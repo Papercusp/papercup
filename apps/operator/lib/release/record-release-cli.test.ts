@@ -56,7 +56,7 @@ describe('scanArtifacts', () => {
   fs.writeFileSync(path.join(tmp, 'appimage', 'Papercusp_GUI_0.0.9_amd64.AppImage'), 'appimage-bytes');
   fs.writeFileSync(path.join(tmp, 'appimage', 'Papercusp_GUI_0.0.9_amd64.AppImage.sig'), 'sig');
 
-  const found = scanArtifacts(tmp, '0.0.9', 'desktop-v0.0.9-alpha');
+  const found = scanArtifacts([tmp], '0.0.9', 'desktop-v0.0.9-alpha');
 
   it('finds only THIS version, and no signatures', () => {
     expect(found.map((a) => a.name).sort()).toEqual([
@@ -82,7 +82,49 @@ describe('scanArtifacts', () => {
   });
 
   it('returns nothing rather than throwing when the bundle dir is absent', () => {
-    expect(scanArtifacts(path.join(tmp, 'nope'), '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
+    expect(scanArtifacts([path.join(tmp, 'nope')], '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
+  });
+
+  /**
+   * THE 0.0.8 BUG, pinned. The mac and windows installers were built, signed, and
+   * sitting on disk — in DIFFERENT bundle roots than linux — and the recorder, which
+   * scanned one linux root and a subdir list with no `inno` in it, never looked at
+   * them. 0.0.8 shipped a release page that offered a Mac or Windows tester nothing
+   * to download, and told nobody. If this ever goes green with fewer than 3
+   * platforms, that release is lying to two thirds of the beta testers again.
+   */
+  it('finds ALL THREE platforms across their separate bundle roots (0.0.8 shipped linux-only)', () => {
+    const lin = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-lin-'));
+    const mac = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-mac-'));
+    const win = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-win-'));
+    fs.mkdirSync(path.join(lin, 'deb'), { recursive: true });
+    fs.mkdirSync(path.join(mac, 'dmg'), { recursive: true });
+    // Windows lands in inno/ — the subdir the old list omitted entirely.
+    fs.mkdirSync(path.join(win, 'inno'), { recursive: true });
+    fs.writeFileSync(path.join(lin, 'deb', 'Papercusp GUI_0.0.9_amd64.deb'), 'l');
+    fs.writeFileSync(path.join(mac, 'dmg', 'Papercusp GUI_0.0.9_universal-apple-darwin.dmg'), 'm');
+    fs.writeFileSync(path.join(win, 'inno', 'Papercusp GUI_0.0.9_x64-setup.exe'), 'w');
+    fs.writeFileSync(path.join(win, 'inno', 'Papercusp GUI_0.0.9_x64-setup.exe.sig'), 'sig');
+
+    const all = scanArtifacts([lin, mac, win], '0.0.9', 'desktop-v0.0.9-alpha');
+    expect(all.map((a) => a.platform).sort()).toEqual([
+      'darwin-universal',
+      'linux-x86_64',
+      'windows-x86_64',
+    ]);
+    // every platform a beta tester can actually be on has a GUI installer
+    expect(all.filter((a) => a.product === 'gui')).toHaveLength(3);
+
+    for (const d of [lin, mac, win]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('records an artifact reachable from two roots exactly ONCE', () => {
+    const a = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-dup-'));
+    fs.mkdirSync(path.join(a, 'dmg'), { recursive: true });
+    fs.writeFileSync(path.join(a, 'dmg', 'Papercusp GUI_0.0.9_universal-apple-darwin.dmg'), 'm');
+    // same root passed twice (the salvage/reuse path can alias two trees)
+    expect(scanArtifacts([a, a], '0.0.9', 'desktop-v0.0.9-alpha')).toHaveLength(1);
+    fs.rmSync(a, { recursive: true, force: true });
   });
 
   it('hashes a file LARGER than one read chunk — the whole file, not just the first 1 MiB', () => {
@@ -97,7 +139,7 @@ describe('scanArtifacts', () => {
     for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
     fs.writeFileSync(big, bytes);
 
-    const [artifact] = scanArtifacts(tmp, '9.9.9', 'desktop-v9.9.9-alpha');
+    const [artifact] = scanArtifacts([tmp], '9.9.9', 'desktop-v9.9.9-alpha');
     expect(artifact.size).toBe(3 * chunk);
     expect(artifact.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
     // ...and specifically NOT the digest of just the first chunk.

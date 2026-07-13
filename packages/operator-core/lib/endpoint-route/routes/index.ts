@@ -62,7 +62,7 @@ import backupsRestore from './backups/restore';
 import backupsSnapshots from './backups/snapshots';
 import harnessProjects from './harness/projects';
 // learning-packs-2026-06-11 P-009/P-010 — the Learnings view's pack management:
-import learningPacksRoutes from './learning-packs';
+import knowledgePacksRoutes from './knowledge-packs';
 import harnessMembership from './harness/membership';
 import harnessJoinLink from './harness/join-link';
 // share-finalize / binding-resolve / cupboard-publish (the per-harness
@@ -592,7 +592,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(backupsRestore as AnyRoute),
   ...flatten(backupsSnapshots as AnyRoute[]),
   ...flatten(harnessProjects as AnyRoute[]),
-  ...flatten(learningPacksRoutes as AnyRoute[]),
+  ...flatten(knowledgePacksRoutes as AnyRoute[]),
   ...flatten(harnessMembership as AnyRoute[]),
   ...flatten(harnessJoinLink as AnyRoute),
   ...flatten(harnessBindingClaim as AnyRoute[]),

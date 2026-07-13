@@ -29,7 +29,7 @@ describe('central categorical palette', () => {
     expect(FEED_KIND_COLOR.handoff_accepted).toBe(CATEGORICAL.violet300.hex);
     expect(FEED_KIND_FALLBACK).toBe(CATEGORICAL.slate500.hex);
     expect(Object.keys(CUPBOARD_LISTING_KIND_TONE).sort()).toEqual([
-      'blueprint', 'harness', 'learning-pack', 'pack', 'plugin', 'template',
+      'blueprint', 'harness', 'knowledge-pack', 'pack', 'plugin', 'template',
     ]);
   });
 });

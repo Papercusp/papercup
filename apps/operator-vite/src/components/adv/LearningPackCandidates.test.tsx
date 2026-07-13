@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// LearningPackCandidates render + decide coverage (consume-edges P-032 / B-11).
+// KnowledgePackCandidates render + decide coverage (consume-edges P-032 / B-11).
 // The fleet→pack review strip: pending candidates with provenance, the draft
-// expander, and the adopt/dismiss POST through /api/learning-packs/candidate-decide
+// expander, and the adopt/dismiss POST through /api/knowledge-packs/candidate-decide
 // (adopt surfaces the "pack updated" hint; failures surface role=alert; the
 // empty queue renders nothing). useSyncQuery + nuqs mocked, the pinned
 // sibling pattern (LearningTab.test.tsx).
@@ -15,7 +15,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import type { LearningPackCandidate } from "@papercusp/operator-core/lib/learning-packs/candidates";
+import type { KnowledgePackCandidate } from "@papercusp/operator-core/lib/knowledge-packs/candidates";
 
 const nuqsState: Record<string, unknown> = { lcand: "" };
 const setLcand = vi.fn();
@@ -27,7 +27,7 @@ vi.mock("nuqs", () => ({
 }));
 
 const invalidate = vi.fn();
-let candidates: LearningPackCandidate[] = [];
+let candidates: KnowledgePackCandidate[] = [];
 vi.mock("@papercusp/sync", () => ({
   useSyncQuery: () => ({ data: candidates, invalidate }),
 }));
@@ -35,12 +35,12 @@ vi.mock("@papercusp/sync", () => ({
 // hives→pot routed tooltip from the THE_HIVE flag hook (restore-pot-lexicon P-006).
 vi.mock("@/lib/useLexicon", () => ({ useLexicon: () => (k: string) => k }));
 
-const { default: LearningPackCandidates } =
-  await import("./LearningPackCandidates");
+const { default: KnowledgePackCandidates } =
+  await import("./KnowledgePackCandidates");
 
 const cand = (
-  over: Partial<LearningPackCandidate> = {},
-): LearningPackCandidate => ({
+  over: Partial<KnowledgePackCandidate> = {},
+): KnowledgePackCandidate => ({
   id: "cand-1",
   signature: "lock edit serialize",
   title: "Coordinate shared-tree edits",
@@ -74,15 +74,15 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("<LearningPackCandidates />", () => {
+describe("<KnowledgePackCandidates />", () => {
   it("renders nothing when the queue is empty", () => {
     candidates = [];
-    const { container } = render(<LearningPackCandidates />);
+    const { container } = render(<KnowledgePackCandidates />);
     expect(container.firstChild).toBeNull();
   });
 
   it("renders pending candidates with provenance; ?lcand expands the draft", () => {
-    render(<LearningPackCandidates />);
+    render(<KnowledgePackCandidates />);
     expect(screen.getByText("Coordinate shared-tree edits")).toBeTruthy();
     expect(screen.getByText("4× · 2 scopes").getAttribute("title")).toBe(
       "Recurred 4× across operator, harness:sheets · from EI-1, EI-2",
@@ -92,7 +92,7 @@ describe("<LearningPackCandidates />", () => {
 
     cleanup();
     nuqsState.lcand = "cand-1";
-    render(<LearningPackCandidates />);
+    render(<KnowledgePackCandidates />);
     expect(screen.getByText(/serializes concurrent edits/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "hide draft" })).toBeTruthy();
   });
@@ -101,7 +101,7 @@ describe("<LearningPackCandidates />", () => {
     candidates = Array.from({ length: 5 }, (_, i) =>
       cand({ id: `cand-${i + 1}`, title: `Candidate ${i + 1}` }),
     );
-    render(<LearningPackCandidates />);
+    render(<KnowledgePackCandidates />);
     expect(screen.getByText("Candidate 3")).toBeTruthy();
     expect(screen.queryByText("Candidate 4")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /More candidates/ }));
@@ -124,7 +124,7 @@ describe("<LearningPackCandidates />", () => {
         },
       ),
     );
-    render(<LearningPackCandidates />);
+    render(<KnowledgePackCandidates />);
     fireEvent.click(screen.getByRole("button", { name: "adopt" }));
     await waitFor(() =>
       expect(
@@ -132,7 +132,7 @@ describe("<LearningPackCandidates />", () => {
       ).toBeTruthy(),
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/learning-packs/candidate-decide",
+      "/api/knowledge-packs/candidate-decide",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ id: "cand-1", action: "adopt" }),
@@ -143,11 +143,11 @@ describe("<LearningPackCandidates />", () => {
 
   it("dismiss POSTs the decide route; a failed decide surfaces role=alert", async () => {
     const fetchMock = vi.mocked(globalThis.fetch);
-    render(<LearningPackCandidates />);
+    render(<KnowledgePackCandidates />);
     fireEvent.click(screen.getByRole("button", { name: "dismiss" }));
     await waitFor(() => expect(invalidate).toHaveBeenCalled());
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/learning-packs/candidate-decide",
+      "/api/knowledge-packs/candidate-decide",
       expect.objectContaining({
         body: JSON.stringify({ id: "cand-1", action: "dismiss" }),
       }),

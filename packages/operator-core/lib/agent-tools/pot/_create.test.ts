@@ -129,11 +129,11 @@ beforeEach(() => {
       return true;
     },
   }));
-  // learning-packs P-005: the seed step is mocked (its own behavior is pinned in
-  // lib/learning-packs/seed.test.ts); the flag gate resolves ON deterministically.
+  // knowledge-packs P-005: the seed step is mocked (its own behavior is pinned in
+  // lib/knowledge-packs/seed.test.ts); the flag gate resolves ON deterministically.
   vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => true, onFlagChange: () => () => {} }));
-  vi.doMock('../../learning-packs/load-packs', () => ({
-    loadLearningPack: async () => ({
+  vi.doMock('../../knowledge-packs/load-packs', () => ({
+    loadKnowledgePack: async () => ({
       pack: {
         manifest: { id: 'papercusp-default', title: 'T', description: 'd', version: '1.0.0' },
         items: [{ id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'a' }],
@@ -142,7 +142,7 @@ beforeEach(() => {
       warnings: [],
     }),
   }));
-  vi.doMock('../../learning-packs/seed', () => ({
+  vi.doMock('../../knowledge-packs/seed', () => ({
     shapesFromDetection: () => undefined,
     seedPackIntoHive: async () => ({
       ok: true,
@@ -212,8 +212,8 @@ afterEach(() => {
   vi.doUnmock('../../hive-identity');
   vi.doUnmock('../../hive-store');
   vi.doUnmock('@papercusp/flags/server');
-  vi.doUnmock('../../learning-packs/load-packs');
-  vi.doUnmock('../../learning-packs/seed');
+  vi.doUnmock('../../knowledge-packs/load-packs');
+  vi.doUnmock('../../knowledge-packs/seed');
   vi.doUnmock('../../pot/provision-learning-loop');
   vi.doUnmock('../../hive-settings-store');
   vi.doUnmock('../../harness/usage-actor');
@@ -242,7 +242,7 @@ describe('createPotHarness', () => {
     // The Pot's first-class identity (Ed25519 keypair + entity row) is minted as
     // part of create (shared-pot-federation P-002).
     expect(ensureCalls).toEqual([['default', 'test-pot']]);
-    // learning-packs P-005: the default pack seeded into the new pot's pool.
+    // knowledge-packs P-005: the default pack seeded into the new pot's pool.
     expect(res.seededLearnings).toEqual({ packId: 'papercusp-default', packVersion: '1.0.0', count: 1 });
     // per-pot-learning-loops P-020: the per-pot loop is provisioned, keyed to the
     // pot's OWN slug, and reported in the result.
@@ -289,13 +289,13 @@ describe('createPotHarness', () => {
     expect(res.provisionedLoop).toBeUndefined();
   });
 
-  it('learningPack: null skips seeding entirely', async () => {
+  it('knowledgePack: null skips seeding entirely', async () => {
     const { createPotHarness } = await import('./_create');
     const res = await createPotHarness({
       slug: 'no-seed-pot',
       workspaceId: 'default',
       parentDir: tmpParent,
-      learningPack: null,
+      knowledgePack: null,
     });
     expect(res.ok).toBe(true);
     expect(res.seededLearnings).toBeUndefined();

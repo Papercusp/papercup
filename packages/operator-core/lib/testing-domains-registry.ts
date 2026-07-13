@@ -137,7 +137,7 @@ defineTestDomain({
   ],
 });
 
-// learning-packs-2026-06-11: the Learning Packs feature end-to-end — pack
+// learning-packs-2026-06-11: the Knowledge Packs feature end-to-end — pack
 // format/seeding/management, the hive memory scope + budgeted injection, the
 // Learnings-view reader, the creation/Comb UI, and the worker's
 // pre-publication review pipeline. (hive-scope/injection also surface under
@@ -146,14 +146,14 @@ defineTestDomain({
 defineTestDomain({
   id: 'learnings',
   label: 'Learnings',
-  description: 'Learning packs: format/seed/manage, hive memory scope, Learnings UI, Comb review pipeline.',
+  description: 'Knowledge packs: format/seed/manage, hive memory scope, Learnings UI, Comb review pipeline.',
   tier: 'domain',
   sections: [
     {
       id: 'packs',
       label: 'Packs core',
       description: 'Pack format + loader, default-pack content pin, seeding, install/uninstall/upgrade/sweep + conflict review.',
-      globs: ['packages/operator-core/lib/learning-packs/**/*.test.ts'],
+      globs: ['packages/operator-core/lib/knowledge-packs/**/*.test.ts'],
     },
     {
       id: 'hive-memory',

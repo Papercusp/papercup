@@ -1,5 +1,5 @@
 /**
- * learning_packs:candidates — the fleet→pack candidate review queue
+ * knowledge_packs:candidates — the fleet→pack candidate review queue
  * (self-improvement-consume-edges-2026-06-12 P-032, brief B-11).
  *
  * Candidates are staged by the recurrence-escalation cross-scope promotion
@@ -8,23 +8,23 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
+import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
 export default defineTool({
-  name: 'learning_packs:candidates',
+  name: 'knowledge_packs:candidates',
   capability: 'memory:read',
   description:
-    'List learning-pack item CANDIDATEs — cross-hive recurring lessons the recurrence-escalation loop staged for owner review (default: pending only). Each carries provenance: the friction signature, the scopes it recurred across, the recurrence count, and the source improvement-item ids.',
+    'List knowledge-pack item CANDIDATEs — cross-hive recurring lessons the recurrence-escalation loop staged for owner review (default: pending only). Each carries provenance: the friction signature, the scopes it recurred across, the recurrence count, and the source improvement-item ids.',
   guidance: {
     when:
-      'The owner asks what fleet lessons await review, or before learning_packs:decide_candidate (the id comes from here).',
+      'The owner asks what fleet lessons await review, or before knowledge_packs:decide_candidate (the id comes from here).',
     notWhen:
-      "To read a hive's installed learnings (learning_packs:list / memory:list) or the pack catalog (learning_packs:list).",
+      "To read a hive's installed learnings (knowledge_packs:list / memory:list) or the pack catalog (knowledge_packs:list).",
     chaining:
-      'learning_packs:decide_candidate { id, action } to adopt into the fleet-lessons pack or dismiss; after an adopt, hives pick the item up via learning_packs:install/upgrade.',
+      'knowledge_packs:decide_candidate { id, action } to adopt into the fleet-lessons pack or dismiss; after an adopt, hives pick the item up via knowledge_packs:install/upgrade.',
     seeAlso: [
-      'learning_packs:decide_candidate (adopt or dismiss a candidate)',
-      'learning_packs:upgrade (hives pick up an adopted item)',
+      'knowledge_packs:decide_candidate (adopt or dismiss a candidate)',
+      'knowledge_packs:upgrade (hives pick up an adopted item)',
     ],
   },
   crossWorkspace: true,
@@ -36,10 +36,10 @@ export default defineTool({
     limit: z.number().int().min(1).max(500).optional(),
   }),
   async handler(args) {
-    if (!(await learningPacksEnabled())) return text(FLAG_OFF);
+    if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
     // Candidates are GLOBAL (P-002) — no workspace filter; the queue is fleet-wide.
-    const { listLearningPackCandidates } = await import('../../learning-packs/candidates');
-    const candidates = await listLearningPackCandidates({
+    const { listKnowledgePackCandidates } = await import('../../knowledge-packs/candidates');
+    const candidates = await listKnowledgePackCandidates({
       status: args.status ?? 'pending',
       ...(args.limit ? { limit: args.limit } : {}),
     });

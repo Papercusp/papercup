@@ -92,7 +92,7 @@ export interface ProjectEntry {
    * a platform self-hive (or any member without upstream write) git-syncs its
    * local commits to THIS fork remote — never the canonical upstream — and
    * improvements reach upstream only as human-reviewed PRs (open-fork-pr) or
-   * moderated Comb learning-pack listings. Absent ⇒ no fork configured (the
+   * moderated Comb knowledge-pack listings. Absent ⇒ no fork configured (the
    * default for every existing harness): git-sync stays commit-only / pushes the
    * upstream only when the operator has write (decideGitSyncPush). This is a LOCAL
    * config seam only — setting it performs NO outward git action (D-007: the live

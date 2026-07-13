@@ -5,7 +5,7 @@
  * throw) and everything is capped — the tick admits, it doesn't flood.
  *
  * `lessonSignature` is the structural dedup key (sha-256 of the normalized
- * text): the transfer_lessons UNIQUE constraint rides it, and learning-pack
+ * text): the transfer_lessons UNIQUE constraint rides it, and knowledge-pack
  * candidates are matched on the same key (the D-006 inherit-the-bar join).
  */
 import { createHash } from 'node:crypto';

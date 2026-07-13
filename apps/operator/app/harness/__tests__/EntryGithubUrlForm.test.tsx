@@ -245,7 +245,7 @@ describe('new-hive mode', () => {
     expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ runTests: true });
   });
 
-  it('learning pack: default selection submits papercusp-default; "none" submits null (learning-packs P-006)', async () => {
+  it('knowledge pack: default selection submits papercusp-default; "none" submits null (knowledge-packs P-006)', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/pots/from-repo': {
@@ -265,12 +265,12 @@ describe('new-hive mode', () => {
     });
     const { onCreated } = renderForm();
     // The picker defaults to the Papercusp pack and explains the seeding.
-    const picker = screen.getByTestId('learning-pack-picker').querySelector('select')!;
+    const picker = screen.getByTestId('knowledge-pack-picker').querySelector('select')!;
     expect(picker.value).toBe('papercusp-default');
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ learningPack: 'papercusp-default' });
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ knowledgePack: 'papercusp-default' });
     // A clean seeded create auto-closes (modal-lifecycle-2026-06-17): the
     // "started with N learnings" summary lives in the Learning tab now, not a
     // lingering dialog. (The seeded-line render itself stays covered by the
@@ -287,11 +287,11 @@ describe('new-hive mode', () => {
       },
     });
     renderForm();
-    await user.selectOptions(screen.getByTestId('learning-pack-picker').querySelector('select')!, 'none');
+    await user.selectOptions(screen.getByTestId('knowledge-pack-picker').querySelector('select')!, 'none');
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ learningPack: null });
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ knowledgePack: null });
   });
 
   it('the status beacon is AUTO (no opt-in): a known-public repo shows an info note and sends NO beaconConsent', async () => {

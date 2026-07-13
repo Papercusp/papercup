@@ -120,7 +120,7 @@
  *     (FB-08, D-006). Nightly lesson distillation from the day's transcripts
  *     (admitted FREE at memory tier 'probationary') + student-transfer tests
  *     (with-lesson vs baseline on the source historical task via lib/replay)
- *     that promote/demote/retire via the pure gate; learning-pack candidate
+ *     that promote/demote/retire via the pure gate; knowledge-pack candidate
  *     adoption inherits the bar. LLM spend; flag-gated OFF
  *     (papercusp-transfer-harness — the frontier D-001 arming gate),
  *     governor-preflighted (loop `frontier:transfer-harness`, lifetime

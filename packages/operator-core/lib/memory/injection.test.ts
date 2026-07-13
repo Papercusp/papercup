@@ -12,7 +12,7 @@ vi.mock('./backend', () => ({
   getMemoryBackend: vi.fn(),
 }));
 
-// The harness registry backs the member→hive resolution (learning-packs
+// The harness registry backs the member→hive resolution (knowledge-packs
 // P-004). Canned per-test via `registryProjects`; default empty ⇒ no hive pull.
 let registryProjects: Array<{ slug: string; harness_kind?: string; hive_slug?: string }> = [];
 vi.mock('../harness-registry', () => ({
@@ -189,7 +189,7 @@ describe('buildMemoryContextBlock', () => {
     expect(block).toBeNull();
   });
 
-  it('pulls + labels the hive pool for a member harness (learning-packs P-004)', async () => {
+  it('pulls + labels the hive pool for a member harness (knowledge-packs P-004)', async () => {
     registryProjects = [
       { slug: 'member-a', hive_slug: 'my-hive' },
       { slug: 'my-hive', harness_kind: 'hive' },

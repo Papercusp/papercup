@@ -1,5 +1,5 @@
 /**
- * seed — copy a learning pack into a hive's mem0 store
+ * seed — copy a knowledge pack into a hive's mem0 store
  * (learning-packs-2026-06-11 P-005, D-001 copy-not-link).
  *
  * Each pack item becomes one ordinary memory row in the `hive:<slug>` pool
@@ -16,7 +16,7 @@
  * undefined ⇒ `any`-tagged items only.
  *
  * Used by pot:create (best-effort, undo-stacked) and the
- * learning_packs:install verb (P-009, which adds the conflict review —
+ * knowledge_packs:install verb (P-009, which adds the conflict review —
  * creation-time seeding into an EMPTY pool needs none).
  */
 
@@ -27,7 +27,7 @@ import {
   memoryTextOf,
   provenanceOf,
   type AppliesTo,
-  type LearningPack,
+  type KnowledgePack,
 } from './pack-format';
 
 /** Map a DetectionResult-shaped value onto applies_to shapes. Defensive on shape. */
@@ -45,7 +45,7 @@ export interface SeedPackInput {
   workspaceId: string;
   /** The hive's home slug — rows land in scope `hive:<slug>`. */
   potSlug: string;
-  pack: LearningPack;
+  pack: KnowledgePack;
   /** Project shapes from detection; undefined ⇒ `any`-only (D-008/OQ-3). */
   shapes?: readonly AppliesTo[];
   /** Stamped as metadata.created_by. Default 'system' (creation-time seed). */
@@ -79,8 +79,8 @@ const SEED_CONCURRENCY = 4;
 export async function rememberPackItem(opts: {
   workspaceId: string;
   potSlug: string;
-  pack: LearningPack;
-  item: LearningPack['items'][number];
+  pack: KnowledgePack;
+  item: KnowledgePack['items'][number];
   createdBy?: string;
 }): Promise<string[]> {
   const backend = getMemoryBackend();
@@ -142,7 +142,7 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
           });
         } catch (e) {
           console.warn(
-            `[learning-packs] seed write failed (${pack.manifest.id}/${item.id}): ${e instanceof Error ? e.message : e}`,
+            `[knowledge-packs] seed write failed (${pack.manifest.id}/${item.id}): ${e instanceof Error ? e.message : e}`,
           );
           return null;
         }

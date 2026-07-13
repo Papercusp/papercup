@@ -16,13 +16,16 @@ import type { Env } from './env.ts';
  *  `pack` (packs are the umbrella that also carry event deps), so `tool-pack`
  *  becomes the interim wire alias; both `tool-pack` and the pre-008 `pack` stay
  *  accepted on the wire and normalize to `pack` via normalizeListingKind.
+ *  Migration 011 (cupboard-public-release-2026-07-12 P-001) renames
+ *  `learning-pack` → `knowledge-pack`; the old `learning-pack` wire value stays
+ *  accepted and normalizes forward, same pattern.
  *  `template` (app-templates-2026-07-04; standard-path publish wired in
  *  cupboard-full-dogfood-2026-07-10 P-003): a first-party app-template listing,
  *  GitHub-repo-backed per `listing_ref` like a blueprint. Previously the 11
  *  official template rows were seeded directly (bypassing POST /listings); it is
  *  now accepted on the publish path so templates list "as authored by papercusp"
  *  via the standard flow. */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'learning-pack', 'template'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -38,13 +41,13 @@ export function normalizeListingKind(v: unknown): ListingKind | null {
 }
 
 /**
- * Pre-publication review policy (learning-packs D-007): the INSTRUCTION-
- * CARRYING kinds — content injected into agent context (learning packs) or
+ * Pre-publication review policy (knowledge-packs D-007): the INSTRUCTION-
+ * CARRYING kinds — content injected into agent context (knowledge packs) or
  * run as agent roles (blueprints) — land `pending` at publish and go public
  * only on operator approval. Code kinds keep install-consent + reactive
  * moderation.
  */
-export const REVIEW_POLICY_KINDS: readonly ListingKind[] = ['learning-pack', 'blueprint'];
+export const REVIEW_POLICY_KINDS: readonly ListingKind[] = ['knowledge-pack', 'blueprint'];
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
@@ -97,7 +100,7 @@ export interface HarnessRow {
   updated_at: number;
   unlisted_at: number | null;
   unlisted_reason: string | null;
-  // Pre-publication review (migration 008 / learning-packs D-007). Policy
+  // Pre-publication review (migration 008 / knowledge-packs D-007). Policy
   // kinds publish 'pending'; everything else (and every pre-008 row) is
   // 'approved'. reviewed_at/review_reason carry the operator decision.
   review_status: ReviewStatus;
@@ -197,7 +200,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
     .run();
 }
 
-/** Operator decision on a pending listing (learning-packs P-019/P-020). */
+/** Operator decision on a pending listing (knowledge-packs P-019/P-020). */
 export async function setReviewStatus(
   db: D1Database,
   id: string,
@@ -299,7 +302,7 @@ export interface ListOpts {
 export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<HarnessRow[]> {
   const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100);
   // Static SQL avoids D1's prepared-statement string concat tax; we filter
-  // unlisted always — and non-approved always (learning-packs D-007: pending/
+  // unlisted always — and non-approved always (knowledge-packs D-007: pending/
   // rejected policy-kind listings are invisible to public browse; the
   // publisher reads their own via GET /:id with auth, operators via /admin).
   const where: string[] = ['unlisted_at IS NULL', `review_status = 'approved'`];

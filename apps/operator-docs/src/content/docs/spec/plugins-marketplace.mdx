@@ -23,7 +23,7 @@ The plugin **distribution** model it proposes (a `kind` discriminator on
 Cloudflare Worker + D1, live at `cupboard.papercusp.com`), not a
 `papercuspai.com/marketplace/` site. The Cupboard is a single catalog with five
 listing **kinds** — `harness` (join), `blueprint` (fork), `plugin` (install),
-`tool-pack` (install), and `learning-pack` (install) — exposed over HTTP at the
+`tool-pack` (install), and `knowledge-pack` (install) — exposed over HTTP at the
 worker root: `/listings` (kind-aware) and `/harnesses` (the `kind='harness'`
 view), with no `cupboard:*` MCP verbs. (The original proposal's `snapshot` kind
 was **retired** — `retire-snapshots-instance-spec-2026-06-09` D-005.) Plugins
@@ -127,7 +127,7 @@ loader specially constrains it, rejecting any of those contributions on a pack
 (`tool-distribution-granularity-2026-06-05` D-001/D-004). `'snapshot'`,
 `'service'`, `'theme'`, and `'harness'` are reserved/dormant — the loader treats
 every non-`'pack'` value as a default plugin. The Cupboard's `tool-pack` listing
-kind is how these packs surface in the storefront (and `learning-pack` is its
+kind is how these packs surface in the storefront (and `knowledge-pack` is its
 sibling install kind for curated pot learnings).
 
 **Plugins ship in one of three runtimes.** Orthogonal to the action handler

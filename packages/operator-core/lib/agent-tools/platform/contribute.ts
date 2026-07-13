@@ -7,9 +7,9 @@
  * locally, this orchestrates the two contribution round-trips D-007 ratified —
  * REUSING the proven surfaces, never rebuilding them:
  *
- *   kind:'learning-pack' — export the self-hive's organic learnings into a pack
- *     (learning_packs:export's core) then LIST it on the Comb
- *     (learning_packs:publish's core). The listing lands PENDING (operator
+ *   kind:'knowledge-pack' — export the self-hive's organic learnings into a pack
+ *     (knowledge_packs:export's core) then LIST it on the Comb
+ *     (knowledge_packs:publish's core). The listing lands PENDING (operator
  *     approval gates public visibility, D-007 moderation gate).
  *
  *   kind:'pr' — commit + push the local change to the USER'S OWN FORK (never
@@ -44,17 +44,17 @@ export default defineTool({
   name: 'platform:contribute',
   profile: 'engineer',
   description:
-    "Send a local improvement UPSTREAM from a platform-mode install. kind:'learning-pack' exports the self-hive's organic learnings + lists them on the Comb (lands PENDING — operator-moderated); kind:'pr' pushes the change to the USER'S FORK and opens a human-reviewed PR fork→canonical Papercusp (never a direct push). Root-only, reason-audited. By default it PREPARES but does not send: the live push/PR/publish fires ONLY with confirm:true AND credentials/remote present, else returns {ok, prepared:true, needs:[...]}.",
+    "Send a local improvement UPSTREAM from a platform-mode install. kind:'knowledge-pack' exports the self-hive's organic learnings + lists them on the Comb (lands PENDING — operator-moderated); kind:'pr' pushes the change to the USER'S FORK and opens a human-reviewed PR fork→canonical Papercusp (never a direct push). Root-only, reason-audited. By default it PREPARES but does not send: the live push/PR/publish fires ONLY with confirm:true AND credentials/remote present, else returns {ok, prepared:true, needs:[...]}.",
   guidance: {
-    when: 'The user explicitly wants to contribute a platform-mode improvement UPSTREAM to Papercusp — publish a learning-pack to the Comb, or open a fork→canonical PR. Requires platform:enable first (the self-hive must be standing).',
+    when: 'The user explicitly wants to contribute a platform-mode improvement UPSTREAM to Papercusp — publish a knowledge-pack to the Comb, or open a fork→canonical PR. Requires platform:enable first (the self-hive must be standing).',
     notWhen:
-      'Enabling platform mode / standing up the self-hive — platform:enable. Publishing a pack for an ARBITRARY (non-platform) hive — learning_packs:export + learning_packs:publish. Opening a PR for a normal harness feature — the orchestrator fork-PR hook.',
+      'Enabling platform mode / standing up the self-hive — platform:enable. Publishing a pack for an ARBITRARY (non-platform) hive — knowledge_packs:export + knowledge_packs:publish. Opening a PR for a normal harness feature — the orchestrator fork-PR hook.',
     chaining:
       'platform:enable (stand up the self-hive) → set the self-hive member\'s fork_remote (for kind:\'pr\') → platform:contribute (prepared) → review the plan/needs → platform:contribute { confirm:true } to send.',
     seeAlso: [
       'platform:enable (stand up the self-hive first)',
       'platform:dogfood_verify (confirm the PR loop closed)',
-      'learning_packs:publish (publish a pack for a non-platform hive)',
+      'knowledge_packs:publish (publish a pack for a non-platform hive)',
     ],
   },
   capability: 'harness:write',
@@ -66,9 +66,9 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     kind: z
-      .enum(['learning-pack', 'pr'])
+      .enum(['knowledge-pack', 'pr'])
       .describe(
-        "Which upstream round-trip: 'learning-pack' (export + publish to the Comb, lands PENDING) or 'pr' (push to the user's fork + open a PR into canonical Papercusp).",
+        "Which upstream round-trip: 'knowledge-pack' (export + publish to the Comb, lands PENDING) or 'pr' (push to the user's fork + open a PR into canonical Papercusp).",
       ),
     confirm: z
       .boolean()
@@ -88,22 +88,22 @@ export default defineTool({
       .optional()
       .describe(`Base slug of the self-hive (default ${PLATFORM_SELF_POT_SLUG}; member = <base>, home = <base>-hive).`),
 
-    // ── learning-pack path ──
+    // ── knowledge-pack path ──
     packId: z
       .string()
       .min(1)
       .max(120)
       .optional()
-      .describe("kind:'learning-pack' — kebab-case pack id (becomes the Comb listing_ref)."),
-    title: hardText(LIMITS.SHORT_TITLE).optional().describe("kind:'learning-pack' — pack title."),
+      .describe("kind:'knowledge-pack' — kebab-case pack id (becomes the Comb listing_ref)."),
+    title: hardText(LIMITS.SHORT_TITLE).optional().describe("kind:'knowledge-pack' — pack title."),
     description: hardText(LIMITS.ANNOTATION)
       .optional()
-      .describe("kind:'learning-pack' — short pack description."),
-    version: z.string().optional().describe("kind:'learning-pack' — three-part semver (default 1.0.0)."),
+      .describe("kind:'knowledge-pack' — short pack description."),
+    version: z.string().optional().describe("kind:'knowledge-pack' — three-part semver (default 1.0.0)."),
     includePackRows: z
       .boolean()
       .optional()
-      .describe("kind:'learning-pack' — re-export installed-pack content too (default false: organic learnings only)."),
+      .describe("kind:'knowledge-pack' — re-export installed-pack content too (default false: organic learnings only)."),
 
     // ── pr path ──
     featureBranch: z

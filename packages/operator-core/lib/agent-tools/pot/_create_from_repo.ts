@@ -40,7 +40,7 @@ import type {
   SeedGitSyncRoutineOutcome,
 } from '../../harness/git-sync/git-sync-routine';
 import { createPotHarness, type CreatePotResult, type SeededLearningsSummary } from './_create';
-import { shapesFromDetection } from '../../learning-packs/seed';
+import { shapesFromDetection } from '../../knowledge-packs/seed';
 import {
   publishCreatedHive as publishCreatedPot,
   republishHiveAfterMemberAdd as republishPotAfterMemberAdd,
@@ -94,11 +94,11 @@ export interface CreatePotFromRepoOpts {
    */
   progressId?: string;
   /**
-   * Learning pack seeded into the new pot home (learning-packs P-005).
+   * Knowledge pack seeded into the new pot home (knowledge-packs P-005).
    * Omit ⇒ default pack; null ⇒ none. Ignored in into-pot mode (the home
-   * already exists — install packs there via learning_packs:install).
+   * already exists — install packs there via knowledge_packs:install).
    */
-  learningPack?: string | null;
+  knowledgePack?: string | null;
   workspaceId: string;
 }
 
@@ -109,7 +109,7 @@ export interface CreatePotFromRepoCreated {
   defaultBranch?: string;
   githubRepositoryId?: number;
   detection?: unknown;
-  /** learning-packs P-005: what seeded into the new pot home (absent in
+  /** knowledge-packs P-005: what seeded into the new pot home (absent in
    *  into-pot mode / flag-off / pack 'none'). */
   seededLearnings?: SeededLearningsSummary;
   /** P-008: set when `force` created past an existing pot/share — the
@@ -480,14 +480,14 @@ export async function createPotFromRepo(
   //     into-pot mode — the home already exists.
   let pot: CreatePotResult | null = null;
   if (!intoPot) {
-    // learning-packs P-005: seed the selected pack into the new home,
+    // knowledge-packs P-005: seed the selected pack into the new home,
     // shape-filtered by what detection learned about the repo.
     const projectShapes = shapesFromDetection(bp.detection);
     pot = await createPot({
       slug: potSlug,
       workspaceId: opts.workspaceId,
       ...(opts.parentDir ? { parentDir: opts.parentDir } : {}),
-      ...(opts.learningPack !== undefined ? { learningPack: opts.learningPack } : {}),
+      ...(opts.knowledgePack !== undefined ? { knowledgePack: opts.knowledgePack } : {}),
       ...(projectShapes ? { projectShapes } : {}),
     });
     if (!pot.ok) {
@@ -518,7 +518,7 @@ export async function createPotFromRepo(
     return fail('member_create_failed', member.error ?? 'harness:create failed');
   }
   mark('create', 'done');
-  // learning-packs P-006: the seed step settles retrospectively from the pot
+  // knowledge-packs P-006: the seed step settles retrospectively from the pot
   // create's summary (seeding ran inside it) — done / error / skipped, real
   // data only. into-pot mode never seeds (no new home) → skipped.
   mark(

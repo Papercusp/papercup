@@ -1,12 +1,12 @@
 /**
- * Pins the two GENERIC domain default learning packs + their blueprint wiring
+ * Pins the two GENERIC domain default knowledge packs + their blueprint wiring
  * (domain-generic-hive-architecture-2026-06-18 P-017, D-010).
  *
  * D-010: a coding hive seeds a GENERIC `coding` pack and a work hive a GENERIC
  * `work` pack — generic engineering / work wisdom, NOT project-specific (project
  * specifics ride the per-hive override + a separate project pack, never the
  * blueprint). This test fails HERE — not silently at hive creation — if a pack
- * develops a content typo, drifts off-domain, or the blueprint `learning.pack`
+ * develops a content typo, drifts off-domain, or the blueprint `knowledge.pack`
  * wiring breaks.
  *
  * The wiring assertions resolve through the EXACT path createHiveHarness uses
@@ -16,13 +16,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { validatePack, filterByShapes } from './pack-format';
-import { loadLearningPack } from './load-packs';
+import { loadKnowledgePack } from './load-packs';
 import { operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 
 describe('generic `coding` default pack (shipped content)', () => {
   it('loads cleanly from the builtin root and validates', async () => {
-    const loaded = await loadLearningPack('coding');
+    const loaded = await loadKnowledgePack('coding');
     expect(loaded, 'builtin `coding` pack must resolve').toBeTruthy();
     expect(loaded!.source).toBe('builtin');
     expect(loaded!.warnings).toEqual([]);
@@ -30,7 +30,7 @@ describe('generic `coding` default pack (shipped content)', () => {
   });
 
   it('is a substantial coding pack: 20–40 items, every project shape represented', async () => {
-    const { pack } = (await loadLearningPack('coding'))!;
+    const { pack } = (await loadKnowledgePack('coding'))!;
     expect(pack.items.length).toBeGreaterThanOrEqual(20);
     expect(pack.items.length).toBeLessThanOrEqual(40);
 
@@ -47,7 +47,7 @@ describe('generic `coding` default pack (shipped content)', () => {
   });
 
   it('carries coding-domain learnings (it is the coding pack, not the work pack)', async () => {
-    const { pack } = (await loadLearningPack('coding'))!;
+    const { pack } = (await loadKnowledgePack('coding'))!;
     const ids = new Set(pack.items.map((i) => i.id));
     for (const id of ['tests-ship-with-feature', 'migrations-not-runtime-ddl', 'use-existing-test-framework']) {
       expect(ids.has(id), `coding pack carries ${id}`).toBe(true);
@@ -57,7 +57,7 @@ describe('generic `coding` default pack (shipped content)', () => {
 
 describe('generic `work` default pack (shipped content)', () => {
   it('loads cleanly from the builtin root and validates', async () => {
-    const loaded = await loadLearningPack('work');
+    const loaded = await loadKnowledgePack('work');
     expect(loaded, 'builtin `work` pack must resolve').toBeTruthy();
     expect(loaded!.source).toBe('builtin');
     expect(loaded!.warnings).toEqual([]);
@@ -65,7 +65,7 @@ describe('generic `work` default pack (shipped content)', () => {
   });
 
   it('is a substantial, fully repo-less-seedable pack (every item is `any`)', async () => {
-    const { pack } = (await loadLearningPack('work'))!;
+    const { pack } = (await loadKnowledgePack('work'))!;
     expect(pack.items.length).toBeGreaterThanOrEqual(20);
     // A work hive is repo-less ⇒ blueprint detection yields no shapes ⇒ only
     // `any`-tagged items seed (D-008/OQ-3). So EVERY work learning must be `any`,
@@ -75,7 +75,7 @@ describe('generic `work` default pack (shipped content)', () => {
   });
 
   it('carries work-domain learnings and drops coding-only ones (D-010)', async () => {
-    const { pack } = (await loadLearningPack('work'))!;
+    const { pack } = (await loadKnowledgePack('work'))!;
     const ids = new Set(pack.items.map((i) => i.id));
     // Work-specific judgment present …
     for (const id of [

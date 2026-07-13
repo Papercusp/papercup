@@ -396,7 +396,7 @@ let hiveEvalResult: Record<string, unknown> = {
   invalidate: vi.fn(),
 };
 // P-042: the tab-level hive picker reuses learning.hiveList; the Learnings view
-// reads learning.hive + learningPacks.list. Defaults: two hives so the picker
+// reads learning.hive + knowledgePacks.list. Defaults: two hives so the picker
 // renders real options.
 let hiveListResult: Record<string, unknown> = {
   data: [
@@ -434,8 +434,8 @@ vi.mock("@papercusp/sync", () => ({
                 ? hiveListResult
                 : opts.queryName === "learning.hive"
                   ? hiveResult
-                  : opts.queryName === "learningPacks.list" ||
-                      opts.queryName === "learningPacks.candidates"
+                  : opts.queryName === "knowledgePacks.list" ||
+                      opts.queryName === "knowledgePacks.candidates"
                     ? {
                         data: [],
                         loading: false,

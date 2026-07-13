@@ -137,7 +137,7 @@ blueprint** (a search box over published blueprints → instantiate), **JOIN**. 
 
 **Approach.** Find the current pot-create UI (`apps/operator/app/...`). The Comb-search path
 reuses the tier-aware resolver (DONE, P-014/D-006) — a Comb-instantiated blueprint's prompts now
-resolve via the installed tier. `hive_create { blueprintId, learningPack }` is the create call.
+resolve via the installed tier. `hive_create { blueprintId, knowledgePack }` is the create call.
 
 **Files (disjoint — UI only):** `apps/operator/app/**` (the pot-create flow + components).
 
@@ -165,20 +165,20 @@ if a new read is needed. **Mild overlap with Brief 3** if same settings surface 
 
 ---
 
-## BRIEF 5 — Default learning packs: generic coding + generic work (P-017)
+## BRIEF 5 — Default knowledge packs: generic coding + generic work (P-017)
 
-**Goal.** A blessed default **coding** learning pack and **work** learning pack — generic
+**Goal.** A blessed default **coding** knowledge pack and **work** knowledge pack — generic
 engineering / generic work knowledge, **NOT** Papercusp-specific (D-010). Papercusp knowledge
 stays a SEPARATE pack + the per-pot override.
 
-**Approach.** Use the `learning_packs:*` system. Define the two default packs + wire each blessed
+**Approach.** Use the `knowledge_packs:*` system. Define the two default packs + wire each blessed
 blueprint (`coding`/`work`) to its default pack at pot-create. Do NOT bake pack content into the
 blueprint (blueprint = prompts; pack = memory).
 
-**Files (disjoint — pack system):** the learning-pack definitions/seed + the blueprint→default-pack
+**Files (disjoint — pack system):** the knowledge-pack definitions/seed + the blueprint→default-pack
 wiring. Disjoint from blueprints/prompts, UI, and scout code.
 
-**Verify.** Pack unit tests; `learning_packs:list` shows the defaults.
+**Verify.** Pack unit tests; `knowledge_packs:list` shows the defaults.
 
 ---
 
@@ -343,7 +343,7 @@ generic · P-029 ship Papercusp as a shared pot by default.
 **(Recorded here because the `plans:*` MCP write surface is itself down — `scoped_superuser_workspace_unresolved`, bdc3a's incident. Reconcile this into the plan as D-023 when MCP recovers.)**
 
 - **P-026 / P-027 / P-029 (live dogfood + install-default): HARD-BLOCKED** on two ACTIVE infra incidents (other agents'), not on caution:
-  1. **`scoped_superuser_workspace_unresolved`** (bdc3a) — rejects the Phase-6 operator tools (`hive_create`, `blueprint_catalog`, `papercusp:list_workspaces`, `learning_packs:list`) AND, as of this attempt, even `plans:*` writes. The operator MCP surface is degraded.
+  1. **`scoped_superuser_workspace_unresolved`** (bdc3a) — rejects the Phase-6 operator tools (`hive_create`, `blueprint_catalog`, `papercusp:list_workspaces`, `knowledge_packs:list`) AND, as of this attempt, even `plans:*` writes. The operator MCP surface is degraded.
   2. **Deploy frozen** (fc2fd, request-only / `:5532`+cluster) — Phases 1-5 are **not deployed**; `:3070` still serves the **pre-rename** blueprint layout (`pot`/`generic-pot`/old-`coding`; no `coding-factory`/`work`). A dogfood now would exercise the OLD system and validate nothing about the new architecture.
   - Dogfooding old code with broken tools = a fabricated DONE → **refused** (integrity). Also: staging isn't fully green yet (rename-residual `decider` reds, su-b258e/3a0d4's lane).
 - **P-028 STATIC HALF — DONE** (file inspection, no live op): the generic `coding` blueprint is substantially clean — `cup.md` + `mug.md` carry **zero** papercup specifics. Minor findings: **F1** — `operator.md`/`overwatch.md` keep platform `:3070`/`localhost:3055` "no-REST-surface" warnings (platform-appropriate, keep) + one `'papercup'` home-harness *example* (operator.md:117 — genericize); **F2** — no dedicated Papercusp-specifics *pack* yet (specifics live in the seeded `papercup-pot.su.md` su override + the legacy `papercusp-default`; D-017 already flagged papercusp-default's retirement as a follow-on). So D-010's "blueprint stays generic" invariant substantially holds; F1/F2 are small follow-ons. The "both flows produce a working pot" half of P-028 is blocked with P-026/P-027.

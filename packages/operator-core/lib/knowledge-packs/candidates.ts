@@ -5,19 +5,19 @@
  * The recurrence-escalation cross-scope promotion (P-052 lite) notices a
  * friction signature recurring across ≥2 DISTINCT scopes — cross-Hive pain
  * that belongs in the shared knowledge layer. This module is the missing edge
- * from that observation into the learning-pack system:
+ * from that observation into the knowledge-pack system:
  *
  *   stage    one CANDIDATE row per signature (PG, migration 239; GLOBAL since 377)
  *            with full provenance — deduped structurally (UNIQUE signature — a
  *            learning is a workspace-agnostic capability, data-scoping-audit P-002,
  *            so a dismissed lesson never re-nags) and capped (pending ≤
  *            {@link pendingCandidateCap}), like the lite promotion itself.
- *   list     the Learnings view + learning_packs:candidates read.
+ *   list     the Learnings view + knowledge_packs:candidates read.
  *   decide   the OWNER adopts or dismisses. Adoption materializes the item
  *            into the `fleet-lessons` pack under the installed packs root and
  *            bumps the pack's patch version — it NEVER touches a hive pool.
  *            Hives then adopt the new item through the EXISTING
- *            install/upgrade conflict review (learning-packs D-003), which is
+ *            install/upgrade conflict review (knowledge-packs D-003), which is
  *            exactly the never-auto-published contract: a candidate becomes
  *            recallable wisdom only after two deliberate human acts.
  *
@@ -30,14 +30,14 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
-import { installedLearningPacksRoot } from './load-packs';
+import { installedKnowledgePacksRoot } from './load-packs';
 import {
   APPLIES_TO_SHAPES,
   LEARNING_KINDS,
   parseManifest,
   type AppliesTo,
   type LearningKind,
-  type LearningPackManifest,
+  type KnowledgePackManifest,
 } from './pack-format';
 
 /** The owner-curated pack adoption writes into (created on first adoption). */
@@ -54,7 +54,7 @@ export function pendingCandidateCap(): number {
 
 export type CandidateStatus = 'pending' | 'adopted' | 'dismissed';
 
-export interface LearningPackCandidate {
+export interface KnowledgePackCandidate {
   id: string;
   signature: string;
   title: string;
@@ -109,7 +109,7 @@ function strArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : [];
 }
 
-function rowToCandidate(r: CandidateRow): LearningPackCandidate {
+function rowToCandidate(r: CandidateRow): KnowledgePackCandidate {
   const kind = (LEARNING_KINDS as readonly string[]).includes(r.kind) ? (r.kind as LearningKind) : 'feedback';
   const appliesTo = strArray(r.applies_to).filter((s): s is AppliesTo =>
     (APPLIES_TO_SHAPES as readonly string[]).includes(s),
@@ -167,7 +167,7 @@ export type StageCandidateResult =
  * triage tick is a no-op); refuses past the pending cap so the owner's review
  * queue stays a queue.
  */
-export async function stageLearningPackCandidate(
+export async function stageKnowledgePackCandidate(
   input: StageCandidateInput,
 ): Promise<StageCandidateResult> {
   const { sql } = getOrgPg();
@@ -175,12 +175,12 @@ export async function stageLearningPackCandidate(
   // Pending cap + structural dedup are GLOBAL now (learnings are workspace-agnostic
   // capabilities, P-002) — the queue is fleet-wide, the signature unique fleet-wide.
   const [{ count }] = await sql<[{ count: string }]>`
-    SELECT count(*)::text AS count FROM harness_shared.learning_pack_candidates
+    SELECT count(*)::text AS count FROM harness_shared.knowledge_pack_candidates
     WHERE status = 'pending'`;
   if (Number(count) >= pendingCandidateCap()) return { staged: false, reason: 'pending-cap' };
 
   const rows = await sql<Array<{ id: string }>>`
-    INSERT INTO harness_shared.learning_pack_candidates
+    INSERT INTO harness_shared.knowledge_pack_candidates
       (signature, title, draft_text, kind, scopes, recurrence_count,
        source_item_ids, created_by)
     VALUES
@@ -188,11 +188,11 @@ export async function stageLearningPackCandidate(
        ${input.kind ?? 'feedback'}, ${JSON.stringify(input.scopes)}::text::jsonb,
        ${input.recurrenceCount}, ${JSON.stringify(input.sourceItemIds ?? [])}::text::jsonb,
        ${input.createdBy ?? 'recurrence-escalation'})
-    ON CONFLICT ON CONSTRAINT learning_pack_candidates_signature_uniq DO NOTHING
+    ON CONFLICT ON CONSTRAINT knowledge_pack_candidates_signature_uniq DO NOTHING
     RETURNING id`;
   if (rows.length === 0) return { staged: false, reason: 'duplicate-signature' };
 
-  invalidate(['learningPacks.candidates']);
+  invalidate(['knowledgePacks.candidates']);
   return { staged: true, id: rows[0]!.id };
 }
 
@@ -200,13 +200,13 @@ export async function stageLearningPackCandidate(
  * List
  * ──────────────────────────────────────────────────────────────────────── */
 
-export async function listLearningPackCandidates(
+export async function listKnowledgePackCandidates(
   opts: { status?: CandidateStatus; limit?: number } = {},
-): Promise<LearningPackCandidate[]> {
+): Promise<KnowledgePackCandidate[]> {
   const { sql } = getOrgPg();
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
   const rows = await sql<CandidateRow[]>`
-    SELECT * FROM harness_shared.learning_pack_candidates
+    SELECT * FROM harness_shared.knowledge_pack_candidates
     ${opts.status ? sql`WHERE status = ${opts.status}` : sql``}
     ORDER BY created_at DESC
     LIMIT ${limit}`;
@@ -217,7 +217,7 @@ export async function listLearningPackCandidates(
  * Pack materialization (pure-ish fs helpers — injectable root for tests)
  * ──────────────────────────────────────────────────────────────────────── */
 
-const FLEET_LESSONS_MANIFEST: LearningPackManifest = {
+const FLEET_LESSONS_MANIFEST: KnowledgePackManifest = {
   id: FLEET_LESSONS_PACK_ID,
   title: 'Fleet lessons',
   description:
@@ -290,7 +290,7 @@ export function renderCandidateLearningFile(opts: {
   ].join('\n');
 }
 
-function renderManifest(m: LearningPackManifest): string {
+function renderManifest(m: KnowledgePackManifest): string {
   return [
     `id: ${m.id}`,
     `title: ${fmValue(m.title)}`,
@@ -320,10 +320,10 @@ export async function materializeCandidateIntoPack(
   },
   io: { packsRoot?: string } = {},
 ): Promise<{ packId: string; packItemId: string; packVersion: string }> {
-  const dir = join(io.packsRoot ?? installedLearningPacksRoot(), FLEET_LESSONS_PACK_ID);
+  const dir = join(io.packsRoot ?? installedKnowledgePacksRoot(), FLEET_LESSONS_PACK_ID);
   await fs.mkdir(dir, { recursive: true });
 
-  let manifest: LearningPackManifest = FLEET_LESSONS_MANIFEST;
+  let manifest: KnowledgePackManifest = FLEET_LESSONS_MANIFEST;
   try {
     const raw = await fs.readFile(join(dir, 'manifest.yaml'), 'utf8');
     const parsed = parseManifest(raw);
@@ -389,21 +389,21 @@ export type DecideCandidateResult =
  * pending (retryable), never a half-adopted ghost.
  *
  * Adoption also consults the TRANSFER BAR (self-learning-frontier P-022 /
- * D-006: "learning-pack candidates inherit the passing-transfer-test bar"):
+ * D-006: "knowledge-pack candidates inherit the passing-transfer-test bar"):
  * with the papercusp-transfer-harness flag armed, a candidate whose matched
  * transfer lesson FAILED its student-transfer test (or was retired) refuses
  * with reason 'transfer_bar' — the candidate stays pending, so the owner can
  * re-decide after a fix or dismiss. Flag dark (today) ⇒ byte-identical
  * behavior; the bar itself fails open on IO trouble.
  */
-export async function decideLearningPackCandidate(
+export async function decideKnowledgePackCandidate(
   input: DecideCandidateInput,
 ): Promise<DecideCandidateResult> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
 
   const rows = await sql<CandidateRow[]>`
-    SELECT * FROM harness_shared.learning_pack_candidates
+    SELECT * FROM harness_shared.knowledge_pack_candidates
     WHERE id = ${input.id}`;
   const row = rows[0];
   if (!row) return { ok: false, reason: 'not_found' };
@@ -412,11 +412,11 @@ export async function decideLearningPackCandidate(
 
   if (input.action === 'dismiss') {
     await sql`
-      UPDATE harness_shared.learning_pack_candidates
+      UPDATE harness_shared.knowledge_pack_candidates
       SET status = 'dismissed', decided_at = now(), decided_by = ${input.by},
           decision_note = ${input.note ?? null}
       WHERE id = ${input.id} AND status = 'pending'`;
-    invalidate(['learningPacks.candidates']);
+    invalidate(['knowledgePacks.candidates']);
     return { ok: true, action: 'dismiss', id: input.id };
   }
 
@@ -456,7 +456,7 @@ export async function decideLearningPackCandidate(
   }
 
   await sql`
-    UPDATE harness_shared.learning_pack_candidates
+    UPDATE harness_shared.knowledge_pack_candidates
     SET status = 'adopted', decided_at = now(), decided_by = ${input.by},
         decision_note = ${input.note ?? null},
         pack_id = ${written.packId}, pack_item_id = ${written.packItemId}
@@ -465,6 +465,6 @@ export async function decideLearningPackCandidate(
   // The version bump makes `updateAvailable` light up on every hive carrying
   // the pack (learning.hive computes it from the catalog) — the existing
   // upgrade review is the adoption path into pools.
-  invalidate(['learningPacks.candidates', 'learningPacks.list', 'learning.hive']);
+  invalidate(['knowledgePacks.candidates', 'knowledgePacks.list', 'learning.hive']);
   return { ok: true, action: 'adopt', id: input.id, ...written };
 }

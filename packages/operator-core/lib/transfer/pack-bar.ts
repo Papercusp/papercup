@@ -1,7 +1,7 @@
 /**
- * The learning-pack transfer bar (P-022 / FB-08, D-006: "learning-pack
+ * The knowledge-pack transfer bar (P-022 / FB-08, D-006: "knowledge-pack
  * candidates inherit the passing-transfer-test bar") — consulted by
- * decideLearningPackCandidate at ADOPTION time.
+ * decideKnowledgePackCandidate at ADOPTION time.
  *
  * Semantics (deliberately narrow — the bar blocks PROVEN failures, it never
  * wedges the owner's curation queue on an idle loop):
@@ -32,7 +32,7 @@ export interface PackBarDeps {
 }
 
 const defaultDeps: Required<PackBarDeps> = {
-  enabled: () => getFlag(FLAGS.TRANSFER_HARNESS, 'learning-pack-transfer-bar'),
+  enabled: () => getFlag(FLAGS.TRANSFER_HARNESS, 'knowledge-pack-transfer-bar'),
   // Lazy: the pool module must not load (or throw) before the flag check.
   getSql: async () => (await import('@papercusp/db-org')).getOrgPg().sql,
   log: (m) => console.log(`[transfer-bar] ${m}`),

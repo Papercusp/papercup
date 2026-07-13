@@ -437,7 +437,7 @@ describe('groupHarnessRowsByHive (hive-first browse, comb-hive-native-sharing P-
 
 describe('isListingKind / listingKindOf — kind resolution', () => {
   it('isListingKind accepts the 6 canonical kinds, rejects everything else', () => {
-    for (const k of ['harness', 'blueprint', 'plugin', 'pack', 'learning-pack', 'template']) {
+    for (const k of ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template']) {
       expect(isListingKind(k)).toBe(true);
     }
     expect(isListingKind('tool-pack')).toBe(false); // interim alias is NOT a canonical kind (mig 010)
@@ -464,8 +464,8 @@ describe('listingActionFor — the consumer action per listing kind (per-harness
     expect(listingActionFor(makeListing({}))).toBeNull(); // absent kind → harness, no pubkey
   });
 
-  it('blueprint / plugin / pack / learning-pack all → install', () => {
-    for (const k of ['blueprint', 'plugin', 'pack', 'learning-pack'] as const) {
+  it('blueprint / plugin / pack / knowledge-pack all → install', () => {
+    for (const k of ['blueprint', 'plugin', 'pack', 'knowledge-pack'] as const) {
       expect(listingActionFor(makeListing({ listing_kind: k }))).toBe('install');
     }
     // the interim "tool-pack" alias resolves to pack → install

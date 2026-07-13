@@ -4,7 +4,7 @@
  * (so the candidate-dir resolution + the real loader/validator run); the
  * installed root is redirected to a tmp dir so the copy lands under test
  * control. Pins: clone-error pass-through, candidate-dir precedence
- * (learning-packs/<ref> over a root manifest), pack_not_found, pack_invalid,
+ * (knowledge-packs/<ref> over a root manifest), pack_not_found, pack_invalid,
  * pack_id_mismatch, the happy copy, and temp-clone cleanup.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
@@ -18,15 +18,15 @@ vi.mock('../harness/clone-github', async (orig) => {
 });
 vi.mock('./load-packs', async (orig) => {
   const actual = await orig<typeof import('./load-packs')>();
-  return { ...actual, installedLearningPacksRoot: vi.fn() };
+  return { ...actual, installedKnowledgePacksRoot: vi.fn() };
 });
 
 import { cloneGithubRepo } from '../harness/clone-github';
-import { installedLearningPacksRoot } from './load-packs';
-import { fetchLearningPackFromRepo } from './install-from-repo';
+import { installedKnowledgePacksRoot } from './load-packs';
+import { fetchKnowledgePackFromRepo } from './install-from-repo';
 
 const mockClone = vi.mocked(cloneGithubRepo);
-const mockRoot = vi.mocked(installedLearningPacksRoot);
+const mockRoot = vi.mocked(installedKnowledgePacksRoot);
 
 let scratch: string;
 let installRoot: string;
@@ -69,27 +69,27 @@ const cloneInto = (relRepoDir: string) => {
   return repoPath;
 };
 
-describe('fetchLearningPackFromRepo', () => {
+describe('fetchKnowledgePackFromRepo', () => {
   it('passes a clone error straight through (code + detail)', async () => {
     mockClone.mockResolvedValue({ code: 'not_found', message: 'Repository not found' });
-    const res = await fetchLearningPackFromRepo({ githubUrl: 'https://github.com/x/y', listingRef: 'p' });
+    const res = await fetchKnowledgePackFromRepo({ githubUrl: 'https://github.com/x/y', listingRef: 'p' });
     expect(res).toMatchObject({ ok: false, error: 'not_found', detail: 'Repository not found' });
   });
 
-  it('pack_not_found_in_repo when neither learning-packs/<ref> nor a root manifest exists', async () => {
+  it('pack_not_found_in_repo when neither knowledge-packs/<ref> nor a root manifest exists', async () => {
     const repo = cloneInto('repo1');
     mkdirSync(repo, { recursive: true }); // empty repo, no manifest anywhere
-    const res = await fetchLearningPackFromRepo({ githubUrl: 'u', listingRef: 'missing-pack' });
+    const res = await fetchKnowledgePackFromRepo({ githubUrl: 'u', listingRef: 'missing-pack' });
     expect(res).toMatchObject({ ok: false, error: 'pack_not_found_in_repo' });
-    expect(res.detail).toMatch(/learning-packs\/missing-pack/);
+    expect(res.detail).toMatch(/knowledge-packs\/missing-pack/);
   });
 
-  it('prefers learning-packs/<ref> over a root manifest (candidate precedence)', async () => {
+  it('prefers knowledge-packs/<ref> over a root manifest (candidate precedence)', async () => {
     const repo = cloneInto('repo2');
     // Root pack (wrong) + the listing-ref pack (right) — the ref wins.
     writePack(repo, '.', { id: 'root-pack' }, [{ file: 'r.md', title: 'R', body: 'root body' }]);
-    writePack(repo, 'learning-packs/wanted', { id: 'wanted' }, [{ file: 'w.md', title: 'W', body: 'wanted body' }]);
-    const res = await fetchLearningPackFromRepo({ githubUrl: 'u', listingRef: 'wanted' });
+    writePack(repo, 'knowledge-packs/wanted', { id: 'wanted' }, [{ file: 'w.md', title: 'W', body: 'wanted body' }]);
+    const res = await fetchKnowledgePackFromRepo({ githubUrl: 'u', listingRef: 'wanted' });
     expect(res).toMatchObject({ ok: true });
     expect(res.pack?.id).toBe('wanted');
     expect(existsSync(join(installRoot, 'wanted', 'manifest.yaml'))).toBe(true);
@@ -98,25 +98,25 @@ describe('fetchLearningPackFromRepo', () => {
   it('a repo that IS one pack (root manifest, no listingRef) loads', async () => {
     const repo = cloneInto('repo3');
     writePack(repo, '.', { id: 'solo-pack' }, [{ file: 's.md', title: 'S', body: 'solo body' }]);
-    const res = await fetchLearningPackFromRepo({ githubUrl: 'u' });
+    const res = await fetchKnowledgePackFromRepo({ githubUrl: 'u' });
     expect(res).toMatchObject({ ok: true });
     expect(res.pack).toMatchObject({ id: 'solo-pack', itemCount: 1 });
   });
 
   it('pack_invalid when the pack dir has a malformed manifest', async () => {
     const repo = cloneInto('repo4');
-    const dir = join(repo, 'learning-packs', 'bad');
+    const dir = join(repo, 'knowledge-packs', 'bad');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'manifest.yaml'), 'id: bad\ntitle: t\ndescription: d\nversion: NOT_SEMVER\n', 'utf8');
     writeFileSync(join(dir, 'x.md'), '---\ntitle: X\n---\n\nbody\n', 'utf8');
-    const res = await fetchLearningPackFromRepo({ githubUrl: 'u', listingRef: 'bad' });
+    const res = await fetchKnowledgePackFromRepo({ githubUrl: 'u', listingRef: 'bad' });
     expect(res).toMatchObject({ ok: false, error: 'pack_invalid' });
   });
 
   it('pack_id_mismatch when the manifest id disagrees with listing_ref', async () => {
     const repo = cloneInto('repo5');
-    writePack(repo, 'learning-packs/claimed', { id: 'actual-id' }, [{ file: 'a.md', title: 'A', body: 'b' }]);
-    const res = await fetchLearningPackFromRepo({ githubUrl: 'u', listingRef: 'claimed' });
+    writePack(repo, 'knowledge-packs/claimed', { id: 'actual-id' }, [{ file: 'a.md', title: 'A', body: 'b' }]);
+    const res = await fetchKnowledgePackFromRepo({ githubUrl: 'u', listingRef: 'claimed' });
     expect(res).toMatchObject({ ok: false, error: 'pack_id_mismatch' });
     expect(res.detail).toMatch(/actual-id/);
   });
@@ -124,7 +124,7 @@ describe('fetchLearningPackFromRepo', () => {
   it('cleans up the temp clone dir even on the happy path', async () => {
     const repo = cloneInto('repo6');
     writePack(repo, '.', { id: 'cleanme' }, [{ file: 'c.md', title: 'C', body: 'body' }]);
-    const res = await fetchLearningPackFromRepo({ githubUrl: 'u' });
+    const res = await fetchKnowledgePackFromRepo({ githubUrl: 'u' });
     expect(res.ok).toBe(true);
     // The mkdtemp clone dir (the parent passed to cloneGithubRepo) is removed.
     const clonesDirArg = mockClone.mock.calls[0][1] as { clonesDir: string };

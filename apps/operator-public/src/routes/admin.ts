@@ -139,7 +139,7 @@ export function adminRoute(): Hono<{ Bindings: Env }> {
 
   // GET /admin/pending — the pre-publication review queue
   // (learning-packs-2026-06-11 P-019/P-020, D-007): policy-kind listings
-  // (learning-pack, blueprint) awaiting an operator decision, oldest first.
+  // (knowledge-pack, blueprint) awaiting an operator decision, oldest first.
   app.get('/admin/pending', async (c) => {
     const op = await requireOperator(c);
     if (op instanceof Response) return op;

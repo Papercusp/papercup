@@ -386,7 +386,7 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
 
     async createHive({ runId }) {
       // A transient IDLE Queen-seat home (the scripted loop drives placement, not a real Queen wake).
-      // `liveHiveOps.createHive` === createHiveHarness, IDLE/repo-less/no learning-pack — exactly the
+      // `liveHiveOps.createHive` === createHiveHarness, IDLE/repo-less/no knowledge-pack — exactly the
       // hive-eval boot. The home slug doubles as the per-run member-slug namespace.
       homePrefix = scratchSlug('xbh');
       const hiveHome = homePrefix;

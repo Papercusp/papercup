@@ -273,7 +273,7 @@ export function nextEmbedBackoffMs(
  *
  * Resilient: a TRANSIENT failure (429 rate-limit, 5xx, network/fetch error) is
  * retried with HEADER-AWARE, jittered exponential backoff before giving up. A
- * burst of writes (learning-pack seeding fires concurrent batches) — or a
+ * burst of writes (knowledge-pack seeding fires concurrent batches) — or a
  * sustained org-wide TPM saturation (text-embedding-3-small, 1M TPM, which
  * hard-failed memory:remember/search FLEET-WIDE on 2026-06-17) — no longer fails
  * the moment OpenAI rate-limits. We ride it out on the SAME embedder (no

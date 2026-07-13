@@ -69,8 +69,8 @@ plans:
           </tr>
           <tr>
             <td><strong>Marketplace package <code>kind</code></strong></td>
-            <td>The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a five-kind storefront (<code>LISTING_KINDS</code> in <code>packages/operator-core/lib/cupboard/types.ts</code>): <code>harness</code> (the repo&rarr;Pot lookup index), <code>blueprint</code> (a GitHub-repo-backed harness recipe — the term that superseded the original <code>template</code>), <code>plugin</code>, <code>tool-pack</code> (the runtime-less code-tool pack — renamed from <code>pack</code> by migration 008; the legacy <code>pack</code> value still parses as an alias), and <code>learning-pack</code> (a distributable set of curated pot learnings).</td>
-            <td>All five go through the same publish + signing + retraction infrastructure; only the install handler differs. <code>blueprint</code> + <code>learning-pack</code> listings publish pending and surface only after operator approval.</td>
+            <td>The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a five-kind storefront (<code>LISTING_KINDS</code> in <code>packages/operator-core/lib/cupboard/types.ts</code>): <code>harness</code> (the repo&rarr;Pot lookup index), <code>blueprint</code> (a GitHub-repo-backed harness recipe — the term that superseded the original <code>template</code>), <code>plugin</code>, <code>tool-pack</code> (the runtime-less code-tool pack — renamed from <code>pack</code> by migration 008; the legacy <code>pack</code> value still parses as an alias), and <code>knowledge-pack</code> (a distributable set of curated pot learnings).</td>
+            <td>All five go through the same publish + signing + retraction infrastructure; only the install handler differs. <code>blueprint</code> + <code>knowledge-pack</code> listings publish pending and surface only after operator approval.</td>
           </tr>
           <tr>
             <td><strong>Goal</strong></td>

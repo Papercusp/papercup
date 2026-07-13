@@ -137,7 +137,7 @@ describe('POST /admin/listings/:id/review', () => {
       id: 'l1',
       review_status: 'pending',
       unlisted_at: null,
-      listing_kind: 'learning-pack',
+      listing_kind: 'knowledge-pack',
       publisher_github_user_id: 42,
     });
   });

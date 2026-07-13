@@ -17,7 +17,7 @@
  *     accounts:register     → credentials-auth (PROTECTED)
  *     pot:create           → agent-lifecycle
  *     blender:grade-idea      → ideation-intake  (low-risk)
- *     learning_packs:publish→ knowledge-curation
+ *     knowledge_packs:publish→ knowledge-curation
  * Keying on `capability` would collapse a low-risk grade and a PROTECTED deploy
  * to the same category — exactly the confident-but-catastrophic ≡ shaky-but-
  * trivial collapse D-002 forbids. So the rules match the stable MCP tool **name**
@@ -140,7 +140,7 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
 
   // ── knowledge-curation ──
   { id: 'cat:memory', on: TRIGGER, when: { action: { matches: '^memory:' } }, fire: 'knowledge-curation', meta: { reason: 'remember / forget / update a memory' } },
-  { id: 'cat:learning-packs', on: TRIGGER, when: { action: { matches: '^learning_packs:' } }, fire: 'knowledge-curation', meta: { reason: 'publish / install a learning pack' } },
+  { id: 'cat:knowledge-packs', on: TRIGGER, when: { action: { matches: '^knowledge_packs:' } }, fire: 'knowledge-curation', meta: { reason: 'publish / install a knowledge pack' } },
   { id: 'cat:blueprint', on: TRIGGER, when: { action: { matches: '^blueprint:' } }, fire: 'knowledge-curation', meta: { reason: 'authors / extends a blueprint' } },
   { id: 'cat:docs', on: TRIGGER, when: { action: { matches: '^docs:' } }, fire: 'knowledge-curation', meta: { reason: 'publishes documentation' } },
   { id: 'cat:curation', on: TRIGGER, when: { action: { matches: '^curation:' } }, fire: 'knowledge-curation', meta: { reason: 'hive knowledge curation' } },

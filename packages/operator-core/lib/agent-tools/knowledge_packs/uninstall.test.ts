@@ -1,18 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import uninstallTool from './uninstall';
 import { getFlag } from '@papercusp/flags/server';
-import { loadLearningPack } from '../../learning-packs/load-packs';
-import { uninstallPack } from '../../learning-packs/manage';
+import { loadKnowledgePack } from '../../knowledge-packs/load-packs';
+import { uninstallPack } from '../../knowledge-packs/manage';
 
 // PG-free unit: the uninstall core has its own suite; this pins the TOOL — flag
 // gate, the null-pack tolerance (uninstall by id even if the pack no longer
 // resolves), and the keepEdited pass-through (learning-packs-2026-06-11 P-009).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('../../learning-packs/load-packs', () => ({ loadLearningPack: vi.fn() }));
-vi.mock('../../learning-packs/manage', () => ({ uninstallPack: vi.fn() }));
+vi.mock('../../knowledge-packs/load-packs', () => ({ loadKnowledgePack: vi.fn() }));
+vi.mock('../../knowledge-packs/manage', () => ({ uninstallPack: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
-const mockLoad = vi.mocked(loadLearningPack);
+const mockLoad = vi.mocked(loadKnowledgePack);
 const mockUninstall = vi.mocked(uninstallPack);
 
 function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
@@ -24,11 +24,11 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 }
 const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
 
-describe('learning_packs:uninstall tool', () => {
+describe('knowledge_packs:uninstall tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
-    mockLoad.mockResolvedValue({ pack: { id: 'p1' } } as unknown as Awaited<ReturnType<typeof loadLearningPack>>);
+    mockLoad.mockResolvedValue({ pack: { id: 'p1' } } as unknown as Awaited<ReturnType<typeof loadKnowledgePack>>);
     mockUninstall.mockResolvedValue({ ok: true, removed: 5, keptEdited: [] } as unknown as Awaited<
       ReturnType<typeof uninstallPack>
     >);

@@ -52,15 +52,15 @@ export interface CreatePotOpts {
   wakeInSeconds?: number;
   kickoff?: string;
   /**
-   * Learning pack to seed into the pot's `pot:<slug>` memory pool
+   * Knowledge pack to seed into the pot's `pot:<slug>` memory pool
    * (learning-packs-2026-06-11 P-005). Omit ⇒ the default pack (D-004);
-   * `null` ⇒ seed nothing. Flag-gated (LEARNING_PACKS) + best-effort —
+   * `null` ⇒ seed nothing. Flag-gated (KNOWLEDGE_PACKS) + best-effort —
    * a seed failure never fails the create.
    */
-  learningPack?: string | null;
+  knowledgePack?: string | null;
   /** Project shapes from blueprint detection — filters `applies_to`-tagged
    *  learnings (D-002). Omit (repo-less) ⇒ `any`-tagged items only. */
-  projectShapes?: import('../../learning-packs/pack-format').AppliesTo[];
+  projectShapes?: import('../../knowledge-packs/pack-format').AppliesTo[];
   /** metadata.created_by on seeded rows. Default 'system'. */
   createdBy?: string;
   /**
@@ -109,7 +109,7 @@ export interface CreatePotResult {
   slug?: string;
   path?: string;
   waked?: boolean;
-  /** Present when seeding was attempted (learning-packs P-005). */
+  /** Present when seeding was attempted (knowledge-packs P-005). */
   seededLearnings?: SeededLearningsSummary;
   /** Present when per-pot learning-loop provisioning was attempted (P-020). */
   provisionedLoop?: ProvisionedLoopSummary;
@@ -393,30 +393,30 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
       );
     }
 
-    // 6b. Seed the selected learning pack into the pot's `pot:<slug>` memory
-    //     pool (learning-packs P-005, D-001 copy-not-link). Flag-gated +
+    // 6b. Seed the selected knowledge pack into the pot's `pot:<slug>` memory
+    //     pool (knowledge-packs P-005, D-001 copy-not-link). Flag-gated +
     //     best-effort: a seed failure warns and reports, never fails the
     //     create — but a LATER step failure rolls seeded rows back (the undo
     //     joins the stack). Runs before the first wake so the Mug's opening
     //     turn already recalls the pack.
     let seededLearnings: SeededLearningsSummary | undefined;
-    if (opts.learningPack !== null) {
+    if (opts.knowledgePack !== null) {
       try {
         const [{ getFlag }, { FLAGS }] = await Promise.all([
           import('@papercusp/flags/server'),
           import('@papercusp/flags'),
         ]);
-        if (await getFlag(FLAGS.LEARNING_PACKS, 'system')) {
-          const { DEFAULT_LEARNING_PACK_ID } = await import('../../learning-packs/pack-format');
-          const { loadLearningPack } = await import('../../learning-packs/load-packs');
-          const { seedPackIntoHive: seedPackIntoPot } = await import('../../learning-packs/seed');
-          // P-014: an explicit arg wins; else the blueprint's declared learning.pack
+        if (await getFlag(FLAGS.KNOWLEDGE_PACKS, 'system')) {
+          const { DEFAULT_KNOWLEDGE_PACK_ID } = await import('../../knowledge-packs/pack-format');
+          const { loadKnowledgePack } = await import('../../knowledge-packs/load-packs');
+          const { seedPackIntoHive: seedPackIntoPot } = await import('../../knowledge-packs/seed');
+          // P-014: an explicit arg wins; else the blueprint's declared knowledge.pack
           // (a generic-pot can seed a different pack); else the global default.
-          const packId = opts.learningPack ?? validation.blueprint.learning?.pack ?? DEFAULT_LEARNING_PACK_ID;
-          const loaded = await loadLearningPack(packId);
+          const packId = opts.knowledgePack ?? validation.blueprint.learning?.pack ?? DEFAULT_KNOWLEDGE_PACK_ID;
+          const loaded = await loadKnowledgePack(packId);
           if (!loaded) {
             seededLearnings = { packId, error: 'pack_not_found' };
-            console.warn(`[pot:create] learning pack '${packId}' not found; seeding skipped (${opts.slug})`);
+            console.warn(`[pot:create] knowledge pack '${packId}' not found; seeding skipped (${opts.slug})`);
           } else {
             const res = await seedPackIntoPot({
               workspaceId: ws,
@@ -436,8 +436,8 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[pot:create] learning-pack seed failed (${opts.slug}): ${msg}`);
-        seededLearnings = { packId: opts.learningPack ?? 'papercusp-default', error: msg.slice(0, 200) };
+        console.warn(`[pot:create] knowledge-pack seed failed (${opts.slug}): ${msg}`);
+        seededLearnings = { packId: opts.knowledgePack ?? 'papercusp-default', error: msg.slice(0, 200) };
       }
     }
 
@@ -447,7 +447,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
     //     that's reserved for the workspace-singleton frontier loops, D-008). Both
     //     ship inert (the gym tick doubly refuses a disabled+unbudgeted row; an
     //     inactive routine never fires) — the owner arms each via the gym/routines
-    //     UI. Same contract as the learning-pack seed above: flag-gated +
+    //     UI. Same contract as the knowledge-pack seed above: flag-gated +
     //     best-effort (a failure warns and reports, NEVER fails the create), and a
     //     LATER step failure rolls the rows back (the undo joins the stack). The
     //     matching teardown at pot:dissolve is P-021.

@@ -1,28 +1,28 @@
 /**
- * learning_packs:list — the pack catalog + (optionally) one hive's installed
+ * knowledge_packs:list — the pack catalog + (optionally) one hive's installed
  * state (learning-packs-2026-06-11 P-009).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
+import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
 export default defineTool({
-  name: 'learning_packs:list',
+  name: 'knowledge_packs:list',
   capability: 'memory:read',
   description:
-    "List resolvable learning packs (builtin + Comb-installed) and, when `pot` is given, that hive's installed state: per-pack rows present/edited, enabled/disabled, and whether a newer pack version is adoptable.",
+    "List resolvable knowledge packs (builtin + Comb-installed) and, when `pot` is given, that hive's installed state: per-pack rows present/edited, enabled/disabled, and whether a newer pack version is adoptable.",
   guidance: {
     when:
-      "Before learning_packs:install/upgrade (what's available + what's already in the hive), or when the user asks what learnings their hive carries.",
+      "Before knowledge_packs:install/upgrade (what's available + what's already in the hive), or when the user asks what learnings their hive carries.",
     notWhen:
       'To read the actual learning texts — learning.hive backs the Learnings UI, and memory:list { hive_slug } returns the rows.',
     chaining:
-      'learning_packs:install { pot, pack } to add one; learning_packs:upgrade when updateAvailable; learning_packs:set_enabled to mute a pack without uninstalling.',
+      'knowledge_packs:install { pot, pack } to add one; knowledge_packs:upgrade when updateAvailable; knowledge_packs:set_enabled to mute a pack without uninstalling.',
     seeAlso: [
-      'learning_packs:install (add a pack)',
-      'learning_packs:upgrade (when a pack shows updateAvailable)',
-      'learning_packs:set_enabled (mute a pack without uninstalling)',
+      'knowledge_packs:install (add a pack)',
+      'knowledge_packs:upgrade (when a pack shows updateAvailable)',
+      'knowledge_packs:set_enabled (mute a pack without uninstalling)',
     ],
   },
   crossWorkspace: true,
@@ -31,19 +31,19 @@ export default defineTool({
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
-    if (!(await learningPacksEnabled())) return text(FLAG_OFF);
+    if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
     const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const { listLearningPacks } = await import('../../learning-packs/load-packs');
-    const packs = await listLearningPacks();
+    const { listKnowledgePacks } = await import('../../knowledge-packs/load-packs');
+    const packs = await listKnowledgePacks();
 
     if (!args.pot) return text({ ok: true, packs });
 
-    const [{ readHiveLearnings }, { getMemoryBackend }, { loadLearningPack }, { disabledPacksFor }] =
+    const [{ readHiveLearnings }, { getMemoryBackend }, { loadKnowledgePack }, { disabledPacksFor }] =
       await Promise.all([
         import('../../sync-resolver/learning-hive-read'),
         import('../../memory/backend'),
-        import('../../learning-packs/load-packs'),
-        import('../../learning-packs/manage'),
+        import('../../knowledge-packs/load-packs'),
+        import('../../knowledge-packs/manage'),
       ]);
     const snap = await readHiveLearnings(args.pot, {
       listPool: async (scope) => {
@@ -52,9 +52,9 @@ export default defineTool({
         if (!avail.ok) throw new Error(avail.reason);
         return backend.list({ scope });
       },
-      loadPack: (id) => loadLearningPack(id),
+      loadPack: (id) => loadKnowledgePack(id),
     });
-    const { semverGt } = await import('../../learning-packs/pack-format');
+    const { semverGt } = await import('../../knowledge-packs/pack-format');
     const disabled = await disabledPacksFor(workspaceId, args.pot);
     const installed = snap.packs.map((p) => {
       const availableVersion = packs.find((a) => a.id === p.packId)?.version;

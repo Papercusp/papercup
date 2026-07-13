@@ -16,8 +16,8 @@
  *     scopes (operator + a harness, or two harnesses) files one kind=change
  *     capture proposing a shared lesson (insight/memory) — cross-Hive pain is
  *     exactly what belongs in the shared knowledge layer — AND stages one
- *     learning-pack item CANDIDATE (consume-edges P-032 / brief B-11): a draft
- *     row in lib/learning-packs/candidates the OWNER reviews in the Learnings
+ *     knowledge-pack item CANDIDATE (consume-edges P-032 / brief B-11): a draft
+ *     row in lib/knowledge-packs/candidates the OWNER reviews in the Learnings
  *     view; adoption materializes it into the fleet-lessons pack, never a hive
  *     pool. Identity-file/curator promotion (the full P-052) stays future work.
  *
@@ -35,10 +35,10 @@ import { classifyIdeaType } from './triage';
 import { applyTriageDecision, type ApplyTriageInput, type ApplyTriageResult } from './triage-core';
 import { captureImprovement, type CaptureImprovementInput, type CaptureImprovementResult } from './capture-core';
 import {
-  stageLearningPackCandidate,
+  stageKnowledgePackCandidate,
   type StageCandidateInput,
   type StageCandidateResult,
-} from '../../learning-packs/candidates';
+} from '../../knowledge-packs/candidates';
 
 export const RECURRENCE_ESCALATION_THRESHOLD = 3;
 
@@ -145,7 +145,7 @@ export interface EscalationResult {
   escalated: number;
   gymRouted: number;
   promotionsSuggested: number;
-  /** Learning-pack candidates staged for owner review (P-032 — fleet→pack edge). */
+  /** Knowledge-pack candidates staged for owner review (P-032 — fleet→pack edge). */
   candidatesStaged: number;
 }
 
@@ -165,7 +165,7 @@ const defaultDeps: EscalationDeps = {
   commentIssue,
   applyTriage: applyTriageDecision,
   capture: captureImprovement,
-  stageCandidate: stageLearningPackCandidate,
+  stageCandidate: stageKnowledgePackCandidate,
 };
 
 export async function runRecurrenceEscalation(
@@ -221,7 +221,7 @@ export async function runRecurrenceEscalation(
       if (r.created) result.promotionsSuggested += 1;
 
       // P-032 (B-11): the same cross-scope recurrence also stages ONE
-      // learning-pack candidate for the owner's review queue. Best-effort —
+      // knowledge-pack candidate for the owner's review queue. Best-effort —
       // a staging failure (PG blip) must never abort the escalation pass;
       // the planner re-emits the action next tick and the structural dedup
       // makes the retry safe.

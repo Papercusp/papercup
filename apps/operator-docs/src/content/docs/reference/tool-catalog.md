@@ -84,7 +84,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `intel` | 2 | `artifacts` `spawn_tree` | `intel:read` |
 | `kettle` | 3 | `declare-wake` `pause` `start` | `coord:write` `harness:write` |
 | `learning` | 1 | `set-scout-budget` | `operator:write` |
-| `learning_packs` | 10 | `candidates` `decide_candidate` `export` `install` `list` `publish` `set_enabled` `sweep` `uninstall` `upgrade` | `harness:write` `memory:read` `memory:write` |
+| `knowledge_packs` | 10 | `candidates` `decide_candidate` `export` `install` `list` `publish` `set_enabled` `sweep` `uninstall` `upgrade` | `harness:write` `memory:read` `memory:write` |
 | `lexicon` | 1 | `active_pack` | `work_items:read` |
 | `locks` | 12 | `acquire` `acquire_granular` `acquire_resource` `cancel_wait` `check_command` `heartbeat` `heartbeat_resource` `list` `queue` `release` `release_granular` `release_resource` | `locks:read` `locks:write` |
 | `loop` | 5 | `arm` `checkpoint` `end` `soak-report` `status` | `harness:read` `routines:write` |

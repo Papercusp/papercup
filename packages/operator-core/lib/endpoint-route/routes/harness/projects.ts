@@ -432,7 +432,7 @@ const createHive = defineTool({
   path: '/harness/pots',
   auth: 'loopback',
   async handler(req) {
-    let body: { slug?: string; path?: string; parentDir?: string; wakeInSeconds?: number; learningPack?: string | null; blueprintId?: string } = {};
+    let body: { slug?: string; path?: string; parentDir?: string; wakeInSeconds?: number; knowledgePack?: string | null; blueprintId?: string } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
     const slug = String(body.slug ?? '').trim();
     if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
@@ -457,9 +457,9 @@ const createHive = defineTool({
         ? { existingPath: linkPath }
         : { parentDir: typeof body.parentDir === 'string' && body.parentDir.trim() ? body.parentDir.trim() : undefined }),
       wakeInSeconds: typeof body.wakeInSeconds === 'number' ? body.wakeInSeconds : undefined,
-      // learning-packs P-005/P-006: '' and null ⇒ seed nothing; absent ⇒ default pack.
-      ...(body.learningPack === null || typeof body.learningPack === 'string'
-        ? { learningPack: body.learningPack === '' ? null : body.learningPack }
+      // knowledge-packs P-005/P-006: '' and null ⇒ seed nothing; absent ⇒ default pack.
+      ...(body.knowledgePack === null || typeof body.knowledgePack === 'string'
+        ? { knowledgePack: body.knowledgePack === '' ? null : body.knowledgePack }
         : {}),
       ...(blueprintId ? { blueprintId } : {}),
     });
@@ -504,7 +504,7 @@ const createHiveFromRepoRoute = defineTool({
       force?: boolean;
       intoHive?: string;
       progressId?: string;
-      learningPack?: string | null;
+      knowledgePack?: string | null;
     } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
     const githubUrl = String(body.githubUrl ?? '').trim();
@@ -523,10 +523,10 @@ const createHiveFromRepoRoute = defineTool({
       ...(typeof body.intoHive === 'string' && body.intoHive.trim()
         ? { intoHive: body.intoHive.trim() }
         : {}),
-      // learning-packs P-005/P-006: pack picker selection — string pack id,
+      // knowledge-packs P-005/P-006: pack picker selection — string pack id,
       // null = seed nothing, absent = default pack.
-      ...(body.learningPack === null || typeof body.learningPack === 'string'
-        ? { learningPack: body.learningPack === '' ? null : body.learningPack }
+      ...(body.knowledgePack === null || typeof body.knowledgePack === 'string'
+        ? { knowledgePack: body.knowledgePack === '' ? null : body.knowledgePack }
         : {}),
       // P-008: real step progress over the sync channel (client-minted id).
       ...(typeof body.progressId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(body.progressId)

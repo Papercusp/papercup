@@ -10,7 +10,7 @@ import {
   runRecurrenceEscalation,
   type EscalationDeps,
 } from './recurrence-escalation';
-import type { StageCandidateInput } from '../../learning-packs/candidates';
+import type { StageCandidateInput } from '../../knowledge-packs/candidates';
 import type { ImprovementCandidate } from './policy';
 
 const daysAgo = (d: number): string => new Date(Date.now() - d * 86400000).toISOString();

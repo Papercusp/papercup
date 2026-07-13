@@ -113,7 +113,7 @@ describe('listingKindOf (row → kind, defaulting to harness)', () => {
   it('reads an explicit valid listing_kind (interim "tool-pack" normalizes to pack)', () => {
     expect(listingKindOf(makeListing({ listing_kind: 'plugin' }))).toBe('plugin');
     expect(listingKindOf(makeListing({ listing_kind: 'pack' }))).toBe('pack');
-    expect(listingKindOf(makeListing({ listing_kind: 'learning-pack' }))).toBe('learning-pack');
+    expect(listingKindOf(makeListing({ listing_kind: 'knowledge-pack' }))).toBe('knowledge-pack');
     // P-003 rename (mig 010): the interim 'tool-pack' value (mig 008) → 'pack'.
     expect(listingKindOf(makeListing({ listing_kind: 'tool-pack' }))).toBe('pack');
     expect(listingKindOf(makeListing({ listing_kind: 'blueprint' }))).toBe('blueprint');

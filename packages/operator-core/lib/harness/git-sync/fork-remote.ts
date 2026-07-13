@@ -5,7 +5,7 @@
  * The contribution design (D-007): a platform self-hive (or any member without
  * upstream write) git-syncs its local commits to the USER'S OWN FORK — never the
  * canonical upstream — and improvements reach upstream only as human-reviewed PRs
- * or moderated Comb learning-pack listings. This module is the CONFIG SEAM for the
+ * or moderated Comb knowledge-pack listings. This module is the CONFIG SEAM for the
  * "sync to my fork" half: it reads/writes the `fork_remote` field on the registry
  * entry and resolves WHICH remote a git-sync should push to.
  *

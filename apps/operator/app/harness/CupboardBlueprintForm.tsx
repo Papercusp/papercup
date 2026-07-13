@@ -8,7 +8,7 @@
  * (`GET /api/cupboard/listings?kind=blueprint`), filtered to hive-instantiable
  * blueprints (`blueprint_kind: 'hive'`, or unknown on a pre-009 worker — a
  * known `harness` blueprint can't be a hive home and is dropped). Pick a
- * blueprint → a small create form (slug · parent dir · learning pack) →
+ * blueprint → a small create form (slug · parent dir · knowledge pack) →
  * INSTANTIATE = install the blueprint into the installed tier
  * (`POST /api/cupboard/install-blueprint`) then stand up a new hive running it
  * (`POST /api/harness/pots` with the installed `blueprintId`). The tier-aware
@@ -137,13 +137,13 @@ export function CupboardBlueprintForm({ onBack, onCreated, hiveLabel }: Cupboard
   // Create-form state.
   const slugRef = useRef<HTMLInputElement>(null);
   const parentDirRef = useRef<HTMLInputElement>(null);
-  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
+  const [knowledgePack, setKnowledgePack] = useState<string>('papercusp-default');
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState('Creating…');
   const [createError, setCreateError] = useState<string | null>(null);
 
   const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
-    queryName: 'learningPacks.list',
+    queryName: 'knowledgePacks.list',
     args: {},
     staleTime: 60_000,
   });
@@ -239,7 +239,7 @@ export function CupboardBlueprintForm({ onBack, onCreated, hiveLabel }: Cupboard
           slug,
           ...(parentDir ? { parentDir } : {}),
           blueprintId,
-          learningPack: learningPack === 'none' ? null : learningPack,
+          knowledgePack: knowledgePack === 'none' ? null : knowledgePack,
         }),
       });
       if (!res.ok) {
@@ -290,12 +290,12 @@ export function CupboardBlueprintForm({ onBack, onCreated, hiveLabel }: Cupboard
           <Hint>Where the {hiveLower}&rsquo;s home folder is created. Leave blank for the default (~/.papercusp/hives).</Hint>
         </label>
         <label style={{ display: 'block', marginBottom: 14 }}>
-          <FieldLabel>Learning pack</FieldLabel>
+          <FieldLabel>Knowledge pack</FieldLabel>
           <Select
-            testId="learning-pack-picker"
-            value={learningPack}
-            onChange={setLearningPack}
-            ariaLabel="Learning pack"
+            testId="knowledge-pack-picker"
+            value={knowledgePack}
+            onChange={setKnowledgePack}
+            ariaLabel="Knowledge pack"
             triggerStyle={inputStyle}
             options={[
               ...availablePacks.map((p) => ({

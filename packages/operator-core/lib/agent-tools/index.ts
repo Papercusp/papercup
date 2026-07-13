@@ -160,7 +160,7 @@ import './pot/add_member';
 import './pot/create_from_repo';
 // per-hive-learning-loops-2026-06-14 P-071 — opt INTO platform mode ("Papercusp inside Papercusp"):
 import './platform/enable';
-// per-hive-learning-loops-2026-06-14 P-072 — send a local improvement UPSTREAM (fork-PR + Comb learning-pack):
+// per-hive-learning-loops-2026-06-14 P-072 — send a local improvement UPSTREAM (fork-PR + Comb knowledge-pack):
 import './platform/contribute';
 // pr-system-completion-dogfood PR-5 (D-3) — GC abandoned contribution forks (KEEP-on-merge + stale-fork sweep):
 import './platform/fork_gc';
@@ -224,18 +224,18 @@ import './gates/canary-check';
 // mis-declared `guards` limit). The on-demand READER for the decision log — a detector nothing
 // calls is itself the Shape-4 defect it exists to catch.
 import './gates/degenerate-check';
-// learning-packs-2026-06-11 P-009/P-012/P-013 — hive learning-pack management
+// learning-packs-2026-06-11 P-009/P-012/P-013 — hive knowledge-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
-import './learning_packs/list';
-import './learning_packs/install';
-import './learning_packs/uninstall';
-import './learning_packs/set_enabled';
-import './learning_packs/upgrade';
-import './learning_packs/sweep';
-import './learning_packs/publish';
+import './knowledge_packs/list';
+import './knowledge_packs/install';
+import './knowledge_packs/uninstall';
+import './knowledge_packs/set_enabled';
+import './knowledge_packs/upgrade';
+import './knowledge_packs/sweep';
+import './knowledge_packs/publish';
 // consume-edges P-032 (B-11) — the fleet→pack candidate review queue:
-import './learning_packs/candidates';
-import './learning_packs/decide_candidate';
+import './knowledge_packs/candidates';
+import './knowledge_packs/decide_candidate';
 import './memory/forget';
 import './memory/update';
 import './memory/recover-from-transcripts';
@@ -1018,7 +1018,7 @@ import './blueprint/validate';
 import './blueprint/create';
 import './blueprint/extend';
 // domain-generic-hive-architecture-2026-06-18 P-016 — blueprint:publish, the
-// publish entry point (mirror of learning_packs:publish): promote a local/private
+// publish entry point (mirror of knowledge_packs:publish): promote a local/private
 // blueprint to the published/installed tier via the shared Cupboard core.
 import './blueprint/publish';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the

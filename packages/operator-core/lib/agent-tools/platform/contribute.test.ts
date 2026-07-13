@@ -45,16 +45,16 @@ beforeEach(() => {
 describe('platform:contribute guards + delegation', () => {
   it('refuses a bee (fleet-spawn) — root-only — with no outward action', async () => {
     ident.mockReturnValue({ source: 'fleet-spawn' } as never);
-    const b = body(await call({ kind: 'learning-pack' }));
+    const b = body(await call({ kind: 'knowledge-pack' }));
     expect(b).toMatchObject({ ok: false, error: 'platform_contribute_root_only' });
     expect(contribM).not.toHaveBeenCalled();
   });
 
   it('delegates with the kind + resolved workspace and returns the composition result', async () => {
-    const b = body(await call({ kind: 'learning-pack' }));
+    const b = body(await call({ kind: 'knowledge-pack' }));
     expect(b).toMatchObject({ ok: true, prepared: true, needs: ['fork_remote'] });
     expect(contribM).toHaveBeenCalledTimes(1);
-    expect(contribM.mock.calls[0]![0]).toMatchObject({ kind: 'learning-pack', workspaceId: 'ws-1' });
+    expect(contribM.mock.calls[0]![0]).toMatchObject({ kind: 'knowledge-pack', workspaceId: 'ws-1' });
   });
 
   it('passes per-kind pr args through to the composition', async () => {
@@ -68,14 +68,14 @@ describe('platform:contribute guards + delegation', () => {
 describe('platform:contribute audit-only-when-sent', () => {
   it('does NOT audit a prepared (not-sent) contribution', async () => {
     contribM.mockResolvedValue({ ok: true, prepared: true } as never);
-    await call({ kind: 'learning-pack', confirm: true });
+    await call({ kind: 'knowledge-pack', confirm: true });
     expect(auditM).not.toHaveBeenCalled();
   });
 
   it('audits a genuinely sent contribution', async () => {
-    contribM.mockResolvedValue({ ok: true, sent: true, kind: 'learning-pack' } as never);
-    await call({ kind: 'learning-pack', confirm: true });
+    contribM.mockResolvedValue({ ok: true, sent: true, kind: 'knowledge-pack' } as never);
+    await call({ kind: 'knowledge-pack', confirm: true });
     expect(auditM).toHaveBeenCalledTimes(1);
-    expect(String(auditM.mock.calls[0]![3]?.reason)).toMatch(/platform:contribute \(learning-pack\)/);
+    expect(String(auditM.mock.calls[0]![3]?.reason)).toMatch(/platform:contribute \(knowledge-pack\)/);
   });
 });

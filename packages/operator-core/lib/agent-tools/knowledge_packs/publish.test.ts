@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import exportTool, { publishTool } from './publish';
 import { getFlag } from '@papercusp/flags/server';
-import { exportHiveLearningsToPack } from '../../learning-packs/export';
+import { exportHiveLearningsToPack } from '../../knowledge-packs/export';
 import { resolveRepoCoordsFromDir } from '../../cupboard/resolve-repo-coords';
 import { publishListingToCupboard } from '../../cupboard/publish-listing';
 
@@ -11,7 +11,7 @@ import { publishListingToCupboard } from '../../cupboard/publish-listing';
 // (learning-packs-2026-06-11 P-016, D-007 approval gate).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
-vi.mock('../../learning-packs/export', () => ({ exportHiveLearningsToPack: vi.fn() }));
+vi.mock('../../knowledge-packs/export', () => ({ exportHiveLearningsToPack: vi.fn() }));
 vi.mock('../../cupboard/resolve-repo-coords', () => ({
   resolveRepoCoordsFromDir: vi.fn(),
   gitOriginUrl: vi.fn(),
@@ -38,7 +38,7 @@ const COORDS = {
   github_url: 'https://github.com/acme/proj',
 };
 
-describe('learning_packs:export tool', () => {
+describe('knowledge_packs:export tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
@@ -59,7 +59,7 @@ describe('learning_packs:export tool', () => {
       expect.objectContaining({ potSlug: 'h', packId: 'my-pack', title: 'T', description: 'D', targetDir: '/repo' }),
     );
     expect(res.ok).toBe(true);
-    expect(res.hint).toMatch(/learning_packs:publish/);
+    expect(res.hint).toMatch(/knowledge_packs:publish/);
   });
 
   it('omits the hint when the export itself failed', async () => {
@@ -72,7 +72,7 @@ describe('learning_packs:export tool', () => {
   });
 });
 
-describe('learning_packs:publish tool', () => {
+describe('knowledge_packs:publish tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
@@ -110,10 +110,10 @@ describe('learning_packs:publish tool', () => {
     expect(body(await call(publishTool, PUBLISH_ARGS))).toMatchObject({ ok: false, error: 'gh_token_missing', status: 401 });
   });
 
-  it('publishes the learning-pack listing and reports PENDING review', async () => {
+  it('publishes the knowledge-pack listing and reports PENDING review', async () => {
     const res = body(await call(publishTool, PUBLISH_ARGS));
     expect(mockPublish).toHaveBeenCalledWith(
-      expect.objectContaining({ listing_kind: 'learning-pack', listing_ref: 'my-pack', project_ref: 'acme/proj' }),
+      expect.objectContaining({ listing_kind: 'knowledge-pack', listing_ref: 'my-pack', project_ref: 'acme/proj' }),
     );
     expect(res).toMatchObject({ ok: true, listingId: 'listing-1', review_status: 'pending' });
     expect(res.hint).toMatch(/PENDING/);

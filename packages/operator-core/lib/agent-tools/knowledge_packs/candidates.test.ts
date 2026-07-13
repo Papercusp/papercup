@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import candidatesTool from './candidates';
 import { getFlag } from '@papercusp/flags/server';
-import { listLearningPackCandidates } from '../../learning-packs/candidates';
+import { listKnowledgePackCandidates } from '../../knowledge-packs/candidates';
 
 // PG-free unit: the candidate read has its own suite; this pins the TOOL — flag
 // gate, the status default ('pending' review queue), the conditional limit, and
 // the { count, candidates } envelope (self-improvement-consume-edges P-032 / B-11).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('../../learning-packs/candidates', () => ({ listLearningPackCandidates: vi.fn() }));
+vi.mock('../../knowledge-packs/candidates', () => ({ listKnowledgePackCandidates: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
-const mockList = vi.mocked(listLearningPackCandidates);
+const mockList = vi.mocked(listKnowledgePackCandidates);
 
 function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   return (
@@ -21,11 +21,11 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 }
 const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
 
-describe('learning_packs:candidates tool', () => {
+describe('knowledge_packs:candidates tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
-    mockList.mockResolvedValue([{ id: 'c1' }, { id: 'c2' }] as unknown as Awaited<ReturnType<typeof listLearningPackCandidates>>);
+    mockList.mockResolvedValue([{ id: 'c1' }, { id: 'c2' }] as unknown as Awaited<ReturnType<typeof listKnowledgePackCandidates>>);
   });
 
   it('refuses when the flag is off', async () => {

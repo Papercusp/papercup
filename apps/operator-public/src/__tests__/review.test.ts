@@ -2,7 +2,7 @@
  * Pre-publication review pipeline tests (migration 008 /
  * learning-packs-2026-06-11 P-019/P-020/P-021, D-007).
  *
- * Pins the whole flow for the policy kinds (learning-pack + blueprint):
+ * Pins the whole flow for the policy kinds (knowledge-pack + blueprint):
  * publish → PENDING (invisible to public browse + anonymous reads; visible to
  * the publisher with auth) → operator approve/reject via the allowlist-gated
  * /admin surface → approved goes public; rejected stays invisible with the
@@ -32,9 +32,9 @@ const LP_BASE = {
   github_name: 'learnings',
   github_url: 'https://github.com/acme/learnings',
   project_ref: 'acme/learnings',
-  listing_kind: 'learning-pack',
+  listing_kind: 'knowledge-pack',
   listing_ref: 'rails-conventions',
-  title: 'Rails conventions learning pack',
+  title: 'Rails conventions knowledge pack',
 };
 
 describe('pre-publication review (D-007)', () => {
@@ -43,7 +43,7 @@ describe('pre-publication review (D-007)', () => {
     api = buildApi();
   });
 
-  it('learning-pack publishes PENDING: publisher told, public browse + anon read exclude it', async () => {
+  it('knowledge-pack publishes PENDING: publisher told, public browse + anon read exclude it', async () => {
     const { env } = makeEnv();
     stubGithub({ user: PUBLISHER, repo: { id: 70, private: false } });
     const res = await publish(api, env, { ...LP_BASE, github_repository_id: 70 });
@@ -53,7 +53,7 @@ describe('pre-publication review (D-007)', () => {
     expect(j.pending_review).toBe(true);
 
     // Public browse: invisible.
-    const browse = await api.request('/listings?kind=learning-pack', {}, env);
+    const browse = await api.request('/listings?kind=knowledge-pack', {}, env);
     expect((await browse.json() as { results: unknown[] }).results).toHaveLength(0);
 
     // Anonymous single read: 404. (stub the unauthenticated /user probe)
@@ -90,7 +90,7 @@ describe('pre-publication review (D-007)', () => {
     expect((await decide.json() as { review_status: string }).review_status).toBe('approved');
 
     // Now public.
-    const browse = await api.request('/listings?kind=learning-pack', {}, env);
+    const browse = await api.request('/listings?kind=knowledge-pack', {}, env);
     expect((await browse.json() as { results: Array<{ id: string }> }).results.map((r) => r.id)).toEqual([id]);
     const emptyQueue = await api.request('/admin/pending', { headers: { Authorization: 'Bearer t' } }, env);
     expect((await emptyQueue.json() as { pending: unknown[] }).pending).toHaveLength(0);
@@ -110,7 +110,7 @@ describe('pre-publication review (D-007)', () => {
     }, env);
     expect(decide.status).toBe(200);
 
-    const browse = await api.request('/listings?kind=learning-pack', {}, env);
+    const browse = await api.request('/listings?kind=knowledge-pack', {}, env);
     expect((await browse.json() as { results: unknown[] }).results).toHaveLength(0);
 
     stubGithub({ user: PUBLISHER });

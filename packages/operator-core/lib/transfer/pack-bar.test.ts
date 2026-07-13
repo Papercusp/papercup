@@ -1,5 +1,5 @@
 /**
- * pack-bar.test.ts — the D-006 learning-pack transfer bar (P-022 / FB-08):
+ * pack-bar.test.ts — the D-006 knowledge-pack transfer bar (P-022 / FB-08):
  * dark ⇒ no gating, proven failure ⇒ blocked, everything else (untested /
  * validated / infra-error / IO trouble) ⇒ open. Fake flag + sql, zero IO.
  */

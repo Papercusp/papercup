@@ -166,7 +166,7 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 22, private: false } });
     await publish(api, env, { github_owner: 'o', github_name: 'n3', github_url: 'https://github.com/o/n3', github_repository_id: 22, topic_hex: 'a'.repeat(64) });
 
-    // Blueprint is a review-policy kind (migration 008 / learning-packs D-007):
+    // Blueprint is a review-policy kind (migration 008 / knowledge-packs D-007):
     // it publishes PENDING and is invisible to public browse until approved.
     const pending = await api.request('/listings?kind=blueprint', {}, env);
     expect((await pending.json() as { results: unknown[] }).results).toHaveLength(0);

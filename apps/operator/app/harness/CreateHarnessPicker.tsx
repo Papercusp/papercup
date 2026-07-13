@@ -205,14 +205,14 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
   const isWork = domain === 'work' && !hive;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // learning-packs P-006: pack selection — default = the Papercusp pack (D-004).
+  // knowledge-packs P-006: pack selection — default = the Papercusp pack (D-004).
   // Only used on the new-hive branch (`!hive`).
-  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
+  const [knowledgePack, setKnowledgePack] = useState<string>('papercusp-default');
   const slugRef = useRef<HTMLInputElement>(null);
   const parentDirRef = useRef<HTMLInputElement>(null);
 
   const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
-    queryName: 'learningPacks.list',
+    queryName: 'knowledgePacks.list',
     args: {},
     staleTime: 60_000,
   });
@@ -234,7 +234,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
     try {
       // `hive` SET → a member harness inside the selected hive (the folder is
       // the slug). `hive` UNDEFINED → a new top-level hive home at
-      // <parentDir>/<slug>, seeded from the chosen learning pack.
+      // <parentDir>/<slug>, seeded from the chosen knowledge pack.
       const res = hive
         ? await fetch('/api/harness/projects', {
             method: 'POST',
@@ -248,7 +248,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
             headers: { 'Content-Type': 'application/json' },
             // P-006: a work hive passes its blueprintId; coding omits it (the
             // route + createHiveHarness default to the coding `hive`).
-            body: JSON.stringify({ slug, parentDir, learningPack: learningPack === 'none' ? null : learningPack, ...(blueprintId ? { blueprintId } : {}) }),
+            body: JSON.stringify({ slug, parentDir, knowledgePack: knowledgePack === 'none' ? null : knowledgePack, ...(blueprintId ? { blueprintId } : {}) }),
           });
       if (!res.ok) {
         const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -263,7 +263,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
         toast.success(`${t('pot')} '${data.project.slug}' added to ${hive} at ${data.project.path}`);
       } else {
         toast.success(`${hiveLabel} '${data.project.slug}' created — the ${t('brain')} is provisioning its fleet.`, {
-          // learning-packs P-006: tell the user the hive starts with default
+          // knowledge-packs P-006: tell the user the hive starts with default
           // learnings + where to edit them (the Learning tab's Learnings view).
           description:
             data.seededLearnings && !data.seededLearnings.error && (data.seededLearnings.count ?? 0) > 0
@@ -341,17 +341,17 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
         <input ref={parentDirRef} type="text" placeholder="/home/user/projects" style={inputStyle} />
         <HintText>Absolute path to the directory that will contain the new folder.</HintText>
       </Label>
-      {/* learning-packs P-006: the pack picker — a new hive starts with a
+      {/* knowledge-packs P-006: the pack picker — a new hive starts with a
           default set of learnings; selectable away, editable afterward. Only
           shown for the new-hive branch (`!hive`); members inherit the hive's. */}
       {!hive && (
         <Label>
-          <FieldLabel>Learning pack</FieldLabel>
+          <FieldLabel>Knowledge pack</FieldLabel>
           <Select
-            testId="learning-pack-picker"
-            value={learningPack}
-            onChange={setLearningPack}
-            ariaLabel="Learning pack"
+            testId="knowledge-pack-picker"
+            value={knowledgePack}
+            onChange={setKnowledgePack}
+            ariaLabel="Knowledge pack"
             triggerStyle={inputStyle}
             options={[
               ...availablePacks.map((p) => ({
@@ -386,14 +386,14 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
   const hiveLower = hiveLabel.toLowerCase();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // learning-packs P-006: pack selection — default = the Papercusp pack (D-004).
+  // knowledge-packs P-006: pack selection — default = the Papercusp pack (D-004).
   // Only used on the new-hive branch (`!hive`).
-  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
+  const [knowledgePack, setKnowledgePack] = useState<string>('papercusp-default');
   const slugRef = useRef<HTMLInputElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
 
   const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
-    queryName: 'learningPacks.list',
+    queryName: 'knowledgePacks.list',
     args: {},
     staleTime: 60_000,
   });
@@ -416,7 +416,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
       // `hive` SET → a member harness linked in place inside the selected hive
       // (P-011 stamps the membership edge). `hive` UNDEFINED → LINK the existing
       // repo in place as a NEW top-level hive home (the contract: a non-empty
-      // `path` links a dir as a hive), seeded from the chosen learning pack.
+      // `path` links a dir as a hive), seeded from the chosen knowledge pack.
       const res = hive
         ? await fetch('/api/harness/projects', {
             method: 'POST',
@@ -426,7 +426,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
         : await fetch('/api/harness/pots', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ slug, path, learningPack: learningPack === 'none' ? null : learningPack }),
+            body: JSON.stringify({ slug, path, knowledgePack: knowledgePack === 'none' ? null : knowledgePack }),
           });
       if (!res.ok) {
         const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -509,17 +509,17 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
         <input ref={pathRef} type="text" placeholder="/home/user/projects/my-project" style={inputStyle} />
         <HintText>Absolute path to an existing git repository or project directory. Stays where it is — linked, not moved.</HintText>
       </Label>
-      {/* learning-packs P-006: the pack picker — a new hive starts with a
+      {/* knowledge-packs P-006: the pack picker — a new hive starts with a
           default set of learnings; selectable away, editable afterward. Only
           shown for the new-hive branch (`!hive`); members inherit the hive's. */}
       {!hive && (
         <Label>
-          <FieldLabel>Learning pack</FieldLabel>
+          <FieldLabel>Knowledge pack</FieldLabel>
           <Select
-            testId="learning-pack-picker"
-            value={learningPack}
-            onChange={setLearningPack}
-            ariaLabel="Learning pack"
+            testId="knowledge-pack-picker"
+            value={knowledgePack}
+            onChange={setKnowledgePack}
+            ariaLabel="Knowledge pack"
             triggerStyle={inputStyle}
             options={[
               ...availablePacks.map((p) => ({

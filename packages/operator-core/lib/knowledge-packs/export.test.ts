@@ -2,7 +2,7 @@
  * export tests (learning-packs-2026-06-11 P-016) — the distill-to-pack writer.
  *
  * Fake memory backend (canned hive pool) + a real tmp dir, so the written pack
- * is round-tripped back through loadLearningPackFromDir to prove the on-disk
+ * is round-tripped back through loadKnowledgePackFromDir to prove the on-disk
  * shape is the loader's shape. Pins: organic-only default vs includePackRows,
  * semver/kebab validation, nothing_to_export, and (LP-3) the `id:` frontmatter
  * that keeps pack_item_id stable across an export → re-import round-trip.
@@ -16,7 +16,7 @@ vi.mock('../memory/backend', () => ({ getMemoryBackend: vi.fn() }));
 
 import { getMemoryBackend } from '../memory/backend';
 import { exportHiveLearningsToPack } from './export';
-import { loadLearningPackFromDir } from './load-packs';
+import { loadKnowledgePackFromDir } from './load-packs';
 import { memoryTextOf } from './pack-format';
 
 type Entry = { id: string; text: string; scope: string; kind?: string; metadata?: Record<string, unknown> };
@@ -64,7 +64,7 @@ describe('exportHiveLearningsToPack', () => {
       targetDir: root,
     });
     expect(res).toMatchObject({ ok: true, exported: 2, skippedPackRows: 1 });
-    expect(res.packDir).toBe(join(root, 'learning-packs', 'my-pack'));
+    expect(res.packDir).toBe(join(root, 'knowledge-packs', 'my-pack'));
   });
 
   it('includePackRows: true also exports the seeded rows', async () => {
@@ -129,7 +129,7 @@ describe('exportHiveLearningsToPack', () => {
     expect(exp.ok).toBe(true);
 
     // Every learning file carries an explicit `id:` line (not just the filename).
-    const { loaded, errors } = await loadLearningPackFromDir(exp.packDir!);
+    const { loaded, errors } = await loadKnowledgePackFromDir(exp.packDir!);
     expect(errors).toEqual([]);
     expect(loaded).toBeTruthy();
     const pack = loaded!.pack;
@@ -152,7 +152,7 @@ describe('exportHiveLearningsToPack', () => {
         version: '1.2.3',
         targetDir: root2,
       });
-      const { loaded: loaded2 } = await loadLearningPackFromDir(exp2.packDir!);
+      const { loaded: loaded2 } = await loadKnowledgePackFromDir(exp2.packDir!);
       expect(loaded2!.pack.items.map((i) => i.id).sort()).toEqual(pack.items.map((i) => i.id).sort());
     } finally {
       rmSync(root2, { recursive: true, force: true });
@@ -168,7 +168,7 @@ describe('exportHiveLearningsToPack', () => {
       description: 'D',
       targetDir: root,
     });
-    const { loaded } = await loadLearningPackFromDir(exp.packDir!);
+    const { loaded } = await loadKnowledgePackFromDir(exp.packDir!);
     const item = loaded!.pack.items[0];
     // memoryTextOf(re-imported item) reconstructs the original row text — the
     // export split (title — body) is loader-reversible for a "Title — body" row.

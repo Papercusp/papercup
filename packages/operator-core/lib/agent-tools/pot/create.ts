@@ -66,12 +66,12 @@ export default defineTool({
       .describe(
         "The kind:'hive' blueprint to run — default 'hive' (the coding pot); 'work' for a non-coding pot (judge-accepted, artifacts output, topic affinity). Resolved local→installed→built-in; blueprint:catalog lists the pot blueprints.",
       ),
-    learningPack: z
+    knowledgePack: z
       .string()
       .max(120)
       .optional()
       .describe(
-        "Learning pack to seed into the pot's shared memory (learning-packs P-005). Omit ⇒ the default pack (papercusp-default); 'none' ⇒ seed nothing. learning_packs:list enumerates the available packs.",
+        "Knowledge pack to seed into the pot's shared memory (knowledge-packs P-005). Omit ⇒ the default pack (papercusp-default); 'none' ⇒ seed nothing. knowledge_packs:list enumerates the available packs.",
       ),
     repoRemote: z
       .enum(['auto', 'local-only'])
@@ -134,7 +134,7 @@ export default defineTool({
       kickoff: clampText(args.kickoff, LIMITS.ANNOTATION),
       blueprintId: args.blueprintId ?? undefined,
       // 'none' ⇒ null (seed nothing); omit ⇒ undefined (default pack).
-      learningPack: args.learningPack === 'none' ? null : args.learningPack ?? undefined,
+      knowledgePack: args.knowledgePack === 'none' ? null : args.knowledgePack ?? undefined,
       repoRemote: args.repoRemote ?? undefined,
       repoOwner: args.repoOwner ?? undefined,
     });

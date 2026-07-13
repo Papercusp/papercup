@@ -28,10 +28,10 @@ const MEMBER_NO_FORK: SelfPotMember = {
 
 function deps(over: Partial<ContributeUpstreamInput> = {}): ContributeUpstreamInput {
   return {
-    kind: 'learning-pack',
+    kind: 'knowledge-pack',
     workspaceId: 'w',
     resolveSelfPotMember: async () => MEMBER_WITH_FORK,
-    exportPack: async () => ({ ok: true, packDir: '/tmp/self-pot/learning-packs/p', exported: 3, skippedPackRows: 0 }),
+    exportPack: async () => ({ ok: true, packDir: '/tmp/self-pot/knowledge-packs/p', exported: 3, skippedPackRows: 0 }),
     publishPack: async () => ({ ok: true, listingId: 'lst_1', reviewStatus: 'pending' }),
     pushAndOpenPr: async () => ({
       ok: true,
@@ -49,7 +49,7 @@ function deps(over: Partial<ContributeUpstreamInput> = {}): ContributeUpstreamIn
   };
 }
 
-describe('contributeUpstream — kind:learning-pack (the Comb path) (P-072)', () => {
+describe('contributeUpstream — kind:knowledge-pack (the Comb path) (P-072)', () => {
   it('PREPARED without confirm: exports locally but does NOT publish to the Comb', async () => {
     let published = false;
     const res = await contributeUpstream(
@@ -64,7 +64,7 @@ describe('contributeUpstream — kind:learning-pack (the Comb path) (P-072)', ()
       }),
     );
     expect(published).toBe(false);
-    expect(res).toMatchObject({ ok: true, kind: 'learning-pack', prepared: true });
+    expect(res).toMatchObject({ ok: true, kind: 'knowledge-pack', prepared: true });
     if ('prepared' in res) expect(res.needs).toContain('confirm');
   });
 
@@ -91,7 +91,7 @@ describe('contributeUpstream — kind:learning-pack (the Comb path) (P-072)', ()
       }),
     );
     expect(publishedArgs).toMatchObject({ packId: 'my-pack' });
-    expect(res).toMatchObject({ ok: true, kind: 'learning-pack', sent: true });
+    expect(res).toMatchObject({ ok: true, kind: 'knowledge-pack', sent: true });
     if ('sent' in res) {
       // The Comb publish stays PENDING (moderation-gated, D-007) — never auto-public.
       expect(res.result.reviewStatus).toBe('pending');

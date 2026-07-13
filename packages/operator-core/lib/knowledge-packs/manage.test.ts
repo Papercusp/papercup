@@ -24,11 +24,11 @@ import {
   setPackEnabled,
   uninstallPack,
 } from './manage';
-import type { LearningPack } from './pack-format';
+import type { KnowledgePack } from './pack-format';
 
 let settingRec: { value: unknown } | null = null;
 
-const pack: LearningPack = {
+const pack: KnowledgePack = {
   manifest: { id: 'rails-pack', title: 'Rails', description: 'd', version: '2.0.0' },
   items: [
     { id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'always do a' },

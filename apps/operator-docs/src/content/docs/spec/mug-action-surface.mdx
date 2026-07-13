@@ -104,7 +104,7 @@ graduate (D-005); accessible as propose→ratify, never auto.
 | **spend-budget** | approve spend, budgets, account scaling | **PROTECTED** |
 | **agent-lifecycle** | spawn / cancel / drain agents; model-tier; fleet admission | risk-graded |
 | **credentials-auth** | register / approve credentials; auth-affecting flags | **PROTECTED** |
-| **knowledge-curation** | memory approve / forget; docs & insights publish; learning-pack / blueprint publish | low-risk |
+| **knowledge-curation** | memory approve / forget; docs & insights publish; knowledge-pack / blueprint publish | low-risk |
 | **schedule-arm** | arm / disarm a scheduled plan's recurrence (start/stop autonomous runs) — distinct from system-control's SYSTEM loops | risk-graded |
 | **system-control** | arm / disarm loops; flag flips; routines; the learning loop itself | **PROTECTED** |
 
@@ -129,7 +129,7 @@ one capability. Under `harness:write` **alone**:
 | `accounts:register` | credentials-auth | **PROTECTED** |
 | `pot:create` | agent-lifecycle | risk-graded |
 | `scout:grade-idea` | ideation-intake | low-risk |
-| `learning_packs:publish` | knowledge-curation | low-risk |
+| `knowledge_packs:publish` | knowledge-curation | low-risk |
 
 Keying on `capability` would collapse a low-risk grade and a PROTECTED deploy to
 the same category — exactly the confident-but-catastrophic ≡ shaky-but-trivial
@@ -202,7 +202,7 @@ lives in `action-surface.ts`.
 | Flip an auth-affecting flag | credentials-auth | rev | owner | `flags:set` | partial |
 | Trust / un-trust a GitHub author for auto-run | credentials-auth | rev | owner | `trust:add`, `trust:remove` | covered |
 | Approve / forget / update a memory | knowledge-curation | rev | system | `memory:remember`, `memory:forget` | covered |
-| Publish / install a learning pack | knowledge-curation | rev | system | `learning_packs:publish` | covered |
+| Publish / install a knowledge pack | knowledge-curation | rev | system | `knowledge_packs:publish` | covered |
 | Author / extend a blueprint | knowledge-curation | rev | system | `blueprint:create`, `blueprint:extend` | covered |
 | Publish documentation | knowledge-curation | rev | system | `docs:write` | covered |
 | Arm / disarm a scheduled plan | schedule-arm | rev | system | `plans:arm-schedule`, `plans:disarm-schedule` | covered |

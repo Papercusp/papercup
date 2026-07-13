@@ -2,7 +2,7 @@
  * blueprint:publish — list a local/private blueprint on the Comb
  * (domain-generic-hive-architecture-2026-06-18 P-016).
  *
- * The publish entry point for blueprints, mirroring `learning_packs:publish`: it
+ * The publish entry point for blueprints, mirroring `knowledge_packs:publish`: it
  * resolves the member repo's GitHub coords and publishes a `kind='blueprint'`
  * listing (listing_ref = blueprintId) through THE shared Cupboard publish core
  * (gh token + channel-2 attestation). The blueprint INSTALL side already exists
@@ -89,7 +89,7 @@ export default defineTool({
       /* unreadable/partial yaml → default 'harness'; the worker re-derives on approve */
     }
 
-    // 2. Resolve the repo's GitHub coords — the SAME path learning_packs:publish uses.
+    // 2. Resolve the repo's GitHub coords — the SAME path knowledge_packs:publish uses.
     const { resolveRepoCoordsFromDir, gitOriginUrl, fetchGithubRepoMeta } = await import(
       '../../cupboard/resolve-repo-coords'
     );

@@ -35,7 +35,7 @@ const NON_SUFFIX_MUTATORS = [
   'capability:git',
   'capability:computer',
   'processes:kill',
-  'learning_packs:export', // capability memory:read + explicit effect:'write' (writes pack files)
+  'knowledge_packs:export', // capability memory:read + explicit effect:'write' (writes pack files)
   'plans:export', // capability plans:read + explicit effect:'write' (toDir writes .md files)
 ];
 

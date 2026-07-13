@@ -336,7 +336,7 @@ export async function computeMugWakeBrief(
     //
     // EI-10015: previously a bespoke `getMemoryBackend().search(..., { scope:
     // [`harness:${installSlug}`] })` — this queried the harness pool ONLY and
-    // structurally EXCLUDED the hive:<slug> pool entirely, so learning-pack
+    // structurally EXCLUDED the hive:<slug> pool entirely, so knowledge-pack
     // seeded rows and pot-organic conventions (both land in hive scope, per
     // lib/memory/hive-scope.ts) never reached the Mug. It also bypassed the
     // shared injection pipeline (no floors / dedup / muted-pack / tombstones).

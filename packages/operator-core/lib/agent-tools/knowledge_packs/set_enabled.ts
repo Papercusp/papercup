@@ -1,8 +1,8 @@
 /**
- * learning_packs:set_enabled — mute/unmute one OR many packs' injection without
+ * knowledge_packs:set_enabled — mute/unmute one OR many packs' injection without
  * uninstalling (learning-packs-2026-06-11 P-009; bulk-standardized per
  * bulk-endpoint-standardization-2026-06-21). hive_settings-backed
- * (`learning-packs:disabled`); the pre-turn injection filters disabled packs.
+ * (`knowledge-packs:disabled`); the pre-turn injection filters disabled packs.
  *
  * Bulk by default (the house keyed-array contract): flip ONE inline ({ pot,
  * pack, enabled }), MANY packs for the SAME hive+enabled (hive + packs:[…] +
@@ -13,7 +13,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
+import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 import { runBulk, bulkContent } from '../_bulk';
 
 const itemSpec = z.object({
@@ -29,17 +29,17 @@ interface FlipItem {
 }
 
 export default defineTool({
-  name: 'learning_packs:set_enabled',
+  name: 'knowledge_packs:set_enabled',
   capability: 'memory:write',
   description:
-    "Enable or disable one OR many learning packs' injection for a hive WITHOUT uninstalling them — the rows stay stored; agents just stop recalling them. Cheap to flip, fully reversible. Single: { pot, pack, enabled }. Many packs same hive: { pot, packs:[…], enabled }. Many heterogeneous: items:[{ pot, pack, enabled }]. Returns { ok, results:[{ ok, hive, pack, enabled? | error }], counts } — correlate by hive+pack, not by position; one failure never fails the rest.",
+    "Enable or disable one OR many knowledge packs' injection for a hive WITHOUT uninstalling them — the rows stay stored; agents just stop recalling them. Cheap to flip, fully reversible. Single: { pot, pack, enabled }. Many packs same hive: { pot, packs:[…], enabled }. Many heterogeneous: items:[{ pot, pack, enabled }]. Returns { ok, results:[{ ok, hive, pack, enabled? | error }], counts } — correlate by hive+pack, not by position; one failure never fails the rest.",
   guidance: {
     when: 'Trying out whether a pack helps, or quarantining one that seems to misdirect agents — before reaching for uninstall. Flip several at once via packs:[…] or items:[…].',
-    notWhen: 'Permanently removing a pack — learning_packs:uninstall.',
-    chaining: 'learning_packs:list { pot } shows enabled state per installed pack. Bulk: single | items[] (or packs) → { ok, results, counts }; correlate by hive+pack not position; one failure never fails the rest.',
+    notWhen: 'Permanently removing a pack — knowledge_packs:uninstall.',
+    chaining: 'knowledge_packs:list { pot } shows enabled state per installed pack. Bulk: single | items[] (or packs) → { ok, results, counts }; correlate by hive+pack not position; one failure never fails the rest.',
     seeAlso: [
-      'learning_packs:uninstall (permanently remove instead of disabling)',
-      'learning_packs:list (enabled state per installed pack)',
+      'knowledge_packs:uninstall (permanently remove instead of disabling)',
+      'knowledge_packs:list (enabled state per installed pack)',
     ],
   },
   crossWorkspace: true,
@@ -62,9 +62,9 @@ export default defineTool({
       },
     ),
   async handler(args, ctx) {
-    if (!(await learningPacksEnabled())) return text(FLAG_OFF);
+    if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
     const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const { setPackEnabled } = await import('../../learning-packs/manage');
+    const { setPackEnabled } = await import('../../knowledge-packs/manage');
 
     const list: FlipItem[] = args.items?.length
       ? args.items

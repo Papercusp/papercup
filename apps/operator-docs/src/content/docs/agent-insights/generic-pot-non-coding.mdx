@@ -80,7 +80,7 @@ blueprint parses byte-identically, so the coding fleet is unchanged.
 | `output.kind` | `planFinalization` tags the documenter with `OUTPUT_KIND=<sink>`; `harnessOutputKind()` reads it. | `repo-commit` — no extra |
 | `affinity.kind` | `fleet:place_batch`'s `affinity_kind` arg → `AFFINITY_WEIGHTS_BY_KIND` presets in `fleet/placement-affinity.ts` (reweights the lexicographic ranker). | `file-overlap` — today's weights |
 | `lexicon` | persona/UI noun overrides (feature/PR vs deliverable/report) | the built-in noun |
-| `learning.{pack,loops}` | `createHiveHarness` seeds `learning.pack` as the default seed pack | the global default pack |
+| `learning.{pack,loops}` | `createHiveHarness` seeds `knowledge.pack` as the default seed pack | the global default pack |
 | `fleet` / `wake` / `placement` | declared; runtime reads are partial (see Gotchas) | global defaults |
 | `dependencies.blueprints` | the spawned-blueprint dep + install-closure (blueprint-role-bundling P-007) | none |
 

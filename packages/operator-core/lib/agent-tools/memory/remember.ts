@@ -164,7 +164,7 @@ export default defineTool({
     harness_slug: z.string().optional()
       .describe('Scope to a specific harness (project). Anyone with access to that harness will see this memory in their recall. Omit for a personal (per-user) fact.'),
     hive_slug: z.string().optional()
-      .describe("Scope to a Pot's SHARED pool (learning-packs P-004) — every agent in every member harness of that pot recalls it. Use for discovered project conventions (test command, build path, design system) the whole pot should inherit. Mutually exclusive with harness_slug."),
+      .describe("Scope to a Pot's SHARED pool (knowledge-packs P-004) — every agent in every member harness of that pot recalls it. Use for discovered project conventions (test command, build path, design system) the whole pot should inherit. Mutually exclusive with harness_slug."),
     force: z.boolean().optional()
       .describe('Bypass the dedup-on-write similarity check (P-016). Use only when knowingly writing a near-duplicate the agent has decided to keep separate. Default: false.'),
     shareable: z.boolean().optional()
@@ -193,7 +193,7 @@ export default defineTool({
     let scopeKey: string;
     let scope: 'user' | 'harness' | 'hive';
     if (args.hive_slug) {
-      // learning-packs P-004: the Hive's shared pool — recalled by every agent
+      // knowledge-packs P-004: the Hive's shared pool — recalled by every agent
       // in every member harness (injection resolves member→hive).
       scopeKey = `hive:${args.hive_slug}`;
       scope = 'hive';

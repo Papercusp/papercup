@@ -151,15 +151,15 @@ listing, and the dep-validator can mark not-installed tools *installable*.
 ### The worker wire (migrations 006 + 008)
 
 The Cupboard worker (`apps/operator-public`) stores listings with
-`listing_kind ∈ {harness, blueprint, plugin, tool-pack, learning-pack}`
+`listing_kind ∈ {harness, blueprint, plugin, tool-pack, knowledge-pack}`
 (`LISTING_KINDS` in `apps/operator-public/src/db.ts`) and a nullable
 `provides_tools` TEXT column (JSON `string[]`; migration
 `006_pack_kind_provides_tools.sql` — a table rebuild, since SQLite can't
 ALTER the kind CHECK). **Migration 008** (`learning-packs-2026-06-11` D-005)
 reshaped the kind set: `snapshot` was RETIRED (its rows are `DELETE`d),
 `pack` was RENAMED `tool-pack` (the runtime-less code-tool pack this page is
-about), and a sibling `learning-pack` (a distributable set of curated pot
-learnings) joined — see the `learning-pack` section below. `'pack'` survives
+about), and a sibling `knowledge-pack` (a distributable set of curated pot
+learnings) joined — see the `knowledge-pack` section below. `'pack'` survives
 only as a wire alias normalized to `'tool-pack'` (`normalizeListingKind` /
 `listingKindOf`), so older clients keep parsing. On `POST /listings`,
 `provides_tools` is accepted only for kinds `plugin`/`tool-pack` (1–200
@@ -169,13 +169,13 @@ required, `(repo, kind, ref)` dedup, action **install** (`listingActionFor`
 returns `'install'` for the `tool-pack` case, in
 `operator-core/lib/cupboard/types.ts`).
 
-#### The sibling `learning-pack` kind (migration 008)
+#### The sibling `knowledge-pack` kind (migration 008)
 
-Migration 008 also adds a `learning-pack` listing kind that coexists with
+Migration 008 also adds a `knowledge-pack` listing kind that coexists with
 `tool-pack` in the same worker schema and storefront this page describes — but
 it is a different thing: a distributable set of curated pot learnings
 (installed into a pot's shared memory through conflict review), not a
-code-tool pack. The instruction-carrying kinds (`learning-pack` + `blueprint`)
+code-tool pack. The instruction-carrying kinds (`knowledge-pack` + `blueprint`)
 also gain a pre-publication `review_status` (`pending` / `approved` /
 `rejected`, `REVIEW_POLICY_KINDS`): they publish `pending` and surface
 publicly only on operator approval, whereas code kinds (`tool-pack` / `plugin`)
@@ -228,7 +228,7 @@ A tool never installs in isolation (D-005): the storefront's Tools view
 **providing listing's** detail page, where the normal install-consent flow
 executes. The storefront also gains a **Tool packs** kind tab (keyed on the
 `tool-pack` kind value — `VIEW_FILTERS` in `CupboardClient.tsx`, alongside the
-sibling **Learning Packs** tab), and plugin/pack detail pages surface the
+sibling **Knowledge Packs** tab), and plugin/pack detail pages surface the
 listing's `provides_tools`.
 
 ### Closing the install loop (`autoInstallDeps`)

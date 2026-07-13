@@ -103,11 +103,11 @@ export default function CupboardDetailPage() {
       void installBlueprintFromCupboard();
       return;
     }
-    // learning-pack (learning-packs P-017): fetch the pack files into the
+    // knowledge-pack (knowledge-packs P-017): fetch the pack files into the
     // installed root — it then appears in the creation picker + Learning tab,
     // and lands in a hive only through the normal conflict review.
-    if (kind === 'learning-pack') {
-      void fetchLearningPackFromComb();
+    if (kind === 'knowledge-pack') {
+      void fetchKnowledgePackFromComb();
       return;
     }
     // template (cupboard-full-dogfood P-003 / public-release P-002): clone the
@@ -124,14 +124,14 @@ export default function CupboardDetailPage() {
     void installPluginFromCupboard();
   };
 
-  // learning-pack Install (learning-packs P-017): stage the pack locally.
+  // knowledge-pack Install (knowledge-packs P-017): stage the pack locally.
   // Nothing is injected into any agent by the fetch itself — adding it to a
   // hive happens in the Learning tab, through the install conflict review.
-  const fetchLearningPackFromComb = async () => {
+  const fetchKnowledgePackFromComb = async () => {
     if (!listing || busy) return;
     setBusy(true);
     try {
-      const r = await fetch('/api/learning-packs/fetch-from-comb', {
+      const r = await fetch('/api/knowledge-packs/fetch-from-comb', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ listingId: listing.id }),
@@ -147,7 +147,7 @@ export default function CupboardDetailPage() {
         return;
       }
       toast.success(
-        `Learning pack "${d.pack.title}" v${d.pack.version} fetched (${d.pack.itemCount} learnings). ` +
+        `Knowledge pack "${d.pack.title}" v${d.pack.version} fetched (${d.pack.itemCount} learnings). ` +
           `Add it to a ${t('pot', { lower: true })} from the Learning tab → Learnings — incoming learnings go through the conflict review there.`,
       );
     } catch (e) {
@@ -412,7 +412,7 @@ export default function CupboardDetailPage() {
             </MetaRow>
           )}
           {listing.listing_ref && (
-            <MetaRow label={kind === 'plugin' ? 'Plugin' : kind === 'pack' ? 'Pack' : kind === 'learning-pack' ? 'Learning pack' : 'Listing'}>
+            <MetaRow label={kind === 'plugin' ? 'Plugin' : kind === 'pack' ? 'Pack' : kind === 'knowledge-pack' ? 'Knowledge pack' : 'Listing'}>
               <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.text }}>{listing.listing_ref}</span>
             </MetaRow>
           )}
@@ -467,10 +467,10 @@ export default function CupboardDetailPage() {
           )}
         </div>
 
-        {/* learning-pack: every learning is readable BEFORE install — the
-            pre-install trust surface (learning-packs P-015, D-007). */}
-        {kind === 'learning-pack' && repoSlug && (
-          <LearningPackContents repoSlug={repoSlug} listingRef={listing.listing_ref ?? null} />
+        {/* knowledge-pack: every learning is readable BEFORE install — the
+            pre-install trust surface (knowledge-packs P-015, D-007). */}
+        {kind === 'knowledge-pack' && repoSlug && (
+          <KnowledgePackContents repoSlug={repoSlug} listingRef={listing.listing_ref ?? null} />
         )}
 
         {/* Per-listing primary CTA — hidden for legacy harness rows (per-harness
@@ -556,15 +556,15 @@ export default function CupboardDetailPage() {
 }
 
 /**
- * LearningPackContents — read every learning BEFORE installing
+ * KnowledgePackContents — read every learning BEFORE installing
  * (learning-packs-2026-06-11 P-015): the pre-install trust surface for
  * instruction-carrying content. Fetched straight from the public GitHub repo
  * (contents API + raw download; unauthenticated, so a rate-limit or network
  * miss degrades to the "browse on GitHub" link, never an error wall).
- * Convention: the pack lives at `learning-packs/<listing_ref>/` (P-016's
+ * Convention: the pack lives at `knowledge-packs/<listing_ref>/` (P-016's
  * export shape) — repo-root manifests also resolve.
  */
-function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; listingRef: string | null }) {
+function KnowledgePackContents({ repoSlug, listingRef }: { repoSlug: string; listingRef: string | null }) {
   const t = useLexicon();
   const [items, setItems] = useState<Array<{ name: string; text: string }> | null>(null);
   const [contentsError, setContentsError] = useState<string | null>(null);
@@ -575,7 +575,7 @@ function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; list
     let cancelled = false;
     (async () => {
       try {
-        const dir = listingRef ? `learning-packs/${listingRef}` : '';
+        const dir = listingRef ? `knowledge-packs/${listingRef}` : '';
         const listRes = await fetch(
           `https://api.github.com/repos/${repoSlug}/contents/${dir}`,
           { headers: { Accept: 'application/vnd.github+json' } },
@@ -600,7 +600,7 @@ function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; list
   }, [open, items, repoSlug, listingRef]);
 
   return (
-    <div style={{ marginTop: SIZES.md, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: RADIUS.lg, padding: SIZES.md }} data-testid="learning-pack-contents">
+    <div style={{ marginTop: SIZES.md, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: RADIUS.lg, padding: SIZES.md }} data-testid="knowledge-pack-contents">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -619,7 +619,7 @@ function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; list
             <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
               Couldn&rsquo;t fetch the pack contents ({contentsError}) —{' '}
               <a
-                href={`https://github.com/${repoSlug}${listingRef ? `/tree/HEAD/learning-packs/${listingRef}` : ''}`}
+                href={`https://github.com/${repoSlug}${listingRef ? `/tree/HEAD/knowledge-packs/${listingRef}` : ''}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ color: 'var(--accent-soft)' }}

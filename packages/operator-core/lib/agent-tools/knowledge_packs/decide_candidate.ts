@@ -1,12 +1,12 @@
 /**
- * learning_packs:decide_candidate — the owner's adopt/dismiss on one OR many
+ * knowledge_packs:decide_candidate — the owner's adopt/dismiss on one OR many
  * staged fleet→pack candidates (self-improvement-consume-edges-2026-06-12 P-032,
  * brief B-11; bulk-standardized per bulk-endpoint-standardization-2026-06-21).
  *
  * Adoption materializes the (optionally owner-edited) draft into the
  * fleet-lessons pack under the installed packs root and bumps the pack's
  * patch version — it NEVER writes a hive's memory pool. Hives adopt the new
- * item through the existing learning_packs:install/upgrade conflict review.
+ * item through the existing knowledge_packs:install/upgrade conflict review.
  *
  * Bulk by default (the house keyed-array contract): decide ONE inline ({ id,
  * action, note?, title?, text? }), MANY with the SAME action (ids:[…] + action),
@@ -19,14 +19,14 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getSessionUserOrDefault } from '../../auth';
-import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
+import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 
 const ACTION = z.enum(['adopt', 'dismiss']);
 
 const itemSpec = z.object({
-  id: z.string().min(1).max(80).describe('Candidate id (from learning_packs:candidates).'),
+  id: z.string().min(1).max(80).describe('Candidate id (from knowledge_packs:candidates).'),
   action: ACTION,
   note: softText(LIMITS.ANNOTATION).optional().describe('Decision note recorded on the candidate. Auto-truncated to 2000 chars if longer.'),
   title: hardText(LIMITS.SHORT_TITLE).optional().describe('Owner-edited title (adopt only).'),
@@ -36,23 +36,23 @@ const itemSpec = z.object({
 type DecideItem = z.infer<typeof itemSpec>;
 
 const ADOPT_HINT =
-  'Adopted into the fleet-lessons pack. Hives with the pack installed now show updateAvailable (adopt via learning_packs:upgrade); others can learning_packs:install it — both through the normal conflict review.';
+  'Adopted into the fleet-lessons pack. Hives with the pack installed now show updateAvailable (adopt via knowledge_packs:upgrade); others can knowledge_packs:install it — both through the normal conflict review.';
 
 export default defineTool({
-  name: 'learning_packs:decide_candidate',
+  name: 'knowledge_packs:decide_candidate',
   capability: 'memory:write',
   description:
-    'Decide one OR many pending learning-pack candidates: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). This is an OWNER decision; candidates are never auto-published. Single: { id, action, note?, title?, text? }. Many same action: { ids:[…], action }. Many heterogeneous: items:[{ id, action, note?, title?, text? }]. Returns { ok, results:[{ ok, id, action?, … | error }], counts } — correlate by id, not by position; one bad candidate never fails the rest.',
+    'Decide one OR many pending knowledge-pack candidates: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). This is an OWNER decision; candidates are never auto-published. Single: { id, action, note?, title?, text? }. Many same action: { ids:[…], action }. Many heterogeneous: items:[{ id, action, note?, title?, text? }]. Returns { ok, results:[{ ok, id, action?, … | error }], counts } — correlate by id, not by position; one bad candidate never fails the rest.',
   guidance: {
     when:
-      'The owner has reviewed pending candidate(s) (learning_packs:candidates) and says adopt/dismiss — or asks you to apply their edits while adopting. Decide several at once via ids:[…]+action or items:[…].',
+      'The owner has reviewed pending candidate(s) (knowledge_packs:candidates) and says adopt/dismiss — or asks you to apply their edits while adopting. Decide several at once via ids:[…]+action or items:[…].',
     notWhen:
-      'To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via learning_packs:install/upgrade). Unprompted bulk adoption — each candidate is an explicit owner call.',
+      'To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via knowledge_packs:install/upgrade). Unprompted bulk adoption — each candidate is an explicit owner call.',
     chaining:
-      'learning_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → learning_packs:upgrade { hive, pack: "fleet-lessons" }; others via learning_packs:install. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+      'knowledge_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → knowledge_packs:upgrade { hive, pack: "fleet-lessons" }; others via knowledge_packs:install. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
     seeAlso: [
-      'learning_packs:candidates (the candidate pool + drafts)',
-      'learning_packs:upgrade (hives adopt the accepted item)',
+      'knowledge_packs:candidates (the candidate pool + drafts)',
+      'knowledge_packs:upgrade (hives adopt the accepted item)',
     ],
   },
   crossWorkspace: true,
@@ -74,10 +74,10 @@ export default defineTool({
       },
     ),
   async handler(args, ctx) {
-    if (!(await learningPacksEnabled())) return text(FLAG_OFF);
+    if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
     const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const by = (await getSessionUserOrDefault()).id;
-    const { decideLearningPackCandidate } = await import('../../learning-packs/candidates');
+    const { decideKnowledgePackCandidate } = await import('../../knowledge-packs/candidates');
 
     const list: DecideItem[] = args.items?.length
       ? args.items
@@ -88,7 +88,7 @@ export default defineTool({
     const env = await runBulk(
       list,
       async (it) => {
-        const result = await decideLearningPackCandidate({
+        const result = await decideKnowledgePackCandidate({
           id: it.id,
           action: it.action,
           by,

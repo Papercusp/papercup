@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import listTool from './list';
 import { getFlag } from '@papercusp/flags/server';
-import { listLearningPacks } from '../../learning-packs/load-packs';
+import { listKnowledgePacks } from '../../knowledge-packs/load-packs';
 import { readHiveLearnings } from '../../sync-resolver/learning-hive-read';
-import { disabledPacksFor } from '../../learning-packs/manage';
+import { disabledPacksFor } from '../../knowledge-packs/manage';
 
 // PG-free unit: the pack loaders + hive snapshot have their own suites; this pins
 // the TOOL — the flag gate, the catalog-only vs hive branch, and the installed
@@ -11,13 +11,13 @@ import { disabledPacksFor } from '../../learning-packs/manage';
 // the catalog) — learning-packs-2026-06-11 P-009.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
-vi.mock('../../learning-packs/load-packs', () => ({ listLearningPacks: vi.fn(), loadLearningPack: vi.fn() }));
+vi.mock('../../knowledge-packs/load-packs', () => ({ listKnowledgePacks: vi.fn(), loadKnowledgePack: vi.fn() }));
 vi.mock('../../sync-resolver/learning-hive-read', () => ({ readHiveLearnings: vi.fn() }));
 vi.mock('../../memory/backend', () => ({ getMemoryBackend: vi.fn() }));
-vi.mock('../../learning-packs/manage', () => ({ disabledPacksFor: vi.fn() }));
+vi.mock('../../knowledge-packs/manage', () => ({ disabledPacksFor: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
-const mockListPacks = vi.mocked(listLearningPacks);
+const mockListPacks = vi.mocked(listKnowledgePacks);
 const mockReadHive = vi.mocked(readHiveLearnings);
 const mockDisabled = vi.mocked(disabledPacksFor);
 
@@ -30,19 +30,19 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 }
 const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
 
-describe('learning_packs:list tool', () => {
+describe('knowledge_packs:list tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
     mockListPacks.mockResolvedValue([{ id: 'papercusp-default', version: '2.0.0' }] as unknown as Awaited<
-      ReturnType<typeof listLearningPacks>
+      ReturnType<typeof listKnowledgePacks>
     >);
   });
 
   it('refuses with the FLAG_OFF envelope when the feature flag is off', async () => {
     mockFlag.mockResolvedValue(false);
     const res = body(await callTool({}));
-    expect(res).toMatchObject({ ok: false, reason: 'feature-disabled', flag: 'papercusp-learning-packs' });
+    expect(res).toMatchObject({ ok: false, reason: 'feature-disabled', flag: 'papercusp-knowledge-packs' });
     expect(mockListPacks).not.toHaveBeenCalled();
   });
 

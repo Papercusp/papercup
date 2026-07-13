@@ -71,7 +71,7 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     updated_at: 1,
     unlisted_at: null,
     unlisted_reason: null,
-    // migration 008 (learning-packs): pre-publication review fields.
+    // migration 008 (knowledge-packs): pre-publication review fields.
     review_status: 'approved',
     reviewed_at: null,
     review_reason: null,
@@ -131,7 +131,7 @@ export class FakeStore {
       );
       return 1;
     }
-    // setReviewStatus (migration 008 / learning-packs P-019).
+    // setReviewStatus (migration 008 / knowledge-packs P-019).
     if (upper.startsWith('UPDATE HARNESSES') && upper.includes('SET REVIEW_STATUS')) {
       const [review_status, reviewed_at, review_reason, updated_at, id] = binds;
       const row = this.tables.harnesses.find((r) => r.id === id);

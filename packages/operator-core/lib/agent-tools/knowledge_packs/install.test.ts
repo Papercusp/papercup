@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import installTool from './install';
 import { getFlag } from '@papercusp/flags/server';
-import { loadLearningPack } from '../../learning-packs/load-packs';
-import { classifyPackInstall, applyPackInstall } from '../../learning-packs/manage';
+import { loadKnowledgePack } from '../../knowledge-packs/load-packs';
+import { classifyPackInstall, applyPackInstall } from '../../knowledge-packs/manage';
 import { getSessionUserOrDefault } from '../../auth';
 
 // PG-free unit: the classify/apply core has its own suite; this pins the TOOL's
@@ -11,12 +11,12 @@ import { getSessionUserOrDefault } from '../../auth';
 // path (learning-packs-2026-06-11 P-009/P-010, D-003).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
-vi.mock('../../learning-packs/load-packs', () => ({ loadLearningPack: vi.fn() }));
-vi.mock('../../learning-packs/manage', () => ({ classifyPackInstall: vi.fn(), applyPackInstall: vi.fn() }));
+vi.mock('../../knowledge-packs/load-packs', () => ({ loadKnowledgePack: vi.fn() }));
+vi.mock('../../knowledge-packs/manage', () => ({ classifyPackInstall: vi.fn(), applyPackInstall: vi.fn() }));
 vi.mock('../../auth', () => ({ getSessionUserOrDefault: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
-const mockLoad = vi.mocked(loadLearningPack);
+const mockLoad = vi.mocked(loadKnowledgePack);
 const mockClassify = vi.mocked(classifyPackInstall);
 const mockApply = vi.mocked(applyPackInstall);
 const mockUser = vi.mocked(getSessionUserOrDefault);
@@ -31,11 +31,11 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
 const review = (p: Record<string, number> = {}) => ({ clean: 3, duplicates: 0, conflicts: 0, ...p });
 
-describe('learning_packs:install tool', () => {
+describe('knowledge_packs:install tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
-    mockLoad.mockResolvedValue({ pack: { id: 'p1', items: [] } } as unknown as Awaited<ReturnType<typeof loadLearningPack>>);
+    mockLoad.mockResolvedValue({ pack: { id: 'p1', items: [] } } as unknown as Awaited<ReturnType<typeof loadKnowledgePack>>);
     mockClassify.mockResolvedValue(review() as unknown as Awaited<ReturnType<typeof classifyPackInstall>>);
     mockApply.mockResolvedValue({ ok: true, installed: 3 } as unknown as Awaited<ReturnType<typeof applyPackInstall>>);
     mockUser.mockResolvedValue({ id: 'user-1' } as Awaited<ReturnType<typeof getSessionUserOrDefault>>);

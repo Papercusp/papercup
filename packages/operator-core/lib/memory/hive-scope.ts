@@ -2,7 +2,7 @@
  * hive-scope — the `hive:<slug>` memory pool (learning-packs-2026-06-11 P-004,
  * D-008/OQ-1: a payload-level scope value, no schema migration).
  *
- * A Hive's shared knowledge — seeded learning packs (D-001) + organically
+ * A Hive's shared knowledge — seeded knowledge packs (D-001) + organically
  * recorded conventions (D-002's binding step) — lives in mem0 rows whose scope
  * is `hive:<home-slug>`. Every agent working anywhere in the Hive should
  * recall it, so injection resolves the harness slugs it was given to their
@@ -73,7 +73,7 @@ export async function resolveHiveSlugsForHarnesses(
  * user pool + EVERY workspace harness pool. In a MULTI-hive workspace that bleeds
  * a hive-confined session's recall across SIBLING hives' harness pools (e.g. a
  * papercusp-hive bee/su recalling oddsmith-hive lessons) — the leak this closes.
- * Within a hive, member harness pools stay shared (learning-packs seed each
+ * Within a hive, member harness pools stay shared (knowledge-packs seed each
  * member, they aren't cross-recalled), so narrowing to the subtree drops only the
  * cross-hive bleed, never intra-hive sharing.
  *

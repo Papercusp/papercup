@@ -57,7 +57,7 @@ export default defineTool({
     kind: z.enum(KINDS).optional(),
     harness_slug: z.string().optional(),
     hive_slug: z.string().optional()
-      .describe("Also list the Pot's shared pool (seeded learnings + recorded conventions — learning-packs P-004)."),
+      .describe("Also list the Pot's shared pool (seeded learnings + recorded conventions — knowledge-packs P-004)."),
     as_of: z.string().max(64)
       .refine((v) => Number.isFinite(new Date(v).getTime()), 'as_of must be a parseable ISO 8601 timestamp')
       .optional()

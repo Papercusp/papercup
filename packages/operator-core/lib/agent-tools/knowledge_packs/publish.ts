@@ -1,12 +1,12 @@
 /**
- * learning_packs:export + learning_packs:publish — distill a hive's learnings
+ * knowledge_packs:export + knowledge_packs:publish — distill a hive's learnings
  * into a pack and list it on the Comb (learning-packs-2026-06-11 P-016).
  *
  * Two deliberate steps:
- *   export  — write `learning-packs/<packId>/` into a member repo's working
+ *   export  — write `knowledge-packs/<packId>/` into a member repo's working
  *             tree (the project's normal commit/push flow carries the files).
  *   publish — once the files are on GitHub, create the Comb listing
- *             (kind 'learning-pack', listing_ref = packId) via the standard
+ *             (kind 'knowledge-pack', listing_ref = packId) via the standard
  *             publish core (gh token + attestation). The listing lands
  *             PENDING (D-007) — an operator approves before it goes public;
  *             the response says so.
@@ -15,26 +15,26 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
+import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
 export const exportTool = defineTool({
-  name: 'learning_packs:export',
+  name: 'knowledge_packs:export',
   capability: 'memory:read',
-  // Writes `learning-packs/<packId>/` files into a member repo's working tree — a real FS
+  // Writes `knowledge-packs/<packId>/` files into a member repo's working tree — a real FS
   // mutation, so it must be dry-run/confirm-gated even though its capability is the shared
   // read cap `memory:read`. An explicit override (not WRITE_CAPABILITIES) so memory:read's
   // genuine readers stay read. B-CX-EFFECT audit.
   effect: 'write',
   description:
-    "Export a hive's shared learnings into the standard pack shape (learning-packs/<packId>/ — manifest + one-learning-per-file) inside a member repo's working tree, ready to commit + publish. Defaults to the hive's ORGANIC learnings only; includePackRows re-exports installed-pack content too (explicit opt-in).",
+    "Export a hive's shared learnings into the standard pack shape (knowledge-packs/<packId>/ — manifest + one-learning-per-file) inside a member repo's working tree, ready to commit + publish. Defaults to the hive's ORGANIC learnings only; includePackRows re-exports installed-pack content too (explicit opt-in).",
   guidance: {
     when: "The user wants to share their pot's accumulated learnings — first step of the publish flow.",
-    notWhen: 'Installing or browsing packs — learning_packs:list/install.',
+    notWhen: 'Installing or browsing packs — knowledge_packs:list/install.',
     chaining:
-      "After the files are committed + pushed by the project's normal flow, learning_packs:publish lists the pack on the Comb (it publishes PENDING — operator approval gates public visibility, D-007).",
+      "After the files are committed + pushed by the project's normal flow, knowledge_packs:publish lists the pack on the Comb (it publishes PENDING — operator approval gates public visibility, D-007).",
     seeAlso: [
-      'learning_packs:publish (list the pack on the Comb after export + push)',
-      'learning_packs:list (browse / install packs instead)',
+      'knowledge_packs:publish (list the pack on the Comb after export + push)',
+      'knowledge_packs:list (browse / install packs instead)',
     ],
   },
   crossWorkspace: true,
@@ -49,8 +49,8 @@ export const exportTool = defineTool({
     workspace: z.string().max(120).optional(),
   }),
   async handler(args) {
-    if (!(await learningPacksEnabled())) return text(FLAG_OFF);
-    const { exportHiveLearningsToPack } = await import('../../learning-packs/export');
+    if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
+    const { exportHiveLearningsToPack } = await import('../../knowledge-packs/export');
     const result = await exportHiveLearningsToPack({
       potSlug: args.pot,
       packId: args.packId,
@@ -63,24 +63,24 @@ export const exportTool = defineTool({
     return text({
       ...result,
       ...(result.ok
-        ? { hint: "Commit + push these files via the project's normal flow, then learning_packs:publish." }
+        ? { hint: "Commit + push these files via the project's normal flow, then knowledge_packs:publish." }
         : {}),
     });
   },
 });
 
 export const publishTool = defineTool({
-  name: 'learning_packs:publish',
+  name: 'knowledge_packs:publish',
   capability: 'harness:write',
   description:
-    "List an exported learning pack on the Comb: resolves the member repo's GitHub coords, publishes a kind='learning-pack' listing (listing_ref = packId) with the operator's gh token + attestation. The listing lands PENDING (D-007) — an operator must approve it before anyone else sees it.",
+    "List an exported knowledge pack on the Comb: resolves the member repo's GitHub coords, publishes a kind='knowledge-pack' listing (listing_ref = packId) with the operator's gh token + attestation. The listing lands PENDING (D-007) — an operator must approve it before anyone else sees it.",
   guidance: {
-    when: 'After learning_packs:export and the files are pushed to the GitHub repo.',
+    when: 'After knowledge_packs:export and the files are pushed to the GitHub repo.',
     notWhen: 'The pack files are not on GitHub yet — publish points at the repo; export first, push, then publish.',
     chaining: 'The response carries review_status pending — the submitter sees it on their own listing; operators approve at /admin/cupboard-moderation.',
     seeAlso: [
-      'learning_packs:export (run first — export, push, then publish)',
-      'learning_packs:list (browse published packs)',
+      'knowledge_packs:export (run first — export, push, then publish)',
+      'knowledge_packs:list (browse published packs)',
     ],
   },
   crossWorkspace: true,
@@ -92,7 +92,7 @@ export const publishTool = defineTool({
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
-    if (!(await learningPacksEnabled())) return text(FLAG_OFF);
+    if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
 
     const { resolveRepoCoordsFromDir, gitOriginUrl, fetchGithubRepoMeta } = await import(
@@ -113,7 +113,7 @@ export const publishTool = defineTool({
 
     const { publishListingToCupboard } = await import('../../cupboard/publish-listing');
     const result = await publishListingToCupboard({
-      listing_kind: 'learning-pack',
+      listing_kind: 'knowledge-pack',
       listing_ref: args.packId,
       project_ref: `${coords.github_owner}/${coords.github_name}`,
       github_repository_id: coords.github_repository_id,

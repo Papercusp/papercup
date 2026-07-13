@@ -7,9 +7,9 @@
  * shared Pot that dogfoods locally, this sends a LOCAL improvement UPSTREAM —
  * the collaboration flywheel D-007 ratified, via BOTH proven round-trips:
  *
- *   kind:'learning-pack' (the Comb path) — distill the self-pot's ORGANIC
- *     learnings into a pack dir (learning_packs:export's core) and LIST it on the
- *     Comb (learning_packs:publish's core). The listing lands PENDING behind the
+ *   kind:'knowledge-pack' (the Comb path) — distill the self-pot's ORGANIC
+ *     learnings into a pack dir (knowledge_packs:export's core) and LIST it on the
+ *     Comb (knowledge_packs:publish's core). The listing lands PENDING behind the
  *     D-007 operator-approval moderation gate — never auto-public.
  *
  *   kind:'pr' (the fork-PR path) — commit + push the local change to the USER'S
@@ -39,7 +39,7 @@
 import { loadHarnessRegistry, type ProjectEntry } from '../harness-registry';
 import { activeWorkspaceId } from '../workspace-registry';
 import { PLATFORM_SELF_POT_SLUG, PAPERCUSP_CANONICAL_REPO_URL } from './enable-platform-mode';
-import { exportHiveLearningsToPack, type ExportPackResult } from '../learning-packs/export';
+import { exportHiveLearningsToPack, type ExportPackResult } from '../knowledge-packs/export';
 import { publishListingToCupboard, type CupboardPublishResult } from '../cupboard/publish-listing';
 import {
   resolveRepoCoordsFromDir,
@@ -52,7 +52,7 @@ import { getGhAuthToken } from '../identity/gh-token';
 
 // ── Shared shapes ──────────────────────────────────────────────────────────────
 
-export type ContributeKind = 'learning-pack' | 'pr';
+export type ContributeKind = 'knowledge-pack' | 'pr';
 
 /**
  * The resolved self-pot member checkout the contribution operates over: the
@@ -75,7 +75,7 @@ export interface SelfPotMember {
 }
 
 export interface ContributeUpstreamInput {
-  /** Which round-trip: the Comb learning-pack, or the fork→canonical PR. */
+  /** Which round-trip: the Comb knowledge-pack, or the fork→canonical PR. */
   kind: ContributeKind;
   /**
    * Fire the LIVE outward action (push + PR / Comb publish). When false/omitted,
@@ -87,8 +87,8 @@ export interface ContributeUpstreamInput {
   /** Override the self-pot base slug (default `papercusp-platform`). */
   slug?: string;
 
-  // ── learning-pack path inputs ──
-  /** Kebab-case pack id (becomes the Comb listing_ref). Required for kind:'learning-pack'. */
+  // ── knowledge-pack path inputs ──
+  /** Kebab-case pack id (becomes the Comb listing_ref). Required for kind:'knowledge-pack'. */
   packId?: string;
   title?: string;
   description?: string;
@@ -210,7 +210,7 @@ export async function defaultResolveSelfPotMember(
 }
 
 /** Default publish seam: resolve the member repo's GitHub coords, then publish a
- *  PENDING learning-pack listing via the one server-side publish core. */
+ *  PENDING knowledge-pack listing via the one server-side publish core. */
 async function defaultPublishPack(
   member: SelfPotMember,
   args: { packId: string; title: string; description: string },
@@ -227,7 +227,7 @@ async function defaultPublishPack(
     };
   }
   const res: CupboardPublishResult = await publishListingToCupboard({
-    listing_kind: 'learning-pack',
+    listing_kind: 'knowledge-pack',
     listing_ref: args.packId,
     project_ref: `${coords.github_owner}/${coords.github_name}`,
     github_repository_id: coords.github_repository_id,
@@ -336,15 +336,15 @@ export async function contributeUpstream(
     };
   }
 
-  if (input.kind === 'learning-pack') {
-    return contributeLearningPack(input, member, { exportPack, publishPack });
+  if (input.kind === 'knowledge-pack') {
+    return contributeKnowledgePack(input, member, { exportPack, publishPack });
   }
   return contributePr(input, member, { pushAndOpenPr, resolveGhToken, recordFeaturePr, workspaceId });
 }
 
-// ── kind: 'learning-pack' (the Comb path) ──────────────────────────────────────
+// ── kind: 'knowledge-pack' (the Comb path) ──────────────────────────────────────
 
-async function contributeLearningPack(
+async function contributeKnowledgePack(
   input: ContributeUpstreamInput,
   member: SelfPotMember,
   seams: {
@@ -382,7 +382,7 @@ async function contributeLearningPack(
     } catch (e) {
       return {
         ok: false,
-        kind: 'learning-pack',
+        kind: 'knowledge-pack',
         error: 'export_failed',
         message: e instanceof Error ? e.message : String(e),
       };
@@ -390,7 +390,7 @@ async function contributeLearningPack(
     if (!exported.ok) {
       return {
         ok: false,
-        kind: 'learning-pack',
+        kind: 'knowledge-pack',
         error: exported.error ?? 'export_failed',
         message: 'Nothing to export — the self-pot has no organic learnings yet.',
       };
@@ -402,7 +402,7 @@ async function contributeLearningPack(
     const needs = [...missing, ...(input.confirm ? [] : ['confirm'])];
     return {
       ok: true,
-      kind: 'learning-pack',
+      kind: 'knowledge-pack',
       prepared: true,
       needs,
       plan: {
@@ -413,7 +413,7 @@ async function contributeLearningPack(
         moderation: 'the Comb listing publishes PENDING (operator approval gates public visibility, D-007)',
       },
       summary:
-        `Prepared a learning-pack contribution${exported?.ok ? ` (${exported.exported} learning(s) exported)` : ''}` +
+        `Prepared a knowledge-pack contribution${exported?.ok ? ` (${exported.exported} learning(s) exported)` : ''}` +
         ` — NOT published. Re-run with ${needs.map((n) => `${n}${n === 'confirm' ? ':true' : ''}`).join(' + ')} to list it on the Comb (PENDING).`,
     };
   }
@@ -424,14 +424,14 @@ async function contributeLearningPack(
   if (!pub.ok) {
     return {
       ok: false,
-      kind: 'learning-pack',
+      kind: 'knowledge-pack',
       error: pub.error,
       message: typeof pub.detail === 'string' ? pub.detail : undefined,
     };
   }
   return {
     ok: true,
-    kind: 'learning-pack',
+    kind: 'knowledge-pack',
     sent: true,
     result: {
       ...(pub.listingId ? { listingId: pub.listingId } : {}),
@@ -439,7 +439,7 @@ async function contributeLearningPack(
       ...(exported?.ok ? { exported: exported.exported } : {}),
     },
     summary:
-      `Learning-pack listed on the Comb as ${pub.reviewStatus.toUpperCase()}` +
+      `Knowledge-pack listed on the Comb as ${pub.reviewStatus.toUpperCase()}` +
       ` — an operator must approve it before it is publicly visible (D-007 moderation gate).`,
   };
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import setEnabledTool from './set_enabled';
 import { getFlag } from '@papercusp/flags/server';
-import { setPackEnabled } from '../../learning-packs/manage';
+import { setPackEnabled } from '../../knowledge-packs/manage';
 
 // PG-free unit: the mute/unmute core has its own suite; this pins the TOOL —
 // flag gate, the workspace + arg wiring, the bulk { ok, results, counts }
@@ -9,7 +9,7 @@ import { setPackEnabled } from '../../learning-packs/manage';
 // (learning-packs-2026-06-11 P-009; bulk-endpoint-standardization-2026-06-21).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
-vi.mock('../../learning-packs/manage', () => ({ setPackEnabled: vi.fn() }));
+vi.mock('../../knowledge-packs/manage', () => ({ setPackEnabled: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
 const mockSet = vi.mocked(setPackEnabled);
@@ -23,7 +23,7 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 }
 const body = (r: { data?: any; content?: Array<{ text: string }> }) => (r.data ?? JSON.parse(r.content![0].text));
 
-describe('learning_packs:set_enabled tool (bulk keyed-array)', () => {
+describe('knowledge_packs:set_enabled tool (bulk keyed-array)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);

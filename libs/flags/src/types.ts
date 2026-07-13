@@ -345,11 +345,11 @@ export const FLAGS = {
   // OFF = the kill-switch if the guard ever wrongly blocks a declaration.
   POT_WAKE_FRONTIER_GUARD: "papercusp-hive-wake-frontier-guard",
   // learning-packs-2026-06-11 (P-005): seeding a new hive's mem0 store with the
-  // selected learning pack at pot:create, plus the learning_packs:* management
+  // selected knowledge pack at pot:create, plus the knowledge_packs:* management
   // verbs and the Learnings UI surfaces. OFF skips seeding + hides pack
   // management; the hive:<slug> memory scope itself stays live (recall of an
   // unseeded pool is harmless).
-  LEARNING_PACKS: "papercusp-learning-packs",
+  KNOWLEDGE_PACKS: "papercusp-knowledge-packs",
   // per-hive-learning-loops-2026-06-14 (P-020, D-003/D-008): provisioning a
   // per-HIVE learning loop at pot:create — a DARK gym_autoloop_config row
   // (enabled:false, budget:null) + an INACTIVE scout routine under the hive's
@@ -514,7 +514,7 @@ export const FLAGS = {
   // promotes a lesson to 'validated' only when a fresh student agent with it
   // beats one without it on the source historical task (replayed via
   // lib/replay, judged by the frozen eval-battery). Repeated failures retire
-  // (forget) the lesson; learning-pack candidate adoption inherits the bar.
+  // (forget) the lesson; knowledge-pack candidate adoption inherits the bar.
   // OFF until the plan's P-001 arming gate closes (D-001 owner-ratified
   // dark-ship rule for frontier loops).
   TRANSFER_HARNESS: "papercusp-transfer-harness",

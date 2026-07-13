@@ -67,7 +67,7 @@ type KindFilter = 'all' | ListingKind;
  *  app/aspect templates.) */
 type ViewFilter = KindFilter | 'tools';
 
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'template', 'plugin', 'pack', 'learning-pack', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'tools'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -81,7 +81,7 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
     case 'blueprint': return <Boxes size={size} />;
     case 'plugin': return <Plug size={size} />;
     case 'pack': return <Box size={size} />;
-    case 'learning-pack': return <Brain size={size} />;
+    case 'knowledge-pack': return <Brain size={size} />;
     case 'template': return <LayoutTemplate size={size} />;
     default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
   }
@@ -148,7 +148,7 @@ export default function CupboardClient() {
       template: 'Templates',
       plugin: 'Plugins',
       pack: 'Packs',
-      'learning-pack': 'Learning Packs',
+      'knowledge-pack': 'Knowledge Packs',
       tools: 'Tools',
     }),
     [t],
@@ -204,7 +204,7 @@ export default function CupboardClient() {
       }
       // WI-3259: `kind` is INTENTIONALLY never forwarded here (even outside the
       // hive rollup). Every kind tab (all/harness/blueprint/hive-blueprint/
-      // plugin/pack/learning-pack) is a CLIENT-SIDE facet over ONE full
+      // plugin/pack/knowledge-pack) is a CLIENT-SIDE facet over ONE full
       // fetch — see `viewListings` below — so switching tabs is a pure
       // re-filter with ZERO network round-trip. Only q / claimFilter / hive
       // (all real server-side params) trigger a refetch to the external

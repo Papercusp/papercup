@@ -5,12 +5,12 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { readHiveLearnings } from './learning-hive-read';
-import type { LearningPack } from '../learning-packs/pack-format';
+import type { KnowledgePack } from '../knowledge-packs/pack-format';
 
 // The LP-6 cross-check exercises planPackUpgrade, which reads getMemoryBackend.
 vi.mock('../memory/backend', () => ({ getMemoryBackend: vi.fn() }));
 
-const pack: LearningPack = {
+const pack: KnowledgePack = {
   manifest: { id: 'papercusp-default', title: 'T', description: 'd', version: '1.0.0' },
   items: [
     { id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'body a' },
@@ -96,7 +96,7 @@ describe('readHiveLearnings', () => {
 });
 
 describe('LP-6: cross-check — planPackUpgrade captures the FULL version set the rollup collapses', async () => {
-  const { planPackUpgrade } = await import('../learning-packs/manage');
+  const { planPackUpgrade } = await import('../knowledge-packs/manage');
   const { getMemoryBackend } = await import('../memory/backend');
 
   it('installedVersions lists EVERY distinct pack_version in the pool (not just first-seen)', async () => {

@@ -3863,7 +3863,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── learning.hive — one hive's shared learnings pool (learning-packs P-008) ──
+  // ── learning.hive — one hive's shared learnings pool (knowledge-packs P-008) ──
   //
   // Rows + per-pack rollups + organic count for `hive:<args.hive>`, pack
   // provenance annotated (pristine/modified vs the resolvable pack). Returns a
@@ -3878,7 +3878,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       if (!hive) return [{ hive: '', rows: [], packs: [], organicCount: 0 }];
       const { readHiveLearnings } = await import('./learning-hive-read');
       const { getMemoryBackend } = await import('../memory/backend');
-      const { loadLearningPack, listLearningPacks } = await import('../learning-packs/load-packs');
+      const { loadKnowledgePack, listKnowledgePacks } = await import('../knowledge-packs/load-packs');
       const snap = await readHiveLearnings(hive, {
         listPool: async (scope) => {
           const backend = getMemoryBackend();
@@ -3886,16 +3886,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           if (!avail.ok) throw new Error(avail.reason);
           return backend.list({ scope });
         },
-        loadPack: (id) => loadLearningPack(id),
+        loadPack: (id) => loadKnowledgePack(id),
       });
       // Decorate the rollups with enabled state (P-009) + adoptable-version
       // info (P-013) — best-effort; the bare snapshot still renders.
       try {
         const [{ disabledPacksFor }, { activeWorkspaceId }, { semverGt }, catalog] = await Promise.all([
-          import('../learning-packs/manage'),
+          import('../knowledge-packs/manage'),
           import('../workspace-registry'),
-          import('../learning-packs/pack-format'),
-          listLearningPacks(),
+          import('../knowledge-packs/pack-format'),
+          listKnowledgePacks(),
         ]);
         const disabled = new Set(await disabledPacksFor(activeWorkspaceId(), hive));
         for (const p of snap.packs) {
@@ -3966,39 +3966,39 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── learningPacks.list — the pack catalog (learning-packs-2026-06-11 P-006) ──
+  // ── knowledgePacks.list — the pack catalog (learning-packs-2026-06-11 P-006) ──
   //
-  // Resolvable learning packs across the builtin + installed roots (builtin
+  // Resolvable knowledge packs across the builtin + installed roots (builtin
   // wins on id clash). Backs the creation-flow pack picker and the Learning
   // tab's pack management. Rows flat (one per pack); a read failure degrades
   // to [] — the picker falls back to its default-only option, never a 500.
   // NOT table-backed (FS read); installs/uninstalls fire `learning.hive`
   // + this name explicitly.
-  'learningPacks.list': {
+  'knowledgePacks.list': {
     resolve: async () => {
       try {
-        const { listLearningPacks } = await import('../learning-packs/load-packs');
-        return await listLearningPacks();
+        const { listKnowledgePacks } = await import('../knowledge-packs/load-packs');
+        return await listKnowledgePacks();
       } catch (err) {
-        console.warn('[learningPacks.list] read failed:', err instanceof Error ? err.message : err);
+        console.warn('[knowledgePacks.list] read failed:', err instanceof Error ? err.message : err);
         return [];
       }
     },
   },
 
-  // ── learningPacks.candidates — the fleet→pack review queue (consume-edges
+  // ── knowledgePacks.candidates — the fleet→pack review queue (consume-edges
   // P-032, B-11). Pending candidates staged by recurrence-escalation, with
   // provenance; the Learnings view renders adopt/dismiss. Stage/decide fire
-  // this name explicitly (an adopt also fires learningPacks.list +
+  // this name explicitly (an adopt also fires knowledgePacks.list +
   // learning.hive — the version bump lights updateAvailable). Read failure
   // degrades to [] — the strip just disappears, never a 500.
-  'learningPacks.candidates': {
+  'knowledgePacks.candidates': {
     resolve: async () => {
       try {
-        const { listLearningPackCandidates } = await import('../learning-packs/candidates');
-        return await listLearningPackCandidates({ status: 'pending' });
+        const { listKnowledgePackCandidates } = await import('../knowledge-packs/candidates');
+        return await listKnowledgePackCandidates({ status: 'pending' });
       } catch (err) {
-        console.warn('[learningPacks.candidates] read failed:', err instanceof Error ? err.message : err);
+        console.warn('[knowledgePacks.candidates] read failed:', err instanceof Error ? err.message : err);
         return [];
       }
     },

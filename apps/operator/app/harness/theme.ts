@@ -278,7 +278,7 @@ export const CUPBOARD_LISTING_KIND_TONE: Record<string, CategoryTone> = {
   // pack: the runtime-less code-tool pack (canonical 'pack' — migration 010
   // renamed the interim 'tool-pack', cupboard-public-release-2026-07-12 P-003).
   pack: { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
-  'learning-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
+  'knowledge-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
   // app/aspect templates (app-templates-2026-07-04) — a distinct rose hue so a
   // Templates card reads apart from blueprint (good/green) + pack (accent-cool).
   // (pack tone above; template rose below.)

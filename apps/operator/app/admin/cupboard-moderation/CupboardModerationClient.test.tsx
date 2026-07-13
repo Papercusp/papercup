@@ -87,7 +87,7 @@ describe('<CupboardModerationClient />', () => {
         body: {
           pending: [
             {
-              id: 'L1', listing_kind: 'learning-pack', listing_ref: 'ref-1', title: 'My Pack',
+              id: 'L1', listing_kind: 'knowledge-pack', listing_ref: 'ref-1', title: 'My Pack',
               description: 'a pack', github_url: 'https://github.com/o/r',
               publisher_github_login: 'octocat', created_at: 1_700_000_000_000,
             },

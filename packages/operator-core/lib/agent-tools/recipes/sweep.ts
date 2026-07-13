@@ -1,7 +1,7 @@
 /**
  * recipes:sweep — retire the stale long-tail of never-reused one-off code:run
  * RECIPES so the corpus doesn't accumulate dead weight (mirror
- * learning_packs:sweep; code-recipes-2026-06-21 Phase 4, P-010).
+ * knowledge_packs:sweep; code-recipes-2026-06-21 Phase 4, P-010).
  *
  * Selects ACTIVE recipes whose last_run_at is older than `staleDays` AND whose
  * run_count is at or below `maxRunCount` (one-offs nobody reused), and flips them

@@ -20,7 +20,7 @@
  *       cycle budget lives in payload_template.budget.maxCostUsd
  *       (parseScoutCycleConfig reads it).
  *
- * Mirrors learning-packs/seed.ts (seedPackIntoPot): pure-ish, injectable Sql,
+ * Mirrors knowledge-packs/seed.ts (seedPackIntoPot): pure-ish, injectable Sql,
  * returns an `undo` that joins the create's rollback stack so a LATER create
  * step failure removes the rows we laid down — and a summary the result reports.
  *

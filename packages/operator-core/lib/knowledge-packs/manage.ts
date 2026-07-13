@@ -1,5 +1,5 @@
 /**
- * manage — post-install Learning Pack management
+ * manage — post-install Knowledge Pack management
  * (learning-packs-2026-06-11 P-009 install/uninstall/enable/disable,
  * P-010 install-time conflict review, P-013 upgrade).
  *
@@ -13,7 +13,7 @@
  * per-item resolutions: install · skip · replace (forget the clashing row,
  * write incoming) · keep-both.
  *
- * Enable/disable (P-009): a hive setting (`learning-packs:disabled`, a JSON
+ * Enable/disable (P-009): a hive setting (`knowledge-packs:disabled`, a JSON
  * string[] of pack ids on the federated hive_settings store) the injection
  * path filters against — a disabled pack's rows stay in the store but stop
  * being recalled. Cheap to flip, fully reversible.
@@ -34,7 +34,7 @@ import {
   filterByShapes,
   memoryTextOf,
   type AppliesTo,
-  type LearningPack,
+  type KnowledgePack,
 } from './pack-format';
 import { rememberPackItem } from './seed';
 
@@ -106,7 +106,7 @@ function packIdOf(e: MemoryEntry): string | undefined {
 export async function classifyPackInstall(
   opts: {
     potSlug: string;
-    pack: LearningPack;
+    pack: KnowledgePack;
     shapes?: readonly AppliesTo[];
   },
   deps: ManageDeps = {},
@@ -231,7 +231,7 @@ export async function applyPackInstall(
   opts: {
     workspaceId: string;
     potSlug: string;
-    pack: LearningPack;
+    pack: KnowledgePack;
     review: InstallReview;
     resolutions?: ReadonlyArray<{ itemId: string; action: InstallAction }>;
     createdBy?: string;
@@ -278,7 +278,7 @@ export async function applyPackInstall(
     } catch (e) {
       failed += 1;
       console.warn(
-        `[learning-packs] install write failed (${opts.pack.manifest.id}/${c.itemId}): ${e instanceof Error ? e.message : e}`,
+        `[knowledge-packs] install write failed (${opts.pack.manifest.id}/${c.itemId}): ${e instanceof Error ? e.message : e}`,
       );
     }
   }
@@ -286,7 +286,7 @@ export async function applyPackInstall(
   void import('../sync-sse')
     .then((m) => {
       m.notifySyncInvalidate('learning.hive');
-      m.notifySyncInvalidate('learningPacks.list');
+      m.notifySyncInvalidate('knowledgePacks.list');
     })
     .catch(() => {});
 
@@ -320,7 +320,7 @@ export async function uninstallPack(
     potSlug: string;
     packId: string;
     /** The resolvable pack (for the edited-row comparison); null when gone. */
-    pack: LearningPack | null;
+    pack: KnowledgePack | null;
     keepEdited?: boolean;
   },
   deps: ManageDeps = {},
@@ -351,7 +351,7 @@ export async function uninstallPack(
   void import('../sync-sse')
     .then((m) => {
       m.notifySyncInvalidate('learning.hive');
-      m.notifySyncInvalidate('learningPacks.list');
+      m.notifySyncInvalidate('knowledgePacks.list');
     })
     .catch(() => {});
 
@@ -362,7 +362,7 @@ export async function uninstallPack(
  * Enable / disable (hive_settings-backed)
  * ──────────────────────────────────────────────────────────────────────── */
 
-export const DISABLED_PACKS_SETTING = 'learning-packs:disabled';
+export const DISABLED_PACKS_SETTING = 'knowledge-packs:disabled';
 
 export async function disabledPacksFor(workspaceId: string, potSlug: string): Promise<string[]> {
   try {
@@ -492,7 +492,7 @@ export interface UpgradePlanResult {
 }
 
 export async function planPackUpgrade(
-  opts: { potSlug: string; pack: LearningPack },
+  opts: { potSlug: string; pack: KnowledgePack },
   deps: ManageDeps = {},
 ): Promise<UpgradePlanResult> {
   const backend = deps.backend ?? getMemoryBackend();

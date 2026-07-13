@@ -5,12 +5,12 @@
  * empty body, dup id) fails HERE, not silently at hive creation.
  */
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_LEARNING_PACK_ID, validatePack, filterByShapes } from './pack-format';
-import { loadLearningPack } from './load-packs';
+import { DEFAULT_KNOWLEDGE_PACK_ID, validatePack, filterByShapes } from './pack-format';
+import { loadKnowledgePack } from './load-packs';
 
 describe('papercusp-default pack (shipped content)', () => {
   it('loads cleanly from the builtin root', async () => {
-    const loaded = await loadLearningPack(DEFAULT_LEARNING_PACK_ID);
+    const loaded = await loadKnowledgePack(DEFAULT_KNOWLEDGE_PACK_ID);
     expect(loaded, 'builtin papercusp-default pack must resolve').toBeTruthy();
     expect(loaded!.source).toBe('builtin');
     expect(loaded!.warnings).toEqual([]);
@@ -18,7 +18,7 @@ describe('papercusp-default pack (shipped content)', () => {
   });
 
   it('stays in the 20–40 learning band with every shape represented', async () => {
-    const { pack } = (await loadLearningPack(DEFAULT_LEARNING_PACK_ID))!;
+    const { pack } = (await loadKnowledgePack(DEFAULT_KNOWLEDGE_PACK_ID))!;
     expect(pack.items.length).toBeGreaterThanOrEqual(20);
     expect(pack.items.length).toBeLessThanOrEqual(40);
 

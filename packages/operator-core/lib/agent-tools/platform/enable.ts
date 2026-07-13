@@ -38,7 +38,7 @@ export default defineTool({
   guidance: {
     when: 'The user explicitly opts into platform mode / "Papercusp inside Papercusp" / wants this install to improve Papercusp-the-platform itself (layer 3). One call stands up the self-hive + arms the loops.',
     notWhen:
-      'Onboarding an ARBITRARY repo as a hive — pot:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a learning-pack) — platform:contribute (the separate, gated path).',
+      'Onboarding an ARBITRARY repo as a hive — pot:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a knowledge-pack) — platform:contribute (the separate, gated path).',
     chaining:
       'platform:enable → improvements:learning_loops to see the armed (dark) layer-3 loops → arm the watchdog via the routines admin → platform:contribute to send an improvement upstream.',
     seeAlso: [

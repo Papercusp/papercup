@@ -22,7 +22,7 @@ describe('capability→category map: the anti-collapse proof (D-002)', () => {
     ['accounts:register', 'credentials-auth'],
     ['pot:create', 'agent-lifecycle'],
     ['blender:grade-idea', 'ideation-intake'],
-    ['learning_packs:publish', 'knowledge-curation'],
+    ['knowledge_packs:publish', 'knowledge-curation'],
   ];
 
   it.each(cases)('%s → %s (despite all sharing harness:write)', (action, expected) => {

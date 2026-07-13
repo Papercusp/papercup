@@ -155,7 +155,7 @@ function statusMap(entries: [StripStepId, StripStatus][]): Partial<Record<StripS
 }
 
 function stepsForMode(mode: FormMode): StripStepId[] {
-  // Only a NEW hive seeds learnings (learning-packs P-006) — into-hive adds a
+  // Only a NEW hive seeds learnings (knowledge-packs P-006) — into-hive adds a
   // member to an existing home (install packs there from the Learning tab).
   return mode === 'into-hive'
     ? ['resolve', 'lookup', 'clone', 'detect', 'create', 'publish']
@@ -240,7 +240,7 @@ interface CreatedResult {
   memberPath: string;
   defaultBranch?: string;
   githubRepositoryId?: number;
-  /** learning-packs P-006: what seeded into the new hive's shared memory. */
+  /** knowledge-packs P-006: what seeded into the new hive's shared memory. */
   seededLearnings?: { packId: string; packVersion?: string; count?: number; error?: string };
   duplicateOf?: { kind: 'hive' | 'legacy_shared_harness'; hivePubkey?: string; source: string };
 }
@@ -334,10 +334,10 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   // CODE from the pasted repo — explicit opt-in, default off. Transient draft →
   // useState (nuqs exception).
   const [verifyTests, setVerifyTests] = useState(false);
-  // learning-packs P-006: which pack seeds the new hive's shared memory.
+  // knowledge-packs P-006: which pack seeds the new hive's shared memory.
   // Default = the Papercusp pack (D-004); 'none' starts empty. Transient
   // form draft → useState (nuqs exception).
-  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
+  const [knowledgePack, setKnowledgePack] = useState<string>('papercusp-default');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customSlug, setCustomSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
@@ -395,10 +395,10 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     advance();
   };
 
-  // learning-packs P-006: the pack catalog for the picker. Degrades to the
+  // knowledge-packs P-006: the pack catalog for the picker. Degrades to the
   // default-only option when the query has no rows yet (fresh install, flag off).
   const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
-    queryName: 'learningPacks.list',
+    queryName: 'knowledgePacks.list',
     args: {},
     enabled: mode === 'new-hive',
     staleTime: 60_000,
@@ -448,7 +448,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
       statusMap(
         steps.map((s) => {
           if (s === 'seed') {
-            // learning-packs P-006 — settled from the real summary only:
+            // knowledge-packs P-006 — settled from the real summary only:
             // absent (flag off / pack 'none') → skipped; error → error.
             if (!seeded) return [s, 'skipped'];
             return [s, seeded.error ? 'error' : 'done'];
@@ -495,8 +495,8 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           // frontend no longer sends a chosen `visibility`.
           // B-07 / C-2: the beacon is auto-derived server-side from the repo's
           // privacy (public → on, private → off) — the frontend sends nothing.
-          // learning-packs P-006: the picker selection ('none' ⇒ null = seed nothing).
-          ...(mode === 'new-hive' ? { learningPack: learningPack === 'none' ? null : learningPack } : {}),
+          // knowledge-packs P-006: the picker selection ('none' ⇒ null = seed nothing).
+          ...(mode === 'new-hive' ? { knowledgePack: knowledgePack === 'none' ? null : knowledgePack } : {}),
           ...(mode === 'into-hive' && hiveScope ? { intoHive: hiveScope } : {}),
           ...(verifyTests ? { runTests: true } : {}),
           ...(opts?.force ? { force: true } : {}),
@@ -775,7 +775,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             {hiveLabel}: <code>{result.potSlug}</code> · member: <code>{result.memberSlug}</code>
             {result.defaultBranch ? <> · default branch <code>{result.defaultBranch}</code></> : null}
           </div>
-          {/* learning-packs P-006: the seeded-learnings line + the edit surface link. */}
+          {/* knowledge-packs P-006: the seeded-learnings line + the edit surface link. */}
           {result.seededLearnings && !result.seededLearnings.error && (result.seededLearnings.count ?? 0) > 0 && (
             <div style={{ marginTop: 6 }} data-testid="seeded-learnings-line">
               Started with {result.seededLearnings.count} default learnings (pack{' '}
@@ -789,7 +789,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           )}
           {result.seededLearnings?.error && (
             <div style={{ marginTop: 6, color: 'var(--warn, #f59e0b)' }} data-testid="seeded-learnings-error">
-              Learning-pack seeding didn&rsquo;t complete ({result.seededLearnings.error}) — install a pack
+              Knowledge-pack seeding didn&rsquo;t complete ({result.seededLearnings.error}) — install a pack
               later from the Learning tab.
             </div>
           )}
@@ -954,18 +954,18 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         </div>
       )}
 
-      {/* learning-packs P-006: the pack picker — a new hive starts with a
+      {/* knowledge-packs P-006: the pack picker — a new hive starts with a
           default set of learnings seeded into its shared memory; the user can
           pick another pack or none, and edit the result from the Learning tab. */}
       {mode === 'new-hive' && (
-        <label data-testid="learning-pack-picker" style={{ display: 'block', marginBottom: 14 }}>
+        <label data-testid="knowledge-pack-picker" style={{ display: 'block', marginBottom: 14 }}>
           <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-dim)', marginBottom: 4, fontWeight: 500 }}>
-            Learning pack
+            Knowledge pack
           </span>
           <Select
-            value={learningPack}
-            onChange={setLearningPack}
-            ariaLabel="Learning pack"
+            value={knowledgePack}
+            onChange={setKnowledgePack}
+            ariaLabel="Knowledge pack"
             triggerStyle={inputStyle}
             options={[
               ...availablePacks.map((p) => ({

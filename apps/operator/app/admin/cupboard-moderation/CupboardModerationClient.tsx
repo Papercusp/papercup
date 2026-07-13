@@ -79,7 +79,7 @@ interface PendingRow {
 
 /**
  * Pre-publication review queue (learning-packs-2026-06-11 P-020, D-007):
- * policy-kind listings (learning-pack, blueprint) awaiting an operator
+ * policy-kind listings (knowledge-pack, blueprint) awaiting an operator
  * decision. Only allowlisted operators reach this — the worker 403s everyone
  * else. Review the CONTENT (the repo link carries the pack/blueprint files)
  * before approving: these listings are instructions injected into agents.
@@ -304,7 +304,7 @@ export default function CupboardModerationClient() {
 
   return (
     <div className="pc-cbmod">
-      {/* learning-packs P-020: the pre-publication approval queue renders
+      {/* knowledge-packs P-020: the pre-publication approval queue renders
           ABOVE the abuse reports — proactive review before reactive. */}
       <PendingReviewQueue />
 

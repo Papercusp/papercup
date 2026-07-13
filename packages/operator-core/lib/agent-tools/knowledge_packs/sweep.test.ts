@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import sweepTool from './sweep';
 import { getFlag } from '@papercusp/flags/server';
-import { sweepHiveConflicts } from '../../learning-packs/manage';
+import { sweepHiveConflicts } from '../../knowledge-packs/manage';
 
 // PG-free unit: the conflict sweep core has its own suite; this pins the TOOL —
 // flag gate, the hive pass-through, and the { ok, ...result } envelope
 // (learning-packs-2026-06-11 P-012).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('../../learning-packs/manage', () => ({ sweepHiveConflicts: vi.fn() }));
+vi.mock('../../knowledge-packs/manage', () => ({ sweepHiveConflicts: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
 const mockSweep = vi.mocked(sweepHiveConflicts);
@@ -21,7 +21,7 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 }
 const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
 
-describe('learning_packs:sweep tool', () => {
+describe('knowledge_packs:sweep tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);

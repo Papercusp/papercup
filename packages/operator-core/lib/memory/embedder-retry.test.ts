@@ -10,7 +10,7 @@ import {
 import { memoryToolTimeoutMs } from './op-deadline';
 
 // The OpenAI embedder used to throw on the FIRST non-OK response with no retry,
-// so a burst of memory writes (learning-pack seeding fires items in concurrent
+// so a burst of memory writes (knowledge-pack seeding fires items in concurrent
 // batches) failed wholesale the instant OpenAI rate-limited or hiccupped —
 // surfacing to the user as "N write(s) failed". A sustained org-wide TPM 429
 // (text-embedding-3-small, 1M TPM) then hard-failed memory:remember/search

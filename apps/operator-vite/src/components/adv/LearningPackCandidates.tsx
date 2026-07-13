@@ -1,9 +1,9 @@
 /**
- * LearningPackCandidates — the fleet→pack candidate review strip in the
+ * KnowledgePackCandidates — the fleet→pack candidate review strip in the
  * Learnings view (self-improvement-consume-edges-2026-06-12 P-032 / B-11).
  *
  * Pending candidates are cross-hive recurring lessons staged by the
- * recurrence-escalation loop (`learningPacks.candidates` sync query) — each
+ * recurrence-escalation loop (`knowledgePacks.candidates` sync query) — each
  * carries provenance (signature, scopes, recurrence count, source items) and
  * waits for the OWNER: adopt writes it into the fleet-lessons pack (the pack
  * version bumps, so every hive carrying the pack lights `updateAvailable`
@@ -16,7 +16,7 @@ import { useState } from "react";
 import { parseAsString, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import { Inbox } from "lucide-react";
-import type { LearningPackCandidate } from "@papercusp/operator-core/lib/learning-packs/candidates";
+import type { KnowledgePackCandidate } from "@papercusp/operator-core/lib/knowledge-packs/candidates";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { useLexicon } from "@/lib/useLexicon";
 import { LearningDisclosure } from "./LearningVisuals";
@@ -31,10 +31,10 @@ const actionBtn: React.CSSProperties = {
   padding: "1px 7px",
 };
 
-export default function LearningPackCandidates() {
+export default function KnowledgePackCandidates() {
   const t = useLexicon();
-  const sync = useSyncQuery<LearningPackCandidate>({
-    queryName: "learningPacks.candidates",
+  const sync = useSyncQuery<KnowledgePackCandidate>({
+    queryName: "knowledgePacks.candidates",
     args: {},
     staleTime: 30_000,
   });
@@ -51,14 +51,14 @@ export default function LearningPackCandidates() {
   const [adoptedNote, setAdoptedNote] = useState("");
 
   const decide = async (
-    c: LearningPackCandidate,
+    c: KnowledgePackCandidate,
     action: "adopt" | "dismiss",
   ) => {
     setError("");
     setAdoptedNote("");
     setBusy(c.id);
     try {
-      const res = await fetch("/api/learning-packs/candidate-decide", {
+      const res = await fetch("/api/knowledge-packs/candidate-decide", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: c.id, action }),
@@ -87,7 +87,7 @@ export default function LearningPackCandidates() {
 
   const visible = pending.slice(0, 3);
   const remaining = pending.slice(3);
-  const renderCandidate = (c: LearningPackCandidate) => (
+  const renderCandidate = (c: KnowledgePackCandidate) => (
     <div key={c.id} className="pc-pack-candidates__row">
       <div className="pc-pack-candidates__main">
         <strong>{c.title}</strong>

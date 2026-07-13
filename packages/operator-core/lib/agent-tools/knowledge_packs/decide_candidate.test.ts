@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import decideTool from './decide_candidate';
 import { getFlag } from '@papercusp/flags/server';
-import { decideLearningPackCandidate } from '../../learning-packs/candidates';
+import { decideKnowledgePackCandidate } from '../../knowledge-packs/candidates';
 import { getSessionUserOrDefault } from '../../auth';
 
 // PG-free unit: the decide core has its own suite; this pins the TOOL — flag
@@ -10,11 +10,11 @@ import { getSessionUserOrDefault } from '../../auth';
 // P-032 / B-11; bulk-endpoint-standardization-2026-06-21).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
-vi.mock('../../learning-packs/candidates', () => ({ decideLearningPackCandidate: vi.fn() }));
+vi.mock('../../knowledge-packs/candidates', () => ({ decideKnowledgePackCandidate: vi.fn() }));
 vi.mock('../../auth', () => ({ getSessionUserOrDefault: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
-const mockDecide = vi.mocked(decideLearningPackCandidate);
+const mockDecide = vi.mocked(decideKnowledgePackCandidate);
 const mockUser = vi.mocked(getSessionUserOrDefault);
 
 function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
@@ -26,13 +26,13 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 }
 const body = (r: { data?: any; content?: Array<{ text: string }> }) => (r.data ?? JSON.parse(r.content![0].text));
 
-describe('learning_packs:decide_candidate tool (bulk keyed-array)', () => {
+describe('knowledge_packs:decide_candidate tool (bulk keyed-array)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
     mockUser.mockResolvedValue({ id: 'owner-1' } as Awaited<ReturnType<typeof getSessionUserOrDefault>>);
     mockDecide.mockResolvedValue({ ok: true, action: 'adopt', packVersion: '1.1.0' } as unknown as Awaited<
-      ReturnType<typeof decideLearningPackCandidate>
+      ReturnType<typeof decideKnowledgePackCandidate>
     >);
   });
 
@@ -75,7 +75,7 @@ describe('learning_packs:decide_candidate tool (bulk keyed-array)', () => {
     expect(adopted.results[0].hint).toMatch(/fleet-lessons pack/);
 
     mockDecide.mockResolvedValue({ ok: true, action: 'dismiss' } as unknown as Awaited<
-      ReturnType<typeof decideLearningPackCandidate>
+      ReturnType<typeof decideKnowledgePackCandidate>
     >);
     const dismissed = body(await callTool({ id: 'c1', action: 'dismiss' }));
     expect(dismissed.results[0].hint).toBeUndefined();

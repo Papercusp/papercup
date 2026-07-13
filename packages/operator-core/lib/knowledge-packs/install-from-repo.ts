@@ -1,15 +1,15 @@
 /**
- * install-from-repo — fetch a Learning Pack from a (Comb-listed) GitHub repo
+ * install-from-repo — fetch a Knowledge Pack from a (Comb-listed) GitHub repo
  * into the local installed root (learning-packs-2026-06-11 P-017).
  *
- * Flow: shallow-clone the repo → locate the pack dir (`learning-packs/<ref>/`
+ * Flow: shallow-clone the repo → locate the pack dir (`knowledge-packs/<ref>/`
  * by convention — P-016's export writes the same shape; a repo whose ROOT is a
  * pack also works) → VALIDATE through the same parser the loader uses (a
- * malformed pack never lands) → copy to `~/.papercusp/learning-packs/<id>/`
+ * malformed pack never lands) → copy to `~/.papercusp/knowledge-packs/<id>/`
  * (overwrite = fetching a newer version) → clean up the clone.
  *
  * Fetching only stages the pack locally — it then appears in
- * learningPacks.list (creation picker + Learnings view) and installs into a
+ * knowledgePacks.list (creation picker + Learnings view) and installs into a
  * hive through the NORMAL conflict-review path. Nothing is injected into any
  * agent by the fetch itself.
  */
@@ -18,7 +18,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cloneGithubRepo, isCloneError } from '../harness/clone-github';
-import { installedLearningPacksRoot, loadLearningPackFromDir } from './load-packs';
+import { installedKnowledgePacksRoot, loadKnowledgePackFromDir } from './load-packs';
 
 export interface FetchPackResult {
   ok: boolean;
@@ -28,9 +28,9 @@ export interface FetchPackResult {
   warnings?: string[];
 }
 
-export async function fetchLearningPackFromRepo(opts: {
+export async function fetchKnowledgePackFromRepo(opts: {
   githubUrl: string;
-  /** The Comb listing_ref = the pack id/dir under `learning-packs/`. */
+  /** The Comb listing_ref = the pack id/dir under `knowledge-packs/`. */
   listingRef?: string;
 }): Promise<FetchPackResult> {
   const clonesDir = await mkdtemp(join(tmpdir(), 'pc-lp-fetch-'));
@@ -46,7 +46,7 @@ export async function fetchLearningPackFromRepo(opts: {
 
     // Candidate pack dirs, most specific first.
     const candidates = [
-      ...(opts.listingRef ? [join(cloned.path, 'learning-packs', opts.listingRef)] : []),
+      ...(opts.listingRef ? [join(cloned.path, 'knowledge-packs', opts.listingRef)] : []),
       cloned.path, // a repo that IS one pack (manifest.yaml at root)
     ].filter((d) => existsSync(join(d, 'manifest.yaml')));
     if (candidates.length === 0) {
@@ -54,12 +54,12 @@ export async function fetchLearningPackFromRepo(opts: {
         ok: false,
         error: 'pack_not_found_in_repo',
         detail: opts.listingRef
-          ? `expected learning-packs/${opts.listingRef}/manifest.yaml (or a root manifest.yaml)`
+          ? `expected knowledge-packs/${opts.listingRef}/manifest.yaml (or a root manifest.yaml)`
           : 'no manifest.yaml found',
       };
     }
 
-    const { loaded, errors } = await loadLearningPackFromDir(candidates[0]);
+    const { loaded, errors } = await loadKnowledgePackFromDir(candidates[0]);
     if (!loaded) {
       return { ok: false, error: 'pack_invalid', detail: errors.join('; ').slice(0, 400) };
     }
@@ -71,12 +71,12 @@ export async function fetchLearningPackFromRepo(opts: {
       };
     }
 
-    const dest = join(installedLearningPacksRoot(), loaded.pack.manifest.id);
+    const dest = join(installedKnowledgePacksRoot(), loaded.pack.manifest.id);
     await rm(dest, { recursive: true, force: true });
     await cp(candidates[0], dest, { recursive: true });
 
     void import('../sync-sse')
-      .then((m) => m.notifySyncInvalidate('learningPacks.list'))
+      .then((m) => m.notifySyncInvalidate('knowledgePacks.list'))
       .catch(() => {});
 
     return {

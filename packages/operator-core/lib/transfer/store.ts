@@ -177,7 +177,7 @@ export async function setLessonMemoryId(
      WHERE workspace_id = ${q.workspaceId} AND id = ${q.id}`;
 }
 
-/** Link a learning_pack_candidates row (the inherit-the-bar edge). */
+/** Link a knowledge_pack_candidates row (the inherit-the-bar edge). */
 export async function setLessonPackCandidate(
   sql: Sql,
   q: { workspaceId: string; id: string; packCandidateId: string },

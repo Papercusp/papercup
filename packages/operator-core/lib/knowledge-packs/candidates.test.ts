@@ -18,7 +18,7 @@ import {
   renderCandidateLearningFile,
 } from './candidates';
 import { parseLearningFile } from './pack-format';
-import { loadLearningPack } from './load-packs';
+import { loadKnowledgePack } from './load-packs';
 
 describe('bumpPatchVersion', () => {
   it('bumps the patch component; degrades garbage to 0.0.1', () => {
@@ -103,7 +103,7 @@ describe('materializeCandidateIntoPack', () => {
 
     // The written pack is fully loadable through the normal resolution path —
     // which is what lets the EXISTING install/upgrade conflict review carry it.
-    const loaded = await loadLearningPack(FLEET_LESSONS_PACK_ID, {
+    const loaded = await loadKnowledgePack(FLEET_LESSONS_PACK_ID, {
       roots: [{ dir: root, source: 'installed' }],
     });
     expect(loaded).not.toBeNull();

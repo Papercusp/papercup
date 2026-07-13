@@ -313,7 +313,7 @@ describe('createPotFromRepo (P-006)', () => {
       'pid-1:detect:done',
       'pid-1:create:running',
       'pid-1:create:done',
-      'pid-1:seed:skipped', // learning-packs P-005: no learnings detected in the fake repo
+      'pid-1:seed:skipped', // knowledge-packs P-005: no learnings detected in the fake repo
       'pid-1:publish:running',
       'pid-1:publish:done',
     ]);

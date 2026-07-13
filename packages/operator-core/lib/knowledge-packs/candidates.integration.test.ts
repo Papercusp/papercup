@@ -19,9 +19,9 @@ vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
 const {
   FLEET_LESSONS_PACK_ID,
-  decideLearningPackCandidate,
-  listLearningPackCandidates,
-  stageLearningPackCandidate,
+  decideKnowledgePackCandidate,
+  listKnowledgePackCandidates,
+  stageKnowledgePackCandidate,
 } = await import('./candidates');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
@@ -37,7 +37,7 @@ const stageInput = (signature: string, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-describe('learning-pack candidates (real PG, migration 239)', () => {
+describe('knowledge-pack candidates (real PG, migration 239)', () => {
   let db: OrgTestDb;
   let packsRoot: string;
 
@@ -57,13 +57,13 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
   });
 
   it('stages once per signature — the structural dedup eats every retry', async () => {
-    const first = await stageLearningPackCandidate(stageInput('sig-dedup'));
+    const first = await stageKnowledgePackCandidate(stageInput('sig-dedup'));
     expect(first).toMatchObject({ staged: true });
 
-    const retry = await stageLearningPackCandidate(stageInput('sig-dedup'));
+    const retry = await stageKnowledgePackCandidate(stageInput('sig-dedup'));
     expect(retry).toEqual({ staged: false, reason: 'duplicate-signature' });
 
-    const rows = await listLearningPackCandidates({ status: 'pending' });
+    const rows = await listKnowledgePackCandidates({ status: 'pending' });
     expect(rows.filter((r) => r.signature === 'sig-dedup')).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       scopes: ['operator', 'harness:sheets'],
@@ -76,16 +76,16 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
 
   it('refuses past the pending cap', async () => {
     process.env.PAPERCUSP_LEARNING_CANDIDATE_CAP = '2';
-    await stageLearningPackCandidate(stageInput('sig-cap-2'));
-    const over = await stageLearningPackCandidate(stageInput('sig-cap-3'));
+    await stageKnowledgePackCandidate(stageInput('sig-cap-2'));
+    const over = await stageKnowledgePackCandidate(stageInput('sig-cap-3'));
     expect(over).toEqual({ staged: false, reason: 'pending-cap' });
   });
 
   it('dismiss flips the row terminally — a second decide is not_pending', async () => {
-    const staged = await stageLearningPackCandidate(stageInput('sig-dismiss'));
+    const staged = await stageKnowledgePackCandidate(stageInput('sig-dismiss'));
     if (!staged.staged) throw new Error('stage failed');
 
-    const dismissed = await decideLearningPackCandidate({
+    const dismissed = await decideKnowledgePackCandidate({
       id: staged.id,
       action: 'dismiss',
       by: 'owner',
@@ -94,7 +94,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     });
     expect(dismissed).toEqual({ ok: true, action: 'dismiss', id: staged.id });
 
-    const again = await decideLearningPackCandidate({
+    const again = await decideKnowledgePackCandidate({
       id: staged.id,
       action: 'adopt',
       by: 'owner',
@@ -103,19 +103,19 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     });
     expect(again).toEqual({ ok: false, reason: 'not_pending' });
 
-    const [row] = (await listLearningPackCandidates({})).filter((r) => r.id === staged.id);
+    const [row] = (await listKnowledgePackCandidates({})).filter((r) => r.id === staged.id);
     expect(row).toMatchObject({ status: 'dismissed', decidedBy: 'owner', decisionNote: 'not a transferable lesson' });
 
     // The dismissed signature can never re-stage — owner decisions stick.
-    const restage = await stageLearningPackCandidate(stageInput('sig-dismiss'));
+    const restage = await stageKnowledgePackCandidate(stageInput('sig-dismiss'));
     expect(restage).toEqual({ staged: false, reason: 'duplicate-signature' });
   });
 
   it('adopt writes the fleet-lessons pack item (owner edits applied) and records where', async () => {
-    const staged = await stageLearningPackCandidate(stageInput('sig-adopt'));
+    const staged = await stageKnowledgePackCandidate(stageInput('sig-adopt'));
     if (!staged.staged) throw new Error('stage failed');
 
-    const adopted = await decideLearningPackCandidate({
+    const adopted = await decideKnowledgePackCandidate({
       id: staged.id,
       action: 'adopt',
       by: 'owner',
@@ -139,7 +139,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     expect(md).toContain('coordinates destructive shared actions');
     expect(md).toContain('sig-adopt'); // provenance footer
 
-    const [row] = (await listLearningPackCandidates({ status: 'adopted' })).filter(
+    const [row] = (await listKnowledgePackCandidates({ status: 'adopted' })).filter(
       (r) => r.id === staged.id,
     );
     expect(row).toMatchObject({
@@ -150,10 +150,10 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
   });
 
   it('a blocked transfer bar refuses adoption and the candidate stays pending (P-022 / D-006)', async () => {
-    const staged = await stageLearningPackCandidate(stageInput('sig-transfer-blocked'));
+    const staged = await stageKnowledgePackCandidate(stageInput('sig-transfer-blocked'));
     if (!staged.staged) throw new Error('stage failed');
 
-    const refused = await decideLearningPackCandidate({
+    const refused = await decideKnowledgePackCandidate({
       id: staged.id,
       action: 'adopt',
       by: 'owner',
@@ -167,13 +167,13 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     expect(refused).toEqual({ ok: false, reason: 'transfer_bar', error: 'transfer test failed this lesson' });
 
     // Still pending — the owner can fix/dismiss/re-decide; never a half state.
-    const [row] = (await listLearningPackCandidates({ status: 'pending' })).filter(
+    const [row] = (await listKnowledgePackCandidates({ status: 'pending' })).filter(
       (r) => r.id === staged.id,
     );
     expect(row?.status).toBe('pending');
 
     // An open bar lets the same candidate through.
-    const adopted = await decideLearningPackCandidate({
+    const adopted = await decideKnowledgePackCandidate({
       id: staged.id,
       action: 'adopt',
       by: 'owner',
@@ -185,9 +185,9 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
   });
 
   it('the bar never gates a dismiss', async () => {
-    const staged = await stageLearningPackCandidate(stageInput('sig-transfer-dismiss'));
+    const staged = await stageKnowledgePackCandidate(stageInput('sig-transfer-dismiss'));
     if (!staged.staged) throw new Error('stage failed');
-    const dismissed = await decideLearningPackCandidate({
+    const dismissed = await decideKnowledgePackCandidate({
       id: staged.id,
       action: 'dismiss',
       by: 'owner',
@@ -200,7 +200,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
   });
 
   it('decide on an unknown id is not_found', async () => {
-    const missing = await decideLearningPackCandidate({
+    const missing = await decideKnowledgePackCandidate({
       id: '00000000-0000-0000-0000-000000000000',
       action: 'dismiss',
       by: 'owner',
@@ -212,9 +212,9 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
   it('candidates are GLOBAL — staged in one place, visible fleet-wide (P-002)', async () => {
     // No workspace arg anywhere: a candidate staged here is listed without any
     // workspace filter (the whole point of the de-scoping — learnings are shared).
-    const staged = await stageLearningPackCandidate(stageInput('sig-global-visible'));
+    const staged = await stageKnowledgePackCandidate(stageInput('sig-global-visible'));
     if (!staged.staged) throw new Error('stage failed');
-    const all = await listLearningPackCandidates({});
+    const all = await listKnowledgePackCandidates({});
     expect(all.map((r) => r.signature)).toContain('sig-global-visible');
   });
 });

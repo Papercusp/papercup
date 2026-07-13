@@ -300,7 +300,7 @@ export interface SweepRecipesResult {
 
 /**
  * Retire the stale long-tail of never-reused one-off recipes (mirror
- * learning_packs:sweep). Selects ACTIVE recipes whose `last_run_at` is older than
+ * knowledge_packs:sweep). Selects ACTIVE recipes whose `last_run_at` is older than
  * `staleDays` AND `run_count <= maxRunCount` (a one-off nobody reused) and — on a
  * real run — flips them to `status='retired'`. A `dryRun` returns the candidates
  * without mutating. NEVER touches a hot recipe (run_count over the cap), a recipe

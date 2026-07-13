@@ -15,9 +15,9 @@ import {
   provenanceOf,
   semverGt,
   validatePack,
-  type LearningPack,
+  type KnowledgePack,
 } from './pack-format';
-import { listLearningPacks, loadLearningPack } from './load-packs';
+import { listKnowledgePacks, loadKnowledgePack } from './load-packs';
 
 describe('parseManifest', () => {
   it('parses a valid manifest', () => {
@@ -81,7 +81,7 @@ describe('parseLearningFile', () => {
 });
 
 describe('validatePack + filterByShapes + provenance', () => {
-  const pack: LearningPack = {
+  const pack: KnowledgePack = {
     manifest: { id: 'p', title: 'P', description: 'd', version: '1.2.0' },
     items: [
       { id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'a' },
@@ -115,7 +115,7 @@ describe('validatePack + filterByShapes + provenance', () => {
 });
 
 describe('load-packs (tmp fixture roots)', () => {
-  const root = mkdtempSync(join(tmpdir(), 'learning-packs-'));
+  const root = mkdtempSync(join(tmpdir(), 'knowledge-packs-'));
   const builtin = join(root, 'builtin');
   const installed = join(root, 'installed');
 
@@ -149,7 +149,7 @@ describe('load-packs (tmp fixture roots)', () => {
   afterAll(() => rmSync(root, { recursive: true, force: true }));
 
   it('lists across roots, builtin wins on clash, broken pack skipped', async () => {
-    const packs = await listLearningPacks(roots);
+    const packs = await listKnowledgePacks(roots);
     const ids = packs.map((p) => p.id).sort();
     expect(ids).toEqual(['papercusp-default', 'rails-pack']);
     const def = packs.find((p) => p.id === 'papercusp-default')!;
@@ -159,15 +159,15 @@ describe('load-packs (tmp fixture roots)', () => {
   });
 
   it('loads one pack by id; missing id → null', async () => {
-    const loaded = await loadLearningPack('rails-pack', roots);
+    const loaded = await loadKnowledgePack('rails-pack', roots);
     expect(loaded?.pack.items.map((i) => i.id).sort()).toEqual(['rails-a', 'rails-b']);
     expect(loaded?.source).toBe('installed');
-    expect(await loadLearningPack('nope', roots)).toBeNull();
+    expect(await loadKnowledgePack('nope', roots)).toBeNull();
   });
 
   it('absent roots are empty, not errors', async () => {
     expect(
-      await listLearningPacks({ roots: [{ dir: join(root, 'missing'), source: 'builtin' }] }),
+      await listKnowledgePacks({ roots: [{ dir: join(root, 'missing'), source: 'builtin' }] }),
     ).toEqual([]);
   });
 });

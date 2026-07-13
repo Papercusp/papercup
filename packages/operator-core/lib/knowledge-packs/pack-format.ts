@@ -1,8 +1,8 @@
 /**
- * pack-format — the Learning Pack format: types + pure parse/validate/filter
+ * pack-format — the Knowledge Pack format: types + pure parse/validate/filter
  * (learning-packs-2026-06-11 P-001).
  *
- * A learning pack is a versioned, git-canonical set of *learnings* — curated,
+ * A knowledge pack is a versioned, git-canonical set of *learnings* — curated,
  * project-transferable working wisdom seeded into a hive's own mem0 store at
  * creation/install (copy, never live-link — D-001). On disk a pack is:
  *
@@ -14,7 +14,7 @@
  *
  * Built-in packs live next to the blueprints they ship with
  * (`libs/papercusp/packages/harness/learnings/`); Comb-installed packs land
- * under `~/.papercusp/learning-packs/` (see ./load-packs).
+ * under `~/.papercusp/knowledge-packs/` (see ./load-packs).
  *
  * Content doctrine (D-002): learnings carry invariant judgment as DISCOVERY
  * RULES ("find how this project runs tests"), never stack bindings ("use
@@ -28,7 +28,7 @@ import { parse as parseYaml } from 'yaml';
 import { parseFrontmatter } from '../memory/insights-index';
 
 /** The pack preselected in the hive-creation picker (D-004). */
-export const DEFAULT_LEARNING_PACK_ID = 'papercusp-default';
+export const DEFAULT_KNOWLEDGE_PACK_ID = 'papercusp-default';
 
 /**
  * Project shapes a learning can apply to (D-002/D-008). `any` always seeds;
@@ -45,7 +45,7 @@ export type LearningKind = (typeof LEARNING_KINDS)[number];
 /** Provenance metadata value marking a memory row as pack-seeded (D-001). */
 export const PACK_MEMORY_SOURCE = 'pack';
 
-export interface LearningPackManifest {
+export interface KnowledgePackManifest {
   /** Kebab-case pack id — globally unique (Comb listing_ref for published packs). */
   id: string;
   title: string;
@@ -68,22 +68,22 @@ export interface LearningItem {
   text: string;
 }
 
-export interface LearningPack {
-  manifest: LearningPackManifest;
+export interface KnowledgePack {
+  manifest: KnowledgePackManifest;
   items: LearningItem[];
 }
 
 /** Where a pack was resolved from (./load-packs). */
-export type LearningPackSource = 'builtin' | 'installed';
+export type KnowledgePackSource = 'builtin' | 'installed';
 
-export interface LearningPackSummary {
+export interface KnowledgePackSummary {
   id: string;
   title: string;
   description: string;
   version: string;
   author?: string;
   itemCount: number;
-  source: LearningPackSource;
+  source: KnowledgePackSource;
 }
 
 const KEBAB_RE = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
@@ -124,7 +124,7 @@ export function semverGt(a: string | undefined, b: string | undefined): boolean 
  * Manifest
  * ──────────────────────────────────────────────────────────────────────── */
 
-export function parseManifest(raw: string): { manifest?: LearningPackManifest; error?: string } {
+export function parseManifest(raw: string): { manifest?: KnowledgePackManifest; error?: string } {
   let obj: unknown;
   try {
     obj = parseYaml(raw);
@@ -210,7 +210,7 @@ export function parseLearningFile(
  * ──────────────────────────────────────────────────────────────────────── */
 
 /** Whole-pack validation. Empty array = valid. */
-export function validatePack(pack: LearningPack): string[] {
+export function validatePack(pack: KnowledgePack): string[] {
   const errors: string[] = [];
   const seen = new Set<string>();
   for (const item of pack.items) {
@@ -253,7 +253,7 @@ export interface PackProvenance {
   pack_item_id: string;
 }
 
-export function provenanceOf(pack: LearningPack, item: LearningItem): PackProvenance {
+export function provenanceOf(pack: KnowledgePack, item: LearningItem): PackProvenance {
   return {
     source: PACK_MEMORY_SOURCE,
     pack_id: pack.manifest.id,

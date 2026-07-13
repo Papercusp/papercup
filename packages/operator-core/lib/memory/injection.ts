@@ -78,7 +78,7 @@ export interface MemoryInjectionInput {
    */
   harnessSlugs?: readonly string[];
   /**
-   * Hive pools to pull (`hive:<slug>` scope — learning-packs P-004). Usually
+   * Hive pools to pull (`hive:<slug>` scope — knowledge-packs P-004). Usually
    * OMITTED: the helper resolves the owning hives from `harnessSlugs` via the
    * registry (member `hive_slug` / `harness_kind:'hive'` home). Pass
    * explicitly to skip that lookup or to recall a hive with no harness in
@@ -190,7 +190,7 @@ function injectMinLexScore(): number | undefined {
 }
 
 /**
- * Injected-block character budget (learning-packs P-011 / D-008). ~4k tokens
+ * Injected-block character budget (knowledge-packs P-011 / D-008). ~4k tokens
  * by default (≈4 chars/token). Lines are admitted in priority order — user
  * pool → harness pools → hive-organic → hive-pack — and assembly stops at the
  * budget, so a hive carrying many packs can't crowd the user's own facts out
@@ -231,7 +231,7 @@ export async function buildMemoryContextBlock(
     harnessSlugs = harnessSlugs.slice(0, MAX_HARNESS_FANOUT);
   }
 
-  // Hive pools (learning-packs P-004): resolve the owning hives from the
+  // Hive pools (knowledge-packs P-004): resolve the owning hives from the
   // harness slugs unless the caller pinned them. Best-effort — a registry
   // hiccup degrades to "no hive pull", never blocks the turn.
   let hiveSlugs: string[] = [];
@@ -335,12 +335,12 @@ export async function buildMemoryContextBlock(
 
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
-  // learning-packs P-009: a DISABLED pack's rows stay stored but stop being
+  // knowledge-packs P-009: a DISABLED pack's rows stay stored but stop being
   // recalled. One settings read per hive in scope (usually 1); best-effort —
   // a settings hiccup means no filtering, never a blocked turn.
   if (hiveHits.length > 0) {
     try {
-      const { disabledPacksFor } = await import('../learning-packs/manage');
+      const { disabledPacksFor } = await import('../knowledge-packs/manage');
       const slugs = [...new Set(hiveHits.map(({ slug }) => slug))];
       const disabledBySlug = new Map(
         await Promise.all(

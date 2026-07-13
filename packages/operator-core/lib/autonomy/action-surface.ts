@@ -501,13 +501,13 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     coverage: 'covered',
   },
   {
-    id: 'knowledge.publish-learning-pack',
-    label: 'Publish / install a learning pack',
+    id: 'knowledge.publish-knowledge-pack',
+    label: 'Publish / install a knowledge pack',
     category: 'knowledge-curation',
     reversibility: 'reversible',
     authority: 'system',
-    queenVerbs: ['learning_packs:publish', 'learning_packs:install', 'learning_packs:decide_candidate'],
-    humanSurface: 'Learning packs',
+    queenVerbs: ['knowledge_packs:publish', 'knowledge_packs:install', 'knowledge_packs:decide_candidate'],
+    humanSurface: 'Knowledge packs',
     coverage: 'covered',
   },
   {

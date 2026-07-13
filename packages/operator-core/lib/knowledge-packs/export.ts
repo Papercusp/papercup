@@ -2,7 +2,7 @@
  * export — distill a hive's shared learnings into a publishable pack
  * (learning-packs-2026-06-11 P-016).
  *
- * Writes the standard pack shape (`learning-packs/<packId>/manifest.yaml` +
+ * Writes the standard pack shape (`knowledge-packs/<packId>/manifest.yaml` +
  * one-learning-per-file md) into a target directory — by convention a member
  * repo of the hive, so the project's normal commit/push flow carries it; the
  * Comb listing then points at that repo with `listing_ref = packId`
@@ -26,7 +26,7 @@ export interface ExportPackInput {
   /** Three-part semver. Default 1.0.0. */
   version?: string;
   author?: string;
-  /** Absolute dir the `learning-packs/<packId>/` tree is written under. */
+  /** Absolute dir the `knowledge-packs/<packId>/` tree is written under. */
   targetDir: string;
   /** Also export rows that came from installed packs. Default false. */
   includePackRows?: boolean;
@@ -91,7 +91,7 @@ export async function exportHiveLearningsToPack(input: ExportPackInput): Promise
     return { ok: false, error: 'nothing_to_export', skippedPackRows };
   }
 
-  const packDir = join(input.targetDir, 'learning-packs', input.packId);
+  const packDir = join(input.targetDir, 'knowledge-packs', input.packId);
   await rm(packDir, { recursive: true, force: true });
   await mkdir(packDir, { recursive: true });
 

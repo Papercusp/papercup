@@ -1,5 +1,5 @@
 /**
- * learning_packs:upgrade — adopt a newer pack version's NEW learnings
+ * knowledge_packs:upgrade — adopt a newer pack version's NEW learnings
  * (learning-packs-2026-06-11 P-013). Present rows are never auto-touched —
  * the store can't distinguish user edits from pack drift, and
  * never-clobber-user-edits is the D-003 line.
@@ -8,20 +8,20 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getSessionUserOrDefault } from '../../auth';
-import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
+import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
 export default defineTool({
-  name: 'learning_packs:upgrade',
+  name: 'knowledge_packs:upgrade',
   capability: 'memory:write',
   description:
-    "Adopt a newer version of an installed learning pack: NEW items (no row in the hive's pool) are classified like an install and added per your resolutions; rows already present are never auto-modified. Call once for the plan, re-call with resolutions (or acceptDefaults: true) to apply.",
+    "Adopt a newer version of an installed knowledge pack: NEW items (no row in the hive's pool) are classified like an install and added per your resolutions; rows already present are never auto-modified. Call once for the plan, re-call with resolutions (or acceptDefaults: true) to apply.",
   guidance: {
-    when: 'learning_packs:list shows updateAvailable for an installed pack.',
-    notWhen: 'First-time install — learning_packs:install.',
+    when: 'knowledge_packs:list shows updateAvailable for an installed pack.',
+    notWhen: 'First-time install — knowledge_packs:install.',
     chaining: 'The response reports installedVersions vs availableVersion + the adoptable-new-items review.',
     seeAlso: [
-      'learning_packs:list (see which packs show updateAvailable)',
-      'learning_packs:install (first-time install, not an upgrade)',
+      'knowledge_packs:list (see which packs show updateAvailable)',
+      'knowledge_packs:install (first-time install, not an upgrade)',
     ],
   },
   crossWorkspace: true,
@@ -35,13 +35,13 @@ export default defineTool({
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
-    if (!(await learningPacksEnabled())) return text(FLAG_OFF);
+    if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
     const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const { loadLearningPack } = await import('../../learning-packs/load-packs');
-    const loaded = await loadLearningPack(args.pack);
+    const { loadKnowledgePack } = await import('../../knowledge-packs/load-packs');
+    const loaded = await loadKnowledgePack(args.pack);
     if (!loaded) return text({ ok: false, reason: 'pack_not_found', pack: args.pack });
 
-    const { planPackUpgrade, applyPackInstall } = await import('../../learning-packs/manage');
+    const { planPackUpgrade, applyPackInstall } = await import('../../knowledge-packs/manage');
     const plan = await planPackUpgrade({ potSlug: args.pot, pack: loaded.pack });
 
     if (plan.newItems.items.length === 0) {

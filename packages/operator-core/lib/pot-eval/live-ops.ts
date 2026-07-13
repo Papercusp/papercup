@@ -253,8 +253,8 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
     rm: (path) => rm(path, { recursive: true, force: true }),
 
     async createHive({ slug, workspaceId }) {
-      // Idle (no wakeInSeconds — driveToCompletion starts it), repo-less, no learning-pack seed.
-      const res = await createPotHarness({ slug, workspaceId, learningPack: null });
+      // Idle (no wakeInSeconds — driveToCompletion starts it), repo-less, no knowledge-pack seed.
+      const res = await createPotHarness({ slug, workspaceId, knowledgePack: null });
       if (!res.ok) {
         throw new Error(`hive-eval createHive('${slug}') failed: ${res.error ?? 'unknown'} ${res.message ?? ''}`.trim());
       }

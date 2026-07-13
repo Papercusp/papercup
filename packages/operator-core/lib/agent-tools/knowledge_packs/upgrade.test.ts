@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import upgradeTool from './upgrade';
 import { getFlag } from '@papercusp/flags/server';
-import { loadLearningPack } from '../../learning-packs/load-packs';
-import { planPackUpgrade, applyPackInstall } from '../../learning-packs/manage';
+import { loadKnowledgePack } from '../../knowledge-packs/load-packs';
+import { planPackUpgrade, applyPackInstall } from '../../knowledge-packs/manage';
 import { getSessionUserOrDefault } from '../../auth';
 
 // PG-free unit: the upgrade planner has its own suite; this pins the TOOL — flag
@@ -11,12 +11,12 @@ import { getSessionUserOrDefault } from '../../auth';
 // (learning-packs-2026-06-11 P-013, D-003 never-clobber).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
-vi.mock('../../learning-packs/load-packs', () => ({ loadLearningPack: vi.fn() }));
-vi.mock('../../learning-packs/manage', () => ({ planPackUpgrade: vi.fn(), applyPackInstall: vi.fn() }));
+vi.mock('../../knowledge-packs/load-packs', () => ({ loadKnowledgePack: vi.fn() }));
+vi.mock('../../knowledge-packs/manage', () => ({ planPackUpgrade: vi.fn(), applyPackInstall: vi.fn() }));
 vi.mock('../../auth', () => ({ getSessionUserOrDefault: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);
-const mockLoad = vi.mocked(loadLearningPack);
+const mockLoad = vi.mocked(loadKnowledgePack);
 const mockPlan = vi.mocked(planPackUpgrade);
 const mockApply = vi.mocked(applyPackInstall);
 const mockUser = vi.mocked(getSessionUserOrDefault);
@@ -38,11 +38,11 @@ function plan(p: Record<string, unknown> = {}) {
   };
 }
 
-describe('learning_packs:upgrade tool', () => {
+describe('knowledge_packs:upgrade tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
-    mockLoad.mockResolvedValue({ pack: { id: 'p1' } } as unknown as Awaited<ReturnType<typeof loadLearningPack>>);
+    mockLoad.mockResolvedValue({ pack: { id: 'p1' } } as unknown as Awaited<ReturnType<typeof loadKnowledgePack>>);
     mockPlan.mockResolvedValue(plan() as unknown as Awaited<ReturnType<typeof planPackUpgrade>>);
     mockApply.mockResolvedValue({ ok: true, installed: 1 } as unknown as Awaited<ReturnType<typeof applyPackInstall>>);
     mockUser.mockResolvedValue({ id: 'user-1' } as Awaited<ReturnType<typeof getSessionUserOrDefault>>);

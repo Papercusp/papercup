@@ -1,11 +1,11 @@
 /**
- * load-packs — fs resolution for Learning Packs (learning-packs-2026-06-11 P-001).
+ * load-packs — fs resolution for Knowledge Packs (learning-packs-2026-06-11 P-001).
  *
  * Two roots, mirroring the blueprint distribution tiers
  * (installed-blueprints.ts):
  *
- *   builtin    libs/papercusp/packages/harness/learnings/<id>/   (ships with the app)
- *   installed  ~/.papercusp/learning-packs/<id>/                 (Comb-installed, P-017)
+ *   builtin    libs/papercusp/packages/harness/knowledge-packs/<id>/  (ships with the app)
+ *   installed  ~/.papercusp/knowledge-packs/<id>/                     (Comb-installed, P-017)
  *
  * Builtin wins on an id clash — a community pack can never shadow a
  * first-party one. Missing roots are simply empty (fresh installs have no
@@ -24,34 +24,71 @@ import {
   parseManifest,
   validatePack,
   type LearningItem,
-  type LearningPack,
-  type LearningPackSource,
-  type LearningPackSummary,
+  type KnowledgePack,
+  type KnowledgePackSource,
+  type KnowledgePackSummary,
 } from './pack-format';
 
-export function builtinLearningPacksRoot(): string {
-  return harnessPath('learnings');
+export function builtinKnowledgePacksRoot(): string {
+  // knowledge-packs P-003: the builtin dir was renamed harness/learnings →
+  // harness/knowledge-packs alongside the module. It ships INSIDE the app
+  // bundle, so there is no on-disk legacy copy to fall back to — a stale name
+  // here is a hard "no builtin packs", not a soft miss.
+  return harnessPath('knowledge-packs');
 }
 
-export function installedLearningPacksRoot(): string {
+export function installedKnowledgePacksRoot(): string {
+  return join(papercuspRoot(), 'knowledge-packs');
+}
+
+/**
+ * The pre-rename installed root. Unlike the builtin dir this one lives in the
+ * USER's home (`~/.papercusp/`), so an existing install genuinely has packs
+ * sitting under the old name — they are migrated on boot (migrateInstalledRoot).
+ */
+export function legacyInstalledKnowledgePacksRoot(): string {
   return join(papercuspRoot(), 'learning-packs');
+}
+
+/**
+ * Boot-time move of the installed-packs root (knowledge-packs P-003).
+ *
+ * D-001 is a HARD rename with no read-time aliases, so the old directory must
+ * actually MOVE rather than be dual-read forever. Idempotent and fail-soft:
+ * a missing legacy dir is the normal (fresh-install) case, and if BOTH exist
+ * the new root wins and the legacy dir is left alone for the owner to inspect
+ * rather than silently merged (a merge could shadow an installed pack with a
+ * stale same-id copy).
+ */
+export async function migrateInstalledRoot(): Promise<
+  { moved: false; reason: 'no-legacy' | 'already-migrated' } | { moved: true; from: string; to: string }
+> {
+  const legacy = legacyInstalledKnowledgePacksRoot();
+  const next = installedKnowledgePacksRoot();
+  const exists = async (d: string) => !!(await fs.stat(d).catch(() => null));
+
+  if (!(await exists(legacy))) return { moved: false, reason: 'no-legacy' };
+  if (await exists(next)) return { moved: false, reason: 'already-migrated' };
+
+  await fs.rename(legacy, next);
+  return { moved: true, from: legacy, to: next };
 }
 
 export interface PackRoots {
   /** Resolution order; earlier roots win on id clash. Default builtin → installed. */
-  roots?: Array<{ dir: string; source: LearningPackSource }>;
+  roots?: Array<{ dir: string; source: KnowledgePackSource }>;
 }
 
-function defaultRoots(): Array<{ dir: string; source: LearningPackSource }> {
+function defaultRoots(): Array<{ dir: string; source: KnowledgePackSource }> {
   return [
-    { dir: builtinLearningPacksRoot(), source: 'builtin' },
-    { dir: installedLearningPacksRoot(), source: 'installed' },
+    { dir: builtinKnowledgePacksRoot(), source: 'builtin' },
+    { dir: installedKnowledgePacksRoot(), source: 'installed' },
   ];
 }
 
-export interface LoadedLearningPack {
-  pack: LearningPack;
-  source: LearningPackSource;
+export interface LoadedKnowledgePack {
+  pack: KnowledgePack;
+  source: KnowledgePackSource;
   /** Per-item parse problems for a pack that still loaded (none ⇒ clean). */
   warnings: string[];
 }
@@ -65,8 +102,8 @@ export interface LoadedLearningPack {
  */
 async function readPackDir(
   dir: string,
-  source: LearningPackSource,
-): Promise<{ loaded?: LoadedLearningPack; errors: string[] }> {
+  source: KnowledgePackSource,
+): Promise<{ loaded?: LoadedKnowledgePack; errors: string[] }> {
   const errors: string[] = [];
 
   let manifestRaw: string;
@@ -107,7 +144,7 @@ async function readPackDir(
     else if (error) warnings.push(`${manifest.id}: ${error}`);
   }
 
-  const pack: LearningPack = { manifest, items };
+  const pack: KnowledgePack = { manifest, items };
   const packErrors = validatePack(pack);
   if (packErrors.length > 0) {
     return { errors: packErrors.map((e) => `${manifest.id}: ${e}`) };
@@ -116,9 +153,9 @@ async function readPackDir(
 }
 
 /** Enumerate every resolvable pack across the roots (earlier root wins on id). */
-export async function listLearningPacks(opts: PackRoots = {}): Promise<LearningPackSummary[]> {
+export async function listKnowledgePacks(opts: PackRoots = {}): Promise<KnowledgePackSummary[]> {
   const roots = opts.roots ?? defaultRoots();
-  const byId = new Map<string, LearningPackSummary>();
+  const byId = new Map<string, KnowledgePackSummary>();
 
   for (const { dir, source } of roots) {
     let subdirs: string[] = [];
@@ -152,10 +189,10 @@ export async function listLearningPacks(opts: PackRoots = {}): Promise<LearningP
 }
 
 /** Resolve one pack by id across the roots (earlier root wins). */
-export async function loadLearningPack(
+export async function loadKnowledgePack(
   packId: string,
   opts: PackRoots = {},
-): Promise<LoadedLearningPack | null> {
+): Promise<LoadedKnowledgePack | null> {
   const roots = opts.roots ?? defaultRoots();
   for (const { dir, source } of roots) {
     const { loaded } = await readPackDir(join(dir, packId), source);
@@ -169,8 +206,8 @@ export async function loadLearningPack(
  * fetch-from-Comb path (P-017) validates a cloned repo's pack dir before
  * copying it under the installed root. Returns null + errors when invalid.
  */
-export async function loadLearningPackFromDir(
+export async function loadKnowledgePackFromDir(
   dir: string,
-): Promise<{ loaded?: LoadedLearningPack; errors: string[] }> {
+): Promise<{ loaded?: LoadedKnowledgePack; errors: string[] }> {
   return readPackDir(dir, 'installed');
 }

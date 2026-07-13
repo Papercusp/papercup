@@ -63,7 +63,8 @@ export interface RecordOpts {
   cutAt: Date;
   since: Date | null;
   changelogMd: string | null;
-  bundleDir: string;
+  /** EVERY platform's bundle root — see `releaseBundleRoots`. Not just linux. */
+  bundleDirs: string[];
   outDir: string;
   scope: Scope;
   cutBy: string | null;
@@ -118,30 +119,99 @@ function sha256File(file: string): string {
 }
 
 /**
+ * The bundle ROOTS a tri-platform cut writes to — ONE PER LEG, in three different
+ * trees. This is the whole reason 0.0.8 shipped a Linux-only release page.
+ *
+ * Each leg of release-local.sh drops its bundle somewhere different:
+ *   - linux   → $CARGO_TARGET_DIR/release/bundle          (deb/, appimage/)
+ *   - mac     → src-tauri/target/universal-apple-darwin/… (dmg/, macos/)   [rsync'd back from the mac VM]
+ *   - windows → src-tauri/target/windows-vm/bundle        (inno/)          [rsync'd back from the win VM]
+ *
+ * scanArtifacts used to take a SINGLE dir defaulting to the linux one, so the mac
+ * and windows bytes — which were built, signed, and sitting on disk the whole time
+ * — were never even looked at. `classifyArtifact` already knew how to label a .dmg
+ * and a .exe; nothing ever handed it one. The page then advertised "0.0.8" to every
+ * beta tester while offering a Mac or Windows user nothing to download, and the
+ * same history.json drives the in-app Update Center, so those platforms had no
+ * update path either. A recorder that silently records a THIRD of a release is
+ * worse than one that fails: the output looks complete.
+ */
+/**
+ * Locate `papercusp-desktop/` — the tree the mac + windows legs bundle into.
+ *
+ * Walks up from cwd rather than assuming the repo root, so the CLI still finds the
+ * mac/windows artifacts when it is invoked from a subdirectory. `--desktop-root` /
+ * PAPERCUSP_DESKTOP_ROOT override it. Returning a path that does not exist is fine:
+ * scanArtifacts skips absent roots, and the missing-platform warning then fires —
+ * which is the loud failure we want, not a silent linux-only record.
+ */
+export function resolveDesktopRoot(startDir: string = process.cwd()): string {
+  const env = process.env.PAPERCUSP_DESKTOP_ROOT;
+  if (env) return env;
+  let dir = path.resolve(startDir);
+  for (let i = 0; i < 8; i++) {
+    const cand = path.join(dir, 'papercusp-desktop');
+    if (fs.existsSync(path.join(cand, 'src-tauri'))) return cand;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return path.join(path.resolve(startDir), 'papercusp-desktop');
+}
+
+export function releaseBundleRoots(linuxBundleDir: string, desktopRoot: string): string[] {
+  return [
+    linuxBundleDir,
+    path.join(desktopRoot, 'src-tauri', 'target', 'universal-apple-darwin', 'release', 'bundle'),
+    path.join(desktopRoot, 'src-tauri', 'target', 'windows-vm', 'bundle'),
+  ];
+}
+
+/**
  * Find this version's artifacts on disk and describe them. The URL is RELATIVE —
  * see the module header.
+ *
+ * Scans EVERY bundle root (see `releaseBundleRoots`). A missing root is not an
+ * error — a linux-only cut simply has no mac/windows tree — but it IS the caller's
+ * job to notice a leg went missing; see the per-platform report in `run()`.
  */
-export function scanArtifacts(bundleDir: string, version: string, tag: string): ReleaseArtifact[] {
-  const subdirs = ['deb', 'appimage', 'dmg', 'macos', 'nsis', 'msi'];
+export function scanArtifacts(
+  bundleDirs: string[],
+  version: string,
+  tag: string,
+): ReleaseArtifact[] {
+  // `inno` is the Windows one, and its absence here is precisely why no Windows
+  // installer has ever been recorded: tauri builds the Windows setup with Inno
+  // Setup, which writes to inno/ — never to the nsis/ or msi/ dirs this list used
+  // to stop at.
+  const subdirs = ['deb', 'appimage', 'dmg', 'macos', 'nsis', 'msi', 'inno'];
   const found: ReleaseArtifact[] = [];
-  for (const sub of subdirs) {
-    const dir = path.join(bundleDir, sub);
-    if (!fs.existsSync(dir)) continue;
-    for (const name of fs.readdirSync(dir)) {
-      if (!name.includes(version)) continue;
-      const kind = classifyArtifact(name);
-      if (!kind) continue;
-      const full = path.join(dir, name);
-      const stat = fs.statSync(full);
-      if (!stat.isFile()) continue;
-      found.push({
-        ...kind,
-        name,
-        // Relative to the release base. Never absolute — the base is the secret.
-        url: `${tag}/${name}`,
-        size: stat.size,
-        sha256: sha256File(full),
-      });
+  const seen = new Set<string>();
+  for (const bundleDir of bundleDirs) {
+    for (const sub of subdirs) {
+      const dir = path.join(bundleDir, sub);
+      if (!fs.existsSync(dir)) continue;
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.includes(version)) continue;
+        const kind = classifyArtifact(name);
+        if (!kind) continue;
+        const full = path.join(dir, name);
+        const stat = fs.statSync(full);
+        if (!stat.isFile()) continue;
+        // The same artifact can be reachable from two roots (a salvage/reuse path
+        // rsyncs bytes into a second tree). Record it once — a duplicated row would
+        // show the tester the same download twice.
+        if (seen.has(name)) continue;
+        seen.add(name);
+        found.push({
+          ...kind,
+          name,
+          // Relative to the release base. Never absolute — the base is the secret.
+          url: `${tag}/${name}`,
+          size: stat.size,
+          sha256: sha256File(full),
+        });
+      }
     }
   }
   return found.sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
@@ -245,7 +315,28 @@ export async function run(opts: RecordOpts): Promise<number> {
       return 0;
     }
 
-    const artifacts = scanArtifacts(opts.bundleDir, opts.version, tag);
+    const artifacts = scanArtifacts(opts.bundleDirs, opts.version, tag);
+
+    // A release that records only SOME platforms must never look like a complete
+    // one. 0.0.8 went out advertising itself to every beta tester while carrying
+    // linux artifacts alone — a Mac or Windows tester had nothing to download, and
+    // nothing anywhere said so. Name the platforms that are missing a GUI installer,
+    // loudly, every time. (Not fatal: a deliberate single-platform cut is legal —
+    // but it has to be a CHOICE, made in the open, not a silent omission.)
+    const guiPlatforms = new Set(
+      artifacts.filter((a) => a.product === 'gui').map((a) => a.platform),
+    );
+    const missing = (['linux-x86_64', 'darwin-universal', 'windows-x86_64'] as const).filter(
+      (p) => !guiPlatforms.has(p),
+    );
+    if (missing.length > 0) {
+      console.warn(
+        `  ⚠ NO GUI INSTALLER for: ${missing.join(', ')} — a tester on ${
+          missing.length === 1 ? 'that platform' : 'those platforms'
+        } will have nothing to download, and the in-app Update Center will offer them no update.`,
+      );
+      console.warn(`    Scanned roots:\n${opts.bundleDirs.map((d) => `      ${d}`).join('\n')}`);
+    }
 
     const row: ReleaseRow = {
       version: opts.version,
@@ -336,6 +427,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     arg(argv, '--bundle') ??
     process.env.PAPERCUSP_BUNDLE_DIR ??
     path.join(process.env.CARGO_TARGET_DIR ?? `${process.env.HOME}/.cargo-target`, 'release/bundle');
+  // The mac + windows legs land in the desktop app's own target tree, NOT in
+  // CARGO_TARGET_DIR — so they need their own roots (see `releaseBundleRoots`).
+  const desktopRoot = arg(argv, '--desktop-root') ?? resolveDesktopRoot();
+  const bundleDirs = releaseBundleRoots(bundleDir, desktopRoot);
   const outDir = arg(argv, '--out') ?? path.join(bundleDir, 'release-history');
   const scope: Scope = {
     workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',
@@ -351,7 +446,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     cutAt: cutAtRaw ? new Date(cutAtRaw) : new Date(),
     since: sinceRaw ? new Date(sinceRaw) : null,
     changelogMd,
-    bundleDir,
+    bundleDirs,
     outDir,
     scope,
     cutBy: arg(argv, '--cut-by') ?? process.env.PAPERCUSP_SESSION_ID ?? null,

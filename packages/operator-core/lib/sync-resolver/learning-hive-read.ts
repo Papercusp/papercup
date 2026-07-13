@@ -22,7 +22,7 @@
  */
 
 import type { MemoryEntry } from '../memory/backend';
-import { memoryTextOf, type LearningPack } from '../learning-packs/pack-format';
+import { memoryTextOf, type KnowledgePack } from '../knowledge-packs/pack-format';
 
 export interface HiveLearningRow {
   id: string;
@@ -67,7 +67,7 @@ export interface HiveLearningsSnapshot {
 
 export interface HiveLearningsDeps {
   listPool: (scope: string) => Promise<MemoryEntry[]>;
-  loadPack: (packId: string) => Promise<{ pack: LearningPack } | null>;
+  loadPack: (packId: string) => Promise<{ pack: KnowledgePack } | null>;
 }
 
 function str(v: unknown): string | undefined {

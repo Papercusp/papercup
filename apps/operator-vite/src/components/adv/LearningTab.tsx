@@ -3159,7 +3159,7 @@ export function ScoutView({
   );
 }
 
-// ─── Learnings view (a hive's editable shared memory — learning-packs P-008) ──
+// ─── Learnings view (a hive's editable shared memory — knowledge-packs P-008) ──
 
 type HiveLearningRowT = HiveLearningsSnapshot["rows"][number];
 

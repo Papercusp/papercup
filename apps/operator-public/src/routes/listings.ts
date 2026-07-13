@@ -192,7 +192,7 @@ function registerListingEndpoints(
       const banned = await listBannedPubkeySet(c.env.DB);
       if (banned.has(row.publisher_device_pubkey)) return c.json({ error: 'not_found' }, 404);
     }
-    // Pre-publication review (learning-packs D-007): a pending/rejected
+    // Pre-publication review (knowledge-packs D-007): a pending/rejected
     // listing is publicly invisible — only its PUBLISHER reads it (the
     // "pending approval" state + a rejection's reason); operators use /admin.
     if (row.review_status !== 'approved') {
@@ -408,7 +408,7 @@ function registerListingEndpoints(
       return c.json({ ok: true, id: existing.id, harness: existing, listing: existing, dedup: true });
     }
 
-    // Pre-publication review (learning-packs D-007): instruction-carrying
+    // Pre-publication review (knowledge-packs D-007): instruction-carrying
     // kinds land PENDING — invisible to public browse until an operator
     // approves. The response carries review_status so the publisher's client
     // can say "pending approval" instead of "live".

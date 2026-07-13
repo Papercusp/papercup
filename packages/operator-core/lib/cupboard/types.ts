@@ -61,7 +61,7 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  *                              interim 'tool-pack' AND the pre-008 'pack' wire
  *                              values both parse to 'pack' via listingKindOf.
  *                              The plugin manifest already uses kind:'pack'.)
- *   learning-pack → install   (a distributable set of curated hive learnings,
+ *   knowledge-pack → install   (a distributable set of curated hive learnings,
  *                              installed into a hive's shared memory through
  *                              the conflict review)
  *   template      → install   (a first-party app-template — a GitHub-repo-backed
@@ -74,11 +74,11 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  * the Cupboard distributes RECIPES (blueprints), not binary tarballs; the
  * reproducible clone is the lightweight InstanceSpec, not a published snapshot.
  *
- * Review policy (learning-packs D-007): `learning-pack` + `blueprint` listings
+ * Review policy (knowledge-packs D-007): `knowledge-pack` + `blueprint` listings
  * publish PENDING and surface publicly only after operator approval — see
  * `review_status` on the row + `isPendingReview()`.
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'learning-pack', 'template'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -101,7 +101,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'blueprint':
     case 'plugin':
     case 'pack':
-    case 'learning-pack':
+    case 'knowledge-pack':
     case 'template':
       return 'install';
   }
@@ -110,7 +110,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
 /** Human label for a kind's action button. */
 export const LISTING_ACTION_LABEL: Record<ListingAction, string> = {
   'view-hive': 'View Hive',
-  // blueprint + plugin + pack + learning-pack all → 'install' (clone the listing).
+  // blueprint + plugin + pack + knowledge-pack all → 'install' (clone the listing).
   install: 'Install',
 };
 
@@ -140,7 +140,7 @@ export function isHiveBlueprintListing(l: HarnessListing): boolean {
   return listingKindOf(l) === 'blueprint' && (l.blueprint_kind === 'pot' || l.blueprint_kind === 'hive');
 }
 
-/** Pre-publication review (worker migration 008 / learning-packs D-007):
+/** Pre-publication review (worker migration 008 / knowledge-packs D-007):
  *  pending/rejected listings are publicly invisible server-side; this badge
  *  helper is for the PUBLISHER's own views (their pending rows + reasons). */
 export function isPendingReview(l: HarnessListing): boolean {
@@ -326,7 +326,7 @@ export interface HarnessListing {
   // they are optional. `listing_kind` drives the per-kind consumer action
   // (join/fork/install); `project_ref`/`listing_ref` carry the project-centric
   // 1:N identity (D-008). See `listingAction()`.
-  /** harness | blueprint | plugin | pack | learning-pack | template. Absent ⇒
+  /** harness | blueprint | plugin | pack | knowledge-pack | template. Absent ⇒
    *  treat as 'harness'; the interim 'tool-pack' wire value (mig 008) normalizes
    *  to 'pack' via listingKindOf (cupboard-public-release P-003). */
   listing_kind?: ListingKind | 'tool-pack';
@@ -364,8 +364,8 @@ export interface HarnessListing {
    */
   provides_tools?: string | null;
 
-  // ── Pre-publication review (worker migration 008 / learning-packs D-007).
-  // Policy kinds (learning-pack, blueprint) publish 'pending'; the server
+  // ── Pre-publication review (worker migration 008 / knowledge-packs D-007).
+  // Policy kinds (knowledge-pack, blueprint) publish 'pending'; the server
   // hides non-approved rows from public reads, so most clients only ever see
   // 'approved' — the pending/rejected values surface on the PUBLISHER's own
   // GET /:id view (with auth) and the operator /admin queue. ──

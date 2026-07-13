@@ -172,7 +172,7 @@ export const CATEGORIES: readonly CategoryDef[] = [
     protected: false,
     suggestedPosture: 'low-risk',
     covers:
-      'memory approve / forget; docs & insights publish; learning-pack / blueprint publish',
+      'memory approve / forget; docs & insights publish; knowledge-pack / blueprint publish',
   },
   {
     id: 'schedule-arm',

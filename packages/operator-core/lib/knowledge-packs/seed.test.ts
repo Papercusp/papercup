@@ -11,7 +11,7 @@ vi.mock('../memory/backend', () => ({
 
 import { getMemoryBackend } from '../memory/backend';
 import { seedPackIntoHive, shapesFromDetection } from './seed';
-import type { LearningPack } from './pack-format';
+import type { KnowledgePack } from './pack-format';
 
 type RememberCall = [string, Record<string, unknown>];
 
@@ -36,7 +36,7 @@ const makeBackend = (opts: { available?: boolean; failOn?: string[] } = {}) => {
   return { backend, forgotten };
 };
 
-const pack: LearningPack = {
+const pack: KnowledgePack = {
   manifest: { id: 'papercusp-default', title: 'T', description: 'd', version: '1.0.0' },
   items: [
     { id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'body a' },

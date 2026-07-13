@@ -14,7 +14,7 @@ All steps executed in green-stepped turns (owner chose "hold + auto-exec when cl
 - **Step 4 — alias (transition net):** NEW `libs/papercusp/packages/orchestrator/src/blueprint-aliases.ts` (`canonicalBlueprintId`: pot→coding, generic-pot→work; **no coding→coding-factory alias** — coding is reused) wired into `loader.builtinBlueprintPath` + `prompt-resolve` dir/prompt/overlay lookups. 2 new alias tests.
 - **Step 5 — instance migration:** the 2 strict-spine instances (`pot-canary`, `frame-work-smoke`) migrated `extends: coding`→`coding-factory`. The many `extends: pot`/`generic-pot` instances (xbench/smoke, mostly ephemeral) are alias-covered. PG `harness_shared.blueprints` needs no manual migration (rows keyed by the instance slug, not the parent; re-projection + alias resolve correctly).
 
-**Verification:** orchestrator full package **74 files / 895 tests green**; operator-core blueprint-area (lib/blueprint, agent-tools/blueprint, fleet/operator-spawn, overwatch, agent-tools/pot) **64 files / 633 green**; plus dbos/learning-packs/experiment/endpoint-route, apps/operator CreateHarnessPicker (33), operator-public listings (28). Repo-wide grep: zero stray blueprint-id refs to the old ids.
+**Verification:** orchestrator full package **74 files / 895 tests green**; operator-core blueprint-area (lib/blueprint, agent-tools/blueprint, fleet/operator-spawn, overwatch, agent-tools/pot) **64 files / 633 green**; plus dbos/knowledge-packs/experiment/endpoint-route, apps/operator CreateHarnessPicker (33), operator-public listings (28). Repo-wide grep: zero stray blueprint-id refs to the old ids.
 
 **Remaining cosmetic debt (NOT load-bearing, safe follow-up):** stale path/prose comments still naming `blueprints/pot/` or `generic-pot` in `overwatch/loop.ts`, `agent-mcp/role-config.ts`, `operator-spawn.ts` (deeper comment), `mug.ts` (`pot/mug.md` in a comment), the `coding`/`work` blueprint.yaml header comments, and the `coding-factory` description (`The default coding harness` → should read coding-factory). None affect tests/behavior. Also: the transition alias should be REMOVED once all live instances + PG are confirmed migrated.
 
@@ -126,7 +126,7 @@ Vacates the `coding` id. After this step NOTHING references builtin `coding`; `p
 - `packages/operator-core/lib/blueprint/installed-blueprints.test.ts:52`
 - `packages/operator-core/lib/endpoint-route/routes/harness/projects-create-routes.test.ts:223`
 - `apps/operator/app/harness/__tests__/CreateHarnessPicker.test.tsx:186`  ⚠️ Brief 3
-- `packages/operator-core/lib/learning-packs/domain-default-packs.test.ts:113` (`extends:'generic-pot'`→`'work'`)  ⚠️ Brief 5 (su-3896e)
+- `packages/operator-core/lib/knowledge-packs/domain-default-packs.test.ts:113` (`extends:'generic-pot'`→`'work'`)  ⚠️ Brief 5 (su-3896e)
 - `apps/operator-public/src/__tests__/listings.test.ts:96` (fixture consistency only)
 
 **Verify:** orchestrator blueprint/ + prompt-resolve; `npm run test:affected`; `installed-blueprints` test (pots list contains work, not generic-pot).

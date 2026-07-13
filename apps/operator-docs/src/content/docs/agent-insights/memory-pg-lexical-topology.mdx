@@ -33,8 +33,10 @@ never hand-copy the list).
   `CanonicalVectorStore.lexicalSearch`: embed-free, field-weighted token match
   (`payload->>'name'` ×3 > `'description'` ×2 > `'data'` ×1, normalized by
   tokens×3 — parity with the claude-file scoring that benched best on
-  exact-identifier recall), ILIKE candidate pull across all three fields,
-  min-2-char identifier-preserving tokenizer (`lexicalTokens`).
+  exact-identifier recall), min-2-char identifier-preserving tokenizer
+  (`lexicalTokens`, which emits a compound like `PAPERCUSP_MEMORY_TIMEOUT` whole
+  *and* its `_`/`-` subtokens). **The score is computed IN SQL and the `ORDER BY`
+  is the score** — see the ranking trap below.
 - Fusion: `HybridBackend` RRF (floored-union). Both legs return the SAME
   canonical ids, so fusion dedupes by construction.
 
@@ -86,6 +88,23 @@ claude topic files + PG) but would double-write when both legs share
 
 ## Traps this replaced (don't re-learn them)
 
+- **Never rank a lexical candidate pool by RECENCY and then score it.** The first
+  cut of `lexicalSearch` pulled `ORDER BY created_at DESC LIMIT max(topK*5, 50)`
+  and did the field-weighted scoring in JS over the survivors. That truncates the
+  pool *before* anything is scored, so the best lexical match is dropped without
+  ever being scored whenever it loses a recency race to rows that merely share a
+  common word. It cost lexical-gap MRR on the frozen bench (0.68 vs the file leg's
+  0.75 — the paraphrase queries reach their answer only through a couple of generic
+  words), and on a live store it silently breaks **exact-identifier recall**, which
+  is the whole reason this leg exists: a rare identifier sitting in an old row never
+  enters the candidate pool at all. A small bench corpus HIDES this — with 114 rows a
+  cap of 50 still admits most of the corpus. The fix is structural: the per-token
+  `CASE` weights are computed in SQL, `WHERE lex_raw > 0 ORDER BY lex_raw DESC LIMIT
+  topK` — ranking over the whole matching set, each ILIKE evaluated once (the score
+  expression *is* the filter). Guard:
+  `canonical-lexical-search.integration.test.ts` → "ranks an OLD strong match above
+  many NEWER weak ones" (60 newer common-word rows vs one old identifier row), which
+  fails if a recency-ordered candidate cap is ever reintroduced.
 - The bench's isolated `bench_memory` schema used to hand-mirror production
   DDL and drifted TWICE in one day (missing `memory_vec_harrier`, then missing
   the temporal-lite columns) — every PG backend benched at literal zero

@@ -114,7 +114,7 @@ export async function ensurePapercuspHive(
   }
 
   // Create the generic `coding` shared hive — private/local/idle, blueprint
-  // default pack. blueprintId omitted ⇒ HIVE_BLUEPRINT_ID ('coding'); learningPack
+  // default pack. blueprintId omitted ⇒ HIVE_BLUEPRINT_ID ('coding'); knowledgePack
   // omitted ⇒ the blueprint's declared generic `coding` pack (P-017); deployment
   // omitted ⇒ local (no announce); wakeInSeconds omitted ⇒ idle.
   const createHive =

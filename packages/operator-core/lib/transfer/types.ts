@@ -50,7 +50,7 @@ export interface TransferLesson {
   workspaceId: string;
   id: string;
   /** sha-256 of the normalized lesson text — the structural dedup key, and
-   *  the join key to learning_pack_candidates (the inherit-the-bar edge). */
+   *  the join key to knowledge_pack_candidates (the inherit-the-bar edge). */
   signature: string;
   title: string | null;
   lessonText: string;
