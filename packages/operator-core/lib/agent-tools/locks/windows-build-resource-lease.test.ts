@@ -66,7 +66,8 @@ if (tool === 'locks:acquire_resource') {
   output({ ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, released }] });
 } else if (tool === 'locks:list') {
   const row = current();
-  output({ ok: true, holders: row ? [row] : [] });
+  if (row) process.stdout.write('format: toon\nok: true\nholders[1]{owner,resource}:\n  ' + row.owner + ',' + row.resource + '\n');
+  else process.stdout.write('format: toon\nok: true\nholders: []\ndraining: false\n');
 } else if (tool === 'events:emit' && args.announce) {
   appendFileSync(eventLog, 'announce:' + args.event + '\n');
   output({ ok: true, announced: true, event: args.event });
