@@ -3796,8 +3796,17 @@ function repoCwdOrRedirect(cwd) {
   return cwd; // no better answer — do not invent one
 }
 
-function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null }) {
-  cwd = repoCwdOrRedirect(cwd);
+function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null, preserveCwd = false }) {
+  // EI-10938's `.papercusp` state-dir → checkout redirect is correct for a FRESH
+  // launch, but a RESUME/FORK MUST keep the recorded cwd: `claude --resume` /
+  // `--fork` locate the transcript under the cwd-derived projects dir
+  // (<CLAUDE_CONFIG_DIR>/projects/<encoded-cwd>/<id>.jsonl), and the archive
+  // rematerializes it under the ORIGINAL cwd's encoding — so redirecting the cwd
+  // makes claude search the checkout's projects dir instead → "No conversation
+  // found", which silently made EVERY `.papercusp`-cwd session unresumable
+  // (owner-reported 2026-07-13). Resume/fork pass preserveCwd:true; fresh
+  // launches keep the guard.
+  if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
   // Export the RESOLVED operator url to every agent child so claude's user-level
   // papercusp-su MCP url (`${PAPERCUSP_OPERATOR_URL:-…}/api/mcp?…`, written by
@@ -4076,6 +4085,10 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
     wrapperBin: bin,
     args,
     cwd: session.cwd,
+    // A resume MUST run in the recorded cwd so `claude --resume` finds the
+    // transcript under its cwd-encoded projects dir (EI-10938's state-dir
+    // redirect would send it to the checkout → "No conversation found").
+    preserveCwd: true,
     envelopeEnv: env,
     kickoff: kickoff ? tagKickoffProvenance(kickoff, env.PAPERCUSP_SID || null) : null,
   });
