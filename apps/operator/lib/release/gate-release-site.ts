@@ -23,6 +23,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { findIdentityLeaks, identityLiterals } from './release-content-scrub';
 
 export interface SiteLeak {
@@ -33,12 +34,20 @@ export interface SiteLeak {
   sample: string;
 }
 
+/**
+ * Every file we PUBLISH — not just the pages. `history.json` is uploaded to the
+ * same host and carries the same agent-written changelog prose, so a gate that only
+ * read `.html` would wave through a leak sitting in the feed the app itself fetches.
+ * Gate what ships, not what you happened to think of first.
+ */
+const PUBLISHED = ['.html', '.json'];
+
 function walk(dir: string): string[] {
   const out: string[] = [];
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, e.name);
     if (e.isDirectory()) out.push(...walk(full));
-    else if (e.name.endsWith('.html')) out.push(full);
+    else if (PUBLISHED.some((ext) => e.name.endsWith(ext))) out.push(full);
   }
   return out;
 }
@@ -101,6 +110,6 @@ export function main(argv: string[] = process.argv.slice(2)): number {
 }
 
 // `npx tsx gate-release-site.ts <dir>` — the form the publish script calls.
-if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
+if (isCliEntry(import.meta.url)) {
   process.exit(main());
 }

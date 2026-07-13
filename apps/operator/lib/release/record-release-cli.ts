@@ -44,6 +44,7 @@ import {
 } from './release-registry';
 import {
   planPagePath,
+  renderHistoryJson,
   renderIndexHtml,
   renderPlanPageHtml,
   type HydratedRelease,
@@ -156,6 +157,9 @@ export async function generateSite(
   const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS };
   fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
   fs.writeFileSync(path.join(outDir, 'index.html'), renderIndexHtml(hydratedAll, opts), 'utf8');
+  // The machine-readable twin of the page — what the in-app Update Center reads.
+  // Same registry, same scrub, published to the same host as latest.json.
+  fs.writeFileSync(path.join(outDir, 'history.json'), renderHistoryJson(hydratedAll, opts), 'utf8');
   let pages = 1;
 
   // One page per plan, newest release wins when a plan spans several (it carries

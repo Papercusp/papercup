@@ -9,8 +9,22 @@
  * normalization as the manifest route (imported, not re-derived) so the list and
  * the updater can never disagree about what "on the beta channel" means.
  *
- * `auth: 'public'` — same loopback posture as the manifest/download routes; the
- * private release repo is reached with a server-resolved GitHub token.
+ * SOURCE PRECEDENCE (WI-4446) — the static release host FIRST, GitHub as fallback,
+ * mirroring the manifest route exactly:
+ *
+ *   1. `<host>/history.json` — AUTHORITATIVE. Generated from the release registry
+ *      (`harness_shared.releases`) at cut time and uploaded next to `latest.json`.
+ *   2. GitHub Releases — the legacy/hybrid path, kept for a host that publishes no
+ *      history.json. It discovers NOTHING on our current rail: releases stopped
+ *      going to GitHub on 2026-07-08.
+ *
+ * ⚠ It reads the registry over HTTP, not out of Postgres, and that is deliberate.
+ * `harness_shared.releases` lives in OUR database; an installed app has its own,
+ * empty one. Querying it directly would make this route work perfectly on the
+ * machine that cuts releases and return an empty history to every real user —
+ * a bug with no failing branch, on the box least likely to notice.
+ *
+ * `auth: 'public'` — same loopback posture as the manifest/download routes.
  *
  * Query: channel? (else the saved update_channel, else stable) · product? (gui|
  * server, default gui) · target?/arch? (default linux/x86_64 — the GUI passes the
@@ -30,6 +44,8 @@ import {
   fetchReleases,
   normalizeTagVersion,
   pickAsset,
+  platformKeyFor,
+  releaseHostBase,
   resolveChannel,
   visibleChannels,
   type Channel,
@@ -37,6 +53,97 @@ import {
 } from './updates-manifest';
 
 type Product = 'gui' | 'server';
+
+/**
+ * `<host>/history.json` — the AUTHORITATIVE history since releases went local-only
+ * (WI-4446, and the same reasoning as WI-4389 for the manifest).
+ *
+ * Written by `apps/operator/lib/release/record-release-cli.ts --regenerate` from
+ * the release registry and uploaded by `bin/publish-release-history.sh`.
+ */
+export interface StaticHistoryArtifact {
+  product: Product;
+  platform: string;
+  name: string;
+  /** Relative to the release host base — the base path is the shared secret. */
+  url: string;
+  size: number;
+  sha256: string;
+}
+
+export interface StaticHistoryRelease {
+  tag: string;
+  version: string;
+  channel: string;
+  notes: string;
+  pub_date: string;
+  prerelease: boolean;
+  artifacts: StaticHistoryArtifact[];
+}
+
+export interface StaticHistory {
+  generated_at: string;
+  releases: StaticHistoryRelease[];
+}
+
+export async function fetchStaticHistory(host: string): Promise<StaticHistory | null> {
+  const res = await fetch(`${host}/history.json`, { next: { revalidate: 60 } } as RequestInit);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`release host history.json: ${res.status}`);
+  return (await res.json()) as StaticHistory;
+}
+
+/**
+ * Does this release have something THIS machine can install?
+ *
+ * A macOS build is `darwin-universal` — one artifact that runs on both Apple
+ * Silicon and Intel. `platformKeyFor` (shared with the updater, so the two can
+ * never disagree about what a platform is) yields `darwin-aarch64` /
+ * `darwin-x86_64`, neither of which equals `darwin-universal`. Comparing the two
+ * naively marks every mac release un-installable ON A MAC, which is the one
+ * machine it definitely runs on.
+ */
+export function artifactMatches(
+  a: StaticHistoryArtifact,
+  platformKey: string,
+  product: Product,
+): boolean {
+  if (a.product !== product) return false;
+  if (a.platform === platformKey) return true;
+  return a.platform === 'darwin-universal' && platformKey.startsWith('darwin-');
+}
+
+/** Build the history list from the STATIC feed. Pure — the network is the caller's. */
+export function buildHistoryFromStatic(
+  history: StaticHistory,
+  opts: {
+    channel: Channel;
+    target: string;
+    arch: string;
+    product: Product;
+    currentVersion: string;
+    limit: number;
+  },
+): UpdateHistoryEntry[] {
+  const visible = visibleChannels(opts.channel);
+  const platformKey = platformKeyFor(opts.target, opts.arch);
+  return history.releases
+    .filter((r) => visible.has(r.channel as Channel))
+    .sort((a, b) => Date.parse(b.pub_date) - Date.parse(a.pub_date))
+    .slice(0, opts.limit)
+    .map((r) => ({
+      tag: r.tag,
+      version: normalizeTagVersion(r.tag),
+      channel: r.channel as Channel,
+      notes: r.notes ?? '',
+      pub_date: r.pub_date,
+      prerelease: r.prerelease,
+      is_current: Boolean(opts.currentVersion) && normalizeTagVersion(r.tag) === opts.currentVersion,
+      installable:
+        platformKey != null &&
+        (r.artifacts ?? []).some((a) => artifactMatches(a, platformKey, opts.product)),
+    }));
+}
 
 export interface UpdateHistoryEntry {
   /** The full git tag, e.g. `desktop-v0.0.7-alpha` (what a rollback targets). */
@@ -112,10 +219,34 @@ export default defineTool({
     const channel = resolveChannel(params, stored?.update_channel);
 
     const base = { channel, product, current_version: currentVersion };
+    const opts = { channel, target, arch, product, currentVersion, limit };
 
+    // ── 1. The static release host — AUTHORITATIVE. ──────────────────────────
+    // Releases have not been published to GitHub since 2026-07-08 (owner directive:
+    // artifacts are built locally and uploaded to our own host), so the GitHub path
+    // below discovers nothing and this route returned an empty list to every user,
+    // forever, while reporting `no_token` as though a credential were the problem.
+    const host = releaseHostBase();
+    if (host) {
+      try {
+        const stat = await fetchStaticHistory(host);
+        if (stat && stat.releases.length > 0) {
+          return Response.json({ ...base, releases: buildHistoryFromStatic(stat, opts) });
+        }
+      } catch (e: unknown) {
+        // Fall through to GitHub — but say so. Silently returning an empty list here
+        // is the "you're on the latest" lie in a different costume (WI-4477): a
+        // failed fetch and a genuinely empty history must not look the same.
+        console.warn(
+          `[updates/history] release host fetch failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
+    // ── 2. GitHub — the legacy/hybrid path. ─────────────────────────────────
     const token = await resolveGithubToken();
     if (!token) {
-      console.warn('[updates/history] no GitHub token — returning empty history');
+      console.warn('[updates/history] no release host history and no GitHub token');
       return Response.json({ ...base, releases: [], reason: 'no_token' });
     }
 
@@ -130,7 +261,6 @@ export default defineTool({
     }
     if (!releases) return Response.json({ ...base, releases: [], reason: 'fetch_failed' });
 
-    const history = buildHistory(releases, { channel, target, arch, product, currentVersion, limit });
-    return Response.json({ ...base, releases: history });
+    return Response.json({ ...base, releases: buildHistory(releases, opts) });
   },
 });

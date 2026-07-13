@@ -407,6 +407,52 @@ ${releases.map((r, i) => renderRelease(r, i === 0)).join('\n')}`;
   return shell('Papercusp releases', `${body}\n${footer}`, beacon, opts.redact ?? identityLiterals());
 }
 
+/**
+ * `history.json` — the same release history, for the APP to read.
+ *
+ * ⚠ This exists because the obvious implementation of the in-app Update Center is
+ * wrong. The registry lives in `harness_shared.releases` in OUR Postgres; a beta
+ * tester's installed app has its own, empty database. A route that reads the
+ * registry directly therefore works perfectly on the machine that cut the release
+ * and shows an empty history to every actual user — the "works on my box" bug, in
+ * a place nobody would look for it, because the code has no branch that can fail.
+ *
+ * So the history travels the SAME rail as the updater's manifest: a static file on
+ * the release host, published next to `latest.json`, fetched over HTTPS. One
+ * source of truth (the registry), two published projections (this and the page).
+ *
+ * It goes through the identity scrub for the same reason the page does — these are
+ * bytes leaving this box for a human outside it, and the changelog is agent-written
+ * prose from our own database, which is precisely the content we learned not to
+ * trust.
+ */
+export function renderHistoryJson(releases: HydratedRelease[], opts: PageOptions): string {
+  const json = {
+    generated_at: opts.generatedAt.toISOString(),
+    releases: releases.map((r) => ({
+      tag: `desktop-v${r.row.version}${r.row.channel === 'stable' ? '' : `-${r.row.channel}`}`,
+      version: r.row.version,
+      channel: r.row.channel,
+      notes: r.row.changelogMd ?? '',
+      pub_date: (r.row.publishedAt ?? r.row.cutAt).toISOString(),
+      prerelease: r.row.channel !== 'stable',
+      artifacts: r.row.artifacts
+        .filter((a) => !a.name.endsWith('.sig'))
+        .map((a) => ({
+          product: a.product,
+          platform: a.platform,
+          name: a.name,
+          // RELATIVE, like everywhere else — the base path is the secret, and the
+          // app already knows it (it is baked in as the update base URL).
+          url: a.url,
+          size: a.size,
+          sha256: a.sha256,
+        })),
+    })),
+  };
+  return scrubIdentity(JSON.stringify(json, null, 2), opts.redact ?? identityLiterals());
+}
+
 /** One plan, rendered — the owner's "display the plan" surface. */
 export function renderPlanPageHtml(
   plan: ShippedPlan,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHistory } from './updates-history';
+import { buildHistory, buildHistoryFromStatic, type StaticHistory } from './updates-history';
 import type { GhRelease } from './updates-manifest';
 
 /** Minimal GitHub release fixture. */
@@ -83,5 +83,90 @@ describe('buildHistory — Update Center release list (pure)', () => {
     const h = buildHistory(RELEASES, { ...baseOpts, channel: 'alpha', limit: 1 });
     expect(h).toHaveLength(1);
     expect(h[0].tag).toBe('desktop-v0.0.7-alpha');
+  });
+});
+
+// ── The static release host: the source that actually has our releases in it.
+describe('buildHistoryFromStatic — the local-only rail', () => {
+  const history: StaticHistory = {
+    generated_at: '2026-07-13T00:00:00Z',
+    releases: [
+      {
+        tag: 'desktop-v0.0.9-alpha',
+        version: '0.0.9',
+        channel: 'alpha',
+        notes: '## Highlights\n\nAuto-update works.',
+        pub_date: '2026-07-13T00:00:00Z',
+        prerelease: true,
+        artifacts: [
+          {
+            product: 'gui',
+            platform: 'linux-x86_64',
+            name: 'gui.deb',
+            url: 'desktop-v0.0.9-alpha/gui.deb',
+            size: 1,
+            sha256: 'a',
+          },
+          {
+            product: 'gui',
+            platform: 'darwin-universal',
+            name: 'gui.dmg',
+            url: 'desktop-v0.0.9-alpha/gui.dmg',
+            size: 1,
+            sha256: 'b',
+          },
+        ],
+      },
+      {
+        tag: 'desktop-v0.0.8-alpha',
+        version: '0.0.8',
+        channel: 'alpha',
+        notes: 'older',
+        pub_date: '2026-07-12T00:00:00Z',
+        prerelease: true,
+        artifacts: [],
+      },
+    ],
+  };
+
+  const opts = {
+    channel: 'alpha' as const,
+    target: 'linux',
+    arch: 'x86_64',
+    product: 'gui' as const,
+    currentVersion: '',
+    limit: 20,
+  };
+
+  it('lists the releases newest-first and marks what this machine can install', () => {
+    const h = buildHistoryFromStatic(history, opts);
+    expect(h.map((r) => r.version)).toEqual(['0.0.9', '0.0.8']);
+    expect(h[0].installable).toBe(true);
+    // 0.0.8's installers were never uploaded — offering "Install" would 404.
+    expect(h[1].installable).toBe(false);
+  });
+
+  it('marks the RUNNING version as current', () => {
+    const h = buildHistoryFromStatic(history, { ...opts, currentVersion: '0.0.8-alpha' });
+    expect(h.find((r) => r.version === '0.0.8-alpha')?.is_current).toBe(true);
+  });
+
+  it('a universal mac build IS installable on both mac arches', () => {
+    // darwin-universal !== darwin-aarch64, so a naive equality check marks every mac
+    // release un-installable on the one machine it certainly runs on.
+    for (const arch of ['aarch64', 'x86_64']) {
+      const h = buildHistoryFromStatic(history, { ...opts, target: 'darwin', arch });
+      expect(h[0].installable, `darwin/${arch}`).toBe(true);
+    }
+  });
+
+  it('does not offer the GUI build to someone asking for the Server product', () => {
+    const h = buildHistoryFromStatic(history, { ...opts, product: 'server' });
+    expect(h[0].installable).toBe(false);
+  });
+
+  it('respects the channel-visibility window', () => {
+    const h = buildHistoryFromStatic(history, { ...opts, channel: 'stable' });
+    expect(h).toEqual([]);
   });
 });
