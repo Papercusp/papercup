@@ -357,6 +357,16 @@ export default defineTool({
           systemPromptText,
           model: operatorModel,
           backend: operatorBackend,
+          // Gateway admission tier: this brain IS the owner-interactive chat/voice
+          // reply (loopback-only route; operator:converse + the papercup:converse
+          // voice alias share this handler). Tag it `interactive` so its LLM calls
+          // land in the gateway's reserved tier-1 (HUMAN_PRIORITY_LABELS → fail-fast
+          // + reserved floor) instead of the untiered default band, where under an
+          // account-pool crunch the owner's voice queued behind the background fleet
+          // and hung ("processing forever" — EI-10795). Threads to every backend:
+          // anthropic-direct via priorityTierHeaders, claude/codex via the spawn's
+          // ANTHROPIC_CUSTOM_HEADERS / gateway config.
+          priority: 'interactive',
           mcpConfig,
           allowedTools: [...allowedTools],
           permissionMode: 'bypassPermissions',
