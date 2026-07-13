@@ -13,11 +13,16 @@
  *     which short-circuits before any conversation routing.
  *   - Yields to a higher-priority registered voice consumer (e.g. a
  *     background-toast "say cancel" handler) when one is active.
- *   - Otherwise routes the transcript to the dock's Papercup pane (the
- *     persistent fast front-end — voice-public-release-readiness P-019/D-007)
- *     with a spoken instant ack, falling back to the in-process Papercup
- *     converse brain (the desktop chat's shared thread, submitVoiceTurn) when
- *     the pane route is unavailable.
+ *   - Otherwise routes the transcript into the in-process Papercup converse
+ *     brain (the operator chat sidebar's shared thread, submitVoiceTurn) —
+ *     voice and text land in the SAME visible conversation
+ *     (operator-chat-sidebar-revival-2026-07-13 P-007/D-001, reversing
+ *     voice-public-release-readiness D-004's pane-primary routing: the
+ *     zellij dock is now a TESTING-gated dev surface, not the shipped
+ *     front-end). When FLAGS.TESTING is ON (the dock dev path), the
+ *     transcript still goes to the dock's Papercup pane FIRST with a spoken
+ *     instant ack, falling back to the converse thread when the pane is
+ *     unavailable.
  *
  * The previous Oracle fallback (POST /api/oracle/chat) was removed
  * 2026-06-22: Oracle is a separate concierge brain (not the conversation)
@@ -34,6 +39,8 @@ import {
 } from './voice-mode';
 import { routeVoiceToSentinelPane, drainSentinelOutput } from './voice-sentinel-bridge';
 import { submitVoiceTurn } from './voice-converse-handler';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 
 /**
  * Voice consumer priority registry (v4 §2b).
