@@ -164,6 +164,31 @@ describe('pickAssetUrl', () => {
   });
 });
 
+describe('resolveChannel — default channel while the app is in alpha (WI-4389)', () => {
+  it('defaults to alpha when NO ?channel= and NO stored channel (the fresh-install path)', () => {
+    // The bug: this used to return 'stable', and visibleChannels('stable')={stable}
+    // excludes the alpha releases that are the ONLY ones that exist → the updater
+    // was silently DOA for any install that skipped the onboarding channel step.
+    expect(resolveChannel(new URLSearchParams(''), undefined)).toBe('alpha');
+    expect(DEFAULT_CHANNEL).toBe('alpha');
+  });
+
+  it('an explicit ?channel= query still wins over the default', () => {
+    expect(resolveChannel(new URLSearchParams('channel=stable'), undefined)).toBe('stable');
+    expect(resolveChannel(new URLSearchParams('channel=beta'), 'stable')).toBe('beta');
+  });
+
+  it('a persisted channel (override) wins over the default when no query is given', () => {
+    expect(resolveChannel(new URLSearchParams(''), 'stable')).toBe('stable');
+    expect(resolveChannel(new URLSearchParams(''), 'beta')).toBe('beta');
+  });
+
+  it('ignores a garbage channel and falls back to the default', () => {
+    expect(resolveChannel(new URLSearchParams('channel=nightly'), undefined)).toBe('alpha');
+    expect(resolveChannel(new URLSearchParams(''), 'bogus')).toBe('alpha');
+  });
+});
+
 describe('GET /api/updates/manifest — manifest contract with tauri-plugin-updater', () => {
   const guiRelease = {
     tag_name: 'desktop-v0.0.4-alpha',
