@@ -609,6 +609,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     since: sinceRaw ? new Date(sinceRaw) : null,
     changelogMd,
     bundleDirs,
+    mobileRoot,
     outDir,
     scope,
     cutBy: arg(argv, '--cut-by') ?? process.env.PAPERCUSP_SESSION_ID ?? null,

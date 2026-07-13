@@ -26870,3 +26870,184 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
     left: 12px !important;
   }
 }
+
+/* ── Pot status strip + panel (operator-chat-sidebar-revival P-018, variant A)
+   The one-line ambient pot digest under the sidebar header + its fold-out
+   panel. Same token vocabulary as the op-chat blocks above. ── */
+
+.op-pot-status {
+  flex: none;
+  border-bottom: 1px solid rgb(from var(--accent-strong) r g b / 0.10);
+}
+
+.op-pot-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 14px;
+  border: none;
+  background: rgba(255, 255, 255, 0.02);
+  color: color-mix(in srgb, var(--accent-soft), transparent 18%);
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.op-pot-strip:hover {
+  background: rgb(from var(--accent-strong) r g b / 0.06);
+}
+
+.op-pot-strip:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -2px;
+}
+
+.op-pot-strip-item { flex: none; }
+
+.op-pot-sep { flex: none; opacity: 0.45; }
+
+.op-pot-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.op-pot-dot.ok { background: #35c98f; }
+.op-pot-dot.bad { background: #e5484d; }
+
+.op-pot-badge {
+  flex: none;
+  margin-left: 4px;
+  padding: 2px 7px;
+  border-radius: 9px;
+  background: rgb(from #e5484d r g b / 0.16);
+  color: #ff8f93;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.op-pot-caret { margin-left: auto; opacity: 0.6; }
+
+.op-pot-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 44vh;
+  padding: 10px 14px 12px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--bg-deeper), transparent 30%);
+  font-size: 12px;
+}
+
+.op-pot-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.op-pot-h {
+  margin: 0;
+  color: color-mix(in srgb, var(--accent-soft), transparent 28%);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.op-pot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.op-pot-queue { counter-reset: potq; }
+
+.op-pot-attn {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-left: 2px solid transparent;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.op-pot-attn.sev-critical { border-left-color: #e5484d; }
+.op-pot-attn.sev-warning { border-left-color: #f5a524; }
+.op-pot-attn.sev-info { border-left-color: color-mix(in srgb, var(--accent-strong), transparent 40%); }
+
+.op-pot-attn-text { flex: 1; min-width: 0; }
+
+.op-pot-chip {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid rgb(from var(--accent-strong) r g b / 0.24);
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--accent-soft), transparent 20%);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.op-pot-cup,
+.op-pot-next {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.op-pot-cup .op-pot-dot { align-self: center; }
+
+.op-pot-cup-id,
+.op-pot-next-id {
+  flex: none;
+  color: color-mix(in srgb, var(--accent-soft), transparent 10%);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.op-pot-cup-doing,
+.op-pot-next-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.op-pot-cup-load {
+  flex: none;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.op-pot-next::before {
+  counter-increment: potq;
+  content: counter(potq);
+  flex: none;
+  width: 14px;
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.op-pot-foot { opacity: 0.65; font-size: 11px; }
+
+.op-pot-directive {
+  padding: 5px 8px;
+  border-left: 2px solid color-mix(in srgb, var(--accent-strong), transparent 40%);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  font-style: italic;
+}
+
+.op-pot-empty { opacity: 0.55; font-size: 11.5px; }
