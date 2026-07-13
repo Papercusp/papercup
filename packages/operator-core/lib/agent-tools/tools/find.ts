@@ -36,14 +36,22 @@ import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/e
  * `name \n description \n when \n argSchema` — the richest intent signal for the
  * semantic leg.
  */
-export function buildCorpus(): { corpus: ToolDiscoveryEntry[]; embedText: Map<string, string> } {
+export function buildCorpus(): {
+  corpus: ToolDiscoveryEntry[];
+  embedText: Map<string, string>;
+  /** EI-10882: name → the tool's declared RESPONSE shape (guidance.returns). */
+  returnsByTool: Map<string, string>;
+} {
   const corpus: ToolDiscoveryEntry[] = [];
   const embedText = new Map<string, string>();
+  const returnsByTool = new Map<string, string>();
   for (const tool of listAllProjectedTools()) {
     if (!tool.expose.mcp) continue;
     const name = tool.expose.mcp.name;
     const when = tool.guidance?.when?.trim();
     const argSchema = schemaToText(tool.inputSchema);
+    const returns = (tool.guidance as { returns?: string } | undefined)?.returns?.trim();
+    if (returns) returnsByTool.set(name, returns);
     // Fold the "when to use" line into the searchable text — it's the richest
     // intent signal for both legs (lexical description weight + the embedding).
     const description = [tool.description, when].filter(Boolean).join(' ').trim() || null;
@@ -58,7 +66,7 @@ export function buildCorpus(): { corpus: ToolDiscoveryEntry[]; embedText: Map<st
     } as unknown as ToolDiscoveryEntry);
     embedText.set(name, [name, tool.description, when, argSchema].filter(Boolean).join('\n'));
   }
-  return { corpus, embedText };
+  return { corpus, embedText, returnsByTool };
 }
 
 // ── Boot-time embedding index over the full catalog (module-scoped cache) ─────
@@ -156,24 +164,30 @@ if (!process.env.VITEST) {
 export default defineTool({
   name: 'tools:find',
   description:
-    'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic) AND ' +
-    'activate the matches for your session so you can call them. Returns the best-matching tool ' +
-    'names with descriptions. Use when you need a capability that is not in your core toolset — ' +
-    'e.g. tools:find("feature flag") or tools:find("spawn a worker"). On a seeded (small-surface) ' +
-    'session the matched tools are added to your live tool list on the fly, so after this call you ' +
-    'can call the one you want directly.',
+    'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the ' +
+    'best-matching tool names with their description, ARG schema, and (EI-10882) their declared ' +
+    'RESPONSE shape (`returns`) — so you can write a code:run batch over a tool without first calling ' +
+    'it once just to learn its field names. Use when you need a capability that is not in your core ' +
+    'toolset — e.g. tools:find("feature flag") or tools:find("spawn a worker"). ' +
+    'ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live ' +
+    'tool list (`activated:true`) and you can call them directly; on a full-catalog session there is ' +
+    'nothing to expand (`activated:false`) and you must call them via tools:invoke. ALWAYS read the ' +
+    '`activated` flag + `howToCall` in the result rather than assuming a direct call will resolve.',
   guidance: {
     when:
       'You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO ' +
-      '("set a feature flag", "list open plans", "spawn a worker bee"). The intent-aware replacement for guessing names.',
+      '("set a feature flag", "list open plans", "spawn a worker bee"). The intent-aware replacement for guessing names. ' +
+      'Also the cheapest way to learn a tool\'s RESPONSE shape before batching over it (`returns` on each hit).',
     notWhen:
       'When the tool is already in your core set or you know its exact name — just call it (in omp, if a direct call reports not-found, tools:invoke {name, args} runs it server-side). ' +
       'For a full permission-annotated dump use agent_tools:list.',
     chaining:
-      'tools:find("<intent>") activates the matches for your session → call the top tool directly. ' +
-      'If the direct call errors "tool not found", do NOT guess name variants: call ' +
-      'tools:invoke {name:"<tool>", args:{...}} — it runs any catalog tool without loading. ' +
-      'tools:invoke works on every client (claude/codex/omp) and never needs a separate load step.',
+      'tools:find("<intent>") → READ `activated`. activated:true ⇒ call the top tool directly. ' +
+      'activated:false ⇒ the tools are NOT on your surface; call tools:invoke {name:"<colon-form name>", args:{...}} — ' +
+      'a direct call will fail with not-found, and ToolSearch cannot resolve the colon-form name either (it only ' +
+      'matches the client-mangled id). tools:invoke runs any catalog tool server-side, on every client, with no load step.',
+    returns:
+      '{ query, count, semantic: "on"|"warming"|"lexical-only", activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (the tool\'s declared response shape, or null if it has not declared one), via }], howToCall }',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -189,7 +203,7 @@ export default defineTool({
     limit: z.number().int().positive().max(25).optional(),
   }),
   async handler(args, ctx) {
-    const { corpus, embedText } = buildCorpus();
+    const { corpus, embedText, returnsByTool } = buildCorpus();
     const embedder = await getEmbedder();
     // Self-heal: rebuild if boot warm didn't run or the catalog drifted. Non-
     // blocking — this call uses whatever index is ready right now.
@@ -236,16 +250,28 @@ export default defineTool({
               tool: h.tool,
               description: h.description,
               argSchema: h.argSchema,
+              // EI-10882: the RESPONSE shape, so a caller can write a code:run
+              // batch over this tool WITHOUT first calling it once just to learn
+              // the field names. `null` is an honest "not declared" — call once and
+              // inspect — never a silent omission the caller mistakes for "no body".
+              returns: returnsByTool.get(h.tool) ?? null,
               via: h.via,
             })),
+            // EI-10885: when activation did NOT happen, the old text still LED with
+            // "Call the tool directly" — the one path that cannot work on this
+            // surface — and relegated the path that always works to a fallback after
+            // a failure. An agent that follows the instruction in order pays a
+            // guaranteed wasted call. Lead with the working path instead.
             howToCall: activated
-              ? 'The matched tools are now active for your session — call the one you want directly. ' +
+              ? 'The matched tools are now ACTIVE for your session — call the one you want directly. ' +
                 'If that errors "tool not found", do NOT guess name variants: call ' +
                 'tools:invoke {name:"<exact tool name from hits>", args:{...}} — it runs any catalog tool ' +
                 'without loading. tools:invoke works on every client including omp (server-side dispatch).'
-              : 'Call the tool directly (Claude/Codex). If it reports unknown/not-found, call ' +
-                'tools:invoke {name:"<exact tool name from hits>", args:{...}} — always works, on every ' +
-                'client including omp (server-side dispatch; no load step).',
+              : 'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
+                'fail with unknown/not-found. Call them with ' +
+                'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
+                "the tool's real (colon-form) name; works on every client, needs no load step. " +
+                'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.',
           }),
         },
       ],

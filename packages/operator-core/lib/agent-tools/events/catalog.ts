@@ -12,7 +12,15 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { EVENT_CATALOG, renderCatalog, familyKeyPrefix, type CatalogRow } from '../../events/await/catalog';
+import {
+  mergeInstalledEventCatalog,
+  renderCatalog,
+  familyKeyPrefix,
+  type CatalogRow,
+  type EventFamilyCollision,
+  type InstalledUnitEvents,
+} from '../../events/await/catalog';
+import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import { countActiveAwaitsByPrefixes, listActiveAnnouncements } from '../../events/await/store';
 import { announcementVisibleTo } from '../../events/await/announce-key';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -54,9 +62,35 @@ export default defineTool({
       .boolean()
       .optional()
       .describe("default true — also list ANNOUNCED gate events (EI-9270: dynamic, leader-declared keys — events:emit { announce:true }) visible to your fleet/plan/harness (+ global), each with fired/latched state and live_awaiters. Pass false to skip."),
+    installed: z
+      .boolean()
+      .optional()
+      .describe('default true — also fold in event families declared by INSTALLED packs/plugins (`provides.events`), each tagged `provenance: "installed:<unit>"`. Pass false for the builtin registry only.'),
   }),
   async handler(args, ctx) {
-    let rows = renderCatalog();
+    // ── The INSTALLED tier (P-006 / D-003: events are a dependency axis). Installed
+    // units declare the key families they provide; fold them over the builtin registry
+    // so "what can I wait on?" answers for the WHOLE host, not just this binary's
+    // hard-coded families. Fail-soft: a bad manifest or a cold host degrades to the
+    // builtin catalog — never a throw, or an agent gets pushed back to polling.
+    let installedUnits: InstalledUnitEvents[] = [];
+    if (args.installed !== false) {
+      try {
+        const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+        installedUnits = await readInstalledUnitEvents({
+          harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+        });
+      } catch {
+        /* best-effort — builtin-only catalog beats a dead discovery tool */
+      }
+    }
+    // The merged entry list is also what the live-awaiter join reads below, so an
+    // INSTALLED family gets its awaiter count too (deriving prefixes from the builtin
+    // EVENT_CATALOG alone would silently leave every installed family without one).
+    const merged = mergeInstalledEventCatalog(installedUnits);
+    const collisions: EventFamilyCollision[] = merged.collisions;
+
+    let rows = renderCatalog(installedUnits);
     if (args.family) rows = rows.filter((r) => r.family === args.family);
     if (args.awaitable_now) rows = rows.filter((r) => r.awaitable_now);
 
@@ -66,7 +100,7 @@ export default defineTool({
     // omits live_awaiters rather than failing the whole call.
     if (args.liveAwaiters !== false && rows.length > 0) {
       const wanted = new Set(rows.map((r) => r.family));
-      const entries = EVENT_CATALOG.filter((e) => wanted.has(e.family));
+      const entries = merged.entries.filter((e) => wanted.has(e.family));
       const prefixByFamily = new Map(entries.map((e) => [e.family, familyKeyPrefix(e)]));
       try {
         const counts = await countActiveAwaitsByPrefixes([...prefixByFamily.values()]);
@@ -133,6 +167,7 @@ export default defineTool({
     }
 
     const rowsOut: CatalogRow[] = rows;
+    const installedCount = merged.entries.filter((e) => e.provenance !== 'builtin').length;
     return {
       content: [
         {
@@ -140,10 +175,14 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             count: rowsOut.length,
-            total: EVENT_CATALOG.length,
+            total: merged.entries.length,
+            ...(installedCount > 0 ? { installed_families: installedCount } : {}),
             ...(announced && announced.length > 0 ? { announced } : {}),
+            // A REFUSED family declaration is reported, never swallowed — otherwise a
+            // pack author debugs a family that "just doesn't appear" with no signal.
+            ...(collisions.length > 0 ? { collisions } : {}),
             note:
-              'Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one.',
+              'Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. `provenance` says whether a family is a platform guarantee (builtin) or an installed unit\'s promise (installed:<unit>) — the two carry different trust and lifetime.',
             families: rowsOut,
           }),
         },

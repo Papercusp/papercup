@@ -2,9 +2,22 @@
  * orient-recall-quality-2026-07-12 P-001 — memory:search records its recall
  * telemetry under the ctx-borne `telemetrySurface` (stamped by a compound's
  * inProcessCall — e.g. coord:orient's fold stamps 'orient'), falling back to
- * 'search' for direct calls. Without this pin, deleting the ctx read silently
- * re-blends orient's recall into generic 'search' and per-entry-point recall
- * quality becomes unmeasurable again (the exact gap this plan closes).
+ * 'search' for direct calls.
+ *
+ * ⚠ SCOPE — READ THIS BEFORE TRUSTING THIS FILE (WI-4549). These cases call
+ * `search.handler(input, ctxLiteral)` DIRECTLY, so they pin only that the handler
+ * READS `ctx.telemetrySurface`. They CANNOT pin that dispatch DELIVERS it, and the
+ * docstring here used to claim they closed the whole gap. They did not: memory:search
+ * is principal-gated, defineTool's legacy shim rebuilt the handler ctx from an
+ * allowlist that dropped the stamp, and orient recorded ZERO rows in
+ * memory_recall_stats for WEEKS — blended into generic 'search' — while this suite
+ * stayed green. A ctx-borne field has two halves (read + delivery); a handler-level
+ * test can only ever pin one.
+ *
+ * The DELIVERY half is pinned where it actually breaks — at the dispatch boundary:
+ * libs/generic/tooldef/src/define-tool-legacy-ctx.test.ts ("telemetrySurface
+ * threading (WI-4549)"), which drives the real dispatchProjectedTool path. If you
+ * add a ctx-borne field, pin it THERE, not here.
  *
  * Mock scaffold mirrors search-degraded.test.ts (drives the REAL handler with a
  * mocked backend); recordRecallStats + db-org are mocked because the telemetry

@@ -49,11 +49,57 @@ const DEFAULT_DRAIN_SEC = 120;
  *  minutes later still gets its own restart promptly. */
 const STAGING_COOLDOWN_SEC = 120;
 
-type RestartTarget = 'dev' | 'staging';
+/**
+ * EI-10896: the SHARED long-running hosts beyond the operator. Every one of these executes source
+ * straight from the STAGING tree (tsx, no build step), so an edit to their code is on their disk
+ * IMMEDIATELY but is NOT loaded until the process restarts — no deploy is involved at all. Before
+ * this, none of them had a sanctioned restart path: the target enum was ['dev','staging'], so the
+ * ONLY way to land a gateway fix was the exact raw `systemctl --user restart` this tool's own
+ * guidance forbids. A rule you can only obey by not doing your job gets broken — so the rule now
+ * has a tool behind it.
+ *
+ * The GATEWAY is the most shared process in the system (every agent's LLM egress flows through it),
+ * which makes coalescing matter MORE here than for :3170, not less: N agents each landing a gateway
+ * fix would otherwise mean N fleet-wide outages. It gets a cooldown marker for exactly that reason.
+ */
+const GATEWAY_COOLDOWN_SEC = 120;
 
-const TARGETS: Record<RestartTarget, { unit: string; resource: string; cooldownResource?: string }> = {
-  dev: { unit: 'papercup-dev-api.service', resource: 'dev-server' },
-  staging: { unit: 'papercup-staging-api.service', resource: 'staging-server', cooldownResource: 'staging-server-cooldown' },
+type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar';
+
+const TARGETS: Record<RestartTarget, { unit: string; resource: string; cooldownResource?: string; blastRadius: string }> = {
+  dev: { unit: 'papercup-dev-api.service', resource: 'dev-server', blastRadius: 'the :3070 operator (green release checkout)' },
+  staging: {
+    unit: 'papercup-staging-api.service',
+    resource: 'staging-server',
+    cooldownResource: 'staging-server-cooldown',
+    blastRadius: 'the :3170 staging operator',
+  },
+  gateway: {
+    unit: 'papercup-inference-gateway.service',
+    resource: 'inference-gateway',
+    cooldownResource: 'inference-gateway-cooldown',
+    blastRadius: 'EVERY agent in the fleet — all LLM egress flows through :8788, so in-flight requests are dropped fleet-wide',
+  },
+  'bg-host': {
+    unit: 'papercup-bg-host.service',
+    resource: 'bg-host',
+    cooldownResource: 'bg-host-cooldown',
+    blastRadius: 'the background routines/git-sync/DBOS ticker (an in-flight git-sync commit is interrupted)',
+  },
+  'embed-sidecar': {
+    unit: 'papercup-embed-sidecar.service',
+    resource: 'embed-sidecar',
+    cooldownResource: 'embed-sidecar-cooldown',
+    blastRadius: 'the shared embedding sidecar (:3384) — semantic search / memory recall degrade until it is back',
+  },
+};
+
+/** Per-target cooldown window (EI-10896). Only targets with a cooldownResource coalesce. */
+const COOLDOWN_SEC: Partial<Record<RestartTarget, number>> = {
+  staging: STAGING_COOLDOWN_SEC,
+  gateway: GATEWAY_COOLDOWN_SEC,
+  'bg-host': GATEWAY_COOLDOWN_SEC,
+  'embed-sidecar': GATEWAY_COOLDOWN_SEC,
 };
 
 const json = (payload: unknown) => ({
@@ -67,13 +113,15 @@ const holderJson = (h: ResourceHolder) => ({
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Restart the operator dev server (target:"dev", default) or the staging operator (target:"staging"), coordinated. DRY RUN unless confirm:true. With confirm, acquires exclusive(<target>-server) and drains current users (wait:{max_drain_sec}) before restarting, then releases (broadcasts "back up"). staging additionally DEBOUNCES (WI-4221): a restart requested within ~2min of a peer\'s real staging restart is coalesced (skipped, not re-run) instead of firing a redundant one. The real restart also requires PAPERCUSP_ALLOW_DEV_RESTART=1 on the host. Prefer this over a raw systemctl restart.',
+    'Restart a SHARED long-running host, coordinated (drain + coalesce + audit) — the sanctioned alternative to a raw `systemctl restart`. Targets: "dev" (the :3070 operator, default) · "staging" (the :3170 operator) · "gateway" (the inference gateway on :8788 — EVERY agent\'s LLM egress) · "bg-host" (routines/git-sync ticker) · "embed-sidecar" (:3384 embeddings). DRY RUN unless confirm:true. With confirm: acquires exclusive(<resource>), drains current users (wait:{max_drain_sec}), restarts, then releases (broadcasts "back up"). Every target except "dev" also DEBOUNCES (WI-4221/EI-10896): a restart requested within ~2min of a peer\'s real restart of the SAME target is coalesced (reported coalesced:true, not re-run) instead of firing a redundant outage — this matters MOST for the gateway, where N agents landing N fixes would otherwise mean N fleet-wide outages. The real restart requires PAPERCUSP_ALLOW_DEV_RESTART=1 on the host. WHEN IS A RESTART EVEN THE RIGHT MOVE? The gateway / bg-host / embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build, no deploy), so your edit is already on their disk and a RESTART — not a deploy — is what loads it. Do NOT wait on the release pipeline for those.',
   guidance: {
-    when: 'You need to restart the dev server (e.g. to pick up a lib/** edit), or — target:"staging" — the staging operator (:3170) to pick up a live server-side edit per CLAUDE.md\'s "test a server-side edit live" workflow. Run dry first to see who is using it; then confirm to drain + restart.',
-    notWhen: 'Just probing the server — that needs no restart. Never restart casually on a shared box; it disrupts every agent using the app. Never shell out to a raw `systemctl --user restart papercup-staging-api.service` — it bypasses the drain AND the debounce, which is exactly the uncoordinated-churn defect (WI-4221) this tool exists to fix.',
-    chaining: 'dev:restart (dry) → review holders → dev:restart { confirm: true, max_drain_sec, target } → connection drops as it restarts (or, for staging within the cooldown window, a coalesced:true no-op — probe :3170 directly, a peer already restarted it).',
+    when: 'To LOAD a code edit into a long-running host: target:"staging" for the :3170 operator (CLAUDE.md\'s "test a server-side edit live" workflow), target:"gateway" for an inference-gateway edit (packages/operator-core/lib/inference-gateway/**, libs/papercusp-shared/src/resilience/** — it runs tsx from the staging tree, so a restart is the ONLY way to load your change; no deploy is involved), target:"bg-host" for a routines/git-sync edit, target:"embed-sidecar" for an embeddings edit, target:"dev" for the :3070 operator. Run dry first to see who is using it; then confirm to drain + restart.',
+    notWhen: 'Just probing the server — that needs no restart. Never restart casually on a shared box; it disrupts every agent using it (a gateway restart drops in-flight LLM requests for the WHOLE fleet — prefer a low-load moment and check gateway:status first). NEVER shell out to a raw `systemctl --user restart` for ANY of these units — it bypasses the drain AND the debounce, which is exactly the uncoordinated-churn defect (WI-4221) this tool exists to fix; EI-10896 added the non-operator targets precisely so that rule is followable.',
+    chaining: 'dev:restart (dry) → review holders → dev:restart { confirm: true, max_drain_sec, target } → the service drops + comes back (or, within the cooldown window, a coalesced:true no-op — a peer already restarted it, so just probe directly). For the gateway: gateway:status (confirm in-flight is low) → dev:restart { target:"gateway", confirm:true } → gateway:status (confirm it is back and the admission state looks right).',
     seeAlso: [
       'dev:service_health (check what is down first)',
+      'gateway:status (in-flight/admission state — read BEFORE and AFTER a gateway restart)',
+      'dev:pipeline_position (is my edit live? — tells you whether a restart or a deploy is what you need)',
       'dev:processes (see the running processes)',
     ],
   },
@@ -84,7 +132,7 @@ export default defineTool({
   args: z.object({
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),
-    target: z.enum(['dev', 'staging']).optional(),
+    target: z.enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar']).optional(),
   }),
   async handler(args, ctx) {
     const target: RestartTarget = args.target ?? 'dev';
@@ -118,6 +166,7 @@ export default defineTool({
     // own successful restart below; it is left to expire via its TTL, which
     // IS the debounce window.
     let cooldownLockId: string | null = null;
+    const cooldownSec = COOLDOWN_SEC[target] ?? STAGING_COOLDOWN_SEC;
     if (enabled && cfg.cooldownResource) {
       const cd = cfg.cooldownResource;
       const cooldown = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
@@ -127,8 +176,8 @@ export default defineTool({
           mode: 'exclusive',
           owner: ownerId,
           ownerLabel,
-          reason: `${target}-server restart cooldown (WI-4221)`,
-          ttlSec: STAGING_COOLDOWN_SEC,
+          reason: `${target} restart cooldown (WI-4221 / EI-10896)`,
+          ttlSec: cooldownSec,
         }),
       );
       if (!cooldown.ok) {
@@ -138,7 +187,7 @@ export default defineTool({
           target,
           restarted: false,
           coalesced: true,
-          note: `${cfg.unit} was restarted within the last ~${STAGING_COOLDOWN_SEC}s${
+          note: `${cfg.unit} was restarted within the last ~${cooldownSec}s${
             holder ? ` by ${holder.owner_label ?? holder.owner}` : ' by a peer'
           } — skipping a redundant restart. It should already be back up; probe it directly. If you still see stale behavior after a few seconds, wait for the cooldown to lapse and retry.`,
         });

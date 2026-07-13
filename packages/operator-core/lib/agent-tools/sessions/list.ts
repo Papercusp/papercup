@@ -24,8 +24,13 @@ export default defineTool({
       '"What sessions has agent X had", "find my session from yesterday", or picking a session id for sessions:read. Covers the whole fleet, not one client. For a COST/EFFORT audit, compare prompt_count/response_count/tool_call_count, not turns — see description.',
     notWhen:
       'Searching CONTENT — sessions:search. Live "who is on what" — coord:presence / fleet:assignments.',
-    chaining: 'session_id → sessions:read / sessions:search { session }.',
-    seeAlso: ['sessions:search', 'sessions:read', 'sessions:timeline'],
+    chaining: 'session_id → sessions:read / sessions:search { session } / sessions:digest { session }.',
+    // EI-10882: publish the RESPONSE shape. Arg schemas were published but return
+    // shapes were not, so writing any code:run batch over this tool required calling
+    // it once just to learn the field names — a guaranteed wasted round-trip per tool.
+    returns:
+      '{ ok, count (rows HERE), total (rows MATCHING, before limit), hasMore, truncated?, note, sessions: [{ source_kind, session_id, turns, prompt_count, owner, harness_slug, cwd, first_ts, last_ts, response_count, tool_call_count }] }. Timestamps are ISO-8601 with an explicit offset. count < total ⇒ the read was TRUNCATED (hasMore:true).',
+    seeAlso: ['sessions:search', 'sessions:read', 'sessions:digest', 'sessions:timeline'],
   },
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],
@@ -53,17 +58,29 @@ export default defineTool({
     // (rare but possible — a rotated/split log file) and silently inflate
     // `turns` itself, which is exactly the kind of miscount this fix
     // exists to stop reintroducing.
+    // EI-10891 (timestamps): emit ISO-8601 WITH an explicit offset — to_json() on a
+    // timestamptz yields e.g. 2026-07-12T00:46:02.236-04:00 — instead of Postgres'
+    // bare "2026-07-12 00:46:02.236-04" text cast. `since` is parsed as UTC, so
+    // returning a bare local-offset string on the way OUT made the two ends of the
+    // SAME tool speak different clocks: an auditing agent compared a 00:46 row
+    // against an 04:43Z cutoff and nearly reported the filter as broken (it was
+    // correct — 00:46-04 IS 04:46Z). Ordering still uses the raw timestamptz, never
+    // the rendered text, so a mixed-offset corpus cannot mis-sort.
+    //
+    // NOTE: keep backticks out of the SQL template below — it is a JS template
+    // literal, and a stray backtick in a comment silently terminates the string.
     const rows = await ctx.tx<Array<{
       source_kind: string; session_id: string; turns: number; prompt_count: number;
       owner: string | null; harness_slug: string | null; cwd: string | null;
       first_ts: string | null; last_ts: string | null;
       response_count: number | null; tool_call_count: number | null;
+      total_matching: number;
     }>>`
       WITH turns_agg AS (
         SELECT source_kind, session_id, count(*)::int AS turns,
                count(*) FILTER (WHERE speaker = 'user')::int AS prompt_count,
                max(owner) AS owner, max(harness_slug) AS harness_slug, max(cwd) AS cwd,
-               min(ts)::text AS first_ts, max(ts)::text AS last_ts
+               min(ts) AS first_ts_raw, max(ts) AS last_ts_raw
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
            AND (${owner}::text IS NULL OR owner = ${owner})
@@ -80,23 +97,47 @@ export default defineTool({
          WHERE session_id IS NOT NULL
          GROUP BY source_kind, session_id
       )
-      SELECT t.*, s.response_count, s.tool_call_count
+      SELECT t.source_kind, t.session_id, t.turns, t.prompt_count,
+             t.owner, t.harness_slug, t.cwd,
+             -- EI-10891: ISO-8601 with an explicit offset (see the note above).
+             to_json(t.first_ts_raw) #>> '{}' AS first_ts,
+             to_json(t.last_ts_raw)  #>> '{}' AS last_ts,
+             s.response_count, s.tool_call_count,
+             -- EI-10886: the true match count BEFORE the limit. A window function is
+             -- evaluated ahead of LIMIT, so this is the unbounded total in one pass.
+             count(*) OVER ()::int AS total_matching
         FROM turns_agg t
         LEFT JOIN state_agg s USING (source_kind, session_id)
-       ORDER BY t.last_ts DESC NULLS LAST
+       ORDER BY t.last_ts_raw DESC NULLS LAST
        LIMIT ${limit}
     `;
+
+    // EI-10886: `count` used to equal `limit` on a truncated read with nothing to
+    // distinguish it from an exhaustive one — a caller could not tell whether the
+    // window held 100 sessions or 500, and the max limit (100) made the ambiguity
+    // permanent. Report the real total and say plainly whether more remain.
+    const total = rows[0]?.total_matching ?? 0;
+    const sessions = rows.map(({ total_matching: _drop, ...row }) => row);
+    const hasMore = total > sessions.length;
 
     return {
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
           ok: true,
-          count: rows.length,
+          count: sessions.length,
+          total,
+          hasMore,
+          ...(hasMore
+            ? {
+                truncated: `Showing ${sessions.length} of ${total} matching sessions (newest first). Raise \`limit\` (max 100) or narrow with owner / source_kind / cwd_contains / since.`,
+              }
+            : {}),
           note:
             'Indexed sessions only (ingest window ~45d). Raw pre-window files: dev:claude_session / dev:omp_session. ' +
+            'Timestamps are ISO-8601 with an explicit offset; `since` is parsed as UTC. ' +
             'UNITS (EI-9970): `turns` = indexed TEXT turns only (excludes tool_use/tool_result/thinking content) — for cost/effort audits use prompt_count/response_count/tool_call_count instead (see this tool\'s description for exact definitions). response_count/tool_call_count are null for source_kind=agent_chat (no tool-call signal in that transcript shape).',
-          sessions: rows,
+          sessions,
         }),
       }],
     };

@@ -359,6 +359,172 @@ export function familyKeyPrefix(entry: EventCatalogEntry): string {
   return prefix;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * INSTALLED TIER (cupboard-public-release-2026-07-12 P-006, D-003).
+ *
+ * D-003: "what good is an event without a tool" — events are a DEPENDENCY AXIS,
+ * so a distribution unit can DECLARE the event families it provides
+ * (`provides.events` in its manifest — P-005 / WI-4521). This tier folds those
+ * declarations into the catalog, so `events:catalog` answers "what can I wait on?"
+ * for the WHOLE host — builtin families AND whatever the installed packs/plugins
+ * bring — rather than only the families this binary happens to hard-code.
+ *
+ * P-005 deliberately shaped `ManifestProvidedEvent` as a structural SUBSET of
+ * `EventCatalogEntry` (family / keyTemplate / params / describe), so this is a
+ * LIFT, not a translation.
+ *
+ * PROVENANCE, not a flat union: every row says where it came from (`builtin` vs
+ * `installed:<unit>`). An agent that sees an awaitable key must be able to tell
+ * whether it is a platform guarantee or a third-party pack's promise — those carry
+ * very different trust and lifetime.
+ *
+ * BUILTIN ALWAYS WINS A FAMILY-ID COLLISION. This is a safety rule, not a
+ * tie-break preference. The sugar verbs resolve their key TEMPLATES through this
+ * registry by family id (`buildKey`), so a pack that re-declared `deploy` with its
+ * own keyTemplate would silently re-point `deploy:await` at a key nothing emits —
+ * and an agent awaiting it would hang FOREVER (a wait that never fires is the worst
+ * failure this subsystem has). So a colliding installed family is REFUSED, never
+ * merged. Collisions are reported, not swallowed: a silently-dropped declaration is
+ * how a pack author ends up debugging a family that "just doesn't appear".
+ *
+ * The merge is PURE (no I/O) and does not mutate EVENT_CATALOG — mirroring
+ * `assemblePackCatalog`'s pure-assembler/derive-wrapper split. Keeping the module
+ * const immutable matters: it is process-global, and a mutable registry that grows
+ * with whatever was installed last is unreproducible.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/** Where a family came from. `installed:<unit>` names the declaring unit. */
+export type EventProvenance = 'builtin' | `installed:${string}`;
+
+/**
+ * The minimal `provides.events[]` surface the merge reads — structurally the
+ * plugin-sdk's `ManifestProvidedEvent` (P-005), re-declared rather than imported.
+ * This follows pack-catalog's `InstalledUnitInput` convention: operator-core has no
+ * plugin-sdk dependency, and the merge stays pure and dependency-free. Fields are
+ * `unknown` because a manifest is THIRD-PARTY data: P-005 validates it at load time,
+ * but this function must not assume that ran (it is also fed by tests and by the
+ * Cupboard's not-yet-installed listings).
+ */
+export interface ManifestEventDeclaration {
+  family?: unknown;
+  keyTemplate?: unknown;
+  params?: unknown;
+  describe?: unknown;
+}
+
+/** One installed unit's declared event families. */
+export interface InstalledUnitEvents {
+  /** Unit name as the pack catalog knows it, e.g. `@papercupai/repomix`. */
+  unit: string;
+  events?: ManifestEventDeclaration[] | null;
+}
+
+/** A family the merge REFUSED, and why — surfaced so a drop is never silent. */
+export interface EventFamilyCollision {
+  family: string;
+  /** The unit whose declaration was refused. */
+  unit: string;
+  /** What already held the family id. */
+  heldBy: EventProvenance;
+  reason: string;
+}
+
+/** A catalog entry plus where it came from. */
+export interface MergedEventCatalogEntry extends EventCatalogEntry {
+  provenance: EventProvenance;
+}
+
+export interface MergedEventCatalog {
+  entries: MergedEventCatalogEntry[];
+  collisions: EventFamilyCollision[];
+}
+
+const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+
+/** Lift a manifest's `params` into catalog `EventKeyParam`s, dropping malformed ones. */
+function liftParams(raw: unknown): EventKeyParam[] {
+  if (!Array.isArray(raw)) return [];
+  const out: EventKeyParam[] = [];
+  for (const p of raw) {
+    if (p == null || typeof p !== 'object') continue;
+    const { name, required, describe } = p as Record<string, unknown>;
+    if (!isNonEmptyString(name)) continue;
+    out.push({
+      name: name.trim(),
+      required: required === true,
+      describe: isNonEmptyString(describe) ? describe : '',
+    });
+  }
+  return out;
+}
+
+/**
+ * Merge installed units' declared event families over the builtin registry.
+ *
+ * Order is stable and meaningful: builtin families first (they are the platform
+ * guarantees and the ones a sugar verb can resolve), then installed families in
+ * unit order. A family id already taken — by a builtin, or by an earlier unit — is
+ * REFUSED and recorded in `collisions` (see the header note: shadowing `deploy`
+ * would strand every `deploy:await` on a key nothing fires).
+ *
+ * `exists` is true for an installed family: unlike a builtin `exists:false` (a key
+ * this repo has not yet wired an emitter for), a unit that declares `provides.events`
+ * and is INSTALLED is asserting its runtime fires that key — that assertion IS the
+ * unit's contract, and P-007's resolver is what checks a REQUIRED family is actually
+ * provided by something.
+ */
+export function mergeInstalledEventCatalog(
+  installed: readonly InstalledUnitEvents[] = [],
+  builtin: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): MergedEventCatalog {
+  const entries: MergedEventCatalogEntry[] = builtin.map((e) => ({ ...e, provenance: 'builtin' as const }));
+  const held = new Map<string, EventProvenance>(entries.map((e) => [e.family, e.provenance]));
+  const collisions: EventFamilyCollision[] = [];
+
+  for (const unit of installed) {
+    if (!isNonEmptyString(unit?.unit) || !Array.isArray(unit.events)) continue;
+    const provenance: EventProvenance = `installed:${unit.unit}`;
+    for (const decl of unit.events) {
+      if (decl == null || typeof decl !== 'object') continue;
+      const family = isNonEmptyString(decl.family) ? decl.family.trim() : '';
+      const keyTemplate = isNonEmptyString(decl.keyTemplate) ? decl.keyTemplate.trim() : '';
+      // A declaration missing either half cannot be awaited OR displayed. P-005's
+      // load-time validator rejects these, so reaching here means an unvalidated
+      // path (a test, or a Cupboard listing) — skip rather than emit a broken row.
+      if (!family || !keyTemplate) continue;
+
+      const heldBy = held.get(family);
+      if (heldBy) {
+        collisions.push({
+          family,
+          unit: unit.unit,
+          heldBy,
+          reason:
+            heldBy === 'builtin'
+              ? `family "${family}" is a BUILTIN — an installed unit may not shadow it (the sugar verbs resolve this family id to the builtin key template; re-pointing it would strand every await on a key nothing emits). Rename the family in your manifest.`
+              : `family "${family}" is already declared by ${heldBy} — family ids must be unique across installed units. Rename the family in your manifest.`,
+        });
+        continue;
+      }
+
+      held.set(family, provenance);
+      entries.push({
+        family,
+        keyTemplate,
+        params: liftParams(decl.params),
+        describe: isNonEmptyString(decl.describe) ? decl.describe : `Provided by ${unit.unit}.`,
+        emitter: unit.unit,
+        // An installed unit asserting provides.events IS asserting its runtime fires
+        // the key — that is the unit's contract (P-007 validates the REQUIRES side).
+        exists: true,
+        provenance,
+      });
+    }
+  }
+
+  return { entries, collisions };
+}
+
 /** A render-ready row for the events:catalog tool (stable, JSON-friendly shape). */
 export interface CatalogRow {
   family: string;
@@ -367,6 +533,8 @@ export interface CatalogRow {
   await_example: string;
   describe: string;
   emitter: string;
+  /** `builtin` | `installed:<unit>` (P-006) — a platform guarantee vs a pack's promise. */
+  provenance: EventProvenance;
   replaces_poll?: string;
   sugar?: string;
   payload_filtered?: boolean;
@@ -377,15 +545,23 @@ export interface CatalogRow {
   live_awaiters?: number;
 }
 
-/** Project the whole catalog into render rows for the events:catalog tool. */
-export function renderCatalog(): CatalogRow[] {
-  return EVENT_CATALOG.map((e) => ({
+/**
+ * Project the catalog into render rows for the events:catalog tool.
+ *
+ * Pass `installed` (units' `provides.events`) to fold in the installed tier (P-006);
+ * omit it for the builtin-only catalog — the pre-P-006 behaviour, byte-identical
+ * apart from the new `provenance` field, so every existing caller keeps working.
+ */
+export function renderCatalog(installed: readonly InstalledUnitEvents[] = []): CatalogRow[] {
+  const { entries } = mergeInstalledEventCatalog(installed);
+  return entries.map((e) => ({
     family: e.family,
     key: e.keyTemplate,
     awaitable_now: e.exists,
     await_example: `events:await { event: "${e.keyTemplate}" }`,
     describe: e.describe,
     emitter: e.emitter,
+    provenance: e.provenance,
     ...(e.replacesPoll ? { replaces_poll: e.replacesPoll } : {}),
     ...(e.sugar ? { sugar: e.sugar } : {}),
     ...(e.payloadFiltered ? { payload_filtered: true } : {}),
