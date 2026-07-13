@@ -52,6 +52,25 @@
 #                                        condition, not a fresh EI every tick)
 set -uo pipefail
 
+# ── ALARM SAFETY: a TEST must not be able to fire the real alarm (EI-10746) ──
+# Its sibling ~/.config/kopia/healthcheck.sh had the identical hole and it BIT: on
+# 2026-07-12 22:25, three failure-path test runs against a 4-minute-old healthy dump each
+# rang the real alarm and paged the whole fleet. Both scripts offered an opt-out
+# (BACKUP_ALERT_CMD there, BACKUP_NO_FILE here) and neither ENFORCED it — so the default
+# way to test the alarm was to fire it. A guard you must REMEMBER is not a guard.
+#
+# Structural rule: OVERRIDING A THRESHOLD IS THE DEFINITION OF A NON-PRODUCTION RUN.
+# Detected HERE, before the `${VAR:-default}` assignments below erase the difference
+# between "unset" and "set to the default value" (${VAR+x} can still see it). The verdict
+# and exit path are untouched — only the FILING is withheld, so a test still gets the truth.
+# BACKUP_ALERT_FORCE=1 files anyway, for the rare case a non-default threshold should.
+if [ -z "${BACKUP_ALERT_FORCE:-}" ] \
+   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ]; } \
+   && [ "${BACKUP_NO_FILE:-0}" != 1 ]; then
+  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
+  BACKUP_NO_FILE=1
+fi
+
 BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
 BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg-5432.sql.gz}"
 BACKUP_MAX_AGE_H="${BACKUP_MAX_AGE_H:-6}"
@@ -72,7 +91,16 @@ jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.std
 # Mark a RED as filed, so we file once per BACKUP_RED_REFILE_H window instead of every tick.
 # NEVER writes the marker on a dry-run: file_ei() no-ops under BACKUP_NO_FILE=1, so writing
 # the marker anyway would let a harmless dry-run SUPPRESS the next REAL filing for 12h — a
-# dry-run that disarms the alarm it is testing. Caught by the discrimination test below.
+# dry-run that disarms the alarm it is testing.
+#
+# ⚠ THAT IS EXACTLY WHAT WAS HAPPENING (EI-10746, fixed 2026-07-12). This function was
+# defined, its rationale was written out in full above — and then NEVER CALLED. All three
+# call sites inlined `echo "$(now_s)" >"$RED_MARKER"`, bypassing the guard completely. So a
+# BACKUP_NO_FILE=1 dry-run skipped the EI (correct) but STILL wrote the marker (wrong), and
+# the next REAL red was silently suppressed for 12 hours. Testing the alarm turned the alarm
+# off — the precise failure this comment claims to prevent. The "discrimination test below"
+# the comment used to cite did not exist either; it does now (--self-test), and it fails if
+# any call site ever bypasses mark_red again.
 mark_red() { [ "$BACKUP_NO_FILE" = 1 ] && return 0; echo "$(now_s)" >"$1"; }
 
 file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are the fallback
@@ -109,7 +137,7 @@ for art in $BACKUP_ARTIFACTS; do
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (missing $art) — skipping duplicate filing."
     else
-      file_ei "$TITLE" "$BODY"; echo "$(now_s)" >"$RED_MARKER"
+      file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
     fi
     continue
   fi
@@ -134,7 +162,7 @@ An orphaned/stuck dump is not just a dead backup — it holds AccessShareLock on
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (stale $art, filed $(age_h "$RED_MARKER")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
     else
-      file_ei "$TITLE" "$BODY"; echo "$(now_s)" >"$RED_MARKER"
+      file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
     fi
   else
     rm -f "$RED_MARKER"
@@ -169,7 +197,7 @@ Read the pg_dumpall error appended to $BACKUP_HOOK_LOG. The original root cause 
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (consecutive fails) — skipping duplicate filing."
     else
-      file_ei "$TITLE" "$BODY"; echo "$(now_s)" >"$RED_MARKER"
+      file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
     fi
   else
     rm -f "$RED_MARKER"
