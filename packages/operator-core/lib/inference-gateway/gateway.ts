@@ -862,6 +862,8 @@ export interface GatewayStats {
   /** Per-backend Codex/OpenAI counters (2026-06-22 audit) — kept SEPARATE from the Claude counters above so
    *  /stats distinguishes Codex health from Claude health. All zero until Codex accounts are configured. */
   codex: { requests: number; upstream429: number; failovers: number; errors: number };
+  /** Codex accounts that can serve right now, including ChatGPT-subscription CLI bridge accounts. */
+  codexHealthyAccounts?: number;
   /** Bee-FACING final 503s (2026-06-22 audit) — what the bee receives after the gateway exhausts internal
    *  retries. Makes egress-proxy leakage visible (it isn't a rate shed, so shedAllThrottled never counted it). */
   beeFacing503: { egressExhausted: number; tokenStall: number };
@@ -1994,6 +1996,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         failStreakByAccount: Object.fromEntries(proactiveProbeFailStreak),
       },
       codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
+      codexHealthyAccounts: (deps.codexPool?.healthyCount ? deps.codexPool.healthyCount() : 0) + codexCliAccounts().length,
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       unified: snap.unified,
       ...(smoothing ? { smoothing } : {}),

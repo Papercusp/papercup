@@ -59,8 +59,91 @@ export type ScoutArchiveBuilder = (scope: { workspaceId: string; harnessSlug: st
 
 const defaultArchiveBuilder: ScoutArchiveBuilder = (scope) => buildScoutArchivePort(scope);
 const DEFAULT_ARCHIVE_RESOLVE_TIMEOUT_MS = 10_000;
+const DEFAULT_SCOUT_CODEX_FALLBACK_MODEL = 'chatgpt:5.5';
+const SCOUT_PROVIDER_CAPACITY_CACHE_MS = 1_000;
 
 let activeArchiveBuilder: ScoutArchiveBuilder = defaultArchiveBuilder;
+let scoutProviderCapacityCache:
+  | { expiresAt: number; value: ScoutProviderCapacity }
+  | undefined;
+let scoutProviderCapacityRequest: Promise<ScoutProviderCapacity> | undefined;
+
+export interface ScoutProviderCapacity {
+  /** Whether the Claude/Anthropic pool can serve at least one request right now. */
+  claudeAvailable: boolean;
+  /** Whether the Codex provider has a configured, serving account to use as fallback. */
+  codexAvailable: boolean;
+}
+
+/** The Codex model used only when the Claude pool is genuinely unavailable. */
+export const SCOUT_CODEX_FALLBACK_MODEL = DEFAULT_SCOUT_CODEX_FALLBACK_MODEL;
+
+/**
+ * Read the gateway's provider-specific capacity without changing any routing state.
+ *
+ * `/stats.healthyAccounts` is the Claude pool's serviceable-account denominator. Codex's
+ * ChatGPT-subscription bridge is reported by `/admin/config.providers.codex.cliAccountCount`;
+ * bearer-backed Codex deployments are covered by `configured`. If either probe is unavailable,
+ * fail closed to the historical Claude route rather than sending Scout into an unknown provider.
+ */
+export async function readScoutProviderCapacity(fetchImpl: typeof fetch = fetch): Promise<ScoutProviderCapacity> {
+  const base = `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788}`;
+  try {
+    const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1_000) : undefined;
+    const [statsRes, configRes] = await Promise.all([
+      fetchImpl(`${base}/stats`, signal ? { signal } : undefined),
+      fetchImpl(`${base}/admin/config`, signal ? { signal } : undefined),
+    ]);
+    if (!statsRes.ok || !configRes.ok) return { claudeAvailable: true, codexAvailable: false };
+    const stats = (await statsRes.json()) as { healthyAccounts?: unknown; codexHealthyAccounts?: unknown };
+    const config = (await configRes.json()) as {
+      providers?: { codex?: { configured?: unknown; cliAccountCount?: unknown } };
+    };
+    const codex = config.providers?.codex;
+    const cliAccountCount = typeof codex?.cliAccountCount === 'number' ? codex.cliAccountCount : 0;
+    const codexHealthyAccounts = typeof stats.codexHealthyAccounts === 'number' ? stats.codexHealthyAccounts : 0;
+    return {
+      claudeAvailable: typeof stats.healthyAccounts === 'number' && stats.healthyAccounts > 0,
+      codexAvailable: codex?.configured === true && (cliAccountCount > 0 || codexHealthyAccounts > 0),
+    };
+  } catch {
+    return { claudeAvailable: true, codexAvailable: false };
+  }
+}
+
+/** Cache the paired gateway probes so Scout's parallel ideators do not fan out diagnostics calls. */
+export function cachedScoutProviderCapacity(): Promise<ScoutProviderCapacity> {
+  const now = Date.now();
+  if (scoutProviderCapacityCache && scoutProviderCapacityCache.expiresAt > now) {
+    return Promise.resolve(scoutProviderCapacityCache.value);
+  }
+  if (!scoutProviderCapacityRequest) {
+    scoutProviderCapacityRequest = readScoutProviderCapacity().then((value) => {
+      scoutProviderCapacityCache = { expiresAt: Date.now() + SCOUT_PROVIDER_CAPACITY_CACHE_MS, value };
+      return value;
+    }).finally(() => {
+      scoutProviderCapacityRequest = undefined;
+    });
+  }
+  return scoutProviderCapacityRequest;
+}
+
+/** Test seam; also useful after an operator-side gateway hot-reload. */
+export function resetScoutProviderCapacityCache(): void {
+  scoutProviderCapacityCache = undefined;
+  scoutProviderCapacityRequest = undefined;
+}
+
+/** Pure Scout provider selection: preserve Claude whenever it has capacity; otherwise use Codex. */
+export function resolveScoutModel(
+  requestedModel: string | undefined,
+  capacity: ScoutProviderCapacity,
+  backendForModel: (model: string | undefined) => string,
+  claudeModel: string,
+): string | undefined {
+  if (!capacity.claudeAvailable && capacity.codexAvailable) return SCOUT_CODEX_FALLBACK_MODEL;
+  return backendForModel(requestedModel) === 'codex' ? claudeModel : requestedModel;
+}
 
 /** Swap the archive builder (a test, or an alternate gym-QD store). */
 export function setScoutArchiveBuilder(builder: ScoutArchiveBuilder): void {
@@ -131,6 +214,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   const { llmCall: rawLlmCall, backendForLlmCall } = await import('../llm-testing/llm-client');
   const { SCOUT_IDEATOR_MODEL } = await import('./ideators');
   const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
+  const providerCapacity = await cachedScoutProviderCapacity();
 
   // Gateway admission-tier label (gateway-priority-tiers-2026-06-22): stamp every
   // in-process Scout LLM call (ideators/critics/recombine/revise) with the `scout`
@@ -146,11 +230,12 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // (quota-EXHAUSTED) → "all 1 ideator failed, 0 ideas, $0 spent" → circuit-open/gated
   // for hours, DESPITE the claude-opus-4-8 default + INFERENCE_GATEWAY on (that flag only
   // redirects the anthropic-direct path, NOT codex). OpenAI has no quota; the Anthropic
-  // pool (the gateway) does. So force any codex-backend model back to the Claude ideator
-  // default → it egresses anthropic-direct → the gateway. (LLM_TEST_BACKEND is unset on
-  // bg-host, so backendForLlmCall is model-derived — pinning the model is sufficient.)
+  // pool (the gateway) does. Preserve that historical force while Claude has capacity, but
+  // use the available Codex bridge when the gateway proves the Claude pool is empty (WI-4475).
+  // (LLM_TEST_BACKEND is unset on bg-host, so backendForLlmCall is model-derived — pinning
+  // the model is sufficient.)
   const llmCall: typeof rawLlmCall = (o) => {
-    const model = backendForLlmCall(o.model) === 'codex' ? SCOUT_IDEATOR_MODEL : o.model;
+    const model = resolveScoutModel(o.model, providerCapacity, backendForLlmCall, SCOUT_IDEATOR_MODEL);
     return rawLlmCall({ ...o, model, signal: combineAbortSignals(signal, o.signal), priority: 'scout' });
   };
 
