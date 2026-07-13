@@ -92,6 +92,23 @@ describe('planRowToRubric', () => {
     expect(r!.ratifiedBy).toBeNull();
   });
 
+  it('persisted template_data provenance WINS over the owner fallback (EI-10751)', () => {
+    const r = planRowToRubric(
+      planRow({ template_data: { ...baseData, proposedBy: 'reviewer-b', ratifiedBy: 'queen-2' } }),
+    );
+    expect(r!.proposedBy).toBe('reviewer-b'); // the reviser, not the plan owner
+    expect(r!.ratifiedBy).toBe('queen-2'); // the true ratifier, not the author
+    expect(r!.createdBy).toBe('queen-1'); // the owner column stays the original creator
+  });
+
+  it('a persisted ratifiedBy on a NON-active row projects null — status still gates it', () => {
+    const r = planRowToRubric(
+      planRow({ status: 'draft', template_data: { ...baseData, ratifiedBy: 'queen-2' } }),
+    );
+    expect(r!.status).toBe('proposed');
+    expect(r!.ratifiedBy).toBeNull();
+  });
+
   it('degrades to null when template_data is absent', () => {
     expect(planRowToRubric(planRow({ template_data: null }))).toBeNull();
   });

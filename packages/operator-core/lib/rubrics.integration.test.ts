@@ -181,12 +181,47 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect((await rubrics.listRubrics({})).map((x) => x.rubricId)).toEqual(['pot-coordination-health']);
   });
 
-  it('ratify flips proposed → active (ratifiedBy = the plan owner, identity collapsed to one field)', async () => {
+  it('ratify flips proposed → active and records the TRUE ratifier, not the author (EI-10751)', async () => {
     await rubrics.proposeRubric({ rubricId: 'x', characteristic: 'c', title: 'X', criteria: sampleCriteria, by: 'author-a' });
     const active = await rubrics.ratifyRubric('x', 'queen-1');
     expect(active?.status).toBe('active');
-    // A plan has ONE owner → createdBy/proposedBy/ratifiedBy all derive from it (D-002).
+    // The old projection collapsed ratifiedBy onto the plan owner — a fabricated
+    // self-ratification record that made D-012 (author ≠ ratifier) unrecordable.
+    expect(active?.ratifiedBy).toBe('queen-1');
+    expect(active?.proposedBy).toBe('author-a');
+    expect(active?.createdBy).toBe('author-a');
+  });
+
+  it('D-012 enforced on persisted provenance: the proposer cannot ratify their own proposal', async () => {
+    await rubrics.proposeRubric({ rubricId: 'selfy', characteristic: 'c', title: 'S', criteria: sampleCriteria, by: 'author-a' });
+    await expect(rubrics.ratifyRubric('selfy', 'author-a')).rejects.toThrow(/author ≠ ratifier|cannot ratify their own/i);
+    expect((await rubrics.getRubric('selfy'))?.status).toBe('proposed'); // nothing flipped
+  });
+
+  it('a re-propose moves the proposer of record to the reviser and DROPS the old ratification', async () => {
+    await rubrics.proposeRubric({ rubricId: 'rev', characteristic: 'c', title: 'v1', criteria: sampleCriteria, by: 'author-a' });
+    await rubrics.ratifyRubric('rev', 'queen-1');
+    const revised = await rubrics.proposeRubric({ rubricId: 'rev', characteristic: 'c', title: 'v2', criteria: sampleCriteria, by: 'reviewer-b' });
+    expect(revised.proposedBy).toBe('reviewer-b'); // NOT the plan owner (author-a)
+    expect(revised.status).toBe('proposed'); // a revision needs re-ratification…
+    expect(revised.ratifiedBy).toBeNull(); // …and the stale ratification is gone
+    // The cross-party ratify then records honestly.
+    const active = await rubrics.ratifyRubric('rev', 'author-a'); // a ≠ b, allowed
     expect(active?.ratifiedBy).toBe('author-a');
+    expect(active?.proposedBy).toBe('reviewer-b');
+  });
+
+  it('amendRubric on an ACTIVE rubric preserves the ratifier of record (status is preserved, so provenance must be too)', async () => {
+    await rubrics.proposeRubric({ rubricId: 'amendee', characteristic: 'c', title: 'A', criteria: sampleCriteria, by: 'author-a' });
+    await rubrics.ratifyRubric('amendee', 'queen-1');
+    const amended = await rubrics.amendRubric({
+      rubricId: 'amendee',
+      criterion: { key: 'placement-health', field: 'title', mode: 'replace', text: 'Placement health (amended)' },
+      by: 'author-a',
+    });
+    expect(amended?.status).toBe('active');
+    expect(amended?.ratifiedBy).toBe('queen-1'); // not dropped, not the amender
+    expect(amended?.proposedBy).toBe('author-a');
   });
 
   it('ratify of an unknown rubric returns null', async () => {
