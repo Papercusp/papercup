@@ -25,7 +25,7 @@
  * Read-only + fail-soft: any miss returns null; callers degrade gracefully.
  */
 
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
 
@@ -36,6 +36,19 @@ export interface SelfSession {
   sourceKind: 'claude' | 'omp' | 'codex';
   sessionId: string;
   filePath: string;
+}
+
+interface ActiveSessionRow {
+  id: number;
+  agent: string | null;
+  session_id: string | null;
+  omp_thread_id: string | null;
+}
+
+export interface ResolveSelfSessionOptions {
+  home?: string;
+  loadActiveSessions?: (ownerId: string) => Promise<ActiveSessionRow[]>;
+  codexHomeForSession?: (id: number) => string;
 }
 
 /** Mirror of psu-pty-discovery's sanitizeKey (kept trivial on purpose). */
@@ -65,15 +78,63 @@ async function newestOf(paths: string[]): Promise<string | null> {
   return best?.p ?? null;
 }
 
+/** Read the native thread id from Codex's bounded prompt-history tail. */
+async function newestCodexHistorySessionId(filePath: string): Promise<string | null> {
+  let fh: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    fh = await open(filePath, 'r');
+    const s = await fh.stat();
+    const size = Math.min(s.size, 1024 * 1024);
+    if (size <= 0) return null;
+    const buf = Buffer.alloc(size);
+    await fh.read(buf, 0, size, s.size - size);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (!lines[i]?.trim()) continue;
+      try {
+        const row = JSON.parse(lines[i]) as { session_id?: unknown };
+        if (typeof row.session_id === 'string' && UUID_RE.test(row.session_id)) return row.session_id;
+      } catch {
+        /* a bounded tail may begin mid-line */
+      }
+    }
+  } catch {
+    /* absent / raced */
+  } finally {
+    await fh?.close().catch(() => undefined);
+  }
+  return null;
+}
+
+async function defaultActiveSessions(ownerId: string): Promise<ActiveSessionRow[]> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    return await sql<ActiveSessionRow[]>`
+      SELECT id, agent, session_id, omp_thread_id
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${ownerId} AND ended_at IS NULL
+       ORDER BY started_at DESC
+       LIMIT 5`;
+  } catch {
+    return [];
+  }
+}
+
 /** Resolve the caller's live transcript. Fail-soft: null when unresolvable. */
-export async function resolveSelfSession(ownerId: string): Promise<SelfSession | null> {
+export async function resolveSelfSession(
+  ownerId: string,
+  opts: ResolveSelfSessionOptions = {},
+): Promise<SelfSession | null> {
   if (!ownerId) return null;
+  const home = opts.home ?? HOME;
+  const activeSessions = await (opts.loadActiveSessions ?? defaultActiveSessions)(ownerId);
 
   // 1. The psu-pty discovery record → hosted CLI + a session uuid when present.
   let command: string | null = null;
   let uuid: string | null = null;
   try {
-    const raw = await readFile(join(HOME, '.papercusp', 'psu-pty', `${sanitizeKey(ownerId)}.json`), 'utf8');
+    const raw = await readFile(join(home, '.papercusp', 'psu-pty', `${sanitizeKey(ownerId)}.json`), 'utf8');
     const rec = JSON.parse(raw) as { command?: string; args?: unknown };
     command = typeof rec.command === 'string' ? rec.command : null;
     if (Array.isArray(rec.args)) {
@@ -83,14 +144,24 @@ export async function resolveSelfSession(ownerId: string): Promise<SelfSession |
     /* no live pty record — fall through to the claude isolation-dir path */
   }
 
+  // A fresh psu Codex launch has an adv-session row before it has a native
+  // session id or discovery record. The row still identifies its client and
+  // isolated CODEX_HOME; defaulting such a launch to Claude made self-recall
+  // impossible by construction.
+  if (!command) command = activeSessions.find((r) => r.agent)?.agent ?? null;
+  if (!uuid) {
+    const native = activeSessions.find((r) => r.session_id && UUID_RE.test(r.session_id))?.session_id;
+    if (native) uuid = native;
+  }
+
   const kind: SelfSession['sourceKind'] =
     command === 'omp' ? 'omp' : command === 'codex' ? 'codex' : 'claude';
 
   if (kind === 'claude') {
     const roots = [
-      join(HOME, '.papercusp', 'session-claude', ownerId, 'projects'),
+      join(home, '.papercusp', 'session-claude', ownerId, 'projects'),
       // Non-isolated interactive sessions land in the global dir.
-      ...(uuid ? [join(HOME, '.claude', 'projects')] : []),
+      ...(uuid ? [join(home, '.claude', 'projects')] : []),
     ];
     for (const root of roots) {
       const files = await listJsonlUnder(root);
@@ -106,10 +177,9 @@ export async function resolveSelfSession(ownerId: string): Promise<SelfSession |
     return null;
   }
 
-  // omp / codex: no per-owner isolation dir — a uuid from the args is required.
-  if (!uuid) return null;
   if (kind === 'omp') {
-    const files = await listJsonlUnder(join(HOME, '.omp', 'agent', 'sessions'));
+    if (!uuid) return null;
+    const files = await listJsonlUnder(join(home, '.omp', 'agent', 'sessions'));
     const hit = files.find((f) => basename(f, '.jsonl').endsWith(`_${uuid}`));
     return hit ? { sourceKind: 'omp', sessionId: uuid, filePath: hit } : null;
   }
@@ -119,22 +189,30 @@ export async function resolveSelfSession(ownerId: string): Promise<SelfSession |
   // first (session-db-archive-retire-dirs P-015; before this a live fleet
   // codex session could never resolve `session:'self'`). Fail-soft to the
   // shared root.
-  try {
-    const { getOrgPg } = await import('@papercusp/db-org');
-    const { sql } = getOrgPg();
-    const rows = await sql<Array<{ id: number }>>`
-      SELECT id FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ${ownerId} AND agent = 'codex' AND ended_at IS NULL
-       ORDER BY started_at DESC
-       LIMIT 3`;
-    const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
-    for (const r of rows) {
-      files.push(...(await listJsonlUnder(join(codexHomeForSessionKey(r.id), 'sessions'))));
+  for (const r of activeSessions.filter((row) => row.agent === 'codex')) {
+    const codexHome = opts.codexHomeForSession
+      ? opts.codexHomeForSession(r.id)
+      : join(home, '.papercusp', 'su-codex-homes', `session-${r.id}`);
+    const isolated = await listJsonlUnder(join(codexHome, 'sessions'));
+    files.push(...isolated);
+    const pinned = uuid
+      ? isolated.find((f) => basename(f, '.jsonl').toLowerCase().endsWith(uuid.toLowerCase()))
+      : await newestOf(isolated);
+    if (pinned) {
+      const stem = basename(pinned, '.jsonl');
+      const parsed = stem.match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i)?.[1] ?? uuid;
+      if (parsed) return { sourceKind: 'codex', sessionId: parsed, filePath: pinned };
     }
-  } catch {
-    /* PG unavailable — the shared root below still works for non-fleet runs */
+
+    // Codex 0.144+ can update state_5.sqlite/history.jsonl while the recorded
+    // rollout_path is absent. history.jsonl is user-turn-only, but pinning and
+    // indexing it is strictly better than an unscoped owner fallback.
+    const historyPath = join(codexHome, 'history.jsonl');
+    const historyId = await newestCodexHistorySessionId(historyPath);
+    if (historyId) return { sourceKind: 'codex', sessionId: historyId, filePath: historyPath };
   }
-  files.push(...(await listJsonlUnder(join(HOME, '.codex', 'sessions'))));
+  if (!uuid) return null;
+  files.push(...(await listJsonlUnder(join(home, '.codex', 'sessions'))));
   const hit = files.find((f) => basename(f, '.jsonl').toLowerCase().endsWith(uuid.toLowerCase()));
   return hit ? { sourceKind: 'codex', sessionId: uuid, filePath: hit } : null;
 }

@@ -1286,8 +1286,9 @@ export default defineTool({
           configIntegrity = {
             ...verdict,
             warning:
-              'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562). Claude Code rewrote this session config and dropped psu-owned keys. ' +
-              'Hooks are read at STARTUP, so this CANNOT be repaired in-process — the listed capabilities stay off until this session is relaunched. Act accordingly.',
+              'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562). Claude Code rewrote this session config and dropped psu-owned keys, so the capabilities listed above are OFF right now. ' +
+              'Repairing the session settings.json + .claude.json restores them: hook registrations are re-read from the file, so delivery resumes WITHOUT a relaunch (verified live on su-5d6764f9 — the coord inbox began delivering a 40+ message backlog immediately after repair). ' +
+              'Two caveats: a past SessionStart cannot be re-fired, so compactions that already happened never got their memory epoch bump; and the MCP server entry is bound at connect time, so papercusp-su may need a reconnect.',
           };
         }
       } catch { /* fail-soft — never break orientation over a config read */ }

@@ -122,7 +122,10 @@ export async function resolveSearchFilters(
       // last minutes are indexed before we search. One file — bounded + cheap.
       try {
         const { ingestFileNow } = await import('../../search/session-ingest');
-        await ingestFileNow(selfSession.filePath);
+        await ingestFileNow(selfSession.filePath, {
+          owner: callerOwnerId,
+          sessionId: selfSession.sessionId,
+        });
       } catch {
         /* fail-soft: the 2-min tick covers it */
       }

@@ -25,13 +25,19 @@
  * fixed in place; the detector has to live somewhere that does not depend on hooks.
  * That is the operator (see coord:orient's `configIntegrity` block).
  *
- * WHAT A REPAIR CAN AND CANNOT DO. Claude Code reads settings at STARTUP, so rewriting
- * the file does NOT re-register hooks in the already-running process — the session stays
- * degraded until it relaunches (at which point the materializer rebuilds settings.json
- * from the global anyway). The load-bearing half of this module is therefore the
- * DETECTION: a degraded session must be told, loudly, that it is running without locks,
- * without an inbox, and without recall — because it can still act on that (relaunch,
- * stop making unlocked edits, poll the inbox by hand). Silence is the actual bug.
+ * WHAT A REPAIR ACTUALLY DOES — measured, not assumed. I first wrote that hooks are read
+ * only at startup and so could not be restored in-process. That was WRONG, and the live
+ * repair disproved it: rewriting settings.json re-registered the hooks for the RUNNING
+ * session, and su-5d6764f9's coord inbox immediately delivered a 40+ message backlog that
+ * had been silently dropped for 27h. So a repair heals the live session, not just its
+ * next boot. Two things it cannot undo: a SessionStart that already passed never fires
+ * again (compactions that already happened never got their memory epoch bump, so their
+ * dedup ledger stays un-re-primed), and the MCP server entry is bound at connect time, so
+ * papercusp-su may need a reconnect.
+ *
+ * The DETECTION half is still the load-bearing one: the failure is silent and
+ * self-latching, and an agent that does not know it is running without edit locks, without
+ * an inbox, and without recall cannot act on any of it. Silence is the actual bug.
  *
  * The global ~/.claude/settings.json is the canonical hook block (writeSessionSettings
  * copies it in at materialize). We diff the session against it rather than hard-coding a

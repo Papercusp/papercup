@@ -226,6 +226,21 @@ export function parseCodexLine(line: string): ParsedTurn | null {
   } catch {
     return null;
   }
+  // Fallback prompt history: {session_id, ts(seconds), text}. Current Codex
+  // builds can emit this while leaving the rollout path unmaterialized.
+  if (
+    typeof obj.session_id === 'string' &&
+    typeof obj.text === 'string' &&
+    (typeof obj.ts === 'number' || typeof obj.ts === 'string')
+  ) {
+    const text = cleanTurnText(obj.text);
+    if (!text) return null;
+    const rawTs = obj.ts;
+    const ts = typeof rawTs === 'number' && rawTs < 10_000_000_000
+      ? new Date(rawTs * 1000)
+      : parseTs(rawTs);
+    return { ts, speaker: 'user', text, sessionId: obj.session_id };
+  }
   if (obj.type !== 'response_item') return null;
   const payload = obj.payload as { type?: string; role?: string; content?: unknown } | undefined;
   if (!payload || payload.type !== 'message') return null;
@@ -349,6 +364,9 @@ export function classifyCodexLine(line: string): LineSignal | null {
     obj = JSON.parse(line) as Record<string, unknown>;
   } catch {
     return null;
+  }
+  if (typeof obj.session_id === 'string' && typeof obj.text === 'string') {
+    return cleanTurnText(obj.text) ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
   if (obj.type !== 'response_item') return null;
   const payload = obj.payload as { type?: string; role?: string; content?: unknown; id?: string } | undefined;
@@ -688,7 +706,10 @@ async function writeState(
  * sessions:search { session:'self' } and the post-compaction orient call this
  * on the caller's own transcript so the last few minutes are never a blind
  * spot — client-neutral (compaction-context-loss D-002). */
-export async function ingestFileNow(filePath: string): Promise<{ inserted: number }> {
+export async function ingestFileNow(
+  filePath: string,
+  opts: { owner?: string | null; sessionId?: string | null } = {},
+): Promise<{ inserted: number }> {
   const adapter = FILE_ADAPTERS.find((a) => a.roots().some((r) => filePath.startsWith(r.root)));
   if (!adapter) return { inserted: 0 };
   const { sql } = getOrgPg();
@@ -707,7 +728,7 @@ export async function ingestFileNow(filePath: string): Promise<{ inserted: numbe
       session_id: t.sessionId ?? meta.sessionId,
       turn_idx: st.turn_count + i,
       ts: t.ts ? t.ts.toISOString() : null,
-      owner: meta.owner,
+      owner: opts.owner ?? meta.owner,
       harness_slug: null,
       cwd: t.cwd ?? null,
       speaker: t.speaker,
@@ -721,7 +742,7 @@ export async function ingestFileNow(filePath: string): Promise<{ inserted: numbe
       response_count: st.response_count + responseCount,
       tool_call_count: st.tool_call_count + toolCallCount,
       last_inference_id: lastInferenceId,
-      sessionId: meta.sessionId,
+      sessionId: opts.sessionId ?? meta.sessionId,
     });
   }
   return { inserted };

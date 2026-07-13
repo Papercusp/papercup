@@ -70,6 +70,22 @@ export default defineTool({
     const limit = args.limit ?? 30;
     const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : (args.owner ?? null);
 
+    // Keep the caller's live session visible even before the periodic ingest
+    // sweep. Codex prompt-history fallbacks need the owner override because a
+    // history.jsonl path alone does not encode its coord owner.
+    if (args.owner === 'self' && owner) {
+      try {
+        const { resolveSelfSession } = await import('../../search/self-session');
+        const self = await resolveSelfSession(owner);
+        if (self) {
+          const { ingestFileNow } = await import('../../search/session-ingest');
+          await ingestFileNow(self.filePath, { owner, sessionId: self.sessionId });
+        }
+      } catch {
+        /* the regular ingest sweep remains the fail-soft fallback */
+      }
+    }
+
     // EI-9970: `turns` (session_turns row count) and the real prompt/
     // response/tool-call counts (session_ingest_state, accumulated at
     // ingest time over EVERY raw line — a superset of session_turns'

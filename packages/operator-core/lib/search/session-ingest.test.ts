@@ -313,4 +313,20 @@ describe('parseCodexLine', () => {
     expect(parseCodexLine(JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } }))).toBeNull();
     expect(parseCodexLine(JSON.stringify({ type: 'session_meta', payload: {} }))).toBeNull();
   });
+
+  it('parses Codex history.jsonl fallback prompts with second timestamps', () => {
+    const line = JSON.stringify({
+      session_id: '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f',
+      ts: 1_783_926_209,
+      text: 'implement the full operability audit now',
+    });
+    const turn = parseCodexLine(line);
+    expect(turn).toMatchObject({
+      sessionId: '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f',
+      speaker: 'user',
+      text: 'implement the full operability audit now',
+    });
+    expect(turn?.ts?.getUTCFullYear()).toBeGreaterThan(2025);
+    expect(classifyCodexLine(line)).toMatchObject({ isPrompt: true, isResponsePayload: false });
+  });
 });
