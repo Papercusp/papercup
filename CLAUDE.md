@@ -439,6 +439,16 @@ training cutoffs; don't guess from memory.
    over-budget guidance edit reds HERE instead of silently wedging the green
    gate (EI-7284).
 
+> **Editing a live tool counts too.** In practice nearly every prompt-weight gate
+> red has come from *growing* an existing tool's `description`/`guidance`, not from
+> adding a new one — and an editor never reads an "Adding a tool" section, so the
+> breach lands committed and freezes the fleet gate hours later. Run the same
+> `tools-md-sync` quick-check after ANY description/guidance change, not just an
+> add. Backstop (EI-10966): the live operator now re-checks the prompt-weight
+> budget at tool-registration and warns in its OWN log the moment a hot-reloaded
+> edit goes over budget — so a skipped quick-check surfaces in the operator, not
+> only at the fleet gate.
+
 Per-tool when/not-when goes on the tool; cross-tool patterns in
 `<role>.tools.md`; behavior rules in `<role>.persona.md`. The split is
 intentional — see `packages/operator-core/lib/prompt-assembly.ts`.

@@ -12,14 +12,16 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { runBulk, bulkContent } from '../_bulk';
 import {
-  activeExternalBlockers,
   getWorkItem,
   mergeWorkItemPayload,
   setWorkItemClaimHold,
   setWorkItemStateWithAliasInfo,
+} from '../../work-items';
+import {
+  activeExternalBlockers,
   updateExternalBlockerHistory,
   type ExternalBlockerKind,
-} from '../../work-items';
+} from '../../external-blockers';
 
 const BLOCKER_KIND = z.enum(['event', 'gate', 'runtime', 'human']);
 const fields = {

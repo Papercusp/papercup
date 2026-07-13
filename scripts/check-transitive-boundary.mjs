@@ -161,32 +161,42 @@ function extractImports(source) {
   const specs = [];
 
   function visit(node) {
+    if (!node) return;
+
     // import ... from '...'
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      specs.push(node.moduleSpecifier.text);
+    if (ts.isImportDeclaration(node)) {
+      if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        specs.push(node.moduleSpecifier.text);
+      }
     }
     // export ... from '...'
-    if (ts.isExportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      specs.push(node.moduleSpecifier.text);
+    else if (ts.isExportDeclaration(node)) {
+      if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        specs.push(node.moduleSpecifier.text);
+      }
     }
-    // require('...')
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === 'require' &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteral(node.arguments[0])
-    ) {
-      specs.push(node.arguments[0].text);
-    }
-    // dynamic import('...')
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteral(node.arguments[0])
-    ) {
-      specs.push(node.arguments[0].text);
+    // require('...') or import('...')
+    else if (ts.isCallExpression(node)) {
+      const expr = node.expression;
+      if (!expr) return;
+
+      // require('...')
+      if (
+        ts.isIdentifier(expr) &&
+        expr.text === 'require' &&
+        node.arguments.length > 0 &&
+        ts.isStringLiteral(node.arguments[0])
+      ) {
+        specs.push(node.arguments[0].text);
+      }
+      // import('...')
+      else if (
+        expr.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length > 0 &&
+        ts.isStringLiteral(node.arguments[0])
+      ) {
+        specs.push(node.arguments[0].text);
+      }
     }
 
     ts.forEachChild(node, visit);
@@ -197,80 +207,136 @@ function extractImports(source) {
 }
 
 /**
+ * Walk the import graph from an entry file, tracking violations.
+ * @param {string} entryFile - Absolute path to entry
+ * @returns {{ files: Set<string>, violations: Map<string, string[][]> }}
+ */
+function walkGraph(entryFile) {
+  const visited = new Set(); // Visited file paths
+  const violations = new Map(); // forbidden module -> array of import chains
+
+  function visit(filePath, chain = []) {
+    // Prevent cycles and stack overflow
+    if (visited.has(filePath) || chain.length > 100) return;
+    visited.add(filePath);
+
+    const source = loadSourceFile(filePath);
+    if (!source) return;
+
+    const specs = extractImports(source);
+    const currentChain = [...chain, filePath];
+
+    for (const spec of specs) {
+      // Check if this direct import is forbidden
+      if (isForbidden(spec)) {
+        if (!violations.has(spec)) {
+          violations.set(spec, []);
+        }
+        // Record the chain that leads to this forbidden import
+        violations.get(spec).push(currentChain);
+      } else {
+        // Not forbidden, recurse into it
+        const resolved = resolveModulePath(spec, filePath);
+        if (resolved) {
+          visit(resolved, currentChain);
+        }
+      }
+    }
+  }
+
+  visit(entryFile);
+  return { files: visited, violations };
+}
+
+/**
+ * Format an import chain for display (entry → ... → forbidden).
+ * @param {string[]} chain - Chain of files ending at the file importing the forbidden module
+ * @param {string} forbidden - The forbidden module name
+ * @returns {string}
+ */
+function formatChain(chain, forbidden) {
+  const formatted = chain.map((item) => {
+    const rel = relative(ROOT, item);
+    return rel.startsWith('..') ? item : rel;
+  });
+  return [
+    '        ' + formatted.join('\n        ↓\n        '),
+    '        → ' + forbidden,
+  ].join('\n');
+}
+
+/**
  * Main entrypoint
  */
 function main() {
   const verbose = process.argv.includes('--verbose');
 
-  // Find the main entry file
-  const packageJson = JSON.parse(
-    readFileSync(resolve(APP_DIR, 'package.json'), 'utf8')
-  );
-  const mainEntry = packageJson.module || packageJson.main || 'src/index.tsx';
-  const entryFile = resolve(APP_DIR, mainEntry);
+  // Allow custom entry point (for testing)
+  let entryFile;
+  const customEntry = process.argv.find((arg) => !arg.startsWith('-'));
+  if (customEntry && customEntry !== process.argv[1]) {
+    entryFile = findFile(resolve(customEntry));
+  } else {
+    // Default to operator-vite
+    entryFile = findFile(resolve(APP_DIR, 'src/main'));
+  }
 
-  if (!statSync(entryFile, { throwIfNoEntry: false })?.isFile()) {
-    console.error(`❌ Entry file not found: ${entryFile}`);
+  if (!entryFile) {
+    console.error(
+      `❌ Entry point not found (tried ${customEntry || resolve(APP_DIR, 'src/main')}.*)`
+    );
     process.exit(1);
   }
 
-  // Walk the import graph
-  const importMap = new Map();
-  const importedFrom = new Map();
-  const visited = new Set();
-  const host = createCompilerHost();
+  console.log(`Scanning import graph from ${relative(ROOT, entryFile)}...\n`);
 
-  console.log(`Scanning import graph from ${relative(ROOT, entryFile)}...`);
-  walkImports(entryFile, importMap, visited, host, importedFrom);
+  const { files, violations } = walkGraph(entryFile);
 
-  // Collect violations
-  const violations = new Map(); // module -> chains
-  const allModules = new Set(importedFrom.keys());
-
-  for (const module of allModules) {
-    if (isForbidden(module)) {
-      const chains = traceImportChains(module, importedFrom, importMap, entryFile);
-      violations.set(module, chains);
-    }
-  }
-
-  // Report findings
   if (violations.size === 0) {
-    console.log(`✓ No forbidden imports detected. Scanned ${visited.size} files, ${allModules.size} unique imports.`);
+    console.log(`✓ No forbidden imports detected in the client graph.`);
+    console.log(`  Scanned: ${files.size} files`);
     process.exit(0);
   }
 
-  console.error(`\n❌ Found ${violations.size} forbidden import(s) in the client graph:\n`);
+  // Sort and format violations
+  const sorted = Array.from(violations.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 
-  const sortedViolations = Array.from(violations.entries()).sort((a, b) =>
-    a[0].localeCompare(b[0])
-  );
+  console.error(`❌ Found ${violations.size} forbidden import(s):\n`);
 
-  for (const [module, chains] of sortedViolations) {
-    console.error(`  ⚠ ${module}`);
+  let totalChains = 0;
+  for (const [module, chains] of sorted) {
+    totalChains += chains.length;
+    console.error(`  ⚠  ${module}`);
     if (verbose && chains.length > 0) {
-      // Show the first chain as an example
-      const chain = chains[0];
-      for (let i = 0; i < chain.length; i++) {
-        const item = chain[i];
-        const isFile = item.startsWith('/');
-        const label = isFile ? relative(ROOT, item) : item;
-        const indent = '    ' + '→ '.repeat(i);
-        console.error(`${indent}${label}`);
+      // Show up to 3 example chains
+      const example = chains.slice(0, 3);
+      for (let i = 0; i < example.length; i++) {
+        const chain = example[i];
+        if (chain.length <= 1) continue; // Skip if just the direct import
+        console.error(`\n${formatChain(chain.slice(0, 15), module)}`);
       }
-      if (chains.length > 1) {
-        console.error(`    ... and ${chains.length - 1} more import path(s)`);
+      if (chains.length > 3) {
+        console.error(`\n      (+ ${chains.length - 3} more import path${chains.length > 4 ? 's' : ''})`);
       }
     }
   }
 
-  console.error(`\nRemedy:`);
-  console.error(`  - Load forbidden modules lazily: \`const x = await import('...')\``);
-  console.error(`  - Use \`import type\` for type-only imports`);
-  console.error(`  - Add a browser shim in apps/operator-vite/vite.config.ts`);
-  console.error(`  - See /internal/docs/agent-insights/fcp-server-libs-leak-into-eager-client-bundle\n`);
+  console.error(`
+Total: ${totalChains} import chain(s) to forbidden module(s)
+
+Fix options:
+  1. Lazy-load: \`const x = await import('...')\` in functions that need it
+  2. Type-only: \`import type { X } from '...'\` if only types are needed
+  3. Add shim: Add entry to apps/operator-vite/vite.config.ts resolve.alias
+  4. Re-export: Deep-import from origin instead of importing barrel
+
+Run with --verbose to see full import chains.
+Read more: /internal/docs/agent-insights/fcp-server-libs-leak-into-eager-client-bundle
+`);
 
   process.exit(1);
 }
 
-main();
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

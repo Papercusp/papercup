@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   decideAutoClose,
   processAutoClose,
@@ -7,6 +7,7 @@ import {
   type AutoCloseDeps,
 } from './auto-close';
 import type { EngineerIssue } from '../../issues-engineer';
+import type { RedTestRun } from './red-test-green-resolve';
 
 // P-009 (watchdog-and-exposed-systems-improvement-2026-06-18): the auto-close sweep
 // retires a watchdog-sourced EI once its signal stops firing. Auto-closing real items
@@ -232,5 +233,126 @@ describe('processAutoClose — flag gate + orchestration', () => {
       },
     ]);
     expect(out).toEqual(closed.map(({ id: issueId, key: watchdogKey, reason }) => ({ issueId, watchdogKey, reason })));
+  });
+});
+
+// ── P-007 / WI-4601: POSITIVE green-run resolution (the raise-but-never-lower fix) ──────
+// Live premise (dev:pg_query 2026-07-13): 18 of 58 open red-test EIs (31%) had their named
+// test currently GREEN. This pass resolves them on PROVEN green (N consecutive passes) with
+// the green run as real completion evidence — BEFORE, and independent of, the absence path.
+describe('processAutoClose — P-007 green-run resolution', () => {
+  const greenRun = (statuses: string): RedTestRun[] =>
+    statuses.split(',').map((status, i) => ({ status: status.trim(), startedAtMs: NOW - i * 60_000, commitSha: 'deadbeef00' }));
+
+  interface GreenCapture { resolved: Array<{ id: string; ref: string; verifiedHow?: string }> }
+  const greenDeps = (
+    runsByPath: Record<string, RedTestRun[]>,
+    capture: GreenCapture,
+    over: Partial<AutoCloseDeps> = {},
+  ): AutoCloseDeps => ({
+    listOpen: async () => [],
+    recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
+    inFlightDispatchIds: async () => new Set(),
+    close: async () => {},
+    nowMs: () => NOW,
+    recentRedTestRuns: async (paths) => {
+      const m = new Map<string, RedTestRun[]>();
+      for (const p of paths) if (runsByPath[p]) m.set(p, runsByPath[p]);
+      return m;
+    },
+    resolveGreen: async (id, _wk, ref, evidence) => {
+      capture.resolved.push({ id, ref, verifiedHow: evidence.verifiedHow });
+    },
+    ...over,
+  });
+
+  it('resolves a PROVEN-GREEN red-test EI with real evidence, and does NOT also absence-close it', async () => {
+    process.env[FLAG_ENV] = '1';
+    const cap: GreenCapture = { resolved: [] };
+    const closed: string[] = [];
+    const deps = greenDeps({ 'packages/x/foo.test.ts': greenRun('pass,pass,pass,pass') }, cap, {
+      listOpen: async () => [mkIssue({ id: 'EI-green', watchdogKey: 'red-test:packages/x/foo.test.ts' })],
+      // Signal ABSENT from known-open (the absence path WOULD close it) — green evidence wins first.
+      recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
+      close: async (id) => { closed.push(id); },
+    });
+    const out = await processAutoClose('ws', {}, deps);
+    expect(cap.resolved).toEqual([
+      { id: 'EI-green', ref: expect.stringContaining('POSITIVE green-run evidence'), verifiedHow: 'already-passing' },
+    ]);
+    expect(closed).toEqual([]); // NOT double-closed by the absence path
+    expect(out.map((o) => o.issueId)).toEqual(['EI-green']);
+  });
+
+  it('runs INDEPENDENTLY of tick history — resolves a proven-green EI even with too few ran-ticks', async () => {
+    process.env[FLAG_ENV] = '1';
+    const cap: GreenCapture = { resolved: [] };
+    const deps = greenDeps({ 'packages/x/foo.test.ts': greenRun('pass,pass,pass') }, cap, {
+      listOpen: async () => [mkIssue({ id: 'EI-green', watchdogKey: 'red-test:packages/x/foo.test.ts' })],
+      recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 1 }), // absence path cannot run
+    });
+    const out = await processAutoClose('ws', {}, deps);
+    expect(cap.resolved.map((r) => r.id)).toEqual(['EI-green']);
+    expect(out.map((o) => o.issueId)).toEqual(['EI-green']);
+  });
+
+  it('does NOT green-resolve a red-test EI whose latest run is red (regressed test stays open)', async () => {
+    process.env[FLAG_ENV] = '1';
+    const cap: GreenCapture = { resolved: [] };
+    const deps = greenDeps({ 'packages/x/foo.test.ts': greenRun('fail,pass,pass,pass') }, cap, {
+      listOpen: async () => [mkIssue({ id: 'EI-red', watchdogKey: 'red-test:packages/x/foo.test.ts' })],
+      // still firing → also not absence-closed; the item correctly stays open
+      recentRanTickKeys: async () => ({ seenKeys: new Set(['red-test:packages/x/foo.test.ts']), ranTickCount: 6 }),
+    });
+    const out = await processAutoClose('ws', {}, deps);
+    expect(cap.resolved).toEqual([]);
+    expect(out).toEqual([]);
+  });
+
+  it('does NOT green-resolve a red-test EI with a live in-flight dispatch (active work)', async () => {
+    process.env[FLAG_ENV] = '1';
+    const cap: GreenCapture = { resolved: [] };
+    const deps = greenDeps({ 'packages/x/foo.test.ts': greenRun('pass,pass,pass,pass') }, cap, {
+      listOpen: async () => [mkIssue({ id: 'EI-green', watchdogKey: 'red-test:packages/x/foo.test.ts' })],
+      inFlightDispatchIds: async () => new Set(['EI-green']),
+    });
+    await processAutoClose('ws', {}, deps);
+    expect(cap.resolved).toEqual([]);
+  });
+
+  it('is fail-soft: a test_runs read error yields no green resolution and never aborts the sweep', async () => {
+    process.env[FLAG_ENV] = '1';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); // the read error is EXPECTED
+    const cap: GreenCapture = { resolved: [] };
+    const closed: string[] = [];
+    const deps = greenDeps({}, cap, {
+      listOpen: async () => [mkIssue({ id: 'EI-green', watchdogKey: 'red-test:packages/x/foo.test.ts' })],
+      recentRedTestRuns: async () => { throw new Error('pg down'); },
+      // signal absent + enough ticks → the absence path still runs and closes it
+      recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
+      close: async (id) => { closed.push(id); },
+    });
+    const out = await processAutoClose('ws', {}, deps);
+    expect(cap.resolved).toEqual([]);
+    expect(closed).toEqual(['EI-green']); // fell through to absence close; sweep not aborted
+    expect(out.map((o) => o.issueId)).toEqual(['EI-green']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[watchdog-green-resolve]'), expect.stringContaining('pg down'));
+    warn.mockRestore();
+  });
+
+  it('does nothing green when the green deps are not injected (pre-P-007 backward compat)', async () => {
+    process.env[FLAG_ENV] = '1';
+    const closed: string[] = [];
+    // No recentRedTestRuns / resolveGreen → the green pass is a no-op; only the absence path acts.
+    const deps: AutoCloseDeps = {
+      listOpen: async () => [mkIssue({ id: 'EI-green', watchdogKey: 'red-test:packages/x/foo.test.ts' })],
+      recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
+      inFlightDispatchIds: async () => new Set(),
+      close: async (id) => { closed.push(id); },
+      nowMs: () => NOW,
+    };
+    const out = await processAutoClose('ws', {}, deps);
+    expect(closed).toEqual(['EI-green']); // absence-closed as before (no green resolution path)
+    expect(out.map((o) => o.issueId)).toEqual(['EI-green']);
   });
 });

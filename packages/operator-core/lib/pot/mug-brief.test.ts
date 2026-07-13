@@ -92,6 +92,28 @@ test('renderMugBrief — floor-only (no carry-note) omits the carry-note section
   assert.doesNotMatch(out2, /### Your carry-note/);
 });
 
+// WI-4563 — an empty frontier must be DIAGNOSABLE in the Mug's own launch brief:
+// admission-starvation (federated work withheld by the G2 gate) must read as a
+// DEADLOCK, never the bare "no ready work" that looked like a blind spot for 14 wakes.
+test('renderMugBrief — WI-4563: an EMPTY frontier caused by admission quarantine renders a LOUD deadlock line, not "no ready work"', () => {
+  const out = renderMugBrief({ floor: { frontier: [], frontierQuarantined: 10 } });
+  assert.match(out, /ADMISSION-STARVED/);
+  assert.match(out, /10 item\(s\) WITHHELD/);
+  // The bare "no work" line must NOT appear — that is exactly the mis-read this fixes.
+  assert.doesNotMatch(out, /empty — no ready work to place/);
+});
+
+test('renderMugBrief — WI-4563: an empty frontier with ZERO quarantined still renders the plain "no ready work" line (genuinely idle)', () => {
+  const out = renderMugBrief({ floor: { frontier: [], frontierQuarantined: 0 } });
+  assert.match(out, /empty — no ready work to place/);
+  assert.doesNotMatch(out, /ADMISSION-STARVED/);
+});
+
+test('floorFromSurvey — threads frontierQuarantined through from the survey (WI-4563)', () => {
+  const floor = floorFromSurvey({ frontier: [], plans: [], frontierBlocked: 0, frontierQuarantined: 4 });
+  assert.equal(floor.frontierQuarantined, 4);
+});
+
 // queen-capacity-aware-dispatch-2026-06-22 P-002 — the inference-capacity panel.
 test('renderMugBrief — capacity panel renders dispatchBudget + advice when present, omitted when absent', () => {
   const withCap = renderMugBrief({

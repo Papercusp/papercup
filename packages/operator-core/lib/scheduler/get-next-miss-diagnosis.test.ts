@@ -84,6 +84,7 @@ describe('WI-4413 — floor-attribution DRIFT GUARD', () => {
     const CLAIM_PATH_FLOORS = [
       'observationLaneExclusionSql',
       'needsHumanExclusionSql',
+      'externalBlockersExclusionSql',
       'claimHoldExclusionSql',
       'reservedPlanLaneExclusionSql',
       'federationDetectorExclusionSql',
@@ -109,6 +110,7 @@ describe('WI-4413 — floor-attribution DRIFT GUARD', () => {
     for (const reason of [
       'observation-lane',
       'needs-human',
+      'external-blocker',
       'claim-hold',
       'plan-lane-reserved',
       'federation-detector',

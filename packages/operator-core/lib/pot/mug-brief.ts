@@ -105,6 +105,12 @@ export interface MugBriefFloor {
   frontier: readonly Ranked<PlacementCandidate>[];
   /** Lanes held back by unsatisfied blocked_by (PotSurvey.frontierBlocked). */
   frontierBlocked?: number;
+  /** Frontier WITHHELD by the G2 admission gate (PotSurvey.frontierQuarantined) —
+   *  the silent-starvation signal (EI-8498 / WI-4563). When the frontier is EMPTY
+   *  and this is > 0, the brief flags an admission DEADLOCK instead of the bare
+   *  "no ready work" line, so an empty frontier never reads as a mysterious blind
+   *  spot wake after wake. */
+  frontierQuarantined?: number;
   /** Started plans with momentum, already ranked (PotSurvey.plans). */
   plans?: readonly Ranked<PlacementCandidate>[];
   /** Live cups: load + liveness (fleet:assignments). */
@@ -474,7 +480,18 @@ export function renderMugBrief(input: MugBriefInput): string {
   out.push('');
   out.push('### Frontier — ready to place (ranked)');
   if (f.frontier.length === 0) {
-    out.push('_empty — no ready work to place._');
+    // WI-4563 — an empty frontier is DIAGNOSABLE, never a mystery: when the ONLY
+    // reason nothing is placeable is the G2 admission gate (remote + un-admitted
+    // federated work), say so LOUDLY. This is a DEADLOCK, not an idle pot — no
+    // admit path in production clears it on its own; the fix is to admit/trust the
+    // authoring node, not to keep re-surveying an empty frontier for 14 wakes.
+    if (f.frontierQuarantined && f.frontierQuarantined > 0) {
+      out.push(
+        `⚠ **ADMISSION-STARVED** — 0 placeable, but ${f.frontierQuarantined} item(s) WITHHELD by the G2 admission gate (remote + un-admitted). NOT idle — this pot has work it is structurally blocked from placing. Admit/trust the authoring node; do not read this as "no work".`,
+      );
+    } else {
+      out.push('_empty — no ready work to place._');
+    }
   } else {
     for (let i = 0; i < Math.min(f.frontier.length, caps.frontier); i++) {
       out.push(renderCandidateLine(f.frontier[i], i));
@@ -585,13 +602,14 @@ export function renderMugBrief(input: MugBriefInput): string {
  * escalation/headroom/woke-by signals it gathered for the wake decision (D-004).
  */
 export function floorFromSurvey(
-  survey: Pick<PotSurvey, 'frontier' | 'plans' | 'frontierBlocked'>,
-  signals: Omit<MugBriefFloor, 'frontier' | 'plans' | 'frontierBlocked'> = {},
+  survey: Pick<PotSurvey, 'frontier' | 'plans' | 'frontierBlocked' | 'frontierQuarantined'>,
+  signals: Omit<MugBriefFloor, 'frontier' | 'plans' | 'frontierBlocked' | 'frontierQuarantined'> = {},
 ): MugBriefFloor {
   return {
     frontier: survey.frontier,
     plans: survey.plans,
     frontierBlocked: survey.frontierBlocked,
+    frontierQuarantined: survey.frontierQuarantined,
     ...signals,
   };
 }
