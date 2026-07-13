@@ -7,6 +7,7 @@
  */
 import type { PipelinePosition } from './git-pipeline-position';
 import type { DeployStatus } from './release-deploy-launch';
+import { classifyReleaseParity } from './release-parity';
 
 export interface ReleaseTraceGate {
   state: DeployStatus['state'];
@@ -282,7 +283,11 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   if (workItem) {
     return {
       name: 'work_items:set_live_verified',
-      args: { id: workItem, deployedSha: position.deployedSha },
+      args: {
+        id: workItem,
+        testedSha: position.verdictProvenance.lastGreenSha,
+        deployedSha: position.deployedSha,
+      },
       reason:
         'The exact SHA is green and deployed; record live evidence on the work item after exercising the behavior.',
     };
@@ -301,11 +306,17 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
   const generationBehind = input.consumerGeneration != null && input.consumerGeneration !== input.snapshotGeneration;
   const testedSha = input.position.verdictProvenance.lastGreenSha;
   const deployedSha = input.position.deployedSha;
+  const pinParity = classifyReleaseParity({
+    testedSha,
+    claimedDeployedSha: deployedSha,
+    actualDeployedSha: deployedSha,
+    greenPinSha: testedSha,
+  });
   const parity =
     targetSha != null &&
     input.position.positions.inMain &&
     input.position.positions.deployed &&
-    sameSha(testedSha, deployedSha);
+    pinParity.ok;
   const nextVerb = safeNextVerb(input);
   const ok = input.position.positions.deployed && parity && constraints.every((c) => !c.blocking);
 
@@ -338,6 +349,10 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
       targetSha,
       testedSha,
       deployedSha,
+      state:
+        !input.position.positions.inMain || !input.position.positions.deployed
+          ? 'target-not-included'
+          : pinParity.state,
     },
     awaits: {
       inspectedKeys: input.inspectedKeys,

@@ -216,8 +216,9 @@ export async function decorateLoopMonitorStates<
 >(
   agents: T[],
   fetchStatuses: (ownerIds: string[]) => Promise<Map<string, LoopStatus>> = (ids) => getLoopStatuses(ids),
-): Promise<T[]> {
-  if (agents.length === 0) return agents;
+): Promise<Array<T & { monitorState: MonitorState | null; nextFireAt: string | null }>> {
+  type Decorated = T & { monitorState: MonitorState | null; nextFireAt: string | null };
+  if (agents.length === 0) return agents as Decorated[];
   const statuses = await fetchStatuses(agents.map((a) => a.agentId));
   for (const a of agents) {
     const loop = statuses.get(a.agentId) ?? null;
@@ -237,7 +238,7 @@ export async function decorateLoopMonitorStates<
     }
     if (a.doing?.activity === 'stalled') a.doing.activity = 'alive';
   }
-  return agents;
+  return agents as Decorated[];
 }
 
 /** Pure derivation — unit-tests without PG (the DI seam is decorateMemberVerdicts). */

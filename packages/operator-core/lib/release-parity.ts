@@ -21,8 +21,14 @@ export interface ReleaseParityVerdict extends ReleaseParityInput {
   nextVerb: { name: string; args?: Record<string, unknown>; reason: string } | null;
 }
 
+function canonicalSha(value: string | null): string | null {
+  return value && /^[0-9a-f]{40}$/i.test(value) ? value.toLowerCase() : null;
+}
+
 function exactSha(a: string | null, b: string | null): boolean {
-  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+  const left = canonicalSha(a);
+  const right = canonicalSha(b);
+  return Boolean(left && right && left === right);
 }
 
 /**
@@ -42,7 +48,12 @@ export function classifyReleaseParity(input: ReleaseParityInput): ReleaseParityV
         name: 'release:trace',
         reason: 'Resolve the tested candidate and current release authorities before recording live proof.',
       };
-  if (!input.testedSha || !input.claimedDeployedSha || !input.actualDeployedSha || !input.greenPinSha) {
+  if (
+    !canonicalSha(input.testedSha) ||
+    !canonicalSha(input.claimedDeployedSha) ||
+    !canonicalSha(input.actualDeployedSha) ||
+    !canonicalSha(input.greenPinSha)
+  ) {
     return {
       ...input,
       ok: false,

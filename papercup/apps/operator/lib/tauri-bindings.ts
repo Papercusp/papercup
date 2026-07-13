@@ -145,8 +145,22 @@ export const commands = {
 	 */
 	externalConsoleRun: (spec: ExternalConsoleSpec) => typedError<number | null, string>(__TAURI_INVOKE("external_console_run", { spec })),
 	nativeTerminalStatus: () => __TAURI_INVOKE<NativeTerminalStatus>("native_terminal_status"),
-	// Show/hide the native sibling terminal. Returns the new running state.
+	/**
+	 *  Show/hide the native sibling terminal. Returns the new running state.
+	 *  D-004: refuses while the FLAGS.TESTING gate is closed — the dock is
+	 *  testing-gated (flip the flag via /admin/features, then relaunch or let
+	 *  the webview relay re-open the gate live).
+	 */
 	nativeTerminalToggle: () => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_toggle")),
+	/**
+	 *  D-004 (operator-chat-sidebar-revival P-014): the webview relays its
+	 *  resolved FLAGS.TESTING across the seam here, once flags load and again on
+	 *  any live flip. Rust no longer spawns the dock at boot — this is the ONLY
+	 *  path that opens the gate. Enabled + not running ⇒ spawn (restores today's
+	 *  dock exactly); disabled + running ⇒ shutdown (a live flag-off flip hides
+	 *  the dock without a relaunch). Returns the new running state.
+	 */
+	nativeTerminalSetEnabled: (enabled: boolean) => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_set_enabled", { enabled })),
 	/**
 	 *  WI-3388 — the terminal's current user layout (divider width fraction +
 	 *  collapsed/rail state). Read on mount by the web UI's `<TerminalDivider>`

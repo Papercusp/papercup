@@ -33,12 +33,8 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
     blurb:
       'The landing dashboard — what is running right now, plans that need attention, and the pulse of the whole workspace at a glance.',
   },
-  {
-    id: 'brainstorm',
-    label: 'Brainstorm',
-    blurb:
-      'A per-project idea canvas: sketch and shape ideas together with agents before they harden into plans.',
-  },
+  // ('brainstorm' left the /adv strip for the Quick Panel popup —
+  //  quick-panel-saved-prompts-2026-07-13 P-010; the tour mirrors ADV_TABS.)
   {
     id: 'plans',
     label: 'Create',

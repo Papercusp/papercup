@@ -83,6 +83,7 @@ describe('fleet scope assignment admission (P-016)', () => {
   it('hydrates issue plan/risk/path vocabulary from the canonical payload shape', () => {
     const subject = claimSpecSubjectFromWorkItem({
       id: 'EI-9',
+      harness: 'papercusp',
       kind: 'bug',
       family: 'issue',
       title: 'issue',

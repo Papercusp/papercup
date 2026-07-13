@@ -139,7 +139,13 @@ describe('release trace wake lineage', () => {
 describe('buildReleaseTrace', () => {
   it('reports exact tested/deployed parity for a green live SHA', () => {
     const out = buildReleaseTrace(input());
-    expect(out.testedDeployedParity).toMatchObject({ ok: true, targetSha: sha, testedSha: sha, deployedSha: sha });
+    expect(out.testedDeployedParity).toMatchObject({
+      ok: true,
+      state: 'matched',
+      targetSha: sha,
+      testedSha: sha,
+      deployedSha: sha,
+    });
     expect(out.constraints).toEqual([]);
     expect(out.nextVerb).toBeNull();
   });
@@ -230,6 +236,13 @@ describe('buildReleaseTrace', () => {
     );
     expect(out.nextVerb).toMatchObject({ name: 'dev:restart', args: { target: 'gateway', confirm: true } });
     expect(out.constraints.map((c) => c.code)).toContain('runtime-not-release-carried');
+  });
+  it('carries both exact tested and deployed SHAs into the live-verification write', () => {
+    const out = buildReleaseTrace(input({ workItem: 'F-123' }));
+    expect(out.nextVerb).toMatchObject({
+      name: 'work_items:set_live_verified',
+      args: { id: 'F-123', testedSha: sha, deployedSha: sha },
+    });
   });
   it('treats dirty path lineage as blocking even when its prior commit deployed', () => {
     const out = buildReleaseTrace(input({ position: position({ dirtyUncommitted: true }) }));

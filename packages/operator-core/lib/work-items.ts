@@ -1840,7 +1840,7 @@ export async function getCompletionIntegrityStats(harness: string): Promise<Comp
 // "done" on a pipeline/operator work-item means code-on-staging; its VALUE only exists once
 // DEPLOYED + exercised. live_verified is an ADDITIVE payload marker (NOT a new lifecycle state —
 // the core enum is deliberately untouched, D-013 sketch) recording that a human/agent confirmed the
-// change live: { at, by, deployedSha?, evidence? }. Feature-family only (the dispatched backlog the
+// change live: { at, by, testedSha?, deployedSha?, greenPinSha?, parity?, evidence? }. Feature-family only (the dispatched backlog the
 // plan targets); issue-family items report applicable:false without writing.
 
 export interface WorkItemLiveVerified {
@@ -1848,8 +1848,14 @@ export interface WorkItemLiveVerified {
   at: number;
   /** who confirmed it (ownerId / actor). */
   by: string;
+  /** the exact commit whose gate/test verdict is being relied upon. */
+  testedSha?: string | null;
   /** the deployed commit verified against (from release:deploy status / dev:pipeline_position). */
   deployedSha?: string | null;
+  /** the green pin independently read when the marker was recorded. */
+  greenPinSha?: string | null;
+  /** present only for markers that passed the tested = deployed = green parity guard. */
+  parity?: 'matched' | null;
   /** free-text proof — what was exercised, where. */
   evidence?: string | null;
 }
@@ -1871,7 +1877,10 @@ export function readWorkItemLiveVerified(payload: unknown): WorkItemLiveVerified
         return {
           at: m.at,
           by: m.by,
+          testedSha: typeof m.testedSha === 'string' ? m.testedSha : null,
           deployedSha: typeof m.deployedSha === 'string' ? m.deployedSha : null,
+          greenPinSha: typeof m.greenPinSha === 'string' ? m.greenPinSha : null,
+          parity: m.parity === 'matched' ? 'matched' : null,
           evidence: typeof m.evidence === 'string' ? m.evidence : null,
         };
       }

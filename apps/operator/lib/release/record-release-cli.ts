@@ -65,6 +65,8 @@ export interface RecordOpts {
   changelogMd: string | null;
   /** EVERY platform's bundle root — see `releaseBundleRoots`. Not just linux. */
   bundleDirs: string[];
+  /** The papercup-rust-mobile repo root (Android/iOS artifacts); null to skip mobile. */
+  mobileRoot: string | null;
   outDir: string;
   scope: Scope;
   cutBy: string | null;
@@ -83,6 +85,12 @@ export interface RecordOpts {
  */
 export function classifyArtifact(name: string): Pick<ReleaseArtifact, 'product' | 'platform'> | null {
   if (name.endsWith('.sig') || name.endsWith('.sha256')) return null;
+  // Mobile products FIRST — a phone app is its own `product`, independent of the
+  // gui/server split (it is neither a desktop GUI nor a headless server). Keeping
+  // them a distinct product is what lets the page give them their own "Mobile
+  // apps" section and keeps them out of the desktop auto-update manifest.
+  if (/\.(apk|aab)$/i.test(name)) return { product: 'mobile', platform: 'android-universal' };
+  if (/\.ipa$/i.test(name)) return { product: 'mobile', platform: 'ios-arm64' };
   const product: 'gui' | 'server' = /server/i.test(name) ? 'server' : 'gui';
   if (/\.(deb|AppImage)$/.test(name)) return { product, platform: 'linux-x86_64' };
   if (/\.(dmg)$/.test(name) || /\.app\.tar\.gz$/.test(name)) return { product, platform: 'darwin-universal' };
@@ -157,6 +165,32 @@ export function resolveDesktopRoot(startDir: string = process.cwd()): string {
     dir = parent;
   }
   return path.join(path.resolve(startDir), 'papercusp-desktop');
+}
+
+/**
+ * Locate `papercup-rust-mobile` — the SEPARATE repo (a sibling of the papercup
+ * checkout, NOT a submodule) that holds the Android/iOS sources + build outputs.
+ *
+ * Returns null when it can't be found: mobile is OPTIONAL, and a null root makes
+ * scanMobileArtifacts a no-op, so a desktop-only cut stays legal and silent.
+ * `--mobile-root` / PAPERCUSP_MOBILE_ROOT override.
+ */
+export function resolveMobileRoot(startDir: string = process.cwd()): string | null {
+  let dir = path.resolve(startDir);
+  for (let i = 0; i < 8; i++) {
+    for (const cand of [
+      path.join(dir, 'papercup-rust-mobile'),
+      path.join(path.dirname(dir), 'papercup-rust-mobile'),
+    ]) {
+      if (fs.existsSync(path.join(cand, 'crates')) || fs.existsSync(path.join(cand, 'Makefile'))) {
+        return cand;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
 
 /**
@@ -244,6 +278,79 @@ export function scanArtifacts(
           sha256: sha256File(full),
         });
       }
+    }
+  }
+  return found.sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
+}
+
+/** Bounded recursive file walk (depth-limited so a deep build tree can't wedge the scan). */
+function walkFiles(dir: string, maxDepth: number, depth = 0): string[] {
+  if (depth > maxDepth) return [];
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walkFiles(full, maxDepth, depth + 1));
+    else if (entry.isFile()) out.push(full);
+  }
+  return out;
+}
+
+/**
+ * Find the mobile app artifacts (Android APK/AAB, iOS IPA) and describe them.
+ *
+ * Mobile is DIFFERENT from the desktop tauri artifacts in two ways that this
+ * function exists to bridge:
+ *
+ *   1. They live in the SEPARATE `papercup-rust-mobile` repo, not in any tauri
+ *      bundle root — so they take their own root (`mobileRoot`), not a
+ *      `releaseBundleRoots` entry.
+ *   2. Their built filenames carry NO version (`app-debug.apk`, not
+ *      `Papercusp_0.0.9_…`). So — unlike `scanArtifacts`, which filters by a
+ *      version substring — we record each under a SYNTHESIZED version+platform
+ *      name (`Papercusp_${version}_android.apk`), url relative to the release tag
+ *      like every other artifact. The publisher copies the real bytes to that
+ *      name under the tag dir.
+ *
+ * iOS is DORMANT until Apple Developer enrollment: with no signing identity there
+ * is no distributable `.ipa`, so the scan simply finds nothing for iOS until a
+ * signed `.ipa` exists — an HONEST omission (no fake iOS row on the page), and the
+ * `.ipa` branch is ready the day enrollment lands. Release preferred over debug.
+ */
+export function scanMobileArtifacts(
+  mobileRoot: string | null,
+  version: string,
+  tag: string,
+): ReleaseArtifact[] {
+  if (!mobileRoot || !fs.existsSync(mobileRoot)) return [];
+  // Ordered: release preferred over debug. First hit per synthesized name wins.
+  const candidates: Array<{ dir: string; ext: RegExp; recurse?: boolean; outName: string }> = [
+    { dir: 'android/app/build/outputs/apk/release', ext: /\.apk$/i, outName: `Papercusp_${version}_android.apk` },
+    { dir: 'android/app/build/outputs/apk/debug', ext: /\.apk$/i, outName: `Papercusp_${version}_android.apk` },
+    { dir: 'android/app/build/outputs/bundle/release', ext: /\.aab$/i, outName: `Papercusp_${version}_android.aab` },
+    { dir: 'ios/build', ext: /\.ipa$/i, recurse: true, outName: `Papercusp_${version}_ios.ipa` },
+  ];
+  const found: ReleaseArtifact[] = [];
+  const seen = new Set<string>();
+  for (const c of candidates) {
+    const dir = path.join(mobileRoot, c.dir);
+    if (!fs.existsSync(dir)) continue;
+    if (seen.has(c.outName)) continue; // release already claimed this name → skip debug
+    const files = (c.recurse ? walkFiles(dir, 5) : fs.readdirSync(dir).map((n) => path.join(dir, n))).filter(
+      (f) => c.ext.test(f),
+    );
+    for (const full of files) {
+      if (!fs.statSync(full).isFile()) continue;
+      const kind = classifyArtifact(c.outName);
+      if (!kind) continue;
+      seen.add(c.outName);
+      found.push({
+        ...kind,
+        name: c.outName,
+        url: `${tag}/${c.outName}`,
+        size: fs.statSync(full).size,
+        sha256: sha256File(full),
+      });
+      break; // one artifact per candidate dir
     }
   }
   return found.sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
@@ -347,7 +454,13 @@ export async function run(opts: RecordOpts): Promise<number> {
       return 0;
     }
 
-    const artifacts = scanArtifacts(opts.bundleDirs, opts.version, tag);
+    const desktopArtifacts = scanArtifacts(opts.bundleDirs, opts.version, tag);
+    // Mobile artifacts live in a separate repo + are not version-named — see
+    // scanMobileArtifacts. Merged into the same record; the page + history.json
+    // give `product:'mobile'` its own section, and the desktop auto-update
+    // manifest (latest.json) never sees them (it is desktop-platform-only).
+    const mobileArtifacts = scanMobileArtifacts(opts.mobileRoot, opts.version, tag);
+    const artifacts = [...desktopArtifacts, ...mobileArtifacts];
 
     // A release that records only SOME platforms must never look like a complete
     // one. 0.0.8 went out advertising itself to every beta tester while carrying
@@ -355,6 +468,8 @@ export async function run(opts: RecordOpts): Promise<number> {
     // nothing anywhere said so. Name the platforms that are missing a GUI installer,
     // loudly, every time. (Not fatal: a deliberate single-platform cut is legal —
     // but it has to be a CHOICE, made in the open, not a silent omission.)
+    // NB: mobile is NOT in this required set — a desktop cut with no phone build is
+    // legal and must not warn; the mobile summary below reports mobile separately.
     const guiPlatforms = new Set(
       artifacts.filter((a) => a.product === 'gui').map((a) => a.platform),
     );
@@ -392,8 +507,19 @@ export async function run(opts: RecordOpts): Promise<number> {
     console.log(`  plans      : ${snap.plans.length}`);
     console.log(`  artifacts  : ${artifacts.length}${artifacts.length === 0 ? '  ⚠ none found on disk' : ''}`);
     for (const a of artifacts) {
-      console.log(`      ${a.platform.padEnd(18)} ${a.name}  (${(a.size / 1e9).toFixed(2)} GB)`);
+      const sz = a.size >= 1e9 ? `${(a.size / 1e9).toFixed(2)} GB` : `${(a.size / 1e6).toFixed(1)} MB`;
+      console.log(`      ${a.platform.padEnd(18)} ${a.name}  (${sz})`);
     }
+    const mobilePlatforms = new Set(
+      artifacts.filter((a) => a.product === 'mobile').map((a) => a.platform),
+    );
+    console.log(
+      `  mobile     : android ${mobilePlatforms.has('android-universal') ? '✓' : '—'}  ·  ios ${
+        mobilePlatforms.has('ios-arm64')
+          ? '✓'
+          : '— (dormant: needs Apple Developer enrollment for a signed .ipa)'
+      }`,
+    );
     console.log(`  changelog  : ${opts.changelogMd ? `${opts.changelogMd.length} chars` : '⚠ NONE'}`);
 
     if (opts.dryRun) {
@@ -463,6 +589,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // CARGO_TARGET_DIR — so they need their own roots (see `releaseBundleRoots`).
   const desktopRoot = arg(argv, '--desktop-root') ?? resolveDesktopRoot();
   const bundleDirs = releaseBundleRoots(bundleDir, desktopRoot);
+  // Mobile (Android/iOS) artifacts live in the separate papercup-rust-mobile repo.
+  // Optional: null root → no mobile artifacts recorded (a legal desktop-only cut).
+  const mobileRoot =
+    arg(argv, '--mobile-root') ?? process.env.PAPERCUSP_MOBILE_ROOT ?? resolveMobileRoot();
   const outDir = arg(argv, '--out') ?? path.join(bundleDir, 'release-history');
   const scope: Scope = {
     workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',

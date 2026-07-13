@@ -10,7 +10,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
+
+// Children are spawned with stdio ['ignore','pipe','pipe'] (stdin ignored), so the
+// exact type is ChildProcessByStdio<null, Readable, Readable> — NOT the
+// all-piped ChildProcessWithoutNullStreams.
+type PipedChild = ChildProcessByStdio<null, Readable, Readable>;
 
 const repoRoot = new URL('../../../../../', import.meta.url).pathname;
 const leaseLib = join(repoRoot, 'papercusp-desktop/bin/lib/windows-build-resource-lease.sh');
