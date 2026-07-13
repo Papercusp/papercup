@@ -12,6 +12,9 @@
 set -euo pipefail
 
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
+# Managed sessions may receive either the operator origin or its full MCP
+# endpoint. Normalize to the origin because the hook appends /api/mcp below.
+OPERATOR_URL="${OPERATOR_URL%%/api/mcp*}"
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
 AGENT_ID_PATH="${HOME}/.papercusp/su-agent-id"
 CACHE_DIR="${PAPERCUSP_LOCKS_CACHE_DIR:-${HOME}/.papercusp/locks-cache}"

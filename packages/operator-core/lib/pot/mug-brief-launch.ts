@@ -229,51 +229,73 @@ export async function computePotPlacementSplit(
   };
 }
 
+/**
+ * Resolve the Mug's steering + placement scope ONCE — the shared front half of
+ * BOTH `computeMugWakeBrief` (the Mug's wake prompt) and
+ * `computeMugBriefFloorView` (the sidebar's pot-status projection,
+ * operator-chat-sidebar-revival-2026-07-13 P-018), so the UI shows the SAME
+ * filtered world the Mug is actually briefed with — never a parallel view.
+ */
+async function resolveMugScope(
+  workspaceId: string,
+  installSlug: string,
+): Promise<{
+  ownerSteering: OwnerSteering | undefined;
+  scopeFilter: ScopeFilter | undefined;
+  placementSplit: { started: string[]; stopped: string[] };
+}> {
+  // mug-steering-panel C-2 (P-003): read owner-steering ONCE up front (via the
+  // B-02 gatherOwnerSteering normalizer — returns the ACTIVE steering, or undefined
+  // when un-steered / expired) so it serves BOTH the survey's scopeFilter (scope +
+  // pause AT THE SOURCE) AND the brief's directive section. A pause empties the
+  // frontier (no new work); eligiblePlans restricts the plan view. The scopeFilter is
+  // built ONLY when steering actually constrains, so an un-steered Pot calls
+  // surveyPot exactly as before (fully backward-compatible).
+  const ownerSteering = await gatherOwnerSteering(workspaceId, installSlug);
+  // Per-pot Stop (per-pot start-stop 2026-06-30): the STOPPED registered hives
+  // whose frontier + plan work the Mug must withhold. A stop-list (not an
+  // allow-list) so standalone / unhived / started work is never regressed.
+  // Fail-open ([] on error). Independent of steering, so a Stop gates even when
+  // no other steering is active.
+  const placementSplit = await computePotPlacementSplit(workspaceId).catch(
+    () => ({ started: [] as string[], stopped: [] as string[] }),
+  );
+  const stoppedHarnesses = placementSplit.stopped;
+  const steeringActive = !!ownerSteering && (
+    ownerSteering.pauseNewWork ||
+    ownerSteering.pausedUntil != null ||
+    ownerSteering.eligiblePlans.length > 0 ||
+    ownerSteering.eligibleHives.length > 0 ||
+    ownerSteering.includeUnplannedWork === false
+  );
+  const scopeFilter: ScopeFilter | undefined =
+    steeringActive || stoppedHarnesses.length > 0
+      ? {
+          ...(ownerSteering && ownerSteering.eligiblePlans.length > 0 ? { eligiblePlans: ownerSteering.eligiblePlans } : {}),
+          // Eligible Pots → the survey's allowedHarnesses scope (C-2, su-266): the
+          // Mug may place only into these hives/harnesses (B-04 round-2).
+          ...(ownerSteering && ownerSteering.eligibleHives.length > 0 ? { allowedHarnesses: ownerSteering.eligibleHives } : {}),
+          // "Non-plan work items" toggle OFF → drop loose frontier work (decouple 2026-06-30).
+          ...(ownerSteering && ownerSteering.includeUnplannedWork === false ? { includeUnplannedWork: false } : {}),
+          ...(ownerSteering && ownerSteering.pauseNewWork ? { pauseNewWork: true } : {}),
+          ...(ownerSteering && ownerSteering.pausedUntil != null ? { pausedUntil: ownerSteering.pausedUntil } : {}),
+          // Per-pot Stop: withhold explicitly-stopped hives' work (stop-list).
+          ...(stoppedHarnesses.length > 0 ? { stoppedHarnesses } : {}),
+        }
+      : undefined;
+  return { ownerSteering, scopeFilter, placementSplit };
+}
+
 export async function computeMugWakeBrief(
   workspaceId: string,
   installSlug: string,
   opts: { wokeBy?: string } = {},
 ): Promise<string | null> {
   try {
-    // mug-steering-panel C-2 (P-003): read owner-steering ONCE up front (via the
-    // B-02 gatherOwnerSteering normalizer — returns the ACTIVE steering, or undefined
-    // when un-steered / expired) so it serves BOTH the survey's scopeFilter (scope +
-    // pause AT THE SOURCE) AND the brief's directive section. A pause empties the
-    // frontier (no new work); eligiblePlans restricts the plan view. The scopeFilter is
-    // built ONLY when steering actually constrains, so an un-steered Pot calls
-    // surveyPot exactly as before (fully backward-compatible).
-    const ownerSteering = await gatherOwnerSteering(workspaceId, installSlug);
-    // Per-pot Stop (per-pot start-stop 2026-06-30): the STOPPED registered hives
-    // whose frontier + plan work the Mug must withhold. A stop-list (not an
-    // allow-list) so standalone / unhived / started work is never regressed.
-    // Fail-open ([] on error). Independent of steering, so a Stop gates even when
-    // no other steering is active.
-    const placementSplit = await computePotPlacementSplit(workspaceId).catch(
-      () => ({ started: [] as string[], stopped: [] as string[] }),
+    const { ownerSteering, scopeFilter, placementSplit } = await resolveMugScope(
+      workspaceId,
+      installSlug,
     );
-    const stoppedHarnesses = placementSplit.stopped;
-    const steeringActive = !!ownerSteering && (
-      ownerSteering.pauseNewWork ||
-      ownerSteering.pausedUntil != null ||
-      ownerSteering.eligiblePlans.length > 0 ||
-      ownerSteering.eligibleHives.length > 0 ||
-      ownerSteering.includeUnplannedWork === false
-    );
-    const scopeFilter: ScopeFilter | undefined =
-      steeringActive || stoppedHarnesses.length > 0
-        ? {
-            ...(ownerSteering && ownerSteering.eligiblePlans.length > 0 ? { eligiblePlans: ownerSteering.eligiblePlans } : {}),
-            // Eligible Pots → the survey's allowedHarnesses scope (C-2, su-266): the
-            // Mug may place only into these hives/harnesses (B-04 round-2).
-            ...(ownerSteering && ownerSteering.eligibleHives.length > 0 ? { allowedHarnesses: ownerSteering.eligibleHives } : {}),
-            // "Non-plan work items" toggle OFF → drop loose frontier work (decouple 2026-06-30).
-            ...(ownerSteering && ownerSteering.includeUnplannedWork === false ? { includeUnplannedWork: false } : {}),
-            ...(ownerSteering && ownerSteering.pauseNewWork ? { pauseNewWork: true } : {}),
-            ...(ownerSteering && ownerSteering.pausedUntil != null ? { pausedUntil: ownerSteering.pausedUntil } : {}),
-            // Per-pot Stop: withhold explicitly-stopped hives' work (stop-list).
-            ...(stoppedHarnesses.length > 0 ? { stoppedHarnesses } : {}),
-          }
-        : undefined;
 
     // surveyPot is the CORE — if it throws, the whole brief is null and she falls
     // back to the survey tools. The other reads are individually fail-soft so one
@@ -382,4 +404,101 @@ export async function computeMugWakeBrief(
     );
     return null;
   }
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * The sidebar's pot-status projection (operator-chat-sidebar-revival P-018).
+ *
+ * A compact, CLIENT-SAFE view of the same floor the Mug is briefed with —
+ * consumed by the `mugBrief.floorView` sync resolver → the operator chat
+ * sidebar's pot-status panel. Reuses the SAME scope resolution + gather
+ * functions as `computeMugWakeBrief` (reuse-first, no parallel data path); a
+ * lighter subset (no inbox / change-feed / capacity / carry-note — those stay
+ * agent-internal per the P-016 owner selection). Every read is fail-soft so a
+ * flaky source degrades one section, never the whole panel.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** One ranked ready-to-place frontier row, projected for the UI. */
+export interface FloorViewFrontierItem {
+  id: string;
+  title: string;
+  /** 'plan' | 'work-item' — what the id refers to. */
+  view: string;
+  harness: string;
+}
+
+export interface MugBriefFloorView {
+  potSlug: string;
+  /** Epoch ms this view was computed (client renders staleness honestly). */
+  computedAt: number;
+  /** Live cups: id · doing · load · alive (BriefCup, verbatim). */
+  cups: BriefCup[];
+  /** Top of the ready frontier in Mug rank order (capped). */
+  frontier: FloorViewFrontierItem[];
+  /** Total ready count (frontier may be capped below this). */
+  frontierTotal: number;
+  frontierBlocked: number;
+  frontierQuarantined: number;
+  /** Placement watchdog counts — the "why is nothing moving" footer. */
+  openPlacements: { recovering: number; stranded: number; workingTracked: number };
+  /** Open escalations needing the owner (BriefEscalation, verbatim). */
+  escalations: BriefEscalation[];
+  /** The steering the Mug honors — null when un-steered. */
+  steering: {
+    directive: string | null;
+    pauseNewWork: boolean;
+    pausedUntil: number | null;
+    eligiblePlans: string[];
+  } | null;
+}
+
+/** Frontier rows surfaced to the sidebar before the "+N more" footer. */
+const FLOOR_VIEW_FRONTIER_CAP = 8;
+
+export async function computeMugBriefFloorView(
+  workspaceId: string,
+  installSlug: string,
+): Promise<MugBriefFloorView> {
+  const { ownerSteering, scopeFilter, placementSplit } = await resolveMugScope(
+    workspaceId,
+    installSlug,
+  );
+  const empty = { frontier: [], plans: [], frontierBlocked: 0, frontierQuarantined: 0 };
+  const [survey, cups, escalations, openPlacements] = await Promise.all([
+    surveyPot(workspaceId, installSlug, {
+      ...(scopeFilter ? { scopeFilter } : {}),
+      ...(placementSplit.started.length > 0 ? { extraSurveySlugs: placementSplit.started } : {}),
+    }).catch(() => empty as unknown as Awaited<ReturnType<typeof surveyPot>>),
+    gatherCups(workspaceId),
+    gatherEscalations(),
+    summarizeOpenPlacements(workspaceId, installSlug),
+  ]);
+  return {
+    potSlug: installSlug,
+    computedAt: Date.now(),
+    cups,
+    frontier: survey.frontier.slice(0, FLOOR_VIEW_FRONTIER_CAP).map((r) => ({
+      id: r.id,
+      title: r.title,
+      view: r.view,
+      harness: r.harness,
+    })),
+    frontierTotal: survey.frontier.length,
+    frontierBlocked: survey.frontierBlocked ?? 0,
+    frontierQuarantined: survey.frontierQuarantined ?? 0,
+    openPlacements: {
+      recovering: openPlacements.recovering,
+      stranded: openPlacements.stranded,
+      workingTracked: openPlacements.workingTracked,
+    },
+    escalations,
+    steering: ownerSteering
+      ? {
+          directive: ownerSteering.directive,
+          pauseNewWork: ownerSteering.pauseNewWork,
+          pausedUntil: ownerSteering.pausedUntil,
+          eligiblePlans: ownerSteering.eligiblePlans,
+        }
+      : null,
+  };
 }

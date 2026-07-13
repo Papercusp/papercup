@@ -1893,6 +1893,11 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
   // on the same tick — the pane stays SSE-live without a second aggregation. Safe
   // no-op when no overwatch pane is subscribed.
   await notifySyncInvalidate('overwatch.snapshot', undefined).catch(() => {});
+  // The chat sidebar's pot-status panel (operator-chat-sidebar-revival P-018)
+  // reads the Mug-brief floor projection; the same tick is its ambient heartbeat
+  // (one aggregation cadence, N consumers). Safe no-op when no sidebar panel is
+  // subscribed.
+  await notifySyncInvalidate('mugBrief.floorView', undefined).catch(() => {});
   return health;
 }
 

@@ -8,37 +8,38 @@
  *
  * The hook is bash+python, so we spawn it as a subprocess with crafted stdin.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import { join } from 'node:path';
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import { join } from "node:path";
 
-const HOOK = join(__dirname, '..', 'pretooluse-locks-acquire.sh');
+const HOOK = join(__dirname, "..", "pretooluse-locks-acquire.sh");
 let home: string, cache: string, ws: string, repo: string;
 
 beforeAll(() => {
-  home = fs.mkdtempSync(join(os.tmpdir(), 'cchook-home-'));
-  fs.mkdirSync(join(home, '.papercusp'), { recursive: true });
+  home = fs.mkdtempSync(join(os.tmpdir(), "cchook-home-"));
+  fs.mkdirSync(join(home, ".papercusp"), { recursive: true });
   // Install markers — the hook bails out (exit 0) without these.
-  fs.writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token\n');
-  fs.writeFileSync(join(home, '.papercusp', 'su-agent-id'), 'test-agent\n');
-  cache = fs.mkdtempSync(join(os.tmpdir(), 'cchook-cache-'));
-  ws = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'cchook-ws-')));
+  fs.writeFileSync(join(home, ".papercusp", "superuser-token"), "test-token\n");
+  fs.writeFileSync(join(home, ".papercusp", "su-agent-id"), "test-agent\n");
+  cache = fs.mkdtempSync(join(os.tmpdir(), "cchook-cache-"));
+  ws = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "cchook-ws-")));
   // A fake worktree that is a direct child of the workspace root, with a
   // `.git` FILE (worktree-style) so find_repo_root resolves it.
-  repo = join(ws, 'papercup-test');
-  fs.mkdirSync(join(repo, 'sub'), { recursive: true });
-  fs.writeFileSync(join(repo, '.git'), 'gitdir: /nonexistent\n');
+  repo = join(ws, "papercup-test");
+  fs.mkdirSync(join(repo, "sub"), { recursive: true });
+  fs.writeFileSync(join(repo, ".git"), "gitdir: /nonexistent\n");
 });
 afterAll(() => {
-  for (const d of [home, cache, ws]) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of [home, cache, ws])
+    fs.rmSync(d, { recursive: true, force: true });
 });
 
 function run(input: string, extraEnv: Record<string, string> = {}) {
-  const r = spawnSync('bash', [HOOK], {
+  const r = spawnSync("bash", [HOOK], {
     input,
-    encoding: 'utf8',
+    encoding: "utf8",
     env: {
       ...process.env,
       HOME: home,
@@ -54,66 +55,136 @@ function run(input: string, extraEnv: Record<string, string> = {}) {
       ...extraEnv,
     },
   });
-  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+  return { status: r.status, stdout: (r.stdout ?? "").trim() };
 }
 const payload = (o: object) => JSON.stringify(o);
 
-describe('cc PreToolUse hook — operator-independent paths', () => {
-  it('non-edit tool → allow (exit 0, no decision)', () => {
-    const r = run(payload({ tool_name: 'Read', tool_input: { file_path: '/x' }, tool_use_id: 't', session_id: 's', cwd: repo }));
+describe("cc PreToolUse hook — operator-independent paths", () => {
+  it("non-edit tool → allow (exit 0, no decision)", () => {
+    const r = run(
+      payload({
+        tool_name: "Read",
+        tool_input: { file_path: "/x" },
+        tool_use_id: "t",
+        session_id: "s",
+        cwd: repo,
+      }),
+    );
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('malformed JSON → fail-open allow', () => {
-    const r = run('not valid json {');
+  it("malformed JSON → fail-open allow", () => {
+    const r = run("not valid json {");
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('edit OUTSIDE the workspace → allow, never coordinated (no operator call)', () => {
-    const r = run(payload({ tool_name: 'Edit', tool_input: { file_path: '/tmp/somewhere-else/x.ts' }, tool_use_id: 't', session_id: 's', cwd: '/tmp/somewhere-else' }), { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' });
+  it("edit OUTSIDE the workspace → allow, never coordinated (no operator call)", () => {
+    const r = run(
+      payload({
+        tool_name: "Edit",
+        tool_input: { file_path: "/tmp/somewhere-else/x.ts" },
+        tool_use_id: "t",
+        session_id: "s",
+        cwd: "/tmp/somewhere-else",
+      }),
+      { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1" },
+    );
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
     // Out-of-scope means we never reached the operator → no error marker.
-    expect(fs.existsSync(join(cache, 'last-error.json'))).toBe(false);
+    expect(fs.existsSync(join(cache, "last-error.json"))).toBe(false);
   });
 
-  it('in-workspace edit + operator unreachable → FAIL-OPEN allow + last-error marker', () => {
-    const r = run(payload({ tool_name: 'Edit', tool_input: { file_path: join(repo, 'sub', 'f.ts') }, tool_use_id: 'tu', session_id: 's', cwd: repo }), { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' });
+  it("in-workspace edit + operator unreachable → FAIL-OPEN allow + last-error marker", () => {
+    const r = run(
+      payload({
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "sub", "f.ts") },
+        tool_use_id: "tu",
+        session_id: "s",
+        cwd: repo,
+      }),
+      { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1" },
+    );
     expect(r.status).toBe(0); // never blocks on infra failure
-    expect(r.stdout).toBe(''); // no deny decision
-    const marker = join(cache, 'last-error.json');
+    expect(r.stdout).toBe(""); // no deny decision
+    const marker = join(cache, "last-error.json");
     expect(fs.existsSync(marker)).toBe(true);
-    expect(JSON.parse(fs.readFileSync(marker, 'utf8')).handler).toBe('pretooluse');
+    expect(JSON.parse(fs.readFileSync(marker, "utf8")).handler).toBe(
+      "pretooluse",
+    );
   });
 
-  it('connection-refused is retried (bounded) before failing open — rides over a restart window', () => {
+  it("normalizes a full MCP endpoint before constructing hook routes", () => {
+    const owner = "normalize-owner";
+    const marker = join(cache, `owner-${owner}-last-error.json`);
+    fs.rmSync(marker, { force: true });
+    const r = run(
+      payload({
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "sub", "normalized.ts") },
+        tool_use_id: "normalized",
+        session_id: "s",
+        cwd: repo,
+      }),
+      {
+        PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1/api/mcp",
+        PAPERCUSP_SID: owner,
+      },
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+    expect(fs.existsSync(marker)).toBe(true);
+    const recorded = JSON.parse(fs.readFileSync(marker, "utf8"));
+    expect(recorded.operator_url).toBe("http://127.0.0.1:1");
+    expect(recorded.owner).toBe(owner);
+  });
+
+  it("connection-refused is retried (bounded) before failing open — rides over a restart window", () => {
     // port 1 → ECONNREFUSED on every attempt. A single-shot urlopen fails open
     // near-instantly (refused is immediate); the bounded retry must elapse its
     // ~2.4s budget first. The > 1.5s lower bound reliably distinguishes the two
     // without depending on cross-process server timing.
     const t0 = Date.now();
     const r = run(
-      payload({ tool_name: 'Edit', tool_input: { file_path: join(repo, 'sub', 'r.ts') }, tool_use_id: 'tu2', session_id: 's', cwd: repo }),
-      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' },
+      payload({
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "sub", "r.ts") },
+        tool_use_id: "tu2",
+        session_id: "s",
+        cwd: repo,
+      }),
+      { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1" },
     );
     const elapsed = Date.now() - t0;
     expect(r.status).toBe(0); // still fails open after the retries
-    expect(r.stdout).toBe(''); // no deny decision
+    expect(r.stdout).toBe(""); // no deny decision
     expect(elapsed).toBeGreaterThan(1500); // proves the retry loop ran
   }, 15000);
 
-  it('not installed (no token) → bail out, allow', () => {
-    const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'cchook-bare-'));
-    const r = spawnSync('bash', [HOOK], {
-      input: payload({ tool_name: 'Edit', tool_input: { file_path: join(repo, 'g.ts') }, tool_use_id: 't', session_id: 's', cwd: repo }),
-      encoding: 'utf8',
-      env: { ...process.env, HOME: bareHome, PAPERCUSP_LOCKS_CACHE_DIR: cache, PAPERCUSP_WORKSPACE_ROOT: ws },
+  it("not installed (no token) → bail out, allow", () => {
+    const bareHome = fs.mkdtempSync(join(os.tmpdir(), "cchook-bare-"));
+    const r = spawnSync("bash", [HOOK], {
+      input: payload({
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "g.ts") },
+        tool_use_id: "t",
+        session_id: "s",
+        cwd: repo,
+      }),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: bareHome,
+        PAPERCUSP_LOCKS_CACHE_DIR: cache,
+        PAPERCUSP_WORKSPACE_ROOT: ws,
+      },
     });
     fs.rmSync(bareHome, { recursive: true, force: true });
     expect(r.status).toBe(0);
-    expect((r.stdout ?? '').trim()).toBe('');
+    expect((r.stdout ?? "").trim()).toBe("");
   });
 });
 
@@ -122,58 +193,66 @@ describe('cc PreToolUse hook — operator-independent paths', () => {
 // first-run cursor seed, and the fail-open contract (a coord blip must
 // NEVER block a turn / emit a deny). The live inbox→inject path needs a
 // running operator and is exercised by the live functional smoke.
-const COORD_HOOK = join(__dirname, '..', 'posttooluse-coord-inbox.sh');
-const postPayload = { tool_name: 'Read', tool_input: { file_path: '/x' }, tool_use_id: 't', session_id: 's', cwd: '/tmp' };
+const COORD_HOOK = join(__dirname, "..", "posttooluse-coord-inbox.sh");
+const postPayload = {
+  tool_name: "Read",
+  tool_input: { file_path: "/x" },
+  tool_use_id: "t",
+  session_id: "s",
+  cwd: "/tmp",
+};
 
 function runCoord(extraEnv: Record<string, string> = {}, homeDir = home) {
-  const r = spawnSync('bash', [COORD_HOOK], {
+  const r = spawnSync("bash", [COORD_HOOK], {
     input: payload(postPayload),
-    encoding: 'utf8',
+    encoding: "utf8",
     env: {
       ...process.env,
       HOME: homeDir,
       PAPERCUSP_LOCKS_CACHE_DIR: cache,
-      PAPERCUSP_SID: '', // cleared unless a test opts in (parent psu session sets it)
-      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // never reach a real operator
+      PAPERCUSP_SID: "", // cleared unless a test opts in (parent psu session sets it)
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1", // never reach a real operator
       ...extraEnv,
     },
   });
-  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+  return { status: r.status, stdout: (r.stdout ?? "").trim() };
 }
 
-describe('cc PostToolUse coord-inbox hook — operator-independent paths', () => {
-  it('no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)', () => {
+describe("cc PostToolUse coord-inbox hook — operator-independent paths", () => {
+  it("no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)", () => {
     const r = runCoord();
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('psu session but not installed (no token) → no-op', () => {
-    const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'coordhook-bare-'));
-    const r = runCoord({ PAPERCUSP_SID: 'sid-notok' }, bareHome);
+  it("psu session but not installed (no token) → no-op", () => {
+    const bareHome = fs.mkdtempSync(join(os.tmpdir(), "coordhook-bare-"));
+    const r = runCoord({ PAPERCUSP_SID: "sid-notok" }, bareHome);
     fs.rmSync(bareHome, { recursive: true, force: true });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('first run seeds the cursor (no fetch, no inject) — even with operator unreachable', () => {
-    const sid = 'sid-first';
+  it("first run seeds the cursor (no fetch, no inject) — even with operator unreachable", () => {
+    const sid = "sid-first";
     const cur = join(cache, `coord-cursor-${sid}.json`);
     if (fs.existsSync(cur)) fs.rmSync(cur);
     const r = runCoord({ PAPERCUSP_SID: sid });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe(''); // seeds only; never injects on first run
+    expect(r.stdout).toBe(""); // seeds only; never injects on first run
     expect(fs.existsSync(cur)).toBe(true);
-    expect(typeof JSON.parse(fs.readFileSync(cur, 'utf8')).since_ts).toBe('string');
+    expect(typeof JSON.parse(fs.readFileSync(cur, "utf8")).since_ts).toBe(
+      "string",
+    );
   });
 
-  it('subsequent run + operator unreachable → FAIL-OPEN (exit 0, no stdout)', () => {
-    const sid = 'sid-second';
+  it("subsequent run + operator unreachable → FAIL-OPEN (exit 0, no stdout)", () => {
+    const sid = "sid-second";
     const cur = join(cache, `coord-cursor-${sid}.json`);
-    fs.writeFileSync(cur, JSON.stringify({ since_ts: '2020-01-01T00:00:00Z' }));
+    fs.writeFileSync(cur, JSON.stringify({ since_ts: "2020-01-01T00:00:00Z" }));
     const r = runCoord({ PAPERCUSP_SID: sid });
     expect(r.status).toBe(0); // a coord/operator blip never blocks the turn
-    expect(r.stdout).toBe(''); // and never injects junk
+    expect(r.stdout).toBe(""); // and never injects junk
   });
 
   // NOTE: the P-015 gauge-on-empty-inbox path (operator returns entries:[] + a
@@ -189,65 +268,82 @@ describe('cc PostToolUse coord-inbox hook — operator-independent paths', () =>
 // fail-open contract, and the non-blocking (detached) guarantee. The live
 // report→agent_activity path needs a running operator and is exercised by
 // the activity-tool integration test + the live smoke recorded in the plan.
-const ACTIVITY_HOOK = join(__dirname, '..', 'posttooluse-activity-report.sh');
+const ACTIVITY_HOOK = join(__dirname, "..", "posttooluse-activity-report.sh");
 const editPayload = {
-  tool_name: 'Edit',
-  tool_input: { file_path: '/x/y.ts', old_string: 'a', new_string: 'b' },
-  tool_use_id: 't',
-  session_id: 's',
-  cwd: '/x',
+  tool_name: "Edit",
+  tool_input: { file_path: "/x/y.ts", old_string: "a", new_string: "b" },
+  tool_use_id: "t",
+  session_id: "s",
+  cwd: "/x",
 };
 
-function runActivity(extraEnv: Record<string, string> = {}, input: string = payload(editPayload), homeDir = home) {
-  const r = spawnSync('bash', [ACTIVITY_HOOK], {
+function runActivity(
+  extraEnv: Record<string, string> = {},
+  input: string = payload(editPayload),
+  homeDir = home,
+) {
+  const r = spawnSync("bash", [ACTIVITY_HOOK], {
     input,
-    encoding: 'utf8',
+    encoding: "utf8",
     env: {
       ...process.env,
       HOME: homeDir,
-      PAPERCUSP_SID: '', // cleared unless a test opts in
-      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // never reach a real operator
+      PAPERCUSP_SID: "", // cleared unless a test opts in
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1", // never reach a real operator
       ...extraEnv,
     },
   });
-  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+  return { status: r.status, stdout: (r.stdout ?? "").trim() };
 }
 
-describe('cc PostToolUse activity-report hook — operator-independent paths', () => {
-  it('no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)', () => {
+describe("cc PostToolUse activity-report hook — operator-independent paths", () => {
+  it("no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)", () => {
     const r = runActivity();
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('psu session but not installed (no token) → no-op', () => {
-    const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'acthook-bare-'));
-    const r = runActivity({ PAPERCUSP_SID: 'sid-x' }, payload(editPayload), bareHome);
+  it("psu session but not installed (no token) → no-op", () => {
+    const bareHome = fs.mkdtempSync(join(os.tmpdir(), "acthook-bare-"));
+    const r = runActivity(
+      { PAPERCUSP_SID: "sid-x" },
+      payload(editPayload),
+      bareHome,
+    );
     fs.rmSync(bareHome, { recursive: true, force: true });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('SID + token, SYNC mode, operator unreachable → FAIL-OPEN (exit 0, no stdout)', () => {
-    const r = runActivity({ PAPERCUSP_SID: 'sid-sync', PAPERCUSP_ACTIVITY_SYNC: '1' });
+  it("SID + token, SYNC mode, operator unreachable → FAIL-OPEN (exit 0, no stdout)", () => {
+    const r = runActivity({
+      PAPERCUSP_SID: "sid-sync",
+      PAPERCUSP_ACTIVITY_SYNC: "1",
+    });
     expect(r.status).toBe(0); // a reporting blip never blocks the tool
-    expect(r.stdout).toBe(''); // and never emits anything onto the tool result
+    expect(r.stdout).toBe(""); // and never emits anything onto the tool result
   });
 
-  it('malformed JSON in SYNC mode → fail-open (exit 0, no stdout)', () => {
-    const r = runActivity({ PAPERCUSP_SID: 'sid-junk', PAPERCUSP_ACTIVITY_SYNC: '1' }, 'not valid json {');
+  it("malformed JSON in SYNC mode → fail-open (exit 0, no stdout)", () => {
+    const r = runActivity(
+      { PAPERCUSP_SID: "sid-junk", PAPERCUSP_ACTIVITY_SYNC: "1" },
+      "not valid json {",
+    );
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('detached (default) mode is NON-BLOCKING — returns fast even when the operator would hang', () => {
+  it("detached (default) mode is NON-BLOCKING — returns fast even when the operator would hang", () => {
     const t0 = Date.now();
     // An unroutable host would hang a synchronous POST for the full timeout; the
     // detached path must return near-instantly (it reparents the POST to init).
-    const r = runActivity({ PAPERCUSP_SID: 'sid-detach', PAPERCUSP_OPERATOR_URL: 'http://10.255.255.1:81' });
+    const r = runActivity({
+      PAPERCUSP_SID: "sid-detach",
+      PAPERCUSP_OPERATOR_URL: "http://10.255.255.1:81",
+    });
     const elapsed = Date.now() - t0;
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
     expect(elapsed).toBeLessThan(2500); // proves it did NOT wait on the 3s POST timeout
   });
 });
@@ -256,56 +352,77 @@ describe('cc PostToolUse activity-report hook — operator-independent paths', (
 // Mirrors the PostToolUse suite above — same contract, `phase:'pre'`, fired
 // at dispatch time instead of completion (closes the D-003 claim-renewal gap
 // a single long-running tool call leaves under PostToolUse-only reporting).
-const PRE_ACTIVITY_HOOK = join(__dirname, '..', 'pretooluse-activity-report.sh');
+const PRE_ACTIVITY_HOOK = join(
+  __dirname,
+  "..",
+  "pretooluse-activity-report.sh",
+);
 
-function runActivityPre(extraEnv: Record<string, string> = {}, input: string = payload(editPayload), homeDir = home) {
-  const r = spawnSync('bash', [PRE_ACTIVITY_HOOK], {
+function runActivityPre(
+  extraEnv: Record<string, string> = {},
+  input: string = payload(editPayload),
+  homeDir = home,
+) {
+  const r = spawnSync("bash", [PRE_ACTIVITY_HOOK], {
     input,
-    encoding: 'utf8',
+    encoding: "utf8",
     env: {
       ...process.env,
       HOME: homeDir,
-      PAPERCUSP_SID: '', // cleared unless a test opts in
-      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // never reach a real operator
+      PAPERCUSP_SID: "", // cleared unless a test opts in
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1", // never reach a real operator
       ...extraEnv,
     },
   });
-  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+  return { status: r.status, stdout: (r.stdout ?? "").trim() };
 }
 
-describe('cc PreToolUse activity-report hook — operator-independent paths', () => {
-  it('no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)', () => {
+describe("cc PreToolUse activity-report hook — operator-independent paths", () => {
+  it("no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)", () => {
     const r = runActivityPre();
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('psu session but not installed (no token) → no-op', () => {
-    const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'acthook-pre-bare-'));
-    const r = runActivityPre({ PAPERCUSP_SID: 'sid-x' }, payload(editPayload), bareHome);
+  it("psu session but not installed (no token) → no-op", () => {
+    const bareHome = fs.mkdtempSync(join(os.tmpdir(), "acthook-pre-bare-"));
+    const r = runActivityPre(
+      { PAPERCUSP_SID: "sid-x" },
+      payload(editPayload),
+      bareHome,
+    );
     fs.rmSync(bareHome, { recursive: true, force: true });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('SID + token, SYNC mode, operator unreachable → FAIL-OPEN (exit 0, no stdout)', () => {
-    const r = runActivityPre({ PAPERCUSP_SID: 'sid-sync', PAPERCUSP_ACTIVITY_SYNC: '1' });
+  it("SID + token, SYNC mode, operator unreachable → FAIL-OPEN (exit 0, no stdout)", () => {
+    const r = runActivityPre({
+      PAPERCUSP_SID: "sid-sync",
+      PAPERCUSP_ACTIVITY_SYNC: "1",
+    });
     expect(r.status).toBe(0); // a reporting blip never blocks the tool
-    expect(r.stdout).toBe(''); // and never emits anything onto the tool result
+    expect(r.stdout).toBe(""); // and never emits anything onto the tool result
   });
 
-  it('malformed JSON in SYNC mode → fail-open (exit 0, no stdout)', () => {
-    const r = runActivityPre({ PAPERCUSP_SID: 'sid-junk', PAPERCUSP_ACTIVITY_SYNC: '1' }, 'not valid json {');
+  it("malformed JSON in SYNC mode → fail-open (exit 0, no stdout)", () => {
+    const r = runActivityPre(
+      { PAPERCUSP_SID: "sid-junk", PAPERCUSP_ACTIVITY_SYNC: "1" },
+      "not valid json {",
+    );
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('detached (default) mode is NON-BLOCKING — returns fast even when the operator would hang', () => {
+  it("detached (default) mode is NON-BLOCKING — returns fast even when the operator would hang", () => {
     const t0 = Date.now();
-    const r = runActivityPre({ PAPERCUSP_SID: 'sid-detach', PAPERCUSP_OPERATOR_URL: 'http://10.255.255.1:81' });
+    const r = runActivityPre({
+      PAPERCUSP_SID: "sid-detach",
+      PAPERCUSP_OPERATOR_URL: "http://10.255.255.1:81",
+    });
     const elapsed = Date.now() - t0;
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
     expect(elapsed).toBeLessThan(2500); // proves it did NOT wait on the 3s POST timeout
   });
 
@@ -319,7 +436,7 @@ describe('cc PreToolUse activity-report hook — operator-independent paths', ()
   // smoke. Here we just pin the SOURCE actually sets phase:'pre' (not 'post') so a
   // future edit can't silently turn this back into a duplicate post-hook.
   it('the script source reports phase:"pre" (never "post")', () => {
-    const src = fs.readFileSync(PRE_ACTIVITY_HOOK, 'utf8');
+    const src = fs.readFileSync(PRE_ACTIVITY_HOOK, "utf8");
     expect(src).toContain("'phase': 'pre'");
     expect(src).not.toContain("'phase': 'post'");
   });
@@ -328,150 +445,207 @@ describe('cc PreToolUse activity-report hook — operator-independent paths', ()
 // ── Fleet statusline (Claude-only progressive enhancement) ─────────────
 // The render is fixture-driven (PAPERCUSP_STATUSLINE_FIXTURE) so it's testable
 // without a live operator; the fail-open paths must NEVER error.
-const STATUSLINE = join(__dirname, '..', 'statusline-fleet.sh');
+const STATUSLINE = join(__dirname, "..", "statusline-fleet.sh");
 
 function runStatusline(extraEnv: Record<string, string> = {}, homeDir = home) {
-  const r = spawnSync('bash', [STATUSLINE], {
+  const r = spawnSync("bash", [STATUSLINE], {
     input: '{"model":"opus","cwd":"/x"}',
-    encoding: 'utf8',
+    encoding: "utf8",
     env: {
       ...process.env,
       HOME: homeDir,
-      PAPERCUSP_SID: '',
-      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+      PAPERCUSP_SID: "",
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1",
       ...extraEnv,
     },
   });
-  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+  return { status: r.status, stdout: (r.stdout ?? "").trim() };
 }
 
 // ── SessionStart/SessionEnd lifecycle hook ─────────────────────────────
-const LIFECYCLE_HOOK = join(__dirname, '..', 'lifecycle-report.sh');
+const LIFECYCLE_HOOK = join(__dirname, "..", "lifecycle-report.sh");
 
-function runLifecycle(payloadObj: object, extraEnv: Record<string, string> = {}, homeDir = home) {
-  const r = spawnSync('bash', [LIFECYCLE_HOOK], {
+function runLifecycle(
+  payloadObj: object,
+  extraEnv: Record<string, string> = {},
+  homeDir = home,
+) {
+  const r = spawnSync("bash", [LIFECYCLE_HOOK], {
     input: payload(payloadObj),
-    encoding: 'utf8',
+    encoding: "utf8",
     env: {
       ...process.env,
       HOME: homeDir,
-      PAPERCUSP_SID: '',
-      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+      PAPERCUSP_SID: "",
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1",
       ...extraEnv,
     },
   });
-  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+  return { status: r.status, stdout: (r.stdout ?? "").trim() };
 }
 
-describe('cc lifecycle hook — operator-independent paths', () => {
-  it('no PAPERCUSP_SID → no-op (exit 0, no stdout)', () => {
-    const r = runLifecycle({ hook_event_name: 'SessionStart', session_id: 's' });
+describe("cc lifecycle hook — operator-independent paths", () => {
+  it("no PAPERCUSP_SID → no-op (exit 0, no stdout)", () => {
+    const r = runLifecycle({
+      hook_event_name: "SessionStart",
+      session_id: "s",
+    });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('SessionStart + operator unreachable (SYNC) → fail-open (exit 0, no stdout)', () => {
-    const r = runLifecycle({ hook_event_name: 'SessionStart', source: 'startup', session_id: 's', cwd: '/x' }, { PAPERCUSP_SID: 'su-l', PAPERCUSP_ACTIVITY_SYNC: '1' });
+  it("SessionStart + operator unreachable (SYNC) → fail-open (exit 0, no stdout)", () => {
+    const r = runLifecycle(
+      {
+        hook_event_name: "SessionStart",
+        source: "startup",
+        session_id: "s",
+        cwd: "/x",
+      },
+      { PAPERCUSP_SID: "su-l", PAPERCUSP_ACTIVITY_SYNC: "1" },
+    );
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('SessionEnd + operator unreachable (SYNC) → fail-open (exit 0)', () => {
-    const r = runLifecycle({ hook_event_name: 'SessionEnd', reason: 'logout', session_id: 's' }, { PAPERCUSP_SID: 'su-l', PAPERCUSP_ACTIVITY_SYNC: '1' });
+  it("SessionEnd + operator unreachable (SYNC) → fail-open (exit 0)", () => {
+    const r = runLifecycle(
+      { hook_event_name: "SessionEnd", reason: "logout", session_id: "s" },
+      { PAPERCUSP_SID: "su-l", PAPERCUSP_ACTIVITY_SYNC: "1" },
+    );
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('a non-lifecycle event (PreToolUse) is ignored — exit 0, no report', () => {
-    const r = runLifecycle({ hook_event_name: 'PreToolUse', tool_name: 'Edit' }, { PAPERCUSP_SID: 'su-l', PAPERCUSP_ACTIVITY_SYNC: '1' });
+  it("a non-lifecycle event (PreToolUse) is ignored — exit 0, no report", () => {
+    const r = runLifecycle(
+      { hook_event_name: "PreToolUse", tool_name: "Edit" },
+      { PAPERCUSP_SID: "su-l", PAPERCUSP_ACTIVITY_SYNC: "1" },
+    );
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 });
 
-describe('cc fleet statusline — render + fail-open', () => {
-  it('renders peers + the newest PEER action (excluding my own activity)', () => {
-    const fixture = join(cache, 'sl-fixture.json');
-    fs.writeFileSync(fixture, JSON.stringify({
-      activity: [
-        { owner_id: 'su-074be3de', summary: '✎ catalog.ts', kind: 'tool' },
-        { owner_id: 'su-me-self', summary: '▶ npm test', kind: 'tool' },
-        { owner_id: 'su-a6146ddc', summary: '👁 README.md', kind: 'tool' },
-      ],
-      count: 3,
-    }));
-    const r = runStatusline({ PAPERCUSP_SID: 'su-me-self', PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+describe("cc fleet statusline — render + fail-open", () => {
+  it("renders peers + the newest PEER action (excluding my own activity)", () => {
+    const fixture = join(cache, "sl-fixture.json");
+    fs.writeFileSync(
+      fixture,
+      JSON.stringify({
+        activity: [
+          { owner_id: "su-074be3de", summary: "✎ catalog.ts", kind: "tool" },
+          { owner_id: "su-me-self", summary: "▶ npm test", kind: "tool" },
+          { owner_id: "su-a6146ddc", summary: "👁 README.md", kind: "tool" },
+        ],
+        count: 3,
+      }),
+    );
+    const r = runStatusline({
+      PAPERCUSP_SID: "su-me-self",
+      PAPERCUSP_STATUSLINE_FIXTURE: fixture,
+    });
     expect(r.status).toBe(0);
     // The static 'papercusp' label was REMOVED 2026-07-03 at owner request (it only ate
     // line width; the ◇ id already identifies the pane) — the line leads with the self chip.
-    expect(r.stdout).not.toContain('papercusp');
-    expect(r.stdout).toContain('◇ su-me'); // THIS agent's own shorthand id chip
-    expect(r.stdout).toContain('2 peers'); // su-074be + su-a6146, not me
-    expect(r.stdout).toContain('4be3de'); // newest peer's short id
-    expect(r.stdout).toContain('✎ catalog.ts');
-    expect(r.stdout).not.toContain('npm test'); // my own action is excluded
+    expect(r.stdout).not.toContain("papercusp");
+    expect(r.stdout).toContain("◇ su-me"); // THIS agent's own shorthand id chip
+    expect(r.stdout).toContain("2 peers"); // su-074be + su-a6146, not me
+    expect(r.stdout).toContain("4be3de"); // newest peer's short id
+    expect(r.stdout).toContain("✎ catalog.ts");
+    expect(r.stdout).not.toContain("npm test"); // my own action is excluded
   });
 
   it('renders "solo" + this agent\'s own id when only my own activity exists', () => {
-    const fixture = join(cache, 'sl-solo.json');
-    fs.writeFileSync(fixture, JSON.stringify({ activity: [{ owner_id: 'su-only-me', summary: '✎ x.ts', kind: 'tool' }], count: 1 }));
-    const r = runStatusline({ PAPERCUSP_SID: 'su-only-me', PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+    const fixture = join(cache, "sl-solo.json");
+    fs.writeFileSync(
+      fixture,
+      JSON.stringify({
+        activity: [{ owner_id: "su-only-me", summary: "✎ x.ts", kind: "tool" }],
+        count: 1,
+      }),
+    );
+    const r = runStatusline({
+      PAPERCUSP_SID: "su-only-me",
+      PAPERCUSP_STATUSLINE_FIXTURE: fixture,
+    });
     expect(r.status).toBe(0);
     // no static 'papercusp' prefix (removed 2026-07-03 at owner request)
-    expect(r.stdout).toBe('◇ su-only · solo');
+    expect(r.stdout).toBe("◇ su-only · solo");
   });
 
-  it('not a psu session → prints nothing (Claude falls back to default), exit 0', () => {
+  it("not a psu session → prints nothing (Claude falls back to default), exit 0", () => {
     const r = runStatusline();
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
-  it('operator unreachable → fail-open empty, exit 0 (never errors the statusline)', () => {
-    const r = runStatusline({ PAPERCUSP_SID: 'su-x' });
+  it("operator unreachable → fail-open empty, exit 0 (never errors the statusline)", () => {
+    const r = runStatusline({ PAPERCUSP_SID: "su-x" });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    expect(r.stdout).toBe("");
   });
 
   // agent-managed-compaction P-015: the `ctx N%` context-usage chip from the glance
   // payload's self.context, ⚠-prefixed at/above the LOUD band (80%). PAPERCUSP_GATEWAY_URL
   // is pinned unroutable so the routed-account read-back (lead()) fails fast → deterministic.
-  const CTX_ENV = { PAPERCUSP_SID: 'su-me-self', PAPERCUSP_GATEWAY_URL: 'http://127.0.0.1:1' };
+  const CTX_ENV = {
+    PAPERCUSP_SID: "su-me-self",
+    PAPERCUSP_GATEWAY_URL: "http://127.0.0.1:1",
+  };
 
-  it('renders the ⚠-prefixed ctx gauge chip at/above the loud band (self.context.pct ≥ 80)', () => {
-    const fixture = join(cache, 'sl-ctx-loud.json');
-    fs.writeFileSync(fixture, JSON.stringify({
-      wake: { default: 'auto' },
-      self: { context: { tokens: 425000, limit: 500000, pct: 85 } },
-      activity: [],
-    }));
-    const r = runStatusline({ ...CTX_ENV, PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+  it("renders the ⚠-prefixed ctx gauge chip at/above the loud band (self.context.pct ≥ 80)", () => {
+    const fixture = join(cache, "sl-ctx-loud.json");
+    fs.writeFileSync(
+      fixture,
+      JSON.stringify({
+        wake: { default: "auto" },
+        self: { context: { tokens: 425000, limit: 500000, pct: 85 } },
+        activity: [],
+      }),
+    );
+    const r = runStatusline({
+      ...CTX_ENV,
+      PAPERCUSP_STATUSLINE_FIXTURE: fixture,
+    });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('⚠ ctx 85%');
+    expect(r.stdout).toContain("⚠ ctx 85%");
   });
 
-  it('renders a quiet ctx gauge chip (no ⚠) below the loud band', () => {
-    const fixture = join(cache, 'sl-ctx-quiet.json');
-    fs.writeFileSync(fixture, JSON.stringify({
-      wake: { default: 'auto' },
-      self: { context: { tokens: 210000, limit: 500000, pct: 42 } },
-      activity: [],
-    }));
-    const r = runStatusline({ ...CTX_ENV, PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+  it("renders a quiet ctx gauge chip (no ⚠) below the loud band", () => {
+    const fixture = join(cache, "sl-ctx-quiet.json");
+    fs.writeFileSync(
+      fixture,
+      JSON.stringify({
+        wake: { default: "auto" },
+        self: { context: { tokens: 210000, limit: 500000, pct: 42 } },
+        activity: [],
+      }),
+    );
+    const r = runStatusline({
+      ...CTX_ENV,
+      PAPERCUSP_STATUSLINE_FIXTURE: fixture,
+    });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('ctx 42%');
-    expect(r.stdout).not.toContain('⚠ ctx');
+    expect(r.stdout).toContain("ctx 42%");
+    expect(r.stdout).not.toContain("⚠ ctx");
   });
 
-  it('omits the ctx chip when self.context is absent (additive + fail-open)', () => {
-    const fixture = join(cache, 'sl-ctx-absent.json');
-    fs.writeFileSync(fixture, JSON.stringify({
-      wake: { default: 'auto' },
-      self: {},
-      activity: [],
-    }));
-    const r = runStatusline({ ...CTX_ENV, PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+  it("omits the ctx chip when self.context is absent (additive + fail-open)", () => {
+    const fixture = join(cache, "sl-ctx-absent.json");
+    fs.writeFileSync(
+      fixture,
+      JSON.stringify({
+        wake: { default: "auto" },
+        self: {},
+        activity: [],
+      }),
+    );
+    const r = runStatusline({
+      ...CTX_ENV,
+      PAPERCUSP_STATUSLINE_FIXTURE: fixture,
+    });
     expect(r.status).toBe(0);
-    expect(r.stdout).not.toContain('ctx');
+    expect(r.stdout).not.toContain("ctx");
   });
 });

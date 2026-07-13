@@ -2973,6 +2973,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── mugBrief.floorView — the chat sidebar's pot-status panel (P-018) ──
+  //
+  // (operator-chat-sidebar-revival-2026-07-13 P-018, mockup variant A.) A compact
+  // client-safe projection of the SAME floor the Mug is briefed with every wake —
+  // cups roster, ranked ready frontier (capped), placement-watchdog counts, open
+  // escalations, and the active owner steering. `computeMugBriefFloorView` reuses
+  // the Mug brief's own scope resolution + gather functions (reuse-first — never a
+  // parallel data path), so the panel shows the Mug's honest filtered world.
+  // Invalidated alongside `overwatch.snapshot` on each system-health tick (the
+  // ambient heartbeat); the sidebar additionally fetches it only while the panel
+  // is expanded, with client staleTime pacing.
+  'mugBrief.floorView': {
+    resolve: async () => {
+      const [{ computeMugBriefFloorView }, { activeWorkspaceId }, { resolvePotHomeSlug }] =
+        await Promise.all([
+          import('../pot/mug-brief-launch'),
+          import('../workspace-registry'),
+          import('../pot/wake'),
+        ]);
+      const ws = activeWorkspaceId();
+      const potSlug = resolvePotHomeSlug() ?? ws;
+      return [await computeMugBriefFloorView(ws, potSlug)];
+    },
+  },
+
   // ── learning.gym — the Learning tab's Gym view (operator-learning-tab P-006) ──
   //
   // Cross-harness rollup of the gym control plane: recent prompt-optimization
