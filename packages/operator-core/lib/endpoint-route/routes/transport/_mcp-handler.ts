@@ -27,6 +27,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { z } from 'zod';
 import {
   getCatalog,
+  toArgsJsonSchema,
   getPromptCatalog,
   getResourceCatalog,
   dispatch,
@@ -875,11 +876,16 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
 }
 
 function builtinInputSchema(tool: ReturnType<typeof getCatalog>[number]): Record<string, unknown> {
-  // Zod 4: use built-in z.toJSONSchema. The legacy `zod-to-json-schema`
-  // package returns just `{ $schema }` against zod 4 schemas — produces
-  // empty inputSchemas for every built-in.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const json = (z as any).toJSONSchema(tool.args) as Record<string, unknown>;
+  // Zod 4: use the built-in toJSONSchema (the legacy `zod-to-json-schema` package
+  // returns just `{ $schema }` against zod 4 schemas — empty inputSchemas for every
+  // built-in) — but go through tooldef's GUARDED wrapper, never a raw call.
+  //
+  // An unrepresentable args schema (almost always a trailing `.transform()`) throws
+  // here for the WHOLE catalog, not one tool: this runs inside the tools/list map, so
+  // one bad schema takes down tool discovery for every client. Raw, the throw is a bare
+  // adapter message naming nothing — un-greppable, and mis-triaged as an infra/zod break
+  // (EI-10996 / WI-4596). toArgsJsonSchema names the offending tool and the likely cause.
+  const json = toArgsJsonSchema(tool.name, tool.args);
   delete (json as Record<string, unknown>).$schema;
   // Registry write-positional tools advertise a single `row` string (P-008).
   const advertised = advertisedArgsSchema(tool.name, json);

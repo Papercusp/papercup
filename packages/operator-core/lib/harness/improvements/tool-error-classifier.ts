@@ -90,12 +90,22 @@ export const CALLER_MESSAGE_PATTERN =
 export const RATE_LIMIT_MESSAGE_PATTERN =
   'openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests';
 
-/** Shared-infra exhaustion (PG `max_connections` / DB-unavailable). Recurs
- *  identically in SHAPE across EVERY pg-backed tool during a wedge, but is
- *  transient LOAD, not a per-tool bug — defer to the volume bar so a brief wedge
- *  stops mis-filing structural tool-bug EIs. */
+/** Shared-infra exhaustion (PG `max_connections` / DB-unavailable) and a
+ *  stale-pooled-connection reset against PgBouncer. Recurs identically in SHAPE
+ *  across EVERY pg-backed tool during a wedge / idle-reap race, but is transient
+ *  LOAD/infra, not a per-tool bug — defer to the volume bar so a brief wedge
+ *  stops mis-filing structural tool-bug EIs.
+ *
+ *  `CONNECTION_CLOSED` / `CONNECT_TIMEOUT` are postgres-js-invented codes
+ *  ("write CONNECTION_CLOSED 127.0.0.1:6432") for a pooled connection PgBouncer
+ *  idle-reaped server-side, or the pool's own connect() timing out — the exact
+ *  codes `connect-retry.ts` already treats as provably-transient and retries
+ *  (EI-9279). Matching on them here cannot mask an unrelated application error
+ *  (they are postgres-js's own codes), and keeps the classifier in lockstep with
+ *  the retry helper so a transient reset that slips past the retry stops being
+ *  mis-filed as a structural tool bug (EI-11010). */
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
-  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|terminating connection due to|ECONNREFUSED|ECONNRESET|connection terminated|could not connect to server';
+  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server';
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.

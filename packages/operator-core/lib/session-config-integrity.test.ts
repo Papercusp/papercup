@@ -10,10 +10,15 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/session-config-integrity.test.ts
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   checkSessionConfigIntegrity,
   computeSessionConfigRepair,
+  loadSessionConfigState,
+  repairSessionConfigOnDisk,
   PSU_MCP_SERVER,
   type SessionConfigState,
 } from './session-config-integrity';
@@ -172,5 +177,93 @@ describe('computeSessionConfigRepair', () => {
       state({ settings: first.settings, claudeJson: first.claudeJson }),
     );
     expect(second.fixed).toEqual([]);
+  });
+});
+
+/**
+ * The fs-write half — repairSessionConfigOnDisk — is what makes coord:orient auto-repair
+ * rather than only warn. These tests lay a clobbered session down in a temp HOME, run the
+ * real disk repair, and assert on disk truth (re-read), not intent.
+ */
+describe('repairSessionConfigOnDisk', () => {
+  const SID = 'su-test-de1a1104-0000-0000-0000-000000000000';
+  let home: string;
+
+  const layGlobals = () => {
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(GLOBAL_SETTINGS, null, 2));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(GLOBAL_CLAUDE_JSON, null, 2));
+  };
+  const laySession = (settings: unknown, claudeJson: unknown) => {
+    const dir = join(home, '.papercusp', 'session-claude', SID);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify(settings, null, 2));
+    writeFileSync(join(dir, '.claude.json'), JSON.stringify(claudeJson, null, 2));
+    return dir;
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'wi4562-'));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('repairs a clobbered session on disk so a RE-READ passes integrity', () => {
+    layGlobals();
+    const dir = laySession(CLOBBERED_SETTINGS, { mcpServers: {} });
+
+    const res = repairSessionConfigOnDisk(SID, home);
+
+    expect(res.repaired).toBe(true);
+    expect(res.wrote.sort()).toEqual(['.claude.json', 'settings.json']);
+    expect(res.stillBroken).toEqual([]);
+    // Disk truth: reloading the just-written files must satisfy the checker.
+    expect(checkSessionConfigIntegrity(loadSessionConfigState(SID, home)).ok).toBe(true);
+    // And CC-owned keys survived the rewrite.
+    const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+    expect(written).toMatchObject({ model: 'opus[1m]', effortLevel: 'xhigh', theme: 'dark' });
+  });
+
+  it('keeps the clobbered original as a *.pre-wi4562.bak (never silently overwrites)', () => {
+    layGlobals();
+    const dir = laySession(CLOBBERED_SETTINGS, { mcpServers: {} });
+
+    repairSessionConfigOnDisk(SID, home);
+
+    expect(existsSync(join(dir, 'settings.json.pre-wi4562.bak'))).toBe(true);
+    const bak = JSON.parse(readFileSync(join(dir, 'settings.json.pre-wi4562.bak'), 'utf8'));
+    expect(bak).toEqual(CLOBBERED_SETTINGS); // the backup is the pre-repair content, verbatim
+  });
+
+  it('surfaces the two residual caveats a disk write cannot undo (SessionStart re-fire + MCP reconnect)', () => {
+    layGlobals();
+    laySession(CLOBBERED_SETTINGS, { mcpServers: {} });
+
+    const res = repairSessionConfigOnDisk(SID, home);
+
+    expect(res.residualCaveats.join(' ')).toMatch(/epoch bump/);
+    expect(res.residualCaveats.join(' ')).toMatch(/reconnect/);
+  });
+
+  it('is a no-op on a healthy session — writes nothing, makes no backup', () => {
+    layGlobals();
+    const dir = laySession(HEALTHY_SETTINGS, { mcpServers: { [PSU_MCP_SERVER]: {} } });
+
+    const res = repairSessionConfigOnDisk(SID, home);
+
+    expect(res).toEqual({ repaired: false, fixed: [], wrote: [], stillBroken: [], residualCaveats: [] });
+    expect(existsSync(join(dir, 'settings.json.pre-wi4562.bak'))).toBe(false);
+  });
+
+  it('is idempotent on disk — a second repair finds nothing to do', () => {
+    layGlobals();
+    laySession(CLOBBERED_SETTINGS, { mcpServers: {} });
+
+    repairSessionConfigOnDisk(SID, home);
+    const second = repairSessionConfigOnDisk(SID, home);
+
+    expect(second.repaired).toBe(false);
+    expect(second.wrote).toEqual([]);
   });
 });

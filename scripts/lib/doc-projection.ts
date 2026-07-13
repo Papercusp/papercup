@@ -123,12 +123,13 @@ function identityLiterals(): Array<{ key: string; value: string; placeholder: st
   return out;
 }
 
-/** Mirrors `audit-release-bundle.py:needs_word_boundary` — a short literal like "Avi"
- *  must match as a whole word or it rewrites half the corpus ("video.avi", "Avicenna"). */
+/** Mirrors `audit-release-bundle.py:needs_word_boundary` — a short git user.name
+ *  must match as a whole word or it rewrites half the corpus (e.g. a name that is
+ *  also a common substring would hit "<name>.avi", "<name>cenna"). */
 function literalPattern(lit: string): RegExp {
   const esc = lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const short = lit.length < 6 && /^[a-z0-9]+$/i.test(lit);
-  // Case-SENSITIVE, like the audit: \bAvi\b hits "Avi Weiss", not "video.avi".
+  // Case-SENSITIVE, like the audit: a word-boundary match hits "Jane Doe", not "video.jane".
   return new RegExp(short ? `\\b${esc}\\b` : esc, 'g');
 }
 
@@ -152,7 +153,7 @@ export function scrubBuildIdentity(content: string): string {
   // replacement that preserves meaning. `[owner:Jane …]` -> `[owner …]`.
   let out = content.replace(/\[owner:\s*[A-Za-z][A-Za-z0-9._'-]*/g, '[owner');
   // LONGEST literal first: the username is a SUBSTRING of the home path
-  // (`marsh-office` ⊂ `/home/marsh-office`), so scrubbing it first would leave
+  // (`<user>` ⊂ `/home/<user>`), so scrubbing it first would leave
   // `/home/<build-user>` instead of `$HOME` — the PII is gone either way, but the
   // more specific literal must win or the output is quietly wrong.
   for (const { value, placeholder } of identityLiterals().sort((a, b) => b.value.length - a.value.length)) {

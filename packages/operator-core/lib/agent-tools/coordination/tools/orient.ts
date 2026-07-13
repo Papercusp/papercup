@@ -1275,23 +1275,34 @@ export default defineTool({
     // SessionStart epoch bump, plus the papercusp-su MCP entry. The existing self-heals
     // cannot catch it: they live INSIDE the SessionStart hook whose registration the wipe
     // deletes. orient is the right detector precisely because it is operator-side and
-    // needs no hooks. Reported ONLY when something is actually broken — a healthy session
-    // pays a couple of file reads and adds no key.
+    // needs no hooks — and because the repair takes effect in the RUNNING session
+    // (hooks are re-read from the file), orient AUTO-REPAIRS rather than only warning:
+    // the moment a de-enrolled session next orients, its capabilities are restored.
+    // Reported ONLY when something was actually broken — a healthy session pays a couple
+    // of file reads and adds no key.
     let configIntegrity: unknown;
     if (ownerId) {
       try {
-        const { loadSessionConfigState, checkSessionConfigIntegrity } = await import('../../../session-config-integrity');
+        const { loadSessionConfigState, checkSessionConfigIntegrity, repairSessionConfigOnDisk } = await import(
+          '../../../session-config-integrity'
+        );
         const verdict = checkSessionConfigIntegrity(loadSessionConfigState(ownerId));
         if (!verdict.ok) {
+          const repair = repairSessionConfigOnDisk(ownerId);
           configIntegrity = {
             ...verdict,
+            repaired: repair.repaired,
+            fixed: repair.fixed,
+            wrote: repair.wrote,
+            stillBroken: repair.stillBroken,
+            residualCaveats: repair.residualCaveats,
             warning:
-              'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562). Claude Code rewrote this session config and dropped psu-owned keys, so the capabilities listed above are OFF right now. ' +
-              'Repairing the session settings.json + .claude.json restores them: hook registrations are re-read from the file, so delivery resumes WITHOUT a relaunch (verified live on su-5d6764f9 — the coord inbox began delivering a 40+ message backlog immediately after repair). ' +
-              'Two caveats: a past SessionStart cannot be re-fired, so compactions that already happened never got their memory epoch bump; and the MCP server entry is bound at connect time, so papercusp-su may need a reconnect.',
+              repair.repaired && repair.stillBroken.length === 0
+                ? 'YOUR SESSION WAS DE-ENROLLED (WI-4562) and has just been AUTO-REPAIRED. Claude Code had rewritten this session config and dropped psu-owned keys; orient restored them on disk. Hook registrations are re-read from the file, so delivery (edit-locks, coord inbox, turn-start recall) resumes WITHOUT a relaunch — verified live on su-5d6764f9, where the coord inbox delivered a 40+ message backlog immediately after repair. See residualCaveats for the two things a disk write cannot undo.'
+                : 'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT fully succeed — see stillBroken. Claude Code rewrote this session config and dropped psu-owned keys, so some capabilities above remain OFF. Repair manually via session-config-integrity.repairSessionConfigOnDisk, or relaunch.',
           };
         }
-      } catch { /* fail-soft — never break orientation over a config read */ }
+      } catch { /* fail-soft — never break orientation over a config read/repair */ }
     }
     const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(configIntegrity ? { configIntegrity } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's

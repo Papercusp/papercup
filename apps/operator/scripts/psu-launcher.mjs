@@ -1499,7 +1499,10 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // (recipes:run cut 2026-07-05 — 78 calls/7d, one role; recipes:search returns the
   // run pointer and the run routes via tools:invoke.)
   'code:run', 'recipes:search',
-  'facts:assert', 'facts:list',
+  // EI-10946/EI-10947: facts:retract is the ONLY exit from a standing fact (folded VERBATIM
+  // into every future orient as binding context) — seeding assert+list without retract armed
+  // the stale-fact trap with no disarm. Mirror the canonical CORE order (retract after list).
+  'facts:assert', 'facts:list', 'facts:retract',
   // loop:arm joins loop:checkpoint (2026-07-05): checkpoint was in the spine while the
   // verb that CREATES the loop was not (253 fallback reaches/7d).
   // loop:status + loop:end join (2026-07-07, EI-8597 canonical-core catch-up): the

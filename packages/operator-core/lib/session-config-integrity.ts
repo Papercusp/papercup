@@ -44,7 +44,7 @@
  * hook list — a hand-copied list is exactly what rotted in EI-10793.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -259,4 +259,83 @@ export function computeSessionConfigRepair(state: SessionConfigState): SessionCo
   }
 
   return { settings, claudeJson, fixed };
+}
+
+export interface SessionConfigRepairResult {
+  /** True when a broken config was detected AND at least one file was rewritten. */
+  repaired: boolean;
+  /** What was restored — the same slugs as SessionConfigRepair.fixed (e.g. ['hooks.PreToolUse']). */
+  fixed: string[];
+  /** File basenames rewritten on disk (e.g. ['settings.json', '.claude.json']). */
+  wrote: string[];
+  /** Anything the RE-READ still reports broken — should be empty on a clean repair; non-empty means the write did not take. */
+  stillBroken: string[];
+  /**
+   * The two things a disk write genuinely cannot undo, surfaced so the caller never
+   * over-claims a full heal: a SessionStart that already passed never re-fires (so
+   * compactions that already happened never got their epoch bump), and the MCP entry
+   * is bound at connect time (papercusp-su may need a reconnect). Present only when
+   * the corresponding piece was among what we just restored.
+   */
+  residualCaveats: string[];
+}
+
+/**
+ * The fs-write half of the repair: load the four documents, compute the non-destructive
+ * repair, write only the files that changed (keeping the clobbered original as a
+ * `*.pre-wi4562.bak`), then RE-READ and re-check so the result reflects disk truth rather
+ * than intent. Fail-soft: a write error is caught and reported as stillBroken, never thrown
+ * — a config repair must not be able to break the orientation call that invokes it.
+ *
+ * This is what makes coord:orient auto-repair rather than only warn. It is safe to call on a
+ * healthy session (returns repaired:false, writes nothing) and is idempotent.
+ */
+export function repairSessionConfigOnDisk(ownerId: string, home = homedir()): SessionConfigRepairResult {
+  const dir = join(home, '.papercusp', 'session-claude', ownerId);
+  const state = loadSessionConfigState(ownerId, home);
+  const repair = computeSessionConfigRepair(state);
+
+  if (repair.fixed.length === 0) {
+    return { repaired: false, fixed: [], wrote: [], stillBroken: [], residualCaveats: [] };
+  }
+
+  const wrote: string[] = [];
+  const stillBroken: string[] = [];
+  const targets: Array<[string, Record<string, unknown> | null]> = [
+    ['settings.json', repair.settings],
+    ['.claude.json', repair.claudeJson],
+  ];
+  for (const [name, next] of targets) {
+    if (!next) continue;
+    const path = join(dir, name);
+    try {
+      if (existsSync(path)) copyFileSync(path, `${path}.pre-wi4562.bak`); // keep the clobbered original
+      writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+      wrote.push(name);
+    } catch (err) {
+      stillBroken.push(`${name}: ${(err as Error).message}`);
+    }
+  }
+
+  // Disk truth, not intent: re-read and re-check.
+  const after = checkSessionConfigIntegrity(loadSessionConfigState(ownerId, home));
+  if (!after.ok) {
+    for (const ev of after.missingHookEvents) stillBroken.push(`hooks.${ev}`);
+    if (after.mcpServerMissing) stillBroken.push(`mcpServers.${PSU_MCP_SERVER}`);
+    if (after.permissionsDowngraded) stillBroken.push('permissions.defaultMode');
+  }
+
+  const residualCaveats: string[] = [];
+  if (repair.fixed.includes('hooks.SessionStart')) {
+    residualCaveats.push(
+      'A SessionStart that already passed cannot be re-fired: any compaction that already happened never got its memory epoch bump, so that context stays un-re-primed. Future compactions will re-prime normally now.',
+    );
+  }
+  if (repair.fixed.includes(`mcpServers.${PSU_MCP_SERVER}`)) {
+    residualCaveats.push(
+      `mcpServers.${PSU_MCP_SERVER} is restored on disk, but the MCP connection is bound at connect time — it may need a reconnect to become available in-process.`,
+    );
+  }
+
+  return { repaired: wrote.length > 0, fixed: repair.fixed, wrote, stillBroken, residualCaveats };
 }

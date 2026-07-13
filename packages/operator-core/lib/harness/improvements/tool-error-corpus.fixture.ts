@@ -69,6 +69,18 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'transient',
     note: 'PG superuser-reserved slots — shared-infra load',
   },
+  {
+    n: 2, errorCode: 'handler_error', status: 'error',
+    message: 'write CONNECTION_CLOSED 127.0.0.1:6432',
+    expectedClass: 'transient',
+    note: 'postgres-js reaped a stale pooled connection PgBouncer (:6432) idle-closed server-side — provably transient (connect-retry.ts retries this exact code); MUST NOT file as a structural tool bug (EI-11010)',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'write CONNECT_TIMEOUT 127.0.0.1:6432',
+    expectedClass: 'transient',
+    note: "postgres-js's pool connect() timed out — the sibling connection-setup code connect-retry.ts treats identically; transient, not a tool bug",
+  },
 
   // ── rate-limit: external provider 429 (capacity, not a code bug) ────────────
   {

@@ -17,6 +17,7 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ManifestProvidedEvent, ManifestEventDependency } from '@papercusp/plugin-sdk';
 
 import { papercuspRoot } from './papercusp-root';
 
@@ -67,8 +68,21 @@ export interface PluginManifest {
   roles?: string[];
   /** MCP tool declarations (`registerPluginTools` naming: `<short>.<name>`). */
   tools?: Array<{ name?: unknown; expose?: { mcp?: { name?: unknown } } } | null>;
-  /** Tool/pack/plugin deps this unit's tools need (D-003 plugin-to-tool deps). */
-  dependencies?: { tools?: string[]; packs?: string[]; plugins?: string[] };
+  /**
+   * Unit-level provisions surfaced to the Cupboard catalog + resolver (D-003,
+   * P-005): the awaitable event-key families this unit provides. This models a
+   * field the manifest schema (plugin-sdk `ManifestProvides`) and validator have
+   * carried since P-005 — the loader type simply hadn't caught up, which left
+   * every consumer of an InstalledPlugin (e.g. the Cupboard publish path)
+   * type-blind to `provides.events` even though it is parsed at runtime.
+   */
+  provides?: { events?: ManifestProvidedEvent[] };
+  /**
+   * Tool/pack/plugin deps this unit's tools need (D-003 plugin-to-tool deps),
+   * plus the EVENT axis (P-005): the event-key families this unit REQUIRES,
+   * resolved at Cupboard install time.
+   */
+  dependencies?: { tools?: string[]; packs?: string[]; plugins?: string[]; events?: ManifestEventDependency[] };
   dashboardTabs?: DashboardTabManifest[];
   sidebarItems?: SidebarItemManifest[];
   ui?: UiContributionManifest;
