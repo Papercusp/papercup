@@ -27,6 +27,9 @@ interface CriterionTrend {
   latest: { rating: string; at: string };
   direction: string;
   mean10: number | null;
+  // WI-4607: the criterion's instrument binding, parsed from a trailing
+  // [instrumentKey: <key>|none] token on the rubric criterion's model prose.
+  instrumentKey?: string | null;
 }
 
 interface RubricTrend {
@@ -34,6 +37,25 @@ interface RubricTrend {
   scorecardCount: number;
   window: { since?: string; from?: string; to?: string };
   criteria: CriterionTrend[];
+  // WI-4607 governance provenance (D-012): the same author≠ratifier story the
+  // RubricsPanel list surfaces, threaded through the rubrics.trend resolver.
+  status?: string;
+  proposedBy?: string | null;
+  ratifiedBy?: string | null;
+}
+
+function isActive(status: string): boolean {
+  return status === "active" || status === "ratified";
+}
+function awaitsRatification(status: string): boolean {
+  return status === "proposed" || status === "draft";
+}
+
+/** Shorten a long agent ownerId (su-eb9b7ae3-…) to a stable, readable handle. */
+function shortActor(actor: string | null): string {
+  if (!actor) return "—";
+  const m = /^([a-z]+-[0-9a-f]{4,8})/i.exec(actor);
+  return m ? m[1] : actor.length > 16 ? `${actor.slice(0, 15)}…` : actor;
 }
 
 function directionGlyph(direction: string): string {
@@ -162,7 +184,24 @@ export default function RubricDetailPanel({
         {
           key: "criterion",
           header: "Criterion",
-          render: (c) => c.criterion,
+          render: (c) => (
+            <span className="pc-rubric-trend__crit">
+              {c.criterion}
+              {c.instrumentKey ? (
+                <em
+                  className="pc-rubric-trend__instr"
+                  data-none={c.instrumentKey === "none" ? "" : undefined}
+                  title={
+                    c.instrumentKey === "none"
+                      ? "No measuring instrument bound to this criterion (explicit [instrumentKey: none])"
+                      : `Instrument: ${c.instrumentKey}`
+                  }
+                >
+                  {c.instrumentKey}
+                </em>
+              ) : null}
+            </span>
+          ),
           cellStyle: { whiteSpace: "nowrap" },
         },
         {
@@ -234,6 +273,49 @@ export default function RubricDetailPanel({
       <header className="pc-rubric-detail__head">
         <span>Evidence</span>
         <strong>{rubricId}</strong>
+        {trendRow ? (
+          <div
+            className={`pc-rubric-detail__gov pc-rubric-detail__gov--${
+              isActive(trendRow.status ?? "")
+                ? "active"
+                : awaitsRatification(trendRow.status ?? "")
+                  ? "awaiting"
+                  : "inactive"
+            }`}
+          >
+            <span className="pc-rubric-detail__gov-status">
+              {isActive(trendRow.status ?? "")
+                ? "Active"
+                : awaitsRatification(trendRow.status ?? "")
+                  ? "Awaiting ratification"
+                  : (trendRow.status ?? "—")}
+            </span>
+            <span
+              className="pc-rubric-detail__gov-chain"
+              title={`proposed by ${trendRow.proposedBy ?? "unknown"}${
+                trendRow.ratifiedBy ? ` · ratified by ${trendRow.ratifiedBy}` : ""
+              }`}
+            >
+              <em>prop</em> {shortActor(trendRow.proposedBy ?? null)}
+              {isActive(trendRow.status ?? "") ? (
+                <>
+                  {" "}
+                  <em>· ratif</em> {shortActor(trendRow.ratifiedBy ?? null)}
+                  {trendRow.ratifiedBy &&
+                  trendRow.proposedBy &&
+                  trendRow.ratifiedBy !== trendRow.proposedBy ? (
+                    <span
+                      className="pc-rubric-detail__gov-split"
+                      title="Independent ratifier — author ≠ ratifier (D-012)"
+                    >
+                      ✓ split
+                    </span>
+                  ) : null}
+                </>
+              ) : null}
+            </span>
+          </div>
+        ) : null}
         {onBack ? (
           <button
             type="button"
@@ -342,7 +424,18 @@ export default function RubricDetailPanel({
         .pc-rubric-detail__head { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
         .pc-rubric-detail__head > span { grid-column: 1; color: var(--fg-mute); font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
         .pc-rubric-detail__head > strong { grid-column: 1; overflow: hidden; color: var(--fg); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-        .pc-rubric-detail__head button { grid-column: 2; grid-row: 1 / 3; display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--fg-mute); cursor: pointer; }
+        .pc-rubric-detail__head button { grid-column: 2; grid-row: 1 / 4; display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--fg-mute); cursor: pointer; }
+        .pc-rubric-detail__gov { grid-column: 1; display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 3px; }
+        .pc-rubric-detail__gov-status { font-size: 9px; font-weight: 750; letter-spacing: 0; text-transform: uppercase; }
+        .pc-rubric-detail__gov--active .pc-rubric-detail__gov-status { color: #34d399; }
+        .pc-rubric-detail__gov--awaiting .pc-rubric-detail__gov-status { color: #f59e0b; }
+        .pc-rubric-detail__gov--inactive .pc-rubric-detail__gov-status { color: var(--fg-mute); }
+        .pc-rubric-detail__gov-chain { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 3px; color: var(--fg-mute); font-family: var(--font-mono, ui-monospace, monospace); font-size: 9px; }
+        .pc-rubric-detail__gov-chain em { color: color-mix(in srgb, var(--fg-mute) 75%, transparent); font-style: normal; }
+        .pc-rubric-detail__gov-split { display: inline-flex; align-items: center; margin-left: 3px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, #34d399 16%, transparent); color: #34d399; font-size: 8.5px; font-weight: 700; }
+        .pc-rubric-trend__crit { display: inline-flex; align-items: baseline; gap: 6px; }
+        .pc-rubric-trend__instr { padding: 0 5px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); font-family: var(--font-mono, ui-monospace, monospace); font-size: 8.5px; font-style: normal; white-space: nowrap; }
+        .pc-rubric-trend__instr[data-none] { border-color: var(--border); background: transparent; color: var(--fg-mute); }
         .pc-rubric-detail__overview { display: grid; grid-template-columns: 1.2fr repeat(3, minmax(64px, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
         .pc-rubric-detail__overview > div { display: grid; grid-template-columns: auto auto; align-items: baseline; justify-content: start; gap: 5px; min-height: 38px; padding: 7px 9px; }
         .pc-rubric-detail__overview > div + div { border-left: 1px solid var(--border); }

@@ -595,6 +595,15 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   const trendRubric = await getRubric(filter.rubricRef);
   const scoreOverrides = scoreOverridesForScale(trendRubric?.ratingScale);
 
+  // WI-4607: the criterion's instrument binding is a trailing token on its `model`
+  // prose (no schema field) — parse it once per criterion key so the trend view can
+  // show which instrument grades each criterion. 'none' = explicitly un-instrumented.
+  const instrumentKeyByCriterion = new Map<string, string>();
+  for (const c of trendRubric?.criteria ?? []) {
+    const m = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(c.model ?? '');
+    if (m) instrumentKeyByCriterion.set(c.key, m[1]);
+  }
+
   const byCriterion = new Map<string, { at: string; rating: string; idle: boolean }[]>();
   for (const sc of chrono) {
     for (const [criterion, entry] of Object.entries(sc.ratings)) {
@@ -621,6 +630,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
         latest: { rating: series[series.length - 1].rating, at: series[series.length - 1].at },
         direction: computeTrendDirection(series),
         mean10: nums.length ? Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 10) / 10 : null,
+        instrumentKey: instrumentKeyByCriterion.get(criterion) ?? null,
         ...(filter.includeSeries ? { series: compressSeries(series) } : {}),
       };
     });
@@ -634,6 +644,9 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
       ...(chrono.length ? { from: chrono[0].createdAt, to: chrono[chrono.length - 1].createdAt } : {}),
     },
     criteria,
+    ...(trendRubric ? { status: trendRubric.status } : {}),
+    proposedBy: trendRubric?.proposedBy ?? null,
+    ratifiedBy: trendRubric?.ratifiedBy ?? null,
     staleness: computeRubricStaleness(criteria),
   };
 }

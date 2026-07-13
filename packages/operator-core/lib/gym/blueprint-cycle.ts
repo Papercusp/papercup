@@ -124,7 +124,19 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
     // prior gym run left behind before Ryuk could reap it.
     await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
     log('provisioning gym DB …');
-    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_bp').start();
+    // EI-10567: a booted gym-operator (6 DBOS queues + system-health boot pre-warm
+    // across every seeded workspace + per-workspace pools) opens well past the stock
+    // PG default max_connections=100, surfacing as `sorry, too many clients already`
+    // during boot → DBOS queue starvation → the durable pipeline never advances → the
+    // 6-min deadline elapses (this test was red on EVERY run since 2026-06-23). Raise
+    // the ceiling on this throwaway test-only container, exactly as the shared helper
+    // libs/test-config/src/pg-container.ts already does for the sibling gym
+    // operator-boot suites (autoloop-cycle, etc.) — see agent-insights
+    // pg-connection-exhaustion-too-many-clients. Free: no prod data, no persistence.
+    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE)
+      .withDatabase('papercusp_bp')
+      .withCommand(['postgres', '-c', 'max_connections=500'])
+      .start();
     const { databaseUri: gymUri } = await provisionGymDatabase({ maintenanceUri: pgContainer.getConnectionUri(), dbName: DB_NAME });
     gymSql = postgres(gymUri, { max: 4, onnotice: () => {}, prepare: false });
 
