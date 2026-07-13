@@ -33,6 +33,11 @@ import { LINK_RELS } from './link';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
+import {
+  admitSubjectForFleetTarget,
+  notifyFleetScopeRefusal,
+} from '../../scheduler/fleet-scope-admission';
+import type { ClaimSpecSubject } from '../../scheduler/claim-spec-match';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -91,6 +96,31 @@ export function codeSmellsLikeCode(title: string, summary?: string): boolean {
       text,
     )
   );
+}
+
+function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
+  const payload = spec.payload ?? {};
+  const numberOrNull = (value: unknown): number | null => {
+    const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    // An id-pinned fleet is a closed cohort: a not-yet-minted item cannot be
+    // silently placed into it merely because its eventual WI id is unknown.
+    id: null,
+    title: spec.title,
+    kind: spec.kind,
+    priority: null,
+    tags: spec.topics ?? [],
+    paths: Array.isArray(payload.paths) ? payload.paths.filter((p): p is string => typeof p === 'string') : [],
+    plan: spec.targetPlanItem?.slug ?? null,
+    planItem: spec.targetPlanItem ? [spec.targetPlanItem.itemId] : [],
+    age: Date.now(),
+    riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
+    redundancy: numberOrNull(payload.redundancy),
+    estCost: numberOrNull(payload.est_cost ?? payload.expected_cost_cents),
+    assignee: spec.assign_to ?? null,
+  };
 }
 
 /** One per-item create spec — the same per-item shape as the single-call fields. */
@@ -251,6 +281,26 @@ export default defineTool({
     const env = await runBulk(
       list,
       async (spec) => {
+        if (spec.assign_to) {
+          const admission = await admitSubjectForFleetTarget({
+            target: spec.assign_to,
+            subject: createAdmissionSubject(spec),
+            workspaceId: ident.workspaceId,
+          });
+          if (!admission.allowed) {
+            await notifyFleetScopeRefusal(
+              ident,
+              admission,
+              `work_items:create+assign '${spec.title}' → ${spec.assign_to}`,
+            );
+            return {
+              ok: false as const,
+              title: spec.title,
+              error: admission.code,
+              message: `${admission.reason}. The item was not created, so no out-of-scope claim exists.`,
+            };
+          }
+        }
         const res = await createOneWorkItem(spec, createCtx);
         if (!res.ok) {
           return {

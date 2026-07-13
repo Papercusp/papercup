@@ -12,11 +12,20 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID, isEphemeralMcpCallIdentity } from '../coordination/identity';
+import {
+  resolveAgentIdentity,
+  SUPERUSER_FALLBACK_CLIENT_ID,
+  isEphemeralMcpCallIdentity,
+  type AgentIdentity,
+} from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { shapeWorkItemWriteEcho } from './write-echo-shape';
+import {
+  admitWorkItemForFleetTarget,
+  notifyFleetScopeRefusal,
+} from '../../scheduler/fleet-scope-admission';
 
 interface ClaimItem {
   id: string;
@@ -30,7 +39,8 @@ interface ClaimItem {
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
  * phantom "not found".
  */
-async function claimOne(itRaw: ClaimItem, claimerDefault: string): Promise<BulkItemResult> {
+async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<BulkItemResult> {
+  const claimerDefault = identity.ownerId;
   // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
   // (resolved to the caller) — including for the implicit-identity guards below, so
   // `assignee: 'self'` under a loopback/ephemeral identity is refused the same way an
@@ -63,6 +73,21 @@ async function claimOne(itRaw: ClaimItem, claimerDefault: string): Promise<BulkI
     };
   }
   const claimer = it.assignee ?? claimerDefault;
+  const admission = await admitWorkItemForFleetTarget({
+    target: claimer,
+    workItemId: it.id,
+    harness: it.harness,
+    workspaceId: identity.workspaceId,
+  });
+  if (!admission.allowed) {
+    await notifyFleetScopeRefusal(identity, admission, `work_items:claim ${it.id} → ${claimer}`);
+    return {
+      ok: false,
+      id: it.id,
+      error: admission.code,
+      hint: `${admission.reason}. The claim was refused before mutation.`,
+    };
+  }
   const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness });
   if (workItem) return { ok: true, id: it.id, workItem };
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
@@ -147,7 +172,7 @@ export default defineTool({
       : args.ids?.length
         ? args.ids.map((id) => ({ id, assignee: args.assignee, harness: args.harness }))
         : [{ id: args.id as string, assignee: args.assignee, harness: args.harness }];
-    const env = await runBulk(list, (it) => claimOne(it, ident.ownerId), { keyOf: (it) => ({ id: it.id }) });
+    const env = await runBulk(list, (it) => claimOne(it, ident), { keyOf: (it) => ({ id: it.id }) });
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
     // D-006): piggyback a targeted memory recall for the just-claimed item(s)
     // on the response — deadline-bounded, epoch-deduped (port 'claim'),

@@ -26,6 +26,10 @@ import { localSwarmId } from '../../fleet/swarm-identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getNextForBee, resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-store';
 import { cancelClaimableAwaits } from '../../events/await/store';
+import {
+  fleetScopedMiss,
+  reconcileFleetScopeClaims,
+} from '../../scheduler/fleet-scope-admission';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -94,11 +98,18 @@ export default defineTool({
     // the caller) — previously stored verbatim, producing an unmatchable, permanently
     // orphaned claim (WI-3881).
     const assignee = resolveSelfLiteral(args.assignee, ident.ownerId) ?? ident.ownerId;
+    const reconciliation = await reconcileFleetScopeClaims({
+      ownerId: assignee,
+      workspaceId: ident.workspaceId,
+      identity: ident,
+    });
     // WI-2971: claim_next is an older public self-pull surface. In a fleet with a
     // leader-authored claim spec, letting this wrapper call the raw oldest-first primitive
     // bypasses the fleet lane and can hand feature/plan work to a bug-drain member. When the
     // scheduler claim flag is ON, route through the same getNextForBee path as
-    // scheduler:get_next. The OFF path is the existing no-breakage degrade.
+    // scheduler:get_next. P-016: a fleet member NEVER takes the legacy generic
+    // fallback, even when the scheduler flag is off — scope is an admission
+    // boundary, not a feature toggle.
     const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
     // P-002 co-location lever: under the per-Hive claim lease, honor each item's
     // swarm_affinity by passing THIS Swarm's id — the claim then skips work affined to
@@ -141,7 +152,8 @@ export default defineTool({
     /** One race-free claim (the existing path) incl. the cross-Swarm lease arbitration.
      *  Returns the claimed item, or null when nothing was (or could be) claimed. */
     const claimOne = async () => {
-      if (specOn) {
+      if (reconciliation.scope?.record.source === 'default') return null;
+      if (specOn || reconciliation.scope) {
         return claimViaScheduler();
       }
       const wi = await claimNextWorkItem({
@@ -177,6 +189,9 @@ export default defineTool({
      *  from pending-but-gated (do NOT idle). Self-select being stricter than a NAMED
      *  work_items:claim(id) is BY DESIGN — the named claim bypasses the status/readiness floors. */
     const missResult = async () => {
+      if (reconciliation.scope) {
+        return fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds);
+      }
       const diag = await diagnoseClaimNextMiss({
         harness: args.harness,
         assignee,

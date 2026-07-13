@@ -24,6 +24,10 @@ import { cancelClaimableAwaits } from '../../events/await/store';
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
 type ClaimNextStates = ('todo' | 'open' | 'failing')[] | undefined;
 import { matchRoutingGateHint } from '../../routing-gate-hints';
+import {
+  fleetScopedMiss,
+  reconcileFleetScopeClaims,
+} from '../../scheduler/fleet-scope-admission';
 
 /**
  * P-006/P-007 (composable-event-awaits-2026-07-11): the idle-puller recipe, delivered at
@@ -182,8 +186,30 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // P-016: reconcile ALL incompatible pre-existing claims before the next
+    // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
+    // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;
+    // leaders supervise rather than consume the member lane.
+    const reconciliation = await reconcileFleetScopeClaims({
+      ownerId: ident.ownerId,
+      workspaceId: ident.workspaceId,
+      identity: ident,
+    });
+    if (reconciliation.scope?.record.source === 'default') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds)),
+          },
+        ],
+      };
+    }
     // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
     // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).
+    // A fleet member is the exception: scope is a correctness boundary, not a feature
+    // preference, so the kill-switch may disable scheduler steering but cannot widen a
+    // member into the generic backlog.
     const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
     const res = await getNextForBee({
       cupId: ident.ownerId,
@@ -197,7 +223,7 @@ export default defineTool({
       heldPaths: args.heldPaths,
       states: args.states,
       rigAvailable: args.rigAvailable,
-      ignoreStoredSpec: !specOn,
+      ignoreStoredSpec: !specOn && !reconciliation.scope,
       // P-006 (fleet-leader-frictions-six-improvements-2026-07-10, WI-3763): this is
       // THE live fleet-member self-pull surface — a miss here is the real "claim-spec
       // view is empty" signal a fleet leader wants pushed, so opt in.
@@ -253,7 +279,7 @@ export default defineTool({
     // DIFFERENT floors, and each took a manual payload dig to find while members idled.
     // FAILS SOFT: any error here degrades to exactly the old static message — a diagnosis must
     // never be able to break the claim path it is only annotating.
-    const missDiagnosis = res
+    const missDiagnosis = res || reconciliation.scope
       ? { error: '' as string, diagnosis: undefined, floors: undefined }
       : await buildMissDiagnosis({
           ownerId: ident.ownerId,
@@ -276,7 +302,9 @@ export default defineTool({
                   ...(routingHint ? { routingHint } : {}),
                   ...(memory ? { memory } : {}),
                 }
-              : {
+              : reconciliation.scope
+                ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds)
+                : {
                   ok: false,
                   error: missDiagnosis.error,
                   // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus

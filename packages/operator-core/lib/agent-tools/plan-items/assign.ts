@@ -21,6 +21,11 @@ import { bestEffortOwnerUser, agentNameOwner, registerAgentName } from '../../pl
 import { assignItem } from '../../plan-items/assignments';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { softText, clampText, LIMITS } from '../limits';
+import { resolveAgentIdentity } from '../coordination/identity';
+import {
+  admitSubjectForFleetTarget,
+  notifyFleetScopeRefusal,
+} from '../../scheduler/fleet-scope-admission';
 
 interface AssignSpecItem {
   plan: string;
@@ -78,6 +83,7 @@ export default defineTool({
       },
     ),
   async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
     const ownerUser = bestEffortOwnerUser(ctx);
     const list: AssignSpecItem[] = args.items?.length
       ? args.items.map((it) => ({
@@ -111,6 +117,37 @@ export default defineTool({
       list,
       async (it): Promise<BulkItemResult> => {
         const { workspaceId, harnessSlug } = await resolvePlanScope({ harnessSlug: it.harness });
+        const admission = await admitSubjectForFleetTarget({
+          target: it.assignee,
+          workspaceId,
+          subject: {
+            id: null,
+            title: null,
+            // Plan-item assignment is the pre-promotion feature lane. A bug-only
+            // or fixed-id member therefore refuses it; a plan-scoped feature fleet
+            // admits it through its plan/plan_item leaves.
+            kind: 'feature',
+            priority: null,
+            tags: [],
+            paths: [],
+            plan: it.plan,
+            planItem: [it.item],
+            age: Date.now(),
+            riskTier: null,
+            redundancy: null,
+            estCost: null,
+            assignee: it.assignee,
+          },
+        });
+        if (!admission.allowed) {
+          await notifyFleetScopeRefusal(identity, admission, `plan_items:assign ${it.plan}#${it.item} → ${it.assignee}`);
+          return {
+            ok: false,
+            plan: it.plan,
+            item: it.item,
+            refused: `${admission.code}: ${admission.reason}`,
+          };
+        }
         const existingOwner = await agentNameOwner(workspaceId, it.assignee);
         if (existingOwner && existingOwner !== ownerUser) {
           return {

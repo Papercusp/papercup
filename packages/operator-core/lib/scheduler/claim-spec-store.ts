@@ -19,6 +19,7 @@ import { getNextWorkItem, type GetNextResult } from './get-next';
 import { releaseWorkItem, type OrgSql } from '../work-items';
 import { planItemLaneBlockReason } from './plan-item-lane-guard';
 import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
+import { matchesWorkItemClaimSpec } from './claim-spec-match';
 
 export interface SetClaimSpecResult {
   ok: boolean;
@@ -276,6 +277,16 @@ export async function getNextForBee(args: {
       // fleet:assignments. Fire-and-forget; never blocks or throws into this miss.
       if (args.checkIdleDrainOnMiss) maybeEmitFleetIdleDrain(args.cupId, args.workspaceId);
       return null;
+    }
+    // P-016 hard fleet-scope boundary: tier 3 is the shared issue-family
+    // fallback. It historically preserved only kind/id leaves, so a title/plan/
+    // tag-constrained spec could receive an adjacent issue outside its view.
+    // Validate the complete spec after the atomic claim and quarantine any
+    // mismatch before it reaches the member. The release cooldown prevents the
+    // bounded retry from selecting the same row immediately.
+    if (result.workItem.family === 'issue' && !matchesWorkItemClaimSpec(result.workItem, record.spec)) {
+      await releaseWorkItem(result.workItem.id, { harness: args.harness, expectedAssignee: args.cupId });
+      continue;
     }
     const blocked = await planItemLaneBlockReason(result.workItem);
     if (!blocked) return { ...result, specSource: record.source };
