@@ -1065,6 +1065,13 @@ export const FLAGS = {
   // including the ones tracking this very bug) and resurrect a corpus frozen in June. The
   // old comment's "byte-identical" claim was written BEFORE the flag was ever on and has
   // been false since 2026-06-22. Reversibility is a property of the DATA, not of the flag.
+  //
+  // NOTE — this was NOT collateral damage from the 2026-06-29 P-011 inversion, contrary to
+  // what EI-9769 assumed ("it is on because a comment lied"). The row dates prove the
+  // cutover was DELIBERATE and finished BEFORE P-011: writes to the workspace partition
+  // begin 2026-06-05 and the legacy `default` partition takes its last write 2026-06-22 —
+  // both ahead of the 06-29 inversion, so the flag was already being held ON on purpose.
+  // P-011 only made the code default agree with the state the cutover had already reached.
   ISSUES_PER_WORKSPACE: "papercusp-issues-per-workspace",
   // work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008: the per-Hive authority claim
   // LEASE (decentralized-dispatch-scaling P-004) — migrated off the ad-hoc
@@ -1150,10 +1157,19 @@ export const FLAGS = {
   // option WI-4239 originally offered as the conservative choice — would RELAX auth
   // enforcement fleet-wide. Do not flip it OFF as a safety measure; that is backwards.
   //
-  // STILL OWED (WI-4239): the attended verification the original comment asked for — not to
-  // decide whether to turn it ON (it has been on for two weeks) but to confirm the clamp
-  // actually ENGAGES rather than being inert. A guard that is live-but-inert looks identical
-  // to a guard that works, from the outside; only an attended :3170 check discriminates.
+  // THE CLAMP DEMONSTRABLY ENGAGES — it is not a live-but-inert guard (checked 2026-07-12,
+  // which is the thing an attended verify would have been run to establish):
+  //   · wired at the MCP dispatch handler (endpoint-route/routes/transport/_mcp-handler.ts
+  //     ~L594) — a bare `?superuser=1` whose workspace can't be resolved is REJECTED with
+  //     `scoped_superuser_workspace_unresolved`; also read in agent-tools/memory/search.ts.
+  //   · THREE integration tests independently document it as "default-on" and had to opt
+  //     into `all_workspaces=1` explicitly BECAUSE it engages (su-locks-http-mcp,
+  //     ask-choice-e2e, pretooluse-locks-live). A guard nothing hit would not have forced
+  //     three suites to opt out of it.
+  //   · its own handler comment calls the unscoped '*' fallback "the root of the
+  //     demonstrated cross-workspace reach" — i.e. OFF reopens a DEMONSTRATED hole.
+  // So the original "flip it ON after an attended :3170 verification" is satisfied in
+  // substance: it has been on for two weeks, it engages, and nothing broke.
   SCOPED_SUPERUSER_CLAMP: "papercusp-scoped-superuser-clamp",
   // domain-generic-agent-personas-2026-06-17 P-006: resolve the `su` role's persona via the
   // blueprint prompt-resolve chain (blueprints/base/prompts/su.md) instead of the hardcoded

@@ -143,6 +143,26 @@ run_once() {
   )
 }
 
+# Classify the last run: "pass" | "red" | "invalid".
+#
+# THIS GUARD IS THE POINT, NOT A NICETY. Turn the load up far enough and vitest
+# stops being slow and starts being BROKEN: the pool reports "Failed to start
+# forks worker" / "Timeout waiting for worker to respond" and finishes with
+# `Test Files  no tests` — a NON-ZERO exit in which ZERO TESTS RAN. Counting that
+# as a flake "red" produces a detector that reports 6/6 red having never executed
+# the test once (measured, 2026-07-12). A soak lane that cannot tell "the race
+# fired" from "the runner died" is worse than no lane: it manufactures evidence.
+#
+# So a run counts as RED only if tests actually EXECUTED and at least one FAILED.
+# An infrastructure error is INVALID — surfaced loudly, never scored.
+classify_run() {
+  local log="/tmp/flake-soak-run.$$.log" rc="$1"
+  if grep -qE "Failed to start .* worker|Timeout waiting for worker to respond|Test Files  no tests|No test files found" "$log" 2>/dev/null; then
+    echo "invalid"; return
+  fi
+  if [ "$rc" -eq 0 ]; then echo "pass"; else echo "red"; fi
+}
+
 pass=0; fail=0
 declare -a RESULTS=()
 
@@ -174,21 +194,26 @@ if [ -n "$SELFTEST_FIXTURE" ]; then
   fi
   banner "SELF-TEST (expect RED) $SELFTEST_FIXTURE" "$local_target"
   for i in $(seq 1 "$REPEATS"); do
-    if run_once "FLAKE_SOAK_SELFTEST=1" "$local_target"; then
-      RESULTS+=("PASS"); pass=$((pass+1)); printf "  run %2d/%d  PASS\n" "$i" "$REPEATS"
-    else
-      RESULTS+=("FAIL"); fail=$((fail+1)); printf "  run %2d/%d  \033[31mFAIL\033[0m\n" "$i" "$REPEATS"
-    fi
+    run_once "FLAKE_SOAK_SELFTEST=1" "$local_target"; rc=$?
+    case "$(classify_run "$rc")" in
+      pass)    pass=$((pass+1));       printf "  run %2d/%d  PASS\n" "$i" "$REPEATS" ;;
+      red)     fail=$((fail+1));       printf "  run %2d/%d  \033[31mRED\033[0m (real test failure)\n" "$i" "$REPEATS" ;;
+      invalid) invalid=$((invalid+1)); printf "  run %2d/%d  \033[33mINVALID\033[0m (runner died — 0 tests ran; NOT scored)\n" "$i" "$REPEATS" ;;
+    esac
   done
   echo "──────────────────────────────────────────────────────────────"
-  echo " self-test result: $fail/$REPEATS reddened (want >=1)"
+  echo " self-test: $fail RED / $pass PASS / $invalid INVALID  over $REPEATS runs"
+  if [ "$invalid" -gt 0 ]; then
+    echo " ⚠️  $invalid run(s) never executed a test (worker start timeout) — the"
+    echo "    load is so heavy the RUNNER dies instead of the race firing. Those are"
+    echo "    NOT flake evidence. Lower --load / raise --cores before trusting this."
+  fi
   if [ "$fail" -ge 1 ]; then
-    echo " ✅ throttle DISCRIMINATES — the lane can catch a load-flake."
+    echo " ✅ throttle DISCRIMINATES — the lane reddened a known load-flake for real."
     exit 0
   fi
-  echo " ❌ fixture stayed ALL-GREEN under throttle — the lane failed to"
-  echo "    reproduce a known load-flake. Do NOT trust it until fixed"
-  echo "    (raise --repeats, lower --cores, or the fixture isn't load-sensitive)."
+  echo " ❌ fixture never reddened for a real reason — the lane failed to"
+  echo "    reproduce a known load-flake. Do NOT trust it until fixed."
   exit 1
 fi
 
