@@ -99,6 +99,7 @@ function depsForPots(
   return {
     now: () => NOW,
     fetchBlockGraph: async () => noBlockers,
+    fetchQuarantinedCount: async () => 0,
     loadRegistry: async () => ({ projects: allProjects }),
     listPlanRows: async (slug) => {
       for (const { member, plans } of Object.values(hives)) {
@@ -210,6 +211,7 @@ describe('surveyWorkspace — the cross-pot ranked backlog (P-003 Phase B / D-00
                 frontierRow({ feature_id: 'WI-B', harness_slug: 'loose-proj' }),
               ],
         fetchBlockGraph: async () => noBlockers,
+        fetchQuarantinedCount: async () => 0,
       },
     });
 
@@ -241,6 +243,7 @@ describe('surveyWorkspace — the cross-pot ranked backlog (P-003 Phase B / D-00
           harness === 'proj-a'
             ? { blockers: new Map([['WI-A2', ['WI-A1']]]), statuses: new Map([['WI-A1', 'todo']]) }
             : { blockers: new Map([['WI-B2', ['WI-B1']]]), statuses: new Map([['WI-B1', 'todo']]) },
+        fetchQuarantinedCount: async () => 0,
       },
     });
     expect(ws.crossPot.frontierBlocked).toBe(2); // one held-back lane per pot

@@ -156,6 +156,7 @@ describe('surveyPot (P-012 regression)', () => {
   const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({
     now: () => NOW,
     fetchBlockGraph: async () => noBlockers,
+    fetchQuarantinedCount: async () => 0,
     ...over,
   });
 

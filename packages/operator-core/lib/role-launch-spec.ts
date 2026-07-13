@@ -397,7 +397,7 @@ export interface BuildSuLaunchSpecInput {
   /** Harness scope, or null/omitted for a workspace-level su session. */
   harnessSlug?: string | null;
   /** Playbook profile: 'engineer' (default) | 'power' | 'generic'. */
-  profile?: string;
+  profile?: 'engineer' | 'power' | 'generic';
   /** su-context-size-variants: 'full' | 'trimmed' — an EXPLICIT initial-context
    *  size override. When omitted, the trim is derived from the model tier
    *  (weak → trimmed, frontier → full); 'trimmed' forces the trim on any tier. */

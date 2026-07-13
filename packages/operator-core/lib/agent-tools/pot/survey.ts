@@ -128,11 +128,11 @@ export default defineTool({
             plans: ws.crossPot.plans.length,
             frontier: ws.crossPot.frontier.length,
             frontierBlocked: ws.crossPot.frontierBlocked,
-            frontierQuarantined: ws.crossPot.frontierQuarantined,
+            frontierQuarantined: ws.crossPot.frontierQuarantined ?? 0,
           },
           // EI-8498 / WI-4563 — a cross-pot frontier of zero is diagnosable too:
           // flag the admission deadlock LOUDLY so it never reads as a read-path bug.
-          ...(ws.crossPot.frontier.length === 0 && ws.crossPot.frontierQuarantined > 0
+          ...(ws.crossPot.frontier.length === 0 && (ws.crossPot.frontierQuarantined ?? 0) > 0
             ? {
                 admissionStarved: true,
                 note: `ADMISSION-STARVED DEADLOCK: 0 placeable cross-pot frontier items, but ${ws.crossPot.frontierQuarantined} withheld by the G2 admission gate (remote + un-admitted). NOT an idle workspace — work is structurally blocked from placing. Not a survey read-path bug.`,
@@ -149,7 +149,7 @@ export default defineTool({
             home: survey.home,
             members: survey.members,
             scope: survey.scope,
-            counts: { plans: survey.plans.length, frontier: survey.frontier.length, frontierBlocked: survey.frontierBlocked, frontierQuarantined: survey.frontierQuarantined },
+            counts: { plans: survey.plans.length, frontier: survey.frontier.length, frontierBlocked: survey.frontierBlocked, frontierQuarantined: survey.frontierQuarantined ?? 0 },
             plans: survey.plans.slice(0, limit).map(compact),
             frontier: survey.frontier.slice(0, limit).map(compact),
           })),
@@ -164,7 +164,7 @@ export default defineTool({
 
     // {data} envelope so the payload-tier shapers apply (P-024).
     const frontierCount = survey.frontier.length;
-    const frontierQuarantined = survey.frontierQuarantined;
+    const frontierQuarantined = survey.frontierQuarantined ?? 0;
     return {
       data: {
         ok: true,

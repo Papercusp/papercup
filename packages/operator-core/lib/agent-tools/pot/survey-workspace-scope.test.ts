@@ -114,7 +114,7 @@ describe('pot:survey tool — flag ON (cross-pot dispatch widening)', () => {
     expect(h.surveyPot).not.toHaveBeenCalled();
     expect(out.scope).toBe('workspace');
     expect(out.hives).toEqual(['pot-a', 'pot-b']);
-    expect(out.counts).toEqual({ hives: 2, plans: 2, frontier: 2, frontierBlocked: 1 });
+    expect(out.counts).toEqual({ hives: 2, plans: 2, frontier: 2, frontierBlocked: 1, frontierQuarantined: 0 });
     // cross-pot ranked priority — pot-b's urgent plan leads, each row pot-tagged.
     expect(out.crossPot.plans.map((c: { id: string }) => c.id)).toEqual(['plan-b', 'plan-a']);
     expect(out.crossPot.plans[0].pot).toBe('pot-b');
