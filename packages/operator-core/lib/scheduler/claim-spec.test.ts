@@ -463,3 +463,77 @@ describe('isIdOnlySelector — the id-pin tripwire', () => {
     expect(SUPPORTED_SPEC_VERSIONS).toContain(CURRENT_SPEC_VERSION);
   });
 });
+
+// drain-claim-spec-hardening-2026-07-13 P-002 (fixes EI-11300): `states` rides the spec —
+// an optional claimable-status subset a fleet leader sets ONCE so every inheriting member's
+// get_next defaults to it instead of the plain ['todo'] floor.
+describe('claim-spec `states` field (D-002, EI-11300)', () => {
+  it('accepts a spec that carries a valid `states` subset', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'bug-drain',
+      revision: 1,
+      view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+      states: ['open'],
+    });
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+    expect(r.spec?.states).toEqual(['open']);
+  });
+
+  it('accepts multiple allowed states together', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'multi-state',
+      revision: 0,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+      states: ['todo', 'open', 'failing'],
+    });
+    expect(r.ok).toBe(true);
+    expect(r.spec?.states).toEqual(['todo', 'open', 'failing']);
+  });
+
+  it('omitting `states` still validates (backward-compatible — undefined, not required)', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'no-states',
+      revision: 0,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.spec?.states).toBeUndefined();
+  });
+
+  it('rejects a `states` value outside the claimable allowlist', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'bad-state',
+      revision: 0,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+      states: ['todo', 'blocked'],
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects `states` gated to floor-owned values (blocked/cursed can never be requested)', () => {
+    for (const bad of ['blocked', 'cursed', 'done', 'passed']) {
+      const r = validateClaimSpec({
+        specVersion: '1.0',
+        specId: 'bad-floor-state',
+        revision: 0,
+        view: {},
+        rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+        states: [bad],
+      });
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it('DEFAULT_CLAIM_SPEC carries no `states` (today’s ['todo']-default behavior, unchanged)', () => {
+    expect(DEFAULT_CLAIM_SPEC.states).toBeUndefined();
+  });
+});

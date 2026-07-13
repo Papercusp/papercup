@@ -30,6 +30,7 @@
  * malformed spec is caught at author time with a clear error.
  */
 import { z } from 'zod';
+import { CLAIM_STATES_ALLOWLIST } from '../work-items';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Vocabulary — the fixed primitive set the Queen composes a spec from.
@@ -219,6 +220,23 @@ export const limitsSchema = z
   .strict();
 
 /**
+ * `states` — the claimable-status subset (drain-claim-spec-hardening-2026-07-13 D-002,
+ * fixes EI-11300). The SAME allowlist `scheduler:get_next`'s own `states` arg enforces
+ * (`CLAIM_STATES_ALLOWLIST` — never widen past a floor: `blocked`/`cursed` stay
+ * resolver-owned, terminal states stay settled). Drain-wide POLICY: a fleet leader sets
+ * it ONCE on the fleet spec (`scheduler:set_claim_spec`) and every member inherits it via
+ * `get_next` — instead of every member having to remember to pass its own `states` override
+ * (the starve class EI-11300 names: an issue-family drain wants `states:['open']`, but the
+ * per-call default is `['todo']`, so a member that cold-wakes back onto the default silently
+ * pulls nothing from a backlog full of open bugs). An explicit per-call `states` on
+ * `get_next` still WINS over this (member judgment overrides the spec, same precedence as
+ * every other narrowing) — this field is only the fallback when the caller omits one.
+ */
+export const claimableStatesSchema = z
+  .array(z.enum(CLAIM_STATES_ALLOWLIST as unknown as [string, ...string[]]))
+  .max(20);
+
+/**
  * The full claim spec. `specVersion` is validated against `SUPPORTED_SPEC_VERSIONS`
  * semantically (so the error is "unsupported spec version 0.9", not a Zod enum dump);
  * the Zod field only checks it is a non-empty string.
@@ -233,6 +251,7 @@ export const claimSpecSchema = z
     view: viewSchema,
     rank: rankSchema,
     limits: limitsSchema.optional(),
+    states: claimableStatesSchema.optional(),
   })
   .strict();
 

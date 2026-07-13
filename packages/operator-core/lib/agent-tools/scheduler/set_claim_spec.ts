@@ -153,7 +153,7 @@ export default defineTool({
       spec: z
         .record(z.string(), z.unknown())
         .describe(
-          'the claim spec: { specVersion, specId, revision, view:{ filter }, rank:{ mode, terms }, limits? } — validated by validateClaimSpec. ' +
+          'the claim spec: { specVersion, specId, revision, view:{ filter }, rank:{ mode, terms }, limits?, states? } — validated by validateClaimSpec. ' +
             'CONCRETE SHAPES (EI-4832 — get these wrong and the write is rejected): ' +
             'specVersion is the STRING "1.0" (not "1" or a number). ' +
             'view.filter is a FILTER NODE: either one LEAF predicate { field, op, value } OR a combinator { all:[nodes...] } / { any:[nodes...] } / { not:node }; ' +
@@ -162,7 +162,8 @@ export default defineTool({
             'op is one of = | != | < | <= | > | >= | in | contains | glob. ' +
             'rank.mode is "lexicographic" (each term breaks ties in order) or "weighted" (a single weighted sum — every term then needs a numeric `weight`). ' +
             'rank.terms is an ARRAY of { expr, dir } — NOT { field, order }; expr is a bare item field (e.g. "priority") or a function term (affinity(bee.held_paths,item.paths) | model_fit(bee.model,item) | tag_weight(tags) | redundancy_need); dir is "asc" or "desc". ' +
-            'EXAMPLE: { specVersion:"1.0", specId:"bc-general", revision:1, view:{ filter:{ all:[{ field:"kind", op:"in", value:["bug","change"] }] } }, rank:{ mode:"lexicographic", terms:[{ expr:"priority", dir:"asc" }, { expr:"age", dir:"desc" }] } }.',
+            'EXAMPLE: { specVersion:"1.0", specId:"bc-general", revision:1, view:{ filter:{ all:[{ field:"kind", op:"in", value:["bug","change"] }] } }, rank:{ mode:"lexicographic", terms:[{ expr:"priority", dir:"asc" }, { expr:"age", dir:"desc" }] } }. ' +
+            'OPTIONAL `states` (drain-claim-spec-hardening-2026-07-13, D-002/EI-11300): a claimable-status subset — same allowlist as scheduler:get_next\'s own `states` arg (todo|open|failing). Set it ONCE here (e.g. on a `fleet` spec) so every inheriting member\'s get_next defaults to it instead of the plain [\'todo\'] floor — the fix for an issue-family drain (bugs/changes are always status=open, never todo) silently starving whenever a member forgets its own per-call override. A member\'s explicit get_next {states} still wins over this.',
         ),
     })
     .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {

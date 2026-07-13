@@ -79,19 +79,24 @@ async function buildMissDiagnosis(args: {
   const STATIC = 'no claimable work-item matched your spec within the floors';
   try {
     const { diagnoseClaimNextMiss, explainIssueClaimFloors } = await import('../../work-items');
-    const diag = await diagnoseClaimNextMiss({
-      harness: args.harness,
-      assignee: args.ownerId,
-      states: args.states as ClaimNextStates,
-      rigAvailable: args.rigAvailable,
-    });
-
     let floors: unknown;
     let namedSummary = '';
     const rec = await getClaimSpecRecord({
       cupId: args.ownerId,
       workspaceId: resolveClaimSpecWorkspace(args.workspaceId),
     }).catch(() => null);
+    // D-002 (drain-claim-spec-hardening-2026-07-13, fixes EI-11300): mirror getNextWorkItem's
+    // own states resolution (per-call override wins; else the spec's `states`; else the
+    // ['todo'] floor default) so the miss diagnosis reflects the SAME pool the real claim
+    // attempt just ran under — a diagnosis computed under a different `states` than the
+    // claim itself would mislead the caller about why it missed.
+    const effectiveStates = args.states ?? (rec?.spec as { states?: string[] } | undefined)?.states;
+    const diag = await diagnoseClaimNextMiss({
+      harness: args.harness,
+      assignee: args.ownerId,
+      states: effectiveStates as ClaimNextStates,
+      rigAvailable: args.rigAvailable,
+    });
     const ids = specNamedIds(rec?.spec);
     if (ids.length > 0) {
       const attributed = await explainIssueClaimFloors(args.harness, ids, {
@@ -166,7 +171,7 @@ export default defineTool({
       .max(20)
       .optional()
       .describe(
-        "claimable states — subset of ['todo','open','failing'] (default ['todo']). 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
+        "claimable states — subset of ['todo','open','failing']. Omit to inherit your claim spec's own `states` (drain-claim-spec-hardening-2026-07-13 D-002/EI-11300 — a fleet leader sets it once via scheduler:set_claim_spec, every member inherits it), else ['todo']. Passing this EXPLICITLY always wins over the spec. 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
       ),
     rigAvailable: z
       .boolean()

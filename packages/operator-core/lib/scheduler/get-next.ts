@@ -34,6 +34,14 @@
  * but the resolver compiles them to a NEUTRAL constant — they don't reorder until the
  * per-MODEL capability lane / tag-weight table ship behind their own flags. `affinity`
  * IS live (it's the reason within-hive push was chosen, preserved as a rank term).
+ *
+ * `states` (drain-claim-spec-hardening-2026-07-13 D-002, fixes EI-11300): the claimable-
+ * status floor is likewise spec-carriable — `opts.states` (the caller's per-call arg) wins
+ * when given; otherwise the resolver falls back to `spec.states` (the fleet leader's
+ * standing policy) before `claimFloorsWhereSql`'s own `['todo']` default. Same NARROW-only
+ * discipline as the filter/rank: a spec can set this floor's DEFAULT, never widen past it
+ * (the values are still drawn from `CLAIM_STATES_ALLOWLIST`, so `blocked`/`cursed`/terminal
+ * remain unreachable).
  */
 import type postgres from 'postgres';
 import {
@@ -88,7 +96,11 @@ export interface GetNextOpts {
   swarmId?: string;
   /** Skip high-stakes (redundancy > 1) items (redundancy flag on). */
   excludeRedundant?: boolean;
-  /** Claimable statuses floor (default ['todo']). */
+  /**
+   * Claimable statuses floor (default ['todo']). An explicit `states` here is the caller's
+   * per-call OVERRIDE and always wins; when omitted, `getNextWorkItem` falls back to the
+   * claim spec's own `states` (D-002, EI-11300) before the ['todo'] default.
+   */
   states?: string[];
   /** WI-2796: caller has/coordinates a live ≥2-machine rig — see crossMachineRigExclusionSql. */
   rigAvailable?: boolean;
@@ -623,10 +635,17 @@ export async function getNextWorkItem(
   const ws = activeWorkspaceId();
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
 
+  // drain-claim-spec-hardening-2026-07-13 D-002 (fixes EI-11300): `states` is drain-wide
+  // POLICY, so it rides the SPEC — a per-call `opts.states` (the caller's explicit
+  // override) still WINS; only when the caller omits one do we fall back to the spec's
+  // `states` (set once by the fleet leader / queen via scheduler:set_claim_spec, inherited
+  // by every member); neither present ⇒ claimFloorsWhereSql's own `['todo']` default.
+  const effectiveStates = opts.states ?? spec.states;
+
   const floors = claimFloorsWhereSql(sql, {
     harness: opts.harness,
     workspaceId: ws,
-    states: opts.states,
+    states: effectiveStates,
     swarmId: opts.swarmId,
     excludeRedundant: opts.excludeRedundant,
     useMaintainedReady,
@@ -703,7 +722,7 @@ export async function getNextWorkItem(
         {
           harness: opts.harness,
           assignee: bee.assignee,
-          states: opts.states,
+          states: effectiveStates,
           swarmId: opts.swarmId,
           excludeRedundant: opts.excludeRedundant,
           rigAvailable: opts.rigAvailable,
