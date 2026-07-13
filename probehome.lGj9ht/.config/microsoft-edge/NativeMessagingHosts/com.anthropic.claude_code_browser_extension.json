@@ -1,0 +1,9 @@
+{
+  "name": "com.anthropic.claude_code_browser_extension",
+  "description": "Claude Code Browser Extension Native Host",
+  "path": "/home/marsh-office/.papercusp/session-claude/role-1a026cb2-b8af-457d-9c5d-4bbb24223e60/chrome/chrome-native-host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/"
+  ]
+}

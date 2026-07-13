@@ -28,6 +28,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { readImprovementItems, readObservationItems } from '../harness/improvements/read-items';
+import type { SignalOrigin } from '../harness/improvements/provenance';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { listRubrics } from '../rubrics';
 import {
@@ -228,11 +229,28 @@ function toStructuredObservation(c: ImprovementCandidate): StructuredObservation
   };
 }
 
+/** Options for {@link buildStateOfHiveReaders}. */
+export interface BuildStateOfHiveReadersOptions {
+  /**
+   * Signal origins the STRUCTURED-observation (rubricRatings) lane surfaces. Omitted
+   * ⇒ readObservationItems's own default (ORGANIC_ONLY) — synthetic rows
+   * (drill/replay/shadow) stay OUT of the organic learner, the standing invariant.
+   *
+   * A DRILL tick (blender-self-learning-2026-07-12 P-013) passes e.g.
+   * `['organic','drill']` to surface a vaccination-planted `origin:drill` scorecard
+   * so the rubric-seeding → grounded-idea loop can be exercised as a repeatable
+   * health check WITHOUT the drill signal contaminating organic learning. Only the
+   * dedicated rubricRatings reader is widened; `friction()` (a free-text organic
+   * learner) stays organic-only, so drill rows never leak into that lane.
+   */
+  observationOrigins?: readonly SignalOrigin[];
+}
+
 /**
  * Build the production StateOfHiveReaders. The core's synthesizeStateOfHive
  * wraps each reader defensively, so one bad query doesn't kill the whole digest.
  */
-export function buildStateOfHiveReaders(): StateOfHiveReaders {
+export function buildStateOfHiveReaders(opts: BuildStateOfHiveReadersOptions = {}): StateOfHiveReaders {
   return {
     async completions(): Promise<ChangeFeedEntry[]> {
       return gatherCompletions(buildChangeFeedReaders());
@@ -264,7 +282,11 @@ export function buildStateOfHiveReaders(): StateOfHiveReaders {
       // (P-006). An independent read from friction()'s free-text union — a single
       // cheap topic query at Scout cadence — so the structured lane stays defensively
       // isolated. Empty until P-001 surfaces candidate.observation + a rubric is in use.
-      const observations = await readObservationItems();
+      // A drill tick widens `observationOrigins` to surface origin:drill scorecards
+      // (P-013); default (undefined) keeps readObservationItems's ORGANIC_ONLY floor.
+      const observations = await readObservationItems(
+        opts.observationOrigins ? { origins: opts.observationOrigins } : {},
+      );
       const out: StructuredObservationRecord[] = [];
       for (const c of observations) {
         const record = toStructuredObservation(c);
