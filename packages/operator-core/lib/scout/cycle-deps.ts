@@ -487,6 +487,18 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       } catch {
         /* best-effort */
       }
+      // COORD-HEALTH lane (blender-self-learning-2026-07-12 P-011 / WI-4453):
+      // coordination breakdown from coord_event_log — re-mounting escalation
+      // storms (leaking dedup gate), fleet-wide unanswered directed mail, per-
+      // recipient inbox/wake floods, claim conflicts. Fail-soft (the lane module
+      // returns [] on outage).
+      try {
+        const { buildCoordHealthLane } = await import('./coord-health-lane');
+        const chLane = await buildCoordHealthLane();
+        if (chLane.length > 0) digest.coordHealth = chLane;
+      } catch {
+        /* best-effort */
+      }
       // DELTA-FIRST substrate (blender-self-learning-2026-07-12 P-003 /
       // WI-4319): diff this digest against the previous fired cycle's persisted
       // snapshot — read the previous refs, persist the CLEAN fresh digest as

@@ -100,7 +100,11 @@ export type MetaPatternCategory =
   // blender-self-learning-2026-07-12 P-010: the release pipeline's ship-path
   // health — standing gate reds + stall, promotion/deploy lag, and chronic
   // pipeline_events failure classes, JOINED into one incident (WI-4455).
-  | 'gate-pipeline-health';
+  | 'gate-pipeline-health'
+  // blender-self-learning-2026-07-12 P-011 / WI-4453: coordination breakdown —
+  // re-mounting escalation storms, fleet-wide unanswered directed mail, per-
+  // recipient inbox/wake floods, and claim conflicts, from coord_event_log.
+  | 'coord-health';
 
 /**
  * A grounded meta-pattern: a cross-corpus regularity (not a single capture),
@@ -171,6 +175,14 @@ export interface CorpusDigest {
    *  `pipeline:event:<kind>:<status>`). OPTIONAL: populated by the cycle seam,
    *  like watchdogHealth. */
   gatePipelineHealth?: MetaPattern[];
+  /** COORD HEALTH (blender-self-learning-2026-07-12 P-011 / WI-4453) —
+   *  coordination breakdown from coord_event_log: re-mounting escalation storms
+   *  (leaking dedup gate), fleet-wide unanswered directed mail, per-recipient
+   *  inbox/wake floods, and claim conflicts
+   *  (`ref` = `coord:escalation-storm:<sig>` / `coord:unanswered` /
+   *  `coord:wake-storm:<recipient>` / `coord:claim-conflict`). OPTIONAL:
+   *  populated by the cycle seam, like watchdogHealth. */
+  coordHealth?: MetaPattern[];
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS fired cycle's persisted digest snapshot
    *  carried (scout_digest_snapshots, migration 582). {@link renderDigest}

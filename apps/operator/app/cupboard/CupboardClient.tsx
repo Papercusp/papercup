@@ -56,6 +56,7 @@ import { Tooltip } from '../harness/Tooltip';
 import { CUPBOARD_LISTING_KIND_TONE } from '../harness/theme';
 import { CupboardErrorState } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
+import InstalledPacksSection from './InstalledPacksSection';
 import { useLexicon } from '@/lib/useLexicon';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
@@ -556,6 +557,13 @@ export default function CupboardClient() {
         />
       ) : (
         <>
+      {/* Per-pot installed-packs overview (P-016): on the Knowledge Packs tab in
+          flat browse, show what packs are installed in a chosen pot — each row
+          deep-links to its detail page for the actual manage controls. */}
+      {kindFilter === 'knowledge-pack' && !hive && (
+        <InstalledPacksSection listings={listings} onOpen={(id) => router.push(`/cupboard/${id}`)} />
+      )}
+
       {/* Error — friendly copy + inline Retry (EI-215) */}
       {error && !loading && (
         <CupboardErrorState raw={error} what="listings" onRetry={() => void fetchListings()} />

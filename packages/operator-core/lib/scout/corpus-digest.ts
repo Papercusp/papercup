@@ -215,6 +215,7 @@ const META_PATTERN_CATEGORIES = [
   'niche-map',
   'watchdog-health',
   'gate-pipeline-health',
+  'coord-health',
 ] as const;
 
 /**
@@ -291,6 +292,11 @@ export const DigestSchema = z.object({
    *  chronic pipeline_events failure classes (WI-4455). OPTIONAL: populated by
    *  the cycle seam (cycle-deps readCorpus), like watchdogHealth. */
   gatePipelineHealth: z.array(MetaPatternSchema).optional(),
+  /** COORD HEALTH (blender-self-learning-2026-07-12 P-011 / WI-4453) —
+   *  coordination breakdown from coord_event_log: escalation storms, unanswered
+   *  directed mail, inbox/wake floods, claim conflicts. OPTIONAL: populated by
+   *  the cycle seam (cycle-deps readCorpus), like watchdogHealth. */
+  coordHealth: z.array(MetaPatternSchema).optional(),
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS cycle's persisted digest snapshot carried
    *  (scout_digest_snapshots, migration 582). renderDigest leads with the

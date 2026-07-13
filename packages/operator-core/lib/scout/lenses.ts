@@ -176,6 +176,9 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // P-010 (blender-self-learning): the release ship-path incident rides the
     // flatten so ideation targets chronic gate/pipeline pain directly.
     ['gate-pipeline-health', digest.gatePipelineHealth ?? []],
+    // P-011 (blender-self-learning): coordination breakdown rides the flatten so
+    // ideation targets escalation storms / unanswered mail / wake floods directly.
+    ['coord-health', digest.coordHealth ?? []],
   ];
   const out: MetaPattern[] = [];
   for (const [category, patterns] of lanes) {
@@ -212,6 +215,8 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Watchdog health (chronic measured infrastructure signal — 15min collectors)';
     case 'gate-pipeline-health':
       return 'Gate / pipeline health (release ship-path — standing reds, promotion/deploy stall, chronic pipeline failures)';
+    case 'coord-health':
+      return 'Coord health (coordination breakdown — escalation storms, unanswered directed mail, inbox/wake floods, claim conflicts)';
   }
 }
 
