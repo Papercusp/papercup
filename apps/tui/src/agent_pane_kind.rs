@@ -136,28 +136,6 @@ impl AgentPaneKind {
         }
     }
 
-    /// Does this kind already OWN a fixed pane in the chat dock (`chat_dock_kdl`)?
-    /// True for the three SINGLETON roles — Mug (`brain-view --queen`), Kettle
-    /// (`brain-view --overwatch`), Papercup (the `psu-sentinel` front door) — and
-    /// false for the worker Bee/cup, which is what the reactive dock stack is FOR.
-    ///
-    /// Owner ask 2026-07-13 ("all the mug turns should happen in the single mug
-    /// pane"): a singleton role is ONE long-lived agent that takes a NEW session
-    /// per wake, so paning it per-session stacks a fresh dead pane every turn
-    /// (24h of live data: kettle 122 sessions, papercup 81, mug 56 — 259 panes).
-    /// Its fixed pane already rolls forward to each new wake's transcript on its
-    /// own (`brain_view::resolve_session` re-resolves the newest session for the
-    /// role every tick), so the per-wake pane is pure duplication. A Bee is the
-    /// opposite: one distinct agent per work item, and one pane each is the point.
-    pub fn has_fixed_dock_pane(self) -> bool {
-        match self {
-            Self::Queen | Self::Overwatch | Self::Sentinel => true,
-            // A worker gets its own reactive pane; planner/su are excluded from
-            // the dock stack upstream (su is the owner's own terminal).
-            Self::Bee | Self::Planner | Self::Su => false,
-        }
-    }
-
     /// The dock-stack GROUP order (P-011): same-type panes stack together, in
     /// this rank order — Sentinel (owner-facing chat) leads, then Overwatch, then
     /// the Queen, then the worker Bees (colony), then Planners. Matches the static
@@ -196,10 +174,18 @@ impl AgentPaneKind {
     }
 }
 
-/// Does a roster row carrying this `role` already have a FIXED pane in the dock,
-/// and therefore need NO reactive per-session pane? (Owner ask 2026-07-13: "all
-/// the mug turns should happen in the single mug pane ... same for kettle ...
-/// same for papercup".)
+/// Does a roster row carrying this `role` already have a FIXED pane in the dock
+/// (`chat_dock_kdl`), and therefore need NO reactive per-session pane? (Owner ask
+/// 2026-07-13: "all the mug turns should happen in the single mug pane ... same for
+/// kettle ... same for papercup".)
+///
+/// A singleton role is ONE long-lived agent that takes a NEW session per wake, so
+/// paning it per-session stacks a fresh dead pane every turn — 24h of live roster
+/// data: kettle 122 sessions, papercup 81, mug 56. Its fixed pane already rolls
+/// forward to each new wake on its own (`brain_view::resolve_session` re-resolves
+/// the role's newest session every tick), so the per-wake pane is pure duplication.
+/// A worker cup is the opposite — one distinct agent per work item, and one pane
+/// each is exactly what the reactive stack is for.
 ///
 /// Keyed on the roster's `role`, NOT its stamped `agentPaneKind`, and that is
 /// deliberate: the backend classifier (`classifyAgentPane`) has no arm for the
@@ -208,16 +194,26 @@ impl AgentPaneKind {
 /// WORKER. Trusting that field would keep paning the very role the owner named.
 /// pui's own `from_wire` maps the role vocabulary correctly, so we re-derive.
 ///
+/// Matched as an explicit ROLE list rather than by `from_wire` + `has_fixed_dock_pane`,
+/// because the role vocabulary is a SUPERSET of the pane-kind wire vocabulary and the
+/// two collide in both directions:
+///   - `brain` is a role (BRAIN_PRINCIPAL_ROLE) that classifies to the Mug, but it is
+///     not a kind wire string, so `from_wire` misses it;
+///   - `sentinel` is a kind ALIAS for Papercup, but as a ROLE it is the read-mostly
+///     fleet WATCHER — a worker (the D-001 collision noted above) — so routing it
+///     through `from_wire` would wrongly strip a real worker of its pane.
 /// `papercup-deep` is the hidden heavy half of the ONE Papercup identity and is
-/// deliberately PANELESS (WI-4485: it is woken over coord and never takes pane
-/// input) — it must not be reactively paned either, and it does not parse as a
-/// kind, so it is matched explicitly.
+/// deliberately PANELESS (WI-4485: it is woken over coord and never takes pane input).
 pub fn role_has_fixed_dock_pane(role: &str) -> bool {
-    let r = role.trim().to_ascii_lowercase();
-    if r == "papercup-deep" {
-        return true;
-    }
-    AgentPaneKind::from_wire(&r).is_some_and(AgentPaneKind::has_fixed_dock_pane)
+    matches!(
+        role.trim().to_ascii_lowercase().as_str(),
+        // The Mug's `brain-view --queen` pane.
+        "mug" | "queen" | "brain"
+        // The Kettle's `brain-view --overwatch` pane.
+        | "kettle" | "overwatch"
+        // The Papercup front door (`psu-sentinel`), plus its paneless deep half.
+        | "papercup" | "papercup-deep"
+    )
 }
 
 /// Prefix a pane title/name with the kind's glyph (P-010). An unknown/missing
@@ -455,6 +451,27 @@ mod tests {
         assert!(text.contains("🥤 Papercup"), "{text}");
         // Dim separators between entries (5 gaps for 6 kinds).
         assert_eq!(line.spans.iter().filter(|s| s.content == " · ").count(), 5);
+    }
+
+    #[test]
+    fn only_worker_roles_get_a_reactive_dock_pane() {
+        // The three SINGLETON roles own a fixed dock pane (chat_dock_kdl) that
+        // already follows their newest wake, so the reactive stack must skip them
+        // (owner ask 2026-07-13 — one mug pane, one kettle pane, one papercup pane).
+        for role in ["mug", "queen", "brain", "kettle", "overwatch", "papercup"] {
+            assert!(role_has_fixed_dock_pane(role), "{role} owns a fixed pane");
+        }
+        // Case/whitespace from the wire must not defeat the gate.
+        assert!(role_has_fixed_dock_pane("  Kettle "));
+        // The hidden deep half is deliberately paneless (WI-4485) and does not
+        // parse as a kind — matched explicitly, or it would fall through and pane.
+        assert!(role_has_fixed_dock_pane("papercup-deep"));
+        // Workers are exactly what the reactive stack is FOR — one pane per cup.
+        // `sentinel` is the D-001 collision: a kind ALIAS for Papercup, but as a
+        // ROLE it is the fleet WATCHER — a worker, and it keeps its pane.
+        for role in ["cup", "bee", "planner", "scoper", "sentinel", ""] {
+            assert!(!role_has_fixed_dock_pane(role), "{role} must still pane");
+        }
     }
 
     #[test]

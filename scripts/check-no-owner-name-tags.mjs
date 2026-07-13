@@ -23,18 +23,25 @@
  * name. `[owner:` is a structured marker, so matching inside it is exact.
  *
  * WHY THIS CATCHES WHAT THE AUDIT CANNOT
- * The audit matches a short git name case-SENSITIVELY on a word boundary (`\bAvi\b`)
- * and says why: `\bavi\b` case-insensitively also hits `video.avi`, `Avicenna`, and a
- * vendored POS lexicon that lists "Avi" — noise that gets a gate switched off. Sound
- * for a bare word; it means `[owner:avi]` slips through while `[owner:Avi]` fails the
- * cut, though both leak the same person. Anchoring on `[owner:` removes the ambiguity:
- * this rule is case-INSENSITIVE with no false-positive surface at all.
+ * The audit matches a short git name case-SENSITIVELY on a word boundary (`\b<Name>\b`)
+ * and says why: matched case-INSENSITIVELY, a three-letter first name also hits things
+ * like a `.avi` file extension, a longer proper noun that starts with it, and vendored
+ * POS-lexicon entries — noise that gets a gate switched off. Sound for a bare word; but
+ * it means the lower-case spelling of a tag slips through while the capitalised one
+ * fails the cut, though both leak the same person. Anchoring on `[owner:` removes the
+ * ambiguity: this rule is case-INSENSITIVE with no false-positive surface at all.
  *
  * THE RULE: in shipped source, cite the tier and the date — `[owner 2026-07-13]` —
- * never the person: `[owner:Avi 2026-07-13]`. The named form stays CORRECT on carry
+ * never the person: `[owner:Jane 2026-07-13]`. The named form stays CORRECT on carry
  * surfaces (work items, facts, checkpoints, plans); those are internal and never
  * packed into source.tar.zst. Only tracked source is shipped, so only tracked source
  * is linted.
+ *
+ * NOTE THIS FILE OBEYS ITS OWN RULE. It cannot spell a real contributor's name even to
+ * illustrate the bug: this script is tracked source, so it is packed into the bundle and
+ * scanned by the very audit described above — quoting the literal name here would fail
+ * the cut, from inside the guard written to prevent exactly that. The examples below are
+ * placeholders for that reason, not by accident.
  *
  *   node scripts/check-no-owner-name-tags.mjs
  *
@@ -129,7 +136,7 @@ for (const f of findings) {
 }
 console.error(
   `\nFIX: strip the NAME, keep the tier and the date.\n` +
-    `      [owner:Avi 2026-07-13]  ->  [owner 2026-07-13]\n` +
+    `      [owner:Jane 2026-07-13]  ->  [owner 2026-07-13]\n` +
     `The named form stays correct on CARRY SURFACES (work items, facts, checkpoints,\n` +
     `plans) — those are internal and never packed into the bundle. Do NOT silence this\n` +
     `by adding the name to PLACEHOLDER_NAMES: shipping that name is the bug.\n`

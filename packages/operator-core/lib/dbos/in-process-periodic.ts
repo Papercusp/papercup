@@ -492,6 +492,64 @@ const staleClaimSweepCheck: PeriodicCheck = {
       );
     }
 
+    // WI-4531 — the HOLD-OPEN reaper. A hold (payload.held_open_by) is a STRONGER block than
+    // a claim: it excludes the item from self-select AND refuses a terminal transition by
+    // anyone but the holder. It had no TTL and no liveness check, so it outlived its holder
+    // forever — measured live before this shipped: 64 holds, 50 of them non-terminal (items
+    // silently starved out of the claimable pool) across 21 holders, only ONE of which still
+    // existed in coord_presence. Same liveness fragments as the claim reapers above (they can
+    // never diverge); a LIVE holder's hold is never touched, however old.
+    try {
+      const { reclaimStaleHoldOpens } = await import('../work-items-hold-open');
+      const hr = await reclaimStaleHoldOpens(sql, {
+        graceMs: livenessCfg.reclaimGraceMs,
+        parkedGraceMs: livenessCfg.reclaimParkedGraceMs,
+        holdOpenGraceMs: livenessCfg.holdOpenGraceMs,
+      });
+      if (hr.expired.length > 0) {
+        console.warn(
+          `[hold-open] lifted ${hr.expired.length} EXPIRED hold-open(s) from dead holders ` +
+            `(item returns to normal self-select + terminal transition): ` +
+            hr.expired
+              .map((h) => `${h.harness_slug}/${h.feature_id}[${h.status}]<-${h.former_holder}`)
+              .join(', '),
+        );
+        // Broadcast ONLY the non-terminal ones: those are the items that were actually being
+        // starved (a hold on an already-resolved row is inert residue — clearing it is
+        // housekeeping nobody needs to hear about).
+        const starved = hr.expired.filter((h) => !['resolved', 'closed', 'passed', 'deprecated', 'done', 'dropped'].includes(h.status));
+        if (starved.length > 0) {
+          try {
+            const { sendMessage } = await import('../agent-tools/coordination/messages');
+            await sendMessage(
+              {
+                ownerId: 'hold-open-sweep',
+                ownerLabel: 'system · hold-open-sweep',
+                source: 'signed-spawn',
+                workspaceId: null,
+                userId: null,
+              },
+              {
+                to: ['*'],
+                summary:
+                  `🔓 hold-open sweep: lifted ${starved.length} EXPIRED hold(s) whose holder is no longer live ` +
+                  `— these items were excluded from claim_next/scheduler and could not be closed by anyone but a ` +
+                  `dead agent (WI-4531). Normal lifecycle resumes: ` +
+                  starved.map((h) => `${h.feature_id} (was held by ${h.former_holder})`).join(', '),
+                extra: { auto: true, lifecycle: 'hold_open_expired' },
+              },
+            );
+          } catch {
+            /* best-effort — the console.warn above is the floor */
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(
+        `[hold-open] sweep failed (non-fatal — retries next tick): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
     // The PLAN-ITEM analog (EI-179): delete claims whose lease lapsed past grace AND
     // whose holder is gone. The durable ASSIGNMENT (mig 140) is untouched HERE — the
     // assignment reaper below handles it.

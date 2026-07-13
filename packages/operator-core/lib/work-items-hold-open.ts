@@ -76,14 +76,13 @@ type Db = Sql | TransactionSql;
  * presence row was already reaped) — so this doubles as the guard against reaping a hold
  * whose holder is only transiently invisible.
  *
- * 2h: comfortably past the presence reaper's own 4h... no — deliberately SHORTER than the
- * 4h presence retention TTL, because a holder still IN coord_presence with a stale beat is
- * already judged dead by (a)+(b), and a holder ALREADY reaped from coord_presence has been
- * gone ≥4h. Either way 2h from the hold's own timestamp is long enough that a live agent's
- * heartbeat (10m window) or parked beat (30m window) will have re-asserted the hold, and
- * short enough that a dead agent's gate lifts the same working session rather than the next
- * day. The motivating incident (a 7.7h-stale hold blocking a real terminal transition)
- * clears comfortably.
+ * Why 2h works from either side of the presence-retention TTL: a holder still IN
+ * coord_presence with a stale beat is already judged dead by (a)+(b), and a holder ALREADY
+ * reaped from coord_presence has by construction been gone ≥4h. So 2h measured from the
+ * hold's own timestamp is long enough that a live holder's heartbeat (10m window) or parked
+ * beat (30m window) will have re-asserted the hold, and short enough that a dead holder's
+ * gate lifts within the same working session rather than the next day. The motivating
+ * incident (a 7.7h-stale hold blocking a real terminal transition) clears comfortably.
  */
 export const HOLD_OPEN_GRACE_MS = 2 * 60 * 60 * 1000;
 

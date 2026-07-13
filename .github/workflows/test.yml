@@ -232,10 +232,12 @@ jobs:
       # which is how the owner's real name keeps reaching source.tar.zst. It has killed
       # two 0.0.9 cuts ~10 min in (the audit runs BEFORE the platform legs, so a whole
       # build dies for a one-word comment). It also catches what the cut's audit CANNOT:
-      # that audit matches a short git name case-SENSITIVELY (\bAvi\b) — rightly, since
-      # \bavi\b would hit video.avi and Avicenna — so `[owner:avi …]` shipped silently.
-      # Anchoring on the `[owner:` tag is exact, so this rule is case-insensitive with no
-      # false-positive surface. BASELINE IS EMPTY: strip the name, never allowlist it.
+      # that audit matches a short git name case-SENSITIVELY — rightly, since matching a
+      # three-letter first name case-insensitively would hit a .avi extension and every
+      # longer proper noun starting with it — so the lower-case spelling of the tag was
+      # shipping silently. Anchoring on the `[owner:` tag is exact, so this rule is
+      # case-insensitive with no false-positive surface.
+      # BASELINE IS EMPTY: strip the name, never allowlist it.
       - name: Lint no named owner provenance tags in tracked source
         run: npm run lint:no-owner-name-tags
 

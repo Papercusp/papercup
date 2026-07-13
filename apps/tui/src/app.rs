@@ -6762,25 +6762,79 @@ mod tests {
         let mut a = App::new();
         a.hive_agent_tabs = true;
         a.dock_agent_panes = true;
-        let mut mug = fleet_bee("s-123-abc", "mug");
-        mug.role = Some("mug".into());
-        a.set_roster(vec![mug, fleet_bee("b-1", "bee")]);
+        // A role-carrying WORKER row. (The singleton roles — mug/kettle/papercup —
+        // are no longer paned at all, so the title path is exercised on a cup.)
+        let mut cup = fleet_bee("s-123-abc", "cup");
+        cup.role = Some("cup".into());
+        a.set_roster(vec![cup, fleet_bee("b-1", "bee")]);
         let titles: Vec<String> = a
             .bee_panes_to_open()
             .iter()
             .map(|s| s.title.clone().unwrap_or_default())
             .collect();
-        // A role-carrying row (a mug/kettle turn) titles with the ROLE — the
-        // agent name ("claude") identifies nothing; role-less rows keep the
-        // agent fallback.
-        assert!(
-            titles.iter().any(|t| t.contains("mug · ")),
-            "{titles:?}"
-        );
-        assert!(
-            titles.iter().any(|t| t.contains("claude · ")),
-            "{titles:?}"
-        );
+        // A role-carrying row titles with the ROLE — the agent name ("claude")
+        // identifies nothing; role-less rows keep the agent fallback.
+        assert!(titles.iter().any(|t| t.contains("cup · ")), "{titles:?}");
+        assert!(titles.iter().any(|t| t.contains("claude · ")), "{titles:?}");
+    }
+
+    #[test]
+    fn singleton_roles_never_reactively_pane_only_cups_do() {
+        // Owner ask 2026-07-13 ("all the mug turns should happen in the single mug
+        // pane ... same for kettle ... same for papercup"): mug/kettle/papercup each
+        // own ONE fixed pane in the dock KDL, and that pane already rolls forward to
+        // the role's newest wake by itself. Every wake is a NEW adv_session with a
+        // NEW owner id, so without this gate the owner_id dedup reads each turn as a
+        // brand-new bee and stacks another dead `claude --resume` pane behind the
+        // live one (24h of real roster data: kettle 122 sessions, papercup 81,
+        // mug 56). The reactive stack is for WORKERS only.
+        let mut a = App::new();
+        a.hive_agent_tabs = true;
+        a.dock_agent_panes = true;
+        let role_row = |owner: &str, role: &str| {
+            let mut r = fleet_bee(owner, role);
+            r.role = Some(role.into());
+            r
+        };
+        // The REAL backend shape for a papercup row: classifyAgentPane has no
+        // `papercup` arm (it matches operator/oracle), so the role falls through to
+        // the default and the row arrives stamped agentPaneKind="cup" — a WORKER.
+        // Keying the gate on that stamped kind would keep paning the very role the
+        // owner named; we key on `role`, so this row is still excluded.
+        let mut papercup = fleet_bee("s-1783922650850", "cup");
+        papercup.role = Some("papercup".into());
+
+        a.set_roster(vec![
+            role_row("s-1783921649457", "kettle"),
+            role_row("s-1783922048712", "kettle"),
+            role_row("s-1783922650849", "mug"),
+            papercup,
+            // The hidden heavy half of the ONE Papercup identity — deliberately
+            // paneless (WI-4485): woken over coord, never takes pane input.
+            role_row("s-1783922650851", "papercup-deep"),
+            role_row("c-1", "cup"),
+        ]);
+
+        let titles: Vec<String> = a
+            .bee_panes_to_open()
+            .iter()
+            .map(|s| s.title.clone().unwrap_or_default())
+            .collect();
+        // Six live fleet-spawn rows in, exactly ONE pane out: the worker cup.
+        assert_eq!(titles.len(), 1, "{titles:?}");
+        assert!(titles[0].contains("cup · "), "{titles:?}");
+        // The singletons must not be recorded as paned either — a row that is
+        // never paned must not occupy the dedup set (that would only mask it).
+        for o in [
+            "s-1783921649457",
+            "s-1783922048712",
+            "s-1783922650849",
+            "s-1783922650850",
+            "s-1783922650851",
+        ] {
+            assert!(!a.paned_bees.contains(o), "singleton {o} must not be paned");
+        }
+        assert!(a.paned_bees.contains("c-1"));
     }
 
     #[test]

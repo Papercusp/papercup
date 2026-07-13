@@ -45,6 +45,12 @@ const GENERIC_USERS = new Set([
   'pcusp', 'papercusp', 'papercup', 'tester', 'User', 'x',
   // Stand-ins that name nobody: test fixtures and doc examples.
   'test', 'testuser', 'owner', 'host', 'whoever', 'all', 'paper', 'submission',
+  // The canonical fake identities. The identity SCRUBBER's own tests
+  // (release-content-scrub.test.ts, gate-release-site.test.ts) must contain
+  // realistic-looking home paths — that is the input they scrub — so the rule
+  // "no /home/<user>/ in source" fires on the one place a fake home path is the
+  // entire point. These name no person; they are the John-Doe set.
+  'jdoe', 'alice', 'bob', 'buildbot', 'otheruser', 'someuser',
 ]);
 /** Anonymous by construction: a redaction (`/home/.../`, `/home/<user>/`) or a
  *  1–2 char stand-in a test/doc uses precisely because it names nobody. */

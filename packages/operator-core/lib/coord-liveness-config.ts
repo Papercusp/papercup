@@ -33,6 +33,13 @@ export interface CoordLivenessConfig {
   reclaimParkedGraceMs?: number;
   /** Override the requeue cap before a mid-flight claim is dead-lettered (default staleReclaimRequeueCap() = 3). */
   reclaimRequeueCap?: number;
+  /** WI-4531: override how long a HOLD-OPEN survives once its holder stops looking alive —
+   *  measured from `held_open_at` (default HOLD_OPEN_GRACE_MS = 2h). A hold whose holder is
+   *  LIVE is never expired regardless of age, so this only governs holds left behind by dead
+   *  sessions. Raise it if a multi-node deployment wants longer protection for a hold placed
+   *  by a live agent on ANOTHER hive node (invisible to this node's coord_presence — the one
+   *  accepted false-positive; see work-items-hold-open.ts). */
+  holdOpenGraceMs?: number;
   /** Override the dead-holder plan-item ASSIGNMENT reclaim grace (default
    *  STALE_PLAN_ASSIGNMENT_GRACE_MS = 60m). Longer than reclaimGraceMs because
    *  assignments are durable across interruption (EI-2535). */
@@ -66,6 +73,7 @@ export const COORD_LIVENESS_DEFAULTS = {
   reclaimGraceMs: STALE_MS,
   reclaimParkedGraceMs: 30 * 60 * 1000,
   reclaimRequeueCap: 3,
+  holdOpenGraceMs: 2 * 60 * 60 * 1000,
   assignmentReclaimGraceMs: 60 * 60 * 1000,
   sessionReaperGraceMs: STALE_MS,
   presenceReaperTtlMs: 4 * 60 * 60 * 1000,

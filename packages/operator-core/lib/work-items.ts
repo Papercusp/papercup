@@ -1256,6 +1256,58 @@ export async function markFeatureProgress(harness: string, id: string): Promise<
   }
 }
 
+/**
+ * WI-4531: is this hold-open dead residue — and if so, LIFT it.
+ *
+ * The held-open guard below refuses a non-holder's terminal transition. That guard was
+ * unconditional, so a hold left behind by a dead session blocked the item forever (WI-4445 sat
+ * behind a hold placed by an agent that `coord:send` could not even resolve; measured live: 50
+ * NON-TERMINAL items were starved out of the claimable pool this way). A hold must not outlive
+ * its holder — so before refusing, re-derive the same liveness rule the 60s sweep uses and, if
+ * the hold is expired, clear it and let the caller through.
+ *
+ * FAILS CLOSED: any error (config read, PG, a clear that does not land) returns false ⇒ the
+ * hold stays enforced ⇒ the pre-WI-4531 refusal. A liveness check that cannot run must never
+ * become a way to punch through a LIVE holder's gate — the EI-8993 dup-close guard is the whole
+ * point of the hold.
+ *
+ * Dynamic imports: keeps coord-liveness-config / work-items-hold-open off this module's static
+ * graph (work-items.ts is imported very widely), so no import cycle is possible.
+ */
+async function isStaleHoldOpenAndCleared(
+  id: string,
+  heldOpen: { by: string; reason: string | null; at: string | null },
+  harness?: string,
+): Promise<boolean> {
+  try {
+    const [{ isHoldOpenExpired }, { readCoordLivenessConfig }] = await Promise.all([
+      import('./work-items-hold-open'),
+      import('./coord-liveness-config'),
+    ]);
+    const cfg = await readCoordLivenessConfig();
+    const { sql } = getOrgPg();
+    const expired = await isHoldOpenExpired(sql, heldOpen.by, heldOpen.at, {
+      graceMs: cfg.reclaimGraceMs,
+      parkedGraceMs: cfg.reclaimParkedGraceMs,
+      holdOpenGraceMs: cfg.holdOpenGraceMs,
+    });
+    if (!expired) return false;
+    // Lift it for real — not just "ignore it this once". Leaving the stamp in place would keep
+    // the item excluded from claim_next/scheduler self-select (the `_claimHold` half of the
+    // hold), which is the other half of the same bug.
+    const cleared = await setWorkItemClaimHold(id, false, { harness });
+    if (!cleared) return false;
+    console.warn(
+      `[hold-open] lifted EXPIRED hold on ${id}: holder ${heldOpen.by} is not live and the hold ` +
+        `(${heldOpen.at ?? 'no timestamp'}) is past grace — a hold must not outlive its holder (WI-4531). ` +
+        `Reason was: ${heldOpen.reason ?? '(none)'}`,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Lifecycle.setState — feature → status; issue → state. The requested state is
  *  normalized onto the family's native vocabulary first (EI-24); an unmappable
  *  state throws a typed error naming the valid set.
@@ -1361,7 +1413,15 @@ export async function setWorkItemState(
     heldOpen &&
     opts.by !== heldOpen.by &&
     !isSettledWorkItemState(wi.state) &&
-    isSettledWorkItemState(state)
+    isSettledWorkItemState(state) &&
+    // WI-4531: a hold must not outlive its holder. Before refusing, re-derive the SAME
+    // liveness rule the 60s sweep uses (work-items-hold-open.ts): if the holder is neither
+    // live nor briefly-parked AND the hold is past grace, it is dead residue — lift it inline
+    // and let the transition through, rather than making a blocked agent go discover the
+    // leader force-clear. Enforcing here (not only in the sweep) means the guard still holds
+    // when the sweep is wedged or has not ticked — which is exactly the failure this fixes.
+    // Only reached on the rare refusal path, so the extra round-trip costs nothing hot.
+    !(await isStaleHoldOpenAndCleared(id, heldOpen, wi.harness ?? undefined))
   ) {
     // WI-4530: name the REAL verbs. This message used to say "or { force: true }", which is
     // true for work_items:set_state but NOT for work_items:complete (it has no `force` arg) —
@@ -2449,12 +2509,20 @@ export async function setWorkItemClaimHold(
   return { id, harness: wi.harness, hold, applicable: true };
 }
 
-/** P-006: who holds a work-item OPEN (payload.held_open_by), or null. */
-export function readWorkItemHeldOpenBy(payload: unknown): { by: string; reason: string | null } | null {
+/** P-006: who holds a work-item OPEN (payload.held_open_by), or null.
+ *  WI-4531: also carries `at` (payload.held_open_at) — the hold's lease anchor, which the
+ *  expiry rule (work-items-hold-open.ts) needs to tell a fresh hold from dead residue. */
+export function readWorkItemHeldOpenBy(
+  payload: unknown,
+): { by: string; reason: string | null; at: string | null } | null {
   if (!payload || typeof payload !== 'object') return null;
   const p = payload as Record<string, unknown>;
   if (typeof p.held_open_by !== 'string' || !p.held_open_by) return null;
-  return { by: p.held_open_by, reason: typeof p.held_open_reason === 'string' ? p.held_open_reason : null };
+  return {
+    by: p.held_open_by,
+    reason: typeof p.held_open_reason === 'string' ? p.held_open_reason : null,
+    at: typeof p.held_open_at === 'string' ? p.held_open_at : null,
+  };
 }
 
 /**
