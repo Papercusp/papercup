@@ -21,8 +21,11 @@ import {
   type ShippedItem,
   type ShippedPlan,
 } from './release-registry';
-import { renderHistoryJson, renderIndexHtml, type HydratedRelease } from './release-history-page';
-import { buildHistoryFromStatic, type StaticHistory } from '../endpoint-route/routes/misc/updates-history';
+import { renderHistoryJson, renderIndexHtml, renderPlanPageHtml, type HydratedRelease } from './release-history-page';
+import {
+  buildHistoryFromStatic,
+  type StaticHistory,
+} from '@papercusp/operator-core/lib/endpoint-route/routes/misc/updates-history';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-test-'));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -131,7 +134,7 @@ describe('release-history end-to-end data flow', () => {
     });
 
     expect(entries.length).toBeGreaterThan(0);
-    expect(entries[0].version).toBe('0.0.9');
+    expect(entries[0].version).toBe('0.0.9-alpha'); // includes channel
     expect(entries[0].channel).toBe('alpha');
     expect(entries[0].prerelease).toBe(true);
     expect(entries[0].notes).toContain('Fixed auto-update');
@@ -264,7 +267,6 @@ describe('release-history end-to-end data flow', () => {
 
   it('plan page renders with markdown and links back', () => {
     const plan = mockHydratedRelease.plans[0];
-    const { renderPlanPageHtml } = require('./release-history-page');
 
     const html = renderPlanPageHtml(plan, {
       generatedAt: now,
@@ -277,9 +279,8 @@ describe('release-history end-to-end data flow', () => {
     expect(html).toContain('Auto-update reliability');
     // Markdown should be rendered
     expect(html).toContain('Fixed critical issues');
-    // Back link should be relative
+    // Back link should be relative (../index.html)
     expect(html).toContain('href="../index.html"');
-    expect(html).not.toContain('/index.html');
   });
 
   it('generated HTML escapes user-provided content', () => {

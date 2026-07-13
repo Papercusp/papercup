@@ -2,20 +2,34 @@
  * APNs + FCM dispatcher. Sends a push to every registered device when:
  *   - A harness escalates (intervention required)
  *   - A smoke test fails
+ *   - A ≥high attention item appears (needs-human / owner-gated / questions)
  *   - User-defined notification rules fire (future)
  *
  * Registered tokens live in harness_shared.mobile_push_tokens (migration 009).
  *
- * Provider selection:
- *   - APNs: HTTP/2 to api.push.apple.com using a P8 auth key
- *   - FCM: HTTP v1 to fcm.googleapis.com using a service-account JWT
+ * ── Credentials (mobile-apps-revival-v2-2026-07-13 P-005/P-006) ──────────────
+ * Both providers now mint their auth token IN-PROCESS from a stored credential,
+ * rather than expecting a pre-signed token env var refreshed by an external
+ * hourly job that never existed (the pre-revival design silently no-op'd because
+ * FCM_OAUTH_TOKEN / APNS_AUTH_TOKEN were never populated).
  *
- * Credentials are USER-PROVIDED (paste into Settings → Mobile → Push Credentials).
- * That keeps push privacy-respecting: payload contents never traverse anyone
- * else's infra. Push tokens themselves go through APNs/FCM by definition; that's
- * unavoidable on iOS/Android.
+ *   - FCM  (Android, LIVE): a Google service-account JSON at
+ *          FCM_SERVICE_ACCOUNT_PATH (default ~/.papercusp/firebase-admin.json).
+ *          google-auth-library signs a JWT → exchanges it for a short-lived
+ *          OAuth access token and caches/refreshes it internally. HTTP v1 send.
+ *   - APNs (iOS, DORMANT until Apple Developer enrollment — owner-gated): a P8
+ *          key at APNS_KEY_PATH + APNS_KEY_ID + APNS_TEAM_ID. `jose` signs the
+ *          ES256 provider JWT (cached ~50 min). Sent over HTTP/2 (APNs rejects
+ *          HTTP/1.1). Absent creds ⇒ cleanly skipped, so iOS registration is
+ *          harmless while push is not yet enrolled.
+ *
+ * Credentials stay on THIS box; payload contents are kept generic so nothing
+ * sensitive traverses APNs/FCM. Push tokens themselves go through APNs/FCM by
+ * definition; that's unavoidable on iOS/Android.
  */
-import { request } from 'node:https';
+import { connect as http2Connect } from 'node:http2';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 /**
  * Push-routing kinds understood by the mobile app's `push-routing.ts`.
@@ -47,24 +61,177 @@ interface DeviceTarget {
   token: string;
 }
 
+/** Outcome of a single provider send — surfaced for logging/tests, never thrown. */
+export interface PushSendResult {
+  platform: 'apns' | 'fcm';
+  ok: boolean;
+  /** 'skipped' when the provider is not configured (no creds). */
+  status: number | 'skipped' | 'error';
+  detail?: string;
+}
+
 export async function dispatchPush(
   targets: DeviceTarget[],
   payload: PushPayload,
-): Promise<void> {
-  await Promise.allSettled(
+): Promise<PushSendResult[]> {
+  const settled = await Promise.allSettled(
     targets.map((t) =>
       t.platform === 'apns' ? sendApns(t.token, payload) : sendFcm(t.token, payload),
     ),
   );
+  return settled.map((s, i) =>
+    s.status === 'fulfilled'
+      ? s.value
+      : { platform: targets[i].platform, ok: false, status: 'error', detail: String(s.reason) },
+  );
 }
 
-async function sendApns(deviceToken: string, payload: PushPayload): Promise<void> {
-  const auth = process.env.APNS_AUTH_TOKEN; // pre-signed JWT, refreshed every hour
-  const bundleId = process.env.APNS_BUNDLE_ID ?? 'com.papercuspai.operator.mobile';
-  if (!auth) {
-    console.warn('[push] APNS_AUTH_TOKEN not set; skipping APNs');
-    return;
+// ── FCM (Android) ────────────────────────────────────────────────────────────
+
+const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
+
+interface FcmCreds {
+  getAccessToken: () => Promise<string>;
+  projectId: string;
+}
+let _fcm: FcmCreds | null | undefined; // undefined = not resolved yet; null = unconfigured
+
+/**
+ * Resolve (once) the FCM service-account credential + a token minter.
+ * Uses google-auth-library's JWT client, which signs a service-account JWT and
+ * caches/refreshes the OAuth access token internally. Returns null (memoized)
+ * when no service account is configured or the file can't be read.
+ */
+export function resolveFcmCreds(): FcmCreds | null {
+  if (_fcm !== undefined) return _fcm;
+  const path =
+    process.env.FCM_SERVICE_ACCOUNT_PATH ?? `${homedir()}/.papercusp/firebase-admin.json`;
+  try {
+    const raw = readFileSync(path, 'utf8');
+    const sa = JSON.parse(raw) as {
+      client_email?: string;
+      private_key?: string;
+      project_id?: string;
+    };
+    if (!sa.client_email || !sa.private_key || !sa.project_id) {
+      console.warn(`[push] FCM service account at ${path} is missing required fields; skipping FCM`);
+      _fcm = null;
+      return _fcm;
+    }
+    // Lazy require so the (heavy) auth lib only loads when push is actually configured.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { JWT } = require('google-auth-library') as typeof import('google-auth-library');
+    const client = new JWT({
+      email: sa.client_email,
+      key: sa.private_key,
+      scopes: [FCM_SCOPE],
+    });
+    _fcm = {
+      projectId: sa.project_id,
+      getAccessToken: async () => {
+        const { token } = await client.getAccessToken();
+        if (!token) throw new Error('FCM getAccessToken returned empty token');
+        return token;
+      },
+    };
+    return _fcm;
+  } catch (e) {
+    console.warn(
+      `[push] FCM service account not usable (${path}): ${e instanceof Error ? e.message : String(e)}; skipping FCM`,
+    );
+    _fcm = null;
+    return _fcm;
   }
+}
+
+/** Test-only: reset the memoized FCM creds so a test can re-resolve with new env. */
+export function __resetPushCredsForTest(): void {
+  _fcm = undefined;
+  _apnsJwt = null;
+}
+
+/** Build the FCM v1 request body for a device token + payload (pure; unit-tested). */
+export function buildFcmMessage(deviceToken: string, payload: PushPayload) {
+  return {
+    message: {
+      token: deviceToken,
+      notification: { title: payload.title, body: payload.body },
+      // FCM data values MUST be strings.
+      data: payload.data,
+      android: { priority: 'HIGH' as const },
+    },
+  };
+}
+
+async function sendFcm(deviceToken: string, payload: PushPayload): Promise<PushSendResult> {
+  const creds = resolveFcmCreds();
+  if (!creds) return { platform: 'fcm', ok: false, status: 'skipped' };
+  let accessToken: string;
+  try {
+    accessToken = await creds.getAccessToken();
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.warn(`[push] fcm token mint failed: ${detail}`);
+    return { platform: 'fcm', ok: false, status: 'error', detail };
+  }
+  const res = await fetch(
+    `https://fcm.googleapis.com/v1/projects/${creds.projectId}/messages:send`,
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify(buildFcmMessage(deviceToken, payload)),
+    },
+  );
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    console.warn(`[push] fcm ${res.status}: ${detail}`);
+    return { platform: 'fcm', ok: false, status: res.status, detail };
+  }
+  return { platform: 'fcm', ok: true, status: res.status };
+}
+
+// ── APNs (iOS) — dormant until Apple Developer enrollment (owner-gated) ───────
+
+interface ApnsJwt {
+  jwt: string;
+  mintedAtMs: number;
+}
+let _apnsJwt: ApnsJwt | null = null;
+const APNS_JWT_TTL_MS = 50 * 60 * 1000; // Apple recommends refreshing < 60 min.
+
+/**
+ * Mint (and cache ~50 min) the APNs provider JWT (ES256) from the .p8 key.
+ * Returns null when APNs is not configured. An explicit APNS_AUTH_TOKEN (a
+ * pre-signed JWT) short-circuits and is used verbatim — handy for a smoke test.
+ */
+async function resolveApnsJwt(): Promise<string | null> {
+  const override = process.env.APNS_AUTH_TOKEN;
+  if (override) return override;
+  const keyPath = process.env.APNS_KEY_PATH;
+  const keyId = process.env.APNS_KEY_ID;
+  const teamId = process.env.APNS_TEAM_ID;
+  if (!keyPath || !keyId || !teamId) return null; // dormant — not enrolled yet
+  const now = Date.now();
+  if (_apnsJwt && now - _apnsJwt.mintedAtMs < APNS_JWT_TTL_MS) return _apnsJwt.jwt;
+  const p8 = readFileSync(keyPath, 'utf8');
+  // Lazy require so jose only loads when APNs is actually configured.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { SignJWT, importPKCS8 } = require('jose') as typeof import('jose');
+  const key = await importPKCS8(p8, 'ES256');
+  const jwt = await new SignJWT({})
+    .setProtectedHeader({ alg: 'ES256', kid: keyId })
+    .setIssuedAt()
+    .setIssuer(teamId)
+    .sign(key);
+  _apnsJwt = { jwt, mintedAtMs: now };
+  return jwt;
+}
+
+async function sendApns(deviceToken: string, payload: PushPayload): Promise<PushSendResult> {
+  const jwt = await resolveApnsJwt();
+  if (!jwt) return { platform: 'apns', ok: false, status: 'skipped' };
+  const bundleId = process.env.APNS_BUNDLE_ID ?? 'com.papercuspai.operator.mobile';
+  const host = process.env.APNS_HOST ?? 'https://api.push.apple.com'; // sandbox: api.sandbox.push.apple.com
   const body = JSON.stringify({
     aps: {
       alert: { title: payload.title, body: payload.body },
@@ -74,64 +241,58 @@ async function sendApns(deviceToken: string, payload: PushPayload): Promise<void
     },
     ...payload.data,
   });
-  await new Promise<void>((resolve, reject) => {
-    const req = request(
-      {
-        method: 'POST',
-        host: 'api.push.apple.com',
-        port: 443,
-        path: `/3/device/${deviceToken}`,
-        headers: {
-          'apns-topic': bundleId,
-          'apns-push-type': 'alert',
-          authorization: `bearer ${auth}`,
-          'content-type': 'application/json',
-          'content-length': Buffer.byteLength(body),
-        },
-      },
-      (res) => {
-        res.resume();
-        res.on('end', () =>
-          res.statusCode && res.statusCode < 300 ? resolve() : reject(new Error(`apns ${res.statusCode}`)),
-        );
-      },
+  // APNs is HTTP/2 only. Open a short-lived session per send (low volume).
+  return await new Promise<PushSendResult>((resolve) => {
+    const client = http2Connect(host);
+    let settled = false;
+    const done = (r: PushSendResult) => {
+      if (settled) return;
+      settled = true;
+      client.close();
+      resolve(r);
+    };
+    client.on('error', (e) => done({ platform: 'apns', ok: false, status: 'error', detail: String(e) }));
+    const req = client.request({
+      ':method': 'POST',
+      ':path': `/3/device/${deviceToken}`,
+      'apns-topic': bundleId,
+      'apns-push-type': 'alert',
+      authorization: `bearer ${jwt}`,
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(body),
+    });
+    let status = 0;
+    let detail = '';
+    req.on('response', (h) => {
+      status = Number(h[':status'] ?? 0);
+    });
+    req.setEncoding('utf8');
+    req.on('data', (c) => (detail += c));
+    req.on('end', () =>
+      done({ platform: 'apns', ok: status > 0 && status < 300, status: status || 'error', detail: detail || undefined }),
     );
-    req.on('error', reject);
+    req.on('error', (e) => done({ platform: 'apns', ok: false, status: 'error', detail: String(e) }));
     req.write(body);
     req.end();
   });
 }
 
-async function sendFcm(deviceToken: string, payload: PushPayload): Promise<void> {
-  const auth = process.env.FCM_OAUTH_TOKEN; // service-account access token, refreshed hourly
-  const project = process.env.FCM_PROJECT_ID;
-  if (!auth || !project) {
-    console.warn('[push] FCM_OAUTH_TOKEN/FCM_PROJECT_ID not set; skipping FCM');
-    return;
-  }
-  const body = JSON.stringify({
-    message: {
-      token: deviceToken,
-      notification: { title: payload.title, body: payload.body },
-      data: payload.data,
-      android: { priority: 'HIGH' },
-    },
-  });
-  const res = await fetch(`https://fcm.googleapis.com/v1/projects/${project}/messages:send`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${auth}`, 'content-type': 'application/json' },
-    body,
-  });
-  if (!res.ok) console.warn(`[push] fcm ${res.status}: ${await res.text().catch(() => '')}`);
+/** True when at least one push provider is actually configured on this host. */
+export function pushEnabled(): { fcm: boolean; apns: boolean } {
+  const fcm = !!resolveFcmCreds();
+  const apns =
+    !!process.env.APNS_AUTH_TOKEN ||
+    (!!process.env.APNS_KEY_PATH && !!process.env.APNS_KEY_ID && !!process.env.APNS_TEAM_ID);
+  return { fcm, apns };
 }
 
 /** Convenience: load registered tokens for a workspace + dispatch a push. */
 export async function notifyWorkspace(
   workspaceId: string,
   payload: PushPayload,
-): Promise<void> {
+): Promise<PushSendResult[]> {
   const { pushTargetsForWorkspace } = await import('./device-store');
   const targets = await pushTargetsForWorkspace(workspaceId);
-  if (targets.length === 0) return;
-  await dispatchPush(targets, payload);
+  if (targets.length === 0) return [];
+  return await dispatchPush(targets, payload);
 }

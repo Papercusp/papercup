@@ -24,7 +24,6 @@
  */
 import {
   useCallback,
-  useEffect,
   useMemo,
   useRef,
   useState,
@@ -370,10 +369,11 @@ export default function PromptsTab() {
     [],
   );
 
-  // Keep the selection valid as rows change (deletes, filter, first load).
-  useEffect(() => {
-    if (sel && !rows.some((r) => r.id === sel)) void setSel('');
-  }, [rows, sel, setSel]);
+  // NOTE deliberately NO "clear sel when the row is missing" effect: right
+  // after a create, `sel` points at the new node BEFORE the sync refetch
+  // delivers it, and such a guard raced the refetch and wiped the selection
+  // (found live, 2026-07-13). A sel that never resolves is harmless — the
+  // preview column just shows its empty state. Deletes clear sel explicitly.
 
   const onOutlineKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {

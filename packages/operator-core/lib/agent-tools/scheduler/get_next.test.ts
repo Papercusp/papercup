@@ -9,8 +9,31 @@
  * `states` arg re-opened the identical hole at the tool boundary. These tests
  * pin the clamp: `states` accepts only CLAIM_STATES_ALLOWLIST members.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
+
+const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[] }));
+const getNextM = vi.hoisted(() => vi.fn());
+
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
+}));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();
+  return { ...actual, getNextForBee: getNextM };
+});
+vi.mock('../../scheduler/fleet-scope-admission', () => ({
+  reconcileFleetScopeClaims: vi.fn(async () => ({ scope: scopeState.scope, quarantinedIds: scopeState.quarantinedIds })),
+  fleetScopedMiss: (scope: any, quarantinedIds: string[]) => ({
+    ok: false,
+    error: 'scoped miss; no generic fallback',
+    fleetScope: { fleet: scope.fleetSlug, source: scope.record.source },
+    quarantinedIds,
+    windDown: true,
+  }),
+}));
+
 import getNextTool from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
@@ -53,5 +76,41 @@ describe('pull-tool `states` arg is clamped to the claimable allowlist (WI-1912)
       const r = args.safeParse({ harness: 'papercusp', states: ['todo', 'open', 'blocked'] });
       expect(r.success, `${name} must reject the WI-1912 repro args`).toBe(false);
     }
+  });
+});
+
+describe('scheduler:get_next hard fleet boundary (P-016)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    getNextM.mockResolvedValue(null);
+  });
+
+  it('refuses a member with no explicit/inherited spec before generic selection', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'default', spec: { specId: 'default', revision: 0 } },
+    };
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as { content: Array<{ text: string }> };
+    const b = JSON.parse(out.content[0]!.text);
+    expect(b).toMatchObject({ ok: false, windDown: true, fleetScope: { fleet: 'bugs', source: 'default' } });
+    expect(getNextM).not.toHaveBeenCalled();
+  });
+
+  it('returns a scoped wind-down verdict on miss, including the one-pass quarantine result', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
+    };
+    scopeState.quarantinedIds = ['WI-out'];
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as { content: Array<{ text: string }> };
+    const b = JSON.parse(out.content[0]!.text);
+    expect(b).toMatchObject({ ok: false, windDown: true, quarantinedIds: ['WI-out'] });
+    expect(getNextM).toHaveBeenCalledOnce();
   });
 });

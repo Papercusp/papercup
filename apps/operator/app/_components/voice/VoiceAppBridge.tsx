@@ -118,6 +118,16 @@ export function VoiceAppBridge(): null {
   // overwrites it on the first change either way.
   const voiceStateRef = useRef<VoiceState>(getVoiceState());
 
+  // Pane dev path (operator-chat-sidebar-revival P-007): the dock's Papercup
+  // pane only exists when FLAGS.TESTING is on, so pane-first voice routing is
+  // gated on it. Mirrored into a ref — the utterance handler + FIFO poll
+  // below live in mount-once effects.
+  const paneDevPath = useFlag(FLAGS.TESTING);
+  const paneDevPathRef = useRef(paneDevPath);
+  useEffect(() => {
+    paneDevPathRef.current = paneDevPath;
+  }, [paneDevPath]);
+
   useEffect(() => {
     const unsubState = subscribeVoiceState((s) => {
       voiceStateRef.current = s;
@@ -252,43 +262,41 @@ export function VoiceAppBridge(): null {
       }
       if (hasHigherPriorityConsumer()) return;
 
-      // Voice-IN → the dock's Papercup pane FIRST (plan
-      // voice-public-release-readiness P-019/D-004/D-007, owner-ratified
-      // 2026-07-12). The pane is the persistent fast Papercup front-end (a psu
-      // `--role=papercup` session on a fast model, auto wake-mode) and the dock
-      // ships on ALL platforms (D-004) — so the pane is the PRIMARY voice brain:
-      // it holds the full tool surface, the P-016 orient folds, and the coord
-      // channel to the deep brain. Its reply comes back through the existing
-      // voice-OUT FIFO poll below (the pane calls voice:say). On a successful
-      // pane write we speak a short local ack immediately — a real pane turn
-      // takes seconds, and the ack keeps the user out of dead air (and holds the
-      // awaitingResponse window honest).
+      // Voice-IN → the Papercup CONVERSE thread (operator-chat-sidebar-revival
+      // P-007/D-001, reversing voice-public-release-readiness D-004's
+      // pane-primary routing): the operator chat sidebar is the shipped
+      // front-end again and the zellij dock is TESTING-gated, so voice routes
+      // into the SAME conversation the sidebar renders — the user SEES their
+      // spoken turn + the reply in the chat, and the reply is spoken via the
+      // active TTS engine (sendUserMessage spoken:true). Same user identity
+      // as text (voice D-001).
       //
-      // FALLBACK: when the pane route is unavailable (no dock session, pane
-      // exited, write failed — e.g. the dock hasn't booted yet, or a stripped-
-      // down install), degrade to the in-process Papercup converse brain (the
-      // P-001 interim path): the SAME conversation + shared thread the desktop
-      // chat uses, via the provider-registered sendUserMessage (spoken:true →
-      // reply spoken via the active TTS engine). Same user identity either way
-      // (D-001) — the swap is invisible.
+      // DEV PATH (FLAGS.TESTING on — the dock exists): the dock's Papercup
+      // pane keeps priority (the pre-revival P-019/D-007 behavior): a psu
+      // `--role=papercup` session on a fast model with the full tool surface;
+      // its reply returns via the voice-OUT FIFO poll below, and a short
+      // local ack covers the seconds a real pane turn takes. A failed pane
+      // write still degrades to the converse thread.
       //
       // Guard: when a full-agent engine (EL Conv-AI / OpenAI Realtime) owns the
       // session it is its own brain, so don't double-dispatch.
       if (fullAgentActive) return;
-      const paneOk = await routeVoiceToSentinelPane(text);
-      if (paneOk) {
-        // Instant ack (P-019): the pane turn is composing — tell the user we
-        // heard them. Speaking also flips status → 'speaking', which clears the
-        // awaitingResponse timeout window; the real reply lands via the
-        // drainSentinelOutput poll below.
-        const { speak } = await import('./voice-mode');
-        speak('On it.', 'system:operator', 'polite');
-        return;
+      if (paneDevPathRef.current) {
+        const paneOk = await routeVoiceToSentinelPane(text);
+        if (paneOk) {
+          // Instant ack (P-019): the pane turn is composing — tell the user we
+          // heard them. Speaking also flips status → 'speaking', which clears
+          // the awaitingResponse timeout window; the real reply lands via the
+          // drainSentinelOutput poll below.
+          const { speak } = await import('./voice-mode');
+          speak('On it.', 'system:operator', 'polite');
+          return;
+        }
       }
       if (!submitVoiceTurn(text)) {
-        // Neither the pane nor a conversation provider is available (should not
-        // happen in the desktop app — the provider mounts with the shell). The
-        // turn is dropped; the awaitingResponse window will surface the miss.
+        // No conversation provider available (should not happen in the desktop
+        // app — the provider mounts with the shell). The turn is dropped; the
+        // awaitingResponse window will surface the miss.
       }
     });
 
@@ -311,6 +319,11 @@ export function VoiceAppBridge(): null {
       // FIFO (synth + bus fan-out to every attached client) — this local-mode
       // poll must not compete for the drain.
       if (voiceStateRef.current.micOwnedByFullAgent) return;
+      // The FIFO carries PANE replies; with the dock dev path off, voice
+      // replies come back through the converse thread's own spoken:true TTS
+      // (operator-chat-sidebar-revival P-007) — don't poll for a pane that
+      // does not exist.
+      if (!paneDevPathRef.current) return;
       void (async () => {
         const says = await drainSentinelOutput();
         if (says.length === 0) return;
