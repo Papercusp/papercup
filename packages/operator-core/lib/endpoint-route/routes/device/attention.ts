@@ -29,6 +29,12 @@ import {
 import '../../../agent-tools/index';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { listWorkItems, type WorkItem } from '../../../work-items';
+import {
+  releaseGateTile,
+  poolTile,
+  systemAlerts,
+  type SystemAlert,
+} from '../../../device-monitoring';
 
 /** Feature-family states that mean "needs a human / stuck". */
 const FEATURE_ATTENTION_STATES = new Set(['needs-human', 'blocked', 'failing']);
@@ -86,12 +92,27 @@ const attention = defineTool({
       console.warn('[device/attention] listWorkItems failed:', (e as Error)?.message ?? e);
     }
 
+    // 3. System-health attention producers (P-007): release red-gate and
+    //    inference-pool exhaustion are owner-attention conditions the fleet
+    //    escalations / owner-questions above don't cover. Both tiles are
+    //    fail-soft (null on error) and `systemAlerts` emits nothing when the
+    //    conditions are healthy, so this never adds inbox noise.
+    let systemAlertsOut: SystemAlert[] = [];
+    try {
+      const [gate, pool] = await Promise.all([releaseGateTile(), poolTile()]);
+      systemAlertsOut = systemAlerts({ gate, pool });
+    } catch (e) {
+      console.warn('[device/attention] systemAlerts failed:', (e as Error)?.message ?? e);
+    }
+
     return Response.json({
       groups,
       workItems,
+      systemAlerts: systemAlertsOut,
       counts: {
         groups: groups.length,
         workItems: workItems.length,
+        systemAlerts: systemAlertsOut.length,
       },
     });
   },

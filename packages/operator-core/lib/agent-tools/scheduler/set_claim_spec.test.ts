@@ -8,7 +8,8 @@
  * push-role trips it. These assertions pin that role-awareness.
  */
 import { describe, it, expect } from 'vitest';
-import { claimSpecInertWarning, claimSpecWakeabilityWarning } from './set_claim_spec';
+import { claimSpecInertWarning, claimSpecWakeabilityWarning, previewClaimSpecAdmission } from './set_claim_spec';
+import type { ClaimSpec } from '../../scheduler/claim-spec';
 
 describe('claimSpecInertWarning — inert-spec advisory role-awareness', () => {
   it('WARNS for coding-FACTORY push-pipeline roles (spec is genuinely inert)', () => {
@@ -76,5 +77,80 @@ describe('claimSpecWakeabilityWarning — EI-6079 warm-inject-miss advisory', ()
   it('names the cupId so the operator can act on it', () => {
     const w = claimSpecWakeabilityWarning('bee-abc123', false);
     expect(w).toContain('bee-abc123');
+  });
+});
+
+const fixedSpec = (ids: string[], states?: string[]): ClaimSpec => ({
+  specVersion: '1.0',
+  specId: 'fixed-live-wave',
+  revision: 1,
+  view: {
+    filter: {
+      all: [{ field: 'id', op: 'in', value: ids }, { not: { field: 'title', op: 'glob', value: '*p2p*' } }],
+    },
+  },
+  rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  ...(states ? { states } : {}),
+});
+
+describe('previewClaimSpecAdmission — WI-4429 write-time dead-cohort prevention', () => {
+  it('rejects a 0-admissible issue cohort and threads spec-carried states into the shared evaluator', async () => {
+    const explain = async (_harness: string, ids: readonly string[], opts?: { states?: readonly string[] }) =>
+      ids.map((id) => ({
+        id,
+        admissible: false,
+        refusedBy: 'not-claimable-status',
+        detail: `states=${opts?.states?.join(',')}`,
+      }));
+    const result = await previewClaimSpecAdmission({
+      spec: fixedSpec(['WI-1', 'EI-2'], ['open']),
+      harness: 'papercusp',
+      assignee: 'su-leader',
+      explain,
+    });
+    expect(result.errors[0]).toContain('0 are claim-path admissible');
+    expect(result.preview).toMatchObject({
+      checked: true,
+      cohortIds: ['WI-1', 'EI-2'],
+      effectiveStates: ['open'],
+      admissibleIds: [],
+    });
+    expect(result.preview.floored).toHaveLength(2);
+  });
+
+  it('accepts a partially-admissible cohort but returns every floored id as a warning', async () => {
+    const result = await previewClaimSpecAdmission({
+      spec: fixedSpec(['WI-good', 'WI-held'], ['open']),
+      harness: 'papercusp',
+      assignee: 'su-leader',
+      explain: async () => [
+        { id: 'WI-good', admissible: true, refusedBy: null, detail: null },
+        { id: 'WI-held', admissible: false, refusedBy: 'claim-hold', detail: 'held' },
+      ],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.warning).toContain('1/2');
+    expect(result.warning).toContain('WI-held:claim-hold');
+    expect(result.preview.admissibleIds).toEqual(['WI-good']);
+  });
+
+  it('refuses to skip a named issue preview when no harness can be resolved', async () => {
+    const result = await previewClaimSpecAdmission({
+      spec: fixedSpec(['WI-1']),
+      assignee: 'su-leader',
+      explain: async () => [],
+    });
+    expect(result.errors[0]).toMatch(/harness is required/);
+    expect(result.preview).toMatchObject({ checked: false, mode: 'fixed-cohort' });
+  });
+
+  it('leaves dynamic/property specs to live pull-time evaluation without a false reject', async () => {
+    const spec: ClaimSpec = {
+      ...fixedSpec([]),
+      view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+    };
+    const result = await previewClaimSpecAdmission({ spec, assignee: 'su-leader' });
+    expect(result.errors).toEqual([]);
+    expect(result.preview).toMatchObject({ mode: 'dynamic', checked: false });
   });
 });

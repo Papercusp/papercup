@@ -167,4 +167,12 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
   it('an empty id list is a no-op — a broad kind-only spec must not pay for a pointless query', async () => {
     expect(await explainIssueClaimFloors(H, [])).toEqual([]);
   });
+
+  it('uses the caller/spec state floor instead of treating every issue state as admissible', async () => {
+    await seedIssue('WI-9301', null, 'open');
+    const [todoOnly] = await explainIssueClaimFloors(H, ['WI-9301'], { states: ['todo'] });
+    const [open] = await explainIssueClaimFloors(H, ['WI-9301'], { states: ['open'] });
+    expect(todoOnly).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
+    expect(open).toMatchObject({ admissible: true, refusedBy: null });
+  });
 });

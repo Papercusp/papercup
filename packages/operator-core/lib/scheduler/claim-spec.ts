@@ -97,9 +97,10 @@ export type BeeField = (typeof BEE_FIELDS)[number];
  * spec-controlled (D-002). A spec that filters on them is rejected — it would be
  * either redundant (re-asserting a floor) or, worse, an attempt to widen past one.
  */
-export const FILTERABLE_ITEM_FIELDS = ITEM_FIELDS.filter(
-  (f) => f !== 'blocked' && f !== 'cursed',
-) as Exclude<ItemField, 'blocked' | 'cursed'>[];
+export const FILTERABLE_ITEM_FIELDS = ITEM_FIELDS.filter((f) => f !== 'blocked' && f !== 'cursed') as Exclude<
+  ItemField,
+  'blocked' | 'cursed'
+>[];
 
 /** Predicate operators usable in a `view.filter` leaf (the plan's "Predicates"). */
 export const FILTER_OPS = ['=', '!=', '<', '<=', '>', '>=', 'in', 'contains', 'glob'] as const;
@@ -124,9 +125,7 @@ export type RankFunction = (typeof RANK_FUNCTIONS)[number];
  *  filterable (pin a set) but NOT rankable — ordering by id is meaningless, and an
  *  id-pin is about WHICH items, never their order (use priority/age for that). `title`
  *  is the same shape: filterable for keyword exclusion (WI-3268), not a sort key. */
-export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
-  (f) => f !== 'id' && f !== 'title',
-);
+export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter((f) => f !== 'id' && f !== 'title');
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;
 /** Schema versions this validator understands. Bump + branch when the shape changes. */
@@ -162,11 +161,7 @@ export type FilterLeaf = z.infer<typeof filterLeafSchema>;
  * The boolean combinator tree. A node is exactly ONE of: a leaf, `{ all: [...] }`,
  * `{ any: [...] }`, or `{ not: <node> }`. Recursive, so `z.lazy`.
  */
-export type FilterNode =
-  | FilterLeaf
-  | { all: FilterNode[] }
-  | { any: FilterNode[] }
-  | { not: FilterNode };
+export type FilterNode = FilterLeaf | { all: FilterNode[] } | { any: FilterNode[] } | { not: FilterNode };
 
 export const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
   z.union([
@@ -322,7 +317,9 @@ function isFilterScalar(v: unknown): boolean {
  */
 function validateFilterNode(node: unknown, path: string, errors: string[]): void {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) {
-    errors.push(`${path}: filter node must be an object (a leaf, or all/any/not), got ${Array.isArray(node) ? 'array' : typeof node}`);
+    errors.push(
+      `${path}: filter node must be an object (a leaf, or all/any/not), got ${Array.isArray(node) ? 'array' : typeof node}`,
+    );
     return;
   }
   const obj = node as Record<string, unknown>;
@@ -459,9 +456,18 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
 function collectFilterFields(node: unknown, acc: Set<string>): void {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
   const obj = node as Record<string, unknown>;
-  if (typeof obj.field === 'string') { acc.add(obj.field); return; }
-  if (Array.isArray(obj.all)) { obj.all.forEach((n) => collectFilterFields(n, acc)); return; }
-  if (Array.isArray(obj.any)) { obj.any.forEach((n) => collectFilterFields(n, acc)); return; }
+  if (typeof obj.field === 'string') {
+    acc.add(obj.field);
+    return;
+  }
+  if (Array.isArray(obj.all)) {
+    obj.all.forEach((n) => collectFilterFields(n, acc));
+    return;
+  }
+  if (Array.isArray(obj.any)) {
+    obj.any.forEach((n) => collectFilterFields(n, acc));
+    return;
+  }
   if ('not' in obj) collectFilterFields(obj.not, acc);
 }
 
@@ -494,9 +500,7 @@ export function isIdOnlySelector(spec: { view?: { filter?: unknown } } | null | 
  * union). Negative/fuzzy leaves and `not` describe an unbounded complement, so
  * they return null instead of pretending a finite audit is authoritative.
  */
-export function fixedCohortIds(
-  spec: { view?: { filter?: unknown } } | null | undefined,
-): string[] | null {
+export function fixedCohortIds(spec: { view?: { filter?: unknown } } | null | undefined): string[] | null {
   if (!isIdOnlySelector(spec)) return null;
 
   function walk(node: unknown): Set<string> | null {
@@ -505,9 +509,14 @@ export function fixedCohortIds(
     if (obj.field === 'id') {
       if (obj.op !== '=' && obj.op !== 'in') return null;
       const raw = Array.isArray(obj.value) ? obj.value : [obj.value];
-      return new Set(raw.filter((v): v is string | number | boolean =>
-        typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
-      ).map(String));
+      return new Set(
+        raw
+          .filter(
+            (v): v is string | number | boolean =>
+              typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+          )
+          .map(String),
+      );
     }
     if (Array.isArray(obj.all) && obj.all.length > 0) {
       const sets = obj.all.map(walk);

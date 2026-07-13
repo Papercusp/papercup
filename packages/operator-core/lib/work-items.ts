@@ -68,15 +68,8 @@ import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
-import {
-  readExternalBlockers,
-  type ExternalBlockerRecord,
-} from './external-blockers';
-export {
-  activeExternalBlockers,
-  readExternalBlockers,
-  updateExternalBlockerHistory,
-} from './external-blockers';
+import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
+export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type { ExternalBlockerKind, ExternalBlockerRecord } from './external-blockers';
 import {
   ISSUE_KIND,
@@ -284,7 +277,6 @@ function tsIso(v: unknown): string {
   if (typeof v === 'number') return new Date(v).toISOString();
   return String(v ?? '');
 }
-
 
 function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
   let obj = payload;
@@ -766,7 +758,11 @@ const WORK_ITEM_EMBED_DIM = 384;
 /** Test seam for the P-008 semantic leg: the query-embedder resolver to use
  *  (defaults to the real `buildQueryEmbedderResolved`). Injectable because the
  *  real one lazy-loads an ONNX model — a unit test must never pay that. */
-export type QueryEmbedderResolver = () => Promise<{ mode: string; dims: number; embed: (t: string) => Promise<number[]> } | null>;
+export type QueryEmbedderResolver = () => Promise<{
+  mode: string;
+  dims: number;
+  embed: (t: string) => Promise<number[]>;
+} | null>;
 
 /** Cross-kind full-text search over both kind-tables (parity with issues:search).
  *
@@ -830,7 +826,8 @@ export async function searchWorkItems(
   const semanticOn = opts.semantic ?? !process.env.VITEST;
   if (semanticOn) {
     try {
-      const resolve = opts.embedderResolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
+      const resolve =
+        opts.embedderResolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
       const resolved = await resolve();
       // The embedding columns are vector(384); a query vector in another width
       // (harrier@1024) can't rank against them — skip rather than SQL-error.
@@ -846,7 +843,11 @@ export async function searchWorkItems(
             if (!opts.includeObservations) {
               hits = hits.filter((w) => (w.payload as { lane?: string } | null | undefined)?.lane !== 'observation');
             }
-            for (const w of hits) if (!seen.has(w.id)) { seen.add(w.id); out.push(w); }
+            for (const w of hits)
+              if (!seen.has(w.id)) {
+                seen.add(w.id);
+                out.push(w);
+              }
           }
           if (wantFeature) {
             const { sql } = getOrgPg();
@@ -862,7 +863,11 @@ export async function searchWorkItems(
                  AND ${opts.kind && familyOf(opts.kind) === 'feature' ? sql`item_kind = ${opts.kind}` : sql`TRUE`}
                ORDER BY embedding <=> ${vecLit}::vector
                LIMIT ${semLimit}`;
-            for (const w of rows.map(featureRowToWorkItem)) if (!seen.has(w.id)) { seen.add(w.id); out.push(w); }
+            for (const w of rows.map(featureRowToWorkItem))
+              if (!seen.has(w.id)) {
+                seen.add(w.id);
+                out.push(w);
+              }
           }
         }
       }
@@ -1695,13 +1700,7 @@ export interface LifecycleAliasInfo {
  * Both: excluded from self-select, but still directly claimable BY ID. Best-effort — never
  * fails/blocks the primary lifecycle write.
  */
-const NEEDS_HUMAN_ALIAS_REQUESTS = new Set([
-  'needs-human',
-  'needs_human',
-  'needshuman',
-  'needs human',
-  'need-human',
-]);
+const NEEDS_HUMAN_ALIAS_REQUESTS = new Set(['needs-human', 'needs_human', 'needshuman', 'needs human', 'need-human']);
 const BLOCKED_ALIAS_REQUESTS = new Set(['blocked']);
 
 /**
@@ -3024,19 +3023,19 @@ export async function explainIssueClaimFloors(
               ? 'needs-human'
               : !r.ok_external_blocker
                 ? 'external-blocker'
-              : !r.ok_claim_hold
-                ? 'claim-hold'
-                : !r.ok_plan_lane
-                  ? 'plan-lane-reserved'
-                  : !r.ok_federation
-                    ? 'federation-detector'
-                    : !r.ok_loop_noise
-                      ? 'loop-noise'
-                      : !r.ok_completed
-                        ? 'already-completed'
-                        : !r.ok_rig
-                          ? 'cross-machine-rig'
-                          : null;
+                : !r.ok_claim_hold
+                  ? 'claim-hold'
+                  : !r.ok_plan_lane
+                    ? 'plan-lane-reserved'
+                    : !r.ok_federation
+                      ? 'federation-detector'
+                      : !r.ok_loop_noise
+                        ? 'loop-noise'
+                        : !r.ok_completed
+                          ? 'already-completed'
+                          : !r.ok_rig
+                            ? 'cross-machine-rig'
+                            : null;
     return {
       id,
       admissible: refusedBy === null,
@@ -3777,9 +3776,7 @@ export async function unlinkWorkItem(
   // silently strands to its 30-min timeout-wake. Fire-and-forget + lazy import
   // (mirrors the settle-path call above) — never blocks or fails this write.
   if (rel === 'blocks') {
-    void import('./work-items-events')
-      .then((m) => m.emitUnblockedOnEdgeRemoved(dst, id))
-      .catch(() => {});
+    void import('./work-items-events').then((m) => m.emitUnblockedOnEdgeRemoved(dst, id)).catch(() => {});
   }
   return { ok: true };
 }

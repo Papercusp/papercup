@@ -446,7 +446,14 @@ describe('isIdOnlySelector — the id-pin tripwire', () => {
   });
   it('false when any property selector is present (a real lane, even if id is also used)', () => {
     expect(
-      isIdOnlySelector(spec({ all: [{ field: 'id', op: 'in', value: ['F-1'] }, { field: 'plan', op: '=', value: 'p' }] })),
+      isIdOnlySelector(
+        spec({
+          all: [
+            { field: 'id', op: 'in', value: ['F-1'] },
+            { field: 'plan', op: '=', value: 'p' },
+          ],
+        }),
+      ),
     ).toBe(false);
     expect(isIdOnlySelector(spec({ field: 'plan', op: '=', value: 'p' }))).toBe(false);
   });
@@ -470,20 +477,25 @@ describe('fixedCohortIds — exact fixed-wave extraction', () => {
   const spec = (filter: unknown) => ({ view: { filter } });
 
   it('extracts a positive id leaf, deduping in declared order', () => {
-    expect(fixedCohortIds(spec({ field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-1'] })))
-      .toEqual(['WI-1', 'WI-2']);
+    expect(fixedCohortIds(spec({ field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-1'] }))).toEqual(['WI-1', 'WI-2']);
   });
 
   it('composes all as intersection and any as union', () => {
-    expect(fixedCohortIds(spec({
-      all: [
-        { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] },
-        { any: [
-          { field: 'id', op: '=', value: 'WI-2' },
-          { field: 'id', op: '=', value: 'WI-3' },
-        ] },
-      ],
-    }))).toEqual(['WI-2']);
+    expect(
+      fixedCohortIds(
+        spec({
+          all: [
+            { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] },
+            {
+              any: [
+                { field: 'id', op: '=', value: 'WI-2' },
+                { field: 'id', op: '=', value: 'WI-3' },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).toEqual(['WI-2']);
   });
 
   it('returns null for property lanes, negative/fuzzy id sets, and complements', () => {
@@ -495,31 +507,38 @@ describe('fixedCohortIds — exact fixed-wave extraction', () => {
 
 describe('positiveIdCohortIds — immutable cross-family candidate set', () => {
   it('extracts a bare ID leaf and de-duplicates it', () => {
-    expect(positiveIdCohortIds({ field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-1'] }))
-      .toEqual(['WI-1', 'WI-2']);
+    expect(positiveIdCohortIds({ field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-1'] })).toEqual(['WI-1', 'WI-2']);
   });
 
   it('keeps an ID cohort inside top-level all when property predicates narrow it further', () => {
-    expect(positiveIdCohortIds({
-      all: [
-        { field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-3'] },
-        { not: { field: 'title', op: 'glob', value: '*p2p*' } },
-        { field: 'kind', op: 'in', value: ['bug'] },
-      ],
-    })).toEqual(['WI-1', 'WI-2', 'WI-3']);
+    expect(
+      positiveIdCohortIds({
+        all: [
+          { field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-3'] },
+          { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+          { field: 'kind', op: 'in', value: ['bug'] },
+        ],
+      }),
+    ).toEqual(['WI-1', 'WI-2', 'WI-3']);
   });
 
   it('intersects direct ID leaves and refuses any/not simplification', () => {
-    expect(positiveIdCohortIds({
-      all: [
-        { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] },
-        { field: 'id', op: 'in', value: ['WI-2', 'WI-3'] },
-      ],
-    })).toEqual(['WI-2']);
-    expect(positiveIdCohortIds({ any: [
-      { field: 'id', op: '=', value: 'WI-1' },
-      { field: 'kind', op: '=', value: 'bug' },
-    ] })).toBeNull();
+    expect(
+      positiveIdCohortIds({
+        all: [
+          { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] },
+          { field: 'id', op: 'in', value: ['WI-2', 'WI-3'] },
+        ],
+      }),
+    ).toEqual(['WI-2']);
+    expect(
+      positiveIdCohortIds({
+        any: [
+          { field: 'id', op: '=', value: 'WI-1' },
+          { field: 'kind', op: '=', value: 'bug' },
+        ],
+      }),
+    ).toBeNull();
     expect(positiveIdCohortIds({ not: { field: 'id', op: '=', value: 'WI-1' } })).toBeNull();
   });
 });

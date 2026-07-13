@@ -455,20 +455,6 @@ function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
 }
 
 /**
- * WI-4309: extract the LITERAL id set from a POSITIVE `id = ...` / `id in [...]` leaf, when
- * the filter is a bare leaf or that leaf sits inside a top-level `all` — the same
- * conservative shapes {@link issueKindsForFallback} walks (leaf/all only; an id constraint
- * nested in an `any`/`not` doesn't name a simple closed-world set, so this deliberately does
- * NOT attempt to extract one there, same rationale as widenPastKind's conservative shapes).
- *
- * `filterHasIdConstraint` is still the sole authority on WHETHER an id constraint exists at
- * all (it recurses through any/not too, since that answer is binary). This function answers
- * the narrower "can we safely name the exact set to narrow tier 3 to?" — undefined means "no
- * — either there's no id leaf, or it's nested in a shape we can't safely simplify", and the
- * caller falls back to the fully-conservative EI-10062 behavior (skip tier 3) rather than
- * guess wrong.
- */
-/**
  * Recursively compile the filter combinator tree to ONE parameterized `sql` fragment.
  * `all` ⇒ AND, `any` ⇒ OR, `not` ⇒ NOT; a leaf ⇒ {@link compileLeaf}. An undefined
  * filter ⇒ `TRUE` (the empty view — every floor-eligible item).
@@ -503,11 +489,7 @@ export function compileFilter(sql: OrgSql, filter: FilterNode | undefined) {
  * ordering. A bare item field maps through {@link FIELD_MAP}; an `inverted` field
  * (feature_order) flags the caller to flip the direction.
  */
-function compileRankExpr(
-  sql: OrgSql,
-  expr: string,
-  bee: BeeContext,
-): { value: SqlFragment; inverted: boolean } | null {
+function compileRankExpr(sql: OrgSql, expr: string, bee: BeeContext): { value: SqlFragment; inverted: boolean } | null {
   const head = expr.includes('(') ? expr.slice(0, expr.indexOf('(')).trim() : expr.trim();
 
   // Live function term: affinity(bee.held_paths, item.paths) — count of item paths that
@@ -564,7 +546,9 @@ export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
         const compiled = compileRankExpr(sql, t.expr, bee);
         if (!compiled) return null;
         const w = Number.isFinite(t.weight) ? (t.weight as number) : 0;
-        const signed = compiled.inverted ? sql`(-1 * COALESCE((${compiled.value})::numeric, 0))` : sql`COALESCE((${compiled.value})::numeric, 0)`;
+        const signed = compiled.inverted
+          ? sql`(-1 * COALESCE((${compiled.value})::numeric, 0))`
+          : sql`COALESCE((${compiled.value})::numeric, 0)`;
         // A `dir: 'asc'` weighted term contributes with a flipped sign (smaller = better).
         const dirSign = t.dir === 'asc' ? sql`(-1 * ${signed})` : signed;
         return sql`(${w} * ${dirSign})`;
@@ -576,9 +560,7 @@ export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
   }
 
   // lexicographic: each term ASC/DESC in order, then the total-order tiebreaker.
-  const orderings = terms
-    .map((t) => compileTermOrdering(sql, t, bee))
-    .filter((o): o is SqlFragment => o != null);
+  const orderings = terms.map((t) => compileTermOrdering(sql, t, bee)).filter((o): o is SqlFragment => o != null);
   if (orderings.length === 0) return sql`created_ts ASC`;
   const joined = orderings.reduce((acc, o) => sql`${acc}, ${o}`);
   // created_ts ASC as the final tiebreaker (skip if already the last bare term).
@@ -697,13 +679,13 @@ export async function getNextWorkItem(
   // and structurally can't match an issue-family id, and tier 2 is a no-op with no `kind`
   // leaf to widen — so with tier 3 also skipped, the ladder had NO path left for such a spec
   // and always reported a false drain. Fix: extract the literal id set (when the shape allows
-  // it — idValuesForFallback) and THREAD it through tier 3 so it narrows to exactly those ids,
+  // it — positiveIdCohortIds) and THREAD it through tier 3 so it narrows to exactly those ids,
   // instead of either ignoring the constraint (the original leak) or refusing to run at all.
   // Only fall back to skipping tier 3 (the fully-conservative EI-10062 behavior) when an id
   // constraint exists but its exact set can't be safely extracted (nested in an any/not).
   if (!claimed && (await schedulerIssuesClaimableEnabled())) {
     const hasIdConstraint = filterHasIdConstraint(spec.view.filter);
-    const idValues = hasIdConstraint ? positiveIdCohortIds(spec.view.filter) ?? undefined : undefined;
+    const idValues = hasIdConstraint ? (positiveIdCohortIds(spec.view.filter) ?? undefined) : undefined;
     if (!hasIdConstraint || idValues) {
       const issueKinds = issueKindsForFallback(spec.view.filter);
       claimed = await claimNextIssueWorkItem(
@@ -723,9 +705,7 @@ export async function getNextWorkItem(
 
   if (!claimed) return null;
   // Same claimed-event as the legacy claim path (best-effort fanout).
-  void import('../work-items-events')
-    .then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee))
-    .catch(() => {});
+  void import('../work-items-events').then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee)).catch(() => {});
   return { workItem: claimed, claimedUnder: { specId: spec.specId, revision: spec.revision } };
 }
 

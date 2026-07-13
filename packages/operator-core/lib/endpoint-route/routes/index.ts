@@ -415,6 +415,7 @@ import devicePush from './device/push';
 import deviceOperatorConverse from './device/operator-converse';
 import devicePlans from './device/plans';
 import deviceAttention from './device/attention';
+import deviceMonitoring from './device/monitoring';
 import coordRoutes from './coord/index';
 import tuiRoutes from './tui/index';
 import activityRoutes from './activity/index';
@@ -872,6 +873,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deviceOperatorConverse as AnyRoute[]),
   ...flatten(devicePlans as AnyRoute[]),
   ...flatten(deviceAttention as AnyRoute[]),
+  ...flatten(deviceMonitoring as AnyRoute[]),
   ...flatten(coordRoutes as AnyRoute[]),
   ...flatten(tuiRoutes as AnyRoute[]),
   ...flatten(activityRoutes as AnyRoute[]),

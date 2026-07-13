@@ -202,25 +202,8 @@ export function ChatConversation(props: ChatConversationProps) {
     preserveScrollHeightRef.current = scrollerRef.current.scrollHeight;
   }
 
-  useEffect(() => {
-    const el = scrollerRef.current;
-    if (!el) {
-      lastFirstKeyRef.current = firstKey;
-      lastLastKeyRef.current = lastKey;
-      return;
-    }
-    const isPrepend = preserveScrollHeightRef.current !== null;
-    if (isPrepend) {
-      const delta = el.scrollHeight - preserveScrollHeightRef.current!;
-      el.scrollTop = el.scrollTop + delta;
-      preserveScrollHeightRef.current = null;
-    } else if (lastLastKeyRef.current !== lastKey || busy) {
-      // Append (new turn at bottom) OR busy flip → scroll to bottom.
-      endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
-    lastFirstKeyRef.current = firstKey;
-    lastLastKeyRef.current = lastKey;
-  }, [messages.length, busy, firstKey, lastKey]);
+  // (The scroll-pinning effect lives BELOW the virtualizer declaration —
+  // it pins via virtualizer.scrollToIndex, which doesn't exist yet here.)
 
   // Auto-load older turns when the top sentinel scrolls into view.
   // Gated on user-initiated scroll: a freshly-mounted chat scrolls to
@@ -295,6 +278,51 @@ export function ChatConversation(props: ChatConversationProps) {
 
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
+
+  // Scroll pinning (WI-4692). endRef.scrollIntoView({ behavior: 'smooth' })
+  // is NOT reliable on a virtualized transcript: the smooth animation tweens
+  // across thousands of px of *estimated* rows, measureElement corrections
+  // resize the container mid-flight, and the animation strands the view
+  // partway up the history (observed live: view parked at ~29% after
+  // hydration, so streamed replies rendered off-screen and the chat looked
+  // dead). Pin via the virtualizer's own measurement-aware scrollToIndex,
+  // then re-pin on a double-rAF so post-measurement drift is absorbed.
+  //
+  // Pin policy:
+  //   - initial hydration (no lastKey recorded yet) → always pin;
+  //   - busy flip (the user just sent / assistant streaming) → always pin;
+  //   - append while the user is reading history (scrolled up) → do NOT
+  //     yank the view; system broadcasts land every minute, so yanking on
+  //     each append would make scrollback unusable. Near-bottom appends pin.
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) {
+      lastFirstKeyRef.current = firstKey;
+      lastLastKeyRef.current = lastKey;
+      return;
+    }
+    const isPrepend = preserveScrollHeightRef.current !== null;
+    if (isPrepend) {
+      const delta = el.scrollHeight - preserveScrollHeightRef.current!;
+      el.scrollTop = el.scrollTop + delta;
+      preserveScrollHeightRef.current = null;
+    } else if (lastLastKeyRef.current !== lastKey || busy) {
+      const isFirstPin = lastLastKeyRef.current === null;
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
+      const last = messages.length - 1;
+      if (last >= 0 && (isFirstPin || nearBottom || busy)) {
+        virtualizer.scrollToIndex(last, { align: 'end' });
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const sc = scrollerRef.current;
+            if (sc) sc.scrollTop = sc.scrollHeight;
+          }),
+        );
+      }
+    }
+    lastFirstKeyRef.current = firstKey;
+    lastLastKeyRef.current = lastKey;
+  }, [messages.length, busy, firstKey, lastKey, virtualizer]);
 
   return (
     <>

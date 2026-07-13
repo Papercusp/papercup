@@ -17,11 +17,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { fetchWakeability } from '../coordination/presence-wakeability';
-import {
-  positiveIdCohortIds,
-  validateClaimSpec,
-  type ClaimSpec,
-} from '../../scheduler/claim-spec';
+import { positiveIdCohortIds, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimFloorAttribution } from '../../work-items';
 
 /**
@@ -133,7 +129,8 @@ export async function previewClaimSpecAdmission(args: {
       preview: {
         mode: 'dynamic',
         checked: false,
-        reason: 'no conservatively-extractable positive ID cohort; admissibility remains live and is evaluated at pull time',
+        reason:
+          'no conservatively-extractable positive ID cohort; admissibility remains live and is evaluated at pull time',
       },
       errors: [],
     };
@@ -236,8 +233,7 @@ export default defineTool({
   description:
     "Steer a SELF-PULLING agent — a coding-hive bee, the queen, or an su fleet member — by setting/replacing its versioned claim spec (view.filter + rank). The agent's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running puller by setting a new spec (the revision bumps; it's picked up on the next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision, warning? } (EI-6079: a `warning` can flag the bee as not currently wakeable — the spec still stored, but a warm-inject wake to it may return woken:0).",
   guidance: {
-    when:
-      'Steer a SELF-PULLING agent that calls scheduler:get_next: a coding-hive bee, the queen, or an su fleet member. Set a property-filtered view plus rank for a standing lane; use `id in [...]` only for a static pinned wave. Re-steer by bumping the spec, not by micro-dispatching.',
+    when: 'Steer a SELF-PULLING agent that calls scheduler:get_next: a coding-hive bee, the queen, or an su fleet member. Set a property-filtered view plus rank for a standing lane; use `id in [...]` only for a static pinned wave. Re-steer by bumping the spec, not by micro-dispatching.',
     notWhen:
       'A coding-FACTORY push role (scoper/architect/worker/validator): it is handed a FEATURE_ID and never calls get_next, so a spec is inert. Not for hand-picked micro-dispatch, or for overriding global floors (blocked/ready/dedup/cursed) — the resolver enforces those.',
     chaining: 'scheduler:set_claim_spec → the puller applies it on the next scheduler:get_next.',
@@ -284,7 +280,7 @@ export default defineTool({
             'rank.mode is "lexicographic" (each term breaks ties in order) or "weighted" (a single weighted sum — every term then needs a numeric `weight`). ' +
             'rank.terms is an ARRAY of { expr, dir } — NOT { field, order }; expr is a bare item field (e.g. "priority") or a function term (affinity(bee.held_paths,item.paths) | model_fit(bee.model,item) | tag_weight(tags) | redundancy_need); dir is "asc" or "desc". ' +
             'EXAMPLE: { specVersion:"1.0", specId:"bc-general", revision:1, view:{ filter:{ all:[{ field:"kind", op:"in", value:["bug","change"] }] } }, rank:{ mode:"lexicographic", terms:[{ expr:"priority", dir:"asc" }, { expr:"age", dir:"desc" }] } }. ' +
-            'OPTIONAL `states` (drain-claim-spec-hardening-2026-07-13, D-002/EI-11300): a claimable-status subset — same allowlist as scheduler:get_next\'s own `states` arg (todo|open|failing). Set it ONCE here (e.g. on a `fleet` spec) so every inheriting member\'s get_next defaults to it instead of the plain [\'todo\'] floor — the fix for an issue-family drain (bugs/changes are always status=open, never todo) silently starving whenever a member forgets its own per-call override. A member\'s explicit get_next {states} still wins over this.',
+            "OPTIONAL `states` (drain-claim-spec-hardening-2026-07-13, D-002/EI-11300): a claimable-status subset — same allowlist as scheduler:get_next's own `states` arg (todo|open|failing). Set it ONCE here (e.g. on a `fleet` spec) so every inheriting member's get_next defaults to it instead of the plain ['todo'] floor — the fix for an issue-family drain (bugs/changes are always status=open, never todo) silently starving whenever a member forgets its own per-call override. A member's explicit get_next {states} still wins over this.",
         ),
     })
     .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {
@@ -298,9 +294,7 @@ export default defineTool({
     }
     const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const ctxHarness =
-      typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*'
-        ? ctxHarnessRaw
-        : undefined;
+      typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
     const admission = await previewClaimSpecAdmission({
       spec: validated.spec,
       harness: args.harness ?? ctxHarness,
@@ -321,8 +315,7 @@ export default defineTool({
     let targetBeeId = args.cupId as string;
     if (args.fleet) {
       const fleetSlug = args.fleet.trim();
-      const wsForFleet =
-        ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined;
+      const wsForFleet = ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined;
       const { getFleet } = await import('../../agent-fleets-store');
       const { activeWorkspaceId } = await import('../../workspace-registry');
       const record = await getFleet(wsForFleet ?? activeWorkspaceId(), fleetSlug);
@@ -348,9 +341,7 @@ export default defineTool({
     try {
       const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
       const ctxHarness =
-        typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*'
-          ? ctxHarnessRaw
-          : undefined;
+        typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
       if (ctxHarness) potSlug = ctxHarness;
       else if (ident.workspaceId && ident.workspaceId !== '*') {
         const scope = await resolveWorkspaceHiveScope(ident.workspaceId);
