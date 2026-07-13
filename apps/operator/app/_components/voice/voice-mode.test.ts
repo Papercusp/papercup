@@ -203,3 +203,42 @@ describe('gateAlwaysOnTranscript (P-004 wake gate)', () => {
     expect(mod.gateAlwaysOnTranscript('should be dropped', T0 + 1_000).dispatch).toBe(null);
   });
 });
+
+// WI-4500: the always-on mic hears papercup's OWN kokoro TTS (WebKitGTK AEC is weak),
+// whisper hallucinates a stable token ("omid"), it sails past isBlankTranscript, and the
+// self-refreshing wake window keeps papercup talking to its own echo forever. These pin
+// the two guards that break that loop. Each also carries the DISCRIMINATION half — the
+// guard must stay silent on real input — because a guard that drops everything is not a
+// guard (see harness fact a-claimed-guard-is-not-a-guard).
+describe('always-on self-feedback guards (WI-4500)', () => {
+  const T0 = 2_000_000;
+
+  it('isLikelyWhisperHallucination catches whisper non-speech tokens including "omid"', async () => {
+    const mod = await import('./voice-mode');
+    // The tokens the loop actually produced / the classic whisper.cpp hallucinations.
+    for (const t of ['omid', 'Omid', ' OMID ', 'you', 'Thank you', 'thanks for watching']) {
+      expect(mod.isLikelyWhisperHallucination(t)).toBe(true);
+    }
+  });
+
+  it('does NOT filter real one-word replies (discrimination — not a mute button)', async () => {
+    const mod = await import('./voice-mode');
+    // These are legitimate short commands a user says; they MUST pass.
+    for (const t of ['yes', 'no', 'stop', 'open the dashboard', 'what changed today']) {
+      expect(mod.isLikelyWhisperHallucination(t)).toBe(false);
+    }
+  });
+
+  it('isSelfAudioLikely is true within the cooldown after playout ends, false after', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow(); // also clears synthQuietSince
+    // Nothing has spoken → not self-audio.
+    expect(mod.isSelfAudioLikely(T0)).toBe(false);
+    // Playout just ended → inside the ~700ms AEC-settle tail → treat mic as self-audio.
+    mod.__markSynthPlayoutEnded(T0);
+    expect(mod.isSelfAudioLikely(T0 + 100)).toBe(true);
+    expect(mod.isSelfAudioLikely(T0 + 699)).toBe(true);
+    // Past the tail → the room is quiet again, real speech is trustworthy.
+    expect(mod.isSelfAudioLikely(T0 + 1_500)).toBe(false);
+  });
+});

@@ -1798,8 +1798,8 @@ let wakeConversationUntil = 0;
 const SELF_AUDIO_COOLDOWN_MS = 700;
 let synthQuietSince = 0; // wall-clock ms when TTS playout last ENDED; 0 = never spoke
 
-/** True while papercup is speaking, or within the AEC-settle tail after it stopped. */
-function isSelfAudioLikely(nowMs: number = Date.now()): boolean {
+/** True while papercup is speaking, or within the AEC-settle tail after it stopped. Exported for tests. */
+export function isSelfAudioLikely(nowMs: number = Date.now()): boolean {
   if (isSynthSpeaking) return true;
   if (synthQuietSince > 0 && nowMs - synthQuietSince < SELF_AUDIO_COOLDOWN_MS) return true;
   return false;
@@ -1864,6 +1864,16 @@ export function resetWakeConversationWindow(): void {
 }
 
 function dispatchAlwaysOnUtterance(text: string): void {
+  // HALF-DUPLEX GATE (WI-4500): never act on the mic while papercup is speaking (or
+  // in the AEC-settle tail after). Otherwise a spoken reply is re-heard, re-dispatched,
+  // and refreshes the conversation window — an unbreakable self-talk loop. This is the
+  // one chokepoint every always-on utterance passes through, and it must reject BEFORE
+  // gateAlwaysOnTranscript so the echo can't even refresh the window.
+  if (isSelfAudioLikely()) return;
+  // HALLUCINATION GUARD (WI-4500): whisper emits stable real-word hallucinations on
+  // non-speech audio ("omid", "you", "thank you", …) that sail past isBlankTranscript
+  // (it only catches bracketed markers). Drop them in always-on; PTT stays unfiltered.
+  if (isLikelyWhisperHallucination(text)) return;
   const gated = gateAlwaysOnTranscript(text);
   if (gated.bareWake) {
     // Bare "hey papercup" — acknowledge audibly; the follow-up window is open.
@@ -2322,6 +2332,7 @@ function processSynthQueue(): void {
   const next = synthQueue.shift();
   if (!next) {
     isSynthSpeaking = false;
+    synthQuietSince = Date.now(); // playout ended — start the self-audio cooldown (WI-4500)
     setState({ status: state.mode === 'off' ? 'off' : 'idle', speakingRole: null });
     return;
   }

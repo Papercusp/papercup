@@ -261,6 +261,16 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // direction (ON removes the last human check on the system widening its own ceilings),
   // so only this one is darkened. Watermark raised 25→26. Count 25 → 26.
   'papercusp-queen-full-autonomy',
+  // 2026-07-12 (WI-4240) — papercusp-workspace-coordination: BUG-FIX correction, TENTH
+  // instance of the EI-7230 class (own comment always said "DEFAULT OFF (dark) /
+  // KNOWN_DARK_FLAGS", never actually added — see PRE_INVERSION_DEFAULT_OFF discipline).
+  // The genuine dark case among the WI-4240 residue: an UNVERIFIED workspace-brain re-key
+  // cutover that production held OFF only via a hand-placed operator_flag_overrides row.
+  // Adding it makes the code default match that override (row now redundant, not load-
+  // bearing). Watermark raised 26→27. Count 26 → 27. (Its sibling residue INBOX_DURABLE_
+  // ESCALATIONS was RATIFIED ON instead — finished additive work, zero leaks in 2 weeks —
+  // so it is NOT in this set.)
+  'papercusp-workspace-coordination',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -431,7 +441,12 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // ten outstanding mismatches; the other nine default-ON to the SAFER direction and had
     // their stale comments corrected instead (see types.ts). Breached the watermark of 25,
     // so DARK_FLAGS_HIGH_WATERMARK was raised 25→26. Count 25 → 26.
-    expect(offCount).toBe(26);
+    // 2026-07-12 (WI-4240) — papercusp-workspace-coordination: BUG-FIX correction, TENTH
+    // instance of the EI-7230 class (own comment always said dark, never actually added). The
+    // genuine dark case among the WI-4240 residue (an unverified cutover held OFF in prod only
+    // by a hand-placed override row); its sibling INBOX_DURABLE_ESCALATIONS was ratified ON
+    // instead (finished additive work). Watermark raised 26→27. Count 26 → 27.
+    expect(offCount).toBe(27);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

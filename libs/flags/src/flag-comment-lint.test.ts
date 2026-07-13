@@ -212,7 +212,11 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
     // carry that evidence itself instead of making each reader re-derive it.)
     { key: 'AUTHORITY_RPC_PROTOMUX', reason: 'WI-3855 SPECIAL CARE — cross-machine lock-authority RPC transport; real-hardware-unverified (P-003); bundled into WI-4240; owner-ratification pending. NOT re-derived in the 2026-07-12 pass (needs a two-machine rig, not a code read) — its direction-of-safety is still unestablished.' },
     { key: 'AUTHORITY_EVICTION_PROBE', reason: 'WI-3855 SPECIAL CARE — cross-machine failure-detector eviction; rides the same unverified cross-machine proof as AUTHORITY_RPC_PROTOMUX; bundled into WI-4240. NOT re-derived in the 2026-07-12 pass (same two-machine rig gap).' },
-    { key: 'WORKSPACE_COORDINATION', reason: 'WI-3855 SPECIAL CARE — the shared master gate for workspace-scoped Queen/Scout/Overwatch. UNIQUE among the ten: it is the only one held OFF by a live harness_shared.operator_flag_overrides row (workspace papercusp-workspace, verified 2026-07-12), so prod behavior is correct but depends on a hand-placed DB row — delete it and the flag silently goes ON. Its code (workspace-brain-scope.ts) DOES ship a read-fallback to the legacy per-hive row, so unlike COORD_/ISSUES_PER_WORKSPACE it is genuinely reversible. Left for a deliberate pass: the right fix is to add it to DARK_FLAGS so the code default matches the override (making the row redundant rather than load-bearing), which costs another watermark slot.' },
+    // WORKSPACE_COORDINATION — RESOLVED 2026-07-12 (WI-4240, su-00a91): added to DARK_FLAGS
+    // (case 'cutover'), watermark 26→27. The genuine dark case (comment right, code wrong):
+    // an unverified workspace-brain re-key cutover that production held OFF only via a
+    // hand-placed operator_flag_overrides row. Adding it to DARK_FLAGS makes the code default
+    // match that override, so the row is now redundant rather than load-bearing.
     // MUG_FULL_AUTONOMY — RESOLVED 2026-07-12 (WI-4238, su-00a91): added to DARK_FLAGS,
     // watermark raised 25→26. It was parked here on the reasoning that "DARK_FLAGS is
     // already AT its watermark (25/25), so fixing it needs a graduation or an explicit
@@ -220,12 +224,14 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
     // is what kept a live, never-ratified recursive-self-improvement grant switched ON: the
     // watermark is a BOOKKEEPING ceiling, and letting it outrank a safety default gets the
     // priority exactly backwards. It was raised, in the safe direction, and disclosed.
-    // Lower-severity, not auth/partition/autonomy-scoped, but also not yet confirmed
-    // safe-to-graduate the way the 5 comment-only fixes in this same EI-9826 pass
-    // were (TEST_COMPLETION_GATE / PER_POT_RELEASE_GATE / MUG_WARM_SESSION /
-    // INFERENCE_GATEWAY / OVERWATCH all had an in-file or first-hand-verified
-    // graduation condition; this one has neither).
-    { key: 'INBOX_DURABLE_ESCALATIONS', reason: 'No in-file graduation evidence found (unlike the 5 flags this same pass fixed) — additive/low-risk (writes an extra durable escalation record alongside an unchanged existing path); bundled into WI-4240 rather than assumed safe.' },
+    // INBOX_DURABLE_ESCALATIONS — RESOLVED 2026-07-12 (WI-4240, su-00a91): RATIFIED DEFAULT ON
+    // (comment corrected in types.ts), NOT darkened. It was parked here for lacking "in-file
+    // graduation evidence", but the evidence is in the CODE and the DATA, not a comment: the
+    // mirror write + resolve are best-effort throughout and the durable record resolves
+    // idempotently on every card-exit path (live / inbox / timeout — ask_choice.ts ~L300), and
+    // it has been default-ON ~2 weeks with ZERO leaked escalations from this path (0 rows
+    // carrying a cardCorrelationId in coord_open_escalations, all workspaces). Finished
+    // additive work ships ON per repo policy; no DARK_FLAGS change, no watermark cost.
   ];
 
   it('the pending-allowlist itself stays honest: every listed key is a REAL current mismatch (never a stale/unnecessary entry)', () => {

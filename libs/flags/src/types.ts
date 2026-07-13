@@ -25,7 +25,18 @@ export const FLAGS = {
   // inbox-cards-unification Phase D (P-031): when on, a chat decision card
   // (chat:ask_choice / ctx.askUser) ALSO writes a durable coord escalation so
   // the human can answer it live OR later from the inbox; either path resolves
-  // the same record. Default off — the live ctx.askUser path is unchanged.
+  // the same record.
+  //
+  // DEFAULT ON — ratified 2026-07-12 (WI-4240, su-00a91); this comment used to say
+  // "Default off — the live ctx.askUser path is unchanged". Finished additive work, not a
+  // dark case: the mirror write + resolve are best-effort throughout (a flag/identity/write
+  // failure never breaks the card — ask_choice.ts), and the durable record is resolved
+  // idempotently on EVERY card-exit path (live answer, inbox answer via coord:resolve, and
+  // timeout/cancel — ask_choice.ts ~L300). Verified live: ~2 weeks default-ON with ZERO
+  // leaked escalations from this path (harness_shared.coord_open_escalations rows carrying a
+  // cardCorrelationId = 0, all workspaces, 2026-07-12). Per repo policy (finished work never
+  // ships dark) it is ratified ON rather than darkened. OFF ⇒ interactive cards do not mirror
+  // to the inbox (they can only be answered live).
   INBOX_DURABLE_ESCALATIONS: "papercusp-inbox-durable-escalations",
   // papercusp-self-improvement-loop-2026-06-04 Phase 3 (D-004/D-006/D-008): the
   // master switch for AUTO-implementing captured improvements. When OFF (default),
@@ -1240,7 +1251,22 @@ export const FLAGS = {
   // workspace spanning all its hives (P-003 Queen re-key + P-002 Scout re-key both gate on THIS
   // one flag, so the two halves flip together). DEFAULT OFF (dark): the re-key touches the live
   // wake/learning loop on a hot path, so it ships reversible behind one flag and flips ON only
-  // after the post-canary verify. OFF ⇒ today's per-hive brains, byte-identical. KNOWN_DARK_FLAGS.
+  // after the post-canary verify. OFF ⇒ today's per-hive brains, byte-identical.
+  //
+  // NOW ACTUALLY IN DARK_FLAGS (added 2026-07-12, WI-4240, su-00a91). This was the genuine
+  // EI-7230 bug — the comment always said "dark / KNOWN_DARK_FLAGS" and was RIGHT, but the
+  // flag was never added to the DARK_FLAGS map, so the 2026-06-29 P-011 inversion silently
+  // derived it default-ON (the unverified cutover). Unlike COORD_/ISSUES_PER_WORKSPACE (where
+  // the CODE was right and the comment stale — completed cutovers), here the CODE was wrong:
+  // the re-key has NOT been canary-verified and production was held on the safe per-hive path
+  // ONLY by a hand-placed harness_shared.operator_flag_overrides row (false, papercusp-
+  // workspace). That override was LOAD-BEARING and fragile — delete it, or stand up a fresh
+  // workspace that lacks it, and the unverified cutover silently engaged. Adding the flag here
+  // makes the code default match the comment + the override, so the row is now REDUNDANT rather
+  // than the only thing holding the line. Genuinely reversible: isWorkspaceCoordinationOn()
+  // returns false on any flag-IO error and workspaceBrainScopeKey ships a legacy per-hive
+  // read-fallback, so no state is stranded by keeping it off. Owner flips ON at the verified
+  // cutover.
   WORKSPACE_COORDINATION: "papercusp-workspace-coordination",
   // unified-work-item-ledger-2026-06-21 P-003 (D-002): auto-promote a started plan's OPEN
   // items into placeable, UNCLAIMED work-items inside plans:start (the single promotion path;
@@ -1790,6 +1816,14 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // (see the constant's note); actioned under the owner's standing AUTO-mode grant and
     // disclosed rather than left silently live, and it is unambiguously the SAFE direction —
     // it turns OFF an already-live, never-ratified behavior and newly enables nothing.
+    // WI-4240 (2026-07-12, su-00a91): the genuine EI-7230 bug among the WI-4240 residue — the
+    // comment always said "DEFAULT OFF (dark) / KNOWN_DARK_FLAGS" and was CORRECT (the workspace
+    // brain re-key is an UNVERIFIED cutover), but the flag was never added here, so P-011 derived
+    // it live default-ON. Production was held on the safe per-hive path ONLY by a hand-placed
+    // operator_flag_overrides row (false, papercusp-workspace) — load-bearing + fragile. Adding
+    // it makes the code default agree with that override, so the row becomes redundant and a
+    // fresh workspace no longer silently gets the unverified cutover. Watermark 26→27.
+    [FLAGS.WORKSPACE_COORDINATION, { case: 'cutover', reason: 'workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate moving the Queen + Scout (+ later Overwatch) from per-HIVE to one-per-WORKSPACE brain. The re-key touches the live wake/learning loop on a hot path and has NOT been canary-verified — its own comment always said "DEFAULT OFF (dark)... flips ON only after the post-canary verify. KNOWN_DARK_FLAGS", but it was never added here, so the 2026-06-29 P-011 inversion silently derived it default-ON. Production was held on the safe per-hive path ONLY by a hand-placed harness_shared.operator_flag_overrides row (false, papercusp-workspace) — load-bearing and fragile (delete the row or spin up a fresh workspace and the unverified cutover silently engages). Reversible: isWorkspaceCoordinationOn() fails to false and workspaceBrainScopeKey read-falls-back to the legacy per-hive slug, so nothing is stranded. OFF ⇒ today\'s per-hive brains, byte-identical. Owner flips ON at the verified cutover.' }],
     [FLAGS.MUG_FULL_AUTONOMY, { case: 'owner-authority', reason: 'WI-4238: the recursive-self-improvement boundary. When ON, (1) the autonomy decider returns `auto` for categorical HARD GATES — authority:\'owner\', protected/locked categories, irreversible actions, above-ceiling, and graduation:* ratification asks — so the Queen widens her own ceilings without pausing; and (2) the self-improvement auto-implement loop lifts the protectedPathPatterns/protectedKeywords TCB bars, making a kind=bug that touches the deploy gate / flags / capability dispatch / migrations / the loop\'s OWN code auto-implement-eligible. The flag\'s own comment has always said "OFF by default — DELIBERATE, NOT the alpha flags-default-on policy" and warned it "removes the last human check on the system widening its own ceilings and editing its own safety machinery" — but it was never added here, so the 2026-06-29 P-011 inversion silently derived it default-ON. OFF ⇒ the documented gated residue is restored VERBATIM (pinned both directions in tests); the decider/loop fail-DARK on a flag-IO error. Owner flips ON only by personally ratifying full autonomy.' }],
     [FLAGS.MEM0_FEDERATION_EGRESS, { case: 'owner-authority', reason: 'mem0-cross-machine-federation-2026-07-10 (F1-1 mirror, D-006 privacy): gates the cross-machine federation of SHAREABLE memories (memory:remember with shareable=true). When ON, capture triggers enqueue shareable=true memories to the peer-log outbox, and receive-side projections apply remote memories to the local store (source-partitioned H6 pattern mirroring agent-facts). OWNER-AUTHORITY: memory federation affects what personal memory data leaves the machine — only the owner ratifies when/how/which memories federate. The privacy gates ride the SAME pot-visibility + member-admission guards as agent-facts (private pots never leak; only admitted members receive). OFF ⇒ shareable flag has no effect — capture stays quiet and egress never happens (byte-identical to today\'s personal-only behavior). Owner flips ON after reviewing privacy implications + confirming the privacy gates are in effect.' }],
   ]);
@@ -1869,7 +1903,7 @@ export const DARK_FLAGS_REVIEW_BY = '2026-07-24';
 // Filed as WI-4495 (make the ceiling per-case: a TIGHT budget on parked+incomplete — the
 // actual abuse — and review-by-date governance, not a size cap, on the safety cases).
 // Until then this stays one number and each raise must justify itself in-line, as above.
-export const DARK_FLAGS_HIGH_WATERMARK = 26; // +papercusp-queen-full-autonomy 2026-07-12 (WI-4238)
+export const DARK_FLAGS_HIGH_WATERMARK = 27; // +papercusp-workspace-coordination 2026-07-12 (WI-4240)
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /
