@@ -87,6 +87,13 @@ describe('sendMessage / readInbox', () => {
     expect(inboxA).toEqual([]); // excludeOwn = true default
   });
 
+  it('persists the sender-declared expectsReply envelope field', async () => {
+    const A = fakeIdentity('A');
+    const sent = await sendMessage(A, { to: ['B'], summary: 'question', expectsReply: true });
+    expect(sent.expectsReply).toBe(true);
+    expect((await readInbox('B'))[0]?.expectsReply).toBe(true);
+  });
+
   it('broadcast (to:["*"]) reaches everyone except (by default) the sender', async () => {
     const A = fakeIdentity('A');
     await sendMessage(A, { to: ['*'], summary: 'all hands' });

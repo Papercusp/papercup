@@ -220,6 +220,29 @@ describe('coord:send handler (bulk keyed-array)', () => {
 });
 
 describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
+  it('persists expectsReply:true only when the sender declares a response is wanted', async () => {
+    await body({ to: ['bee-1'], summary: 'question', expectsReply: true });
+    const question = sendM.mock.calls[0][1] as { expectsReply?: boolean };
+    expect(question.expectsReply).toBe(true);
+
+    sendM.mockClear();
+    await body({ to: ['bee-1'], summary: 'FYI', expectsReply: false });
+    const fyi = sendM.mock.calls[0][1] as { expectsReply?: boolean };
+    expect(fyi.expectsReply).toBeUndefined();
+  });
+
+  it('derives expectsReply from wake:"required" plus replyDeadlineSec', async () => {
+    await body({ to: ['bee-1'], summary: 'please answer', wake: 'required', replyDeadlineSec: 60 });
+    const opts = sendM.mock.calls[0][1] as { expectsReply?: boolean };
+    expect(opts.expectsReply).toBe(true);
+  });
+
+  it('does not infer expectsReply from a plain directed send or wakeOnReply', async () => {
+    await body({ to: ['bee-1'], summary: 'status', wakeOnReply: true });
+    const opts = sendM.mock.calls[0][1] as { expectsReply?: boolean };
+    expect(opts.expectsReply).toBeUndefined();
+  });
+
   it('a DIRECTED send persists wakeOnReply:true in the envelope extra (default ON)', async () => {
     await body({ to: ['bee-1'], summary: 'hi' });
     expect(sendM).toHaveBeenCalledTimes(1);

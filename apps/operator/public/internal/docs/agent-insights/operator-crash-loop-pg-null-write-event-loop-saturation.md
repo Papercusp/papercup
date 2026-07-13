@@ -71,6 +71,18 @@ The resilience patch (fault 2) stops the *crash* on every topology; P1 reduces
 how easily the loop saturates in the first place; P3 removes the request-path
 blast-radius once enabled, but is not yet the default.
 
+## Independent crash-loop alarm
+
+The operator cannot reliably supervise its own total outage, so the dedicated
+`papercup-bg-host` runs `system:supervision-reconcile` once a minute and watches
+the operator's systemd `NRestarts` counter. Three automatic restarts inside five
+minutes is a crash loop, even if every one-minute sample catches the service in
+its brief `active` interval. The reconciler sends one fleet escalation and adds
+the most recent concrete failure line from `systemctl status` (for example,
+`EADDRINUSE` or `Main process exited`) so responders see the cause without first
+reconstructing the journal. Manual deploy restarts do not increment
+`NRestarts`, so they do not trip this detector.
+
 ## Diagnose / runbook
 
 ```bash
