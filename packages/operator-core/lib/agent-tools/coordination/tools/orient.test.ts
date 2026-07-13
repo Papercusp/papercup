@@ -566,10 +566,33 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const LEADER_BRIEF_RESULT = { ok: true, summary: { fleet: 'p2p-git', members: 2 }, members: [] };
 
     it('a resolvable fleet LEADER on a monitor tick gets fleet:leader-brief folded in', async () => {
+      const brief = {
+        ...LEADER_BRIEF_RESULT,
+        members: [{ agentId: 'su-1', workItemIds: ['WI-1', 'WI-outside'] }],
+      };
+      const claimSpec = {
+        source: 'fleet',
+        revision: 4,
+        harnessSlug: 'papercusp',
+        spec: {
+          specId: 'rev4',
+          view: { filter: { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] } },
+        },
+      };
+      const scopedBurndown = {
+        counts: { total: 2, terminal: 1, inFlight: 0, parked: 1, unclaimed: 0 },
+        cohortAudit: {
+          rows: [
+            { id: 'WI-1', title: 'bare close', state: 'done', bucket: 'terminal', evidenceVerdict: 'missing', reopenRecommended: true, recommendation: 'reopen' },
+            { id: 'WI-2', title: 'owner gate', state: 'needs-human', bucket: 'parked', evidenceVerdict: 'not-applicable', reopenRecommended: false, recommendation: null },
+          ],
+        },
+      };
       const { call, calls } = fakeCall({
         ...CORE,
-        'fleet:leader-brief': () => LEADER_BRIEF_RESULT,
-        'scheduler:get_claim_spec': () => ({ source: 'fleet', revision: 4, spec: { specId: 'rev4' } }),
+        'fleet:leader-brief': () => brief,
+        'scheduler:get_claim_spec': () => claimSpec,
+        'work_items:burn_down': () => scopedBurndown,
         'coord:walls': () => ({ ok: true, count: 0, walls: [] }),
       });
       const r = await composeOrient(
@@ -584,8 +607,14 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         { fleetSlug: 'p2p-git', fleetRole: 'leader' },
       );
       expect(r.leaderBrief).toEqual({
-        ...LEADER_BRIEF_RESULT,
-        claimSpec: { source: 'fleet', revision: 4, spec: { specId: 'rev4' } },
+        ...brief,
+        claimSpec,
+        scopedBurndown,
+        outOfScopeAssignments: [{ agentId: 'su-1', id: 'WI-outside' }],
+        integrityWarnings: [{
+          id: 'WI-1', title: 'bare close', state: 'done', evidenceVerdict: 'missing',
+          reopenRecommended: true, recommendation: 'reopen',
+        }],
         walls: { ok: true, count: 0, walls: [] },
         announcedGates: [],
         release: null,
@@ -593,6 +622,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       const briefCall = calls.find((c) => c.name === 'fleet:leader-brief');
       expect(briefCall?.args).toMatchObject({ fleet: 'p2p-git' });
       expect(calls.find((c) => c.name === 'scheduler:get_claim_spec')?.args).toEqual({ fleet: 'p2p-git' });
+      expect(calls.find((c) => c.name === 'work_items:burn_down')?.args).toEqual({
+        harness: 'papercusp',
+        ids: ['WI-1', 'WI-2'],
+      });
       expect(calls.find((c) => c.name === 'coord:walls')?.args).toEqual({});
     });
 

@@ -48,6 +48,7 @@ import { getModes } from '../../../modes/store';
 import { modeById } from '../../../modes/registry';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { fixedCohortIds } from '../../../scheduler/claim-spec';
 import type { AckResult, CursorState } from '../read-cursors';
 import {
   fingerprintFleet,
@@ -558,12 +559,70 @@ export async function composeOrient(
         brief && typeof brief === 'object' && !Array.isArray(brief)
           ? { ...(brief as Record<string, unknown>) }
           : { fleetHealth: brief };
+      let claimSpec: unknown = null;
       try {
-        hydrated.claimSpec = await call('scheduler:get_claim_spec', {
+        claimSpec = await call('scheduler:get_claim_spec', {
           fleet: fleetMembership.fleetSlug,
         });
+        hydrated.claimSpec = claimSpec;
       } catch {
         hydrated.claimSpec = null;
+      }
+      // Fixed-wave scope is already encoded in the fleet claim spec. Reuse that
+      // literal cohort to drive work_items:burn_down's exact-ID audit; never ask a
+      // leader to maintain a second list or infer scope from current assignments.
+      const specRecord = claimSpec && typeof claimSpec === 'object'
+        ? (claimSpec as { spec?: unknown; harnessSlug?: unknown })
+        : null;
+      const cohortIds = fixedCohortIds(
+        specRecord?.spec && typeof specRecord.spec === 'object'
+          ? (specRecord.spec as { view?: { filter?: unknown } })
+          : null,
+      );
+      const cohortHarness = args.harness ??
+        (typeof specRecord?.harnessSlug === 'string' ? specRecord.harnessSlug : undefined);
+      if (cohortIds && cohortHarness) {
+        try {
+          const scoped = await call('work_items:burn_down', {
+            harness: cohortHarness,
+            ids: cohortIds.slice(0, 200),
+          });
+          hydrated.scopedBurndown = scoped;
+          const allowed = new Set(cohortIds);
+          const members = Array.isArray(hydrated.members)
+            ? hydrated.members as Array<Record<string, unknown>>
+            : [];
+          hydrated.outOfScopeAssignments = members.flatMap((member) => {
+            const ids = Array.isArray(member.workItemIds)
+              ? member.workItemIds.filter((id): id is string => typeof id === 'string')
+              : [];
+            return ids
+              .filter((id) => !allowed.has(id))
+              .map((id) => ({ agentId: member.agentId ?? null, id }));
+          });
+          const auditRows =
+            scoped && typeof scoped === 'object' &&
+            Array.isArray((scoped as { cohortAudit?: { rows?: unknown[] } }).cohortAudit?.rows)
+              ? (scoped as { cohortAudit: { rows: Array<Record<string, unknown>> } }).cohortAudit.rows
+              : [];
+          hydrated.integrityWarnings = auditRows
+            .filter((row) => row.reopenRecommended === true || row.bucket === 'missing')
+            .map((row) => ({
+              id: row.id,
+              title: row.title ?? null,
+              state: row.state ?? null,
+              evidenceVerdict: row.evidenceVerdict ?? null,
+              reopenRecommended: row.reopenRecommended === true,
+              recommendation: row.recommendation ?? null,
+            }));
+        } catch {
+          hydrated.scopedBurndown = null;
+        }
+      } else {
+        hydrated.scopedBurndown = {
+          available: false,
+          reason: cohortIds ? 'claim-spec-harness-unresolved' : 'claim-spec-not-a-fixed-id-cohort',
+        };
       }
       try {
         hydrated.walls = await call('coord:walls', {

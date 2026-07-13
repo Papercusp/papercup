@@ -75,6 +75,8 @@ export interface LeaderBriefMember {
   /** ms since the member's last recorded tool call; null = never (still booting). */
   lastToolCallAgeMs: number | null;
   doing: unknown;
+  /** Every currently-held work-item id (bounded by the member's actual claim list). */
+  workItemIds: string[];
   queuedCount: number;
   load: number;
   stalled: boolean;
@@ -154,6 +156,9 @@ export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMemb
     nextFireAt: a.nextFireAt ?? null,
     lastToolCallAgeMs: Number.isFinite(lastMs) ? Math.max(0, nowMs - lastMs) : null,
     doing: a.doing,
+    workItemIds: a.claims
+      .filter((claim) => claim.type === 'work-item' && claim.id)
+      .map((claim) => claim.id as string),
     queuedCount: a.queued.length,
     load: a.load,
     stalled: a.stalled === true,
@@ -174,7 +179,7 @@ export default defineTool({
   description:
     "A leader's ONE-call fleet-health brief: per-member sessionState, lifecycle `verdict` " +
     '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, ' +
-    'current claims (doing/queuedCount/load), healthy loop state (monitoring|waiting|' +
+    'current claims (doing/workItemIds/queuedCount/load), healthy loop state (monitoring|waiting|' +
     'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), and benchSuggestion (EI-9943: alive+speaking ' +

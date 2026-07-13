@@ -347,7 +347,7 @@ export default defineTool({
   name: 'work_items:burn_down',
   profile: 'engineer',
   description:
-    'One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `since` to also get closedSince/openedSince — itemized (not just counted) terminal transitions and newly-created items, capped + newest-first. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.',
+    'One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID: terminal bucket, closure kind, structured-evidence verdict, completion ref, and reopen recommendation. Pass `since` for itemized closed/opened deltas. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.',
   guidance: {
     when:
       'You are leading a drain/fleet/Mug pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
@@ -382,6 +382,12 @@ export default defineTool({
       .optional()
       .describe('include child/chunk rows in the census'),
     limit: z.number().int().positive().max(2000).optional(),
+    ids: z
+      .array(z.string().min(1).max(120))
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Exact fixed-cohort IDs. Narrows the census and adds cohortAudit with one row per requested ID, including missing IDs.'),
   }),
   result: z.object({
     ok: z.literal(true),
@@ -466,20 +472,27 @@ export default defineTool({
       .optional(),
   }),
   async handler(args, ctx) {
+    const requestedIds = args.ids ? [...new Set(args.ids)] : null;
     const [items, presence] = await Promise.all([
-      listWorkItems({
-        harness: args.harness,
-        kind: args.kind as WorkItemKind | undefined,
-        includeChildren: args.includeChildren,
-        limit: args.limit ?? 2000,
-      }),
+      requestedIds
+        ? Promise.all(requestedIds.map((id) => getWorkItem(id, args.harness))).then(
+            (rows) => rows.filter((row): row is WorkItem => row != null),
+          )
+        : listWorkItems({
+            harness: args.harness,
+            kind: args.kind as WorkItemKind | undefined,
+            includeChildren: args.includeChildren,
+            limit: args.limit ?? 2000,
+          }),
       listPresence({ workspaceId: (ctx as { workspaceId?: string | null }).workspaceId ?? undefined }).catch(() => []),
     ]);
+    const result = buildBurnDownResult(items, liveOwnersFromPresence(presence), {
+      harness: args.harness,
+      since: args.since ?? null,
+    });
+    if (requestedIds) result.cohortAudit = buildCohortAudit(requestedIds, items);
     return {
-      data: buildBurnDownResult(items, liveOwnersFromPresence(presence), {
-        harness: args.harness,
-        since: args.since ?? null,
-      }),
+      data: result,
     };
   },
 });

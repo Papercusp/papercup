@@ -3,6 +3,7 @@ import type { WorkItem } from '../../work-items';
 
 vi.mock('../../work-items', () => ({
   listWorkItems: vi.fn(),
+  getWorkItem: vi.fn(),
 }));
 
 vi.mock('../coordination/presence', async (importOriginal) => ({
@@ -11,14 +12,16 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
   PRESENCE_STALE_MS: 60_000,
 }));
 
-import { listWorkItems } from '../../work-items';
+import { getWorkItem, listWorkItems } from '../../work-items';
 import { listPresence } from '../coordination/presence';
 import {
   buildBurnDownResult,
+  buildCohortAudit,
   liveOwnersFromPresence,
 } from './burn_down';
 
 const mockListWorkItems = vi.mocked(listWorkItems);
+const mockGetWorkItem = vi.mocked(getWorkItem);
 const mockListPresence = vi.mocked(listPresence);
 const tool = (await import('./burn_down')).default;
 
@@ -63,6 +66,7 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 describe('work_items:burn_down', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetWorkItem.mockResolvedValue(null);
   });
 
   it('classifies terminal, in-flight, parked, and unclaimed rows', () => {
@@ -195,6 +199,51 @@ describe('work_items:burn_down', () => {
     expect([...live]).toEqual(['fresh']);
   });
 
+  it('audits every fixed-cohort id with evidence verdict and reopen recommendation', () => {
+    const verified = item({
+      id: 'WI-verified',
+      state: 'done',
+      terminalOwner: 'su-1',
+      terminalCompletionRef: 'sha:abc',
+      terminalCompletionEvidence: {
+        verifiedHow: 'unit',
+        testsRun: 'npm test',
+        testResult: '4/4 green',
+      },
+    });
+    const bare = item({
+      id: 'WI-bare',
+      state: 'resolved',
+      terminalOwner: 'su-2',
+      terminalCompletionRef: 'done assertion only',
+      terminalCompletionEvidence: null,
+    });
+    const open = item({ id: 'WI-open', state: 'open', assignee: 'su-3' });
+    const audit = buildCohortAudit(
+      ['WI-verified', 'WI-bare', 'WI-open', 'WI-missing'],
+      [verified, bare, open],
+    );
+    expect(audit).toMatchObject({ requested: 4, found: 3, missing: 1, reopenRecommended: 1 });
+    expect(audit.rows).toEqual([
+      expect.objectContaining({
+        id: 'WI-verified', bucket: 'terminal', closureKind: 'done',
+        evidenceVerdict: 'verified', completionRef: 'sha:abc', reopenRecommended: false,
+      }),
+      expect.objectContaining({
+        id: 'WI-bare', bucket: 'terminal', closureKind: 'resolved',
+        evidenceVerdict: 'missing', reopenRecommended: true,
+      }),
+      expect.objectContaining({
+        id: 'WI-open', bucket: 'in-flight', closureKind: null,
+        evidenceVerdict: 'not-applicable', reopenRecommended: false,
+      }),
+      expect.objectContaining({
+        id: 'WI-missing', bucket: 'missing', title: null,
+        evidenceVerdict: 'not-applicable', reopenRecommended: false,
+      }),
+    ]);
+  });
+
   it('wires the tool to list work-items and workspace-scoped presence', async () => {
     mockListWorkItems.mockResolvedValue([item({ id: 'WI-live', assignee: 'su-live' })]);
     mockListPresence.mockResolvedValue([
@@ -218,6 +267,31 @@ describe('work_items:burn_down', () => {
       ok: true,
       harness: 'papercusp',
       counts: { total: 1, terminal: 0, inFlight: 1, parked: 0, unclaimed: 0 },
+    });
+  });
+
+  it('loads an exact ID cohort and returns one audit row per requested ID', async () => {
+    mockGetWorkItem.mockImplementation(async (id) =>
+      id === 'WI-found'
+        ? item({
+            id,
+            state: 'closed',
+            terminalCompletionRef: 'ref',
+            terminalOwner: 'su-1',
+            terminalCompletionEvidence: { verifiedHow: 'manual', testsRun: 'probe', testResult: 'ok' },
+          })
+        : null,
+    );
+    mockListPresence.mockResolvedValue([]);
+
+    const res = await callTool({ harness: 'papercusp', ids: ['WI-found', 'WI-missing', 'WI-found'] });
+
+    expect(mockListWorkItems).not.toHaveBeenCalled();
+    expect(mockGetWorkItem).toHaveBeenCalledTimes(2);
+    expect(mockGetWorkItem).toHaveBeenCalledWith('WI-found', 'papercusp');
+    expect(res.data).toMatchObject({
+      counts: { total: 1, terminal: 1 },
+      cohortAudit: { requested: 2, found: 1, missing: 1, reopenRecommended: 0 },
     });
   });
 });

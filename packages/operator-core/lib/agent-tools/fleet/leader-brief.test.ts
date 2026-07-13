@@ -46,11 +46,20 @@ describe('projectMember (pure)', () => {
     expect(m.lastToolCallAgeMs).toBeNull();
   });
 
-  it('collapses claims to queuedCount/load, never the full claim list', () => {
-    const agent = baseAgent({ queued: [{ id: 'WI-1' }, { id: 'WI-2' }] as never, load: 3 });
+  it('collapses claims to queuedCount/load and bounded work-item ids, never the full claim records', () => {
+    const agent = baseAgent({
+      claims: [
+        { type: 'work-item', id: 'WI-1' },
+        { type: 'plan-item', id: 'P-1' },
+        { type: 'work-item', id: 'WI-2' },
+      ] as never,
+      queued: [{ id: 'WI-1' }, { id: 'WI-2' }] as never,
+      load: 3,
+    });
     const m = projectMember(agent, NOW);
     expect(m.queuedCount).toBe(2);
     expect(m.load).toBe(3);
+    expect(m.workItemIds).toEqual(['WI-1', 'WI-2']);
     expect('claims' in m).toBe(false);
   });
 
