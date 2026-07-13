@@ -91,6 +91,20 @@ export const rubricTemplateDataSchema = z
       .string()
       .optional()
       .describe('one-line summary; the long-form narrative lives in the plan body'),
+    proposedBy: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'ownerId that authored the CURRENT proposal (EI-10751 provenance: the plan owner column is the ORIGINAL creator and does not track a re-propose, so projecting owner as proposer misattributes every revision)',
+      ),
+    ratifiedBy: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'ownerId that ratified this rubric (EI-10751: projecting the plan owner as ratifier fabricated the self-ratification record D-012 forbids). Written by ratifyRubric in the same locked write that activates; cleared by any re-propose (a revision needs re-ratification)',
+      ),
   })
   .strict();
 

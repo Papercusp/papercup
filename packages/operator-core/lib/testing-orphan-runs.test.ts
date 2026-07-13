@@ -89,6 +89,10 @@ describe('findOrphanTestRunGroups', () => {
     const { sql } = fakeSql([
       { harness_slug: null, file_path: '_retired/snapshot-system/x.test.ts', row_count: 3 },
       { harness_slug: null, file_path: '.papercusp/scratch/tdg-abc/app/x.test.ts', row_count: 4 },
+      // The exact EI-10761 phantom: a flake-soak self-test fixture, null harness,
+      // recorded before the reporter exclusion landed. Must classify as non-signal
+      // and be prunable without a file-existence check.
+      { harness_slug: null, file_path: 'apps/operator-vite/src/components/left-sidebar/MugTab.flakeproof.test.tsx', row_count: 2 },
       { harness_slug: null, file_path: 'papercupai-workspace/papercusp-checkpoint/packages/x.test.ts', row_count: 5 },
       { harness_slug: null, file_path: 'packages/live.test.ts', row_count: 6 },
     ]);
@@ -96,6 +100,7 @@ describe('findOrphanTestRunGroups', () => {
     expect(out).toEqual<OrphanRunGroup[]>([
       { harnessSlug: null, filePath: '_retired/snapshot-system/x.test.ts', rowCount: 3, reason: 'retired_path' },
       { harnessSlug: null, filePath: '.papercusp/scratch/tdg-abc/app/x.test.ts', rowCount: 4, reason: 'scratch_path' },
+      { harnessSlug: null, filePath: 'apps/operator-vite/src/components/left-sidebar/MugTab.flakeproof.test.tsx', rowCount: 2, reason: 'flakeproof_path' },
       { harnessSlug: null, filePath: 'papercupai-workspace/papercusp-checkpoint/packages/x.test.ts', rowCount: 5, reason: 'wrong_tree_path' },
     ]);
     expect(existsSyncMock).not.toHaveBeenCalled();
