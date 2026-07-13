@@ -315,7 +315,12 @@ function beginAwaitingResponse(): void {
       try {
         window.dispatchEvent(
           new CustomEvent('papercusp:voiceTimeout', {
-            detail: { phase: 'response', message: 'Agent did not respond — check connection.' },
+            // EI-10795: the old copy ("check connection") misdiagnosed the common cause.
+            // This window expires far more often because the brain couldn't get an LLM slot
+            // (account-pool crunch) than because the socket is down — and it sent the owner
+            // hunting a network fault that wasn't there. Say what's actually true: no reply
+            // arrived in time, and retrying is the useful action.
+            detail: { phase: 'response', message: "Papercup didn't reply in time — it may be busy. Try again." },
           }),
         );
       } catch { /* ignore */ }
