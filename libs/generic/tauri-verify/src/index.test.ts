@@ -85,6 +85,29 @@ describe('Tauri verification surface', () => {
     });
   });
 
+  it('rejects a mounted route error boundary instead of reporting a false app-ready green', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(json({
+        result: JSON.stringify({
+          href: 'http://127.0.0.1:3170/adv', title: 'Papercusp', readyState: 'complete',
+        }),
+      }))
+      .mockResolvedValueOnce(json({
+        result: JSON.stringify({
+          readyState: 'complete', rootMounted: true, href: 'http://127.0.0.1:3170/adv',
+          pathname: '/adv', search: '', hash: '', origin: 'http://127.0.0.1:3170',
+          routeError: 'This view hit an error',
+        }),
+      }));
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(createVerifier({ bridgePort: 4444, bridgeToken: 'secret' }).appReady()).resolves.toMatchObject({
+      ok: false,
+      code: 'route_error_boundary',
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('asserts a semantic screen using its route, query, and live selectors', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(json({

@@ -65,7 +65,10 @@ export async function assertAppReady(config: VerifyConfig): Promise<VerifyResult
       pathname: location.pathname,
       search: location.search,
       hash: location.hash,
-      origin: location.origin
+      origin: location.origin,
+      routeError: Array.from(document.querySelectorAll('[role="alert"] h2'))
+        .map((node) => node.textContent?.trim())
+        .find((text) => text === 'This view hit an error') ?? null
     })`,
   );
   if (!stateResult.ok) return stateResult;
@@ -77,6 +80,7 @@ export async function assertAppReady(config: VerifyConfig): Promise<VerifyResult
     search: string;
     hash: string;
     origin: string;
+    routeError: string | null;
   }>(stateResult.value, 'app readiness state');
   if (!state.ok) return state;
 
@@ -87,6 +91,14 @@ export async function assertAppReady(config: VerifyConfig): Promise<VerifyResult
       ok: false,
       code: 'webview_not_ready',
       error: `Webview not ready: readyState=${state.value.readyState}, rootMounted=${state.value.rootMounted}`,
+      evidence: state.value,
+    };
+  }
+  if (state.value.routeError) {
+    return {
+      ok: false,
+      code: 'route_error_boundary',
+      error: `Target webview is showing its route error boundary: ${state.value.routeError}`,
       evidence: state.value,
     };
   }

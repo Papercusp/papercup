@@ -26,7 +26,7 @@ import {
   type ObservationRatings,
 } from './harness/improvements/observation-types';
 import { issuesScopeWorkspace, issuesOutLinksMany } from './issues-engineer';
-import { getRubric } from './rubrics';
+import { getRubric, type RubricStatus } from './rubrics';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
@@ -412,6 +412,14 @@ export interface CriterionTrend {
    * (P-004 / D-001 read-time scale; unknown/custom excluded, null when none map).
    */
   mean10: number | null;
+  /**
+   * The criterion's machine-readable instrument binding, parsed from a trailing
+   * `[instrumentKey: <key>|none]` token on the rubric criterion's `model` (WI-4607).
+   * A real key = the concrete instrument that grades this criterion; `'none'` =
+   * explicitly un-instrumented; `null`/absent = the criterion definition carries no
+   * such token. Lets the trend view show which instrument backs each criterion.
+   */
+  instrumentKey?: string | null;
   /** The chronological series as RLE runs (oldest → newest). Only present when
    *  requested (`includeSeries`, WI-2943) — the summary fields above are the
    *  default payload. */
@@ -536,6 +544,13 @@ export interface RubricTrend {
   window: { since?: string; from?: string; to?: string };
   /** Per-criterion trends, criterion key ASC (stable output). */
   criteria: CriterionTrend[];
+  /** Governance provenance (WI-4607, D-012): the rubric's status + who proposed vs.
+   *  ratified it, so the detail panel can surface author≠ratifier the same way the
+   *  RubricsPanel list does. Sourced from the same getRubric() read the mean10 scale
+   *  projection already runs — no extra store hit. Absent only for a missing rubric. */
+  status?: RubricStatus;
+  proposedBy?: string | null;
+  ratifiedBy?: string | null;
   /** Staleness signal (P-011): criteria the Overwatch persistently can't assess,
    *  suggesting the rubric's model has drifted and should re-enter the queen↔scout
    *  loop for re-ratification. */

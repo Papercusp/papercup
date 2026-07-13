@@ -4,7 +4,8 @@ Stable, target-explicit assertions for Papercusp’s Tauri shell. The library us
 the same authenticated dev-bridge protocol as `tauri-agent-tools`, but gives
 tests and agents semantic operations instead of one-off JavaScript snippets:
 
-- `appReady()` — authenticated bridge, mounted webview, target API, and route
+- `appReady()` — authenticated bridge, mounted webview, target API, route, and
+  explicit rejection of the mounted route-error boundary (no false green)
 - `route()` — exact or regular-expression pathname assertion
 - `scope()` — active harness and workspace assertion
 - `screen()` — semantic route, query, and live selector assertion

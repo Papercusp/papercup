@@ -9,13 +9,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ sql: vi.fn() }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(() => ({ sql: h.sql })),
 }));
 
 const tool = (await import('./walls')).default;
 
-type Out = { content: Array<{ text: string }>; isError?: boolean };
+type Out = {
+  data: { ok: boolean; count: number; waiting: number; stranded: number; walls: unknown[] };
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -29,9 +32,8 @@ describe('coord:walls handler', () => {
   it('calls getOrgPg().sql as the tagged-template function and returns an empty wall set', async () => {
     const out = (await tool.handler({}, { workspaceId: 'ws-test' } as never)) as Out;
 
-    expect(out.isError).not.toBe(true);
     expect(h.sql).toHaveBeenCalledTimes(3);
-    expect(JSON.parse(out.content[0]!.text)).toMatchObject({
+    expect(out.data).toMatchObject({
       ok: true,
       count: 0,
       waiting: 0,
