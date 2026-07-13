@@ -272,16 +272,31 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // wakes it over coord with delegated questions), never user-facing. Same
     // Sentinel glyph/kind ⇒ same group_rank, and it sits adjacent to the
     // front pane, so the P-011 regroup never reorders it.
-    let sentinel_deep_cmd_block = "command \"psu-sentinel-deep\"";
-    // WI-4485: the deep half rides in a HIDDEN FLOATING pane, not a tiled sibling — the
-    // only way to honour D-001's "the split must never be visible in the dock". The tab
-    // sets hide_floating_panes=true, so it is not drawn; it still launches (verified on
-    // zellij 0.44.3), so the front-end can wake it over coord exactly as before. It keeps
-    // the SAME front-door label: on the off-chance a user toggles floating panes into
-    // view, they see the one "Papercup" identity, never a "-deep" internal role name.
-    let sentinel_deep_floating_block = format!(
-        "    floating_panes {{\n        pane name=\"{sentinel_name}\" {{\n            {sentinel_deep_cmd_block}\n        }}\n    }}"
-    );
+    // WI-4485: there is NO papercup-deep pane in the dock — not tiled, not floating.
+    //
+    // P-014 shipped it as a TILED SIBLING carrying the SAME "🥤 papercup" label, on the
+    // theory that an identical name made the fast/deep split invisible. It does the
+    // opposite: two visible identically-named panes read as a DUPLICATE. The owner
+    // reported it ("why do I see 2x papercup agents ... there should only be 1").
+    // The first fix attempt moved it to a `floating_panes` block with the tab's
+    // hide_floating_panes=true — zellij 0.44.3 PARSES that attribute but still RENDERS
+    // the pane, so the owner then saw "one in a floating panel and one in the dock". A
+    // pane you cannot reliably hide is a pane you should not create.
+    //
+    // The deep half never needed a pane at all:
+    //   - it is discovered via presence (listPresence, agentRole='papercup-deep') and
+    //     woken over coord (sendMessage + wakeRecipients) — see papercup-deep-delegate-deps.ts.
+    //     It NEVER takes pane input.
+    //   - ~/.papercusp/sentinel-deep-pane (which the psu-sentinel-deep shim writes) is
+    //     WRITE-ONLY — nothing in the tree reads it. It was copy-pasted from the
+    //     front-door pane, whose ~/.papercusp/sentinel-pane IS read (voice pane-targeting).
+    //   - papercup-deep-delegate.ts documents the no-pane configuration as SUPPORTED and
+    //     TESTED: "FALLBACK (kept for the NO-DEEP-PANE case): when NO live papercup-deep
+    //     session exists, spawn an EPHEMERAL background agent with the question as its
+    //     brief — same work_item, same answer-return seam."
+    // So deep thinking still works with zero dock surface: the delegate spawns the deep
+    // agent on demand. D-001's "the fast/deep split must never be visible in the dock" is
+    // honoured by NOT PUTTING IT IN THE DOCK — the only way that actually holds.
     // P-004 / D-009: the operator pane is psu, so the reactive agent stack has a
     // dedicated driver — the `pui dock-driver` pane runs the reactive loop
     // (dock_agent_panes) and renders the fleet roster as the dock's controller.
@@ -454,9 +469,8 @@ layout {{
             plugin location="zellij:status-bar"
         }}
     }}
-    tab name="this hive" focus=true hide_floating_panes=true {{
+    tab name="this hive" focus=true {{
 {dock_body}
-{sentinel_deep_floating_block}
     }}
     tab name="network" {{
         pane name="network" {{
@@ -1073,14 +1087,19 @@ mod tests {
         assert!(!on.contains("args \"chat-pane\""));
         // queen-overwatch-live-visibility D-003: the ♛ queen + 👁 overwatch panes
         // now render the READ-ONLY shared transcript view (`pui brain-view`), so the
-        // only psu sessions in the dock are the sentinel (operator chat) and its
-        // hidden deep pane (P-014). That is what lets every desktop instance show
-        // the SAME live queen/overwatch and survive a shell exit. The one-pane
-        // `pui agent-pane` variant stays reverted. NOTE the closing quote in the
-        // needle: it keeps "psu-sentinel" from substring-matching
-        // "psu-sentinel-deep" — exactly one of EACH wrapper.
+        // ONLY psu session in the dock is the sentinel (the front-door chat). That is
+        // what lets every desktop instance show the SAME live queen/overwatch and
+        // survive a shell exit. The one-pane `pui agent-pane` variant stays reverted.
+        // NOTE the closing quote in the needle: it keeps "psu-sentinel" from
+        // substring-matching "psu-sentinel-deep".
         assert_eq!(on.matches("command \"psu-sentinel\"").count(), 1); // the front pane (queen+overwatch are pui brain-view)
-        assert_eq!(on.matches("command \"psu-sentinel-deep\"").count(), 1); // the deep pane (P-014)
+                                                                      // WI-4485: NO deep pane in the dock — not tiled, not floating. P-014 put one here
+                                                                      // (a 2nd pane sharing the "🥤 papercup" label) and the owner saw "2x papercup";
+                                                                      // moving it to a hidden floating pane still RENDERED (zellij parses
+                                                                      // hide_floating_panes but draws the pane anyway). The deep half needs no pane: it
+                                                                      // is found via presence + woken over coord, and papercup-deep-delegate.ts
+                                                                      // explicitly supports the "no-deep-pane case" by spawning an ephemeral agent.
+        assert_eq!(on.matches("command \"psu-sentinel-deep\"").count(), 0);
                                                                             // And no BARE `command "psu"` leaks back (brain/queen/overwatch are all pui).
         assert_eq!(on.matches("command \"psu\"\n").count(), 0);
         assert!(
@@ -1134,71 +1153,51 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_deep_pane_is_hidden_never_a_second_visible_papercup() {
-        // WI-4485 — REGRESSION PIN. This test previously asserted the OPPOSITE and is
-        // why the bug shipped: it required a SECOND TILED pane ("deep pane unfocused at
-        // 12%") while its own comment claimed "the fast/deep split must never be visible
-        // in the dock". Both cannot be true. Two visible panes sharing the one
-        // "🥤 papercup" label do not hide the split — they read as a DUPLICATE, and the
-        // owner reported exactly that ("why do I see 2x papercup agents ... there should
-        // only be 1"). An identical NAME conceals nothing; only NOT RENDERING it does.
+    fn chat_dock_has_exactly_one_papercup_and_no_deep_pane_at_all() {
+        // WI-4485 — REGRESSION PIN, second cut. The owner reported "2x papercup agents";
+        // the FIRST fix moved the deep pane into `floating_panes` with the tab's
+        // hide_floating_panes=true, and the owner then reported "one is in a floating
+        // panel and one is in the dock" — zellij 0.44.3 parses that attribute but still
+        // RENDERS the pane. A pane you cannot reliably hide is a pane you must not create.
         //
-        // The invariant, pinned: exactly ONE papercup pane is DRAWN. The deep half still
-        // exists and still launches — as a HIDDEN FLOATING pane (falsification-tested on
-        // zellij 0.44.3: a pane under `floating_panes` in a `hide_floating_panes=true`
-        // tab does run its command), so the coord-driven delegate chain is intact.
+        // The deep half needs NO pane: it is found via presence (agentRole='papercup-deep')
+        // and woken over coord, never by pane input; ~/.papercusp/sentinel-deep-pane is
+        // write-only (nothing reads it); and papercup-deep-delegate.ts explicitly supports
+        // + tests the "no-deep-pane case" by spawning an ephemeral background agent.
+        //
+        // The invariant: the dock contains EXACTLY ONE papercup pane and NO psu-sentinel-deep
+        // launch of any kind. Deep thinking still works — via the delegate, off-screen.
         let kdl = chat_dock_kdl(
             &["psu".to_string(), "--brain".to_string()],
             &Lexicon::default(),
         );
 
-        // 1. The tab hides floating panes → the deep pane is never drawn.
-        assert!(
-            kdl.contains("tab name=\"this hive\" focus=true hide_floating_panes=true"),
-            "the dock tab must hide floating panes: {kdl}"
-        );
-
-        // 2. The deep half is INSIDE the floating block — not a tiled sibling.
-        let floating_at = kdl
-            .find("floating_panes {")
-            .expect("the deep pane must ride in a floating_panes block");
-        let deep_at = kdl
-            .find("command \"psu-sentinel-deep\"")
-            .expect("the deep session must still be launched");
-        assert!(
-            floating_at < deep_at,
-            "the deep pane must be declared inside floating_panes, not tiled: {kdl}"
-        );
-
-        // 3. The FRONT pane is the only papercup pane in the TILED body, and it has its
-        //    12% back (28% → 40%). Anything claiming a tiled 12% papercup is the old bug.
-        let tiled = &kdl[..floating_at];
+        // Exactly ONE papercup pane in the entire dock — tiled or otherwise.
         assert_eq!(
-            tiled.matches("name=\"🥤 papercup\"").count(),
+            kdl.matches("name=\"🥤 papercup\"").count(),
             1,
-            "exactly ONE visible papercup pane in the dock: {tiled}"
+            "exactly ONE papercup pane in the dock: {kdl}"
         );
+        // The deep pane must not be launched from the dock in ANY form.
         assert!(
-            tiled.contains("name=\"🥤 papercup\" focus=true size=\"40%\""),
-            "front pane focused at 40% (it took the deep pane's 12% back): {tiled}"
+            !kdl.contains("psu-sentinel-deep"),
+            "the dock must not launch a papercup-deep pane at all (WI-4485): {kdl}"
         );
+        // No floating-pane escape hatch — that was the failed first fix.
         assert!(
-            !tiled.contains("command \"psu-sentinel-deep\""),
-            "the deep pane must NOT be a tiled sibling — that is the 2x-papercup bug: {tiled}"
+            !kdl.contains("floating_panes") && !kdl.contains("hide_floating_panes"),
+            "a floating pane is still RENDERED by zellij — do not reintroduce it: {kdl}"
         );
-
-        // 4. The split is never NAMED: no internal "-deep" role leaks into a pane label,
-        //    even if a user toggles floating panes into view.
+        // The front-door pane keeps the full 40% it originally had, and still leads the dock.
         assert!(
-            !kdl.contains("name=\"🥤 papercup-deep\"") && !kdl.contains("deep\" {"),
-            "the deep pane must not be labeled as deep: {kdl}"
+            kdl.contains("name=\"🥤 papercup\" focus=true size=\"40%\""),
+            "front pane focused at 40%: {kdl}"
         );
-
-        // 5. The front-door pane still leads the tiled dock, above overwatch.
         let front = kdl.find("command \"psu-sentinel\"").unwrap();
         let ow = kdl.find("name=\"🫖 kettle\"").unwrap();
         assert!(front < ow, "the front pane leads the dock, above overwatch");
     }
+
 
     #[test]
     fn chat_dock_overwatch_pane_sits_above_the_queen() {

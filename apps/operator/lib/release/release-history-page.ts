@@ -361,6 +361,12 @@ ${body}${internal}
   </details>`;
 }
 
+/**
+ * Order: downloads BEFORE the changelog. A beta tester came here to get the
+ * installer; making them scroll past the release notes to reach it is backwards.
+ * It also keeps the prose honest — 0.0.8's changelog says "download the installer
+ * above", which was a lie when the table rendered underneath it.
+ */
 function renderRelease(rel: HydratedRelease, isCurrent: boolean): string {
   const { row } = rel;
   const meta: string[] = [`Cut ${formatDate(row.cutAt)}`];
@@ -378,8 +384,8 @@ function renderRelease(rel: HydratedRelease, isCurrent: boolean): string {
     ${isCurrent ? '<span class="tag current">latest</span>' : ''}
   </div>
   <p class="meta">${meta.join(' · ')}</p>
-  ${changelog}
   ${renderArtifacts(row.artifacts)}
+  ${changelog}
 ${renderWork(rel)}
 </section>`;
 }

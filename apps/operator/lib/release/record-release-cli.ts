@@ -241,12 +241,34 @@ function arg(argv: string[], flag: string): string | null {
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null;
 }
 
+/**
+ * Rebuild every page from the registry WITHOUT recording anything.
+ *
+ * The pages are a projection, so a fix to the RENDERER (a leak in the markup, a
+ * wording change) must be re-publishable on its own. Without this, the only way to
+ * regenerate is to re-record a release — which would silently re-snapshot the work
+ * window against a NEW `now`, quietly rewriting which items a past release shipped.
+ * A rendering fix must never be able to change history.
+ */
+export async function regenerateOnly(scope: Scope, outDir: string): Promise<number> {
+  const sql = postgres(getHarnessAdminUrl(), { max: 1 });
+  try {
+    const { pages } = await generateSite(sql, scope, outDir);
+    console.log(`[record-release] regenerated ${pages} page(s) → ${outDir}  (registry untouched)`);
+    return 0;
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const version = arg(argv, '--version');
-  if (!version) {
+  const regenerate = argv.includes('--regenerate');
+  if (!version && !regenerate) {
     console.error('usage: record-release-cli --version <x.y.z> [--channel alpha] [--git-sha <sha>]');
     console.error('       [--changelog-file <path>] [--cut-at <iso>] [--since <iso>]');
     console.error('       [--bundle <dir>] [--out <dir>] [--dry-run]');
+    console.error('   or: record-release-cli --regenerate [--out <dir>]   # re-render pages only');
     return 2;
   }
   const channel = arg(argv, '--channel') ?? 'alpha';
@@ -259,9 +281,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     process.env.PAPERCUSP_BUNDLE_DIR ??
     path.join(process.env.CARGO_TARGET_DIR ?? `${process.env.HOME}/.cargo-target`, 'release/bundle');
   const outDir = arg(argv, '--out') ?? path.join(bundleDir, 'release-history');
+  const scope: Scope = {
+    workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',
+    harnessSlug: arg(argv, '--harness') ?? 'papercusp',
+  };
+
+  if (regenerate) return regenerateOnly(scope, outDir);
 
   return run({
-    version,
+    version: version as string,
     channel,
     gitSha: arg(argv, '--git-sha'),
     cutAt: cutAtRaw ? new Date(cutAtRaw) : new Date(),
@@ -269,10 +297,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     changelogMd,
     bundleDir,
     outDir,
-    scope: {
-      workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',
-      harnessSlug: arg(argv, '--harness') ?? 'papercusp',
-    },
+    scope,
     cutBy: arg(argv, '--cut-by') ?? process.env.PAPERCUSP_SESSION_ID ?? null,
     dryRun: argv.includes('--dry-run'),
   });

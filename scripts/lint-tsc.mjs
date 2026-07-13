@@ -89,7 +89,13 @@ function main() {
   let tscOutput = '';
   let tscThrew = false;
   try {
-    tscOutput = execSync('npx tsc -p packages/operator-core/tsconfig.json --noEmit 2>&1', {
+    // `--incremental false` (WI-4488): operator-core's tsconfig has `incremental:
+    // true`, and a warm/stale tsconfig.tsbuildinfo makes `tsc --noEmit` UNDER-REPORT
+    // errors in files affected-but-not-edited — on the shared dev tree this masked
+    // +29 real errors as green for days while CI (fresh checkout, no buildinfo)
+    // red-pinned at the same commit. A gate count must not depend on cache warmth:
+    // always measure fresh, so a hand-run here and a CI run agree.
+    tscOutput = execSync('npx tsc -p packages/operator-core/tsconfig.json --noEmit --incremental false 2>&1', {
       cwd: ROOT,
       encoding: 'utf-8',
       maxBuffer: 64 * 1024 * 1024,
