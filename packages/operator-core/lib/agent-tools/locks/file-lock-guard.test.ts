@@ -5,7 +5,7 @@
  * uncoordinated path → no lock at all. The actual acquire/release SQL is the
  * same `tryAcquire`/`tryRelease` `locks:acquire` already uses in production.
  */
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +41,7 @@ import { guardFileLock, toRepoRelative, withFileLock, fileLockedResult } from '.
 // "uncoordinated path" test wrongly hit the lock store).
 const REPO = mkdtempSync(join(tmpdir(), 'flg-repo-'));
 mkdirSync(join(REPO, '.git'));
+writeFileSync(join(REPO, '.git', 'HEAD'), 'ref: refs/heads/main\n'); // a VALID git dir needs HEAD (valid-git-entry.ts)
 const NO_REPO = mkNonRepoTmpDir('flg-norepo-');
 const ctx = { projectDir: REPO, log: () => {} } as never;
 

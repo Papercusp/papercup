@@ -20,16 +20,18 @@
  * regardless of how the runner configures temp.
  */
 
-import { existsSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { hasValidGitEntry } from './valid-git-entry';
 
-/** Walk up from `dir` to `/` looking for a `.git` entry (dir OR submodule/worktree
- *  file). Mirrors `findRepoRoot` in file-lock-guard.ts. */
+/** Walk up from `dir` to `/` looking for a VALID `.git` entry (gitlink file OR
+ *  git dir with HEAD — see valid-git-entry.ts for why bare existence is not
+ *  enough). Mirrors `findRepoRoot` in file-lock-guard.ts. */
 export function hasGitAncestor(dir: string): boolean {
   let d = dir;
   for (let i = 0; i < 60 && d && d !== dirname(d); i++) {
-    if (existsSync(join(d, '.git'))) return true;
+    if (hasValidGitEntry(d)) return true;
     d = dirname(d);
   }
   return false;

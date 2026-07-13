@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, realpathSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,6 +7,13 @@ import {
   lockCoordinationDomain,
   __resetLockCoordinationDomain,
 } from './coordination-domain';
+
+/** Scaffold a VALID fake git dir — findRepoRoot requires a gitlink file or a git
+ *  dir WITH HEAD (valid-git-entry.ts); a bare empty `.git` no longer counts. */
+const mkFakeGitDir = (root: string) => {
+  mkdirSync(join(root, '.git'));
+  writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+};
 
 const SAVED = process.env.PAPERCUSP_LOCK_DOMAIN;
 beforeEach(() => {
@@ -27,7 +34,7 @@ describe('lockDomainForProjectDir', () => {
 
   it('resolves to the realpath of the nearest .git ancestor (so two workspaces over one checkout serialize)', () => {
     const root = mkdtempSync(join(tmpdir(), 'lockdom-'));
-    mkdirSync(join(root, '.git'));
+    mkFakeGitDir(root);
     const sub = join(root, 'a', 'b');
     mkdirSync(sub, { recursive: true });
     expect(lockDomainForProjectDir(sub)).toBe(realpathSync(root));
@@ -38,16 +45,27 @@ describe('lockDomainForProjectDir', () => {
     expect(lockDomainForProjectDir(dir)).toBe(realpathSync(dir));
   });
 
+  it('ignores a stray EMPTY `.git` dir ancestor — never a domain that collapses unrelated locks (the 2026-07-13 /tmp/.git incident)', () => {
+    // An accidental `mkdir .git` in a shared ancestor (it happened at /tmp) must
+    // not become the lock domain for every path beneath it — a HEAD-less `.git`
+    // dir is not a repo. The domain falls through to the start dir instead.
+    const root = mkdtempSync(join(tmpdir(), 'lockdom-stray-'));
+    mkdirSync(join(root, '.git')); // EMPTY — no HEAD, not a gitlink
+    const sub = join(root, 'a', 'b');
+    mkdirSync(sub, { recursive: true });
+    expect(lockDomainForProjectDir(sub)).toBe(realpathSync(sub));
+  });
+
   it('ignores an empty / whitespace-only PAPERCUSP_LOCK_DOMAIN (never an empty domain that collapses all locks)', () => {
     const root = mkdtempSync(join(tmpdir(), 'lockdom-empty-'));
-    mkdirSync(join(root, '.git'));
+    mkFakeGitDir(root);
     process.env.PAPERCUSP_LOCK_DOMAIN = '   ';
     expect(lockDomainForProjectDir(root)).toBe(realpathSync(root)); // falls through, not '' nor the blank override
   });
 
   it('resolves a SYMLINKED path to the same domain as the real path (two paths to one checkout serialize)', () => {
     const root = mkdtempSync(join(tmpdir(), 'lockdom-real-'));
-    mkdirSync(join(root, '.git'));
+    mkFakeGitDir(root);
     const link = `${root}-link`;
     symlinkSync(root, link); // a second path that points at the same checkout
     // Editing via the real path and via the symlink must key on the SAME (realpath) domain — else the
@@ -58,10 +76,10 @@ describe('lockDomainForProjectDir', () => {
 
   it('keys on the NEAREST .git ancestor when repos are nested (a submodule serializes on its own root)', () => {
     const outer = mkdtempSync(join(tmpdir(), 'lockdom-outer-'));
-    mkdirSync(join(outer, '.git'));
+    mkFakeGitDir(outer);
     const inner = join(outer, 'sub');
     mkdirSync(inner);
-    mkdirSync(join(inner, '.git')); // a nested repo (e.g. a submodule) with its OWN .git
+    mkFakeGitDir(inner); // a nested repo (e.g. a submodule) with its OWN .git
     const deep = join(inner, 'x', 'y');
     mkdirSync(deep, { recursive: true });
     expect(lockDomainForProjectDir(deep)).toBe(realpathSync(inner)); // the inner root wins, not the outer

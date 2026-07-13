@@ -37,6 +37,7 @@
 
 import { existsSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { hasValidGitEntry } from './valid-git-entry';
 import { readIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
@@ -81,13 +82,14 @@ export function toRepoRelative(rawPath: string, cwd: string): string | null {
 }
 
 /** Walk up from a path (or its nearest existing parent) to the dir holding a
- *  `.git` entry — file (submodule/worktree) OR dir. Mirrors the hook's
- *  `find_repo_root`: deriving the root per-edit keeps keys correct across the
- *  many worktrees in this workspace. */
+ *  VALID `.git` entry — gitlink file (submodule/worktree) OR git dir with HEAD
+ *  (see valid-git-entry.ts: a stray empty `.git` must not re-key locks).
+ *  Mirrors the hook's `find_repo_root`: deriving the root per-edit keeps keys
+ *  correct across the many worktrees in this workspace. */
 function findRepoRoot(absPath: string): string | null {
   let d = existsSync(absPath) && isDir(absPath) ? absPath : dirname(absPath);
   for (let i = 0; i < 40 && d && d !== '/'; i++) {
-    if (existsSync(join(d, '.git'))) return d;
+    if (hasValidGitEntry(d)) return d;
     const parent = dirname(d);
     if (parent === d) break;
     d = parent;

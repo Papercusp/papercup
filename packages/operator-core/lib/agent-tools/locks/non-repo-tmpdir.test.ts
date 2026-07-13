@@ -8,18 +8,37 @@
  * and the path is treated as coordinated. This test arms exactly that trap and
  * proves mkNonRepoTmpDir stays repo-free regardless.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { hasGitAncestor, mkNonRepoTmpDir } from './non-repo-tmpdir';
 
+/** Scaffold a VALID fake git dir — the walks require a gitlink file or a git
+ *  dir WITH HEAD (valid-git-entry.ts); a bare empty `.git` no longer counts. */
+const mkFakeGitDir = (root: string) => {
+  mkdirSync(join(root, '.git'));
+  writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+};
+
 describe('hasGitAncestor', () => {
   it('detects a `.git` ancestor', () => {
     const root = mkdtempSync(join('/tmp', 'nrt-root-'));
     try {
-      mkdirSync(join(root, '.git'));
+      mkFakeGitDir(root);
       const child = join(root, 'a', 'b');
+      mkdirSync(child, { recursive: true });
+      expect(hasGitAncestor(child)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('detects a `.git` FILE ancestor (submodule / worktree gitlink)', () => {
+    const root = mkdtempSync(join('/tmp', 'nrt-gitlink-'));
+    try {
+      writeFileSync(join(root, '.git'), 'gitdir: /somewhere/else/.git/modules/x\n');
+      const child = join(root, 'a');
       mkdirSync(child, { recursive: true });
       expect(hasGitAncestor(child)).toBe(true);
     } finally {
@@ -31,6 +50,21 @@ describe('hasGitAncestor', () => {
     const root = mkdtempSync(join('/tmp', 'nrt-clean-'));
     try {
       expect(hasGitAncestor(root)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a stray EMPTY `.git` dir — not a valid repo marker (the 2026-07-13 /tmp/.git incident)', () => {
+    // Any process can accidentally `mkdir .git` in a shared dir (it happened at
+    // /tmp — red-pinned the release gate and would have collapsed every
+    // non-repo tmpdir lock domain to /tmp). A HEAD-less `.git` dir must not count.
+    const root = mkdtempSync(join('/tmp', 'nrt-stray-'));
+    try {
+      mkdirSync(join(root, '.git')); // EMPTY — no HEAD, not a gitlink
+      const child = join(root, 'a', 'b');
+      mkdirSync(child, { recursive: true });
+      expect(hasGitAncestor(child)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -49,7 +83,7 @@ describe('mkNonRepoTmpDir', () => {
     const fakeRepo = mkdtempSync(join('/tmp', 'nrt-fakerepo-'));
     const inRepoTmp = join(fakeRepo, 'tmp');
     try {
-      mkdirSync(join(fakeRepo, '.git'));
+      mkFakeGitDir(fakeRepo);
       mkdirSync(inRepoTmp);
       process.env.TMPDIR = inRepoTmp; // os.tmpdir() now resolves inside fakeRepo
       expect(hasGitAncestor(tmpdir())).toBe(true); // precondition: trap is armed

@@ -19,17 +19,20 @@
  *
  * `PAPERCUSP_LOCK_DOMAIN` overrides (tests / packaged builds with no repo on disk).
  */
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
+import { hasValidGitEntry } from './valid-git-entry';
 
 let _domain: string | null = null;
 
-/** Walk up from `start` to the nearest ancestor containing a `.git` entry. */
+/** Walk up from `start` to the nearest ancestor containing a VALID `.git` entry
+ *  (gitlink file OR git dir with HEAD — see valid-git-entry.ts: a stray empty
+ *  `.git` dir must not collapse lock domains). */
 function findRepoRoot(start: string): string {
   let dir = start;
   for (let i = 0; i < 16; i++) {
-    if (existsSync(join(dir, '.git'))) return dir;
+    if (hasValidGitEntry(dir)) return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
