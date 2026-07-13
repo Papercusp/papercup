@@ -40,10 +40,21 @@
  * The fire is injectable (`setOverwatchLaunchFire`) so unit tests capture the
  * dispatch without a real HTTP call (the codebase's `setBlueprintRunFire` pattern).
  */
+import { randomUUID } from "node:crypto";
 import { getOrgPg } from "@papercusp/db-org";
 import { loopbackFetch } from "../loopback-fetch";
 import { operatorApiBase } from "../operator-api-base";
 import { classifyFireError, recordFire } from "../autoloop";
+import { recordSpawn, finishSpawn } from "../fleet/spawn-tree";
+import {
+  heartbeatSpawns,
+  recordSpawnPid,
+  SPAWN_HEARTBEAT_INTERVAL_MS,
+} from "../fleet/spawn-reclaim";
+import {
+  managedSetInterval,
+  type ManagedHandle,
+} from "@papercusp/scheduled-registry";
 import {
   registerSystemAction,
   type SystemActionCtx,
@@ -173,7 +184,7 @@ function resolveOverwatchLaunchInstallSlug(ctx: SystemActionCtx): string {
  * durable step on the whole agent lifetime — the next declared wake re-fires).
  * Mirrors blueprint-run-action.ts's `defaultFire`.
  */
-const defaultOverwatchFire: OverwatchLaunchFireFn = ({
+const defaultOverwatchFire: OverwatchLaunchFireFn = async ({
   installSlug,
   workspaceId,
   role,
@@ -211,6 +222,76 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
   void recordFire(installSlug, role, "firing", "attempt")
     .catch(() => {})
     .finally(invalidateOverwatchLiveness);
+
+  // KETTLE TURN VISIBILITY. This fire is an IN-PROCESS `/invoke` (loopbackFetch), not a
+  // spawned invoke-once child, so it historically recorded NO `spawned_agents` row: the
+  // kettle's turns were invisible in fleet:tree, and pot:soak-report — whose roleSuccess
+  // reads that table — saw "no terminal kettle turns" no matter how many turns the meta-
+  // monitor actually took, which pinned the production-readiness verdict NOT-READY on a
+  // criterion nothing could ever satisfy. Record the row the same way launch-blueprint's
+  // fire-and-forget fallback does (WI-108/EI-403): `running` at fire, pid-stamped and
+  // heartbeated so the P-011 reclaim sweep can't reap a legitimately long turn (the invoke
+  // ceiling is 480s, well past RECLAIM_STALE_MS 300s — an unbeaten row would come back
+  // `reaped`, i.e. a FAILED turn, making the gate read worse than the silence did), then
+  // finished done/failed on the SAME classification the recordFire branches below compute.
+  // Best-effort end to end: a bookkeeping failure must never break the meta-monitor's fire.
+  const spawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const runId = `overwatch-${Date.now()}-${randomUUID().slice(0, 6)}`;
+  let pg: ReturnType<typeof getOrgPg> | null = null;
+  try {
+    pg = getOrgPg();
+    await recordSpawn(pg.sql, {
+      spawnId,
+      workspaceId,
+      harnessSlug: installSlug,
+      // parent_role is NOT NULL in spawned_agents — a scheduled, parentless system launch
+      // is recorded as spawned by the operator host, matching every other root spawn.
+      parentSpawnId: null,
+      parentRole: "operator",
+      childRole: role,
+      runId,
+      status: "running",
+    });
+    await recordSpawnPid(pg.sql, spawnId, process.pid).catch(() => {});
+  } catch (e) {
+    console.warn(
+      `[overwatch-loop] spawn record failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
+    );
+    pg = null;
+  }
+
+  let heartbeat: ManagedHandle | null = null;
+  if (pg) {
+    const sql = pg.sql;
+    heartbeat = managedSetInterval(
+      "overwatch-launch-heartbeat",
+      SPAWN_HEARTBEAT_INTERVAL_MS,
+      () => {
+        void heartbeatSpawns(sql, [spawnId]).catch(() => {
+          /* best-effort — a missed beat at worst risks an early reclaim, itself
+             recoverable (the next declared wake re-fires the overwatch). */
+        });
+      },
+      { category: "lifecycle", instanced: true },
+    );
+  }
+  const settleSpawn = (
+    status: "done" | "failed",
+    errorMessage?: string,
+  ): void => {
+    if (heartbeat) {
+      heartbeat.stop();
+      heartbeat = null;
+    }
+    if (!pg) return;
+    void finishSpawn(pg.sql, {
+      spawnId,
+      workspaceId,
+      status,
+      ...(errorMessage ? { errorMessage } : {}),
+    }).catch(() => {});
+  };
+
   void loopbackFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -224,6 +305,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
         const detail = responseBody.replace(/\s+/g, " ").slice(0, 320);
         if (!r.ok) {
           const message = `error: HTTP ${r.status}${detail ? ` — ${detail.slice(0, 160)}` : ""}`;
+          settleSpawn("failed", message);
           await recordFire(installSlug, role, message, classifyFireError(message));
           await runScorecardBackstop(workspaceId, installSlug, message);
           return;
@@ -234,11 +316,16 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
           `${installSlug}/${role}`,
         );
         if (invokeError) {
+          settleSpawn("failed", invokeError);
           await recordFire(installSlug, role, invokeError, classifyFireError(invokeError));
           await runScorecardBackstop(workspaceId, installSlug, invokeError);
           return;
         }
 
+        // The agent produced a real turn — `done` is the spawn-row truth regardless of the
+        // scorecard deadline below (a missed scorecard is a separate obligation the
+        // backstop already records; it is not an infra failure of this turn).
+        settleSpawn("done");
         if (deadline.fired) return;
         return recordFire(installSlug, role, "ok", "ok");
       },
@@ -248,6 +335,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
           `[overwatch-loop] launch fire failed (${installSlug}/${role}): ${detail}`,
         );
         const message = `error: ${detail}`;
+        settleSpawn("failed", message);
         await recordFire(installSlug, role, message, classifyFireError(message));
         await runScorecardBackstop(workspaceId, installSlug, message);
       },

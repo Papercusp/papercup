@@ -4,7 +4,20 @@
  * Client only sends a `cmd` id. Server resolves to the actual shell
  * command. Adding a new entry here is the only way to expose a
  * command — there's no path that lets the client pass raw shell.
+ *
+ * NOTHING HERE MAY NAME A PARTICULAR MACHINE (WI-4419). These commands used to
+ * hardcode one box's home (`/home/<user>/...`), its VM ssh keys and the VM
+ * account name. That was wrong twice over: wrong on every checkout that isn't
+ * that box, and — since this file ships inside the release bundle's source drop
+ * — it leaked the owner's identity to everyone we hand a build to. So the repo
+ * paths are DERIVED and the VM targets are MACHINE-LOCAL CONFIG, read at run
+ * time from `~/.papercusp/build-vms.env` (git-ignored, like `r2.env` and
+ * `release-host.env` beside it).
  */
+import { homedir } from 'node:os';
+import path from 'node:path';
+
+import { desktopRoot, integrationRoot } from './release-cut-launch';
 
 export interface AdminCommand {
   id: string;
@@ -15,11 +28,36 @@ export interface AdminCommand {
   cwd?: string;
 }
 
-const SSH_MAC = 'ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null aviweiss@127.0.0.1';
-const SSH_WIN = 'ssh -i /home/marsh-office/.ssh/papercup-vm-win -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null User@127.0.0.1';
+const PAPERCUSP_REPO = integrationRoot();
+const PAPERCUSP_DESKTOP = desktopRoot();
 
-const PAPERCUSP_DESKTOP = '/home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop';
-const PAPERCUSP_REPO = '/home/marsh-office/papercupai-workspace/papercusp';
+/** Where a VM build drops the installer it just built. */
+const ARTIFACT_DIR = process.env.PAPERCUSP_ARTIFACT_DIR ?? homedir();
+
+/**
+ * Prelude for every command that talks to a build VM: load the machine's own VM
+ * config and construct $SSH_MAC / $SSH_WIN from it. Missing config FAILS LOUD
+ * with the fix, rather than silently ssh-ing at whatever the defaults happened
+ * to be — a wrong-host build is worse than no build.
+ */
+const LOAD_VM_ENV = `VM_ENV="$HOME/.papercusp/build-vms.env"
+if [ ! -f "$VM_ENV" ]; then
+  echo "ERROR: no $VM_ENV — the build VMs are machine-local config, not repo constants." >&2
+  echo "Create it (chmod 600) with, e.g.:" >&2
+  echo "  VM_MAC_SSH_KEY=\\$HOME/.ssh/papercup-vm-mac" >&2
+  echo "  VM_MAC_USER=<the mac VM account>" >&2
+  echo "  VM_WIN_SSH_KEY=\\$HOME/.ssh/papercup-vm-win" >&2
+  echo "  VM_WIN_USER=<the windows VM account>" >&2
+  exit 1
+fi
+. "$VM_ENV"
+: "\${VM_MAC_SSH_KEY:?set VM_MAC_SSH_KEY in $VM_ENV}"; : "\${VM_MAC_USER:?set VM_MAC_USER in $VM_ENV}"
+: "\${VM_WIN_SSH_KEY:?set VM_WIN_SSH_KEY in $VM_ENV}"; : "\${VM_WIN_USER:?set VM_WIN_USER in $VM_ENV}"
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+MAC_PORT="\${VM_MAC_PORT:-2222}"; MAC_HOST="\${VM_MAC_HOST:-127.0.0.1}"
+WIN_PORT="\${VM_WIN_PORT:-2223}"; WIN_HOST="\${VM_WIN_HOST:-127.0.0.1}"
+SSH_MAC="ssh -i $VM_MAC_SSH_KEY -p $MAC_PORT $SSH_OPTS $VM_MAC_USER@$MAC_HOST"
+SSH_WIN="ssh -i $VM_WIN_SSH_KEY -p $WIN_PORT $SSH_OPTS $VM_WIN_USER@$WIN_HOST"`;
 
 export const ADMIN_COMMANDS: AdminCommand[] = [
   // ── Building ─────────────────────────────────────────────
@@ -43,23 +81,25 @@ echo "=== build + audit complete"`,
     id: 'build-mac-prod',
     label: 'Mac Prod Build',
     section: 'building',
-    description: 'Rsyncs the canonical tree into the Mac VM (~/papercup-build-mac) and builds the UNIVERSAL .dmg via bin/mac-vm-build.sh (term shim + sidecar + tauri). ~30–45 min. Copies the .dmg back to /home/marsh-office/ and runs the privacy auditor.',
+    description: 'Rsyncs the canonical tree into the Mac VM (~/papercup-build-mac) and builds the UNIVERSAL .dmg via bin/mac-vm-build.sh (term shim + sidecar + tauri). ~30–45 min. Copies the .dmg back to the artifact dir and runs the privacy auditor.',
     command: `set -e
+${LOAD_VM_ENV}
 echo "=== rsync tree → VM:papercup-build-mac/papercup"
-rsync -az --delete --exclude .git --exclude node_modules --exclude target --exclude .turbo --exclude .next -e "ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" ${PAPERCUSP_REPO}/ aviweiss@127.0.0.1:papercup-build-mac/papercup/
-if [ -f /home/marsh-office/.papercusp/signing/papercusp.key ]; then
-  scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /home/marsh-office/.papercusp/signing/papercusp.key aviweiss@127.0.0.1:.papercusp-updater.key
+rsync -az --delete --exclude .git --exclude node_modules --exclude target --exclude .turbo --exclude .next -e "ssh -i $VM_MAC_SSH_KEY -p $MAC_PORT $SSH_OPTS" ${PAPERCUSP_REPO}/ "$VM_MAC_USER@$MAC_HOST:papercup-build-mac/papercup/"
+SIGNING_KEY="$HOME/.papercusp/signing/papercusp.key"
+if [ -f "$SIGNING_KEY" ]; then
+  scp -i "$VM_MAC_SSH_KEY" -P "$MAC_PORT" $SSH_OPTS "$SIGNING_KEY" "$VM_MAC_USER@$MAC_HOST:.papercusp-updater.key"
 fi
-echo "=== mac build via ${SSH_MAC}"
-${SSH_MAC} 'bash -lc "set -e
+echo "=== mac build via $SSH_MAC"
+$SSH_MAC 'bash -lc "set -e
    cd ~/papercup-build-mac/papercup/papercusp-desktop
    NODE_OPTIONS=--max-old-space-size=8192 npm install --legacy-peer-deps 2>&1 | tail -5
    export TAURI_SIGNING_PRIVATE_KEY_PATH=\\$HOME/.papercusp-updater.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD=
    bash bin/mac-vm-build.sh 2>&1 | tail -200"' 2>&1
 echo "=== scp dmg back"
-scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'aviweiss@127.0.0.1:papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg' /home/marsh-office/
+scp -i "$VM_MAC_SSH_KEY" -P "$MAC_PORT" $SSH_OPTS "$VM_MAC_USER@$MAC_HOST:papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg" "${ARTIFACT_DIR}/"
 echo "=== audit"
-${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh /home/marsh-office/Papercusp_*_universal.dmg
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh ${ARTIFACT_DIR}/Papercusp_*_universal.dmg
 echo "=== mac build + audit complete"`,
   },
   {

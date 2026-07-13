@@ -58,6 +58,18 @@ NATIVE_PKGS=(
   bare-fs bare-os bare-url bare-inspect bare-type
   better-sqlite3
   ssh2
+  # ONNX / local-voice stack (P-009): voice-node/kokoro-local dynamic-imports
+  # @huggingface/transformers, which require()s onnxruntime-node's per-platform
+  # `.node` addon via a TEMPLATE specifier (`../bin/napi-v6/${process.platform}/...`).
+  # esbuild follows that into all 5 platform binaries and dies with "No loader is
+  # configured for .node files" — which broke the host bundle outright (:3170 down,
+  # and the release deploy with it). These MUST stay external and resolve from
+  # node_modules at runtime. onnxruntime-web is never used on the node path but is
+  # a transformers dep, so keep it out of the graph too.
+  onnxruntime-node
+  onnxruntime-web
+  "@huggingface/transformers"
+  sharp
 )
 HOST_EXTERNALS=(
   --external:@lydell/*
