@@ -80,6 +80,29 @@ export function computeEagerExternalized({ eagerRoots, staticEdges, builtinStati
   return { reachCount: reach.size, eager };
 }
 
+/**
+ * Builtins that are ALLOWED to be reached eagerly because they are genuinely browser-polyfilled
+ * (not server-only stubs that throw). `buffer` has a real polyfill (src/buffer-polyfill.ts + the
+ * vite buffer shim) that the SPA intentionally loads at boot. Everything else reaching the eager
+ * graph is a white-page risk. Shrink-only: adding a builtin here needs a justification, like the
+ * dark-flags allowlist.
+ */
+export const ALLOWED_EAGER_BUILTINS = new Set(['buffer']);
+
+/**
+ * Gate decision for the eager-reach guard. Pure. A non-allowlisted eager externalized reach is a
+ * VIOLATION (eval-time white-page risk). Mirrors lint-tsc's "named regression" shape.
+ * @param {object} p
+ * @param {Array<{builtin:string, eagerImporters:string[]}>} p.eager
+ * @param {Set<string>} [p.allowlist]
+ * @returns {{ ok:boolean, violations:Array<{builtin:string, eagerImporters:string[]}>, allowed:string[] }}
+ */
+export function decideEager({ eager, allowlist = ALLOWED_EAGER_BUILTINS }) {
+  const violations = eager.filter((e) => !allowlist.has(e.builtin));
+  const allowed = eager.filter((e) => allowlist.has(e.builtin)).map((e) => e.builtin);
+  return { ok: violations.length === 0, violations, allowed };
+}
+
 /** Shortest static chain from any eager root down to `target`. Pure. */
 export function shortestStaticChain(eagerRoots, staticEdges, target) {
   const seen = new Set(eagerRoots);
@@ -101,28 +124,36 @@ export function shortestStaticChain(eagerRoots, staticEdges, target) {
 
 async function main() {
   const jsonOut = process.argv.includes('--json');
+  const checkMode = process.argv.includes('--check');
   const appRequire = createRequire(APP_DIR + '/package.json');
   const { build } = await import(appRequire.resolve('vite'));
 
-  /** @type {Map<string,string[]>} */ const staticEdges = new Map(); // parent -> static children (non-builtin)
-  /** @type {Map<string,Set<string>>} */ const builtinStaticImporters = new Map(); // builtin -> importers (static)
+  /** @type {Map<string,string[]>} */ const staticEdges = new Map(); // parent -> static child module ids
   const entryIds = new Set();
+  // Externalized builtins are rewritten to virtual ids (\0vite-browser-external:…) so they never
+  // appear in moduleParsed.importedIds — capture them at RESOLVE time instead. A `await import()`
+  // routes through resolveDynamicImport FIRST; when it returns null it ALSO reaches resolveId, so
+  // we record the dynamic occurrences and SUBTRACT them to get the purely-static importers.
+  const staticBuiltinPairs = new Set(); // `${builtin}\0${importer}`
+  const dynamicBuiltinPairs = new Set();
+  const key = (b, imp) => `${b}\0${imp}`;
+  const norm = (s) => s.replace(/^node:/, '');
 
   const tracer = {
     name: 'externalized-attribution-tracer',
     enforce: 'pre',
-    moduleParsed(info) {
-      const kids = [];
-      for (const child of info.importedIds) {
-        if (isBuiltin(child)) {
-          const key = child.replace(/^node:/, '');
-          if (!builtinStaticImporters.has(key)) builtinStaticImporters.set(key, new Set());
-          builtinStaticImporters.get(key).add(info.id);
-        } else {
-          kids.push(child);
-        }
+    resolveId(source, importer) {
+      if (importer && isBuiltin(source)) staticBuiltinPairs.add(key(norm(source), importer));
+      return null;
+    },
+    resolveDynamicImport(source, importer) {
+      if (importer && typeof source === 'string' && isBuiltin(source)) {
+        dynamicBuiltinPairs.add(key(norm(source), importer));
       }
-      staticEdges.set(info.id, kids);
+      return null;
+    },
+    moduleParsed(info) {
+      staticEdges.set(info.id, info.importedIds.filter((c) => !isBuiltin(c)));
       if (info.isEntry) entryIds.add(info.id);
     },
   };
@@ -134,6 +165,21 @@ async function main() {
     plugins: [tracer],
     build: { write: false },
   });
+
+  // Purely-static importers of each builtin = seen at resolveId, NOT (only) via a dynamic import.
+  /** @type {Map<string,Set<string>>} */ const builtinStaticImporters = new Map();
+  for (const pair of staticBuiltinPairs) {
+    if (dynamicBuiltinPairs.has(pair)) continue; // dynamic-only reach — a lazy chunk, not eval-time
+    const [builtin, importer] = pair.split('\0');
+    if (!builtinStaticImporters.has(builtin)) builtinStaticImporters.set(builtin, new Set());
+    builtinStaticImporters.get(builtin).add(importer);
+  }
+  if (process.env.TRACE_VITE_DEBUG) {
+    console.error(
+      `[debug] staticPairs=${staticBuiltinPairs.size} dynamicPairs=${dynamicBuiltinPairs.size} ` +
+        `staticImporterBuiltins=${builtinStaticImporters.size} modules=${staticEdges.size} entries=${entryIds.size}`,
+    );
+  }
 
   const eagerRoots = [...entryIds];
   const { reachCount, eager } = computeEagerExternalized({ eagerRoots, staticEdges, builtinStaticImporters });
@@ -157,6 +203,27 @@ async function main() {
       };
     }),
   };
+
+  if (checkMode) {
+    const { ok, violations, allowed } = decideEager({ eager });
+    if (ok) {
+      console.log(
+        `✓ eager externalized-reach guard: no server/node builtin reaches the SPA entry EAGERLY` +
+          (allowed.length ? ` (allowlisted, browser-polyfilled: ${allowed.join(', ')})` : '') +
+          `. No eval-time white-page risk.`,
+      );
+      process.exit(0);
+    }
+    console.error(`❌ eager externalized-reach guard: ${violations.length} NEW server builtin(s) reach the SPA EAGERLY —`);
+    console.error(`   each blanks the WHOLE desktop app when its module evaluates (the 2026-07-04 / 2026-07-12 class).`);
+    for (const v of violations.map((e) => report.eagerExternalized.find((r) => r.builtin === e.builtin) ?? e)) {
+      console.error(`\n   • node:${v.builtin}  client entry: ${v.clientEntry ?? v.eagerImporters?.[0] ?? '?'}`);
+      for (const step of v.chain ?? []) console.error(`        → ${step}`);
+    }
+    console.error(`\n   Fix: import type, lazy \`await import()\` inside the fn, or a browser-safe subpath/shim.`);
+    console.error(`   If genuinely browser-polyfilled, add it to ALLOWED_EAGER_BUILTINS with a justification.`);
+    process.exit(1);
+  }
 
   if (jsonOut) {
     console.log(JSON.stringify(report, null, 1));
