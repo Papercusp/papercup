@@ -26987,122 +26987,273 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   .op-pot-caret { transition: none; }
 }
 
+/* The fold-out panel — mockup: deep translucent ground, hairline section
+   separators, thin scrollbar; sections own their padding. */
 .op-pot-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-height: 44vh;
-  padding: 10px 14px 12px;
+  max-height: 348px;
   overflow-y: auto;
-  background: color-mix(in srgb, var(--bg-deeper), transparent 30%);
+  background: color-mix(in srgb, var(--bg-deepest), transparent 45%);
   font-size: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 68%) transparent;
 }
 
 .op-pot-section {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 7px;
+  padding: 9px 14px 10px;
+}
+
+.op-pot-section + .op-pot-section {
+  border-top: 1px solid rgb(from var(--accent-soft) r g b / 0.09);
 }
 
 .op-pot-h {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin: 0;
-  color: color-mix(in srgb, var(--accent-soft), transparent 28%);
-  font-size: 10px;
-  font-weight: 700;
-  /* letter-spacing removed: design-primitives lint bans nonzero letter-spacing (gate red 2026-07-13) */
+  color: var(--fg-mute);
+  font-size: 9.5px;
+  font-weight: 750;
+  /* letter-spacing stays 0: design-primitives lint + /internal/docs/design */
   text-transform: uppercase;
+}
+
+/* Count pill beside a section header — amber for attention, accent for
+   neutral counts (mockup .sec-head .badge / .badge.n). */
+.op-pot-h-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--warn), transparent 84%);
+  color: color-mix(in srgb, var(--warn), var(--fg) 35%);
+  border: 1px solid color-mix(in srgb, var(--warn), transparent 65%);
+}
+
+.op-pot-h-badge.n {
+  background: rgb(from var(--accent-strong) r g b / 0.12);
+  color: var(--accent-soft);
+  border-color: rgb(from var(--accent-strong) r g b / 0.32);
 }
 
 .op-pot-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.op-pot-queue { counter-reset: potq; }
+.op-pot-cups { gap: 4px; }
 
-.op-pot-attn {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 5px 8px;
-  border-left: 2px solid transparent;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.02);
+.op-pot-queue {
+  counter-reset: potq;
+  gap: 3px;
 }
 
-.op-pot-attn.sev-critical { border-left-color: var(--bad); }
-.op-pot-attn.sev-warning { border-left-color: var(--warn); }
-.op-pot-attn.sev-info { border-left-color: color-mix(in srgb, var(--accent-strong), transparent 40%); }
+/* Attention rows — mockup .attn-row: bordered card with a 3px severity
+   stripe inset on the left, bold subject + muted cause, toned action chip. */
+.op-pot-attn {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-popover), transparent 25%);
+  font-size: 12px;
+  line-height: 1.4;
+}
 
-.op-pot-attn-text { flex: 1; min-width: 0; }
+.op-pot-attn::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+}
 
+.op-pot-attn.sev-critical::before { background: var(--bad); }
+.op-pot-attn.sev-warning::before { background: var(--warn); }
+.op-pot-attn.sev-info::before { background: color-mix(in srgb, var(--accent-strong), transparent 40%); }
+
+.op-pot-attn-text { flex: 1; min-width: 0; color: var(--fg-dim); }
+
+.op-pot-attn-subj { color: var(--fg); font-weight: 600; }
+
+/* Suggested-action chips — mono micro-labels toned by action
+   (mockup .act-chip.esc/.nudge; letter-spacing stays 0 per the lint). */
 .op-pot-chip {
   flex: none;
-  padding: 1px 6px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.24);
-  border-radius: 7px;
-  color: color-mix(in srgb, var(--accent-soft), transparent 20%);
+  align-self: flex-start;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 9px;
   font-weight: 700;
-  /* letter-spacing removed: design-primitives lint bans nonzero letter-spacing (gate red 2026-07-13) */
 }
 
-.op-pot-cup,
-.op-pot-next {
+.op-pot-chip.esc {
+  color: color-mix(in srgb, var(--bad), var(--fg) 40%);
+  background: color-mix(in srgb, var(--bad), transparent 88%);
+  border: 1px solid color-mix(in srgb, var(--bad), transparent 65%);
+}
+
+.op-pot-chip.nudge {
+  color: color-mix(in srgb, var(--warn), var(--fg) 35%);
+  background: color-mix(in srgb, var(--warn), transparent 90%);
+  border: 1px solid color-mix(in srgb, var(--warn), transparent 68%);
+}
+
+.op-pot-chip.obs {
+  color: var(--accent-soft);
+  background: rgb(from var(--accent-strong) r g b / 0.10);
+  border: 1px solid rgb(from var(--accent-strong) r g b / 0.30);
+}
+
+/* Cup rows — mockup .cup-row: ☕ glyph, mono id, doing with the WI id in
+   accent mono, bordered load chip, trailing heartbeat dot; idle rows dim. */
+.op-pot-cup {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
+  padding: 5px 8px;
+  border-radius: 8px;
+  font-size: 12px;
 }
 
-.op-pot-cup .op-pot-dot { align-self: center; }
+.op-pot-cup:hover { background: rgba(255, 255, 255, 0.03); }
 
-.op-pot-cup-id,
-.op-pot-next-id {
+.op-pot-cup-glyph { flex: none; font-size: 12px; }
+
+.op-pot-cup-id {
   flex: none;
-  color: color-mix(in srgb, var(--accent-soft), transparent 10%);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--fg);
 }
 
-.op-pot-cup-doing,
-.op-pot-next-title {
+.op-pot-cup-doing {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0.85;
+  color: var(--fg-mute);
+}
+
+.op-pot-wi {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--accent-soft);
 }
 
 .op-pot-cup-load {
   flex: none;
-  opacity: 0.6;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--fg-mute);
   font-variant-numeric: tabular-nums;
 }
+
+.op-pot-cup .op-pot-dot { align-self: center; }
+
+.op-pot-cup.idle .op-pot-cup-id,
+.op-pot-cup.idle .op-pot-cup-doing {
+  color: var(--fg-mute);
+  opacity: 0.75;
+}
+
+/* Ranked queue rows — mockup .q-row: mono rank, accent WI id, ink title. */
+.op-pot-next {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.op-pot-next:hover { background: rgba(255, 255, 255, 0.03); }
 
 .op-pot-next::before {
   counter-increment: potq;
   content: counter(potq);
   flex: none;
   width: 14px;
-  opacity: 0.5;
-  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--fg-mute);
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-.op-pot-foot { opacity: 0.65; font-size: 11px; }
-
-.op-pot-directive {
-  padding: 5px 8px;
-  border-left: 2px solid color-mix(in srgb, var(--accent-strong), transparent 40%);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.02);
-  font-style: italic;
+.op-pot-next-id {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--accent-soft);
 }
 
-.op-pot-empty { opacity: 0.55; font-size: 11.5px; }
+.op-pot-next-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.op-pot-foot {
+  padding: 0 8px;
+  color: var(--fg-mute);
+  font-size: 11px;
+}
+
+.op-pot-recovering {
+  color: color-mix(in srgb, var(--warn), var(--fg) 30%);
+  font-weight: 600;
+}
+
+/* Steering — mockup .steer: dashed accent box, italic quote, fact row with
+   the pause verdict in --good. */
+.op-pot-steering {
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--accent-strong), transparent 55%);
+  border-radius: 10px;
+  background: rgb(from var(--accent-strong) r g b / 0.09);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.op-pot-directive { color: var(--fg); font-style: italic; }
+
+.op-pot-steer-facts {
+  margin-top: 5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 10.5px;
+  color: var(--fg-mute);
+}
+
+.op-pot-steer-facts b { color: var(--good); font-weight: 650; }
+
+.op-pot-empty { color: var(--fg-mute); font-size: 11.5px; }
