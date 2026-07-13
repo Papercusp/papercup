@@ -22,6 +22,17 @@ vi.mock('../../../voice-credentials', () => ({
   readOpenAiKey: vi.fn(async () => null),
   readCartesiaKey: vi.fn(async () => null),
 }));
+// See tts-synth.test.ts: the kokoro-unreachable branch's in-process fallback is gated on an
+// fs marker under the REAL $HOME, so on a box with the local model provisioned it loads
+// @huggingface/transformers, fetches through the stubbed `fetch`, and console.warns —
+// failing the test on some machines and not others. Stub it; kokoro-local has its own suite.
+vi.mock('../../../voice-node/kokoro-local', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../../voice-node/kokoro-local')>();
+  return {
+    ...orig,
+    kokoroLocalSynthWav: vi.fn(async () => ({ ok: false as const, error: 'kokoro local model not provisioned' })),
+  };
+});
 
 import { loadVoicePrefs } from '../../../voice-prefs';
 import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';

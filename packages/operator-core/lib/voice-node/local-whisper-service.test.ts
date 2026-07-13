@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
@@ -195,6 +195,7 @@ describe('local-whisper-service', () => {
   });
 
   it('whisperSttBaseUrl does NO I/O — it never probes on the utterance hot path', () => {
+    __resetLocalWhisperStateForTests(); // no managed child → the pure external-URL read
     // The regression this guards: the first cut called ensureLocalWhisper() here, adding a
     // health-probe round-trip to EVERY transcription (agent-peer.test.ts caught it as a
     // second fetch). The base URL must be a pure read of lifecycle state.

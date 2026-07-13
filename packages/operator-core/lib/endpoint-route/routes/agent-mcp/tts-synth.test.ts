@@ -27,6 +27,22 @@ vi.mock('../../../voice-credentials', () => ({
   readDeepgramKey: async () => null,
 }));
 
+// The kokoro-unreachable branch falls back to the IN-PROCESS engine, which is gated on an
+// fs marker under the REAL $HOME (isKokoroLocalProvisioned). On a box where someone has
+// provisioned the local model, the unmocked fallback loads @huggingface/transformers, which
+// fetches model metadata through the very `fetch` these tests stub to throw — and its
+// console.warn trips vitest-fail-on-console. That made the outcome depend on the developer's
+// home directory (green on a fresh machine, red on a provisioned one — it held the release
+// gate on 2026-07-12). Stub the fallback: these tests pin `synthesize`'s CLASSIFICATION, and
+// kokoro-local has its own suite.
+vi.mock('../../../voice-node/kokoro-local', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../../voice-node/kokoro-local')>();
+  return {
+    ...orig,
+    kokoroLocalSynthWav: vi.fn(async () => ({ ok: false as const, error: 'kokoro local model not provisioned' })),
+  };
+});
+
 import { synthesize } from './tts-synth';
 import { synthesize as synthesizeFromRoute } from './operator-tts';
 import type { VoicePrefs } from '../../../voice-prefs';

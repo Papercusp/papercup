@@ -61,6 +61,11 @@ describe('wav codec', () => {
 
 describe('utterance segmentation → STT', () => {
   beforeEach(() => {
+    // STT now resolves its base URL through local-whisper-service.whisperSttBaseUrl(), which reads
+    // process.env.VOICEMODE_URL (the external server always wins over the operator-managed child).
+    // The module-level vi.mock of operator-voice-proxy-helpers' VOICEMODE_URL no longer feeds this
+    // path — stub the env the code actually reads, or the fallback (localhost:2022) is what gets hit.
+    vi.stubEnv('VOICEMODE_URL', 'http://voicemode.test');
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: true, json: async () => ({ text: ' hello world ' }) })),
@@ -69,6 +74,7 @@ describe('utterance segmentation → STT', () => {
   afterEach(() => {
     enableVoiceAgent(false);
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
   });
 
@@ -78,6 +84,15 @@ describe('utterance segmentation → STT', () => {
     const got: Array<{ peerId: string; text: string }> = [];
     const off = onTranscript((t) => got.push(t));
 
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    // Enabling voice warms the whisper endpoint ONCE (a lifecycle probe — see
+    // local-whisper-service.warmLocalWhisper). Let it settle, then rebaseline the counter so the
+    // assertion below stays the strict per-utterance contract it has always been: the STT hot
+    // path issues EXACTLY ONE fetch — the transcription — and never a probe. (That contract is
+    // what caught the first cut of whisperSttBaseUrl(), which probed on every utterance.)
+    await new Promise((r) => setTimeout(r, 0));
+    fetchMock.mockClear();
+
     // 10 loud frames (200ms speech), then 30 silent (600ms) → utterance closes
     for (let i = 0; i < 10; i++) peerFrameCbs[0]('peer-A', loudFrame());
     for (let i = 0; i < 30; i++) peerFrameCbs[0]('peer-A', silentFrame());
@@ -85,7 +100,6 @@ describe('utterance segmentation → STT', () => {
 
     expect(got).toHaveLength(1);
     expect(got[0]).toMatchObject({ peerId: 'peer-A', text: 'hello world' });
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toContain('voicemode.test/v1/audio/transcriptions');
     off();
