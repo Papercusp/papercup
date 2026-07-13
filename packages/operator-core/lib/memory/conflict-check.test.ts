@@ -112,7 +112,7 @@ describe('buildConflictPrompt', () => {
       { id: 'm2', text: 'unrelated fact' },
     ];
     const p = buildConflictPrompt({ newText: 'Dev prefers vim', neighbors });
-    expect(p).toContain('NEW memory:\nAvi prefers vim');
+    expect(p).toContain('NEW memory:\nDev prefers vim');
     expect(p).toContain('[1] id=m1: Dev prefers emacs');
     expect(p).toContain('[2] id=m2: unrelated fact');
     expect(p).toContain('{"conflicts": [{"memory_id":');
