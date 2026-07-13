@@ -67,17 +67,28 @@ export async function benchPgClient(): Promise<Client> {
  * does not copy FOREIGN KEYS, so the bench vec tables carry no FK to
  * memory_canonical — harmless here: recall JOINs canonical (an orphaned vec
  * row can never surface), and cleanup is a whole-schema DROP CASCADE.
+ *
+ * ⚠ It DROPS the schema first: a run's corpus MUST start empty. Idempotence
+ * belongs at the START of a run, not to the politeness of the previous one's
+ * cleanup (EI-10854). This used to be CREATE-IF-NOT-EXISTS, which silently
+ * seeded ON TOP of whatever was already there — so a bench killed mid-flight
+ * (its cleanup DROP never ran) left rows behind that contaminated the NEXT
+ * run's corpus, and the numbers came out quietly wrong rather than failing.
+ * Same hazard within a single `--keep` run, where backend B seeded on top of
+ * backend A. Callers are sequential (one backend context at a time), so the
+ * drop can never race a live sibling.
  */
 export async function ensureBenchSchema(client: Client, schema: string = BENCH_SCHEMA): Promise<void> {
-  await client.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
+  await dropBenchSchema(client, schema);
+  await client.query(`CREATE SCHEMA ${schema}`);
   await client.query(`
-    CREATE TABLE IF NOT EXISTS ${schema}.memory_canonical
+    CREATE TABLE ${schema}.memory_canonical
       (LIKE harness_shared.memory_canonical INCLUDING ALL)
   `);
   for (const mode of Object.keys(VEC_TABLE) as ResolvedVecMode[]) {
     const vec = VEC_TABLE[mode];
     await client.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.${vec}
+      CREATE TABLE ${schema}.${vec}
         (LIKE harness_shared.${vec} INCLUDING ALL)
     `);
   }

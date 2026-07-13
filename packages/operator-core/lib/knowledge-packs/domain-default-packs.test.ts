@@ -105,7 +105,7 @@ describe('blueprint → default-pack wiring (resolved via the pot-create path)',
   it('the coding pot (`coding`) defaults to the generic `coding` pack', () => {
     const v = resolveAndValidate({ id: 'probe-hive', extends: 'coding' }, resolver);
     expect(v.ok, v.parseError ?? JSON.stringify(v.validation?.errors)).toBe(true);
-    expect(v.blueprint!.learning?.pack).toBe('coding');
+    expect(v.blueprint!.knowledge?.pack).toBe('coding');
     expect(v.blueprint!.kind).toBe('pot');
   });
 
@@ -114,7 +114,23 @@ describe('blueprint → default-pack wiring (resolved via the pot-create path)',
     expect(v.ok, v.parseError ?? JSON.stringify(v.validation?.errors)).toBe(true);
     // `pack: work` must win over the inherited `pack: coding` (extends deep-merge
     // replaces the scalar) — the regression this test exists to catch.
-    expect(v.blueprint!.learning?.pack).toBe('work');
+    expect(v.blueprint!.knowledge?.pack).toBe('work');
+    // The learning LOOPS are a DIFFERENT system from Knowledge Packs and keep the
+    // `learning:` block — the rename moved only the seed pack out of it (P-001).
     expect(v.blueprint!.learning?.loops).toContain('scout');
+  });
+
+  it('still reads a pre-rename blueprint that declares the deprecated `learning.pack`', () => {
+    // Blueprint YAML is a true boundary (knowledge-packs-2026-07-11 D-001): a
+    // blueprint authored before the rename — or already installed in a user's
+    // tree, which we never rewrite — still says `learning.pack`. It must parse,
+    // and pot:create falls back to it (see _create.ts).
+    const v = resolveAndValidate(
+      { id: 'probe-legacy', kind: 'pot', learning: { pack: 'coding' } },
+      resolver,
+    );
+    expect(v.ok, v.parseError ?? JSON.stringify(v.validation?.errors)).toBe(true);
+    expect(v.blueprint!.learning?.pack).toBe('coding');
+    expect(v.blueprint!.knowledge?.pack).toBeUndefined();
   });
 });
