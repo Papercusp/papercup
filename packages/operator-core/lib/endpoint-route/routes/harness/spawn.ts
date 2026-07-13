@@ -368,6 +368,40 @@ const invoke = defineTool({
           modelPin: spawnModelPin || null,
         }),
       });
+
+      // Roster/pane visibility (owner-facing zellij dock). The pui panes an agent
+      // from the coord_presence-PRIMARY roster (adv-roster.ts builds it as
+      // presence.map(...)); no presence row ⇒ no roster entry ⇒ the dock's
+      // dock_pane_argv() hits a bare `continue` and silently skips it — so the
+      // owner never sees the mug/kettle turn even though it ran (its spawned_agents
+      // + adv_sessions rows exist and the turn completes). A cup gets a row because
+      // it boots as a principal and mints one on its first coord:orient; a tracked
+      // hive/overwatch launch only ever calls no-op-on-missing-row heartbeats
+      // (coord:escalate/emit/pot:wake/kettle:declare-wake — never coord:inbox/orient,
+      // the only presence-MINTING calls), so it seeds none. Seed it HERE under the
+      // SAME coordOwnerId the adv_sessions row uses (hiveSpawnId) — the agent's env
+      // PAPERCUSP_SPAWN_ID resolves to this id, so its own dispatch heartbeats keep
+      // the row fresh, the roster's LEFT-join to adv_sessions resolves the resumable
+      // session_id for `claude --resume`, and the presence reaper clears it when the
+      // turn ends. Best-effort: bookkeeping must never break a spawn.
+      try {
+        const { writePresence } = await import('../../../agent-tools/coordination/presence');
+        await writePresence(
+          {
+            ownerId: hiveSpawnId,
+            ownerLabel: `${canonicalRole} · ${project.slug}`,
+            source: 'fleet-spawn',
+            workspaceId: activeWorkspaceId(),
+            userId: null,
+          },
+          { agentRole: canonicalRole },
+          project.slug,
+        );
+      } catch (e) {
+        console.warn(
+          `[invoke] seed presence failed (${project.slug}/${role}): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
     }
 
     // Phase 7: write pending_events for the role to read at $STATE_DIR/pending-events.jsonl.

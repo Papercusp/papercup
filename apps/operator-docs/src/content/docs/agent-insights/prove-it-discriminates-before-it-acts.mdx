@@ -266,8 +266,42 @@ payload**.
 
 That is the real reason this class is only ever found by hand: **there is nothing to look at.** The
 fix is not to mine the existing telemetry harder, it is to **emit the decision** (`gate`, `verdict`,
-the compared `value`, the `threshold`) — then `max(value) < threshold` is a *proof* of an unreachable
-branch, not a heuristic. Filed as EI-10619 under the constraint-removal lens.
+the compared `value`, the `threshold`). Filed as EI-10619 under the constraint-removal lens, and
+**shipped** — `harness_shared.gate_decisions`, with the memory recall gates wired to emit and a
+`gates:degenerate-check` reader. But the detection rule took two wrong turns before it was sound, and
+both are the class biting the fix again.
+
+### The detector's rule is `expect`, not `max(value) < threshold` (EI-10619, shipped)
+
+The filing said `max(value) < threshold` would be a *proof* of an unreachable branch. **It is not** —
+it is Shape 1 one more rung up, and it fails identically to EI-10609. A *healthy* gate is routinely
+one-sided:
+
+| gate | verdicts | threshold vs value range | healthy? |
+|---|---|---|---|
+| orient's relevance floor (EI-10372) | 100% reject | above the whole range | **BROKEN** |
+| a rate limiter under normal traffic | 100% pass | above the whole range | **HEALTHY** |
+| an auth check every caller passes | 100% pass | — | **HEALTHY** |
+
+A broken discriminator and a healthy limit-that-never-trips are **observationally identical** over
+`(verdict, value, threshold)`. No statistic over those columns separates them, because the separating
+fact is not in the data — it is *what the gate is for*. So the gate **declares** it: `expect:
+'discriminates'` (one-sided ⇒ a defect) vs `expect: 'guards'` (never firing ⇒ the healthy case). The
+detector applies its rule only to `discriminates`. `value`/`threshold` stop being the detection and
+become the **explanation** — which direction, and by how far off-scale (the *margin* is the proof).
+
+> **You cannot infer a gate's intent from its behaviour; a monitor that tries is guessing.** This is
+> Rule (b) one level up — you cannot find a missing row by looking at the rows you have, and you
+> cannot find a *mis-scaled* gate by looking at its outputs. Diff against the **declaration**: make
+> the gate state what it is for, then check the behaviour against that. Unlike the docstring lie of
+> EI-10660, the declaration is *checked* — a `guards` gate that fires constantly is surfaced as
+> mis-declared — so it is a claim with a feedback loop, not a comment nobody tests.
+
+And this was, once again, the same instinct: reaching for a *threshold* (`max(value) < threshold`)
+where what was needed was a check that the decision **separates at all**. Fourth time in the same
+three days — and this time the bug was inside the fix *for* the class, caught only because the
+discrimination test carried a negative fixture (a healthy `guards` gate that never fires) and the
+`expect`-is-load-bearing test asserted the detector goes blind when intent is stripped.
 
 ## The trap is recursive — the proposed fix walked into it
 

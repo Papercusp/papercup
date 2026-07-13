@@ -31,6 +31,7 @@ import { recordRoutedIdea } from './routed-ledger';
 import { refreshScoutOutcomes } from './routed-ledger';
 import { readIdeaQueueStatus } from './routed-ledger';
 import { recordScoutTick, readLastRanTickAtMs, type ScoutTickRecord } from './tick-ledger';
+import { isCapacityError } from './capacity-errors';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 import type { ScoutCyclePhase } from './cycle';
@@ -371,33 +372,11 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   }
 }
 
-/**
- * PURE: is this failure a CAPACITY ceiling (the pool had nothing to give) rather than a
- * genuine cycle failure? Matched on the provider/gateway's own message, since the capacity
- * signal arrives as a thrown Error from deep inside the ideator's LLM transport and there is
- * no typed carrier for it today.
- *
- * The live signatures (measured over the recent 200-tick window, 2026-07-12):
- *   - "rate-limit pause exceeds maxWait"                    — the gateway governor's own wait bail
- *   - "429 ... rate_limit_error"                            — the raw provider ceiling
- *   - the ideator's transport-death wrapper carrying either — "scout: all N ideator LLM call(s)
- *     failed — transport death (0 ideas, $0 spent): rate-limit pause exceeds maxWait"
- *
- * Deliberately NARROW. A TIMEOUT is NOT treated as capacity even though it is plausibly
- * capacity-induced (a call queued behind an exhausted account's backoff until it times out):
- * that link is unproven, and mis-classifying a real hang as "pool busy" would hide a genuine
- * defect — the exact failure this classification exists to prevent, pointed the other way.
- * Keep timeouts as errors until the correlation is actually demonstrated.
- */
-export function isCapacityError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    m.includes('rate-limit pause exceeds maxwait') ||
-    m.includes('rate_limit_error') ||
-    (m.includes('429') && m.includes('rate limit')) ||
-    m.includes('rate limit exceeded')
-  );
-}
+// The pure capacity-vs-genuine-failure classifier moved to ./capacity-errors so the
+// READ path (quality-metrics.ts) can reuse the EXACT same notion when re-classifying
+// historical error ticks — one classifier, two consumers (WI-4475). Re-exported here
+// because scheduler.isCapacityError is the established import site + test surface.
+export { isCapacityError };
 
 /**
  * PURE (blender-self-learning-2026-07-12 P-006): per-lane grounding histogram

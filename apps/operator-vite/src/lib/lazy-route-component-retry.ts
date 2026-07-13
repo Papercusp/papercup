@@ -83,7 +83,10 @@ export function retryingImporter<T>(
  */
 export function lazyRouteComponentWithRetry<
   T extends Record<string, unknown>,
-  TKey extends keyof T = 'default',
+  // `& string`: an export NAME is a string, and lazyRouteComponent's `exportName`
+  // param is typed `TKey` where it expects a string key. Without the intersection,
+  // `keyof T` widens to `string | number | symbol` and the passthrough call errors.
+  TKey extends keyof T & string = 'default',
 >(importer: () => Promise<T>, exportName?: TKey) {
   return lazyRouteComponent(retryingImporter(importer), exportName);
 }

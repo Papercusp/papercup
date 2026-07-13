@@ -56,7 +56,8 @@ vi.mock('@papercusp/sync', () => ({
 }));
 
 const boundCbs: Array<(api: unknown) => void> = [];
-const listPanelsMock = vi.fn<[], Array<{ id: string; type: string; params?: Record<string, unknown> }>>(() => []);
+// Vitest 4 renamed vi.fn's type params from <Args, Return> to a single <FnSig>.
+const listPanelsMock = vi.fn<() => Array<{ id: string; type: string; params?: Record<string, unknown> }>>(() => []);
 const setPanelParamsMock = vi.fn();
 vi.mock('@/app/harness/dock/dock-actions', () => ({
   onDockApiBind: (cb: (api: unknown) => void) => { boundCbs.push(cb); return () => {}; },

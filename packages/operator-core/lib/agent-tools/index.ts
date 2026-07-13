@@ -219,6 +219,11 @@ import './probe/record-hop';
 // self-checking gate canary on demand, bifurcating "still red" into gate-broken
 // (the checker itself can't pass a known-good) vs system-broken (trust the red).
 import './gates/canary-check';
+// EI-10619 — gates:degenerate-check: read the gate_decisions log and report gates that cannot
+// discriminate (a `discriminates` gate gone one-sided, a registered gate that never ran, a
+// mis-declared `guards` limit). The on-demand READER for the decision log — a detector nothing
+// calls is itself the Shape-4 defect it exists to catch.
+import './gates/degenerate-check';
 // learning-packs-2026-06-11 P-009/P-012/P-013 — hive learning-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
 import './learning_packs/list';
