@@ -110,6 +110,7 @@ export default defineTool({
         position,
         deploy,
         pipeline,
+        inspectedKeys: keys,
         awaits,
         wakes,
         snapshotGeneration: snapshot.generatedAtMs,

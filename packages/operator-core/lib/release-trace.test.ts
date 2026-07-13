@@ -75,6 +75,12 @@ function input(over: Partial<ReleaseTraceInput> = {}): ReleaseTraceInput {
     position: position(),
     deploy: deploy(),
     pipeline: 'papercusp',
+    inspectedKeys: [
+      `release:deployed:${sha}`,
+      'release:deploy-failed',
+      'release:green:papercusp',
+      'green-checkpoint:red:papercusp',
+    ],
     awaits: [],
     wakes: [],
     snapshotGeneration: 10,
@@ -233,6 +239,7 @@ describe('buildReleaseTrace', () => {
       }),
     );
     expect(out.awaits.activeRegistrations).toBe(1);
+    expect(out.awaits.inspectedKeys).toContain(`release:deployed:${sha}`);
     expect(out.resync).toMatchObject({ required: true, consumerGeneration: 9, authoritativeGeneration: 10 });
   });
 });

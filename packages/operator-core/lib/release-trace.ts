@@ -57,6 +57,7 @@ export interface ReleaseTraceInput {
   deploy: DeployStatus;
   gate: ReleaseTraceGate;
   pipeline: string;
+  inspectedKeys: string[];
   awaits: ReleaseTraceAwait[];
   wakes: ReleaseTraceWake[];
   snapshotGeneration: number;
@@ -330,7 +331,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
       deployedSha,
     },
     awaits: {
-      inspectedKeys: [...new Set(input.awaits.map((a) => a.event).concat(input.wakes.map((w) => w.event)))],
+      inspectedKeys: input.inspectedKeys,
       registered: activeAwaits,
       totalRegistrations: input.awaits.length,
       activeRegistrations: activeAwaits.length,
