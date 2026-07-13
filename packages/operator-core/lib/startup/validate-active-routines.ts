@@ -1,8 +1,7 @@
 /**
  * Recurrence guard for active routines (EI-2224 recurrence guard P-2).
  *
- * Periodic check (not startup) that validates no ACTIVE routines target
- * unregistered harnesses. This catches drift scenarios where:
+ * Validates that no ACTIVE routine targets an unregistered harness. This catches drift where:
  *  - The harness registry gets cleared/rebuilt
  *  - Fire-paths still reference old harness slugs
  *  - A host restart introduces a slug mismatch
@@ -10,9 +9,17 @@
  * When violations are found, logs a FATAL error so it surfaces in monitoring.
  * A production deployment would page on this error class.
  *
- * Called by:
- *  - The health-check loop (service-health.ts, every 30-60s)
- *  - The startup validation (validate-home-harness.ts, on boot)
+ * Called by: the boot sequence (apps/operator/bin/host-bootstrap.ts), beside its two sibling
+ * guards — validateHomeHarnessResolution (does the HOME slug resolve?) and
+ * validateDeclaredSingletons (do the routines we DECLARED exist at all?).
+ *
+ * There is NO periodic caller, deliberately. Every drift case above lands at boot or at a
+ * registry rebuild, and a resolveProject() per active routine every 30-60s is a real cost for
+ * a failure that cannot appear between two ticks. A prior version of this comment claimed a
+ * health-check loop called it every 30-60s AND that boot called it. BOTH WERE FALSE — it had
+ * ZERO callers for its entire life (EI-10660), and the docstring is what kept anyone from
+ * noticing: it retired the very suspicion that would have found the gap. Do not describe a
+ * caller here that you have not grepped for.
  */
 
 import { getOrgPg } from '@papercusp/db-org';

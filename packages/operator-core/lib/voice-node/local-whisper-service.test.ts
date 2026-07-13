@@ -189,13 +189,18 @@ describe('local-whisper-service', () => {
     expect(spawns).toBe(1);
   });
 
-  it('whisperSttBaseUrl falls back to the external URL when nothing is provisioned (same error surface as before)', async () => {
-    const url = await whisperSttBaseUrl({
-      home,
-      externalUrl: 'http://localhost:29999',
-      probe: async () => false,
-      detectHw: async () => linuxHw,
-    });
+  it('whisperSttBaseUrl falls back to the external URL when nothing is provisioned (same error surface as before)', () => {
+    const url = whisperSttBaseUrl({ externalUrl: 'http://localhost:29999' });
     expect(url).toBe('http://localhost:29999');
+  });
+
+  it('whisperSttBaseUrl does NO I/O — it never probes on the utterance hot path', () => {
+    // The regression this guards: the first cut called ensureLocalWhisper() here, adding a
+    // health-probe round-trip to EVERY transcription (agent-peer.test.ts caught it as a
+    // second fetch). The base URL must be a pure read of lifecycle state.
+    const probe = vi.fn(async () => true);
+    const url = whisperSttBaseUrl({ externalUrl: 'http://localhost:29999', probe });
+    expect(url).toBe('http://localhost:29999');
+    expect(probe).not.toHaveBeenCalled();
   });
 });

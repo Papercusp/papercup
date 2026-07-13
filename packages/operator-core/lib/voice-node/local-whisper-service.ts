@@ -141,15 +141,32 @@ export async function ensureLocalWhisper(deps: LocalWhisperDeps = {}): Promise<E
 
 /**
  * The STT call sites' one-liner: the base URL to POST /v1/audio/transcriptions at.
- * External server → its URL; else the managed child (spawned on demand); else the external
- * URL anyway — so a not-provisioned box fails with the SAME "whisper unreachable" surface it
- * had before this module existed (no new error shapes on the request path; the health route
- * carries the not-provisioned diagnosis).
+ *
+ * HOT PATH — this runs once per utterance, so it does NO I/O: it is a pure read of the
+ * lifecycle state (a live managed child → its URL; otherwise the external URL, which is
+ * also the not-provisioned fallback, so an unreachable whisper fails with exactly the same
+ * surface it had before this module existed).
+ *
+ * It deliberately does NOT call ensureLocalWhisper: that probes over HTTP, and doing so here
+ * added a full round-trip to EVERY transcription (caught by agent-peer.test.ts's "one fetch
+ * per transcription" contract — the test was right and the first cut of this function was
+ * wrong). The managed child is started by `warmLocalWhisper()` at the lifecycle moments that
+ * actually mean "voice is about to be used" — enabling voice mode, and finishing the local
+ * install — never on the utterance path.
  */
-export async function whisperSttBaseUrl(deps: LocalWhisperDeps = {}): Promise<string> {
-  const r = await ensureLocalWhisper(deps);
-  if (r.ok && r.url) return r.url;
+export function whisperSttBaseUrl(deps: LocalWhisperDeps = {}): string {
+  if (state.child && state.child.exitCode === null && state.url) return state.url;
   return deps.externalUrl ?? (process.env.VOICEMODE_URL ?? 'http://localhost:2022');
+}
+
+/**
+ * Lifecycle warm-up: bring a whisper endpoint up (external probe → managed child spawn) so the
+ * FIRST utterance already has one. Fire-and-forget by design — callers are lifecycle events
+ * (voice-mode enable, install completion), never the request path, and a failure here just
+ * means the STT call falls back to the external URL and surfaces the usual unreachable error.
+ */
+export async function warmLocalWhisper(deps: LocalWhisperDeps = {}): Promise<EnsureWhisperResult> {
+  return ensureLocalWhisper(deps);
 }
 
 async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promise<boolean>): Promise<EnsureWhisperResult> {

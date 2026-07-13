@@ -17,7 +17,7 @@
 import { energy } from '@papercusp/p2p-voice';
 import { loadVoicePrefs } from '../voice-prefs';
 import { synthesize } from '../endpoint-route/routes/agent-mcp/operator-tts';
-import { whisperSttBaseUrl } from './local-whisper-service';
+import { whisperSttBaseUrl, warmLocalWhisper } from './local-whisper-service';
 import { VOICE_FRAME_SAMPLES, VOICE_SAMPLE_RATE } from './codec';
 import { onPeerFrame, pushMicFrame, voiceStatus } from './manager';
 import { decodeWavPcm16, encodeWavPcm16, resamplePcm16 } from './wav';
@@ -62,6 +62,10 @@ export function enableVoiceAgent(on: boolean): void {
   if (on === enabled) return;
   enabled = on;
   if (on) {
+    // Bring a whisper endpoint up NOW, so the first utterance doesn't pay for it (and the STT
+    // path itself never probes). Fire-and-forget: a failure just leaves the external-URL
+    // fallback in place, which surfaces the usual "whisper unreachable" error.
+    void warmLocalWhisper().catch(() => {});
     unsub = onPeerFrame(handleFrame);
   } else {
     unsub?.();
@@ -127,7 +131,7 @@ export async function transcribePcm48k(pcm: Int16Array): Promise<string> {
   const form = new FormData();
   form.append('file', new Blob([wav.buffer as ArrayBuffer], { type: 'audio/wav' }), 'utterance.wav');
   form.append('model', 'whisper-1');
-  const sttBase = await whisperSttBaseUrl();
+  const sttBase = whisperSttBaseUrl();
   const r = await fetch(`${sttBase}/v1/audio/transcriptions`, { method: 'POST', body: form });
   if (!r.ok) throw new Error(`whisper ${r.status}`);
   const body = (await r.json()) as { text?: string };

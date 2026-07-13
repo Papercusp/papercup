@@ -45,7 +45,7 @@ export default defineTool({
     try {
       // External whisper (VOICEMODE_URL) when reachable; else the operator-managed
       // provisioned whisper-server child, spawned on demand (P-009 hop 3).
-      const sttBase = await whisperSttBaseUrl();
+      const sttBase = whisperSttBaseUrl();
       r = await fetch(`${sttBase}/v1/audio/transcriptions`, {
         method: 'POST',
         body: fd,

@@ -24,6 +24,7 @@ import {
 } from '../provisioner/whisper-binary';
 import { platformKeyFor } from '../provisioner/llama-binary';
 import { isKokoroLocalProvisioned, provisionKokoroLocal } from './kokoro-local';
+import { warmLocalWhisper } from './local-whisper-service';
 
 export interface LegStatus {
   done: boolean;
@@ -46,6 +47,8 @@ export interface LocalVoiceProvisionDeps {
   provisionWhisperBinary?: () => Promise<LegStatus>;
   provisionWhisperModel?: () => Promise<LegStatus>;
   provisionKokoro?: () => Promise<LegStatus>;
+  /** Injected for tests; defaults to warmLocalWhisper (spawn the server once the files land). */
+  warmWhisper?: () => Promise<unknown>;
 }
 
 let current: LocalVoiceProvisionStatus = {
@@ -130,6 +133,12 @@ export function startLocalVoiceProvision(deps: LocalVoiceProvisionDeps = {}): { 
     current.running = false;
     current.finishedAt = now();
     inflight = null;
+    // The binary + model just landed, so bring the whisper server up NOW rather than making the
+    // user's first utterance wait for a cold spawn. The STT hot path never starts it itself
+    // (whisperSttBaseUrl does no I/O), so this is the lifecycle moment that must.
+    if (current.whisperBinary.done && current.whisperModel.done) {
+      void (deps.warmWhisper ?? warmLocalWhisper)().catch(() => {});
+    }
     return current;
   })();
   return { started: true, alreadyRunning: false };

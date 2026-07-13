@@ -166,10 +166,13 @@ loop that was merely LATE demanded attention. A loop that DID NOT EXIST did not.
 never lied. Nobody asked it.
 
 The same session turned up a third instance one level up: `validateActiveRoutines` (EI-10660) — the
-recurrence guard for exactly this family of drift — is **dead code with zero callers**, and its own
-docstring says *"Called by: the health-check loop (every 30-60s), the startup validation (on boot)."*
-Both claims are false. It has never executed. A guard that documents callers it does not have is
-worse than no guard: **it retires the very suspicion that would find the gap.**
+recurrence guard for exactly this family of drift — was **dead code with zero callers**, and its own
+docstring said *"Called by: the health-check loop (every 30-60s), the startup validation (on boot)."*
+Both claims were false; `service-health.ts` is not even a loop, so the caller it named could not have
+existed. It had never executed, with four green unit tests to its name. A guard that documents
+callers it does not have is worse than no guard: **it retires the very suspicion that would find the
+gap.** (Now wired into `host-bootstrap.ts` beside its two siblings, and the docstring's periodic
+claim is deleted rather than retro-justified — do not describe a caller you have not grepped for.)
 
 > **A CORRECT VERDICT THAT NOTHING READS IS NOT A CHECK. A CHECK THAT NOTHING CALLS IS NOT A CHECK.**
 
@@ -189,6 +192,22 @@ Two rules fall out, and they are cheap:
    `: 0` fallback — see the fix in `memoryStatus`). A missing routine row cannot be found by any
    check that iterates the rows it has. **You cannot find a missing row by looking at the rows you
    have** — the only way to see an absence is to diff against the DECLARATION.
+
+### How you guard against Shape 4: test the CALL SITE, not just the check
+
+The unit test is the wrong instrument here and no amount of it helps. Ask what a per-module suite can
+actually see: it imports the function and asserts on what it returns. **A green unit test proves a
+check WORKS. It can never prove the check RUNS** — those are different questions, and only the first
+one is ever asked. `validateActiveRoutines` had four green tests and zero callers, and there is no
+test you could have added *to that file* that would have noticed.
+
+So the guard has to live where the wiring does. `host-bootstrap.startup-guards.test.ts` asserts the
+boot file calls each of the three startup guards by name — crude, and it fails the instant a call
+site is deleted, which is the regression that went unnoticed for months. Prove such a test
+discriminates the same way you would any other: run it against the tree from *before* the fix. Ours
+fails on the real 2026-07-06 `host-bootstrap.ts` for exactly the two guards that were unwired and
+passes for the one that was. **A wiring test that passes on the broken tree is itself a Shape-4
+defect** — a check whose verdict nobody can act on, which is where you came in.
 
 ## The audit — run this on anything that thresholds or joins before it acts
 
