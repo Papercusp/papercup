@@ -22,11 +22,16 @@
 # TWO independent signals, either can fire:
 #   (a) FRESHNESS — the newest dump artifact is older than BACKUP_MAX_AGE_H. This is
 #       the signal that would have caught the 30-day death on day one. It holds even if
-#       the hook log has been rotated away, because it judges the ARTIFACT, not the log.
-#   (b) CONSECUTIVE FAILURES — the hook log's tail shows >= BACKUP_MAX_FAILS "FAIL"
-#       lines with no intervening "ok". This fires EARLY (within an hour or two of the
-#       breakage) rather than waiting for the artifact to age past the freshness bar,
-#       and it catches the case where an artifact is fresh but a LATER dump began failing.
+#       the run log has been rotated away, because it judges the ARTIFACT, not the log.
+#   (b) CONSECUTIVE FAILURES — db-backup.log's tail shows >= BACKUP_MAX_FAILS "backup
+#       FAILED" runs with no intervening "backup OK". This fires EARLY (within an hour or
+#       two of the breakage) rather than waiting for the artifact to age past the freshness
+#       bar, and it catches the case where an artifact is fresh but a LATER dump began failing.
+#
+# CONVERGED 2026-07-12 (EI-10733): the backup path is now db-backup.sh (pg_dump -Fd -j,
+# per-DB, TOC-validated) — NOT the old pre-snapshot.sh `timeout 60 pg_dumpall | gzip`
+# that produced pg-5432.sql.gz. This probe was repointed at db-backup.sh's artifacts +
+# run log accordingly; the two-signal design is unchanged, only what it judges.
 #
 # DETECTION + ESCALATION ONLY — this script never re-runs a dump, kills a process, or
 # touches the backup config. Recovery is a human/agent call made off the filed EI. Same
@@ -36,15 +41,24 @@
 #
 # Usage: papercup-backup-health-check.sh
 # Env:
-#   BACKUP_DUMP_DIR      (default /mnt/data/Backup/db-dumps) — where the .sql.gz dumps land
-#   BACKUP_ARTIFACTS     (default "pg-5432.sql.gz")          — space-separated artifacts that
-#                                                              MUST stay fresh. pg-16534 is
-#                                                              deliberately NOT here: the
-#                                                              embedded PG isn't running on the
-#                                                              dev box, so it is skipped, not failed.
+#   BACKUP_DUMP_DIR      (default /mnt/data/Backup/db-dumps) — where the dumps land
+#   BACKUP_ARTIFACTS     (default "pg/papercusp pg/restart") — space-separated dump artifacts
+#                                                              (relative to BACKUP_DUMP_DIR) that
+#                                                              MUST stay fresh. These are the
+#                                                              per-DB pg_dump -Fd directories
+#                                                              db-backup.sh renames into place
+#                                                              ONLY after a chown + pg_restore -l
+#                                                              validation, so a fresh dir mtime
+#                                                              means a *verified* dump — the
+#                                                              faithful successor to the old
+#                                                              single pg-5432.sql.gz. papercusp
+#                                                              (23GB) + restart (4.6GB) are the
+#                                                              real-state DBs; papercusp_su /
+#                                                              postgres are tiny/derived and
+#                                                              deliberately not gated.
 #   BACKUP_MAX_AGE_H     (default 6)   — artifact older than this ⇒ alarm (dumps run ~hourly)
-#   BACKUP_MAX_FAILS     (default 3)   — this many trailing FAILs with no "ok" ⇒ alarm
-#   BACKUP_HOOK_LOG      (default $BACKUP_DUMP_DIR/hook.log)
+#   BACKUP_MAX_FAILS     (default 3)   — this many trailing FAILED runs with no "OK" ⇒ alarm
+#   BACKUP_HOOK_LOG      (default $BACKUP_DUMP_DIR/db-backup.log) — db-backup.sh's run log
 #   OPERATOR_MCP_URL     (default http://127.0.0.1:3070/api/mcp?superuser=1)
 #   BACKUP_NO_FILE       (default 0)   — set 1 to skip EI filing (log-only / dry-run)
 #   BACKUP_RED_REFILE_H  (default 12)  — RED-EI dedup window (mirrors DHT_RED_REFILE_H /
@@ -72,10 +86,10 @@ if [ -z "${BACKUP_ALERT_FORCE:-}" ] \
 fi
 
 BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
-BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg-5432.sql.gz}"
+BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg/papercusp pg/restart}"
 BACKUP_MAX_AGE_H="${BACKUP_MAX_AGE_H:-6}"
 BACKUP_MAX_FAILS="${BACKUP_MAX_FAILS:-3}"
-BACKUP_HOOK_LOG="${BACKUP_HOOK_LOG:-$BACKUP_DUMP_DIR/hook.log}"
+BACKUP_HOOK_LOG="${BACKUP_HOOK_LOG:-$BACKUP_DUMP_DIR/db-backup.log}"
 OPERATOR_MCP_URL="${OPERATOR_MCP_URL:-http://127.0.0.1:3070/api/mcp?superuser=1}"
 BACKUP_NO_FILE="${BACKUP_NO_FILE:-0}"
 BACKUP_RED_REFILE_H="${BACKUP_RED_REFILE_H:-12}"
@@ -184,9 +198,10 @@ fi
 # the log says.
 for art in $BACKUP_ARTIFACTS; do
   f="$BACKUP_DUMP_DIR/$art"
-  if [ ! -f "$f" ]; then
+  # -e not -f: db-backup.sh's artifacts are pg_dump -Fd DIRECTORIES, not single files.
+  if [ ! -e "$f" ]; then
     TITLE="DB backup artifact MISSING: $art (no dump has ever succeeded at $BACKUP_DUMP_DIR)"
-    BODY="EI-10733 durable backup-health probe: expected dump artifact '$f' does not exist at all. There is NO recoverable database dump. Check ~/.config/kopia/hooks/pre-snapshot.sh and $BACKUP_HOOK_LOG."
+    BODY="EI-10733 durable backup-health probe: expected dump artifact '$f' does not exist at all. There is NO recoverable database dump. Check ~/.config/kopia/db-backup.sh, its timer (systemctl --user status papercusp-db-backup.timer), and $BACKUP_HOOK_LOG."
     RED_MARKER="$STATE_DIR/missing-$art"
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (missing $art) — skipping duplicate filing."
@@ -207,9 +222,9 @@ for art in $BACKUP_ARTIFACTS; do
 THIS IS THE SIGNAL THAT WAS MISSING. On 2026-07-12 the backup had been failing 100% for ~30 DAYS (newest good dump 2026-06-12) and nothing detected it, because a plausible-looking 1.4GB .gz sat on disk the whole time. 'The backup file exists' is not 'the backup works' — only its FRESHNESS discriminates.
 
 LIKELY CAUSES (check in this order):
- 1. The dump is exceeding its timeout. If the DB has grown, DB_DUMP_TIMEOUT in ~/.config/kopia/hooks/pre-snapshot.sh may again be too small — the ORIGINAL bug was 'timeout 60' against a 1.4GB dump. Look for 'pg-5432 FAIL' in $BACKUP_HOOK_LOG and any pg_dumpall error appended there. DO NOT blindly raise the timeout without reading the actual error.
- 2. An orphaned pg_dump is holding locks (the EI-10730 knock-on): check for a pg_dump whose parent is dead (PPID 1/systemd). pre-snapshot.sh's reap_orphan_dumps() should terminate these — verify it is still present and running.
- 3. The kopia-snapshots timer/service is not firing at all: systemctl --user list-timers kopia-snapshots.timer
+ 1. db-backup.sh's timer stopped firing: systemctl --user status papercusp-db-backup.timer papercusp-db-backup.service ; journalctl --user -u papercusp-db-backup.service -n 50. Read $BACKUP_DUMP_DIR/STATUS.json (ok / failed[] / lastSuccessEpoch) and $BACKUP_HOOK_LOG.
+ 2. A specific DB's dump is failing validation: db-backup.sh only renames a dump into place after pg_restore -l passes, so a per-DB 'FAIL' in db-backup.log means the archive was unreadable or the dump errored — read the actual pg_dump error there. DO NOT blindly raise PC_BACKUP_TIMEOUT_SEC without reading it.
+ 3. An orphaned pg_dump is holding locks (the EI-10730 knock-on): check for a pg_dump backend older than its timeout (SELECT pid, application_name, backend_start FROM pg_stat_activity WHERE application_name LIKE 'pg_dump%'). db-backup.sh tags its own dumps PGAPPNAME=pcbackup and reaps foreign ones; a lingering 'pg_dump%' backend is a legacy/manual dump.
  4. Disk full on the backup volume: df -h $BACKUP_DUMP_DIR
 
 An orphaned/stuck dump is not just a dead backup — it holds AccessShareLock on ~593 tables, which starves every migration's ACCESS EXCLUSIVE and can wedge the whole release pipeline (EI-10730)."

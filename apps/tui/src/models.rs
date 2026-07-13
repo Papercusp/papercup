@@ -299,6 +299,11 @@ pub enum NativeSessionHandle {
         owner_id: Option<String>,
         #[serde(default)]
         session_id: Option<String>,
+        /// The session's isolated CLAUDE_CONFIG_DIR (adv-roster `configDir`) —
+        /// the transcript lives under it, so the attach must run with this env
+        /// set (the claude analog of `codex_home`). None on legacy payloads.
+        #[serde(default)]
+        config_dir: Option<String>,
         #[serde(default)]
         exact_resume_supported: bool,
         #[serde(default)]
@@ -339,16 +344,34 @@ pub enum NativeSessionHandle {
 impl NativeSessionHandle {
     pub fn dock_pane_argv(&self) -> Option<Vec<String>> {
         match self {
-            Self::Claude { session_id, .. } => session_id
+            Self::Claude {
+                session_id,
+                config_dir,
+                ..
+            } => session_id
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(|sid| {
-                    vec![
-                        "claude".to_string(),
-                        "--resume".to_string(),
-                        sid.to_string(),
-                    ]
+                    // The transcript lives under the session's ISOLATED config
+                    // dir, not the default one — a bare `claude --resume` finds
+                    // nothing there. Wrap with env exactly like the Codex arm
+                    // wraps CODEX_HOME; bare only for legacy payloads without
+                    // a configDir.
+                    match config_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                        Some(dir) => vec![
+                            "env".to_string(),
+                            format!("CLAUDE_CONFIG_DIR={dir}"),
+                            "claude".to_string(),
+                            "--resume".to_string(),
+                            sid.to_string(),
+                        ],
+                        None => vec![
+                            "claude".to_string(),
+                            "--resume".to_string(),
+                            sid.to_string(),
+                        ],
+                    }
                 }),
             Self::Codex {
                 codex_home,
@@ -2760,6 +2783,51 @@ mod tests {
                 "claude".to_string(),
                 "--resume".to_string(),
                 "uuid-x".to_string()
+            ])
+        );
+        // Claude handle WITH a configDir → env-wrapped resume (the transcript
+        // lives under the isolated config dir; a bare resume attaches to nothing).
+        let claude = RosterEntry {
+            owner_id: "s-claude".into(),
+            native_session: Some(NativeSessionHandle::Claude {
+                source: "adv_sessions".into(),
+                owner_id: Some("s-claude".into()),
+                session_id: Some("uuid-y".into()),
+                config_dir: Some("/home/me/.papercusp/session-claude/s-claude".into()),
+                exact_resume_supported: true,
+                missing_reason: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            claude.dock_pane_argv(),
+            Some(vec![
+                "env".to_string(),
+                "CLAUDE_CONFIG_DIR=/home/me/.papercusp/session-claude/s-claude".to_string(),
+                "claude".to_string(),
+                "--resume".to_string(),
+                "uuid-y".to_string(),
+            ])
+        );
+        // Claude handle WITHOUT a configDir (legacy payload) → bare resume.
+        let claude_legacy = RosterEntry {
+            owner_id: "s-claude-legacy".into(),
+            native_session: Some(NativeSessionHandle::Claude {
+                source: "adv_sessions".into(),
+                owner_id: Some("s-claude-legacy".into()),
+                session_id: Some("uuid-z".into()),
+                config_dir: None,
+                exact_resume_supported: true,
+                missing_reason: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            claude_legacy.dock_pane_argv(),
+            Some(vec![
+                "claude".to_string(),
+                "--resume".to_string(),
+                "uuid-z".to_string(),
             ])
         );
         let codex = RosterEntry {

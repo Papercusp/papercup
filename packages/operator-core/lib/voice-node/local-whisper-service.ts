@@ -310,7 +310,9 @@ async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promis
   try {
     return await spawnAndHealthGate({ deps, probe, url, args, binPath: cached.binPath, spawnFn, now, timeoutMs, intervalMs });
   } finally {
-    void releaseSpawnLock(deps.home);
+    // Awaited on purpose: a fire-and-forget unlink races the CALLER's next ensure() —
+    // which would see a "fresh foreign lock" that is really our own garbage.
+    await releaseSpawnLock(deps.home);
   }
 }
 

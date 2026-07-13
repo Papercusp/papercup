@@ -11,6 +11,7 @@ const peerFrameCbs: Array<(id: string, f: Int16Array) => void> = [];
 const pushMicFrame = vi.fn();
 let mockChannel: { id: string } | null = { id: 'vc-1' };
 let mockTtsEngine = 'kokoro';
+let mockAgentSpeaking = false; // WI-4501 half-duplex gate input
 
 vi.mock('./manager', () => ({
   onPeerFrame: (cb: (id: string, f: Int16Array) => void) => {
@@ -21,7 +22,13 @@ vi.mock('./manager', () => ({
     };
   },
   pushMicFrame: (f: Int16Array) => pushMicFrame(f),
-  voiceStatus: () => ({ channel: mockChannel, muted: false, peers: [], identity: { id: 't', label: 't' } }),
+  voiceStatus: () => ({
+    channel: mockChannel,
+    muted: false,
+    peers: [],
+    identity: { id: 't', label: 't' },
+    agentSpeaking: mockAgentSpeaking,
+  }),
 }));
 
 vi.mock('../voice-prefs', () => ({
@@ -113,6 +120,102 @@ describe('utterance segmentation → STT', () => {
     for (let i = 0; i < 40; i++) peerFrameCbs[0]('peer-B', silentFrame());
     await new Promise((r) => setTimeout(r, 30));
     expect(got).toHaveLength(0);
+  });
+});
+
+describe('half-duplex echo gate (WI-4501)', () => {
+  // The gate uses Date.now() for its post-speech tail — fake ONLY Date so the test's own
+  // real setTimeout waits (and the SUT's async STT hop) still run.
+  let jumpSeq = 0;
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // Jump past any echo tail a previous test armed (module-level state). The jump must GROW
+    // per test: useFakeTimers re-bases to real now, so a fixed offset would land BEHIND the
+    // guard the previous test armed at its own offset.
+    vi.setSystemTime(Date.now() + 60_000 * ++jumpSeq);
+    vi.stubEnv('VOICEMODE_URL', 'http://voicemode.test');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => ({ text: ' omid ' }) })),
+    );
+  });
+  afterEach(() => {
+    enableVoiceAgent(false);
+    mockAgentSpeaking = false;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+  });
+
+  /** Enable the agent, let the one-off whisper warm-probe settle, rebaseline fetch. */
+  async function enableAndSettle(): Promise<ReturnType<typeof vi.fn>> {
+    enableVoiceAgent(true);
+    await new Promise((r) => setTimeout(r, 0));
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockClear();
+    return fetchMock;
+  }
+
+  it('frames heard while the agent speaks NEVER reach STT — the self-echo loop is cut', async () => {
+    const fetchMock = await enableAndSettle();
+    const got: unknown[] = [];
+    onTranscript((t) => got.push(t));
+
+    mockAgentSpeaking = true; // the agent's TTS is playing; the mic is re-capturing it
+    for (let i = 0; i < 10; i++) peerFrameCbs[0]('peer-A', loudFrame());
+    for (let i = 0; i < 40; i++) peerFrameCbs[0]('peer-A', silentFrame());
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(got).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('an utterance already OPEN when the agent starts speaking is discarded, not transcribed', async () => {
+    const fetchMock = await enableAndSettle();
+    const got: unknown[] = [];
+    onTranscript((t) => got.push(t));
+
+    // Real speech opens an utterance…
+    for (let i = 0; i < 10; i++) peerFrameCbs[0]('peer-A', loudFrame());
+    // …then the agent starts talking: whatever the mic hears now is (mostly) our own voice,
+    // and the half-built segment must never reach whisper.
+    mockAgentSpeaking = true;
+    peerFrameCbs[0]('peer-A', loudFrame());
+    mockAgentSpeaking = false;
+    vi.setSystemTime(Date.now() + 1000); // past the echo tail
+    // Silence that would have closed the (now discarded) utterance:
+    for (let i = 0; i < 40; i++) peerFrameCbs[0]('peer-A', silentFrame());
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(got).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('the echo tail suppresses frames right after speech ends, then hearing resumes', async () => {
+    const fetchMock = await enableAndSettle();
+    const got: Array<{ text: string }> = [];
+    onTranscript((t) => got.push(t));
+
+    // Arm the tail: one frame heard during speech.
+    mockAgentSpeaking = true;
+    peerFrameCbs[0]('peer-A', loudFrame());
+    mockAgentSpeaking = false;
+
+    // Still inside the 750ms tail (speaker/jitter latency) — dropped.
+    for (let i = 0; i < 10; i++) peerFrameCbs[0]('peer-A', loudFrame());
+    for (let i = 0; i < 40; i++) peerFrameCbs[0]('peer-A', silentFrame());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(got).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Past the tail: a real utterance transcribes again — the gate is a pause, not a mute.
+    vi.setSystemTime(Date.now() + 1000);
+    for (let i = 0; i < 10; i++) peerFrameCbs[0]('peer-A', loudFrame());
+    for (let i = 0; i < 30; i++) peerFrameCbs[0]('peer-A', silentFrame());
+    await new Promise((r) => setTimeout(r, 30));
+    expect(got).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

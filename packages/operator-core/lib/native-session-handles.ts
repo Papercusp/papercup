@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
 import type { AdvSessionRow } from './adv-sessions';
 import { interactiveBackendFromSpawnBackend, type InteractiveBackend, type SpawnBackendLike } from './backend-feature-capabilities';
@@ -12,6 +12,13 @@ export interface ClaudeNativeSessionHandle {
   source: NativeSessionSource;
   ownerId: string | null;
   sessionId: string | null;
+  /** The per-session CLAUDE_CONFIG_DIR the transcript lives under
+   *  (`~/.papercusp/session-claude/<ownerId>`). A bare `claude --resume
+   *  <sessionId>` looks in the DEFAULT config dir and finds nothing — every
+   *  attach (dock bee pane, hive tab) must run with CLAUDE_CONFIG_DIR set to
+   *  THIS dir, mirroring what the codex handle's `codexHome` already carries.
+   *  Null when the owner id (the dir key) is unknown. */
+  configDir: string | null;
   exactResumeSupported: boolean;
   missingReason: string | null;
 }
@@ -62,6 +69,7 @@ export function nativeSessionHandleForAdvSession(
       source: 'adv_sessions',
       ownerId,
       sessionId: row.sessionId,
+      configDir: ownerId ? sessionClaudeConfigDir(ownerId) : null,
       exactResumeSupported: Boolean(row.sessionId),
       missingReason: row.sessionId ? null : 'claude session_id is not recorded',
     };
@@ -119,6 +127,7 @@ export function nativeSessionHandleForSpawnedAgent(
       source: 'spawned_agents',
       ownerId,
       sessionId: row.sessionId ?? null,
+      configDir: sessionClaudeConfigDir(ownerId),
       exactResumeSupported: Boolean(row.sessionId),
       missingReason: row.sessionId ? null : 'spawned Claude agent has no session_id',
     };

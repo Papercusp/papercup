@@ -144,6 +144,13 @@ describe('renderWhisperServerArgs', () => {
     expect(args[args.indexOf('--host') + 1]).toBe('127.0.0.1');
     expect(args[args.indexOf('--port') + 1]).toBe(String(WHISPER_SERVER_DEFAULT_PORT));
   });
+
+  it('default threads are CLAMPED to 16 (WI-4501) — a big box must not claim cpus()-1 per server', () => {
+    const args = renderWhisperServerArgs({ modelPath: '/m/ggml-base.bin' });
+    const threads = Number(args[args.indexOf('--threads') + 1]);
+    expect(threads).toBeGreaterThanOrEqual(1);
+    expect(threads).toBeLessThanOrEqual(16); // 127-thread servers × a 17-server pile = the incident
+  });
 });
 
 // ---------------------------------------------------------------------------------------
