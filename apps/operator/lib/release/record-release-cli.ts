@@ -230,7 +230,11 @@ export async function run(opts: RecordOpts): Promise<number> {
         { force: opts.forceChangelog },
       );
       console.log(`[record-release] changelog draft (${res.source}) → ${res.draftPath}`);
-      console.log('  Review + edit the claims it cannot stand behind, then record with:');
+      if (res.warnings.length > 0) {
+        console.log(`\n⚠ ${res.warnings.length} thing(s) to review before recording — fix these in the draft:`);
+        for (const w of res.warnings) console.log(w);
+      }
+      console.log('\n  Review + edit the claims it cannot stand behind, then record with:');
       console.log(
         `    tsx apps/operator/lib/release/record-release-cli.ts --version ${opts.version} ` +
           `--channel ${opts.channel} --git-sha <sha> --changelog-file ${res.draftPath}`,

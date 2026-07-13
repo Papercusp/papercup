@@ -22,6 +22,10 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { connect } from 'node:net';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import {
   findCachedWhisperBinary,
   resolveWhisperModel,
@@ -41,8 +45,10 @@ export interface EnsureWhisperResult {
   url?: string;
   source?: LocalWhisperSource;
   /** Machine-readable reason when !ok: 'not-provisioned' (binary/model missing — run the
-   *  provision step), 'spawn-failed', 'unhealthy' (spawned but never answered), 'spawn-storm'. */
-  reason?: 'not-provisioned' | 'spawn-failed' | 'unhealthy' | 'spawn-storm';
+   *  provision step), 'spawn-failed', 'unhealthy' (spawned but never answered), 'spawn-storm',
+   *  'port-occupied' (something ELSE is bound to the port and never answered /health — spawning
+   *  would silently stack a duplicate listener via SO_REUSEPORT, the WI-4501 17-server pile). */
+  reason?: 'not-provisioned' | 'spawn-failed' | 'unhealthy' | 'spawn-storm' | 'port-occupied';
   detail?: string;
 }
 
@@ -54,6 +60,10 @@ export interface LocalWhisperDeps {
   model?: WhisperModelId;
   detectHw?: () => Promise<DetectedHardware>;
   probe?: (baseUrl: string) => Promise<boolean>;
+  /** Raw TCP bind check on the managed port (default: node:net connect). WI-4501: whisper-server
+   *  binds with SO_REUSEPORT, so a duplicate spawn SUCCEEDS silently and the kernel round-robins
+   *  /health probes across the pile — HTTP probing alone cannot see the duplication. */
+  tcpProbe?: (port: number) => Promise<boolean>;
   spawnFn?: typeof spawn;
   /** Health-wait tuning (tests shrink these). */
   healthTimeoutMs?: number;
@@ -74,6 +84,65 @@ const SPAWN_WINDOW_MS = 5 * 60 * 1000;
 // Module-singleton on purpose: ONE managed whisper child per operator process, whichever
 // route asks first (same posture as the voice bus / audio socket singletons in this dir).
 const state: ManagedState = { child: null, url: null, starting: null, spawnTimes: [] };
+
+/** Is ANYTHING accepting TCP on 127.0.0.1:port? Distinct from the HTTP /health probe: a
+ *  listener that is sick, still loading its model, or not-whisper-at-all still accepts the
+ *  connect — and is exactly what we must never spawn a duplicate next to. */
+async function defaultTcpProbe(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = connect({ port, host: '127.0.0.1' });
+    let settled = false;
+    const done = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(v);
+    };
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+    sock.setTimeout(1000, () => done(false));
+  });
+}
+
+// Cross-PROCESS spawn lock (WI-4501): the in-memory `state.starting` coalescer only guards ONE
+// operator process, but a deploy restarts several hono-hosts at once — 8 of them each spawned
+// "their own singleton" on 2026-07-12 (17 servers stacked on :2022). A tiny lockfile under
+// ~/.papercusp serializes the spawn across processes: fresh lock → poll the port's health
+// instead of spawning; stale lock (holder died mid-spawn) → take over.
+const SPAWN_LOCK_FRESH_MS = 60_000;
+
+function spawnLockPath(home: string | undefined): string {
+  return join(home ?? homedir(), '.papercusp', 'whisper-spawn.lock');
+}
+
+async function acquireSpawnLock(home: string | undefined): Promise<'acquired' | 'held'> {
+  const lockPath = spawnLockPath(home);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await mkdir(dirname(lockPath), { recursive: true });
+      await writeFile(lockPath, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: 'wx' });
+      return 'acquired';
+    } catch {
+      // EEXIST — another process is (or was) mid-spawn.
+      try {
+        const st = await stat(lockPath);
+        if (Date.now() - st.mtimeMs < SPAWN_LOCK_FRESH_MS) return 'held';
+        await unlink(lockPath); // stale — holder died mid-spawn; take over on the retry
+      } catch {
+        // lock vanished between write and stat — retry the acquire
+      }
+    }
+  }
+  return 'held';
+}
+
+async function releaseSpawnLock(home: string | undefined): Promise<void> {
+  try {
+    await unlink(spawnLockPath(home));
+  } catch {
+    // already gone — fine
+  }
+}
 
 async function defaultProbe(baseUrl: string): Promise<boolean> {
   try {

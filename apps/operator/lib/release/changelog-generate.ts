@@ -147,11 +147,49 @@ export function fallbackChangelog(input: ChangelogInput): string {
   return out.join('\n');
 }
 
+/**
+ * Warn about the two things the model reliably gets wrong even when told not to,
+ * so the reviewer's eyes go straight to them instead of having to hold every rule
+ * in their head. WARNINGS, never failures: this is a draft a human is about to
+ * edit, and the honest fix ("reworded", "cut the line") is theirs to make — a
+ * hard gate here would just be bypassed. Observed on the very first live run
+ * (2026-07-13): the model wrote "fleet-wide", "agents", and "Fixed …".
+ *
+ *   1. INTERNAL VOCABULARY a beta tester has no context for (agents, the fleet,
+ *      work-item / plan ids) — leaked despite the explicit ban.
+ *   2. SUCCESS CLAIMS ("fixed", "now works", "resolved") — the exact class that
+ *      turns a changelog into a lie when the work shipped but was never verified
+ *      on the reader's platform. See the module header.
+ */
+export function lintChangelogClaims(md: string): string[] {
+  const warnings: string[] = [];
+  const internal: Array<[RegExp, string]> = [
+    [/\b(the )?fleet\b/i, 'mentions "fleet" (internal)'],
+    [/\bagents?\b/i, 'mentions "agent(s)" (internal)'],
+    [/\b(WI|EI)-\d+/, 'contains a work-item/issue id'],
+  ];
+  const claims: Array<[RegExp, string]> = [
+    [/\bnow works\b/i, 'claims something "now works" — describe the change, not its success'],
+    [/\bis (now )?fixed\b/i, 'claims something "is fixed" — the work shipped; that is not "verified"'],
+    [/\b(fixed|resolved)\b/i, 'asserts "fixed/resolved" — prefer "reworked/changed" unless verified on the user\'s platform'],
+    [/\bon all platforms\b/i, 'claims "on all platforms" — only claim platforms you watched it work on'],
+  ];
+  const lines = md.split('\n');
+  for (const [i, line] of lines.entries()) {
+    for (const [re, why] of [...internal, ...claims]) {
+      if (re.test(line)) warnings.push(`  line ${i + 1}: ${why}\n    ${line.trim().slice(0, 100)}`);
+    }
+  }
+  return warnings;
+}
+
 export interface ChangelogResult {
   md: string;
   source: 'model' | 'fallback' | 'existing-draft';
   /** Where the draft was written — the file a reviewer edits and then records. */
   draftPath: string;
+  /** Warn-only claim-lint hits, so the CLI can point the reviewer at them. */
+  warnings: string[];
 }
 
 export interface GenerateDeps {
@@ -183,7 +221,9 @@ export async function generateChangelog(
 ): Promise<ChangelogResult> {
   if (!opts.force && fs.existsSync(draftPath)) {
     const existing = fs.readFileSync(draftPath, 'utf8').trim();
-    if (existing) return { md: existing, source: 'existing-draft', draftPath };
+    if (existing) {
+      return { md: existing, source: 'existing-draft', draftPath, warnings: lintChangelogClaims(existing) };
+    }
   }
 
   const complete = deps.complete ?? defaultComplete;
@@ -195,5 +235,5 @@ export async function generateChangelog(
 
   fs.mkdirSync(path.dirname(draftPath), { recursive: true });
   fs.writeFileSync(draftPath, `${md}\n`, 'utf8');
-  return { md, source, draftPath };
+  return { md, source, draftPath, warnings: lintChangelogClaims(md) };
 }

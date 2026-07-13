@@ -6,6 +6,7 @@ import {
   buildChangelogPrompt,
   fallbackChangelog,
   generateChangelog,
+  lintChangelogClaims,
   sanitizeChangelog,
   type ChangelogInput,
 } from './changelog-generate';
@@ -95,6 +96,27 @@ describe('fallbackChangelog — dull, deterministic, and TRUE', () => {
     expect(md).toContain('since 0.0.8');
     expect(md).toContain('Auto-update reliability');
     expect(md).not.toMatch(/works now|is fixed|verified/i);
+  });
+});
+
+describe('lintChangelogClaims — spotlight the model\'s reliable mistakes', () => {
+  it('flags success claims — the "fixed / now works" lie class', () => {
+    const w = lintChangelogClaims('## Highlights\n- Auto-update now works on all platforms\n- Login is fixed');
+    expect(w.join('\n')).toMatch(/now works/i);
+    expect(w.join('\n')).toMatch(/on all platforms/i);
+    expect(w.join('\n')).toMatch(/fixed/i);
+  });
+
+  it('flags internal vocabulary a beta tester has no context for', () => {
+    // These are the exact leaks the first live run produced despite the prompt ban.
+    const w = lintChangelogClaims('- Fixed a fleet-wide memory issue where agents got zero results\n- see WI-4389');
+    expect(w.join('\n')).toMatch(/fleet/i);
+    expect(w.join('\n')).toMatch(/agent/i);
+    expect(w.join('\n')).toMatch(/work-item/i);
+  });
+
+  it('stays quiet on clean, change-describing prose', () => {
+    expect(lintChangelogClaims('## Highlights\n- Reworked how the app checks for updates')).toEqual([]);
   });
 });
 

@@ -155,7 +155,10 @@ export interface WhisperServeOptions {
   host?: string;
   /** Default WHISPER_SERVER_DEFAULT_PORT (2022, the VOICEMODE_URL seam's default). */
   port?: number;
-  /** Default: all-but-one core, same heuristic as llama-binary's build jobs. */
+  /** Default: all-but-one core, CLAMPED to 16 (WI-4501). STT on whisper-base is realtime well
+   *  under 16 threads (this box's live voicemode unit runs exactly 16); an unclamped
+   *  `cpus()-1` on a big box claims 127 threads PER SERVER, which turned a duplicate-spawn
+   *  bug into a machine-wide CPU incident. */
   threads?: number;
   /** Default true — webview/browser audio arrives as webm/opus; whisper-server needs its
    *  ffmpeg conversion path to accept it (the live voicemode unit runs --convert). */
@@ -174,7 +177,7 @@ export function renderWhisperServerArgs(opts: WhisperServeOptions): string[] {
     '--port', String(opts.port ?? WHISPER_SERVER_DEFAULT_PORT),
     '--model', opts.modelPath,
     '--inference-path', '/v1/audio/transcriptions',
-    '--threads', String(opts.threads ?? Math.max(1, os.cpus().length - 1)),
+    '--threads', String(opts.threads ?? Math.max(1, Math.min(16, os.cpus().length - 1))),
   ];
   if (opts.convert ?? true) args.push('--convert');
   if (opts.noGpu) args.push('--no-gpu');
