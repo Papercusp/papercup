@@ -109,6 +109,22 @@ export const commands = {
 	 */
 	nativeTerminalSetEnabled: (enabled: boolean) => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_set_enabled", { enabled })),
 	/**
+	 *  WI-3388 — the terminal's current user layout (divider width fraction +
+	 *  collapsed/rail state). Read on mount by the web UI's `<TerminalDivider>`
+	 *  so it renders the persisted position instead of flashing a default.
+	 *  (Restored 2026-07-13, WI-4721: a bindings regeneration dropped these two
+	 *  entries + the TerminalLayout type while the Rust commands still exist.)
+	 */
+	terminalGetLayout: () => __TAURI_INVOKE<TerminalLayout>("terminal_get_layout"),
+	/**
+	 *  WI-3388 — set the terminal's layout (either field optional — pass just
+	 *  `collapsed` for the rail toggle, or just `fraction` for a divider drag),
+	 *  persist it, and apply it LIVE to whichever backend is running. A no-op
+	 *  apply (persisted only) for NewWindow/Disabled — there's no native surface
+	 *  to resize.
+	 */
+	terminalSetLayout: (fraction: number | null, collapsed: boolean | null) => typedError<TerminalLayout, string>(__TAURI_INVOKE("terminal_set_layout", { fraction, collapsed })),
+	/**
 	 *  Tauri command — invoked from the webview. The wire shape mirrors
 	 *  what `apps/operator/lib/transport-adapters/ipc-stream.ts` sends.
 	 */
@@ -120,6 +136,24 @@ export const commands = {
 };
 
 /* Types */
+/**
+ *  serde_json::Value as specta projects it — the tagged JSON enum the endpoint
+ *  bridge speaks (endpointInvoke / devBridgeResult / EndpointEvent reference it
+ *  recursively for Array/Object). Restored by hand 2026-07-13 (WI-4721): a
+ *  bindings regeneration dropped the declaration while the inline unions still
+ *  reference `Value`. Keep byte-identical to the inline union shape.
+ */
+export type Value = "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never };
+/**
+ *  WI-3388 — the terminal's user-controlled layout. `fraction` is resolution-
+ *  independent (a fraction of the GUI window's docking-axis size); `collapsed`
+ *  fully hides the terminal's native surface (the webview's own rail control
+ *  then owns the flush edge). Persisted across relaunch.
+ */
+export type TerminalLayout = {
+	fraction: number,
+	collapsed: boolean,
+};
 /**
  *  Mirror of the TS-side `ConsoleEnvelope` from
  *  apps/operator/lib/console-launcher.ts.

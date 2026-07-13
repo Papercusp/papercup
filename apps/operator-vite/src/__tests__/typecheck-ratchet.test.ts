@@ -41,6 +41,7 @@ interface TscError {
 
 function runTsc(): TscError[] {
   let out = '';
+  let crashed: string | null = null;
   try {
     out = execFileSync('npx', ['tsc', '--noEmit'], {
       cwd: APP_ROOT,
@@ -50,13 +51,28 @@ function runTsc(): TscError[] {
     });
   } catch (e) {
     // tsc exits non-zero when there are errors — that is the expected path here.
-    const err = e as { stdout?: string };
+    const err = e as { stdout?: string; stderr?: string; message?: string };
     out = err.stdout ?? '';
+    crashed = err.stderr || err.message || 'tsc exited non-zero with no stdout';
   }
-  return out
+  const errors = out
     .split('\n')
     .filter((l) => / error TS\d+: /.test(l))
     .map((line) => ({ file: line.split('(')[0] ?? '', line }));
+  // WI-4721 guard: a tsc run that exited non-zero but produced ZERO parseable
+  // error lines is an INFRASTRUCTURE failure (npx resolution mid node_modules
+  // churn, OOM, a config crash) — NOT a clean tree. Reading it as "0 errors"
+  // is exactly how the watermark got erroneously lowered to 0 on 2026-07-13
+  // (commit 09155066e1: 170 → 0 with the 169-error backlog intact, redding the
+  // release gate on inheritance). Fail LOUDLY instead of reporting zero.
+  if (errors.length === 0 && crashed !== null) {
+    throw new Error(
+      `tsc exited non-zero but emitted no parseable "error TSxxxx" lines — this is a tsc ` +
+        `INFRASTRUCTURE failure, not a clean typecheck. Do NOT treat it as 0 errors and do ` +
+        `NOT lower the watermark from a run like this.\n--- tsc stderr/message ---\n${crashed.slice(0, 2000)}`,
+    );
+  }
+  return errors;
 }
 
 describe('typecheck ratchet (EI-10611)', () => {
