@@ -33,7 +33,7 @@ export interface BgHostJournalMetrics {
   restartCount: number;
   /** Unit DEATHS (crash / OOM-kill / watchdog / non-zero exit) in the window —
    *  one systemd `Failed with result '…'` line per death. This, not
-   *  `restartCount`, is the readiness red criterion [owner:Avi 2026-07-13
+   *  `restartCount`, is the readiness red criterion [owner 2026-07-13
    *  "red only on crashes"]: a deliberate `systemctl restart` (how deploys
    *  ship routine fixes) is a clean stop+start and emits no failure line. */
   failureCount: number;
@@ -217,7 +217,7 @@ export function computeSoakReport(input: SoakReportInput): PotSoakReport {
   if (input.bgHost.oomKillCount > 0) {
     reasons.push(`bg-host OOM evidence in window (${input.bgHost.oomKillCount})`);
   }
-  // [owner:Avi 2026-07-13] Red only on UNEXPECTED restarts (crash/OOM/watchdog).
+  // [owner 2026-07-13] Red only on UNEXPECTED restarts (crash/OOM/watchdog).
   // Deliberate deploy restarts still show in restartCount for visibility, but a
   // clean stop+start is how fixes ship and must not make readiness unsatisfiable.
   if (input.bgHost.failureCount > 0) {

@@ -2685,16 +2685,23 @@ export function ScoutView({
     if (kind === "wi") {
       const title = groundingTitles[ref];
       return (
-        <button
+        <Tooltip
           key={ref}
-          type="button"
-          className="pc-learning__tracechip pc-learning__tracechip--link"
-          title={title ? `${rest} — ${title}` : rest}
-          onClick={() => openImprovement(rest)}
+          label={
+            title
+              ? `${rest} — ${title} (open in Improvements)`
+              : `${rest} — open in Improvements`
+          }
         >
-          <i>{kind}</i>
-          {title ? `${rest} · ${title}` : rest}
-        </button>
+          <button
+            type="button"
+            className="pc-learning__tracechip pc-learning__tracechip--link"
+            onClick={() => openImprovement(rest)}
+          >
+            <i>{kind}</i>
+            {title ? `${rest} · ${title}` : rest}
+          </button>
+        </Tooltip>
       );
     }
     return (
@@ -2763,15 +2770,16 @@ export function ScoutView({
         {arrow}
         <div className="pc-learning__tracestage">
           <em>routed to</em>
-          <button
-            type="button"
-            className="pc-learning__tracechip pc-learning__tracechip--link"
-            title={`${meta.desc} — open ${item.routedRef}`}
-            onClick={() => openRouted(item)}
-          >
-            <i style={{ color: meta.color }}>{meta.label}</i>
-            {item.routedRef}
-          </button>
+          <Tooltip label={`${meta.desc} — open ${item.routedRef}`}>
+            <button
+              type="button"
+              className="pc-learning__tracechip pc-learning__tracechip--link"
+              onClick={() => openRouted(item)}
+            >
+              <i style={{ color: meta.color }}>{meta.label}</i>
+              {item.routedRef}
+            </button>
+          </Tooltip>
         </div>
         {arrow}
         <div
@@ -2820,25 +2828,32 @@ export function ScoutView({
         key={item.ideaId}
         className="pc-learning__row pc-learning__row--scout"
       >
-        <button
-          type="button"
-          className="pc-learning__rowmain"
-          aria-expanded={isTraceOpen}
-          title="Show this idea's pipeline trace — grounding, lens, route, grade, outcome"
-          onClick={() => void setTraceOpen(isTraceOpen ? null : item.ideaId)}
+        <Tooltip
+          label={
+            isTraceOpen
+              ? "Hide this idea's pipeline trace"
+              : "Show this idea's pipeline trace — grounding, lens, route, grade, outcome"
+          }
         >
-          <span
-            className="pc-learning__sev"
-            style={{ background: meta.color }}
-            aria-hidden
-          />
-          <span className="pc-learning__id" style={{ color: meta.color }}>
-            {meta.label}
-          </span>
-          <span className="pc-learning__title">
-            {item.title ?? item.routedRef}
-          </span>
-        </button>
+          <button
+            type="button"
+            className="pc-learning__rowmain"
+            aria-expanded={isTraceOpen}
+            onClick={() => void setTraceOpen(isTraceOpen ? null : item.ideaId)}
+          >
+            <span
+              className="pc-learning__sev"
+              style={{ background: meta.color }}
+              aria-hidden
+            />
+            <span className="pc-learning__id" style={{ color: meta.color }}>
+              {meta.label}
+            </span>
+            <span className="pc-learning__title">
+              {item.title ?? item.routedRef}
+            </span>
+          </button>
+        </Tooltip>
         <span className="pc-learning__meta">
           <span
             className="pc-learning__chip pc-learning__chip--idea"
@@ -3700,7 +3715,7 @@ export function LearningStyles() {
       .pc-learning__tracestage { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
       .pc-learning__tracestage > em {
         font-style: normal; font-size: 8.5px; font-weight: 720; text-transform: uppercase;
-        letter-spacing: 0.05em; color: var(--fg-mute, #7f9bb4);
+        letter-spacing: 0; color: var(--fg-mute, #7f9bb4);
       }
       .pc-learning__tracestage > strong {
         font-size: 11px; font-weight: 650; color: var(--fg-dim, #b9d4e8);
@@ -3721,7 +3736,7 @@ export function LearningStyles() {
       }
       .pc-learning__tracechip i {
         font-style: normal; font-size: 8.5px; font-weight: 720; text-transform: uppercase;
-        letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); flex-shrink: 0;
+        letter-spacing: 0; color: var(--fg-mute, #7f9bb4); flex-shrink: 0;
       }
       .pc-learning__tracechip--link { cursor: pointer; }
       .pc-learning__tracechip--link:hover, .pc-learning__tracechip--link:focus-visible {
