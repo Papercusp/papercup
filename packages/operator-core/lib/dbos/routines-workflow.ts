@@ -565,6 +565,17 @@ async function routinesTickImpl(): Promise<void> {
           console.warn(`[su-ideate-ungraded] ${res.outcome}: ${res.installSlug} — ${res.reason}`);
         }
       }
+      // DBOS persists runStep return values in operation_outputs. Returning a
+      // compact semantic summary gives watchdog:status one authoritative record
+      // of internal fail-soft errors; `void` previously made a swallowed sweep
+      // failure look identical to a healthy empty run.
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        errorCount: results.filter((res) => res.outcome === 'error').length,
+        nudgedCount: results.filter((res) => res.outcome === 'nudged').length,
+        results: results.slice(0, 25),
+      };
     },
     { name: 'su-ideate-ungraded-sweep' },
   );

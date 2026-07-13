@@ -55,6 +55,35 @@ export function suIdeateUngradedStaleSec(): number {
   return Number.isFinite(n) ? n : 604_800;
 }
 
+export interface SuIdeateUngradedConfig {
+  enabled: boolean;
+  effectiveThresholdSec: number;
+  overrideSource: 'default' | 'environment' | 'invalid-environment-fallback';
+  overrideEnv: 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC';
+  rawOverride: string | null;
+  epochMs: number;
+  batchCap: number;
+}
+
+/** The effective configuration readback used by the sweep and watchdog:status.
+ * Keeping this next to the tunable prevents diagnostic code from independently
+ * re-implementing the default/override/kill-switch rules and drifting again. */
+export function suIdeateUngradedConfig(): SuIdeateUngradedConfig {
+  const raw = process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC ?? null;
+  const parsed = raw == null ? Number.NaN : Number(raw);
+  const effectiveThresholdSec = suIdeateUngradedStaleSec();
+  return {
+    enabled: effectiveThresholdSec > 0,
+    effectiveThresholdSec,
+    overrideSource:
+      raw == null ? 'default' : Number.isFinite(parsed) ? 'environment' : 'invalid-environment-fallback',
+    overrideEnv: 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC',
+    rawOverride: raw,
+    epochMs: SU_IDEATE_UNGRADED_EPOCH_MS,
+    batchCap: SU_IDEATE_UNGRADED_BATCH_CAP,
+  };
+}
+
 /** D-013 enablement-epoch floor: only rows routed AFTER the watchdog shipped are
  *  ever nudged — the pre-existing su-ideate corpus (85 rows at sizing) belongs to
  *  the P-016 backfill sweep (outcomes), never to triage nudges. */
@@ -282,7 +311,13 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
       }
     }
   } catch (e) {
-    console.warn(`[su-ideate-ungraded] sweep failed: ${e instanceof Error ? e.message : e}`);
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn(`[su-ideate-ungraded] sweep failed: ${reason}`);
+    // Preserve the fail-soft routinesTick contract while making an outer
+    // infrastructure failure observable in this DBOS step's durable output.
+    // Before this, listStartedPots/getOrgPg failures collapsed to [], which was
+    // indistinguishable from a healthy sweep with no eligible filings.
+    results.push({ workspaceId: '*', installSlug: '*', outcome: 'error', staleCount: 0, reason });
   }
   return results;
 }

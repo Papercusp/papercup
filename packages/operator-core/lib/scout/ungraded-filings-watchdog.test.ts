@@ -19,10 +19,13 @@ vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage: (...args: 
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
 
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
+import { listStartedPots } from '../pot/started';
 import {
   selectUngradedFilings,
   shouldNudgeMug,
   suIdeateUngradedStaleSec,
+  suIdeateUngradedConfig,
+  suIdeateUngradedSweep,
   fireGradingNudge,
   SU_IDEATE_UNGRADED_EPOCH_MS,
   SU_IDEATE_UNGRADED_BATCH_CAP,
@@ -186,5 +189,41 @@ describe('suIdeateUngradedStaleSec tunable', () => {
   it('falls back to the default on a non-numeric value (fail-soft)', () => {
     process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC = 'nonsense';
     expect(suIdeateUngradedStaleSec()).toBe(604_800);
+    expect(suIdeateUngradedConfig()).toMatchObject({
+      enabled: true,
+      effectiveThresholdSec: 604_800,
+      overrideSource: 'invalid-environment-fallback',
+      rawOverride: 'nonsense',
+    });
+  });
+
+  it('reports the effective source and kill-switch state from the same config reader as the sweep', () => {
+    process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC = '0';
+    expect(suIdeateUngradedConfig()).toMatchObject({
+      enabled: false,
+      effectiveThresholdSec: 0,
+      overrideSource: 'environment',
+      epochMs: SU_IDEATE_UNGRADED_EPOCH_MS,
+      batchCap: SU_IDEATE_UNGRADED_BATCH_CAP,
+    });
+  });
+});
+
+describe('suIdeateUngradedSweep observability', () => {
+  it('returns a synthetic error result when the outer infrastructure read fails', async () => {
+    vi.mocked(listStartedPots).mockRejectedValueOnce(new Error('started-pot registry unavailable'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await suIdeateUngradedSweep();
+    expect(result).toEqual([
+      {
+        workspaceId: '*',
+        installSlug: '*',
+        outcome: 'error',
+        staleCount: 0,
+        reason: 'started-pot registry unavailable',
+      },
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('started-pot registry unavailable'));
+    warn.mockRestore();
   });
 });

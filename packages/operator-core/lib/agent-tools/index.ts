@@ -649,6 +649,9 @@ import './improvements/watchdog-status';
 import './improvements/keyless-digest';
 import './improvements/learning-loops';
 import './improvements/set-watchdog-tunables';
+// EI-11401 — one effective-status join across scheduled-watchdog config,
+// DBOS execution, tenant eligibility, and fire ledger.
+import './watchdog/status';
 
 // live-configurability-audit-2026-06-20 P-024/P-025 — the runtime-config override-registry
 // readback (config:list-overrides); the concern modules (e.g. watchdog-tunables) self-register.
