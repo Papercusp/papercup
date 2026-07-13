@@ -599,20 +599,48 @@ export async function resolveShimNode(launcherPath: string): Promise<string> {
   return 'node';
 }
 
+interface ShimRuntimeOptions {
+  /** Explicit per-process override, useful for tests and unusual installs. */
+  explicitLauncherEnv: string;
+  /** Stable fallback paths captured from the install environment. */
+  fallbackLaunchers: string[];
+}
+
 /**
- * Write an executable bash shim that `exec node`s the resolved launcher.
- * Same shape as the `psu`/`ptool` shims install-standalone-mcp.sh writes for
- * dev, but pointed at the bundled launcher in the shipped runtime. Refreshed
- * every boot so an app update re-points the shim at the new bundle. The
- * launcher path is double-quoted (JSON.stringify) so a path with spaces
- * survives — these shims run under bash on macOS / Linux / the WSL distro.
+ * Write an executable bash shim that resolves its launcher at RUN time.
+ *
+ * The old shim baked whichever operator tree happened to run
+ * installPapercuspFiles last. On a dev box both the green release operator and
+ * the staging operator boot, so the shared ~/.papercusp/bin/psu silently
+ * changed behavior based on boot order. Runtime resolution makes the active
+ * integration/release root win, while the install-time fallback keeps a
+ * packaged app usable when no root env is exported.
  */
-async function writeShim(shimPath: string, launcherPath: string, label: string): Promise<boolean> {
+async function writeShim(
+  shimPath: string,
+  launcherPath: string,
+  label: string,
+  runtime: ShimRuntimeOptions,
+): Promise<boolean> {
   const nodeCmd = await resolveShimNode(launcherPath);
+  const launcherNames = [path.basename(launcherPath)];
+  if (launcherNames[0] === 'psu-launcher.mjs') launcherNames.push('psu.mjs');
+  if (launcherNames[0] === 'psu.mjs') launcherNames.push('psu-launcher.mjs');
+  if (launcherNames[0] === 'ptool.mjs') launcherNames.push('ptool-launcher.mjs');
+  if (launcherNames[0] === 'ptool-launcher.mjs') launcherNames.push('ptool.mjs');
+  const relativeLauncherPaths = [...new Set(
+    launcherNames.flatMap((name) => [
+      `apps/operator/scripts/${name}`,
+      `scripts/${name}`,
+    ]),
+  )];
+  const shellLiteral = (value: string): string => JSON.stringify(value);
+  const fallbackLiterals = runtime.fallbackLaunchers.map(shellLiteral);
+  const relativeLiterals = relativeLauncherPaths.map(shellLiteral);
   const body =
     '#!/usr/bin/env bash\n' +
     `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
-    '# Refreshed on every boot; do not edit. Execs the bundled Node launcher.\n' +
+    '# Refreshed on every boot; do not edit. Resolves the launcher at runtime.\n' +
     // The agent backend (claude, installed by the official claude.ai/install.sh
     // into ~/.local/bin) must be resolvable by the launcher's pty.spawn('claude').
     // The WSL2 distro's login PATH omits ~/.local/bin, so a console-launched psu
@@ -621,7 +649,38 @@ async function writeShim(shimPath: string, launcherPath: string, label: string):
     // Windows VM 2026-07-04, WI-2149). Prepending here is a harmless no-op on
     // macOS/Linux, where ~/.local/bin is already on PATH.
     'export PATH="$HOME/.local/bin:$PATH"\n' +
-    `exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@"\n`;
+    'resolve_launcher() {\n' +
+    `  if [ -n "\${${runtime.explicitLauncherEnv}:-}" ] && [ -f "\${${runtime.explicitLauncherEnv}}" ]; then\n` +
+    `    printf '%s\\n' "\${${runtime.explicitLauncherEnv}}"\n` +
+    '    return 0\n' +
+    '  fi\n' +
+    '  local root rel candidate\n' +
+    '  for root in "${PAPERCUSP_INTEGRATION_ROOT:-}" "${PAPERCUSP_RELEASE_ROOT:-}"; do\n' +
+    '    [ -n "$root" ] || continue\n' +
+    '    for rel in\n' +
+    `      ${relativeLiterals.join('\n      ')}\n` +
+    '    do\n' +
+    '      candidate="$root/$rel"\n' +
+    '      if [ -f "$candidate" ]; then\n' +
+    '        printf \'%s\\n\' "$candidate"\n' +
+    '        return 0\n' +
+    '      fi\n' +
+    '    done\n' +
+    '  done\n' +
+    '  for candidate in\n' +
+    `    ${fallbackLiterals.join('\n    ')}\n` +
+    '  do\n' +
+    '    if [ -f "$candidate" ]; then\n' +
+    '      printf \'%s\\n\' "$candidate"\n' +
+    '      return 0\n' +
+    '    fi\n' +
+    '  done\n' +
+    `  printf '%s\\n' 'papercusp ${label}: no launcher found; set ${runtime.explicitLauncherEnv} or PAPERCUSP_INTEGRATION_ROOT' >&2\n` +
+    '  return 127\n' +
+    '}\n' +
+    'launcher="$(resolve_launcher)" || exit $?\n' +
+    `printf '%s\\n' ${shellLiteral(`papercusp ${label}: launcher`)} "$launcher" >&2\n` +
+    `exec ${shellLiteral(nodeCmd)} "$launcher" "$@"\n`;
   await fs.writeFile(shimPath, body, { mode: 0o755 });
   // writeFile honors mode only on creation; chmod to guarantee on overwrite.
   await fs.chmod(shimPath, 0o755);

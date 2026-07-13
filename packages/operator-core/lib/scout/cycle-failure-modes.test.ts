@@ -130,6 +130,28 @@ const NEAR_EMPTY_DIGEST: CorpusDigest = {
 };
 
 /**
+ * The four FREE-TEXT lanes are empty but a MEASURED rubric criterion is present
+ * (blender-self-learning-2026-07-12 P-013 drift fix). Before the fix `digestIsEmpty`
+ * hardcoded only the four free-text lanes, so this read as "empty" and the cycle
+ * short-circuited BEFORE the P-004 rubric-seeded slot could run — defeating the exact
+ * rail rubric-seeding exists for (and any origin:drill health check). A digest that
+ * grounds an idea (any lane in flattenDigest) is substrate; the guard must NOT trip.
+ */
+const RUBRIC_ONLY_DIGEST: CorpusDigest = {
+  recurringFriction: [],
+  timeTokenSinks: [],
+  chronicDeferrals: [],
+  capabilityGaps: [],
+  rubricRatings: [
+    {
+      category: 'rubric-rating',
+      summary: 'pot-coordination-health · end-to-end-flow: broken',
+      ref: 'rubric:pot-coordination-health#end-to-end-flow',
+    },
+  ],
+};
+
+/**
  * REAL-step deps: runIdeators / critiqueIdeas / recombineProposals / routeProposals
  * wired as the cycle's ports (the cycle-deps.ts shape) over the fake LLM + fake
  * dispatch ports. The novelty corpus defaults EMPTY so search-first novelty is a
@@ -386,6 +408,25 @@ describe('failure: empty (fresh-hive) corpus digest', () => {
     expect(r.ideas.every((i) => i.addressesPatternRefs.length === 0)).toBe(true);
     expect(r.proposals.every((p) => p.addressesPatternRefs.length === 0)).toBe(true);
     expect(r.stop).toBe('completed'); // one pattern is enough substrate — no early exit
+  });
+
+  it('P-013 drift fix: a rubric-ONLY digest (measured ratings, no free-text friction) is substrate — the guard must NOT trip', async () => {
+    const { deps, fake } = makeRealStepDeps({
+      digest: RUBRIC_ONLY_DIGEST,
+      responders: [
+        jsonAt(isIdeate, VALID_IDEAS),
+        jsonAt(isCritique, KEEP_CRITIC),
+        jsonAt(isRecombine, VALID_PROPOSAL),
+      ],
+    });
+
+    const r = await runScoutCycle(deps);
+
+    // Before the fix this early-exited 'empty-digest' with zero LLM calls — the seeded
+    // rubric slot never ran. Now the roster runs: a rubric measurement IS substrate.
+    expect(r.stop).not.toBe('empty-digest');
+    expect(fake.count()).toBeGreaterThan(0);
+    expect(r.ideas.length).toBeGreaterThanOrEqual(1);
   });
 });
 
