@@ -80,6 +80,13 @@ export interface CoordEnvelope {
   harness_slug?: string;
   /** For acks / replies / resolutions — points at the originating msg_id. */
   related_msg_id?: string;
+  /**
+   * Sender-declared reply expectation. This is deliberately separate from
+   * wakeOnReply (which controls whether the sender is re-invoked when a reply
+   * arrives): unanswered-directed uses this field to distinguish a question
+   * from an FYI/status report.
+   */
+  expectsReply?: boolean;
   /** Kind-specific extras (e.g. subscribe.pattern, escalation.options). */
   [key: string]: unknown;
 }

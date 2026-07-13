@@ -48,6 +48,8 @@ export interface SendOptions {
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
+  /** Explicit sender-side intent: this message is awaiting a reply. */
+  expectsReply?: boolean;
   /** Originating harness slug — ALSO the coord federation key (the capture
    *  trigger only outboxes a coord_event_log row whose harness_slug names a
    *  federating harness/hive-home). Tri-state (WI-3653):
@@ -189,6 +191,7 @@ export async function sendMessage(
   if (opts.files !== undefined) env.files = opts.files;
   if (opts.plan_slug !== undefined) env.plan_slug = opts.plan_slug;
   if (opts.related_msg_id !== undefined) env.related_msg_id = opts.related_msg_id;
+  if (opts.expectsReply !== undefined) env.expectsReply = opts.expectsReply;
   // Canonical snake_case envelope field (matches plan_slug/msg_id/related_msg_id
   // and the coord_event_log.harness_slug column PgCoordLog projects it to for
   // federation — distributed-coordination-shared-harness-2026-06-04 Track A).

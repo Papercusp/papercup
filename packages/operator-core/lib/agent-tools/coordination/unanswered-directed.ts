@@ -15,6 +15,10 @@
  *     `audience` key stamped; see sendMessage's deriveAudienceKey — '*' and
  *     every `@selector` both stamp one). Sender != recipient (never counts a
  *     message against its own author, e.g. a fanout that lists the sender).
+ *   - "expects reply": the sender explicitly sets `expectsReply:true`, or
+ *     uses the coord:send ergonomic `wake:'required'` + `replyDeadlineSec`
+ *     combination (which stamps the same field). FYI/status reports are
+ *     intentionally absent from this aggregate.
  *   - "answered": a sibling row carrying `related_msg_id = <this msg_id>`
  *     AUTHORED BY the recipient — an explicit ack (kind='ack') or a genuine
  *     reply both satisfy it (mirrors reply-deadline-sweep's own NOT EXISTS
@@ -159,6 +163,9 @@ export async function fetchUnansweredDirected(
          AND r = ANY(${recipientIds}::text[])
          AND e.body->>'from' IS DISTINCT FROM r
          AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
+         -- WI-4553: only the SENDER can distinguish a question from an FYI.
+         -- Missing/false is the backwards-compatible non-obligation default.
+         AND (e.body->>'expectsReply') = 'true'
          -- WI-4537 (a): machine LIFECYCLE chatter is not an obligation. sendMessage now
          -- auto-stamps this for every machine sender (messages.ts), so it is reliable going
          -- forward.
