@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 649,
+  "count": 655,
   "tools": [
     {
       "name": "ablation:report",
@@ -5047,6 +5047,41 @@
       }
     },
     {
+      "name": "coord:walls",
+      "http": {
+        "path": "/api/agent-tools/coord/walls",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "What is BLOCKED ON THE OWNER right now — every agent parked on a decision, credential, or approval only a human can give. Unions the two surfaces where agents are already required to register owner-gated blockers: loop carry-note walls (loop:checkpoint { walls }) and work-items in needs-human. Each row carries the ask VERBATIM, how long it has been waiting, the re-check command, and — critically — whether the blocked agent is still ALIVE (waiting) or its session has died (stranded: answering will not resume it; it must be respawned). Ordered oldest-wait first.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "The owner asks \"what needs me / what is waiting on me / am I blocking anything\", at the top of an owner session, and in any fleet-leader or monitor sweep. Also before you report \"all green\" — a fleet with a 5h-old owner wall is NOT green, it is stalled on the owner and nobody has told them.",
+        "notWhen": "Who is working on what (coord:presence / fleet:assignments). Blockers between AGENTS — those are peer coordination (coord:send), not owner walls; only a blocker a HUMAN must clear belongs here.",
+        "chaining": "coord:walls → answer the claim (coord:send to the ownerId), then the agent clears it via loop:checkpoint { walls: [...] } (pass the remaining set; [] clears all). A `stranded` row needs a respawn as well as an answer — the waiter is gone."
+      }
+    },
+    {
       "name": "coord:watermark",
       "http": {
         "path": "/api/agent-tools/coord/watermark",
@@ -7194,7 +7229,7 @@
           "POST"
         ]
       },
-      "description": "Restart the operator dev server (target:\"dev\", default) or the staging operator (target:\"staging\"), coordinated. DRY RUN unless confirm:true. With confirm, acquires exclusive(<target>-server) and drains current users (wait:{max_drain_sec}) before restarting, then releases (broadcasts \"back up\"). staging additionally DEBOUNCES (WI-4221): a restart requested within ~2min of a peer's real staging restart is coalesced (skipped, not re-run) instead of firing a redundant one. The real restart also requires PAPERCUSP_ALLOW_DEV_RESTART=1 on the host. Prefer this over a raw systemctl restart.",
+      "description": "Restart a SHARED long-running host, coordinated (drain + coalesce + audit) — the sanctioned alternative to a raw `systemctl restart`. Targets: \"dev\" (:3070 operator, default) · \"staging\" (:3170 operator) · \"gateway\" (inference gateway :8788 — every agent's LLM egress) · \"bg-host\" (routines/git-sync) · \"embed-sidecar\" (:3384 embeddings). DRY RUN unless confirm:true; the real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1. Every target but \"dev\" DEBOUNCES: a restart within ~2min of a peer's real one is coalesced (coalesced:true), not re-run — so N agents landing N gateway fixes cost ONE outage, not N.",
       "capabilities": [
         "locks:write"
       ],
@@ -7255,9 +7290,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need to restart the dev server (e.g. to pick up a lib/** edit), or — target:\"staging\" — the staging operator (:3170) to pick up a live server-side edit per CLAUDE.md's \"test a server-side edit live\" workflow. Run dry first to see who is using it; then confirm to drain + restart.",
-        "notWhen": "Just probing the server — that needs no restart. Never restart casually on a shared box; it disrupts every agent using the app. Never shell out to a raw `systemctl --user restart papercup-staging-api.service` — it bypasses the drain AND the debounce, which is exactly the uncoordinated-churn defect (WI-4221) this tool exists to fix.",
-        "chaining": "dev:restart (dry) → review holders → dev:restart { confirm: true, max_drain_sec, target } → connection drops as it restarts (or, for staging within the cooldown window, a coalesced:true no-op — probe :3170 directly, a peer already restarted it)."
+        "when": "To LOAD a code edit into a long-running host. KEY: gateway / bg-host / embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build, no deploy) — a RESTART, not the release pipeline, is what loads your edit; never wait on a deploy for those. Pick by what you edited: inference-gateway/** or resilience/** → \"gateway\"; routines/git-sync → \"bg-host\"; embeddings → \"embed-sidecar\"; operator server-side code → \"staging\" (then probe :3170). Run dry first to see current users, then confirm to drain + restart.",
+        "notWhen": "Just probing a service — that needs no restart. Never restart casually on a shared box: a gateway restart drops in-flight LLM requests for the WHOLE fleet (read gateway:status first, prefer a low-load moment). NEVER raw `systemctl --user restart` these units — it bypasses the drain AND the debounce, the exact uncoordinated-churn defect (WI-4221) this tool exists to fix.",
+        "chaining": "dev:restart (dry) → review holders → dev:restart { confirm:true, target } → service drops + returns (or coalesced:true — a peer just restarted it; probe directly). Gateway: gateway:status → restart → gateway:status."
       }
     },
     {
@@ -7419,7 +7454,7 @@
           "POST"
         ]
       },
-      "description": "\"Why is nothing shipping?\" in one read: walks green-checkpoint gate health -> release-gate deploy position -> account-pool rate-limit status top-down, and returns one causal sentence per stage plus a ROOT CAUSE line naming the current blocking leaf (a red test file, a stuck promotion, a saturated pool). Deterministic — no LLM. Read-only.",
+      "description": "\"Why is nothing shipping / why is everything SLOW?\" in one read: walks green-checkpoint gate health -> release-gate deploy position -> gateway ADMISSION -> account-pool rate-limit status top-down, and returns one causal sentence per stage plus a ROOT CAUSE line naming the current blocking leaf (a red test file, a stuck promotion, an admission-path defect, a saturated pool). The ADMISSION stage catches the class where work is QUEUED while concurrency slots sit IDLE — definitionally a bug, not a capacity shortage (WI-4541: the whole fleet ran single-file through ONE slot with 9-10 of 12 idle, and a gate/deploy/pool-only chain reported everything nominal). Deterministic — no LLM. Read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -7445,8 +7480,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The owner or an agent asks \"why is nothing shipping / deploying\" or a deploy has been frozen/stalled for a while and you need the causal chain in one call instead of manually cross-referencing dev:pipeline_position, testing:flakiness, and accounts:status.",
-        "notWhen": "To check ONE specific path/sha's position, use dev:pipeline_position. To rank flaky files over a longer window, use testing:flakiness. This is the top-down \"what is the root blocker right now\" read."
+        "when": "The owner or an agent asks \"why is nothing shipping / deploying\", OR agents/turns are SLOW or queueing, OR you are about to conclude \"the pool is capacity-crunched\" — this is the top-down causal chain in one call instead of manually cross-referencing dev:pipeline_position, testing:flakiness, gateway:status and accounts:status.",
+        "notWhen": "To check ONE specific path/sha's position, use dev:pipeline_position. To rank flaky files over a longer window, use testing:flakiness. This is the top-down \"what is the root blocker right now\" read.",
+        "chaining": "dev:why (find the blocking stage) → then the stage's detail tool: gate → testing:flakiness; deploy → dev:pipeline_position / release:deploy; admission → gateway:status (per-tier caps/queues); pool → accounts:status."
       }
     },
     {
@@ -7624,6 +7660,143 @@
         "when": "You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.",
         "notWhen": "You do not know what to search for — call docs:outline first. For PG-stored prose (chats, escalations) use search:fulltext. To search another harness from outside, use cross_harness:docs_search.",
         "chaining": "docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading)."
+      }
+    },
+    {
+      "name": "egress:health",
+      "http": {
+        "path": "/api/agent-tools/egress/health",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Reachability check for one provider allocation: builds the same undici dispatcher the gateway would use and echoes the exit IP through it. Returns {ok, health: {reachable, exitIp?, error?}}. Read-only.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "Confirming a provisioned egress IP is actually reachable — before/after egress:provision, or investigating a suspected dead proxy.",
+        "notWhen": "You also want the reputation/ASN/distinctness gate — accounts:test-egress probes a POOLED account's registered egress with the fuller clean-IP gate."
+      }
+    },
+    {
+      "name": "egress:list",
+      "http": {
+        "path": "/api/agent-tools/egress/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List every allocation an EgressProvider currently knows about — id, proxyUrl/localAddress, and which accountId (if any) currently holds it. Returns {ok, allocations}. Read-only, no account-pool change.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "Seeing what IPs a provider has available/assigned before provisioning or releasing one.",
+        "notWhen": "Listing the pooled accounts themselves — accounts:list."
+      }
+    },
+    {
+      "name": "egress:provision",
+      "http": {
+        "path": "/api/agent-tools/egress/provision",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Allocate an egress IP from an EgressProvider (static/rayobyte/brightdata) for accountId, register it onto the account pool (the accounts:register{egress} equivalent, tagged with providerId/providerAllocationId for later egress:release/health), and verify it actually routes (the same testEgressForAccount probe accounts:test-egress uses) — allocate+register+verify in one call. Returns {ok, allocation, account, verify}. dryRun:true allocates + verifies without writing the account pool.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "Programmatically provisioning a NEW egress IP for a pooled account instead of hand-registering one you already have — rotating in a fresh Rayobyte IP, or drawing the next entry from a pre-provisioned static list.",
+        "notWhen": "You already hold the proxyUrl/localAddress — just accounts:register{egress} directly, no provider needed. Also not for making the LIVE inference gateway pick this up — that still needs a restart (the gateway resolves its account pool once at boot); this tool only writes the pool row + proves the dispatcher itself works pre-restart.",
+        "chaining": "egress:provision {provider, accountId} → accounts:list (confirm the pool row) → restart the gateway (dev:restart{target:\"staging\"} / the prod deploy) → egress:health or accounts:test-egress to re-verify post-restart."
+      }
+    },
+    {
+      "name": "egress:release",
+      "http": {
+        "path": "/api/agent-tools/egress/release",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Release an egress allocation back to its provider (frees the IP for reuse). When accountId is given AND that account's current egress was provisioned by this exact allocation (providerId + providerAllocationId match), also clears the account pool's egress binding (reverts to default shared egress) — omit accountId to release provider-side only and leave the account pool untouched. Returns {ok, released:true, accountCleared}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "Decommissioning a provisioned egress IP — a flagged/dead proxy, or freeing capacity before re-provisioning.",
+        "notWhen": "You just want to clear an account's egress without touching the provider — accounts:register{id, credentialRef, egress:{}}."
       }
     },
     {
@@ -9601,7 +9774,7 @@
           "POST"
         ]
       },
-      "description": "Read the inference gateway LIVE config (GET :8788/admin/config): the account-pool config version, the live account ids, and the admission/AIMD concurrency state. Use to see what pool + concurrency the RUNNING gateway is actually using, or to confirm a gateway:reload landed (the version bumped). Returns {ok, version, accounts, admission, aimd, ...}.",
+      "description": "WHY ARE MY AGENTS SLOW / QUEUED? — the live inference-gateway ADMISSION state, and the FIRST read when turns are stalling. Returns per-tier admission {tier, cap, inFlight, queued}, the reserved tier-1 (interactive/queen) floor, AIMD effective-vs-configured concurrency, and the account pool. THE TELL: any tier with queued > 0 while running < maxConcurrent - tier1Reserve means work is WAITING WHILE SLOTS SIT IDLE — that is an ADMISSION bug, never a capacity shortage, and no amount of pool headroom will fix it (WI-4541: the whole fleet ran single-file through ONE slot with 9-10 of 12 idle, for hours, while everyone blamed a 'capacity crunch'). CHECK THIS BEFORE concluding the account pool is exhausted. Also reads the pool config version + live account ids (confirming a gateway:reload landed). GET :8788/admin/config.",
       "capabilities": [
         "harness:read"
       ],
@@ -9623,9 +9796,9 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "Confirming what the running gateway is using right now, or verifying a hot-reload took effect (version bump).",
-        "notWhen": "Editing the pool itself — accounts:register / accounts:remove (then gateway:reload to apply live).",
-        "chaining": "accounts:register/remove → gateway:reload → gateway:status (confirm version + accounts)."
+        "when": "Agents/turns are SLOW, QUEUED, or stalling, or you are about to conclude 'the pool is capacity-crunched' — read this FIRST and check the queued-while-idle tell. Also: confirming what pool + concurrency the running gateway actually uses, or verifying a hot-reload took effect (version bump).",
+        "notWhen": "Editing the pool itself — accounts:register / accounts:remove (then gateway:reload to apply live). For per-AGENT outcomes (which account did MY session get, did it 429/shed/stall) use gateway:owner_report.",
+        "chaining": "Slowness triage: dev:why (walks every stage incl. admission) → gateway:status (the per-tier detail) → gateway:owner_report (per-agent outcomes) → accounts:status / dev:rate_governor_status (only once admission is RULED OUT). Pool edits: accounts:register/remove → gateway:reload → gateway:status (confirm version + accounts)."
       }
     },
     {
@@ -20180,6 +20353,38 @@
       }
     },
     {
+      "name": "sessions:digest",
+      "http": {
+        "path": "/api/agent-tools/sessions/digest",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "What a session WAS — kickoff intent (its opening turn / loop goal), where it got to (closing turn), and WHY it stopped (endedReason: settled | active | awaiting_owner | auth_wall | usage_limit | model_error | context_limit), with evidence. Pass `session` for one, or `since`/`owner` to digest a whole window at once. Replaces the sessions:list → per-session sessions:read(tail) → \"hope the last turn was a summary\" pattern, which returns NOTHING for exactly the sessions that matter (crashed, wedged, still running).",
+      "capabilities": [
+        "search:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "kettle"
+      ],
+      "guidance": {
+        "when": "\"What were all these agents doing?\", \"what was session X?\", triaging a window of sessions, or finding WEDGED sessions (endedReason auth_wall/model_error/context_limit ⇒ wedged:true — the agent is not going to recover on its own).",
+        "notWhen": "Reading actual transcript content — sessions:read. Searching for a phrase across sessions — sessions:search. Just enumerating sessions + counts — sessions:list.",
+        "chaining": "sessions:digest { since } → pick the wedged/interesting ones → sessions:read { session } for the full turns."
+      }
+    },
+    {
       "name": "sessions:list",
       "http": {
         "path": "/api/agent-tools/sessions/list",
@@ -20208,7 +20413,7 @@
       "guidance": {
         "when": "\"What sessions has agent X had\", \"find my session from yesterday\", or picking a session id for sessions:read. Covers the whole fleet, not one client. For a COST/EFFORT audit, compare prompt_count/response_count/tool_call_count, not turns — see description.",
         "notWhen": "Searching CONTENT — sessions:search. Live \"who is on what\" — coord:presence / fleet:assignments.",
-        "chaining": "session_id → sessions:read / sessions:search { session }."
+        "chaining": "session_id → sessions:read / sessions:search { session } / sessions:digest { session }."
       }
     },
     {
@@ -20238,7 +20443,7 @@
         "kettle"
       ],
       "guidance": {
-        "when": "Following a sessions:search hit for more context, or reading where a session left off. Pass around=<turn_idx> (from the hit's provenance) or nothing for the tail.",
+        "when": "Following a sessions:search hit for more context, or reading where a session left off. Pass around=<turn_idx> (from the hit's provenance), order:'asc' for the session's OPENING turns, or nothing for the tail.",
         "notWhen": "Finding WHERE something was said — sessions:search. Raw un-indexed files — dev:claude_session op=read (being absorbed here).",
         "chaining": "provenance.turn_idx from sessions:search hits → around."
       }
@@ -20954,7 +21159,7 @@
           "POST"
         ]
       },
-      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic) AND activate the matches for your session so you can call them. Returns the best-matching tool names with descriptions. Use when you need a capability that is not in your core toolset — e.g. tools:find(\"feature flag\") or tools:find(\"spawn a worker\"). On a seeded (small-surface) session the matched tools are added to your live tool list on the fly, so after this call you can call the one you want directly.",
+      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the best-matching tool names with their description, ARG schema, and (EI-10882) their declared RESPONSE shape (`returns`) — so you can write a code:run batch over a tool without first calling it once just to learn its field names. Use when you need a capability that is not in your core toolset — e.g. tools:find(\"feature flag\") or tools:find(\"spawn a worker\"). ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list (`activated:true`) and you can call them directly; on a full-catalog session there is nothing to expand (`activated:false`) and you must call them via tools:invoke. ALWAYS read the `activated` flag + `howToCall` in the result rather than assuming a direct call will resolve.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -21015,9 +21220,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO (\"set a feature flag\", \"list open plans\", \"spawn a worker bee\"). The intent-aware replacement for guessing names.",
+        "when": "You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO (\"set a feature flag\", \"list open plans\", \"spawn a worker bee\"). The intent-aware replacement for guessing names. Also the cheapest way to learn a tool's RESPONSE shape before batching over it (`returns` on each hit).",
         "notWhen": "When the tool is already in your core set or you know its exact name — just call it (in omp, if a direct call reports not-found, tools:invoke {name, args} runs it server-side). For a full permission-annotated dump use agent_tools:list.",
-        "chaining": "tools:find(\"<intent>\") activates the matches for your session → call the top tool directly. If the direct call errors \"tool not found\", do NOT guess name variants: call tools:invoke {name:\"<tool>\", args:{...}} — it runs any catalog tool without loading. tools:invoke works on every client (claude/codex/omp) and never needs a separate load step."
+        "chaining": "tools:find(\"<intent>\") → READ `activated`. activated:true ⇒ call the top tool directly. activated:false ⇒ the tools are NOT on your surface; call tools:invoke {name:\"<colon-form name>\", args:{...}} — a direct call will fail with not-found, and ToolSearch cannot resolve the colon-form name either (it only matches the client-mangled id). tools:invoke runs any catalog tool server-side, on every client, with no load step."
       }
     },
     {

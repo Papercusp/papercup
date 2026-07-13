@@ -471,6 +471,8 @@ export async function readPotSoakReport(
     pipelineEventRows,
     wakeBurnRows,
     compactionRows,
+    placeableCount,
+    quarantinedCount,
   ] = await Promise.all([
     probeBgHostTicker(),
     readBgHostJournal(windowHours),
@@ -582,6 +584,11 @@ export async function readPotSoakReport(
                       AND ti.invoked_at < c.invoked_at + make_interval(mins => ${POST_COMPACTION_MARKER_WINDOW_MIN})
                  ))::int AS post_markers
     `,
+    // The two halves of the frontier: what the pot MAY place, and what the admission
+    // gate is withholding from it. Both, or the readiness gate cannot tell an idle
+    // pot (nothing to do) from a deadlocked one (work it may never touch).
+    countPlaceableFrontier(sql, workspaceId, surveySlugs),
+    countQuarantinedFrontier(sql, workspaceId, surveySlugs),
   ]);
 
   const curse = curseRows[0] ?? { placements_seen: 0, infra_curses: 0 };
@@ -605,6 +612,7 @@ export async function readPotSoakReport(
       tickerNote: ticker.note ?? null,
     },
     roleSuccess: roleSuccessRowsToView(spawnRows),
+    frontier: { placeable: placeableCount, quarantined: quarantinedCount },
     infraCurse: {
       placementsSeen: Number(curse.placements_seen ?? 0),
       infraCurses: Number(curse.infra_curses ?? 0),

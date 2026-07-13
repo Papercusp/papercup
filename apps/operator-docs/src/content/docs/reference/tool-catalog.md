@@ -12,7 +12,7 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**649 MCP tools** across **132 groups**.
+**655 MCP tools** across **133 groups**.
 
 ## Groups
 
@@ -50,7 +50,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `config` | 5 | `list-overrides` `reset-overrides` `set-compaction-limit` `tiers-get` `tiers-set` | `coord:write` `operator:read` `operator:write` |
 | `conversation` | 2 | `append` `recent` | `operator:converse` |
 | `conversations` | 7 | `answer` `get` `join` `list` `post` `promote` `resolve` | `coord:read` `coord:write` |
-| `coord` | 38 | `ack` `ask` `ask-owner` `await-inbox` `catch-up` `conditions` `declare-intent` `deliberate` `dispatch` `emit` `escalate` `escalations` `feed` `glance` `handoff` `handoff_config` `handoffs` `inbox` `message-agent` `orient` `plan-events` `presence` `read` `rebind-identity` `resolve` `retract` `roster` `send` `session_reaper_config` `thread` `thread-post` `vote` `wake` `wake-mode` `wake-queue` `watermark` `watermark-set` `whoami` | `audit:read` `coord:read` `coord:write` `operator:write` |
+| `coord` | 39 | `ack` `ask` `ask-owner` `await-inbox` `catch-up` `conditions` `declare-intent` `deliberate` `dispatch` `emit` `escalate` `escalations` `feed` `glance` `handoff` `handoff_config` `handoffs` `inbox` `message-agent` `orient` `plan-events` `presence` `read` `rebind-identity` `resolve` `retract` `roster` `send` `session_reaper_config` `thread` `thread-post` `vote` `wake` `wake-mode` `wake-queue` `walls` `watermark` `watermark-set` `whoami` | `audit:read` `coord:read` `coord:write` `operator:write` |
 | `cross_harness` | 10 | `docs_get` `docs_outline` `docs_search` `inbox` `outbox` `plans_get` `plans_list` `plans_search` `recent_activity` `supervisor_notes` | `cross_harness:read` `harness:read` `plans:read` |
 | `cup` | 1 | `spawn` | `work_items:write` |
 | `curation` | 3 | `change-feed` `feed` `state-of-pot` | `curation:read` |
@@ -62,6 +62,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `dev` | 30 | `activity` `audit` `build_status` `claude_session` `code_run_adoption` `coord_categorize` `dogfood_substrate_status` `event_emitter` `harnesses` `ipc_echo` `limit_failure_rate` `omp_session` `orient_dedup_rate` `pg_active_queries` `pg_health` `pg_query` `pg_table_sizes` `pipeline_position` `processes` `rate_governor_status` `resolve_owner` `restart` `service_health` `session_detail` `sessions` `state_counter` `telemetry` `tool_cooccurrence` `why` `worker_chunk_loop_metrics` | `audit:read` `harness:read` `intel:read` `locks:write` `tasks:read` |
 | `discovery` | 2 | `pots` `set_pot` | `discovery:read` `discovery:write` |
 | `docs` | 4 | `author` `get` `outline` `search` | `docs:read` `docs:write` |
+| `egress` | 4 | `health` `list` `provision` `release` | `harness:read` `harness:write` |
 | `events` | 7 | `await` `cancel` `catalog` `emit` `graph` `status` `unsubscribe` | `coord:read` `coord:write` `events:read` |
 | `exec_sandbox` | 1 | `set_policy` | `operator:write` |
 | `experiment` | 3 | `catalog` `results` `run` | `harness:read` `harness:write` |
@@ -130,7 +131,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `search` | 3 | `fulltext` `query` `semantic` | `search:read` |
 | `service` | 1 | `await-up` | `coord:write` |
 | `session` | 1 | `request-compaction` | `coord:write` |
-| `sessions` | 4 | `list` `read` `search` `timeline` | `search:read` |
+| `sessions` | 5 | `digest` `list` `read` `search` `timeline` | `search:read` |
 | `setup` | 8 | `complete` `save_integration_key` `save_key` `set_git_identity` `set_telemetry` `set_tutorial_progress` `set_update_channel` `status` | `operator:read` `operator:write` |
 | `slash` | 1 | `dispatch` | `coord:write` |
 | `storage` | 2 | `prune` `usage` | `storage:read` `storage:write` |

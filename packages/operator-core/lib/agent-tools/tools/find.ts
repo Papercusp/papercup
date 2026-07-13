@@ -165,27 +165,23 @@ export default defineTool({
   name: 'tools:find',
   description:
     'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the ' +
-    'best-matching tool names with their description, ARG schema, and (EI-10882) their declared ' +
-    'RESPONSE shape (`returns`) — so you can write a code:run batch over a tool without first calling ' +
-    'it once just to learn its field names. Use when you need a capability that is not in your core ' +
-    'toolset — e.g. tools:find("feature flag") or tools:find("spawn a worker"). ' +
-    'ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live ' +
-    'tool list (`activated:true`) and you can call them directly; on a full-catalog session there is ' +
-    'nothing to expand (`activated:false`) and you must call them via tools:invoke. ALWAYS read the ' +
-    '`activated` flag + `howToCall` in the result rather than assuming a direct call will resolve.',
+    'best-matching tool names with their description, ARG schema, and declared RESPONSE shape ' +
+    '(`returns`) — so you can write a code:run batch over a tool without calling it once just to learn ' +
+    'its field names. e.g. tools:find("feature flag"), tools:find("spawn a worker"). ACTIVATION IS ' +
+    'CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list ' +
+    '(activated:true) and are directly callable; on a full-catalog session there is nothing to expand ' +
+    '(activated:false) — call them via tools:invoke. Always read `activated` + `howToCall` rather than ' +
+    'assuming a direct call resolves.',
   guidance: {
     when:
-      'You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO ' +
-      '("set a feature flag", "list open plans", "spawn a worker bee"). The intent-aware replacement for guessing names. ' +
-      'Also the cheapest way to learn a tool\'s RESPONSE shape before batching over it (`returns` on each hit).',
+      'You need a tool that is not in your loaded/core set and do not know its exact name — search by what you want to DO ' +
+      '("set a feature flag", "spawn a worker bee"). Also the cheapest way to learn a tool\'s RESPONSE shape before batching over it.',
     notWhen:
-      'When the tool is already in your core set or you know its exact name — just call it (in omp, if a direct call reports not-found, tools:invoke {name, args} runs it server-side). ' +
-      'For a full permission-annotated dump use agent_tools:list.',
+      'The tool is already in your core set or you know its exact name — just call it. For a full permission-annotated dump use agent_tools:list.',
     chaining:
-      'tools:find("<intent>") → READ `activated`. activated:true ⇒ call the top tool directly. ' +
-      'activated:false ⇒ the tools are NOT on your surface; call tools:invoke {name:"<colon-form name>", args:{...}} — ' +
-      'a direct call will fail with not-found, and ToolSearch cannot resolve the colon-form name either (it only ' +
-      'matches the client-mangled id). tools:invoke runs any catalog tool server-side, on every client, with no load step.',
+      'tools:find("<intent>") → READ `activated`. true ⇒ call the top tool directly. false ⇒ call ' +
+      'tools:invoke { name:"<colon-form name>", args } — a direct call fails not-found, and ToolSearch ' +
+      'cannot resolve a colon-form name (it only matches the client-mangled id).',
     returns:
       '{ query, count, semantic: "on"|"warming"|"lexical-only", activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (the tool\'s declared response shape, or null if it has not declared one), via }], howToCall }',
     seeAlso: [

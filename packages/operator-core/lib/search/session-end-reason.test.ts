@@ -1,0 +1,115 @@
+/**
+ * EI-10889 — the terminal state of a session is only ever visible in the TEXT of
+ * its last assistant turn. These tests pin the classification of the real provider
+ * strings observed in the wild (2026-07-13 audit), because the whole point of the
+ * classifier is that a wedged session must not be reported as a settled one.
+ */
+import { describe, expect, it } from 'vitest';
+import { classifySessionEnd, isWedged } from './session-end-reason';
+
+const NOW = Date.UTC(2026, 6, 13, 12, 0, 0);
+const minsAgo = (m: number) => NOW - m * 60_000;
+
+describe('classifySessionEnd', () => {
+  it('classifies the org auth wall as WEDGED (verbatim string from session c3a5178a)', () => {
+    const r = classifySessionEnd({
+      lastAssistantText:
+        'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access',
+      lastTsMs: minsAgo(120),
+      nowMs: NOW,
+    });
+    expect(r.reason).toBe('auth_wall');
+    expect(r.wedged).toBe(true);
+    expect(r.evidence).toContain('disabled');
+  });
+
+  it('classifies a usage/session limit as NOT wedged (it resets on its own)', () => {
+    const r = classifySessionEnd({
+      lastAssistantText: "You've hit your session limit · resets 4am (America/New_York)",
+      lastTsMs: minsAgo(300),
+      nowMs: NOW,
+    });
+    expect(r.reason).toBe('usage_limit');
+    // The distinction that matters: an auth wall never recovers, a usage limit does.
+    expect(r.wedged).toBe(false);
+  });
+
+  it('classifies a rejected model parameter as a model_error (session bf1881bc)', () => {
+    const r = classifySessionEnd({
+      lastAssistantText:
+        "API Error: 400 This model does not support effort level 'xhigh'. Supported levels: high, low, max, medium.",
+      lastTsMs: minsAgo(60),
+      nowMs: NOW,
+    });
+    expect(r.reason).toBe('model_error');
+    expect(r.wedged).toBe(true);
+  });
+
+  it('an error signature beats recency — a session dying on every wake is NOT "active"', () => {
+    // This is the ordering bug the classifier exists to avoid: the auth-walled loop
+    // was being woken every 60s, so its last turn was always SECONDS old. A
+    // liveness-first classifier would have called it healthy while it did nothing.
+    const r = classifySessionEnd({
+      lastAssistantText: 'Your organization has disabled Claude subscription access for Claude Code',
+      lastTsMs: minsAgo(0),
+      nowMs: NOW,
+    });
+    expect(r.reason).toBe('auth_wall');
+    expect(r.reason).not.toBe('active');
+  });
+
+  it('reports a recently-speaking healthy session as active', () => {
+    const r = classifySessionEnd({
+      lastAssistantText: 'Resolved EI-9942 with tests; reported to the leader.',
+      lastTsMs: minsAgo(2),
+      nowMs: NOW,
+    });
+    expect(r.reason).toBe('active');
+    expect(r.wedged).toBe(false);
+  });
+
+  it('reports a quiet healthy session as settled', () => {
+    const r = classifySessionEnd({
+      lastAssistantText: 'Loop ended — no further self-wakes. Work is complete.',
+      lastTsMs: minsAgo(600),
+      nowMs: NOW,
+    });
+    expect(r.reason).toBe('settled');
+  });
+
+  it('an open owner wall outranks quiet-but-alive — the agent is parked on a human', () => {
+    const r = classifySessionEnd({
+      lastAssistantText: 'Wake settled — no delta. Still blocked on the capacity decision.',
+      lastTsMs: minsAgo(600),
+      nowMs: NOW,
+      hasOpenWall: true,
+    });
+    expect(r.reason).toBe('awaiting_owner');
+  });
+
+  it('returns unknown (never a confident wrong label) when there is no closing turn', () => {
+    const r = classifySessionEnd({ lastAssistantText: null, lastTsMs: null, nowMs: NOW });
+    expect(r.reason).toBe('unknown');
+    expect(r.evidence).toBeNull();
+  });
+
+  it('always carries evidence for a matched error so the label can be verified, not trusted', () => {
+    const r = classifySessionEnd({
+      lastAssistantText: 'API Error: 400 invalid_request_error — bad model',
+      lastTsMs: minsAgo(5),
+      nowMs: NOW,
+    });
+    expect(r.evidence).toBeTruthy();
+    expect(r.evidence!.length).toBeLessThanOrEqual(200);
+  });
+
+  it('isWedged marks exactly the non-self-recovering reasons', () => {
+    expect(isWedged('auth_wall')).toBe(true);
+    expect(isWedged('model_error')).toBe(true);
+    expect(isWedged('context_limit')).toBe(true);
+    expect(isWedged('usage_limit')).toBe(false);
+    expect(isWedged('settled')).toBe(false);
+    expect(isWedged('active')).toBe(false);
+    expect(isWedged('awaiting_owner')).toBe(false);
+  });
+});

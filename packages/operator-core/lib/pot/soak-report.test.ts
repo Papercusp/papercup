@@ -93,6 +93,7 @@ describe('computeSoakReport', () => {
         { role: 'mug', totalTerminalTurns: 3, successfulTurns: 3, successRate: 1 },
         { role: 'kettle', totalTerminalTurns: 2, successfulTurns: 2, successRate: 1 },
       ],
+      frontier: { placeable: 4, quarantined: 0 },
       infraCurse: { placementsSeen: 10, infraCurses: 0, rate: 0 },
       escalationBacklog: { openNow: 0, olderOpenCount: 0, newerOpenCount: 0, improving: true },
       gateGreenRatio: { green: 5, total: 5, ratio: 1 },
@@ -126,6 +127,7 @@ describe('computeSoakReport', () => {
         { role: 'mug', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
         { role: 'kettle', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
       ],
+      frontier: { placeable: 4, quarantined: 0 },
       infraCurse: { placementsSeen: 10, infraCurses: 0, rate: 0 },
       escalationBacklog: { openNow: 0, olderOpenCount: 0, newerOpenCount: 0, improving: true },
       gateGreenRatio: { green: 5, total: 5, ratio: 1 },
@@ -168,6 +170,7 @@ describe('computeSoakReport', () => {
         { role: 'mug', totalTerminalTurns: 0, successfulTurns: 0, successRate: null },
         { role: 'kettle', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
       ],
+      frontier: { placeable: 0, quarantined: 7 },
       infraCurse: { placementsSeen: 10, infraCurses: 1, rate: 0.1 },
       escalationBacklog: { openNow: 2, olderOpenCount: 0, newerOpenCount: 2, improving: false },
       gateGreenRatio: { green: 2, total: 3, ratio: 2 / 3 },
@@ -190,6 +193,8 @@ describe('computeSoakReport', () => {
         'bg-host ticker unhealthy: ticker stale',
         'bg-host OOM evidence in window (1)',
         'bg-host FAILED 2 time(s) in window (crash/OOM/watchdog — deliberate restarts excluded)',
+        'placement DEADLOCKED: 0 placeable, 7 item(s) quarantined by the admission gate ' +
+          '(remote origin, unaudited) — the loop has work it may never place, and no admit path will clear it',
         'infra-attributed curse rate non-zero (10%)',
         'cup turn success below 100% (75%)',
         'no terminal mug turns in window',
@@ -201,6 +206,110 @@ describe('computeSoakReport', () => {
         'post-compaction error markers in window (3)',
       ]),
     );
+  });
+
+  it('an otherwise-PERFECT pot is RED when it may place none of the work it has', () => {
+    // The 2026-07-13 silent starvation, pinned. papercusp's entire placeable pool was
+    // 10 federated `feature` items, every one quarantined by the G2 admission gate
+    // (remote origin, no `admit` verdict, no trusted author — and nothing in production
+    // writes that verdict, so waiting would never clear them). The Mug woke every ~20min,
+    // surveyed a frontier of zero, correctly placed nothing, and reported SUCCESS: five
+    // hours, zero cups, EVERY OTHER SIGNAL GREEN. That is what this test forbids.
+    //
+    // Note the shape: bg-host clean, 100% turn success, no escalations, gate green, fast
+    // deploys — a pot that looks flawless precisely BECAUSE it is doing nothing. An empty
+    // frontier is only healthy when there is nothing to do; when work is being WITHHELD it
+    // is a deadlock, and no amount of soaking resolves it.
+    const report = computeSoakReport({
+      potSlug: 'papercusp',
+      surveyScope: 'members',
+      surveySlugs: ['papercusp'],
+      windowHours: 24,
+      generatedAtMs: Date.UTC(2026, 6, 13, 6, 0, 0),
+      bgHost: {
+        oomKillCount: 0,
+        restartCount: 0,
+        failureCount: 0,
+        peakMemoryMb: 2048,
+        highMemoryPeakCount: 0,
+        journalError: null,
+        tickerUp: true,
+        tickerNote: null,
+      },
+      // The tell: the mug and kettle keep taking successful turns — it is only the CUPS
+      // that never happen, because there is nothing the Mug is allowed to place.
+      roleSuccess: [
+        { role: 'mug', totalTerminalTurns: 15, successfulTurns: 15, successRate: 1 },
+        { role: 'kettle', totalTerminalTurns: 20, successfulTurns: 20, successRate: 1 },
+      ],
+      frontier: { placeable: 0, quarantined: 10 },
+      infraCurse: { placementsSeen: 10, infraCurses: 0, rate: 0 },
+      escalationBacklog: { openNow: 0, olderOpenCount: 0, newerOpenCount: 0, improving: true },
+      gateGreenRatio: { green: 5, total: 5, ratio: 1 },
+      deployLatency: { samples: 2, meanMs: 120000 },
+      contextBurn: {
+        loopWakes: 100,
+        meanWakeChars: 1500,
+        maxWakeChars: 5900,
+        estMeanWakeTokens: 375,
+        requestedCompactions: 4,
+        sessionsCompacting: 2,
+        compactionsPerSession: 2,
+        postCompactionErrorMarkers: 0,
+      },
+    });
+
+    expect(report.ready).toBe(false);
+    expect(report.reasons).toContain(
+      'placement DEADLOCKED: 0 placeable, 10 item(s) quarantined by the admission gate ' +
+        '(remote origin, unaudited) — the loop has work it may never place, and no admit path will clear it',
+    );
+    expect(report.frontier).toEqual({ placeable: 0, quarantined: 10 });
+  });
+
+  it('an EMPTY frontier with nothing withheld is idle, not deadlocked — stays green', () => {
+    // The other side of the line: a pot that has genuinely finished its work must NOT be
+    // red. Only a frontier that is empty BECAUSE something is being withheld is a deadlock.
+    const report = computeSoakReport({
+      potSlug: 'papercusp',
+      surveyScope: 'members',
+      surveySlugs: ['papercusp'],
+      windowHours: 24,
+      generatedAtMs: Date.UTC(2026, 6, 13, 6, 0, 0),
+      bgHost: {
+        oomKillCount: 0,
+        restartCount: 0,
+        failureCount: 0,
+        peakMemoryMb: 2048,
+        highMemoryPeakCount: 0,
+        journalError: null,
+        tickerUp: true,
+        tickerNote: null,
+      },
+      roleSuccess: [
+        { role: 'cup', totalTerminalTurns: 4, successfulTurns: 4, successRate: 1 },
+        { role: 'mug', totalTerminalTurns: 3, successfulTurns: 3, successRate: 1 },
+        { role: 'kettle', totalTerminalTurns: 2, successfulTurns: 2, successRate: 1 },
+      ],
+      frontier: { placeable: 0, quarantined: 0 },
+      infraCurse: { placementsSeen: 10, infraCurses: 0, rate: 0 },
+      escalationBacklog: { openNow: 0, olderOpenCount: 0, newerOpenCount: 0, improving: true },
+      gateGreenRatio: { green: 5, total: 5, ratio: 1 },
+      deployLatency: { samples: 2, meanMs: 120000 },
+      contextBurn: {
+        loopWakes: 400,
+        meanWakeChars: 1500,
+        maxWakeChars: 5900,
+        estMeanWakeTokens: 375,
+        requestedCompactions: 12,
+        sessionsCompacting: 6,
+        compactionsPerSession: 2,
+        postCompactionErrorMarkers: 0,
+      },
+    });
+
+    expect(report.ready).toBe(true);
+    expect(report.reasons).toEqual([]);
   });
 
   it('an unreadable journal reds the gate — zero counts are NOT a clean bill of health', () => {
@@ -231,6 +340,7 @@ describe('computeSoakReport', () => {
         { role: 'mug', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
         { role: 'kettle', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
       ],
+      frontier: { placeable: 4, quarantined: 0 },
       infraCurse: { placementsSeen: 10, infraCurses: 0, rate: 0 },
       escalationBacklog: { openNow: 0, olderOpenCount: 0, newerOpenCount: 0, improving: true },
       gateGreenRatio: { green: 5, total: 5, ratio: 1 },

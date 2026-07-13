@@ -4243,6 +4243,11 @@ describe('ttyCandidates + writeOscTitle — the OMP twin of pc_tty.py (WI-3665)'
   });
 });
 
+// Mirrors coord-hook.ts's private ttyClaimFilename — the claim filename is derived from the
+// FULL device path (not just its basename), so a test claim must be written under the same
+// transform or the code looks in the wrong place and (correctly, per fail-open) finds nothing.
+const claimFilename = (ttyPath: string) => ttyPath.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+/, '');
+
 describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling)', () => {
   it('a claim naming a DIFFERENT session blocks the write to PAPERCUSP_TTY (the on-camera bug)', async () => {
     const dir = await fs.mkdtemp(join(tmpdir(), 'omp-tty-claim-'));
@@ -4252,7 +4257,7 @@ describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling
     await fs.writeFile(owned, '');
     // A NEW session (windows-parity's own relaunch, or an unrelated one) claimed this
     // recycled path — our stale env still spells the same path, but it's no longer ours.
-    await fs.writeFile(join(claimsDir, 'recycled_tty'), 'su-someone-else');
+    await fs.writeFile(join(claimsDir, claimFilename(owned)), 'su-someone-else');
     const osc = buildDisplayTitleOsc('👑 windows-parity 🟦 · su-9859e');
     await writeOscTitle(osc, {
       PAPERCUSP_TTY: owned,
@@ -4273,7 +4278,7 @@ describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling
     const owned = join(dir, 'mine.tty');
     await fs.writeFile(owned, '');
     const sid = 'su-9859ea5e-926d-4c65-b8fb-4d7c25a21353';
-    await fs.writeFile(join(claimsDir, 'mine_tty'), sid);
+    await fs.writeFile(join(claimsDir, claimFilename(owned)), sid);
     const osc = buildDisplayTitleOsc('su-9859e');
     const wrote = await writeOscTitle(osc, {
       PAPERCUSP_TTY: owned,
@@ -4306,7 +4311,7 @@ describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling
     await fs.mkdir(claimsDir, { recursive: true });
     const owned = join(dir, 'nosid.tty');
     await fs.writeFile(owned, '');
-    await fs.writeFile(join(claimsDir, 'nosid_tty'), 'su-someone-else');
+    await fs.writeFile(join(claimsDir, claimFilename(owned)), 'su-someone-else');
     const osc = buildDisplayTitleOsc('x');
     const wrote = await writeOscTitle(osc, {
       PAPERCUSP_TTY: owned,
