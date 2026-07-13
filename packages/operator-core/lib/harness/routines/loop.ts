@@ -506,40 +506,7 @@ export function computeLoopStall(input: {
  * `next_fire_at='infinity'::timestamptz` to an invalid Date, so we detect parked
  * in SQL and never hand a NaN-Date out.
  */
-export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): Promise<LoopStatus | null> {
-  const sql = opts.sql ?? getOrgPg().sql;
-  const name = loopRoutineName(ownerId);
-  const rows = await sql<any[]>`
-    SELECT r.install_slug,
-           r.name,
-           r.active,
-           r.reschedule_interval_sec,
-           r.target_owner_id,
-           r.payload_template,
-           COALESCE((r.metadata->>'fire_count')::int, 0)                  AS fire_count,
-           r.last_fired_at,
-           (r.next_fire_at = 'infinity'::timestamptz)                    AS parked,
-           CASE WHEN r.next_fire_at = 'infinity'::timestamptz THEN NULL
-                ELSE r.next_fire_at END                                  AS next_fire_at,
-           -- P2b stall inputs: how long parked past the fire, last fire-state, completion + activity.
-           CASE WHEN r.last_fired_at IS NULL THEN NULL
-                ELSE (EXTRACT(EPOCH FROM (now() - r.last_fired_at)) * 1000)::bigint END AS parked_ms,
-           a.last_status         AS last_delivery_outcome,
-           a.consecutive_errors  AS consecutive_errors,
-           (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
-             WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
-               AND ag.summary ILIKE '%end%' AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
-           (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
-             WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at
-      FROM harness_shared.routines r
-      LEFT JOIN harness_shared.autoloop_state a
-        ON a.workspace_id = r.workspace_id AND a.harness_slug = r.install_slug AND a.role = r.name
-     WHERE r.name = ${name}
-     ORDER BY r.active DESC, r.updated_at DESC
-     LIMIT 1
-  `;
-  if (rows.length === 0) return null;
-  const r = rows[0];
+function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   const pt = r.payload_template ?? {};
   const costCap = pt?.costCapCents;
   const intervalSec = r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec);
@@ -552,12 +519,12 @@ export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): 
     parked,
     parkedMs,
     intervalSec,
-    hasCompletionSinceFire: completedMs != null, // the subquery already bounds it to > last_fired
+    hasCompletionSinceFire: completedMs != null,
     activeSinceFire: presenceMs != null && lastFiredMs != null && presenceMs > lastFiredMs,
   });
   return {
     name: r.name,
-    ownerId: r.target_owner_id ?? ownerId,
+    ownerId: r.target_owner_id ?? fallbackOwnerId,
     harnessSlug: r.install_slug,
     active: r.active,
     intervalSec,
@@ -575,4 +542,58 @@ export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): 
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
     consecutiveErrors: r.consecutive_errors == null ? 0 : Number(r.consecutive_errors),
   };
+}
+
+/**
+ * Batch loop-status read for roster/watchdog callers. The former per-owner
+ * `getLoopStatus` loop made a fleet monitor pay one PG round-trip per member;
+ * this returns the latest routine per owner in one query while preserving the
+ * exact status/stall derivation used by loop:status.
+ */
+export async function getLoopStatuses(
+  ownerIds: readonly string[],
+  opts: { sql?: Sql } = {},
+): Promise<Map<string, LoopStatus>> {
+  const out = new Map<string, LoopStatus>();
+  const owners = [...new Set(ownerIds.filter(Boolean))];
+  if (owners.length === 0) return out;
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<any[]>`
+    SELECT DISTINCT ON (r.target_owner_id)
+           r.install_slug,
+           r.name,
+           r.active,
+           r.reschedule_interval_sec,
+           r.target_owner_id,
+           r.payload_template,
+           COALESCE((r.metadata->>'fire_count')::int, 0)                  AS fire_count,
+           r.last_fired_at,
+           (r.next_fire_at = 'infinity'::timestamptz)                    AS parked,
+           CASE WHEN r.next_fire_at = 'infinity'::timestamptz THEN NULL
+                ELSE r.next_fire_at END                                  AS next_fire_at,
+           CASE WHEN r.last_fired_at IS NULL THEN NULL
+                ELSE (EXTRACT(EPOCH FROM (now() - r.last_fired_at)) * 1000)::bigint END AS parked_ms,
+           a.last_status         AS last_delivery_outcome,
+           a.consecutive_errors  AS consecutive_errors,
+           (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
+             WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
+               AND ag.summary ILIKE '%end%' AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
+           (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
+             WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at
+      FROM harness_shared.routines r
+      LEFT JOIN harness_shared.autoloop_state a
+        ON a.workspace_id = r.workspace_id AND a.harness_slug = r.install_slug AND a.role = r.name
+     WHERE r.target_owner_id = ANY(${owners}::text[])
+       AND r.reschedule_interval_sec IS NOT NULL
+     ORDER BY r.target_owner_id, r.active DESC, r.updated_at DESC
+  `;
+  for (const r of rows) {
+    const ownerId = String(r.target_owner_id);
+    out.set(ownerId, loopStatusFromRow(r, ownerId));
+  }
+  return out;
+}
+
+export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): Promise<LoopStatus | null> {
+  return (await getLoopStatuses([ownerId], opts)).get(ownerId) ?? null;
 }
