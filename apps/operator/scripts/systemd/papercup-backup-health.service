@@ -10,4 +10,4 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 # Detection + escalation ONLY — never re-runs a dump, kills a process, or edits backup
 # config (EI-8901: a health check must not hold mutate authority over what it judges).
-ExecStart=/home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/papercup-backup-health-check.sh
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-backup-health-check.sh

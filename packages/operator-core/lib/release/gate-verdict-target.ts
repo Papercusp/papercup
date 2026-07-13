@@ -26,7 +26,7 @@
  * most recent completed suite run, whoever ran it", which is correct BY CONSTRUCTION rather than
  * reconciled after the fact. Two prior attempts (the 2026-07-02 pin-movement inference and WI-4489's
  * `verdictStale` derivation) were both reconciliation layers over a value that can be wrong; this
- * removes the wrongness instead. [owner:Avi 2026-07-11] "this looks like just a bandaid, lets just
+ * removes the wrongness instead. [owner 2026-07-11] "this looks like just a bandaid, lets just
  * make sure its right the first time so that it doesn't need to get 're-verified' to begin with."
  *
  * WHY AN ENV GATE (and not "the CLI always records"): the CLI is invoked ACROSS VERSIONS. The routine

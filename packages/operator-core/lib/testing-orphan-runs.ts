@@ -45,6 +45,7 @@ export type OrphanRunReason =
   | 'harness_not_found'
   | 'retired_path'
   | 'scratch_path'
+  | 'flakeproof_path'
   | 'wrong_tree_path';
 
 export interface OrphanRunGroup {

@@ -114,6 +114,7 @@ const { default: subscribeTool } = await import('./subscribe');
 const { default: commentTool } = await import('./comment');
 const { default: promoteTool } = await import('./promote');
 const { default: expandTool } = await import('./expand');
+const { default: updateTool } = await import('./update');
 
 // A superuser engineer ctx: resolveAgentIdentity reads uiClientId as the ownerId.
 const CTX = { isSuperuser: true, uiClientId: 'su-tester', workspaceId: 'default' } as never;
@@ -704,5 +705,38 @@ describe('work_items:create {assign_to} — atomic create+claim envelope (real P
   it('omitting assign_to leaves the item unclaimed (the default is unchanged)', async () => {
     const res = await createOne({ kind: 'feature', title: 'no assign', harness: 'papercup' });
     expect((res.workItem as Record<string, unknown>).assignee).toBeNull();
+  });
+});
+
+// WI-4492: the item's primary text column had INVERTED names across the CRUD triad —
+// create took `summary`, update took `body`, get RETURNS `summary` — and each write verb
+// SILENTLY DROPPED the wrong one (Zod stripped it) while returning ok:true. Both write
+// verbs now accept EITHER name. This proves the fix END-TO-END against real PG: the
+// natural get→edit→update round-trip no longer loses the body (fix-spec guard (b)).
+describe('work_items body/summary alias round-trip (WI-4492, real PG)', () => {
+  it('create accepts `body`, update accepts `summary`, and both PERSIST (get returns `summary`)', async () => {
+    // create under the ALIAS `body` (the name update taught callers) — previously dropped,
+    // which filed WI-4491/WI-4492 themselves as empty shells.
+    const created = await createOne({ kind: 'bug', title: 'alias round-trip', body: 'ALPHA original body', harness: 'papercup' });
+    expect(created.ok).toBe(true);
+    const id = (created.workItem as Record<string, unknown>).id as string;
+    expect((created.workItem as Record<string, unknown>).summary).toBe('ALPHA original body');
+    const [afterCreate] = await db.sql<{ body: string }[]>`
+      SELECT body FROM harness_shared.engineer_issues WHERE issue_id = ${id}`;
+    expect(afterCreate.body).toBe('ALPHA original body');
+
+    // update under the ALIAS `summary` (the name get RETURNS) — the exact get→edit→update
+    // round-trip that used to silently drop the edit.
+    const updated = await call(updateTool, { id, summary: 'BETA revised body via the summary alias' });
+    expect((updated.results as Record<string, unknown>[])[0]!.ok).toBe(true);
+    const [afterUpdate] = await db.sql<{ body: string }[]>`
+      SELECT body FROM harness_shared.engineer_issues WHERE issue_id = ${id}`;
+    expect(afterUpdate.body).toBe('BETA revised body via the summary alias');
+
+    // the read path (get) returns the persisted text as `summary` — the round-trip closes.
+    const got = await call(getTool, { id });
+    expect(((got.results as Record<string, unknown>[])[0]!.workItem as Record<string, unknown>).summary).toBe(
+      'BETA revised body via the summary alias',
+    );
   });
 });
