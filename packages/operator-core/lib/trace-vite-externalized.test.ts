@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
+// @ts-expect-error — the .mjs script has no declaration file (same as test-file-router.test.ts).
 import {
   reachableStatic,
   computeEagerExternalized,
@@ -99,7 +100,7 @@ describe('decideEager — the white-page guard verdict', () => {
       ],
     });
     expect(r.ok).toBe(false);
-    expect(r.violations.map((v) => v.builtin)).toEqual(['worker_threads']);
+    expect(r.violations.map((v: { builtin: string }) => v.builtin)).toEqual(['worker_threads']);
   });
 
   it('an empty eager set is trivially ok', () => {
