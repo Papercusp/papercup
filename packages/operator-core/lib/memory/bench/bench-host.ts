@@ -12,6 +12,8 @@
  * Exported as reusable pieces (not just the runner's internals) so the
  * scale tier (P-010) and any future bench rides the same wiring.
  */
+import { existsSync } from 'node:fs';
+
 import { Client } from 'pg';
 
 import { configureMemory, memoryHost, pgClientFields, VEC_TABLE } from '@papercusp/memory';
@@ -102,10 +104,18 @@ export async function benchPgClient(): Promise<Client> {
  * (its cleanup DROP never ran) left rows behind that contaminated the NEXT
  * run's corpus, and the numbers came out quietly wrong rather than failing.
  * Same hazard within a single `--keep` run, where backend B seeded on top of
- * backend A. Callers are sequential (one backend context at a time), so the
- * drop can never race a live sibling.
+ * backend A.
+ *
+ * ⚠ The old version of this comment claimed "callers are sequential (one
+ * backend context at a time), so the drop can never race a live sibling." That
+ * reasoning is only true WITHIN ONE PROCESS — it silently assumed no other bench
+ * process exists. It does: `BENCH_SCHEMA` is now pid-unique precisely because a
+ * second run's DROP CASCADE otherwise destroys a first run's tables mid-seed.
+ * The drop below is safe because the schema is OURS ALONE, not because callers
+ * are sequential.
  */
 export async function ensureBenchSchema(client: Client, schema: string = BENCH_SCHEMA): Promise<void> {
+  await reapOrphanBenchSchemas(client);
   await dropBenchSchema(client, schema);
   await client.query(`CREATE SCHEMA ${schema}`);
   await client.query(`
@@ -119,6 +129,39 @@ export async function ensureBenchSchema(client: Client, schema: string = BENCH_S
         (LIKE harness_shared.${vec} INCLUDING ALL)
     `);
   }
+}
+
+/**
+ * Drop bench schemas left behind by runs that are no longer alive.
+ *
+ * A pid-unique schema cannot collide, but it CAN leak: a run killed before its
+ * cleanup (SIGKILL, OOM, a crashed host) leaves `bench_memory_<pid>` behind
+ * forever. So each run reaps its dead predecessors — a schema is orphaned iff
+ * its pid no longer exists in /proc. Also reaps the LEGACY fixed `bench_memory`
+ * schema, which no current run owns.
+ *
+ * Deliberately best-effort: a reap failure must never fail a bench run (it is
+ * hygiene, not correctness — correctness comes from the pid-unique name).
+ */
+export async function reapOrphanBenchSchemas(client: Client): Promise<string[]> {
+  const reaped: string[] = [];
+  try {
+    const { rows } = await client.query<{ nspname: string }>(
+      `SELECT nspname FROM pg_namespace WHERE nspname LIKE $1`,
+      [`${BENCH_SCHEMA_PREFIX}%`],
+    );
+    for (const { nspname } of rows) {
+      if (nspname === BENCH_SCHEMA) continue; // ours — handled by the caller's drop
+      const m = /^bench_memory_(\d+)$/.exec(nspname);
+      // The legacy bare `bench_memory` has no owner pid → always orphaned.
+      if (m && existsSync(`/proc/${m[1]}`)) continue; // a LIVE peer run owns it
+      await dropBenchSchema(client, nspname);
+      reaped.push(nspname);
+    }
+  } catch {
+    /* hygiene only — never fail a run on a reap error */
+  }
+  return reaped;
 }
 
 /**

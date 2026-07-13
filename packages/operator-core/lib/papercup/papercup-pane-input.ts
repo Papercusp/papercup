@@ -106,6 +106,17 @@ export type SentinelPaneWrite =
     };
 
 /**
+ * The pane-input prefix a voice-origin turn is tagged with (EI-10563). Mirrors
+ * the `[deep-answer WI-NNN]` pattern (papercup-deep-watch.ts) that the papercup
+ * persona already keys on reliably: the pane can't otherwise tell a spoken
+ * turn from typed text (both arrive as plain stdin), so "was this voice?"
+ * silently degraded to an LLM guess — a real ack one turn, dead air the next.
+ * A leading, unmissable textual marker is a much stronger signal than
+ * expecting the model to always remember "every turn is spoken."
+ */
+export const VOICE_TURN_PREFIX = '[voice]';
+
+/**
  * Write `text` into the Sentinel pane's composer + Enter to submit the turn.
  * Applies the warm-up gate and the exited-pane guard. Never throws.
  *
@@ -118,8 +129,18 @@ export type SentinelPaneWrite =
  * than degrading). Callers treat `no-sentinel-pane` like `no-dock`: the pane
  * route is unavailable — fall back (voice → the in-process converse brain;
  * deep-watch → the hindsight channel).
+ *
+ * `opts.spoken` (EI-10563): when true, the written line is tagged with
+ * `VOICE_TURN_PREFIX` so the persona can deterministically `voice:say` an
+ * ack/reply instead of relying on inferring modality from plain text. Pass it
+ * from every caller whose turn actually originated as speech (the dock voice
+ * bridge, the ElevenLabs relay) — never from the deep-answer injection, which
+ * already carries its own `[deep-answer WI-NNN]` marker.
  */
-export async function writeToSentinelPane(text: string): Promise<SentinelPaneWrite> {
+export async function writeToSentinelPane(
+  text: string,
+  opts?: { spoken?: boolean },
+): Promise<SentinelPaneWrite> {
   const t = text.trim();
   if (!t) return { ok: false, reason: 'write-failed', error: 'empty text' };
 
@@ -179,10 +200,13 @@ export async function writeToSentinelPane(text: string): Promise<SentinelPaneWri
   }
 
   try {
+    // EI-10563: tag a voice-origin turn so the pane can key on it deterministically
+    // (see VOICE_TURN_PREFIX above) instead of guessing modality from bare text.
+    const line = opts?.spoken ? `${VOICE_TURN_PREFIX} ${t}` : t;
     // `--` end-of-options marker: `text` is user-controlled, so without it a
     // value starting with `-` would be parsed as a zellij flag (argv flag
     // smuggling). After `--` everything is positional.
-    await exec(z, ['-s', session, 'action', 'write-chars', '--pane-id', paneId, '--', t], { timeout: 4000 });
+    await exec(z, ['-s', session, 'action', 'write-chars', '--pane-id', paneId, '--', line], { timeout: 4000 });
     await exec(z, ['-s', session, 'action', 'write', '--pane-id', paneId, '13'], { timeout: 4000 });
     return { ok: true, session, paneId, targeted: true };
   } catch (e) {

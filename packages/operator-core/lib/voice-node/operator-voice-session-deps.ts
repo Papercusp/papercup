@@ -151,7 +151,9 @@ function connect(signedUrl: string, handlers: ElConnectHandlers): Promise<ElSock
  *  local voice + typed text). Failure reasons pass through 1:1, including
  *  'no-sentinel-pane' (P-019 targeted-only writes). */
 async function relayToBrain(text: string): Promise<BrainRelayResult> {
-  const res = await writeToSentinelPane(text);
+  // EI-10563: this relay only ever carries spoken EL utterances — tag the write
+  // so the pane can deterministically voice:say the reply.
+  const res = await writeToSentinelPane(text, { spoken: true });
   if (res.ok) return { ok: true };
   return { ok: false, reason: res.reason, error: res.error };
 }

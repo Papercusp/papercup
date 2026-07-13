@@ -35,6 +35,7 @@ import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
 import { withBoundedTimeout } from '../../../bounded-timeout';
 import { shapeOrient } from './orient-shape';
+import type { OrientPipeline } from '../pipeline-health';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
 import { admitRecallHits, MEMORY_TEXT_CAP } from '../../../memory/recall-admission';
@@ -82,6 +83,11 @@ const RECIPE_TITLE_CAP = 120;
  *  client timeout, in BOTH monitor and full mode (`me` runs unconditionally).
  *  Bound each so a slow leg degrades to an empty/null fallback instead. */
 const ORIENT_FLEET_LEG_TIMEOUT_MS = 8_000;
+/** WI-4533: the pipeline leg is a DECORATION on the wake read — cached, and started by the handler
+ *  before the legs above, so by the time it is awaited it is almost always already resolved. Bound
+ *  it tightly anyway: an agent must never wait on "is the gate green" to find out what it's
+ *  assigned. Blowing this budget drops the block; it never fails the orient. */
+const ORIENT_PIPELINE_TIMEOUT_MS = 3_000;
 /** P-016 (voice-public-release-readiness-2026-07-12): the papercup pane-context
  *  fold gathers FOUR ready-made digests (salience feed, overwatch brief, corpus
  *  digest, live fleet — papercup-context.ts) — heavier than a single fleet leg,
@@ -299,6 +305,14 @@ export interface OrientResult {
     /** The answer-before-parking advisory — rides only a non-empty thread. */
     note?: string;
   } | null;
+  /** WI-4533 (P-006): the release PIPELINE's health — the gate's colour + whether the tip is live
+   *  — folded into the wake read every agent already makes. An agent that starts editing without
+   *  knowing the gate is red is working on something that cannot ship; the fact existed (dev:why)
+   *  but 425 agents oriented 2256×/7d and called it 16×. Terse when healthy ({gate,deploy}); when
+   *  not, it carries the failing files + the root-cause leaf + what it means for the caller's work.
+   *  ABSENT (never a false green) for a harness with no green-checkpoint routine, and on any
+   *  read failure/timeout — see pipeline-health.ts. Both modes: a monitor tick wants this most. */
+  pipeline?: OrientPipeline | null;
 }
 
 /** P-016: the role-specific fold closures the HANDLER injects (dynamic-import IO
@@ -398,6 +412,12 @@ export async function composeOrient(
    *  gate) and INJECTED so composeOrient stays IO-free + unit-testable. Absent ⇒
    *  neither fold (every non-pane role, and every monitor tick). */
   roleFolds?: OrientRoleFolds,
+  /** WI-4533 (P-006): the release-pipeline health fold. The handler STARTS the read before calling
+   *  composeOrient and passes a closure over the in-flight promise, so its latency overlaps the
+   *  sequential legs below instead of adding to them. Injected (not called inline) so composeOrient
+   *  stays IO-free + unit-testable — the same contract as ownerPresent / roleFolds. Undefined ⇒
+   *  the leg is absent. */
+  pipelineFold?: () => Promise<OrientPipeline | null>,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   // WI-3818: unconditional in BOTH modes (monitor's one fleet-related read) — a
@@ -891,6 +911,20 @@ export async function composeOrient(
     }
   }
 
+  // ── release-pipeline health (WI-4533 / P-006): can what I'm about to write actually SHIP?
+  // Folded in BOTH modes — a monitor tick is precisely where a leader wants the gate's colour —
+  // and awaited LAST so the read (kicked off by the handler before any of the legs above) has been
+  // running in the background the whole time. Bounded + fail-soft: a slow/failed pipeline read
+  // drops the leg, never the orientation.
+  if (pipelineFold) {
+    const p = await withBoundedTimeout(pipelineFold(), {
+      fallback: null as OrientPipeline | null,
+      timeoutMs: ORIENT_PIPELINE_TIMEOUT_MS,
+      label: 'orient:pipeline',
+    });
+    if (p.value) result.pipeline = p.value;
+  }
+
   // ── coord:declare-intent — only when an intent is given (a WRITE; independently
   // capability-gated at re-dispatch, so a read-only caller gets intentDeclared:false
   // rather than an escalation). BEST-EFFORT.
@@ -1130,6 +1164,16 @@ export default defineTool({
         },
       };
     }
+    // WI-4533 (P-006): START the pipeline-health read HERE — before composeOrient's sequential
+    // legs — and hand composeOrient a closure over the in-flight promise. Its latency therefore
+    // overlaps reads that were happening anyway (orient p50 1.75s; this leg is cached and usually
+    // ~ms), instead of being added to them. `.catch(() => null)` is belt-and-braces: the fetch is
+    // already fail-soft, but an unhandled rejection on a promise created early and awaited late
+    // must be impossible.
+    const pipelinePromise = (async () => {
+      const { fetchOrientPipeline } = await import('../pipeline-health');
+      return fetchOrientPipeline(args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? undefined);
+    })().catch(() => null);
     const result = await composeOrient(
       args,
       // P-001 (orient-recall-quality-2026-07-12): the folded memory:search records
@@ -1144,6 +1188,7 @@ export default defineTool({
       fleetCatchUpCursor,
       fleetMembership,
       roleFolds,
+      () => pipelinePromise,
     );
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is

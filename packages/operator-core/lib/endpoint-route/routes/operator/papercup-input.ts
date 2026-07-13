@@ -1,5 +1,9 @@
 /**
- * POST /api/operator/papercup-input  { text: string }
+ * POST /api/operator/papercup-input  { text: string, spoken?: boolean }
+ *
+ * `spoken` (EI-10563): pass true for a voice-originated transcript — it tags
+ * the pane write with `[voice]` so the persona can deterministically
+ * `voice:say` a reply instead of guessing modality from bare text.
  *
  * Voice-IN for the Sentinel-as-Claude-TUI (sentinel-as-claude-tui-2026-06-22,
  * Phase C). Writes a final STT transcript into the dock's 🛡 Sentinel pane's
@@ -25,6 +29,9 @@ export { isExitedPaneScreen };
 
 interface Body {
   text?: unknown;
+  /** EI-10563: true when this transcript originated as speech — tags the pane
+   *  write so the persona can deterministically voice:say a reply. */
+  spoken?: unknown;
 }
 
 export default defineTool({
@@ -43,8 +50,9 @@ export default defineTool({
     const body = (await req.json().catch(() => null)) as Body | null;
     const text = typeof body?.text === 'string' ? body.text.trim() : '';
     if (!text) return Response.json({ error: 'text required' }, { status: 400 });
+    const spoken = body?.spoken === true;
 
-    const res = await writeToSentinelPane(text);
+    const res = await writeToSentinelPane(text, { spoken });
     if (res.ok) {
       return Response.json({ ok: true, session: res.session, paneId: res.paneId, targeted: res.targeted });
     }

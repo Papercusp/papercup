@@ -106,24 +106,22 @@ export default defineTool({
   description:
     "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. " +
     'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
-    'Your prior transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
-    "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` " +
-    'joins instead (EI-9036). ' +
+    'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
+    "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
-    'Writes are verify-read; fails loudly on an invisible write (checkpoint_verify_failed). A plain replace shrinking ' +
-    'a substantial checkpoint >50% gets a non-blocking `shrinkWarning` (EI-9325, likely truncation).',
+    'Writes are verify-read and fail loudly on an invisible write (checkpoint_verify_failed); a plain replace that shrinks ' +
+    'a substantial checkpoint >50% returns a non-blocking `shrinkWarning`.',
   guidance: {
     when:
-      'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
-      'next fresh-context wake) needs to continue — what is done, what is left, current approach, gotchas, open ' +
-      'threads. Keep it COMPRESSED (a digest, not a transcript).',
+      'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next ' +
+      'fresh-context wake) needs — what is done, what is left, current approach, gotchas. A digest, not a transcript.',
     notWhen:
-      'Mid-task scratch state that the live transcript already holds — checkpoint only the durable, cross-boundary ' +
-      'gist. Do not dump file contents or full tool output.',
+      'Mid-task scratch the live transcript already holds; never dump file contents or tool output. NOT an edit channel ' +
+      'for the item: use work_items:update for the body, work_items:comment for a note (both exist even if a trimmed ' +
+      'tool surface reports them missing).',
     chaining:
-      'work_items:checkpoint { id, checkpoint } before work_items:complete / on yield. Pass blank to clear a stale note. ' +
-      'Also fixes EI-6772: a claim held through long PURELY-LOCAL tool use (no papercusp-su calls) can go presence-stale ' +
-      'and be reclaimed — checkpointing doubles as a liveness pulse (no separate heartbeat verb).',
+      'Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a claim held ' +
+      'through long purely-local tool use can go presence-stale and be reclaimed (no separate heartbeat verb).',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

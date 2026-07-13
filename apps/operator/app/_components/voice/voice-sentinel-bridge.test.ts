@@ -19,7 +19,7 @@ describe('routeVoiceToSentinelPane', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/operator/papercup-input', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'status of the hive' }),
+      body: JSON.stringify({ text: 'status of the hive', spoken: true }),
     });
   });
 

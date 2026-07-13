@@ -18,7 +18,9 @@ export async function routeVoiceToSentinelPane(text: string): Promise<boolean> {
     const res = await fetch('/api/operator/papercup-input', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: t }),
+      // EI-10563: this bridge is voice-IN only (see the module docstring) — the
+      // route/pane can't otherwise tell this transcript apart from typed text.
+      body: JSON.stringify({ text: t, spoken: true }),
     });
     return res.ok;
   } catch {

@@ -110,6 +110,26 @@ export async function recentFailingFiles(deps: WhyChainDeps = {}): Promise<strin
   }
 }
 
+/**
+ * The gate's COLOUR as a single label — the one word an agent acts on. Derived here, next to
+ * gateStage, so every consumer (dev:why's chain AND coord:orient's wake fold, WI-4533) reads the
+ * SAME rule: two surfaces that disagree about whether the gate is red is worse than either being
+ * silent.
+ *
+ * `stale-verdict` is deliberately its OWN colour, not a red — see gateStage below.
+ */
+export type GateLabel = 'green' | 'red' | 'stalled' | 'wedged' | 'stale-verdict' | 'conflict';
+
+export function gateLabel(snap: GitPipelineSnapshot): GateLabel {
+  const g = snap.gate;
+  if (snap.openConflict) return 'conflict';
+  if (g.fireStale) return 'wedged';
+  if (g.verdictStale && g.consecutiveReds > 0) return 'stale-verdict';
+  if (g.stalled) return 'stalled';
+  if (g.consecutiveReds > 0) return 'red';
+  return 'green';
+}
+
 function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainStage {
   const g = snap.gate;
   const filesNote = failingFiles.length ? ` — recent failing file(s): ${failingFiles.join(', ')}` : '';
@@ -125,6 +145,29 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
       stage: 'gate',
       status: 'blocked',
       reason: `green-checkpoint gate is WEDGED — not firing (${g.fireStaleReason ?? 'stale'})`,
+    };
+  }
+  // WI-4533: a STALE red is not a red — it is an UNKNOWN, and it must never be rendered as the
+  // gate's colour. The snapshot has carried `verdictStale` since WI-4489 ("a stale red must never
+  // be reported as the gate's colour, nor dispatch anyone at the tests it names") but this chain —
+  // the very read an agent uses to decide what to go fix — never consulted it, so it kept
+  // reporting a confident RED off a verdict the system already knew was superseded. That is the
+  // exact 3.5h phantom WI-4489 documented: a starved `gate_health` blob reporting 4 reds while
+  // every real run was green, which dispatched the release-fixer at 8 tests that all passed — and
+  // whose manual runs then held the lock that kept the blob stale. Naming the files here would
+  // re-arm precisely that loop, so the stale branch names NONE of them.
+  //
+  // Ordered ABOVE `stalled`/`consecutiveReds` on purpose: both of those read the same untrusted
+  // streak. Freshness is only ever judged for a RED (a stale GREEN misdirects nobody — see
+  // gate-verdict-freshness.ts), so a green verdict can never land here.
+  if (g.verdictStale && g.consecutiveReds > 0) {
+    return {
+      stage: 'gate',
+      status: 'degraded',
+      reason:
+        `gate verdict is STALE (${g.verdictStaleReason ?? 'superseded/unverified'}) — the recorded ` +
+        `${g.consecutiveReds} red(s) are NOT current, so the gate's colour is UNKNOWN. Do not dispatch ` +
+        `anyone at the test(s) it names; re-run the checkpoint to get a real verdict (WI-4489).`,
     };
   }
   if (g.stalled) {
@@ -282,6 +325,96 @@ async function loadAdmissionDefault(): Promise<AdmissionSnapshotLite | null> {
   } catch {
     return null; // gateway down / not running — admissionStage reports it as degraded, never throws
   }
+}
+
+/**
+ * PIPELINE HEALTH — the gate + deploy legs only (WI-4533 / P-006).
+ *
+ * WHY A SECOND ENTRY POINT rather than just calling computeWhyChain: this one is folded into
+ * `coord:orient`, the hottest read in the fleet (2256 calls / 425 agents / 7d), so it must be
+ * CHEAP and it must be SILENT when it has nothing to say:
+ *
+ *   - it skips the ADMISSION leg (an HTTP fetch to the gateway) and the POOL leg (accountStatus)
+ *     — those answer "why is everything slow", which is not what a waking agent needs to know
+ *     before touching code. Gate + deploy answer "will my change ship, and is the tree healthy",
+ *     which is;
+ *   - it fetches the recent failing FILES only when the gate is not green — no red, no query;
+ *   - it reports `known: false` (rather than a cheerful green) for a harness that has no
+ *     green-checkpoint routine at all. A detector with no data must say UNKNOWN, never OK — the
+ *     same rule the stale-verdict branch above enforces. A false green at wake is worse than
+ *     silence: it is an agent shipping into a pipeline it believes is healthy.
+ *
+ * It shares gateStage/deployStage/gateLabel VERBATIM with dev:why, so the wake fold and the
+ * causal chain can never drift into disagreeing about the gate's colour.
+ */
+export interface PipelineHealth {
+  generatedAtMs: number;
+  /** false ⇒ this harness has no green-checkpoint routine: nothing is known, report NOTHING. */
+  known: boolean;
+  gate: WhyChainStage;
+  deploy: WhyChainStage;
+  gateLabel: GateLabel;
+  consecutiveReds: number;
+  lastGreenAtMs: number | null;
+  /** WI-4489: the recorded red is superseded/unverified — its colour is UNKNOWN, not red. */
+  verdictStale: boolean;
+  /** Commits on `main` not yet promoted to the green pin (`ready`). */
+  readyBehindMain: number | null;
+  /** Commits on the green pin not yet live on :3070. */
+  deployedBehindReady: number | null;
+  recentFailingFiles: string[];
+  /** The upstream-most non-ok leg of THIS chain (gate, then deploy) — null when both are ok. */
+  rootCause: WhyChainStage | null;
+}
+
+export async function computePipelineHealth(
+  deps: WhyChainDeps & { slug?: string } = {},
+): Promise<PipelineHealth> {
+  const loadSnapshot = deps.loadSnapshot ?? (() => gitPipelineSnapshot(deps.slug));
+  const snap = await loadSnapshot();
+  const now = Date.now();
+
+  // No green-checkpoint routine for this harness ⇒ there IS no gate to report on. Say so; a
+  // zero-red `gate_health` on a harness that never runs a checkpoint would otherwise render as a
+  // confident "green" (the snapshot defaults consecutiveReds to 0).
+  if (!snap.routines.greenCheckpoint) {
+    const unknown: WhyChainStage = { stage: 'gate', status: 'degraded', reason: 'no green-checkpoint routine for this harness — gate state unknown' };
+    return {
+      generatedAtMs: now,
+      known: false,
+      gate: unknown,
+      deploy: deployStage(snap),
+      gateLabel: 'green',
+      consecutiveReds: 0,
+      lastGreenAtMs: null,
+      verdictStale: false,
+      readyBehindMain: null,
+      deployedBehindReady: null,
+      recentFailingFiles: [],
+      rootCause: null,
+    };
+  }
+
+  // The failing-files read is the only extra query, and a GREEN gate never pays for it.
+  const provisional = gateStage(snap, []);
+  const failingFiles = provisional.status === 'ok' ? [] : await recentFailingFiles(deps);
+  const gate = failingFiles.length ? gateStage(snap, failingFiles) : provisional;
+  const deploy = deployStage(snap);
+
+  return {
+    generatedAtMs: now,
+    known: true,
+    gate,
+    deploy,
+    gateLabel: gateLabel(snap),
+    consecutiveReds: snap.gate.consecutiveReds,
+    lastGreenAtMs: snap.gate.lastGreenAtMs,
+    verdictStale: snap.gate.verdictStale,
+    readyBehindMain: snap.deploy.readyBehindMain ?? null,
+    deployedBehindReady: snap.deploy.deployedBehindReady ?? null,
+    recentFailingFiles: failingFiles,
+    rootCause: [gate, deploy].find((s) => s.status !== 'ok') ?? null,
+  };
 }
 
 /** Compute the full why-chain (gate -> deploy -> admission -> pool), pure + read-only. */
