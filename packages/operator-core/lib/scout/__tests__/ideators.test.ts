@@ -253,6 +253,7 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
   /** A fake llmCall that queues in a "governor" for `admissionMs` before it "sends". */
   function governedLlm(opts: {
     admissionMs: number;
+    gatewayAdmissionMs?: number;
     generationMs?: number;
     admit?: boolean;
   }): { call: ScoutLlmCall; seen: Array<Parameters<ScoutLlmCall>[0]> } {
@@ -268,8 +269,13 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
           o.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
         });
       }
-      // Phase 2 — ADMITTED: the request is really issued. Generation starts NOW.
+      // Phase 2 — LOCAL admission: the HTTP request is issued, but may still queue in
+      // the inference gateway before any upstream response begins.
       o.onAdmitted?.();
+      await new Promise((r) => setTimeout(r, opts.gatewayAdmissionMs ?? 0));
+      if (o.signal?.aborted) throw new Error('aborted during gateway admission');
+      // Phase 3 — response start: the request cleared every admission layer.
+      o.onResponseStart?.();
       await new Promise((r) => setTimeout(r, opts.generationMs ?? 0));
       if (o.signal?.aborted) throw new Error('aborted during generation');
       return {
@@ -303,6 +309,22 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
     expect(res.ideators.every((i) => i.ok)).toBe(true);
   });
 
+  it('EI-11417: gateway admission after the local permit is NOT charged to generation', async () => {
+    // The local governor admits immediately, then the inference gateway queues longer than
+    // the 25ms generation cap. The old onAdmitted boundary killed this as "GENERATION" even
+    // though upstream had not sent response headers. It must succeed once response starts.
+    const { call } = governedLlm({ admissionMs: 0, gatewayAdmissionMs: 60, generationMs: 0 });
+    const res = await runIdeators(digest, {
+      llmCall: call,
+      perLens: 1,
+      lenses: ['analogical'],
+      ideatorTimeoutMs: 25,
+      cycleDeadlineMs: Date.now() + 10_000,
+    });
+    expect(res.ideas).toHaveLength(1);
+    expect(res.ideators[0]?.ok).toBe(true);
+  });
+
   it('the GENERATION cap still bites once admitted — and says so (a real wedged stream is still caught)', async () => {
     // Admitted immediately, then the stream wedges well past the cap.
     const { call } = governedLlm({ admissionMs: 0, generationMs: 200 });
@@ -317,7 +339,7 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
     const err = res.ideators[0]?.error ?? '';
     expect(err).toMatch(/GENERATION/);
     // It must NOT be blamed on capacity — this one really was the model.
-    expect(err).not.toMatch(/never admitted/);
+    expect(err).not.toMatch(/admission wait/);
   });
 
   it('never admitted ⇒ an HONEST capacity error, never a bogus transport "timeout"', async () => {

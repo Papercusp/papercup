@@ -444,8 +444,9 @@ type ScoutLlmCallInput = Parameters<ScoutLlmCall>[0];
  *     governor gets that as `governorMaxWaitMs` and bails with an HONEST capacity error
  *     instead of being killed by our timer. A backstop timer covers a transport that never
  *     admits and never returns.
- *   - GENERATION — the existing per-ideator cap, whose timer starts on `onAdmitted` (the
- *     instant the request is really issued) and RESETS on each retry attempt.
+ *   - GENERATION — the existing per-ideator cap, whose timer starts on `onResponseStart`
+ *     (response headers / first stream event, after the inference gateway admits the request)
+ *     and RESETS on each retry attempt.
  *
  * Net effect: a pause shorter than the cycle's remaining budget now yields IDEAS (a bit
  * later) instead of a hard cycle failure; a pause longer than it fails fast and honestly.
@@ -477,8 +478,9 @@ async function callIdeatorLlm(
   // merely RE-ARM on admission:
   //   - no deadline  ⇒ ceiling = the generation cap. Byte-identical to the pre-WI-4475 contract
   //                    (same bound, same message), so legacy callers are untouched.
-  //   - a deadline   ⇒ ceiling = admission budget + generation cap. On admission we re-arm to
-  //                    the generation cap ALONE, so queue-wait is never charged to generation.
+  //   - a deadline   ⇒ ceiling = admission budget + generation cap. On RESPONSE START we
+  //                    re-arm to the generation cap alone; local/gateway queue-wait is never
+  //                    charged to generation.
   const grace = opts.admissionBackstopGraceMs ?? ADMISSION_BACKSTOP_GRACE_MS;
   const totalCeilingMs = (() => {
     if (admissionBudgetMs === undefined) return hasGenerationCap ? generationTimeoutMs : undefined;
@@ -492,9 +494,11 @@ async function callIdeatorLlm(
   const ctrl = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let parentAbort: (() => void) | null = null;
-  let admitted = false;
+  let locallyAdmitted = false;
+  let responseStarted = false;
   // Assigned synchronously by the Promise executor below, before `llmCall` is ever invoked.
   let onAdmitted: () => void = () => {};
+  let onResponseStart: () => void = () => {};
 
   const rejectOnAbort = new Promise<never>((_, reject) => {
     const abort = (err: Error) => {
@@ -510,24 +514,26 @@ async function callIdeatorLlm(
       opts.signal.addEventListener('abort', parentAbort, { once: true });
     }
 
-    // The failure MESSAGE is chosen when the timer FIRES, from whether we were ever admitted —
-    // so a capacity starve can never again be misreported as transport death (the WI-4475 lie
-    // that sent us hunting a phantom hang).
+    // The failure MESSAGE is chosen when the timer FIRES. Local admission is deliberately
+    // NOT the generation boundary: the HTTP request can still spend minutes in the inference
+    // gateway's own queue/account governor (EI-11417). Only response start proves the request
+    // cleared every admission layer.
     const arm = (ms: number) => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        if (admitted) {
+        if (responseStarted) {
           abort(
             new Error(
               `Scout ideator ${slot.lens} timed out after ${Math.trunc(generationTimeoutMs)}ms of GENERATION ` +
-                `(admitted — the model was streaming; this is not a capacity wait)`,
+                `(upstream response started — this is not an admission wait)`,
             ),
           );
         } else if (admissionBudgetMs !== undefined) {
           abort(
             new Error(
-              `Scout ideator ${slot.lens} was never admitted within ${Math.trunc(admissionBudgetMs)}ms ` +
-                `— no capacity within the cycle's remaining budget (not a transport timeout)`,
+              `Scout ideator ${slot.lens} did not receive an upstream response before the cycle deadline ` +
+                `(${locallyAdmitted ? 'left the local governor but remained queued/stalled downstream' : 'never left the local governor'}; ` +
+                `not generation)`,
             ),
           );
         } else {
@@ -541,11 +547,17 @@ async function callIdeatorLlm(
 
     if (totalCeilingMs !== undefined) arm(totalCeilingMs);
 
-    // ADMITTED — the request is really on the wire. Re-arm with the GENERATION budget alone, so
-    // however long we queued, the model still gets its full (and only its own) budget. Fires per
-    // retry attempt: each attempt re-acquires a permit, so each gets a fresh generation budget.
+    // LOCAL ADMISSION — observability only. The HTTP request may still be waiting inside the
+    // inference gateway, so re-arming the generation timer here recreates the exact queue-vs-
+    // generation conflation WI-4475 intended to remove (EI-11417).
     onAdmitted = () => {
-      admitted = true;
+      locallyAdmitted = true;
+    };
+    // RESPONSE START — the gateway has routed/admitted the request and upstream response
+    // headers arrived. Generation owns the timer from this point onward. Fires per successful
+    // retry attempt, resetting the cap for that attempt.
+    onResponseStart = () => {
+      responseStarted = true;
       if (hasGenerationCap) arm(generationTimeoutMs);
       else if (timer) {
         clearTimeout(timer);
@@ -561,6 +573,7 @@ async function callIdeatorLlm(
         signal: ctrl.signal,
         ...(admissionBudgetMs !== undefined ? { governorMaxWaitMs: admissionBudgetMs } : {}),
         onAdmitted: () => onAdmitted(),
+        onResponseStart: () => onResponseStart(),
       }),
       rejectOnAbort,
     ]);

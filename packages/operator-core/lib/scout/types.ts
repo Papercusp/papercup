@@ -263,12 +263,16 @@ export interface ScoutLlmCall {
      */
     governorMaxWaitMs?: number;
     /**
-     * WI-4475 — fired when the governor admits the call (per attempt), i.e. the instant the
-     * request is actually issued. Everything before it is queue-wait; everything after is
-     * generation. The per-call GENERATION timer starts/resets here — charging queue-wait
-     * against it is what turned a survivable capacity pause into a bogus "timeout".
+     * WI-4475 — fired when the LOCAL governor admits the call (per attempt), immediately
+     * before the HTTP request is issued. The inference gateway may still queue it, so this
+     * is observability only — it is NOT the generation boundary.
      */
     onAdmitted?: () => void;
+    /**
+     * Fired when response headers / the first stream event arrive, after the inference
+     * gateway has admitted the request. The per-call GENERATION timer starts/resets here.
+     */
+    onResponseStart?: () => void;
   }): Promise<{
     text: string;
     json?: unknown;
