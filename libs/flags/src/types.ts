@@ -22,6 +22,12 @@ export const FLAGS = {
   // separate `papercusp-oracle` key was folded into this one by owner ask
   // (2026-06-10): the Oracle is a testing surface.
   TESTING: "papercusp-testing",
+  // Quick Panel — the global-shortcut popup window's tabbed body (Saved Prompts
+  // outline / Docs search / Brainstorm), served at /quick-panel
+  // (quick-panel-saved-prompts-2026-07-13). Default ON (derived FLAG_DEFAULTS —
+  // additive surface); OFF renders the panel's disabled note, nothing else
+  // changes behavior.
+  QUICK_PANEL: "papercusp-quick-panel",
   // inbox-cards-unification Phase D (P-031): when on, a chat decision card
   // (chat:ask_choice / ctx.askUser) ALSO writes a durable coord escalation so
   // the human can answer it live OR later from the inbox; either path resolves
