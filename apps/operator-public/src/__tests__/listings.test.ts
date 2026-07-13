@@ -602,3 +602,144 @@ describe('Cupboard /listings — provides_events (migration 012)', () => {
     }
   });
 });
+
+/**
+ * requires_events (migration 013 / D-003 / P-008) — the CONSUMER half of the
+ * event axis. Mirrors the provides_events block above.
+ *
+ * The stakes differ from provides_events, and the tests say so: a REQUIRED family
+ * that nothing provides is a HARD install failure (P-007's gate refuses the
+ * install outright). The declaration therefore has to travel WITH the listing, or
+ * the user meets that refusal as a surprise toast after clicking Install instead
+ * of reading it on the detail page beforehand.
+ *
+ * What the worker deliberately does NOT validate: whether anything actually
+ * provides the required family. The Cupboard has no host catalog and no idea what
+ * the installing box already has — availability is the operator resolver's answer,
+ * at install time, against the local catalog. Enforcing resolvability at publish
+ * would reject a good unit whose provider merely hasn't been published yet.
+ */
+describe('Cupboard /listings — requires_events (migration 013)', () => {
+  let api: ReturnType<typeof buildApi>;
+  beforeEach(() => {
+    api = buildApi();
+  });
+
+  const PACK_BASE = {
+    github_owner: 'papercupai',
+    github_name: 'dep-packs',
+    github_url: 'https://github.com/papercupai/dep-packs',
+    project_ref: 'papercupai/dep-packs',
+  };
+
+  it('POST /listings publishes requires_events; GET returns the JSON passthrough', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 80, private: false } });
+    const deps = [{ family: 'deploy:done' }, { family: 'canary:flipped', optional: true }];
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 80, listing_kind: 'pack',
+      listing_ref: 'reactor', title: 'Reactor pack',
+      requires_events: deps,
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { ok: boolean; id: string; listing: Record<string, unknown> };
+    expect(j.ok).toBe(true);
+    // `optional` is stored only when true — an absent flag means REQUIRED.
+    expect(j.listing.requires_events).toBe(
+      JSON.stringify([{ family: 'deploy:done' }, { family: 'canary:flipped', optional: true }]),
+    );
+
+    const got = await api.request(`/listings/${j.id}`, {}, env);
+    expect(got.status).toBe(200);
+    expect((await got.json() as { requires_events: string }).requires_events).toBe(
+      JSON.stringify([{ family: 'deploy:done' }, { family: 'canary:flipped', optional: true }]),
+    );
+  });
+
+  it('a unit can PROVIDE and REQUIRE events at once, alongside provides_tools (all three columns land)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 81, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 81, listing_kind: 'plugin', listing_ref: 'relay',
+      provides_tools: ['relay.send'],
+      provides_events: [{ family: 'relay:sent', keyTemplate: 'relay:sent:<id>' }],
+      requires_events: [{ family: 'deploy:done' }],
+    });
+    expect(res.status).toBe(200);
+    const listing = (await res.json() as { listing: Record<string, unknown> }).listing;
+    // THE POSITIONAL-BIND TRAP, now three columns wide: db.ts's INSERT column
+    // order and its bind array must stay in lockstep (and fake-d1's destructure
+    // with them). If any drifts, one of these lands in another's column — and the
+    // tests would keep passing while writing wrong data into wrong columns unless
+    // we assert all three, distinctly, here.
+    expect(listing.provides_tools).toBe(JSON.stringify(['relay.send']));
+    expect(listing.provides_events).toBe(JSON.stringify([{ family: 'relay:sent', keyTemplate: 'relay:sent:<id>' }]));
+    expect(listing.requires_events).toBe(JSON.stringify([{ family: 'deploy:done' }]));
+  });
+
+  it('omitting requires_events stores NULL (every pre-013 listing reads as "declares no event deps")', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 82, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 82, listing_kind: 'pack', listing_ref: 'plain',
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { listing: { requires_events: unknown } }).listing.requires_events).toBeNull();
+  });
+
+  it('requires_events is rejected on non-installable kinds', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 83, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 83, listing_kind: 'blueprint', listing_ref: 'bp',
+      requires_events: [{ family: 'deploy:done' }],
+    });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { field: string; reason: string };
+    expect(j.field).toBe('requires_events');
+    expect(j.reason).toBe('plugin_or_pack_kind_only');
+  });
+
+  it('rejects a DUPLICATE family — is the dep hard or soft? refuse to guess', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 84, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 84, listing_kind: 'pack', listing_ref: 'dup',
+      requires_events: [{ family: 'deploy:done' }, { family: 'deploy:done', optional: true }],
+    });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { field: string; reason: string };
+    expect(j.field).toBe('requires_events');
+    expect(j.reason).toBe('duplicate_family');
+  });
+
+  it('rejects the malformed shapes', async () => {
+    const cases: Array<[unknown, string]> = [
+      ['nope', 'array_1_to_200'],
+      [[], 'array_1_to_200'],
+      [['just-a-string'], 'entries_must_be_objects'],
+      [[{ family: '' }], 'family_non_empty_string_max_128'],
+      [[{ family: 'a'.repeat(129) }], 'family_non_empty_string_max_128'],
+      [[{ family: 'ok:done', optional: 'yes' }], 'optional_must_be_boolean'],
+    ];
+    let repoId = 90;
+    for (const [value, reason] of cases) {
+      // A FRESH env per case, deliberately: the publish rate limit (5/hr) is
+      // enforced BEFORE field validation, so even these rejected attempts count
+      // against it — six cases sharing one env would make the last ones 429
+      // rather than 400, and the test would be asserting the rate limiter instead
+      // of the validator it is named for.
+      const { env } = makeEnv();
+      stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: repoId, private: false } });
+      const res = await publish(api, env, {
+        ...PACK_BASE, github_repository_id: repoId, listing_kind: 'pack',
+        listing_ref: `bad-${repoId}`, requires_events: value,
+      });
+      expect(res.status, `value=${JSON.stringify(value)}`).toBe(400);
+      const j = await res.json() as { field: string; reason: string };
+      expect(j.field).toBe('requires_events');
+      expect(j.reason, `value=${JSON.stringify(value)}`).toBe(reason);
+      repoId++;
+    }
+  });
+});

@@ -11,6 +11,7 @@ import {
   depHostSetsFromCatalog,
   manifestToolNames,
   parseProvidesTools,
+  parseRequiredEvents,
   shortUnitName,
   type PackCatalogInputs,
 } from '../pack-catalog';
@@ -158,5 +159,60 @@ describe('depHostSetsFromCatalog', () => {
     expect(depHostSetsFromCatalog(cat).availableDatatypes).toEqual(new Set());
     // DB-aware callers pass the registry's names so a blueprint's dependencies.datatypes resolve.
     expect(depHostSetsFromCatalog(cat, ['bet', 'forecast']).availableDatatypes).toEqual(new Set(['bet', 'forecast']));
+  });
+});
+
+/**
+ * parseRequiredEvents (P-008) — the consumer half of the event axis. Two rules
+ * carry real weight, and both are about refusing to silently WEAKEN a declared
+ * requirement:
+ *
+ *  - a bare STRING reads as REQUIRED. An under-specified declaration must fail
+ *    loudly rather than install a unit whose reactions never fire.
+ *  - on a duplicate family, REQUIRED WINS. A soft re-declaration (from a
+ *    transitive path, say) must never be able to downgrade a hard dependency into
+ *    a no-op install. This mirrors uniqEvents in resolve-and-install exactly, so a
+ *    declaration means the same thing wherever it is parsed.
+ */
+describe('parseRequiredEvents', () => {
+  it('parses the object form, defaulting optional to false (= REQUIRED)', () => {
+    expect(parseRequiredEvents([{ family: 'a:done' }, { family: 'b:done', optional: true }])).toEqual([
+      { family: 'a:done', optional: false },
+      { family: 'b:done', optional: true },
+    ]);
+  });
+
+  it('reads a BARE STRING as required — the safe reading of an under-specification', () => {
+    expect(parseRequiredEvents(['a:done'])).toEqual([{ family: 'a:done', optional: false }]);
+  });
+
+  it('REQUIRED WINS on a duplicate family, in either declaration order', () => {
+    // optional first, then required → required.
+    expect(parseRequiredEvents([{ family: 'x', optional: true }, { family: 'x' }])).toEqual([
+      { family: 'x', optional: false },
+    ]);
+    // required first, then optional → STILL required (an optional re-declaration
+    // cannot relax a hard dep back down).
+    expect(parseRequiredEvents([{ family: 'x' }, { family: 'x', optional: true }])).toEqual([
+      { family: 'x', optional: false },
+    ]);
+  });
+
+  it('parses a JSON string (the listing `requires_events` column shape)', () => {
+    expect(parseRequiredEvents(JSON.stringify([{ family: 'a:done', optional: true }]))).toEqual([
+      { family: 'a:done', optional: true },
+    ]);
+  });
+
+  it('is FAIL-SOFT: drops malformed entries, never throws', () => {
+    // A third party's bad manifest must not take down catalog derivation for
+    // every other unit — drop the junk, keep the good.
+    expect(parseRequiredEvents([null, 42, {}, { family: '' }, { family: 'ok' }, 'bare'])).toEqual([
+      { family: 'ok', optional: false },
+      { family: 'bare', optional: false },
+    ]);
+    expect(parseRequiredEvents('{not json')).toEqual([]);
+    expect(parseRequiredEvents(undefined)).toEqual([]);
+    expect(parseRequiredEvents({ nope: true })).toEqual([]);
   });
 });

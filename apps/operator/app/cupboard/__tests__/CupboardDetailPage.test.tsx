@@ -205,3 +205,87 @@ describe('CupboardDetailPage — plugin Install (direct global install, EI-27)',
     expect(h.push).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The event axis on the detail page (cupboard-public-release P-008 / D-003).
+ *
+ * "Provides events" is discovery — what awaiting this unit buys you. "Requires
+ * events" is a DECISION surface, and that is why it earns its own section rather
+ * than being folded in with the tools: a REQUIRED family that nothing on the host
+ * provides is a HARD install failure (P-007's gate), so the required/optional
+ * distinction must survive all the way to the screen. Blend them and the page
+ * quietly implies "this install will work" when it won't.
+ */
+describe('CupboardDetailPage — the event axis (P-008)', () => {
+  const eventPluginListing = () =>
+    pluginListing({
+      provides_events: JSON.stringify([
+        { family: 'relay:sent', keyTemplate: 'relay:sent:<id>', describe: 'a relay message landed' },
+      ]),
+      requires_events: JSON.stringify([
+        { family: 'deploy:done' },
+        { family: 'canary:flipped', optional: true },
+      ]),
+    });
+
+  it('renders provided families with their KEY TEMPLATE — the thing an awaiter actually parks on', async () => {
+    mockFetch(eventPluginListing(), { status: 200, body: { ok: true } });
+    render(<CupboardDetailPage />);
+
+    const section = await screen.findByTestId('cupboard-detail-provides-events');
+    expect(section).toBeTruthy();
+    expect(section.textContent).toContain('relay:sent');
+    // Naming the family without its template would leave the user unable to
+    // actually await it — the template IS the usable artifact.
+    expect(section.textContent).toContain('relay:sent:<id>');
+    expect(section.textContent).toContain('a relay message landed');
+  });
+
+  it('renders required families and marks REQUIRED vs OPTIONAL distinctly', async () => {
+    mockFetch(eventPluginListing(), { status: 200, body: { ok: true } });
+    render(<CupboardDetailPage />);
+
+    await screen.findByTestId('cupboard-detail-requires-events');
+    const rows = screen.getAllByTestId('cupboard-detail-required-event');
+    expect(rows).toHaveLength(2);
+
+    const hard = rows.find((r) => r.getAttribute('data-family') === 'deploy:done');
+    const soft = rows.find((r) => r.getAttribute('data-family') === 'canary:flipped');
+    // The distinction that decides whether the install SUCCEEDS.
+    expect(hard?.getAttribute('data-optional')).toBe('false');
+    expect(hard?.textContent).toContain('required');
+    expect(soft?.getAttribute('data-optional')).toBe('true');
+    expect(soft?.textContent).toContain('optional');
+  });
+
+  it('omits both sections when the listing declares no events (a pre-012/013 row)', async () => {
+    mockFetch(pluginListing(), { status: 200, body: { ok: true } });
+    render(<CupboardDetailPage />);
+
+    // Wait for the page to actually render before asserting an absence, or this
+    // passes vacuously against a still-loading page.
+    await screen.findByTestId('cupboard-detail-action');
+    expect(screen.queryByTestId('cupboard-detail-provides-events')).toBeNull();
+    expect(screen.queryByTestId('cupboard-detail-requires-events')).toBeNull();
+  });
+
+  it('degrades to no section — never a crashed page — on a MALFORMED declaration', async () => {
+    // The row is a third party's declaration. A bad one must cost us the section,
+    // not the whole listing page (fail-soft parse; the worker validates on publish).
+    mockFetch(
+      pluginListing({
+        provides_events: '{not json',
+        requires_events: JSON.stringify([{ nope: 1 }, { family: 'ok:done' }]),
+      }),
+      { status: 200, body: { ok: true } },
+    );
+    render(<CupboardDetailPage />);
+
+    await screen.findByTestId('cupboard-detail-action');
+    expect(screen.queryByTestId('cupboard-detail-provides-events')).toBeNull();
+    // The one WELL-FORMED entry still renders; only the junk entry is dropped.
+    const rows = screen.getAllByTestId('cupboard-detail-required-event');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].getAttribute('data-family')).toBe('ok:done');
+  });
+});

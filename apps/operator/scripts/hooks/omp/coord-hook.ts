@@ -47,8 +47,8 @@
  * operator + PG are required for any coord surface.
  */
 
-import { promises as fsp, existsSync, realpathSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { promises as fsp, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────
@@ -995,6 +995,141 @@ export function osSchedulerDenyReason(cmd: string): string {
     'pot:declare-wake instead — the routines table is the only scheduler ' +
     'the hive’s pause/status/liveness machinery can see.'
   );
+}
+
+/**
+ * EI-10939 — tauri-agent-tools target guard (SAFETY). Mirrors the Claude/Codex
+ * shell hook (pretooluse-bash-resource-gate.sh); fix one, fix both.
+ *
+ * `tauri-agent-tools` chooses its target by scanning /tmp for
+ * `tauri-dev-bridge-<pid>.token` and taking THE FIRST LIVE ONE IT HAPPENS TO READ
+ * (its tokenDiscovery.js: `if (!found) found = …`, over an unordered readdir;
+ * commands/shared.js `resolveBridge()` falls into that path whenever `--pid` and
+ * `--port`+`--token` are all absent). No preference, no tie-break, and no warning
+ * when several bridges are alive — so a bare `tauri-agent-tools click …` drives
+ * whichever app came up first. That is frequently the OWNER'S LIVE DESKTOP WINDOW
+ * rather than the throwaway instance the agent spawned (an agent came within one
+ * keystroke of typing into the owner's real app).
+ *
+ * The package is a third-party global npm install, outside our repo — we cannot
+ * fix `resolveBridge`. Refusing to let an UNAIMED command through is the same
+ * protection, and it is ours to enforce.
+ *
+ * TWO TIERS, because ambiguity is not the only hazard:
+ *  • MUTATING (eval/click/type/…) — an explicit target is required ALWAYS, even
+ *    with exactly one live bridge. Verified 2026-07-13: the ONLY live bridge on
+ *    this box WAS the owner's own papercusp-desktop, so an ambiguity-only rule
+ *    would have sailed through and driven his window. Driving a webview you did
+ *    not name is never safe.
+ *  • READ-ONLY bridge commands — required only when genuinely AMBIGUOUS (2+ live
+ *    bridges). Reading the wrong app is how "I verified my fix" becomes a false green.
+ *  • Discovery / bridge-free commands (probe, list-windows, info, forensics, …) are
+ *    NEVER gated — `probe` is the ANSWER to this deny.
+ */
+const TAT_MUTATING = new Set([
+  'eval', 'click', 'type', 'scroll', 'focus', 'navigate', 'select', 'invoke',
+]);
+const TAT_BRIDGE_READ = new Set([
+  'screenshot', 'dom', 'wait', 'ipc-monitor', 'page-state', 'storage',
+  'console-monitor', 'mutations', 'snapshot', 'rust-logs', 'store-inspect',
+  'check', 'capture', 'process-tree', 'capabilities', 'webview', 'health',
+  'diagnose',
+]);
+const TAT_BIN_RE = /(?:^|[\s;&|(])(?:[\w./-]*\/)?tauri-agent-tools(?=\s|$)/;
+
+export interface TauriBridge {
+  pid: number;
+  port: number | null;
+  exe: string;
+}
+
+/** The subcommand being run, or null for a bare / `--help` / non-tat command. */
+export function tauriSubcommand(cmd: string): string | null {
+  const stripped = stripShellQuotes(cmd);
+  const m = TAT_BIN_RE.exec(stripped);
+  if (!m) return null;
+  for (const tok of stripped.slice(m.index + m[0].length).trim().split(/\s+/)) {
+    if (!tok) continue;
+    if (tok.startsWith('-')) continue;
+    return tok;
+  }
+  return null;
+}
+
+/** `--pid N` aims it; `--port N --token X` bypasses discovery and is equally explicit. */
+export function tauriHasExplicitTarget(cmd: string): boolean {
+  const c = stripShellQuotes(cmd);
+  if (/--pid[=\s]/.test(c)) return true;
+  return /--port[=\s]/.test(c) && /--token[=\s]/.test(c);
+}
+
+/**
+ * The same discovery the tool itself does — live `tauri-dev-bridge-<pid>.token`
+ * files — plus each process's cmdline, so the refusal can NAME the candidates
+ * instead of merely asserting ambiguity. Fail-open (returns []) on any error: a
+ * hook must never wedge a command because it could not read /tmp.
+ */
+export function liveTauriBridges(dir: string = tmpdir()): TauriBridge[] {
+  const out: TauriBridge[] = [];
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const f of files.sort()) {
+    if (!f.startsWith('tauri-dev-bridge-') || !f.endsWith('.token')) continue;
+    try {
+      const data = JSON.parse(readFileSync(join(dir, f), 'utf8')) as { pid: number; port?: number };
+      process.kill(data.pid, 0); // throws unless alive — stale tokens are skipped (as the tool does)
+      let exe = '(unknown process)';
+      try {
+        exe = readFileSync(`/proc/${data.pid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim();
+      } catch { /* /proc unreadable — the pid is still live and still a candidate */ }
+      out.push({ pid: data.pid, port: data.port ?? null, exe: exe.slice(0, 100) });
+    } catch {
+      continue; // dead or malformed
+    }
+  }
+  return out;
+}
+
+/** The refusal text — always NAMES the live candidates so it is satisfiable in one edit. */
+export function tauriTargetDenyReason(
+  sub: string,
+  bridges: TauriBridge[],
+  mutating: boolean,
+): string {
+  const head = mutating
+    ? 'tauri-agent-tools target guard: this command DRIVES a webview but does not say WHICH one.'
+    : `tauri-agent-tools target guard: ${bridges.length} bridges are live, so \`${sub}\` cannot tell which app you mean.`;
+  const candidates =
+    bridges.map((b) => `  --pid ${b.pid}  port ${b.port ?? '?'}  ${b.exe}`).join('\n') ||
+    '  (none discoverable right now)';
+  return (
+    `${head}\n` +
+    'With no --pid, tauri-agent-tools attaches to the FIRST bridge token it finds in /tmp — ' +
+    "an arbitrary readdir order, with no warning. That is frequently the OWNER'S LIVE DESKTOP " +
+    'APP rather than the instance you spawned.\n\n' +
+    `Live bridges right now:\n${candidates}\n\n` +
+    `Re-run naming your target:\n  tauri-agent-tools ${sub} --pid <PID> …\n\n` +
+    'Not sure which is yours? `tauri-agent-tools probe` (never blocked) lists the targets, ' +
+    'and the PID of an app YOU spawned is the one you launched — if you did not spawn one, ' +
+    "you are about to act on someone else's window."
+  );
+}
+
+/** null = allow; a string = the refusal. */
+export function tauriTargetDenial(cmd: string, dir: string = tmpdir()): string | null {
+  const sub = tauriSubcommand(cmd);
+  if (!sub) return null;
+  const mutating = TAT_MUTATING.has(sub);
+  if (!mutating && !TAT_BRIDGE_READ.has(sub)) return null; // probe / list-windows / bridge-free
+  if (tauriHasExplicitTarget(cmd)) return null;
+  const bridges = liveTauriBridges(dir);
+  if (bridges.length === 0) return null; // nothing to hit — the tool prints its own error
+  if (!mutating && bridges.length === 1) return null; // read + unambiguous
+  return tauriTargetDenyReason(sub, bridges, mutating);
 }
 
 /**
@@ -2792,6 +2927,18 @@ export async function onToolCall(
         'model must match yours). To TRACK your own tasks, use `todo_write`. Do NOT call the ' +
         'task/subagent tools again.',
     };
+  }
+
+  // EI-10939 — tauri-agent-tools target guard. Deliberately NOT gated on
+  // isAgentSession(): EI-7872 established that the agent-session marker is silently
+  // unset in fleet-launched sessions — exactly the ones doing unattended UI
+  // verification, i.e. the ones most likely to drive the wrong webview. The resource
+  // being protected is the OWNER'S LIVE APP (not a tree, not a schedule), and the
+  // deny is satisfiable with one flag, so it applies to every session this hook sees.
+  if (event.toolName.toLowerCase().startsWith('bash')) {
+    const bashCmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
+    const tauriDenial = tauriTargetDenial(bashCmd);
+    if (tauriDenial) return { block: true, reason: tauriDenial };
   }
 
   // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010): an

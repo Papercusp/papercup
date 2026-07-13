@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { promises as fs } from 'node:fs';
+import { promises as fs, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -111,6 +111,9 @@ import {
   isOsSchedulerCommand,
   isResourceLimitInvocation,
   osSchedulerDenyReason,
+  tauriSubcommand,
+  tauriHasExplicitTarget,
+  tauriTargetDenial,
   stripShellQuotes,
   pollInboxDelta,
   summarisePlanEvents,
@@ -282,6 +285,125 @@ describe('the lockout refusal answers the INTENT, not the token (EI-10940)', () 
     for (const cmd of [...RESOURCE_LIMITS, ...SCHEDULES]) {
       expect(isOsSchedulerCommand(cmd)).toBe(true);
     }
+  });
+});
+
+describe('tauri-agent-tools target guard (EI-10939)', () => {
+  // See the Claude/Codex mirror in cc/__tests__/bash-resource-gate.test.ts — same
+  // contract, driven through the shell hook there and the TS predicate here.
+  //
+  // The load-bearing case is the FIRST test: with exactly ONE live bridge there is
+  // no ambiguity to detect — and on this box that one bridge WAS the owner's own
+  // papercusp-desktop. An ambiguity-only guard sails straight through it.
+  let dir = '';
+  const LIVE_A = process.pid; // this process — definitely alive
+  const LIVE_B = process.ppid;
+  const DEAD = 999_999;
+
+  const writeBridge = (pid: number, port: number) =>
+    writeFileSync(join(dir, `tauri-dev-bridge-${pid}.token`), JSON.stringify({ port, token: `t-${pid}`, pid }));
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'tat-omp-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a MUTATING command with ONE live bridge is still refused — "unambiguous" is exactly how the owner\'s window gets driven', () => {
+    writeBridge(LIVE_A, 46423);
+    const reason = tauriTargetDenial(`tauri-agent-tools eval 'document.title'`, dir);
+    expect(reason).toMatch(/DRIVES a webview but does not say WHICH/);
+    expect(reason).toMatch(new RegExp(`--pid ${LIVE_A}`)); // names the candidate
+  });
+
+  it('every mutating verb is covered', () => {
+    writeBridge(LIVE_A, 46423);
+    for (const cmd of [
+      `tauri-agent-tools click '#send'`,
+      `tauri-agent-tools type '#in' hi`,
+      'tauri-agent-tools navigate /settings',
+      'tauri-agent-tools invoke some_cmd',
+      `tauri-agent-tools select '#d' v`,
+      `tauri-agent-tools focus '#e'`,
+      'tauri-agent-tools scroll --to 400',
+      `tauri-agent-tools eval 'x'`,
+    ]) {
+      expect(tauriTargetDenial(cmd, dir), cmd).toMatch(/DRIVES a webview/);
+    }
+  });
+
+  it('an explicitly aimed command passes', () => {
+    writeBridge(LIVE_A, 46423);
+    for (const cmd of [
+      `tauri-agent-tools eval --pid 999 'x'`,
+      `tauri-agent-tools click --pid=999 '#b'`,
+      `tauri-agent-tools eval --port 46423 --token abc 'x'`,
+    ]) {
+      expect(tauriTargetDenial(cmd, dir), cmd).toBeNull();
+    }
+  });
+
+  it('a READ command is allowed when unambiguous, refused when 2+ bridges are live', () => {
+    writeBridge(LIVE_A, 46423);
+    expect(tauriTargetDenial('tauri-agent-tools dom body', dir)).toBeNull();
+    writeBridge(LIVE_B, 43929);
+    const reason = tauriTargetDenial('tauri-agent-tools dom body', dir);
+    expect(reason).toMatch(/2 bridges are live/);
+    expect(reason).toMatch(new RegExp(`--pid ${LIVE_A}`));
+    expect(reason).toMatch(new RegExp(`--pid ${LIVE_B}`));
+  });
+
+  it('a stale token from a dead app is not a candidate (and not ambiguity)', () => {
+    writeBridge(LIVE_A, 46423);
+    writeBridge(DEAD, 111);
+    expect(tauriTargetDenial('tauri-agent-tools dom body', dir)).toBeNull();
+  });
+
+  it('never gates discovery / bridge-free commands — `probe` is the ANSWER to the deny', () => {
+    writeBridge(LIVE_A, 46423);
+    writeBridge(LIVE_B, 43929); // maximally ambiguous
+    for (const cmd of [
+      'tauri-agent-tools probe',
+      'tauri-agent-tools list-windows',
+      'tauri-agent-tools info',
+      'tauri-agent-tools forensics --identifier ai.papercup',
+      'tauri-agent-tools app-paths --identifier ai.papercup',
+      'tauri-agent-tools --help',
+      'tauri-agent-tools',
+    ]) {
+      expect(tauriTargetDenial(cmd, dir), cmd).toBeNull();
+    }
+  });
+
+  it('allows when no bridge is live — nothing to hit; the tool prints its own error', () => {
+    expect(tauriTargetDenial(`tauri-agent-tools eval 'x'`, dir)).toBeNull();
+  });
+
+  it('guards a full-path invocation (the binary is a global install)', () => {
+    writeBridge(LIVE_A, 46423);
+    expect(
+      tauriTargetDenial(`/home/linuxbrew/.linuxbrew/bin/tauri-agent-tools click '#b'`, dir),
+    ).toMatch(/DRIVES a webview/);
+  });
+
+  it('a quoted prose mention is not an invocation (no false deny)', () => {
+    writeBridge(LIVE_A, 46423);
+    expect(
+      tauriTargetDenial('echo "you could run tauri-agent-tools eval document.title"', dir),
+    ).toBeNull();
+  });
+
+  it('parses the subcommand and the explicit-target flags', () => {
+    expect(tauriSubcommand(`tauri-agent-tools eval 'x'`)).toBe('eval');
+    expect(tauriSubcommand('tauri-agent-tools --json dom body')).toBe('dom');
+    expect(tauriSubcommand('tauri-agent-tools --help')).toBeNull();
+    expect(tauriSubcommand('ls -la')).toBeNull();
+    expect(tauriHasExplicitTarget('tauri-agent-tools eval --pid 12 x')).toBe(true);
+    expect(tauriHasExplicitTarget('tauri-agent-tools eval --port 1 --token t x')).toBe(true);
+    // a port with no token still falls into first-match discovery → not explicit
+    expect(tauriHasExplicitTarget('tauri-agent-tools eval --port 1 x')).toBe(false);
+    expect(tauriHasExplicitTarget(`tauri-agent-tools eval 'x'`)).toBe(false);
   });
 });
 
