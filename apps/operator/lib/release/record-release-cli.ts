@@ -87,8 +87,27 @@ export function releaseTag(version: string, channel: string): string {
   return channel === 'stable' ? `desktop-v${version}` : `desktop-v${version}-${channel}`;
 }
 
+/**
+ * Hash the file in CHUNKS, never with readFileSync.
+ *
+ * Node's readFileSync throws ERR_FS_FILE_TOO_LARGE above 2 GiB — and EVERY real
+ * artifact here is 3-4 GB, so the naive version worked on test fixtures and blew
+ * up on the first genuine release. Hash the stream instead: constant memory,
+ * no size ceiling.
+ */
 function sha256File(file: string): string {
-  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  const hash = createHash('sha256');
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(1 << 20); // 1 MiB
+    let read: number;
+    while ((read = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+      hash.update(buf.subarray(0, read));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest('hex');
 }
 
 /**

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -82,5 +83,26 @@ describe('scanArtifacts', () => {
 
   it('returns nothing rather than throwing when the bundle dir is absent', () => {
     expect(scanArtifacts(path.join(tmp, 'nope'), '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
+  });
+
+  it('hashes a file LARGER than one read chunk — the whole file, not just the first 1 MiB', () => {
+    // Real artifacts are 3-4 GB. The first version of this used readFileSync and
+    // died with ERR_FS_FILE_TOO_LARGE (Node's 2 GiB ceiling) on the first genuine
+    // release; the chunked replacement's classic failure is hashing only chunk one.
+    // 3 MiB of NON-uniform bytes: with uniform filler, a first-chunk-only bug
+    // would still produce a plausible-looking (but wrong) digest.
+    const big = path.join(tmp, 'deb', 'Papercusp GUI_9.9.9_amd64.deb');
+    const chunk = 1 << 20;
+    const bytes = Buffer.alloc(3 * chunk);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+    fs.writeFileSync(big, bytes);
+
+    const [artifact] = scanArtifacts(tmp, '9.9.9', 'desktop-v9.9.9-alpha');
+    expect(artifact.size).toBe(3 * chunk);
+    expect(artifact.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    // ...and specifically NOT the digest of just the first chunk.
+    expect(artifact.sha256).not.toBe(
+      createHash('sha256').update(bytes.subarray(0, chunk)).digest('hex'),
+    );
   });
 });

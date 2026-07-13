@@ -2,7 +2,7 @@
  * The release registry — one row per cut, and the window of work it shipped.
  * (WI-4446; table: migration 589 `harness_shared.releases`.)
  *
- * [owner:Avi 2026-07-12] "we should also have the agent auto generate a high
+ * [owner 2026-07-12] "we should also have the agent auto generate a high
  * level changelog. Can we also publish the full list of work items fixed between
  * releases and plans implemented?"
  *

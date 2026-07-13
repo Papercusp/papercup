@@ -3,7 +3,7 @@
  * release registry, served from the R2 SECRET PATH alongside the artifacts.
  * (WI-4446. Registry: release-registry.ts. Table: migration 589.)
  *
- * [owner:Avi 2026-07-12, on who it is for]
+ * [owner 2026-07-12, on who it is for]
  *   "only the people we share the link with, which will be our beta testers. we
  *    will also want to collect stats on visits to make sure it isnt leaked."
  *
