@@ -194,8 +194,20 @@ describe('buildMemoryContextBlock', () => {
       { slug: 'member-a', hive_slug: 'my-hive' },
       { slug: 'my-hive', harness_kind: 'hive' },
     ];
-    const b = mockBackend([{ id: 'h1', text: 'Tests ship with the feature', kind: 'feedback' }]);
-    useBackend(b);
+    // The harness pool and hive pool are DISTINCT stores with distinct content — return
+    // per-scope facts (the flat mockBackend returns identical rows for every scope, which the
+    // P-008 near-duplicate collapse would correctly fold, hiding the hive label under test).
+    const b = {
+      name: 'fake',
+      available: vi.fn(async () => ({ ok: true })),
+      search: vi.fn(async (_q: string, opts: { scope: string | readonly string[] }) => {
+        const scope = typeof opts.scope === 'string' ? opts.scope : opts.scope[0];
+        return scope.startsWith('hive:')
+          ? [{ id: 'h1', text: 'Hive convention: tests ship with the feature', kind: 'feedback', scope }]
+          : [{ id: 'a1', text: 'Harness note: run npm test before pushing', kind: 'feedback', scope }];
+      }),
+    };
+    useBackend(b as unknown as ReturnType<typeof mockBackend>);
     const block = await buildMemoryContextBlock({
       userId: null, workspaceId: 'ws', harnessSlugs: ['member-a'], queryContext: 'testing?',
     });
@@ -204,7 +216,24 @@ describe('buildMemoryContextBlock', () => {
       ['testing?', { scope: ['harness:member-a'], limit: 3, minScore: 0.45, minLexScore: 0.4 }],
       ['testing?', { scope: ['hive:my-hive'], limit: 3, minScore: 0.45, minLexScore: 0.4 }],
     ]);
-    expect(block).toContain('- [feedback @ hive:my-hive] (id=h1) Tests ship with the feature');
+    expect(block).toContain('- [feedback @ hive:my-hive] (id=h1) Hive convention: tests ship with the feature');
+    expect(block).toContain('- [feedback @ member-a] (id=a1) Harness note: run npm test before pushing');
+  });
+
+  it('P-008: collapses near-duplicate memories (same fact under different ids) before the budget', async () => {
+    const dupText = 'owner directive: put yourself on auto mode and continue the full plan';
+    useBackend(mockBackend([
+      { id: 'd1', text: dupText, kind: 'preference' },
+      { id: 'd2', text: dupText, kind: 'preference' }, // same fact, DIFFERENT id — the WI-4538 case
+      { id: 'd3', text: 'a distinct fact about migration 557 renaming hive tables to pots', kind: 'reference' },
+    ]));
+    const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'directives?' });
+    expect(block).not.toBeNull();
+    // The highest-ranked copy survives; the duplicate id is dropped; the distinct fact is kept
+    // (not crowded out — the collapse runs before the budget).
+    expect(block).toContain('(id=d1)');
+    expect(block).not.toContain('(id=d2)');
+    expect(block).toContain('(id=d3)');
   });
 
   it('budget: hive-pack rows yield first under the cap; truncation is announced; only injected ids get watermarked (P-011)', async () => {

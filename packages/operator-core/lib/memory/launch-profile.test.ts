@@ -129,6 +129,25 @@ describe('buildLaunchMemoryBlock — multi-query merge', () => {
     expect(buildMemoryContextBlock).toHaveBeenCalledTimes(2);
   });
 
+  it('P-008: collapses the SAME fact stored under DIFFERENT ids across queries', async () => {
+    const ID_C = '33333333-3333-3333-3333-333333333333';
+    // The two dup lines differ ONLY in the (id=…) suffix, so the id-dedup and exact-line dedup
+    // both miss them; the near-duplicate collapse folds on the memory TEXT, keeping the first.
+    vi.mocked(buildMemoryContextBlock)
+      .mockResolvedValueOnce(`## H\n\n- [ref] (id=${ID_A}) save the age benchmark for the release after next`)
+      .mockResolvedValueOnce(
+        `## H\n\n- [ref] (id=${ID_B}) save the age benchmark for the release after next\n- [ref] (id=${ID_C}) a genuinely different distinct fact`,
+      );
+    const out = await buildLaunchMemoryBlock({
+      profile: { rung: 'plan', queries: ['q1', 'q2'], harnessSlugs: ['h'], deterministicSections: [] },
+      workspaceId: 'w1',
+      heading: 'H',
+    });
+    expect(out).toContain(`(id=${ID_A}) save the age benchmark`);
+    expect(out).not.toContain(`(id=${ID_B})`); // near-duplicate of ID_A → collapsed
+    expect(out).toContain('a genuinely different distinct fact');
+  });
+
   it('tolerates a per-query failure and still returns the rest', async () => {
     vi.mocked(buildMemoryContextBlock)
       .mockRejectedValueOnce(new Error('embed down'))

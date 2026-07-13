@@ -1,111 +1,130 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createVerifier } from './index.js';
-import { findScreen, SCREENS } from './screens.js';
+import { findScreen, findScreenByRoute, SCREENS } from './screens.js';
 
-describe('Tauri Verification Surface', () => {
-  describe('createVerifier', () => {
-    it('creates a verifier with default config', () => {
-      const verifier = createVerifier();
-      const config = verifier.config();
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
 
-      expect(config.bridgePort).toBe(42391);
-      expect(config.timeout).toBe(10000);
-      expect(config.apiBaseUrl).toBe('http://127.0.0.1:3270');
-    });
+afterEach(() => vi.unstubAllGlobals());
 
-    it('creates a verifier with custom config', () => {
-      const verifier = createVerifier({
-        bridgePort: 5555,
-        timeout: 20000,
-        apiBaseUrl: 'http://localhost:3000',
-      });
-      const config = verifier.config();
-
-      expect(config.bridgePort).toBe(5555);
-      expect(config.timeout).toBe(20000);
-      expect(config.apiBaseUrl).toBe('http://localhost:3000');
-    });
-
-    it('merges partial config with defaults', () => {
-      const verifier = createVerifier({ bridgePort: 9999 });
-      const config = verifier.config();
-
-      expect(config.bridgePort).toBe(9999);
-      expect(config.timeout).toBe(10000);
-      expect(config.apiBaseUrl).toBe('http://127.0.0.1:3270');
+describe('Tauri verification surface', () => {
+  it('never silently chooses among live desktops', async () => {
+    const verifier = createVerifier();
+    expect(verifier.config()).toEqual({ timeout: 10_000 });
+    await expect(verifier.route('/adv')).resolves.toMatchObject({
+      ok: false,
+      code: 'target_required',
     });
   });
 
-  describe('Semantic Screens', () => {
-    it('defines standard screens', () => {
-      expect(SCREENS.ONBOARDING).toBeDefined();
-      expect(SCREENS.LOGIN).toBeDefined();
-      expect(SCREENS.ADVANCED).toBeDefined();
-      expect(SCREENS.HARNESS_HOME).toBeDefined();
-      expect(SCREENS.SETTINGS).toBeDefined();
-      expect(SCREENS.ADMIN).toBeDefined();
-    });
+  it('uses an explicit authenticated bridge target and the webview origin for health', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(json({
+        result: JSON.stringify({
+          href: 'http://127.0.0.1:3170/adv?tab=learning',
+          title: 'Papercusp',
+          readyState: 'complete',
+        }),
+      }))
+      .mockResolvedValueOnce(json({
+        result: JSON.stringify({
+          readyState: 'complete',
+          rootMounted: true,
+          href: 'http://127.0.0.1:3170/adv?tab=learning',
+          pathname: '/adv',
+          search: '?tab=learning',
+          hash: '',
+          origin: 'http://127.0.0.1:3170',
+        }),
+      }))
+      .mockResolvedValueOnce(json({ ok: true }));
+    vi.stubGlobal('fetch', fetch);
 
-    it('finds screen by ID', () => {
-      const screen = findScreen('onboarding');
-      expect(screen).toBeDefined();
-      expect(screen?.id).toBe('onboarding');
-      expect(screen?.name).toBe('Setup Wizard');
+    const result = await createVerifier({ bridgePort: 4444, bridgeToken: 'secret' }).appReady();
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        bridgeConnected: true,
+        webviewLoaded: true,
+        apiHealthy: true,
+        routerReady: true,
+        route: { pathname: '/adv', search: '?tab=learning' },
+      },
     });
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      new URL('http://127.0.0.1:3170/api/health'),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    const bridgeBody = JSON.parse(String((fetch.mock.calls[0][1] as RequestInit).body));
+    expect(bridgeBody).toMatchObject({ token: 'secret' });
+    expect(bridgeBody.js).toContain('document.readyState');
+  });
 
-    it('returns undefined for unknown screen ID', () => {
-      const screen = findScreen('unknown-screen');
-      expect(screen).toBeUndefined();
-    });
+  it('fails app-ready when the target API is unhealthy instead of reporting a false green', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(json({
+        result: JSON.stringify({ href: 'http://127.0.0.1:3170/adv', title: 'Papercusp', readyState: 'complete' }),
+      }))
+      .mockResolvedValueOnce(json({
+        result: JSON.stringify({
+          readyState: 'complete', rootMounted: true, href: 'http://127.0.0.1:3170/adv',
+          pathname: '/adv', search: '', hash: '', origin: 'http://127.0.0.1:3170',
+        }),
+      }))
+      .mockResolvedValueOnce(json({ error: 'down' }, 503));
+    vi.stubGlobal('fetch', fetch);
 
-    it('screen has proper route pattern', () => {
-      const screen = SCREENS.ADVANCED;
-      expect(screen.route).toBeInstanceOf(RegExp);
-      expect((screen.route as RegExp).test('/adv')).toBe(true);
-      expect((screen.route as RegExp).test('/adv?tab=harnesses')).toBe(true);
-      expect((screen.route as RegExp).test('/settings')).toBe(false);
-    });
-
-    it('screen has required elements defined', () => {
-      const screen = SCREENS.ADVANCED;
-      expect(screen.requiredElements).toBeDefined();
-      expect(Array.isArray(screen.requiredElements)).toBe(true);
-      expect(screen.requiredElements?.length).toBeGreaterThan(0);
+    await expect(createVerifier({ bridgePort: 4444, bridgeToken: 'secret' }).appReady()).resolves.toMatchObject({
+      ok: false,
+      code: 'api_unhealthy',
     });
   });
 
-  describe('Verifier interface', () => {
-    it('has all required methods', () => {
-      const verifier = createVerifier();
+  it('asserts a semantic screen using its route, query, and live selectors', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(json({
+        result: JSON.stringify({
+          href: 'http://127.0.0.1:3170/adv?tab=learning',
+          pathname: '/adv', search: '?tab=learning', hash: '',
+        }),
+      }))
+      .mockResolvedValueOnce(json({
+        result: JSON.stringify([
+          { selector: '.pc-advshell', present: true },
+          { selector: '.pc-advshell__tab--learning[data-state="active"]', present: true },
+        ]),
+      }));
+    vi.stubGlobal('fetch', fetch);
 
-      expect(typeof verifier.appReady).toBe('function');
-      expect(typeof verifier.route).toBe('function');
-      expect(typeof verifier.scope).toBe('function');
-      expect(typeof verifier.navigateToScreen).toBe('function');
-      expect(typeof verifier.currentScreen).toBe('function');
-      expect(typeof verifier.config).toBe('function');
+    await expect(createVerifier({ bridgePort: 4444, bridgeToken: 'secret' }).screen('learning')).resolves.toMatchObject({
+      ok: true,
+      value: { id: 'learning', href: '/adv?tab=learning' },
     });
   });
 
-  describe('VerifyResult type', () => {
-    it('represents success result', () => {
-      const result: { ok: true; value: string } = {
-        ok: true,
-        value: 'success',
-      };
-
-      expect(result.ok).toBe(true);
-      expect(result.value).toBe('success');
+  describe('semantic screen registry', () => {
+    it('uses real shell selectors and concrete navigation destinations', () => {
+      expect(SCREENS.ONBOARDING.requiredElements).toContain('.pc-onboarding-shell');
+      expect(SCREENS.ADVANCED.requiredElements).toContain('.pc-advshell');
+      expect(SCREENS.SETTINGS.requiredElements).toContain('.pc-settings-shell');
+      expect(SCREENS.ADMIN.requiredElements).toContain('.pc-adminshell');
+      expect(Object.values(SCREENS).every((screen) => screen.href.startsWith('/'))).toBe(true);
     });
 
-    it('represents error result', () => {
-      const result: { ok: false; error: string } = {
-        ok: false,
-        error: 'Something went wrong',
-      };
+    it('chooses a query-specific screen before the generic /adv surface', () => {
+      expect(findScreenByRoute('/adv?tab=learning')?.id).toBe('learning');
+      expect(findScreenByRoute('/adv?tab=harnesses')?.id).toBe('working');
+      expect(findScreenByRoute('/adv')?.id).toBe('advanced');
+    });
 
-      expect(result.ok).toBe(false);
-      expect(result.error).toBe('Something went wrong');
+    it('finds screens by stable ID', () => {
+      expect(findScreen('onboarding')?.name).toBe('Onboarding Console');
+      expect(findScreen('unknown-screen')).toBeUndefined();
     });
   });
 });

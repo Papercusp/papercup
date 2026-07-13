@@ -27,8 +27,9 @@
  */
 
 import type { VerifyConfig, VerifyResult, AppReady, RouteInfo, ScopeInfo, Screen } from './types.js';
-import { assertAppReady, assertRoute, assertScope } from './assertions.js';
-import { findScreen, findScreenByRoute } from './screens.js';
+import { assertAppReady, assertRoute, assertScope, readRoute } from './assertions.js';
+import { bridgeEval } from './bridge-client.js';
+import { findScreen, findScreenByRoute, screenMatchesRoute } from './screens.js';
 
 /**
  * Stable verification interface for Tauri-based UI testing.
@@ -49,6 +50,9 @@ export interface Verifier {
    */
   scope(expected: Partial<ScopeInfo>): Promise<VerifyResult<ScopeInfo>>;
 
+  /** Assert semantic route + required live selectors. */
+  screen(screenId: string): Promise<VerifyResult<Screen>>;
+
   /**
    * Navigate to a semantic screen by ID.
    */
@@ -66,28 +70,67 @@ export interface Verifier {
 }
 
 /**
- * Create a verifier instance with optional configuration.
- * If no bridge port is provided, attempts to auto-detect from running Tauri process.
+ * Create a verifier. Driving calls require an explicit tauriPID (recommended)
+ * or bridgePort + bridgeToken, so multiple live desktops can never be confused.
  */
 export function createVerifier(config?: VerifyConfig): Verifier {
   const finalConfig: VerifyConfig = {
-    bridgePort: config?.bridgePort ?? 42391, // tauri-agent-tools default
     timeout: config?.timeout ?? 10000,
-    apiBaseUrl: config?.apiBaseUrl ?? 'http://127.0.0.1:3270',
     ...config,
+  };
+
+  const assertSemanticScreen = async (screenId: string): Promise<VerifyResult<Screen>> => {
+    const screen = findScreen(screenId);
+    if (!screen) return { ok: false, code: 'screen_not_found', error: `Screen not found: ${screenId}` };
+    const route = await readRoute(finalConfig);
+    if (!route.ok) return route;
+    if (!screenMatchesRoute(screen, route.value)) {
+      return {
+        ok: false,
+        code: 'screen_route_mismatch',
+        error: `Screen ${screenId} does not match ${route.value.pathname}${route.value.search}`,
+        evidence: route.value,
+      };
+    }
+    const selectors = JSON.stringify(screen.requiredElements ?? []);
+    const elements = await bridgeEval<string>(
+      finalConfig,
+      `JSON.stringify(${selectors}.map(selector => ({ selector, present: !!document.querySelector(selector) })))`,
+    );
+    if (!elements.ok) return elements;
+    let checks: Array<{ selector: string; present: boolean }>;
+    try {
+      checks = JSON.parse(elements.value) as Array<{ selector: string; present: boolean }>;
+    } catch {
+      return { ok: false, code: 'invalid_screen_result', error: 'Screen selector check returned invalid JSON.' };
+    }
+    const missing = checks.filter((check) => !check.present).map((check) => check.selector);
+    if (missing.length) {
+      return {
+        ok: false,
+        code: 'screen_elements_missing',
+        error: `Screen ${screenId} is missing required elements: ${missing.join(', ')}`,
+        evidence: { route: route.value, missing },
+      };
+    }
+    return { ok: true, value: screen };
   };
 
   return {
     async appReady(): Promise<VerifyResult<AppReady>> {
-      return assertAppReady(finalConfig.bridgePort!, finalConfig.apiBaseUrl);
+      return assertAppReady(finalConfig);
     },
 
     async route(expected: string | RegExp): Promise<VerifyResult<RouteInfo>> {
-      return assertRoute(finalConfig.bridgePort!, expected);
+      return assertRoute(finalConfig, expected);
     },
 
     async scope(expected: Partial<ScopeInfo>): Promise<VerifyResult<ScopeInfo>> {
-      return assertScope(finalConfig.bridgePort!, expected);
+      return assertScope(finalConfig, expected);
+    },
+
+    async screen(screenId: string): Promise<VerifyResult<Screen>> {
+      return assertSemanticScreen(screenId);
     },
 
     async navigateToScreen(screenId: string): Promise<VerifyResult<Screen>> {
@@ -99,18 +142,27 @@ export function createVerifier(config?: VerifyConfig): Verifier {
         };
       }
 
-      const routeResult = await assertRoute(finalConfig.bridgePort!, screen.route);
-      if (!routeResult.ok) {
-        // Try to navigate if not on correct route
-        // This would require injecting navigation into the webview
-        return routeResult as VerifyResult<Screen>;
+      const alreadyThere = await assertSemanticScreen(screenId);
+      if (alreadyThere.ok) return alreadyThere;
+      const navigate = await bridgeEval(finalConfig, `location.assign(${JSON.stringify(screen.href)}); true`);
+      if (!navigate.ok) return navigate;
+      const deadline = Date.now() + (finalConfig.timeout ?? 10_000);
+      let last: VerifyResult<Screen> = alreadyThere;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        last = await assertSemanticScreen(screenId);
+        if (last.ok) return last;
       }
-
-      return { ok: true, value: screen };
+      return {
+        ok: false,
+        code: 'screen_navigation_timeout',
+        error: `Timed out navigating to ${screenId}: ${last.ok ? 'unknown error' : last.error}`,
+        evidence: { href: screen.href },
+      };
     },
 
     async currentScreen(): Promise<VerifyResult<Screen>> {
-      const routeResult = await assertRoute(finalConfig.bridgePort!, /.*/);
+      const routeResult = await readRoute(finalConfig);
       if (!routeResult.ok) {
         return {
           ok: false,
@@ -118,7 +170,7 @@ export function createVerifier(config?: VerifyConfig): Verifier {
         };
       }
 
-      const screen = findScreenByRoute(routeResult.value.pathname);
+      const screen = findScreenByRoute(routeResult.value);
       if (!screen) {
         return {
           ok: false,
@@ -139,3 +191,4 @@ export function createVerifier(config?: VerifyConfig): Verifier {
 export * from './types.js';
 export * from './assertions.js';
 export * from './screens.js';
+export * from './bridge-client.js';
