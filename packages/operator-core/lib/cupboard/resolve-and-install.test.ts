@@ -201,3 +201,117 @@ describe('resolveAndInstallDeps', () => {
     expect(res.advisory.some((m) => m.includes('round cap'))).toBe(true);
   });
 });
+
+/* ───────────────────────────────────────────────────────────────────────
+ * The EVENT dependency axis (D-003, cupboard-public-release P-007).
+ *
+ * The contract being pinned: a REQUIRED event dep is as hard as a tool dep
+ * (a unit whose reaction fires on a family nobody emits is inert, and we say
+ * so at install rather than shipping something that silently never fires),
+ * while an OPTIONAL one is listen-if-present and never blocks. And crucially:
+ * an event dep that a Cupboard unit PROVIDES pulls that unit in through the
+ * SAME install loop as a tool dep — that is the whole point of making events
+ * an axis rather than a bolted-on side concept.
+ * ─────────────────────────────────────────────────────────────────────── */
+describe('resolveAndInstallDeps — event deps (D-003)', () => {
+  const builtinEvents = new Map([['deploy', 'deploy:<env>']]);
+
+  it('a REQUIRED event family with no provider anywhere is a HARD miss (ok:false), like a missing tool', async () => {
+    const world = makeWorld({ builtinEvents });
+    const res = await resolveAndInstallDeps({ events: [{ family: 'nobody:emits' }] }, world);
+    expect(res.ok).toBe(false);
+    expect(res.stillMissing.events).toEqual([{ family: 'nobody:emits' }]);
+    expect(world.installs).toEqual([]);
+  });
+
+  it('an OPTIONAL event family with no provider does NOT block — install proceeds, advisory records it', async () => {
+    const world = makeWorld({ builtinEvents });
+    const res = await resolveAndInstallDeps({ events: [{ family: 'nobody:emits', optional: true }] }, world);
+    expect(res.ok).toBe(true);
+    expect(res.stillMissing.events).toEqual([]);
+    expect(res.advisory.join(' ')).toContain('nobody:emits');
+    expect(res.advisory.join(' ')).toContain('optional');
+  });
+
+  it('a BUILTIN family is satisfied outright — no install, no miss', async () => {
+    const world = makeWorld({ builtinEvents });
+    const res = await resolveAndInstallDeps({ events: [{ family: 'deploy' }] }, world);
+    expect(res.ok).toBe(true);
+    expect(world.installs).toEqual([]);
+    expect(res.stillMissing.events).toEqual([]);
+  });
+
+  it('an ALREADY-INSTALLED unit’s family is satisfied outright', async () => {
+    const world = makeWorld({
+      installed: [{ name: 'watcher', kind: 'plugin', tools: [], events: [{ family: 'w:settled', keyTemplate: 'w:settled:<id>' }] }],
+      builtinEvents,
+    });
+    const res = await resolveAndInstallDeps({ events: [{ family: 'w:settled' }] }, world);
+    expect(res.ok).toBe(true);
+    expect(world.installs).toEqual([]);
+  });
+
+  // The axis actually closing the install loop — an event dep pulls its provider in.
+  it('an event family a CUPBOARD unit provides INSTALLS that unit (same loop as a tool dep)', async () => {
+    const world = makeWorld({
+      cupboard: [{ name: 'canary', kind: 'pack', tools: [], events: [{ family: 'canary:flipped', keyTemplate: 'canary:flipped:<f>' }] }],
+      builtinEvents,
+    });
+    const res = await resolveAndInstallDeps({ events: [{ family: 'canary:flipped' }] }, world);
+    expect(res.ok).toBe(true);
+    expect(world.installs).toEqual(['canary']);
+    expect(res.installed.map((u) => u.name)).toEqual(['canary']);
+    expect(res.stillMissing.events).toEqual([]);
+  });
+
+  it('installs a unit whose event provider is pulled in TRANSITIVELY (the installed unit’s own event dep)', async () => {
+    const world = makeWorld({
+      cupboard: [
+        {
+          name: 'A',
+          kind: 'pack',
+          tools: ['a.run'],
+          // A itself needs an event that only B provides.
+          declaredDeps: { events: [{ family: 'b:ready' }] },
+        },
+        { name: 'B', kind: 'plugin', tools: [], events: [{ family: 'b:ready', keyTemplate: 'b:ready' }] },
+      ],
+      builtinEvents,
+    });
+    const res = await resolveAndInstallDeps({ tools: ['a.run'] }, world);
+    expect(res.ok).toBe(true);
+    expect(world.installs).toEqual(['A', 'B']); // A first, then its transitive EVENT dep
+    expect(res.stillMissing.events).toEqual([]);
+  });
+
+  it('a failed install of the event provider leaves the REQUIRED family missing (ok:false)', async () => {
+    const world = makeWorld({
+      cupboard: [{ name: 'canary', kind: 'pack', tools: [], events: [{ family: 'canary:flipped', keyTemplate: 'x' }] }],
+      builtinEvents,
+      failInstalls: ['canary'],
+    });
+    const res = await resolveAndInstallDeps({ events: [{ family: 'canary:flipped' }] }, world);
+    expect(res.ok).toBe(false);
+    expect(res.stillMissing.events).toEqual([{ family: 'canary:flipped' }]);
+  });
+
+  // REQUIRED beats OPTIONAL on merge: a soft transitive re-declaration must never
+  // downgrade a hard dep into a silently-skipped one.
+  it('the SAME family declared both required and optional stays REQUIRED (strictest wins)', async () => {
+    const world = makeWorld({ builtinEvents });
+    const res = await resolveAndInstallDeps(
+      { events: [{ family: 'x:done' }, { family: 'x:done', optional: true }] },
+      world,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.stillMissing.events).toEqual([{ family: 'x:done' }]);
+  });
+
+  it('declaring NO events is byte-identical to before (the axis is inert when unused)', async () => {
+    const world = makeWorld({ builtins: ['core.tool'] });
+    const res = await resolveAndInstallDeps({ tools: ['core.tool'] }, world);
+    expect(res.ok).toBe(true);
+    expect(res.stillMissing).toEqual({ tools: [], packs: [], plugins: [], events: [] });
+    expect(res.advisory).toEqual([]);
+  });
+});

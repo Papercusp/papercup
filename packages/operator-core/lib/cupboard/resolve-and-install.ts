@@ -285,11 +285,22 @@ export async function resolveAndInstallDeps(
   const stillMissing = emptyDepSet();
   stillMissing.tools = finalC.unknownTools; // no provider — always hard
 
-  // Event deps (D-003). A REQUIRED family with no provider is a hard miss —
-  // the unit's reactions would never fire, so the install is broken and we say
-  // so now rather than shipping something silently inert. An OPTIONAL one is
-  // the listen-if-present contract: report it, don't block on it.
-  stillMissing.events = finalC.unknownRequiredEvents.map((family) => ({ family }));
+  // Event deps (D-003). A REQUIRED family that is not AVAILABLE after the loop
+  // is a hard miss — the unit's reactions would never fire, so the install is
+  // broken and we say so now rather than shipping something silently inert.
+  //
+  // "Not available" is deliberately broader than "unknown": a family whose only
+  // provider was a Cupboard unit we TRIED and FAILED to install is still not
+  // emitted by anything, so it belongs here too. (The tool axis reports that
+  // case only as a failed UNIT, in stillMissing.packs/plugins. For events the
+  // family is what the author declared and what an awaiter blocks on, so the
+  // family-level answer is the one that has to be truthful — otherwise
+  // stillMissing.events reads empty while a required dep is plainly unmet.)
+  //
+  // An OPTIONAL family is the listen-if-present contract: report it, never block.
+  stillMissing.events = working.events
+    .filter((d) => !d.optional && resolveEventProvider(d.family, cat.view).status !== 'available')
+    .map((d) => ({ family: d.family }));
   if (finalC.unknownOptionalEvents.length > 0) {
     advisory.push(
       `optional event dep(s) unresolved (nothing provides them; the unit installs and simply won't react): ${finalC.unknownOptionalEvents.join(', ')}`,

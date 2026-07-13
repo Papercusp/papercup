@@ -696,7 +696,15 @@ export async function composeOrient(
     // works alongside the body-vocabulary net. Auto callers keep every fact.
     const { kept, withheld } = withholdQueenLoopControl(facts, driveMode, (f) => ({ key: f.key, body: f.body }));
     if (kept.length > 0) {
-      result.facts = kept.map((f) => ({
+      // EI-10947: a fact anchored to a work-item that has since CLOSED is still folded
+      // here verbatim, as binding context. If it was a carry-note ("NEXT: implement
+      // EI-10539") that is now an instruction to REDO finished work — the exact failure
+      // that cost su-71d9f8a2 a wasted re-implementation. Mark it (never auto-retract:
+      // a durable conclusion the closed item PROVED stays true — see stale-source.ts).
+      // Fail-soft: markStaleSourceFacts returns the facts unmarked on any lookup error.
+      const { markStaleSourceFacts } = await import('../../facts/stale-source');
+      const marked = await markStaleSourceFacts(kept);
+      result.facts = marked.map((f) => ({
         scope: f.scope,
         ref: f.scopeRef,
         body: f.body,
@@ -705,6 +713,7 @@ export async function composeOrient(
         // renders LOUDLY (`✗unverified`); free-text anchors pass through as before.
         src: renderFactSrc(f) || null,
         ...(f.audienceScope ? { aud: f.audienceScope } : {}),
+        ...(f.sourceStale ? { stale: f.sourceStale } : {}),
       }));
     }
     if (withheld.length > 0) {

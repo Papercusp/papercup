@@ -11,7 +11,13 @@ import type { DocPage, DocSource } from './types.js';
  * Minimal in-memory DocSource for ranking tests. Each spec is
  * [slug, title, description, body]; url defaults to `/${slug}`.
  */
-type PageSpec = { slug: string; title?: string; description?: string; body?: string };
+type PageSpec = {
+  slug: string;
+  title?: string;
+  description?: string;
+  body?: string;
+  searchable?: boolean;
+};
 
 function makeSource(specs: PageSpec[]): DocSource {
   const bodies = new Map<string, string>();
@@ -23,6 +29,7 @@ function makeSource(specs: PageSpec[]): DocSource {
       url: `/${s.slug}`,
       title: s.title ?? '',
       ...(s.description ? { description: s.description } : {}),
+      ...(s.searchable === false ? { searchable: false as const } : {}),
       toc: [],
     };
   });
@@ -108,21 +115,70 @@ describe('searchDocs', () => {
     expect(res.hits[0].score).toBe(res.hits[1].score); // genuinely tied on score
   });
 
-  it('weights title ×4 over body, and falls back to slug order when weighted scores tie (Gap 3)', async () => {
-    // title-hit scores 4 (1×4); a body with 'foo foo foo' scores 3 (3×1) → title first.
-    // A body with 'foo foo foo foo' scores 4 → ties the single title hit, so the
-    // tie-break is slug ascending. Slugs chosen so insertion order ≠ slug order.
+  it('weights a title hit above body repetition — body TF saturates and cannot be out-stuffed (Gap 3, EI-10937)', async () => {
+    // A title hit scores 4 (1 × 4). The body term is now BM25-saturated, so its
+    // per-token contribution is capped near (k1+1)=2.2 no matter how many times
+    // the token is repeated. Body stuffing can therefore no longer overtake a
+    // genuine title match — which is the ranking inversion EI-10937 was about.
     const source = makeSource([
-      { slug: 'body3', title: 'nope', body: 'foo foo foo' }, // score 3
-      { slug: 'm-title', title: 'foo', body: 'nope' }, // score 4 (title ×4)
-      { slug: 'a-body4', title: 'nope', body: 'foo foo foo foo' }, // score 4 (body ×1 ×4)
+      { slug: 'body3', title: 'nope', body: 'foo foo foo' },
+      { slug: 'm-title', title: 'foo', body: 'nope' },
+      { slug: 'a-body4', title: 'nope', body: 'foo foo foo foo' },
     ]);
     const res = await searchDocs(source, { query: 'foo' });
 
-    // Scores: a-body4=4, m-title=4, body3=3. Top two tie at 4 → slug ascending
-    // ('a-body4' before 'm-title'); body3 (score 3) last.
-    expect(res.hits.map((h) => h.slug)).toEqual(['a-body4', 'm-title', 'body3']);
-    expect(res.hits.map((h) => h.score)).toEqual([4, 4, 3]);
+    // The title hit wins outright now; the two body-only pages trail it.
+    expect(res.hits[0]?.slug).toBe('m-title');
+    expect(res.hits[0]?.score).toBe(4); // title ×4, body contributes 0
+    // Body-only pages score strictly below the title hit, and are BM25-capped.
+    for (const h of res.hits.slice(1)) {
+      expect(h.score).toBeLessThan(4);
+      expect(h.score).toBeLessThanOrEqual(2.2 + 1e-9); // (k1 + 1) ceiling per token
+    }
+  });
+
+  it('EXCLUDES pages marked `searchable: false` from results entirely (EI-10937 guard 1)', async () => {
+    // Generated navigation aggregators (reference/agent-insights-index, 304KB of
+    // every insight's title+description) opt out of the search corpus. They stay
+    // reachable via docs:get / the outline — they are simply never an ANSWER.
+    const source = makeSource([
+      { slug: 'reference/agent-insights-index', title: 'Agent insights index', body: 'flake soak nuqs alias vitest', searchable: false },
+      { slug: 'agent-insights/the-real-doc', title: 'the real doc', body: 'flake soak' },
+    ]);
+    const res = await searchDocs(source, { query: 'flake soak' });
+
+    expect(res.hits.map((h) => h.slug)).toEqual(['agent-insights/the-real-doc']);
+    expect(res.hits.some((h) => h.slug.includes('-index'))).toBe(false);
+  });
+
+  it('a focused doc OUTRANKS a giant aggregate dump that merely mentions the terms (EI-10937 guard 2)', async () => {
+    // THE RECURRENCE GUARD, and the exact bug as measured in production:
+    // `reference/agent-insights-index` (304KB) vs the mean 10.1KB doc. Under the
+    // old raw-count body scoring, the aggregate accumulated more raw occurrences
+    // than any focused page could and took rank #1 for essentially EVERY query —
+    // so the correct doc landed at #5 or vanished, and agents concluded the topic
+    // was undocumented and re-derived it.
+    //
+    // Note this aggregate deliberately does NOT set `searchable:false`: guard 1
+    // would trivially satisfy this test. This asserts the SCORER itself is sound,
+    // so the next unflagged 100KB page cannot become the new black hole.
+    const filler = 'lorem ipsum coordination plan release gate agent fleet memory '.repeat(400);
+    const aggregate =
+      'nuqs throttled url flush race '.repeat(20) + filler; // mentions the terms a LOT, but is mostly noise
+    const source = makeSource([
+      { slug: 'reference/big-aggregate', title: 'Everything index', body: aggregate },
+      {
+        slug: 'agent-insights/load-sensitive-test-flakes',
+        title: 'load-sensitive test flakes and the soak lane',
+        body: 'The reset path races: nuqs applies a set optimistically but commits the url write on a throttle, so a remount inside that window re-reads a url that never heard about the flush.',
+      },
+    ]);
+    const res = await searchDocs(source, { query: 'nuqs throttled url flush race' }, {});
+
+    expect(res.hits[0]?.slug).toBe('agent-insights/load-sensitive-test-flakes');
+    expect(res.hits[0]!.score).toBeGreaterThan(
+      res.hits.find((h) => h.slug === 'reference/big-aggregate')!.score,
+    );
   });
 
   it('an exact-slug query hard-hits that doc first even when generic tokens favor other pages (EI-10097)', async () => {
