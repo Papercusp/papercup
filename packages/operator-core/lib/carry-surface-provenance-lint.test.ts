@@ -62,6 +62,43 @@ describe('lintCarrySurfaceProvenance', () => {
     const r = lintCarrySurfaceProvenance(long);
     expect(r.matches[0].line.length).toBe(200);
   });
+
+  // EI-10994: complying with the bare-gate nudge (writing an explicit, source-tagged
+  // PROVENANCE block that restates the imperative it attributes) must CLEAR the flag —
+  // before the fix it re-fired on the original line AND on the block's own restatement line.
+  it('EI-10994: an explicit source-tagged PROVENANCE block clears the bare-gate-imperative it attributes', () => {
+    const text = [
+      'do not widen the isCapacityError match until the SDK ships the typed error',
+      '',
+      "PROVENANCE: the 'do not widen isCapacityError until the SDK ships' constraint above",
+      '  is [self-imposed] by su-eb9b7ae3 on 2026-07-13. It is NOT an owner directive.',
+    ].join('\n');
+    const r = lintCarrySurfaceProvenance(text);
+    expect(r.flagged).toBe(false);
+    expect(r.matches).toEqual([]);
+  });
+
+  it('EI-10994: a PROVENANCE block with NO source tag does not suppress — still nudges to tag it', () => {
+    const text = [
+      'do not resolve WI-3532 until the UI pass is done',
+      'PROVENANCE: this constraint above — I forgot to actually tag it.',
+    ].join('\n');
+    const r = lintCarrySurfaceProvenance(text);
+    expect(r.flagged).toBe(true);
+    expect(r.matches.some((m) => m.kind === 'bare-gate-imperative')).toBe(true);
+  });
+
+  it('EI-10994: a tagged PROVENANCE block does not launder an affirmative "the owner said" claim on another line', () => {
+    const text = [
+      "PROVENANCE: the 'do not merge until review' gate is [self-imposed] by su-abc on 2026-07-13.",
+      'the owner said to ship this dark',
+    ].join('\n');
+    const r = lintCarrySurfaceProvenance(text);
+    expect(r.flagged).toBe(true);
+    expect(r.matches).toHaveLength(1);
+    expect(r.matches[0].kind).toBe('owner-attribution');
+    expect(r.matches[0].line).toContain('the owner said to ship this dark');
+  });
 });
 
 describe('provenanceLintField', () => {

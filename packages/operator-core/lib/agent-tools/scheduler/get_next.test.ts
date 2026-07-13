@@ -18,7 +18,10 @@ const getNextM = vi.hoisted(() => vi.fn());
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
 }));
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getFlag: vi.fn(async () => true),
+}));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();
   return { ...actual, getNextForBee: getNextM };

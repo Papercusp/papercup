@@ -16,7 +16,8 @@ vi.mock('@papercusp/flags', () => ({
   FLAGS: { SCHEDULER_SPEC_CLAIM: 'scheduler.spec.claim' },
 }));
 
-vi.mock('@papercusp/flags/server', () => ({
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   getFlag: vi.fn(async () => flag.schedulerSpecClaim),
 }));
 

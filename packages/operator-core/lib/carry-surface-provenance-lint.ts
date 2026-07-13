@@ -38,6 +38,19 @@ const OWNER_ATTRIBUTION_RE =
   /\b(?:the )?owner\s+(?:said|says|wants|needs|requires|required|approved|approves|told me|instructed|directed|asked|demands|set an? (?:explicit )?gate|gave permission)\b/i;
 const BARE_GATE_IMPERATIVE_RE = /\bdo not\b.{0,80}\buntil\b/i;
 
+/**
+ * An explicit PROVENANCE-block header. An agent complies with the nudge by writing a block
+ * like `PROVENANCE: the 'do not widen X until Y' constraint above is [self-imposed] by …` —
+ * which necessarily RESTATES the imperative it is attributing so the reader knows WHICH one.
+ * That restatement would otherwise re-trip BARE_GATE_IMPERATIVE_RE on the very line carrying
+ * the attribution, so compliance could never clear the flag and the act of complying ADDED a
+ * violation (EI-10994). When a write carries such an explicit block AND a source tag, we treat
+ * its bare gate imperatives as attributed and stop nudging them. Owner-attribution phrases
+ * (`the owner said X`) stay LINE-scoped and are never suppressed this way — a factual
+ * owner-claim must not be laundered by an unrelated tagged block.
+ */
+const PROVENANCE_BLOCK_MARKER_RE = /\bprovenance\b/i;
+
 export interface ProvenanceLintMatch {
   /** The offending line, trimmed and capped for display (never the full body). */
   line: string;
@@ -61,15 +74,24 @@ const MATCH_LINE_CAP = 200;
  */
 export function lintCarrySurfaceProvenance(text: string | null | undefined): ProvenanceLintResult {
   if (!text) return { flagged: false, matches: [] };
+  const lines = text.split('\n');
+  // EI-10994: an explicit, source-tagged PROVENANCE block means the writer HAS attributed
+  // their gate imperatives, so complying with the nudge must CLEAR it — not add a second
+  // violation on the block's own restatement of the imperative. Suppress bare-gate-imperative
+  // matches for the whole write when such a block is present. Owner-attribution stays
+  // line-scoped (below): an affirmative "the owner said X" is a factual claim a tagged block
+  // must not launder, so it is still flagged per line.
+  const hasTaggedProvenanceBlock =
+    SOURCE_TAG_RE.test(text) && lines.some((l) => PROVENANCE_BLOCK_MARKER_RE.test(l));
   const matches: ProvenanceLintMatch[] = [];
-  for (const rawLine of text.split('\n')) {
+  for (const rawLine of lines) {
     if (matches.length >= MAX_MATCH_LINES) break;
     const line = rawLine.trim();
     if (!line) continue;
     if (SOURCE_TAG_RE.test(line)) continue; // already tagged on this line — not flagged
     if (OWNER_ATTRIBUTION_RE.test(line)) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-attribution' });
-    } else if (BARE_GATE_IMPERATIVE_RE.test(line)) {
+    } else if (!hasTaggedProvenanceBlock && BARE_GATE_IMPERATIVE_RE.test(line)) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'bare-gate-imperative' });
     }
   }
