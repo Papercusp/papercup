@@ -95,21 +95,28 @@ describe('PotStatusStrip (P-018 variant A)', () => {
   it('renders the ambient strip: Mug/Kettle ages, working + ready counts, need-you badge', () => {
     seedSnapshot();
     render(<PotStatusStrip />);
-    expect(screen.getByText('Mug 2m')).toBeTruthy();
-    expect(screen.getByText('Kettle 40s')).toBeTruthy();
+    // Role name + age are separate spans (variant-A mockup: emphasized who,
+    // mono age — WI-4726 fidelity pass).
+    expect(screen.getByText('Mug')).toBeTruthy();
+    expect(screen.getByText('2m')).toBeTruthy();
+    expect(screen.getByText('Kettle')).toBeTruthy();
+    expect(screen.getByText('40s')).toBeTruthy();
     expect(screen.getByText('3 working')).toBeTruthy();
     expect(screen.getByText('5 ready')).toBeTruthy();
-    // 1 non-info anomaly + 1 aging escalation
-    expect(screen.getByText('2 need you')).toBeTruthy();
+    // 1 non-info anomaly + 1 aging escalation — count lives in the pill,
+    // the label beside it.
+    expect(screen.getByTitle('2 need you').textContent).toBe('2 need you');
+    expect(screen.getByText('2')).toBeTruthy();
   });
 
   it('caps the need-you badge display at 99+ but keeps the honest count in aria-label + title (WI-4724)', () => {
     // 1 non-info anomaly + 268 aging escalations = 269
     seedSnapshot({ plans: { agingEscalations: 268 } });
     render(<PotStatusStrip />);
-    const badge = screen.getByText('99+ need you');
-    expect(badge).toBeTruthy();
-    expect(badge.getAttribute('title')).toBe('269 need you');
+    // The pill shows only the capped count; the wrapper title + the strip
+    // aria-label carry the honest total.
+    expect(screen.getByText('99+')).toBeTruthy();
+    expect(screen.getByTitle('269 need you').textContent).toBe('99+ need you');
     expect(
       screen.getByRole('button', { name: /269 need you/ }),
     ).toBeTruthy();
@@ -145,12 +152,15 @@ describe('PotStatusStrip (P-018 variant A)', () => {
     // cups roster
     expect(screen.getByText('cup-a49e')).toBeTruthy();
     expect(screen.getByText('idle')).toBeTruthy();
-    // up next + honest footer
+    // up next + honest footer (the recovering count is its own amber span —
+    // WI-4726 — so assert the footer's joined text content)
     expect(screen.getByText('WI-4665')).toBeTruthy();
-    expect(screen.getByText(/\+2 more · 2 blocked · 1 quarantined · 1 recovering ↻/)).toBeTruthy();
-    // steering
+    const foot = document.querySelector('.op-pot-foot');
+    expect(foot?.textContent).toBe('+2 more · 2 blocked · 1 quarantined · 1 recovering ↻');
+    // steering (the pause verdict is a <b> inside the fact span)
     expect(screen.getByText(/Focus the sidebar revival/)).toBeTruthy();
-    expect(screen.getByText(/New work: allowed/)).toBeTruthy();
+    const facts = document.querySelector('.op-pot-steer-facts');
+    expect(facts?.textContent).toContain('New work: allowed');
   });
 });
 
