@@ -50,6 +50,7 @@ import {
   type FilterLeaf,
   type RankTerm,
   DEFAULT_CLAIM_SPEC,
+  positiveIdCohortIds,
 } from './claim-spec';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -467,26 +468,6 @@ function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
  * caller falls back to the fully-conservative EI-10062 behavior (skip tier 3) rather than
  * guess wrong.
  */
-function idValuesForFallback(filter: FilterNode | undefined): readonly string[] | undefined {
-  function fromLeaf(leaf: FilterLeaf): string[] | undefined {
-    if (leaf.field !== 'id' || (leaf.op !== '=' && leaf.op !== 'in')) return undefined;
-    return (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map(String);
-  }
-  if (!filter) return undefined;
-  if (isLeaf(filter)) return fromLeaf(filter);
-  if ('all' in filter) {
-    for (const node of filter.all) {
-      if (isLeaf(node)) {
-        const v = fromLeaf(node);
-        if (v) return v;
-      }
-    }
-    return undefined;
-  }
-  // `any` / `not` — leave unextracted (see doc comment above).
-  return undefined;
-}
-
 /**
  * Recursively compile the filter combinator tree to ONE parameterized `sql` fragment.
  * `all` ⇒ AND, `any` ⇒ OR, `not` ⇒ NOT; a leaf ⇒ {@link compileLeaf}. An undefined
@@ -722,7 +703,7 @@ export async function getNextWorkItem(
   // constraint exists but its exact set can't be safely extracted (nested in an any/not).
   if (!claimed && (await schedulerIssuesClaimableEnabled())) {
     const hasIdConstraint = filterHasIdConstraint(spec.view.filter);
-    const idValues = hasIdConstraint ? idValuesForFallback(spec.view.filter) : undefined;
+    const idValues = hasIdConstraint ? positiveIdCohortIds(spec.view.filter) ?? undefined : undefined;
     if (!hasIdConstraint || idValues) {
       const issueKinds = issueKindsForFallback(spec.view.filter);
       claimed = await claimNextIssueWorkItem(

@@ -527,6 +527,43 @@ export function fixedCohortIds(
   return ids ? [...ids] : null;
 }
 
+/**
+ * Return the positive ID candidate set carried by the conservative fallback
+ * shapes the scheduler can enforce across BOTH work-item families: a bare
+ * `id =`/`id in` leaf, or one or more such leaves directly inside a top-level
+ * `all`. Non-ID siblings may narrow the set at pull time, but cannot add to it.
+ *
+ * `any`/`not` are not simplified: their set can depend on non-ID predicates or
+ * describe an unbounded complement. Multiple direct ID leaves in `all`
+ * intersect, matching boolean semantics instead of letting the first leaf win.
+ */
+export function positiveIdCohortIds(filter: unknown): string[] | null {
+  function leafSet(node: unknown): Set<string> | null {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return null;
+    const obj = node as Record<string, unknown>;
+    if (obj.field !== 'id' || (obj.op !== '=' && obj.op !== 'in')) return null;
+    const raw = Array.isArray(obj.value) ? obj.value : [obj.value];
+    return new Set(
+      raw
+        .filter(
+          (v): v is string | number | boolean =>
+            typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+        )
+        .map(String),
+    );
+  }
+
+  const bare = leafSet(filter);
+  if (bare) return [...bare];
+  if (filter === null || typeof filter !== 'object' || Array.isArray(filter)) return null;
+  const all = (filter as { all?: unknown }).all;
+  if (!Array.isArray(all)) return null;
+  const sets = all.map(leafSet).filter((set): set is Set<string> => set !== null);
+  if (sets.length === 0) return null;
+  const [head, ...rest] = sets;
+  return [...head].filter((id) => rest.every((set) => set.has(id)));
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // The default spec — "no spec = today's behavior" (D-003).
 // ────────────────────────────────────────────────────────────────────────────

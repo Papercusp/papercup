@@ -147,3 +147,51 @@ export async function pushTargetsForWorkspace(
     `;
   });
 }
+
+/**
+ * Connection snapshot for ONE device — the read behind the phone's
+ * connection-health tile (mobile-apps-revival-v2 P-010): is this device still
+ * paired (row present + not revoked), when was it last seen, and which push
+ * platforms has it registered a token for. One round-trip; scoped by workspace
+ * GUC so a device only ever reads its own workspace's rows.
+ */
+export interface DeviceConnectionSnapshot {
+  /** The device row exists (it was paired at some point). */
+  exists: boolean;
+  /** The device has been revoked (or does not exist) — its JWT is dead. */
+  revoked: boolean;
+  /** last_seen timestamp, if the device has ever been seen. */
+  lastSeen: Date | null;
+  /** When the device was paired, if it exists. */
+  pairedAt: Date | null;
+  /** Push platforms this device has a registered token for (fcm / apns). */
+  pushPlatforms: Array<'apns' | 'fcm'>;
+}
+
+export async function deviceConnectionSnapshot(
+  deviceId: string,
+  workspaceId: string,
+): Promise<DeviceConnectionSnapshot> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const [device] = await tx<
+      { revoked_at: Date | null; last_seen: Date | null; paired_at: Date }[]
+    >`
+      SELECT revoked_at, last_seen, paired_at
+      FROM harness_shared.mobile_devices
+      WHERE device_id = ${deviceId}
+      LIMIT 1
+    `;
+    const tokens = await tx<{ platform: 'apns' | 'fcm' }[]>`
+      SELECT platform
+      FROM harness_shared.mobile_push_tokens
+      WHERE device_id = ${deviceId}
+    `;
+    return {
+      exists: device != null,
+      revoked: device == null || device.revoked_at != null,
+      lastSeen: device?.last_seen ?? null,
+      pairedAt: device?.paired_at ?? null,
+      pushPlatforms: tokens.map((t) => t.platform),
+    };
+  });
+}

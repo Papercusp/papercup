@@ -21,6 +21,7 @@ import {
   RANK_FUNCTIONS,
   isIdOnlySelector,
   fixedCohortIds,
+  positiveIdCohortIds,
   type ClaimSpec,
 } from './claim-spec';
 
@@ -489,6 +490,37 @@ describe('fixedCohortIds — exact fixed-wave extraction', () => {
     expect(fixedCohortIds(spec({ field: 'plan', op: '=', value: 'p' }))).toBeNull();
     expect(fixedCohortIds(spec({ field: 'id', op: '!=', value: 'WI-1' }))).toBeNull();
     expect(fixedCohortIds(spec({ not: { field: 'id', op: '=', value: 'WI-1' } }))).toBeNull();
+  });
+});
+
+describe('positiveIdCohortIds — immutable cross-family candidate set', () => {
+  it('extracts a bare ID leaf and de-duplicates it', () => {
+    expect(positiveIdCohortIds({ field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-1'] }))
+      .toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('keeps an ID cohort inside top-level all when property predicates narrow it further', () => {
+    expect(positiveIdCohortIds({
+      all: [
+        { field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-3'] },
+        { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+        { field: 'kind', op: 'in', value: ['bug'] },
+      ],
+    })).toEqual(['WI-1', 'WI-2', 'WI-3']);
+  });
+
+  it('intersects direct ID leaves and refuses any/not simplification', () => {
+    expect(positiveIdCohortIds({
+      all: [
+        { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] },
+        { field: 'id', op: 'in', value: ['WI-2', 'WI-3'] },
+      ],
+    })).toEqual(['WI-2']);
+    expect(positiveIdCohortIds({ any: [
+      { field: 'id', op: '=', value: 'WI-1' },
+      { field: 'kind', op: '=', value: 'bug' },
+    ] })).toBeNull();
+    expect(positiveIdCohortIds({ not: { field: 'id', op: '=', value: 'WI-1' } })).toBeNull();
   });
 });
 

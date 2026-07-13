@@ -2965,13 +2965,14 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
 export async function explainIssueClaimFloors(
   harness: string,
   ids: readonly string[],
-  opts: { assignee?: string; rigAvailable?: boolean } = {},
+  opts: { assignee?: string; rigAvailable?: boolean; states?: readonly string[] } = {},
 ): Promise<ClaimFloorAttribution[]> {
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
   const issueWs = issuesScopeWorkspace();
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
+  const states = opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES;
 
   const rows = await sql<
     {
@@ -2990,7 +2991,7 @@ export async function explainIssueClaimFloors(
     }[]
   >`
     SELECT wi.feature_id AS id,
-           (wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[]))       AS ok_status,
+           (wi.status = ANY(${[...states]}::text[]))                              AS ok_status,
            (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
            (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
            (${needsHumanExclusionSql(sql)})                                       AS ok_needs_human,
