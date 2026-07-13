@@ -245,7 +245,11 @@ if [ -n "$SELFTEST_FIXTURE" ]; then
     run_once "FLAKE_SOAK_SELFTEST=1" "$local_target"; rc=$?
     case "$(classify_run "$rc")" in
       pass)    pass=$((pass+1));       printf "  run %2d/%d  PASS\n" "$i" "$REPEATS" ;;
-      red)     fail=$((fail+1));       printf "  run %2d/%d  \033[31mRED\033[0m (real test failure)\n" "$i" "$REPEATS" ;;
+      red)     fail=$((fail+1));       printf "  run %2d/%d  \033[31mRED\033[0m (real test failure)\n" "$i" "$REPEATS"
+               # Keep the log: a red is only trustworthy if you can read WHY it
+               # reddened. An unexamined red is how a congestion artifact gets
+               # mistaken for the race it was supposed to prove.
+               cp /tmp/flake-soak-run.$$.log "/tmp/flake-soak-selftest-red-${i}.$$.log" 2>/dev/null || true ;;
       invalid) invalid=$((invalid+1)); printf "  run %2d/%d  \033[33mINVALID\033[0m (runner died — 0 tests ran; NOT scored)\n" "$i" "$REPEATS" ;;
     esac
   done

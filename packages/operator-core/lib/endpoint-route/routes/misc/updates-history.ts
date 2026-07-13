@@ -38,14 +38,13 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { readOperatorState } from '../../../operator-state-pg';
-import { resolveGithubToken } from './updates-github';
+import { releaseHostBase, resolveGithubToken } from './updates-github';
 import {
   classifyChannel,
   fetchReleases,
   normalizeTagVersion,
   pickAsset,
   platformKeyFor,
-  releaseHostBase,
   resolveChannel,
   visibleChannels,
   type Channel,
