@@ -80,9 +80,16 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_DIR="$REPO_ROOT/$CWD"
 
-if [ ! -x "$PKG_DIR/node_modules/.bin/vitest" ]; then
-  echo "flake-soak: no vitest binary at $PKG_DIR/node_modules/.bin/vitest" >&2
-  echo "            (pass --cwd <pkg-with-node_modules>; never run pnpm install here)" >&2
+# Resolve the vitest binary. In this monorepo it is HOISTED to the repo root
+# (apps/operator-vite has no local .bin/vitest), so a package-local-only lookup
+# is dead on arrival — check the package first, then fall back to the root.
+if [ -x "$PKG_DIR/node_modules/.bin/vitest" ]; then
+  VITEST_BIN="$PKG_DIR/node_modules/.bin/vitest"
+elif [ -x "$REPO_ROOT/node_modules/.bin/vitest" ]; then
+  VITEST_BIN="$REPO_ROOT/node_modules/.bin/vitest"
+else
+  echo "flake-soak: no vitest binary (looked in $PKG_DIR and $REPO_ROOT)" >&2
+  echo "            never run pnpm install in the shared tree (WI-4427)" >&2
   exit 2
 fi
 
@@ -117,7 +124,7 @@ run_once() {
     env PC_HEAVY_BYPASS=1 $extra_env \
       ${TASKSET_BIN:+"$TASKSET_BIN" -c "$CPUSET"} \
       nice -n "$NICE" \
-      ./node_modules/.bin/vitest run "$@" >/tmp/flake-soak-run.$$.log 2>&1
+      "$VITEST_BIN" run "$@" >/tmp/flake-soak-run.$$.log 2>&1
   )
 }
 

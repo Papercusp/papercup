@@ -35,6 +35,12 @@ const silent = () => {};
 // (no embedder/PG) by supplying no-op stand-ins.
 const noHistory = async () => [];
 const noEscalate = async () => {};
+// `invalidate` defaults to defaultInvalidate(), which `await import(...)`s the SSE module. Its own
+// comment says the lazy import exists "so the read/test graph never pulls the SSE module" — but a
+// test that does not INJECT the dep pulls it anyway: a lazy import DEFERS the cost, it cannot avoid
+// it. That dragged the whole sync-sse graph into this suite (~7s on the first test to reach it) and
+// made it flake against the 5s timeout under host load. Inject it, like every other dep here.
+const noInvalidate = () => {};
 
 describe('runMemoryPrecisionMonitor', () => {
   it('skips with flag-off and never benches when the flag is OFF', async () => {
@@ -138,6 +144,7 @@ describe('runMemoryPrecisionMonitor', () => {
           escalateRecall: async (workspaceId, backend, rowId, evaluation) => {
             seen = { workspaceId, backend, rowId, evaluation };
           },
+          invalidate: noInvalidate,
           log: silent,
         },
       );
@@ -162,6 +169,7 @@ describe('runMemoryPrecisionMonitor', () => {
           escalateRecall: async (_ws, _b, _row, evaluation) => {
             seen = evaluation;
           },
+          invalidate: noInvalidate,
           log: silent,
         },
       );
@@ -183,6 +191,7 @@ describe('runMemoryPrecisionMonitor', () => {
           escalateRecall: async (_ws, _b, _row, evaluation) => {
             seen = evaluation;
           },
+          invalidate: noInvalidate,
           log: silent,
         },
       );
@@ -205,6 +214,7 @@ describe('runMemoryPrecisionMonitor', () => {
           escalateRecall: async (_ws, _b, _row, evaluation) => {
             seen = evaluation;
           },
+          invalidate: noInvalidate,
           log: silent,
         },
       );
@@ -223,6 +233,7 @@ describe('runMemoryPrecisionMonitor', () => {
           escalateRecall: async () => {
             throw new Error('EI create failed');
           },
+          invalidate: noInvalidate,
           log: silent,
         },
       );

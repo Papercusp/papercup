@@ -95,7 +95,9 @@ describe('fetchWithTimeout', () => {
   it('propagates a CALLER abort immediately and never retries', async () => {
     const ac = new AbortController();
     ac.abort();
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+    // `typeof fetch` takes RequestInfo | URL — a `_url: string` mock is NARROWER
+    // than the contract it stands in for, so it is not assignable to fetchImpl.
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
       return new Response('ok', { status: 200 });
     });

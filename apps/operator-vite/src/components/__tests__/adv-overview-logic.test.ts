@@ -64,6 +64,15 @@ function attn(over: Partial<AttentionItem> = {}): AttentionItem {
     importance: 'normal' as Importance,
     tier: 'activity' as AttentionTier,
     needsHuman: false,
+    // Required on AttentionItem (ownership + triage columns). Omitted here, they
+    // typed as `undefined`, which the row forbids — the factory claims to return a
+    // complete AttentionItem, so it must actually build one.
+    ownerAgentId: null,
+    ownerLabel: null,
+    triageState: 'untriaged' as AttentionItem['triageState'],
+    triageNote: null,
+    triagedBy: null,
+    triagedAt: null,
     actions: [],
     ref: { kind: 'coord-message' } as AttentionItem['ref'],
     ...over,

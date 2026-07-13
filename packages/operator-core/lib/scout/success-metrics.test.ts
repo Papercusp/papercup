@@ -11,11 +11,13 @@ import { describe, expect, it } from 'vitest';
 import {
   evaluateProgramSuccess,
   LEDGER_RECONCILE_EPOCH_MS,
+  LENS_DIVERSITY_SAMPLE,
   type ProgramSuccessReport,
   type ProgramSuccessInputs,
 } from './success-metrics';
 import type { ScoutQualityInputs } from './quality-metrics';
 import { isCapacityError } from './scheduler';
+import { hasForcedDiversity } from './invariants';
 import type { ScoutTickRecord } from './tick-ledger';
 import type { RoutedIdeaProvenance, LensOutcomeReport } from './outcome-feedback';
 import { SU_IDEATION_LENSES, type SuIdeationLens, type CreativeLens } from './types';
@@ -224,6 +226,61 @@ describe('evaluateProgramSuccess — grader suggestion adopted', () => {
   it('is UNKNOWN when nothing is graded yet — the channel has produced no input', () => {
     const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [idea()]));
     expect(bar(r, 'grader-suggestion-adopted').status).toBe('unknown');
+  });
+});
+
+describe('evaluateProgramSuccess — lens diversity (D-004, WI-4482)', () => {
+  const scoutIdea = (lens: string, n: number): RoutedIdeaProvenance =>
+    idea({ ideaId: `i-${lens}-${n}`, lens: lens as unknown as RoutedIdeaProvenance['lens'] });
+
+  it('PASSES when the roster spans >=2 lenses', () => {
+    const r = evaluateProgramSuccess(
+      inputs([ranTick({ ideasRouted: 4 })], [
+        scoutIdea('analogical', 1),
+        scoutIdea('reframing', 2),
+        scoutIdea('first-principles', 3),
+        scoutIdea('constraint-removal', 4),
+      ]),
+    );
+    const b = bar(r, 'lens-diversity');
+    expect(b.status).toBe('pass');
+    expect(b.observed).toContain('4 distinct lenses');
+  });
+
+  it('FAILS when the roster has collapsed to a single lens — the live WI-4482 regression', () => {
+    // maxIdeators:1 ⇒ rosterForBudget slices to the FIRST lens ⇒ every idea is analogical.
+    const r = evaluateProgramSuccess(
+      inputs([ranTick({ ideasRouted: 5 })], [1, 2, 3, 4, 5].map((n) => scoutIdea('analogical', n))),
+    );
+    const b = bar(r, 'lens-diversity');
+    expect(b.status).toBe('fail');
+    expect(b.observed).toContain('ROSTER COLLAPSED');
+    expect(b.observed).toContain('maxIdeators');
+  });
+
+  it('a single idea is UNKNOWN, never a PASS — hasForcedDiversity() alone would false-pass here', () => {
+    // The D-004 invariant returns true for <=1 idea ("a single idea cannot collapse"), which is
+    // right as an invariant and WRONG as a health bar: it would green precisely when a roster
+    // is so broken it emits one idea. The bar must refuse to certify on an empty denominator.
+    const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [scoutIdea('analogical', 1)]));
+    expect(bar(r, 'lens-diversity').status).toBe('unknown');
+    // ...and prove the underlying invariant really would have said "fine" — i.e. this guard is
+    // load-bearing, not decorative.
+    expect(hasForcedDiversity([{ lens: 'analogical' as CreativeLens }], 2)).toBe(true);
+  });
+
+  it('is UNKNOWN on an empty scout partition', () => {
+    expect(bar(evaluateProgramSuccess(inputs([], [])), 'lens-diversity').status).toBe('unknown');
+  });
+
+  it('judges the NEWEST sample only — stale multi-lens history must not mask a collapsed roster', () => {
+    // The live trap: the ledger still holds 4-lens rows from 2026-06-11, but the roster
+    // collapsed on 06-25. A lifetime distinct(lens) count reports 4 and PASSES a broken bar.
+    // readRoutedIdeas returns newest-first, so the recent sample must dominate.
+    const recentCollapsed = Array.from({ length: LENS_DIVERSITY_SAMPLE }, (_, n) => scoutIdea('analogical', n));
+    const staleDiverse = [scoutIdea('reframing', 100), scoutIdea('first-principles', 101)];
+    const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [...recentCollapsed, ...staleDiverse]));
+    expect(bar(r, 'lens-diversity').status).toBe('fail');
   });
 });
 

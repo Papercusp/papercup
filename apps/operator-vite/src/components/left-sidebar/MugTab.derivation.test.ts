@@ -63,6 +63,9 @@ function steering(over: Partial<HiveSteeringRow> = {}): HiveSteeringRow {
     directive: null,
     eligiblePlans: [],
     eligibleHives: [],
+    // Required on HiveSteeringRow (the "Non-plan work items" toggle, default true)
+    // — omitting it made the factory's return type `boolean | undefined`.
+    includeUnplannedWork: true,
     pauseNewWork: false,
     pausedUntil: null,
     ...over,

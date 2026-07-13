@@ -37,12 +37,26 @@
 import { groundingLaneHistogram } from './scheduler';
 import { computeScoutQualityReport, buildQualityReportInputs, type ScoutQualityInputs } from './quality-metrics';
 import type { BuildQualityInputsOptions } from './quality-metrics';
+import { hasForcedDiversity } from './invariants';
 import type { RoutedIdeaProvenance } from './outcome-feedback';
 import type { CreativeLens, SuIdeationLens } from './types';
 import { SU_IDEATION_LENSES } from './types';
 
 /** The digest lane a rubric-RATING-grounded idea is attributed to (scheduler's histogram key). */
 export const RUBRIC_GROUNDING_LANE = 'rubric-rating';
+
+/**
+ * How many of the NEWEST scout-routed ideas the lens-diversity bar looks at (WI-4482).
+ *
+ * It MUST be a recent sample, not the whole window: the roster collapsed to a single lens
+ * on 2026-06-25, but the ledger still holds multi-lens rows from 2026-06-11, so a lifetime
+ * `distinct(lens)` count reports 4 lenses and PASSES a bar that is presently broken. Judging
+ * a live-health question over a window that straddles the regression is the same
+ * measure-across-a-boundary error that made the ledger-reconcile bar read as drift
+ * (LEDGER_RECONCILE_EPOCH_MS) — here the fix is a recency sample rather than an epoch floor,
+ * because "is the roster diverse RIGHT NOW" has no fix-boundary to anchor to.
+ */
+export const LENS_DIVERSITY_SAMPLE = 20;
 
 /**
  * The program spans TWO ledger partitions, and the bars do not all live on the same one —
@@ -323,6 +337,44 @@ export function evaluateProgramSuccess(
       : {
           status: (adopted.length > 0 ? 'pass' : 'fail') as SuccessStatus,
           observed: `${adopted.length} graded+attributed idea(s) routed onto a rail (of ${graded.length} graded / ${ideas.length} routed)`,
+        }),
+  });
+
+  // ── 6. lens diversity — the roster actually spans lenses (D-004) ─────────────
+  // WI-4482: a stale debug config (`maxIdeators: 1`, set 2026-06-25) collapsed the roster to
+  // the FIRST lens only, so every cycle for 17 days ran `analogical` alone. That silently
+  // voided forced-diversity (D-004) AND left the entire per-lens learning subsystem
+  // (scout_lens_weights / perLensWinRates / weight-proportional extra ideators) with a
+  // dimension that never varies — a founding invariant of this program, dead, with NOTHING
+  // in the gate to notice. A health check that cannot see its own premise collapse is the
+  // defect this bar exists to close.
+  //
+  // Judged on the SCOUT partition only: su-ideate rows carry a different lens vocabulary
+  // (SU_IDEATION_LENSES), so mixing them would let su lens variety mask a dead scout roster.
+  // Reuses the shipped D-004 predicate (invariants.hasForcedDiversity) rather than
+  // re-deriving "diverse" — one notion, every consumer.
+  const recentScoutIdeas = inputs.cadence.routedIdeas.slice(0, LENS_DIVERSITY_SAMPLE);
+  const lensesSeen = [...new Set(recentScoutIdeas.map((i) => i.lens))].sort();
+  criteria.push({
+    key: 'lens-diversity',
+    bar: `scout roster spans >=2 lenses (D-004 forced diversity, newest ${LENS_DIVERSITY_SAMPLE} routed ideas)`,
+    // A sample of 0-1 ideas CANNOT certify diversity. hasForcedDiversity() deliberately
+    // returns true for <=1 idea ("a single idea cannot collapse") — correct as an invariant,
+    // but as a health bar that is a FALSE PASS: it would green exactly when a roster so
+    // broken it emits one idea per window is at its worst. Empty denominators are unknown.
+    ...(recentScoutIdeas.length < 2
+      ? {
+          status: 'unknown' as const,
+          observed: `only ${recentScoutIdeas.length} scout-routed idea(s) in the recent sample — too few to judge diversity`,
+          unknownReason:
+            'a sample of <2 ideas cannot distinguish a diverse roster from a collapsed one (and must not be allowed to certify either)',
+        }
+      : {
+          status: (hasForcedDiversity(recentScoutIdeas, 2) ? 'pass' : 'fail') as SuccessStatus,
+          observed:
+            lensesSeen.length >= 2
+              ? `${lensesSeen.length} distinct lenses across the newest ${recentScoutIdeas.length} scout-routed ideas: ${lensesSeen.join(', ')}`
+              : `ROSTER COLLAPSED — all ${recentScoutIdeas.length} of the newest scout-routed ideas are a SINGLE lens (${lensesSeen[0]}). The per-lens learning subsystem has nothing to learn from. Check the scout routine's budget.maxIdeators (1 ⇒ first lens only; see WI-4482).`,
         }),
   });
 
