@@ -362,7 +362,8 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   const scored = await deps.critique(ideas, { llmCall: recordingLlm, corpus });
   const survivors = selectSurvivors(scored);
   if (survivors.length === 0) return finish('no-survivors', { digest, ideas, scored, survivors });
-  if (overBudget()) return finish('budget-exhausted', { digest, ideas, scored, survivors });
+  // EI-10779: same salvage rule — a budget overrun here never discards the paid-for
+  // survivors; the cycle proceeds to recombine + route (see the note after ideate).
 
   // 4. Debate + recombine survivors → proposals (P-006). The port re-filters
   //    verdict≠reject internally (su-d1170's recombineProposals), so passing all

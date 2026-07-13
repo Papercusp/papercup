@@ -14,7 +14,7 @@
  */
 import { Client } from 'pg';
 
-import { configureMemory, memoryHost, pgClientFields, VEC_TABLE, MODE_DIMS } from '@papercusp/memory';
+import { configureMemory, memoryHost, pgClientFields, VEC_TABLE } from '@papercusp/memory';
 import type { ResolvedVecMode } from '@papercusp/memory';
 // Side-effect import: wires the operator host (admin URL, credentials,
 // embedder cascade) that we then override schema-wise below.
@@ -48,46 +48,37 @@ export async function benchPgClient(): Promise<Client> {
 }
 
 /**
- * Create an isolated schema + the memory tables in migration 081's shape
- * (mirrored from the live `harness_shared` definitions). Idempotent.
+ * Create an isolated schema + the memory tables CLONED from the live
+ * `harness_shared` definitions via `CREATE TABLE (LIKE ... INCLUDING ALL)`
+ * — columns, defaults, CHECK constraints, and indexes track production BY
+ * CONSTRUCTION. Idempotent.
+ *
+ * WHY clone instead of hand-mirroring DDL: the previous hand-written copy
+ * drifted from production TWICE in one day (2026-07-13, WI-4509) —
+ * (1) migration 547's memory_vec_harrier (1024-dim) was missing, so every
+ * PG-backed seed failed on a missing relation once the 07-10 embedder eval
+ * made harrier the active mode (EI-10793); (2) migration 578's temporal-lite
+ * columns (valid_at/invalid_at/superseded_by) were missing, so every
+ * canonical search threw `column c.valid_at does not exist` and the whole
+ * bench read as zero recall. A clone of the live table cannot drift.
+ *
+ * The vec-table set still derives from the shared VEC_TABLE map
+ * (vec-write.ts) — the same single source the write path uses. NOTE: LIKE
+ * does not copy FOREIGN KEYS, so the bench vec tables carry no FK to
+ * memory_canonical — harmless here: recall JOINs canonical (an orphaned vec
+ * row can never surface), and cleanup is a whole-schema DROP CASCADE.
  */
 export async function ensureBenchSchema(client: Client, schema: string = BENCH_SCHEMA): Promise<void> {
   await client.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
   await client.query(`
-    CREATE TABLE IF NOT EXISTS ${schema}.memory_canonical (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      last_validated_at timestamptz,
-      last_surfaced_at timestamptz,
-      state text NOT NULL DEFAULT 'active'
-        CHECK (state IN ('active','broken_anchor','superseded','contradicted','forgotten','archived'))
-    )
+    CREATE TABLE IF NOT EXISTS ${schema}.memory_canonical
+      (LIKE harness_shared.memory_canonical INCLUDING ALL)
   `);
-  await client.query(`
-    CREATE INDEX IF NOT EXISTS memory_canonical_user_id_idx
-      ON ${schema}.memory_canonical ((payload->>'user_id'))
-  `);
-  // One vec table per embedding SPACE — DERIVED from the shared VEC_TABLE /
-  // MODE_DIMS maps (vec-write.ts) so a new production embedding space can never
-  // silently miss the bench again. The previous hand-copied 3-entry list did
-  // exactly that: migration 547 added memory_vec_harrier (1024-dim), the
-  // 2026-07-10 embedder eval made harrier the active mode, and every PG-backed
-  // seed then failed on `relation "bench_memory.memory_vec_harrier" does not
-  // exist` — zeroing mem0/hybrid in the 2026-07-13 run (WI-4509).
   for (const mode of Object.keys(VEC_TABLE) as ResolvedVecMode[]) {
     const vec = VEC_TABLE[mode];
     await client.query(`
-      CREATE TABLE IF NOT EXISTS ${schema}.${vec} (
-        memory_id uuid PRIMARY KEY REFERENCES ${schema}.memory_canonical(id) ON DELETE CASCADE,
-        vector vector(${MODE_DIMS[mode]}) NOT NULL,
-        embedded_at timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS ${vec}_hnsw_idx
-        ON ${schema}.${vec} USING hnsw (vector vector_cosine_ops)
+      CREATE TABLE IF NOT EXISTS ${schema}.${vec}
+        (LIKE harness_shared.${vec} INCLUDING ALL)
     `);
   }
 }

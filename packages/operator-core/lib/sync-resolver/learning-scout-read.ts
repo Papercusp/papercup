@@ -98,6 +98,18 @@ export interface ScoutRoutedItem {
   humanFeedback: string | null;
   /** Who graded — 'owner' | 'Queen' (open set — render what arrives). */
   gradedBy: string | null;
+  /** Who filed it — 'scout' | 'su-ideate' (open set; migration 552). */
+  origin: string | null;
+  /** The Scout cycle that produced it — joins the idea to its tick (P-002 strip). */
+  cycleId: string | null;
+  /**
+   * Grounding evidence: the corpus MetaPattern refs the idea targeted (typed —
+   * "wi:EI-…" | "fact:workspace:…" | "rubric:<slug>#<criterion>@…" |
+   * "watchdog:…" | "plan:<slug>#P-NNN" | …). Empty when none recorded
+   * (su-ideate filings often ground informally). The pipeline trace's first
+   * stage (learning-tab-alignment P-004).
+   */
+  addressesPatternRefs: string[];
 }
 
 /**
@@ -148,6 +160,14 @@ export interface ScoutSnapshot {
    * null when none recorded yet (or the read degrades).
    */
   lensWeights: Record<string, number> | null;
+  /**
+   * Pipeline-trace enrichment (P-004): titles for the OPAQUE grounding refs in
+   * `recent[].addressesPatternRefs` — today the `wi:EI-…` class, resolved
+   * against engineer_issues (fact:/rubric:/watchdog:/plan: refs are already
+   * human-readable slugs). Keyed by the FULL ref ("wi:EI-10795" → title).
+   * Best-effort: an unresolvable ref simply has no entry.
+   */
+  groundingTitles: Record<string, string>;
 }
 
 const UNDEFINED_TABLE = '42P01';
@@ -343,7 +363,8 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
   // epoch-ms (bigint) in migration 194.
   const items = (await sql`
     SELECT idea_id, lens, rail, routed_ref, title, routed_at, outcome,
-           human_grade, human_feedback, graded_by
+           human_grade, human_feedback, graded_by, origin, cycle_id,
+           addresses_pattern_refs
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${workspaceId}
      ORDER BY routed_at DESC
@@ -360,7 +381,47 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     humanGrade: r.human_grade == null ? null : Number(r.human_grade),
     humanFeedback: typeof r.human_feedback === 'string' && r.human_feedback ? r.human_feedback : null,
     gradedBy: typeof r.graded_by === 'string' && r.graded_by ? r.graded_by : null,
+    origin: typeof r.origin === 'string' && r.origin ? r.origin : null,
+    cycleId: typeof r.cycle_id === 'string' && r.cycle_id ? r.cycle_id : null,
+    addressesPatternRefs: Array.isArray(r.addresses_pattern_refs)
+      ? (r.addresses_pattern_refs as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : [],
   }));
+
+  // P-004 pipeline trace: resolve the opaque grounding refs (the wi:EI-… class)
+  // to titles so the trace's first stage reads as evidence, not ids. One bounded
+  // IN-query over the refs actually present in `recent`; best-effort — a failed
+  // read leaves the map empty and the UI falls back to the raw ref.
+  let groundingTitles: Record<string, string> = {};
+  try {
+    const wiIds = [
+      ...new Set(
+        recent
+          .flatMap((it) => it.addressesPatternRefs)
+          .filter((ref) => ref.startsWith('wi:'))
+          .map((ref) => ref.slice('wi:'.length))
+          .filter(Boolean),
+      ),
+    ];
+    if (wiIds.length > 0) {
+      const titleRows = (await sql`
+        SELECT issue_id, title /* grounding-titles */
+          FROM harness_shared.engineer_issues
+         WHERE workspace_id = ${workspaceId}
+           AND issue_id IN ${sql(wiIds)}
+      `) as Array<Record<string, unknown>>;
+      for (const r of titleRows) {
+        const id = typeof r.issue_id === 'string' ? r.issue_id : '';
+        const title = typeof r.title === 'string' && r.title ? r.title : null;
+        if (id && title) groundingTitles[`wi:${id}`] = title;
+      }
+    }
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.scout] grounding-title read failed:', err instanceof Error ? err.message : err);
+    }
+    groundingTitles = {};
+  }
 
   // scout_ticks lands with P-034 (a peer owns the migration); until then — and
   // under any column-shape drift — omit the tick half rather than failing the
@@ -447,5 +508,5 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
   }
 
   const health = evaluateIdeasDriftMarkers({ ticks, recent, scoutLensSample });
-  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights };
+  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights, groundingTitles };
 }
