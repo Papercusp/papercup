@@ -2001,7 +2001,7 @@ const handler = createMcpHandler(
                   }
                 }
                 // PREDICTIVE fan-out hint (EI-10894): the batch nudges above are all REACTIVE —
-                // they key on round-trips ALREADY spent, so the waste is billed in full and only
+                // they key on MODEL turns already spent (not raw same-turn RPCs), so the waste is billed and only
                 // then explained. A list verb that just returned >5 addressable rows IS the
                 // fan-out, one call BEFORE it happens, so attach the code:run skeleton to THAT
                 // result — ids already extracted — while batching still costs the agent nothing.

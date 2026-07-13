@@ -32,8 +32,10 @@ import {
  * `coord:wake-queue` → `tools.coord.wakeQueue`) or `tools.call('ns:verb', args)`, with real
  * control flow (loops / conditionals / retries / filtering). It runs in a vm sandbox; only the
  * script's RETURNED value re-enters your context — intermediate tool results stay in the runtime.
- * This collapses many tool round-trips (each its own inference call re-reading your whole context)
- * into ONE `code:run` call.
+ * This collapses tool flows that would otherwise require multiple MODEL inference turns into ONE
+ * `code:run` call and keeps intermediate payloads out of model context. Several independent direct
+ * calls emitted together in one assistant response are already one inference turn; raw RPC count is
+ * not the cost metric.
  *
  * SAFETY: the sandbox exposes only tools your role may call (the whitelist IS the boundary). Set
  * `dryRun: true` to PREVIEW mutations — `effect:'write'` tool calls are recorded (returned in
@@ -43,7 +45,8 @@ export default defineTool({
   name: 'code:run',
   description:
     'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE ' +
-    'call, returning only the script\'s summary — collapsing N round-trips into one. Write the ' +
+    'call, returning only the script\'s summary — collapsing N sequential model turns into one and ' +
+    'keeping intermediate payloads out of context. Write the ' +
     'script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true ' +
     'previews write-effect mutations before committing. Colon name → dotted call: `:`/`_` → `.` ' +
     '(sessions:read → tools.sessions.read); never invent a fourth spelling.',
@@ -53,8 +56,8 @@ export default defineTool({
       'orchestrate them in ONE call. Pass title+description so the run saves as a reusable ' +
       'RECIPE other agents in your hive can find.',
     notWhen:
-      'A single call, or a step that needs YOUR judgment mid-flow (read a result, then decide) ' +
-      '— call tools directly.',
+      'A single call; a few independent calls you can emit together in this assistant turn; or a ' +
+      'step that needs YOUR judgment mid-flow (read a result, then decide) — call tools directly.',
     chaining:
       'script → code:run { dryRun:true } → inspect plannedMutations → code:run. A correct tool ' +
       'name with a WRONG field mapping fails SILENTLY (ok:true, blank rows) — check the tool\'s ' +

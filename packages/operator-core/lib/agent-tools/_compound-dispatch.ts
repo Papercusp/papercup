@@ -6,8 +6,9 @@
  * harness_shared.tool_invocations) into ONE call — the cheap/safe complement to
  * `code:run`. Where `code:run` runs an arbitrary script, a compound tool composes a
  * KNOWN sequence of existing tools server-side and returns a summary, so the agent
- * pays ONE inference round-trip instead of N (each its own model call re-reading the
- * whole context).
+ * pays ONE inference turn instead of a sequential N-turn flow and sees only the compound summary.
+ * Multiple direct calls emitted together are already one inference turn; this optimization targets
+ * flows that would return intermediate results to the model between steps, not raw RPC count.
  *
  * Composition routes each sub-call through the SAME dispatcher pipeline every MCP
  * `tools/call` uses (role/capability/envelope gates, quota, authorize, telemetry,

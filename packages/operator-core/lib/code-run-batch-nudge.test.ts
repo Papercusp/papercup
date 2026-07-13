@@ -152,6 +152,102 @@ describe('maybeBatchNudge — fan-out trigger (the ~70% the old nudge missed)', 
   });
 });
 
+// ── P-012 (agent-operability-clarity-full-audit-2026-07-13): the guidance must measure model
+//    INFERENCE TURNS, not raw downstream RPC count. A burst already collapsed into ONE turn via
+//    parallel tool_use costs zero extra round-trips and must never be nudged as if it did; only a
+//    burst that genuinely SPANS multiple turns has a round-trip to save. ──────────────────────────
+describe('clusterTurns — the turn-clustering primitive', () => {
+  it('groups events within TURN_GAP_MS of each other into the same turn', () => {
+    const events = [{ at: 0 }, { at: 50 }, { at: TURN_GAP_MS }];
+    expect(clusterTurns(events)).toEqual([0, 0, 0]);
+  });
+
+  it('starts a new turn once the gap exceeds TURN_GAP_MS', () => {
+    const events = [{ at: 0 }, { at: TURN_GAP_MS + 1 }];
+    expect(clusterTurns(events)).toEqual([0, 1]);
+  });
+
+  it('is order-independent — sorts by `at` internally', () => {
+    const events = [{ at: TURN_GAP_MS + 1 }, { at: 0 }];
+    expect(clusterTurns(events)).toEqual([1, 0]);
+  });
+});
+
+describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
+  it('does NOT fire when the same tool is called ≥ threshold times but all within ONE turn (parallel dispatch)', () => {
+    // BATCH_NUDGE_THRESHOLD calls, all landing inside the same inference turn (near-simultaneous
+    // timestamps well under TURN_GAP_MS) — this is already ONE round-trip, not a hand-loop.
+    let last: ReturnType<typeof maybeBatchNudge> = null;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
+      last = maybeBatchNudge({ ...cap, now: i * 10 }); // 10ms apart ≪ TURN_GAP_MS
+    }
+    expect(last).toBeNull();
+  });
+
+  it('DOES fire once the same tool spans ≥ threshold SEPARATE turns, even with extra same-turn repeats', () => {
+    // Turn 1: two PARALLEL calls to the same tool (fine, one round-trip). Turn 2 (well past the
+    // gap): one more call to the same tool — now it has genuinely repeated across 2 turns.
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    hit = maybeBatchNudge({ ...cap, sessionKey: 'turn-mix', now: 0 });
+    expect(hit).toBeNull();
+    hit = maybeBatchNudge({ ...cap, sessionKey: 'turn-mix', now: 10 }); // same turn as the first
+    expect(hit).toBeNull(); // still only 1 distinct turn for this tool
+    hit = maybeBatchNudge({ ...cap, sessionKey: 'turn-mix', now: TURN_GAP_MS + 100 }); // a new turn
+    expect(hit?.kind).toBe('same-tool');
+    // The felt-cost figure is the TURN count (2), never the raw call count (3).
+    expect(hit?.text).toContain('2');
+    expect(hit?.text).not.toMatch(/\b3 separate round-trips\b/);
+    expect(hit?.text).toContain('2 separate round-trips');
+  });
+});
+
+describe('maybeBatchNudge — turn-aware fan-out trigger (P-012)', () => {
+  const fanTools = ['plans:get', 'work_items:get', 'docs:search', 'coord:inbox'];
+
+  it('does NOT fire when ≥ FANOUT_DISTINCT_THRESHOLD distinct tools are all called within ONE turn', () => {
+    // A legitimate parallel fan-out: several independent, distinct-tool calls from ONE inference
+    // turn (exactly the harness's "make independent calls in the same response block" guidance).
+    // Already one round-trip — nudging this would steer the agent AWAY from best practice.
+    let last: ReturnType<typeof maybeBatchNudge> = null;
+    let i = 0;
+    for (const toolName of fanTools) {
+      last = maybeBatchNudge({ sessionKey: 'par-fan', toolName, canCodeRun: true, now: i * 5 });
+      i++;
+    }
+    expect(last).toBeNull();
+  });
+
+  it('DOES fire when the same distinct-tool spread lands across ≥ FANOUT_DISTINCT_THRESHOLD SEPARATE turns', () => {
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (const toolName of fanTools) {
+      t += TURN_GAP_MS + 100; // each call is its own turn
+      const r = maybeBatchNudge({ sessionKey: 'seq-fan', toolName, canCodeRun: true, now: t });
+      if (r && !firstFire) firstFire = r;
+    }
+    expect(firstFire?.kind).toBe('fanout');
+    expect(firstFire?.text).toMatch(/round-trip/);
+  });
+
+  it('a burst that mixes one parallel turn + later separate turns counts turns, not calls', () => {
+    // Turn 1: 2 parallel distinct-tool calls (1 turn so far). Turn 2 (later): a 3rd distinct tool.
+    // Total calls = 3, but distinct turns = 2 — below FANOUT_DISTINCT_THRESHOLD (3), so silent.
+    let last: ReturnType<typeof maybeBatchNudge> = null;
+    last = maybeBatchNudge({ sessionKey: 'mix-fan', toolName: 'plans:get', canCodeRun: true, now: 0 });
+    expect(last).toBeNull();
+    last = maybeBatchNudge({ sessionKey: 'mix-fan', toolName: 'work_items:get', canCodeRun: true, now: 10 });
+    expect(last).toBeNull();
+    last = maybeBatchNudge({
+      sessionKey: 'mix-fan',
+      toolName: 'docs:search',
+      canCodeRun: true,
+      now: TURN_GAP_MS + 200,
+    });
+    // 3 distinct tools reached, but only 2 distinct turns — must stay silent (turns, not raw diversity).
+    expect(last).toBeNull();
+  });
+});
+
 describe('maybeBatchNudge — backoff (re-fires, NOT one-shot)', () => {
   it('re-fires on an exponential call-count cooldown instead of going permanently silent', () => {
     const fires: number[] = [];

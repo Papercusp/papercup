@@ -276,59 +276,44 @@ describe('setVoiceMode', () => {
 });
 
 describe('shouldSkipVoicemodeWhisperOnThisRuntime', () => {
-  const WEBKIT_UA = 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)';
-  const CHROME_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+  // The predicate now detects the REAL capability the Silero always-on path needs —
+  // onnxruntime-web THREADED wasm → SharedArrayBuffer — instead of the old
+  // UA/crossOriginIsolated proxy. WI-4498 proved that proxy wrong on WebKitGTK: the
+  // desktop webview exposes SAB via the JSC_useSharedArrayBuffer runtime flag while
+  // crossOriginIsolated stays false. UA / Tauri / COI are now irrelevant; only SAB
+  // presence decides skip (energy-VAD) vs. run (Silero).
+  const g = globalThis as any;
+  const ORIG_SAB = g.SharedArrayBuffer;
+  const HAD_SAB = 'SharedArrayBuffer' in g;
 
-  function setRuntime(opts: { ua: string; tauri: boolean; coi: boolean }) {
-    const g = globalThis as any;
-    Object.defineProperty(g, 'navigator', { value: { userAgent: opts.ua }, configurable: true });
-    g.self = g;
-    g.crossOriginIsolated = opts.coi;
-    if (opts.tauri) g.window.__TAURI_INTERNALS__ = {};
-    else delete g.window.__TAURI_INTERNALS__;
+  function setSab(present: boolean) {
+    g.window = g.window ?? {};
+    if (present) g.SharedArrayBuffer = ORIG_SAB ?? (function SharedArrayBuffer() {} as unknown);
+    else delete g.SharedArrayBuffer;
+  }
+  function restoreSab() {
+    if (HAD_SAB) g.SharedArrayBuffer = ORIG_SAB;
+    else delete g.SharedArrayBuffer;
   }
 
-  it('returns true only on Tauri WebKitGTK without crossOriginIsolated', async () => {
+  it('returns true when SharedArrayBuffer is unavailable (no threaded ort → energy-VAD fallback)', async () => {
     const mod = await import('./voice-mode');
-    setRuntime({ ua: WEBKIT_UA, tauri: true, coi: false });
-    expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(true);
+    setSab(false);
+    try {
+      expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(true);
+    } finally {
+      restoreSab();
+    }
   });
 
-  it('returns false when crossOriginIsolated is enabled (Whisper threading works)', async () => {
+  it('returns false when SharedArrayBuffer is available (Silero threading works)', async () => {
     const mod = await import('./voice-mode');
-    setRuntime({ ua: WEBKIT_UA, tauri: true, coi: true });
-    expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
-  });
-
-  it('returns false in a Chromium webview even inside Tauri', async () => {
-    const mod = await import('./voice-mode');
-    setRuntime({ ua: CHROME_UA, tauri: true, coi: false });
-    expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
-  });
-
-  it('returns false outside Tauri (plain browser)', async () => {
-    const mod = await import('./voice-mode');
-    setRuntime({ ua: WEBKIT_UA, tauri: false, coi: false });
-    expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
-  });
-
-  // P-008 (voice-production-test-coverage): the isWebKit check excludes
-  // Chromium-engine UAs via /(Chrome|Chromium|Edg)\//. Cover the Edge and
-  // Chromium alternation branches the Chrome case above doesn't exercise — a
-  // Chromium-based webview inside Tauri must NOT be treated as WebKitGTK.
-  const EDGE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36 Edg/120.0';
-  const CHROMIUM_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chromium/120.0 Safari/537.36';
-
-  it('returns false for an Edge (Chromium) webview inside Tauri', async () => {
-    const mod = await import('./voice-mode');
-    setRuntime({ ua: EDGE_UA, tauri: true, coi: false });
-    expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
-  });
-
-  it('returns false for a Chromium-branded webview inside Tauri', async () => {
-    const mod = await import('./voice-mode');
-    setRuntime({ ua: CHROMIUM_UA, tauri: true, coi: false });
-    expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
+    setSab(true);
+    try {
+      expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
+    } finally {
+      restoreSab();
+    }
   });
 });
 

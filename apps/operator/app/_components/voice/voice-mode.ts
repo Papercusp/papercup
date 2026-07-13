@@ -1707,16 +1707,23 @@ async function runOneShotWhisperAfterWake(): Promise<void> {
 }
 
 
-// Exported for unit testing the runtime-gating truth table. Returns true
-// on the Tauri WebKitGTK desktop webview without crossOriginIsolated —
-// the runtime where onnxruntime-web threading (and thus voicemode Whisper)
-// can't run, so always-on capture must fall through to wake-word listening.
+// Exported for unit testing the runtime-gating truth table. Returns true when
+// the Silero-VAD always-on path can't run, so capture falls through to the
+// energy-gated path (or, on catch, wake-word listening).
+//
+// Silero runs on onnxruntime-web's THREADED wasm, which requires SharedArrayBuffer.
+// Detect the REAL capability, not a proxy. The old `isTauri && isWebKit &&
+// !crossOriginIsolated` heuristic was proven WRONG on WebKitGTK (WI-4498): the
+// desktop webview exposes SharedArrayBuffer via the JSC_useSharedArrayBuffer runtime
+// flag (set in src-tauri/main.rs) even though crossOriginIsolated stays false, so the
+// proxy forced the crude energy-VAD fallback on builds that could actually run Silero.
+// `typeof SharedArrayBuffer === 'undefined'` is correct everywhere: a flagless desktop
+// build or a browser without cross-origin isolation lacks SAB → skip Silero → energy-VAD;
+// a flagged build or an isolated browser has SAB → Silero. If SAB is present but threaded
+// ort still fails to load, maybeStartWhisperCapture's try/catch falls back safely.
 export function shouldSkipVoicemodeWhisperOnThisRuntime(): boolean {
   if (typeof window === 'undefined') return false;
-  const ua = navigator.userAgent;
-  const isTauri = Boolean((window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
-  const isWebKit = /AppleWebKit/i.test(ua) && !/(Chrome|Chromium|Edg)\//i.test(ua);
-  return isTauri && isWebKit && !self.crossOriginIsolated;
+  return typeof SharedArrayBuffer === 'undefined';
 }
 
 async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {

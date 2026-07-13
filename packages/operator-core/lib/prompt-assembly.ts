@@ -676,7 +676,7 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   // Code-run nudge (code-execution-tool-orchestration B-CX-3) — the SHARED base every
   // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts). Reach for
   // code:run to collapse a multi-step tool flow (loop/branch/filter/fan-out/retry over N) into ONE
-  // call instead of N inference round-trips; self-gated ("if code:run is in your toolset"). Sourced
+  // call instead of N sequential MODEL turns (raw same-turn RPC count is not the cost); self-gated.
   // from the one CODE_RUN_NUDGE constant (orchestrator) so this base + the spawned-bee base can't desync.
   const codeRunNudge = renderCodeRunNudge();
   if (codeRunNudge) {

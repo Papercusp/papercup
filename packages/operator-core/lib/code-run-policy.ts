@@ -1,6 +1,6 @@
 /**
  * code-run-policy.ts — re-export of the shared "collapse a multi-step tool flow into ONE `code:run`
- * instead of paying an inference round-trip per call" clause for the operator-launched-role prompt
+ * to remove sequential model inference turns / intermediate context" clause for the operator prompt
  * base (code-execution-tool-orchestration B-CX-3 rollout).
  *
  * The one `CODE_RUN_NUDGE` string is owned by `@papercusp/orchestrator` (prompt-build.ts), where it

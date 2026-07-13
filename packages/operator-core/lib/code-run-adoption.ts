@@ -8,12 +8,24 @@
  * thresholds are IMPORTED from code-run-batch-nudge, not re-stated, so they can never drift:
  *
  *   - A spawn is a BATCHABLE OPPORTUNITY when, across its (successful) tool calls, it either fired one
- *     tool ≥ BATCH_NUDGE_THRESHOLD× (the same-tool pattern) or touched ≥ FANOUT_DISTINCT_THRESHOLD
- *     distinct tools (the fan-out pattern). Batch tools (code:* / recipes:*) are EXCLUDED from those
- *     counts (a code:run call is not "work to be batched").
+ *     tool from ≥ BATCH_NUDGE_THRESHOLD SEPARATE inference turns (the same-tool pattern) or touched
+ *     ≥ FANOUT_DISTINCT_THRESHOLD distinct tools spanning ≥ FANOUT_DISTINCT_THRESHOLD separate turns
+ *     (the fan-out pattern). Batch tools (code:* / recipes:*) are EXCLUDED from those counts (a
+ *     code:run call is not "work to be batched").
  *   - A spawn ADOPTED code:run when it made ≥1 code:run / recipes:run call.
  *   - adoptionRate (per role/day) = opportunity-spawns-that-also-used-code:run ÷ opportunity-spawns.
  *     That is the number to watch: of the spawns that COULD have batched, how many DID.
+ *
+ * TURNS, not raw calls (P-012, agent-operability-clarity-full-audit-2026-07-13): this metric used to
+ * classify an opportunity off raw tool-call counts (`maxSameTool`/`distinctTools`) — the same flaw the
+ * live nudge had before P-012. Several tool calls dispatched from ONE model inference turn (parallel
+ * tool_use — the harness's own "make independent calls in the same response block" guidance) cost a
+ * single round-trip; counting them as separate "opportunities to batch" inflated the denominator with
+ * spawns that were ALREADY optimal. `maxSameToolTurns`/`distinctTurns` (below) cluster calls into
+ * inferred turns the same way the nudge does — see `clusterTurns`/`TURN_GAP_MS` in
+ * code-run-batch-nudge.ts, imported (not re-implemented) so metric and nudge can never drift on what
+ * "a wasted round-trip" means. `workCalls`/`distinctTools` are kept for informational/debugging
+ * purposes but no longer drive the opportunity classification.
  *
  * Pure + injectable (the load-token-rollups.ts RunQuery precedent): `summarizeSpawnAdoption` /
  * `computeCodeRunAdoption` are pure and unit-tested without PG; `readCodeRunAdoption` runs the
@@ -21,7 +33,7 @@
  * (also runnable via dev:pg_query — see the agent-insight doc) and pre-aggregates per spawn so a
  * large tool_invocations table never streams raw rows over the wire.
  */
-import { BATCH_NUDGE_THRESHOLD, FANOUT_DISTINCT_THRESHOLD } from './code-run-batch-nudge';
+import { BATCH_NUDGE_THRESHOLD, FANOUT_DISTINCT_THRESHOLD, TURN_GAP_MS, clusterTurns } from './code-run-batch-nudge';
 
 /** Injectable query runner (mirrors harness-insights/load-token-rollups.ts). */
 export type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
@@ -56,25 +68,40 @@ function normalize(toolName: string): string {
   return toolName.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-/** One raw tool-call row (for the from-raw `computeCodeRunAdoption` path / tests). */
+/** One raw tool-call row (for the from-raw `computeCodeRunAdoption` path / tests). `invokedAt` is
+ *  REQUIRED (P-012): turn-clustering needs a timestamp per call — without one every call would have
+ *  to be assumed its own turn, silently reverting to the raw-count behavior this metric replaced. */
 export interface CallRow {
   spawnId: string;
   role: string;
   /** ISO day bucket (YYYY-MM-DD). */
   day: string;
   toolName: string;
+  /** Epoch ms this call was invoked — the ONLY signal available to infer turn boundaries (P-012;
+   *  see clusterTurns/TURN_GAP_MS in code-run-batch-nudge.ts). */
+  invokedAt: number;
 }
 
 /** Per-spawn aggregate — the shape CODE_RUN_ADOPTION_SQL returns and the reducer consumes. */
 export interface SpawnAdoptionRow {
   role: string;
   day: string;
-  /** Non-batch tool calls in the spawn. */
+  /** Non-batch tool calls in the spawn. Informational only since P-012 — NOT the opportunity signal
+   *  (see maxSameToolTurns/distinctTurns). */
   workCalls: number;
-  /** Distinct non-batch tools in the spawn. */
+  /** Distinct non-batch tools in the spawn. Informational only since P-012 (paired with
+   *  distinctTurns — see isBatchableSpawn — because tool DIVERSITY alone does not imply wasted
+   *  round-trips if it all landed in one turn). */
   distinctTools: number;
-  /** Max count of any single non-batch tool in the spawn. */
+  /** Max count of any single non-batch tool in the spawn, by RAW CALLS. Superseded by
+   *  maxSameToolTurns for the opportunity classification; kept for debugging/back-compat display. */
   maxSameTool: number;
+  /** Max count of DISTINCT INFERENCE TURNS any single non-batch tool was called from (P-012) — the
+   *  same-tool opportunity signal. A tool called 5× from ONE turn (parallel) scores 1 here, not 5. */
+  maxSameToolTurns: number;
+  /** Distinct inference turns spanned by the spawn's non-batch calls (P-012) — the fan-out
+   *  opportunity signal, paired with distinctTools. */
+  distinctTurns: number;
   /** The spawn made ≥1 code:run / recipes:run call. */
   usedCodeRun: boolean;
 }
@@ -96,9 +123,17 @@ export interface AdoptionSummary {
 }
 
 /** Is this spawn a batchable opportunity? Uses the SAME thresholds as the live nudge (imported, so
- *  the metric and the nudge can never disagree about what "batchable" means). */
-export function isBatchableSpawn(row: Pick<SpawnAdoptionRow, 'maxSameTool' | 'distinctTools'>): boolean {
-  return row.maxSameTool >= BATCH_NUDGE_THRESHOLD || row.distinctTools >= FANOUT_DISTINCT_THRESHOLD;
+ *  the metric and the nudge can never disagree about what "batchable" means) — and, since P-012,
+ *  the SAME turn-based gating: a same-tool repeat only counts if it spans ≥ BATCH_NUDGE_THRESHOLD
+ *  separate turns, and a fan-out only counts if it ALSO spans ≥ FANOUT_DISTINCT_THRESHOLD separate
+ *  turns (tool diversity alone is not waste if it all happened in one turn). */
+export function isBatchableSpawn(
+  row: Pick<SpawnAdoptionRow, 'maxSameToolTurns' | 'distinctTools' | 'distinctTurns'>,
+): boolean {
+  return (
+    row.maxSameToolTurns >= BATCH_NUDGE_THRESHOLD ||
+    (row.distinctTools >= FANOUT_DISTINCT_THRESHOLD && row.distinctTurns >= FANOUT_DISTINCT_THRESHOLD)
+  );
 }
 
 /** Fold per-spawn rows into per-(role, day) adoption summaries (deterministic; stable role/day sort). */
