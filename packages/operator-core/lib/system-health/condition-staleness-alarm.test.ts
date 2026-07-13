@@ -84,10 +84,15 @@ describe('evaluateStaleConditions (pure)', () => {
     expect(sigs).toEqual([]);
   });
 
-  it('an unparseable first_seen is skipped rather than throwing', () => {
+  it('an unparseable open-episode anchor is skipped rather than throwing', () => {
     const now = Date.parse('2026-07-05T01:00:00.000Z');
-    expect(() => evaluateStaleConditions([mkState({ first_seen: 'not-a-date' })], now, 0)).not.toThrow();
-    expect(evaluateStaleConditions([mkState({ first_seen: 'not-a-date' })], now, 0)).toEqual([]);
+    // The age anchor is now open_since (EI-10653); an unparseable one is skipped.
+    const bad = mkState({ open_since: 'not-a-date' });
+    expect(() => evaluateStaleConditions([bad], now, 0)).not.toThrow();
+    expect(evaluateStaleConditions([bad], now, 0)).toEqual([]);
+    // Fallback path: open_since null → first_seen used; an unparseable one is skipped too.
+    const badFallback = mkState({ open_since: null, first_seen: 'not-a-date' });
+    expect(evaluateStaleConditions([badFallback], now, 0)).toEqual([]);
   });
 
   it('multiple stale conditions each get their own signal', () => {

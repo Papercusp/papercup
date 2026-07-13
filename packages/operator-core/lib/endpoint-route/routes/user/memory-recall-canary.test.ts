@@ -66,6 +66,9 @@ const okRun = {
   baselineRAt10: 0.9,
   delta: -0.01,
   zeroHitRate: 0,
+  // EI-10666: zeroHitRate is consumer-level now; the retrieval-level pair localises a blackout.
+  retrievalZeroHitRate: 0,
+  retrievalRAt10: 0.89,
   latencyP50Ms: 120,
   status: 'ok' as const,
   notes: null,

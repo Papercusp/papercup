@@ -84,6 +84,8 @@ describe("computeConditionStates (pure)", () => {
       open: true,
       alarm_count: 3,
       first_seen: at(1),
+      // never-resolved ⇒ the current episode began at the first alarm.
+      open_since: at(1),
       last_seen: at(5),
       latest_summary: "latest",
       resolved_at: null,
@@ -92,14 +94,23 @@ describe("computeConditionStates (pure)", () => {
 
   it("alarm + later resolution ⇒ RESOLVED; re-alarm after ⇒ re-OPEN", () => {
     const resolved = computeConditionStates([alarm(1, "k"), resolution(2, "k")]);
-    expect(resolved[0]).toMatchObject({ open: false, resolved_at: at(2) });
+    // resolved ⇒ no current open episode.
+    expect(resolved[0]).toMatchObject({ open: false, resolved_at: at(2), open_since: null });
 
     const reopened = computeConditionStates([
       alarm(1, "k"),
       resolution(2, "k"),
       alarm(3, "k"),
     ]);
-    expect(reopened[0]).toMatchObject({ open: true, alarm_count: 2, last_seen: at(3) });
+    // EI-10653: the re-alarm opens a FRESH episode — open_since tracks the reopen
+    // (at 3), not the first-ever alarm (at 1) which first_seen still pins.
+    expect(reopened[0]).toMatchObject({
+      open: true,
+      alarm_count: 2,
+      first_seen: at(1),
+      open_since: at(3),
+      last_seen: at(3),
+    });
   });
 
   it("a resolution for a never-seen key records resolved, never open", () => {
