@@ -2934,13 +2934,21 @@ impl App {
             // P-010: prefix the per-type glyph into the bee pane title (zellij
             // has no per-pane color — D-008 — so the glyph carries the type).
             let title = crate::agent_pane_kind::glyph_prefixed_title(&title, kind);
+            let mut spec = crate::mux::PaneSpec::new(argv)
+                .titled(title)
+                .stacked_autoclose();
+            // `claude --resume <id>` resolves the session INSIDE the config dir
+            // by the pane's cwd (projects/<cwd-slug>) — open the pane in the
+            // agent's own cwd or the finder misses the transcript even with
+            // CLAUDE_CONFIG_DIR set correctly.
+            if let Some(cwd) = r.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+                spec = spec.cwd(cwd);
+            }
             out.push((
                 // P-011: group same-type panes — the batch appends in group-rank
                 // order so bees land together, planners together. Unknown → last.
                 kind.map(|k| k.group_rank()).unwrap_or(u8::MAX),
-                crate::mux::PaneSpec::new(argv)
-                    .titled(title)
-                    .stacked_autoclose(),
+                spec,
             ));
             // NOTE (owner ask 2026-06-11): bees do NOT get a per-bee wake pane
             // here. zellij stacks can't nest a chat|wakes split, and a bee is a
