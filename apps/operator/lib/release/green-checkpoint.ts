@@ -146,6 +146,12 @@ export interface CheckpointResult {
   from: string | null;
   green: boolean | null;
   reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'delta-held' | 'skipped-locked';
+  /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
+   *  launcher stamped the record target into the env. Read by the routine, which then does NOT
+   *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
+   *  exactly as before WI-4494 — which is what keeps an old-CLI/new-routine skew safe.
+   *  Set by the CLI entrypoint, never by runGreenCheckpoint itself. */
+  recorded?: boolean;
   /** P-016 (D-010): on a PARTIAL advance (reason 'advanced-prefix'), the sha `main`
    *  was FF'd to — the longest GREEN prefix — while `candidate` stays the red TIP (so
    *  failingTests + the release-fixer still target the real failure). Absent otherwise. */
@@ -2285,6 +2291,38 @@ if (require.main === module) {
     console.log(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(r)}`);
   };
 
+  /**
+   * WI-4494 — THE RUN RECORDS ITS OWN VERDICT.
+   *
+   * Before this, `gate_health` + the pipeline event were written by the ROUTINE that parsed our
+   * stdout — so a DETACHED manual run (`release:checkpoint-run`) executed the whole suite, produced
+   * a perfectly good green/red, and threw it away. That is what made run-lock contention lethal: a
+   * manual run holds the lock for up to 55 min, the hourly routine fire lands mid-run and records
+   * `skipped-locked` (a no-op — it has no verdict), and the run that DOES have the verdict discards
+   * it. gate_health then freezes on a stale red, which dispatches more fixers, which fire more
+   * manual runs. Observed live 2026-07-12: three consecutive fires skipped, the release pin frozen
+   * ~10h. We are the producer; we record. Then the collision is harmless — whoever wins the lock is
+   * the one with a verdict, and it lands.
+   *
+   * Fail-SAFE by construction: we record ONLY when our launcher stamped the record target into the
+   * env (see gate-verdict-target.ts). No stamp ⇒ we return false, leave `recorded` unset, and the
+   * caller records exactly as it always did — which is what keeps an old-routine/new-CLI skew (the
+   * deployed tree driving the integration tree's CLI) working. Any failure here degrades to the
+   * same place, so this can never leave the gate blind: the worst case is the old behaviour.
+   */
+  const recordOwnVerdict = async (r: CheckpointResult): Promise<boolean> => {
+    try {
+      const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+      const target = gateVerdictTargetFromEnv();
+      if (!target) return false; // not launched with a record target — the caller records.
+      const { recordCheckpointVerdict } = await import('@papercusp/operator-core/lib/harness/routines/release-actions');
+      return await recordCheckpointVerdict(target, r);
+    } catch (e) {
+      console.error(`[green-checkpoint] verdict self-record failed (the caller will record): ${e instanceof Error ? e.message : e}`);
+      return false;
+    }
+  };
+
   const candidateArg = arg('--candidate');
   const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
   if (!lock.acquired) {
@@ -2371,8 +2409,12 @@ if (require.main === module) {
       candidate: candidateArg,
       noPush: process.argv.includes('--no-push'),
     })
-      .then((r) => {
-        emitResult(r);
+      .then(async (r) => {
+        // WI-4494: record BEFORE emitResult/exit — `releaseAndExit` calls process.exit(), which
+        // would kill an un-awaited write. The marker then carries `recorded` so the routine knows
+        // not to record this same verdict a second time (double-counting the red streak).
+        const recorded = await recordOwnVerdict(r);
+        emitResult(recorded ? { ...r, recorded: true } : r);
         releaseAndExit(0);
       })
       .catch((e) => {

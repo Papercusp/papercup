@@ -28,6 +28,35 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
+import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
+
+/**
+ * WI-4494: the harness whose gate a MANUAL checkpoint run judges — stamped into the detached unit's
+ * env so the run RECORDS ITS OWN VERDICT instead of discarding it.
+ *
+ * This is the launcher whose verdicts were being thrown on the floor: it fires the full suite,
+ * green-checkpoint.ts computes a real green/red — and, because only ROUTINE-invoked runs wrote
+ * gate_health, nobody wrote it down. Meanwhile this run holds the run-lock, so the hourly routine
+ * fire that COULD have recorded one gets `skipped-locked` instead. The gate then can't produce a
+ * verdict at all while manual runs are in flight (observed live 2026-07-12: 3 consecutive fires
+ * skipped, release pin frozen ~10h). See release/gate-verdict-target.ts.
+ *
+ * Scope matches this module's: the operator-home gate (root = integrationRoot()), so the target is
+ * the operator-home harness. Fail-safe — if either half won't resolve we stamp nothing, the run
+ * doesn't record, and the routine records exactly as it did before.
+ */
+function resolveHomeGateTarget(): GateVerdictTarget | null {
+  try {
+    const { activeWorkspaceId } = require('./workspace-registry') as typeof import('./workspace-registry');
+    const { operatorHomeHarnessSlug } = require('./harness/operator-home-harness') as typeof import('./harness/operator-home-harness');
+    const workspaceId = activeWorkspaceId();
+    const installSlug = operatorHomeHarnessSlug();
+    if (!workspaceId || !installSlug) return null;
+    return { workspaceId, installSlug };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The transient systemd unit the detached manual checkpoint runs as. DISTINCT from the deploy
@@ -290,6 +319,10 @@ export function buildCheckpointSystemdArgv(
   partialGreenGate = false,
   /** When given, the run writes HERE and `logPath` is repointed at it as a symlink. */
   runLogPath?: string,
+  /** WI-4494: when given, the run RECORDS ITS OWN VERDICT for this harness (gate_health + the
+   *  pipeline event) instead of discarding it. Omitted ⇒ pre-WI-4494 behaviour (the caller records
+   *  — which for a detached manual run meant nobody did). */
+  target?: GateVerdictTarget | null,
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -306,6 +339,10 @@ export function buildCheckpointSystemdArgv(
   const inner =
     `${link}${gateEnv}PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
     `apps/operator/lib/release/green-checkpoint.ts > ${target} 2>&1`;
+  // WI-4494: a detached unit does NOT inherit the launcher's env (same reason the partial-green
+  // flag above has to be forwarded explicitly), so the record target must be passed as --setenv or
+  // the run has no idea whose gate it is judging and silently declines to record.
+  const verdictEnv = target ? Object.entries(gateVerdictEnv(target)).map(([k, v]) => `--setenv=${k}=${v}`) : [];
   return [
     '--user',
     '--collect',
@@ -313,6 +350,7 @@ export function buildCheckpointSystemdArgv(
     `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
+    ...verdictEnv,
     'bash',
     '-c',
     inner,
@@ -339,6 +377,10 @@ export interface LaunchCheckpointOpts {
    *  still-relevant verdict). No supported "cancel" existed before this; the only prior path
    *  was a human running `systemctl --user stop` by hand, then relaunching. */
   replaceStale?: boolean;
+  /** WI-4494: the harness whose gate this run judges — the run stamps its OWN verdict into that
+   *  harness's gate_health + pipeline history instead of discarding it. Omitted ⇒ the operator-home
+   *  gate (this launcher's scope). Pass `null` to explicitly launch a NON-recording run. */
+  target?: GateVerdictTarget | null;
 }
 
 /** EI-9672: best-effort `systemctl --user stop` on a checkpoint unit — the piece that was
@@ -426,6 +468,9 @@ export function launchDetachedCheckpoint(
     process.env.PATH ?? '',
     process.env.PAPERCUSP_PARTIAL_GREEN_GATE === '1',
     runLogPath,
+    // WI-4494: this run records its own verdict. Explicit opt-out (`target: null`) is honoured;
+    // omitted ⇒ the operator-home gate, which is this launcher's documented scope.
+    opts.target === undefined ? resolveHomeGateTarget() : opts.target,
   );
 
   return new Promise<LaunchCheckpointResult>((resolve) => {

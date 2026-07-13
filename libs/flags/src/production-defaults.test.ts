@@ -245,6 +245,22 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // DARK_FLAGS_HIGH_WATERMARK was raised 24→25 (see types.ts's watermark constant
   // comment). Count 24 → 25.
   'papercusp-mem0-federation-egress',
+  // 2026-07-12 (WI-4238) — papercusp-queen-full-autonomy: BUG-FIX correction, NINTH
+  // instance of the EI-7230 class (own comment always said "OFF by default — DELIBERATE",
+  // never actually added to DARK_FLAGS, so the P-011 inversion silently derived it ON).
+  // Confirmed live-ON via PG (no override row in workspace papercusp-workspace).
+  //
+  // This is the ONLY genuine safety mis-default of the ten outstanding comment/DARK_FLAGS
+  // mismatches. A per-flag re-derivation (su-00a91, 2026-07-12) found the other nine all
+  // default-ON to a SAFER/NARROWER behavior — completed partition cutovers and workspace/
+  // auth guard rails — so for those, "restoring the documented dark baseline" is a
+  // REGRESSION, not a fix: COORD_PER_WORKSPACE and ISSUES_PER_WORKSPACE would have stranded
+  // ~79k live rows (67,468 coord events + 11,730 issues, measured), and SCOPED_SUPERUSER_
+  // CLAMP / UI_WORKSPACE_GUARD would have RELAXED auth enforcement. Their comments were the
+  // stale side and are now corrected in types.ts. Only this one inverts the safety
+  // direction (ON removes the last human check on the system widening its own ceilings),
+  // so only this one is darkened. Watermark raised 25→26. Count 25 → 26.
+  'papercusp-queen-full-autonomy',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -409,7 +425,13 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // federation is an owner-ratified privacy surface. Breached the watermark of 24 with
     // zero graduation candidates ready, so DARK_FLAGS_HIGH_WATERMARK was raised 24→25 (see
     // types.ts's watermark constant comment). Count 24 → 25.
-    expect(offCount).toBe(25);
+    // 2026-07-12 (WI-4238) — papercusp-queen-full-autonomy: BUG-FIX correction, NINTH
+    // instance of the EI-7230-class bug (own comment always said dark, never actually added
+    // — see PRE_INVERSION_DEFAULT_OFF above). The ONE genuine safety mis-default among the
+    // ten outstanding mismatches; the other nine default-ON to the SAFER direction and had
+    // their stale comments corrected instead (see types.ts). Breached the watermark of 25,
+    // so DARK_FLAGS_HIGH_WATERMARK was raised 25→26. Count 25 → 26.
+    expect(offCount).toBe(26);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {
