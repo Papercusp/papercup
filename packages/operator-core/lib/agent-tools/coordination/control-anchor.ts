@@ -51,7 +51,7 @@ export interface ControlAnchor {
     updatedAt: string;
   };
   resync: {
-    on: ['missing-base', 'schema-mismatch', 'generation-mismatch'];
+    on: readonly ['missing-base', 'schema-mismatch', 'generation-mismatch'];
     verb: 'coord:orient';
     args: { afterCompaction: true };
     rule: 'replace-full-never-merge-behind';

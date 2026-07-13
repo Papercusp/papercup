@@ -30,8 +30,15 @@ import type { Sql } from 'postgres';
 export const TERMINAL_STATUSES = ['resolved', 'passed', 'closed'] as const;
 
 export interface ReleaseArtifact {
-  product: 'gui' | 'server';
-  /** e.g. `linux-x86_64`, `darwin-universal`, `windows-x86_64`. */
+  /**
+   * `gui`/`server` are the desktop products (win/mac/linux). `mobile` is the
+   * phone apps (Android APK/AAB, iOS IPA) — a distinct product so the page can
+   * give them their own "Mobile apps" section AND so they can never collide into
+   * the desktop auto-update manifest (`latest.json` is desktop-only; the Tauri
+   * updater's `platformKeyFor` accepts only darwin/linux/windows).
+   */
+  product: 'gui' | 'server' | 'mobile';
+  /** e.g. `linux-x86_64`, `darwin-universal`, `windows-x86_64`, `android-universal`, `ios-arm64`. */
   platform: string;
   name: string;
   url: string;

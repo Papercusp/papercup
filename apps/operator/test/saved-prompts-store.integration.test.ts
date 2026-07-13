@@ -1,8 +1,9 @@
 /**
  * Integration test for saved-prompts-store against a real Postgres.
  * Targets the real `harness_shared.saved_prompts` table (mirrors migration
- * 105's DDL subset — no RLS/grants, which need cluster roles). Isolation is
- * by unique workspace ids per test, not a private schema, so it can share
+ * 105's DDL subset + migration 598's organizer columns — no RLS/grants or
+ * the change-notify trigger, which need cluster roles/functions). Isolation
+ * is by unique workspace ids per test, not a private schema, so it can share
  * the reused testcontainer with other suites.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -46,6 +47,28 @@ beforeAll(async () => {
   await sql.unsafe(`
     CREATE UNIQUE INDEX IF NOT EXISTS saved_prompts_scope_name
       ON harness_shared.saved_prompts (workspace_id, COALESCE(harness_slug, ''), name)
+  `);
+  // Organizer columns (migration 598, quick-panel-saved-prompts-2026-07-13) —
+  // idempotent ALTERs exactly like the real migration, because the reused
+  // testcontainer may already hold the pre-598 table from an earlier run.
+  // mapRow() in saved-prompts-store reads these on every RETURNING *.
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.saved_prompts
+      ADD COLUMN IF NOT EXISTS parent_id uuid,
+      ADD COLUMN IF NOT EXISTS position text,
+      ADD COLUMN IF NOT EXISTS title text,
+      ADD COLUMN IF NOT EXISTS collapsed boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS usage_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS last_used_at timestamptz,
+      ADD COLUMN IF NOT EXISTS archived_at timestamptz
+  `);
+  await sql.unsafe(`
+    DO $$ BEGIN
+      ALTER TABLE harness_shared.saved_prompts
+        ADD CONSTRAINT saved_prompts_parent_fk FOREIGN KEY (parent_id)
+          REFERENCES harness_shared.saved_prompts(id) ON DELETE CASCADE;
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$
   `);
 });
 

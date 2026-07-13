@@ -48,6 +48,8 @@ export async function resolveFleetScopeContext(
   const { latestFleetMembership } = await import('../fleet-membership-store');
   const { listFleetAssignments } = await import('../fleet/assignments');
   const ws = resolveClaimSpecWorkspace(workspaceId);
+  // No specific workspace (null / '*' / empty) ⇒ no fleet-member scope to resolve.
+  if (!ws) return null;
   let ownerId = ownerIdOrName;
   let membership = await latestFleetMembership(ws, ownerId).catch(() => null);
 
