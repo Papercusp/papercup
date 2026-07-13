@@ -43,3 +43,18 @@ export function queueForRoutine(targetRole: string): string {
   }
   return ROUTINES_QUEUE;
 }
+
+/**
+ * The CRITICAL-ROUTINE FLOOR for the routinesTick PG-pool-starvation shed (EI-11171).
+ *
+ * When routinesTickImpl sheds on critical pool pressure (pool-pressure.ts), it must NOT go
+ * fully dark: the ONE thing that can never be allowed to stall is the protected critical-queue
+ * routine (git-sync) — the whole reason the dedicated `routines-critical` lane exists is that
+ * its starvation froze every commit + deploy for 7h (2026-06-23). The original shed did a bare
+ * `return` BEFORE the fire loop, silently skipping git-sync's enqueue too — defeating that lane.
+ * This predicate is the floor: under a shed, a routine fires ONLY if it belongs to the protected
+ * lane; everything else sheds with the heavy sweeps, exactly as before. Pure ⇒ unit-testable.
+ */
+export function shouldFireUnderPoolShed(targetRole: string): boolean {
+  return queueForRoutine(targetRole) === ROUTINES_CRITICAL_QUEUE;
+}

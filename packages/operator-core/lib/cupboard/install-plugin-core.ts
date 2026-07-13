@@ -16,7 +16,7 @@
  * route registry. The route (`install-plugin.ts`) wires the real impls.
  */
 import { promises as fs, existsSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { join, resolve, sep, dirname } from 'node:path';
 
 export interface InstallPluginCoreInput {
   /** The plugin repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -126,10 +126,29 @@ export class InstallPluginError extends Error {
   }
 }
 
-// A plugin name becomes a directory under global-plugins, so it must be a safe
-// SINGLE-SEGMENT slug — never a path. It is UNTRUSTED (from the cloned repo's
-// papercusp.json), so reject anything with a separator, a leading dot, or `..`.
-const SAFE_PLUGIN_NAME_RE = /^@?[a-z0-9][a-z0-9._-]{0,127}$/i;
+// A plugin name becomes a directory under global-plugins. It is UNTRUSTED (from
+// the cloned repo's papercusp.json), so it must be EITHER a safe single-segment
+// slug (optional leading `@`), OR a scoped `@scope/name` where BOTH segments are
+// safe slugs — the exact on-disk layout the plugin LOADER recurses into
+// (`global-plugins/@scope/name/`; see plugin-loader loader.test.ts "recurses into
+// @scope/ dirs"). Rejecting scoped names here (as the old single-segment-only
+// regex did) made a legitimately-scoped plugin — e.g. `@papercupai/papercusp-worker`
+// — uninstallable via the Cupboard even though the loader loads it fine
+// (cupboard-public-release-2026-07-12 P-015 fresh-install acceptance). Anything
+// else (bare separator, leading dot, `..`, >2 segments) is rejected: an untrusted
+// `../evil` or `@a/../evil` must never escape global-plugins (path traversal →
+// arbitrary file deletion via the `rm -rf` target).
+const SAFE_NAME_SEGMENT_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
+function isSafePluginName(name: string): boolean {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  // Scoped `@scope/name`: exactly two safe segments.
+  if (name.startsWith('@') && name.includes('/')) {
+    const parts = name.slice(1).split('/');
+    return parts.length === 2 && parts.every((seg) => SAFE_NAME_SEGMENT_RE.test(seg));
+  }
+  // Unscoped single segment (an optional bare leading `@` is allowed).
+  return SAFE_NAME_SEGMENT_RE.test(name.replace(/^@/, ''));
+}
 
 /** Throw unless `childPath` resolves to `parentDir` itself or a path inside it. */
 function assertInside(parentDir: string, childPath: string, label: string): void {
@@ -206,9 +225,9 @@ export async function installPluginFromCupboardCore(
     // `rm -rf` + `cp` into — so it must be a safe single-segment slug, never a path.
     // Otherwise a malicious manifest (`"name": "../../.ssh"`) would delete/overwrite
     // files outside global-plugins (path traversal → arbitrary file deletion).
-    if (typeof manifest.name !== 'string' || !SAFE_PLUGIN_NAME_RE.test(manifest.name)) {
+    if (typeof manifest.name !== 'string' || !isSafePluginName(manifest.name)) {
       throw new InstallPluginError(
-        `unsafe plugin name ${JSON.stringify(manifest.name)} — must be a single-segment slug`,
+        `unsafe plugin name ${JSON.stringify(manifest.name)} — must be a single-segment slug or a scoped @scope/name`,
         400,
       );
     }

@@ -27,7 +27,12 @@
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
-import { ROUTINES_QUEUE, ROUTINES_CRITICAL_QUEUE, queueForRoutine } from './routines-queue-classification';
+import {
+  ROUTINES_QUEUE,
+  ROUTINES_CRITICAL_QUEUE,
+  queueForRoutine,
+  shouldFireUnderPoolShed,
+} from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
@@ -315,13 +320,23 @@ async function routinesTickImpl(): Promise<void> {
   // the starvation becomes a loud counted signal (the bghost-watchdog stays the backstop;
   // the dead-routine detector still catches a sustained freeze — this adds attribution).
   // Fail-soft: poolPressure() returns 'ok' on any probe error (never shed on no signal).
+  //
+  // EI-11171 CRITICAL-ROUTINE FLOOR: a critical shed no longer goes fully dark. The original
+  // bare `return` here skipped the ENTIRE fire loop below — including git-sync, which is fired
+  // into the protected ROUTINES_CRITICAL_QUEUE precisely so it can NEVER be starved (its
+  // starvation froze every commit + deploy for 7h on 2026-06-23). Shedding it too silently
+  // re-armed that exact incident class. Instead we set `poolCritical` and fall through to a
+  // MINIMAL pass: fire ONLY critical-queue routines (shouldFireUnderPoolShed), then return
+  // before the heavy sweeps. Strictly additive — every non-critical fire + loop-rebase + the
+  // heavy sweeps stay shed exactly as before, so the shed's protective behaviour is unchanged;
+  // this only guarantees the must-never-starve lane survives (bounded to ~a few quick queries).
   const pool = await poolPressure();
-  if (pool === 'critical') {
+  const poolCritical = pool === 'critical';
+  if (poolCritical) {
     const shedCount = recordPoolShed();
     console.warn(
-      `[routines-tick] SKIPPED — PG pool starvation (acquire+SELECT1 probe ${lastPoolProbeMs()}ms ≥ critical), shedding scheduler tick (P-006/W4); pool-shed #${shedCount}`,
+      `[routines-tick] PG pool starvation (acquire+SELECT1 probe ${lastPoolProbeMs()}ms ≥ critical) — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync floor, EI-11171/P-006/W4); pool-shed #${shedCount}`,
     );
-    return;
   }
   const { sql } = getOrgPg();
 
@@ -357,6 +372,9 @@ async function routinesTickImpl(): Promise<void> {
 
   const due = await DBOS.runStep(() => listDueCronRoutines(sql), { name: 'list-due-routines' });
   for (const r of due) {
+    // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY the protected
+    // critical-queue routines (git-sync); everything else sheds with the heavy sweeps below.
+    if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
     const claimed = await DBOS.runStep(() => claimDueRoutine(sql, r), { name: 'claim-routine' });
     if (!claimed) continue;
     try {
@@ -391,6 +409,11 @@ async function routinesTickImpl(): Promise<void> {
       if (!/Duplicat/i.test(String(e))) throw e;
     }
   }
+
+  // EI-11171 critical-routine floor (cont.): under a pool-starvation shed the critical-queue
+  // routines have now fired; skip the loop-rebase + heavy sweeps below (they stay shed exactly
+  // as before this floor existed — the shed's protective behaviour is unchanged).
+  if (poolCritical) return;
 
   // Loop completion-rebase (B-LOOP-2) — its OWN step, FIRST after the fire loop
   // (Task-#8 / su-cold-auto 2026-07-03): a loop fire parks at next_fire_at='infinity'
