@@ -45,12 +45,6 @@ import { getOrgPg } from "@papercusp/db-org";
 import { loopbackFetch } from "../loopback-fetch";
 import { operatorApiBase } from "../operator-api-base";
 import { classifyFireError, recordFire } from "../autoloop";
-import { recordSpawn, finishSpawn } from "../fleet/spawn-tree";
-import {
-  heartbeatSpawns,
-  recordSpawnPid,
-  SPAWN_HEARTBEAT_INTERVAL_MS,
-} from "../fleet/spawn-reclaim";
 import {
   managedSetInterval,
   type ManagedHandle,
@@ -235,12 +229,22 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = async ({
   // `reaped`, i.e. a FAILED turn, making the gate read worse than the silence did), then
   // finished done/failed on the SAME classification the recordFire branches below compute.
   // Best-effort end to end: a bookkeeping failure must never break the meta-monitor's fire.
+  // The spawn stores are DYNAMICALLY imported (the launch-blueprint / scorecard convention):
+  // they pull the db-org graph in behind them, and this module's unit tests mock @papercusp/
+  // db-org partially — a static import would drag that graph into their module graph and
+  // break collection. Tests replace the whole fire via setOverwatchLaunchFire anyway.
   const spawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const runId = `overwatch-${Date.now()}-${randomUUID().slice(0, 6)}`;
   let pg: ReturnType<typeof getOrgPg> | null = null;
+  let spawnTree: typeof import("../fleet/spawn-tree") | null = null;
+  let reclaim: typeof import("../fleet/spawn-reclaim") | null = null;
   try {
+    [spawnTree, reclaim] = await Promise.all([
+      import("../fleet/spawn-tree"),
+      import("../fleet/spawn-reclaim"),
+    ]);
     pg = getOrgPg();
-    await recordSpawn(pg.sql, {
+    await spawnTree.recordSpawn(pg.sql, {
       spawnId,
       workspaceId,
       harnessSlug: installSlug,
@@ -252,7 +256,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = async ({
       runId,
       status: "running",
     });
-    await recordSpawnPid(pg.sql, spawnId, process.pid).catch(() => {});
+    await reclaim.recordSpawnPid(pg.sql, spawnId, process.pid).catch(() => {});
   } catch (e) {
     console.warn(
       `[overwatch-loop] spawn record failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
@@ -261,8 +265,9 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = async ({
   }
 
   let heartbeat: ManagedHandle | null = null;
-  if (pg) {
+  if (pg && reclaim) {
     const sql = pg.sql;
+    const { heartbeatSpawns, SPAWN_HEARTBEAT_INTERVAL_MS } = reclaim;
     heartbeat = managedSetInterval(
       "overwatch-launch-heartbeat",
       SPAWN_HEARTBEAT_INTERVAL_MS,
@@ -283,13 +288,15 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = async ({
       heartbeat.stop();
       heartbeat = null;
     }
-    if (!pg) return;
-    void finishSpawn(pg.sql, {
-      spawnId,
-      workspaceId,
-      status,
-      ...(errorMessage ? { errorMessage } : {}),
-    }).catch(() => {});
+    if (!pg || !spawnTree) return;
+    void spawnTree
+      .finishSpawn(pg.sql, {
+        spawnId,
+        workspaceId,
+        status,
+        ...(errorMessage ? { errorMessage } : {}),
+      })
+      .catch(() => {});
   };
 
   void loopbackFetch(url, {

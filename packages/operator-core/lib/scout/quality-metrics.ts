@@ -46,7 +46,20 @@ import { computeNoveltyGainReport, mapProvenanceToNoveltyRow } from './novelty-m
  * breakdown always carries all four keys (zeroed), so a dashboard / baseline
  * diff never sees a key appear out of nowhere.
  */
-export const SCOUT_TICK_GATES = ['min-interval', 'no-trigger', 'circuit', 'claim-lost'] as const;
+/**
+ * The self-gates a tick can be withheld by — every key is always PRESENT (zeroed) in
+ * {@link ScoutQualityReport.gatedTickBreakdown}, so "this gate never fired" is a visible 0
+ * rather than a missing key.
+ *
+ * `no-signal` is the volume-mode zero-signal veto (WI-4318, cadence.ts): the corpus is
+ * byte-identical to the last cycle, so friction/drain/idle/heartbeat are ALL withheld. It
+ * was a live gate reason for its whole life but was never listed here — so it only ever
+ * appeared in the histogram once it had already fired, and a healthy quiet period (the
+ * veto working exactly as designed) was indistinguishable from the gate not existing. It
+ * is the load-bearing evidence for the P-015 "spend drops in quiet periods" bar, so it is
+ * zeroed like every other gate.
+ */
+export const SCOUT_TICK_GATES = ['min-interval', 'no-trigger', 'no-signal', 'circuit', 'claim-lost'] as const;
 
 /**
  * Injected snapshots the pure core folds — production via {@link buildQualityReportInputs},

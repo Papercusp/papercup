@@ -104,10 +104,21 @@ export default defineTool({
     const lastScoutTickAt = scoutTicks[0]?.last_tick_at ?? null;
     const nowMs = Date.now();
 
+    // P-070 deployment gate (EI-10625): a Class-C platform-improvement loop is
+    // DELIBERATELY not materialized when platform mode is off, so its missing routine row
+    // is by design. Every other declared singleton is expected to have one — and a missing
+    // row there is a registration failure, never a dark-by-design loop (a dark loop still
+    // HAS a row). Resolve the gate once and hand it to the pure classifier.
+    const { platformImprovementLoopsEnabled, isPlatformImprovementLoop } = await import(
+      '../../blueprint/materialize-triggers'
+    );
+    const platformLoopsOn = await platformImprovementLoopsEnabled();
+
     const loops = computeLearningLoopHealth(LEARNING_SINGLETONS, routines, {
       nowMs,
       staleAfterDays: args.staleAfterDays,
       homeSlug: operatorHomeHarnessSlug(),
+      expectedMaterialized: (id) => platformLoopsOn || !isPlatformImprovementLoop(id),
       activityByBlueprintId: {
         scout: {
           lastActivityAt: lastScoutTickAt == null ? null : new Date(lastScoutTickAt).toISOString(),

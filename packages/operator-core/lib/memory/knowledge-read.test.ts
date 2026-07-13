@@ -83,6 +83,7 @@ describe('readMemoryHealth', () => {
       topScoreP90: 0.74,
       fragmentHits7d: 0,
       recallBySurface: [],
+      recallTelemetryOk: true,
     });
   });
 
@@ -122,5 +123,31 @@ describe('readMemoryHealth', () => {
       topScoreP50: null,
       fragmentHits7d: 0,
     });
+  });
+
+  // EI-10625. The degrade above is the whole trap: a FAILED read produces
+  // `zeroHitRate7d: 0` — "no recall ever missed", the healthiest value in the range —
+  // and every consumer downstream reads it as a clean bill of health. The zeros are
+  // fine to return; returning them WITHOUT SAYING SO is not. This flag is the only
+  // thing distinguishing a perfect store from an unreadable one.
+  it('flags the failed read so its all-zeros cannot be mistaken for perfect health', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const health = await readMemoryHealth(sqlSequence([
+      [{ total_memories: 10_491, entity_rows: 0, feedback_30d: 250 }],
+      new Error('relation "harness_shared.memory_recall_stats" does not exist'),
+    ]));
+    warn.mockRestore();
+    // Reads as flawless recall over a 10k-memory store — and is worth exactly nothing.
+    expect(health.zeroHitRate7d).toBe(0);
+    expect(health.recallTelemetryOk).toBe(false);
+  });
+
+  it('a healthy read is marked trustworthy', async () => {
+    const health = await readMemoryHealth(sqlSequence([
+      [{ total_memories: 341, entity_rows: 0, feedback_30d: 2 }],
+      [{ recalls: 40, zero_hits: 10, p50: 0.5, p90: 0.7, fragment_hits: 0 }],
+      [],
+    ]));
+    expect(health.recallTelemetryOk).toBe(true);
   });
 });

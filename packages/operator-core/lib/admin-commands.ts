@@ -106,15 +106,16 @@ echo "=== mac build + audit complete"`,
     id: 'build-windows-prod',
     label: 'Windows Prod Build',
     section: 'building',
-    description: 'Builds the Windows .msi / .exe inside the Windows VM (C:\\Users\\User\\papercupai\\papercusp-desktop). ~30–45 min. Copies the artifacts back to /home/marsh-office/ and runs the privacy auditor.',
+    description: 'Builds the Windows .msi / .exe inside the Windows VM (%USERPROFILE%\\papercupai\\papercusp-desktop). ~30–45 min. Copies the artifacts back to the artifact dir and runs the privacy auditor.',
     command: `set -e
-echo "=== win build via ${SSH_WIN}"
-${SSH_WIN} "powershell -NoProfile -ExecutionPolicy Bypass -File win-build.ps1" 2>&1 | tail -200
+${LOAD_VM_ENV}
+echo "=== win build via $SSH_WIN"
+$SSH_WIN "powershell -NoProfile -ExecutionPolicy Bypass -File win-build.ps1" 2>&1 | tail -200
 echo "=== scp msi+exe back"
-scp -i /home/marsh-office/.ssh/papercup-vm-win -P 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/msi/Papercusp_0.0.1_x64_en-US.msi' /home/marsh-office/
-scp -i /home/marsh-office/.ssh/papercup-vm-win -P 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/nsis/Papercusp_0.0.1_x64-setup.exe' /home/marsh-office/
+scp -i "$VM_WIN_SSH_KEY" -P "$WIN_PORT" $SSH_OPTS "$VM_WIN_USER@$WIN_HOST:papercupai/papercusp-desktop/src-tauri/target/release/bundle/msi/Papercusp_0.0.1_x64_en-US.msi" "${ARTIFACT_DIR}/"
+scp -i "$VM_WIN_SSH_KEY" -P "$WIN_PORT" $SSH_OPTS "$VM_WIN_USER@$WIN_HOST:papercupai/papercusp-desktop/src-tauri/target/release/bundle/nsis/Papercusp_0.0.1_x64-setup.exe" "${ARTIFACT_DIR}/"
 echo "=== audit"
-${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh ${ARTIFACT_DIR}/Papercusp_0.0.1_x64_en-US.msi ${ARTIFACT_DIR}/Papercusp_0.0.1_x64-setup.exe
 echo "=== win build + audit complete"`,
   },
   {
@@ -139,14 +140,18 @@ echo "=== win build + audit complete"`,
     label: 'Install + launch Mac .dmg',
     section: 'running',
     description: 'Mounts the DMG, copies Papercusp.app to /Applications, strips quarantine, and launches it in the Mac VM.',
-    command: `${SSH_MAC} 'bash -lc "set -e; DMG=~/Papercusp_0.0.1_x86_64.dmg; echo \\"==> mounting $DMG\\"; hdiutil attach \\"$DMG\\" -nobrowse; echo \\"==> copying to /Applications\\"; rm -rf /Applications/Papercusp.app; cp -R /Volumes/Papercusp/Papercusp.app /Applications/; hdiutil detach /Volumes/Papercusp; xattr -dr com.apple.quarantine /Applications/Papercusp.app; echo \\"==> launching\\"; open /Applications/Papercusp.app; echo done"' 2>&1`,
+    command: `set -e
+${LOAD_VM_ENV}
+$SSH_MAC 'bash -lc "set -e; DMG=~/Papercusp_0.0.1_x86_64.dmg; echo \\"==> mounting $DMG\\"; hdiutil attach \\"$DMG\\" -nobrowse; echo \\"==> copying to /Applications\\"; rm -rf /Applications/Papercusp.app; cp -R /Volumes/Papercusp/Papercusp.app /Applications/; hdiutil detach /Volumes/Papercusp; xattr -dr com.apple.quarantine /Applications/Papercusp.app; echo \\"==> launching\\"; open /Applications/Papercusp.app; echo done"' 2>&1`,
   },
   {
     id: 'install-windows-msi',
     label: 'Install + launch Windows .msi',
     section: 'running',
     description: 'Runs msiexec /i silent + launches Papercusp.exe in the Windows VM.',
-    command: `${SSH_WIN} "powershell -NoProfile -Command \\"& { \\$msi = 'C:\\\\Users\\\\User\\\\papercusp-desktop\\\\src-tauri\\\\target\\\\release\\\\bundle\\\\msi\\\\Papercusp_0.0.1_x64_en-US.msi' ; Write-Host '==> installing' \\$msi ; Start-Process -Wait msiexec -ArgumentList '/i', \\$msi, '/quiet' ; Write-Host '==> launching' ; Start-Process 'C:\\\\Program Files\\\\Papercusp\\\\Papercusp.exe' ; Write-Host 'done' }\\"" 2>&1`,
+    command: `set -e
+${LOAD_VM_ENV}
+$SSH_WIN "powershell -NoProfile -Command \\"& { \\$msi = \\"\\$env:USERPROFILE\\\\papercusp-desktop\\\\src-tauri\\\\target\\\\release\\\\bundle\\\\msi\\\\Papercusp_0.0.1_x64_en-US.msi\\" ; Write-Host '==> installing' \\$msi ; Start-Process -Wait msiexec -ArgumentList '/i', \\$msi, '/quiet' ; Write-Host '==> launching' ; Start-Process 'C:\\\\Program Files\\\\Papercusp\\\\Papercusp.exe' ; Write-Host 'done' }\\"" 2>&1`,
   },
   {
     id: 'launch-linux-dev',
@@ -167,14 +172,14 @@ echo "=== win build + audit complete"`,
     id: 'audit-prod-bundles',
     label: 'Audit prod bundles for PostHog leaks',
     section: 'running',
-    description: 'Runs bin/audit-bundle.sh against any prod artifacts present in /home/marsh-office/ + the local Linux .deb/.rpm. Fails loud if any artifact contains posthog.json, posthog-personal.json, or PAPERCUSP_POSTHOG_* env vars.',
+    description: 'Runs bin/audit-bundle.sh against any prod artifacts present in the artifact dir + the local Linux .deb/.rpm. Fails loud if any artifact contains posthog.json, posthog-personal.json, or PAPERCUSP_POSTHOG_* env vars.',
     command: `set -e
 ARTIFACTS=()
 DEB="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb"
 RPM="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/rpm/Papercusp-0.0.1-1.x86_64.rpm"
-DMG=/home/marsh-office/Papercusp_0.0.1_x86_64.dmg
-MSI=/home/marsh-office/Papercusp_0.0.1_x64_en-US.msi
-EXE=/home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+DMG=${ARTIFACT_DIR}/Papercusp_0.0.1_x86_64.dmg
+MSI=${ARTIFACT_DIR}/Papercusp_0.0.1_x64_en-US.msi
+EXE=${ARTIFACT_DIR}/Papercusp_0.0.1_x64-setup.exe
 for a in "$DEB" "$RPM" "$DMG" "$MSI" "$EXE"; do
   [ -f "$a" ] && ARTIFACTS+=("$a") && echo "found: $a ($(du -h "$a" | cut -f1))" || echo "missing: $a"
 done
@@ -235,14 +240,18 @@ ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "\${ARTIFACTS[@]}"`,
     label: 'Launch iOS simulator (iPhone 16)',
     section: 'simulators',
     description: 'SSH Mac VM → xcrun simctl boot "iPhone 16" + open Simulator.app. Requires the macOS VM running; view via `remote-viewer spice://127.0.0.1:5930`.',
-    command: `${SSH_MAC} 'bash -lc "set -e; DEVICE=\\"iPhone 16\\"; echo \\"==> booting $DEVICE\\"; xcrun simctl boot \\"$DEVICE\\" 2>&1 | grep -v \\"Booted\\" || true; echo \\"==> opening Simulator.app\\"; open -a Simulator; sleep 2; echo \\"==> booted devices:\\"; xcrun simctl list devices booted; echo \\"==> done — view via SPICE on :5930\\""' 2>&1`,
+    command: `set -e
+${LOAD_VM_ENV}
+$SSH_MAC 'bash -lc "set -e; DEVICE=\\"iPhone 16\\"; echo \\"==> booting $DEVICE\\"; xcrun simctl boot \\"$DEVICE\\" 2>&1 | grep -v \\"Booted\\" || true; echo \\"==> opening Simulator.app\\"; open -a Simulator; sleep 2; echo \\"==> booted devices:\\"; xcrun simctl list devices booted; echo \\"==> done — view via SPICE on :5930\\""' 2>&1`,
   },
   {
     id: 'ios-simulator-list',
     label: 'List iOS simulator devices',
     section: 'simulators',
     description: 'Shows all available iOS simulator devices on the Mac VM. Use device names from here in custom xcrun simctl boot runs.',
-    command: `${SSH_MAC} "xcrun simctl list devices available iOS" 2>&1`,
+    command: `set -e
+${LOAD_VM_ENV}
+$SSH_MAC "xcrun simctl list devices available iOS" 2>&1`,
   },
 ];
 

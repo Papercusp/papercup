@@ -234,6 +234,18 @@ jobs:
       - name: Lint no self-referential export shims
         run: npm run lint:no-self-referential-export
 
+      # Host-bundle build guard (P-009, 2026-07-12): bundle-host.sh runs at service
+      # ExecStartPre + release deploy, NEVER in tests — so a change that breaks the
+      # esbuild bundle is invisible to unit tests, tsc AND the green gate, and only
+      # detonates at the next restart (:3170 down fleet-wide, deploy dead). It happened:
+      # a dynamic import of @huggingface/transformers dragged onnxruntime-node's
+      # per-platform `.node` addons into the graph → "No loader is configured for .node".
+      # The three lints above each pattern-match ONE way to break this bundle; this is
+      # the DIRECT detector — it runs the real bundle-host.sh (single source of truth for
+      # the externals list) against a throwaway outfile. ~10s.
+      - name: Lint host bundle builds
+        run: npm run lint:host-bundle-builds
+
       # Smart-quote guard (EI-418, found via EI-412): a curly quote used as a
       # code delimiter (copy-paste through a smart-quoting surface) is a hard
       # esbuild/tsc parse failure that reads as mysterious. GATING — flags

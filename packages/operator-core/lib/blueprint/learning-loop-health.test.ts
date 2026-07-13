@@ -251,3 +251,77 @@ describe('summarizeLearningLoopHealth — rollup + needs-attention partition', (
     expect(s.needsAttention).toEqual(['scout']); // dark-by-design is NOT flagged; the always-on gap IS
   });
 });
+
+/**
+ * EI-10625 — A LOOP THAT DOES NOT EXIST MUST NOT BE QUIETER THAN A LOOP THAT IS LATE.
+ *
+ * The memory recall canary (EI-10047) was never materialized: no routine row, 0 runs, for
+ * its entire life. `computeLearningLoopHealth` classified it `absent` CORRECTLY on every
+ * call — and `summarizeLearningLoopHealth` then dropped it from `needsAttention`, because
+ * that filter admitted an absent loop only when `alwaysOn`. The canary is a frontier loop,
+ * so it was excused. The classification was never the problem; the action on it was.
+ *
+ * These tests pin the rule: an absent loop that was EXPECTED to exist always needs
+ * attention — and construct the failure that should make it fire before trusting it.
+ */
+describe('summarizeLearningLoopHealth — a never-materialized loop is LOUD (EI-10625)', () => {
+  // The canary's exact live shape: a declared, non-always-on loop with NO routine row.
+  const CANARY: LearningLoopSpec = {
+    blueprintId: 'memory-live-recall-canary',
+    legacyRoutine: 'memory-live-recall-canary',
+  };
+
+  it('FIRES: a declared frontier loop with NO routine row is never-materialized, not dark', () => {
+    const rows = computeLearningLoopHealth([CANARY], [], { nowMs: NOW });
+    expect(rows[0].status).toBe('absent');
+    expect(rows[0].alwaysOn).toBe(false); // the very property that used to excuse it
+    expect(rows[0].expectedMaterialized).toBe(true);
+
+    const s = summarizeLearningLoopHealth(rows);
+    expect(s.absent).toBe(1);
+    expect(s.neverMaterialized).toBe(1);
+    expect(s.needsAttention).toEqual(['memory-live-recall-canary']); // was [] — the bug
+  });
+
+  it('an absent loop is flagged ALONGSIDE stale ones, not instead of them', () => {
+    const rows = computeLearningLoopHealth(
+      [CANARY, ...LOOPS],
+      [
+        sRow('scout', { lastFiredAt: daysAgo(9) }), // stale
+        sRow('calibration', { active: false, lastFiredAt: null }), // dark-by-design — has a row
+      ],
+      { nowMs: NOW },
+    );
+    const s = summarizeLearningLoopHealth(rows);
+    expect(s.needsAttention).toContain('memory-live-recall-canary');
+    expect(s.needsAttention).toContain('scout');
+    expect(s.needsAttention).not.toContain('calibration'); // a DARK loop still has a row
+    expect(s.neverMaterialized).toBe(1);
+  });
+
+  it('does NOT fire on a loop that is absent BY DESIGN (Class-C, platform mode OFF)', () => {
+    // The one legitimate absence (P-070): a public release with PLATFORM_IMPROVEMENT_LOOPS
+    // off never materializes Class-C loops. Absent is expected there, and 13 false alarms
+    // on every release would be its own cry-wolf failure.
+    const rows = computeLearningLoopHealth([CANARY], [], {
+      nowMs: NOW,
+      expectedMaterialized: () => false,
+    });
+    expect(rows[0].status).toBe('absent');
+    expect(rows[0].expectedMaterialized).toBe(false);
+
+    const s = summarizeLearningLoopHealth(rows);
+    expect(s.absent).toBe(1); // still counted...
+    expect(s.neverMaterialized).toBe(0); // ...but it is not a registration failure
+    expect(s.needsAttention).toEqual([]);
+  });
+
+  it('the routine-less su-ideation lane is never a registration failure (it has no row by design)', () => {
+    const lane = computeActivityLaneHealth(
+      { blueprintId: 'su-ideation', lastActivityAt: daysAgo(0), source: 'su-ideate-ticks' },
+      { nowMs: NOW },
+    );
+    expect(lane.expectedMaterialized).toBe(false);
+    expect(summarizeLearningLoopHealth([lane]).neverMaterialized).toBe(0);
+  });
+});

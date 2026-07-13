@@ -313,6 +313,18 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         // WHICH digest lanes actually generate routed ideas (the rubric lane
         // was silently at zero for its whole life until the P-004 seeding).
         ...(Object.keys(groundingLanes).length > 0 ? { groundingLanes } : {}),
+        // P-015 (blender-self-learning-2026-07-12): the volume-mode signal score
+        // THIS cycle fired on. The cadence gate already computes it (state.signalScore,
+        // WI-4318) and vetoes a fire at score<=0 ('no-signal'), but it was never
+        // PERSISTED — so the program's own success bar ("zero score-0 cycles fired")
+        // was unmeasurable after the fact: nothing on the ledger said what the score
+        // WAS at fire time. Recording it makes the bar checkable on real rows
+        // (evaluateProgramSuccess/zero-signal-cycles) instead of inferred from the
+        // absence of a gate. Undefined in legacy (non-volume) mode — an absent key
+        // means "volume mode was not engaged", never "the score was 0".
+        ...(typeof state.signalScore === 'number' && Number.isFinite(state.signalScore)
+          ? { signalScore: state.signalScore }
+          : {}),
       },
     });
     return {

@@ -77,6 +77,18 @@ export interface LearningLoopHealth {
   daysSinceActivity: number | null;
   activitySource: string | null;
   status: LearningLoopStatus;
+  /**
+   * Was this loop SUPPOSED to have a routine row? (EI-10625.) `absent` is the one
+   * status that means "registration never happened" — a dark-by-design frontier loop
+   * still HAS a row (inactive); no row at all means the materializer never ran for it.
+   * That is a defect for every loop that is expected to exist, and it is NOT excused by
+   * the loop being frontier/dark: darkness is a row's `active` flag, not its absence.
+   *
+   * The one legitimate absence: a Class-C platform-improvement loop on a deployment with
+   * `PLATFORM_IMPROVEMENT_LOOPS` OFF is deliberately never materialized (P-070). Callers
+   * inject that gate via `opts.expectedMaterialized`; the default is "expected".
+   */
+  expectedMaterialized: boolean;
 }
 
 /** The workspace-singleton cadence routine name a blueprint materializes. */
@@ -114,6 +126,15 @@ export function computeLearningLoopHealth(
     /** Operator-home harness slug the legacy (per-home) learning row lives under. Defaults to
      *  the resolved operator home harness slug. */
     homeSlug?: string;
+    /**
+     * Is a routine row EXPECTED for this loop? (EI-10625.) Default: every declared
+     * singleton is expected to be materialized. Inject the P-070 deployment gate here
+     * — `(id) => platformLoopsOn || !isPlatformImprovementLoop(id)` — so a Class-C loop
+     * that is deliberately not materialized on a platform-mode-OFF release reads as
+     * absent-by-design instead of raising a false alarm. Kept as an injected predicate
+     * rather than an import so this module stays pure.
+     */
+    expectedMaterialized?: (blueprintId: string) => boolean;
   },
 ): LearningLoopHealth[] {
   const staleMs = (opts.staleAfterDays ?? DEFAULT_LOOP_STALE_AFTER_DAYS) * DAY_MS;
@@ -167,6 +188,7 @@ export function computeLearningLoopHealth(
       daysSinceActivity,
       activitySource: activity?.source ?? null,
       status,
+      expectedMaterialized: opts.expectedMaterialized?.(loop.blueprintId) ?? true,
     };
   });
 }
@@ -210,6 +232,9 @@ export function computeActivityLaneHealth(
     daysSinceActivity,
     activitySource: lane.source,
     status,
+    // A routine-less lane has no cadence row BY DESIGN (D-001: no su daemon), so it can
+    // never be "never materialized" — it never classifies as `absent` either way.
+    expectedMaterialized: false,
   };
 }
 
@@ -222,18 +247,39 @@ export interface LearningLoopHealthSummary {
   darkByDesign: number;
   shouldBeOnButDark: number;
   absent: number;
+  /**
+   * Loops that were EXPECTED to have a routine row and have none (EI-10625) — i.e. the
+   * materializer never ran for them. Distinct from `absent`, which also counts the one
+   * benign case (a Class-C loop on a platform-mode-OFF release). This count is a
+   * REGISTRATION FAILURE count: it should always be zero.
+   */
+  neverMaterialized: number;
   collisions: number;
-  /** Loops that warrant a look: always-on-but-dark, stale, absent-when-always-on, or a collision. */
+  /**
+   * Loops that warrant a look: always-on-but-dark, stale, a collision, or NEVER
+   * MATERIALIZED (an expected loop with no routine row at all).
+   */
   needsAttention: string[];
 }
 
 export function summarizeLearningLoopHealth(rows: readonly LearningLoopHealth[]): LearningLoopHealthSummary {
+  // EI-10625 — A LOOP THAT DOES NOT EXIST IS NOT LESS URGENT THAN A LOOP THAT IS LATE.
+  //
+  // This filter used to admit an absent loop only `&& r.alwaysOn`, which silently excused
+  // the never-materialized case for 13 of the 15 loops. That is how the memory recall
+  // canary (EI-10047) sat DEAD ON ARRIVAL for its entire life: this very function
+  // classified it `absent` correctly, every single time it was called — and then dropped
+  // it from the only field anyone reads. The classification was never the problem; the
+  // ACTION taken on it was. Absence is the most severe state a loop can be in, not the
+  // most excusable: `dark-by-design` still HAS a row, so `absent` never means "dark", it
+  // means the registration never happened. Gate it on EXPECTATION, never on always-on.
+  const neverMaterialized = rows.filter((r) => r.status === 'absent' && r.expectedMaterialized);
   const needsAttention = rows
     .filter(
       (r) =>
         r.status === 'should-be-on-but-dark' ||
         r.status === 'stale' ||
-        (r.status === 'absent' && r.alwaysOn) ||
+        (r.status === 'absent' && r.expectedMaterialized) ||
         r.collision,
     )
     .map((r) => r.blueprintId);
@@ -245,6 +291,7 @@ export function summarizeLearningLoopHealth(rows: readonly LearningLoopHealth[])
     darkByDesign: rows.filter((r) => r.status === 'dark-by-design').length,
     shouldBeOnButDark: rows.filter((r) => r.status === 'should-be-on-but-dark').length,
     absent: rows.filter((r) => r.status === 'absent').length,
+    neverMaterialized: neverMaterialized.length,
     collisions: rows.filter((r) => r.collision).length,
     needsAttention,
   };

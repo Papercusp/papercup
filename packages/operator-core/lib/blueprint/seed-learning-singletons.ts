@@ -233,6 +233,113 @@ export async function materializeLearningSingletons(
   return out;
 }
 
+/** One loop's reconcile verdict — see {@link reconcileLearningSingletons}. */
+export interface SingletonReconcileEntry {
+  blueprintId: string;
+  /** The `@singleton` routine row this loop must have. */
+  routineName: string;
+  /** Is a routine row EXPECTED? (false = Class-C loop, platform mode OFF — absent by design.) */
+  expected: boolean;
+  /** Does the routine row EXIST? */
+  present: boolean;
+  /** EXPECTED but NOT PRESENT — the registration silently never happened. THE defect. */
+  missing: boolean;
+  /** Set when `execute` and the row was missing — the rows we upserted to heal it. */
+  materialized?: MaterializedRoutine[];
+}
+
+export interface SingletonReconcileResult {
+  entries: SingletonReconcileEntry[];
+  /** Loops that were declared but never materialized. MUST be empty on a healthy install. */
+  missing: string[];
+  /** Loops healed this run (only when `execute`). */
+  healed: string[];
+}
+
+/**
+ * RECONCILE the declared learning singletons against the routine rows that actually exist
+ * — EI-10625, the recurrence-preventing fix.
+ *
+ * THE BUG THIS EXISTS TO KILL: `materializeLearningSingletons` had exactly one caller, the
+ * one-shot `enable-platform-mode`. So adding a loop to {@link LEARNING_SINGLETONS} DID NOT
+ * SCHEDULE IT. Registering a loop *looked* complete — the list entry, the blueprint, the
+ * flag, the tables, the health line all existed — but the routine row only appeared if a
+ * human happened to re-run a CLI afterwards. `memory-precision` got its row that way on
+ * 2026-06-30. The memory recall canary (EI-10047) was added later, nobody re-ran anything,
+ * and it was DEAD ON ARRIVAL: 0 routine rows, 0 runs, for its entire life — silently, with
+ * no error, on a 10,491-memory store it was built to watch.
+ *
+ * A DECLARATION NOBODY EXECUTES IS NOT A REGISTRATION. This diffs declared-vs-materialized
+ * and (with `execute`) heals the gap, so a loop added to the list is a loop that RUNS.
+ * Idempotent: `materializeBlueprintTriggers` upserts, so re-running touches nothing that is
+ * already correct — safe to call on every boot.
+ *
+ * Read-only by default (`execute: false`) — it reports the diff and writes nothing.
+ */
+export async function reconcileLearningSingletons(
+  sql: Sql,
+  workspaceId: string,
+  opts: {
+    execute: boolean;
+    log?: (m: string) => void;
+    flag?: (key: typeof FLAGS.PLATFORM_IMPROVEMENT_LOOPS) => Promise<boolean>;
+    /** The declared loop set to reconcile. Defaults to {@link LEARNING_SINGLETONS}; injectable for tests. */
+    loops?: readonly LearningSingleton[];
+  },
+): Promise<SingletonReconcileResult> {
+  const log = opts.log ?? (() => {});
+  const platformLoopsOn = await platformImprovementLoopsEnabled({ flag: opts.flag });
+
+  // Every @singleton routine row that exists for this workspace, in one read.
+  const rows = (await sql<{ name: string }[]>`
+    SELECT name FROM harness_shared.routines
+     WHERE install_slug = ${SINGLETON_TRIGGER_HOST_SLUG} AND workspace_id = ${workspaceId}
+  `) as { name: string }[];
+  const present = new Set(rows.map((r) => r.name));
+
+  const entries: SingletonReconcileEntry[] = [];
+  for (const t of opts.loops ?? LEARNING_SINGLETONS) {
+    const { blueprint } = loadBuiltinBlueprint(t.blueprintId);
+    const specs = triggerRoutineSpecs(blueprint).filter((s) => s.singleton);
+    if (specs.length === 0) continue; // the blueprint declares no singleton — nothing to reconcile
+    const routineName = specs[0].name;
+
+    // The ONLY legitimate absence (P-070): a Class-C platform-improvement loop while the
+    // deployment-mode knob is OFF is deliberately never materialized. Everything else that
+    // is declared is expected to exist.
+    const expected = platformLoopsOn || !isPlatformImprovementLoop(t.blueprintId);
+    const exists = present.has(routineName);
+    const missing = expected && !exists;
+
+    const entry: SingletonReconcileEntry = { blueprintId: t.blueprintId, routineName, expected, present: exists, missing };
+    if (missing) {
+      // LOUD, always — even in read-only mode. A declared-but-unmaterialized singleton is a
+      // loop that will never run, and silence here is precisely how this bug survived.
+      console.warn(
+        `[learning-singletons] NEVER MATERIALIZED: '${t.blueprintId}' is declared in LEARNING_SINGLETONS ` +
+          `but has no @singleton/${routineName} routine row — it has never run and never will. ` +
+          (opts.execute ? 'Materializing now.' : 'Run with execute to heal it.'),
+      );
+      log(`MISSING ${t.blueprintId}: no @singleton/${routineName} row`);
+      if (opts.execute) {
+        entry.materialized = await materializeBlueprintTriggers(t.blueprintId, blueprint, {
+          sql,
+          workspaceId,
+          flag: opts.flag,
+        });
+        log(`HEALED ${t.blueprintId}: materialized @singleton/${routineName}`);
+      }
+    }
+    entries.push(entry);
+  }
+
+  return {
+    entries,
+    missing: entries.filter((e) => e.missing).map((e) => e.blueprintId),
+    healed: entries.filter((e) => e.materialized !== undefined).map((e) => e.blueprintId),
+  };
+}
+
 export interface ActiveCutoverResult {
   blueprintId: string;
   /** The legacy `papercup` row existed. */
@@ -320,12 +427,36 @@ async function main(): Promise<void> {
   const execute = argv.includes('--execute');
   const retireLegacy = argv.includes('--retire-legacy');
   const activeCutover = argv.includes('--active-cutover');
+  const reconcile = argv.includes('--reconcile');
   const onlyIdx = argv.indexOf('--only');
   const only = onlyIdx >= 0 ? argv[onlyIdx + 1] : undefined;
 
   const workspaceId =
     process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE ?? activeWorkspaceId();
   const { sql } = getOrgPg();
+
+  // --reconcile (EI-10625): diff DECLARED singletons against the routine rows that exist,
+  // and heal the gap. This is the mode that must eventually run on boot — a loop added to
+  // LEARNING_SINGLETONS without it is dead on arrival, silently.
+  if (reconcile) {
+    console.log(`[seed-learning-singletons] ws=${workspaceId} RECONCILE ${execute ? 'EXECUTE' : 'DRY-RUN'}`);
+    try {
+      const r = await reconcileLearningSingletons(sql, workspaceId, {
+        execute,
+        log: (m) => console.log(`  ${m}`),
+      });
+      console.log(
+        `[seed-learning-singletons] reconcile: ${r.missing.length} never-materialized` +
+          `${r.missing.length ? ` (${r.missing.join(', ')})` : ''}` +
+          `${execute ? `; healed ${r.healed.length}` : ' — pass --execute to heal'}.`,
+      );
+      if (!execute && r.missing.length > 0) process.exitCode = 1; // a check mode that can FAIL
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+    return;
+  }
+
   const mode = activeCutover ? 'ACTIVE-CUTOVER (copy)' : 'DARK-MATERIALIZE';
   console.log(
     `[seed-learning-singletons] ws=${workspaceId} ${mode} ${execute ? 'EXECUTE' : 'DRY-RUN'}` +
