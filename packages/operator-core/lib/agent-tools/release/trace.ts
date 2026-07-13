@@ -97,10 +97,10 @@ export default defineTool({
     );
     const wakes: ReleaseTraceWake[] = histories.flatMap(({ event, history }) =>
       history.deliveries.map((row) => ({
-          event,
-          deliveryId: row.id,
-          subscriberId: row.subscriberId,
-          status: row.status,
+        event,
+        deliveryId: row.id,
+        subscriberId: row.subscriberId,
+        status: row.status,
         channel: row.channel,
         createdAt: row.createdAt,
         deliveredAt: row.deliveredAt,

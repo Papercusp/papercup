@@ -143,6 +143,28 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints).toEqual([]);
     expect(out.nextVerb).toBeNull();
   });
+  it('accepts a target contained in a newer matching green/deployed pin', () => {
+    const newer = 'c'.repeat(40);
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          deployedSha: newer,
+          verdictProvenance: {
+            ...position().verdictProvenance,
+            lastGreenSha: newer,
+            deployOrigin: 'gate-green',
+          },
+        }),
+      }),
+    );
+    expect(out.testedDeployedParity).toMatchObject({
+      ok: true,
+      targetSha: sha,
+      testedSha: newer,
+      deployedSha: newer,
+    });
+    expect(out.ok).toBe(true);
+  });
   it('returns one safe green-pin deploy trigger when main is ahead of live', () => {
     const out = buildReleaseTrace(
       input({
@@ -244,5 +266,24 @@ describe('buildReleaseTrace', () => {
     expect(out.awaits.activeRegistrations).toBe(1);
     expect(out.awaits.inspectedKeys).toContain(`release:deployed:${sha}`);
     expect(out.resync).toMatchObject({ required: true, consumerGeneration: 9, authoritativeGeneration: 10 });
+  });
+  it('does not classify another subscriber’s crossed wake as this caller’s stale wake', () => {
+    const out = buildReleaseTrace(
+      input({
+        wakes: [
+          {
+            event: 'release:green:papercusp',
+            deliveryId: 9,
+            subscriberId: 'su-peer',
+            status: 'delivered',
+            channel: 'resume',
+            createdAt: '2026-01-01T00:00:00Z',
+            deliveredAt: null,
+            observedSha: 'b'.repeat(40),
+          },
+        ],
+      }),
+    );
+    expect(out.staleWake.verdict).toBe('none');
   });
 });

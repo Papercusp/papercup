@@ -555,7 +555,7 @@ export async function composeOrient(
       // P-015: hydrate the EXISTING leader brief instead of introducing a parallel
       // monitor surface. These are authoritative reads a leader otherwise re-calls
       // immediately after orient; each remains independently fail-soft.
-      const hydrated =
+      const hydrated: Record<string, unknown> =
         brief && typeof brief === 'object' && !Array.isArray(brief)
           ? { ...(brief as Record<string, unknown>) }
           : { fleetHealth: brief };

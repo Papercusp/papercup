@@ -92,8 +92,6 @@ export interface LeaderBriefMember {
   unanswered?: UnansweredDirectedSummary;
   /** Active non-inbox-wake events:await keys — a deliberately-benched member. */
   parkedOn?: string[];
-  monitorState?: MonitorState | null;
-  nextFireAt?: string | null;
   /** EI-9943: this member is alive/speaking (burning real turns) but its work
    *  is NOT advancing and it is not already benched — the "live-loop-polling
    *  on a peer's critical path" pattern (fleet p2p-ship, 2026-07-11/12: 3 of 5
@@ -140,6 +138,8 @@ export type DecoratedAgent = AgentAssignment & {
   coordHook?: CoordDeafState | null;
   coordLastReadAgoSec?: number | null;
   unanswered?: UnansweredDirectedSummary;
+  monitorState?: MonitorState | null;
+  nextFireAt?: string | null;
 };
 
 /** PURE: exported for direct unit-testing (no PG/DI ceremony needed). */
