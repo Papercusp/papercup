@@ -6,7 +6,16 @@
  * config.toml = [mcp_servers.papercusp] url = "<signed>", auth.json
  * symlinked to the real ~/.codex/auth.json (never copied).
  */
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -63,10 +72,7 @@ function installOwnerRuntimeProof(owner: string) {
     join(dir, `owner-${safe}-last-decision.json`),
     JSON.stringify({ ts: new Date().toISOString(), owner, decision: 'granted' }),
   );
-  writeFileSync(
-    join(dir, `owner-${safe}-last-success.json`),
-    JSON.stringify({ ts: new Date().toISOString(), owner }),
-  );
+  writeFileSync(join(dir, `owner-${safe}-last-success.json`), JSON.stringify({ ts: new Date().toISOString(), owner }));
 }
 
 describe('writeRoleCodexHome', () => {
@@ -101,9 +107,7 @@ describe('writeRoleCodexHome', () => {
     expect(toml).toContain('[tui]\nterminal_title = []');
     // tui-status-parity D 2026-07-06: codex also gets a native bottom status pane
     // (codex-own items; canonical rust-v0.142.5 StatusLineItem IDs).
-    expect(toml).toContain(
-      'status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]',
-    );
+    expect(toml).toContain('status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]');
   });
 
   it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh role CODEX_HOME never blocks at the boot trust prompt', async () => {
@@ -171,7 +175,11 @@ describe('writeRoleCodexHome', () => {
     writeFileSync(join(realAuthDir, 'auth.json'), '{"token":"real"}');
 
     const writeRoleCodexHome = await load();
-    const out = writeRoleCodexHome({ sessionKey: 'abc', mcpUrl: 'http://x/api/mcp?role=scoper&sig=z', promptText: 'P' });
+    const out = writeRoleCodexHome({
+      sessionKey: 'abc',
+      mcpUrl: 'http://x/api/mcp?role=scoper&sig=z',
+      promptText: 'P',
+    });
 
     const authLink = join(out.codexHome, 'auth.json');
     expect(existsSync(authLink)).toBe(true);
@@ -181,10 +189,18 @@ describe('writeRoleCodexHome', () => {
 
   it('rebuilds fresh — a stale prompt from a prior launch does not leak', async () => {
     const writeRoleCodexHome = await load();
-    const first = writeRoleCodexHome({ sessionKey: 9, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'OLD PROMPT' });
+    const first = writeRoleCodexHome({
+      sessionKey: 9,
+      mcpUrl: 'http://x/?role=worker&sig=1',
+      promptText: 'OLD PROMPT',
+    });
     // Drop a stray file in the home to prove the rebuild wipes it.
     writeFileSync(join(first.codexHome, 'STALE.txt'), 'stale');
-    const second = writeRoleCodexHome({ sessionKey: 9, mcpUrl: 'http://x/?role=worker&sig=2', promptText: 'NEW PROMPT' });
+    const second = writeRoleCodexHome({
+      sessionKey: 9,
+      mcpUrl: 'http://x/?role=worker&sig=2',
+      promptText: 'NEW PROMPT',
+    });
 
     expect(second.codexHome).toBe(first.codexHome);
     expect(readFileSync(second.agentsPath, 'utf8')).toContain('NEW PROMPT');
@@ -223,24 +239,29 @@ describe('writeRoleCodexHome', () => {
   it('a role session WITH a sid gets the activity-bridge + objective-title hooks (worker activity → fleet view), still no coord', async () => {
     await installFakeHooks();
     const writeRoleCodexHome = await load();
-    const out = writeRoleCodexHome({ sessionKey: 71, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-abc-9' });
+    const out = writeRoleCodexHome({
+      sessionKey: 71,
+      mcpUrl: 'http://x/?role=worker&sig=1',
+      promptText: 'P',
+      sid: 'role-abc-9',
+    });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
     // Three PostToolUse entries: lock-release + activity + objective-title (NO coord — roles don't ride the SU bus).
     expect(hooks.hooks.PostToolUse).toHaveLength(3);
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-coord-inbox.sh');
-    const activity = hooks.hooks.PostToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-activity-report.sh'),
+    const activity = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-activity-report.sh'),
     );
     expect(activity).toBeTruthy();
     expect(activity.matcher).toBe('.*');
     // SID + agent baked (codex hands hooks a minimal env, can't env-expand).
     expect(activity.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(activity.hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
-    const preLock = hooks.hooks.PreToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
+    const preLock = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
     );
-    const postLock = hooks.hooks.PostToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-locks-release.sh'),
+    const postLock = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-locks-release.sh'),
     );
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
@@ -248,8 +269,8 @@ describe('writeRoleCodexHome', () => {
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
     // Objective-title hook (session-objective-display-2026-06-22): terminal title
     // ← coord:glance self.objective, matcher .*, baked SID = the session id.
-    const objective = hooks.hooks.PostToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-objective-title.sh'),
+    const objective = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-objective-title.sh'),
     );
     expect(objective).toBeTruthy();
     expect(objective.matcher).toBe('.*');
@@ -270,8 +291,8 @@ describe('writeRoleCodexHome', () => {
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({ sessionKey: 9, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    const gate = hooks.hooks.PreToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('pretooluse-bash-resource-gate.sh'),
+    const gate = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-bash-resource-gate.sh'),
     );
     expect(gate).toBeTruthy();
     expect(gate.matcher).toContain('exec_command');
@@ -313,9 +334,7 @@ describe('writeSuCodexHome', () => {
     // (default ["activity","project"]) clobbering display.title every turn.
     expect(toml).toContain('[tui]\nterminal_title = []');
     // tui-status-parity D 2026-07-06: codex gets a native bottom status pane.
-    expect(toml).toContain(
-      'status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]',
-    );
+    expect(toml).toContain('status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]');
   });
 
   it('no token → degraded config (url only, no http_headers / superuser bearer)', async () => {
@@ -333,9 +352,19 @@ describe('writeSuCodexHome', () => {
     writeFileSync(join(realAuthDir, 'auth.json'), '{"token":"real"}');
 
     const { writeSuCodexHome } = await loadMod();
-    const first = writeSuCodexHome({ sessionKey: 'k', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'OLD', sid: 's1' });
+    const first = writeSuCodexHome({
+      sessionKey: 'k',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'OLD',
+      sid: 's1',
+    });
     writeFileSync(join(first.codexHome, 'STALE.txt'), 'stale');
-    const second = writeSuCodexHome({ sessionKey: 'k', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'NEW', sid: 's2' });
+    const second = writeSuCodexHome({
+      sessionKey: 'k',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'NEW',
+      sid: 's2',
+    });
 
     expect(lstatSync(join(second.codexHome, 'auth.json')).isSymbolicLink()).toBe(true);
     expect(readFileSync(second.agentsPath, 'utf8')).toContain('NEW');
@@ -350,24 +379,32 @@ describe('writeSuCodexHome', () => {
     mkdirSync(join(realCodex, 'plugins'), { recursive: true });
     mkdirSync(join(realCodex, 'prompts'), { recursive: true });
     writeFileSync(join(realCodex, 'prompts', 'user-prompt.md'), 'USER PROMPT');
-    writeFileSync(join(realCodex, 'config.toml'), [
-      'model = "gpt-5"',
-      '',
-      '[trusted_workspaces]',
-      '"/repo" = true',
-      '',
-      // Modern codex records directory trust here (ProjectConfig) — the shape our
-      // inherit helper used to silently ignore, booting fresh homes untrusted.
-      '[projects."/home/me/repo"]',
-      'trust_level = "trusted"',
-      '',
-      '[model_providers.default]',
-      'name = "Default"',
-      '',
-    ].join('\n'));
+    writeFileSync(
+      join(realCodex, 'config.toml'),
+      [
+        'model = "gpt-5"',
+        '',
+        '[trusted_workspaces]',
+        '"/repo" = true',
+        '',
+        // Modern codex records directory trust here (ProjectConfig) — the shape our
+        // inherit helper used to silently ignore, booting fresh homes untrusted.
+        '[projects."/home/me/repo"]',
+        'trust_level = "trusted"',
+        '',
+        '[model_providers.default]',
+        'name = "Default"',
+        '',
+      ].join('\n'),
+    );
 
     const { writeSuCodexHome } = await loadMod();
-    const out = writeSuCodexHome({ sessionKey: 'inherit', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
+    const out = writeSuCodexHome({
+      sessionKey: 'inherit',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 's',
+    });
 
     expect(lstatSync(join(out.codexHome, 'skills')).isSymbolicLink()).toBe(true);
     expect(readlinkSync(join(out.codexHome, 'skills'))).toBe(join(realCodex, 'skills'));
@@ -464,14 +501,16 @@ describe('writeSuCodexHome', () => {
   it('reads non-secret CODEX_HOME diagnostics, including latest rollout id and resume command', async () => {
     await installFakeHooks();
     const { writeSuCodexHome, readCodexHomeDiagnostics } = await loadMod();
-    const out = writeSuCodexHome({ sessionKey: 'diag', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
+    const out = writeSuCodexHome({
+      sessionKey: 'diag',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 's',
+    });
     const { mkdirSync } = await import('node:fs');
     const rolloutDir = join(out.codexHome, 'sessions', '2026', '06', '21');
     mkdirSync(rolloutDir, { recursive: true });
-    writeFileSync(
-      join(rolloutDir, 'rollout-2026-06-21T13-12-06-019eeb2b-0742-72a0-85a4-5dc505cfe62d.jsonl'),
-      '{}\n',
-    );
+    writeFileSync(join(rolloutDir, 'rollout-2026-06-21T13-12-06-019eeb2b-0742-72a0-85a4-5dc505cfe62d.jsonl'), '{}\n');
 
     const diag = readCodexHomeDiagnostics('diag');
     expect(diag.exists).toBe(true);
@@ -500,23 +539,28 @@ describe('writeSuCodexHome', () => {
   it('adds the coord-inbox PUSH + activity hooks (PostToolUse, matcher .*, baked PAPERCUSP_SID = the session id)', async () => {
     await installFakeHooks();
     const { writeSuCodexHome } = await loadMod();
-    const out = writeSuCodexHome({ sessionKey: 12, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-abc-123' });
+    const out = writeSuCodexHome({
+      sessionKey: 12,
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-abc-123',
+    });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
     // Four PostToolUse entries: lock-release + coord push + activity report + objective-title.
     expect(hooks.hooks.PostToolUse).toHaveLength(4);
-    const coord = hooks.hooks.PostToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-coord-inbox.sh'),
+    const coord = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-coord-inbox.sh'),
     );
     expect(coord).toBeTruthy();
     expect(coord.matcher).toBe('.*');
     // SID baked (codex doesn't env-expand) so the hook's coord identity == &client=.
     expect(coord.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(coord.hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
-    const preLock = hooks.hooks.PreToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
+    const preLock = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
     );
-    const postLock = hooks.hooks.PostToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-locks-release.sh'),
+    const postLock = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-locks-release.sh'),
     );
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
@@ -524,8 +568,8 @@ describe('writeSuCodexHome', () => {
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
 
     // The activity-bridge hook — an SU/engineer session is a worker too.
-    const activity = hooks.hooks.PostToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-activity-report.sh'),
+    const activity = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-activity-report.sh'),
     );
     expect(activity).toBeTruthy();
     expect(activity.matcher).toBe('.*');
@@ -534,8 +578,8 @@ describe('writeSuCodexHome', () => {
 
     // The objective-title hook (session-objective-display-2026-06-22): terminal
     // title ← coord:glance self.objective, matcher .*, baked SID = the session id.
-    const objective = hooks.hooks.PostToolUse.find(
-      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-objective-title.sh'),
+    const objective = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-objective-title.sh'),
     );
     expect(objective).toBeTruthy();
     expect(objective.matcher).toBe('.*');

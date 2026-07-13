@@ -4,11 +4,7 @@
  * the path helpers.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  composeLaunchContext,
-  launchContextDir,
-  launchContextPathFor,
-} from './su-launch-context';
+import { composeLaunchContext, launchContextDir, launchContextPathFor } from './su-launch-context';
 
 describe('composeLaunchContext', () => {
   it('returns empty when neither harness nor plan is picked (ad-hoc launch)', () => {

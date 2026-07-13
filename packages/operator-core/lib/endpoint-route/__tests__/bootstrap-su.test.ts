@@ -58,7 +58,10 @@ vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => 'default',
   readRegistry: () => ({
     current: 'default',
-    workspaces: [{ id: 'default', name: 'Default' }, { id: 'ws2', name: 'Second' }],
+    workspaces: [
+      { id: 'default', name: 'Default' },
+      { id: 'ws2', name: 'Second' },
+    ],
   }),
   // Sparse-registry reality (fresh packaged install): the literal 'default' fallback is
   // NOT listed as a concrete entry, so workspaceById('default') is undefined — but
@@ -138,11 +141,23 @@ vi.mock('../../pot/mug-brief-launch', () => ({
 }));
 vi.mock('../../device-harnesses', () => ({
   listHarnessesFor: vi.fn(async () => [
-    { slug: 'papercup', path: '/repo', harness_kind: null, has_state: true, status: 'active', iteration: 1, last_active_ts: null },
+    {
+      slug: 'papercup',
+      path: '/repo',
+      harness_kind: null,
+      has_state: true,
+      status: 'active',
+      iteration: 1,
+      last_active_ts: null,
+    },
   ]),
 }));
 vi.mock('../../agent-tools/plans/source', () => ({
-  resolveHarnessPlansDir: vi.fn(async () => ({ harnessSlug: 'papercup', plans: '/repo/plans', archive: '/repo/plans/archive' })),
+  resolveHarnessPlansDir: vi.fn(async () => ({
+    harnessSlug: 'papercup',
+    plans: '/repo/plans',
+    archive: '/repo/plans/archive',
+  })),
   listPlanFiles: vi.fn(async () => [
     { slug: 'plan-a', filePath: '/repo/plans/plan-a.md', archived: false },
     { slug: 'plan-archived', filePath: '/repo/plans/archive/plan-archived.md', archived: true },
@@ -156,11 +171,18 @@ vi.mock('../../agent-tools/plans/source', () => ({
 // but ONLY when the gateway flag is on. Mock both so the gateway-ON branches are
 // DB-free + deterministic (the gateway-OFF + no-account branches return before them).
 type MockPoolAccount = { id: string; provider?: 'claude' | 'codex' };
-const loadAccountPoolMock = vi.fn(async (_ws?: string): Promise<{ accounts: MockPoolAccount[] }> => ({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] }));
+const loadAccountPoolMock = vi.fn(
+  async (_ws?: string): Promise<{ accounts: MockPoolAccount[] }> => ({
+    accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }],
+  }),
+);
 vi.mock('../../deployment/account-pool-store', () => ({
   loadAccountPool: (...a: unknown[]) => loadAccountPoolMock(...(a as [string])),
 }));
-const getAccountOverrideMock = vi.fn(async (_ws: string) => ({ forcedAccounts: [] as string[], excludeAccounts: [] as string[] }));
+const getAccountOverrideMock = vi.fn(async (_ws: string) => ({
+  forcedAccounts: [] as string[],
+  excludeAccounts: [] as string[],
+}));
 vi.mock('../../deployment/account-session-override', () => ({
   getAccountOverride: (...a: unknown[]) => getAccountOverrideMock(...(a as [string])),
 }));
@@ -320,9 +342,7 @@ describe('bootstrap-su', () => {
     // roster row (visible at launch) flips recorded → parked/wakeable immediately —
     // no dependence on the detached, lossy SessionStart lifecycle hook.
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ coordOwnerId: sid }));
-    expect(armInboxWakeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ ownerId: sid, workspaceId: 'default' }),
-    );
+    expect(armInboxWakeMock).toHaveBeenCalledWith(expect.objectContaining({ ownerId: sid, workspaceId: 'default' }));
   });
 
   it('launch-wakeability: an arm failure is best-effort and never fails the launch', async () => {
@@ -364,9 +384,7 @@ describe('bootstrap-su', () => {
     const json = await res.json();
     expect(json.promptFile).toMatch(/session-42\.md$/);
     expect(json.instructionLint).toMatchObject({ markerCount: 0, clean: true });
-    expect(buildLaunchSpecMock).toHaveBeenCalledWith(
-      expect.objectContaining({ harnessSlug: null, planSlug: null }),
-    );
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: null, planSlug: null }));
   });
 
   it('refuses a compiled prompt with contradictory file-lock modes', async () => {
@@ -417,19 +435,24 @@ describe('bootstrap-su', () => {
         token: 'TESTBEARER',
       }),
     );
-    expect(recordAdvSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agent: 'codex', mode: 'console' }),
-    );
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex', mode: 'console' }));
   });
 
   it('codex folds launch_context into AGENTS.md prompt text before writing CODEX_HOME', async () => {
     const kickoff = join(LC_DIR, 'kickoff.md');
     writeFileSync(kickoff, 'KICKOFF CONTEXT\n- continue the rollout\n');
-    const res = await callPost({ agent: 'codex', harness_slug: 'papercup', plan_slug: 'my-plan', launch_context: kickoff });
+    const res = await callPost({
+      agent: 'codex',
+      harness_slug: 'papercup',
+      plan_slug: 'my-plan',
+      launch_context: kickoff,
+    });
     expect(res.status).toBe(200);
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        promptText: expect.stringContaining('PLAYBOOK + CTX BODY\n\n---\n## Launch Context\n\nKICKOFF CONTEXT\n- continue the rollout'),
+        promptText: expect.stringContaining(
+          'PLAYBOOK + CTX BODY\n\n---\n## Launch Context\n\nKICKOFF CONTEXT\n- continue the rollout',
+        ),
       }),
     );
   });
@@ -442,9 +465,7 @@ describe('bootstrap-su', () => {
     recordAdvSessionMock.mockResolvedValue(43);
     const codex = await callPost({ agent: 'codex', harness_slug: 'papercup', plan_slug: 'my-plan' });
     expect(codex.status).toBe(200);
-    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ promptText: 'PLAYBOOK + CTX BODY' }),
-    );
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({ promptText: 'PLAYBOOK + CTX BODY' }));
   });
 
   it('claude: mints + records + returns a native session id (the launcher forces it via --session-id)', async () => {
@@ -540,7 +561,10 @@ describe('bootstrap-su', () => {
   it('options lists workspaces + the active one', async () => {
     const json = await (await callGet()).json();
     expect(json.activeWorkspace).toBe('default');
-    expect(json.workspaces).toEqual([{ id: 'default', name: 'Default' }, { id: 'ws2', name: 'Second' }]);
+    expect(json.workspaces).toEqual([
+      { id: 'default', name: 'Default' },
+      { id: 'ws2', name: 'Second' },
+    ]);
   });
 
   it('threads an explicit workspace to the session + result', async () => {
@@ -779,11 +803,18 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] });
     getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
   });
-  const choices = async (agent: 'claude' | 'omp' | 'codex' = 'claude') => (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountChoices('default', agent);
+  const choices = async (agent: 'claude' | 'omp' | 'codex' = 'claude') =>
+    (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountChoices('default', agent);
 
   it('gateway off → hidden (empty pool) — the current default', async () => {
     getFlagMock.mockResolvedValue(false);
-    expect(await choices()).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [], provider: 'claude' });
+    expect(await choices()).toEqual({
+      gatewayOn: false,
+      pool: [],
+      forcedAccounts: [],
+      excludeAccounts: [],
+      provider: 'claude',
+    });
   });
 
   it('gateway on → pool ids + the active session-override', async () => {
@@ -816,7 +847,13 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
   it('GET /options surfaces the accounts field (empty when gateway off)', async () => {
     getFlagMock.mockResolvedValue(false);
     const json = await (await callGet()).json();
-    expect(json.accounts).toEqual({ gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [], provider: 'claude' });
+    expect(json.accounts).toEqual({
+      gatewayOn: false,
+      pool: [],
+      forcedAccounts: [],
+      excludeAccounts: [],
+      provider: 'claude',
+    });
   });
 });
 
@@ -835,7 +872,13 @@ describe('resolveFleet — terminal color env (fleet-color-schemes)', () => {
 
   async function resolveFleet(
     workspaceId: string,
-    opts: { fleet?: string | null; fleetRole?: string | null; fleetName?: string | null; fleetScheme?: string | null; ownerId?: string },
+    opts: {
+      fleet?: string | null;
+      fleetRole?: string | null;
+      fleetName?: string | null;
+      fleetScheme?: string | null;
+      ownerId?: string;
+    },
   ) {
     const mod = await import('../routes/agent-mcp/bootstrap-su');
     return mod.resolveFleet(workspaceId, opts);
@@ -870,8 +913,15 @@ describe('resolveFleet — terminal color env (fleet-color-schemes)', () => {
   it('a chosen catalog scheme (fleetScheme) is FORCED at create; unknown/absent → auto-allocate (null)', async () => {
     createFleetIfAbsentMock.mockResolvedValue({
       record: {
-        workspaceId: 'default', fleetSlug: 'my-fleet', title: 'My Fleet', description: null,
-        owner: 'su-1', leaderOwnerId: 'su-1', colorScheme: 'forest', createdAt: 0, updatedAt: 0,
+        workspaceId: 'default',
+        fleetSlug: 'my-fleet',
+        title: 'My Fleet',
+        description: null,
+        owner: 'su-1',
+        leaderOwnerId: 'su-1',
+        colorScheme: 'forest',
+        createdAt: 0,
+        updatedAt: 0,
       },
       created: true,
     });
@@ -923,7 +973,13 @@ describe('resolveFleet — nonexistent-slug rejection (WI-1408)', () => {
   // is its own closure — the other block's local `resolveFleet` isn't in scope here).
   async function resolveFleet(
     workspaceId: string,
-    opts: { fleet?: string | null; fleetRole?: string | null; fleetName?: string | null; fleetScheme?: string | null; ownerId?: string },
+    opts: {
+      fleet?: string | null;
+      fleetRole?: string | null;
+      fleetName?: string | null;
+      fleetScheme?: string | null;
+      ownerId?: string;
+    },
   ) {
     const mod = await import('../routes/agent-mcp/bootstrap-su');
     return mod.resolveFleet(workspaceId, opts);
@@ -999,7 +1055,8 @@ describe('deriveKickoffPrompt (EI-5503 + WI-1962 + WI-1356 — the turn-1 kickof
   });
 
   it('AUTO prepends the activation to whichever base applies (brief / bare)', async () => {
-    const { deriveKickoffPrompt, AUTO_MODE_DIRECTIVE, LAUNCH_CONTEXT_KICKOFF } = await import('../routes/agent-mcp/bootstrap-su');
+    const { deriveKickoffPrompt, AUTO_MODE_DIRECTIVE, LAUNCH_CONTEXT_KICKOFF } =
+      await import('../routes/agent-mcp/bootstrap-su');
     const withBrief = deriveKickoffPrompt({ planSlug: null, autoMode: true, launchContextPath: '/b.md' });
     expect(withBrief).toContain(AUTO_MODE_DIRECTIVE);
     expect(withBrief).toContain(LAUNCH_CONTEXT_KICKOFF);

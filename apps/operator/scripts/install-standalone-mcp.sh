@@ -21,9 +21,9 @@
 #          automatic — survives a raw `claude`/`psu` launch).
 #        - OMP    → coord-hook.ts, loaded per-launch by psu via `-e`.
 #        - Codex  → hooks.json in the per-session CODEX_HOME psu mints.
-#          NOTE: codex does not currently fire PreToolUse on edits (upstream
-#          openai/codex #20204), so codex coordination is voluntary
-#          (playbook-driven `locks:*`) until that lands.
+#          Current managed Codex builds fire Pre/PostToolUse on apply_patch;
+#          owner-scoped runtime markers decide automatic vs explicit-manual
+#          mode instead of a static version assumption.
 #      Claude and Codex share one hook-script pair (same hook wire format).
 #   5. Verifies HTTP 200 against the running operator
 #

@@ -48,7 +48,11 @@ import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
 import { readSuperuserToken } from '../../../superuser-token';
 import { homedir } from 'node:os';
-import { accountProviderForInteractiveBackend, backendFeatureGuard, type BackendAccountProvider } from '../../../backend-feature-capabilities';
+import {
+  accountProviderForInteractiveBackend,
+  backendFeatureGuard,
+  type BackendAccountProvider,
+} from '../../../backend-feature-capabilities';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -229,7 +233,9 @@ export async function resolveAccountPin(
   });
   const accountGuard = backendFeatureGuard(agent, wantAuto ? 'gateway-routing' : 'account-pinning');
   if (!accountGuard.supported)
-    return fail(`${wantAuto ? 'gateway routing' : 'account pinning'} is unsupported for ${agent}: ${accountGuard.reason}`);
+    return fail(
+      `${wantAuto ? 'gateway routing' : 'account pinning'} is unsupported for ${agent}: ${accountGuard.reason}`,
+    );
   const gatewayGuard = backendFeatureGuard(agent, 'gateway-routing');
   if (!gatewayGuard.supported) return fail(`gateway routing is unsupported for ${agent}: ${gatewayGuard.reason}`);
   try {
@@ -286,7 +292,8 @@ export async function resolveAccountPin(
     const provider = accountProvider(acct as never);
     const expected = accountProviderForInteractiveBackend(agent);
     if (!expected) return fail(`account routing is unsupported for ${agent}`);
-    if (provider !== expected) return fail(`'${id}' is a ${provider} account, but ${agent} sessions require ${expected} accounts`);
+    if (provider !== expected)
+      return fail(`'${id}' is a ${provider} account, but ${agent} sessions require ${expected} accounts`);
     const { getAccountOverride } = await import('../../../deployment/account-session-override');
     const ov = await getAccountOverride(workspaceId);
     if (ov.excludeAccounts.includes(id)) return fail('it is in the session-override exclude list');
@@ -334,13 +341,28 @@ export async function resolveAccountPin(
 export async function resolveAccountChoices(
   workspaceId: string,
   agent: SuAgent = 'claude',
-): Promise<{ gatewayOn: boolean; pool: string[]; forcedAccounts: string[]; excludeAccounts: string[]; provider: BackendAccountProvider | null; unsupportedReason?: string }> {
+): Promise<{
+  gatewayOn: boolean;
+  pool: string[];
+  forcedAccounts: string[];
+  excludeAccounts: string[];
+  provider: BackendAccountProvider | null;
+  unsupportedReason?: string;
+}> {
   const provider = accountProviderForInteractiveBackend(agent);
-  const empty = { gatewayOn: false, pool: [] as string[], forcedAccounts: [] as string[], excludeAccounts: [] as string[], provider };
+  const empty = {
+    gatewayOn: false,
+    pool: [] as string[],
+    forcedAccounts: [] as string[],
+    excludeAccounts: [] as string[],
+    provider,
+  };
   const accountGuard = backendFeatureGuard(agent, 'account-pinning');
-  if (!accountGuard.supported) return { ...empty, unsupportedReason: accountGuard.reason ?? 'account pinning unsupported' };
+  if (!accountGuard.supported)
+    return { ...empty, unsupportedReason: accountGuard.reason ?? 'account pinning unsupported' };
   const gatewayGuard = backendFeatureGuard(agent, 'gateway-routing');
-  if (!gatewayGuard.supported) return { ...empty, unsupportedReason: gatewayGuard.reason ?? 'gateway routing unsupported' };
+  if (!gatewayGuard.supported)
+    return { ...empty, unsupportedReason: gatewayGuard.reason ?? 'gateway routing unsupported' };
   if (!provider) return { ...empty, unsupportedReason: `account routing is unsupported for ${agent}` };
   try {
     const { getFlag } = await import('@papercusp/flags/server');
@@ -370,7 +392,13 @@ export async function resolveAccountChoices(
  */
 export async function resolveFleet(
   workspaceId: string,
-  opts: { fleet?: string | null; fleetRole?: string | null; fleetName?: string | null; fleetScheme?: string | null; ownerId?: string } = {},
+  opts: {
+    fleet?: string | null;
+    fleetRole?: string | null;
+    fleetName?: string | null;
+    fleetScheme?: string | null;
+    ownerId?: string;
+  } = {},
 ): Promise<{ env: Record<string, string>; notice: string | null; fleetSlug: string | null; fleetRole: string | null }> {
   const name = opts.fleetName?.trim();
   const requested = opts.fleet?.trim();
@@ -501,7 +529,7 @@ export const AUTO_MODE_DIRECTIVE =
   'keyboard, so to persist across turns instead of PARKING after turn 1 you MUST ARM A ' +
   'SELF-SUSTAINING LOOP: call loop:arm { intervalSec, goal } toward your assigned work; each ' +
   'wake self-assign + advance a work_item; loop:end ONLY when the goal is done or you are ' +
-  'blocked. (The persona\'s AUTO-mode section governs; the narrow irreversible-high-stakes ' +
+  "blocked. (The persona's AUTO-mode section governs; the narrow irreversible-high-stakes " +
   'brakes still apply.)';
 
 /**
@@ -649,7 +677,10 @@ const brainGet = defineTool({
   async handler(req) {
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
-    return jsonRes({ status: 'error', error: 'psu --brain is deprecated; use operator/sentinel converse or a normal psu session.' }, 410);
+    return jsonRes(
+      { status: 'error', error: 'psu --brain is deprecated; use operator/sentinel converse or a normal psu session.' },
+      410,
+    );
   },
 });
 
@@ -686,11 +717,21 @@ const optionsGet = defineTool({
         const { listFeaturesForHarness } = await import('../../../harness-readers');
         const r = await listFeaturesForHarness(harness, 'staging');
         const features = r.ok
-          ? (r.data.features as Array<{ id?: string; feature_id?: string; title?: string; description?: string; status?: string }>).map((f) => ({
-              id: f.id ?? f.feature_id ?? '',
-              title: f.title ?? f.description ?? '',
-              status: f.status ?? null,
-            })).filter((f) => f.id)
+          ? (
+              r.data.features as Array<{
+                id?: string;
+                feature_id?: string;
+                title?: string;
+                description?: string;
+                status?: string;
+              }>
+            )
+              .map((f) => ({
+                id: f.id ?? f.feature_id ?? '',
+                title: f.title ?? f.description ?? '',
+                status: f.status ?? null,
+              }))
+              .filter((f) => f.id)
           : [];
         return jsonRes({ status: 'ok', workspace, harness, features });
       } catch (e: any) {
@@ -759,7 +800,18 @@ const optionsGet = defineTool({
     } catch {
       /* fleet listing is optional — proceed without it */
     }
-    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles, accounts, fleets, nextScheme, schemes });
+    return jsonRes({
+      status: 'ok',
+      activeWorkspace: activeWorkspaceId(),
+      workspace,
+      workspaces,
+      harnesses,
+      roles,
+      accounts,
+      fleets,
+      nextScheme,
+      schemes,
+    });
   },
 });
 
@@ -885,7 +937,10 @@ const post = defineTool({
     // Anything else → 400 so a typo doesn't silently fall back. Omitted → engineer.
     const profileRaw = body.profile?.trim() || null;
     if (profileRaw && profileRaw !== 'engineer' && profileRaw !== 'power' && profileRaw !== 'generic') {
-      return jsonRes({ status: 'error', error: `profile must be engineer|power|generic (got ${profileRaw.slice(0, 24)})` }, 400);
+      return jsonRes(
+        { status: 'error', error: `profile must be engineer|power|generic (got ${profileRaw.slice(0, 24)})` },
+        400,
+      );
     }
     const profile = profileRaw ?? 'engineer';
 
@@ -914,7 +969,13 @@ const post = defineTool({
 
     const brain = body.brain === true;
     if (brain) {
-      return jsonRes({ status: 'error', error: 'brain launches are deprecated; use operator/sentinel converse or a normal psu session.' }, 410);
+      return jsonRes(
+        {
+          status: 'error',
+          error: 'brain launches are deprecated; use operator/sentinel converse or a normal psu session.',
+        },
+        410,
+      );
     }
 
     // Resolve cwd + context env from the existing console envelope builder
@@ -953,7 +1014,10 @@ const post = defineTool({
       try {
         const { resolveHarnessPlansDir, readPlanBySlug } = await import('../../../agent-tools/plans/source');
         const resolved = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
-        const found = await readPlanBySlug(planSlug, { harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId });
+        const found = await readPlanBySlug(planSlug, {
+          harnessSlug: resolved.harnessSlug,
+          workspaceId: resolved.workspaceId,
+        });
         if (found) {
           // WI-1442 fix (a): decorate any su-* agent-id mention in the launch-
           // context Now echo with its CURRENT coord:presence session state —
@@ -1008,9 +1072,7 @@ const post = defineTool({
     // the false "not started by psu" path). omp's native handle is the
     // omp_thread_id (linked post-launch); codex resumes via its per-session
     // CODEX_HOME and can't have its rollout id forced — so both stay null.
-    const nativeSessionId = backendFeatureGuard(agent, 'forced-native-session-id').supported
-      ? randomUUID()
-      : null;
+    const nativeSessionId = backendFeatureGuard(agent, 'forced-native-session-id').supported ? randomUUID() : null;
 
     // launch-path-argv-reconstruction (WI-1343): the exact `psu …` invocation that
     // launched this session — recorded on adv_sessions.launch_argv so a killed batch
@@ -1110,7 +1172,8 @@ const post = defineTool({
         return jsonRes(
           {
             status: 'error',
-            error: '`--seat` requires a fleet: a seat is delegated TO a fleet (agent-allocation P-005) — pass `--fleet=<slug>` with it.',
+            error:
+              '`--seat` requires a fleet: a seat is delegated TO a fleet (agent-allocation P-005) — pass `--fleet=<slug>` with it.',
           },
           409,
         );
@@ -1185,7 +1248,10 @@ const post = defineTool({
     const modeRaw = body.mode?.trim() || null;
     if (modeRaw && modeRaw !== 'drain') {
       return jsonRes(
-        { status: 'error', error: `unknown mode '${modeRaw.slice(0, 32)}' — the only recognized value is 'drain' (psu --mode=drain)` },
+        {
+          status: 'error',
+          error: `unknown mode '${modeRaw.slice(0, 32)}' — the only recognized value is 'drain' (psu --mode=drain)`,
+        },
         400,
       );
     }
@@ -1524,10 +1590,7 @@ const heartbeat = defineTool({
     } catch (err) {
       // Best-effort contract: the launcher treats any failure as a missed
       // beat, never an error loop.
-      return jsonRes(
-        { ok: false, error: err instanceof Error ? err.message : String(err) },
-        503,
-      );
+      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }
   },
 });
@@ -1583,10 +1646,7 @@ const sessionEnded = defineTool({
       await markAdvSessionEnded(advSessionId, exitCode);
       return jsonRes({ ok: true });
     } catch (err) {
-      return jsonRes(
-        { ok: false, error: err instanceof Error ? err.message : String(err) },
-        503,
-      );
+      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }
   },
 });
@@ -1638,10 +1698,7 @@ const sessionResumed = defineTool({
       const reactivated = await reactivateAdvSession(advSessionId);
       return jsonRes({ ok: true, reactivated });
     } catch (err) {
-      return jsonRes(
-        { ok: false, error: err instanceof Error ? err.message : String(err) },
-        503,
-      );
+      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }
   },
 });
@@ -1655,4 +1712,16 @@ const optionsForSessionResumed = defineTool({
   },
 });
 
-export default [options, optionsForOptions, post, optionsGet, brainGet, heartbeat, optionsForHeartbeat, sessionEnded, optionsForSessionEnded, sessionResumed, optionsForSessionResumed];
+export default [
+  options,
+  optionsForOptions,
+  post,
+  optionsGet,
+  brainGet,
+  heartbeat,
+  optionsForHeartbeat,
+  sessionEnded,
+  optionsForSessionEnded,
+  sessionResumed,
+  optionsForSessionResumed,
+];

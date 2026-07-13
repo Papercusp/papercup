@@ -44,12 +44,8 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import { codexGatewayConfigToml, tomlEscape } from '@papercusp/orchestrator/codex-gateway-config';
-import {
-  readCodexLockRuntimeVerdict,
-  type CodexLockRuntimeVerdict,
-} from './codex-lock-runtime';
+import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
 import { lintInstructionText, type InstructionLintReport } from './instruction-lint';
-
 
 import { dirname as __esmDirname } from 'node:path';
 import { fileURLToPath as __esmFileURLToPath } from 'node:url';
@@ -360,7 +356,13 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  */
 export function writeCodexLockHooks(
   codexHome: string,
-  opts: { lockSid?: string; coordSid?: string; activitySid?: string; objectiveSid?: string; agentSession?: boolean } = {},
+  opts: {
+    lockSid?: string;
+    coordSid?: string;
+    activitySid?: string;
+    objectiveSid?: string;
+    agentSession?: boolean;
+  } = {},
 ): boolean {
   const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
@@ -376,7 +378,10 @@ export function writeCodexLockHooks(
 
   type CodexHook = { matcher: string; hooks: { type: 'command'; command: string }[] };
   const postToolUse: CodexHook[] = [
-    { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${post}` }] },
+    {
+      matcher: CODEX_LOCK_MATCHER,
+      hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${post}` }],
+    },
   ];
 
   // SU coord push hook (matcher `.*` — every PostToolUse-eligible tool, for
@@ -385,10 +390,12 @@ export function writeCodexLockHooks(
   if (opts.coordSid && existsSync(coord)) {
     postToolUse.push({
       matcher: '.*',
-      hooks: [{
-        type: 'command',
-        command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_SID=${shellSingleQuote(opts.coordSid)} ${coord}`,
-      }],
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_SID=${shellSingleQuote(opts.coordSid)} ${coord}`,
+        },
+      ],
     });
   }
 
@@ -398,10 +405,12 @@ export function writeCodexLockHooks(
   if (opts.activitySid && existsSync(activity)) {
     postToolUse.push({
       matcher: '.*',
-      hooks: [{
-        type: 'command',
-        command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} ${activity}`,
-      }],
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} ${activity}`,
+        },
+      ],
     });
   }
 
@@ -412,15 +421,20 @@ export function writeCodexLockHooks(
   if (opts.objectiveSid && existsSync(objective)) {
     postToolUse.push({
       matcher: '.*',
-      hooks: [{
-        type: 'command',
-        command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_SID=${shellSingleQuote(opts.objectiveSid)} ${objective}`,
-      }],
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_SID=${shellSingleQuote(opts.objectiveSid)} ${objective}`,
+        },
+      ],
     });
   }
 
   const preToolUse: CodexHook[] = [
-    { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }] },
+    {
+      matcher: CODEX_LOCK_MATCHER,
+      hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }],
+    },
   ];
 
   // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010):
@@ -433,10 +447,12 @@ export function writeCodexLockHooks(
   if (opts.agentSession && existsSync(gate)) {
     preToolUse.push({
       matcher: 'Bash|exec_command|local_shell|shell',
-      hooks: [{
-        type: 'command',
-        command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT_SESSION=1 ${gate}`,
-      }],
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT_SESSION=1 ${gate}`,
+        },
+      ],
     });
   }
 
@@ -460,6 +476,7 @@ function writeCodexHomeDiagnostics(
   },
 ): void {
   const body = {
+    // One resolved mode only; coord:orient refreshes the runtime verdict after launch.
     lockEnforcement: opts.hooksInstalled ? 'hooks-configured' : 'hooks-missing',
     codexPreToolUseStatus: opts.lockRuntime.hookHealth,
     lockMode: opts.lockRuntime.lockMode,
@@ -550,7 +567,10 @@ export function writeRoleCodexHome(opts: {
     objectiveSid: opts.sid,
     agentSession: true,
   });
-  const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: opts.sid ?? `role-${opts.sessionKey}`, hooksConfigured: hooksInstalled });
+  const lockRuntime = readCodexLockRuntimeVerdict({
+    ownerId: opts.sid ?? `role-${opts.sessionKey}`,
+    hooksConfigured: hooksInstalled,
+  });
   const agentsText = codexAgentsPrompt(opts.promptText, lockRuntime);
   const instructionLint = lintInstructionText(agentsText);
   writeFileSync(agentsPath, agentsText, { mode: 0o600 });
@@ -614,9 +634,7 @@ export interface CodexHomeDiagnostics {
 function readJsonObject(path: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
   }
@@ -636,9 +654,7 @@ function coerceCodexPapercuspDiagnostics(raw: Record<string, unknown> | null): C
       ? { requiresExplicitPapercuspLocks: raw.requiresExplicitPapercuspLocks }
       : {}),
     ...(typeof raw.lockOwnerSid === 'string' ? { lockOwnerSid: raw.lockOwnerSid } : {}),
-    ...(typeof raw.inheritedPromptsCopied === 'boolean'
-      ? { inheritedPromptsCopied: raw.inheritedPromptsCopied }
-      : {}),
+    ...(typeof raw.inheritedPromptsCopied === 'boolean' ? { inheritedPromptsCopied: raw.inheritedPromptsCopied } : {}),
   };
 }
 
@@ -673,7 +689,16 @@ function latestCodexRollout(codexHome: string): { id: string; path: string } | n
   const latest = files[0];
   if (!latest) return null;
   const match = latest.path.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
-  return { id: match?.[1] ?? latest.path.split('/').pop()!.replace(/^rollout-/, '').replace(/\.jsonl$/, ''), path: latest.path };
+  return {
+    id:
+      match?.[1] ??
+      latest.path
+        .split('/')
+        .pop()!
+        .replace(/^rollout-/, '')
+        .replace(/\.jsonl$/, ''),
+    path: latest.path,
+  };
 }
 
 export function readCodexHomeDiagnostics(sessionKey: string | number): CodexHomeDiagnostics {
@@ -801,9 +826,7 @@ export function writeSuCodexHome(opts: {
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,
-    ...(opts.token
-      ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`]
-      : []),
+    ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
     '',
   ].join('\n');
   writeFileSync(configPath, toml, { mode: 0o600 });

@@ -74,9 +74,7 @@ export function composeLaunchContext(input: LaunchContextInput): string {
   }
 
   if (planSlug) {
-    lines.push(
-      `- **Plan:** bound to \`${planSlug}\`${planTitle ? ` — ${planTitle}` : ''}.`,
-    );
+    lines.push(`- **Plan:** bound to \`${planSlug}\`${planTitle ? ` — ${planTitle}` : ''}.`);
     if (planNow && (planNow.state || planNow.next)) {
       if (planNow.state) lines.push(`  - **Now:** ${planNow.state}`);
       if (planNow.next) lines.push(`  - **Next:** ${planNow.next}`);

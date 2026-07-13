@@ -17,10 +17,8 @@ const resolvePromptFilesMock = vi.fn((_ctx: unknown, role: string): string[] => 
 
 vi.mock('@papercusp/orchestrator/role-prompt', () => ({
   assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
-  resolvePromptFile: (...args: unknown[]) =>
-    resolvePromptFileMock(...(args as [unknown, string])),
-  resolvePromptFiles: (...args: unknown[]) =>
-    resolvePromptFilesMock(...(args as [unknown, string])),
+  resolvePromptFile: (...args: unknown[]) => resolvePromptFileMock(...(args as [unknown, string])),
+  resolvePromptFiles: (...args: unknown[]) => resolvePromptFilesMock(...(args as [unknown, string])),
 }));
 vi.mock('@papercusp/harness/paths', () => ({
   harnessRoot: vi.fn(() => '/h'),
@@ -82,7 +80,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   assembleRolePromptMock.mockReturnValue({
     text: 'WORKER PROMPT BODY',
-    meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: '/proj/papercup', stateDir: '/proj/papercup/.papercusp', harnessDir: '/h', runId: 'worker-F-001-123' },
+    meta: {
+      role: 'worker',
+      promptFile: '/h/prompts/worker.md',
+      projectDir: '/proj/papercup',
+      stateDir: '/proj/papercup/.papercusp',
+      harnessDir: '/h',
+      runId: 'worker-F-001-123',
+    },
   });
 });
 
@@ -100,7 +105,13 @@ describe('buildRoleLaunchSpec', () => {
     // in-process workspace-aware projectDir (so the assembler skips its
     // workspace-blind lookupProjectDir / curl-to-:3055 fallback).
     expect(assembleRolePromptMock).toHaveBeenCalledWith(
-      expect.objectContaining({ slug: 'papercup', role: 'worker', mode: 'chat', featureId: 'F-001', projectDir: '/registry/papercup' }),
+      expect.objectContaining({
+        slug: 'papercup',
+        role: 'worker',
+        mode: 'chat',
+        featureId: 'F-001',
+        projectDir: '/registry/papercup',
+      }),
     );
     expect(spec.promptText).toBe('WORKER PROMPT BODY');
     expect(spec.runId).toBe('worker-F-001-123');
@@ -140,7 +151,14 @@ describe('buildRoleLaunchSpec', () => {
   it('omits the feature param for a no-feature role', async () => {
     assembleRolePromptMock.mockReturnValue({
       text: 'SCOPER PROMPT',
-      meta: { role: 'scoper', promptFile: '/h/prompts/scoper.md', projectDir: '/proj/papercup', stateDir: '', harnessDir: '/h', runId: 'scoper-123' },
+      meta: {
+        role: 'scoper',
+        promptFile: '/h/prompts/scoper.md',
+        projectDir: '/proj/papercup',
+        stateDir: '',
+        harnessDir: '/h',
+        runId: 'scoper-123',
+      },
     });
     const spec = await buildRoleLaunchSpec({
       role: 'scoper',
@@ -157,7 +175,12 @@ describe('buildRoleLaunchSpec', () => {
       throw new Error('assembleRolePrompt: harness "ghost" not registered');
     });
     await expect(
-      buildRoleLaunchSpec({ role: 'worker', workspaceId: 'default', harnessSlug: 'ghost', operatorBaseUrl: 'http://x' }),
+      buildRoleLaunchSpec({
+        role: 'worker',
+        workspaceId: 'default',
+        harnessSlug: 'ghost',
+        operatorBaseUrl: 'http://x',
+      }),
     ).rejects.toThrow(/not registered/);
   });
 
@@ -167,7 +190,12 @@ describe('buildRoleLaunchSpec', () => {
     // back to its workspace-blind lookup.
     vi.mocked(resolveProjectDir).mockResolvedValueOnce(null);
     await expect(
-      buildRoleLaunchSpec({ role: 'scoper', workspaceId: 'papercusp-workspace', harnessSlug: 'papercup', operatorBaseUrl: 'http://x' }),
+      buildRoleLaunchSpec({
+        role: 'scoper',
+        workspaceId: 'papercusp-workspace',
+        harnessSlug: 'papercup',
+        operatorBaseUrl: 'http://x',
+      }),
     ).rejects.toThrow(/not registered in workspace "papercusp-workspace"/);
     expect(assembleRolePromptMock).not.toHaveBeenCalled();
   });
@@ -308,7 +336,7 @@ describe('buildLaunchSpec — kind dispatch', () => {
     expect(spec.promptText).toContain('# Operating brief — this launch');
     expect(spec.promptText).toContain('papercup');
     expect(spec.promptText).toContain('my-plan');
-    expect(spec.instructionLint).toMatchObject({ markerCount: 5, clean: true });
+    expect(spec.instructionLint).toMatchObject({ markerCount: 4, clean: true });
   });
 
   it("kind:'su' surfaces a harness that isn't registered in the workspace", async () => {
@@ -384,11 +412,15 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
   // explicit contextSize:'full' opts codex back into the ~140k-token full catalog.
   it('codex + omitted, no model ⇒ tools= present (seed-by-default, D-004 token win)', async () => {
     expect((await suMcpUrl('codex')).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
-    expect((await suMcpUrl('codex', { contextSize: null })).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect((await suMcpUrl('codex', { contextSize: null })).searchParams.get('tools')).toBe(
+      CORE_MCP_TOOL_NAMES.join(','),
+    );
   });
 
   it('codex + FRONTIER model ⇒ tools= present (seed-by-default holds on strong models too)', async () => {
-    expect((await suMcpUrl('codex', { model: FRONTIER })).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect((await suMcpUrl('codex', { model: FRONTIER })).searchParams.get('tools')).toBe(
+      CORE_MCP_TOOL_NAMES.join(','),
+    );
   });
 
   // weak-model-tool-tier: when contextSize is omitted, the tier is derived from the MODEL.
@@ -410,9 +442,7 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
   });
 
   it('omp + FRONTIER model + explicit trimmed ⇒ tools= present (explicit override on any tier)', async () => {
-    expect(
-      (await suMcpUrl('omp', { model: FRONTIER, contextSize: 'trimmed' })).searchParams.has('tools'),
-    ).toBe(true);
+    expect((await suMcpUrl('omp', { model: FRONTIER, contextSize: 'trimmed' })).searchParams.has('tools')).toBe(true);
   });
 
   it('claude + trimmed ⇒ tools= present and EQUALS CORE_MCP_TOOL_NAMES (THE FIX — ToolSearch defers only schemas, not the ~165k of names+descriptions)', async () => {
@@ -426,7 +456,9 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
   });
 
   it('claude + FRONTIER model, no override ⇒ tools= present (D-010: claude defaults to trimmed too — the ~165k names+descriptions ToolSearch leaves inline are the waste)', async () => {
-    expect((await suMcpUrl('claude', { model: FRONTIER })).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect((await suMcpUrl('claude', { model: FRONTIER })).searchParams.get('tools')).toBe(
+      CORE_MCP_TOOL_NAMES.join(','),
+    );
     expect((await suMcpUrl('claude')).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
   });
 

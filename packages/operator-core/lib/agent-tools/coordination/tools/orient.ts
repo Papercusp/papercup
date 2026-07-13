@@ -358,9 +358,7 @@ export const ORIENT_DEEP_WORK_NOTE =
  * from `_meta.delta.mode`) — the generic breadcrumb that makes a delta rollout's live win
  * directly queryable (`metadata_json->>'deltaServed'`) instead of only inferable.
  */
-export function orientServedDelta(
-  result: Pick<OrientResult, 'fleetDelta' | 'planEvents' | 'fleetCatchUp'>,
-): boolean {
+export function orientServedDelta(result: Pick<OrientResult, 'fleetDelta' | 'planEvents' | 'fleetCatchUp'>): boolean {
   return (
     result.fleetDelta?.baseline === false ||
     result.planEvents?.unchanged === true ||
@@ -504,10 +502,7 @@ export async function composeOrient(
   let inboxSince: string | undefined;
   if (monitor && !args.afterCompaction) {
     try {
-      const wm = (await call('coord:watermark', {})) as
-        | { read_through_ts?: string | null }
-        | null
-        | undefined;
+      const wm = (await call('coord:watermark', {})) as { read_through_ts?: string | null } | null | undefined;
       if (typeof wm?.read_through_ts === 'string' && wm.read_through_ts) {
         inboxSince = wm.read_through_ts;
       }
@@ -526,8 +521,8 @@ export async function composeOrient(
   const claimable = Array.isArray(list)
     ? list
     : ((list as { data?: unknown[]; items?: unknown[] } | null)?.data ??
-       (list as { data?: unknown[]; items?: unknown[] } | null)?.items ??
-       []);
+      (list as { data?: unknown[]; items?: unknown[] } | null)?.items ??
+      []);
 
   const result: OrientResult = {
     ok: true,
@@ -571,16 +566,15 @@ export async function composeOrient(
       // Fixed-wave scope is already encoded in the fleet claim spec. Reuse that
       // literal cohort to drive work_items:burn_down's exact-ID audit; never ask a
       // leader to maintain a second list or infer scope from current assignments.
-      const specRecord = claimSpec && typeof claimSpec === 'object'
-        ? (claimSpec as { spec?: unknown; harnessSlug?: unknown })
-        : null;
+      const specRecord =
+        claimSpec && typeof claimSpec === 'object' ? (claimSpec as { spec?: unknown; harnessSlug?: unknown }) : null;
       const cohortIds = fixedCohortIds(
         specRecord?.spec && typeof specRecord.spec === 'object'
           ? (specRecord.spec as { view?: { filter?: unknown } })
           : null,
       );
-      const cohortHarness = args.harness ??
-        (typeof specRecord?.harnessSlug === 'string' ? specRecord.harnessSlug : undefined);
+      const cohortHarness =
+        args.harness ?? (typeof specRecord?.harnessSlug === 'string' ? specRecord.harnessSlug : undefined);
       if (cohortIds && cohortHarness) {
         try {
           const scoped = await call('work_items:burn_down', {
@@ -589,19 +583,16 @@ export async function composeOrient(
           });
           hydrated.scopedBurndown = scoped;
           const allowed = new Set(cohortIds);
-          const members = Array.isArray(hydrated.members)
-            ? hydrated.members as Array<Record<string, unknown>>
-            : [];
+          const members = Array.isArray(hydrated.members) ? (hydrated.members as Array<Record<string, unknown>>) : [];
           hydrated.outOfScopeAssignments = members.flatMap((member) => {
             const ids = Array.isArray(member.workItemIds)
               ? member.workItemIds.filter((id): id is string => typeof id === 'string')
               : [];
-            return ids
-              .filter((id) => !allowed.has(id))
-              .map((id) => ({ agentId: member.agentId ?? null, id }));
+            return ids.filter((id) => !allowed.has(id)).map((id) => ({ agentId: member.agentId ?? null, id }));
           });
           const auditRows =
-            scoped && typeof scoped === 'object' &&
+            scoped &&
+            typeof scoped === 'object' &&
             Array.isArray((scoped as { cohortAudit?: { rows?: unknown[] } }).cohortAudit?.rows)
               ? (scoped as { cohortAudit: { rows: Array<Record<string, unknown>> } }).cohortAudit.rows
               : [];
@@ -650,9 +641,7 @@ export async function composeOrient(
         query: memQuery,
         ...(args.harness ? { harness_slug: args.harness } : {}),
         limit: memLimit,
-      })) as
-        | { results?: OrientMemoryHit[]; degraded?: boolean; reason?: string; degraded_reason?: string }
-        | undefined;
+      })) as { results?: OrientMemoryHit[]; degraded?: boolean; reason?: string; degraded_reason?: string } | undefined;
       const rawHits = (mem?.results ?? []).slice(0, memLimit).map((r) => ({
         id: r.id,
         memory: typeof r.memory === 'string' ? r.memory.slice(0, MEMORY_TEXT_CAP) : undefined,
@@ -668,13 +657,10 @@ export async function composeOrient(
       // failure it exists to catch. See lib/memory/recall-admission.ts.
       // P-002 / D-001: a responsive caller doesn't receive queen-loop steering as a binding
       // recall hit (it self-drained fleet leaders). Auto callers keep all.
-      const { admitted, filteredLowScore, withheld, withheldBudget, decisions } = admitRecallHits(
-        rawHits,
-        {
-          degraded: memDegraded,
-          withhold: (hs) => withholdQueenLoopControl(hs, driveMode, (h) => ({ body: h.memory })),
-        },
-      );
+      const { admitted, filteredLowScore, withheld, withheldBudget, decisions } = admitRecallHits(rawHits, {
+        degraded: memDegraded,
+        withhold: (hs) => withholdQueenLoopControl(hs, driveMode, (h) => ({ body: h.memory })),
+      });
       // EI-10619 — SHIP THE DECISIONS. `tool_invocations` records that orient returned ok; it
       // cannot see that the relevance floor discarded every hit on the way. That blind spot IS
       // EI-10372, and it is why a gate's decision has to be an event of its own. Fire-and-forget,
@@ -701,9 +687,7 @@ export async function composeOrient(
         // P-003: the non-exhaustive advisory rides ONLY a non-empty fold (zero
         // noise on the empty path).
         ...(admitted.length > 0 ? { note: ORIENT_MEMORY_NOTE } : {}),
-        ...(memDegraded
-          ? { degraded: true, ...(memDegradedReason ? { degradedReason: memDegradedReason } : {}) }
-          : {}),
+        ...(memDegraded ? { degraded: true, ...(memDegradedReason ? { degradedReason: memDegradedReason } : {}) } : {}),
       };
       // P-002 (memory-delivery-unification-2026-07-12 D-006): stamp the
       // orient-DELIVERED hits on the session-epoch surfaced-ledger, keyed by
@@ -760,51 +744,52 @@ export async function composeOrient(
   // other leg — a facts outage must never break orientation. EI-8300: skipped
   // entirely on a monitor tick (a leader loop re-reads its own steering facts on
   // every wake for no reason — it already has them from an earlier full orient).
-  if (!monitor) try {
-    const { foldFacts, renderFactSrc } = await import('../../../agent-facts/store');
-    const selectors = [
-      { scope: 'workspace' as const },
-      ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
-      ...(args.harness ? [{ scope: 'harness' as const, scopeRef: args.harness }] : []),
-    ];
-    // P-007: filter by the RECIPIENT's audience — an audience-scoped fact
-    // (audienceScope 'fleet:<slug>') folds only for that fleet's members;
-    // a non-fleet caller receives only unrestricted facts.
-    const facts = await foldFacts(selectors, {
-      audiences: fleetSlug ? [`fleet:${fleetSlug}`] : [],
-    });
-    // P-002 / D-001: withhold queen-loop steering facts (pauseNewWork/maxBees) from
-    // an OWNER-DIRECTED (responsive) caller — filter the RAW facts (key + body both
-    // inspected) BEFORE projecting, so the structural `queen-loop:` key convention
-    // works alongside the body-vocabulary net. Auto callers keep every fact.
-    const { kept, withheld } = withholdQueenLoopControl(facts, driveMode, (f) => ({ key: f.key, body: f.body }));
-    if (kept.length > 0) {
-      // EI-10947: a fact anchored to a work-item that has since CLOSED is still folded
-      // here verbatim, as binding context. If it was a carry-note ("NEXT: implement
-      // EI-10539") that is now an instruction to REDO finished work — the exact failure
-      // that cost su-71d9f8a2 a wasted re-implementation. Mark it (never auto-retract:
-      // a durable conclusion the closed item PROVED stays true — see stale-source.ts).
-      // Fail-soft: markStaleSourceFacts returns the facts unmarked on any lookup error.
-      const { markStaleSourceFacts } = await import('../../facts/stale-source');
-      const marked = await markStaleSourceFacts(kept);
-      result.facts = marked.map((f) => ({
-        scope: f.scope,
-        ref: f.scopeRef,
-        body: f.body,
-        // P-007: provenance-hydrated src — a verified typed sourceRef renders its
-        // platform-captured verbatim quote (`msg:x ✓ "…"`); an unresolvable one
-        // renders LOUDLY (`✗unverified`); free-text anchors pass through as before.
-        src: renderFactSrc(f) || null,
-        ...(f.audienceScope ? { aud: f.audienceScope } : {}),
-        ...(f.sourceStale ? { stale: f.sourceStale } : {}),
-      }));
+  if (!monitor)
+    try {
+      const { foldFacts, renderFactSrc } = await import('../../../agent-facts/store');
+      const selectors = [
+        { scope: 'workspace' as const },
+        ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
+        ...(args.harness ? [{ scope: 'harness' as const, scopeRef: args.harness }] : []),
+      ];
+      // P-007: filter by the RECIPIENT's audience — an audience-scoped fact
+      // (audienceScope 'fleet:<slug>') folds only for that fleet's members;
+      // a non-fleet caller receives only unrestricted facts.
+      const facts = await foldFacts(selectors, {
+        audiences: fleetSlug ? [`fleet:${fleetSlug}`] : [],
+      });
+      // P-002 / D-001: withhold queen-loop steering facts (pauseNewWork/maxBees) from
+      // an OWNER-DIRECTED (responsive) caller — filter the RAW facts (key + body both
+      // inspected) BEFORE projecting, so the structural `queen-loop:` key convention
+      // works alongside the body-vocabulary net. Auto callers keep every fact.
+      const { kept, withheld } = withholdQueenLoopControl(facts, driveMode, (f) => ({ key: f.key, body: f.body }));
+      if (kept.length > 0) {
+        // EI-10947: a fact anchored to a work-item that has since CLOSED is still folded
+        // here verbatim, as binding context. If it was a carry-note ("NEXT: implement
+        // EI-10539") that is now an instruction to REDO finished work — the exact failure
+        // that cost su-71d9f8a2 a wasted re-implementation. Mark it (never auto-retract:
+        // a durable conclusion the closed item PROVED stays true — see stale-source.ts).
+        // Fail-soft: markStaleSourceFacts returns the facts unmarked on any lookup error.
+        const { markStaleSourceFacts } = await import('../../facts/stale-source');
+        const marked = await markStaleSourceFacts(kept);
+        result.facts = marked.map((f) => ({
+          scope: f.scope,
+          ref: f.scopeRef,
+          body: f.body,
+          // P-007: provenance-hydrated src — a verified typed sourceRef renders its
+          // platform-captured verbatim quote (`msg:x ✓ "…"`); an unresolvable one
+          // renders LOUDLY (`✗unverified`); free-text anchors pass through as before.
+          src: renderFactSrc(f) || null,
+          ...(f.audienceScope ? { aud: f.audienceScope } : {}),
+          ...(f.sourceStale ? { stale: f.sourceStale } : {}),
+        }));
+      }
+      if (withheld.length > 0) {
+        result.factsWithheld = { count: withheld.length, reason: QUEEN_LOOP_WITHHELD_REASON };
+      }
+    } catch {
+      result.facts = null;
     }
-    if (withheld.length > 0) {
-      result.factsWithheld = { count: withheld.length, reason: QUEEN_LOOP_WITHHELD_REASON };
-    }
-  } catch {
-    result.facts = null;
-  }
 
   // ── coord:plan-events — the "what plans changed" delta (default on; the bootstrap's
   // third leg). Already result-bounded server-side; we keep the newest few.
@@ -827,7 +812,9 @@ export async function composeOrient(
         try {
           const ack = await planEventsCursor(fingerprintIdList(recent.map(rowKey)));
           unchanged = !ack.baseline && idListUnchanged(ack.committed, recent.map(rowKey));
-        } catch { /* fail-open: full delivery */ }
+        } catch {
+          /* fail-open: full delivery */
+        }
       }
       result.planEvents = unchanged ? { total, recent: [], unchanged: true } : { total, recent };
     } catch {
@@ -894,7 +881,9 @@ export async function composeOrient(
           try {
             const ack = await fleetCatchUpCursor(fingerprintIdList(recent.map(rowKey)));
             unchanged = !ack.baseline && idListUnchanged(ack.committed, recent.map(rowKey));
-          } catch { /* fail-open: full delivery */ }
+          } catch {
+            /* fail-open: full delivery */
+          }
         }
         result.fleetCatchUp = unchanged
           ? { fleet: fleetSlug, total, recent: [], unchanged: true }
@@ -953,7 +942,9 @@ export async function composeOrient(
         expires_ts: a.expiresTs,
       }));
     }
-  } catch { /* best-effort — never break orientation */ }
+  } catch {
+    /* best-effort — never break orientation */
+  }
 
   // ── role-specific pane folds (voice-public-release-readiness-2026-07-12 P-016) —
   // injected by the handler ONLY for the papercup / papercup-deep dock-pane roles in
@@ -991,7 +982,9 @@ export async function composeOrient(
       const rec = (await call('recipes:search', {
         query: recipeQuery,
         limit: recLimit,
-      })) as { recipes?: Array<{ id?: unknown; title?: unknown; runCount?: unknown; similarity?: unknown }> } | undefined;
+      })) as
+        | { recipes?: Array<{ id?: unknown; title?: unknown; runCount?: unknown; similarity?: unknown }> }
+        | undefined;
       result.recipes = (rec?.recipes ?? []).slice(0, recLimit).map((r) => ({
         id: r.id,
         title: typeof r.title === 'string' ? r.title.slice(0, RECIPE_TITLE_CAP) : undefined,
@@ -1050,16 +1043,16 @@ export async function composeOrient(
 export default defineTool({
   name: 'coord:orient',
   description:
-    "One agent wake-orientation + session-bootstrap read: your assignments (+lane+load), " +
-    "the claimable backlog, your inbox summary, and the recent plan-events delta — plus, with " +
-    "`intent`, a memory recall AND a coord:declare-intent so peers see you. The mandated bootstrap " +
-    "(memory:search + coord:inbox + coord:plan-events + declare + assignments + claimable) in ONE " +
+    'One agent wake-orientation + session-bootstrap read: your assignments (+lane+load), ' +
+    'the claimable backlog, your inbox summary, and the recent plan-events delta — plus, with ' +
+    '`intent`, a memory recall AND a coord:declare-intent so peers see you. The mandated bootstrap ' +
+    '(memory:search + coord:inbox + coord:plan-events + declare + assignments + claimable) in ONE ' +
     'round-trip; a fleet member also gets a compact fleet-health glance.',
   guidance: {
     when:
       'At the START of a turn / on waking. Pass `intent` (your one-line task) for the whole ' +
       'bootstrap in ONE round-trip: assignments + claimable + inbox + plan-events + a memory recall ' +
-      "+ your intent DECLARED to peers. Omit `intent` for a lighter re-orientation. On a repeating " +
+      '+ your intent DECLARED to peers. Omit `intent` for a lighter re-orientation. On a repeating ' +
       "LEADER/MONITOR tick pass `mode:'monitor'` — skips the claimable/facts/plan-events/fleet/" +
       'recipes/recall legs, keeping fleet:assignments + inbox + declare.',
     notWhen:
@@ -1091,7 +1084,11 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    harness: z.string().max(80).optional().describe('Scope assignments + claimable + recall + declare to this harness.'),
+    harness: z
+      .string()
+      .max(80)
+      .optional()
+      .describe('Scope assignments + claimable + recall + declare to this harness.'),
     claimableState: z.string().max(40).optional().describe("Work-item state for the claimable list (default 'todo')."),
     claimableLimit: z.number().int().positive().max(100).optional().describe('Max claimable items (default 20).'),
     inboxLimit: z.number().int().positive().max(50).optional().describe('Max recent inbox entries (default 10).'),
@@ -1103,8 +1100,14 @@ export default defineTool({
       ),
     intent: hardText(LIMITS.ANNOTATION)
       .optional()
-      .describe('Your one-line intent for this turn — DECLARED to peers (coord:declare-intent) AND used as the memory:search recall query. The bootstrap-in-one-call lever.'),
-    memoryQuery: z.string().max(500).optional().describe('Explicit memory:search query (overrides `intent` for recall).'),
+      .describe(
+        'Your one-line intent for this turn — DECLARED to peers (coord:declare-intent) AND used as the memory:search recall query. The bootstrap-in-one-call lever.',
+      ),
+    memoryQuery: z
+      .string()
+      .max(500)
+      .optional()
+      .describe('Explicit memory:search query (overrides `intent` for recall).'),
     planSlug: z.string().max(120).optional().describe('Plan slug for the declared lane (used with `intent`).'),
     planItems: z
       .array(z.string().max(20))
@@ -1114,12 +1117,42 @@ export default defineTool({
     memoryLimit: z.number().int().positive().max(10).optional().describe('Max memory hits to fold (default 5).'),
     includePlanEvents: z.boolean().optional().describe('Fold the recent plan-events delta (default true).'),
     planEventsSince: z.string().optional().describe('Only plan-events strictly after this ISO timestamp.'),
-    includeRecipes: z.boolean().optional().describe('Surface reusable code:run recipes relevant to `intent` (default true).'),
-    recipesLimit: z.number().int().positive().max(5).optional().describe('Max relevant recipes to surface (default 3).'),
-    includeFleetCatchUp: z.boolean().optional().describe("Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true)."),
-    fleetCatchUpLimit: z.number().int().positive().max(25).optional().describe('Max fleet catch-up messages to fold (default 8).'),
-    includeFleetHealth: z.boolean().optional().describe("Fold a COMPACT fleet-health glance (bees running/working, staged wakes, paused governor buckets) when you're in a named fleet (default true; full mode only) — the coord:glance health read agents otherwise re-fetch right after orient."),
-    afterCompaction: z.boolean().optional().describe('Pass true on your FIRST orient after a compaction: folds a recovery block — your held work-items’ checkpoints, armed-loop status, staleness_warnings (presence/fleet/claims that changed AFTER your summary was written — the summary’s view of them is stale), and the self-recall pointer (pre-compaction turns are searchable via sessions:search { session:’self’ }).'),
+    includeRecipes: z
+      .boolean()
+      .optional()
+      .describe('Surface reusable code:run recipes relevant to `intent` (default true).'),
+    recipesLimit: z
+      .number()
+      .int()
+      .positive()
+      .max(5)
+      .optional()
+      .describe('Max relevant recipes to surface (default 3).'),
+    includeFleetCatchUp: z
+      .boolean()
+      .optional()
+      .describe(
+        "Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true).",
+      ),
+    fleetCatchUpLimit: z
+      .number()
+      .int()
+      .positive()
+      .max(25)
+      .optional()
+      .describe('Max fleet catch-up messages to fold (default 8).'),
+    includeFleetHealth: z
+      .boolean()
+      .optional()
+      .describe(
+        "Fold a COMPACT fleet-health glance (bees running/working, staged wakes, paused governor buckets) when you're in a named fleet (default true; full mode only) — the coord:glance health read agents otherwise re-fetch right after orient.",
+      ),
+    afterCompaction: z
+      .boolean()
+      .optional()
+      .describe(
+        'Pass true on your FIRST orient after a compaction: folds a recovery block — your held work-items’ checkpoints, armed-loop status, staleness_warnings (presence/fleet/claims that changed AFTER your summary was written — the summary’s view of them is stale), and the self-recall pointer (pre-compaction turns are searchable via sessions:search { session:’self’ }).',
+      ),
   }),
   // context-trimming-tiers P-012: orient is the fattest bootstrap read (one
   // unshaped call measured ~43k tokens in the 2026-07-01 fleet incident). The
@@ -1245,7 +1278,9 @@ export default defineTool({
           // Heading scope LABEL only (workspace-scoped-coordination D-008) — the
           // anomalies leg's addressing stays potSlug, exactly like converse-prompt.
           const scopeLabel = pc.sentinelScopeLabel(ws, potSlug, await isWorkspaceCoordinationOn().catch(() => false));
-          const input = await pc.gatherSentinelContext(pc.buildSentinelContextDeps(ws, potSlug), { potSlug: scopeLabel });
+          const input = await pc.gatherSentinelContext(pc.buildSentinelContextDeps(ws, potSlug), {
+            potSlug: scopeLabel,
+          });
           const block = pc.renderSentinelContext(input);
           return block.trim() ? block : null;
         },
@@ -1312,14 +1347,22 @@ export default defineTool({
         const rows = await getModes(ws, ownerId);
         if (rows.length) {
           modes = {
-            active: rows.map((r) => ({ mode: r.mode, reason: r.reason, setBy: r.setBy, ownerDirected: r.ownerDirected, setAt: r.setAt })),
+            active: rows.map((r) => ({
+              mode: r.mode,
+              reason: r.reason,
+              setBy: r.setBy,
+              ownerDirected: r.ownerDirected,
+              setAt: r.setAt,
+            })),
             contracts: rows
               .map((r) => modeById(r.mode)?.contract)
               .filter(Boolean)
               .join('\n\n'),
           };
         }
-      } catch { /* fail-soft */ }
+      } catch {
+        /* fail-soft */
+      }
     }
     // su-ideate-learning-substrate-2026-07-10 P-011: when the caller's active
     // modes include 'ideate', fold ONE line telling them whether they are OVERDUE
@@ -1332,7 +1375,9 @@ export default defineTool({
         const { computeIdeateOverdue } = await import('./orient-ideate-hint');
         const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
         ideate = await computeIdeateOverdue({ ownerId, workspaceId: ws });
-      } catch { /* fail-soft */ }
+      } catch {
+        /* fail-soft */
+      }
     }
     // su-ideate-learning-substrate-2026-07-10 P-022(a): the capture-MISS advisory
     // (D-017). A high-signal turn — an error-retry cluster / EI-* reference /
@@ -1346,7 +1391,9 @@ export default defineTool({
       try {
         const { resolveCaptureMissHint } = await import('./orient-capture-miss-hint');
         captureMiss = await resolveCaptureMissHint({ ownerId, harness: args.harness });
-      } catch { /* fail-soft */ }
+      } catch {
+        /* fail-soft */
+      }
     }
     // compaction-context-loss-2026-07-05 P-002: the post-compaction recovery
     // fold — held-item checkpoints + armed-loop status + the self-recall
@@ -1362,7 +1409,9 @@ export default defineTool({
         // no rows. Resolve to the concrete active workspace.
         const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
         recovery = await buildCompactionRecovery(ownerId, ws);
-      } catch { /* fail-soft */ }
+      } catch {
+        /* fail-soft */
+      }
     }
     // WI-4562: a Claude Code config save (/model, /effort, theme) REWRITES the session's
     // settings.json from its own in-memory keys and drops every psu key — silently
@@ -1378,17 +1427,11 @@ export default defineTool({
     let configIntegrity: unknown;
     if (ownerId) {
       try {
-        const {
-          loadSessionConfigState,
-          checkSessionConfigIntegrityForClient,
-          repairSessionConfigOnDisk,
-        } = await import(
-          '../../../session-config-integrity'
-        );
+        const { loadSessionConfigState, checkSessionConfigIntegrityForClient, repairSessionConfigOnDisk } =
+          await import('../../../session-config-integrity');
         const state = loadSessionConfigState(ownerId);
-        const recordedClient = (
-          await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId)
-        )?.agent;
+        const recordedClient = (await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId))
+          ?.agent;
         const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
         if (verdict && !verdict.ok) {
           const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient);
@@ -1405,7 +1448,9 @@ export default defineTool({
                 : 'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT fully succeed — see stillBroken. Claude Code rewrote this session config and dropped psu-owned keys, so some capabilities above remain OFF. Repair manually via session-config-integrity.repairSessionConfigOnDisk, or relaunch.',
           };
         }
-      } catch { /* fail-soft — never break orientation over a config read/repair */ }
+      } catch {
+        /* fail-soft — never break orientation over a config read/repair */
+      }
     }
     // EI-11408 / P-004: Codex's lock policy is a RUNTIME verdict, not a
     // static client assumption. Hooks merely present on disk remain manual
@@ -1441,8 +1486,20 @@ export default defineTool({
       const { renderOpenOwnerDirectivesBlock } = await import('../../../owner-directives');
       const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
       ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws)) ?? undefined;
-    } catch { /* fail-soft */ }
-    const out = { ...(ownerDirectives ? { ownerDirectives } : {}), ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(configIntegrity ? { configIntegrity } : {}), ...(codexLocks ? { codexLocks } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
+    } catch {
+      /* fail-soft */
+    }
+    const out = {
+      ...(ownerDirectives ? { ownerDirectives } : {}),
+      ...(self ? { self } : {}),
+      ...(modes ? { modes } : {}),
+      ...(ideate ? { ideate } : {}),
+      ...(captureMiss ? { captureMiss } : {}),
+      ...(configIntegrity ? { configIntegrity } : {}),
+      ...(codexLocks ? { codexLocks } : {}),
+      ...(recovery ? { recovery } : {}),
+      ...(result as object),
+    };
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never

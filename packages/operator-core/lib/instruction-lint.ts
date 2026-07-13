@@ -25,7 +25,11 @@ export interface InstructionLintReport {
 const RULE_RE = /<!--\s*papercusp-rule:([a-z0-9-]+)=([a-z0-9-]+)\s*-->/gi;
 
 function semanticFileLockMode(line: string): string | null {
-  const plain = line.replace(/[`*_>#|]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  const plain = line
+    .replace(/[`*_>#|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
   if (
     /file-lock enforcement is not automatic/.test(plain) ||
     /nothing claims locks for you/.test(plain) ||
