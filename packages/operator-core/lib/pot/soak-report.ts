@@ -31,6 +31,12 @@ export const DEPLOY_LATENCY_THRESHOLD_MS = 15 * 60_000;
 export interface BgHostJournalMetrics {
   oomKillCount: number;
   restartCount: number;
+  /** Unit DEATHS (crash / OOM-kill / watchdog / non-zero exit) in the window —
+   *  one systemd `Failed with result '…'` line per death. This, not
+   *  `restartCount`, is the readiness red criterion [owner:Avi 2026-07-13
+   *  "red only on crashes"]: a deliberate `systemctl restart` (how deploys
+   *  ship routine fixes) is a clean stop+start and emits no failure line. */
+  failureCount: number;
   peakMemoryMb: number | null;
   highMemoryPeakCount: number;
   /** null when the journal was read successfully. Otherwise WHY it could not be —
@@ -50,6 +56,10 @@ export interface BgHostJournalMetrics {
 export const BG_HOST_RESTART_PATTERN = 'Started papercup-bg-host\\.service';
 export const BG_HOST_OOM_PATTERN = 'OOM killer|FatalProcessOutOfMemory|ReportOOMFailure|Out of memory';
 export const BG_HOST_MEMORY_PEAK_PATTERN = 'memory peak';
+/** systemd writes exactly ONE `Failed with result '<oom-kill|signal|exit-code|
+ *  watchdog>'` line per unit death, and none for a requested stop+start — the
+ *  one-per-death marker that separates crashes from deliberate deploy restarts. */
+export const BG_HOST_FAILURE_PATTERN = 'Failed with result';
 
 export interface RoleTurnSuccess {
   role: 'cup' | 'mug' | 'kettle';
@@ -167,20 +177,23 @@ export function parseBgHostUnitJournal(text: string): BgHostJournalMetrics {
   const lines = text.split('\n').filter(Boolean);
   const restartRe = new RegExp(BG_HOST_RESTART_PATTERN, 'i');
   const oomRe = new RegExp(BG_HOST_OOM_PATTERN, 'i');
+  const failureRe = new RegExp(BG_HOST_FAILURE_PATTERN, 'i');
   let oomKillCount = 0;
   let restartCount = 0;
+  let failureCount = 0;
   let peakMemoryMb: number | null = null;
   let highMemoryPeakCount = 0;
   for (const line of lines) {
     if (restartRe.test(line)) restartCount += 1;
     if (oomRe.test(line)) oomKillCount += 1;
+    if (failureRe.test(line)) failureCount += 1;
     const peakMb = parseMemoryPeakMb(line);
     if (peakMb != null) {
       peakMemoryMb = peakMemoryMb == null ? peakMb : Math.max(peakMemoryMb, peakMb);
       if (peakMb >= 3200) highMemoryPeakCount += 1;
     }
   }
-  return { oomKillCount, restartCount, peakMemoryMb, highMemoryPeakCount, journalError: null };
+  return { oomKillCount, restartCount, failureCount, peakMemoryMb, highMemoryPeakCount, journalError: null };
 }
 
 export function parseBgHostGlobalJournal(text: string): number {
@@ -204,8 +217,13 @@ export function computeSoakReport(input: SoakReportInput): PotSoakReport {
   if (input.bgHost.oomKillCount > 0) {
     reasons.push(`bg-host OOM evidence in window (${input.bgHost.oomKillCount})`);
   }
-  if (input.bgHost.restartCount > 0) {
-    reasons.push(`bg-host restarted ${input.bgHost.restartCount} time(s) in window`);
+  // [owner:Avi 2026-07-13] Red only on UNEXPECTED restarts (crash/OOM/watchdog).
+  // Deliberate deploy restarts still show in restartCount for visibility, but a
+  // clean stop+start is how fixes ship and must not make readiness unsatisfiable.
+  if (input.bgHost.failureCount > 0) {
+    reasons.push(
+      `bg-host FAILED ${input.bgHost.failureCount} time(s) in window (crash/OOM/watchdog — deliberate restarts excluded)`,
+    );
   }
   if (input.infraCurse.rate == null) {
     reasons.push('no placement evidence for infra-curse rate');

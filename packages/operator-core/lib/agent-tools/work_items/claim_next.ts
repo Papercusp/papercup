@@ -226,7 +226,12 @@ export default defineTool({
         .catch(() => null);
     };
     const wiOf = (
-      c: { workItem: unknown } | Record<string, unknown> | null,
+      // `unknown` (not a narrow union): the callers pass the claimOne() result, which is
+      // `(GetNextResult & {…}) | WorkItem` — a WorkItem is not assignable to a bare
+      // `Record<string, unknown>`, so the narrow param type reddened the operator-core tsc
+      // ratchet by 2 (pre-existing, from the 2026-07-12 recallFor addition). The body already
+      // narrows defensively (`typeof c === 'object'` + `'workItem' in c`), so `unknown` is safe.
+      c: unknown,
     ): { id?: string; title?: string; summary?: string; harness?: string | null } | null =>
       c && typeof c === 'object'
         ? (('workItem' in c ? (c as { workItem: unknown }).workItem : c) as {
