@@ -159,6 +159,24 @@ export function resolveDesktopRoot(startDir: string = process.cwd()): string {
   return path.join(path.resolve(startDir), 'papercusp-desktop');
 }
 
+/**
+ * Is this `.exe` an Inno SPANNED installer — a small bootstrap whose real payload
+ * lives in sibling `-1.bin`, `-2.bin`, … disks?
+ *
+ * Detected structurally (do the companion disks exist?) rather than by a size
+ * threshold, because "how big is too small for an installer" is a guess that goes
+ * stale, while the `-N.bin` siblings are exactly what Inno writes when it spans.
+ * Exported so the rule is unit-testable rather than discovered by a beta tester
+ * whose install failed.
+ */
+export function isSpannedInstaller(dir: string, name: string): boolean {
+  if (!/\.exe$/i.test(name)) return false;
+  const base = name.replace(/\.exe$/i, '');
+  return fs
+    .readdirSync(dir)
+    .some((f) => new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d+\\.bin$`, 'i').test(f));
+}
+
 export function releaseBundleRoots(linuxBundleDir: string, desktopRoot: string): string[] {
   return [
     linuxBundleDir,
@@ -198,6 +216,20 @@ export function scanArtifacts(
         const full = path.join(dir, name);
         const stat = fs.statSync(full);
         if (!stat.isFile()) continue;
+        // NEVER record an installer we KNOW is incomplete. Inno Setup emits a
+        // SPANNED installer when the payload is large: `foo-setup.exe` becomes a
+        // ~3 MB bootstrap that reads `foo-setup-1.bin`, `-2.bin`, … from beside it.
+        // Recorded alone, that stub downloads perfectly and then fails at install —
+        // and the release page would show it with a confident size and sha256. An
+        // artifact that cannot install is worse than an absent one: the absent one
+        // is honest. Skip it (loudly) until the companions are published too.
+        if (isSpannedInstaller(dir, name)) {
+          console.warn(
+            `  ⚠ SKIPPING ${name} — spanned Inno installer (payload is in its *-N.bin disks, which are not published). ` +
+              `Recording the stub alone would offer a download that cannot install.`,
+          );
+          continue;
+        }
         // The same artifact can be reachable from two roots (a salvage/reuse path
         // rsyncs bytes into a second tree). Record it once — a duplicated row would
         // show the tester the same download twice.

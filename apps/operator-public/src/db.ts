@@ -32,11 +32,20 @@ export function isListingKind(v: unknown): v is ListingKind {
   return typeof v === 'string' && (LISTING_KINDS as readonly string[]).includes(v);
 }
 
-/** Wire-compat: normalize the interim 'tool-pack' alias (migration 008) to the
- *  canonical 'pack' (migration 010 / P-003). A pre-008 literal 'pack' already IS
- *  canonical and passes through isListingKind. */
+/** Wire-compat: normalize legacy listing-kind values to their canonical form.
+ *
+ *  - 'tool-pack'     → 'pack'            (interim alias from migration 008; canonicalized by 010 / P-003)
+ *  - 'learning-pack' → 'knowledge-pack'  (renamed by migration 011 / P-001)
+ *
+ *  A pre-008 literal 'pack' already IS canonical and passes through isListingKind.
+ *
+ *  This is a TRUE BOUNDARY (knowledge-packs-2026-07-11 D-001): the rename is HARD
+ *  internally with no aliases, but an already-published listing row and any client
+ *  built against the old API still speak 'learning-pack' on the wire, so it must
+ *  keep parsing. It normalizes FORWARD — nothing downstream ever sees the old value. */
 export function normalizeListingKind(v: unknown): ListingKind | null {
   if (v === 'tool-pack') return 'pack';
+  if (v === 'learning-pack') return 'knowledge-pack';
   return isListingKind(v) ? v : null;
 }
 

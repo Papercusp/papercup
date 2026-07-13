@@ -412,7 +412,16 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
           const { seedPackIntoHive: seedPackIntoPot } = await import('../../knowledge-packs/seed');
           // P-014: an explicit arg wins; else the blueprint's declared knowledge.pack
           // (a generic-pot can seed a different pack); else the global default.
-          const packId = opts.knowledgePack ?? validation.blueprint.learning?.pack ?? DEFAULT_KNOWLEDGE_PACK_ID;
+          //
+          // `learning.pack` is the pre-rename key (cupboard-public-release P-001).
+          // Blueprint YAML is a true boundary (knowledge-packs-2026-07-11 D-001) —
+          // a blueprint authored before the rename, or one already installed in a
+          // user's tree, still declares it — so it stays readable as a fallback.
+          const packId =
+            opts.knowledgePack ??
+            validation.blueprint.knowledge?.pack ??
+            validation.blueprint.learning?.pack ??
+            DEFAULT_KNOWLEDGE_PACK_ID;
           const loaded = await loadKnowledgePack(packId);
           if (!loaded) {
             seededLearnings = { packId, error: 'pack_not_found' };

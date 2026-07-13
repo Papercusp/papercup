@@ -45,8 +45,20 @@ export async function fetchKnowledgePackFromRepo(opts: {
     }
 
     // Candidate pack dirs, most specific first.
+    //
+    // A community repo's directory layout is a TRUE BOUNDARY
+    // (knowledge-packs-2026-07-11 D-001): the rename is hard internally, but a
+    // pack repo published before it still has its content under the old
+    // `learning-packs/<id>/` convention, and we do not control when (or whether)
+    // its author re-lays it out. So BOTH conventions resolve — new name first,
+    // legacy second — and a repo that IS one pack (root manifest.yaml) still works.
     const candidates = [
-      ...(opts.listingRef ? [join(cloned.path, 'knowledge-packs', opts.listingRef)] : []),
+      ...(opts.listingRef
+        ? [
+            join(cloned.path, 'knowledge-packs', opts.listingRef),
+            join(cloned.path, 'learning-packs', opts.listingRef), // legacy layout
+          ]
+        : []),
       cloned.path, // a repo that IS one pack (manifest.yaml at root)
     ].filter((d) => existsSync(join(d, 'manifest.yaml')));
     if (candidates.length === 0) {
@@ -54,7 +66,7 @@ export async function fetchKnowledgePackFromRepo(opts: {
         ok: false,
         error: 'pack_not_found_in_repo',
         detail: opts.listingRef
-          ? `expected knowledge-packs/${opts.listingRef}/manifest.yaml (or a root manifest.yaml)`
+          ? `expected knowledge-packs/${opts.listingRef}/manifest.yaml (or the legacy learning-packs/${opts.listingRef}/manifest.yaml, or a root manifest.yaml)`
           : 'no manifest.yaml found',
       };
     }
