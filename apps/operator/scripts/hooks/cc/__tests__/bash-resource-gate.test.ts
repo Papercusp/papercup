@@ -574,6 +574,43 @@ describe('heavy-command admission control (WI-3821)', () => {
     expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, ...OVER, PC_HEAVY_ADMISSION: 'off' }));
   });
 
+  // ── EI-10913: the documented kill-switch must WORK as an INLINE prefix ──
+  // The deny message advertises `PC_HEAVY_ADMISSION=off` as the kill-switch, but
+  // the gate only read it from THIS hook process's env — and an agent cannot set
+  // that from a Bash call (the assignment applies to the child, not to the hook).
+  // So the guard's own documented escape hatch was itself denied under the exact
+  // high load it exists for. The gate now reads a leading `PC_HEAVY_ADMISSION=off`
+  // prefix in-band from the command text, exactly parallel to the PC_HEAVY_BYPASS=1
+  // in-band remedy (EI-9634). Recurrence guards — these fail against the pre-fix hook.
+  it.each([
+    ['bare PC_HEAVY_ADMISSION=off prefix', 'PC_HEAVY_ADMISSION=off npm run test:affected'],
+    ['inline off in front of a bare vitest', 'PC_HEAVY_ADMISSION=off vitest run lib/x.test.ts'],
+    ['env-prefixed inline off', 'env PC_HEAVY_ADMISSION=off npm run test:affected'],
+    // The EXACT repro from the item body: the message told the agent to run it
+    // under pc-heavy.sh AND named PC_HEAVY_ADMISSION=off, and both were rejected.
+    ['PC_HEAVY_ADMISSION=off scripts/pc-heavy.sh -- <heavy> (the item repro)', 'PC_HEAVY_ADMISSION=off scripts/pc-heavy.sh -- node_modules/.bin/vitest run lib/x.test.ts'],
+    ['cd <dir> && PC_HEAVY_ADMISSION=off <heavy>', 'cd packages/operator-core && PC_HEAVY_ADMISSION=off npx tsc --noEmit -p .'],
+    ['PC_HEAVY_ADMISSION=off among other assignments', 'FOO=bar PC_HEAVY_ADMISSION=off vitest run x.test.ts'],
+    // The env read lower-cases and accepts off/0/false/no — the inline form must
+    // accept the same value set (value case-insensitive, var name literal).
+    ['uppercase value PC_HEAVY_ADMISSION=OFF', 'PC_HEAVY_ADMISSION=OFF vitest run x.test.ts'],
+    ['numeric off PC_HEAVY_ADMISSION=0', 'PC_HEAVY_ADMISSION=0 npm test'],
+    ['PC_HEAVY_ADMISSION=false', 'PC_HEAVY_ADMISSION=false vitest run x.test.ts'],
+    ['PC_HEAVY_ADMISSION=no', 'PC_HEAVY_ADMISSION=no npm run build'],
+  ])('allows the inline kill-switch %s even over the threshold (EI-10913)', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  it.each([
+    // Not a free pass: `=on` is not an off-value, so it must stay gated.
+    ['PC_HEAVY_ADMISSION=on does not bypass', 'PC_HEAVY_ADMISSION=on vitest run x.test.ts'],
+    // The prefix must be at command position — hidden after a real heavy op it
+    // does not un-gate the leading heavy command.
+    ['inline off after a raw heavy stays gated', 'vitest run a.test.ts && PC_HEAVY_ADMISSION=off vitest run b.test.ts'],
+  ])('does NOT over-bypass %s (EI-10913 guard)', (_label, command) => {
+    expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
   it('never throttles the owner (no agent marker, outside the canonical tree)', () => {
     expectAllow(runGate(bashCmd('npm run test:affected', { cwd: '/tmp/not-canonical' }), { ...CANON_ENV, ...OVER }));
   });

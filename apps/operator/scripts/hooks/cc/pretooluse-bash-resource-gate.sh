@@ -550,6 +550,21 @@ def _heavy_admission():
         r'^cd\s+([\'"]?)[^&|;<>\s\'"]+\1\s*(?:&&|;)\s*', '', _lead, count=1)
     if re.match(r'(?:env\s+)?(?:[A-Za-z_]\w*=\S*\s+)*PC_HEAVY_BYPASS=1(?:\s|$)', _bypass_lead):
         return
+    #   (c) a leading `PC_HEAVY_ADMISSION=off` env-assignment prefix (EI-10913):
+    #       the deny message advertises `PC_HEAVY_ADMISSION=off` as the
+    #       kill-switch, but the env read at the TOP of this function only sees
+    #       it when it is ALREADY in this process's env — which an agent cannot
+    #       set from a Bash call (the assignment applies to the CHILD, not to
+    #       this hook). So the guard's own documented escape hatch was itself
+    #       denied under the exact high load it exists for — the "guard blocks
+    #       its own remedy" bug. Read it in-band from the command text too,
+    #       accepting the same off-values the env read does (off/0/false/no,
+    #       value case-insensitive; the env-var NAME stays literal since a shell
+    #       assignment is case-sensitive). Same `cd <dir> &&` and leading-
+    #       assignment/`env` allowance as the PC_HEAVY_BYPASS check above.
+    if re.match(r'(?:env\s+)?(?:[A-Za-z_]\w*=\S*\s+)*PC_HEAVY_ADMISSION=(?i:off|0|false|no)(?:\s|$)',
+                _bypass_lead):
+        return
     # Only throttle agent / shared-tree sessions — never the owner's own box
     # work. Mirror the git-guard's marker-OR-tree gate so marker-less fleet
     # sessions (EI-7872) are still covered.
@@ -596,7 +611,8 @@ def _heavy_admission():
             f'melted the host to load 3000+ twice this week). Either wait ~30-60s and '
             f're-run once load drops, or run it under `scripts/pc-heavy.sh -- <your '
             f'command>`, which waits for a free build slot (flock counting semaphore) '
-            f'and runs niced instead of failing. Kill-switch: PC_HEAVY_ADMISSION=off.'
+            f'and runs niced instead of failing. Kill-switch (prepend inline): '
+            f'`PC_HEAVY_ADMISSION=off <your command>`.'
         )
 
 try:
