@@ -49,6 +49,35 @@ interface TscError {
 }
 
 function runTsc(): TscError[] {
+  // Regenerate the TanStack route tree FIRST. `src/routeTree.gen.ts` is a
+  // generated file, .gitignored, and ONLY ever written by the vite plugin
+  // (dev/build). This test runs bare `tsc` with no vite — and so does the
+  // green-checkpoint, in its OWN `papercusp-checkpoint` checkout with no dev
+  // server. There, a stale/absent route tree makes every newly-added route's
+  // `createFileRoute('/x')` fail TS2345 ("'/x' not assignable to keyof
+  // FileRoutesByPath") — a phantom `src/**` error that reds the RELEASE GATE
+  // fleet-wide, while every local tree (with a running vite) looks clean. It
+  // happened with src/routes/quick-panel.tsx (2026-07-13) and would recur on the
+  // next route. Generate it here so the typecheck is checkout- and
+  // dev-server-independent (byte-identical to the vite plugin's output).
+  try {
+    execFileSync('node', [resolve(APP_ROOT, 'scripts/generate-route-tree.mjs')], {
+      cwd: APP_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    // Fail LOUD: a failed generation means the tsc result below would judge a
+    // stale tree — do NOT silently pass or report phantom src errors from it.
+    throw new Error(
+      `route-tree generation failed before typecheck — the tsc result cannot be trusted ` +
+        `(it would judge a stale src/routeTree.gen.ts). Fix the generator, do not skip.\n` +
+        `--- generate-route-tree stderr/message ---\n${(err.stderr || err.message || '').slice(0, 2000)}`,
+    );
+  }
+
   let out = '';
   let crashed: string | null = null;
   try {

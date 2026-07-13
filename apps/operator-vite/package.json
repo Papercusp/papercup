@@ -9,6 +9,8 @@
     "build": "bin/vite-build-singleflight",
     "preview": "vite preview",
     "test": "vitest run",
+    "generate:routes": "node scripts/generate-route-tree.mjs",
+    "pretypecheck": "npm run generate:routes",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
