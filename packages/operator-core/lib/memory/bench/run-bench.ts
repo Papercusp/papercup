@@ -367,7 +367,10 @@ async function benchOne(
     };
 
     return {
-      backend: ctx.backend.name,
+      // The REQUESTED bench name, not backend.name — both hybrid variants
+      // share the class's hardcoded 'hybrid', which printed two identical
+      // "hybrid" scorecard columns in the 2026-07-13 run.
+      backend: name,
       seeded: corpus.length,
       seedFailed: manifests[0].failed.length,
       retrieval,
