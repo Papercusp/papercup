@@ -127,7 +127,7 @@
 .pc-qp__bslabel {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  /* no letter-spacing: the design-primitives lint bans nonzero tracking in app UI */
   color: var(--fg-mute);
 }
 

@@ -184,15 +184,6 @@ export function ChatConversation(props: ChatConversationProps) {
   const lastFirstKeyRef = useRef<string | null>(null);
   const lastLastKeyRef = useRef<string | null>(null);
   const preserveScrollHeightRef = useRef<number | null>(null);
-  // Captured alongside preserveScrollHeightRef: was the view pinned at the
-  // bottom when the prepend/replace landed? (WI-4692) The classic case is
-  // PG hydration swapping the sessionStorage paint-cache (≤100 turns) for
-  // the full 200-turn page — the TAIL message is identical (lastKey doesn't
-  // change) but 100 turns of history appear above (firstKey changes), so it
-  // reads as a "prepend". Height-delta preservation is meaningless across a
-  // virtualized replace (every estimated offset shifts) and strands the
-  // view mid-history; a bottom-pinned user should stay pinned instead.
-  const prependWasNearBottomRef = useRef(false);
   const firstKey = messages.length > 0 ? `${messages[0].role}:${messages[0].content.slice(0, 32)}` : null;
   const lastKey = messages.length > 0
     ? `${messages[messages.length - 1].role}:${messages[messages.length - 1].content.slice(0, 32)}`
@@ -208,9 +199,7 @@ export function ChatConversation(props: ChatConversationProps) {
     && firstKey !== lastFirstKeyRef.current
     && scrollerRef.current
   ) {
-    const sc = scrollerRef.current;
-    preserveScrollHeightRef.current = sc.scrollHeight;
-    prependWasNearBottomRef.current = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 240;
+    preserveScrollHeightRef.current = scrollerRef.current.scrollHeight;
   }
 
   // (The scroll-pinning effect lives BELOW the virtualizer declaration —
@@ -290,59 +279,64 @@ export function ChatConversation(props: ChatConversationProps) {
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
 
-  // Scroll pinning (WI-4692). endRef.scrollIntoView({ behavior: 'smooth' })
-  // is NOT reliable on a virtualized transcript: the smooth animation tweens
-  // across thousands of px of *estimated* rows, measureElement corrections
-  // resize the container mid-flight, and the animation strands the view
-  // partway up the history (observed live: view parked at ~29% after
-  // hydration, so streamed replies rendered off-screen and the chat looked
-  // dead). Pin via the virtualizer's own measurement-aware scrollToIndex,
-  // then re-pin on a double-rAF so post-measurement drift is absorbed.
+  // ── Scroll pinning: "follow the tail" (WI-4692) ────────────────────────
+  // The transcript FOLLOWS new output while the user sits at the bottom,
+  // exactly like a terminal: follow starts ON; a genuine user scroll away
+  // from the bottom turns it off; scrolling back to the bottom turns it
+  // back on. While following, EVERY message change re-pins.
   //
-  // Pin policy:
-  //   - initial hydration (no lastKey recorded yet) → always pin;
-  //   - busy flip (the user just sent / assistant streaming) → always pin;
-  //   - append while the user is reading history (scrolled up) → do NOT
-  //     yank the view; system broadcasts land every minute, so yanking on
-  //     each append would make scrollback unusable. Near-bottom appends pin.
+  // Why not endRef.scrollIntoView({ behavior: 'smooth' }) (the pre-revival
+  // code): on a virtualized transcript the smooth animation tweens across
+  // thousands of px of *estimated* rows, measureElement corrections resize
+  // the container mid-flight, and the view strands mid-history (observed
+  // live: parked at ~29-50% after every hydration, so streamed replies
+  // rendered off-screen and the chat looked dead). And a single scrollTop
+  // write is not enough either: rows are estimated at 64px and measure
+  // ~2x that, so each pin reveals more unmeasured rows below and the
+  // bottom keeps moving. The pin is therefore virtualizer.scrollToIndex
+  // (measurement-aware) + a bounded rAF settle loop that re-asserts the
+  // bottom until estimates converge.
   //
-  // A single scrollTop write is NOT enough: rows are estimated at 64px and
-  // measured ~112px, so every re-pin reveals more unmeasured rows below and
-  // scrollHeight keeps growing for several frames. The pin therefore runs a
-  // bounded rAF loop that re-asserts bottom until measurements converge
-  // (or the frame budget runs out). A user wheel/touch cancels it.
+  // Follow-state tracking distinguishes USER scrolls from the pin loop's
+  // own programmatic writes via `programmaticScrollRef` (set before every
+  // programmatic scrollTop write, consumed by the scroll listener).
+  const followRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
   const pinFramesRef = useRef(0);
   const pinLoopActiveRef = useRef(false);
   const pinToBottom = useCallback(() => {
-    pinFramesRef.current = 45; // ~750ms of frames for measurement convergence
-    if (pinLoopActiveRef.current) return; // already looping — just extended it
+    pinFramesRef.current = 45; // ~750ms frame budget for measurement convergence
+    if (pinLoopActiveRef.current) return; // already looping — budget extended
     pinLoopActiveRef.current = true;
     const step = () => {
       const sc = scrollerRef.current;
-      if (!sc || pinFramesRef.current <= 0) {
+      if (!sc || pinFramesRef.current <= 0 || !followRef.current) {
         pinLoopActiveRef.current = false;
         return;
       }
       pinFramesRef.current -= 1;
       const target = sc.scrollHeight - sc.clientHeight;
-      if (Math.abs(sc.scrollTop - target) > 1) sc.scrollTop = target;
+      if (Math.abs(sc.scrollTop - target) > 1) {
+        programmaticScrollRef.current = true;
+        sc.scrollTop = target;
+      }
       requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
   }, []);
-  // A real user scroll gesture cancels an in-flight pin loop immediately —
-  // programmatic scrollTop writes don't fire wheel/touchmove, so this only
-  // triggers on genuine user intent.
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    const cancel = () => { pinFramesRef.current = 0; };
-    el.addEventListener('wheel', cancel, { passive: true });
-    el.addEventListener('touchmove', cancel, { passive: true });
-    return () => {
-      el.removeEventListener('wheel', cancel);
-      el.removeEventListener('touchmove', cancel);
+    const onScroll = () => {
+      if (programmaticScrollRef.current) {
+        programmaticScrollRef.current = false;
+        return;
+      }
+      // A genuine user scroll: follow iff they are at (or near) the bottom.
+      followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
     };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
   useEffect(() => {
@@ -353,34 +347,29 @@ export function ChatConversation(props: ChatConversationProps) {
       return;
     }
     const isPrepend = preserveScrollHeightRef.current !== null;
-    if (isPrepend) {
-      if (prependWasNearBottomRef.current) {
-        // Replace-with-same-tail (PG hydration over the paint-cache) or a
-        // prepend that landed while pinned at the bottom → stay pinned.
-        const last = messages.length - 1;
-        if (last >= 0) {
-          virtualizer.scrollToIndex(last, { align: 'end' });
-          pinToBottom();
-        }
-      } else {
-        // True history prepend while reading scrollback → preserve position.
-        const delta = el.scrollHeight - preserveScrollHeightRef.current!;
-        el.scrollTop = el.scrollTop + delta;
-      }
-      preserveScrollHeightRef.current = null;
-      prependWasNearBottomRef.current = false;
-    } else if (lastLastKeyRef.current !== lastKey || busy) {
-      const isFirstPin = lastLastKeyRef.current === null;
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
+    if (followRef.current) {
+      // Following the tail — pin, whatever just changed (append, stream
+      // delta, busy flip, or a hydration replace that swapped the whole
+      // list under us: the sessionStorage paint-cache → the PG 200-turn
+      // page has an identical tail but 100 turns more history above, so
+      // key-diffing alone misreads it as a "prepend").
       const last = messages.length - 1;
-      if (last >= 0 && (isFirstPin || nearBottom || busy)) {
+      if (last >= 0) {
         virtualizer.scrollToIndex(last, { align: 'end' });
         pinToBottom();
       }
+      preserveScrollHeightRef.current = null;
+    } else if (isPrepend) {
+      // Reading scrollback while older history lands above → preserve the
+      // reading position.
+      const delta = el.scrollHeight - preserveScrollHeightRef.current!;
+      programmaticScrollRef.current = true;
+      el.scrollTop = el.scrollTop + delta;
+      preserveScrollHeightRef.current = null;
     }
     lastFirstKeyRef.current = firstKey;
     lastLastKeyRef.current = lastKey;
-  }, [messages.length, busy, firstKey, lastKey, virtualizer, pinToBottom]);
+  }, [messages, busy, firstKey, lastKey, virtualizer, pinToBottom]);
 
   return (
     <>
