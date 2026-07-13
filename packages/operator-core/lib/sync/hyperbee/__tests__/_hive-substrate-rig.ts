@@ -38,6 +38,7 @@ import { applyOpVia, type ProjectionLookup, type TableProjection } from '../proj
 import { buildHiveMembersProjection } from '../projections/hive-members';
 import { buildHiveSettingsProjection } from '../projections/hive-settings';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { drainCleanupsBounded } from './_cleanup-bounded';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // .../packages/operator-core/lib/sync/hyperbee/__tests__ → repo root is seven up.
@@ -57,13 +58,16 @@ export const BINDING = {
 // ── Async resource teardown (newest-first). Drained by each file's afterEach. ──
 export const cleanups: Array<() => void | Promise<void>> = [];
 export async function rigAfterEach(): Promise<void> {
-  while (cleanups.length) {
-    try {
-      await cleanups.pop()!();
-    } catch {
-      /* a thrown assertion must never leak a swarm/dir/db/DHT node */
-    }
-  }
+  // EI-10581: bound each teardown step + the whole drain. This rig closes several
+  // real async resources per test (2 PG DBs, 2 Hyperswarms, a testnet DHT, temp
+  // dirs); under load ONE hung close (e.g. `swarm.destroy()`) would block this
+  // unbounded loop past vitest's 90s integration hookTimeout and redden a test whose
+  // assertions already passed ("Hook timed out in 90000ms"). A hang/throw per step is
+  // swallowed (a leaked handle at process exit is harmless); the drain never throws,
+  // so the resets below ALWAYS run. On a healthy run every close settles far under the
+  // bound, so behaviour is identical to the old loop — this only makes teardown fail
+  // fast + clean, never slower.
+  await drainCleanupsBounded(cleanups);
   _resetCacheForTests();
   _resetBootHistoryForTests();
 }
