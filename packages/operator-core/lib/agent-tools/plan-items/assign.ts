@@ -48,7 +48,7 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'plan_items:assign',
   description:
-    'Push-assign one OR many plan items (P-NNN) to a stable agent-NAME. Durable intent — survives interruption; the named agent reads it via plan_items:my_items and claims it. Intra-user only: a name you own (a fresh name is claimed for you); a name owned by another user is refused (cross-user is pull-only). Single: { plan, item, assignee }. Many same plan+assignee: { plan, itemIds:[…], assignee }. Many heterogeneous: items:[{ plan, item, assignee, harness?, strategy?, note? }]. Returns { ok, results:[{ ok, plan, item, assignment? | refused | error }], counts } — correlate by { plan, item }; one refusal never fails the rest.',
+    'Push-assign one OR many plan items to a stable agent-NAME. Durable intent survives interruption. If the name resolves to a fleet MEMBER, the plan/item must match its per-member/inherited claim spec or assignment is refused before mutation and its leader is alerted. Intra-user only; cross-user is pull-only. Supports one, itemIds:[…], or heterogeneous items:[…] and returns per-item outcomes.',
   guidance: {
     when: 'You are dividing your own plan work across your named agents — "builder-1 takes P-001..P-003". Assign several at once via itemIds:[…] or items:[…].',
     notWhen: 'You want to start working on an item right now — that is plan_items:claim (the live grip). Handing work to another USER\'s agents — they pull it (you cannot push onto their machine).',

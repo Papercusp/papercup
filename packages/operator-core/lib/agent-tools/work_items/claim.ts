@@ -119,9 +119,9 @@ export default defineTool({
   name: 'work_items:claim',
   profile: 'engineer',
   description:
-    'Claim one OR many work-items (assign to yourself, or to `assignee`). Claiming a feature sets taken_by; an issue sets assignee. Single: { id, assignee? }. Many same assignee: { ids:[…], assignee? }. Many heterogeneous: items:[{ id, assignee?, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a claim_conflict on one item never fails the rest.',
+    'Claim one OR many work-items (assign to yourself, or to `assignee`). A target that is a fleet MEMBER may only receive an item matching its per-member/inherited fleet claim spec; out-of-scope named claims are refused before mutation and alert its leader. Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Returns per-item outcomes; one refusal/conflict never fails the rest.',
   guidance: {
-    when: 'You are starting work on work-item(s) — claim so peers do not duplicate. Claim a swath at once via { ids:[…] }.',
+    when: 'You are starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, but never fleet scope.',
     notWhen: 'A per-item `claim_conflict` means a LIVE peer holds it — coordinate with the `holder` (coord:send) or pick another item; do not blind-retry. (If the holder is dead, the stale-claim reclaim lane frees it.)',
     chaining:
       'work_items:list → work_items:claim → work_items:set_state → work_items:release/close. There is no separate work_items:heartbeat — ANY papercusp-su tool call already refreshes your liveness (dispatch-heartbeat beats coord_presence on every settled dispatch), which is what the stale-claim reaper checks before reclaiming a held item. The gap is a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest with zero papercusp-su calls) during a >10-15min single-claim investigation (EI-6772) — call work_items:checkpoint { id, checkpoint } partway through (it doubles as your progress note AND a liveness pulse) rather than going silent on the platform for the whole investigation.',

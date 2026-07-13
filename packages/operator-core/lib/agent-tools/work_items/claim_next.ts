@@ -35,11 +35,11 @@ export default defineTool({
   name: 'work_items:claim_next',
   profile: 'engineer',
   description:
-    'Self-select the next work-item. When scheduler claim-specs are enabled, this compatibility wrapper honors the caller/assignee claim-spec (same selector as scheduler:get_next) so a fleet member stays in its leader-steered lane; when the scheduler flag is off it degrades to the legacy oldest-first SKIP LOCKED claim. Competing agents never double-claim. Returns the claimed item, or on a miss a SELF-DESCRIBING result: `{ ok:false, drained, pendingUnclaimed, readyUnclaimed, error }`.',
+    'Self-select the next work-item. This compatibility wrapper honors fleet scope through the same selector as scheduler:get_next. Outside a fleet, disabling scheduler claim-specs degrades to legacy oldest-first SKIP LOCKED; a fleet MEMBER never takes that fallback. Returns the claimed item or a self-describing miss; a scoped miss carries windDown:true.',
   guidance: {
-    when: 'You are an idle agent picking up work. Fleet members should prefer scheduler:get_next, but this older wrapper is lane-safe while scheduler claim-specs are enabled.',
-    notWhen: 'When a SPECIFIC item must go to a SPECIFIC agent — that is work_items:claim with an explicit assignee (named assignment, the exception — it deliberately bypasses the status/readiness floors self-select enforces, so an item claimable by id can still legitimately miss here).',
-    chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a MISS, read `drained`: drained:true means the queue is empty (message leader + idle); drained:false means work exists but is currently blocked/gated (pendingUnclaimed>0) — do NOT idle, re-check shortly or help unblock the backlog rather than reporting the queue drained.',
+    when: 'You are an idle agent picking up work. Fleet members should prefer scheduler:get_next; this older wrapper is still fleet-scope-safe even if the scheduler flag is off.',
+    notWhen: 'A SPECIFIC item must go to a SPECIFIC agent → work_items:claim with an explicit assignee. Named claim bypasses self-select readiness floors, but it never bypasses a fleet member\'s claim-spec boundary.',
+    chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a non-fleet miss, read drained/pendingUnclaimed. On a fleet scoped miss, windDown:true means checkpoint/release, loop:end, and report to the leader; do not scan generic backlog.',
     // EI-6981: when the scheduler-spec bridge is OFF, the legacy path self-selects the
     // OLDEST unclaimed item HARNESS-WIDE, not just your fleet/plan — a peer's "solo takeover"
     // of an item they haven't formally
@@ -187,7 +187,8 @@ export default defineTool({
      *  "fleet saturated with work still queued" signal). On a miss we run a read-only diagnosis
      *  and return a SELF-DESCRIBING result so the caller distinguishes drained (idle is correct)
      *  from pending-but-gated (do NOT idle). Self-select being stricter than a NAMED
-     *  work_items:claim(id) is BY DESIGN — the named claim bypasses the status/readiness floors. */
+     *  work_items:claim(id) is BY DESIGN — the named claim bypasses status/readiness
+     *  floors, never a fleet member's authoritative scope boundary. */
     const missResult = async () => {
       if (reconciliation.scope) {
         return fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds);

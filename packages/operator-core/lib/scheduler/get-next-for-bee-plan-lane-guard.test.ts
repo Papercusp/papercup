@@ -38,6 +38,12 @@ vi.mock('../work-items', async (importOriginal) => ({
   releaseWorkItem: (...args: unknown[]) => releaseWorkItemMock(...args),
 }));
 
+const matchesWorkItemClaimSpecMock = vi.fn(() => true);
+vi.mock('./claim-spec-match', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./claim-spec-match')>()),
+  matchesWorkItemClaimSpec: (...args: unknown[]) => matchesWorkItemClaimSpecMock(...args),
+}));
+
 import { getNextForBee } from './claim-spec-store';
 
 function claimResult(id: string) {
@@ -52,6 +58,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     getNextWorkItemMock.mockReset();
     planItemLaneBlockReasonMock.mockReset();
     releaseWorkItemMock.mockReset().mockResolvedValue(null);
+    matchesWorkItemClaimSpecMock.mockReset().mockReturnValue(true);
   });
 
   it('serves the first claim straight through when its plan-item lane is clear', async () => {
@@ -97,6 +104,26 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
 
     expect(res).toBeNull();
     expect(releaseWorkItemMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('quarantines an issue-family fallback that fails the complete claim spec before serving the next row', async () => {
+    const outside = claimResult('EI-out');
+    outside.workItem.family = 'issue';
+    const inside = claimResult('F-in');
+    inside.workItem.family = 'feature';
+    getNextWorkItemMock.mockResolvedValueOnce(outside).mockResolvedValueOnce(inside);
+    matchesWorkItemClaimSpecMock.mockReturnValueOnce(false);
+    planItemLaneBlockReasonMock.mockResolvedValueOnce(null);
+
+    const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
+
+    expect(res?.workItem.id).toBe('F-in');
+    expect(matchesWorkItemClaimSpecMock).toHaveBeenCalledOnce();
+    expect(releaseWorkItemMock).toHaveBeenCalledWith('EI-out', {
+      harness: 'papercusp',
+      expectedAssignee: 'me',
+    });
+    expect(planItemLaneBlockReasonMock).toHaveBeenCalledOnce();
   });
 
   // EI-9108 (2026-07-10: WI-3503/P-401 handed out via scheduler:get_next while its

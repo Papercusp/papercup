@@ -143,13 +143,13 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Self-select via your claim SPEC (issued by your queen or fleet leader): atomically claim the next eligible work-item — the global floors (ready/blocking, lease, admission, dedup) AND your spec.view.filter, ordered by spec.rank, SKIP LOCKED. No spec set ⇒ default ordering (== work_items:claim_next) + an advisory `warning` (EI-8579). Returns the claimed item + the spec revision that selected it, or null.',
+    'Self-select via your claim SPEC (issued by your queen or fleet leader): atomically claim the next eligible work-item under global floors + spec.view.filter, ordered by spec.rank, SKIP LOCKED. Outside a fleet, no spec uses default ordering with a warning. A fleet MEMBER with no matching/inherited spec fails closed with windDown:true; it never falls through to generic backlog. Returns the claimed item + selecting spec revision, or a self-describing miss.',
   guidance: {
     when: 'You are a SELF-PULLING agent picking up your next item — a coding-pot cup (role="cup"), or an su fleet MEMBER pulling its lane (su-loop-capability-parity). Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your Mug\'s / fleet leader\'s judgment expressed as your claim spec; the pickup is yours. A claim-spec self-puller is a cup or an su fleet member, NOT a coding-factory pipeline role (see notWhen).',
     notWhen:
-      'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull — never call get_next. Claiming a SPECIFIC item by id — that is work_items:claim. Plain oldest-first self-select with NO per-agent spec — work_items:claim_next.',
+      'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull. Claiming a SPECIFIC item by id → work_items:claim. Plain oldest-first self-select is only for non-fleet callers → work_items:claim_next.',
     chaining:
-      'scheduler:get_next → work_items:set_state (progress) → work_items:release. Your queen or fleet leader re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next). A MISS returns the idle recipe: park on ONE events:await (work-item:claimable) — never a timer re-poll.',
+      'scheduler:get_next → work_items:set_state → work_items:release. Your leader re-steers via scheduler:set_claim_spec. A non-fleet MISS may park on one work-item:claimable event. A fleet scoped miss returns windDown:true: checkpoint/release, loop:end, and report to the leader; resume only after a spec revision or claimable event.',
     seeAlso: [
       'work_items:claim_next (plain oldest-first self-select, no spec)',
       'work_items:claim (claim a SPECIFIC item by id)',
