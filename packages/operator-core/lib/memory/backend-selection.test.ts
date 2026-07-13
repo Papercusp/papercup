@@ -89,4 +89,29 @@ describe('memory backend selection', () => {
     process.env.PAPERCUSP_MEMORY_BACKEND = 'mem0';
     expect(await readMemoryBackendChoice()).toBe('mem0');
   });
+
+  // WI-4484 recurrence guard: multi-process convergence. A flip persisted by a
+  // PEER process (simulated as a direct PG-store write) must reach THIS
+  // process's sync thunk within the stale-while-revalidate TTL — the boot-once
+  // cache that never re-read PG is exactly the drift this pins.
+  it('a peer process flip converges via the TTL background re-read (no restart)', async () => {
+    vi.useFakeTimers();
+    try {
+      await initMemoryBackendSelection();
+      await writeMemoryBackendChoice('hybrid');
+      expect(currentMemoryBackendChoice()).toBe('hybrid');
+      // A PEER process persists a different choice (writes PG behind our back).
+      store.set('memory_backend', 'mem0');
+      // Within the TTL the stale cache still serves (sync contract).
+      expect(currentMemoryBackendChoice()).toBe('hybrid');
+      // Past the TTL, a read kicks the background refresh…
+      vi.advanceTimersByTime(16_000);
+      expect(currentMemoryBackendChoice()).toBe('hybrid'); // kick happens async
+      await vi.runAllTimersAsync(); // settle the background read
+      // …and the peer's choice is now live here, no restart involved.
+      expect(currentMemoryBackendChoice()).toBe('mem0');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

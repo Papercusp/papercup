@@ -13,9 +13,18 @@
  *
  * Resolution order: persisted setting → `PAPERCUSP_MEMORY_BACKEND` → `'mem0'`.
  * Operator-wide (not per-workspace): it's an infra choice over the whole
- * store. The dev box runs one operator process, so a plain in-process
- * cache suffices (PG is the source of truth across restarts; a second
- * process re-reads at its own boot).
+ * store.
+ *
+ * MULTI-PROCESS CONVERGENCE (WI-4484): the dev box runs SEVERAL operator
+ * processes against one PG (:3070 release, :3170 staging, per-desktop
+ * sidecars, isolated verify shells), so a boot-once in-process cache made a
+ * UI flip apply ONLY to the process that handled the POST — every other
+ * process kept serving the old store until its next restart (silent drift;
+ * the "one operator process" assumption this file was written under is long
+ * false). The sync thunk now does a stale-while-revalidate: past a short
+ * TTL it kicks ONE background PG re-read (piggybacked on a real memory
+ * call — no timer, no poll loop) so peers converge within ~15s of their
+ * next memory use. PG stays the cross-process source of truth.
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
@@ -32,6 +41,31 @@ function envDefault(): string {
 // undefined = not yet loaded from PG → fall back to env/default.
 let cached: string | undefined;
 let booted = false;
+// Stale-while-revalidate freshness (WI-4484): when the cache is older than
+// this, the next sync read kicks ONE background PG re-read so a flip made by
+// a PEER process converges here without a restart.
+const CACHE_TTL_MS = 15_000;
+let loadedAtMs = 0;
+let refreshing = false;
+
+function refreshInBackground(): void {
+  if (refreshing) return;
+  refreshing = true;
+  void readSetting()
+    .then((stored) => {
+      // null = no persisted row → keep the env/default fallback (never
+      // overwrite a live cache with "unset"; an explicit write always sets).
+      if (stored) cached = stored;
+      loadedAtMs = Date.now();
+    })
+    .catch(() => {
+      // PG hiccup — try again after the next TTL window.
+      loadedAtMs = Date.now();
+    })
+    .finally(() => {
+      refreshing = false;
+    });
+}
 
 async function readSetting(): Promise<string | null> {
   try {
@@ -60,8 +94,12 @@ async function writeSetting(value: string): Promise<void> {
 /**
  * The synchronous live choice the memory host thunk reads on every
  * `getMemoryBackend()`. Persisted setting (once loaded) → env → 'mem0'.
+ * Past the TTL it also kicks a background PG re-read (WI-4484) so a flip
+ * made by a peer process converges here without a restart — the CURRENT
+ * call still returns the cached value (sync contract unchanged).
  */
 export function currentMemoryBackendChoice(): string {
+  if (booted && Date.now() - loadedAtMs > CACHE_TTL_MS) refreshInBackground();
   return cached ?? envDefault();
 }
 
@@ -76,6 +114,7 @@ export async function initMemoryBackendSelection(): Promise<void> {
   booted = true;
   const stored = await readSetting();
   if (stored) cached = stored;
+  loadedAtMs = Date.now();
 }
 
 /** Read the persisted choice (independent of the cache); env/default if unset. */
@@ -93,6 +132,7 @@ export async function readMemoryBackendChoice(): Promise<string> {
 export async function writeMemoryBackendChoice(backend: string): Promise<string> {
   cached = backend;
   booted = true;
+  loadedAtMs = Date.now();
   await writeSetting(backend);
   return backend;
 }
@@ -101,4 +141,6 @@ export async function writeMemoryBackendChoice(backend: string): Promise<string>
 export function __resetMemoryBackendSelectionForTest(): void {
   cached = undefined;
   booted = false;
+  loadedAtMs = 0;
+  refreshing = false;
 }
