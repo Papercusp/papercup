@@ -104,7 +104,11 @@ export type MetaPatternCategory =
   // blender-self-learning-2026-07-12 P-008 / WI-4453: coordination breakdown —
   // re-mounting escalation storms, fleet-wide unanswered directed mail, per-
   // recipient inbox/wake floods, and claim conflicts, from coord_event_log.
-  | 'coord-health';
+  | 'coord-health'
+  // blender-self-learning-2026-07-12 P-009 / WI-4454: measured tool DX friction —
+  // per-tool error rates, arg-limit rejections, retry/batching-waste loops, and
+  // chronic p95 latency, from tool_invocations.
+  | 'tool-telemetry';
 
 /**
  * A grounded meta-pattern: a cross-corpus regularity (not a single capture),
@@ -183,6 +187,13 @@ export interface CorpusDigest {
    *  `coord:wake-storm:<recipient>` / `coord:claim-conflict`). OPTIONAL:
    *  populated by the cycle seam, like watchdogHealth. */
   coordHealth?: MetaPattern[];
+  /** TOOL TELEMETRY (blender-self-learning-2026-07-12 P-009 / WI-4454) — measured
+   *  tool DX friction from tool_invocations: per-tool error rates, arg-limit
+   *  rejections, retry/batching-waste loops, and chronic p95 latency
+   *  (`ref` = `tool:error-rate:<tool>` / `tool:limit-failure:<tool>` /
+   *  `tool:retry-loop:<tool>` / `tool:p95:<tool>`). OPTIONAL: populated by the
+   *  cycle seam, like watchdogHealth. */
+  toolTelemetry?: MetaPattern[];
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS fired cycle's persisted digest snapshot
    *  carried (scout_digest_snapshots, migration 582). {@link renderDigest}

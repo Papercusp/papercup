@@ -27,6 +27,7 @@ import {
 import type { HarnessListing } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
 import { useLexicon } from '@/lib/useLexicon';
+import { Select } from '@/app/harness/Select';
 
 // ── Contract mirror (UI-local; server types live in operator-core/lib/knowledge-
 //    packs/manage.ts — kept as plain interfaces so the client bundle never pulls
@@ -353,24 +354,22 @@ export default function KnowledgePackInstall({ listing }: { listing: HarnessList
         <>
           {/* Pot picker + primary action */}
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: SIZES.sm }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.textMuted }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.textMuted }}>
               {potWord}
-              <select
-                data-testid="cupboard-kp-pot-select"
+              <Select
+                testId="cupboard-kp-pot-select"
+                ariaLabel={potWord}
                 value={hive}
-                onChange={(e) => setHiveSel(e.target.value)}
+                onChange={setHiveSel}
                 disabled={busy !== null}
-                style={{
+                options={hives.map((h) => ({ value: h.slug, label: `${h.slug}${h.remote ? ' (joined)' : ''}` }))}
+                triggerStyle={{
                   fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.text,
                   background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`,
                   borderRadius: RADIUS.md, padding: '4px 8px', maxWidth: 220,
                 }}
-              >
-                {hives.map((h) => (
-                  <option key={h.slug} value={h.slug}>{h.slug}{h.remote ? ' (joined)' : ''}</option>
-                ))}
-              </select>
-            </label>
+              />
+            </span>
 
             {installedHere ? (
               <span
@@ -498,20 +497,17 @@ export default function KnowledgePackInstall({ listing }: { listing: HarnessList
                     {it.summary}
                   </div>
                 )}
-                <select
-                  aria-label={`Resolution for ${it.title || it.itemId}`}
+                <Select
+                  ariaLabel={`Resolution for ${it.title || it.itemId}`}
                   value={resolutions[it.itemId] ?? it.defaultAction}
-                  onChange={(e) => setResolutions((cur) => ({ ...cur, [it.itemId]: e.target.value as InstallAction }))}
+                  onChange={(v) => setResolutions((cur) => ({ ...cur, [it.itemId]: v as InstallAction }))}
                   disabled={busy !== null}
-                  style={{
+                  options={(['install', 'skip', 'replace', 'keep-both'] as InstallAction[]).map((a) => ({ value: a, label: ACTION_LABEL[a] }))}
+                  triggerStyle={{
                     marginTop: 7, fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.text,
                     background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: RADIUS.md, padding: '4px 8px',
                   }}
-                >
-                  {(['install', 'skip', 'replace', 'keep-both'] as InstallAction[]).map((a) => (
-                    <option key={a} value={a}>{ACTION_LABEL[a]}</option>
-                  ))}
-                </select>
+                />
               </div>
             ))}
           </div>

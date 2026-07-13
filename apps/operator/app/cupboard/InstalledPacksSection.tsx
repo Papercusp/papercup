@@ -17,6 +17,8 @@ import { Brain, BellOff, ArrowUpCircle, ChevronRight, CheckCircle2 } from 'lucid
 import type { HarnessListing } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
 import { useLexicon } from '@/lib/useLexicon';
+import { Select } from '@/app/harness/Select';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 interface HivePackRollup {
   packId: string;
@@ -80,20 +82,18 @@ export default function InstalledPacksSection({
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: FONTS.ui, fontWeight: 600, fontSize: 14, color: COLORS.text }}>
           <Brain size={13} /> Installed in
         </span>
-        <select
-          data-testid="cupboard-installed-pot-select"
+        <Select
+          testId="cupboard-installed-pot-select"
+          ariaLabel="Installed in"
           value={hive}
-          onChange={(e) => setSel(e.target.value)}
-          style={{
+          onChange={setSel}
+          options={hives.map((h) => ({ value: h.slug, label: `${h.slug}${h.remote ? ' (joined)' : ''}` }))}
+          triggerStyle={{
             fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.text,
             background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`,
             borderRadius: RADIUS.md, padding: '4px 8px', maxWidth: 240,
           }}
-        >
-          {hives.map((h) => (
-            <option key={h.slug} value={h.slug}>{h.slug}{h.remote ? ' (joined)' : ''}</option>
-          ))}
-        </select>
+        />
         <span style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
           {packs.length} pack{packs.length === 1 ? '' : 's'}
         </span>
@@ -141,16 +141,16 @@ export default function InstalledPacksSection({
               border: `1px solid ${COLORS.border}`, borderRadius: RADIUS.md, background: COLORS.surfaceRaised,
             };
             return l ? (
-              <button
-                key={p.packId}
-                type="button"
-                data-testid="cupboard-installed-pack-row"
-                onClick={() => onOpen(l.id)}
-                style={{ ...rowStyle, cursor: 'pointer', color: COLORS.text, fontFamily: FONTS.ui }}
-                title={`Manage "${label}" in ${hive}`}
-              >
-                {rowInner}
-              </button>
+              <Tooltip key={p.packId} label={`Manage "${label}" in ${hive}`}>
+                <button
+                  type="button"
+                  data-testid="cupboard-installed-pack-row"
+                  onClick={() => onOpen(l.id)}
+                  style={{ ...rowStyle, cursor: 'pointer', color: COLORS.text, fontFamily: FONTS.ui }}
+                >
+                  {rowInner}
+                </button>
+              </Tooltip>
             ) : (
               <div
                 key={p.packId}
