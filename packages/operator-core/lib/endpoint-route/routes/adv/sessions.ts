@@ -722,7 +722,43 @@ const resumable = defineTool({
   async handler(req) {
     const limit = Number(new URL(req.url).searchParams.get('limit') ?? 30);
     const sessions = await listResumableSessions(Number.isFinite(limit) && limit > 0 ? limit : 30);
-    return new Response(JSON.stringify({ sessions }), { status: 200, headers: JSON_HEADERS });
+    // Enrich each session with `hasArchive` — whether its transcript exists in the
+    // DB session-archive. The archive-at-death lifecycle deletes an ended session's
+    // on-disk transcript ~15s after end, so a resumable claude/codex session may
+    // have its ONLY copy in the DB. The psu picker's transcript check is on-disk-
+    // only (sessionHasTranscript), so without this flag it misclassifies every
+    // off-disk session as a permanent "ghost" and HIDES it (owner-hit 2026-07-13:
+    // `psu --resume` reported "hiding 21 session(s) with no persisted transcript"
+    // after the move-sessions-off-disk-to-DB change — those sessions ARE resumable,
+    // they just need rematerializing first). The picker keeps a session that is on
+    // disk OR archived, and rematerializes an archived one on selection.
+    const archivedIds = new Set<string>();
+    try {
+      // Lazy: session-archive fails LOUD at import when zstd is unavailable —
+      // keep that off this module's load path (mirrors the rematerialize route).
+      const { pgSessionArchiveStore } = await import('../../../session-archive');
+      const store = pgSessionArchiveStore();
+      await Promise.all(
+        sessions.map(async (s) => {
+          // Only claude/codex sessions are keyed by a session_id in the archive;
+          // omp resumes by thread name and is never ghost-filtered by the picker.
+          if (!s.sessionId || (s.agent !== 'claude' && s.agent !== 'codex')) return;
+          try {
+            const stamp = await store.readStamp(s.agent, s.sessionId, s.workspaceId);
+            if (stamp) archivedIds.add(s.sessionId);
+          } catch {
+            /* best-effort per session — a read failure just leaves hasArchive false */
+          }
+        }),
+      );
+    } catch {
+      /* archive module unavailable ⇒ no enrichment (every hasArchive stays false) */
+    }
+    const enriched = sessions.map((s) => ({
+      ...s,
+      hasArchive: s.sessionId ? archivedIds.has(s.sessionId) : false,
+    }));
+    return new Response(JSON.stringify({ sessions: enriched }), { status: 200, headers: JSON_HEADERS });
   },
 });
 

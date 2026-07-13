@@ -48,9 +48,14 @@ Rust bridge inside the webview, so DOM queries, `eval`, `click`,
 `type`, IPC monitoring, and DOM-targeted screenshots all work without
 focus-stealing or OCR.
 
-The shell also opens a **second window** — a ghostty terminal running the
-zellij `pui` dock with the live agent TUIs (the **Papercup chat** there is a
-Claude-Code session, and the **Mug** runs beside it). `tauri-agent-tools`
+The shell **used to** also open a **second window** — a ghostty terminal
+running the zellij `pui` dock with the live agent TUIs. Since 2026-07-13 the
+dock is **testing-gated dark** (operator-chat-sidebar-revival-2026-07-13
+P-014/D-004): it stays fully bundled, but spawns only when `FLAGS.TESTING` is
+ON (the webview relays the flag to Rust's `native_terminal_set_enabled` — no
+boot-time spawn). With the flag off (the shipped default) there is **no dock
+window**, and the revived **operator chat sidebar** in the webview is the
+chat surface. When the flag is on and the dock is up, `tauri-agent-tools`
 **cannot** see that window; drive/observe it with `zellij action` +
 screenshots — see **§16**.
 
@@ -1914,12 +1919,21 @@ testing a state the user can never reach.
 
 ## 16. Driving the zellij `pui` chat dock (the Papercup / Mug TUIs)
 
-Everything above drives the **Tauri webview**. The desktop ALSO opens a *second*
-window: a **ghostty terminal running a zellij `pui` dock** — the live agent TUIs
-(owner directive 2026-06-11: "every agent chat is a LIVE TUI"). This is where the
-**Papercup chat** and the **Mug** actually run for the user. `tauri-agent-tools`
-**cannot see it** (it's not the webview) — drive it with `zellij action` +
-window screenshots instead.
+> **⚠ Testing-gated since 2026-07-13** (operator-chat-sidebar-revival-2026-07-13
+> P-014/D-004): the dock no longer spawns by default. It stays fully bundled
+> (all code + `pui`/`zellij` binaries ship), but the desktop opens it ONLY when
+> `FLAGS.TESTING` is on — the webview relays the resolved flag to Rust's
+> `native_terminal_set_enabled` (`NativeTerminalGate`); there is no boot-time
+> spawn. Flag off ⇒ no dock window; the revived **operator chat sidebar** is
+> the user-facing chat surface. Everything below applies when the flag is ON
+> (or when you launch `pui chat` manually from any terminal — that path is
+> unaffected by the gate).
+
+Everything above drives the **Tauri webview**. With `FLAGS.TESTING` on, the
+desktop ALSO opens a *second* window: a **ghostty terminal running a zellij
+`pui` dock** — the live agent TUIs. `tauri-agent-tools` **cannot see it**
+(it's not the webview) — drive it with `zellij action` + window screenshots
+instead.
 
 ### 16.1 What's in the dock
 
