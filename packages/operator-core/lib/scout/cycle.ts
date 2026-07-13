@@ -25,9 +25,13 @@
  *  - **Survivors (D-005):** `keep` + `moonshot` proceed, `reject` is dropped (the
  *    recombine port re-filters internally; the cycle also surfaces `survivors`
  *    for observability + a no-survivors short-circuit, and the two agree).
- *  - **Per-cycle budget (D-010):** an optional `limits.maxCostUsd` halts the
- *    cycle before the next LLM-spending step — a belt to su-80be9's pre-fire
- *    budget-gate suspenders.
+ *  - **Per-cycle budget (D-010, softened by EI-10779):** `limits.maxCostUsd` is a
+ *    SOFT cap. A zero/negative cap refuses to spend at all (halts before the first
+ *    costed step); but once generation has been PAID FOR, the cap NEVER discards it
+ *    — the cycle always finishes routing what it generated (routing is ~$0, the
+ *    cheapest stage must never be the one skipped) and flags the result
+ *    `overBudget` for observability. It is a belt to su-80be9's pre-fire
+ *    budget-gate suspenders, not a mid-flight kill that destroys sunk cost.
  *
  * PROVENANCE (P-013, D-009): a {@link Proposal} *fuses* multiple source ideas
  * (`sourceIdeaIds[]`), and the creative `lens` lives on {@link Idea}. The router
@@ -59,7 +63,14 @@ import type { RoutedIdeaProvenance } from './outcome-feedback';
 export interface ScoutCycleLimits {
   /** Cap the ideator roster size (passed to the ideate port). */
   maxIdeators?: number;
-  /** Halt the cycle before the next LLM-spending step once cumulative spend exceeds this. */
+  /**
+   * SOFT per-cycle spend cap (USD). A zero/negative cap halts BEFORE the first
+   * costed step (no spend at all, EI-305). A POSITIVE cap does NOT abort the cycle
+   * mid-flight once generation is paid for — the cycle finishes routing what it
+   * generated and flags {@link ScoutCycleResult.overBudget} instead of discarding
+   * the paid-for output (EI-10779: killing the pipeline after generation but before
+   * the ~$0 route stage is pure sunk-cost destruction).
+   */
   maxCostUsd?: number;
 }
 

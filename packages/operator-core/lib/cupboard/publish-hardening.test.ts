@@ -32,13 +32,13 @@ import * as ghToken from '../identity/gh-token';
 import * as cupboardPublish from './publisher-attestation';
 
 const nonHarnessInput = {
-  listing_kind: 'tool-pack' as const,
+  listing_kind: 'pack' as const,
   listing_ref: 'my-pack',
   github_repository_id: 7,
   github_owner: 'acme',
   github_name: 'widget',
   github_url: 'https://github.com/acme/widget',
-  title: 'A tool pack',
+  title: 'A pack',
   provides_tools: ['acme:do-thing'],
 };
 

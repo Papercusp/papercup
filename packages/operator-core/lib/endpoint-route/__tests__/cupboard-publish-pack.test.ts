@@ -65,15 +65,15 @@ beforeEach(() => {
 });
 
 describe('POST /cupboard/publish-plugin — pack kind', () => {
-  it("a kind:'pack' manifest publishes as listing_kind='tool-pack' (renamed by mig 008) with manifest-derived provides_tools", async () => {
+  it("a kind:'pack' manifest publishes as listing_kind='pack' (canonical, mig 010) with manifest-derived provides_tools", async () => {
     vi.mocked(findInstalledPlugin).mockResolvedValue(PACK_MANIFEST as never);
     const res = await post({ slug: 'markdown-tools' });
     expect(res.status).toBe(200);
     expect(publishListingToCupboard).toHaveBeenCalledWith(
       expect.objectContaining({
-        // The manifest format keeps kind:'pack'; the LISTING kind is the
-        // renamed 'tool-pack' (learning-packs D-005 / worker migration 008).
-        listing_kind: 'tool-pack',
+        // The manifest format uses kind:'pack'; the LISTING kind is the
+        // canonical 'pack' (migration 010 renamed the interim 'tool-pack' — P-003).
+        listing_kind: 'pack',
         listing_ref: 'markdown-tools',
         provides_tools: ['markdown-tools.render', 'markdown-tools.lint'],
       }),
@@ -141,12 +141,12 @@ describe('POST /cupboard/publish-plugin — publish-time manifest gate (P-005)',
     expect(publishListingToCupboard).toHaveBeenCalledWith(expect.objectContaining({ listing_kind: 'plugin' }));
   });
 
-  it('does NOT gate a tool-pack publish (scoped to kind=plugin) — a null manifest still 200s', async () => {
-    vi.mocked(findInstalledPlugin).mockResolvedValue(PACK_MANIFEST as never); // kind:'pack' → tool-pack
+  it('does NOT gate a pack publish (scoped to kind=plugin) — a null manifest still 200s', async () => {
+    vi.mocked(findInstalledPlugin).mockResolvedValue(PACK_MANIFEST as never); // kind:'pack' → pack
     vi.mocked(fetchGithubRepoFile).mockResolvedValue(null);
     const res = await post({ slug: 'markdown-tools' });
     expect(res.status).toBe(200);
     expect(fetchGithubRepoFile).not.toHaveBeenCalled();
-    expect(publishListingToCupboard).toHaveBeenCalledWith(expect.objectContaining({ listing_kind: 'tool-pack' }));
+    expect(publishListingToCupboard).toHaveBeenCalledWith(expect.objectContaining({ listing_kind: 'pack' }));
   });
 });

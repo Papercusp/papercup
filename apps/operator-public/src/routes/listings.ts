@@ -297,7 +297,7 @@ function registerListingEndpoints(
     let providesToolsJson: string | null = null;
     if (body.provides_tools != null) {
       if (kind !== 'plugin' && kind !== 'pack') {
-        return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'plugin_or_tool_pack_kind_only' }, 400);
+        return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'plugin_or_pack_kind_only' }, 400);
       }
       const pt = body.provides_tools;
       if (!Array.isArray(pt) || pt.length === 0 || pt.length > PROVIDES_TOOLS_MAX_ENTRIES) {

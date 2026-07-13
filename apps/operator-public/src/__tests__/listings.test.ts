@@ -234,9 +234,9 @@ describe('Cupboard /listings — pack kind + provides_tools (migration 006)', ()
     expect(res.status).toBe(200);
     const j = await res.json() as { ok: boolean; id: string; listing: Record<string, unknown> };
     expect(j.ok).toBe(true);
-    // Migration 008 (learning-packs D-005): the wire alias 'pack' normalizes
-    // to the renamed 'tool-pack' kind.
-    expect(j.listing.listing_kind).toBe('tool-pack');
+    // Migration 010 (P-003): 'pack' is the canonical listing kind; the wire
+    // value stores through unchanged.
+    expect(j.listing.listing_kind).toBe('pack');
     expect(j.listing.provides_tools).toBe(JSON.stringify(['md.render', 'md.lint']));
 
     const got = await api.request(`/listings/${j.id}`, {}, env);
@@ -275,7 +275,7 @@ describe('Cupboard /listings — pack kind + provides_tools (migration 006)', ()
     expect(res.status).toBe(400);
     const j = await res.json() as { field: string; reason: string };
     expect(j.field).toBe('provides_tools');
-    expect(j.reason).toBe('plugin_or_tool_pack_kind_only');
+    expect(j.reason).toBe('plugin_or_pack_kind_only');
   });
 
   it('provides_tools rejects bad shapes: non-array, empty array, empty strings, oversize', async () => {
@@ -323,12 +323,13 @@ describe('Cupboard /listings — pack kind + provides_tools (migration 006)', ()
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 57, private: false } });
     await publish(api, env, { ...PACK_BASE, github_name: 'other', github_url: 'https://github.com/papercupai/other', github_repository_id: 57, listing_kind: 'plugin', listing_ref: 'pl' });
 
-    // ?kind=pack stays a working wire alias (normalized to tool-pack, mig 008).
+    // ?kind=pack is the canonical filter (mig 010 / P-003).
     const packs = await api.request('/listings?kind=pack', {}, env);
     const packBody = await packs.json() as { results: Array<{ listing_kind: string }> };
     expect(packBody.results).toHaveLength(1);
-    expect(packBody.results[0].listing_kind).toBe('tool-pack');
+    expect(packBody.results[0].listing_kind).toBe('pack');
 
+    // ?kind=tool-pack stays a working interim wire alias (normalized to pack).
     const toolPacks = await api.request('/listings?kind=tool-pack', {}, env);
     expect((await toolPacks.json() as { results: unknown[] }).results).toHaveLength(1);
   });

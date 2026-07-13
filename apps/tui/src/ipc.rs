@@ -357,14 +357,67 @@ fn route_frame(sinks: &Sinks, frame: Frame) {
 
 fn discover_socket() -> Result<PathBuf> {
     let home = dirs::home_dir().context("no home dir")?;
-    let disc = home.join(".papercusp").join("endpoint-ipc.json");
-    let txt = std::fs::read_to_string(&disc).with_context(|| format!("read {}", disc.display()))?;
-    let v: Value = serde_json::from_str(&txt).context("parse endpoint-ipc.json")?;
+    let port = std::env::var("PAPERCUSP_HONO_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(3070);
+    discover_socket_in(&home.join(".papercusp"), port)
+}
+
+/// EI-190 / EI-7760: the singleton `endpoint-ipc.json` is LAST-WRITER-WINS
+/// across EVERY operator on the box — ephemeral hosts (gate runs, scratch
+/// ports) overwrite it and exit, leaving it pointing at a dead pid, which
+/// strands every panel on "no backend reachable". Prefer the per-port file
+/// for the operator this pui targets; use the singleton only as a fallback,
+/// and skip any discovery whose writer pid is dead (dead writer = dead
+/// socket).
+fn discover_socket_in(dir: &Path, port: u32) -> Result<PathBuf> {
+    let per_port = dir.join(format!("endpoint-ipc.{port}.json"));
+    let singleton = dir.join("endpoint-ipc.json");
+    let mut last_err: Option<anyhow::Error> = None;
+    for disc in [&per_port, &singleton] {
+        match read_discovery(disc) {
+            Ok((path, pid)) => {
+                if writer_alive(pid) {
+                    return Ok(path);
+                }
+                last_err = Some(anyhow::anyhow!(
+                    "discovery {} points at dead pid {pid}",
+                    disc.display()
+                ));
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no endpoint-ipc discovery file")))
+}
+
+fn read_discovery(disc: &Path) -> Result<(PathBuf, i64)> {
+    let txt = std::fs::read_to_string(disc).with_context(|| format!("read {}", disc.display()))?;
+    let v: Value =
+        serde_json::from_str(&txt).with_context(|| format!("parse {}", disc.display()))?;
     let sp = v
         .get("socketPath")
         .and_then(|x| x.as_str())
-        .context("endpoint-ipc.json missing socketPath")?;
-    Ok(PathBuf::from(sp))
+        .with_context(|| format!("{} missing socketPath", disc.display()))?;
+    let pid = v.get("pid").and_then(|x| x.as_i64()).unwrap_or(0);
+    Ok((PathBuf::from(sp), pid))
+}
+
+/// pid 0/absent (a legacy file) can't be checked — treat as alive. Non-Linux
+/// has no /proc; treat as alive there too (the dial will sort it out).
+fn writer_alive(pid: i64) -> bool {
+    if pid <= 0 {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 #[cfg(test)]
