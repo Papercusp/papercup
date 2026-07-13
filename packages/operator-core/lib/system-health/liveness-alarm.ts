@@ -351,9 +351,13 @@ const PANEL_LABEL_TO_KEY: Record<string, PanelKey> = {
   ...Object.fromEntries(
     (Object.entries(PANEL_LABELS) as Array<[PanelKey, string]>).map(([k, v]) => [v, k]),
   ),
-  Mug: 'queen',
+  // LEGACY aliases — the PRE-rename display labels that old escalation summaries
+  // carry forever. The spread above already provides the CURRENT labels (Mug,
+  // Kettle, …); these must stay the OLD words so records written before the
+  // cup-lexicon rename still classify. Do NOT rename these to Mug/Kettle.
+  Queen: 'queen',
   'Bees / fleet': 'bees',
-  Kettle: 'overwatch',
+  Overwatch: 'overwatch',
   'Scout / ideation': 'scout',
 };
 
@@ -370,8 +374,12 @@ export function deriveSignatureFromSummary(summary: string): string | null {
   s = s.trim();
   if (s.startsWith('system-health tick stale')) return 'health-tick-stale';
   if (/dead routine\(s\)/.test(s)) return 'dead-routines';
-  if (s.startsWith('Mug loop dark')) return 'queen-dark';
-  if (s.startsWith('Kettle supervisor loop dark')) return 'overwatch-dark';
+  // Dual-recognition: legacy records carry 'Queen'/'Overwatch'; post-rename
+  // records carry 'Mug'/'Kettle'. Match both so the classifier never regresses
+  // on the old backlog it exists to sweep.
+  if (s.startsWith('Queen loop dark') || s.startsWith('Mug loop dark')) return 'queen-dark';
+  if (s.startsWith('Overwatch supervisor loop dark') || s.startsWith('Kettle supervisor loop dark'))
+    return 'overwatch-dark';
   if (/LLM pool account\(s\) paused/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
   // EI-9794 fire-staleness form: "<role>@<harness> has not fired in ...".
