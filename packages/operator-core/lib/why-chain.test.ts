@@ -410,13 +410,24 @@ describe('WI-4533 — computePipelineHealth (the coord:orient fold)', () => {
     expect(res.rootCause?.stage).toBe('gate');
   });
 
-  it('carries the DEPLOY position — a green gate whose tip is not live is still not-shipped', async () => {
+  it('carries the DEPLOY position — a green gate whose GREEN code is not live is still not-shipped', async () => {
+    // EI-11012: "not live" is deployedBehindGreenPin (green pin ahead of :3070) — NOT
+    // greenPinBehindStaging, which is merely the staging buffer. This test used to express
+    // "not live" as the buffer, which is why the bug survived: the fixture agreed with the bug.
     const res = await computePipelineHealth(
-      deps({ snap: withRoutines(snap({ deploy: { greenPinBehindStaging: 49 } })) }),
+      deps({ snap: withRoutines(snap({ deploy: { deployedBehindGreenPin: 2 } })) }),
     );
     expect(res.gateLabel).toBe('green');
-    expect(res.greenPinBehindStaging).toBe(49);
-    expect(res.rootCause?.stage).toBe('deploy'); // the gate is fine; the promotion is not
+    expect(res.rootCause?.stage).toBe('deploy'); // the gate is fine; the SHIP is not
+  });
+
+  it('carries the staging buffer in the payload WITHOUT making it the root cause', async () => {
+    const res = await computePipelineHealth(
+      deps({ snap: withRoutines(snap({ deploy: { greenPinBehindStaging: 49, deployedBehindGreenPin: 0 } })) }),
+    );
+    expect(res.gateLabel).toBe('green');
+    expect(res.greenPinBehindStaging).toBe(49); // still reported (useful: is the gate keeping up?)
+    expect(res.rootCause).toBeNull(); // ...but 49 commits of un-gated staging is NOT a deploy fault
   });
 
   it('labels a stale verdict distinctly, so the orient fold can refuse to name its tests', async () => {

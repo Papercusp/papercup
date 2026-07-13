@@ -181,6 +181,87 @@ describe('defineTool', () => {
     expect(result.error?.message).toContain('"body"');
   });
 
+  /**
+   * EI-10943 — the schema dump is for SHAPE-blindness, not for a caller who simply
+   * overran a cap.
+   *
+   * The dump above (P-004) earns its keep when the caller does not know the contract:
+   * one failure teaches the whole shape. But it was appended to EVERY invalid_args
+   * error, including "foundDuring: too long by 3 chars" — 1,800 characters of schema
+   * that teach nothing the caller already knew, landing in the context of the agent
+   * least able to spare it. Observed live: a one-char overrun on a cosmetic provenance
+   * label returned the entire args schema of improvements:capture.
+   */
+  it('OMITS the schema dump for a pure value-level error, and says how far over the cap it is', async () => {
+    defineTool({
+      name: 'operator:length_probe',
+      description: 'over-length arg probe',
+      capability: 'operator:scan',
+      requirePrincipal: false,
+      agentRoles: ['operator'],
+      args: z.object({ id: z.string(), label: z.string().max(10) }),
+      async handler() {
+        return { content: [{ type: 'text', text: 'should not run' }] };
+      },
+    });
+    const tool = lookupByMcpName('operator:length_probe')!;
+    const result = await dispatchProjectedTool(
+      tool,
+      'operator:length_probe',
+      // Right keys, right types — one value is 5 chars over its cap. The caller
+      // demonstrably knows the shape.
+      { id: 'WI-1', label: 'x'.repeat(15) },
+      {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
+        workspaceId: 'default',
+        role: 'operator',
+        runId: 'run_T',
+      },
+      {},
+    );
+    expect(result.ok).toBe(false);
+    // Actionable in ONE retry: the actual length, the overage, and the target.
+    expect(result.error?.message).toContain('label: too long — 15 chars, 5 over the 10-char limit; trim to 10.');
+    // …and NOT 1,800 chars of schema the caller did not need.
+    expect(result.error?.message).not.toContain('full args schema:');
+  });
+
+  it('still dumps the schema when the caller is SHAPE-blind (an over-length value alongside an unknown key)', async () => {
+    // Mixed issues ⇒ not purely value-level ⇒ the caller does need the contract.
+    defineTool({
+      name: 'operator:mixed_probe',
+      description: 'mixed-issue probe',
+      capability: 'operator:scan',
+      requirePrincipal: false,
+      agentRoles: ['operator'],
+      args: z.object({ id: z.string(), label: z.string().max(10) }),
+      async handler() {
+        return { content: [{ type: 'text', text: 'should not run' }] };
+      },
+    });
+    const tool = lookupByMcpName('operator:mixed_probe')!;
+    const result = await dispatchProjectedTool(
+      tool,
+      'operator:mixed_probe',
+      { id: 'WI-1', label: 'x'.repeat(15), nonsense: 1 },
+      {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
+        workspaceId: 'default',
+        role: 'operator',
+        runId: 'run_T',
+      },
+      {},
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain('full args schema:');
+  });
+
   it('exposes the catalog', () => {
     defineTool({
       name: 'a:one',
