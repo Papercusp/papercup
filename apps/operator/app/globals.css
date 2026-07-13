@@ -26916,16 +26916,19 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   border-radius: 50%;
 }
 
-.op-pot-dot.ok { background: #35c98f; }
-.op-pot-dot.bad { background: #e5484d; }
+/* Status colors ride the DTCG semantic tokens (--good/--warn/--bad) so the
+ * strip re-themes with frost/black/honeycomb instead of pinning one palette
+ * (operator-chat-sidebar-revival-2026-07-13 P-013 token reconcile). */
+.op-pot-dot.ok { background: var(--good); }
+.op-pot-dot.bad { background: var(--bad); }
 
 .op-pot-badge {
   flex: none;
   margin-left: 4px;
   padding: 2px 7px;
   border-radius: 9px;
-  background: rgb(from #e5484d r g b / 0.16);
-  color: #ff8f93;
+  background: color-mix(in srgb, var(--bad), transparent 84%);
+  color: color-mix(in srgb, var(--bad), var(--fg) 35%);
   font-size: 10px;
   font-weight: 700;
 }
@@ -26979,8 +26982,8 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   background: rgba(255, 255, 255, 0.02);
 }
 
-.op-pot-attn.sev-critical { border-left-color: #e5484d; }
-.op-pot-attn.sev-warning { border-left-color: #f5a524; }
+.op-pot-attn.sev-critical { border-left-color: var(--bad); }
+.op-pot-attn.sev-warning { border-left-color: var(--warn); }
 .op-pot-attn.sev-info { border-left-color: color-mix(in srgb, var(--accent-strong), transparent 40%); }
 
 .op-pot-attn-text { flex: 1; min-width: 0; }

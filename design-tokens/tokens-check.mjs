@@ -3,9 +3,9 @@
 //
 // Regenerates design-token CSS outputs and fails if the working tree
 // differs. Catches the drift case where someone edits a token source
-// file but forgets `pnpm tokens` before committing.
+// file but forgets `npm run tokens` before committing.
 //
-// Usage: pnpm tokens:check  (called from CI / pre-commit / make check)
+// Usage: npm run tokens:check  (called from CI / pre-commit / make check)
 
 import { execSync } from "node:child_process";
 
@@ -18,7 +18,7 @@ const OUTPUTS = [
 ];
 
 try {
-  execSync("pnpm tokens", { stdio: "inherit" });
+  execSync("npm run tokens", { stdio: "inherit" });
 } catch (e) {
   console.error("✗ tokens regen failed");
   process.exit(e.status || 1);
@@ -26,7 +26,7 @@ try {
 
 const diff = execSync(`git --no-pager diff --stat -- ${OUTPUTS.join(" ")}`, { encoding: "utf8" });
 if (diff.trim()) {
-  console.error("\n✗ design-token outputs drifted from sources. Run 'pnpm tokens' and commit the diff:\n");
+  console.error("\n✗ design-token outputs drifted from sources. Run 'npm run tokens' and commit the diff:\n");
   console.error(diff);
   process.exit(1);
 }
