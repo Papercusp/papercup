@@ -208,6 +208,33 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe('private_repo_rejected');
   });
+
+  it('a legacy learning-pack alias publish normalizes to knowledge-pack AND still lands PENDING (rename must not open a review-gate bypass)', async () => {
+    // SECURITY INVARIANT (cupboard-public-release P-014): knowledge-pack is
+    // instruction-carrying (REVIEW_POLICY_KINDS), so it must publish PENDING and
+    // stay invisible until an operator approves. A publisher using the
+    // pre-migration-011 wire alias `learning-pack` must be normalized to
+    // `knowledge-pack` BEFORE the review_status decision — normalizeListingKind
+    // runs at the top of the publish handler, the REVIEW_POLICY_KINDS gate below
+    // it. If that order ever inverts (gate on the raw kind), `learning-pack`
+    // would miss REVIEW_POLICY_KINDS and publish `approved`, surfacing an
+    // instruction-carrying pack publicly with NO review. This locks the
+    // normalize-then-gate order so that regression can't ship silently.
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 7, login: 'kp' }, repo: { id: 60, private: false } });
+    const res = await publish(api, env, {
+      github_owner: 'o', github_name: 'kp', github_url: 'https://github.com/o/kp',
+      github_repository_id: 60, listing_kind: 'learning-pack', listing_ref: 'wisdom',
+    });
+    expect(res.status).toBe(200);
+    const row = store.tables.harnesses.find((r) => r.github_repository_id === 60)!;
+    expect(row.listing_kind).toBe('knowledge-pack'); // alias normalized forward
+    expect(row.review_status).toBe('pending');        // review gate NOT bypassed
+
+    // Invisible to public browse (under the canonical kind) until approval.
+    const browse = await api.request('/listings?kind=knowledge-pack', {}, env);
+    expect((await browse.json() as { results: unknown[] }).results).toHaveLength(0);
+  });
 });
 
 describe('Cupboard /listings — pack kind + provides_tools (migration 006)', () => {

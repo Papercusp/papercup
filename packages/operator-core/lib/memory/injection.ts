@@ -21,6 +21,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, type MemoryEntry } from './backend';
+import { collapseNearDuplicates } from './recall-admission';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import {
@@ -476,20 +477,25 @@ export async function buildMemoryContextBlock(
     if (id) surfacedIds.push(id);
     return true;
   };
-  let truncated = false;
-  outer: for (const group of [
-    userResults.map((h) => ({ line: `- ${fmtScope(h)}${fmtId(h)} ${h.text}`, id: h.id })),
-    harnessHits.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, slug)}${fmtId(hit)} ${hit.text}`, id: hit.id })),
+  // Priority-ordered render: user's own facts → harness pools → hive-organic → hive-pack.
+  const rendered = [
+    ...userResults.map((h) => ({ line: `- ${fmtScope(h)}${fmtId(h)} ${h.text}`, id: h.id, text: h.text ?? '' })),
+    ...harnessHits.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, slug)}${fmtId(hit)} ${hit.text}`, id: hit.id, text: hit.text ?? '' })),
     // Hive pool — labeled `@ hive:<slug>` so an agent can tell shared-Hive
     // knowledge (learnings, conventions) from its harness's own pool.
-    hiveOrganic.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`, id: hit.id })),
-    hivePack.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`, id: hit.id })),
-  ]) {
-    for (const { line, id } of group) {
-      if (!admit(line, id)) {
-        truncated = true;
-        break outer;
-      }
+    ...hiveOrganic.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`, id: hit.id, text: hit.text ?? '' })),
+    ...hivePack.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`, id: hit.id, text: hit.text ?? '' })),
+  ];
+  // P-008 (WI-4538): collapse near-duplicate memories (the SAME fact stored under multiple ids
+  // — the id-based dedups above can't see it) BEFORE the budget, so a dupe never consumes a
+  // slot a distinct fact needed. Priority order is preserved, so the highest-priority copy of
+  // each cluster survives.
+  const { kept: dedupedRendered } = collapseNearDuplicates(rendered, (r) => r.text);
+  let truncated = false;
+  for (const { line, id } of dedupedRendered) {
+    if (!admit(line, id)) {
+      truncated = true;
+      break;
     }
   }
   if (lines.length === 0) return null;

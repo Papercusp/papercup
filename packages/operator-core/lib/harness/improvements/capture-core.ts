@@ -166,7 +166,10 @@ export interface CaptureImprovementResult {
   ok: true;
   created: boolean;
   reason?: 'likely-duplicate' | 'check-only' | 'stale-evidence';
-  kind?: ImprovementKind;
+  /** Native engineer_issues storage kind. Always agrees with issue.kind. */
+  kind?: 'bug' | 'change';
+  /** Caller-facing capture classification; `feature` is stored as kind=`change`. */
+  improvementKind?: ImprovementKind;
   issue?: EngineerIssue;
   topics?: string[];
   possibleDuplicates: PossibleDuplicate[];
@@ -469,7 +472,8 @@ export async function captureImprovement(
   return {
     ok: true,
     created: true,
-    kind: input.kind,
+    kind: issue.kind as 'bug' | 'change',
+    improvementKind: input.kind,
     issue,
     topics,
     possibleDuplicates,

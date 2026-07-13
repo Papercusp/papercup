@@ -6,11 +6,22 @@
  * which must never be able to.
  */
 import { describe, expect, it } from 'vitest';
-import { admitRecallHits, MEMORY_SCORE_FLOOR, MEMORY_TEXT_CAP } from './recall-admission';
+import {
+  admitRecallHits,
+  collapseNearDuplicates,
+  isNearDuplicateText,
+  jaccardSimilarity,
+  normalizeForDedup,
+  MEMORY_SCORE_FLOOR,
+  MEMORY_TEXT_CAP,
+} from './recall-admission';
 
+// Distinct-but-same-length text per id: these gate tests exercise floor/withhold/budget, so the
+// fixtures must NOT be collapsed by the P-008 near-duplicate gate (identical `'x'.repeat` text
+// would be — correctly — collapsed). Length stays exactly `chars` so the budget math is unchanged.
 const hit = (id: string, score?: number, chars = 10) => ({
   id,
-  memory: 'x'.repeat(chars),
+  memory: `${id} `.padEnd(chars, 'x'),
   score,
 });
 

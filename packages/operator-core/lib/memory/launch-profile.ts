@@ -35,6 +35,7 @@
  */
 
 import { buildMemoryContextBlock, type MemoryInjectionInput } from './injection';
+import { collapseNearDuplicates } from './recall-admission';
 import { initializeQueryForHarness } from './mcp-prelude';
 
 export type LaunchRung =
@@ -202,6 +203,18 @@ export interface LaunchMemoryBlockInput {
 const LINE_ID_RE = /\(id=([0-9a-f-]{20,})\)/i;
 
 /**
+ * The memory TEXT of a rendered recall line — strips the "- [scope] (id=uuid) " framing so the
+ * P-008 near-duplicate collapse compares CONTENT, not the differing id/scope. (`buildLaunchMemoryBlock`
+ * already dedups by id + exact line; this catches the same fact stored under DIFFERENT ids across
+ * separate queries, whose lines differ only in the id suffix.)
+ */
+function lineMemoryText(line: string): string {
+  const m = LINE_ID_RE.exec(line);
+  if (m) return line.slice(m.index + m[0].length).trim();
+  return line.replace(/^-\s*/, '').replace(/^\[[^\]]*\]\s*/, '').trim();
+}
+
+/**
  * Run the profile's targeted queries through the ONE admission pipeline
  * (floors · muted packs · tombstones · epoch/watermark dedup · budget) and
  * merge the results under a single heading, deduping lines across queries by
@@ -253,5 +266,10 @@ export async function buildLaunchMemoryBlock(
   }
 
   if (merged.length === 0) return null;
-  return `## ${heading}\n\n${merged.join('\n')}`;
+  // P-008 (WI-4538): collapse near-duplicate lines that slipped past the id/exact-line dedup
+  // above — the SAME fact stored under different ids renders as different lines (only the
+  // (id=…) suffix differs), so both survive and spend the budget twice on one fact. Compare on
+  // the memory TEXT, keeping the first (highest-ranked) copy.
+  const { kept: dedupedLines } = collapseNearDuplicates(merged, lineMemoryText);
+  return `## ${heading}\n\n${dedupedLines.join('\n')}`;
 }

@@ -144,9 +144,14 @@ describe('captureImprovement — native kind + paths (close-loop D-002)', () => 
 
   it('kind=feature stores as change + payload.improvementKind (engineer_issues kinds are bug|change|task)', async () => {
     const d = deps();
-    await captureImprovement({ title: 'a net-new capability', kind: 'feature' }, d);
+    const res = await captureImprovement({ title: 'a net-new capability', kind: 'feature' }, d);
     expect(d.created[0].kind).toBe('change');
     expect(d.created[0].payload).toMatchObject({ improvementKind: 'feature' });
+    expect(res).toMatchObject({
+      kind: 'change',
+      improvementKind: 'feature',
+      issue: { kind: 'change' },
+    });
   });
 
   it('stores candidate paths in the payload (the protected-path gate feed)', async () => {
