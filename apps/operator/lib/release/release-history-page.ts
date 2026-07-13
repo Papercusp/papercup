@@ -43,6 +43,7 @@
 import { marked } from 'marked';
 import type { ReleaseArtifact, ReleaseRow, ShippedItem, ShippedPlan } from './release-registry';
 import { groupItemsByPlan } from './release-registry';
+import { identityLiterals, scrubIdentity, type IdentityLiteral } from './release-content-scrub';
 
 /** A release row with the display data for its FROZEN id lists looked up. */
 export interface HydratedRelease {
@@ -61,6 +62,13 @@ export interface PageOptions {
   generatedAt: Date;
   /** Omit/null to generate a page with no beacon at all (local preview, tests). */
   analytics?: Analytics | null;
+  /**
+   * This box's identity, redacted out of every page. DEFAULTS to resolving the
+   * real machine — a caller cannot accidentally publish un-scrubbed pages by
+   * forgetting to pass it (WI-4389's lesson: the loader belongs in the producer).
+   * Tests pass explicit literals; pass `[]` to deliberately disable.
+   */
+  redact?: IdentityLiteral[];
 }
 
 export function escapeHtml(s: string): string {
@@ -207,8 +215,19 @@ ul.items li:last-child { border-bottom: 0; }
 footer { color: var(--muted); font-size: .8rem; margin-top: 3rem; text-align: center; }
 `;
 
-function shell(title: string, body: string, beacon: string): string {
-  return `<!doctype html>
+/**
+ * The single point where a page becomes bytes — and therefore the ONE place the
+ * identity scrub belongs.
+ *
+ * Scrubbing at each call site (item titles here, plan bodies there, changelog
+ * over there) means the next person who adds a field to the page silently adds a
+ * leak. The content is written by agents on the owner's own box: a work-item title
+ * quoting a shell command carries his home path, a plan's decision log carries his
+ * name. So we scrub the FINISHED HTML, once, on the way out. Nothing renders
+ * except through here.
+ */
+function shell(title: string, body: string, beacon: string, redact: IdentityLiteral[]): string {
+  const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -227,6 +246,7 @@ ${beacon}
 </body>
 </html>
 `;
+  return scrubIdentity(html, redact);
 }
 
 function renderArtifacts(artifacts: ReleaseArtifact[]): string {
@@ -334,7 +354,7 @@ ${releases.map((r, i) => renderRelease(r, i === 0)).join('\n')}`;
   const beacon = opts.analytics
     ? beaconScript(opts.analytics, 'index', releases[0]?.row.version ?? null)
     : '';
-  return shell('Papercusp releases', `${body}\n${footer}`, beacon);
+  return shell('Papercusp releases', `${body}\n${footer}`, beacon, opts.redact ?? identityLiterals());
 }
 
 /** One plan, rendered — the owner's "display the plan" surface. */
@@ -352,5 +372,10 @@ export function renderPlanPageHtml(
 ${content}`;
 
   const beacon = opts.analytics ? beaconScript(opts.analytics, 'plan', opts.version) : '';
-  return shell(`${plan.title} — Papercusp`, body, beacon);
+  return shell(
+    `${plan.title} — Papercusp`,
+    body,
+    beacon,
+    opts.redact ?? identityLiterals(),
+  );
 }
