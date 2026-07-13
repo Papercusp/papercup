@@ -10,7 +10,7 @@
  * OPERATOR_URL points at a dead port so any accidental resource-gate
  * round-trip fails open fast instead of touching a live operator.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -210,6 +210,129 @@ describe('native-scheduler lockout: the refusal answers the INTENT (EI-10940)', 
 
   it('quoted prose naming CPUQuota is not a systemd-run at all (no false deny)', () => {
     expectAllow(runGate(bashCmd('echo "we could use -p CPUQuota=200% here"'), AGENT));
+  });
+});
+
+/**
+ * EI-10939 — tauri-agent-tools target guard (SAFETY).
+ *
+ * `tauri-agent-tools` resolves its target by scanning /tmp for
+ * `tauri-dev-bridge-<pid>.token` and taking the FIRST LIVE ONE readdir happens to
+ * yield (its tokenDiscovery.js: `if (!found) found = …`). No preference, no
+ * tie-break, no warning when several are alive — so a bare `… click '#btn'`
+ * drives whichever app came up first, which is very often the OWNER'S LIVE
+ * DESKTOP WINDOW rather than the throwaway instance the agent spawned.
+ *
+ * The package is third-party and global (outside our repo), so the fix lives
+ * here, in the hook: refuse to let an UNAIMED command through.
+ *
+ * The load-bearing case is the FIRST test below: with exactly ONE live bridge
+ * there is no ambiguity to detect — and on this box that one bridge was the
+ * owner's own papercusp-desktop. An ambiguity-only guard sails right through it.
+ * A mutating command must name its target unconditionally.
+ */
+describe('tauri-agent-tools target guard (EI-10939)', () => {
+  let tmpBridgeDir = '';
+  const LIVE_A = process.pid; // this vitest process — definitely alive
+  const LIVE_B = process.ppid; // its parent — also alive
+  const DEAD = 999_999; // no such process
+
+  function writeBridge(pid: number, port: number) {
+    writeFileSync(
+      join(tmpBridgeDir, `tauri-dev-bridge-${pid}.token`),
+      JSON.stringify({ port, token: `tok-${pid}`, pid }),
+    );
+  }
+
+  /** Run the gate with the fabricated bridge set visible as the temp dir. */
+  const runTat = (command: string) =>
+    runGate(bashCmd(command), { ...AGENT, TMPDIR: tmpBridgeDir });
+
+  beforeEach(() => {
+    tmpBridgeDir = mkdtempSync(join(tmpdir(), 'tat-bridges-'));
+  });
+  afterEach(() => {
+    rmSync(tmpBridgeDir, { recursive: true, force: true });
+  });
+
+  it('DENIES a mutating command with ONE live bridge — the "unambiguous" case is exactly how the owner\'s window gets driven', () => {
+    writeBridge(LIVE_A, 46423);
+    const reason = denyReason(runTat(`tauri-agent-tools eval 'document.title'`));
+    expect(reason).toMatch(/DRIVES a webview but does not say WHICH/);
+    expect(reason).toMatch(new RegExp(`--pid\\s+${LIVE_A}`)); // names the candidate
+    expect(reason).toMatch(/probe/); // and the way to find the right one
+  });
+
+  it.each([
+    ['click', `tauri-agent-tools click '#send-button'`],
+    ['type', `tauri-agent-tools type '#input' 'hello'`],
+    ['navigate', `tauri-agent-tools navigate /settings`],
+    ['invoke', `tauri-agent-tools invoke some_command`],
+    ['select', `tauri-agent-tools select '#dropdown' v`],
+    ['focus', `tauri-agent-tools focus '#el'`],
+    ['scroll', `tauri-agent-tools scroll --to 400`],
+  ])('DENIES unaimed mutating `%s`', (_l, command) => {
+    writeBridge(LIVE_A, 46423);
+    expect(denyReason(runTat(command))).toMatch(/DRIVES a webview/);
+  });
+
+  it.each([
+    ['--pid', `tauri-agent-tools eval --pid ${999} 'x'`],
+    ['--pid=', `tauri-agent-tools click --pid=${999} '#b'`],
+    ['--port + --token', `tauri-agent-tools eval --port 46423 --token abc 'x'`],
+  ])('ALLOWS a mutating command that names its target (%s)', (_l, command) => {
+    writeBridge(LIVE_A, 46423);
+    expectAllow(runTat(command));
+  });
+
+  it('ALLOWS an unaimed READ command when only one bridge is live (no ambiguity to resolve)', () => {
+    writeBridge(LIVE_A, 46423);
+    expectAllow(runTat('tauri-agent-tools dom body'));
+  });
+
+  it('DENIES an unaimed READ command when TWO bridges are live — reading the wrong app is how a false green happens', () => {
+    writeBridge(LIVE_A, 46423);
+    writeBridge(LIVE_B, 43929);
+    const reason = denyReason(runTat('tauri-agent-tools dom body'));
+    expect(reason).toMatch(/2 bridges are live/);
+    expect(reason).toMatch(new RegExp(`--pid\\s+${LIVE_A}`));
+    expect(reason).toMatch(new RegExp(`--pid\\s+${LIVE_B}`));
+  });
+
+  it('counts only LIVE bridges — a stale token file from a dead app is not ambiguity', () => {
+    writeBridge(LIVE_A, 46423);
+    writeBridge(DEAD, 111); // stale: the tool itself skips + unlinks these
+    expectAllow(runTat('tauri-agent-tools dom body'));
+  });
+
+  it.each([
+    ['probe — the ANSWER to the deny, so it must never be blocked', 'tauri-agent-tools probe'],
+    ['list-windows', 'tauri-agent-tools list-windows'],
+    ['info', 'tauri-agent-tools info'],
+    ['forensics (bridge-free)', 'tauri-agent-tools forensics --identifier ai.papercup'],
+    ['app-paths (bridge-free)', 'tauri-agent-tools app-paths --identifier ai.papercup'],
+    ['--help', 'tauri-agent-tools --help'],
+    ['bare (usage)', 'tauri-agent-tools'],
+  ])('never gates discovery / bridge-free commands: %s', (_l, command) => {
+    writeBridge(LIVE_A, 46423);
+    writeBridge(LIVE_B, 43929); // maximally ambiguous — still allowed
+    expectAllow(runTat(command));
+  });
+
+  it('ALLOWS when NO bridge is live — nothing to hit; the tool prints its own error', () => {
+    expectAllow(runTat(`tauri-agent-tools eval 'document.title'`));
+  });
+
+  it('guards a full-path / npx invocation too (the binary is a global install)', () => {
+    writeBridge(LIVE_A, 46423);
+    expect(
+      denyReason(runTat(`/home/linuxbrew/.linuxbrew/bin/tauri-agent-tools click '#b'`)),
+    ).toMatch(/DRIVES a webview/);
+  });
+
+  it('a quoted PROSE mention is not an invocation (no false deny)', () => {
+    writeBridge(LIVE_A, 46423);
+    expectAllow(runTat(`echo "you could run tauri-agent-tools eval document.title"`));
   });
 });
 

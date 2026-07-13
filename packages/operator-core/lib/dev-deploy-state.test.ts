@@ -103,7 +103,7 @@ describe('devDeployState', () => {
     expect(st.integrationBranch).toBe('main');
     expect(st.releaseRef).toBe('ready');
     expect(st.stagingHead?.sha).toBe(shaC);
-    expect(st.ready?.sha).toBe(shaB);
+    expect(st.greenPin?.sha).toBe(shaB);
     expect(st.deployed?.sha).toBe(shaA);
   });
 
@@ -130,7 +130,7 @@ describe('devDeployState', () => {
     git(integration, ['branch', '-f', 'ready', shaC]);
     try {
       const st = await devDeployState();
-      expect(st.ready?.sha).toBe(shaC);
+      expect(st.greenPin?.sha).toBe(shaC);
       expect(st.greenPinBehindStaging).toBe(0);
       expect(st.greenPinAtStagingHead).toBe(true);
     } finally {
@@ -174,7 +174,7 @@ describe('devDeployState', () => {
     process.env.PAPERCUSP_RELEASE_REF = 'no-such-ref';
     try {
       const st = await devDeployState();
-      expect(st.ready).toBeNull();
+      expect(st.greenPin).toBeNull();
       expect(st.errors.some((e) => e.includes('no-such-ref'))).toBe(true);
       // main + deployed still resolve — the snapshot is partial, not absent.
       expect(st.stagingHead?.sha).toBe(shaC);

@@ -10,12 +10,16 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   maybeBatchNudge,
   maybeOrientDedupNudge,
+  maybeListFanoutPreempt,
   _resetBatchNudgeState,
   BATCH_NUDGE_THRESHOLD,
   FANOUT_DISTINCT_THRESHOLD,
   NUDGE_WINDOW_MS,
   ORIENT_DEDUP_WINDOW_MS,
   CODE_RUN_CAPABLE_ROLES,
+  LIST_FANOUT_MIN_ROWS,
+  CODE_RUN_RECENT_MS,
+  MAX_PREEMPT_PER_SESSION,
 } from './code-run-batch-nudge';
 
 const cap = { sessionKey: 's1', toolName: 'work_items:get', canCodeRun: true };
@@ -592,5 +596,237 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
       hit = maybeBatchNudge({ sessionKey: 'pf5', toolName: 'plans:get', canCodeRun: true, now: t });
     }
     expect(hit?.tool).toBe('plans:get');
+  });
+});
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * EI-10894 — the PREDICTIVE trigger. The reactive nudges above all key on round-trips ALREADY
+ * spent; this one fires on the list result, BEFORE the per-row calls are paid. Because it fires
+ * on a prediction it can be WRONG in a way they cannot, so most of these tests are teeth on the
+ * guards that keep a wrong fire from happening.
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** N rows of `{ id, title }` — the shape a list verb hands back. */
+function rows(n: number, key = 'id'): Record<string, unknown>[] {
+  return Array.from({ length: n }, (_v, i) => ({ [key]: `WI-${1000 + i}`, title: `item ${i}` }));
+}
+
+const listCall = {
+  sessionKey: 'p1',
+  toolName: 'work_items:list',
+  canCodeRun: true,
+};
+
+describe('maybeListFanoutPreempt — fires on the LIST, before the per-row round-trips', () => {
+  it('fires at >5 addressable rows, and NOT at 5 (the same call, one row short)', () => {
+    const under = maybeListFanoutPreempt({
+      ...listCall,
+      payload: () => rows(LIST_FANOUT_MIN_ROWS - 1),
+      now: 1000,
+    });
+    expect(under).toBeNull();
+
+    _resetBatchNudgeState();
+    const hit = maybeListFanoutPreempt({
+      ...listCall,
+      payload: () => rows(LIST_FANOUT_MIN_ROWS),
+      now: 1000,
+    });
+    expect(hit?.kind).toBe('preempt');
+    expect(hit?.tool).toBe('work_items:list');
+  });
+
+  it('extracts the real ids into the skeleton — acting on it is a paste, not a transcription', () => {
+    const hit = maybeListFanoutPreempt({ ...listCall, payload: () => rows(8), now: 1000 });
+    expect(hit?.text).toContain('"WI-1000"');
+    expect(hit?.text).toContain('"WI-1007"');
+    // The ids are bound to the key they were found under, and fanned out in ONE call.
+    expect(hit?.text).toContain('const ids = [');
+    expect(hit?.text).toContain('Promise.all');
+    // 8 rows ⇒ the felt cost is stated as 8 round-trips NOT YET paid.
+    expect(hit?.text).toContain('8 rows');
+    expect(hit?.text).toContain('you have not paid');
+  });
+
+  it('binds the skeleton to the identifier the rows ACTUALLY carry (slug, not id)', () => {
+    const hit = maybeListFanoutPreempt({
+      ...listCall,
+      toolName: 'plans:list',
+      payload: () => rows(7, 'slug'),
+      now: 1000,
+    });
+    expect(hit?.text).toContain('const slugs = [');
+    expect(hit?.text).toContain('.map((slug) =>');
+    expect(hit?.text).not.toContain('const ids = [');
+  });
+
+  it('finds the rows one hop down — the `{ results: [...] }` shape most list verbs return', () => {
+    const hit = maybeListFanoutPreempt({
+      ...listCall,
+      toolName: 'sessions:search',
+      payload: () => ({ ok: true, total: 9, results: rows(9) }),
+      now: 1000,
+    });
+    expect(hit?.kind).toBe('preempt');
+    expect(hit?.text).toContain('9 rows');
+  });
+
+  it('owns its own conditionality — a wrong fire costs one line, not the agent’s trust', () => {
+    const hit = maybeListFanoutPreempt({ ...listCall, payload: () => rows(9), now: 1000 });
+    expect(hit?.text).toContain('If you were only reading the list, ignore this');
+  });
+});
+
+describe('maybeListFanoutPreempt — the guards against a WRONG prediction', () => {
+  it('stays SILENT for a caller who already used code:run — they need no lecture', () => {
+    // Same list, same rows: the ONLY difference is a code:run earlier in the session.
+    const beforeBatching = maybeListFanoutPreempt({ ...listCall, payload: () => rows(9), now: 1000 });
+    expect(beforeBatching).not.toBeNull();
+
+    _resetBatchNudgeState();
+    maybeListFanoutPreempt({
+      ...listCall,
+      toolName: 'code:run',
+      payload: () => ({}),
+      now: 1000,
+    });
+    const afterBatching = maybeListFanoutPreempt({ ...listCall, payload: () => rows(9), now: 2000 });
+    expect(afterBatching).toBeNull();
+  });
+
+  it('re-arms once the code:run is stale — a batch 20 minutes ago is not a habit', () => {
+    maybeListFanoutPreempt({ ...listCall, toolName: 'code:run', payload: () => ({}), now: 1000 });
+    expect(
+      maybeListFanoutPreempt({ ...listCall, payload: () => rows(9), now: 1000 + CODE_RUN_RECENT_MS + 1 }),
+    ).not.toBeNull();
+  });
+
+  it('ignores a NON-list verb returning the very same rows (coord:orient is nobody’s fan-out)', () => {
+    expect(
+      maybeListFanoutPreempt({
+        ...listCall,
+        toolName: 'coord:orient',
+        payload: () => ({ claimable: rows(9) }),
+        now: 1000,
+      }),
+    ).toBeNull();
+  });
+
+  it('ignores rows that are not ADDRESSABLE — no per-row key means no per-row fan-out', () => {
+    const unaddressable = Array.from({ length: 9 }, (_v, i) => ({ title: `t${i}`, count: i }));
+    expect(maybeListFanoutPreempt({ ...listCall, payload: () => unaddressable, now: 1000 })).toBeNull();
+  });
+
+  it('ignores a set where only a MINORITY of rows carry the id (a heterogeneous blob)', () => {
+    const mixed = [...rows(2), ...Array.from({ length: 7 }, (_v, i) => ({ title: `t${i}` }))];
+    expect(maybeListFanoutPreempt({ ...listCall, payload: () => mixed, now: 1000 })).toBeNull();
+  });
+
+  it('is ONE-SHOT per (session, tool) — it fires on a guess, so it never nags', () => {
+    expect(maybeListFanoutPreempt({ ...listCall, payload: () => rows(9), now: 1000 })).not.toBeNull();
+    expect(maybeListFanoutPreempt({ ...listCall, payload: () => rows(9), now: 2000 })).toBeNull();
+    expect(maybeListFanoutPreempt({ ...listCall, payload: () => rows(9), now: 900_000 })).toBeNull();
+  });
+
+  it('caps the session — a listing-heavy session is not a nudging-heavy session', () => {
+    const tools = ['work_items:list', 'plans:list', 'docs:search', 'coord:feed', 'events:catalog'];
+    const fired = tools.filter(
+      (t, i) =>
+        maybeListFanoutPreempt({
+          sessionKey: 'cap1',
+          toolName: t,
+          canCodeRun: true,
+          payload: () => rows(9),
+          now: 1000 + i,
+        }) !== null,
+    );
+    expect(fired).toHaveLength(MAX_PREEMPT_PER_SESSION);
+  });
+
+  it('does not burn a cap slot on a call that produced NO hint', () => {
+    // Three list calls too small to fire, then three that should — the cap must be intact.
+    for (let i = 0; i < 3; i++) {
+      maybeListFanoutPreempt({
+        sessionKey: 'cap2',
+        toolName: `x${i}:list`,
+        canCodeRun: true,
+        payload: () => rows(2),
+        now: 1000 + i,
+      });
+    }
+    const fired = [0, 1, 2].filter(
+      (i) =>
+        maybeListFanoutPreempt({
+          sessionKey: 'cap2',
+          toolName: `y${i}:list`,
+          canCodeRun: true,
+          payload: () => rows(9),
+          now: 2000 + i,
+        }) !== null,
+    );
+    expect(fired).toHaveLength(MAX_PREEMPT_PER_SESSION);
+  });
+
+  it('never nudges a caller who cannot run code:run', () => {
+    expect(
+      maybeListFanoutPreempt({ ...listCall, canCodeRun: false, payload: () => rows(9), now: 1000 }),
+    ).toBeNull();
+  });
+
+  it('does not materialize the payload unless every cheap gate has already passed', () => {
+    let parsed = 0;
+    const payload = (): unknown => {
+      parsed++;
+      return rows(9);
+    };
+    // Not list-shaped ⇒ the thunk must never be called (this is the MCP hot path).
+    maybeListFanoutPreempt({ ...listCall, toolName: 'work_items:get', payload, now: 1000 });
+    expect(parsed).toBe(0);
+    // List-shaped ⇒ parsed exactly once.
+    maybeListFanoutPreempt({ ...listCall, payload, now: 1000 });
+    expect(parsed).toBe(1);
+  });
+
+  it('treats an unparseable body as nothing-to-judge, never as an error', () => {
+    expect(() =>
+      maybeListFanoutPreempt({
+        ...listCall,
+        payload: () => {
+          throw new SyntaxError('Unexpected token < in JSON');
+        },
+        now: 1000,
+      }),
+    ).not.toThrow();
+  });
+
+  it('unwraps a tools:invoke-routed list call (and a wrapper-routed code:run still counts as batching)', () => {
+    const hit = maybeListFanoutPreempt({
+      sessionKey: 'inv1',
+      toolName: 'tools:invoke',
+      args: { name: 'work_items:list', args: { state: 'todo' } },
+      canCodeRun: true,
+      payload: () => rows(9),
+      now: 1000,
+    });
+    expect(hit?.tool).toBe('work_items:list');
+
+    _resetBatchNudgeState();
+    maybeListFanoutPreempt({
+      sessionKey: 'inv2',
+      toolName: 'tools:invoke',
+      args: { name: 'code:run', args: { script: '…' } },
+      canCodeRun: true,
+      payload: () => ({}),
+      now: 1000,
+    });
+    expect(
+      maybeListFanoutPreempt({
+        sessionKey: 'inv2',
+        toolName: 'work_items:list',
+        canCodeRun: true,
+        payload: () => rows(9),
+        now: 2000,
+      }),
+    ).toBeNull();
   });
 });

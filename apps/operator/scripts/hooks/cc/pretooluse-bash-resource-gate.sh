@@ -41,7 +41,7 @@ AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
-import json, os, re, sys, urllib.request, urllib.parse
+import json, os, re, sys, tempfile, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 raw, operator_url, token, agent_id = sys.argv[1:5]
@@ -224,6 +224,138 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
         r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',
         _strip_shell_quotes(command)):
     deny(_os_scheduler_deny_reason(command))
+
+# ── tauri-agent-tools target guard (EI-10939) ────────────────────────────────
+# SAFETY. `tauri-agent-tools` picks its target by scanning /tmp for
+# `tauri-dev-bridge-<pid>.token` files and taking THE FIRST LIVE ONE IT HAPPENS
+# TO READ (dist/bridge/tokenDiscovery.js: `if (!found) found = …`, over an
+# unordered readdir; dist/commands/shared.js `resolveBridge()` falls into that
+# path whenever `--pid` and `--port`+`--token` are all absent). There is no
+# preference, no tie-break, and — this is the bug — NO WARNING when several
+# bridges are alive. So a bare `tauri-agent-tools click …` drives WHICHEVER app
+# readdir yielded first, which is very often NOT the throwaway instance the
+# agent just spawned but the OWNER'S LIVE DESKTOP WINDOW. This nearly happened
+# (an agent one keystroke from typing into the owner's real app).
+#
+# The package is a third-party global npm install (github.com/cesarandreslopez/
+# tauri-agent-tools) — outside our repo, so we cannot fix `resolveBridge`. We CAN
+# refuse to let an unaimed command through, which is the same protection.
+#
+# TWO TIERS, because ambiguity is not the only hazard:
+#   • MUTATING (eval/click/type/…): an explicit target is required ALWAYS, even
+#     when exactly one bridge is live. Verified 2026-07-13: the ONLY live bridge
+#     on this box was the owner's own `papercusp-desktop` — so an ambiguity-only
+#     rule would have sailed straight through and driven his window. If you are
+#     about to DRIVE a webview, you must say which one. No exceptions.
+#   • READ-ONLY bridge commands (dom/screenshot/page-state/…): required only when
+#     the choice is genuinely AMBIGUOUS (2+ live bridges). Reading the wrong app
+#     is how "I verified my fix" becomes a false green.
+#   • Discovery + bridge-free commands (probe/list-windows/info/forensics/…) are
+#     NEVER gated — `probe` is the ANSWER to this deny, so blocking it would be
+#     perverse.
+#
+# NOT gated on PAPERCUSP_AGENT_SESSION: EI-7872 established that the marker is
+# silently unset in fleet-launched sessions — exactly the ones doing unattended
+# UI verification. The resource being protected is the owner's live app, not a
+# tree, and the deny is satisfiable with one flag, so it applies to every session
+# this hook runs in. Mirrors tauriTargetDenyReason() in the OMP hook.
+TAT_MUTATING = frozenset((
+    'eval', 'click', 'type', 'scroll', 'focus', 'navigate', 'select', 'invoke',
+))
+TAT_BRIDGE_READ = frozenset((
+    'screenshot', 'dom', 'wait', 'ipc-monitor', 'page-state', 'storage',
+    'console-monitor', 'mutations', 'snapshot', 'rust-logs', 'store-inspect',
+    'check', 'capture', 'process-tree', 'capabilities', 'webview', 'health',
+    'diagnose',
+))
+_TAT_BIN_RE = re.compile(r'(?:^|[\s;&|(])(?:[\w./-]*/)?tauri-agent-tools(?=\s|$)')
+
+
+def _tat_subcommand(cmd):
+    # The subcommand is the first non-flag token after the binary. Returns None
+    # for a bare/`--help`/`--version` invocation (nothing to aim).
+    m = _TAT_BIN_RE.search(cmd)
+    if not m:
+        return None
+    rest = cmd[m.end():].split()
+    for tok in rest:
+        if tok.startswith('-'):
+            continue
+        return tok
+    return None
+
+
+def _tat_has_explicit_target(cmd):
+    # `--pid N` is the aim. `--port N --token X` bypasses discovery entirely and
+    # is equally explicit. Either satisfies the guard. (Quote-stripped: a quoted
+    # VALUE disappears but the flag token itself survives, so this stays sound.)
+    if re.search(r'--pid[=\s]', cmd):
+        return True
+    return bool(re.search(r'--port[=\s]', cmd) and re.search(r'--token[=\s]', cmd))
+
+
+def _tat_live_bridges():
+    # Same discovery the tool itself does — /tmp/tauri-dev-bridge-<pid>.token,
+    # keeping only the ones whose pid is still alive — plus the process cmdline,
+    # so the refusal can NAME the candidates instead of just asserting ambiguity.
+    import glob
+    out = []
+    for path in sorted(glob.glob(os.path.join(tempfile.gettempdir(), 'tauri-dev-bridge-*.token'))):
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+            pid = int(data['pid'])
+            os.kill(pid, 0)  # raises unless alive
+        except Exception:
+            continue  # dead / malformed — the tool skips these too
+        try:
+            with open('/proc/%d/cmdline' % pid, 'rb') as fh:
+                exe = fh.read().replace(b'\x00', b' ').decode('utf-8', 'replace').strip()
+        except Exception:
+            exe = '(unknown process)'
+        out.append({'pid': pid, 'port': data.get('port'), 'exe': exe[:100]})
+    return out
+
+
+def _tat_candidate_lines(bridges):
+    return '\n'.join(
+        '  --pid %-8d port %-6s %s' % (b['pid'], b['port'], b['exe']) for b in bridges
+    ) or '  (none discoverable right now)'
+
+
+def _tauri_target_deny_reason(sub, bridges, mutating):
+    head = (
+        'tauri-agent-tools target guard: this command DRIVES a webview but does not say WHICH one.'
+        if mutating else
+        'tauri-agent-tools target guard: %d bridges are live, so `%s` cannot tell which app you mean.'
+        % (len(bridges), sub)
+    )
+    why = (
+        'With no --pid, tauri-agent-tools attaches to the FIRST bridge token it finds in /tmp — '
+        'an arbitrary readdir order, with no warning. That is frequently the OWNER\'S LIVE DESKTOP '
+        'APP rather than the instance you spawned.'
+    )
+    return (
+        '%s\n%s\n\nLive bridges right now:\n%s\n\nRe-run naming your target:\n'
+        '  tauri-agent-tools %s --pid <PID> …\n\n'
+        'Not sure which is yours? `tauri-agent-tools probe` (never blocked) lists the targets, '
+        'and the PID of an app YOU spawned is the one you launched — if you did not spawn one, '
+        'you are about to act on someone else\'s window.' % (
+            head, why, _tat_candidate_lines(bridges), sub,
+        )
+    )
+
+
+_tat_sub = _tat_subcommand(_strip_shell_quotes(command))
+if _tat_sub in TAT_MUTATING or _tat_sub in TAT_BRIDGE_READ:
+    _stripped_cmd = _strip_shell_quotes(command)
+    if not _tat_has_explicit_target(_stripped_cmd):
+        _mutating = _tat_sub in TAT_MUTATING
+        _bridges = _tat_live_bridges()
+        # Mutating: always require an aim. Read-only: only when ambiguous.
+        # Zero bridges → nothing to hit; let the tool print its own error.
+        if _bridges and (_mutating or len(_bridges) > 1):
+            deny(_tauri_target_deny_reason(_tat_sub, _bridges, _mutating))
 
 # Destructive tree-wide git guard (hive-loop-supervision-2026-06-21): a
 # pathspec-less `git reset --hard` / `git checkout|restore .` (or `:/`) /

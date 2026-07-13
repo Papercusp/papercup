@@ -76,6 +76,9 @@ interface PublishBody {
   // the unit registers when installed; kinds plugin|pack only. Stored as a JSON
   // TEXT column and returned verbatim on GET (the operator's resolver parses it).
   provides_events?: unknown;         // expected: Array<{ family, keyTemplate, describe? }>
+  // Event axis, consumer half (migration 013 / D-003 / P-008). The event-key
+  // FAMILIES the unit REQUIRES; kinds plugin|pack only. Same storage posture.
+  requires_events?: unknown;         // expected: Array<{ family, optional? }>
   // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
   // owning Hive's raw-32-byte-base64 Ed25519 pubkey + denormalized title.
   hive_pubkey?: unknown;             // expected: 44-char base64 (32 bytes)
@@ -91,6 +94,10 @@ const PROVIDES_EVENTS_MAX_ENTRIES = 200;
 const PROVIDES_EVENTS_MAX_FAMILY_LEN = 128;
 const PROVIDES_EVENTS_MAX_TEMPLATE_LEN = 256;
 const PROVIDES_EVENTS_MAX_DESCRIBE_LEN = 300;
+
+/** requires_events caps (migration 013): a declaration, not a payload. */
+const REQUIRES_EVENTS_MAX_ENTRIES = 200;
+const REQUIRES_EVENTS_MAX_FAMILY_LEN = 128;
 
 const TOPIC_HEX_RE = /^[0-9a-f]{64}$/;
 // Standard base64 of exactly 32 raw bytes (an Ed25519 pubkey): 43 chars + '='.
@@ -367,6 +374,51 @@ function registerListingEndpoints(
       providesEventsJson = JSON.stringify(clean);
     }
 
+    // requires_events (migration 013 / D-003 / P-008) — the CONSUMER half. Same
+    // posture again: installable kinds only, bounded, JSON TEXT, structural.
+    //
+    // Note what is NOT validated here: whether anything actually PROVIDES the
+    // required family. That is deliberately not the Cupboard's question — it has
+    // no host catalog and no idea what the installing box already has. The
+    // storefront stores the DECLARATION; the operator's resolver answers
+    // availability against the local catalog at install time. Trying to enforce
+    // resolvability at publish would reject a perfectly good unit whose provider
+    // simply hasn't been published yet, and would still be wrong by the time
+    // anyone installed it.
+    let requiresEventsJson: string | null = null;
+    if (body.requires_events != null) {
+      const bad = (reason: string) =>
+        c.json({ error: 'invalid_field', field: 'requires_events', reason }, 400);
+      if (kind !== 'plugin' && kind !== 'pack') return bad('plugin_or_pack_kind_only');
+      const re = body.requires_events;
+      if (!Array.isArray(re) || re.length === 0 || re.length > REQUIRES_EVENTS_MAX_ENTRIES) {
+        return bad('array_1_to_200');
+      }
+      const families = new Set<string>();
+      const clean: Array<{ family: string; optional?: boolean }> = [];
+      for (const raw of re) {
+        if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return bad('entries_must_be_objects');
+        const { family, optional } = raw as Record<string, unknown>;
+        if (
+          typeof family !== 'string' ||
+          family.trim().length === 0 ||
+          family.length > REQUIRES_EVENTS_MAX_FAMILY_LEN
+        ) {
+          return bad('family_non_empty_string_max_128');
+        }
+        if (optional != null && typeof optional !== 'boolean') return bad('optional_must_be_boolean');
+        // A duplicate family with CONFLICTING optionality is ambiguous in the one
+        // way that matters — is this dep hard or soft? — so reject rather than
+        // pick. (The operator's parser resolves dupes REQUIRED-WINS when reading
+        // an already-stored declaration; that's a safe read of legacy data, not a
+        // licence to publish a self-contradicting one.)
+        if (families.has(family)) return bad('duplicate_family');
+        families.add(family);
+        clean.push({ family, ...(optional === true ? { optional: true } : {}) });
+      }
+      requiresEventsJson = JSON.stringify(clean);
+    }
+
     // Repo→Hive binding fields (migration 007 / hive-from-github-url D-004
     // HYBRID). Shape-validated only — the signed directory announce is the
     // content authority; the Cupboard stores the publisher's claim like any
@@ -492,6 +544,7 @@ function registerListingEndpoints(
       publisher_attestation_gist_id: body.attestation_gist_id ?? null,
       provides_tools: providesToolsJson,
       provides_events: providesEventsJson,
+      requires_events: requiresEventsJson,
       hive_pubkey: (body.hive_pubkey as string | undefined) ?? null,
       hive_title: (body.hive_title as string | undefined) ?? null,
       // P-018: the blueprint.yaml `kind` for a blueprint listing (the Hives-tab

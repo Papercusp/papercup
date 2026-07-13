@@ -150,3 +150,124 @@ describe('POST /cupboard/publish-plugin — publish-time manifest gate (P-005)',
     expect(publishListingToCupboard).toHaveBeenCalledWith(expect.objectContaining({ listing_kind: 'pack' }));
   });
 });
+
+/**
+ * The EVENT axis on the publish path (cupboard-public-release P-008 / D-003).
+ *
+ * ⚠ THESE ARE THE REGRESSION TESTS FOR A REAL SHIPPED GAP. P-007 built the whole
+ * event axis — the D1 column, the worker's accept+validate, the catalog read, the
+ * resolver, the install gate — and NOTHING EVER WROTE provides_events, because no
+ * publish path sent it. `cupboardEventIndex` was therefore permanently empty,
+ * `resolveEventProvider` could never return 'installable', and an event dep could
+ * never pull its providing unit in: the entire installable rung was INERT.
+ *
+ * It survived a green suite because the pack-catalog tests feed provides_events in
+ * from a FIXTURE, bypassing publish entirely — the loop-core was tested, the real
+ * path was not. So these tests deliberately sit AT the boundary that was blind:
+ * they assert what the route SENDS to the publisher, not what a fixture contains.
+ */
+describe('POST /cupboard/publish-plugin — the event axis (P-008)', () => {
+  const EVENT_MANIFEST = {
+    ...PACK_MANIFEST,
+    provides: {
+      events: [
+        { family: 'md:rendered', keyTemplate: 'md:rendered:<doc>', params: [{ name: 'doc' }], describe: 'a doc rendered' },
+      ],
+    },
+    dependencies: {
+      events: [{ family: 'fs:changed' }, { family: 'lint:done', optional: true }],
+    },
+  };
+
+  it('SENDS the manifest\'s provides.events + dependencies.events with the listing', async () => {
+    vi.mocked(findInstalledPlugin).mockResolvedValue(EVENT_MANIFEST as never);
+    const res = await post({ slug: 'markdown-tools' });
+    expect(res.status).toBe(200);
+    expect(publishListingToCupboard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provides_events: [
+          { family: 'md:rendered', keyTemplate: 'md:rendered:<doc>', describe: 'a doc rendered' },
+        ],
+        // A bare declaration is REQUIRED (optional:false); `optional:true` stays soft.
+        requires_events: [
+          { family: 'fs:changed', optional: false },
+          { family: 'lint:done', optional: true },
+        ],
+      }),
+    );
+  });
+
+  it('omits both fields entirely when the manifest declares no events (no empty arrays on the wire)', async () => {
+    vi.mocked(findInstalledPlugin).mockResolvedValue(PACK_MANIFEST as never); // no provides/dependencies
+    const res = await post({ slug: 'markdown-tools' });
+    expect(res.status).toBe(200);
+    const sent = vi.mocked(publishListingToCupboard).mock.calls[0][0] as Record<string, unknown>;
+    expect(sent).not.toHaveProperty('provides_events');
+    expect(sent).not.toHaveProperty('requires_events');
+  });
+
+  it('422s a manifest whose provided family has no keyTemplate — LOUD, not silently dropped', async () => {
+    // Fail-soft is right when READING a third party's manifest (one bad unit must
+    // not break catalog derivation for everyone). It is wrong when PUBLISHING your
+    // own: silently dropping a family the author believes they declared ships a
+    // listing that lies about itself, and every awaiter of the advertised key
+    // parks forever on a key nothing emits.
+    vi.mocked(findInstalledPlugin).mockResolvedValue({
+      ...PACK_MANIFEST,
+      provides: { events: [{ family: 'md:rendered' }] }, // no keyTemplate
+    } as never);
+    const res = await post({ slug: 'markdown-tools' });
+    expect(res.status).toBe(422);
+    expect(publishListingToCupboard).not.toHaveBeenCalled();
+  });
+
+  it('422s a manifest whose keyTemplate placeholder has no matching param', async () => {
+    vi.mocked(findInstalledPlugin).mockResolvedValue({
+      ...PACK_MANIFEST,
+      provides: { events: [{ family: 'md:rendered', keyTemplate: 'md:rendered:<doc>' }] }, // no params
+    } as never);
+    const res = await post({ slug: 'markdown-tools' });
+    expect(res.status).toBe(422);
+    expect(publishListingToCupboard).not.toHaveBeenCalled();
+  });
+
+  it('422s a duplicate provided family (ambiguous "who provides X?" within one unit)', async () => {
+    vi.mocked(findInstalledPlugin).mockResolvedValue({
+      ...PACK_MANIFEST,
+      provides: {
+        events: [
+          { family: 'md:rendered', keyTemplate: 'md:rendered' },
+          { family: 'md:rendered', keyTemplate: 'md:other' },
+        ],
+      },
+    } as never);
+    const res = await post({ slug: 'markdown-tools' });
+    expect(res.status).toBe(422);
+    expect(publishListingToCupboard).not.toHaveBeenCalled();
+  });
+
+  it('is NOT body-overridable, unlike provides_tools — the manifest is the only authority', async () => {
+    // A provided family carries a keyTemplate the RUNTIME is held to. Letting a
+    // publisher hand-type it invites a listing promising `deploy:<env>` while the
+    // code fires something else — and every awaiter of the advertised key hangs
+    // forever. So a body value is ignored, not honoured.
+    vi.mocked(findInstalledPlugin).mockResolvedValue(EVENT_MANIFEST as never);
+    const res = await post({
+      slug: 'markdown-tools',
+      provides_events: [{ family: 'spoof:done', keyTemplate: 'spoof:done' }],
+      requires_events: [{ family: 'spoof:need' }],
+    });
+    expect(res.status).toBe(200);
+    expect(publishListingToCupboard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provides_events: [
+          { family: 'md:rendered', keyTemplate: 'md:rendered:<doc>', describe: 'a doc rendered' },
+        ],
+        requires_events: [
+          { family: 'fs:changed', optional: false },
+          { family: 'lint:done', optional: true },
+        ],
+      }),
+    );
+  });
+});

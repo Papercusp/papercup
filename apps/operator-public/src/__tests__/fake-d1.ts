@@ -55,7 +55,8 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     publisher_device_pubkey: null,
     publisher_attestation_gist_id: null,
     provides_tools: null,
-    provides_events: null,   // migration 012 (event dependency axis)
+    provides_events: null,   // migration 012 (event dependency axis — provider half)
+    requires_events: null,   // migration 013 (event dependency axis — consumer half)
     hive_pubkey: null,
     hive_title: null,
     blueprint_kind: null,
@@ -94,14 +95,15 @@ export class FakeStore {
     const upper = sql.trim().toUpperCase();
     if (upper.startsWith('INSERT INTO HARNESSES')) {
       // ⚠ POSITIONAL: this destructure must track insertHarness()'s bind order in
-      // db.ts EXACTLY (migrations 004/006/007/008/012). Insert a column mid-list
-      // in one place and not the other and every later field silently shifts by
-      // one — the tests keep passing while writing wrong data into wrong columns.
+      // db.ts EXACTLY (migrations 004/006/007/008/012/013). Insert a column
+      // mid-list in one place and not the other and every later field silently
+      // shifts by one — the tests keep passing while writing wrong data into
+      // wrong columns.
       const [
         id, listing_kind, project_ref, listing_ref,
         gh_repo_id, gh_owner, gh_name, gh_url, title, description, topic_hex,
         pub_user_id, pub_login, pub_permission, device_pubkey, attestation_gist_id,
-        provides_tools, provides_events,
+        provides_tools, provides_events, requires_events,
         hive_pubkey, hive_title, blueprint_kind,
         review_status,
         created_at, updated_at,
@@ -126,6 +128,7 @@ export class FakeStore {
           publisher_attestation_gist_id: attestation_gist_id ?? null,
           provides_tools: provides_tools ?? null,
           provides_events: provides_events ?? null,
+          requires_events: requires_events ?? null,
           hive_pubkey: hive_pubkey ?? null,
           hive_title: hive_title ?? null,
           blueprint_kind: blueprint_kind ?? null,

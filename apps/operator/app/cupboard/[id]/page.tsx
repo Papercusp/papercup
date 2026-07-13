@@ -53,6 +53,31 @@ import { Button } from '../../harness/Button';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 
+interface ProvidedEvent { family: string; keyTemplate: string; describe: string | null }
+interface RequiredEvent { family: string; optional: boolean }
+
+/**
+ * Parse a listing's JSON-TEXT array column, dropping any entry the mapper
+ * rejects. Fail-soft by design — see the call sites: a third party's malformed
+ * declaration must degrade one section, never blank the listing page.
+ */
+function parseJsonArray<T>(raw: string | null | undefined, map: (e: Record<string, unknown>) => T | null): T[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: T[] = [];
+    for (const e of parsed) {
+      if (e == null || typeof e !== 'object' || Array.isArray(e)) continue;
+      const mapped = map(e as Record<string, unknown>);
+      if (mapped) out.push(mapped);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** Icon for a listing's action (null = legacy harness row — kind icon only). */
 function ActionIcon({ action, size = 14 }: { action: ListingAction | null; size?: number }) {
   switch (action) {
@@ -360,6 +385,33 @@ export default function CupboardDetailPage() {
       return [];
     }
   })();
+  // The EVENT axis (D-003; worker migrations 012 + 013 / P-007 + P-008) — the
+  // mirror of provides_tools, both halves:
+  //   provides_events  what this unit lets you AWAIT once installed
+  //   requires_events  what this unit NEEDS something else to emit
+  //
+  // Requires is the half that changes a decision. A REQUIRED family that nothing
+  // on your host provides is a HARD install failure (P-007's gate refuses it),
+  // so this is where the user gets to see that coming instead of meeting it as a
+  // refusal toast after clicking Install. Optional deps are listen-if-present and
+  // never block — labelled as such rather than silently blended in with the hard
+  // ones, because "this install will fail" and "this feature stays dormant" are
+  // very different things to be told.
+  //
+  // Parsed FAIL-SOFT (a malformed entry is skipped, never thrown): the row is a
+  // third party's declaration, and a bad one must degrade this section, not blank
+  // out the whole listing page. The worker structurally validates on publish, so
+  // this is the belt to that braces.
+  const providesEvents: ProvidedEvent[] = parseJsonArray(listing.provides_events, (e) =>
+    typeof e.family === 'string' && e.family.length > 0 && typeof e.keyTemplate === 'string' && e.keyTemplate.length > 0
+      ? { family: e.family, keyTemplate: e.keyTemplate, describe: typeof e.describe === 'string' ? e.describe : null }
+      : null,
+  );
+  const requiresEvents: RequiredEvent[] = parseJsonArray(listing.requires_events, (e) =>
+    typeof e.family === 'string' && e.family.length > 0
+      ? { family: e.family, optional: e.optional === true }
+      : null,
+  );
 
   return (
     <div style={{ padding: SIZES.lg, maxWidth: 700, margin: '0 auto' }}>
@@ -424,6 +476,66 @@ export default function CupboardDetailPage() {
               >
                 {providesTools.join(', ')}
               </span>
+            </MetaRow>
+          )}
+          {/* The event axis (P-008). Full-width rows: a family carries a key
+              template (and often a description), which does not fit the 2-up
+              grid the scalar metadata uses. */}
+          {providesEvents.length > 0 && (
+            <MetaRow label="Provides events" span>
+              <ul
+                data-testid="cupboard-detail-provides-events"
+                style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}
+              >
+                {providesEvents.map((ev) => (
+                  <li key={ev.family} data-testid="cupboard-detail-provided-event" data-family={ev.family}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <code style={eventFamilyStyle}>{ev.family}</code>
+                      {/* The key template is the thing an awaiter actually parks
+                          on — show it, don't just name the family. */}
+                      <code style={{ fontFamily: FONTS.mono, fontSize: 11, color: COLORS.textMuted }}>
+                        {ev.keyTemplate}
+                      </code>
+                    </div>
+                    {ev.describe && (
+                      <div style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, marginTop: 2 }}>
+                        {ev.describe}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </MetaRow>
+          )}
+          {requiresEvents.length > 0 && (
+            <MetaRow label="Requires events" span>
+              <ul
+                data-testid="cupboard-detail-requires-events"
+                style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}
+              >
+                {requiresEvents.map((ev) => (
+                  <li
+                    key={ev.family}
+                    data-testid="cupboard-detail-required-event"
+                    data-family={ev.family}
+                    data-optional={ev.optional ? 'true' : 'false'}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
+                  >
+                    <code style={eventFamilyStyle}>{ev.family}</code>
+                    {/* Required vs optional is the whole point of showing this:
+                        a required family nothing provides FAILS the install; an
+                        optional one just stays dormant. Never blend them. */}
+                    <span style={ev.optional ? optionalDepStyle : requiredDepStyle}>
+                      {ev.optional ? 'optional' : 'required'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, margin: '6px 0 0' }}>
+                Installing resolves each required family against what this machine already provides — a built-in, an
+                installed unit, or another Cupboard unit it can pull in. A required family that nothing provides will
+                stop the install. Optional families are listen-if-present and never block.
+              </p>
             </MetaRow>
           )}
           {listing.project_ref && (
@@ -650,9 +762,10 @@ function KnowledgePackContents({ repoSlug, listingRef }: { repoSlug: string; lis
   );
 }
 
-function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
+/** `span` = take the full width of the 2-up metadata grid (for list-shaped values). */
+function MetaRow({ label, children, span = false }: { label: string; children: React.ReactNode; span?: boolean }) {
   return (
-    <div>
+    <div style={span ? { gridColumn: '1 / -1' } : undefined}>
       <div style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, marginBottom: 2, textTransform: 'uppercase' }}>
         {label}
       </div>
@@ -660,6 +773,38 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
     </div>
   );
 }
+
+const eventFamilyStyle: React.CSSProperties = {
+  fontFamily: FONTS.mono,
+  fontSize: 12,
+  color: COLORS.text,
+  background: 'var(--bg-1)',
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 999,
+  padding: '2px 8px',
+};
+
+/** A hard dep — an unresolvable one FAILS the install (P-007's gate). */
+const requiredDepStyle: React.CSSProperties = {
+  fontFamily: FONTS.ui,
+  fontSize: 11,
+  color: 'var(--warn)',
+  border: '1px solid color-mix(in srgb, var(--warn), transparent 70%)',
+  background: 'color-mix(in srgb, var(--warn), transparent 88%)',
+  borderRadius: 999,
+  padding: '2px 8px',
+};
+
+/** Listen-if-present — never blocks. */
+const optionalDepStyle: React.CSSProperties = {
+  fontFamily: FONTS.ui,
+  fontSize: 11,
+  color: COLORS.textMuted,
+  border: `1px solid ${COLORS.border}`,
+  background: 'var(--bg-1)',
+  borderRadius: 999,
+  padding: '2px 8px',
+};
 
 const valueStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 4,

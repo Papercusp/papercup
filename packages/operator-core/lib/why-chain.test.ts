@@ -137,18 +137,45 @@ describe('computeWhyChain (EI-7349)', () => {
     expect(res.stages[0].reason).toContain('libs/foo');
   });
 
-  it('gate green but main ahead of ready: deploy stage degraded, gate stays ok', async () => {
-    const res = await computeWhyChain(deps({ snap: snap({ deploy: { greenPinBehindStaging: 4 } }) }));
-    expect(res.stages[0].status).toBe('ok');
-    expect(res.stages[1].status).toBe('degraded');
-    expect(res.stages[1].reason).toContain('4 commit');
-    expect(res.rootCause?.stage).toBe('deploy');
+  // ── EI-11012: the staging buffer is NOT a deploy fault ────────────────────
+  // These three pin the fix. The deploy stage MUST stay ok while staging runs ahead of the
+  // green pin (the normal steady state: git-sync commits staging continuously; the gate FFs
+  // main only hourly + only when green). The old behaviour degraded on it, which made the
+  // deploy stage permanently degraded — and since rootCause is the FIRST non-ok stage, that
+  // shadowed every real downstream cause.
+  it('staging ahead of the green pin (the staging buffer) does NOT degrade the deploy stage', async () => {
+    const res = await computeWhyChain(
+      deps({ snap: snap({ deploy: { greenPinBehindStaging: 10, deployedBehindGreenPin: 0 } }) }),
+    );
+    expect(res.stages[1].status).toBe('ok');
+    expect(res.rootCause).toBeNull();
   });
 
-  it('ready green + ahead of deployed: deploy stage degraded (not yet promoted)', async () => {
+  it('a staging buffer is REPORTED (as normal) in the ok reason, not hidden', async () => {
+    const res = await computeWhyChain(
+      deps({ snap: snap({ deploy: { greenPinBehindStaging: 10, deployedBehindGreenPin: 0 } }) }),
+    );
+    expect(res.stages[1].reason).toContain('10 commit');
+    expect(res.stages[1].reason).toContain('normal');
+  });
+
+  it('a staging buffer never shadows a real downstream cause (rootCause reaches the pool)', async () => {
+    const res = await computeWhyChain(
+      deps({
+        snap: snap({ deploy: { greenPinBehindStaging: 10, deployedBehindGreenPin: 0 } }),
+        accounts: accounts([{ available: false }, { available: false }]),
+      }),
+    );
+    expect(res.stages[1].status).toBe('ok');
+    expect(res.rootCause?.stage).toBe('pool');
+  });
+
+  it('green pin ahead of what is live on :3070: deploy stage degraded (the REAL deploy gap)', async () => {
     const res = await computeWhyChain(deps({ snap: snap({ deploy: { deployedBehindGreenPin: 2 } }) }));
     expect(res.stages[1].status).toBe('degraded');
-    expect(res.stages[1].reason).toContain('not yet promoted');
+    expect(res.stages[1].reason).toContain('2 commit');
+    expect(res.stages[1].reason).toContain('not yet deployed');
+    expect(res.rootCause?.stage).toBe('deploy');
   });
 
   it('all accounts unavailable: pool stage blocked', async () => {
@@ -169,7 +196,10 @@ describe('computeWhyChain (EI-7349)', () => {
   it('multiple non-ok stages: rootCause is the upstream-most (gate before deploy before pool)', async () => {
     const res = await computeWhyChain(
       deps({
-        snap: snap({ gate: { consecutiveReds: 2 }, deploy: { greenPinBehindStaging: 1 } }),
+        // deployedBehindGreenPin (NOT the staging buffer) is what makes the deploy stage
+        // non-ok since EI-11012 — using greenPinBehindStaging here would leave deploy ok and
+        // silently stop exercising the gate-before-deploy ordering this test exists to pin.
+        snap: snap({ gate: { consecutiveReds: 2 }, deploy: { deployedBehindGreenPin: 1 } }),
         accounts: accounts([{ available: false }]),
       }),
     );

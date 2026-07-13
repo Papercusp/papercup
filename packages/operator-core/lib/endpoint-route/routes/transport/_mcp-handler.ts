@@ -75,7 +75,12 @@ import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipa
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
 import { unknownToolReferral } from '../../../agent-tools/tools/unknown-tool-referral';
-import { maybeBatchNudge, maybeOrientDedupNudge, canRoleActOnCodeRun } from '../../../code-run-batch-nudge';
+import {
+  maybeBatchNudge,
+  maybeOrientDedupNudge,
+  maybeListFanoutPreempt,
+  canRoleActOnCodeRun,
+} from '../../../code-run-batch-nudge';
 // EI-10892: detect the ok:true-but-every-field-blank code:run result — a mis-mapped
 // response shape, which is the dominant tool-waste mode and invisible to the
 // hard-failure-only efficiency telemetry.
@@ -1906,27 +1911,29 @@ const handler = createMcpHandler(
                 // appending an advisory `[batch-hint]`/`[nudge]` text item corrupts that parse.
                 // Only attach the advisory nudges to PLAIN-TEXT results.
                 const canAttachAdvisory = (result._meta as Record<string, unknown> | undefined)?.delta == null;
+                // SURFACE-AWARE (code-run-self-state-adoption-2026-07-03 P-004): a role-membership
+                // check alone was dishonest — envelope-denied roles (overwatch/sentinel) and seeded
+                // sessions whose surface lacked code:run were nudged, escalating banners included,
+                // toward a tool they could not call. canRoleActOnCodeRun folds in the envelope deny;
+                // codeRunInSurface switches the hint to the activate-first path (tools:find /
+                // tools:invoke) when the live surface lacks the tool. Computed ONCE here — the
+                // reactive nudge and the predictive hint (EI-10894) both need exactly this.
+                const nudgeSurface = getSessionSurface(
+                  dispatchSpawnCtx.uiClientId ?? null,
+                  parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools')),
+                );
+                const canCodeRunHere =
+                  dispatchSpawnCtx.isSuperuser === true || canRoleActOnCodeRun(dispatchSpawnCtx.role);
+                const codeRunInSurface = !nudgeSurface || nudgeSurface.has('code:run');
                 try {
-                  // SURFACE-AWARE (code-run-self-state-adoption-2026-07-03 P-004): the old check was
-                  // role-membership only, so envelope-denied roles (overwatch/sentinel) and seeded
-                  // sessions whose surface lacked code:run were nudged — escalating banners included —
-                  // toward a tool they could not call. canRoleActOnCodeRun folds in the envelope deny;
-                  // codeRunInSurface switches the hint to the activate-first path (tools:find /
-                  // tools:invoke) when the live surface lacks the tool.
-                  const nudgeSurface = getSessionSurface(
-                    dispatchSpawnCtx.uiClientId ?? null,
-                    parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools')),
-                  );
                   const hint = maybeBatchNudge({
                     sessionKey: replayOwnerKey,
                     toolName,
                     // P-001/P-003 (code-run-batch-adoption): args unwrap tools:invoke-routed calls
                     // to their inner tool and prefill the skeletons with the burst's real args.
                     args,
-                    canCodeRun:
-                      dispatchSpawnCtx.isSuperuser === true ||
-                      canRoleActOnCodeRun(dispatchSpawnCtx.role),
-                    codeRunInSurface: !nudgeSurface || nudgeSurface.has('code:run'),
+                    canCodeRun: canCodeRunHere,
+                    codeRunInSurface,
                   });
                   // Gate PER KIND: the same-tool trigger under CODE_RUN_BATCH_NUDGE; fan-out AND
                   // pipeline (the chained variant of the same multi-tool trigger) under
@@ -1987,6 +1994,47 @@ const handler = createMcpHandler(
                   } catch {
                     // Non-JSON body, or any parse failure — nothing to judge. Advisory only.
                   }
+                }
+                // PREDICTIVE fan-out hint (EI-10894): the batch nudges above are all REACTIVE —
+                // they key on round-trips ALREADY spent, so the waste is billed in full and only
+                // then explained. A list verb that just returned >5 addressable rows IS the
+                // fan-out, one call BEFORE it happens, so attach the code:run skeleton to THAT
+                // result — ids already extracted — while batching still costs the agent nothing.
+                // The payload is passed as a THUNK: the module runs its cheap gates (already
+                // batching / not list-shaped / one-shot / capped) first and returns before the
+                // JSON.parse for the overwhelming majority of calls, so the hot path pays a
+                // couple of set lookups, not a parse of every tool result.
+                try {
+                  const preempt = maybeListFanoutPreempt({
+                    sessionKey: replayOwnerKey,
+                    toolName,
+                    args,
+                    canCodeRun: canCodeRunHere,
+                    codeRunInSurface,
+                    payload: () => {
+                      const first = result.content?.[0] as { type?: string; text?: string } | undefined;
+                      if (first?.type !== 'text' || typeof first.text !== 'string') return undefined;
+                      return JSON.parse(first.text) as unknown;
+                    },
+                  });
+                  if (preempt && canAttachAdvisory && (await getFlag(FLAGS.CODE_RUN_FANOUT_PREEMPT, 'system'))) {
+                    result.content = [
+                      ...result.content,
+                      { type: 'text' as const, text: `\n[batch-hint] ${preempt.text}` },
+                    ];
+                    // Same fires table as the reactive kinds (kind='preempt') — so "did the
+                    // PREDICTIVE hint convert better than the reactive ones?" is the existing
+                    // conversion join with one more GROUP BY, not a new pipeline.
+                    recordBatchNudgeFire({
+                      sessionKey: replayOwnerKey,
+                      role: dispatchSpawnCtx.role,
+                      kind: preempt.kind,
+                      toolName: preempt.tool,
+                      workspaceId: dispatchSpawnCtx.workspaceId,
+                    });
+                  }
+                } catch {
+                  // advisory only; a failure must never change the tool outcome.
                 }
                 // orient-dedup nudge (agent-tooling-token-efficiency P-009): catch a
                 // coord:plan-events / coord:inbox / memory:search / coord:declare-intent fired right

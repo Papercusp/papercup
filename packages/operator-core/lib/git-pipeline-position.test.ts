@@ -45,7 +45,7 @@ const deploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
 const snapDeploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
   ({
     integrationRoot: '/repo',
-    ready: { sha: 'readysha0', shortSha: 'readysha', committedAtMs: 1000, subject: 'ready' } as DevDeployState['ready'],
+    greenPin: { sha: 'readysha0', shortSha: 'readysha', committedAtMs: 1000, subject: 'ready' } as DevDeployState['greenPin'],
     deployed: { sha: 'deployedsha0' } as DevDeployState['deployed'],
     greenPinAtStagingHead: true,
     deployedBehindGreenPin: 0,
@@ -242,7 +242,7 @@ describe('gitPipelinePosition (P-002)', () => {
       {
         git,
         loadDeploy: async () => deploy(),
-        loadSnapshot: async () => snap({}, 'synced', { ready: null }),
+        loadSnapshot: async () => snap({}, 'synced', { greenPin: null }),
       },
     );
     expect(res.verdictProvenance.lastGreenSha).toBeNull();

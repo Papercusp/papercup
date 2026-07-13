@@ -384,7 +384,7 @@ export async function gitPipelinePosition(
   // EI-7846: verdict provenance, derived from the snapshot's already-loaded deploy
   // state (ready = the green pin; greenPinAtStagingHead / deployedBehindGreenPin are already
   // computed there) — no new I/O except the one ancestor check for deployOrigin.
-  const ready = snap.deploy?.ready ?? null;
+  const ready = snap.deploy?.greenPin ?? null;
   let deployOrigin: PipelinePosition['verdictProvenance']['deployOrigin'] = 'unknown';
   if (ready && deployedSha) {
     if (deployedSha === ready.sha) {

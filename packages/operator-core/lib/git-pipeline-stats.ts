@@ -279,7 +279,7 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
     observedAtMs: verdictObservedAtMs,
     observedFromPin: typeof gateHealth.lastFrom === 'string' ? gateHealth.lastFrom : null,
     // The release ("ready") pin — the green-checkpoint's own durable verdict, in git.
-    currentGreenPinSha: deploy.ready?.sha ?? null,
+    currentGreenPinSha: deploy.greenPin?.sha ?? null,
     lastFiredAtMs: gcLastFiredMs,
   });
 

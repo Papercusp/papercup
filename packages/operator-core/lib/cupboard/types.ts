@@ -363,6 +363,23 @@ export interface HarnessListing {
    * "which Cupboard unit provides tool X?". Absent/null ⇒ no declared tools.
    */
   provides_tools?: string | null;
+  /**
+   * Event axis, provider half (worker migration 012 / D-003, P-007): JSON-encoded
+   * Array<{ family, keyTemplate, describe? }> of the awaitable event-key families
+   * the unit registers when installed (kinds plugin|pack only). `resolveEventProvider`
+   * parses it to answer "which Cupboard unit provides family X?" — the `installable`
+   * rung. Absent/null ⇒ declares no events.
+   */
+  provides_events?: string | null;
+  /**
+   * Event axis, consumer half (worker migration 013 / D-003, P-008): JSON-encoded
+   * Array<{ family, optional? }> of the event families the unit REQUIRES. A missing
+   * `optional` means REQUIRED — and a required family nothing provides is a HARD
+   * install failure (P-007's gate), which is exactly why the listing carries this:
+   * so the detail page can show the requirement BEFORE the user clicks Install.
+   * Absent/null ⇒ declares no event deps.
+   */
+  requires_events?: string | null;
 
   // ── Pre-publication review (worker migration 008 / knowledge-packs D-007).
   // Policy kinds (knowledge-pack, blueprint) publish 'pending'; the server

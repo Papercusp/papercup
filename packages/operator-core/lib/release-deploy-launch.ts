@@ -188,7 +188,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
     deploy: {
       deployedSha: d.deployed?.sha ?? null,
       stagingHeadSha: d.stagingHead?.sha ?? null, // field name predates staging→main rename: stagingHead = integration (staging) HEAD
-      greenPinSha: d.ready?.sha ?? null,
+      greenPinSha: d.greenPin?.sha ?? null,
       deployedBehindStaging: d.deployedBehindStaging,
       greenPinBehindStaging: d.greenPinBehindStaging,
       deployedBehindGreenPin: d.deployedBehindGreenPin,
