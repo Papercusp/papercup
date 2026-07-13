@@ -13,20 +13,16 @@ layout), so they cannot drift out of sync the way a hand-written note does.
 
 ## Where shared code lives
 
-There is **no single shared-code directory** — `apps/` AND `libs/` AND `packages/` both
-exist and are BOTH npm workspaces. Guessing the wrong one is a `No such file or
-directory`. When you need a shared package, search both before assuming:
+There is **no single shared-code directory** — `libs/` and `packages/` both
+exist and are both npm workspaces, with shared packages split across them under no
+stated rule (e.g. `test-config` lives in `libs/`, not `packages/`). Guessing the
+wrong root is a `No such file or directory`. Search across them before assuming:
 
 ```
-ls apps/ libs/ packages/      # both are real; the package could be under either
+ls -d libs/*<name>* packages/*<name>* 2>/dev/null   # find which root actually holds it
 ```
 
-<details><summary><code>apps/</code> — 11 entries</summary>
-
-```
-node_modules  operator  operator-docs  operator-public  operator-vite  papercusp-docs  papercusp-publish  pui-companion-proto  pui-zellij-plugin  the-swarm-site  tui
-```
-</details>
+Applications live separately under `apps/` (each is its own workspace).
 
 <details><summary><code>libs/</code> — 12 entries</summary>
 
@@ -35,10 +31,10 @@ agent-chat  flags  generic  holepunch-spike  host-platform  marketplace-public-u
 ```
 </details>
 
-<details><summary><code>packages/</code> — 12 entries</summary>
+<details><summary><code>packages/</code> — 11 entries</summary>
 
 ```
-agent-mcp  backup  coordination  docs-engine  locks  node_modules  omp-plugin  operator-core  plugin-loader  plugin-sdk  plugin-wit  tooldef-mcp
+agent-mcp  backup  coordination  docs-engine  locks  omp-plugin  operator-core  plugin-loader  plugin-sdk  plugin-wit  tooldef-mcp
 ```
 </details>
 

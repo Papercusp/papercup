@@ -465,6 +465,53 @@ describe('surveyPot (P-012 regression)', () => {
     expect(survey.frontier.map((c) => c.id)).toContain('WI-1');
   });
 
+  // ── WI-4563: an empty frontier must be DIAGNOSABLE. Surface the admission-
+  //    withheld (quarantined) count so `frontier: []` reads as deadlock-vs-idle,
+  //    never a mysterious read-path bug for 14+ consecutive Mug wakes. ──
+  it('surfaces frontierQuarantined from the admission-count dep (WI-4563)', async () => {
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-OK', harness_slug: 'papercup' })],
+        fetchQuarantinedCount: async () => 7,
+      }),
+    });
+    expect(survey.frontierQuarantined).toBe(7);
+  });
+
+  it('an EMPTY frontier carries the quarantined count — the admission DEADLOCK is legible, not a silent read-path bug (WI-4563)', async () => {
+    // The exact 2026-07-13 production shape: the pot's only placeable-SHAPED work
+    // is federated remote items, all withheld by the G2 admission gate, so the
+    // frontier is [] AND frontierQuarantined > 0. Before this the survey returned
+    // an empty frontier with no way to tell "no work" from "work I can't touch".
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [], // every candidate withheld by admission
+        fetchQuarantinedCount: async () => 10,
+      }),
+    });
+    expect(survey.frontier).toEqual([]);
+    expect(survey.frontierQuarantined).toBe(10); // the deadlock is visible, not silent
+  });
+
+  it('passes the SAME surveySlugs to the quarantine count as to the frontier fetch (WI-4563)', async () => {
+    let frontierScope: readonly string[] | null = null;
+    let quarantineScope: readonly string[] | null = null;
+    await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async (slugs) => { frontierScope = slugs; return []; },
+        fetchQuarantinedCount: async (slugs) => { quarantineScope = slugs; return 0; },
+      }),
+    });
+    expect(quarantineScope).toEqual(['papercup-pot', 'papercup']);
+    expect(quarantineScope).toEqual(frontierScope); // never a scope-mismatch blind spot between the two reads
+  });
+
   // ── self-feed: eligiblePlans SURFACES unstarted eligible plans (mug-autonomy-and-selffeed C-1 / P-B1) ──
   it('eligiblePlans surfaces an active-but-UNSTARTED plan (self-feed, needsStart)', async () => {
     const survey = await surveyPot('default', 'papercup-pot', {
@@ -607,6 +654,7 @@ describe('surveyWorkspace crossPot dedup (EI-8377)', () => {
       listPlanRows: async () => [],
       fetchFrontier: async () => [],
       fetchBlockGraph: async () => ({ blockers: new Map(), statuses: new Map() }),
+      fetchQuarantinedCount: async () => 0,
       now: () => NOW,
       ...over,
     };

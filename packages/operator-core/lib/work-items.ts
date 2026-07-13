@@ -169,6 +169,10 @@ export interface WorkItem {
   /** Parent work-item id (a chunk's parent, D-004). */
   parent: string | null;
   payload: unknown | null;
+  /** First-class non-work-item dependencies. Internal work dependencies remain
+   * coord `blocks` edges / plan `blocked-by` history; these records cover event,
+   * gate, runtime, and human conditions without flattening them into prose. */
+  externalBlockers?: ExternalBlockerRecord[];
   /**
    * Provenance (shared-hive-trust-admission P-005). `origin`: 'local' = authored on this
    * install, 'remote' = federated from a peer. `auditVerdict`: the G2 auditor's verdict on
@@ -220,6 +224,109 @@ export interface WorkItem {
   terminalCompletionEvidence: CompletionVerificationEvidence | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type ExternalBlockerKind = 'event' | 'gate' | 'runtime' | 'human';
+export interface ExternalBlockerRecord {
+  kind: ExternalBlockerKind;
+  ref: string;
+  summary: string;
+  status: 'active' | 'cleared';
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  evidence?: string;
+  nextVerb?: string;
+  clearedAt?: string;
+  clearedBy?: string;
+}
+
+/** Parse defensively because payload is federated/untrusted JSON. */
+export function readExternalBlockers(payload: unknown): ExternalBlockerRecord[] {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
+  const rows = (payload as Record<string, unknown>).externalBlockers;
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row): row is ExternalBlockerRecord => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+    const r = row as Record<string, unknown>;
+    return (
+      ['event', 'gate', 'runtime', 'human'].includes(String(r.kind)) &&
+      typeof r.ref === 'string' &&
+      typeof r.summary === 'string' &&
+      (r.status === 'active' || r.status === 'cleared') &&
+      typeof r.createdAt === 'string' &&
+      typeof r.createdBy === 'string' &&
+      typeof r.updatedAt === 'string'
+    );
+  });
+}
+
+export function activeExternalBlockers(payload: unknown): ExternalBlockerRecord[] {
+  return readExternalBlockers(payload).filter((blocker) => blocker.status === 'active');
+}
+
+/** Pure history-preserving upsert. Clearing marks the record; it never deletes it,
+ * and it never touches internal work-item dependency edges. */
+export function updateExternalBlockerHistory(
+  payload: unknown,
+  input: {
+    kind: ExternalBlockerKind;
+    ref: string;
+    summary?: string;
+    evidence?: string;
+    nextVerb?: string;
+    clear?: boolean;
+  },
+  actor: string,
+  now = new Date().toISOString(),
+): { blockers: ExternalBlockerRecord[]; changed: boolean } {
+  const blockers = readExternalBlockers(payload);
+  const index = [...blockers]
+    .map((row, i) => ({ row, i }))
+    .reverse()
+    .find(({ row }) => row.kind === input.kind && row.ref === input.ref && row.status === 'active')?.i;
+
+  if (input.clear) {
+    if (index === undefined) return { blockers, changed: false };
+    const current = blockers[index]!;
+    blockers[index] = {
+      ...current,
+      status: 'cleared',
+      updatedAt: now,
+      clearedAt: now,
+      clearedBy: actor,
+      ...(input.evidence ? { evidence: input.evidence } : {}),
+    };
+    return { blockers, changed: true };
+  }
+
+  if (index !== undefined) {
+    const current = blockers[index]!;
+    blockers[index] = {
+      ...current,
+      summary: input.summary?.trim() || current.summary,
+      updatedAt: now,
+      ...(input.evidence ? { evidence: input.evidence } : {}),
+      ...(input.nextVerb ? { nextVerb: input.nextVerb } : {}),
+    };
+    return { blockers, changed: true };
+  }
+
+  blockers.push({
+    kind: input.kind,
+    ref: input.ref,
+    summary: input.summary?.trim() || `${input.kind} dependency: ${input.ref}`,
+    status: 'active',
+    createdAt: now,
+    createdBy: actor,
+    updatedAt: now,
+    ...(input.evidence ? { evidence: input.evidence } : {}),
+    ...(input.nextVerb ? { nextVerb: input.nextVerb } : {}),
+  });
+  // Bound payload growth while preserving a useful cleared history + every active row.
+  const active = blockers.filter((row) => row.status === 'active');
+  const cleared = blockers.filter((row) => row.status === 'cleared').slice(-40);
+  return { blockers: [...cleared, ...active], changed: true };
 }
 
 /** The propose/dispose author of a work-item's rank (local-hive D-008).
@@ -308,6 +415,7 @@ export async function nextWorkItemId(): Promise<string> {
 }
 
 function issueToWorkItem(i: EngineerIssue): WorkItem {
+  const externalBlockers = readExternalBlockers(i.payload);
   return {
     id: i.id,
     kind: i.kind,
@@ -331,6 +439,7 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     severity: i.severity,
     parent: null,
     payload: i.payload ?? null,
+    ...(externalBlockers.length ? { externalBlockers } : {}),
     rank: i.assigneeRank,
     rankWriter: i.rankWriter,
     rankUpdatedAt: i.rankUpdatedAt,
@@ -384,6 +493,7 @@ export interface FeatureRowDb {
   terminal_completion_ref: string | null;
 }
 export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
+  const externalBlockers = readExternalBlockers(r.payload);
   return {
     id: r.feature_id,
     kind: (r.item_kind as FeatureFamilyKind) || 'feature',
@@ -402,6 +512,7 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     severity: null,
     parent: r.parent_id,
     payload: r.payload ?? null,
+    ...(externalBlockers.length ? { externalBlockers } : {}),
     rank: r.assignee_rank,
     rankWriter: isRankWriter(r.rank_writer) ? r.rank_writer : null,
     rankUpdatedAt: r.rank_updated_at == null ? null : tsIso(r.rank_updated_at),
@@ -1941,6 +2052,32 @@ export async function mergeWorkItemOutputPayload(
   }
 }
 
+/** Additively merge a top-level payload patch across BOTH work-item families.
+ * Unlike the completion-specific wrapper above this is strict: callers need to
+ * know whether the typed state was persisted. */
+export async function mergeWorkItemPayload(
+  id: string,
+  patchValue: Record<string, unknown>,
+  opts: { harness?: string } = {},
+): Promise<WorkItem | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family === 'issue') {
+    await mergeIssuePayload(id, patchValue);
+  } else {
+    const { sql } = getOrgPg();
+    const patch = JSON.stringify(patchValue);
+    await sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb,
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = ${wi.harness}
+         AND feature_id = ${id}`;
+  }
+  return getWorkItem(id, opts.harness);
+}
+
 /**
  * Claimable.claim — the tuple-space atomic `in` for a SPECIFIC item (feature → taken_by;
  * issue → assignee). Atomic compare-and-claim (fleet-as-supervised-blackboard D-004):
@@ -2394,6 +2531,18 @@ export function needsHumanExclusionSql(sql: OrgSql) {
   // COALESCE so a NULL-payload row reads NULL ->> 'needsHuman' = NULL, and
   // `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).
   return sql`COALESCE(wi.payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'`;
+}
+
+/** Typed external blockers are queue gates, not prose annotations. An issue with
+ * any active event/gate/runtime/human dependency stays visible and directly
+ * claimable by id, but is excluded from opportunistic self-selection until the
+ * blocker is explicitly cleared. Feature-family rows are also moved to their
+ * native `blocked` state by work_items:set_blocker. */
+export function externalBlockersExclusionSql(sql: OrgSql) {
+  return sql`NOT jsonb_path_exists(
+    COALESCE(wi.payload, '{}'::jsonb),
+    '$.externalBlockers[*] ? (@.status == "active")'::jsonpath
+  )`;
 }
 
 /**
@@ -2870,6 +3019,7 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'already-taken': 'already claimed by another agent',
   'observation-lane': 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
   'needs-human': 'payload.needsHuman = true — routed to a human for ratification (EI-7776)',
+  'external-blocker': 'payload.externalBlockers contains an active event/gate/runtime/human dependency',
   'claim-hold': 'payload._claimHold = true — deliberately held open by an agent/leader (WI-2797)',
   'plan-lane-reserved': 'payload.plan_item — reserved to its own plan lane while that plan is active (WI-2118/WI-3667)',
   'federation-detector': 'an auto-filed replication-liveness detector, gated to the p2p fleet (WI-2633)',
@@ -2914,6 +3064,7 @@ export async function explainIssueClaimFloors(
       ok_untaken: boolean;
       ok_observation: boolean;
       ok_needs_human: boolean;
+      ok_external_blocker: boolean;
       ok_claim_hold: boolean;
       ok_plan_lane: boolean;
       ok_federation: boolean;
@@ -2927,6 +3078,7 @@ export async function explainIssueClaimFloors(
            (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
            (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
            (${needsHumanExclusionSql(sql)})                                       AS ok_needs_human,
+           (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
            (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
            (${reservedPlanLaneExclusionSql(sql, assignee)})                       AS ok_plan_lane,
            (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
@@ -2953,6 +3105,8 @@ export async function explainIssueClaimFloors(
             ? 'observation-lane'
             : !r.ok_needs_human
               ? 'needs-human'
+              : !r.ok_external_blocker
+                ? 'external-blocker'
               : !r.ok_claim_hold
                 ? 'claim-hold'
                 : !r.ok_plan_lane

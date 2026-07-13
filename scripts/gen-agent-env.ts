@@ -36,24 +36,34 @@ function readJson(rel: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(REPO_ROOT, rel), 'utf8'));
 }
 
+// `apps/` holds applications; the tribal-knowledge trap EI-10941 documents is the
+// SHARED-LIBRARY split (`libs/` vs `packages/`), where an agent guesses the wrong
+// root for a shared package. Keep apps out of the "guess between" set.
+const APP_ROOT = 'apps';
+
 /** The workspace roots that actually exist on disk, in a stable order. */
-function sharedCodeRoots(workspaces: string[]): string[] {
+function workspaceRoots(workspaces: string[]): string[] {
   const roots = new Set<string>();
-  for (const w of workspaces) {
+  for (const ws of workspaces) {
     // 'packages/*' → 'packages'; 'libs/generic/tooldef' → 'libs'. We want the
     // top-level directory an agent has to guess between.
-    const top = w.split('/')[0];
+    const top = ws.split('/')[0];
     if (top && existsSync(join(REPO_ROOT, top))) roots.add(top);
   }
   return [...roots].sort();
 }
 
-/** Every top-level entry under a shared-code root — the concrete set an agent picks from. */
+/** The SHARED-LIBRARY roots (workspace roots minus the app root) — the real libs-vs-packages ambiguity. */
+function sharedCodeRoots(workspaces: string[]): string[] {
+  return workspaceRoots(workspaces).filter((r) => r !== APP_ROOT);
+}
+
+/** Every top-level entry under a root — the concrete set an agent picks from (node_modules + dotdirs excluded). */
 function entriesUnder(root: string): string[] {
   const dir = join(REPO_ROOT, root);
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter((e) => e.isDirectory() && e.name !== 'node_modules' && !e.name.startsWith('.'))
     .map((e) => e.name)
     .sort();
 }
@@ -80,11 +90,21 @@ const vite = operatorViteAliasTarget();
 const pcHeavy = existsSync(join(REPO_ROOT, 'scripts', 'pc-heavy.sh'));
 const rootVitest = existsSync(join(REPO_ROOT, 'node_modules', '.bin', 'vitest'));
 
-// A sample workspace package to demonstrate the "no package-local vitest" fact.
-const sampleWs = workspaces
-  .filter((w) => w.startsWith('packages/'))
-  .map((w) => w.replace('/*', ''))
-  .sort()[0];
+// A sample package that GENUINELY has no package-local vitest, to demonstrate the
+// "use the hoisted root binary" fact with a concrete, TRUE example. A few packages
+// (e.g. those pinning a different vitest major) do ship their own — the doc must not
+// point at one of those, or its example would be a lie. Derived, so it stays true.
+const concretePkgWorkspaces = workspaces
+  .filter((ws) => ws.startsWith('packages/') && ws !== 'packages/*')
+  .map((ws) => ws)
+  .sort();
+const sampleWs =
+  concretePkgWorkspaces.find((ws) => !existsSync(join(REPO_ROOT, ws, 'node_modules', '.bin', 'vitest'))) ??
+  // Fall back to scanning packages/* on disk if the workspaces glob is '*'.
+  entriesUnder('packages')
+    .map((name) => `packages/${name}`)
+    .find((rel) => !existsSync(join(REPO_ROOT, rel, 'node_modules', '.bin', 'vitest'))) ??
+  null;
 
 const lines: string[] = [];
 const w = (s = '') => lines.push(s);
@@ -106,16 +126,20 @@ w();
 w('## Where shared code lives');
 w();
 if (roots.length > 1) {
-  w(`There is **no single shared-code directory** — ${roots.map((r) => `\`${r}/\``).join(' AND ')} both`);
-  w('exist and are BOTH npm workspaces. Guessing the wrong one is a `No such file or');
-  w('directory`. When you need a shared package, search both before assuming:');
+  const quantifier = roots.length === 2 ? 'both' : 'all';
+  w(`There is **no single shared-code directory** — ${roots.map((r) => `\`${r}/\``).join(' and ')} ${quantifier}`);
+  w(`exist and are ${quantifier} npm workspaces, with shared packages split across them under no`);
+  w('stated rule (e.g. `test-config` lives in `libs/`, not `packages/`). Guessing the');
+  w('wrong root is a `No such file or directory`. Search across them before assuming:');
   w();
   w('```');
-  w(`ls ${roots.map((r) => `${r}/`).join(' ')}      # both are real; the package could be under either`);
+  w(`ls -d ${roots.map((r) => `${r}/*<name>*`).join(' ')} 2>/dev/null   # find which root actually holds it`);
   w('```');
 } else if (roots.length === 1) {
   w(`Shared code lives under \`${roots[0]}/\`.`);
 }
+w();
+w(`Applications live separately under \`${APP_ROOT}/\` (each is its own workspace).`);
 w();
 for (const r of roots) {
   const entries = entriesUnder(r);
@@ -130,11 +154,13 @@ for (const r of roots) {
 
 w('## Running tests');
 w();
-w('`vitest` is **hoisted to the repo root only** — there is no package-local copy:');
+w('`vitest` is **hoisted to the repo root**, and MOST packages have no local copy —');
+w('so a package-local invocation is exit-127 DOA. (A few packages that pin a different');
+w('vitest major do ship their own; the root binary is the safe default everywhere else.)');
 w();
 w('```');
-w(`node_modules/.bin/vitest            # EXISTS (the only vitest binary)`);
-if (sampleWs) w(`${sampleWs}/node_modules/.bin/vitest   # does NOT exist → a package-local call is exit-127 DOA`);
+w(`node_modules/.bin/vitest            # EXISTS (the hoisted binary — the safe default)`);
+if (sampleWs) w(`${sampleWs}/node_modules/.bin/vitest   # does NOT exist → a package-local call there is exit-127 DOA`);
 w('```');
 w();
 w('Run a suite one of these ways (both resolve the hoisted binary):');

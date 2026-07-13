@@ -397,7 +397,7 @@ export interface BuildSuLaunchSpecInput {
   /** Harness scope, or null/omitted for a workspace-level su session. */
   harnessSlug?: string | null;
   /** Playbook profile: 'engineer' (default) | 'power' | 'generic'. */
-  profile?: 'engineer' | 'power' | 'generic';
+  profile?: string;
   /** su-context-size-variants: 'full' | 'trimmed' — an EXPLICIT initial-context
    *  size override. When omitted, the trim is derived from the model tier
    *  (weak → trimmed, frontier → full); 'trimmed' forces the trim on any tier. */
@@ -517,7 +517,14 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   //    (D-010: papercup specifics live in the hive override, never the base). This
   //    is the ADDITIVE half of P-025; the engineer-profile default is unchanged
   //    (dropping engineer's papercup CLAUDE.md splice is gated to the dogfood pass).
-  const launchProfile = input.profile ?? 'engineer';
+  // Coerce to a valid playbook profile at the boundary: `input.profile` is a loose
+  // `string` (it crosses the HTTP body boundary in bootstrap-su, validated there at
+  // runtime), so narrow it to the actual union here — any unrecognized value falls
+  // back to 'engineer'. This also gives `launchProfile` the union type that
+  // composeLaunchContext/renderSuPlaybook require (a peer tightened those params from
+  // `string` to the union; this is the matching narrow at the source, WI-4596 gate-green).
+  const launchProfile: 'engineer' | 'power' | 'generic' =
+    input.profile === 'power' || input.profile === 'generic' ? input.profile : 'engineer';
   let projectGuideSource: string | undefined;
   if (launchProfile === 'generic') {
     projectGuideSource = ''; // non-coding hive → no repo guide; domain rides the hive override

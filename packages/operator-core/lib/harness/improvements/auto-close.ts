@@ -28,6 +28,13 @@ import {
 } from '../../issues-engineer';
 import { watchdogSourceOf } from './policy';
 import { effectiveOrigin, DEFAULT_SIGNAL_ORIGIN } from './provenance';
+import {
+  decideRedTestGreenResolve,
+  redTestPathOf,
+  RED_TEST_GREEN_WINDOW_HOURS,
+  type RedTestRun,
+} from './red-test-green-resolve';
+import type { CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 
 /**
  * Sources where a signal's ABSENCE reliably means the problem resolved (the
@@ -92,6 +99,14 @@ export interface AutoCloseOptions {
   minAbsentTicks?: number;
   /** An EI younger than this never auto-closes (its signal may not have hit known-open yet). Default 90min. */
   minIssueAgeMs?: number;
+  /**
+   * P-007: consecutive proven-green runs required to auto-resolve a `red-test` EI on
+   * POSITIVE evidence (before the absence path considers it). Default
+   * RED_TEST_GREEN_MIN_CONSECUTIVE (3). See red-test-green-resolve.ts.
+   */
+  redTestGreenMinConsecutive?: number;
+  /** P-007: lookback hours for the green-run read. Default RED_TEST_GREEN_WINDOW_HOURS (24). */
+  redTestGreenWindowHours?: number;
 }
 
 export const AUTO_CLOSE_DEFAULT_MIN_TICKS = 6;
@@ -162,6 +177,20 @@ export interface AutoCloseDeps {
   inFlightDispatchIds: (ids: string[]) => Promise<Set<string>>;
   close: (id: string, watchdogKey: string, reason: string) => Promise<void>;
   nowMs: () => number;
+  /**
+   * P-007 (optional): recent test_runs, LATEST-FIRST, keyed by NORMALIZED repo-relative
+   * path, for the given red-test paths. When BOTH this and `resolveGreen` are present the
+   * green-evidence pass runs; when either is absent it is skipped (existing absence-only
+   * behavior — so pre-P-007 test injections are unchanged).
+   */
+  recentRedTestRuns?: (paths: string[], windowHours: number) => Promise<Map<string, RedTestRun[]>>;
+  /** P-007 (optional): resolve a red-test EI WITH genuine green-run completion evidence. */
+  resolveGreen?: (
+    id: string,
+    watchdogKey: string,
+    completionRef: string,
+    evidence: CompletionVerificationEvidence,
+  ) => Promise<void>;
 }
 
 const watchdogKeyOfIssue = (i: EngineerIssue): string => {
@@ -252,6 +281,51 @@ export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
       // condition cleared on its own" is explicitly NOT evidence of completed work, so
       // this flip must never satisfy C-1's genuine-completion criteria.
       await setIssueState(id, 'resolved', 'watchdog-auto-close', undefined, { skipCompletionGate: true });
+    },
+    // P-007: recent test_runs for red-test paths, LATEST-FIRST, keyed by the SAME
+    // normalized repo-relative path the red-test collector keys its signal on
+    // (normalizeRedTestPath's regex, inlined in SQL) so green-evidence matches the fail
+    // signal's identity across sibling checkouts. Box-global (no workspace_id predicate),
+    // DELIBERATELY mirroring collectRedTestSignals — the collector raises the signal
+    // box-global, so the reader that lowers it must read the same set or the two disagree.
+    recentRedTestRuns: async (paths, windowHours) => {
+      const byPath = new Map<string, RedTestRun[]>();
+      if (paths.length === 0) return byPath;
+      const rows = await sql<{ npath: string; status: string; started_at: Date | string; commit_sha: string | null }[]>`
+        WITH ranked AS (
+          SELECT regexp_replace(file_path, '^.*papercupai-workspace/[^/]+/', '') AS npath,
+                 status, started_at, commit_sha,
+                 row_number() OVER (
+                   PARTITION BY regexp_replace(file_path, '^.*papercupai-workspace/[^/]+/', '')
+                   ORDER BY started_at DESC
+                 ) AS rn
+            FROM harness_shared.test_runs
+           WHERE started_at > now() - make_interval(hours => ${windowHours})
+             AND status IN ('pass', 'fail', 'error')
+             AND file_path LIKE '%/%'
+        )
+        SELECT npath, status, started_at, commit_sha
+          FROM ranked
+         WHERE npath = ANY(${paths}::text[]) AND rn <= 10
+         ORDER BY npath, rn`;
+      for (const r of rows) {
+        const list = byPath.get(r.npath) ?? [];
+        const ms = r.started_at instanceof Date ? r.started_at.getTime() : Date.parse(String(r.started_at));
+        list.push({ status: r.status, startedAtMs: ms, commitSha: r.commit_sha });
+        byPath.set(r.npath, list);
+      }
+      return byPath; // already LATEST-FIRST per path (ordered by rn)
+    },
+    resolveGreen: async (id, _watchdogKey, completionRef, evidence) => {
+      await commentIssue(
+        id,
+        `🟢 Auto-resolved on POSITIVE green-run evidence: ${completionRef} (P-007)`,
+        'watchdog-green-resolve',
+      );
+      // NOT skipCompletionGate: unlike the absence-based close, this IS a genuine,
+      // evidenced completion — the named test verifiably passes now (N consecutive greens
+      // recorded in test_runs), attached as terminal completion evidence.
+      await setIssueState(id, 'resolved', 'watchdog-green-resolve', completionRef, { completionEvidence: evidence });
     },
     nowMs: () => Date.now(),
   };

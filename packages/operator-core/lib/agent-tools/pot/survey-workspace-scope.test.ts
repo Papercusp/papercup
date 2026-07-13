@@ -84,6 +84,46 @@ describe('pot:survey tool — flag OFF (byte-identical single-pot survey)', () =
     expect('hive' in out.plans[0]).toBe(false);
     expect('hive' in out.frontier[0]).toBe(false);
   });
+
+  // ── WI-4563: an empty frontier is DIAGNOSABLE — the tool surfaces the admission-
+  //    withheld count and flags the deadlock LOUDLY so it never reads as a read bug. ──
+  it('OFF → flags admissionStarved + surfaces frontierQuarantined when the frontier is empty ONLY because of the G2 gate (WI-4563)', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(false);
+    h.surveyPot.mockResolvedValue({
+      home: 'papercusp',
+      members: ['proj'],
+      scope: 'members',
+      plans: [],
+      frontier: [], // every placeable-shaped item withheld by admission
+      frontierBlocked: 0,
+      frontierQuarantined: 10,
+    });
+
+    const out = body(await tool.handler({ harness: 'papercusp' } as never, ctx));
+
+    expect(out.counts).toMatchObject({ frontier: 0, frontierQuarantined: 10 });
+    expect(out.admissionStarved).toBe(true);
+    expect(out.note).toMatch(/ADMISSION-STARVED DEADLOCK/);
+  });
+
+  it('OFF → NO admissionStarved flag when the frontier is non-empty, even with some quarantined (WI-4563)', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(false);
+    h.surveyPot.mockResolvedValue({
+      home: 'papercusp',
+      members: [],
+      scope: 'members',
+      plans: [],
+      frontier: [ranked('WI-1', 'papercusp', 5)],
+      frontierBlocked: 0,
+      frontierQuarantined: 3,
+    });
+
+    const out = body(await tool.handler({ harness: 'papercusp' } as never, ctx));
+
+    expect(out.counts.frontierQuarantined).toBe(3);
+    expect(out.admissionStarved).toBeUndefined(); // work IS placeable ⇒ not a deadlock
+    expect(out.note).toBeUndefined();
+  });
 });
 
 describe('pot:survey tool — flag ON (cross-pot dispatch widening)', () => {

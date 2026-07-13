@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { execSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 let ok = true;
 function check(label, fn) {
@@ -74,6 +78,54 @@ if (!submodulesOnly) {
   });
 }
 check('submodule worktrees sane', assertSubmoduleWorktreesSane);
+
+// ── AGENT-ENV operating-contract invariants (EI-10941) ───────────────────────
+// The same facts AGENT-ENV.md documents, asserted as runnable checks so a drift
+// (a package-local vitest appearing, the shared-code roots changing, the vite
+// alias moving, or the doc going stale) breaks `npm run doctor` instead of a
+// future agent's command. The doc is the human-readable projection; these are
+// the machine-checked source of the invariants.
+const R = (rel) => join(REPO_ROOT, rel);
+
+check('vitest is hoisted to the repo root (node_modules/.bin/vitest exists)', () => {
+  if (!existsSync(R('node_modules/.bin/vitest')))
+    throw new Error('no hoisted vitest at node_modules/.bin/vitest — run npm install at the repo root');
+});
+
+check('no package-local vitest shadows the hoisted one (a pkg-local copy is exit-127 DOA)', () => {
+  const roots = ['packages', 'libs', 'apps'].filter((r) => existsSync(R(r)));
+  const shadows = [];
+  for (const root of roots) {
+    for (const entry of readdirSync(R(root), { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'node_modules') continue;
+      if (existsSync(R(`${root}/${entry.name}/node_modules/.bin/vitest`)))
+        shadows.push(`${root}/${entry.name}`);
+    }
+  }
+  if (shadows.length)
+    throw new Error(`package-local vitest found in: ${shadows.join(', ')} — hoist it to the root instead`);
+});
+
+check('the two shared-code roots (libs/ and packages/) both exist', () => {
+  const missing = ['libs', 'packages'].filter((r) => !existsSync(R(r)));
+  if (missing.length) throw new Error(`missing shared-code root(s): ${missing.join(', ')}`);
+});
+
+check('operator-vite @ alias still points at apps/operator (cross-tree import trap)', () => {
+  const rel = 'apps/operator-vite/vite.config.ts';
+  if (!existsSync(R(rel))) return; // config removed — nothing to assert
+  const src = readFileSync(R(rel), 'utf8');
+  const decl = src.match(/const\s+operatorRoot\s*=\s*resolve\(\s*import\.meta\.dirname\s*,\s*['"]([^'"]+)['"]/);
+  const aliasPresent = /\{\s*find:\s*['"]@['"]\s*,\s*replacement:\s*operatorRoot\s*\}/.test(src);
+  if (aliasPresent && decl && decl[1] !== '../operator')
+    throw new Error(
+      `the @ alias resolves to '${decl[1]}', not '../operator' — update AGENT-ENV.md's cross-tree note (npm run gen:agent-env)`,
+    );
+});
+
+check('AGENT-ENV.md is not stale (regenerates identically)', () => {
+  execSync('npx tsx scripts/gen-agent-env.ts --check', { cwd: REPO_ROOT, stdio: 'pipe' });
+});
 
 console.log(ok ? '\nAll checks passed.' : '\nSome checks failed — see above.');
 process.exit(ok ? 0 : 1);
