@@ -439,7 +439,18 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       ADD COLUMN IF NOT EXISTS payload jsonb,
       ADD COLUMN IF NOT EXISTS assignee_rank integer,
       ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
+      -- EI-10579: migration 588 (issue-family-priority-view-column) added
+      -- feature_order to the engineer_issues VIEW, and EI-10421 made ISSUE_COLS
+      -- select it unconditionally (issueToWorkItem now reads i.featureOrder). The
+      -- rig's engineer_issues is a REAL table, not that view, so every read of it
+      -- via ISSUE_COLS — including getWorkItem()'s issue-family probe, which
+      -- setWorkItemPriority (mugTurn) calls first — 42703'd ("column feature_order
+      -- does not exist"), turning this whole file's split-brain probe (and any
+      -- rig test touching a getWorkItem / setWorkItemPriority issue-family path)
+      -- deterministically red from the moment 588 landed. The rig never writes an
+      -- issue-family feature_order; the column only needs to EXIST for the SELECT.
+      ADD COLUMN IF NOT EXISTS feature_order integer;
   `);
 
   // WI-1644 (part 4): migration 432 (work-item-completion-integrity, POST-379 —

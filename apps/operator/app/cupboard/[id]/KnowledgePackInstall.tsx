@@ -129,15 +129,19 @@ export default function KnowledgePackInstall({ listing }: { listing: HarnessList
   const [stagedPackId, setStagedPackId] = useState<string | null>(null);
   // A pack must be staged locally before it can install into any pot, so a
   // locally-installed pack is always in this catalog — match the listing to it
-  // (id === slug, else title) to reflect install state without a network probe.
+  // to reflect install state without a network probe. The pack id === the
+  // listing's `listing_ref` (the pack lives at knowledge-packs/<listing_ref>/;
+  // `slug` is null on knowledge-pack rows), with slug/title as fallbacks.
   const catalogMatch = useMemo<PackSummary | null>(() => {
     const rows = catalogQ.data ?? [];
+    const ref = norm(listing.listing_ref);
     return (
-      rows.find((r) => norm(r.id) === norm(listing.slug)) ??
+      (ref ? rows.find((r) => norm(r.id) === ref) : undefined) ??
+      (listing.slug ? rows.find((r) => norm(r.id) === norm(listing.slug)) : undefined) ??
       rows.find((r) => norm(r.title) === norm(listing.title)) ??
       null
     );
-  }, [catalogQ.data, listing.slug, listing.title]);
+  }, [catalogQ.data, listing.listing_ref, listing.slug, listing.title]);
   const packId = stagedPackId ?? catalogMatch?.id ?? null;
 
   const hiveQ = useSyncQuery<HiveLearningsSnapshot>({
