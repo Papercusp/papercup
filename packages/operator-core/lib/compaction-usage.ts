@@ -447,8 +447,8 @@ function isContextDeathRecord(value: unknown): boolean {
  * Pure (WI-4608): does this transcript-TAIL text carry claude-code's ACTUAL
  * window-overflow API error, as opposed to the phrase appearing as data the
  * session merely read or quoted in meta-commentary? Exported for a direct unit
- * test (detectContextDeathForOwner is fs/PG-bound). See CONTEXT_DEATH_RE for
- * the real-vs-data discriminator.
+ * test (detectContextDeathForOwner is fs/PG-bound). See isContextDeathRecord
+ * for the real-vs-data discriminator.
  */
 export function tailCarriesContextDeath(tail: string): boolean {
   for (const line of tail.split(/\r?\n/)) {
