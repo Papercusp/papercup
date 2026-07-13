@@ -343,17 +343,21 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  */
 export function writeCodexLockHooks(
   codexHome: string,
-  opts: { coordSid?: string; activitySid?: string; objectiveSid?: string; agentSession?: boolean } = {},
+  opts: { lockSid?: string; coordSid?: string; activitySid?: string; objectiveSid?: string; agentSession?: boolean } = {},
 ): boolean {
   const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
   const post = join(dir, 'posttooluse-locks-release.sh');
   if (!existsSync(pre) || !existsSync(post)) return false;
   const root = shellSingleQuote(resolveWorkspaceRoot());
+  // Codex gives hook commands a minimal/stale environment. The lock hooks MUST
+  // use the exact same per-session owner as the MCP URL; otherwise an explicit
+  // multi-file claim by this session blocks its own automatic per-edit acquire.
+  const lockIdentity = opts.lockSid ? ` PAPERCUSP_SID=${shellSingleQuote(opts.lockSid)}` : '';
 
   type CodexHook = { matcher: string; hooks: { type: 'command'; command: string }[] };
   const postToolUse: CodexHook[] = [
-    { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${post}` }] },
+    { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${post}` }] },
   ];
 
   // SU coord push hook (matcher `.*` — every PostToolUse-eligible tool, for
@@ -397,7 +401,7 @@ export function writeCodexLockHooks(
   }
 
   const preToolUse: CodexHook[] = [
-    { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${pre}` }] },
+    { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }] },
   ];
 
   // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010):
@@ -429,12 +433,13 @@ export function writeCodexLockHooks(
 
 function writeCodexHomeDiagnostics(
   codexHome: string,
-  opts: { hooksInstalled: boolean; inheritedPromptsCopied: boolean },
+  opts: { hooksInstalled: boolean; inheritedPromptsCopied: boolean; lockOwnerSid?: string },
 ): void {
   const body = {
     lockEnforcement: opts.hooksInstalled ? 'hooks-configured' : 'hooks-missing',
     codexPreToolUseStatus: opts.hooksInstalled ? 'codex-hooks-stable-pretooluse' : 'hooks-not-installed',
     requiresExplicitPapercuspLocks: !opts.hooksInstalled,
+    ...(opts.lockOwnerSid ? { lockOwnerSid: opts.lockOwnerSid } : {}),
     inheritedPromptsCopied: opts.inheritedPromptsCopied,
   };
   writeFileSync(join(codexHome, 'papercusp-diagnostics.json'), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
@@ -511,11 +516,12 @@ export function writeRoleCodexHome(opts: {
   // session is a WORKER, so it also reports to the activity bridge (under its
   // session identity); no coord-inbox hook (roles don't ride the SU coord bus).
   const hooksInstalled = writeCodexLockHooks(codexHome, {
+    lockSid: opts.sid,
     activitySid: opts.sid,
     objectiveSid: opts.sid,
     agentSession: true,
   });
-  writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied });
+  writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied, lockOwnerSid: opts.sid });
 
   return { codexHome, agentsPath, configPath };
 }
@@ -533,6 +539,7 @@ export interface CodexPapercuspDiagnostics {
   lockEnforcement?: string;
   codexPreToolUseStatus?: string;
   requiresExplicitPapercuspLocks?: boolean;
+  lockOwnerSid?: string;
   inheritedPromptsCopied?: boolean;
 }
 
@@ -578,6 +585,7 @@ function coerceCodexPapercuspDiagnostics(raw: Record<string, unknown> | null): C
     ...(typeof raw.requiresExplicitPapercuspLocks === 'boolean'
       ? { requiresExplicitPapercuspLocks: raw.requiresExplicitPapercuspLocks }
       : {}),
+    ...(typeof raw.lockOwnerSid === 'string' ? { lockOwnerSid: raw.lockOwnerSid } : {}),
     ...(typeof raw.inheritedPromptsCopied === 'boolean'
       ? { inheritedPromptsCopied: raw.inheritedPromptsCopied }
       : {}),
@@ -756,11 +764,12 @@ export function writeSuCodexHome(opts: {
   // the activity-bridge hook (an SU/engineer session is a worker too) — both
   // keyed to the session id.
   const hooksInstalled = writeCodexLockHooks(codexHome, {
+    lockSid: opts.sid,
     coordSid: opts.sid,
     activitySid: opts.sid,
     objectiveSid: opts.sid,
   });
-  writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied });
+  writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied, lockOwnerSid: opts.sid });
 
   return { codexHome, agentsPath, configPath };
 }

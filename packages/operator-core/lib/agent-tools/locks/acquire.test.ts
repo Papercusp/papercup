@@ -15,6 +15,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/acquire.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })) }));
 vi.mock('./enrich-busy', () => ({ enrichBusy: vi.fn(async (b: unknown) => b) }));
@@ -99,6 +101,23 @@ describe('locks:acquire — outcome branches', () => {
       ok: true, lock_id: 'L1', owner: 'me', owner_label: 'Me',
       expires_ts: '2026-02-01T00:00:00.000Z', held: ['a.ts'],
     });
+  });
+
+  it('maps absolute home configuration files to the hook-compatible reserved key', async () => {
+    routeM.mockResolvedValue({
+      value: {
+        ok: true,
+        lock_id: 'L-home',
+        expires_ts: new Date('2026-02-01T00:00:00Z'),
+        held: ['@external/home/.config/mimeapps.list'],
+      },
+    } as never);
+    const out = await tool.handler({
+      external_paths: [join(homedir(), '.config', 'mimeapps.list')],
+      intent: 'edit desktop defaults',
+    } as never, {} as never) as Out;
+    expect(normM).toHaveBeenCalledWith(['@external/home/.config/mimeapps.list']);
+    expect(body(out)).toMatchObject({ ok: true, lock_id: 'L-home' });
   });
 
   it('fast-path busy with no wait/wake → busy()', async () => {

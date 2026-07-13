@@ -60,6 +60,7 @@ async function getHealth(): Promise<{
     healthy: boolean;
     last_success_ts: string | null;
     last_error: Record<string, unknown> | null;
+    last_decision: Record<string, unknown> | null;
   };
 }> {
   const res = await Promise.resolve(
@@ -72,7 +73,7 @@ describe('GET /api/su-locks/hook-health', () => {
   it('healthy=true, both null when no markers exist', async () => {
     const { status, body } = await getHealth();
     expect(status).toBe(200);
-    expect(body).toEqual({ healthy: true, last_success_ts: null, last_error: null });
+    expect(body).toEqual({ healthy: true, last_success_ts: null, last_error: null, last_decision: null });
   });
 
   it('healthy=true when only a success marker exists', async () => {
@@ -108,6 +109,23 @@ describe('GET /api/su-locks/hook-health', () => {
     writeFileSync(join(TMP, 'last-error.json'), 'not-json');
     writeFileSync(join(TMP, 'last-success.json'), '{bad');
     const { body } = await getHealth();
-    expect(body).toEqual({ healthy: true, last_success_ts: null, last_error: null });
+    expect(body).toEqual({ healthy: true, last_success_ts: null, last_error: null, last_decision: null });
+  });
+
+  it('surfaces the last automatic acquire decision for lock observability', async () => {
+    writeFileSync(join(TMP, 'last-decision.json'), JSON.stringify({
+      ts: '2026-07-13T08:00:00Z',
+      decision: 'granted',
+      owner: 'su-session',
+      tool: 'apply_patch',
+      paths: ['@external/home/.config/mimeapps.list'],
+      lock_id: 'L-1',
+    }));
+    const { body } = await getHealth();
+    expect(body.last_decision).toMatchObject({
+      decision: 'granted',
+      owner: 'su-session',
+      paths: ['@external/home/.config/mimeapps.list'],
+    });
   });
 });

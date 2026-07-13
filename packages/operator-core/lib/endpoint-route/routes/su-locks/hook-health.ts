@@ -53,6 +53,7 @@ export default defineTool({
     const dir = locksCacheDir();
     const errorRec = (await readJsonFile(resolve(dir, 'last-error.json'))) as HookErrorRecord | null;
     const successRec = await readJsonFile(resolve(dir, 'last-success.json'));
+    const lastDecision = await readJsonFile(resolve(dir, 'last-decision.json'));
 
     const lastSuccessTs =
       successRec && typeof successRec.ts === 'string' ? successRec.ts : null;
@@ -72,6 +73,7 @@ export default defineTool({
       healthy,
       last_success_ts: lastSuccessTs,
       last_error: lastError,
+      last_decision: lastDecision,
     });
   },
 });

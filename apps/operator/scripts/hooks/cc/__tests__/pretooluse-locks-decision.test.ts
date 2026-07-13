@@ -34,6 +34,7 @@ let nextInner: unknown = { ok: true, lock_id: 'stub-lock' };
 let nextInnerSeq: unknown[] | null = null;
 /** Optionally frame the response as text/event-stream (the hook parses both). */
 let useSse = false;
+let lastRequest: { url: string; body: Record<string, any> } | null = null;
 
 beforeAll(async () => {
   home = fs.mkdtempSync(join(os.tmpdir(), 'cchook-dec-home-'));
@@ -55,6 +56,7 @@ beforeAll(async () => {
     let body = '';
     req.on('data', (d) => (body += d));
     req.on('end', () => {
+      lastRequest = { url: req.url ?? '', body: JSON.parse(body) as Record<string, any> };
       const payload = nextInnerSeq && nextInnerSeq.length ? nextInnerSeq.shift() : nextInner;
       const rpc = {
         jsonrpc: '2.0',
@@ -83,6 +85,7 @@ afterEach(() => {
   nextInner = { ok: true, lock_id: 'stub-lock' };
   nextInnerSeq = null;
   useSse = false;
+  lastRequest = null;
 });
 
 // Async spawn (NOT spawnSync): spawnSync blocks the event loop, so the in-process stub operator
@@ -125,6 +128,30 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     const cached = join(cache, 'tu-grant.lock');
     expect(fs.existsSync(cached)).toBe(true);
     expect(fs.readFileSync(cached, 'utf8')).toBe('lock-xyz');
+  });
+
+  it('coordinates an absolute HOME config edit through the reserved external lock key', async () => {
+    const configFile = join(home, '.config', 'mimeapps.list');
+    fs.mkdirSync(join(home, '.config'), { recursive: true });
+    fs.writeFileSync(configFile, '[Default Applications]\n');
+    const r = await run({
+      tool_name: 'Edit',
+      tool_input: { file_path: configFile },
+      tool_use_id: 'tu-home-config',
+      session_id: 'codex-session-owner',
+      cwd: home,
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+    expect(lastRequest?.body.params.arguments.paths).toEqual(['@external/home/.config/mimeapps.list']);
+    expect(lastRequest?.url).toContain('client=codex-session-owner');
+    expect(fs.existsSync(join(cache, 'tu-home-config.lock'))).toBe(true);
+    const decision = JSON.parse(fs.readFileSync(join(cache, 'last-decision.json'), 'utf8'));
+    expect(decision).toMatchObject({
+      decision: 'granted',
+      owner: 'codex-session-owner',
+      paths: ['@external/home/.config/mimeapps.list'],
+    });
   });
 
   it('block-on-held (busy) → permissionDecision:deny carrying the holder + intent', async () => {

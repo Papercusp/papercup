@@ -67,6 +67,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
+import { externalHomePathToLockKey } from './external-path';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
  *  SLEEPING waiter's ticket stays grant-eligible. Much longer than the 300s
@@ -88,7 +89,7 @@ const PROGRESS_TICK_MS = 10_000;
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim a set of files for exclusive editing. Returns ok+lock_id, or busy+contention details. On contention prefer wake_on_grant:true — queue a waiter + one-shot wake, return immediately; END YOUR TURN, re-invoked on grant (no polling, no held turn). Attach pending_edit for a small non-conflicting edit applied on grant, no wake needed. wait={max_sec:N} (≤300) is the legacy blocking wait for short same-turn needs. Paths must be repo-relative POSIX (no ./, .., //, trailing /, backslashes, absolute paths); resolve symlinks caller-side.',
+    'Claim repository files and/or authorized home-directory configuration files for exclusive editing. Returns ok+lock_id, or busy+contention details. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). On contention prefer wake_on_grant:true — queue a waiter + one-shot wake, return immediately; END YOUR TURN, re-invoked on grant (no polling, no held turn).',
   guidance: {
     when: 'For a DELIBERATE multi-file claim held across several edits AND the commit — acquire once, release after committing. Before individual Codex writes only when that session lacks lock hooks; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.',
     notWhen:
@@ -110,7 +111,12 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    paths: z.array(z.string().min(1)).min(1).max(50),
+    paths: z.array(z.string().min(1)).max(50).optional().describe('repo-relative POSIX file paths (no ./, .., backslashes, or absolute paths)'),
+    external_paths: z
+      .array(z.string().min(1))
+      .max(50)
+      .optional()
+      .describe('absolute configuration-file paths below the current user home; mapped to @external/home/* lock keys shared with automatic edit hooks'),
     intent: hardText(LIMITS.SHORT_TITLE),
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
     wait: z
@@ -140,13 +146,23 @@ export default defineTool({
       .describe(
         'APPLY-ON-GRANT: attach the concrete edit you were going to make (the Edit-tool contract). Requires wake_on_grant + a single-file claim (paths must be exactly [pending_edit.file]). On grant the server applies it iff old_string still matches exactly once, then notifies you PASSIVELY (no wake). If the holder changed that region it is NOT applied and you are woken to redo it — i.e. it degrades to plain wake_on_grant. Best for a small, provably-non-conflicting edit to a high-contention shared file.',
       ),
+  }).superRefine((args, ctx) => {
+    const total = (args.paths?.length ?? 0) + (args.external_paths?.length ?? 0);
+    if (total === 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass at least one repo-relative `paths` entry or absolute home `external_paths` entry' });
+    if (total > 50) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'at most 50 total paths may be acquired in one call' });
+    if (args.pending_edit && (args.external_paths?.length ?? 0) > 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['pending_edit'], message: 'pending_edit supports repository paths only; edit external files after the lock grant' });
+    }
   }),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
 
     let paths: string[];
     try {
-      paths = normalizePaths(args.paths);
+      paths = normalizePaths([
+        ...(args.paths ?? []),
+        ...(args.external_paths ?? []).map((path) => externalHomePathToLockKey(path)),
+      ]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return {

@@ -308,9 +308,11 @@ def find_repo_root(abs_path):
 # lock keys as paths RELATIVE TO each worktree root, so the same logical
 # file collides across worktrees AND with the OMP hook (which keys the
 # same way) — that's the cross-client/cross-worktree contention we want.
-# Anything outside this workspace (a plain `claude`/`codex` editing an
-# unrelated git repo) is left unguarded, so we never lock foreign repos
-# into the shared papercusp_su store.
+# A non-repository file below HOME is mapped to the reserved
+# `@external/home/<relative>` key. This coordinates shared desktop/config edits
+# (mimeapps.list, KDE settings, agent config) without weakening the server's
+# no-absolute-path lock-store contract. Other repos and paths outside HOME stay
+# unguarded.
 workspace_root = os.path.realpath(
     os.environ.get('PAPERCUSP_WORKSPACE_ROOT')
     or os.path.expanduser('~/papercupai-workspace')
@@ -324,7 +326,19 @@ for p in raw_paths:
 
     root = find_repo_root(abs_p)
     if not root:
-        continue  # Outside any repo — the lock store is repo-scoped; allow.
+        try:
+            _home_root = os.path.realpath(
+                os.environ.get('PAPERCUSP_EXTERNAL_LOCK_HOME')
+                or os.path.expanduser('~'))
+            _logical_abs = os.path.abspath(abs_p)
+            _rel_home = os.path.relpath(_logical_abs, _home_root)
+            if (_rel_home and _rel_home != '..'
+                    and not _rel_home.startswith('..' + os.sep)
+                    and not os.path.isabs(_rel_home)):
+                repo_relative.append('@external/home/' + _rel_home.replace(os.sep, '/'))
+        except Exception:
+            pass
+        continue  # Outside a repo and outside HOME remains uncoordinated.
 
     # ── Worktree discipline: only the canonical staging tree is editable ──
     # The shared staging tree (papercusp) is the ONE tree agents edit — its
@@ -560,6 +574,14 @@ def _locks_acquire_once():
 def _grant(granted):
     """Cache the lock_id for the matching PostToolUse release, then allow."""
     lock_id = granted.get('lock_id')
+    write_marker('last-decision.json', {
+        'ts': now_iso(),
+        'decision': 'granted',
+        'owner': owner,
+        'tool': tool_name,
+        'paths': repo_relative[:50],
+        'lock_id': lock_id,
+    })
     if lock_id and tool_use_id:
         try:
             with open(os.path.join(cache_dir, tool_use_id + '.lock'), 'w') as f:

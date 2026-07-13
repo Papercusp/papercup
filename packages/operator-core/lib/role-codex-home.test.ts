@@ -222,6 +222,14 @@ describe('writeRoleCodexHome', () => {
     // SID + agent baked (codex hands hooks a minimal env, can't env-expand).
     expect(activity.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(activity.hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
+    const preLock = hooks.hooks.PreToolUse.find(
+      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
+    );
+    const postLock = hooks.hooks.PostToolUse.find(
+      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-locks-release.sh'),
+    );
+    expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
+    expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     // Objective-title hook (session-objective-display-2026-06-22): terminal title
     // ← coord:glance self.objective, matcher .*, baked SID = the session id.
     const objective = hooks.hooks.PostToolUse.find(
@@ -412,6 +420,7 @@ describe('writeSuCodexHome', () => {
     expect(diag.lockEnforcement).toBe('hooks-configured');
     expect(diag.codexPreToolUseStatus).toBe('codex-hooks-stable-pretooluse');
     expect(diag.requiresExplicitPapercuspLocks).toBe(false);
+    expect(diag.lockOwnerSid).toBe('s');
   });
 
   it('reads non-secret CODEX_HOME diagnostics, including latest rollout id and resume command', async () => {
@@ -433,6 +442,7 @@ describe('writeSuCodexHome', () => {
     expect(diag.hooksExists).toBe(true);
     expect(diag.diagnosticsExists).toBe(true);
     expect(diag.diagnostics?.lockEnforcement).toBe('hooks-configured');
+    expect(diag.diagnostics?.lockOwnerSid).toBe('s');
     expect(diag.latestRolloutId).toBe('019eeb2b-0742-72a0-85a4-5dc505cfe62d');
     expect(diag.resumeStrategy).toBe('codex-resume-last-in-code-home');
     expect(diag.resumeCommand).toContain('codex resume --last');
@@ -464,6 +474,14 @@ describe('writeSuCodexHome', () => {
     // SID baked (codex doesn't env-expand) so the hook's coord identity == &client=.
     expect(coord.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(coord.hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
+    const preLock = hooks.hooks.PreToolUse.find(
+      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
+    );
+    const postLock = hooks.hooks.PostToolUse.find(
+      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-locks-release.sh'),
+    );
+    expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+    expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
 
     // The activity-bridge hook — an SU/engineer session is a worker too.
     const activity = hooks.hooks.PostToolUse.find(
