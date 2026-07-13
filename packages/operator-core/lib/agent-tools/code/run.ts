@@ -172,7 +172,7 @@ export default defineTool({
       result.ok &&
       !(args.dryRun ?? false) &&
       !result.unknownRefs?.length &&
-      !result.okFalseMutations?.length
+      !result.childFailures?.length
     ) {
       similarRecipes = await maybeCaptureRecipe(args, ctx, all, allowed);
     }
@@ -225,22 +225,36 @@ export default defineTool({
     // response text to see it, and it cannot reach ctx.metadata (it never records the
     // invocation; the dispatch layer does). Same pure detector, same input, so the two
     // call sites cannot disagree.
+    const invocationMetadata: Record<string, unknown> = {};
     try {
       const body = (payload as { summary?: unknown }).summary ?? payload;
       // toolsUsed only enriches the agent-facing message text, which the stamp does
       // not use — so pass none, exactly as the handler does.
       const hint = maybeEmptyMappingHint(body, []);
       if (hint) {
-        (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({
-          // Shared constant, not a literal: the panel axis's SQL reads this exact key
-          // back. If the two sides drifted, the metric would read ZERO forever — which
-          // is indistinguishable from healthy. See EMPTY_MAPPING_METADATA_KEY.
-          [EMPTY_MAPPING_METADATA_KEY]: { rows: hint.rows, blankRows: hint.blankRows },
-        });
+        invocationMetadata[EMPTY_MAPPING_METADATA_KEY] = {
+          rows: hint.rows,
+          blankRows: hint.blankRows,
+        };
       }
     } catch {
       // Telemetry is never allowed to fail a run that otherwise succeeded.
     }
+
+    const childFailureRefs = [...new Set([
+      ...(result.childFailures ?? []).map((failure) => failure.tool),
+      ...(result.unknownRefs ?? []),
+    ])];
+    const childFailureCount = (result.childFailures?.length ?? 0) +
+      (!result.ok && childFailureRefs.length === 0 ? 1 : 0);
+    invocationMetadata.effectiveStatus = !result.ok
+      ? 'error'
+      : result.partial || childFailureCount > 0
+        ? 'partial'
+        : 'ok';
+    invocationMetadata.childFailureCount = childFailureCount;
+    if (childFailureRefs.length > 0) invocationMetadata.childFailureRefs = childFailureRefs;
+    ctx.metadata?.(invocationMetadata);
 
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },

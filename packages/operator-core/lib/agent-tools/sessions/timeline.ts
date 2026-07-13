@@ -99,14 +99,15 @@ export default defineTool({
       UNION ALL
       (
         SELECT 'tool' AS kind, invoked_at::text AS ts, id::text AS ref,
-               tool_name || ' (' || COALESCE(status, '?') || COALESCE(', ' || duration_ms || 'ms', '') || ')' AS text,
-               tool_name, status, tool_name = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]) AS auto
+               tool_name || ' (' || COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status, '?') || COALESCE(', ' || duration_ms || 'ms', '') || ')' AS text,
+               tool_name, COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) AS status,
+               tool_name = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]) AS auto
           FROM harness_shared.tool_invocations
          WHERE coord_owner_id = ${owner}
            AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
            AND (${kinds}::text[] IS NULL OR 'tool' = ANY(${kinds}::text[]))
            AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
-           AND (${args.status ?? null}::text IS NULL OR status = ${args.status ?? null})
+           AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
            AND (${includeAuto} OR tool_name <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[]))
          ORDER BY invoked_at DESC LIMIT ${limit}
       )

@@ -19,6 +19,56 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 
+type NestedOutcome = { effectiveStatus: 'ok' | 'partial' | 'error'; childFailureCount: number };
+
+function decodedResultBodies(result: {
+  content?: ReadonlyArray<unknown>;
+  structuredContent?: unknown;
+}): unknown[] {
+  const bodies: unknown[] = [];
+  if (result.structuredContent !== undefined) bodies.push(result.structuredContent);
+  for (const item of result.content ?? []) {
+    if (!item || typeof item !== 'object' || (item as { type?: unknown }).type !== 'text') continue;
+    const text = (item as { text?: unknown }).text;
+    if (typeof text !== 'string') continue;
+    try {
+      bodies.push(JSON.parse(text));
+    } catch {
+      // Non-JSON encodings still carry isError; semantic JSON is the additive path here.
+    }
+  }
+  return bodies;
+}
+
+export function summarizeNestedToolOutcome(result: {
+  content?: ReadonlyArray<unknown>;
+  isError?: boolean;
+  structuredContent?: unknown;
+}): NestedOutcome {
+  if (result.isError) return { effectiveStatus: 'error', childFailureCount: 1 };
+  let failures = 0;
+  let successes = 0;
+  for (const body of decodedResultBodies(result)) {
+    if (!body || typeof body !== 'object') continue;
+    const record = body as Record<string, unknown>;
+    if (record.ok === false) failures += 1;
+    else if (record.ok === true) successes += 1;
+    if (record.partial === true) failures += 1;
+    const counts = record.counts;
+    if (counts && typeof counts === 'object') {
+      const failed = Number((counts as Record<string, unknown>).failed ?? 0);
+      const ok = Number((counts as Record<string, unknown>).ok ?? 0);
+      if (Number.isFinite(failed) && failed > 0) failures += failed;
+      if (Number.isFinite(ok) && ok > 0) successes += ok;
+    }
+  }
+  if (failures === 0) return { effectiveStatus: 'ok', childFailureCount: 0 };
+  return {
+    effectiveStatus: successes > 0 ? 'partial' : 'error',
+    childFailureCount: failures,
+  };
+}
+
 export default defineTool({
   name: 'tools:invoke',
   // The target runs through its own projected dispatcher and therefore owns
@@ -92,6 +142,11 @@ export default defineTool({
       };
     }
     const result = await ctx.dispatchTool(name, args.args ?? {});
+    const outcome = summarizeNestedToolOutcome(result);
+    ctx.metadata?.({
+      ...outcome,
+      ...(outcome.childFailureCount > 0 ? { childFailureRefs: [name] } : {}),
+    });
     // dispatchTool returns an MCP-shaped result already ({ content, isError?, _meta?, structuredContent? }).
     return result as unknown as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
   },

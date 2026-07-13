@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-import toolInvoke from './invoke';
+import toolInvoke, { summarizeNestedToolOutcome } from './invoke';
 
 type ToolDef = {
   name: string;
@@ -56,7 +56,9 @@ describe('tools:invoke registration', () => {
 describe('tools:invoke handler', () => {
   it('routes the call through ctx.dispatchTool with name + args and returns its result', async () => {
     const calls: Array<[string, unknown]> = [];
+    const metadata = vi.fn();
     const ctx = {
+      metadata,
       dispatchTool: vi.fn(async (name: string, a: unknown) => {
         calls.push([name, a]);
         return { content: [{ type: 'text', text: 'dispatched-ok' }], isError: false };
@@ -66,6 +68,7 @@ describe('tools:invoke handler', () => {
     expect(calls).toEqual([['flags:set', { key: 'k', value: true }]]);
     expect(res.content[0].text).toBe('dispatched-ok');
     expect(res.isError).toBe(false);
+    expect(metadata).toHaveBeenCalledWith({ effectiveStatus: 'ok', childFailureCount: 0 });
   });
 
   it('defaults args to {} when omitted', async () => {
@@ -87,5 +90,29 @@ describe('tools:invoke handler', () => {
     const res = await def.handler({ name: 'flags:set', args: {} }, {}); // ctx without dispatchTool
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('unsupported_transport');
+  });
+
+  it('records an effective error when the nested tool reports ok:false', async () => {
+    const metadata = vi.fn();
+    const ctx = {
+      metadata,
+      dispatchTool: async () => ({
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'bad_input' }) }],
+      }),
+    };
+    await def.handler({ name: 'plans:new', args: {} }, ctx);
+    expect(metadata).toHaveBeenCalledWith({
+      effectiveStatus: 'error',
+      childFailureCount: 1,
+      childFailureRefs: ['plans:new'],
+    });
+  });
+});
+
+describe('summarizeNestedToolOutcome', () => {
+  it('marks mixed batch results partial', () => {
+    expect(summarizeNestedToolOutcome({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, counts: { ok: 2, failed: 1 } }) }],
+    })).toEqual({ effectiveStatus: 'partial', childFailureCount: 1 });
   });
 });

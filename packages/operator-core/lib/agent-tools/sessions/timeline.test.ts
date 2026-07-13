@@ -15,3 +15,13 @@ describe('sessions:timeline audit grouping', () => {
     ]);
   });
 });
+
+describe('sessions:timeline effective nested status', () => {
+  it('keeps effective wrapper statuses distinct while grouping', () => {
+    const rows: TimelineEntry[] = [
+      { kind: 'tool', ts: '2026-07-13T07:00:02Z', ref: '2', text: 'code:run (partial)', tool_name: 'code:run', status: 'partial' },
+      { kind: 'tool', ts: '2026-07-13T07:00:01Z', ref: '1', text: 'code:run (ok)', tool_name: 'code:run', status: 'ok' },
+    ];
+    expect(groupRepeatedTimelineEntries(rows)).toHaveLength(2);
+  });
+});

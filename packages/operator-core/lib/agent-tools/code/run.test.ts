@@ -124,6 +124,17 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(captureRecipeMock).not.toHaveBeenCalled();
   });
 
+  it('stamps effective error metadata when the script fails', async () => {
+    const tool = codeRun();
+    const metadata = vi.fn();
+    const ctx = { ...mkCtx(), metadata } as never;
+    await tool.fn({ script: 'throw new Error("boom");' }, ctx);
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      effectiveStatus: 'error',
+      childFailureCount: 1,
+    }));
+  });
+
   it('shapes console logs before serializing the code:run payload, without touching the returned summary', async () => {
     const tool = codeRun();
     const res = await tool.fn(
