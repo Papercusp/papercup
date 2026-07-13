@@ -184,6 +184,15 @@ export function ChatConversation(props: ChatConversationProps) {
   const lastFirstKeyRef = useRef<string | null>(null);
   const lastLastKeyRef = useRef<string | null>(null);
   const preserveScrollHeightRef = useRef<number | null>(null);
+  // Captured alongside preserveScrollHeightRef: was the view pinned at the
+  // bottom when the prepend/replace landed? (WI-4692) The classic case is
+  // PG hydration swapping the sessionStorage paint-cache (≤100 turns) for
+  // the full 200-turn page — the TAIL message is identical (lastKey doesn't
+  // change) but 100 turns of history appear above (firstKey changes), so it
+  // reads as a "prepend". Height-delta preservation is meaningless across a
+  // virtualized replace (every estimated offset shifts) and strands the
+  // view mid-history; a bottom-pinned user should stay pinned instead.
+  const prependWasNearBottomRef = useRef(false);
   const firstKey = messages.length > 0 ? `${messages[0].role}:${messages[0].content.slice(0, 32)}` : null;
   const lastKey = messages.length > 0
     ? `${messages[messages.length - 1].role}:${messages[messages.length - 1].content.slice(0, 32)}`
@@ -199,7 +208,9 @@ export function ChatConversation(props: ChatConversationProps) {
     && firstKey !== lastFirstKeyRef.current
     && scrollerRef.current
   ) {
-    preserveScrollHeightRef.current = scrollerRef.current.scrollHeight;
+    const sc = scrollerRef.current;
+    preserveScrollHeightRef.current = sc.scrollHeight;
+    prependWasNearBottomRef.current = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 240;
   }
 
   // (The scroll-pinning effect lives BELOW the virtualizer declaration —
@@ -343,9 +354,21 @@ export function ChatConversation(props: ChatConversationProps) {
     }
     const isPrepend = preserveScrollHeightRef.current !== null;
     if (isPrepend) {
-      const delta = el.scrollHeight - preserveScrollHeightRef.current!;
-      el.scrollTop = el.scrollTop + delta;
+      if (prependWasNearBottomRef.current) {
+        // Replace-with-same-tail (PG hydration over the paint-cache) or a
+        // prepend that landed while pinned at the bottom → stay pinned.
+        const last = messages.length - 1;
+        if (last >= 0) {
+          virtualizer.scrollToIndex(last, { align: 'end' });
+          pinToBottom();
+        }
+      } else {
+        // True history prepend while reading scrollback → preserve position.
+        const delta = el.scrollHeight - preserveScrollHeightRef.current!;
+        el.scrollTop = el.scrollTop + delta;
+      }
       preserveScrollHeightRef.current = null;
+      prependWasNearBottomRef.current = false;
     } else if (lastLastKeyRef.current !== lastKey || busy) {
       const isFirstPin = lastLastKeyRef.current === null;
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 240;

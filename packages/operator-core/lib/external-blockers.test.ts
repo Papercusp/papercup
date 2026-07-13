@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyExternalBlockerUpdate,
   activeExternalBlockers,
+  externalBlockerCapabilityPolicy,
   readExternalBlockers,
   updateExternalBlockerHistory,
 } from './external-blockers';
@@ -15,6 +17,7 @@ describe('typed external blocker history', () => {
       payload,
       {
         kind: 'event',
+        capability: 'live-dependency',
         ref: 'deploy:ready:staging',
         summary: 'staging deploy must finish',
         nextVerb: 'events:await',
@@ -26,6 +29,7 @@ describe('typed external blocker history', () => {
     expect(out.blockers).toEqual([
       expect.objectContaining({
         kind: 'event',
+        capability: 'live-dependency',
         ref: 'deploy:ready:staging',
         status: 'active',
         createdAt: T1,
@@ -63,5 +67,52 @@ describe('typed external blocker history', () => {
   it('is defensive against malformed federated payload rows', () => {
     expect(readExternalBlockers({ externalBlockers: [null, {}, { kind: 'event' }] })).toEqual([]);
     expect(readExternalBlockers(null)).toEqual([]);
+  });
+
+  it('infers a conservative capability for legacy rows while marking provenance', () => {
+    const legacy = {
+      kind: 'human',
+      ref: 'owner-choice',
+      summary: 'choose a direction',
+      status: 'active',
+      createdAt: T1,
+      createdBy: 'su-a',
+      updatedAt: T1,
+    };
+    expect(readExternalBlockers({ externalBlockers: [legacy] })).toEqual([
+      expect.objectContaining({
+        capability: 'product-decision',
+        capabilitySource: 'legacy-inferred',
+      }),
+    ]);
+  });
+
+  it('mechanically clears standing approval under AUTO but not missing physical capability', () => {
+    const approval = applyExternalBlockerUpdate(
+      {},
+      { kind: 'human', capability: 'approval-auto-clearable', ref: 'deploy-approval' },
+      'su-auto',
+      { autoAuthority: true },
+      T1,
+    );
+    expect(approval.autoCleared).toBe(true);
+    expect(approval.blockers).toEqual([
+      expect.objectContaining({ status: 'cleared', capability: 'approval-auto-clearable' }),
+    ]);
+
+    const device = applyExternalBlockerUpdate(
+      {},
+      { kind: 'human', capability: 'physical-device', ref: 'live-mic' },
+      'su-auto',
+      { autoAuthority: true },
+      T1,
+    );
+    expect(device.autoCleared).toBe(false);
+    expect(device.blockers[0]).toMatchObject({ status: 'active', capability: 'physical-device' });
+    expect(externalBlockerCapabilityPolicy('physical-device')).toMatchObject({
+      autoClearable: false,
+      requiresOwnerCapability: true,
+      resolutionOwner: 'device-holder',
+    });
   });
 });

@@ -70,7 +70,12 @@ import { auditPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
-export type { ExternalBlockerKind, ExternalBlockerRecord } from './external-blockers';
+export type {
+  ExternalBlockerCapability,
+  ExternalBlockerCapabilityPolicy,
+  ExternalBlockerKind,
+  ExternalBlockerRecord,
+} from './external-blockers';
 import {
   ISSUE_KIND,
   type IssueKind,
@@ -2934,7 +2939,7 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'already-taken': 'already claimed by another agent',
   'observation-lane': 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
   'needs-human': 'payload.needsHuman = true — routed to a human for ratification (EI-7776)',
-  'external-blocker': 'payload.externalBlockers contains an active event/gate/runtime/human dependency',
+  'external-blocker': 'payload.externalBlockers contains an active typed capability dependency',
   'claim-hold': 'payload._claimHold = true — deliberately held open by an agent/leader (WI-2797)',
   'plan-lane-reserved': 'payload.plan_item — reserved to its own plan lane while that plan is active (WI-2118/WI-3667)',
   'federation-detector': 'an auto-filed replication-liveness detector, gated to the p2p fleet (WI-2633)',

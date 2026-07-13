@@ -44,9 +44,10 @@ import { placementConfig } from './placement-watchdog';
 const MS_PER_DAY = 86_400_000;
 
 /** Importance rank for "hottest open item" (most → least). */
-const IMPORTANCE_RANK = Object.fromEntries(
-  IMPORTANCE_LEVELS.map((level, i) => [level, i]),
-) as Record<Importance, number>;
+const IMPORTANCE_RANK = Object.fromEntries(IMPORTANCE_LEVELS.map((level, i) => [level, i])) as Record<
+  Importance,
+  number
+>;
 
 function daysSince(ts: unknown, now: number): number {
   if (!ts) return 0;
@@ -85,9 +86,7 @@ export async function resolvePotMembership(
   loadRegistry: (ws: string) => Promise<{ projects: RegistryProjectForPotSurvey[] }> = loadHarnessRegistry,
 ): Promise<PotMembership> {
   const reg = await loadRegistry(workspaceId);
-  const members = reg.projects
-    .filter((p) => p.hive_slug === potHomeSlug && p.slug !== potHomeSlug)
-    .map((p) => p.slug);
+  const members = reg.projects.filter((p) => p.hive_slug === potHomeSlug && p.slug !== potHomeSlug).map((p) => p.slug);
   const surveySlugs = members.length > 0 ? Array.from(new Set([potHomeSlug, ...members])) : [];
   return {
     home: potHomeSlug,
@@ -182,10 +181,7 @@ export function inEligiblePlans(planSlug: string, f: ScopeFilter | undefined): b
  * Distinct from {@link inEligiblePlans} (the PLAN view, where every candidate
  * always carries a plan slug). (pure)
  */
-export function frontierInEligiblePlans(
-  planSlug: string | null | undefined,
-  f: ScopeFilter | undefined,
-): boolean {
+export function frontierInEligiblePlans(planSlug: string | null | undefined, f: ScopeFilter | undefined): boolean {
   if (!planSlug) return f?.includeUnplannedWork !== false; // loose work: gated by the toggle (default include)
   if (!f?.eligiblePlans || f.eligiblePlans.length === 0) return true; // plan-tied, no restriction ⇒ pass
   return f.eligiblePlans.includes(planSlug);
@@ -332,13 +328,13 @@ export function filterReadyFrontier(
     // Build the node set selectReady scores: each candidate (a `todo` lane) plus
     // its referenced blockers (carrying their real status so terminal blockers
     // satisfy). A blocker with no resolved status is simply absent ⇒ satisfied.
-    // Also include active external blockers (events, gates, runtime, human dependencies).
+    // Also include active external blockers with both trigger and capability class.
     const nodes = new Map<string, ReadinessNode>();
     for (const r of hRows) {
-      const extBlockers = activeExternalBlockers(r.payload).map((b) => `${b.kind}:${b.ref}`);
-      nodes.set(r.feature_id, { 
-        id: r.feature_id, 
-        status: 'todo', 
+      const extBlockers = activeExternalBlockers(r.payload).map((b) => `${b.kind}:${b.capability}:${b.ref}`);
+      nodes.set(r.feature_id, {
+        id: r.feature_id,
+        status: 'todo',
         blockedBy: graph?.blockers.get(r.feature_id) ?? [],
         ...(extBlockers.length > 0 ? { externalBlockers: extBlockers } : {}),
       });
@@ -558,10 +554,7 @@ export async function countQuarantinedFrontier(
  * `potDemandCheck.todoItems`. Member-scoped when membership is wired, else the
  * workspace-wide P-012 fallback (mirrors {@link surveyPot}'s own scope choice).
  */
-export async function potPlaceableFrontierDepth(
-  workspaceId: string,
-  potHomeSlug: string,
-): Promise<number> {
+export async function potPlaceableFrontierDepth(workspaceId: string, potHomeSlug: string): Promise<number> {
   const { sql } = getOrgPg();
   const membership = await resolvePotMembership(workspaceId, potHomeSlug);
   return countPlaceableFrontier(sql, workspaceId, membership.surveySlugs);
@@ -579,10 +572,7 @@ export interface FrontierAdmission {
 /** Both halves of the frontier in ONE membership resolve — the pair a starvation
  *  check needs (an empty frontier only means "deadlock" when something is being
  *  withheld; on its own it just means "no work"). */
-export async function potFrontierAdmission(
-  workspaceId: string,
-  potHomeSlug: string,
-): Promise<FrontierAdmission> {
+export async function potFrontierAdmission(workspaceId: string, potHomeSlug: string): Promise<FrontierAdmission> {
   const { sql } = getOrgPg();
   const membership = await resolvePotMembership(workspaceId, potHomeSlug);
   const [placeable, quarantined] = await Promise.all([
@@ -694,7 +684,10 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
           label: 'pot-survey.countQuarantinedFrontier',
         });
       } catch (err) {
-        console.warn('[pot-survey] quarantined-frontier count failed — reporting 0:', err instanceof Error ? err.message : err);
+        console.warn(
+          '[pot-survey] quarantined-frontier count failed — reporting 0:',
+          err instanceof Error ? err.message : err,
+        );
         return 0;
       }
     },
@@ -746,7 +739,9 @@ export async function surveyPot(
     planSlugs = surveySlugs;
   } else {
     const reg = await deps.loadRegistry(workspaceId);
-    planSlugs = Array.from(new Set([potHomeSlug, ...reg.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug)]));
+    planSlugs = Array.from(
+      new Set([potHomeSlug, ...reg.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug)]),
+    );
   }
 
   const [planRowsPerHarness, frontierRows, frontierQuarantined] = await Promise.all([
@@ -758,7 +753,10 @@ export async function surveyPot(
           // live Mug wake skip a member's plan; a sustained outage still logs below.
           return await withPgRetry(() => deps.listPlanRows(slug), { label: 'pot-survey.listPlanRows' });
         } catch (err) {
-          console.warn(`[pot-survey] plan read failed for '${slug}' — skipped:`, err instanceof Error ? err.message : err);
+          console.warn(
+            `[pot-survey] plan read failed for '${slug}' — skipped:`,
+            err instanceof Error ? err.message : err,
+          );
           return [] as PlanIndexRow[];
         }
       }),
@@ -778,8 +776,7 @@ export async function surveyPot(
       // decompose it. Only for plans in a non-empty eligiblePlans list — an un-steered
       // survey is unchanged (started plans only). The later inEligiblePlans filter then
       // keeps the eligible set; a started-but-not-eligible plan still gets filtered out.
-      const includeUnstarted =
-        (sf?.eligiblePlans?.length ?? 0) > 0 && !!sf?.eligiblePlans?.includes(row.planSlug);
+      const includeUnstarted = (sf?.eligiblePlans?.length ?? 0) > 0 && !!sf?.eligiblePlans?.includes(row.planSlug);
       const c = planToCandidate(row, now, { includeUnstarted });
       if (c) planCandidates.push(c);
     }
@@ -797,13 +794,18 @@ export async function surveyPot(
       } catch (err) {
         // Fail-open: a flaky blocker read must not blank the frontier — treat as
         // unblocked (an empty graph) so placement still proceeds, but say so.
-        console.warn(`[pot-survey] block-graph read failed for '${h}' — lanes treated unblocked:`, err instanceof Error ? err.message : err);
+        console.warn(
+          `[pot-survey] block-graph read failed for '${h}' — lanes treated unblocked:`,
+          err instanceof Error ? err.message : err,
+        );
       }
     }),
   );
   const { ready: readyFrontierRowsAll, blockedCount } = filterReadyFrontier(frontierRows, graphByHarness);
   if (blockedCount > 0) {
-    console.log(`[pot-survey] frontier: ${blockedCount} lane(s) held back by unsatisfied blocked_by; ${readyFrontierRowsAll.length} ready`);
+    console.log(
+      `[pot-survey] frontier: ${blockedCount} lane(s) held back by unsatisfied blocked_by; ${readyFrontierRowsAll.length} ready`,
+    );
   }
   // mug-steering-panel C-2 + P-008 — scope/pause/plan enforcement (applied AFTER
   // the readiness filter so it never resurrects a blocked lane): a PAUSE empties the
@@ -817,7 +819,10 @@ export async function surveyPot(
   const readyFrontierRows = paused
     ? []
     : readyFrontierRowsAll.filter(
-        (r) => inAllowedHarness(r.harness_slug, sf) && notStopped(r.harness_slug, sf) && frontierInEligiblePlans(r.plan_slug, sf),
+        (r) =>
+          inAllowedHarness(r.harness_slug, sf) &&
+          notStopped(r.harness_slug, sf) &&
+          frontierInEligiblePlans(r.plan_slug, sf),
       );
   if (paused) {
     console.log(
@@ -827,11 +832,23 @@ export async function surveyPot(
   const frontierCandidates = readyFrontierRows.map((r) => frontierRowToCandidate(r, now));
 
   const [plans, frontier] = await Promise.all([
-    rankPlacements(planCandidates.filter((c) => inAllowedHarness(c.harness, sf) && notStopped(c.harness, sf) && inEligiblePlans(c.id, sf))),
+    rankPlacements(
+      planCandidates.filter(
+        (c) => inAllowedHarness(c.harness, sf) && notStopped(c.harness, sf) && inEligiblePlans(c.id, sf),
+      ),
+    ),
     rankPlacements(frontierCandidates),
   ]);
 
-  return { home: membership.home, members: membership.members, scope: membership.scope, plans, frontier, frontierBlocked: blockedCount, frontierQuarantined };
+  return {
+    home: membership.home,
+    members: membership.members,
+    scope: membership.scope,
+    plans,
+    frontier,
+    frontierBlocked: blockedCount,
+    frontierQuarantined,
+  };
 }
 
 // ── Cross-pot workspace survey (P-003 / D-002 — the central dispatcher) ───────

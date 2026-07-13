@@ -22,12 +22,13 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+const scrollToIndexSpy = vi.fn();
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: (opts: { count: number }) => ({
     getVirtualItems: () => Array.from({ length: opts.count }, (_, i) => ({ index: i, key: `vk-${i}`, start: i * 64, size: 64 })),
     getTotalSize: () => opts.count * 64,
     measureElement: () => {},
-    scrollToIndex: () => {},
+    scrollToIndex: scrollToIndexSpy,
   }),
 }));
 
@@ -79,6 +80,22 @@ describe('ChatConversation', () => {
     expect(screen.getByText('Hello')).toBeTruthy();
     expect(screen.getByText('Hi there')).toBeTruthy();
     expect(screen.getByText('You')).toBeTruthy();
+  });
+
+  it('pins the transcript to the latest message on first render (WI-4692)', () => {
+    // Regression guard for the virtualized-scroll strand: the mount pin must
+    // go through the virtualizer's measurement-aware scrollToIndex targeting
+    // the LAST index — a bare endRef.scrollIntoView({behavior:'smooth'})
+    // strands mid-history while row estimates correct themselves.
+    scrollToIndexSpy.mockClear();
+    renderChat({
+      messages: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'middle' },
+        { role: 'assistant', content: 'latest' },
+      ],
+    });
+    expect(scrollToIndexSpy).toHaveBeenCalledWith(2, { align: 'end' });
   });
 
   it('shows the thinking row and disables input while busy', () => {

@@ -602,8 +602,14 @@ describe('heavy-command admission control (WI-3821)', () => {
   });
 
   it.each([
-    // Not a free pass: `=on` is not an off-value, so it must stay gated.
-    ['PC_HEAVY_ADMISSION=on does not bypass', 'PC_HEAVY_ADMISSION=on vitest run x.test.ts'],
+    // Not a free pass: `=on` is NOT an off-value, so my value alternation must
+    // reject it and leave the command gated. Use the `env`-prefixed form so the
+    // heavy detector actually sees the wrapped `vitest` as heavy (a BARE
+    // `KEY=val vitest` prefix was never recognized as heavy by the detector's
+    // anchor to begin with — that gap predates this fix) — this exercises the
+    // off/0/false/no vs on discrimination in the new inline check directly.
+    ['env PC_HEAVY_ADMISSION=on does not bypass', 'env PC_HEAVY_ADMISSION=on vitest run x.test.ts'],
+    ['env PC_HEAVY_ADMISSION=onward (not an off-value) does not bypass', 'env PC_HEAVY_ADMISSION=onward vitest run x.test.ts'],
     // The prefix must be at command position — hidden after a real heavy op it
     // does not un-gate the leading heavy command.
     ['inline off after a raw heavy stays gated', 'vitest run a.test.ts && PC_HEAVY_ADMISSION=off vitest run b.test.ts'],

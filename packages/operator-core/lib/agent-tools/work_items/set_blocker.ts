@@ -11,6 +11,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { runBulk, bulkContent } from '../_bulk';
+import { getModes } from '../../modes/store';
 import {
   getWorkItem,
   mergeWorkItemPayload,
@@ -19,13 +20,17 @@ import {
 } from '../../work-items';
 import {
   activeExternalBlockers,
-  updateExternalBlockerHistory,
+  applyExternalBlockerUpdate,
+  externalBlockerCapabilityPolicy,
+  EXTERNAL_BLOCKER_CAPABILITIES,
   type ExternalBlockerKind,
 } from '../../external-blockers';
 
 const BLOCKER_KIND = z.enum(['event', 'gate', 'runtime', 'human']);
+const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
 const fields = {
   kind: BLOCKER_KIND,
+  capability: BLOCKER_CAPABILITY.optional(),
   ref: z.string().min(1).max(300),
   summary: z.string().max(1000).optional(),
   evidence: z.string().max(4000).optional(),
@@ -41,14 +46,13 @@ export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items: event, gate, runtime, or human. This is for dependencies that are NOT work-items; internal work dependencies stay in work_items:link{rel:'blocks'} / plan blocked-by. Active blockers park the item out of self-selection. clear:true marks the record cleared but PRESERVES its history. Returns activeBlockers + full blockerHistory and the applied lifecycle/claim-hold result.",
+    "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is immediately history-cleared instead of parking the item; authority cannot fabricate the other capabilities. Internal work dependencies stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history. Returns activeBlockers, capability dispositions, and lifecycle result.",
   guidance: {
-    when:
-      'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human decides. Use a stable ref (event key, gate id, service/runtime id, or decision id) and name the concrete nextVerb when one exists.',
+    when: 'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy event/gate/runtime rows conservatively infer live-dependency and human rows infer product-decision. Use a stable ref and name the concrete nextVerb when one exists.',
     notWhen:
       "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker.",
     chaining:
-      "work_items:set_blocker {id,kind,ref,…} → await the named event/gate rather than polling → work_items:set_blocker {id,kind,ref,clear:true,evidence}. Clearing the last external blocker returns a feature from blocked→todo or removes the issue-family claim hold.",
+      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition (await a live dependency; obtain a credential/device/service action; AUTO clears standing approval) → work_items:set_blocker {id,kind,ref,clear:true,evidence}. Clearing the last blocker returns a feature from blocked→todo or removes the issue-family claim hold.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -57,6 +61,7 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional(),
       kind: BLOCKER_KIND.optional(),
+      capability: BLOCKER_CAPABILITY.optional(),
       ref: z.string().min(1).max(300).optional(),
       summary: z.string().max(1000).optional(),
       evidence: z.string().max(4000).optional(),
@@ -66,12 +71,9 @@ export default defineTool({
       items: z.array(itemSpec).min(1).max(100).optional(),
     })
     .strict()
-    .refine(
-      (args) =>
-        (args.items?.length ?? 0) > 0 ||
-        (Boolean(args.id) && Boolean(args.kind) && Boolean(args.ref)),
-      { message: 'pass { id, kind, ref, summary? } for one, or items:[{ id, kind, ref, … }]' },
-    ),
+    .refine((args) => (args.items?.length ?? 0) > 0 || (Boolean(args.id) && Boolean(args.kind) && Boolean(args.ref)), {
+      message: 'pass { id, kind, ref, summary? } for one, or items:[{ id, kind, ref, … }]',
+    }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const items = args.items?.length
@@ -80,6 +82,7 @@ export default defineTool({
           {
             id: args.id as string,
             kind: args.kind as ExternalBlockerKind,
+            capability: args.capability,
             ref: args.ref as string,
             summary: args.summary,
             evidence: args.evidence,
@@ -88,6 +91,16 @@ export default defineTool({
             harness: args.harness,
           },
         ];
+    const wantsAutoAuthority = items.some((input) => !input.clear && input.capability === 'approval-auto-clearable');
+    let autoAuthority = false;
+    if (wantsAutoAuthority) {
+      try {
+        const modes = await getModes(identity.workspaceId ?? 'default', identity.ownerId);
+        autoAuthority = modes.some((row) => ['auto', 'cold-auto', 'drain'].includes(row.mode));
+      } catch {
+        // Fail closed: a mode-read outage must never fabricate approval.
+      }
+    }
     const env = await runBulk(
       items,
       async (input) => {
@@ -101,10 +114,11 @@ export default defineTool({
           };
         }
 
-        const history = updateExternalBlockerHistory(
+        const history = applyExternalBlockerUpdate(
           workItem.payload,
           {
             kind: input.kind,
+            capability: input.capability,
             ref: input.ref,
             summary: input.summary,
             evidence: input.evidence,
@@ -112,6 +126,7 @@ export default defineTool({
             clear: input.clear,
           },
           identity.ownerId,
+          { autoAuthority },
         );
         if (!history.changed) {
           return {
@@ -121,6 +136,12 @@ export default defineTool({
             workItem,
             activeBlockers: activeExternalBlockers(workItem.payload),
             blockerHistory: history.blockers,
+            capabilityDisposition: externalBlockerCapabilityPolicy(
+              input.capability ??
+                history.blockers.at(-1)?.capability ??
+                (input.kind === 'human' ? 'product-decision' : 'live-dependency'),
+            ),
+            autoCleared: history.autoCleared,
           };
         }
 
@@ -170,8 +191,15 @@ export default defineTool({
           workItem: updated,
           activeBlockers: active,
           blockerHistory: history.blockers,
+          capabilityDispositions: active.map((blocker) => externalBlockerCapabilityPolicy(blocker.capability)),
+          capabilityDisposition: externalBlockerCapabilityPolicy(
+            input.capability ??
+              history.blockers.at(-1)?.capability ??
+              (input.kind === 'human' ? 'product-decision' : 'live-dependency'),
+          ),
+          autoCleared: history.autoCleared,
           lifecycle,
-          ...(input.kind === 'event' && !input.clear ? { await: { event: input.ref } } : {}),
+          ...(input.kind === 'event' && !input.clear && !history.autoCleared ? { await: { event: input.ref } } : {}),
         };
       },
       { keyOf: (input) => ({ id: input.id, kind: input.kind, ref: input.ref }) },
