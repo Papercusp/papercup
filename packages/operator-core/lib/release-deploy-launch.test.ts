@@ -30,6 +30,9 @@ function mkSnap(
       lastFiredAtMs: null,
       fireStale: false,
       fireStaleReason: null,
+      verdictObservedAtMs: null,
+      verdictStale: false,
+      verdictStaleReason: null,
       lastFixerStatus: null,
       lastFixerAtMs: null,
       lastFixerCandidate: null,
@@ -180,5 +183,49 @@ describe('launchDetachedDeploy', () => {
     expect(r.mode).toBe('force');
     const inner = r.argv[r.argv.length - 1]!;
     expect(inner).toMatch(/--deploy-commit deadbeef --force --execute/);
+  });
+});
+
+/**
+ * WI-4489 — a STALE red must not masquerade as the gate's current colour.
+ *
+ * The live incident (2026-07-12): `gate_health` froze on 4 reds from the pnpm-hijack window while
+ * the routine kept firing and skipping on the run-lock. `op:status` reported `gate-red` + "FIX the
+ * reds" for ~3.5h. All 8 named tests passed; the gate was green on every real run. That
+ * recommendation is what dispatched the fixer whose manual runs held the lock that kept the routine
+ * skipping — the stale red sustained itself.
+ */
+describe('WI-4489: gate verdict staleness', () => {
+  it('⭐ a STALE red does NOT report gate-red, and does NOT send anyone to fix the tests it names', () => {
+    const s = computeDeployStatus(
+      mkSnap(
+        { consecutiveReds: 4, verdictStale: true, verdictStaleReason: 'the release pin has advanced' },
+        { deployedBehindReady: 0 },
+      ),
+    );
+    expect(s.state).toBe('gate-verdict-stale');
+    expect(s.state).not.toBe('gate-red');
+    expect(s.recommendation).toMatch(/STALE/);
+    expect(s.recommendation).toMatch(/Do NOT chase the failing tests/);
+    expect(s.recommendation).toMatch(/release:checkpoint-run/);
+    // …and it must NOT claim the gate is green either. The honest state is "unknown".
+    expect(s.gate.green).toBe(false);
+    expect(s.gate.verdictStale).toBe(true);
+  });
+
+  it('⭐ a LIVE red still reports gate-red — the fix must not blind the gate (the EI-10609 lesson)', () => {
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 4, verdictStale: false }, { deployedBehindReady: 0 }),
+    );
+    expect(s.state).toBe('gate-red');
+    expect(s.recommendation).toMatch(/FIX the reds/);
+  });
+
+  it('a stale red never strands a deployable green pin — green-deployable still wins', () => {
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 4, verdictStale: true }, { deployedBehindReady: 146 }),
+    );
+    expect(s.state).toBe('green-deployable');
+    expect(s.canTriggerGreen).toBe(true); // decoupled from gate colour by design (line ~118)
   });
 });

@@ -269,7 +269,8 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
     consecutiveReds: num(gateHealth.consecutiveReds) ?? 0,
     observedAtMs: verdictObservedAtMs,
     observedFromPin: typeof gateHealth.lastFrom === 'string' ? gateHealth.lastFrom : null,
-    currentGreenPinSha: deploy.greenPinSha,
+    // The release ("ready") pin — the green-checkpoint's own durable verdict, in git.
+    currentGreenPinSha: deploy.ready?.sha ?? null,
     lastFiredAtMs: gcLastFiredMs,
   });
 
