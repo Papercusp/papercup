@@ -33,6 +33,7 @@
 import type { RoutedIdeaProvenance, LensOutcomeReport, LensWeightOptions } from './outcome-feedback';
 import { gatherLensOutcomes } from './outcome-feedback';
 import type { ScoutTickRecord } from './tick-ledger';
+import { isCapacityError } from './capacity-errors';
 import type { ScoutLedgerOpts } from './routed-ledger';
 import { CREATIVE_LENSES, type CreativeLens, SU_IDEATION_LENSES, type SuIdeationLens } from './types';
 import { computeNoveltyGainReport, mapProvenanceToNoveltyRow } from './novelty-metrics';
@@ -153,7 +154,20 @@ export function computeScoutQualityReport<L extends string = CreativeLens>(
       const gate = t.gate ?? 'unknown';
       gatedTickBreakdown[gate] = (gatedTickBreakdown[gate] ?? 0) + 1;
     } else if (t.status === 'error') {
-      errorTicks += 1;
+      // WI-4475: re-classify a HISTORICAL capacity-failure tick the same way the
+      // scheduler now classifies a live one (isCapacityError — one classifier, two
+      // consumers). An error tick whose message is a pool-capacity ceiling is folded
+      // into the 'no-capacity' gate bucket, NOT counted as a genuine error — so the
+      // "error rate < 5%" bar reflects real breakage regardless of when the write-path
+      // reclassification went live, instead of staying red on legacy rows for the ~10
+      // days it takes them to age out of the window. Pool pressure stays VISIBLE (its
+      // own gate count grows); it just stops masquerading as ideator breakage.
+      const errMsg = typeof t.detail?.error === 'string' ? t.detail.error : '';
+      if (errMsg && isCapacityError(errMsg)) {
+        gatedTickBreakdown['no-capacity'] = (gatedTickBreakdown['no-capacity'] ?? 0) + 1;
+      } else {
+        errorTicks += 1;
+      }
     }
     if (typeof t.budgetUsedUsd === 'number' && Number.isFinite(t.budgetUsedUsd)) {
       totalSpendUsd += t.budgetUsedUsd;

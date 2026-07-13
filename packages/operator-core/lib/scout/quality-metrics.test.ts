@@ -238,6 +238,43 @@ describe('computeScoutQualityReport', () => {
     expect(r.totalRouted).toBe(2);
   });
 
+  // WI-4475: a HISTORICAL error tick whose message is a pool-capacity ceiling is
+  // re-classified at READ time the same way the scheduler now gates a LIVE one —
+  // folded into the 'no-capacity' bucket, NOT counted as a genuine error. Without
+  // this the "error rate < 5%" bar stays red on legacy rows for ~10 days until they
+  // age out of the window, judging a fixed condition on stale data.
+  it('re-classifies a capacity-message error tick as no-capacity, not a genuine error', () => {
+    const r = computeScoutQualityReport(
+      inputs({
+        ticks: [
+          tick({ status: 'ran' }),
+          // a genuine failure — stays an error
+          tick({ status: 'error', detail: { error: 'ideator transport death: 401 unauthorized' } }),
+          // legacy capacity failures (pre-reclassification write) — fold into no-capacity
+          tick({ status: 'error', detail: { error: 'rate-limit pause exceeds maxWait' } }),
+          tick({ status: 'error', detail: { error: 'scout: all 1 ideator LLM call(s) failed — transport death (0 ideas, $0 spent): 429 {"type":"error","error":{"type":"rate_limit_error"}}' } }),
+          // a LIVE capacity failure (post-reclassification write) already arrives gated —
+          // it must land in the SAME bucket, and each tick is counted exactly once.
+          tick({ status: 'gated', gate: 'no-capacity', detail: { error: 'rate-limit pause exceeds maxWait' } }),
+        ],
+      }),
+    );
+    // Only the 401 counts as a genuine error.
+    expect(r.errorTicks).toBe(1);
+    // Two legacy + one live capacity failure all in the no-capacity bucket, once each.
+    expect(r.gatedTickBreakdown['no-capacity']).toBe(3);
+    // Denominator is unchanged — a no-capacity tick is still a tick.
+    expect(r.totalTicks).toBe(5);
+  });
+
+  it('an error tick with no detail message stays a genuine error (no false capacity reclassification)', () => {
+    const r = computeScoutQualityReport(
+      inputs({ ticks: [tick({ status: 'error' }), tick({ status: 'error', detail: { error: 'boom' } })] }),
+    );
+    expect(r.errorTicks).toBe(2);
+    expect(r.gatedTickBreakdown['no-capacity']).toBe(0);
+  });
+
   // ── su-ideate partition (su-ideate-learning-substrate P-013) ──────────────────
   it('folds perLensWinRates over the SU lens roster, not CREATIVE_LENSES', () => {
     const r = computeScoutQualityReport<SuIdeationLens>(

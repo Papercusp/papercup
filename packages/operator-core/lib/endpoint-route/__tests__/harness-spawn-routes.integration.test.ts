@@ -94,6 +94,16 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
+// Roster/pane-visibility seed (owner-facing zellij dock): a tracked hive/overwatch
+// invoke seeds a coord_presence row so the mug/kettle turn appears in the roster and
+// gets a pane. Partial-mock so the real module still loads (nothing here calls the
+// DB), replacing only writePresence with a spy to assert the seed.
+const writePresence = vi.fn(async () => {});
+vi.mock('../../agent-tools/coordination/presence', async (orig) => {
+  const actual = await orig<typeof import('../../agent-tools/coordination/presence')>();
+  return { ...actual, writePresence: (...a: unknown[]) => (writePresence as (...args: unknown[]) => unknown)(...a) };
+});
+
 // fs: existsSync→false so the actions-dispatch path short-circuits; readFileSync
 // throws so the SU-bearer read falls back to undefined; writes are no-ops.
 vi.mock('node:fs', async (orig) => {
@@ -426,6 +436,40 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
     });
     expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0);
+  });
+
+  it('seeds a coord_presence row for a tracked launch so the mug/kettle turn is roster-visible (owner pane-visibility)', async () => {
+    // The bug this pins: mug/kettle turns ran but the owner saw no zellij pane,
+    // because the pui panes from the coord_presence-PRIMARY roster and a tracked
+    // hive/overwatch launch mints no presence row of its own (it never calls
+    // coord:inbox/orient, the only presence-minting calls). The route now seeds one
+    // under the SAME coordOwnerId (= PAPERCUSP_SPAWN_ID) the adv_sessions row uses,
+    // so the roster's LEFT-join resolves the resumable session_id for the pane.
+    resolveSpawnBackendModel.mockReturnValue({ backend: 'claude-code', model: '' });
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=overwatch&bpkind=overwatch', post({}));
+    expect(res.status).toBe(200);
+    expect(writePresence).toHaveBeenCalledTimes(1);
+    const [identity, input, harnessSlug] = writePresence.mock.calls[0] as unknown as [
+      { ownerId: string; ownerLabel: string; source: string; workspaceId: string | null },
+      { agentRole?: string },
+      string,
+    ];
+    // Same coordOwnerId the adv_sessions row + PAPERCUSP_SPAWN_ID carry — the join key.
+    const advArg = recordAdvSession.mock.calls[0]?.[0] as { coordOwnerId?: string } | undefined;
+    expect(identity.ownerId).toBe(advArg?.coordOwnerId);
+    expect(identity.ownerId).toMatch(/^s-\d+-[0-9a-f]+$/);
+    // canonicalCoordRole('overwatch') === 'kettle' → the roster classifies the pane.
+    expect(identity.ownerLabel).toBe('kettle · papercup');
+    expect(identity.source).toBe('fleet-spawn');
+    expect(input.agentRole).toBe('kettle');
+    expect(harnessSlug).toBe('papercup');
+  });
+
+  it('does NOT seed presence for an untracked worker invoke (only tracked hive/overwatch launches are owner-paned)', async () => {
+    resolveSpawnBackendModel.mockReturnValue({ backend: 'claude-code', model: '' });
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
+    expect(res.status).toBe(200);
+    expect(writePresence).not.toHaveBeenCalled();
   });
 });
 

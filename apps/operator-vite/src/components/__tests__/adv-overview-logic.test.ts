@@ -33,6 +33,11 @@ function plan(over: Partial<PlanListRow> = {}): PlanListRow {
     title: 'P',
     status: 'active',
     updated: '2026-06-05',
+    // Required (string|null / Importance|null) fields the base previously omitted —
+    // absence typed them `undefined`, which PlanListRow forbids. A factory that
+    // RETURNS PlanListRow must supply every required field.
+    created: null,
+    maxImportance: null,
     owner: null,
     archived: false,
     isLegacy: false,
