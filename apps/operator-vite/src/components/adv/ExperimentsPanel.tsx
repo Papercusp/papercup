@@ -140,6 +140,7 @@ export function ExperimentsPanel({
       <LearningPageHeader
         icon={FlaskConical}
         title="Experiments"
+        question="Which arm won?"
         signal={latest?.decision}
         tone={
           latest?.decision === "applied"

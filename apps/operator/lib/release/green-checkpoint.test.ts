@@ -40,6 +40,7 @@ import {
   SELF_WATCHDOG_MS,
   isNothingToGate,
   realCheckpointDeps,
+  pipelineName,
   type CheckpointDeps,
   type CheckpointExec,
   type FailingFile,
@@ -88,6 +89,14 @@ function stubDeps(
     },
     clearEscalation: async () => {
       calls.push('clearEscalation');
+    },
+    emitEvent: async ({ key }) => {
+      // EI-10800 regression guard: hop a microtask before recording. If a call site does NOT
+      // await the emit (the original fire-and-forget `void import(...)` bug), this push lands
+      // AFTER runGreenCheckpoint has already resolved — so the `calls`-contains assertion below
+      // fails, catching exactly the "green advance never woke its awaiter" regression.
+      await Promise.resolve();
+      calls.push(`emit:${key}`);
     },
     log: () => {},
   };
@@ -329,7 +338,34 @@ describe('runGreenCheckpoint', () => {
     expect(r).toMatchObject({ advanced: true, candidate: c2, green: true, reason: 'advanced' });
     expect(await revParse(repo, 'ready')).toBe(c2);
     // P-002: a green advance clears any open release-not-green escalation.
-    expect(calls).toEqual(['setup:' + c2.slice(0, 7), 'runGreen', 'advance', 'broadcast', 'clearEscalation']);
+    // EI-10800: the `release:green` verdict emit is AWAITED (both keys land in `calls` before
+    // runGreenCheckpoint resolves — the stub hops a microtask, so a fire-and-forget emit would
+    // record AFTER return and break this exact-order assertion).
+    expect(calls).toEqual([
+      'setup:' + c2.slice(0, 7),
+      'runGreen',
+      'advance',
+      'broadcast',
+      'clearEscalation',
+      'emit:release:green',
+      `emit:release:green:${pipelineName(repo)}`,
+    ]);
+  });
+
+  it('EI-10800: AWAITS the release:green verdict emit on a green advance (global + pipeline-scoped)', async () => {
+    // The bug: the green full-advance emit was a fire-and-forget `void import(...).then(emit)`
+    // followed by an immediate return, so the short-lived checkpoint process tore down before
+    // the emit ran — `release:green:<pipeline>` fired via `event` 0 times / 87 timeouts in its
+    // whole history, while the longer-lived red path fired normally. This asserts the fix: the
+    // emit flows through the injectable deps.emitEvent seam AND is awaited before return.
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    // Recorded by the time the promise resolves ⇒ it was awaited, not fire-and-forget.
+    expect(calls).toContain('emit:release:green'); // global key (back-compat)
+    expect(calls).toContain(`emit:release:green:${pipelineName(repo)}`); // pipeline-scoped (EI-7646)
   });
 
   it('holds ready when the candidate is NOT green', async () => {

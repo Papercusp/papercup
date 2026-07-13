@@ -829,6 +829,8 @@ describe("LearningTab — Benchmark view", () => {
   it("renders the benchmark answer-first comparison and generation trend", () => {
     render(<LearningTab />);
     expect(screen.getByText("Recent generations")).toBeTruthy();
+    // P-006: the compare-view leads with the question it answers.
+    expect(screen.getByText("Did the new build get better?")).toBeTruthy();
     expect(screen.getAllByText("80%").length).toBeGreaterThanOrEqual(1);
     expect(document.querySelector(".pc-learning-visual__hero")).not.toBeNull();
     expect(
@@ -903,7 +905,8 @@ describe("LearningTab — Benchmark view", () => {
   it("promotes every former benchmark section into the Verify tab row", () => {
     render(<LearningTab />);
     expect(screen.getByRole("tab", { name: "Benchmark" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Pot orchestration" })).toBeTruthy();
+    // P-006: the view shows hive-eval SCORING trends, so the label says so.
+    expect(screen.getByRole("tab", { name: "Pot scoring" })).toBeTruthy();
     expect(
       screen.getByRole("tab", { name: "Framework bake-off" }),
     ).toBeTruthy();
@@ -913,7 +916,7 @@ describe("LearningTab — Benchmark view", () => {
     expect(screen.getByRole("tab", { name: "Experiments" })).toBeTruthy();
   });
 
-  it("renders Pot orchestration as its own Verify view (HE-07)", () => {
+  it("renders Pot scoring (né Pot orchestration) as its own Verify view (HE-07)", () => {
     nuqsState.lview = "orchestration";
     hiveEvalResult = {
       data: [
@@ -955,6 +958,8 @@ describe("LearningTab — Benchmark view", () => {
     };
     render(<LearningTab />);
     expect(screen.getByText("Outcome gate")).toBeTruthy();
+    // P-006: leads with the question the scoring trend answers.
+    expect(screen.getByText("Are orchestration scores improving?")).toBeTruthy();
     expect(screen.getByText("1.30×")).toBeTruthy(); // latest critical-path ratio
     expect(screen.getAllByText("7.200").length).toBeGreaterThanOrEqual(1); // latest composite
     expect(document.querySelectorAll("figure.pc-benchtrend")).toHaveLength(1);

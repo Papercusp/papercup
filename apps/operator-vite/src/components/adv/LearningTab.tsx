@@ -151,7 +151,10 @@ const STAGES: ReadonlyArray<{
     icon: Gauge,
     views: [
       { id: "benchmark", label: "Benchmark", icon: FlaskConical },
-      { id: "orchestration", label: "Pot orchestration", icon: GitBranch },
+      // P-006: this view renders hive-eval SCORING trends (is orchestration
+      // quality improving?), not an orchestration control surface — the label
+      // says what the numbers are, not what they measure over.
+      { id: "orchestration", label: "Pot scoring", icon: GitBranch },
       { id: "bakeoff", label: "Framework bake-off", icon: Repeat2 },
       { id: "wake-efficiency", label: "Wake efficiency", icon: Hourglass },
       { id: "ekg", label: "EKG", icon: Activity },
@@ -1447,6 +1450,7 @@ function ApiaryView({
       <LearningPageHeader
         icon={Gauge}
         title="Benchmark"
+        question="Did the new build get better?"
         signal={
           latest
             ? `${latest.successfulRuns}/${latest.totalRuns} solved`
@@ -1694,7 +1698,8 @@ function HiveEvalTrendView({
     <section className="pc-learning__section">
       <LearningPageHeader
         icon={Activity}
-        title={`${t("pot")} orchestration`}
+        title={`${t("pot")} scoring`}
+        question="Are orchestration scores improving?"
         signal={
           latest ? `${latest.scoredRuns}/${latest.totalRuns} scored` : undefined
         }
@@ -1933,6 +1938,7 @@ function BakeoffTrendView({
       <LearningPageHeader
         icon={Repeat2}
         title="Framework bake-off"
+        question="Did the bet pay off?"
         signal={latestMeta?.label}
         tone={
           latest?.verdict === "improved"

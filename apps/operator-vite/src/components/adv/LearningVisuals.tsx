@@ -12,12 +12,19 @@ export type LearningTone = "good" | "warn" | "bad" | "neutral" | "accent";
 export function LearningPageHeader({
   icon: Icon,
   title,
+  question,
   signal,
   tone = "neutral",
   action,
 }: {
   icon: LucideIcon;
   title: string;
+  /**
+   * The question this view answers (learning-tab-alignment P-006) — a
+   * compare-view leads with it ("Did the new build get better?") so the
+   * reader knows what verdict the numbers below are FOR.
+   */
+  question?: string;
   signal?: string;
   tone?: LearningTone;
   action?: ReactNode;
@@ -28,6 +35,9 @@ export function LearningPageHeader({
         <Icon size={15} aria-hidden />
         {title}
       </h2>
+      {question ? (
+        <span className="pc-learning-visual__question">{question}</span>
+      ) : null}
       {signal ? (
         <span className={`pc-learning-visual__signal is-${tone}`}>
           {signal}
@@ -227,6 +237,7 @@ export function LearningVisualStyles() {
       .pc-learning-visual__head { min-height: 26px; display: flex; align-items: center; gap: 7px; margin: 0 0 3px; }
       .pc-learning-visual__head h2 { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: var(--fg); font-size: 13px; font-weight: 680; letter-spacing: 0; }
       .pc-learning-visual__headspace { flex: 1 1 auto; }
+      .pc-learning-visual__question { color: var(--fg-mute); font-size: 11px; font-weight: 550; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
       .pc-learning-visual__signal { border: 1px solid color-mix(in srgb, var(--fg-mute) 28%, transparent); border-radius: 999px; padding: 2px 7px; color: var(--fg-mute); font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
       .pc-learning-visual__signal.is-good { color: #34d399; border-color: color-mix(in srgb, #34d399 42%, transparent); background: color-mix(in srgb, #34d399 9%, transparent); }
       .pc-learning-visual__signal.is-warn { color: #fbbf24; border-color: color-mix(in srgb, #fbbf24 42%, transparent); background: color-mix(in srgb, #fbbf24 9%, transparent); }
