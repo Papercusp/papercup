@@ -4,7 +4,6 @@ import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-
 import type { AdvTabId } from './AdvShell';
 import { useLexicon } from '@/lib/useLexicon';
 import AdvGitWorkspace from '@/app/adv/harnesses/AdvGitWorkspace';
-import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';
 import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
 import BlueprintSettingsPanel from '@/app/harness/BlueprintSettingsPanel';
@@ -14,10 +13,10 @@ import { InsightsTab, type InsightsTabProps } from '@/app/harness/insights/Insig
 import AdvDocsTab from '@/app/adv/harnesses/AdvDocsTab';
 import HarnessTestsView from '@/app/adv/harnesses/HarnessTestsView';
 
-type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'settings' | 'docs' | 'git' | 'testing'>;
+// ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
+type AdvHarnessPanel = Extract<AdvTabId, 'prs' | 'insights' | 'settings' | 'docs' | 'git' | 'testing'>;
 
 export const ADV_HARNESS_PANEL_LABELS: Record<AdvHarnessPanel, string> = {
-  brainstorm: 'Brainstorm',
   prs: 'PRs',
   insights: 'Insights',
   settings: 'Settings',
@@ -118,7 +117,6 @@ function SettingsTab({ slug }: { slug: string }) {
  * docs renders the plugin's docs tab via AdvDocsTab.)
  */
 const DIRECT: Partial<Record<AdvHarnessPanel, (slug: string) => ReactNode>> = {
-  brainstorm: (slug) => <BrainstormFull slug={slug} />,
   prs: (slug) => <PrsTab harnessSlug={slug} />,
   settings: (slug) => <SettingsTab slug={slug} />,
   insights: (slug) => <AdvInsightsTab slug={slug} />,

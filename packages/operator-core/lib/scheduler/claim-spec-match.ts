@@ -89,6 +89,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
     case 'est_cost': return subject.estCost;
     case 'assignee': return subject.assignee;
   }
+  return null;
 }
 
 function globRegex(pattern: string): RegExp {
@@ -103,16 +104,28 @@ function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolea
   if (leaf.op === 'glob') return globRegex(String(leaf.value)).test(String(actual));
   if (leaf.op === 'contains') return String(actual).toLowerCase().includes(String(leaf.value).toLowerCase());
 
-  const numeric = typeof actual === 'number';
-  const rhs = numeric ? Number(leaf.value) : String(leaf.value);
-  if (numeric && !Number.isFinite(rhs as number)) return false;
+  if (typeof actual === 'number') {
+    const rhs = Number(leaf.value);
+    if (!Number.isFinite(rhs)) return false;
+    switch (leaf.op) {
+      case '=': return actual === rhs;
+      case '!=': return actual !== rhs;
+      case '<': return actual < rhs;
+      case '<=': return actual <= rhs;
+      case '>': return actual > rhs;
+      case '>=': return actual >= rhs;
+      default: return false;
+    }
+  }
+
+  const rhs = String(leaf.value);
   switch (leaf.op) {
     case '=': return actual === rhs;
     case '!=': return actual !== rhs;
-    case '<': return actual < (rhs as never);
-    case '<=': return actual <= (rhs as never);
-    case '>': return actual > (rhs as never);
-    case '>=': return actual >= (rhs as never);
+    case '<': return actual < rhs;
+    case '<=': return actual <= rhs;
+    case '>': return actual > rhs;
+    case '>=': return actual >= rhs;
     default: return false;
   }
 }
@@ -130,9 +143,13 @@ function matchLeaf(subject: ClaimSpecSubject, leaf: FilterLeaf): boolean {
 
   // priority is stored physically as feature_order (lower = more important), so
   // the SQL compiler inverts relational comparators. Mirror that logical mapping.
-  if (leaf.field === 'priority' && ['<', '<=', '>', '>='].includes(leaf.op)) {
-    const inverted = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' }[leaf.op] as FilterLeaf['op'];
-    return compareScalar(actual, { ...leaf, op: inverted });
+  if (leaf.field === 'priority') {
+    switch (leaf.op) {
+      case '<': return compareScalar(actual, { ...leaf, op: '>' });
+      case '<=': return compareScalar(actual, { ...leaf, op: '>=' });
+      case '>': return compareScalar(actual, { ...leaf, op: '<' });
+      case '>=': return compareScalar(actual, { ...leaf, op: '<=' });
+    }
   }
   return compareScalar(actual, leaf);
 }

@@ -1,16 +1,19 @@
 /**
  * @vitest-environment jsdom
  *
- * VoiceAppBridge — routes app-level voice utterances into the dock's 🛡
- * Sentinel pane (a psu/Claude-Code TUI) via routeVoiceToSentinelPane()
- * (POST /api/operator/papercup-input), unless a higher-priority consumer
- * (an open Operator panel, an undo toast) has claimed them. We render the
+ * VoiceAppBridge — routes app-level voice utterances into the Papercup
+ * CONVERSE thread (the operator chat sidebar's shared conversation, via the
+ * provider-registered submitVoiceTurn), unless a higher-priority consumer
+ * (an open Operator panel, an undo toast) has claimed them. When the
+ * FLAGS.TESTING dev path is ON, the dock's 🛡 Sentinel pane
+ * (routeVoiceToSentinelPane → POST /api/operator/papercup-input) keeps
+ * priority, degrading to converse on a failed pane write. We render the
  * component, capture its onFinalUtterance + voice-state subscriptions, and
  * drive utterances to assert the consumer-priority routing decision + the
- * Sentinel-pane hand-off.
+ * brain hand-off.
  *
  * Intent parsing is bypassed (wakeWordIntents:false) so we test the
- * consumer / Sentinel routing path directly.
+ * consumer / brain routing path directly.
  *
  * Routing history: the legacy Oracle fallback (POST /api/oracle/chat) was
  * removed 2026-06-22 (sentinel-tui-shared-backend-and-cards Phase 1), which
@@ -19,7 +22,10 @@
  * with the pane write; WI-4337 flipped to converse-primary while the pane
  * brain was too heavy for the voice window; voice-public-release-readiness
  * P-019 (2026-07-12) made the PANE primary again (fast papercup role) with a
- * spoken instant ack, keeping converse as the pane-unavailable fallback.
+ * spoken instant ack; operator-chat-sidebar-revival P-007/D-001 (2026-07-13)
+ * reversed that once more — the sidebar is the shipped chat surface and the
+ * dock is TESTING-gated, so CONVERSE is primary and the pane is the
+ * FLAGS.TESTING dev path.
  *
  * P-014 of plan voice-production-test-coverage-2026-06-01.
  */
@@ -33,6 +39,9 @@ const h = vi.hoisted(() => ({
   cancelAllSpeech: vi.fn(),
   routeToSentinel: vi.fn(() => Promise.resolve(true)),
   fullAgentEngine: 'off' as string,
+  // FLAGS.TESTING: false = shipped config (converse-primary, dock hidden);
+  // true = the dev dock path (pane-primary). P-007/D-001.
+  testingFlag: false,
 }));
 
 vi.mock('./voice-mode', () => ({
@@ -68,6 +77,14 @@ vi.mock('./voice-sentinel-bridge', () => ({
   // Phase D voice-OUT polling — kept inert so the bridge's 1.5s interval is a no-op.
   drainSentinelOutput: vi.fn(() => Promise.resolve([])),
 }));
+// The pane dev path is gated on FLAGS.TESTING (P-007/D-001): default OFF
+// (the shipped converse-primary config); the dev-pane suite flips it on.
+vi.mock('@papercusp/flags', () => ({
+  FLAGS: { TESTING: 'papercusp-testing' },
+}));
+vi.mock('@/lib/flag-hooks', () => ({
+  useFlag: () => h.testingFlag,
+}));
 
 import { VoiceAppBridge, registerVoiceConsumer } from './VoiceAppBridge';
 import { setVoiceConverseHandler } from './voice-converse-handler';
@@ -99,6 +116,7 @@ beforeEach(() => {
   h.routeToSentinel.mockClear();
   h.routeToSentinel.mockReturnValue(Promise.resolve(true));
   h.fullAgentEngine = 'off';
+  h.testingFlag = false;
   // Reset the module-level converse seam so no provider is "mounted" by default
   // (the dock-fallback tests below assume this); the primary-path suite registers
   // its own handler.

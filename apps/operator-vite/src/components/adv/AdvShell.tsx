@@ -45,7 +45,10 @@ import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { CATEGORICAL } from '@/app/harness/theme';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
+// 'brainstorm' removed 2026-07-13 (quick-panel-saved-prompts P-010): the brainstorm
+// surface lives in the Quick Panel popup's Brainstorm tab now (owner ask). Old
+// ?tab=brainstorm deep links fall back to 'overview' via the enum parser.
+const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -63,7 +66,7 @@ export const ADV_TABS: ReadonlyArray<{
   accentRgb: string;
 }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: CATEGORICAL.indigo400.hex, accentRgb: CATEGORICAL.indigo400.rgb },
-  { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: 'var(--accent)', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
+  // (Brainstorm tab removed — it lives in the Quick Panel popup now; P-010.)
   { id: 'plans', label: 'Create', icon: ListChecks, accent: CATEGORICAL.amber500.hex, accentRgb: CATEGORICAL.amber500.rgb },
   // Calendar — the schedulable time-surface for scheduled/recurring plans
   // (scheduled-recurring-plans-2026-06-16 P-019). Next to Create (D-001: no separate
@@ -435,14 +438,14 @@ export default function AdvShell({
   useShortcutAction('goto.inbox', () => void setActiveTab('conversations'));
   useShortcutAction('harness.create', () => void setCreateOpen(true));
 
-  // Two-stroke tab jumps (`g b` / `g i`). Both ids shipped in the registry with
-  // NO handler anywhere, so the settings row let a user rebind a key that fired
-  // nothing (settings-audit 2026-07-09). Unlike goto.inbox these are PER-POT
-  // tabs, so under "All Pots" they're absent from the base strip — the
-  // pin-the-active-tab branch above appends + highlights the tab and its body
-  // renders the pick-a-pot prompt (owner ask 2026-06-17). That is the designed
-  // empty-state, so no scope guard here.
-  useShortcutAction('goto.brainstorm', () => void setActiveTab('brainstorm'));
+  // Two-stroke tab jump (`g i`). Shipped in the registry with NO handler
+  // anywhere, so the settings row let a user rebind a key that fired nothing
+  // (settings-audit 2026-07-09). Unlike goto.inbox this is a PER-POT tab, so
+  // under "All Pots" it's absent from the base strip — the pin-the-active-tab
+  // branch above appends + highlights the tab and its body renders the
+  // pick-a-pot prompt (owner ask 2026-06-17). That is the designed
+  // empty-state, so no scope guard here. (goto.brainstorm removed with the
+  // Brainstorm tab — the surface lives in the Quick Panel popup now; P-010.)
   useShortcutAction('goto.insights', () => void setActiveTab('insights'));
 
   return (
@@ -1069,7 +1072,7 @@ export default function AdvShell({
           box-shadow: 0 0 14px color-mix(in oklab, var(--h-main-tab-accent), transparent 54%);
         }
         /* Fallback scroller: tabs that lay out their own internal overflow
-           panes (Plans, Sessions) scroll there; tabs that don't (Brainstorm,
+           panes (Plans, Sessions) scroll there; tabs that don't (e.g.
            Insights) scroll here instead of growing the shell + window. */
         .pc-advshell__body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 
