@@ -10,6 +10,7 @@
  * Seams: @tanstack/react-router (createFileRoute → Route), AdminShell + insights
  * clients stubbed, useLexicon → identity, fetch stubbed per-call (call-counted).
  */
+import type { JSX } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
@@ -67,7 +68,7 @@ vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import { Route } from './dogfood-substrate';
 
-const Comp = Route.component as () => JSX.Element;
+const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 
 interface Harness { workspaceId: string; harnessSlug: string; verdict: string; reasons?: string[] }
 let healthBody: { harnesses?: Harness[] } | null;

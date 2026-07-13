@@ -11,6 +11,7 @@
  * for ?tab=), AdvShell (exposes its title prop + ADV_TABS for the enum),
  * AdvHarnessPanelPage (exposes ADV_HARNESS_PANEL_LABELS).
  */
+import type { JSX } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
@@ -51,7 +52,7 @@ vi.mock('@/app/admin/plans/plans.css', () => ({}));
 
 import { Route } from './index';
 
-const Comp = Route.component as () => JSX.Element;
+const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 function renderAdv(searchParams = '') {
   return render(<NuqsTestingAdapter searchParams={searchParams}><Comp /></NuqsTestingAdapter>);
 }

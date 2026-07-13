@@ -371,6 +371,132 @@ describe('runGreenCheckpoint', () => {
     expect(messages.some((m) => m.includes('already changed since candidate'))).toBe(false);
   });
 
+  // EI-10615 — the stale-red rescue must run BEFORE the partial-green prefix salvage.
+  //
+  // The bug these pin: the two ran in the OPPOSITE order, which made the rescue dead code
+  // on a fast-moving fleet. The gate went red, entered the prefix salvage's CONFIRM run (a
+  // SECOND full suite, tens of minutes), and was superseded/killed before execution ever
+  // reached the re-triage. Seven consecutive gate runs ended their log on the partial-green
+  // "confirming longest clean prefix …" line with nothing after it; every one of those reds
+  // PASSED at tip (the last was disproved in 559ms). `main` sat 143 commits behind for ~9h
+  // with nothing actually broken, so nothing the fleet fixed that day ever reached :3070.
+  //
+  // These assert ORDER + SKIP, not just the pure classifier — a pure-classifier test passes
+  // happily while the caller never invokes it, which is exactly what happened.
+  describe('EI-10615: stale-red re-triage precedes the partial-green prefix salvage', () => {
+    /** Wires BOTH paths as eligible, so ordering is the only thing under test. */
+    function bothPathsWired(opts: { passesAtTip: boolean }) {
+      const calls: string[] = [];
+      const { deps } = stubDeps(false, ['@papercusp/web']);
+      let greenRuns = 0;
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        greenRuns += 1;
+        return {
+          green: false,
+          summary: '1 failed',
+          failingTests: ['@papercusp/web'],
+          failingFiles: [{ file: 'src/failing.test.ts', workspace: '@papercusp/web' }],
+        };
+      };
+      // The re-triage is gated on a tip NEWER than the candidate — without resolveTip it
+      // never runs at all (tip=null), which is precisely how it stayed silently dead.
+      deps.resolveTip = async () => revParse(repo, 'HEAD');
+      deps.runTestsAtRef = async () => {
+        calls.push('runTestsAtRef');
+        return { pass: opts.passesAtTip, summary: opts.passesAtTip ? 'pass at tip' : 'still red at tip' };
+      };
+      // The prefix salvage's inputs — present and eligible. If it is ever ATTEMPTED,
+      // commitsInRange is the first thing it calls, so it cannot run without leaving a mark.
+      deps.commitsInRange = async () => {
+        calls.push('commitsInRange');
+        return [];
+      };
+      deps.affectedWorkspacesForRange = async () => {
+        calls.push('affectedWorkspacesForRange');
+        return ['@papercusp/web'];
+      };
+      return { deps, calls, greenRuns: () => greenRuns };
+    }
+
+    it('a STALE red with the refire cap spent still does not salvage from its phantom signature', async () => {
+      // Cap 0 ⇒ no refire, so the run walks PAST the re-triage — the exact path where the
+      // old code would hand a phantom failure signature to the prefix salvage and spend a
+      // second full suite under-advancing `main` around a failure that does not exist.
+      vi.stubEnv('PAPERCUSP_GATE_AUTO_REFIRE_CAP', '0');
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2'); // the candidate the quiet-cut judges
+      await commit('src/failing.test.ts', 'fixed', 'c3 — the fix, landed after the cut');
+      const { deps, calls } = bothPathsWired({ passesAtTip: true });
+
+      await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(calls).toContain('runTestsAtRef'); // the rescue ran (cheap)...
+      expect(calls).not.toContain('commitsInRange'); // ...and the salvage was never ATTEMPTED
+      vi.unstubAllEnvs();
+    });
+
+    it('a STALE red REFIRES on the tip and can advance — the rescue that seven gate runs never reached', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      const c3 = await commit('src/failing.test.ts', 'fixed', 'c3 — the fix');
+      const { deps, calls } = bothPathsWired({ passesAtTip: true });
+      // The candidate is red; the TIP is green (the peer fix landed after the cut).
+      let run = 0;
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        run += 1;
+        return run === 1
+          ? {
+              green: false,
+              summary: '1 failed',
+              failingTests: ['@papercusp/web'],
+              failingFiles: [{ file: 'src/failing.test.ts', workspace: '@papercusp/web' }],
+            }
+          : { green: true, summary: 'all pass' };
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(calls).toContain('runTestsAtRef');
+      expect(r.green).toBe(true);
+      expect(r.advanced).toBe(true);
+      expect(r.candidate).toBe(c3); // advanced to the TIP, not held on the stale red
+    });
+
+    it('the cheap tip re-triage runs BEFORE any prefix-salvage work', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      await commit('src/failing.test.ts', 'fixed', 'c3');
+      const { deps, calls } = bothPathsWired({ passesAtTip: true });
+
+      await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      const triaged = calls.indexOf('runTestsAtRef');
+      const salvaged = calls.indexOf('commitsInRange');
+      expect(triaged).toBeGreaterThanOrEqual(0);
+      // -1 (never) is the correct outcome here; the point is it must NEVER precede triage.
+      if (salvaged >= 0) expect(triaged).toBeLessThan(salvaged);
+    });
+
+    it('a REAL red (reproduces at tip) still gets the prefix salvage — P-016 is not regressed', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      await commit('unrelated.ts', 'x', 'c3');
+      const { deps, calls } = bothPathsWired({ passesAtTip: false });
+
+      await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(calls).toContain('runTestsAtRef'); // triaged first...
+      expect(calls).toContain('commitsInRange'); // ...then genuinely salvaged
+      expect(calls.indexOf('runTestsAtRef')).toBeLessThan(calls.indexOf('commitsInRange'));
+    });
+  });
+
   describe('historicalFlakeAnnotations (WI-2997, pure)', () => {
     it('renders a line per failing file that has historical stats, flagging known suspects', () => {
       const note = historicalFlakeAnnotations(

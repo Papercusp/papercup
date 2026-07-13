@@ -18,7 +18,7 @@
  *   PAPERCUSP_VOICE_LIVE=1 npx vitest run \
  *     lib/endpoint-route/routes/agent-mcp/voice-local-live.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, type TestContext } from 'vitest';
 
 import { synthesize } from './tts-synth';
 import { KOKORO_URL, VOICEMODE_URL, probeKokoroHealth, resolveTtsEngine } from './operator-voice-proxy-helpers';
@@ -36,6 +36,59 @@ async function reachable(url: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Did a live call fail at the TRANSPORT layer (service gone / refused / timed out), as opposed
+ *  to failing an assertion about what it returned? */
+function isTransportFailure(e: unknown): boolean {
+  const msg = e instanceof Error ? `${e.name}: ${e.message}${e.cause ? ` ${String(e.cause)}` : ''}` : String(e);
+  return /fetch failed|ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|AbortError|TimeoutError|timed? ?out/i.test(msg);
+}
+
+/**
+ * `it`, but a TRANSPORT failure against the live services SKIPS instead of redding.
+ *
+ * The reachability probe above runs ONCE at import, so it only proves the services were up a
+ * moment ago. Under the release gate's own full-suite load (load1 ≈ 245 observed) a local
+ * kokoro/whisper answers `/health` and is then knocked over by the time the real call lands —
+ * turning a transient local-service hiccup into a red on the SHARED gate, which is exactly what
+ * "SKIPS when they are not [reachable]" exists to prevent. Mid-run unreachable is the same
+ * condition as at-import unreachable, so it gets the same verdict.
+ *
+ * This never hides a REGRESSION: an assertion failure (wrong sample rate, bad transcript, silent
+ * audio — the API-drift this suite exists to catch) still fails hard, and PAPERCUSP_VOICE_LIVE=1
+ * makes transport failures loud again, so the forced live run keeps its teeth.
+ */
+function liveIt(name: string, fn: (ctx: TestContext) => Promise<void>, timeout?: number): void {
+  it(
+    name,
+    async (ctx) => {
+      try {
+        await fn(ctx);
+      } catch (e) {
+        if (FORCE || !isTransportFailure(e)) throw e;
+        ctx.skip(
+          `live voice service became unreachable mid-run (${e instanceof Error ? e.message : String(e)}) — ` +
+            `skipping per the reachable-or-skip contract; set PAPERCUSP_VOICE_LIVE=1 to make this a hard failure`,
+        );
+      }
+    },
+    timeout,
+  );
+}
+
+/**
+ * `synthesize()` CATCHES its own transport errors and reports `{ ok:false, status:502, error:
+ * 'kokoro unreachable: …' }` instead of throwing — so a kokoro hiccup would reach the test as a
+ * plain `expect(synth.ok).toBe(true)` assertion failure and slip straight past liveIt's skip.
+ * Re-raise the unreachable case as the transport failure it actually is. Note this keys on the
+ * `unreachable` classification, NOT on the 502 alone: a kokoro server that ANSWERS with a 5xx is
+ * also a 502 here, and that one is real API drift — it must keep failing hard.
+ */
+async function liveSynthesize(...args: Parameters<typeof synthesize>) {
+  const r = await synthesize(...args);
+  if (!r.ok && /unreachable/i.test(r.error)) throw new Error(`fetch failed: ${r.error}`);
+  return r;
 }
 
 const kokoroUp = await reachable(`${KOKORO_URL}/health`);
@@ -67,19 +120,19 @@ function peakOf(samples: Int16Array): number {
     expect(whisperUp, `whisper unreachable at ${VOICEMODE_URL}`).toBe(true);
   });
 
-  it('probeKokoroHealth() sees the real server', async () => {
+  liveIt('probeKokoroHealth() sees the real server', async () => {
     expect(await probeKokoroHealth()).toBe(true);
   });
 
-  it("resolveTtsEngine('browser') falls back to kokoro against the LIVE health probe", async () => {
+  liveIt("resolveTtsEngine('browser') falls back to kokoro against the LIVE health probe", async () => {
     // speechSynthesis is meaningless server-side; with kokoro really up it must
     // resolve to kokoro rather than 503.
     const r = await resolveTtsEngine('browser', { ttsEngine: 'browser' }, probeKokoroHealth);
     expect(r).toMatchObject({ ok: true, engine: 'kokoro' });
   });
 
-  it('kokoro synthesizes a real, decodable, non-silent 24kHz mono WAV', async () => {
-    const synth = await synthesize('kokoro', PHRASE, undefined, DEFAULT_VOICE_PREFS);
+  liveIt('kokoro synthesizes a real, decodable, non-silent 24kHz mono WAV', async () => {
+    const synth = await liveSynthesize('kokoro', PHRASE, undefined, DEFAULT_VOICE_PREFS);
     expect(synth.ok).toBe(true);
     if (!synth.ok) return;
     expect(synth.contentType).toBe('audio/wav');
@@ -99,10 +152,10 @@ function peakOf(samples: Int16Array): number {
     expect(Math.floor(pcm48.length / VOICE_FRAME_SAMPLES)).toBeGreaterThan(0);
   }, 60_000);
 
-  it('an explicit voiceId really changes the synthesized audio', async () => {
+  liveIt('an explicit voiceId really changes the synthesized audio', async () => {
     const [bella, adam] = await Promise.all([
-      synthesize('kokoro', 'voice check', 'af_bella', DEFAULT_VOICE_PREFS),
-      synthesize('kokoro', 'voice check', 'am_adam', DEFAULT_VOICE_PREFS),
+      liveSynthesize('kokoro', 'voice check', 'af_bella', DEFAULT_VOICE_PREFS),
+      liveSynthesize('kokoro', 'voice check', 'am_adam', DEFAULT_VOICE_PREFS),
     ]);
     expect(bella.ok && adam.ok).toBe(true);
     if (!bella.ok || !adam.ok) return;
@@ -113,8 +166,8 @@ function peakOf(samples: Int16Array): number {
     expect(same).toBe(false);
   }, 60_000);
 
-  it('ROUND TRIP: kokoro speaks the phrase → whisper transcribes it back', async () => {
-    const synth = await synthesize('kokoro', PHRASE, undefined, DEFAULT_VOICE_PREFS);
+  liveIt('ROUND TRIP: kokoro speaks the phrase → whisper transcribes it back', async () => {
+    const synth = await liveSynthesize('kokoro', PHRASE, undefined, DEFAULT_VOICE_PREFS);
     expect(synth.ok).toBe(true);
     if (!synth.ok) return;
 
@@ -138,7 +191,7 @@ function peakOf(samples: Int16Array): number {
     expect(recall, `transcript was: ${JSON.stringify(transcript)}`).toBeGreaterThanOrEqual(0.8);
   }, 90_000);
 
-  it('whisper returns empty string (not a throw) for un-decodable audio', async () => {
+  liveIt('whisper returns empty string (not a throw) for un-decodable audio', async () => {
     const junk = new Blob([new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])], { type: 'audio/wav' });
     await expect(transcribeChunk(VOICEMODE_URL, junk)).resolves.toBe('');
   }, 30_000);

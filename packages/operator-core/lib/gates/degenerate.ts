@@ -29,7 +29,7 @@
  * Shape 3/4 failure (a metric that cannot be nonzero; a check nothing calls), and you cannot find
  * it by looking at the rows you have. Hence {@link GATE_REGISTRY}: the DECLARATION to diff against.
  */
-import type { Sql } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import type { GateExpectation } from './decision';
 
 /**

@@ -13,6 +13,7 @@
  * reads sessionStorage.setItem + localStorage.length/key/removeItem, so we
  * install Map-backed Storage shims in beforeEach.
  */
+import type { JSX } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
@@ -71,7 +72,7 @@ function stubFetch() {
   }));
 }
 
-const Login = Route.component as () => JSX.Element;
+const Login = (Route as unknown as { component: () => JSX.Element }).component;
 function renderLogin(over: Partial<typeof searchVal> = {}, searchParams = '') {
   searchVal = { redirect_to: undefined, switch: undefined, mode: undefined, ...over };
   return render(<NuqsTestingAdapter searchParams={searchParams}><Login /></NuqsTestingAdapter>);

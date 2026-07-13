@@ -1588,6 +1588,32 @@ export async function runGreenCheckpoint(
       }
     }
 
+    // P-016 (D-010): longest-green-PREFIX FF. With the gate ARMED, a red TIP no longer
+    // holds the clean PREFIX behind it hostage — `main` FFs to the longest prefix that
+    // ITSELF runs green (confirm-gated, so the "always tested-green" invariant holds).
+    // Runs AFTER the red escalate/broadcast/emit above, so the red tip is still fully
+    // surfaced + the release-fixer still dispatched on it. Default-ON (opt-out via
+    // PAPERCUSP_PARTIAL_GREEN_GATE=0); a failure here just falls through to the normal
+    // hold. (release-pipeline-resilience P-016)
+    //
+    // EI-10615: SKIPPED for a `stale-candidate` red. That red's failing files PASS at tip,
+    // so its signature is a phantom — salvaging a "longest clean prefix" from it would spend
+    // a second full suite under-advancing `main` around a failure that does not exist. We
+    // only reach here on a stale red when the refire cap is spent; holding is then correct.
+    const staleRed = retriage?.classification === 'stale-candidate';
+    if (staleRed) {
+      deps.log('partial-green-gate: skipped — red is a STALE candidate (passes at tip); its failure signature is a phantom');
+    }
+    if (lastReady && !staleRed && partialGreenGateEnabledFromEnv()) {
+      const partial = await tryLongestGreenPrefix(cfg, deps, lastReady, candidate, failingTests, !!opts.noPush).catch(
+        (e) => {
+          deps.log(`partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`);
+          return null;
+        },
+      );
+      if (partial) return partial;
+    }
+
     // Deploy-staleness alarm: a held gate is loud, but a PIN that never moves is silent.
     // Attach the blocking red so the page is actionable, not just an age complaint.
     const staleness = await deps.deployStaleness?.().catch(() => null);

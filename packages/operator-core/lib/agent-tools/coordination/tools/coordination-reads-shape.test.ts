@@ -21,7 +21,7 @@ function rosterRow(i: number, overrides: Record<string, unknown> = {}) {
     ownerLabel: `su · ${i}`,
     workspaceId: "papercusp",
     source: "presence",
-    host: "marsh-office",
+    host: "dev-box",
     pid: 1000 + i,
     startedAt: "2026-07-01T00:00:00Z",
     agentRole: "su",

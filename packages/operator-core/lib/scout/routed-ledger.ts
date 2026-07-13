@@ -410,6 +410,18 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
       ...(r.target_hive ? { targetHive: r.target_hive } : {}),
       ...(r.cycle_id ? { cycleId: r.cycle_id } : {}),
       ...(r.title ? { title: r.title } : {}),
+      // WI-4474: this column was SELECTed (and typed on LedgerRow) but never
+      // mapped onto the provenance — so every ledger-READ consumer saw
+      // `addressesPatternRefs: undefined` even though the WRITE path persists it
+      // correctly. That made groundingLaneHistogram() return {} for every cycle,
+      // which in turn made the P-006 grounding-lane metric and the P-015
+      // "rubric-grounded routed ideas > 0" bar structurally unpassable — a
+      // read-side drop that reads exactly like an upstream population failure.
+      // (The cycle-TIME histogram computes over in-memory ideas, so it was
+      // non-empty all along: the two disagreed, and only the ledger read was wrong.)
+      ...(Array.isArray(r.addresses_pattern_refs) && r.addresses_pattern_refs.length > 0
+        ? { addressesPatternRefs: [...r.addresses_pattern_refs] }
+        : {}),
       routedAt: epochMsToIso(r.routed_at),
       ...(r.human_grade != null ? { humanGrade: Number(r.human_grade) } : {}),
       ...(r.human_feedback ? { humanFeedback: r.human_feedback } : {}),

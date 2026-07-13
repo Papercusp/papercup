@@ -9,6 +9,7 @@
  * Seams: @tanstack/react-router (createFileRoute → Route with a controllable
  * useParams + a captured useNavigate), fetch stubbed per-call.
  */
+import type { JSX } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 
@@ -21,7 +22,7 @@ vi.mock('@tanstack/react-router', () => ({
 
 import { Route } from './$login';
 
-const Comp = Route.component as () => JSX.Element;
+const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 
 let fetchImpl: (url: string) => { status?: number; ok: boolean; body: unknown };
 function stubFetch() {

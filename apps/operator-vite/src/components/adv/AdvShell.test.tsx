@@ -90,7 +90,10 @@ vi.mock('@/app/harness/Select', () => ({
       onChange={(e) => onChange(e.target.value)}
     >
       {options.map((o, i) =>
-        'kind' in o && o.kind === 'group' ? (
+        // `'kind' in o` alone narrows the union (only the group has it); the extra
+        // `&& o.kind === 'group'` defeated else-branch narrowing (TS can't tell
+        // which conjunct failed), leaving `o` untyped in the option branch.
+        'kind' in o ? (
           <optgroup key={`g-${i}`} label={o.label}>
             {o.options.map((opt) => (
               <option key={opt.value} value={opt.value} disabled={opt.disabled}>

@@ -53,7 +53,7 @@
  * A gate that had to `await` a telemetry write to make a decision would be a gate whose decision
  * depends on the telemetry being up. Keep them apart.
  */
-import type { Sql } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 
 /**
  * What the gate is FOR. The one field a statistic cannot recover — see the header.
@@ -97,17 +97,23 @@ let _suppressedSinceWarn = 0;
 export async function recordGateDecisions(sql: Sql, decisions: readonly GateDecision[]): Promise<void> {
   if (decisions.length === 0) return;
   try {
+    const rows = decisions.map((d) => ({
+      gate: d.gate,
+      expect: d.expect,
+      verdict: d.verdict,
+      value: typeof d.value === 'number' && Number.isFinite(d.value) ? d.value : null,
+      threshold: typeof d.threshold === 'number' && Number.isFinite(d.threshold) ? d.threshold : null,
+      subject: d.subject ?? null,
+    }));
     await sql`
-      INSERT INTO harness_shared.gate_decisions (gate, expect, verdict, value, threshold, subject)
-      SELECT * FROM ${sql(
-        decisions.map((d) => [
-          d.gate,
-          d.expect,
-          d.verdict,
-          typeof d.value === 'number' && Number.isFinite(d.value) ? d.value : null,
-          typeof d.threshold === 'number' && Number.isFinite(d.threshold) ? d.threshold : null,
-          d.subject ?? null,
-        ]),
+      INSERT INTO harness_shared.gate_decisions ${sql(
+        rows,
+        'gate',
+        'expect',
+        'verdict',
+        'value',
+        'threshold',
+        'subject',
       )}
     `;
   } catch (err) {

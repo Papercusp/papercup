@@ -43,6 +43,7 @@ import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
+import type { SelectOption } from '@/app/harness/Select';
 import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 import ScheduledRoutinesPane from '../adv/ScheduledRoutinesPane';
 import MugHeartbeat from './MugHeartbeat';
@@ -171,7 +172,12 @@ export function steerHiveOptions(projects: LiteProject[]): Array<{ value: string
   // rows (drop the non-steering "All" + loading rows; keep the member indent).
   const flat: Array<{ value: string; label: string }> = [];
   for (const entry of buildHarnessSelectOptions(projects, null)) {
-    const opts = 'kind' in entry && entry.kind === 'group' ? entry.options : [entry];
+    // `'kind' in entry` ALONE narrows the SelectOption | SelectGroup union (only the
+    // group carries `kind`). The old `'kind' in entry && entry.kind === 'group'`
+    // read the same at runtime but defeated narrowing in the ELSE branch — TS can't
+    // tell which conjunct was false — so `entry` stayed SelectEntry and `.value`
+    // below was untyped.
+    const opts: SelectOption[] = 'kind' in entry ? entry.options : [entry];
     for (const o of opts) {
       if (o.value === ALL_HARNESSES_OPTION || o.value === '__loading') continue;
       flat.push({ value: o.value, label: typeof o.label === 'string' ? o.label : String(o.label) });
@@ -187,7 +193,13 @@ export function steerHiveOptions(projects: LiteProject[]): Array<{ value: string
  *  woke-never) and the 👑-tab showed a dead queen while the real home queen ran
  *  (2026-07-01). The guess remains only as the fallback for a stale server
  *  without the stamp. Pure. */
-export function resolveHomeHive(projects: LiteProject[], rows: readonly HiveSteeringRow[]): string {
+export function resolveHomeHive(
+  projects: LiteProject[],
+  // Only `isHome` + `slug` are read, so ASK for only those: useModelOverride reads
+  // the same `hive.steering` query through a narrower row type, and demanding the
+  // full HiveSteeringRow there forced a duplicate/incompatible local interface.
+  rows: readonly Pick<HiveSteeringRow, 'slug' | 'isHome'>[],
+): string {
   return (
     rows.find((r) => r.isHome)?.slug ||
     projects.find((p) => p.harness_kind === 'hive')?.slug ||

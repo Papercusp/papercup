@@ -13,6 +13,7 @@
  * drive the bind callback), @papercusp/sync (harnessProjects.lite — the live
  * registry list replaced the old one-shot fetch, data-sync-push P-010).
  */
+import type { JSX } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
@@ -65,7 +66,7 @@ vi.mock('@/app/harness/dock/dock-actions', () => ({
 
 import { Route } from './workbench';
 
-const Comp = Route.component as () => JSX.Element;
+const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 
 function renderWb(searchParams = '') {
   return render(<NuqsTestingAdapter searchParams={searchParams}><Comp /></NuqsTestingAdapter>);

@@ -170,14 +170,21 @@ export function evaluateProgramSuccess(
         }
       : {
           status: (rubricGrounded > 0 ? 'pass' : 'fail') as SuccessStatus,
-          // When EVERY lane is zero the defect is upstream of the rubric lane: no idea
-          // carries `addressesPatternRefs` at all, so the grounding histogram (and the
-          // P-006 groundingLanes tick metric built on it) is structurally empty. Say so —
-          // "0 rubric-grounded" and "nothing is grounded to anything" are very different
-          // bugs, and the second one masquerades as the first.
+          // When EVERY lane is zero, the defect is upstream of the rubric lane: nothing is
+          // grounded to anything, so the rubric lane CANNOT be non-zero. Say so — "0
+          // rubric-grounded" and "nothing is grounded to anything" are very different bugs
+          // and the second masquerades as the first.
+          //
+          // But do NOT name a culprit we have not verified. An earlier version of this line
+          // asserted "addressesPatternRefs is never populated on the ledger WRITE" — and that
+          // false attribution cost a real investigation (WI-4474): the write path was correct
+          // all along and the READ path (readRoutedIdeas) was silently dropping the column.
+          // A read-side field-drop is INDISTINGUISHABLE from a write-side population failure
+          // from here, because this report only ever sees the read. So state the observation
+          // and hand over the one query that discriminates, rather than guessing a direction.
           observed:
             anyGrounded === 0
-              ? `NO routed idea carries pattern refs at all (0 of ${ideas.length}) — every grounding lane is empty, so the rubric lane cannot be non-zero. The defect is upstream: addressesPatternRefs is never populated on the ledger write.`
+              ? `NO routed idea carries pattern refs at all (0 of ${ideas.length}) — every grounding lane is empty, so the rubric lane cannot be non-zero. This is upstream of the rubric lane, but it does NOT say whether the WRITE or the READ is at fault (this report only sees the read). Discriminate before fixing: SELECT count(*) FILTER (WHERE jsonb_array_length(COALESCE(addresses_pattern_refs,'[]'::jsonb)) > 0) FROM harness_shared.scout_routed_ideas WHERE origin='scout' — refs present in the column ⇒ the read path is dropping them; absent ⇒ the write/ideator path never produced them.`
               : `${rubricGrounded} of ${ideas.length} routed ideas grounded in the rubric lane (all lanes: ${JSON.stringify(lanes)})`,
         }),
   });

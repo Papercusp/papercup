@@ -108,15 +108,24 @@ describe('resolveTtsEngine', () => {
   });
 });
 
-// WI-3663: the "Re-detect engines" button probes voicemode's local Whisper via
-// /v1/models (there is no dedicated /health). A down server must read false, never throw.
+// WI-3663: the "Re-detect engines" button probes voicemode's local Whisper. A down server must
+// read false, never throw.
+//
+// ⚠ REGRESSION PIN (2026-07-13): this test used to assert `/v1/models`, and its comment asserted
+// "there is no dedicated /health" as fact. Both were WRONG, and the test's confidence is exactly
+// why the bug survived: whisper.cpp's server DOES implement /health (200) and does NOT implement
+// /v1/models (404) — it is only OpenAI-shaped on its --inference-path (/v1/audio/transcriptions).
+// So the probe reported a healthy, actively-transcribing whisper as DOWN (`voicemode: false` in
+// the engine-health route + settings UI), and the owner hit an STT engine the app believed was
+// offline. Verified against the live server: /health → 200, /v1/models → 404, a real
+// transcription → 200 with text. Pin the URL so this cannot silently regress again.
 describe('probeVoicemodeHealth', () => {
-  it('returns true when /v1/models answers ok', async () => {
+  it('probes /health — NOT /v1/models (whisper.cpp 404s that; probing it read healthy as down)', async () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     try {
       expect(await probeVoicemodeHealth('http://vm.test')).toBe(true);
-      expect(fetchMock).toHaveBeenCalledWith('http://vm.test/v1/models', expect.anything());
+      expect(fetchMock).toHaveBeenCalledWith('http://vm.test/health', expect.anything());
     } finally {
       vi.unstubAllGlobals();
     }

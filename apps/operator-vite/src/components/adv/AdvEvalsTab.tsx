@@ -139,7 +139,10 @@ interface EvalArmAggregate {
   arm: ArmId;
   passAt1: number;
   ci?: [number, number];
-  costUsd?: number;
+  // null (not just absent) is a real value: an ablation arm can report "no cost
+  // measured". The frontier filter already guards `costUsd != null` (line ~311),
+  // and the sibling aggregate types below allow null — align this one.
+  costUsd?: number | null;
   isoBudgetTokens?: number | null;
 }
 export interface EvalReport {

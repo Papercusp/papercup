@@ -8,6 +8,7 @@
  * Seams: @tanstack/react-router (createFileRoute → Route exposing loader +
  * controllable useLoaderData), RuntimeView stubbed, fetch stubbed per-call.
  */
+import type { JSX } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
@@ -23,8 +24,8 @@ vi.mock('@/app/settings/plugin-runtime/RuntimeView', () => ({
 
 import { Route } from './plugin-runtime';
 
-const loader = (Route as { loader: () => Promise<{ status: unknown }> }).loader;
-const Comp = Route.component as () => JSX.Element;
+const loader = (Route as unknown as { loader: () => Promise<{ status: unknown }> }).loader;
+const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 
 let fetchImpl: () => { ok: boolean; body: unknown };
 let fetchThrows = false;

@@ -16,8 +16,8 @@ vi.mock('@tanstack/react-router', () => ({
 
 import { Route } from './index';
 
-const validateSearch = (Route as { validateSearch: (s: Record<string, unknown>) => { slug?: string; panel?: string } }).validateSearch;
-const beforeLoad = (Route as { beforeLoad: (a: { search: { slug?: string; panel?: string } }) => void }).beforeLoad;
+const validateSearch = (Route as unknown as { validateSearch: (s: Record<string, unknown>) => { slug?: string; panel?: string } }).validateSearch;
+const beforeLoad = (Route as unknown as { beforeLoad: (a: { search: { slug?: string; panel?: string } }) => void }).beforeLoad;
 
 /** beforeLoad always throws the redirect sentinel; return what it threw. */
 function redirectFor(search: { slug?: string; panel?: string }): { to: string; search: Record<string, unknown> } {

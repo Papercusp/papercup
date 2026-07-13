@@ -14,7 +14,7 @@ vi.mock('@tanstack/react-router', () => ({
 
 import { Route } from './$';
 
-const beforeLoad = (Route as { beforeLoad: (a: { params: { _splat?: string } }) => void }).beforeLoad;
+const beforeLoad = (Route as unknown as { beforeLoad: (a: { params: { _splat?: string } }) => void }).beforeLoad;
 
 /** beforeLoad always throws the redirect sentinel; return what it threw. */
 function redirectFor(splat: string | undefined): { to: string; search: Record<string, unknown> } {

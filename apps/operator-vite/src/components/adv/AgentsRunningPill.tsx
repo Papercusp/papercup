@@ -134,7 +134,11 @@ export function canForkSession(a: Pick<RosterAgent, 'agent'>): boolean {
  *  fires when the stream WOULD be empty; a live session's transcript file always
  *  resolves, so a working pane is never hidden. */
 export function hasThinking(
-  a: Pick<RosterAgent, 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId' | 'thinkingResolvable'>,
+  // Every field below is read defensively (`&&` / `!= null` / `=== false`), so the
+  // handles are genuinely OPTIONAL — a caller with only a `sessionId`, or only a
+  // `runId`, is a valid input. A bare `Pick` made all of them REQUIRED, which is
+  // why partial call-sites (real ones pass a full RosterAgent) had to be forced.
+  a: Partial<Pick<RosterAgent, 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId' | 'thinkingResolvable'>>,
 ): boolean {
   if (a.thinkingResolvable === false) return false;
   return Boolean(

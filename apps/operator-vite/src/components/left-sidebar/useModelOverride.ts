@@ -18,6 +18,10 @@ import { resolveHomeHive } from './MugTab';
 
 interface SteeringRow {
   slug: string;
+  /** Server-stamped home-queen marker. The row HAS it on the wire — omitting it
+   *  here hid it from `resolveHomeHive`, which reads exactly this field to pick the
+   *  home hive (see MugTab). Declared so the type matches what we actually receive. */
+  isHome?: boolean;
   modelOverrides?: Record<string, string> | null;
 }
 

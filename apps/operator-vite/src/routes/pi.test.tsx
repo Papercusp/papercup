@@ -7,6 +7,7 @@
  * Seams: @tanstack/react-router (createFileRoute → Route with controllable
  * useSearch), @/app/harness/PiTerminalsDock stubbed so React.lazy resolves it.
  */
+import type { JSX } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
@@ -22,8 +23,8 @@ vi.mock('@/app/harness/PiTerminalsDock', () => ({
 
 import { Route } from './pi';
 
-const validateSearch = (Route as { validateSearch: (s: Record<string, unknown>) => { harness?: string; lane?: string } }).validateSearch;
-const Comp = Route.component as () => JSX.Element;
+const validateSearch = (Route as unknown as { validateSearch: (s: Record<string, unknown>) => { harness?: string; lane?: string } }).validateSearch;
+const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 
 afterEach(cleanup);
 

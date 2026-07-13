@@ -77,6 +77,17 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     expect(i1.cycleId).toBe('c1');
     expect(i1.title).toBe('win idea');
     expect(typeof i1.routedAt).toBe('string');
+    // WI-4474 REGRESSION GUARD. `addresses_pattern_refs` was SELECTed, typed on
+    // LedgerRow, and SET BY THIS VERY FIXTURE (i1, above) — but never mapped onto
+    // the provenance, so every ledger-read consumer saw it as undefined. This
+    // round-trip test asserted six other fields and omitted the seventh, so the
+    // drop was invisible: the fixture had the coverage, the assertion didn't.
+    // A read-side field-drop looks EXACTLY like an upstream population failure
+    // downstream (it made the P-006 grounding lanes and the P-015 rubric bar
+    // structurally unpassable), so assert the field, not just the row.
+    expect(i1.addressesPatternRefs).toEqual(['wi:F-1']);
+    // ...and an absent ref-set stays absent (not [] — the provenance omits the key).
+    expect(rows.find((r) => r.ideaId === 'i2')!.addressesPatternRefs).toBeUndefined();
   });
 
   it('upserts by ideaId (re-routing overwrites, no duplicate row)', async () => {
