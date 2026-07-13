@@ -143,7 +143,7 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Self-select via your claim SPEC (issued by your queen or fleet leader): atomically claim the next eligible work-item under global floors + spec.view.filter, ordered by spec.rank, SKIP LOCKED. Outside a fleet, no spec uses default ordering with a warning. A fleet MEMBER with no matching/inherited spec fails closed with windDown:true; it never falls through to generic backlog. Returns the claimed item + selecting spec revision, or a self-describing miss.',
+    'Self-select via your claim SPEC: atomically claim the next eligible work-item under global floors + spec.view.filter, ordered by spec.rank, SKIP LOCKED. Outside a fleet, no spec uses default ordering with a warning. A fleet MEMBER with no matching/inherited spec fails closed with windDown:true; it never falls through to generic backlog. Returns the claimed item + selecting spec revision, or a self-describing miss.',
   guidance: {
     when: 'You are a SELF-PULLING agent picking up your next item — a coding-pot cup (role="cup"), or an su fleet MEMBER pulling its lane (su-loop-capability-parity). Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your Mug\'s / fleet leader\'s judgment expressed as your claim spec; the pickup is yours. A claim-spec self-puller is a cup or an su fleet member, NOT a coding-factory pipeline role (see notWhen).',
     notWhen:

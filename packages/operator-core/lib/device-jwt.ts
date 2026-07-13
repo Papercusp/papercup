@@ -25,6 +25,69 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
  * time so build hosts (and any route that imports this transitively but
  * doesn't actually use it) don't need MOBILE_JWT_SECRET.
  */
+/**
+ * Durability status of the device-JWT signing secret (mobile-apps-revival-v2
+ * P-001). Pure — reads env, never memoizes — so a boot hook and the phone
+ * connection-health route (P-010) can both call it freely.
+ *
+ *  - durable:true  source:'env'             — a >=32-char MOBILE_JWT_SECRET is
+ *                                             set; device tokens survive
+ *                                             restarts/deploys (the ship state).
+ *  - durable:false source:'unset-production' — production with no usable secret;
+ *                                             signing WILL throw.
+ *  - durable:false source:'ephemeral'        — dev with no secret; a random
+ *                                             per-process secret is used and
+ *                                             every restart silently invalidates
+ *                                             all paired devices (phones must
+ *                                             re-pair). The silent-invalidation
+ *                                             trap this warning exists to expose.
+ */
+export type MobileJwtSecretStatus =
+  | { durable: true; source: 'env' }
+  | { durable: false; source: 'unset-production'; reason: string }
+  | { durable: false; source: 'ephemeral'; reason: string };
+
+export function mobileJwtSecretStatus(): MobileJwtSecretStatus {
+  const s = process.env.MOBILE_JWT_SECRET;
+  if (s && s.length >= 32) return { durable: true, source: 'env' };
+  if (process.env.NODE_ENV === 'production') {
+    return {
+      durable: false,
+      source: 'unset-production',
+      reason:
+        'MOBILE_JWT_SECRET is unset or <32 chars in production; device-token signing will throw and mobile pairing is broken.',
+    };
+  }
+  return {
+    durable: false,
+    source: 'ephemeral',
+    reason:
+      'MOBILE_JWT_SECRET is unset; using a per-process secret — device tokens will NOT survive an operator restart (paired phones silently stop working until they re-pair). Set MOBILE_JWT_SECRET (>=32 chars) in apps/operator/.env.local to make them durable.',
+  };
+}
+
+let _warnedEphemeral = false;
+
+/**
+ * Emit the device-JWT durability warning at most once per process. Safe to call
+ * eagerly at boot (below) AND lazily on first token use — whichever happens
+ * first wins; the guard makes the second call a no-op.
+ */
+export function warnIfMobileJwtSecretNotDurable(): MobileJwtSecretStatus {
+  const status = mobileJwtSecretStatus();
+  if (!status.durable && !_warnedEphemeral) {
+    _warnedEphemeral = true;
+    console.warn(`[device-jwt] ${status.reason}`);
+  }
+  return status;
+}
+
+/** Test-only: reset the memoized secret + the warn-once latch. */
+export function __resetDeviceJwtForTest(): void {
+  _secret = null;
+  _warnedEphemeral = false;
+}
+
 let _secret: string | null = null;
 function getSecret(): string {
   if (_secret) return _secret;
@@ -36,7 +99,10 @@ function getSecret(): string {
   if (process.env.NODE_ENV === 'production') {
     throw new Error('MOBILE_JWT_SECRET must be set (>=32 chars) in production');
   }
-  // Dev: derive a stable per-process secret. Rotates on restart, fine for dev.
+  // Dev: derive a stable per-process secret. Rotates on restart — warn once so
+  // "my phone silently stopped working after a restart" is diagnosable rather
+  // than mysterious.
+  warnIfMobileJwtSecretNotDurable();
   _secret = randomBytes(32).toString('base64url');
   return _secret;
 }
