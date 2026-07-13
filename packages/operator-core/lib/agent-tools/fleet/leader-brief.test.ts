@@ -76,7 +76,18 @@ describe('projectMember (pure)', () => {
     expect(m.verdict).toBeNull();
     expect(m.sessionState).toBeNull();
     expect(m.wakeMode).toBeNull();
+    expect(m.monitorState).toBeNull();
+    expect(m.nextFireAt).toBeNull();
     expect(m.contextPressure).toBeNull();
+  });
+
+  it('carries healthy loop lifecycle and next fire through verbatim', () => {
+    const m = projectMember(
+      baseAgent({ monitorState: 'waiting', nextFireAt: '2026-07-10T12:01:00.000Z' }),
+      NOW,
+    );
+    expect(m.monitorState).toBe('waiting');
+    expect(m.nextFireAt).toBe('2026-07-10T12:01:00.000Z');
   });
 });
 

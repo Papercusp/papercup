@@ -29,6 +29,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
+import { resolvePresenceFleet } from '../presence-fleet';
 import { resolveSelfRef } from '../self-marker';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
@@ -401,10 +402,10 @@ export async function composeOrient(
   /** P-005: the (owner,'orient:fleetCatchUp') read-cursor ack for the fleet
    *  catch-up fold — same contract. Undefined ⇒ full delivery every call. */
   fleetCatchUpCursor?: (next: CursorState) => Promise<AckResult>,
-  /** fleet-reliability-verification-2026-07-10 P-007: the caller's launch-env fleet
-   *  membership (fleetSlug/fleetRole) — resolved by the handler via
-   *  deriveFleetMembership() (a sync, IO-free env read local to the CALLING agent's
-   *  own process) and INJECTED so composeOrient stays IO-free + unit-testable.
+  /** fleet-reliability-verification-2026-07-10 P-007: the caller's authoritative
+   *  presence-backed fleet membership (fleetSlug/fleetRole), falling back to launch
+   *  environment only when the presence read fails. Resolved by the handler and
+   *  INJECTED so composeOrient stays IO-free + unit-testable.
    *  Drives the leaderBrief fold below (monitor mode + fleetRole==='leader' only). */
   fleetMembership?: { fleetSlug: string | null; fleetRole: string | null } | null,
   /** P-016 (voice-public-release-readiness-2026-07-12): the role-specific fold
@@ -659,9 +660,10 @@ export async function composeOrient(
 
   // ── the caller's fleet (coord:whoami) — resolved ONCE, hoisted ABOVE the facts
   // fold because the P-007 audience filter needs it there; reused by the fleet
-  // legs and the announced-gates fold below (EI-9270). BEST-EFFORT: null on any
-  // failure; skipped on a monitor tick (both consumers are monitor-skipped too).
-  let fleetSlug: string | null = null;
+  // legs and the announced-gates fold below (EI-9270). A monitor tick reuses the
+  // handler's already-resolved authoritative membership instead of paying a
+  // coord:whoami sub-call; full mode keeps the existing whoami fold.
+  let fleetSlug: string | null = monitor ? (fleetMembership?.fleetSlug ?? null) : null;
   if (!monitor) {
     try {
       const who = (await call('coord:whoami', {})) as { fleetSlug?: string | null } | undefined;
@@ -840,37 +842,37 @@ export async function composeOrient(
 
   // ── Announced gate events (EI-9270) — declared-but-unfired gates visible to this
   // caller's fleet/plan/harness (+ global): the zero-message "what should I await".
-  // BEST-EFFORT (absent on any failure) + skipped on a monitor tick. TIME-BOUNDED:
+  // BEST-EFFORT (absent on any failure). Monitor ticks intentionally KEEP this
+  // compact fold: a newly-declared gate is an actionable fleet transition, not
+  // heavyweight bootstrap context. TIME-BOUNDED:
   // a hung PG read degrades to absent within its own short budget (a discovery
   // nicety must never stall orientation — the WI-3818 bounded-leg contract).
-  if (!monitor) {
-    try {
-      const annsResult = await withBoundedTimeout(listActiveAnnouncements({ unfiredOnly: true, limit: 50 }), {
-        fallback: [] as Awaited<ReturnType<typeof listActiveAnnouncements>>,
-        timeoutMs: 1_500,
-        label: 'orient:announcedGates',
-      });
-      const anns = annsResult.value ?? [];
-      const visible = anns
-        .filter((a) =>
-          announcementVisibleTo(a, {
-            fleetSlug,
-            planSlug: args.planSlug ?? null,
-            harnessSlug: args.harness ?? null,
-          }),
-        )
-        .slice(0, 8);
-      if (visible.length > 0) {
-        result.announcedGates = visible.map((a) => ({
-          event: a.eventKey,
-          note: a.note,
-          scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
-          announcedBy: a.subscriberId,
-          expires_ts: a.expiresTs,
-        }));
-      }
-    } catch { /* best-effort — never break orientation */ }
-  }
+  try {
+    const annsResult = await withBoundedTimeout(listActiveAnnouncements({ unfiredOnly: true, limit: 50 }), {
+      fallback: [] as Awaited<ReturnType<typeof listActiveAnnouncements>>,
+      timeoutMs: 1_500,
+      label: 'orient:announcedGates',
+    });
+    const anns = annsResult.value ?? [];
+    const visible = anns
+      .filter((a) =>
+        announcementVisibleTo(a, {
+          fleetSlug,
+          planSlug: args.planSlug ?? null,
+          harnessSlug: args.harness ?? null,
+        }),
+      )
+      .slice(0, 8);
+    if (visible.length > 0) {
+      result.announcedGates = visible.map((a) => ({
+        event: a.eventKey,
+        note: a.note,
+        scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
+        announcedBy: a.subscriberId,
+        expires_ts: a.expiresTs,
+      }));
+    }
+  } catch { /* best-effort — never break orientation */ }
 
   // ── role-specific pane folds (voice-public-release-readiness-2026-07-12 P-016) —
   // injected by the handler ONLY for the papercup / papercup-deep dock-pane roles in
@@ -1111,10 +1113,12 @@ export default defineTool({
         };
       }
     }
-    // fleet-reliability-verification-2026-07-10 P-007: a sync, IO-free read of THIS
-    // process's own launch-env fleet membership (mirrors coord:whoami) — drives the
-    // leaderBrief fold (monitor mode + fleetRole==='leader' only).
-    const fleetMembership = deriveFleetMembership();
+    // P-015: leadership is mutable at runtime (fleet:take-leadership / join / leave),
+    // but PAPERCUSP_FLEET_* is immutable launch context. Resolve the live presence
+    // row first so a newly-installed leader gets the WHOLE fleet brief and a caller
+    // that left a fleet does not resurrect stale membership. Only a failed presence
+    // read may fall back to launch context.
+    const fleetMembership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
     // ── role-specific pane folds (voice-public-release-readiness-2026-07-12 P-016):
     // the papercup FAST pane orients with the SAME live-system digest block the
     // converse brain walks in with (papercup-context.ts — one identity, one

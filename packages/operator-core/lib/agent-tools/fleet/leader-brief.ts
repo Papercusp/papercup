@@ -21,7 +21,8 @@
  * benched — the leader's one-glance cue to fleet:bench it onto the right gate.
  *
  * Deliberately THIN: it is fleet:assignments' existing decoration pipeline
- * (reconcileWakeability → decorateMemberVerdicts → decorateParkedOn →
+ * (reconcileWakeability → decorateParkedOn → decorateLoopMonitorStates →
+ * decorateMemberVerdicts →
  * decorateContextPressure → decorateUnansweredDirected — all reused verbatim,
  * reuse-first, no forked logic) filtered to ONE fleet's members and reshaped
  * into a leader-lean per-member row (ages in ms, not raw timestamps; claims
@@ -29,9 +30,9 @@
  * decision actually reads, not the full claim-ledger fleet:assignments
  * carries for the Queen's placement decision).
  *
- * Resolves the target fleet from `deriveFleetMembership()` (the caller's own
- * launch-env fleet) unless `fleet` is passed explicitly (an su monitoring a
- * fleet it didn't launch into). coord:orient's monitor mode folds this in for
+ * Resolves the target fleet from the caller's authoritative presence membership
+ * (launch environment is failure-only fallback) unless `fleet` is passed
+ * explicitly (an su monitoring a fleet it didn't launch into). coord:orient's monitor mode folds this in for
  * a fleet leader automatically (see orient.ts) — a leader's monitor wake is
  * then ONE round-trip instead of orient + a separate fleet:assignments scan.
  */
@@ -39,17 +40,20 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { COORD_ROLES } from '../coordination/roles';
 import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
 import {
   reconcileWakeability,
-  decorateMemberVerdicts,
   decorateParkedOn,
+  decorateLoopMonitorStates,
+  decorateMemberVerdicts,
   decorateContextPressure,
   decorateUnansweredDirected,
   decorateCoordDeafness,
   type MemberVerdict,
+  type MonitorState,
 } from './assignments';
 import type { CoordDeafState } from '../coordination/inbox-read-freshness';
 import type { SessionState } from '../coordination/presence-wakeability';
@@ -64,6 +68,10 @@ export interface LeaderBriefMember {
   sessionState: SessionState | null;
   verdict: MemberVerdict | null;
   wakeMode: WakeMode | null;
+  /** Healthy engine-loop lifecycle; null when this is ordinary work. */
+  monitorState: MonitorState | null;
+  /** Scheduled next engine fire for monitoring/waiting owners. */
+  nextFireAt: string | null;
   /** ms since the member's last recorded tool call; null = never (still booting). */
   lastToolCallAgeMs: number | null;
   doing: unknown;
@@ -82,6 +90,8 @@ export interface LeaderBriefMember {
   unanswered?: UnansweredDirectedSummary;
   /** Active non-inbox-wake events:await keys — a deliberately-benched member. */
   parkedOn?: string[];
+  monitorState?: MonitorState | null;
+  nextFireAt?: string | null;
   /** EI-9943: this member is alive/speaking (burning real turns) but its work
    *  is NOT advancing and it is not already benched — the "live-loop-polling
    *  on a peer's critical path" pattern (fleet p2p-ship, 2026-07-11/12: 3 of 5
@@ -140,6 +150,8 @@ export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMemb
     sessionState: a.sessionState ?? null,
     verdict: a.verdict ?? null,
     wakeMode: a.wakeMode ?? null,
+    monitorState: a.monitorState ?? null,
+    nextFireAt: a.nextFireAt ?? null,
     lastToolCallAgeMs: Number.isFinite(lastMs) ? Math.max(0, nowMs - lastMs) : null,
     doing: a.doing,
     queuedCount: a.queued.length,
@@ -162,7 +174,8 @@ export default defineTool({
   description:
     "A leader's ONE-call fleet-health brief: per-member sessionState, lifecycle `verdict` " +
     '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, ' +
-    'current claims (doing/queuedCount/load), progress-stalled flag, unanswered directed ' +
+    'current claims (doing/queuedCount/load), healthy loop state (monitoring|waiting|' +
+    'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), and benchSuggestion (EI-9943: alive+speaking ' +
     'but not advancing, not yet benched — nudge toward fleet:bench). Scoped to ONE fleet ' +
@@ -190,7 +203,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe("Fleet slug to brief. Defaults to the caller's own launch-env fleet (deriveFleetMembership) — pass explicitly when monitoring a fleet you didn't launch into."),
+      .describe("Fleet slug to brief. Defaults to the caller's current presence membership (launch environment is a failure-only fallback) — pass explicitly when monitoring a fleet you didn't launch into."),
     harness: z.string().max(80).optional(),
     workspace: z.string().max(120).optional(),
     include_stale: z
@@ -208,14 +221,15 @@ export default defineTool({
     } catch {
       actorWorkspace = null;
     }
-    const fleet = args.fleet ?? deriveFleetMembership().fleetSlug;
+    const membership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
+    const fleet = args.fleet ?? membership.fleetSlug;
     if (!fleet) {
       return {
         data: {
           ok: false,
           error: 'no_fleet',
           hint:
-            "No fleet resolvable — this session's PAPERCUSP_FLEET_SLUG is unset and no { fleet } " +
+            'No fleet resolvable from current presence or launch context and no { fleet } ' +
             'was passed. Pass { fleet: "<slug>" } explicitly, or use fleet:assignments for the ' +
             'whole-workspace roster.',
         },
@@ -231,8 +245,9 @@ export default defineTool({
       (g) => g.fleetSlug === fleet && (args.include_stale || g.claims.length > 0 || g.alive),
     );
     await reconcileWakeability(grouped).catch(() => {});
-    await decorateMemberVerdicts(grouped).catch(() => {});
     await decorateParkedOn(grouped).catch(() => {});
+    await decorateLoopMonitorStates(grouped).catch(() => {});
+    await decorateMemberVerdicts(grouped).catch(() => {});
     await decorateContextPressure(grouped).catch(() => {});
     await decorateUnansweredDirected(grouped).catch(() => {});
     await decorateCoordDeafness(grouped).catch(() => {});
@@ -244,6 +259,11 @@ export default defineTool({
       fleet,
       members: members.length,
       speaking: members.filter((m) => m.verdict === 'speaking').length,
+      monitoring: members.filter((m) => m.monitorState === 'monitoring').length,
+      waiting: members.filter((m) => m.monitorState === 'waiting').length,
+      parked_awaiting_capability: members.filter(
+        (m) => m.monitorState === 'parked-awaiting-capability',
+      ).length,
       stalled: members.filter((m) => m.verdict === 'stalled' || m.stalled).length,
       dead: members.filter((m) => m.verdict === 'dead').length,
       unanswered_directed: members.filter((m) => (m.unanswered?.count ?? 0) > 0).length,

@@ -1188,7 +1188,7 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       expect(r.announcedGates?.[0]).toMatchObject({ note: 'opens on verified green', scope: 'fleet:backend', announcedBy: 'su-l' });
     });
 
-    it('absent when nothing is visible, and skipped entirely on a monitor tick', async () => {
+    it('absent when nothing is visible, but monitor still performs the compact gate read', async () => {
       listActiveAnnouncementsMock.mockResolvedValue([
         { eventKey: 'fleet:frontend:phase2-open', note: null, scopeKind: 'fleet', scopeRef: 'frontend', subscriberId: 'su-l', expiresTs: null },
       ]);
@@ -1198,7 +1198,30 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       const before = listActiveAnnouncementsMock.mock.calls.length;
       const monitor = await composeOrient({ mode: 'monitor' }, fakeCall({ ...CORE }).call, 'me');
       expect(monitor.announcedGates).toBeUndefined();
-      expect(listActiveAnnouncementsMock.mock.calls.length).toBe(before); // monitor tick never reads
+      expect(listActiveAnnouncementsMock.mock.calls.length).toBe(before + 1);
+    });
+
+    it('monitor mode scopes announced gates with the injected authoritative fleet membership', async () => {
+      listActiveAnnouncementsMock.mockResolvedValue([
+        { eventKey: 'fleet:backend:green', note: 'resume', scopeKind: 'fleet', scopeRef: 'backend', subscriberId: 'su-l', expiresTs: null },
+        { eventKey: 'fleet:frontend:green', note: null, scopeKind: 'fleet', scopeRef: 'frontend', subscriberId: 'su-l', expiresTs: null },
+      ]);
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:leader-brief': () => ({ ok: true, summary: { fleet: 'backend' }, members: [] }),
+      });
+      const monitor = await composeOrient(
+        { mode: 'monitor' },
+        call,
+        'me',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fleetSlug: 'backend', fleetRole: 'leader' },
+      );
+      expect(monitor.announcedGates?.map((g) => g.event)).toEqual(['fleet:backend:green']);
     });
   });
 

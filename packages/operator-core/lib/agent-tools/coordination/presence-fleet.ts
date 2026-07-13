@@ -39,3 +39,29 @@ export async function fetchPresenceFleet(
   }
   return out;
 }
+
+/**
+ * Resolve one caller's CURRENT fleet membership from coord presence, with the
+ * launch environment used only when the authoritative read itself fails.
+ *
+ * A successful read that returns no row is meaningful: the caller has left its
+ * fleet (or was demoted out of it). Falling back to PAPERCUSP_FLEET_* in that
+ * case resurrects stale launch-time membership and is the root cause of
+ * monitor-orient returning only the caller while fleet:leader-brief, when
+ * explicitly scoped, returns the real roster. Dynamic fleet:join /
+ * fleet:take-leadership mutations cannot rewrite an already-running process's
+ * environment, so every live read surface must prefer coord_presence.
+ */
+export async function resolvePresenceFleet(
+  ownerId: string | undefined,
+  launchFallback: FleetMembership,
+  fetcher: (ownerIds: string[]) => Promise<Map<string, FleetMembership>> = fetchPresenceFleet,
+): Promise<FleetMembership> {
+  if (!ownerId) return launchFallback;
+  try {
+    const memberships = await fetcher([ownerId]);
+    return memberships.get(ownerId) ?? { fleetSlug: null, fleetRole: null };
+  } catch {
+    return launchFallback;
+  }
+}
