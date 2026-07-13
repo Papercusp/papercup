@@ -260,12 +260,16 @@ describe('device/attention', () => {
     const body = (await res.json()) as {
       groups: unknown[];
       workItems: Array<{ id: string }>;
-      counts: { groups: number; workItems: number };
+      systemAlerts: unknown[];
+      counts: { groups: number; workItems: number; systemAlerts: number };
     };
     expect(body.groups).toHaveLength(1);
     // WI-1 (needs-human feature) + WI-3 (open bug) qualify; WI-2 (todo) and
     // WI-4 (delegated task) are filtered out.
     expect(body.workItems.map((w) => w.id).sort()).toEqual(['WI-1', 'WI-3']);
-    expect(body.counts).toEqual({ groups: 1, workItems: 2 });
+    // P-007: system-health producers are fail-soft — with no account-pool / pipeline
+    // in this unit ctx they yield no alerts, so the feed stays clean (0).
+    expect(body.systemAlerts).toEqual([]);
+    expect(body.counts).toEqual({ groups: 1, workItems: 2, systemAlerts: 0 });
   });
 });

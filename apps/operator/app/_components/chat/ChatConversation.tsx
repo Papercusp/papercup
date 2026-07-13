@@ -26,7 +26,7 @@
  * gives the body more vertical room).
  */
 
-import { useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { ChatMessage, ChatToolCall } from './chat-types';
@@ -294,6 +294,46 @@ export function ChatConversation(props: ChatConversationProps) {
   //   - append while the user is reading history (scrolled up) → do NOT
   //     yank the view; system broadcasts land every minute, so yanking on
   //     each append would make scrollback unusable. Near-bottom appends pin.
+  //
+  // A single scrollTop write is NOT enough: rows are estimated at 64px and
+  // measured ~112px, so every re-pin reveals more unmeasured rows below and
+  // scrollHeight keeps growing for several frames. The pin therefore runs a
+  // bounded rAF loop that re-asserts bottom until measurements converge
+  // (or the frame budget runs out). A user wheel/touch cancels it.
+  const pinFramesRef = useRef(0);
+  const pinLoopActiveRef = useRef(false);
+  const pinToBottom = useCallback(() => {
+    pinFramesRef.current = 45; // ~750ms of frames for measurement convergence
+    if (pinLoopActiveRef.current) return; // already looping — just extended it
+    pinLoopActiveRef.current = true;
+    const step = () => {
+      const sc = scrollerRef.current;
+      if (!sc || pinFramesRef.current <= 0) {
+        pinLoopActiveRef.current = false;
+        return;
+      }
+      pinFramesRef.current -= 1;
+      const target = sc.scrollHeight - sc.clientHeight;
+      if (Math.abs(sc.scrollTop - target) > 1) sc.scrollTop = target;
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, []);
+  // A real user scroll gesture cancels an in-flight pin loop immediately —
+  // programmatic scrollTop writes don't fire wheel/touchmove, so this only
+  // triggers on genuine user intent.
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const cancel = () => { pinFramesRef.current = 0; };
+    el.addEventListener('wheel', cancel, { passive: true });
+    el.addEventListener('touchmove', cancel, { passive: true });
+    return () => {
+      el.removeEventListener('wheel', cancel);
+      el.removeEventListener('touchmove', cancel);
+    };
+  }, []);
+
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) {
@@ -312,17 +352,12 @@ export function ChatConversation(props: ChatConversationProps) {
       const last = messages.length - 1;
       if (last >= 0 && (isFirstPin || nearBottom || busy)) {
         virtualizer.scrollToIndex(last, { align: 'end' });
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            const sc = scrollerRef.current;
-            if (sc) sc.scrollTop = sc.scrollHeight;
-          }),
-        );
+        pinToBottom();
       }
     }
     lastFirstKeyRef.current = firstKey;
     lastLastKeyRef.current = lastKey;
-  }, [messages.length, busy, firstKey, lastKey, virtualizer]);
+  }, [messages.length, busy, firstKey, lastKey, virtualizer, pinToBottom]);
 
   return (
     <>
