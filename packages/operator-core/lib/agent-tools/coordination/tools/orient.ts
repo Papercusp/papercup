@@ -37,6 +37,7 @@ import { withBoundedTimeout } from '../../../bounded-timeout';
 import { shapeOrient } from './orient-shape';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
+import { admitRecallHits } from '../../../memory/recall-admission';
 import { readOwnerPresence } from '../../../power-user-sessions';
 import { listActiveAnnouncements } from '../../../events/await/store';
 import { announcementVisibleTo } from '../../../events/await/announce-key';
@@ -59,37 +60,12 @@ import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta'
  *  context as bulk input on every later turn. */
 const MEMORY_TEXT_CAP = 200;
 const MEMORY_HITS_CAP = 10;
-/** P-002 (orient-recall-quality-2026-07-12): AGGREGATE char budget over the folded
- *  hits — the belt over the count(≤10) × per-hit(200) caps, so N unusually-large
- *  hits can't compound (and the cap survives a future MEMORY_TEXT_CAP raise).
- *  Admission is in relevance order; the FIRST hit is always admitted (a budget
- *  smaller than one hit must not blank the fold); dropped hits surface loudly as
- *  `withheldBudget`, and only ADMITTED ids stamp the epoch ledger — a hit the
- *  agent never saw must not be dedup-suppressed at the next injection port.
- *  Env-tunable; `<= 0` disables. */
-function orientMemoryBudgetChars(): number {
-  const raw = Number(process.env.PAPERCUSP_ORIENT_MEMORY_BUDGET_CHARS);
-  if (Number.isFinite(raw)) return raw > 0 ? raw : Number.POSITIVE_INFINITY;
-  return 1_600;
-}
 /** P-003: the non-exhaustive advisory folded alongside a non-empty recall — agents
  *  must neither re-search the intent they just got recall for, NOR treat this fold
  *  as complete (absence here ≠ absence in store). Duplicate-over-missing is the
  *  designed asymmetry (su-agent-behavior `recall-utilization`, D-002). */
 export const ORIENT_MEMORY_NOTE =
   'auto-recall (non-exhaustive): do not re-search this same intent; DO memory:search for specifics not shown — absence here is not absence in store.';
-/** P-004 (fleet-member-dx, EI-9017): drop near-zero-relevance recall hits before
- *  folding — a degraded embedder (quota outage → lexical fallback) returns hits
- *  scored 0.01–0.03 that are pure noise yet still cost fold tokens on EVERY
- *  orient. A hit with NO numeric score passes (fail-open). Filtered hits surface
- *  as `filteredLowScore`, never silently.
- *  ⚠ DEGRADED-REGIME ONLY (orient-recall-quality-2026-07-12): a HEALTHY hybrid
- *  response returns RRF rank-fusion scores on the SAME 0.01–0.03 band (rank-1
- *  both-legs ≈ 2/61 ≈ 0.0328 — a STRONG hit), so this floor is applied only when
- *  the response carries the EI-9031 `degraded` marker; a blanket value floor
- *  silently emptied orient's entire fold on hybrid configs (caught live by the
- *  P-001 per-surface telemetry: search p50 0.50 vs injection-port p50 0.016). */
-const MEMORY_SCORE_FLOOR = 0.05;
 const PLAN_EVENTS_FOLD = 10;
 const FLEET_CATCHUP_FOLD = 8;
 const FLEET_CATCHUP_CAP = 25;
@@ -582,43 +558,21 @@ export async function composeOrient(
       // EI-9031 markers first — the floor below is REGIME-SCOPED on them.
       const memDegraded = mem?.degraded === true;
       const memDegradedReason = mem?.degraded_reason ?? mem?.reason;
-      // P-004 (fleet-member-dx, EI-9017): relevance floor — DEGRADED REGIME ONLY
-      // (orient-recall-quality-2026-07-12 live finding). EI-9017's "hits scored
-      // 0.01–0.03 are pure noise" holds for the regime it was written for — a
-      // degraded embedder's lexical-fallback token matches. But a HEALTHY hybrid
-      // response returns RRF rank-fusion scores on the same numeric band (rank-1
-      // one-leg = 1/61 ≈ 0.0164; rank-1 both legs ≈ 0.0328 — a STRONG hit), so a
-      // blanket value floor filtered EVERY healthy hybrid hit and orient's fold
-      // was silently EMPTY on this backend config (caught live 2026-07-12 by the
-      // per-surface telemetry, P-001: search p50 0.50 vs port p50 0.016). A
-      // healthy response already passed the backend's own admission — floor only
-      // the degraded regime the floor was built for.
-      const hits = memDegraded
-        ? rawHits.filter((h) => typeof h.score !== 'number' || h.score >= MEMORY_SCORE_FLOOR)
-        : rawHits;
-      const filteredLowScore = rawHits.length - hits.length;
-      // P-002 / D-001: a responsive caller doesn't receive queen-loop steering as
-      // a binding recall hit (it self-drained fleet leaders). Auto callers keep all.
-      const { kept, withheld } = withholdQueenLoopControl(hits, driveMode, (h) => ({ body: h.memory }));
-      // P-002 (orient-recall-quality-2026-07-12): AGGREGATE budget over the kept
-      // hits (relevance order; first hit always admitted) — see
-      // orientMemoryBudgetChars. Dropped hits are LOUD (`withheldBudget`), and
-      // only admitted ids stamp the ledger below.
-      const budget = orientMemoryBudgetChars();
-      let spentChars = 0;
-      const admitted: typeof kept = [];
-      for (const h of kept) {
-        const cost =
-          (h.memory?.length ?? 0) + (typeof h.id === 'string' ? h.id.length : 8) + 24; // id + score overhead
-        if (admitted.length > 0 && spentChars + cost > budget) break;
-        admitted.push(h);
-        spentChars += cost;
-      }
-      const withheldBudget = kept.length - admitted.length;
+      // EI-10666: the consumer-admission gates (relevance floor → queen-loop withhold →
+      // aggregate char budget) live in ONE shared module, because the memory recall canary
+      // must probe THE PATH A CONSUMER ACTUALLY TAKES. A canary that re-implemented these
+      // gates would drift from them and go green while orient's fold went dark — the exact
+      // failure it exists to catch. See lib/memory/recall-admission.ts.
+      // P-002 / D-001: a responsive caller doesn't receive queen-loop steering as a binding
+      // recall hit (it self-drained fleet leaders). Auto callers keep all.
+      const { admitted, filteredLowScore, withheld, withheldBudget } = admitRecallHits(rawHits, {
+        degraded: memDegraded,
+        withhold: (hs) => withholdQueenLoopControl(hs, driveMode, (h) => ({ body: h.memory })),
+      });
       result.memory = {
         query: memQuery,
         hits: admitted,
-        ...(withheld.length > 0 ? { withheld: withheld.length } : {}),
+        ...(withheld > 0 ? { withheld } : {}),
         ...(filteredLowScore > 0 ? { filteredLowScore } : {}),
         ...(withheldBudget > 0 ? { withheldBudget } : {}),
         // P-003: the non-exhaustive advisory rides ONLY a non-empty fold (zero

@@ -171,8 +171,19 @@ function stubFetch(impl: (url: string, init?: RequestInit) => Response | Promise
 beforeEach(() => {
   vi.clearAllMocks();
   (loadVoicePrefs as Mock).mockResolvedValue({ ...DEFAULT_VOICE_PREFS });
+  // kokoroTtsAvailable() = HTTP health probe OR the IN-PROCESS engine, and the latter is an
+  // fs-marker check under the REAL $HOME (isKokoroLocalProvisioned). Reading the developer's
+  // home made this suite's verdict machine-dependent: on a box where the local model happens
+  // to be provisioned, a server-side engine IS available, so the health-gated 503 below never
+  // fires and the assertions invert (it held the release gate on 2026-07-12). Point HOME at a
+  // path with no marker so the local leg is deterministically absent and the health probe —
+  // which is what these tests actually pin — decides alone.
+  vi.stubEnv('HOME', '/nonexistent-papercusp-unit-test-home');
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe('POST /agent-mcp/operator-tts — browser fallback wiring', () => {
   it("503s with 'no server-side tts engine available' when prefs='browser' and kokoro /health fails", async () => {
