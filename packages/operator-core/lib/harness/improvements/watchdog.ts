@@ -2040,7 +2040,7 @@ interface CeilingJamRow {
 /**
  * Is this a nursery row for an IN-PROCESS loopback launch (a durable-spawn
  * worker, a `launch-*` launch-blueprint — doc-steward / release cadence /
- * git-sync — or a Queen/overwatch wake) rather than a supervised invoke-once
+ * git-sync — or a Mug/overwatch wake) rather than a supervised invoke-once
  * bee child? Mirrors spawn-reclaim.ts's `kind` classifier (the single source of
  * truth for this distinction: `run_id` starts with `launch-`, OR `spawn_id`
  * starts with `durable-spawn:`).
@@ -2053,7 +2053,7 @@ interface CeilingJamRow {
  * launch is demonstrably alive and working. The jam signal's stream-recency
  * liveness proxy is therefore structurally inapplicable to this class: counting
  * it flags every live in-process launch (durable-spawn worker, launch-blueprint,
- * Queen) as a "stale debit", firing a false-positive `spawn-ceiling-jam` whenever
+ * Mug) as a "stale debit", firing a false-positive `spawn-ceiling-jam` whenever
  * ≥`slack` such launches run concurrently. Their liveness + genuine stale-debit
  * reclaim are owned by the boot-id-aware reclaim sweep / boot reconcile
  * (spawn-reclaim.ts), not this DB-only detector.
@@ -2079,7 +2079,7 @@ export function isInProcessLaunchRow(row: { spawn_id: string; run_id?: string | 
  * SCOPE — supervised bee spawns only (EI-7215). `last_output_at` is populated ONLY
  * for invoke-once bee children (whose stdout the supervisor observes). In-process
  * loopback launches — durable-spawn workers, `launch-*` launch-blueprints,
- * Queen/overwatch wakes — never stream it, so this proxy is meaningless for them and
+ * Mug/overwatch wakes — never stream it, so this proxy is meaningless for them and
  * they are EXCLUDED from the classification (see isInProcessLaunchRow). Counting them
  * treated every live in-process launch as a stale debit and fired a false-positive
  * jam on any healthy fleet of ≥`slack` such launches; their reclaim is the

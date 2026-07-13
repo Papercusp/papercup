@@ -95,7 +95,7 @@ export default defineTool({
       ? await requestOverwatchWake({
           reason:
             clampText(args.kickoff, LIMITS.ANNOTATION) ??
-            'Start Overwatch — the owner started the supervisor; survey system health and nudge any drift back',
+            'Start Kettle — the owner started the supervisor; survey system health and nudge any drift back',
           harness: installSlug,
           workspaceId,
         })

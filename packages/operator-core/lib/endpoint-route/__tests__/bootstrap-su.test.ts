@@ -363,6 +363,7 @@ describe('bootstrap-su', () => {
     const res = await callPost({ agent: 'claude', harness_slug: null, plan_slug: null, cwd: '/home/me' });
     const json = await res.json();
     expect(json.promptFile).toMatch(/session-42\.md$/);
+    expect(json.instructionLint).toMatchObject({ markerCount: 0, clean: true });
     expect(buildLaunchSpecMock).toHaveBeenCalledWith(
       expect.objectContaining({ harnessSlug: null, planSlug: null }),
     );

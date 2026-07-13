@@ -149,7 +149,7 @@ export function buildDeprecateLearningsObservation(
   const title = `Deprecated draft "${planSlug}": ${oneLine(learnings.stalled, 100)}`;
 
   const body = [
-    `A Queen↔Scout draft plan was deprecated (it will not reach \`ready\`) — recording the`,
+    `A Mug↔Scout draft plan was deprecated (it will not reach \`ready\`) — recording the`,
     `learnings so a future Scout cycle can re-ideate from the salvage instead of hitting the`,
     `same dead end (queen-scout-feedback-loop D-002, "a dead draft still produces fuel").`,
     ``,

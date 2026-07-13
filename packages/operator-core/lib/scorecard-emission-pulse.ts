@@ -318,12 +318,12 @@ const defaultEmissionWedgeEscalator: EmissionWedgeEscalator = async (input) => {
   const subjectSignature = `${EMISSION_WEDGE_DEDUP_KIND}:${input.sourceHive}:${input.verdict}`;
   await openEscalation(EMISSION_WEDGE_IDENTITY, {
     severity: 'advisory',
-    summary: `Overwatch emission wedge: ${input.sourceHive} — ${input.verdict} (monitor-the-monitor silent)`,
+    summary: `Kettle emission wedge: ${input.sourceHive} — ${input.verdict} (monitor-the-monitor silent)`,
     body:
       `${input.note}\n\n` +
       `Evidence: no COMPLETE ${COORDINATION_RUBRIC_REF} scorecard in the last ${mins}m ` +
       `(${WEDGE_STALE_CADENCE_MULTIPLE}× the ${input.cadenceSec}s overwatch cadence). ` +
-      `Overwatch loop lastRunAt=${input.lastRunAt ?? 'never'}; ` +
+      `Kettle loop lastRunAt=${input.lastRunAt ?? 'never'}; ` +
       `last complete card=${input.lastCompleteAt ?? 'none in-window'}.\n\n` +
       `This is the cadence-miss ESCALATION (WI-3777). The scorecard-emission-pulse FLOOR keeps the ` +
       `data layer alive when the supervisor stops, but a floor is not an alarm: a loop that is ` +

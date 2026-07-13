@@ -175,7 +175,7 @@ export default defineTool({
       + '"who is actually working / stuck / unanswered / about to compact right now, across MY fleet". '
       + "Folded automatically into coord:orient { mode:'monitor' } for a resolvable fleet leader.",
     notWhen:
-      'The Queen/placement-decision read over the WHOLE workspace roster (fleet:assignments), ' +
+      'The Mug/placement-decision read over the WHOLE workspace roster (fleet:assignments), ' +
       'or full message history for one member (coord:inbox { agent }).',
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +

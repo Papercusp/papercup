@@ -56,7 +56,7 @@ export const SU_S10_CLAIM_BEFORE_WORK: Scenario = {
       {
         name: 'claims-lane-before-working',
         claim:
-          'Expected the engineer to CLAIM its lane before working the plan items — coord:declare-intent with a non-empty `items` array, a plans:set-status wip flip (auto-claims), or plan_items:claim. None happened: the lane exists only as prose, invisible to the Queen and peers.',
+          'Expected the engineer to CLAIM its lane before working the plan items — coord:declare-intent with a non-empty `items` array, a plans:set-status wip flip (auto-claims), or plan_items:claim. None happened: the lane exists only as prose, invisible to the Mug and peers.',
         suggestion:
           "Playbook 'Declare a real intent … and CLAIM your lane': pass the items you are taking as coord:declare-intent { items: ['P-NNN', …] }, or flip the first item wip via plans:set-status before editing.",
       },

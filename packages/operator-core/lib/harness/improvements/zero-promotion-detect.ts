@@ -55,7 +55,7 @@ export function detectZeroPromotion(plans: readonly PlanPromotionCount[]): ZeroP
       title: `Started plan has open items but zero work-items: ${p.planSlug}`,
       body:
         `Plan ${p.planSlug} (${p.harnessSlug}) has ${p.openItemCount} open plan-item(s) but 0 work-items. ` +
-        `plan→work-item promotion is not producing placeable work, so the Queen has nothing to place from it ` +
+        `plan→work-item promotion is not producing placeable work, so the Mug has nothing to place from it ` +
         `(unified-work-item-ledger P-003/P-009).`,
       severity: 'major' as const,
       scope: `harness:${p.harnessSlug}`,

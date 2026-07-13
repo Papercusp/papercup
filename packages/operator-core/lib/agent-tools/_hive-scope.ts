@@ -42,7 +42,7 @@ export const hiveArg = z
   .describe(
     'Hive to scope this to (the hive home-harness slug). Omit in a harness-scoped ' +
       'session — it auto-resolves from your harness (a member harness resolves to its ' +
-      "hive's home). A workspace-spanning caller (Queen/overwatch) that can't auto-resolve " +
+      "hive's home). A workspace-spanning caller (Mug/overwatch) that can't auto-resolve " +
       'must pass an explicit hive.',
   );
 
@@ -86,5 +86,5 @@ export async function resolveHiveScope(
 export const HIVE_REQUIRED_DETAIL =
   'No hive resolvable for this create-side op. Every artifact (work item, plan, ' +
   'assignment, observation) belongs to a HIVE. A harness-scoped session auto-resolves ' +
-  'its hive; a workspace-spanning caller (Queen/overwatch) must pass an explicit ' +
+  'its hive; a workspace-spanning caller (Mug/overwatch) must pass an explicit ' +
   '`hive` (the hive home-harness slug) on this call.';

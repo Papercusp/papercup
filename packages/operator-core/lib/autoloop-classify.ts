@@ -11,7 +11,7 @@
  * real classifier without the autoloop module graph.
  */
 export function classifyFireError(message: string): 'infra-error' | 'error' {
-  return /HTTP 5\d\d|HTTP 404|unknown project|ECONNREFUSED|ECONNRESET|EPIPE|connection (refused|reset|closed)|fetch failed|socket hang up|timed out|timeout|deadline|rate.?limit|429|overloaded|infra_loss|gateway (stall|throttl|unavailable)|reclaimed at operator|dead\/restarting launcher|resume-turn-death:(rate-limit|infra|transport)|no (Overwatch |queen )?turn/i.test(
+  return /HTTP 5\d\d|HTTP 404|unknown project|ECONNREFUSED|ECONNRESET|EPIPE|connection (refused|reset|closed)|fetch failed|socket hang up|timed out|timeout|deadline|rate.?limit|429|overloaded|infra_loss|gateway (stall|throttl|unavailable)|reclaimed at operator|dead\/restarting launcher|resume-turn-death:(rate-limit|infra|transport)|no (Kettle |queen )?turn/i.test(
     message,
   )
     ? 'infra-error'

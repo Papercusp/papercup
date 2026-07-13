@@ -24,13 +24,13 @@ export default defineTool({
   name: 'work_items:expand',
   profile: 'engineer',
   description:
-    'Expand a deferred-expansion node into child work_items in one call. The Queen/operator DISPOSES (children are created); a bee PROPOSES (recorded, the steerer ratifies). Each child carries payload.expanded_from = the parent id. Lets a plan-run start shallow and self-elaborate at the point of best context.',
+    'Expand a deferred-expansion node into child work_items in one call. The Mug/operator DISPOSES (children are created); a bee PROPOSES (recorded, the steerer ratifies). Each child carries payload.expanded_from = the parent id. Lets a plan-run start shallow and self-elaborate at the point of best context.',
   guidance: {
     when: 'You have reached an "expand-here" node (or any node) that should now fan out into concrete child work_items — the decomposition you deferred until you had the context to make it well.',
     notWhen:
       'A flat structural note / re-approach → work_items:amend. A single follow-up → just create/convert one work_item. Re-prioritizing existing nodes → no expansion.',
     chaining:
-      'work_items:get → work_items:expand { id, children:[{title, files?, brief?}] }. A bee PROPOSES (disposition=proposed, nothing created yet); the Queen DISPOSES (children created with payload.expanded_from = parent).',
+      'work_items:get → work_items:expand { id, children:[{title, files?, brief?}] }. A bee PROPOSES (disposition=proposed, nothing created yet); the Mug DISPOSES (children created with payload.expanded_from = parent).',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

@@ -95,7 +95,7 @@ export default defineTool({
   name: 'fleet:place_batch',
   profile: 'engineer',
   description:
-    'Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Queen\'s serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.',
+    'Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Mug\'s serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.',
   guidance: {
     when: 'You (the Mug) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping cup:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm cups by affinity in one turn.',
     notWhen:
@@ -404,7 +404,7 @@ async function subscribeGroups(
       await deps.ensureGroupTopic(opts.actor, {
         slug: g.topic,
         title: `Plan ${g.planSlug}`,
-        description: `Auto-created group channel (EI-1611): bees the Queen placed together this batch on plan "${g.planSlug}" — sibling completions, decisions, blast-radius warnings.`,
+        description: `Auto-created group channel (EI-1611): bees the Mug placed together this batch on plan "${g.planSlug}" — sibling completions, decisions, blast-radius warnings.`,
       });
       for (const ownerId of g.ownerIds) {
         const beeIdentity: AgentIdentity = {
@@ -562,13 +562,13 @@ export async function executeBatch(opts: {
         continue;
       }
       await reorderWorkItem(d.task.id, d.rank ?? 0, { writer: 'mug', harness });
-      const summary = `Queen warm-inject: ${d.task.id}`;
+      const summary = `Mug warm-inject: ${d.task.id}`;
       // The lane's own brief (payload.brief) + the Queen's batch overlay — so the
       // injected bee gets ITS wave lane's missing context, not just a generic note
       // (queen-wave-dispatch P-031). Falls back to the placement pointer when neither.
       const body =
         mergeBrief(d.task.brief, brief) ??
-        `Queen placement — ${d.task.id} ("${d.task.title}") is on your work-list at head-of-line (${d.affinity?.reasons.join(', ') || 'context affinity'}). Claim_next / work it next.`;
+        `Mug placement — ${d.task.id} ("${d.task.title}") is on your work-list at head-of-line (${d.affinity?.reasons.join(', ') || 'context affinity'}). Claim_next / work it next.`;
       await sendMessage(actor, { to: [bee], summary, body, extra: { wake: true } });
       const fan = await wakeRecipients([bee], {
         summary,

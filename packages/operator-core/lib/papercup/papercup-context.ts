@@ -189,10 +189,10 @@ export function renderSentinelContext(input: SentinelContextInput): string {
   out.push(`## Live system status${scope} (your standing context — you watch the whole system)`);
   out.push(
     'This is the deterministic snapshot of the running system, built from the ready-made ' +
-      'digests (the salience-ranked signal feed, the Overwatch anomaly brief, the state-of-pot ' +
+      'digests (the salience-ranked signal feed, the Kettle anomaly brief, the state-of-pot ' +
       'corpus digest, and the live fleet). It is your STANDING awareness as Papercup: act on ' +
       'it by SURFACING what matters to the user, FILING an observation/escalation, or NUDGING a ' +
-      'running agent — never by re-placing work (that is the Queen). Drill into anything this ' +
+      'running agent — never by re-placing work (that is the Mug). Drill into anything this ' +
       'digest omits with a tool (curation:feed, curation:state-of-pot, fleet:assignments) only ' +
       'when you need it.',
   );

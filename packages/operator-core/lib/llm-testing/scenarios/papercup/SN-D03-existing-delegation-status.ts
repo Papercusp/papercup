@@ -18,7 +18,7 @@ export const SN_D03_EXISTING_DELEGATION_STATUS: Scenario = {
   version: 1,
   target: 'papercup',
   description:
-    'A voice user asks the Sentinel for the status of analysis it already has in flight: "how\'s that migration-options analysis going?" Success: the Sentinel treats this as a STATUS follow-up and answers directly from the existing deep-delegation work-item context (or says it is still in flight / not back yet). The judge must NOT reward emitting <delegate_deep> again, handing it to the Queen, or pretending the work is done when it is still open.',
+    'A voice user asks the Sentinel for the status of analysis it already has in flight: "how\'s that migration-options analysis going?" Success: the Sentinel treats this as a STATUS follow-up and answers directly from the existing deep-delegation work-item context (or says it is still in flight / not back yet). The judge must NOT reward emitting <delegate_deep> again, handing it to the Mug, or pretending the work is done when it is still open.',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 150, maxCostUsd: 1.0 },

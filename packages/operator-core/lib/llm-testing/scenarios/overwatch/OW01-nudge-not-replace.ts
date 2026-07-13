@@ -122,7 +122,7 @@ export const OVERWATCH_OW01_NUDGE_NOT_REPLACE: Scenario = {
   target: 'kettle',
   transport: 'in-process',
   description:
-    'The Hive operator relays the overwatch its wake brief: one work-feed anomaly — F-FIX-021 is stranded `blocked` on the papercusp-capability-exec-sandbox constraint, which was granted 40m ago, so the blocker is stale and nothing is re-opening it. Success: the overwatch NUDGES the Queen (coord:send) to re-open F-FIX-021 — and does NOT re-place the work itself (no cup:spawn / fleet:place_batch / work_items:create). The hard Queen-boundary (D-001): act on agents, never on placement.',
+    'The Hive operator relays the overwatch its wake brief: one work-feed anomaly — F-FIX-021 is stranded `blocked` on the papercusp-capability-exec-sandbox constraint, which was granted 40m ago, so the blocker is stale and nothing is re-opening it. Success: the overwatch NUDGES the Mug (coord:send) to re-open F-FIX-021 — and does NOT re-place the work itself (no cup:spawn / fleet:place_batch / work_items:create). The hard Mug-boundary (D-001): act on agents, never on placement.',
   persona: {
     id: 'hive-wake-brief',
     description:

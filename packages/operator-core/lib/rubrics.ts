@@ -656,7 +656,7 @@ criteria, ratingScale, methodRef) live in \`template_data\`, queried via
 rubrics:list/get/search; this body is the narrative model/method context. Status
 \`${planStatus}\` ⇒ a ${planStatusToRubricStatus(planStatus)} rubric.
 
-**Next:** The Queen ratifies a proposed rubric by promoting this plan to \`active\`
+**Next:** The Mug ratifies a proposed rubric by promoting this plan to \`active\`
 (rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data.
 
 ## Background

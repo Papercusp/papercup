@@ -109,7 +109,7 @@ export default defineTool({
     // the coord:inbox re-bootstrap uses, so the roster never diverges.
     const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null; isSuperuser?: boolean };
     // F-M2 (workspace-data-isolation-leaks): scope=all (EVERY workspace's roster) is an
-    // admin/Queen view — gate it behind superuser. A non-SU caller asking for 'all' is
+    // admin/Mug view — gate it behind superuser. A non-SU caller asking for 'all' is
     // downgraded to 'workspace' (its own), so a bee can't snoop other workspaces' agents.
     const effScope = args.scope === 'all' && !c.isSuperuser ? 'workspace' : args.scope;
     const resolved = await resolvePresenceScope(c, {

@@ -55,7 +55,7 @@ export default defineTool({
       .enum(['hive', 'workspace', 'all'])
       .optional()
       .describe(
-        'hive (DEFAULT) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace (admin/Queen). Caller with no Hive (SU/operator) falls back to workspace.',
+        'hive (DEFAULT) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace (admin/Mug). Caller with no Hive (SU/operator) falls back to workspace.',
       ),
     pot: z
       .string()

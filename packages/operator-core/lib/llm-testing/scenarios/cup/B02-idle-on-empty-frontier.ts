@@ -140,7 +140,7 @@ export const BEE_B02_IDLE_ON_EMPTY_FRONTIER: Scenario = {
     assertToolMatch((tc) => canonical(tc.name) === 'coord:await-inbox', {
       name: 'stands-idle-via-await-inbox',
       claim:
-        'Expected the bee to stand idle on the wake watch (coord:await-inbox) once scheduler:get_next reported nothing claimable. It never called coord:await-inbox — so it either freelanced an item off the raw frontier or ended without registering the wake the Queen/peers reach it through.',
+        'Expected the bee to stand idle on the wake watch (coord:await-inbox) once scheduler:get_next reported nothing claimable. It never called coord:await-inbox — so it either freelanced an item off the raw frontier or ended without registering the wake the Mug/peers reach it through.',
       suggestion:
         "bee.tools.md 'Lane empty → coord:await-inbox, then END your turn': when the scheduler has nothing for you, register the wake watch via coord:await-inbox and end — that idle wake is how you get the next item.",
     }),

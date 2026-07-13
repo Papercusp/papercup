@@ -63,7 +63,7 @@ export function loadOverwatchPrompt(): string {
   if (_promptCache !== undefined) return _promptCache;
   const body = readFileSync(resolveOverwatchPromptPath(), 'utf8');
   _promptCache =
-    'You are the Overwatch of a Papercusp Hive (a spawned system-health-supervisor wake). ' +
+    'You are the Kettle of a Papercusp Hive (a spawned system-health-supervisor wake). ' +
     'The following is your operating prompt — follow it exactly.\n\n' +
     body;
   return _promptCache;
@@ -88,7 +88,7 @@ export const OVERWATCH_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   {
     name: 'coord:send',
     description:
-      'Send a coordination message to an agent — the overwatch NUDGE. Tell the Queen/a bee what to do (e.g. re-open a stranded item, re-place a churned one); you do not do it yourself. wake:"required" re-invokes a sleeping target.',
+      'Send a coordination message to an agent — the overwatch NUDGE. Tell the Mug/a bee what to do (e.g. re-open a stranded item, re-place a churned one); you do not do it yourself. wake:"required" re-invokes a sleeping target.',
     input: obj(
       {
         to: { type: 'array', items: { type: 'string' }, description: 'Recipient ownerIds / role handles (e.g. ["mug"]).' },
@@ -151,7 +151,7 @@ export const OVERWATCH_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   // ── read surface (a wake surveys before it acts) ──
   {
     name: 'pot:status',
-    description: 'The hive health snapshot — Queen liveness, bees, the work-feed, tokens.',
+    description: 'The hive health snapshot — Mug liveness, bees, the work-feed, tokens.',
     input: obj({ harness: { type: 'string' } }),
   },
   {

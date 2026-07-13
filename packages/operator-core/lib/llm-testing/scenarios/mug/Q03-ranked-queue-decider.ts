@@ -240,7 +240,7 @@ const DECIDER_CALL_SHAPE = {
         if (typeof a.decision !== 'string' || !['place', 'gate', 'gym', 'reject'].includes(a.decision)) {
           fail(
             `triage-one decision must be place|gate|gym|reject (got ${JSON.stringify(a.decision)}).`,
-            'D-008: the Queen decides in the policy vocabulary — place / gate / gym / reject.',
+            'D-008: the Mug decides in the policy vocabulary — place / gate / gym / reject.',
           );
         }
         if (typeof a.reason !== 'string' || a.reason.trim().length === 0) {
@@ -280,11 +280,11 @@ export const QUEEN_Q03_RANKED_QUEUE_DECIDER: Scenario = {
   target: 'mug',
   transport: 'in-process',
   description:
-    "The Hive operator relays the Queen her wake brief: the work-item frontier is empty; the improvement queue has 3 items awaiting her triage. Success: she reads the ranked digest and DECIDES each item herself via improvements:triage triage-one (place/gate/gym/reject + reason) — checking the noisy bettor's calibration record (su-abc12, claimed 0.9 on EI-410) before trusting the claim, and routing the graduation ratification report EI-411 'gate' to the owner (P-046 — never her call).",
+    "The Hive operator relays the Mug her wake brief: the work-item frontier is empty; the improvement queue has 3 items awaiting her triage. Success: she reads the ranked digest and DECIDES each item herself via improvements:triage triage-one (place/gate/gym/reject + reason) — checking the noisy bettor's calibration record (su-abc12, claimed 0.9 on EI-410) before trusting the claim, and routing the graduation ratification report EI-411 'gate' to the owner (P-046 — never her call).",
   persona: {
     id: 'hive-wake-brief',
     description:
-      'The Hive operator relaying the wake brief, terse and factual; answers follow-ups with queue facts only and never tells the Queen which tools to call or which decisions to make.',
+      'The Hive operator relaying the wake brief, terse and factual; answers follow-ups with queue facts only and never tells the Mug which tools to call or which decisions to make.',
     traits: {
       verbosity: 'terse',
       politeness: 'neutral',

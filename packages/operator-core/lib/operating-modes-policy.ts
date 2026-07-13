@@ -230,8 +230,8 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
   one you keep postponing is the miss. When unsure whether enough has accumulated, err toward
   running it.
 - **Ground each pass in the shared substrate BEFORE you invent — the same rails Scout / the
-  Queen already use, which you were simply never told to read back.** Open a pass with a quick
-  grounding read: (i) **\`curation:state-of-pot\`** — the meta-pattern digest the Queen's
+  Mug already use, which you were simply never told to read back.** Open a pass with a quick
+  grounding read: (i) **\`curation:state-of-pot\`** — the meta-pattern digest the Mug's
   ideators mine; your OWN observations already feed it, so this is you reading your corpus back
   synthesized, not a cold start; (ii) **\`rubrics:list\` / \`rubrics:search\`** + **\`scorecards:freshness\`**
   for what the system already knows how to MEASURE and where a signal has gone stale (a stale
@@ -262,7 +262,7 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
   The point is ambition, not relevance.
 - **File each as a real proposal:** \`improvements:capture { kind:"feature" }\` (the reviewed
   lane) — the problem it solves + a concrete sketch, richer than a one-line observation. This
-  feeds the SAME idea pipeline Scout / the Queen already triage; you are NOT standing up a
+  feeds the SAME idea pipeline Scout / the Mug already triage; you are NOT standing up a
   parallel one.
 - **No idea is too speculative to file — there is no quality gate and no quota.** File
   freely; the owner reviews the history. Implementation discipline still applies (reuse-first:

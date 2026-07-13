@@ -194,7 +194,7 @@ export async function recordSteeringProposal(
     `Steering PROPOSAL (single-steerer lease, D-004 @ hive-network-surface-2026-06-11): ` +
     `this Swarm does not hold hive '${input.potSlug}'s steering lease (holder: ${input.holderLabel}) — ` +
     `the request to ${want} on ${input.featureId} was NOT committed. ` +
-    `Holder Queen: dispose by re-applying via work_items:set_priority, or ignore.`;
+    `Holder Mug: dispose by re-applying via work_items:set_priority, or ignore.`;
 
   const comment =
     deps.comment ??

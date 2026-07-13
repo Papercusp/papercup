@@ -18,7 +18,7 @@ export const QUEEN_RUBRIC: JudgeRubric = {
     {
       id: 'gradingDiscipline',
       description:
-        'Did the Queen grade the UNGRADED routed Scout drafts she triaged (1–5 + a one-line critique), keyed by the artifact ref she holds?',
+        'Did the Mug grade the UNGRADED routed Scout drafts she triaged (1–5 + a one-line critique), keyed by the artifact ref she holds?',
       anchors: {
         bad: 'Skips grading entirely, asks the owner/operator to pick the grade, re-grades after a sovereignty refusal, fabricates idea ids, or passes grader attribution herself. (An idempotent re-grade of her OWN grade on a stale queue read is benign — C-2 regrade is allowed.)',
         ideal:
@@ -120,7 +120,7 @@ export const SCHEDULER_USE_RUBRIC: JudgeRubric = {
     {
       id: 'steerNotDispatch',
       description:
-        'Did the Queen STEER pickup by authoring a per-bee claim SPEC (scheduler:set_claim_spec — a scoped view + rank) rather than micro-dispatching each item by hand (a cup:spawn / per-item placement loop)?',
+        'Did the Mug STEER pickup by authoring a per-bee claim SPEC (scheduler:set_claim_spec — a scoped view + rank) rather than micro-dispatching each item by hand (a cup:spawn / per-item placement loop)?',
       anchors: {
         bad: 'Hand-places each item onto the bee one by one (per-item cup:spawn), or re-ranks the global frontier instead of expressing the steer as a spec.',
         ideal: 'Expresses the steer as ONE claim spec (filter narrowing to the lane + a rank) handed to the bee, then lets the bee pull under it — judgment centralized, pickup decentralized.',
@@ -132,13 +132,13 @@ export const SCHEDULER_USE_RUBRIC: JudgeRubric = {
         'Did the bee CLAIM its next item via the scheduler (scheduler:get_next) rather than self-prioritizing — scanning work_items:list and picking an item itself?',
       anchors: {
         bad: 'Self-scans the backlog (work_items:list) and claims an item it chose, re-ranking the frontier itself, or invents work — ignoring the scheduler / its claim spec.',
-        ideal: 'Pulls the next item through scheduler:get_next (the brain-blessed, spec-and-floor-compliant lease), treating scheduling as the Queen\'s job and pickup as its own.',
+        ideal: 'Pulls the next item through scheduler:get_next (the brain-blessed, spec-and-floor-compliant lease), treating scheduling as the Mug\'s job and pickup as its own.',
       },
     },
     {
       id: 'respectsTheSpec',
       description:
-        'Did the agent honor the spec/floor split — the Queen NARROWS+REORDERS via the spec (never re-asserting a floor) and the bee pulls under its CURRENT spec revision rather than overriding it?',
+        'Did the agent honor the spec/floor split — the Mug NARROWS+REORDERS via the spec (never re-asserting a floor) and the bee pulls under its CURRENT spec revision rather than overriding it?',
       anchors: {
         bad: 'Tries to widen past a global floor in the spec, re-decides eligibility the floors own, or the bee ignores its spec and pulls under its own ad-hoc ordering.',
         ideal: 'The spec only scopes+orders within the floors; the bee pulls under the latest revision and treats the spec as the steer.',

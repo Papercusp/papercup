@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     RETURNING id
   `;
   console.log(
-    `[seed-scan-routine] RETIRED (D-018). Scheduled scan cadence removed — the Queen scans ` +
+    `[seed-scan-routine] RETIRED (D-018). Scheduled scan cadence removed — the Mug scans ` +
       `and the Sentinel reads live state directly. ` +
       (rows.length
         ? `Deactivated a lingering "${name}" routine for "${SLUG}" (ws=${ws}).`

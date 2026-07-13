@@ -28,7 +28,7 @@ export default defineTool({
   profile: 'engineer',
   crossWorkspace: true,
   description:
-    "Log the Queen's disposition of a considered item to the decision ledger (P-111): act | defer | reject | route-to-research | no-op. Resolves the autonomy gate from the action + risk/authority/reversibility (same as autonomy:decide), then records one disposition row with the decision axes, the chosen disposition, why, and links (the item, a realized action row, or a routed research task). Behavior-neutral record-keeping.",
+    "Log the Mug's disposition of a considered item to the decision ledger (P-111): act | defer | reject | route-to-research | no-op. Resolves the autonomy gate from the action + risk/authority/reversibility (same as autonomy:decide), then records one disposition row with the decision axes, the chosen disposition, why, and links (the item, a realized action row, or a routed research task). Behavior-neutral record-keeping.",
   capability: 'coord:write',
   guidance: {
     when: "You are the Mug and you've DECIDED what to do with a queue item — record the disposition so it lands in the decision ledger / the owner's recent-auto-decisions feed. Use disposition='act' (links the action row), 'defer' (+revisitAt), 'reject' (+why), 'route-to-research' (+researchTaskId), or 'no-op' (+why).",

@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-wake-brain-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `the autonomous-Queen cadence (every 30 min; the wake fires only under POT_AGENT_TABS ` +
+      `the autonomous-Mug cadence (every 30 min; the wake fires only under POT_AGENT_TABS ` +
       `with a live pinned brain). ` +
       (active ? 'Cron LIVE (flag still gates the action).' : 'Inactive — enable via the routines admin.'),
   );

@@ -164,7 +164,7 @@ export function nudgeSummary(planSlug: string): string {
 
 export function nudgeBody(planSlug: string): string {
   return [
-    `You declared intent on plan "${planSlug}" but hold no claim on any of its items, so the Queen, the colony tab, and your peers cannot see which items are yours — work can be double-placed or look abandoned.`,
+    `You declared intent on plan "${planSlug}" but hold no claim on any of its items, so the Mug, the colony tab, and your peers cannot see which items are yours — work can be double-placed or look abandoned.`,
     '',
     'Claim your lane (either way works):',
     `  - plans:set-status { slug: '${planSlug}', itemId: 'P-NNN', status: 'wip' } — the wip flip now AUTO-CLAIMS the item for you.`,

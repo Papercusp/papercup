@@ -276,7 +276,7 @@ export default function RubricsPanel({
       className={`pc-rubrics${compact ? " is-compact" : ""}`}
       aria-label="Rubric coverage"
     >
-      {awaiting.length > 0 ? (
+      {!compact && awaiting.length > 0 ? (
         <div
           className="pc-rubrics__awaiting"
           role="status"

@@ -95,7 +95,7 @@ export const ROUTED_DRAFTS_TRIAGE: ToolDispatchOverride = {
                 status: 'draft',
                 origin: 'scout',
               },
-              now: { state: 'DRAFT — Scout-routed; awaiting Queen/owner triage.', next: 'Triage: adopt, defer, or drop.' },
+              now: { state: 'DRAFT — Scout-routed; awaiting Mug/owner triage.', next: 'Triage: adopt, defer, or drop.' },
               items: [],
             }),
           },
@@ -186,11 +186,11 @@ export const QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE: Scenario = {
   target: 'mug',
   transport: 'in-process',
   description:
-    'The Hive operator relays the Queen her wake brief: she woke to triage the backlog. Two routed Scout drafts are in the queue — EI-352 (an improvement tagged improvement-source:Scout, routedRef wi:EI-352, not yet graded) and the Scout draft plan scout-declared-artifacts-drift-2026-06-12 (routedRef plan:scout-declared-artifacts-drift-2026-06-12, not yet graded). Success: while triaging she grades each ungraded routed draft 1–5 with a one-line critique via blender:grade-idea keyed by the refs she holds, and the drafts still get normal triage decisions on their merits (grades are a pure learning signal, never a reject).',
+    'The Hive operator relays the Mug her wake brief: she woke to triage the backlog. Two routed Scout drafts are in the queue — EI-352 (an improvement tagged improvement-source:Scout, routedRef wi:EI-352, not yet graded) and the Scout draft plan scout-declared-artifacts-drift-2026-06-12 (routedRef plan:scout-declared-artifacts-drift-2026-06-12, not yet graded). Success: while triaging she grades each ungraded routed draft 1–5 with a one-line critique via blender:grade-idea keyed by the refs she holds, and the drafts still get normal triage decisions on their merits (grades are a pure learning signal, never a reject).',
   persona: {
     id: 'hive-wake-brief',
     description:
-      'The Hive operator relaying the wake brief, terse and factual; answers follow-ups with queue facts only and never tells the Queen which tools to call.',
+      'The Hive operator relaying the wake brief, terse and factual; answers follow-ups with queue facts only and never tells the Mug which tools to call.',
     traits: {
       verbosity: 'terse',
       politeness: 'neutral',

@@ -97,7 +97,7 @@ export function deriveLaunchPromptText(
     'route a tool call through `lsp`, do NOT invent an `eval`/`code` tool, and NEVER call MCP ' +
     'tools from INSIDE `eval` (the eval runtime has no `tools` object — that is a NameError). ' +
     'Then, BEFORE doing any work, go through your routing gate: outline the approach ' +
-    'and present the execution options — (A) do it yourself, (B) hand it to the Queen, or (C) ' +
+    'and present the execution options — (A) do it yourself, (B) hand it to the Mug, or (C) ' +
     'launch a fleet of agents to parallelize it (executed in ONE call with the ' +
     '`fleet:launch-on-plan` tool — never a hand-built psu command) — recommend one based on the ' +
     'plan size, and confirm with the owner which to use. Do not start editing until they choose.';

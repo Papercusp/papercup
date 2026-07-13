@@ -2623,8 +2623,8 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
             -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
             AND ${kind ? sql`item_kind = ${kind}` : sql`TRUE`}
           -- P-010: when activated (swarmId present ⇒ the per-Hive claim lease is on), claim_next
-          -- RESPECTS the Queen's priority — affinity match first, then lower feature_order (the
-          -- per-harness wave/plan order the Queen steers, D-003/D-009), then oldest-first
+          -- RESPECTS the Mug's priority — affinity match first, then lower feature_order (the
+          -- per-harness wave/plan order the Mug steers, D-003/D-009), then oldest-first
           -- (anti-starvation). Flag OFF ⇒ plain oldest-first, byte-identical to before.
           ORDER BY ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, feature_order ASC NULLS LAST,` : sql``} created_ts ASC
           LIMIT 1
@@ -3131,7 +3131,7 @@ export async function claimNextIssueWorkItem(
               : sql`TRUE`
           }
         -- EI-7407: feature_order steering must be UNCONDITIONAL for issue-family claims (per
-        -- this function's own doc above — "the Queen can now steer issues too, P-007" — with
+        -- this function's own doc above — "the Mug can now steer issues too, P-007" — with
         -- no swarmId/Multi-Swarm-lease caveat, unlike the feature-family path's P-010-gated
         -- behavior). The swarm-affinity tie-break stays swarmId-gated (meaningless without
         -- it); the fix moves feature_order OUT of that ternary so a plain, lease-less

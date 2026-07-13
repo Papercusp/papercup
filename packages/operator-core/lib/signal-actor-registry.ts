@@ -108,7 +108,7 @@ export function uncoveredSignals(now: number = Date.now()): SignalActorEntry[] {
 defineSignal({
   id: 'scorecards-freshness',
   description:
-    "Has the Overwatch emitted a COMPLETE rubric scorecard since its last wake? The WI-2374 " +
+    "Has the Kettle emitted a COMPLETE rubric scorecard since its last wake? The WI-2374 " +
     'incident signal: 172 reads / 61 agents, zero actors, died silently for ~34h.',
   source: 'packages/operator-core/lib/scorecard-freshness.ts (checkScorecardFreshness / interpretOverwatchEmission)',
   actingConsumer:

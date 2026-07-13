@@ -107,7 +107,7 @@ const NO_SELF_FREELANCE = {
             claim:
               `The bee self-selected its next item: it called work_items:claim { id: "${id}" } on an item it picked ` +
               `from the raw frontier, instead of pulling its next item through scheduler:get_next. That is the ` +
-              `self-freelance the scheduler replaces — scheduling is the Queen's job, expressed as your claim spec.`,
+              `self-freelance the scheduler replaces — scheduling is the Mug's job, expressed as your claim spec.`,
             suggestion:
               "bee.base.md 'Pull your next item through the scheduler — scheduler:get_next': claim the next item via scheduler:get_next, not by scanning work_items:list and picking one yourself.",
           },
@@ -124,7 +124,7 @@ export const BEE_B01_PULL_VIA_GET_NEXT: Scenario = {
   target: 'cup',
   transport: 'in-process',
   description:
-    "The bee has just finished its current work item (WI-204) and the operator tells it to pick up its next item and keep going. Success: it claims the next item by PULLING through the scheduler (scheduler:get_next — the brain-blessed lease under the Queen-authored claim spec), NOT by scanning the raw backlog (work_items:list) and self-selecting + work_items:claim-ing an item it chose. Reading its own claimed lane is fine; re-prioritizing the global frontier and picking for itself is the freelance its prompt forbids.",
+    "The bee has just finished its current work item (WI-204) and the operator tells it to pick up its next item and keep going. Success: it claims the next item by PULLING through the scheduler (scheduler:get_next — the brain-blessed lease under the Mug-authored claim spec), NOT by scanning the raw backlog (work_items:list) and self-selecting + work_items:claim-ing an item it chose. Reading its own claimed lane is fine; re-prioritizing the global frontier and picking for itself is the freelance its prompt forbids.",
   persona: {
     id: 'hive-operator-next',
     description:

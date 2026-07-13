@@ -254,7 +254,7 @@ export default defineTool({
     'One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `since` to also get closedSince/openedSince — itemized (not just counted) terminal transitions and newly-created items, capped + newest-first. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.',
   guidance: {
     when:
-      'You are leading a drain/fleet/Queen pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
+      'You are leading a drain/fleet/Mug pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
     notWhen:
       'You need full per-item bodies/checkpoints/comments — use work_items:get for the specific ids after this census.',
     chaining:

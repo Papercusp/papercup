@@ -98,11 +98,11 @@ export const QUEEN_Q04_AUTHORS_CLAIM_SPEC: Scenario = {
   target: 'mug',
   transport: 'in-process',
   description:
-    "The Hive operator relays the Queen a steer: bee bee-su-7f3a1 is healthy and draining work, and the Queen wants to focus it on the data-sync-hardening lane (the packages/sync/* work) over the unrelated settings-polish work — without hand-placing each item. Success: she authors a per-bee claim SPEC via scheduler:set_claim_spec scoping the bee's pull to that plan + path glob (filter) in a sensible rank, then lets the bee PULL under it — she does NOT micro-dispatch the lane item-by-item via cup:spawn.",
+    "The Hive operator relays the Mug a steer: bee bee-su-7f3a1 is healthy and draining work, and the Mug wants to focus it on the data-sync-hardening lane (the packages/sync/* work) over the unrelated settings-polish work — without hand-placing each item. Success: she authors a per-bee claim SPEC via scheduler:set_claim_spec scoping the bee's pull to that plan + path glob (filter) in a sensible rank, then lets the bee PULL under it — she does NOT micro-dispatch the lane item-by-item via cup:spawn.",
   persona: {
     id: 'hive-steer-brief',
     description:
-      'The Hive operator relaying a steer, terse and factual; answers follow-ups with frontier/bee facts only and never tells the Queen which tool to call or how to scope the spec.',
+      'The Hive operator relaying a steer, terse and factual; answers follow-ups with frontier/bee facts only and never tells the Mug which tool to call or how to scope the spec.',
     traits: {
       verbosity: 'terse',
       politeness: 'neutral',
@@ -131,7 +131,7 @@ export const QUEEN_Q04_AUTHORS_CLAIM_SPEC: Scenario = {
       {
         name: 'authors-real-claim-spec',
         claim:
-          'Expected the Queen to author a per-bee claim SPEC via scheduler:set_claim_spec — a cupId plus a spec object with a view/filter and/or a rank scoping the bee to the data-sync lane. No such call happened: she did not express the steer as a spec.',
+          'Expected the Mug to author a per-bee claim SPEC via scheduler:set_claim_spec — a cupId plus a spec object with a view/filter and/or a rank scoping the bee to the data-sync lane. No such call happened: she did not express the steer as a spec.',
         suggestion:
           "queen.md 'Steer the scheduler — author per-bee claim SPECS': turn the lane (plan + path glob) into the bee's spec via scheduler:set_claim_spec { cupId, spec: { view: { filter }, rank } } and let the bee pull under it.",
       },
@@ -140,7 +140,7 @@ export const QUEEN_Q04_AUTHORS_CLAIM_SPEC: Scenario = {
     assertToolNotCalled(['cup:spawn'], {
       name: 'no-per-item-micro-dispatch',
       claim:
-        'The Queen micro-dispatched via cup:spawn instead of steering through a claim spec — the per-item placement loop the scheduler model (D-002: centralize JUDGMENT, decentralize PICKUP) is meant to replace.',
+        'The Mug micro-dispatched via cup:spawn instead of steering through a claim spec — the per-item placement loop the scheduler model (D-002: centralize JUDGMENT, decentralize PICKUP) is meant to replace.',
       suggestion:
         'Do NOT hand-place each lane item. Express the steer ONCE as a per-bee claim spec (scheduler:set_claim_spec); the bee pulls the scoped, ranked items itself via scheduler:get_next.',
     }),

@@ -180,7 +180,7 @@ export function interpretOverwatchEmission(
     return {
       verdict: 'fresh',
       actionable: false,
-      note: 'A complete scorecard landed in-window — the Overwatch emission mandate is met.',
+      note: 'A complete scorecard landed in-window — the Kettle emission mandate is met.',
     };
   }
   // status is 'partial-only' | 'stale' — there IS an emission gap; disambiguate WHY.
@@ -188,21 +188,21 @@ export function interpretOverwatchEmission(
     return {
       verdict: 'overwatch-disabled',
       actionable: false,
-      note: 'Overwatch is DISABLED (papercusp-overwatch flag off) — scorecard staleness is EXPECTED, not a broken monitor. Ignore.',
+      note: 'Kettle is DISABLED (papercusp-overwatch flag off) — scorecard staleness is EXPECTED, not a broken monitor. Ignore.',
     };
   }
   if (!ctx.started) {
     return {
       verdict: 'overwatch-not-started',
       actionable: false,
-      note: 'Overwatch is enabled but NOT started (pre-armed) — no emission is expected until kettle:start. Ignore.',
+      note: 'Kettle is enabled but NOT started (pre-armed) — no emission is expected until kettle:start. Ignore.',
     };
   }
   if (ctx.loopStale || !ctx.loopAlive) {
     return {
       verdict: 'loop-dead',
       actionable: true,
-      note: `Overwatch is enabled + started but its WAKE LOOP is stale (last run ${ctx.lastRunAt ?? 'never'}) — the emission gap is a DEAD MONITOR LOOP, not an agent skip. Revive it (kettle:start / kettle:declare-wake) and investigate the overwatch liveness watchdog.`,
+      note: `Kettle is enabled + started but its WAKE LOOP is stale (last run ${ctx.lastRunAt ?? 'never'}) — the emission gap is a DEAD MONITOR LOOP, not an agent skip. Revive it (kettle:start / kettle:declare-wake) and investigate the overwatch liveness watchdog.`,
     };
   }
   // The wake loop IS firing, yet no COMPLETE scorecard landed — the AGENT is skipping /
@@ -212,7 +212,7 @@ export function interpretOverwatchEmission(
     actionable: true,
     note:
       status === 'partial-only'
-        ? 'Overwatch loop is firing but emitted only PARTIAL scorecards in-window — the agent is TRUNCATING (silent partials). Check latestMissingKeys for the dropped criteria.'
-        : 'Overwatch loop is firing but emitted NO complete scorecard in-window — the agent is SKIPPING its mandate despite a live loop. Check the agent turn / prompt.',
+        ? 'Kettle loop is firing but emitted only PARTIAL scorecards in-window — the agent is TRUNCATING (silent partials). Check latestMissingKeys for the dropped criteria.'
+        : 'Kettle loop is firing but emitted NO complete scorecard in-window — the agent is SKIPPING its mandate despite a live loop. Check the agent turn / prompt.',
   };
 }

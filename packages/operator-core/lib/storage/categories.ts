@@ -109,7 +109,7 @@ export const STORAGE_CATEGORIES: readonly StorageCategory[] = [
     ageColumnType: 'timestamptz',
     federation: 'local-diagnostic',
     description:
-      'The governed-action chokepoint log (what the Queen decided + its disposition). Workspace-local.',
+      'The governed-action chokepoint log (what the Mug decided + its disposition). Workspace-local.',
   },
   {
     id: 'agent-activity',

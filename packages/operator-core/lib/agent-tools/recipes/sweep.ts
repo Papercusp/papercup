@@ -30,7 +30,7 @@ export default defineTool({
     'dryRun:false to actually retire. Reversible (a status flip).',
   guidance: {
     when:
-      'Periodic hygiene (a Queen idle-turn task) to clear the long tail of one-off recipes that were ' +
+      'Periodic hygiene (a Mug idle-turn task) to clear the long tail of one-off recipes that were ' +
       'authored on a single run and never reused. ALWAYS run it once with the default dryRun:true to ' +
       'review the candidates, then dryRun:false to retire them.',
     notWhen:

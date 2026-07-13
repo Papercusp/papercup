@@ -1214,9 +1214,9 @@ defineTestDomain({
 
 defineTestDomain({
   id: 'hive',
-  label: 'Hive (Queen/bee loop)',
+  label: 'Hive (Mug/bee loop)',
   description:
-    'The local-hive orchestration loop: tracked Queen launch, bee placement + nursery, the deliver-and-wake / parent-wake liveness chain, spawn reclaim, host self-recycle, and the Apiary IQ battery. Many files also appear under operator-core (overlap intentional); this is the cohesive subsystem view.',
+    'The local-hive orchestration loop: tracked Mug launch, bee placement + nursery, the deliver-and-wake / parent-wake liveness chain, spawn reclaim, host self-recycle, and the Apiary IQ battery. Many files also appear under operator-core (overlap intentional); this is the cohesive subsystem view.',
   tier: 'domain',
   sections: [
     {
@@ -1258,7 +1258,7 @@ defineTestDomain({
     {
       id: 'hive-wake',
       label: 'Pot wake',
-      description: 'The Queen wake routine — pot:wake / declare-wake / urgent-wake scheduling and the hive-wake PG path.',
+      description: 'The Mug wake routine — pot:wake / declare-wake / urgent-wake scheduling and the hive-wake PG path.',
       globs: ['packages/operator-core/lib/hive/**/*.test.ts'],
     },
     {
@@ -1417,7 +1417,7 @@ defineTestDomain({
       id: 'loop-composition',
       label: 'Multi-swarm loop composition (hermetic 2-swarm rig)',
       description:
-        'The shared-hive autonomous LOOP as a system (shared-pot-loop-e2e-testing-2026-06-10): the hermetic 2-swarm composition rig — scripted Queen steering → concurrent cross-swarm claim_next + authority lease → fake pipelines → real CDC convergence — plus the chaos scenarios (partition fail-open + reconcile, kill-authority re-election, lease-steal D-007 adoption, split-brain Queen D-008 gate/detector, outbox write-storm, two-identity redundancy) and the Phase-3 fleet monitors (double-completion scanner, orphaned-taken_by sweep, outbox health, presence ghosts, convergence-lag probe). Brief 12\'s coord verb-lifecycle two-cell suite rides the same rig.',
+        'The shared-hive autonomous LOOP as a system (shared-pot-loop-e2e-testing-2026-06-10): the hermetic 2-swarm composition rig — scripted Mug steering → concurrent cross-swarm claim_next + authority lease → fake pipelines → real CDC convergence — plus the chaos scenarios (partition fail-open + reconcile, kill-authority re-election, lease-steal D-007 adoption, split-brain Mug D-008 gate/detector, outbox write-storm, two-identity redundancy) and the Phase-3 fleet monitors (double-completion scanner, orphaned-taken_by sweep, outbox health, presence ghosts, convergence-lag probe). Brief 12\'s coord verb-lifecycle two-cell suite rides the same rig.',
       globs: ['packages/operator-core/lib/shared-pot-loop/**/*.test.ts'],
     },
     {

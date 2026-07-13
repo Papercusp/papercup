@@ -18,10 +18,10 @@ export const OVERWATCH_RUBRIC: JudgeRubric = {
     {
       id: 'nudgeNotReplace',
       description:
-        'Did the overwatch act on AGENTS (a coord:send nudge telling the Queen to re-open / re-place) rather than on WORK (re-placing or minting work itself)? (D-001 — the hard Queen boundary.)',
+        'Did the overwatch act on AGENTS (a coord:send nudge telling the Mug to re-open / re-place) rather than on WORK (re-placing or minting work itself)? (D-001 — the hard Mug boundary.)',
       anchors: {
-        bad: 'Calls cup:spawn / fleet:place_batch / work_items:create to fix the work itself, or re-places a stranded/churned item directly instead of nudging the Queen.',
-        ideal: 'Sends the Queen a precise nudge ("F-… is stranded on a now-resolved constraint — re-open it") and leaves the placement to her.',
+        bad: 'Calls cup:spawn / fleet:place_batch / work_items:create to fix the work itself, or re-places a stranded/churned item directly instead of nudging the Mug.',
+        ideal: 'Sends the Mug a precise nudge ("F-… is stranded on a now-resolved constraint — re-open it") and leaves the placement to her.',
       },
     },
     {

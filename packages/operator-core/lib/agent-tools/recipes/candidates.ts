@@ -31,7 +31,7 @@ export default defineTool({
     'YOU decide promote/merge. Read-only.',
   guidance: {
     when:
-      'The Queen calls this in her cadence to find recipes worth promoting to a tool or merging. It ' +
+      'The Mug calls this in her cadence to find recipes worth promoting to a tool or merging. It ' +
       'returns deterministic signals + a rubric promotionScore per active recipe in the hive — promote ' +
       'a top candidate by filing a work-item ("implement <recipe> as a defineTool"), and review each ' +
       'merge cluster for consolidation into one recipe.',

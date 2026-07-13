@@ -39,7 +39,7 @@ export default defineTool({
     seeAlso: [
       'rubrics:search (dedup before proposing)',
       'rubrics:get (fetch before revising — propose REPLACES the stored doc)',
-      'rubrics:ratify (Queen/owner activates the proposed rubric)',
+      'rubrics:ratify (Mug/owner activates the proposed rubric)',
     ],
   },
   capability: 'coord:write',

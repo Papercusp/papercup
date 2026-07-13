@@ -34,7 +34,7 @@ export default defineTool({
       .enum(['member', 'leader'])
       .default('member')
       .describe(
-        "Membership role to join as. 'member' (default) = a worker in the fleet. 'leader' = take over as the fleet's leader (the per-fleet analog of the Queen — owns monitoring + coordination + driving the plan); installs you as leader and demotes + notifies the prior leader. Equivalent to fleet:take-leadership in one call.",
+        "Membership role to join as. 'member' (default) = a worker in the fleet. 'leader' = take over as the fleet's leader (the per-fleet analog of the Mug — owns monitoring + coordination + driving the plan); installs you as leader and demotes + notifies the prior leader. Equivalent to fleet:take-leadership in one call.",
       ),
   }),
   async handler(args, ctx) {

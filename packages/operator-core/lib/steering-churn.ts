@@ -151,13 +151,13 @@ export const defaultSteeringChurnEscalator: SteeringChurnEscalator = async ({
     severity: 'advisory',
     summary:
       `Steering churn: ${harnessSlug}/${featureId} re-steered by ${result.distinctWriters} writers ` +
-      `(${result.churnCount} flips) in ${mins}m — multi-Queen LWW thrash`,
+      `(${result.churnCount} flips) in ${mins}m — multi-Mug LWW thrash`,
     body:
       `The backlog item ${featureId} (harness ${harnessSlug}, workspace ${workspaceId}) had its ` +
       `priority (feature_order) re-steered ${result.steerCount}× by ${result.distinctWriters} different ` +
       `writers within ${mins} minutes, flipping writer ${result.churnCount} times: ` +
       `${result.writers.map(writerLabel).join(', ')}.\n\n` +
-      `This is the multi-Queen steering tripwire (D-004 @ hive-network-surface-2026-06-11): concurrent ` +
+      `This is the multi-Mug steering tripwire (D-004 @ hive-network-surface-2026-06-11): concurrent ` +
       `steering is unarbitrated last-write-wins on feature_order, and this item is ping-ponging between ` +
       `Queens. If this is sustained, it is the evidence that gates building the single-steerer lease ` +
       `(P-011, revisit condition a). Investigate which Swarms are contending this item; consider pinning ` +

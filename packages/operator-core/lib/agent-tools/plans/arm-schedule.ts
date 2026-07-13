@@ -31,7 +31,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:arm-schedule',
   description:
-    'Arm a scheduled plan so it starts firing runs on its cadence (materializes its routine + sets schedule_active). Authoring (plans:set-schedule) does not arm; this does. Autonomy-gated (schedule-arm category): the Queen escalates unless graduated; the owner arms directly.',
+    'Arm a scheduled plan so it starts firing runs on its cadence (materializes its routine + sets schedule_active). Authoring (plans:set-schedule) does not arm; this does. Autonomy-gated (schedule-arm category): the Mug escalates unless graduated; the owner arms directly.',
   guidance: {
     when: 'Activating a plan you already scheduled (plans:set-schedule) so it begins firing runs.',
     notWhen: 'Authoring/editing the cadence (plans:set-schedule). Firing one run by hand (plans:run-now).',

@@ -20,6 +20,9 @@ const rows = [
     characteristic: "quality",
     title: "Outcome quality",
     status: "ratified",
+    // WI-4506 split-provenance: author ≠ ratifier (the D-012 governance story).
+    proposedBy: "su-f69a7079-b041-49de-8468-b012df5abb2e",
+    ratifiedBy: "su-eb9b7ae3-d528-4584-8379-e69f2b8fe7b9",
     criteriaCount: 5,
     ratingScale: ["fail", "partial", "pass"],
     methodRef: null,
@@ -34,6 +37,8 @@ const rows = [
     characteristic: "efficiency",
     title: "Cost efficiency",
     status: "draft",
+    proposedBy: "su-f69a7079-b041-49de-8468-b012df5abb2e",
+    ratifiedBy: null,
     criteriaCount: 3,
     ratingScale: ["fail", "pass"],
     methodRef: null,

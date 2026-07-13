@@ -19,7 +19,7 @@ import { takeFleetLeadership } from './take-leadership-core';
 export default defineTool({
   name: 'fleet:take-leadership',
   description:
-    'Take over an existing fleet: you become its leader (the per-fleet analog of the Queen — you own monitoring, coordination, and driving the plan to completion). Sets the registry leader to you, labels your presence the fleet\'s leader, demotes the prior leader to a member, and NOTIFIES the displaced leader — the returned { previousLeader, notified } tells you whom you displaced and that they were already told, so you don\'t double-message them. This IS how you "hand a plan to a fleet" — there is no separate routing tool. (Also the FIRST act when the owner designates you a fleet\'s leader: claim it, don\'t just assume it.)',
+    'Take over an existing fleet: you become its leader (the per-fleet analog of the Mug — you own monitoring, coordination, and driving the plan to completion). Sets the registry leader to you, labels your presence the fleet\'s leader, demotes the prior leader to a member, and NOTIFIES the displaced leader — the returned { previousLeader, notified } tells you whom you displaced and that they were already told, so you don\'t double-message them. This IS how you "hand a plan to a fleet" — there is no separate routing tool. (Also the FIRST act when the owner designates you a fleet\'s leader: claim it, don\'t just assume it.)',
   guidance: {
     when: 'Routing option (2): handing a plan to an existing named fleet. Taking the leader role makes you its driver (D-002). Also the FIRST act when the owner designates you a fleet\'s leader — claim it (this is identity-establishing, not a confirm-gated write).',
     notWhen:

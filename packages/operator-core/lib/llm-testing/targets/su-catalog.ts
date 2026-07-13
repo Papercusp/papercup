@@ -216,7 +216,7 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   {
     name: 'coord:declare-intent',
     description:
-      'Declare what you are working on right now (intent, files, plan slug) so peers see you. Passing `items` CLAIMS those plan items as your lane (requires current_plan_slug) — an unclaimed lane is invisible to the Queen and peers.',
+      'Declare what you are working on right now (intent, files, plan slug) so peers see you. Passing `items` CLAIMS those plan items as your lane (requires current_plan_slug) — an unclaimed lane is invisible to the Mug and peers.',
     input: obj({
       intent: { type: 'string' },
       current_files: { type: 'array', items: { type: 'string' } },

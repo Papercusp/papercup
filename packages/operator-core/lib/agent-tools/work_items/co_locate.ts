@@ -28,7 +28,7 @@ export default defineTool({
   name: 'work_items:co_locate',
   profile: 'engineer',
   description:
-    "The Queen's co-location lever: stamp a work-item's Swarm affinity so tightly-coupled work runs on the SAME Swarm (instant coordination) and loosely-coupled work spreads. Pin with { swarm }, decide with { coLocateWith, tight? }, or read the current affinity with just { workItem }.",
+    "The Mug's co-location lever: stamp a work-item's Swarm affinity so tightly-coupled work runs on the SAME Swarm (instant coordination) and loosely-coupled work spreads. Pin with { swarm }, decide with { coLocateWith, tight? }, or read the current affinity with just { workItem }.",
   guidance: {
     when: 'You are the Mug placing work: co-locate a work-item with its tight collaborators on one Swarm (coLocateWith), pin it to a specific Swarm (swarm), or check where it is affined. The affinity is honored by claim_next once the per-Pot claim lease is active.',
     notWhen:
