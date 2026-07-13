@@ -172,6 +172,8 @@ export type UpdateInfo = {
 	current_version: string,
 	new_version: string | null,
 	notes: string | null,
+	check_failed: boolean,
+	check_reason: string | null,
 };
 
 export type Workspace = {

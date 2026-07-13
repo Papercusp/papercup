@@ -3,7 +3,7 @@ URL: /internal/docs/agent-insights/one-account-runs-15-agents-headroom
 
 The inference gateway paces ~15 concurrent agents per account. Do not treat healthyAccounts=1 / sustainedlyLimited / utilization7d=1.0 as "no capacity" or refuse to launch a fleet — that is a fabricated wall.
 
-**Owner directive (Avi, 2026-07-06):** *"AVIYNW HAS HEADROOM. DON'T MAKE UP
+**Owner directive (the owner, 2026-07-06):** *"AVIYNW HAS HEADROOM. DON'T MAKE UP
 THAT THERE IS NO HEADROOM. WE CAN RUN 15 SIMULTANEOUS AGENTS ON 1 ACCOUNT."*
 
 ## The mistake this prevents

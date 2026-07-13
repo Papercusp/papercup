@@ -186,10 +186,10 @@ workspaces total: 6, current: default
 ✓ papercup 'papercusp-workspace' present in registry
 === STEP 2: registerPapercupHarness ===
 state: already-registered
-path: /home/marsh-office/papercupai-workspace/papercup
+path: /home/dev/papercupai-workspace/papercup
 === STEP 3: verify PG row ===
 harness_registry@papercusp-workspace: 1 projects
-  - papercup  →  /home/marsh-office/papercupai-workspace/papercup
+  - papercup  →  /home/dev/papercupai-workspace/papercup
 ✓ papercup registered in papercup workspace
 === PASS — dogfooding flipped on ===
 ```

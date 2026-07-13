@@ -13,7 +13,7 @@
 **The ONLY supported way to run or test the app:**
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop && npm run dev
+cd papercusp-desktop && npm run dev   # from the repo root
 ```
 
 Then drive the **Tauri window** it opens (agent-driven UI checks:
@@ -171,10 +171,9 @@ scrolls away — and carry it forward in every status report.
 
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only
 
-- The canonical shared checkout
-  (`/home/marsh-office/papercupai-workspace/papercusp`) **always has `staging`
-  checked out**. Work on `staging` directly — **no `git worktree`, no feature
-  branches**; coordinate via `locks:*` (per-edit hook is automatic) + `coord:*`
+- The canonical shared checkout (the repo root you are working in) **always has
+  `staging` checked out**. Work on `staging` directly — **no `git worktree`, no
+  feature branches**; coordinate via `locks:*` (per-edit hook is automatic) + `coord:*`
   (declare-intent), not tree isolation.
 - **`main` is the GREEN branch** — it only fast-forwards to a staging commit
   that passed the green-checkpoint suite; nothing and no one pushes it directly

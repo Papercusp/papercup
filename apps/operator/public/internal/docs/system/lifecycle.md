@@ -218,7 +218,7 @@ The user **registers a project** (an existing dir on disk) as a harness. Three e
 The handler at `apps/operator/app/api/_hono/harness.ts:714` (`harness.post('/projects', ...)`) does:
 
 1. **Register the slug.** Adds `{ slug, path }` to the per-workspace registry at `<workspace-root>/registry.json` via `loadRegistry()` / `saveRegistry()` in `apps/operator/lib/harness-registry.ts`. The legacy `~/.restart-harness-projects.json` is CLI-only; operator code ignores it.
-2. **Provision the PG schema.** Runs `bin/scaffold-harness-schema.sh <slug>`, which applies `libs/papercusp/libs/db/sql/002-per-harness-template.sql` against `harness_<slug.replace(/-/g,'_')>`. This creates 11 tables (`harness_features`, `harness_issues`, `harness_snapshots`, `agent_runs`, `agent_chats`, `feature_audit`, `messages`, `directive_summaries`, `executed_actions`, `config_token`, `supervisor_notes`), installs `sync_consolidated_trg` on `harness_features` (mirrors INSERT/UPDATE/DELETE into `harness_shared.harness_features_consolidated`), and adds the schema's tables to the `zero_harness` Postgres publication. *Caveat: the code passes `cwd=/home/marsh-office/Restart` (stale); the script actually lives at `papercupai-workspace/papercup/bin/`.*
+2. **Provision the PG schema.** Runs `bin/scaffold-harness-schema.sh <slug>`, which applies `libs/papercusp/libs/db/sql/002-per-harness-template.sql` against `harness_<slug.replace(/-/g,'_')>`. This creates 11 tables (`harness_features`, `harness_issues`, `harness_snapshots`, `agent_runs`, `agent_chats`, `feature_audit`, `messages`, `directive_summaries`, `executed_actions`, `config_token`, `supervisor_notes`), installs `sync_consolidated_trg` on `harness_features` (mirrors INSERT/UPDATE/DELETE into `harness_shared.harness_features_consolidated`), and adds the schema's tables to the `zero_harness` Postgres publication. *Caveat: the code passes `cwd=/home/dev/Restart` (stale); the script actually lives at `papercupai-workspace/papercup/bin/`.*
 3. **Regenerate the cross-harness UNION view.** Runs `scripts/regenerate-harness-features-view.sh`, rewriting `harness_shared.harness_features_all` as `UNION ALL` across every per-harness `harness_features` table (read-only cross-harness aggregator).
 4. **Returns** `{ ok, project, provisioning }` — UI uses `provisioning[]` for per-stage success/failure.
 
@@ -817,5 +817,5 @@ These reflect known in-progress migrations as of 2026-05-06; expect them to drif
 * **Voice tool aliasing.** `delegate_to_claude` and `delegate_to_agent` both map to the same handler (Wave 3 of the omp migration); EL agents may reference either name.
 
 For a one-page summary of recent migrations and their commit hashes, see
-`/home/marsh-office/.claude/projects/-tmp/memory/project_omp_routing_migration.md`
-and `/home/marsh-office/.claude/projects/-tmp/memory/project_filesystem_to_pg_migration.md`.
+`/home/dev/.claude/projects/-tmp/memory/project_omp_routing_migration.md`
+and `/home/dev/.claude/projects/-tmp/memory/project_filesystem_to_pg_migration.md`.

@@ -18,8 +18,8 @@ routine on a schedule (superproject + every submodule) — see
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 No agent ever runs `git commit` themselves. The practical consequence:
 
-* Every commit's author is the same bot identity (`Avi` /
-  `avi@storewolf.com` on this box), regardless of which agent wrote the diff.
+* Every commit's author is the same bot identity (the box's configured
+  `git user.name` / `user.email`), regardless of which agent wrote the diff.
 * Every commit message is the fixed string `chore(git-sync): auto-commit
   papercusp [skip ci]` — no per-change summary, no agent id, no work-item
   reference.
@@ -89,8 +89,8 @@ recipe is:
 **Starting point:** commit `107d5bd337`, `apps/operator/lib/release/green-checkpoint.ts`,
 introducing `quietCutSecFromEnv()` and the quiet-cut candidate-selection logic.
 `git show 107d5bd337` gives the diff and the timestamp
-(`2026-07-01 21:20:07 -0400`) but only `Avi` / `avi@storewolf.com` for author —
-the dead end described above.
+(`2026-07-01 21:20:07 -0400`) but only the single git-sync bot identity for
+author — the dead end described above.
 
 **What worked:**
 

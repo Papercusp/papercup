@@ -44,7 +44,7 @@ is the tool's args verbatim; the response is the same envelope the MCP returns.
 
 Authenticate with the **sanctioned local agent credential** — the superuser bearer at
 `~/.papercusp/superuser-token` (resolved from `homedir()`, i.e.
-`/home/marsh-office/.papercusp/superuser-token`). This is the designed local-agent
+`/home/dev/.papercusp/superuser-token`). This is the designed local-agent
 token: the operator's own first-party tooling reads it (`plans/runner.ts`,
 `operator/converse.ts`, `console-launcher.ts`, gym, oracle) to reach this same admin
 surface. It is **not** a bypass.

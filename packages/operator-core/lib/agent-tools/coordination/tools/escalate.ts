@@ -64,6 +64,14 @@ export default defineTool({
     ),
     body: z.string().optional(),
     plan_slug: z.string().optional(),
+    conditionKey: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'Stable identifier for a RECURRING condition (e.g. "mug-placement-stall", "work-feed-dead"). Re-escalating the same conditionKey COALESCES onto the existing open row (bumps its repeatCount) instead of opening a new one. Pass it for any watchdog/monitor condition you re-check on a cadence — especially when the summary embeds a live count or duration ("stalled ~7h", "302 items"), because without it the dedup falls back to the prose summary, which never repeats, and every wake leaks a new permanently-open escalation.',
+      ),
     options: z
       .array(z.object({ id: z.string().min(1), label: z.string().min(1) }))
       .optional()
@@ -77,6 +85,19 @@ export default defineTool({
     const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const harnessSlug =
       typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+    // A caller-supplied conditionKey becomes the dedup subjectSignature, so the SAME
+    // recurring condition coalesces onto one open row across firings. Without it the
+    // signature is derived from the prose summary — and a watchdog whose summary carries
+    // a live count/duration never produces the same signature twice, so every re-check
+    // leaked a NEW permanently-open escalation (162 of papercusp's 193 open rows were
+    // this: the kettle re-filing "Mug stalled ~7h" → "~10h" → "~16h" once per wake).
+    // Same flood class as EI-1490 (placement-watchdog) and EI-6789 (steering-lease),
+    // whose senders were excluded wholesale; a stable key fixes it at the source instead,
+    // keeping a genuinely-live condition visible (and countable) as exactly one row.
+    const meta = {
+      ...(harnessSlug ? { harnessSlug } : {}),
+      ...(args.conditionKey ? { subjectSignature: args.conditionKey.trim() } : {}),
+    };
     const rec = await openEscalation(identity, {
       severity: args.severity,
       summary: clampText(args.summary, LIMITS.ANNOTATION),
@@ -88,7 +109,8 @@ export default defineTool({
       // so a peer-machine harness-scoped escalation reaches the hub where the human's
       // inbox lives (WI-1375; mirrors messages.ts + coord:handoff). Operator/SU
       // ('*'/unset) escalations stay workspace-local.
-      ...(harnessSlug ? { meta: { harnessSlug }, harness_slug: harnessSlug } : {}),
+      ...(Object.keys(meta).length > 0 ? { meta } : {}),
+      ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
     });
     return {
       content: [

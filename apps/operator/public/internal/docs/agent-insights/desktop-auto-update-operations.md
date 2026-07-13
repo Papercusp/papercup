@@ -58,7 +58,7 @@ per-asset cap**, so they are NOT uploaded as GitHub release assets. Instead:
 manifest returns `404 no asset for linux/x86_64 (gui)` and the Linux update silently
 does not appear. The fallback **code is correct**; you must **set the env var** to a
 host serving the oversized artifacts. In the test rig that was
-`PAPERCUSP_RELEASE_HOST=http://10.0.2.2:8043` (host `/home/marsh-office/release-host-8043/desktop-v<tag>/`).
+`PAPERCUSP_RELEASE_HOST=http://10.0.2.2:8043` (host `/home/dev/release-host-8043/desktop-v<tag>/`).
 **Real Linux installs need this baked into the shipping operator env** — tracked as a
 follow-up (WI-3875, still open as of 2026-07-11 — blocked on an owner decision for the
 production release-host URL; no hosting infra exists in-repo yet). `latest.json` is

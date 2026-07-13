@@ -26,7 +26,7 @@ When a session's **cwd is the owner's `$HOME`**, the cwd-level project files
 `@AGENTS.md` memory rules). The session re-imports exactly the personal
 instructions P-002 skip-linked out of GLOBAL memory — via the PROJECT path the
 config-dir isolation never governed. Observed live (EI-202): a psu session at
-cwd `/home/marsh-office` carried both personal files despite a correct
+cwd `/home/dev` carried both personal files despite a correct
 skip-linked config dir.
 
 ## Why this fooled three implement attempts

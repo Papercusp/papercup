@@ -37,7 +37,7 @@ greeting, send `qmp_capabilities`, then drive:
 
 ```python
 import json, socket
-s = socket.socket(socket.AF_UNIX); s.connect('/home/marsh-office/macos-vm/OSX-KVM/qmp.sock')
+s = socket.socket(socket.AF_UNIX); s.connect('/home/dev/macos-vm/OSX-KVM/qmp.sock')
 f = s.makefile('rw'); f.readline()
 def cmd(c): f.write(json.dumps(c)+'\n'); f.flush(); return f.readline()
 cmd({"execute":"qmp_capabilities"})

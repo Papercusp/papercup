@@ -14,11 +14,11 @@ the one you intended:
 
 ```
 filesTouched: [
-  "/home/marsh-office/other-project/libs/papergrid/grid-core/src/column-filter.ts",
+  "/home/dev/other-project/libs/papergrid/grid-core/src/column-filter.ts",
   ...
 ]
 // …but you asked it to edit
-//   /home/marsh-office/papercupai-workspace/papercup/libs/generic/papergrid/grid-core
+//   /home/dev/papercupai-workspace/papercup/libs/generic/papergrid/grid-core
 ```
 
 Downstream consumers in the *intended* repo then fail to typecheck with
@@ -59,8 +59,8 @@ Before editing **any** file that lives in a shared submodule, make the agent
 **assert the repo root**, not just trust an absolute path:
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercup
-test "$(git rev-parse --show-toplevel)" = "/home/marsh-office/papercupai-workspace/papercup" \
+cd /home/dev/papercupai-workspace/papercup
+test "$(git rev-parse --show-toplevel)" = "/home/dev/papercupai-workspace/papercup" \
   || { echo "WRONG REPO ROOT — refusing to edit"; exit 1; }
 ```
 

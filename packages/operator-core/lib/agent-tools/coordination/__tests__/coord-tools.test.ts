@@ -256,6 +256,65 @@ describe('coord:escalate handler', () => {
     expect(rec.to).toEqual(['human']); // the channel always addresses the human
     expect(rec.resolved).toBeNull();
   });
+
+  // The escalation-flood fix: a watchdog re-checking the SAME condition on a cadence
+  // writes a summary carrying a live count/duration, so the summary-derived dedup
+  // signature never repeats and every wake used to leak a new permanently-open row.
+  // A stable conditionKey must collapse those firings onto ONE open escalation.
+  it('coalesces re-fires of the same conditionKey onto one open row, even as the summary changes', async () => {
+    const first = parse(
+      await run(escalateTool, {
+        severity: 'blocker',
+        summary: 'Mug stalled ~7h — 8 auto-eligible items stuck',
+        conditionKey: 'mug-placement-stall',
+      }),
+    );
+    const second = parse(
+      await run(escalateTool, {
+        severity: 'blocker',
+        summary: 'Mug stalled ~10h — 12 auto-eligible items stuck',
+        conditionKey: 'mug-placement-stall',
+      }),
+    );
+    expect(second.msg_id).toBe(first.msg_id); // same row, bumped — not a new one
+
+    const open = parse(await run(escalationsTool, { status: 'open' }));
+    const mine = open.escalations.filter(
+      (e: { msg_id: string }) => e.msg_id === first.msg_id,
+    );
+    expect(mine).toHaveLength(1);
+    expect(mine[0].repeatCount).toBe(2);
+  });
+
+  it('still opens distinct rows for distinct conditionKeys', async () => {
+    const a = parse(
+      await run(escalateTool, {
+        severity: 'blocker',
+        summary: 'Mug stalled',
+        conditionKey: 'mug-placement-stall',
+      }),
+    );
+    const b = parse(
+      await run(escalateTool, {
+        severity: 'blocker',
+        summary: 'Work feed dead',
+        conditionKey: 'work-feed-dead',
+      }),
+    );
+    expect(b.msg_id).not.toBe(a.msg_id);
+  });
+
+  // Without a key the old behavior stands: two differently-worded escalations are
+  // two rows. This is what makes the key necessary — it is not a regression.
+  it('without a conditionKey, differently-worded re-fires still open separate rows', async () => {
+    const a = parse(
+      await run(escalateTool, { severity: 'blocker', summary: 'Mug stalled ~7h' }),
+    );
+    const b = parse(
+      await run(escalateTool, { severity: 'blocker', summary: 'Mug stalled ~10h' }),
+    );
+    expect(b.msg_id).not.toBe(a.msg_id);
+  });
 });
 
 describe('coord:escalations handler status filter', () => {

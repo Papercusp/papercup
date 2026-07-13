@@ -120,7 +120,7 @@ plus a one-line summary if running.
 Six of seven `papercup-org-*` rows show the same prefix:
 
 ```
-/home/marsh-office/.papercusp-workspaces/default/.papercusp/projects/papercup-org-XXX
+/home/dev/.papercusp-workspaces/default/.papercusp/projects/papercup-org-XXX
 ```
 
 Only the last segment differs. The prefix is workspace-internal
@@ -131,7 +131,7 @@ space and dilutes the slug column.
 **Fix:** show only the meaningful tail:
 
 * For workspace-managed: `.papercusp/projects/<slug>` or just hide.
-* For external (like `sheets` at `/home/marsh-office/sheets-clone`):
+* For external (like `sheets` at `/home/dev/sheets-clone`):
   show the full path because that's where the user actually works.
 
 If the full path is needed for "copy to clipboard" or "reveal in
@@ -227,7 +227,7 @@ now the role attributes are inconsistent.
 ## V1. The `sheets` row's `Added` is `—`
 
 The first row has `—` for Added because `sheets` is an external
-project (`/home/marsh-office/sheets-clone`) the user imported, not
+project (`/home/dev/sheets-clone`) the user imported, not
 one the workspace scaffolded. The dash is correct *information*
 but reads as a missing value or rendering bug.
 

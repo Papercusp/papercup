@@ -65,6 +65,16 @@ export function StepAutoUpdate() {
           new_version: info.new_version ?? undefined,
           notes: info.notes ?? undefined,
         });
+      } else if (info.check_failed) {
+        // Not the same as "up to date": we never reached the release host, so we
+        // do not actually know whether a newer version exists. Saying "you're
+        // current" here would be a guess dressed up as a fact.
+        setUpdate({
+          status: 'error',
+          error: `Couldn't reach the release host${
+            info.check_reason ? ` (${info.check_reason})` : ''
+          } — update status unknown.`,
+        });
       } else {
         setUpdate({ status: 'up-to-date', current: info.current_version });
       }

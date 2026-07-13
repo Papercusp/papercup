@@ -146,11 +146,24 @@ export default function UpdateChip() {
       const u = await checkForUpdate();
       setInfo(u);
       if (!silent && u) {
-        toast.success(
-          u.available
-            ? `Update available: v${u.new_version}`
-            : `You're on v${u.current_version} (latest)`,
-        );
+        // `available: false` alone does NOT mean "you are current" — the updater
+        // protocol reports an unreachable/throttled/unconfigured release host as
+        // a plain "no update" too. Claiming "(latest)" there tells the user they
+        // are up to date when we never actually managed to ask, which is how an
+        // app can sit on a stale version forever and never say a word.
+        if (u.check_failed) {
+          toast.error("Couldn't check for updates", {
+            description: `The release host could not be reached${
+              u.check_reason ? ` (${u.check_reason})` : ''
+            } — you may not be on the latest version. Retry, or check your connection.`,
+          });
+        } else {
+          toast.success(
+            u.available
+              ? `Update available: v${u.new_version}`
+              : `You're on v${u.current_version} (latest)`,
+          );
+        }
       }
       // Notify — once per version per session — when a BACKGROUND check first surfaces a
       // new release. The footer button alone is easy to miss, and the owner wants users
@@ -451,7 +464,11 @@ export default function UpdateChip() {
           </>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span>You’re on the latest ({channel}).</span>
+            <span>
+              {info?.check_failed
+                ? `Couldn’t reach the release host${info.check_reason ? ` (${info.check_reason})` : ''} — update status unknown.`
+                : `You’re on the latest (${channel}).`}
+            </span>
             <button
               type="button"
               onClick={() => void poll(false)}

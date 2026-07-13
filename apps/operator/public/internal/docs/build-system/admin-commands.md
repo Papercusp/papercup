@@ -40,7 +40,7 @@ There is no `requireFlag()` check — earlier versions had a page-side gate tied
 Runs locally on the dev host (`cwd` = `papercusp-desktop`). Produces both `.deb` and `.rpm` in one pass, then audits each.
 
 ```
-cd /home/marsh-office/papercupai-workspace/papercup/papercusp-desktop
+cd /home/dev/papercupai-workspace/papercup/papercusp-desktop
 npm run build              # = tauri build (the sidecar must already be built — see note)
 bin/audit-bundle.sh src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
 bin/audit-bundle.sh src-tauri/target/release/bundle/rpm/Papercusp-0.0.1-1.x86_64.rpm
@@ -62,15 +62,15 @@ Rsyncs the canonical repo tree into the Mac VM (`~/papercup-build-mac/papercup`,
 ```
 # 1. rsync the working tree into the VM
 rsync -az --delete --exclude .git --exclude node_modules --exclude target --exclude .turbo --exclude .next \
-  -e "ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 ..." \
-  /home/marsh-office/papercupai-workspace/papercup/ aviweiss@127.0.0.1:papercup-build-mac/papercup/
+  -e "ssh -i /home/dev/.ssh/papercup-vm-mac -p 2222 ..." \
+  /home/dev/papercupai-workspace/papercup/ aviweiss@127.0.0.1:papercup-build-mac/papercup/
 
 # 2. copy the updater signing key (if present)
-scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 \
-  /home/marsh-office/.papercusp/signing/papercusp.key aviweiss@127.0.0.1:.papercusp-updater.key
+scp -i /home/dev/.ssh/papercup-vm-mac -P 2222 \
+  /home/dev/.papercusp/signing/papercusp.key aviweiss@127.0.0.1:.papercusp-updater.key
 
 # 3. build the universal DMG inside the VM
-ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1 'bash -lc "
+ssh -i /home/dev/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1 'bash -lc "
   cd ~/papercup-build-mac/papercup/papercusp-desktop
   NODE_OPTIONS=--max-old-space-size=8192 npm install --legacy-peer-deps
   export TAURI_SIGNING_PRIVATE_KEY_PATH=$HOME/.papercusp-updater.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD=
@@ -78,9 +78,9 @@ ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1 'bash 
 "'
 
 # 4. copy the universal DMG back and audit it
-scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 \
-  'aviweiss@127.0.0.1:papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg' /home/marsh-office/
-bin/audit-bundle.sh /home/marsh-office/Papercusp_*_universal.dmg
+scp -i /home/dev/.ssh/papercup-vm-mac -P 2222 \
+  'aviweiss@127.0.0.1:papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg' /home/dev/
+bin/audit-bundle.sh /home/dev/Papercusp_*_universal.dmg
 ```
 
 \~30–45 min. NEEDS the Mac VM running with disk room (≥10 GB free). See [VMs](/internal/docs/build-system/vms).
@@ -94,14 +94,14 @@ bin/audit-bundle.sh /home/marsh-office/Papercusp_*_universal.dmg
 
 ### `build-windows-prod` — Windows Prod Build
 
-SSHes into the Windows VM (`ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1`) and runs `win-build.ps1`. Same shape as Mac. Copies back `.msi` (from `bundle/msi/`) and NSIS `.exe` (from `bundle/nsis/`) to `/home/marsh-office/`, then audits both.
+SSHes into the Windows VM (`ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1`) and runs `win-build.ps1`. Same shape as Mac. Copies back `.msi` (from `bundle/msi/`) and NSIS `.exe` (from `bundle/nsis/`) to `/home/dev/`, then audits both.
 
 ```
-ssh -i /home/marsh-office/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
+ssh -i /home/dev/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
   "powershell -NoProfile -ExecutionPolicy Bypass -File win-build.ps1"
-scp -i /home/marsh-office/.ssh/papercup-vm-win -P 2223 User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/msi/Papercusp_0.0.1_x64_en-US.msi /home/marsh-office/
-scp -i /home/marsh-office/.ssh/papercup-vm-win -P 2223 User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/nsis/Papercusp_0.0.1_x64-setup.exe /home/marsh-office/
-bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+scp -i /home/dev/.ssh/papercup-vm-win -P 2223 User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/msi/Papercusp_0.0.1_x64_en-US.msi /home/dev/
+scp -i /home/dev/.ssh/papercup-vm-win -P 2223 User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/nsis/Papercusp_0.0.1_x64-setup.exe /home/dev/
+bin/audit-bundle.sh /home/dev/Papercusp_0.0.1_x64_en-US.msi /home/dev/Papercusp_0.0.1_x64-setup.exe
 ```
 
 \~30–45 min. The Windows VM has crashed 6+ times during builds in past sessions — **expect to retry**. See [VMs / Windows VM crash recovery](/internal/docs/build-system/vms#windows-vm-crashes-routinely).
@@ -111,7 +111,7 @@ bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi /home/marsh
 Runs `bin/prod` in the papercup repo (`cwd` = the papercup repo). It builds the operator (`npm --workspace @papercusp/web run build` = the `@papercupai/operator-docs` Starlight docs + the `@papercusp/operator-vite` SPA) and restarts the Hono host (`bin/hono-host.ts`) on `:3070`, detached (survives the SSE stream closing). This is **not** the desktop bundle — `:3070` serves the same operator UI/API that the packaged Tauri sidecar runs.
 
 ```
-cd /home/marsh-office/papercupai-workspace/papercup
+cd /home/dev/papercupai-workspace/papercup
 bin/prod
 ```
 
@@ -122,7 +122,7 @@ bin/prod
 Installs the most-recently-built local `.deb` and launches `papercusp` (the installed binary on `/usr/bin/papercusp`). Requires `NOPASSWD` sudo for `dpkg`.
 
 ```
-sudo -n dpkg -i /home/marsh-office/papercupai-workspace/papercup/papercusp-desktop/.../Papercusp_0.0.1_amd64.deb
+sudo -n dpkg -i /home/dev/papercupai-workspace/papercup/papercusp-desktop/.../Papercusp_0.0.1_amd64.deb
 setsid /usr/bin/papercusp >/dev/null 2>&1 < /dev/null &
 ```
 
@@ -153,7 +153,7 @@ Runs `bin/dev` in the papercup repo. This (re)starts **two** systemd `--user` tr
 
 ### `audit-prod-bundles` — Audit prod bundles for PostHog leaks
 
-Standalone re-run of `papercusp-desktop/bin/audit-bundle.sh` against every prod artifact present on disk — the local `.deb`/`.rpm` plus any `.dmg`/`.msi`/`.exe` in `/home/marsh-office/`. Fails (`exit 1`) if no artifacts are found, or if any contains a real PostHog key. See [Privacy audit](/internal/docs/build-system/privacy-audit) for the full contract.
+Standalone re-run of `papercusp-desktop/bin/audit-bundle.sh` against every prod artifact present on disk — the local `.deb`/`.rpm` plus any `.dmg`/`.msi`/`.exe` in `/home/dev/`. Fails (`exit 1`) if no artifacts are found, or if any contains a real PostHog key. See [Privacy audit](/internal/docs/build-system/privacy-audit) for the full contract.
 
 ### `env-probe` — Env probe
 

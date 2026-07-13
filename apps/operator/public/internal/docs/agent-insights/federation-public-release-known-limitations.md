@@ -242,7 +242,7 @@ owner-signed allowlist policy auto-admits the owner's login).
 **UPDATE 2026-07-10 (WI-3546 / p2p-rest-lanes-2026-07-09 P-009): the two-device
 data-merge is now WITNESSED LIVE, BOTH directions, with a real second device** —
 superseding the prior "only single-box-smoke-verified, never witnessed live"
-gap. Rig: Linux tower (`main-server-Precision-7865-Tower-marsh-office`) ↔ mac VM
+gap. Rig: Linux tower (`dev-box-linux`) ↔ mac VM
 (`aviweiss@172.31.44.2`), one owner identity, both device pubkeys admitted (the
 VM's registry row was backfilled to `harness_kind:'hive'` / `remote_hive:true`
 per **WI-3891** so `isRegisteredHive` flips true). A genuine coord write on each
@@ -257,7 +257,7 @@ markers \~3.5 min apart, no re-freeze):
 * **tower→VM:** the VM's OWN `coord_event_log` rows **415** (22:47:19Z) + **419**
   (22:50:51Z), `origin='remote'`, `author_pubkey 5b00878b…` (the tower's writer
   log), payload = `coord:receipt` fed\_events self-identifying
-  `machine:main-server-Precision-7865-Tower-marsh-office`, `delivered:true`.
+  `machine:dev-box-linux`, `delivered:true`.
 
 > **Do NOT use `probe:emit` / `harness_shared.federation_probes` hop-advance as
 > the live-federation discriminant (WI-3962).** `probe:emit` only stamps the

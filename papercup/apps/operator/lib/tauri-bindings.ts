@@ -325,6 +325,25 @@ export type UpdateInfo = {
 	current_version: string,
 	new_version: string | null,
 	notes: string | null,
+	/**
+	 *  The update check could not actually be performed — the release host was
+	 *  unreachable, throttled, or never configured. DISTINCT from `available:
+	 *  false`, which means "checked, and you are current".
+	 * 
+	 *  The Tauri updater protocol has no slot for this: a 204 means "no update",
+	 *  and the plugin hands back `Ok(None)` whether we compared versions or
+	 *  never got an answer at all. So an unreachable host reads to the user as
+	 *  "you are up to date" — silently, forever, and indistinguishable from
+	 *  success. That is the worst failure mode an updater can have, and it is
+	 *  exactly how a 0.0.8 with no release host baked in would present: eternally
+	 *  current, never updating, saying nothing.
+	 */
+	check_failed: boolean,
+	/**
+	 *  Why the check could not be performed (`no_token` / `fetch_failed` /
+	 *  `no_candidate` / `manifest_unconfigured`), when the sidecar reports one.
+	 */
+	check_reason: string | null,
 };
 
 export type Workspace = {
