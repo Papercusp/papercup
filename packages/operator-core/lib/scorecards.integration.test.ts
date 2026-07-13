@@ -37,9 +37,11 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
 
 const RUBRIC = 'test-coord-health';
 const CRITERIA = [
-  { key: 'end-to-end-flow', title: 'End-to-end flow', model: 'work flows', method: 'count placements', driftMarkers: 'stuck frontier' },
+  // WI-4607: end-to-end-flow carries a trailing [instrumentKey:] token; watchdog is
+  // explicitly `none`; ideation-quality carries no token (→ instrumentKey null).
+  { key: 'end-to-end-flow', title: 'End-to-end flow', model: 'work flows [instrumentKey: placement-count]', method: 'count placements', driftMarkers: 'stuck frontier' },
   { key: 'ideation-quality', title: 'Ideation quality', model: 'good ideas', method: 'grade ideas', driftMarkers: 'stale ideas' },
-  { key: 'watchdog-determinism', title: 'Watchdog determinism', model: 'deterministic', method: 'replay', driftMarkers: 'flaky red-tests' },
+  { key: 'watchdog-determinism', title: 'Watchdog determinism', model: 'deterministic [instrumentKey: none]', method: 'replay', driftMarkers: 'flaky red-tests' },
 ];
 
 /** File a scorecard via the real write path, then pin its created_at deterministically. */
@@ -219,6 +221,19 @@ describe('listScorecards (P-013) — real PG', () => {
     const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
     expect(e2e.direction).toBe('worsening');
     expect(e2e.distribution).toEqual({ degraded: 1, broken: 1 });
+  });
+
+  it('scorecardTrend: threads governance provenance + per-criterion instrumentKey (WI-4607)', async () => {
+    const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp' });
+    // Governance provenance sourced from the same getRubric() read the mean10 scale uses.
+    expect(trend.status).toBe('active');
+    expect(typeof trend.proposedBy).toBe('string');
+    expect((trend.proposedBy ?? '').length).toBeGreaterThan(0);
+    // instrumentKey parsed from each criterion's trailing model token.
+    const byKey = Object.fromEntries(trend.criteria.map((c) => [c.criterion, c.instrumentKey]));
+    expect(byKey['end-to-end-flow']).toBe('placement-count');
+    expect(byKey['watchdog-determinism']).toBe('none'); // explicit no-instrument binding
+    expect(byKey['ideation-quality']).toBeNull(); // no token → null
   });
 
   it('scorecardTrend: cross-hive (no sourceHive) folds every source into one series', async () => {

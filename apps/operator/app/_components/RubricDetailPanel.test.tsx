@@ -48,8 +48,14 @@ vi.mock("@papercusp/sync", () => ({
                   latest: { rating: "fail", at: "2026-07-03" },
                   direction: "regressing",
                   mean10: 3,
+                  // WI-4607: per-criterion instrument binding parsed from the model token.
+                  instrumentKey: "gate-red-count",
                 },
               ],
+              // WI-4607 governance provenance: author ≠ ratifier ⇒ the split badge (D-012).
+              status: "active",
+              proposedBy: "su-f69a7079-b041-49de-8468-b012df5abb2e",
+              ratifiedBy: "su-eb9b7ae3-d528-4584-8379-e69f2b8fe7b9",
             },
           ],
           loading: false,
@@ -99,5 +105,27 @@ describe("RubricDetailPanel focused evidence", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Grading history/ }));
     expect(screen.getByText("scorecard-3")).toBeTruthy();
+  });
+
+  it("surfaces the governance provenance chain with the split badge (WI-4607, D-012)", () => {
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    const gov = document.querySelector(".pc-rubric-detail__gov");
+    expect(gov).not.toBeNull();
+    // status prominence
+    expect(gov?.querySelector(".pc-rubric-detail__gov-status")?.textContent).toBe(
+      "Active",
+    );
+    // both identities in the chain, shortened
+    expect(gov?.textContent).toContain("su-f69a7079");
+    expect(gov?.textContent).toContain("su-eb9b7ae3");
+    // author ≠ ratifier ⇒ split badge (the D-012 governance point)
+    expect(gov?.querySelector(".pc-rubric-detail__gov-split")).not.toBeNull();
+  });
+
+  it("shows the per-criterion instrument binding badge (WI-4607)", () => {
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    const instr = document.querySelector(".pc-rubric-trend__instr");
+    expect(instr).not.toBeNull();
+    expect(instr?.textContent).toBe("gate-red-count");
   });
 });

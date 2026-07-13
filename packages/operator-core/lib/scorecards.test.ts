@@ -7,8 +7,35 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, isIdleUnknown, ratingScore10, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, isIdleUnknown, parseCriterionInstrumentKey, ratingScore10, scorecardScore10, scoreOverridesForScale } from './scorecards';
 import type { CriterionTrend } from './scorecards';
+
+// WI-4607: the criterion→instrument binding is a trailing token on the model prose.
+describe('parseCriterionInstrumentKey (WI-4607)', () => {
+  it('parses a trailing [instrumentKey: <key>] token', () => {
+    expect(parseCriterionInstrumentKey('work flows and lands [instrumentKey: placement-count]')).toBe('placement-count');
+  });
+  it('returns the literal "none" for an explicit no-instrument binding', () => {
+    expect(parseCriterionInstrumentKey('deterministic replay [instrumentKey: none]')).toBe('none');
+  });
+  it('returns null when the model carries no token', () => {
+    expect(parseCriterionInstrumentKey('good fresh ideas keep flowing')).toBeNull();
+  });
+  it('binds only a TRAILING token — a mid-prose mention does NOT bind', () => {
+    expect(parseCriterionInstrumentKey('the [instrumentKey: foo] is discussed but not bound here')).toBeNull();
+  });
+  it('tolerates trailing whitespace after the token', () => {
+    expect(parseCriterionInstrumentKey('x [instrumentKey: gate-red-count]  \n')).toBe('gate-red-count');
+  });
+  it('is null-safe for a missing/empty model', () => {
+    expect(parseCriterionInstrumentKey(null)).toBeNull();
+    expect(parseCriterionInstrumentKey(undefined)).toBeNull();
+    expect(parseCriterionInstrumentKey('')).toBeNull();
+  });
+  it('rejects a malformed token (uppercase / spaces in the key)', () => {
+    expect(parseCriterionInstrumentKey('x [instrumentKey: Not Valid]')).toBeNull();
+  });
+});
 
 const s = (...ratings: string[]) => ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating }));
 
