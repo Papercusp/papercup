@@ -235,3 +235,126 @@ describe('runIdeators', () => {
     for (const c of calls) expect(c.messages[0].content).not.toContain('Prior gym elites');
   });
 });
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * WI-4475 — RECURRENCE GUARD: the timeout hierarchy must never invert again.
+ *
+ * The bug: ONE wall-clock timer was started at CALL time and raced against llmCall. But
+ * llmCall blocks in the shared rate-limit governor waiting for a permit BEFORE it issues the
+ * request — so that timer charged QUEUE-WAIT and GENERATION to the same budget. Any governor
+ * pause longer than the cap turned a correctly-paced, survivable capacity wait into a hard
+ * failure reported as transport death ("timed out after 180000ms", $0 spent, 0 ideas).
+ * Measured: opus emits ~62 tok/s ⇒ a full 4096-token response is ~66s, so the 180s cap has
+ * ~2.7x headroom and the call CANNOT time out by generating. Live governor pauses: 15s/120s/453s.
+ *
+ * The invariant these tests pin: ADMISSION time is NOT charged against the GENERATION cap.
+ * ──────────────────────────────────────────────────────────────────────────── */
+describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
+  /** A fake llmCall that queues in a "governor" for `admissionMs` before it "sends". */
+  function governedLlm(opts: {
+    admissionMs: number;
+    generationMs?: number;
+    admit?: boolean;
+  }): { call: ScoutLlmCall; seen: Array<Parameters<ScoutLlmCall>[0]> } {
+    const seen: Array<Parameters<ScoutLlmCall>[0]> = [];
+    const call: ScoutLlmCall = async (o) => {
+      seen.push(o);
+      // Phase 1 — ADMISSION: queued behind the shared rate-limit pause. Nothing sent yet.
+      await new Promise((r) => setTimeout(r, opts.admissionMs));
+      if (o.signal?.aborted) throw new Error('aborted during admission');
+      if (opts.admit === false) {
+        // Never admitted: hang until the caller's backstop/abort fires.
+        await new Promise((_r, reject) => {
+          o.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      }
+      // Phase 2 — ADMITTED: the request is really issued. Generation starts NOW.
+      o.onAdmitted?.();
+      await new Promise((r) => setTimeout(r, opts.generationMs ?? 0));
+      if (o.signal?.aborted) throw new Error('aborted during generation');
+      return {
+        text: JSON.stringify([
+          { title: 'i', rationale: 'r', addressesPatternRefs: ['wi:F-1'], cheapExperiment: 'e' },
+        ]),
+        costUsd: 0,
+        inputTokens: 10,
+        outputTokens: 20,
+      };
+    };
+    return { call, seen };
+  }
+
+  it('THE BUG: an ADMISSION wait LONGER than the generation cap still succeeds (queue-wait is not charged to generation)', async () => {
+    // Admission 60ms >> generation cap 25ms. Pre-WI-4475 this raced a 25ms wall-clock timer
+    // against the whole call and died as "timed out" with 0 ideas. It must now succeed:
+    // the model only ever generated for ~0ms.
+    const { call } = governedLlm({ admissionMs: 60, generationMs: 0 });
+    const res = await runIdeators(digest, {
+      llmCall: call,
+      perLens: 1,
+      lenses: ['analogical'],
+      ideatorTimeoutMs: 25,
+      cycleDeadlineMs: Date.now() + 10_000,
+    });
+    expect(res.ideas.length).toBeGreaterThan(0);
+    expect(res.ideators.every((i) => i.ok)).toBe(true);
+  });
+
+  it('the GENERATION cap still bites once admitted — and says so (a real wedged stream is still caught)', async () => {
+    // Admitted immediately, then the stream wedges well past the cap.
+    const { call } = governedLlm({ admissionMs: 0, generationMs: 200 });
+    const res = await runIdeators(digest, {
+      llmCall: call,
+      perLens: 1,
+      lenses: ['analogical'],
+      ideatorTimeoutMs: 25,
+      cycleDeadlineMs: Date.now() + 10_000,
+    });
+    expect(res.ideas).toHaveLength(0);
+    const err = res.ideators[0]?.error ?? '';
+    expect(err).toMatch(/GENERATION/);
+    // It must NOT be blamed on capacity — this one really was the model.
+    expect(err).not.toMatch(/never admitted/);
+  });
+
+  it('never admitted ⇒ an HONEST capacity error, never a bogus transport "timeout"', async () => {
+    const { call } = governedLlm({ admissionMs: 0, admit: false });
+    const res = await runIdeators(digest, {
+      llmCall: call,
+      perLens: 1,
+      lenses: ['analogical'],
+      ideatorTimeoutMs: 5_000, // generation cap is generous; admission is what fails
+      cycleDeadlineMs: Date.now() + 30, // ~nothing left ⇒ admission budget ~0
+    });
+    expect(res.ideas).toHaveLength(0);
+    const err = res.ideators[0]?.error ?? '';
+    // The whole point: this failure names CAPACITY, not a transport timeout. Misreporting it
+    // as a "timeout" is what sent WI-4475 chasing a phantom hang for days.
+    expect(err).toMatch(/never admitted|no capacity/i);
+  });
+
+  it('bounds the ADMISSION wait by the cycle deadline, reserving room for generation', async () => {
+    const { call, seen } = governedLlm({ admissionMs: 0, generationMs: 0 });
+    const generationCap = 1_000;
+    const remaining = 5_000;
+    await runIdeators(digest, {
+      llmCall: call,
+      perLens: 1,
+      lenses: ['analogical'],
+      ideatorTimeoutMs: generationCap,
+      cycleDeadlineMs: Date.now() + remaining,
+    });
+    const budget = seen[0]?.governorMaxWaitMs;
+    expect(budget).toBeDefined();
+    // INVARIANT — the inner admission budget can never exceed its outer budget, and must hold
+    // back room for generation. An inner wait >= the caller's patience is the whole defect.
+    expect(budget!).toBeLessThanOrEqual(remaining - generationCap);
+    expect(budget!).toBeGreaterThan(0);
+  });
+
+  it('no cycle deadline ⇒ no admission bound imposed (pre-WI-4475 callers/tests unchanged)', async () => {
+    const { call, seen } = governedLlm({ admissionMs: 0, generationMs: 0 });
+    await runIdeators(digest, { llmCall: call, perLens: 1, lenses: ['analogical'] });
+    expect(seen[0]?.governorMaxWaitMs).toBeUndefined();
+  });
+});

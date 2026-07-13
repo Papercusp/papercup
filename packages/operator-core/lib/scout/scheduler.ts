@@ -106,6 +106,10 @@ export interface ScoutTickDeps {
     cycleId: string;
     queenFeedback?: QueenFeedbackItem[];
     signal?: AbortSignal;
+    /** WI-4475 — absolute epoch-ms deadline this cycle will be killed at, so the runner can
+     *  bound each LLM call's governor ADMISSION wait by the time actually remaining (a
+     *  `signal` only says "out of time" AFTER the fact). Mirrors `ScoutCycleRunner`. */
+    deadlineMs?: number;
     onPhase?: (phase: ScoutCyclePhase) => void;
   }) => Promise<ScoutCycleLike>;
   /** Persist routed-idea provenance for the cycle (P-013 ledger). */
@@ -162,9 +166,11 @@ export interface ScoutTickResult {
   /**
    * Cadence reason when fired/withheld, or a structural-gate refusal:
    * 'circuit' / 'claim-lost' / 'cycle-error', 'workspace-ceiling' (P-051 — the
-   * workspace-wide scout spend ceiling refused this cycle BEFORE the tick), or
+   * workspace-wide scout spend ceiling refused this cycle BEFORE the tick),
    * 'not-hive-runner' (P-019 — a SHARED-Hive node that is NOT the elected per-Hive
-   * single runner stood down so only ONE node's scout loop fires across the Hive).
+   * single runner stood down so only ONE node's scout loop fires across the Hive), or
+   * 'no-capacity' (WI-4475 — the account pool had no headroom: a GATE, not a failure, so
+   * it is counted in its own SCOUT_TICK_GATES bucket instead of inflating the error rate).
    */
   reason:
     | ScoutCadenceVerdict['reason']
@@ -172,7 +178,8 @@ export interface ScoutTickResult {
     | 'claim-lost'
     | 'cycle-error'
     | 'workspace-ceiling'
-    | 'not-hive-runner';
+    | 'not-hive-runner'
+    | 'no-capacity';
   cycleId?: string;
   routedCount?: number;
   /** The fired cycle's reported LLM spend (cycle.costUsd) — FB-01 learning-governor ledgering. */

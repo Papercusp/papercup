@@ -13,10 +13,29 @@ describe('parseBgHostUnitJournal', () => {
     expect(parseBgHostUnitJournal(journal)).toEqual({
       oomKillCount: 1,
       restartCount: 2,
+      failureCount: 0,
       peakMemoryMb: 6656,
       highMemoryPeakCount: 1,
       journalError: null,
     });
+  });
+
+  it('separates a CRASH from a deliberate restart (the readiness criterion)', () => {
+    // A deploy restart is stop+start: systemd logs "Stopping"/"Started" and NO
+    // failure line. A crash logs "Failed with result '<why>'" — exactly one per
+    // death. Both bump restartCount; only the crash may red the gate.
+    const deliberate = [
+      "Jul 13 00:31:02 host systemd[4022]: Stopping papercup-bg-host.service - Papercusp dedicated background host...",
+      'Jul 13 00:31:04 host systemd[4022]: Started papercup-bg-host.service - Papercusp dedicated background host.',
+    ].join('\n');
+    const crashed = [
+      "Jul 13 01:02:03 host systemd[4022]: papercup-bg-host.service: Main process exited, code=killed, status=9/KILL",
+      "Jul 13 01:02:03 host systemd[4022]: papercup-bg-host.service: Failed with result 'oom-kill'.",
+      'Jul 13 01:02:05 host systemd[4022]: Started papercup-bg-host.service - Papercusp dedicated background host.',
+    ].join('\n');
+
+    expect(parseBgHostUnitJournal(deliberate)).toMatchObject({ restartCount: 1, failureCount: 0 });
+    expect(parseBgHostUnitJournal(crashed)).toMatchObject({ restartCount: 1, failureCount: 1 });
   });
 
   it('parses the lines systemd actually emits (unit name + description suffix)', () => {
@@ -58,7 +77,11 @@ describe('computeSoakReport', () => {
       generatedAtMs: Date.UTC(2026, 6, 2, 10, 0, 0),
       bgHost: {
         oomKillCount: 0,
-        restartCount: 0,
+        // Deploy restarts in the window do NOT red the gate — only failures do
+        // [owner:Avi 2026-07-13 "red only on crashes"]. Shipping a routine fix
+        // must not make readiness unsatisfiable.
+        restartCount: 3,
+        failureCount: 0,
         peakMemoryMb: 2048,
         highMemoryPeakCount: 0,
         journalError: null,
@@ -97,7 +120,7 @@ describe('computeSoakReport', () => {
       surveySlugs: ['papercusp'],
       windowHours: 24,
       generatedAtMs: Date.UTC(2026, 6, 2, 10, 0, 0),
-      bgHost: { oomKillCount: 0, restartCount: 0, peakMemoryMb: null, highMemoryPeakCount: 0, journalError: null, tickerUp: true, tickerNote: null },
+      bgHost: { oomKillCount: 0, restartCount: 0, failureCount: 0, peakMemoryMb: null, highMemoryPeakCount: 0, journalError: null, tickerUp: true, tickerNote: null },
       roleSuccess: [
         { role: 'cup', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
         { role: 'mug', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
@@ -133,6 +156,7 @@ describe('computeSoakReport', () => {
       bgHost: {
         oomKillCount: 1,
         restartCount: 2,
+        failureCount: 2,
         peakMemoryMb: 8192,
         highMemoryPeakCount: 2,
         journalError: null,
@@ -165,7 +189,7 @@ describe('computeSoakReport', () => {
       expect.arrayContaining([
         'bg-host ticker unhealthy: ticker stale',
         'bg-host OOM evidence in window (1)',
-        'bg-host restarted 2 time(s) in window',
+        'bg-host FAILED 2 time(s) in window (crash/OOM/watchdog — deliberate restarts excluded)',
         'infra-attributed curse rate non-zero (10%)',
         'cup turn success below 100% (75%)',
         'no terminal mug turns in window',
@@ -195,6 +219,7 @@ describe('computeSoakReport', () => {
       bgHost: {
         oomKillCount: 0,
         restartCount: 0,
+        failureCount: 0,
         peakMemoryMb: null,
         highMemoryPeakCount: 0,
         journalError: 'stdout maxBuffer length exceeded',

@@ -266,6 +266,35 @@ export function runBootstrap(): void {
     }
   })();
 
+  // [cupboard-public-release-2026-07-12 P-001] Move the installed-packs root
+  // `~/.papercusp/learning-packs/` → `~/.papercusp/knowledge-packs/`.
+  //
+  // The learning→knowledge-packs rename is HARD, with no read-time aliases
+  // (knowledge-packs-2026-07-11 D-001): the loader now looks ONLY at the new
+  // path. The builtin packs ship inside the app bundle and moved with the code,
+  // but the INSTALLED root lives in the user's home — so an existing install has
+  // real Comb-installed packs sitting under the old name that the new loader
+  // cannot see. Without this move they don't error, they just silently VANISH
+  // from the pack list. The move is the migration; there is no dual-read.
+  //
+  // Idempotent + fail-soft, like its siblings above: no legacy dir (the
+  // fresh-install case) and an already-migrated root are both clean no-ops, and
+  // a boot must never die over it — a failure here leaves the packs exactly
+  // where they are and the NEXT boot retries.
+  void (async () => {
+    try {
+      const { migrateInstalledRoot } = await import(
+        '@papercusp/operator-core/lib/knowledge-packs/load-packs'
+      );
+      const r = await migrateInstalledRoot();
+      if (r.moved) {
+        console.log(`[knowledge-packs] migrated installed-packs root: ${r.from} → ${r.to}`);
+      }
+    } catch (e) {
+      console.warn('[knowledge-packs] installed-root migration skipped (non-fatal):', (e as Error)?.message ?? e);
+    }
+  })();
+
   // [ship-papercusp-as-single-hive 2026-06-23, owner-directed] On a PACKAGED desktop
   // install, ensure the `papercusp` dogfood hive exists — clone the repo on first
   // boot (too large to bundle, ~5GB) and home on it — so the app ships with
