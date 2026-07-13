@@ -420,6 +420,24 @@ export interface DesktopEnvResolution {
    * wrong one otherwise. `null` when `resolved` is false.
    */
   resolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
+  /**
+   * WI-4718: true when a real interactive desktop session was detected (the
+   * operator's own env already carried a DBUS_SESSION_BUS_ADDRESS, or a live
+   * gnome-terminal-server/gnome-shell was found and its bus resolved). Drives
+   * terminal preference: true ⇒ prefer the owner's STANDARD client-server
+   * terminal (gnome-terminal/konsole, which will reach its server on the
+   * injected bus); false ⇒ no reachable session (bare Xvfb/sandbox), so prefer a
+   * reliable process-per-window emulator that binds DISPLAY directly.
+   */
+  desktopSessionDetected: boolean;
+  /**
+   * WI-4718: how DBUS_SESSION_BUS_ADDRESS was determined — 'operator-env' (the
+   * caller already had one), 'session-scan' (resolved from a live desktop-session
+   * process), 'user-bus' (fell back to /run/user/<uid>/bus), or null (none
+   * injected / not applicable). Disclosure only; callers key behavior off
+   * `desktopSessionDetected`.
+   */
+  dbusVia: 'operator-env' | 'session-scan' | 'user-bus' | null;
 }
 
 /** Extract the `/tmp/.X11-unix/X<N>` socket path a DISPLAY value points at.
@@ -443,6 +461,14 @@ export interface DesktopEnvProbes {
    * Ascending-sorted; production implementation is best-effort (never throws).
    */
   activeSeatDisplays?: () => string[];
+  /**
+   * WI-4718: the D-Bus session bus address of the owner's live desktop session
+   * (read from a running gnome-terminal-server / gnome-shell for `display`), or
+   * null when no desktop session is detected. Optional + defaults to a no-op
+   * (`() => null`) when omitted, so existing callers/tests fall through to the
+   * systemd-user-bus behavior exactly as before. Best-effort; never throws.
+   */
+  sessionBus?: (display: string | null) => string | null;
 }
 
 /**
