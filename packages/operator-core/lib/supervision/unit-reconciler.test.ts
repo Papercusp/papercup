@@ -496,4 +496,39 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     const driftNotifies = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('Restart= policy has drifted'));
     expect(driftNotifies).toHaveLength(2);
   });
+
+  it('EI-10750: a unit reading healthy every tick while systemd NRestarts climbs ≥6 in <10min pages ONCE (silent crash-loop), even with the auto-restart flag OFF', async () => {
+    // The exact bug: papercup-staging-api crash-looped under systemd's own Restart= so fast that
+    // every 60s reconciler tick saw it `active`. The down-path give-up counter never engaged — 43
+    // restarts / 25 min of :3170 down, ZERO pages. Flag OFF (the real default) to prove the page is
+    // independent of whether WE do the restarting.
+    const upFixture = ['papercup-mcp-proxy.service                       loaded active   running Papercusp resilient MCP proxy', ''].join('\n');
+    let nRestarts = 0;
+    let now = 1_000_000;
+    const deps = makeDeps({
+      autoRestartFlagOn: async () => false,
+      now: () => now,
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return upFixture;
+        if (args[0] === 'show') return `Result=success\nNRestarts=${nRestarts}\nRestart=always\n`;
+        return '';
+      }),
+      registry: () => [AUTORESTART_ENTRY],
+    });
+    // 7 ticks, NRestarts 0..6 (systemd bouncing it), each 30s apart — all inside the 10-min window.
+    for (let i = 0; i <= GIVE_UP_THRESHOLD; i++) {
+      nRestarts = i;
+      await reconcileTick(deps);
+      now += 30_000;
+    }
+    // One more stable tick (no further climb) must not re-page.
+    await reconcileTick(deps);
+
+    const silentPages = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('SILENTLY crash-looping'));
+    expect(silentPages).toHaveLength(1);
+    expect(String(silentPages[0][0].summary)).toContain('papercup-mcp-proxy');
+    expect(silentPages[0][0].kind).toBe('escalation');
+    // It read healthy at every tick — the down/restart path never engaged.
+    expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart')).toBe(false);
+  });
 });
