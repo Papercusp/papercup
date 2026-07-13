@@ -118,7 +118,7 @@ export default function CupboardDetailPage() {
       void installTemplateFromCupboard();
       return;
     }
-    // plugin | tool-pack — the remaining install kinds — clone into
+    // plugin | pack — the remaining install kinds — clone into
     // global-plugins directly (EI-27). Replaces the dead
     // `/harness?cupboardListing=…` navigation no consumer ever read.
     void installPluginFromCupboard();
@@ -412,7 +412,7 @@ export default function CupboardDetailPage() {
             </MetaRow>
           )}
           {listing.listing_ref && (
-            <MetaRow label={kind === 'plugin' ? 'Plugin' : kind === 'tool-pack' ? 'Tool pack' : kind === 'learning-pack' ? 'Learning pack' : 'Listing'}>
+            <MetaRow label={kind === 'plugin' ? 'Plugin' : kind === 'pack' ? 'Pack' : kind === 'learning-pack' ? 'Learning pack' : 'Listing'}>
               <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.text }}>{listing.listing_ref}</span>
             </MetaRow>
           )}

@@ -275,10 +275,13 @@ export const CUPBOARD_LISTING_KIND_TONE: Record<string, CategoryTone> = {
   harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   blueprint: { fg: 'var(--good)', bg: 'color-mix(in srgb, var(--good), transparent 86%)', border: 'color-mix(in srgb, var(--good), transparent 74%)' },
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
-  'tool-pack': { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
+  // pack: the runtime-less code-tool pack (canonical 'pack' — migration 010
+  // renamed the interim 'tool-pack', cupboard-public-release-2026-07-12 P-003).
+  pack: { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
   'learning-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
   // app/aspect templates (app-templates-2026-07-04) — a distinct rose hue so a
   // Templates card reads apart from blueprint (good/green) + pack (accent-cool).
+  // (pack tone above; template rose below.)
   // Without this entry KindBadge/ListingCard crash on `tone.fg` for a template
   // row (cupboard-public-release-2026-07-12 P-002).
   template: { fg: 'var(--rose-400)', bg: 'color-mix(in srgb, var(--rose-400), transparent 86%)', border: 'color-mix(in srgb, var(--rose-400), transparent 74%)' },

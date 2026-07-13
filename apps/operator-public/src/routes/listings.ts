@@ -235,7 +235,8 @@ function registerListingEndpoints(
     }
 
     // Resolve the kind: pinned on /harnesses; from body on /listings (default
-    // harness). normalizeListingKind keeps the pre-008 'pack' alias working.
+    // harness). normalizeListingKind maps the interim 'tool-pack' + pre-008
+    // 'pack' wire aliases to the canonical 'pack' (migration 010 / P-003).
     let kind: ListingKind;
     if (fixedKind) {
       kind = fixedKind;
@@ -295,7 +296,7 @@ function registerListingEndpoints(
     // non-empty tool-name strings, stored as JSON TEXT.
     let providesToolsJson: string | null = null;
     if (body.provides_tools != null) {
-      if (kind !== 'plugin' && kind !== 'tool-pack') {
+      if (kind !== 'plugin' && kind !== 'pack') {
         return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'plugin_or_tool_pack_kind_only' }, 400);
       }
       const pt = body.provides_tools;

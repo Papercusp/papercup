@@ -112,10 +112,11 @@ export default defineTool({
     }
 
     // A runtime-less code-tool pack manifest (kind:'pack') lists as the
-    // tool-pack kind (renamed from 'pack' by worker migration 008 —
-    // learning-packs D-005; the manifest format keeps its own 'pack' value);
-    // everything else stays a plugin listing (D-001: plugin = pack + runtime).
-    const listingKind = installed?.kind === 'pack' ? ('tool-pack' as const) : ('plugin' as const);
+    // canonical 'pack' listing kind (migration 010 renamed the interim
+    // 'tool-pack' back to 'pack' — cupboard-public-release-2026-07-12 P-003;
+    // the manifest format already uses 'pack'); everything else stays a plugin
+    // listing (D-001: plugin = pack + runtime).
+    const listingKind = installed?.kind === 'pack' ? ('pack' as const) : ('plugin' as const);
     const providesTools =
       providesToolsOverride ?? (installed ? manifestToolNames(installed) : []);
     const listingRef =
@@ -125,7 +126,7 @@ export default defineTool({
     // must point at a repo the STANDARD install path can resolve — one carrying a
     // papercusp.json with {name, version} where the installer looks (the
     // listing_ref subdir, then the root). Refuse (422) a publish that would list
-    // an un-installable repo. Scoped to plugin per P-005 (a tool-pack ships the
+    // an un-installable repo. Scoped to plugin per P-005 (a pack ships the
     // same manifest, but keep the gate to the stated kind for now).
     if (listingKind === 'plugin') {
       try {
