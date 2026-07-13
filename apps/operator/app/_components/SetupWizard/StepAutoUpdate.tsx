@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { commands } from '@papercusp/operator-core/lib/tauri-bindings';
 import { isTauri } from './tauri-detect';
@@ -19,6 +19,7 @@ export function StepAutoUpdate() {
   const [channel, setChannel] = useState<Channel>('alpha');
   const [tauri, setTauri] = useState(false);
   const [update, setUpdate] = useState<UpdateState>({ status: 'idle' });
+  const pickedByUser = useRef(false);
 
   useEffect(() => {
     setTauri(isTauri());
@@ -26,6 +27,10 @@ export function StepAutoUpdate() {
       try {
         const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
         const j = await r.json();
+        // A user can pick a channel before the initial state request resolves.
+        // Never let that stale response (or the fresh-install alpha write below)
+        // overwrite the user's explicit choice.
+        if (pickedByUser.current) return;
         if (j.update_channel === 'alpha' || j.update_channel === 'beta' || j.update_channel === 'stable') {
           setChannel(j.update_channel);
         } else {
@@ -49,6 +54,7 @@ export function StepAutoUpdate() {
   }, []);
 
   const pick = async (c: Channel) => {
+    pickedByUser.current = true;
     setChannel(c);
     try {
       await fetch('/api/desktop/setup-wizard-state', {
