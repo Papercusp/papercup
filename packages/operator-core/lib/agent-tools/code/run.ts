@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { withWorkspace, getOrgPg } from '@papercusp/db-org';
+import { maybeEmptyMappingHint } from '../../empty-mapping-hint';
 import {
   defineTool,
   listAllProjectedTools,
@@ -202,6 +203,39 @@ export default defineTool({
             ...(facadeHelp ? { facadeHelp } : {}),
           }
         : shownResult;
+
+    // EI-10892 (fleet telemetry half). The MCP handler already tells THIS agent, in
+    // THIS response, when its script returned `ok:true` with every field blank — a
+    // mis-mapped response shape. But an advisory only the caller sees cannot be
+    // counted, so the dominant waste mode in the system stayed invisible fleet-wide:
+    // the tool-efficiency panel grades hard failures (limit-rejections), code:run
+    // adoption, and orient-dedup — every one of which reports HEALTHY while a fleet
+    // burns round-trips on ok-but-empty results. You cannot fix what you cannot see.
+    //
+    // So stamp the detection into tool_invocations.metadata_json, the general-purpose
+    // per-invocation metadata column that already exists (memory:search stamps its hit
+    // `count` through this same ctx.metadata seam — no migration, no new table). The
+    // empty-result-rate read/grade module aggregates it into a 4th panel axis.
+    //
+    // Detected HERE rather than reusing the handler's result because this is the one
+    // place the payload is still a live object — the handler has to JSON.parse its own
+    // response text to see it, and it cannot reach ctx.metadata (it never records the
+    // invocation; the dispatch layer does). Same pure detector, same input, so the two
+    // call sites cannot disagree.
+    try {
+      const body = (payload as { summary?: unknown }).summary ?? payload;
+      // toolsUsed only enriches the agent-facing message text, which the stamp does
+      // not use — so pass none, exactly as the handler does.
+      const hint = maybeEmptyMappingHint(body, []);
+      if (hint) {
+        (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({
+          emptyMapping: { rows: hint.rows, blankRows: hint.blankRows },
+        });
+      }
+    } catch {
+      // Telemetry is never allowed to fail a run that otherwise succeeded.
+    }
+
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });

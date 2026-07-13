@@ -17,11 +17,44 @@ import { commentWorkItem, getWorkItem, isSettledWorkItemState } from '../../work
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 
-const itemSpec = z.object({
-  id: z.string().min(1),
-  body: hardText(LIMITS.BODY),
-  harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
-});
+/**
+ * EI-10897: `comment` is an ACCEPTED ALIAS for `body` (the SAME field).
+ *
+ * The tool is CALLED `work_items:comment`, so `{ id, comment }` is the spelling an
+ * agent reaches for first — and it was rejected, costing a round-trip to discover the
+ * field is named `body`. Same class as WI-4492 (`body` silently dropped on create),
+ * and the same remedy: accept the obvious spelling, reject a genuine conflict loudly.
+ */
+const itemSpec = z
+  .object({
+    id: z.string().min(1),
+    body: hardText(LIMITS.BODY).optional().describe('the comment text'),
+    comment: hardText(LIMITS.BODY)
+      .optional()
+      .describe('alias for `body` — the comment text. Pass either; both-with-different-values is rejected (EI-10897).'),
+    harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
+  })
+  .superRefine((v, ctx) => {
+    const body = v.body?.trim();
+    const comment = v.comment?.trim();
+    if (!body && !comment) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['body'],
+        message: 'a comment needs text — pass `body` (or its alias `comment`).',
+      });
+      return;
+    }
+    if (body && comment && body !== comment) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['comment'],
+        message:
+          '`body` and `comment` are the SAME field and were both passed with DIFFERENT text — pass one (which did you mean?).',
+      });
+    }
+  })
+  .transform((v) => ({ ...v, body: (v.body ?? v.comment)! }));
 
 /**
  * EI-8837: a completion-shaped thread post ("DONE + GREEN", "VM-VERIFIED", …)
@@ -63,17 +96,26 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('single-comment shorthand: the work-item id (use with `body`)'),
       body: hardText(LIMITS.BODY).optional().describe('single-comment shorthand: the comment text (use with `id`)'),
-      items: z.array(itemSpec).min(1).max(100).optional().describe('comment on many work-items at once — each { id, body, harness? }'),
+      // EI-10897: the tool is named `comment`, so `{ id, comment }` is what an agent
+      // reaches for first. Accept it rather than making them re-call to learn `body`.
+      comment: hardText(LIMITS.BODY)
+        .optional()
+        .describe('alias for `body` (EI-10897) — the comment text. Pass either; both-with-different-values is rejected.'),
+      items: z.array(itemSpec).min(1).max(100).optional().describe('comment on many work-items at once — each { id, body|comment, harness? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
     })
-    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.body)), {
-      message: 'pass { id, body } for one, or items:[{ id, body }] for many',
+    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.body ?? a.comment)), {
+      message: 'pass { id, body } for one (or its alias { id, comment }), or items:[{ id, body }] for many',
+    })
+    .refine((a) => !(a.body?.trim() && a.comment?.trim() && a.body.trim() !== a.comment.trim()), {
+      path: ['comment'],
+      message: '`body` and `comment` are the SAME field and were both passed with DIFFERENT text — pass one.',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const items = args.items?.length
       ? args.items
-      : [{ id: args.id as string, body: args.body as string, harness: args.harness }];
+      : [{ id: args.id as string, body: (args.body ?? args.comment) as string, harness: args.harness }];
     const env = await runBulk(
       items,
       async (it) => {

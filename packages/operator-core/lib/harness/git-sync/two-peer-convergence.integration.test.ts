@@ -410,7 +410,13 @@ afterAll(async () => {
   await resetLocksPools();
   await resetDbOrgPools();
   await db?.cleanup();
-}, 60_000);
+  // EI-10571: 60s wasn't enough — `db.cleanup()`'s DROP DATABASE (WITH FORCE)
+  // against the shared, fleet-hammered testcontainer can legitimately sit
+  // blocked for well past a minute under heavy concurrent load (pg-migrate.ts's
+  // makeDrop already documents "backends parked in DROP DATABASE state for
+  // 6s-267s+ under heavy fleet load" — this isn't a hang, just a slow but
+  // real teardown). 300s covers that documented worst case with headroom.
+}, 300_000);
 
 // ════════════════════════════════════════════════════════════════════════════
 // P0 — the in-pass push race (runGitSync level, real git): a peer push landing

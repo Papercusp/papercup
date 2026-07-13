@@ -41,6 +41,29 @@ import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
  * (target_id) or any coord ObjectRef (target_kind + target_ref). Best-effort in the
  * core: an unresolvable target is skipped, never failing the create.
  */
+/**
+ * EI-10897 — the `state` you may set AT CREATION.
+ *
+ * Non-terminal only, and deliberately so. Creating an item straight into a terminal
+ * state would walk right past the completion-integrity gate (setWorkItemState /
+ * setIssueState demand an owner + a completionRef for any terminal transition, and
+ * `audit:'no-evidence'` reads the evidence that gate collects) — i.e. it would be a
+ * one-call way to manufacture a "done" item with no evidence, the exact laundering
+ * EI-10867 exists to stop. If it is genuinely already finished, create it and then
+ * work_items:complete it, so the evidence is recorded.
+ */
+const stateOnCreate = z
+  .string()
+  .min(1)
+  .max(40)
+  .refine((s) => !TERMINAL_WORK_ITEM_STATES.includes(s), {
+    message:
+      'a work-item cannot be CREATED in a terminal state — that would bypass the completion-integrity gate (no owner, no evidence). Create it, then work_items:complete { id, completion, state } so the verification evidence is recorded.',
+  })
+  .describe(
+    "initial lifecycle state (EI-10897) — e.g. 'wip' to open an ad-hoc unit you are starting RIGHT NOW (pair with assign_to:'self'), or 'blocked'. Defaults to the kind's normal entry state (todo). Terminal states are rejected: complete the item instead, so its evidence is recorded.",
+  );
+
 const linkSpec = z.object({
   rel: z.enum(LINK_RELS).describe('the relationship: blocks | relates | duplicates | fixes | investigates | about | caused-by'),
   target_id: z.string().max(120).optional().describe('a target work-item id'),
@@ -88,6 +111,12 @@ const itemSpec = z.object({
   urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
   force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard for this item.'),
   assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Overrides assign_all_to_self for this item.'),
+  // EI-10897: the su persona itself documents `work_items:create { title, assign_to:'self',
+  // state:'wip' }` as THE way to open an ad-hoc unit you are starting right now — and the
+  // tool rejected `state` as an unrecognized key. A prompt that teaches an arg the tool
+  // refuses is a contract break; the arg is cheaper to add than the instruction is to
+  // unteach. Terminal states are refused on purpose (see stateOnCreate below).
+  state: stateOnCreate.optional(),
   plan_item: z
     .object({ slug: z.string().min(1), item: z.string().min(1) })
     .optional()

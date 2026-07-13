@@ -53,8 +53,26 @@ export interface InstallPluginCoreResult {
    * Deps this unit declares that are not installed but resolvable from the
    * Cupboard (advisory — tool-distribution-granularity D-003). Empty when the
    * manifest declares no dependencies.
+   *
+   * This is ALSO the transitive-recursion channel: `resolveAndInstallDeps` folds
+   * it back into its working set, so a unit's own installable deps pull their
+   * providers in. `events` therefore has to be here — otherwise a unit whose
+   * manifest requires an event family provided by another Cupboard pack would
+   * install with that pack absent, and its reactions would never fire.
    */
-  installableDependencies?: { tools: string[]; packs: string[]; plugins: string[] };
+  installableDependencies?: {
+    tools: string[];
+    packs: string[];
+    plugins: string[];
+    events?: ManifestEventDep[];
+  };
+}
+
+/** A manifest-declared event dependency (plugin-SDK `ManifestEventDependency`, D-003). */
+export interface ManifestEventDep {
+  family: string;
+  /** listen-if-present: an unresolvable optional dep never blocks the install. */
+  optional?: boolean;
 }
 
 export interface InstallPluginCoreDeps {
@@ -74,21 +92,27 @@ export interface InstallPluginCoreDeps {
   /** Drop the in-memory plugin-host + api-route caches so the new plugin goes live. */
   invalidateHost: () => void | Promise<void>;
   /**
-   * Validate the manifest's declared `dependencies.{tools,packs,plugins}`
+   * Validate the manifest's declared `dependencies.{tools,packs,plugins,events}`
    * against the host's pack catalog BEFORE the unit is copied into place
    * (tool-distribution-granularity D-003 — plugin-to-tool deps, install-time
-   * gate). Optional: when absent, declared deps are not gated. Return the
-   * dep-validator verdict; hard-missing deps abort the install (422),
-   * installable ones surface advisorily on the result.
+   * gate; `events` joins the axis per cupboard-public-release D-003 / P-007).
+   * Optional: when absent, declared deps are not gated. Return the dep-validator
+   * verdict; hard-missing deps abort the install (422), installable ones surface
+   * advisorily on the result.
+   *
+   * An unresolvable REQUIRED event family is hard-missing exactly like a tool; an
+   * unresolvable OPTIONAL one (listen-if-present) never blocks and never appears
+   * in `missing`.
    */
   validateDependencies?: (deps: {
     tools?: string[];
     packs?: string[];
     plugins?: string[];
+    events?: ManifestEventDep[];
   }) => Promise<{
     ok: boolean;
-    missing: { tools: string[]; packs: string[]; plugins: string[] };
-    installable: { tools: string[]; packs: string[]; plugins: string[] };
+    missing: { tools: string[]; packs: string[]; plugins: string[]; events?: string[] };
+    installable: { tools: string[]; packs: string[]; plugins: string[]; events?: ManifestEventDep[] };
     messages: string[];
   }>;
 }
@@ -193,12 +217,21 @@ export async function installPluginFromCupboardCore(
     // unit declaring `dependencies` with a hard-missing dep (no provider
     // anywhere) fails BEFORE anything is copied into place. Installable-from-
     // Cupboard deps never block — they surface advisorily on the result.
-    const declaredDeps = (manifest as { dependencies?: { tools?: string[]; packs?: string[]; plugins?: string[] } }).dependencies;
+    const declaredDeps = (
+      manifest as {
+        dependencies?: { tools?: string[]; packs?: string[]; plugins?: string[]; events?: ManifestEventDep[] };
+      }
+    ).dependencies;
     let installableDependencies: InstallPluginCoreResult['installableDependencies'];
+    // `events` counts here: a unit whose ONLY declared dep is an event family
+    // must still be gated. Omitting it from this check would skip the gate
+    // entirely for that unit — it installs, resolves nothing, and its reactions
+    // silently never fire (the exact failure the event axis exists to prevent).
     const hasDeclaredDeps =
       (declaredDeps?.tools?.length ?? 0) > 0 ||
       (declaredDeps?.packs?.length ?? 0) > 0 ||
-      (declaredDeps?.plugins?.length ?? 0) > 0;
+      (declaredDeps?.plugins?.length ?? 0) > 0 ||
+      (declaredDeps?.events?.length ?? 0) > 0;
     if (hasDeclaredDeps && deps.validateDependencies) {
       const verdict = await deps.validateDependencies(declaredDeps!);
       if (!verdict.ok) {
@@ -208,7 +241,12 @@ export async function installPluginFromCupboardCore(
         );
       }
       const inst = verdict.installable;
-      if (inst.tools.length > 0 || inst.packs.length > 0 || inst.plugins.length > 0) {
+      if (
+        inst.tools.length > 0 ||
+        inst.packs.length > 0 ||
+        inst.plugins.length > 0 ||
+        (inst.events?.length ?? 0) > 0
+      ) {
         installableDependencies = inst;
       }
     }

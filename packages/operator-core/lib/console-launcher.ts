@@ -26,6 +26,9 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
 import { papercuspPathForWorkspace } from './papercusp-root';
+// EI-10938: resolve the workspace's home CHECKOUT for a no-slug launch.
+import { detectPapercupRoot, hasPapercupMarkers } from './harness/register-papercusp';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { advSessionsByTranscriptHandles } from './adv-sessions';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
@@ -200,10 +203,54 @@ function readSuperuserToken(): string | null {
   }
 }
 
+/**
+ * EI-10938 — the cwd for a workspace-only (no-slug) launch.
+ *
+ * This used to be `papercuspPathForWorkspace(workspaceId)`, i.e. the workspace's
+ * `.papercusp` STATE dir. The comment called it "the workspace root", but it is
+ * not a root and it is not code — it holds screenshots, blueprints and agent
+ * state, and it is **not a git repository at all**. Every su session is a
+ * workspace-only launch, so every su session's shell started there:
+ *
+ *   - bare `git` failed outright (`fatal: not a git repository`);
+ *   - relative paths resolved into the state dir — `ls apps/` returned EMPTY
+ *     rather than erroring, a silent wrong answer;
+ *   - and Claude Code resets the shell cwd to the launch dir after EVERY command,
+ *     so the workaround had to be repaid on every single call. Measured on one
+ *     real session: 240 cwd resets, and **281 of 363 bash commands (77%)** opened
+ *     with a defensive `cd`.
+ *
+ * A slug launch already lands in the harness's real checkout — the repo-as-cwd
+ * configuration is well-trodden (it is why `.mcp.json` is gitignored at the repo
+ * root). This just gives the no-slug launch the same treatment: land in the
+ * workspace's HOME checkout.
+ *
+ * Resolution, most-authoritative first, all pre-existing helpers:
+ *   1. the operator's home harness (`operatorHomeHarnessSlug()`) → its registered
+ *      path, validated with `hasPapercupMarkers()` so we never cd into a non-repo;
+ *   2. `detectPapercupRoot()` — honours `PAPERCUSP_INTEGRATION_ROOT` (the tree
+ *      "where edits actually land") and otherwise walks up for the repo markers;
+ *   3. the state dir — EXACTLY the old behaviour, so a workspace with no checkout
+ *      (or an unreadable registry) is unchanged. This fix can only ever move a
+ *      session from "not a repo" to "the right repo".
+ */
+async function resolveWorkspaceHomeCwd(workspaceId: string): Promise<string> {
+  try {
+    const homePath = await resolveProjectDir(operatorHomeHarnessSlug(), workspaceId);
+    if (homePath && hasPapercupMarkers(homePath)) return homePath;
+  } catch {
+    // registry unavailable — fall through to ambient detection
+  }
+  const detected = detectPapercupRoot();
+  if (detected) return detected;
+  return papercuspPathForWorkspace(workspaceId);
+}
+
 export async function buildConsoleEnvelope(
   opts: BuildEnvelopeOpts,
 ): Promise<ConsoleEnvelope> {
-  // 1. Resolve cwd: harness's project dir if slug given, else workspace root.
+  // 1. Resolve cwd: harness's project dir if slug given, else the workspace's
+  //    HOME CHECKOUT (EI-10938 — never the .papercusp state dir).
   let cwd: string;
   let stateDir: string | null = null;
   if (opts.slug) {
@@ -212,9 +259,9 @@ export async function buildConsoleEnvelope(
     cwd = projectDir;
     stateDir = await resolveStateDir(opts.slug, opts.workspaceId);
   } else {
-    // Workspace-only launch: open at the SELECTED workspace's root, not the
-    // global active one (opts.workspaceId may differ from activeWorkspaceId()).
-    cwd = papercuspPathForWorkspace(opts.workspaceId);
+    // Workspace-only launch: open in the SELECTED workspace's home checkout, not
+    // the global active one (opts.workspaceId may differ from activeWorkspaceId()).
+    cwd = await resolveWorkspaceHomeCwd(opts.workspaceId);
   }
 
   // 2. Build env — same shape as the Pi pty (PI_CODING_AGENT_DIR if

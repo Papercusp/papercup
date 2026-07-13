@@ -108,8 +108,7 @@ export async function benchMemoryPrecision(): Promise<MemoryPrecisionMetrics> {
     const manifest = await seedCorpus(ctx.backend, corpus, { scope: BENCH_SCOPE, verbatim: true, concurrency: 8 });
     // The manifest was previously DISCARDED — which is exactly how a total seed
     // failure became "recall = 0" instead of "the bench could not run".
-    // TEMP-REVERT-CHECK: guard disabled
-    void manifest;
+    assertCorpusSeeded(manifest, corpus.length);
     const retrieval = await runGoldSet(ctx.backend, gold.queries, {
       scope: BENCH_SCOPE,
       limit: 10,
