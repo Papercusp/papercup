@@ -259,6 +259,26 @@ export default function CupboardClient() {
       : listings.filter((l) => listingKindOf(l) === kindFilter);
   const groupedListings = groupListingsByKind(viewListings);
   const facetCount = groupedListings.length;
+  // Per-kind counts over the full unfiltered fetch. A kind tab with ZERO
+  // listings is HIDDEN (cupboard-public-release-2026-07-12 P-015: "all tabs
+  // non-empty or hidden" — e.g. harness/pack when nothing is published yet).
+  // 'all' + the 'tools' discovery view always show; the currently-selected kind
+  // stays visible even if empty so a URL-pinned `?kind=` filter isn't stranded.
+  const kindCounts = useMemo(() => {
+    const m = new Map<ListingKind, number>();
+    for (const l of listings) {
+      const k = listingKindOf(l);
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return m;
+  }, [listings]);
+  const visibleFilters = VIEW_FILTERS.filter(
+    (k) =>
+      k === 'all' ||
+      k === 'tools' ||
+      k === kindFilter ||
+      (kindCounts.get(k as ListingKind) ?? 0) > 0,
+  );
   // Flat hive-first browse (P-002): harness member rows fold into ONE card per
   // owning hive; legacy (pre-hive) harness rows collapse into their own
   // section. Other kinds render as plain listing cards, unchanged.
@@ -388,7 +408,7 @@ export default function CupboardClient() {
             maxWidth: '100%',
           }}
         >
-          {VIEW_FILTERS.map((k) => (
+          {visibleFilters.map((k) => (
             <button
               key={k}
               onClick={() => void setKindFilter(k === 'all' ? null : k)}

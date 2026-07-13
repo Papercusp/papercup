@@ -15,7 +15,14 @@
 // barrel drags the whole server surface into the SPA module graph and blanks the app at
 // module-eval time (fleet incident 2026-07-04). agent-mcp itself re-exports these from tooldef,
 // so this is the same symbols one hop earlier. (Type-only agent-mcp imports are fine — erased.)
-import { applySnapshotDelta, type SnapshotDelta, type VersionedSnapshot } from '@papercusp/tooldef';
+//
+// WI-4518: even the tooldef BARREL is a value-import hazard here — its `export * from
+// './code-orchestration'` drags the vm-sandbox/orchestrate/run-script runtime into the SPA's
+// EAGER graph (this reducer is on the __root path, loaded on every page). Import the one value
+// we need (`applySnapshotDelta`) from the narrow `./state-delta` subpath, which pulls only the
+// browser-safe delta-protocol math; the two types stay barrel type-imports (erased at build).
+import { applySnapshotDelta, type SnapshotDelta } from '@papercusp/tooldef/state-delta';
+import type { VersionedSnapshot } from '@papercusp/tooldef';
 import type { SnapshotEnvelope } from './use-state-snapshots';
 
 export type SnapshotWireEvent =
