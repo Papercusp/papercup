@@ -129,6 +129,17 @@ export interface UnitFlapState {
    *  this is a tick-count, not a time-based streak. Feeds P-004's `dev:service_health` supervision
    *  block (`consecutiveProbeFailures` in the plan's shape). */
   consecutiveDownTicks: number;
+  /** EI-10750: windowed observations of systemd's OWN restart counter (`NRestarts`), `{at, n}`,
+   *  pruned to the trailing GIVE_UP_WINDOW_MS. Used to catch a crash-loop that systemd's own
+   *  `Restart=` is absorbing FASTER than the 60s tick can observe "down" — the down-path give-up
+   *  counter (`restarts`, built only from restarts WE perform) is blind to it, which is exactly how
+   *  43 restarts / 25 min of :3170 (papercup-staging-api) down produced ZERO pages. */
+  nRestartsObs: { at: number; n: number }[];
+  /** EI-10750: has the CURRENT silent-loop episode already been escalated? Transition-only latch
+   *  (mirrors `wasDown`) so a persistent silent loop pages once, not every 60s tick; cleared once
+   *  the `NRestarts` delta falls back under threshold (loop subsided / counter reset) so a fresh
+   *  re-loop pages again. */
+  silentLoopEscalated: boolean;
 }
 
 export function initialFlapState(unit: string): UnitFlapState {
@@ -142,6 +153,8 @@ export function initialFlapState(unit: string): UnitFlapState {
     wasDown: false,
     restartDriftWarned: false,
     consecutiveDownTicks: 0,
+    nRestartsObs: [],
+    silentLoopEscalated: false,
   };
 }
 
@@ -162,6 +175,54 @@ export function checkRestartPolicyDrift(
   const drifted = restartProp === 'no';
   if (drifted) return { warn: !alreadyWarned, nextWarned: true };
   return { warn: false, nextWarned: false }; // fixed (or unknown) — clear the latch so a future re-drift warns again.
+}
+
+/** EI-10750: systemd's OWN restart counter (`NRestarts`) climbing by ≥ this within
+ *  GIVE_UP_WINDOW_MS, while the unit still reads healthy at each tick, is a SILENT crash-loop —
+ *  systemd's `Restart=` is bouncing the unit faster than the 60s reconciler cadence can observe
+ *  "down". Matches the down-path GIVE_UP_THRESHOLD by design (both mean "crash-looped ~6× in
+ *  <10min → code fault, page"). */
+export const SILENT_LOOP_THRESHOLD = GIVE_UP_THRESHOLD;
+
+/**
+ * EI-10750: PURE detector for a crash-loop that systemd itself is absorbing. Given systemd's live
+ * `NRestarts` reading (or undefined when `systemctl show` was unavailable this tick), the windowed
+ * observation history, the transition latch, and `now`, returns whether to page THIS tick plus the
+ * updated `{ nextObs, nextEscalated }` to persist.
+ *
+ * `NRestarts` is monotonic WITHIN one episode but resets to 0 on `systemctl reset-failed` / unit
+ * reload — a DECREASE is treated as a reset (fresh window + latch cleared). The count is the delta
+ * between the current reading and the oldest reading still inside the window, so only restarts that
+ * happened DURING our observation window page (a pre-existing high `NRestarts` at first observation
+ * — e.g. after an operator restart re-inits the in-memory obs — never false-pages). Below-threshold
+ * clears the latch so a subsequent real loop pages again. A missing reading carries state unchanged
+ * (an absent probe is not evidence the loop stopped).
+ */
+export function checkSilentCrashLoop(
+  nRestarts: number | undefined,
+  obs: readonly { at: number; n: number }[],
+  alreadyEscalated: boolean,
+  now: number,
+): { escalate: boolean; restartsInWindow: number; nextObs: { at: number; n: number }[]; nextEscalated: boolean } {
+  if (nRestarts == null || !Number.isFinite(nRestarts)) {
+    return { escalate: false, restartsInWindow: 0, nextObs: [...obs], nextEscalated: alreadyEscalated };
+  }
+  let pruned = obs.filter((o) => now - o.at < GIVE_UP_WINDOW_MS);
+  let escalatedLatch = alreadyEscalated;
+  // A decrease means the counter was reset (`reset-failed` / reload) — start a fresh window and
+  // clear the latch so the next real loop re-pages.
+  const maxSeen = pruned.reduce((m, o) => Math.max(m, o.n), Number.NEGATIVE_INFINITY);
+  if (nRestarts < maxSeen) {
+    pruned = [];
+    escalatedLatch = false;
+  }
+  const nextObs = [...pruned, { at: now, n: nRestarts }];
+  const oldest = nextObs.reduce((m, o) => Math.min(m, o.n), Number.POSITIVE_INFINITY);
+  const restartsInWindow = Number.isFinite(oldest) ? nRestarts - oldest : 0;
+  if (restartsInWindow >= SILENT_LOOP_THRESHOLD) {
+    return { escalate: !escalatedLatch, restartsInWindow, nextObs, nextEscalated: true };
+  }
+  return { escalate: false, restartsInWindow, nextObs, nextEscalated: false };
 }
 
 export type ReconcileAction =
@@ -345,12 +406,13 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // healthy or not — a unit can be UP the whole time yet have drifted Restart= policy). A
     // report-only entry (autoRestart:false) or a flag-off tick skips the call entirely (neither
     // check applies to it).
-    let show: { result?: string; restart?: string } | undefined;
+    let show: { result?: string; restart?: string; nRestarts?: number } | undefined;
     if (entry.autoRestart) {
       try {
         const raw = await deps.execUser(['show', entry.unit, '-p', 'Result,NRestarts,Restart']);
         const props = parseSystemctlShowProperties(raw);
-        show = { result: props.Result, restart: props.Restart };
+        const nRestarts = props.NRestarts != null ? Number(props.NRestarts) : undefined;
+        show = { result: props.Result, restart: props.Restart, nRestarts: Number.isFinite(nRestarts) ? nRestarts : undefined };
       } catch {
         /* best-effort — decideReconcile treats a missing `show` as "no start-limit-hit signal";
          *  the drift check below just skips this tick when `show` is unavailable. */
