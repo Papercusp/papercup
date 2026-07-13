@@ -154,8 +154,22 @@ interface JournalRow {
  * 5-min embed-backfill tick (plan D-002 — the outage classes overlap: both
  * drains want the embedder back). Linear backoff: a row with N failed
  * attempts is retried only after N*5 minutes since the last attempt.
- * `FOR UPDATE SKIP LOCKED` keeps concurrent ticks (or a second operator
- * process) from double-draining a row.
+ *
+ * Concurrency safety does NOT rest on the `FOR UPDATE SKIP LOCKED` below: this
+ * SELECT runs in postgres-js autocommit (there is no enclosing `sql.begin()`),
+ * so those row locks release the instant the SELECT returns — BEFORE the
+ * per-row backend.remember/update writes run. What actually prevents a
+ * double-drain is (1) DBOS single-flight scheduling: `embedBackfill`'s workflow
+ * id is deterministic per 5-min slot, so only ONE process runs a given tick
+ * clusterwide even across multiple operator hosts (periodic-workflows.ts); and
+ * (2) the `WHERE ... status='pending'` guard on every commit UPDATE — a second
+ * drainer that somehow raced in commits 0 rows — backed by the near-dup guard
+ * as a last catch. Keep it this way: do NOT "fix" SKIP LOCKED by wrapping the
+ * whole pass in a single `sql.begin()` to hold the locks across the loop — that
+ * pins one pgbouncer-pooled connection open across up to DRAIN_BATCH slow
+ * embedder round-trips (connection exhaustion, this `prepare:false` pool's weak
+ * spot). SKIP LOCKED stays only as cheap belt-and-suspenders for the rare
+ * overlapping-tick case DBOS already makes near-impossible.
  */
 export async function drainMemoryWriteJournal(): Promise<DrainResult> {
   const res: DrainResult = {

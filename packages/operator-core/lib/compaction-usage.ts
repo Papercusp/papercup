@@ -395,14 +395,51 @@ export function seedContextAnchorForTests(ownerId: string, pathStr: string): boo
  *  (context-trimming-tiers P-019: 6 members died on it, 2026-07-01). */
 export const CONTEXT_DEATH_MARKER = 'Prompt is too long';
 
+/**
+ * Structural matcher for a REAL claude-code window-overflow death (WI-4608 fix).
+ *
+ * A real overflow lands as an ASSISTANT ERROR ENTRY whose text IS the marker —
+ * `{"type":"text","text":"Prompt is too long"}` alongside `"error":"invalid_request"`
+ * (verified against live doc-steward deaths). So in the raw transcript JSONL the
+ * phrase is the START of an UNESCAPED JSON string value: `"Prompt is too long`
+ * preceded by a real (un-backslashed) `"`.
+ *
+ * The prior detector naive-`.includes()`d the bare phrase over the whole 8KB tail,
+ * which FALSE-FIRED whenever a session merely READ the phrase as DATA — and any
+ * data a session reads is nested JSON, so its quotes are ESCAPED (`\"Prompt is too
+ * long\"`):
+ *   - a coord:escalations tool_result summary (`... died on \"Prompt is too long\" ...`)
+ *     — the overwatch/mug survey escalations every wake, so they ingested the phrase,
+ *     got flagged "dead", and filed a NEW escalation carrying the phrase → a
+ *     self-amplifying false-death loop (WI-4608: mug/kettle/su were ~3k-token turns
+ *     on a 1M window, "dying" every wake);
+ *   - a code comment a cup/worker Read (e.g. this file's own comments);
+ *   - the OverwatchBrief, which lists these deaths verbatim.
+ * All of those embed the phrase MID-string / behind an escaped quote, never as the
+ * value-start of an unescaped JSON string, so the lookbehind excludes them while
+ * still catching the genuine error entry.
+ */
+const CONTEXT_DEATH_RE = /(?<!\\)"Prompt is too long/;
+
+/**
+ * Pure (WI-4608): does this transcript-TAIL text carry claude-code's ACTUAL
+ * window-overflow API error, as opposed to the phrase appearing as data the
+ * session merely read? Exported for a direct unit test (detectContextDeathForOwner
+ * is fs/PG-bound). See CONTEXT_DEATH_RE for the real-vs-data discriminator.
+ */
+export function tailCarriesContextDeath(tail: string): boolean {
+  return CONTEXT_DEATH_RE.test(tail);
+}
+
 /** How much transcript tail to scan for the death marker. The error lands as
  *  the final entry, but a hook/summary line can trail it — 8KB is plenty. */
 const DEATH_TAIL_BYTES = 8_192;
 
 /**
- * P-019 context-death detector: does this owner's transcript TAIL carry the
- * "Prompt is too long" window-overflow error? Best-effort (null transcript /
- * read error → false). fs reads only the tail, never the whole file.
+ * P-019 context-death detector: does this owner's transcript TAIL carry the real
+ * "Prompt is too long" window-overflow error (NOT the phrase as data it read —
+ * see tailCarriesContextDeath / WI-4608)? Best-effort (null transcript / read
+ * error → false). fs reads only the tail, never the whole file.
  */
 export async function detectContextDeathForOwner(ownerId: string): Promise<boolean> {
   try {
@@ -417,7 +454,7 @@ export async function detectContextDeathForOwner(ownerId: string): Promise<boole
     try {
       const buf = Buffer.alloc(size - start);
       fs.readSync(fd, buf, 0, buf.length, start);
-      return buf.toString('utf8').includes(CONTEXT_DEATH_MARKER);
+      return tailCarriesContextDeath(buf.toString('utf8'));
     } finally {
       fs.closeSync(fd);
     }

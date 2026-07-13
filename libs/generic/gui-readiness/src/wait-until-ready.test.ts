@@ -70,6 +70,24 @@ describe('waitUntilReady — level-triggered, never hangs', () => {
     expect(sleep).not.toHaveBeenCalled(); // exits before ever sleeping — the "10,000,000ms budget" was never touched
   });
 
+  it('treats a timed-out liveness sensor as unknown, not as proof that the process exited', async () => {
+    const probe: ReadinessProbe = { checkReady: async () => true };
+    const liveness: LivenessProbe = { isAlive: () => new Promise<boolean>(() => {}) };
+    const outcome = await waitUntilReady(probe, liveness, {
+      timeoutMs: 100,
+      probeTimeoutMs: 10,
+      pollIntervalMs: 1,
+    });
+    expect(outcome).toMatchObject({ ok: true, ready: true });
+  });
+
+  it('treats a failed liveness sensor as unknown, not as proof that the process exited', async () => {
+    const probe: ReadinessProbe = { checkReady: async () => true };
+    const liveness: LivenessProbe = { isAlive: async () => { throw new Error('sensor unavailable'); } };
+    const outcome = await waitUntilReady(probe, liveness, { timeoutMs: 100, probeTimeoutMs: 10 });
+    expect(outcome).toMatchObject({ ok: true, ready: true });
+  });
+
   it('re-checks liveness on every poll, not just once at the start', async () => {
     const { now, sleep } = fakeClock();
     let aliveCalls = 0;
@@ -104,8 +122,31 @@ describe('waitUntilReady — level-triggered, never hangs', () => {
     expect(wallClockMs).toBeLessThan(2000);
   });
 
+  it('does not spend a second full probe budget after liveness consumes the outer deadline', async () => {
+    const probe: ReadinessProbe = { checkReady: () => new Promise<boolean>(() => {}) };
+    const liveness: LivenessProbe = { isAlive: () => new Promise<boolean>(() => {}) };
+    const startedAt = Date.now();
+    const outcome = await waitUntilReady(probe, liveness, {
+      timeoutMs: 30,
+      probeTimeoutMs: 1000,
+      pollIntervalMs: 1,
+    });
+    expect(outcome).toMatchObject({ ok: false, reason: 'timeout' });
+    expect(Date.now() - startedAt).toBeLessThan(500);
+  });
+
   it('rejects a negative timeoutMs rather than silently waiting forever', async () => {
     const probe: ReadinessProbe = { checkReady: async () => true };
     await expect(waitUntilReady(probe, undefined, { timeoutMs: -1 })).rejects.toThrow(/timeoutMs/);
+  });
+
+  it('rejects invalid polling and probe durations rather than creating a busy or unbounded loop', async () => {
+    const probe: ReadinessProbe = { checkReady: async () => true };
+    await expect(waitUntilReady(probe, undefined, { timeoutMs: 10, pollIntervalMs: -1 })).rejects.toThrow(
+      /pollIntervalMs/,
+    );
+    await expect(waitUntilReady(probe, undefined, { timeoutMs: 10, probeTimeoutMs: 0 })).rejects.toThrow(
+      /probeTimeoutMs/,
+    );
   });
 });

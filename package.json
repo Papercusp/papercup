@@ -82,6 +82,7 @@
     "libs/generic/bench-metrics",
     "libs/generic/resource-profile",
     "libs/generic/resumable-download",
+    "libs/generic/tauri-verify",
     "libs/generic/gui-readiness"
   ],
   "scripts": {

@@ -1,0 +1,9 @@
+{
+  "actor": "s-1783933981103-48102673",
+  "feature_id": "F-FIX-048",
+  "field": "__created",
+  "id": 966,
+  "new_value": "{\"id\":\"F-FIX-048\",\"title\":\"green-checkpoint RED at f070ae88 / f070ae88+: psu-launcher CORE_MCP_TOOL_NAMES drift guard + failure-warning.test.ts + invoke.test.ts failing — deploys blocked\",\"sourceIssueId\":\"WI-4600\"}",
+  "old_value": "null",
+  "ts": 1783934085399
+}

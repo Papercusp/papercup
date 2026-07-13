@@ -29,6 +29,9 @@ Concretely:
 - A single wedged/never-resolving `checkReady()` call can't consume (or
   exceed) the whole budget — it's bounded by its own `probeTimeoutMs` and
   the loop just tries again on the next poll.
+- A timed-out or failed liveness sensor is treated as **unknown**, not as
+  evidence that the process died. Only an explicit `false` produces
+  `reason: 'process_exited'`.
 - A dead process (via an optional `LivenessProbe`) fails fast with
   `reason: 'process_exited'` instead of waiting out the remaining deadline
   for a readiness signal that can no longer arrive.
@@ -78,8 +81,8 @@ attached.coldStartMs; // always null for origin: 'attached'
   pass it so a dead process is detected immediately instead of waiting out
   the deadline.
 - `options.timeoutMs` — required. There is no "wait forever" mode.
-- `options.pollIntervalMs` — default 250.
-- `options.probeTimeoutMs` — default `min(timeoutMs, 5000)`.
+- `options.pollIntervalMs` — non-negative; default 250.
+- `options.probeTimeoutMs` — positive; default `min(timeoutMs, 5000)`.
 - `options.now` / `options.sleep` — injectable clock/delay for deterministic
   tests; real `Date.now`/`setTimeout` by default.
 

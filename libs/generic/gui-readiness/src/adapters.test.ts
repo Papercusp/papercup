@@ -13,10 +13,8 @@ describe('pidLivenessProbe', () => {
     await expect(probe.isAlive()).resolves.toBe(false);
   });
 
-  it('reports an almost-certainly-dead high pid as not alive', async () => {
-    // Not perfectly deterministic on every OS, but a pid this high is never a
-    // real live process in CI/dev sandboxes; guards against a false "alive".
-    const probe = pidLivenessProbe(999_999);
+  it('reports an out-of-range pid as not alive', async () => {
+    const probe = pidLivenessProbe(Number.MAX_SAFE_INTEGER);
     await expect(probe.isAlive()).resolves.toBe(false);
   });
 });

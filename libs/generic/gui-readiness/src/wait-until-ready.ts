@@ -14,19 +14,30 @@ function realSleep(ms: number): Promise<void> {
 /**
  * Race a probe call against its own bound so ONE wedged/never-resolving call
  * cannot silently consume (or blow past) the overall wait budget. A timeout is
- * treated as `false` ("not ready/not confirmed alive this round") rather than
- * an error — the caller's next poll (still governed by the OUTER deadline) tries
- * again.
+ * treated as the caller-provided fallback rather than an error. Readiness uses
+ * `false` (not ready this round), while liveness uses `true` (alive UNKNOWN): a
+ * slow or broken liveness sensor is not evidence that the process exited.
  */
-async function boundedProbe(call: () => Promise<boolean>, timeoutMs: number): Promise<boolean> {
+async function boundedProbe(
+  call: () => Promise<boolean>,
+  timeoutMs: number,
+  fallback: boolean,
+): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), timeoutMs);
+    timer = setTimeout(() => resolve(fallback), timeoutMs);
   });
   try {
-    return await Promise.race([call().catch(() => false), timeout]);
+    return await Promise.race([call().catch(() => fallback), timeout]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+function validateDuration(name: string, value: number, allowZero: boolean): void {
+  if (!Number.isFinite(value) || (allowZero ? value < 0 : value <= 0)) {
+    const qualifier = allowZero ? 'non-negative' : 'positive';
+    throw new Error(`waitUntilReady: ${name} must be a ${qualifier} finite number, got ${value}`);
   }
 }
 
@@ -52,27 +63,37 @@ export async function waitUntilReady(
   liveness: LivenessProbe | undefined,
   options: WaitOptions,
 ): Promise<ReadinessOutcome> {
-  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0) {
-    throw new Error(`waitUntilReady: timeoutMs must be a non-negative finite number, got ${options.timeoutMs}`);
-  }
+  validateDuration('timeoutMs', options.timeoutMs, true);
   const now = options.now ?? realNow;
   const sleep = options.sleep ?? realSleep;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const probeTimeoutMs = Math.min(options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS, Math.max(options.timeoutMs, 1));
+  const requestedProbeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  validateDuration('pollIntervalMs', pollIntervalMs, true);
+  validateDuration('probeTimeoutMs', requestedProbeTimeoutMs, false);
+  const probeTimeoutMs = Math.min(requestedProbeTimeoutMs, Math.max(options.timeoutMs, 1));
 
   const start = now();
   const deadline = start + options.timeoutMs;
 
   for (;;) {
     if (liveness) {
-      const alive = await boundedProbe(() => liveness.isAlive(), probeTimeoutMs);
+      const livenessBudgetMs = Math.max(1, Math.min(probeTimeoutMs, deadline - now()));
+      const alive = await boundedProbe(() => liveness.isAlive(), livenessBudgetMs, true);
       if (!alive) {
         return { ok: false, ready: false, elapsedMs: now() - start, reason: 'process_exited' };
       }
+
+      // A liveness call may have consumed the remaining budget. Its timeout or
+      // exception means UNKNOWN (not dead), but it must not grant readiness an
+      // additional full probe budget beyond the outer deadline.
+      if (options.timeoutMs > 0 && now() >= deadline) {
+        return { ok: false, ready: false, elapsedMs: now() - start, reason: 'timeout' };
+      }
     }
 
-    const ready = await boundedProbe(() => probe.checkReady(), probeTimeoutMs);
-    if (ready) {
+    const readinessBudgetMs = Math.max(1, Math.min(probeTimeoutMs, deadline - now()));
+    const ready = await boundedProbe(() => probe.checkReady(), readinessBudgetMs, false);
+    if (ready && now() <= deadline) {
       return { ok: true, ready: true, elapsedMs: now() - start };
     }
 
