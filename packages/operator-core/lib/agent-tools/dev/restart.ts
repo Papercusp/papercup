@@ -28,6 +28,17 @@
  * :3170 should already be back up. `target: 'dev'` (default) is unchanged —
  * :3070 restarts are already infrequent (auto-deploy-pipeline-driven), so no
  * cooldown is applied there.
+ *
+ * EI-11137 (phantom-coalesce fix): a held cooldown marker is NOT proof a
+ * restart happened — it can be held while none did (a withheld/failed restart,
+ * or a stale marker perpetually re-observed on a busy fleet), and the old code
+ * trusted it blindly, silently wedging EVERY subsequent restart for the TTL.
+ * That bit bg-host hardest (it re-bundles the working tree ONLY on restart, so
+ * fixes never went live). Before honoring a coalesce we now CROSS-CHECK the
+ * service's real last-start via systemd (probeServiceStart): coalesce only when
+ * the service genuinely restarted within the window; a phantom marker is
+ * refused and a real restart fires. Every real-restart result also surfaces
+ * `restartedFromPid` + `verifyWith` so the caller can confirm the PID cycled.
  */
 
 import { z } from 'zod';
@@ -38,6 +49,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
 import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
+import { probeServiceStart } from './systemd-service-probe';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 120;
@@ -166,6 +178,13 @@ export default defineTool({
     // own successful restart below; it is left to expire via its TTL, which
     // IS the debounce window.
     let cooldownLockId: string | null = null;
+    // EI-11137: set when we detect (and refuse to honor) a PHANTOM coalesce —
+    // the cooldown marker was held but the service had NOT actually restarted.
+    let phantomCoalesceBroken: {
+      staleMarkerHolder: string | null;
+      serviceSecondsSinceStart: number | null;
+      cooldownSec: number;
+    } | null = null;
     const cooldownSec = COOLDOWN_SEC[target] ?? STAGING_COOLDOWN_SEC;
     if (enabled && cfg.cooldownResource) {
       const cd = cfg.cooldownResource;
@@ -182,17 +201,65 @@ export default defineTool({
       );
       if (!cooldown.ok) {
         const holder = cooldown.holders.find((h) => h.mode === 'exclusive');
-        return json({
-          ok: true,
-          target,
-          restarted: false,
-          coalesced: true,
-          note: `${cfg.unit} was restarted within the last ~${cooldownSec}s${
-            holder ? ` by ${holder.owner_label ?? holder.owner}` : ' by a peer'
-          } — skipping a redundant restart. It should already be back up; probe it directly. If you still see stale behavior after a few seconds, wait for the cooldown to lapse and retry.`,
-        });
+        const holderName = holder ? (holder.owner_label ?? holder.owner) : null;
+        // EI-11137: the marker alone is NOT proof a restart happened. It can be
+        // held while NO real restart occurred (a withheld/failed restart, or a
+        // stale marker perpetually re-observed on a busy fleet) — the old code
+        // trusted it blindly and returned coalesced:true, silently wedging EVERY
+        // subsequent restart for the marker's TTL. bg-host re-bundles the working
+        // tree ONLY on restart, so that meant its code fixes never went live.
+        // Cross-check the coalesce against the service's REAL last-start.
+        const svc = await probeServiceStart(cfg.unit);
+        const restartedRecently =
+          svc.ok && svc.secondsSinceStart !== undefined && svc.secondsSinceStart <= cooldownSec;
+        if (restartedRecently) {
+          // GENUINE coalesce — a peer's restart actually landed within the window.
+          const ago = Math.round(svc.secondsSinceStart!);
+          return json({
+            ok: true,
+            target,
+            restarted: false,
+            coalesced: true,
+            verified: true,
+            restartedSecondsAgo: ago,
+            mainPid: svc.mainPid ?? null,
+            note: `${cfg.unit} genuinely restarted ~${ago}s ago${
+              holderName ? ` (marker held by ${holderName})` : ''
+            } — verified via systemd (MainPID ${svc.mainPid}). Skipping a redundant restart; probe it directly.`,
+          });
+        }
+        if (!svc.ok) {
+          // Could NOT verify (no systemd / probe failed). Fall back to trusting
+          // the marker so we never fire N concurrent outages — but SAY it is
+          // unverified so a stale marker is at least visible to the caller.
+          return json({
+            ok: true,
+            target,
+            restarted: false,
+            coalesced: true,
+            verified: false,
+            note: `${cfg.unit} appears to have been restarted within the last ~${cooldownSec}s${
+              holderName ? ` by ${holderName}` : ' by a peer'
+            } — but this could NOT be verified against systemd. Probe it directly; if it is still stale, retry after the cooldown (~${cooldownSec}s) lapses.`,
+          });
+        }
+        // PHANTOM: the marker is held but the service did NOT actually restart
+        // within the window (its main process is older than the cooldown, or
+        // there is no live main process). This is exactly the wedge EI-11137
+        // fixes — do NOT coalesce. Fall through and fire a REAL restart: the
+        // stale marker expires on its own TTL, and once our restart lands systemd
+        // reflects it so later callers coalesce correctly. We could not acquire
+        // the marker (a peer holds it, and tryReleaseResource is owner-scoped so
+        // we cannot force-release theirs), so we proceed WITHOUT it — the systemd
+        // truth-check above is now the effective debounce.
+        phantomCoalesceBroken = {
+          staleMarkerHolder: holderName,
+          serviceSecondsSinceStart: svc.secondsSinceStart ?? null,
+          cooldownSec,
+        };
+      } else {
+        cooldownLockId = cooldown.lock_id;
       }
-      cooldownLockId = cooldown.lock_id;
     }
 
     const releaseCooldownOnAbort = async () => {
@@ -240,6 +307,10 @@ export default defineTool({
             note: `Restart ABORTED — our exclusive(${cfg.resource}) lease was superseded while we held it. Re-acquire before retrying.`,
           });
         }
+        // EI-11137: capture the pre-restart MainPID so the caller can VERIFY a
+        // real cycle happened (the restart is detached+delayed, so we cannot
+        // confirm it synchronously — but a changed MainPID proves it landed).
+        const before = await probeServiceStart(cfg.unit);
         // Detached + delayed so this response returns before the service dies.
         const child = spawn('sh', ['-c', `sleep 1; ${restartCmd}`], {
           detached: true,
@@ -252,7 +323,16 @@ export default defineTool({
           drained: true,
           restarted: true,
           fence_seq: fence.seq,
-          note: 'Restart scheduled (~1s) — this connection will drop as the operator restarts.',
+          restartedFromPid: before.mainPid ?? null,
+          ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+          verifyWith: `systemctl --user show ${cfg.unit} -p MainPID --value  (expect a NEW pid${
+            before.mainPid ? ` ≠ ${before.mainPid}` : ''
+          } within ~3s)`,
+          note: `Restart scheduled (~1s)${
+            phantomCoalesceBroken
+              ? ' — this BROKE a phantom coalesce marker (the service had NOT actually restarted despite the marker being held)'
+              : ''
+          } — this connection will drop as the operator restarts.`,
         });
       },
     );

@@ -4,7 +4,7 @@
  * (psu-isolation-and-blueprint-aware-harness-ui-2026-06-09 P-008/P-009).
  *
  * This file is a thin ROUTER: scope=all → a per-pot empty hint; panel 'git' →
- * AdvGitWorkspace; the DIRECT registry panels (brainstorm/prs/insights/settings/
+ * AdvGitWorkspace; the DIRECT registry panels (prs/insights/settings/
  * docs/testing) → their component, but only with a selected ?slug=. The heavy
  * child panels + the lexicon/flag hooks are stubbed so we can assert the routing
  * + the BLUEPRINT_AWARE_SETTINGS flag swap on Settings without their trees.
@@ -36,7 +36,6 @@ vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => flagRef.blueprintAware }));
 
 // ── Heavy child panels: stub each to a marker element with its slug. ──
 vi.mock('@/app/adv/harnesses/AdvGitWorkspace', () => ({ default: () => <div data-testid="git-workspace">git</div> }));
-vi.mock('@/app/harness/brainstorm/BrainstormFull', () => ({ BrainstormFull: ({ slug }: { slug: string }) => <div data-testid="brainstorm">{slug}</div> }));
 vi.mock('@/app/harness/PrsTab', () => ({ default: ({ harnessSlug }: { harnessSlug: string }) => <div data-testid="prs">{harnessSlug}</div> }));
 vi.mock('@/app/harness/HarnessSettingsPanel', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="settings-legacy">{slug}</div> }));
 vi.mock('@/app/harness/BlueprintSettingsPanel', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="settings-blueprint">{slug}</div> }));
@@ -55,8 +54,8 @@ afterEach(() => cleanup());
 
 describe('ADV_HARNESS_PANEL_LABELS', () => {
   it('labels every routable harness panel', () => {
+    // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
     expect(ADV_HARNESS_PANEL_LABELS).toEqual({
-      brainstorm: 'Brainstorm',
       prs: 'PRs',
       insights: 'Insights',
       settings: 'Settings',
@@ -71,9 +70,9 @@ describe('<AdvHarnessPanelPage> routing', () => {
   it('scope=all → the per-pot empty hint, no child panel', () => {
     nuqsState.scope = 'all';
     nuqsState.slug = 'pot-a';
-    render(<AdvHarnessPanelPage panel="brainstorm" />);
+    render(<AdvHarnessPanelPage panel="insights" />);
     expect(screen.getByText(/is a per-pot view — pick a Pot from the dropdown above/)).toBeTruthy();
-    expect(screen.queryByTestId('brainstorm')).toBeNull();
+    expect(screen.queryByTestId('insights-tab')).toBeNull();
   });
 
   it('panel=git → AdvGitWorkspace (owns its own slug; renders even without ?slug=)', () => {
@@ -81,11 +80,6 @@ describe('<AdvHarnessPanelPage> routing', () => {
     expect(screen.getByTestId('git-workspace')).toBeTruthy();
   });
 
-  it('a DIRECT panel with a selected slug renders that panel, threading the slug', () => {
-    nuqsState.slug = 'pot-x';
-    render(<AdvHarnessPanelPage panel="brainstorm" />);
-    expect(screen.getByTestId('brainstorm').textContent).toBe('pot-x');
-  });
 
   it('PrsTab receives the slug as harnessSlug', () => {
     nuqsState.slug = 'pot-prs';

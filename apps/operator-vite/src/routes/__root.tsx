@@ -74,7 +74,7 @@ import '@/app/command-palette.css';
 import '@/app/find-in-page.css';
 // Harness panel styles (the `h-*` classes). The legacy /harness page loaded
 // these via HarnessDashboard; now that /adv tabs render harness panel
-// components directly (brainstorm/prs/settings/insights — see
+// components directly (prs/settings/insights — see
 // AdvHarnessPanelPage), the shell must load the stylesheet so those panels
 // keep their styling without mounting the whole dashboard.
 import '@/app/harness/harness.css';
