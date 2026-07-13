@@ -136,6 +136,34 @@ describe('installPluginFromCupboardCore', () => {
     expect(existsSync(join(root, 'evil'))).toBe(false);
   });
 
+  it('installs a SCOPED @scope/name plugin into global-plugins/@scope/name/ (the loader layout)', async () => {
+    // A scoped npm-style name (e.g. @papercupai/papercusp-worker) is exactly what
+    // the plugin loader recurses into (global-plugins/@scope/name/). The install
+    // core must ACCEPT it, not reject it as a "path" — the fix behind the P-015
+    // fresh-install acceptance (the one published plugin listing carries this name).
+    await writeManifest(fixtureRepo, { name: '@papercupai/papercusp-worker', version: '0.3.0' });
+    await fs.writeFile(join(fixtureRepo, 'index.cjs'), 'module.exports = {};', 'utf8');
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/papercusp/papercusp-worker' },
+      makeDeps(),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.name).toBe('@papercupai/papercusp-worker');
+    // Lands at the nested scoped path the loader recurses into.
+    const installed = join(globalDir, '@papercupai', 'papercusp-worker');
+    expect(existsSync(join(installed, 'papercusp.json'))).toBe(true);
+    expect(existsSync(join(installed, '.git'))).toBe(false);
+  });
+
+  it('rejects a scoped name with an unsafe segment (@a/../evil) — no escape, no write', async () => {
+    await writeManifest(fixtureRepo, { name: '@a/../evil', version: '1.0.0' });
+    await expect(
+      installPluginFromCupboardCore({ githubUrl: 'https://github.com/acme/evil' }, makeDeps()),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(existsSync(join(globalDir, 'evil'))).toBe(false);
+    expect(existsSync(join(root, 'evil'))).toBe(false);
+  });
+
   it('ignores an unsafe listing_ref (no escape) and falls back to the repo root', async () => {
     await writeManifest(fixtureRepo, { name: 'safe-p', version: '1.0.0' });
     const res = await installPluginFromCupboardCore(

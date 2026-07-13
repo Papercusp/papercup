@@ -272,7 +272,10 @@ export async function installPluginFromCupboardCore(
 
     const target = join(deps.globalPluginsDir(), manifest.name);
     assertInside(deps.globalPluginsDir(), target, `plugin name "${manifest.name}"`);
-    await fs.mkdir(deps.globalPluginsDir(), { recursive: true });
+    // mkdir the target's PARENT (not just global-plugins) so a scoped
+    // `@scope/name` lands at global-plugins/@scope/name/ — the loader's layout.
+    // For an unscoped name this is global-plugins itself (unchanged).
+    await fs.mkdir(dirname(target), { recursive: true });
     await copyPluginDir(pluginDir, target);
 
     const capabilities = Array.isArray(manifest.capabilities) ? manifest.capabilities : [];
