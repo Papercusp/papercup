@@ -452,9 +452,38 @@ export async function runRecallCanary(
     const retrievalRAt10 = measured.scored > 0 ? measured.retrievalHits / measured.scored : null;
     const delta = rAt10 == null ? null : rAt10 - set.baselineRAt10;
 
+    // P-010 (memory-pg-lexical-own-injection-2026-07-13): probe the LEXICAL
+    // leg directly on the same pairs. A blind lexical leg (schema drift, an
+    // ILIKE/tokenizer regression, an empty leg after a backend flip) can hide
+    // behind a fused product the cosine leg still carries — so it is measured
+    // separately, RETRIEVAL-level (no admission gates: lexical scores are not
+    // on the cosine scale). Feature-tested; a probe failure reads as blind
+    // only if the fused product proves the store itself is serving rows.
+    let lexMeasured: PairMeasurement | null = null;
+    const lexSearch = backend.searchLexical?.bind(backend);
+    if (lexSearch) {
+      try {
+        lexMeasured = await measureCanaryPairs((q, o) => lexSearch(q, o), living, {
+          degraded: degradedRegime,
+        });
+      } catch {
+        lexMeasured = null;
+      }
+    }
+    const lexRetrievalRAt10 =
+      lexMeasured && lexMeasured.scored > 0 ? lexMeasured.retrievalHits / lexMeasured.scored : null;
+    // BLIND = the lexical leg retrieved NOTHING for every probe while the
+    // fused product still returned rows (store demonstrably non-empty).
+    const lexBlind =
+      lexSearch != null &&
+      retrievalZeroHitRate != null &&
+      retrievalZeroHitRate < 1 &&
+      (lexMeasured == null ||
+        (lexMeasured.scored > 0 && lexMeasured.retrievalZeroHits === lexMeasured.scored));
+
     const blackout = zeroHitRate != null && zeroHitRate >= RECALL_CANARY_ZERO_HIT_DEGRADED;
     const dropped = delta != null && delta < -RECALL_CANARY_ALERT_DROP;
-    const status: RecallCanaryStatus = blackout || dropped ? 'degraded' : 'ok';
+    const status: RecallCanaryStatus = blackout || dropped || lexBlind ? 'degraded' : 'ok';
 
     // WHICH LAYER: the store returned rows and the consumer still got nothing ⇒ the gates ate
     // it (the EI-10372 shape). Naming the layer is the whole point of carrying both numbers —
@@ -477,12 +506,23 @@ export async function runRecallCanary(
       retrievalRAt10,
       latencyP50Ms: measured.latencyP50Ms,
       status,
-      notes: !blackout
-        ? null
-        : decisionSideBlackout
-          ? 'zero-hit blackout DOWNSTREAM of retrieval — the store returned rows and the ' +
-            'consumer-admission gates (relevance floor / budget) discarded them'
-          : 'zero-hit blackout at RETRIEVAL — swallowed-store-error smell',
+      notes: [
+        // Lexical-leg visibility on every run (P-010): the leg's retrieval
+        // r@10, or the blindness verdict.
+        lexBlind
+          ? 'LEXICAL LEG BLIND: zero lexical retrieval across all probes while the fused product served rows'
+          : lexRetrievalRAt10 != null
+            ? `lex r@10 ${fmt(lexRetrievalRAt10)}`
+            : null,
+        !blackout
+          ? null
+          : decisionSideBlackout
+            ? 'zero-hit blackout DOWNSTREAM of retrieval — the store returned rows and the ' +
+              'consumer-admission gates (relevance floor / budget) discarded them'
+            : 'zero-hit blackout at RETRIEVAL — swallowed-store-error smell',
+      ]
+        .filter(Boolean)
+        .join('; ') || null,
     };
     const rowId = await (deps.record ?? recordRecallCanaryRun)(sql, input.workspaceId, metrics);
 
@@ -502,7 +542,12 @@ export async function runRecallCanary(
             `embedder degradation that scoped it (degraded regime: ${degradedRegime}).`
           : blackout
             ? 'Most probes returned NOTHING FROM THE STORE — check for swallowed store errors (schema drift / migration mismatch, the PG 42703 class) and embedder/sidecar health.'
-            : 'Check recent migrations, embedder config, and the memory backend selection.');
+            : lexBlind
+              ? 'LEXICAL LEG BLIND (P-010 probe): searchLexical retrieved nothing for every probe ' +
+                'while the fused product still served rows — the exact-identifier recall column is ' +
+                'dark. Check canonical-store lexicalSearch (tokenizer/ILIKE/schema drift) and the ' +
+                'lexical leg wiring in the active hybrid backend.'
+              : 'Check recent migrations, embedder config, and the memory backend selection.');
       await (deps.notify ?? defaultNotify)({
         title: 'Memory recall degraded — live canary below baseline',
         body,

@@ -167,6 +167,15 @@ interface ManifestShape {
    * entry plugin's `reactions` export. Merged by `collectReactionRules`.
    */
   reactions?: import('@papercusp/plugin-sdk').PluginReactionRule[];
+  /**
+   * Event-key families this unit PROVIDES + the ones it DEPENDS ON — the
+   * events-as-a-dependency axis (cupboard-public-release-2026-07-12 D-003 /
+   * P-005). Pure data (a kind:'pack' may declare them); the installed-tier
+   * events:catalog (P-006) + resolver (P-007) consume `provides.events`, and
+   * install-time dep validation (P-007) consumes `dependencies.events`.
+   */
+  provides?: import('@papercusp/plugin-sdk').ManifestProvides;
+  dependencies?: import('@papercusp/plugin-sdk').ManifestDependencies;
 }
 
 async function readManifest(dir: string): Promise<ManifestShape | { __error: string } | null> {
@@ -183,6 +192,15 @@ async function readManifest(dir: string): Promise<ManifestShape | { __error: str
     if (!r.ok) {
       const summary = r.issues.map((i) => `${i.path} — ${i.message}`).join('; ');
       return { __error: `manifest invalid: ${summary}` };
+    }
+    // Semantic cross-field check the JSON schema can't express: provides.events
+    // family uniqueness + keyTemplate↔params consistency, dependencies.events
+    // family presence (events-as-a-dependency axis, D-003 / P-005). Runs for
+    // every manifest — js / wasm / daemon — since they all funnel through here.
+    const { validateManifestEventDeclarations } = await import('@papercusp/plugin-sdk');
+    const evtIssues = validateManifestEventDeclarations(parsed);
+    if (evtIssues.length > 0) {
+      return { __error: `manifest invalid: ${evtIssues.join('; ')}` };
     }
     return parsed;
   } catch {
@@ -423,6 +441,12 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
     if ((plugin.actions?.length ?? 0) > 0) offending.push('actions');
     if (plugin.hooks && Object.keys(plugin.hooks).length > 0) offending.push('hooks');
     if ((plugin.reactions?.length ?? 0) > 0 || (manifest.reactions?.length ?? 0) > 0) offending.push('reactions');
+    // NB (events-as-a-dependency axis, D-003 / P-005): `provides.events` and
+    // `dependencies.events` are pure DATA declarations, not runtime-bearing
+    // surfaces, so they are intentionally ABSENT from this offending list — a
+    // runtime-less pack may declare what event families it provides/requires.
+    // Actually EMITTING/REACTING is runtime: `reactions` (above) stays
+    // pack-forbidden; a pack's js tool handler may still emit its declared family.
     if (offending.length > 0) {
       return `pack "${plugin.name}" declares runtime-bearing surface(s) ${offending.join(', ')} — a pack contributes tools only; use kind "plugin"`;
     }

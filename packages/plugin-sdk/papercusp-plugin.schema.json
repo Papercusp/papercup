@@ -52,11 +52,59 @@
     "dependencies": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Tool/pack/plugin deps this unit's tools need (tool-distribution-granularity D-003 plugin-to-tool deps). Validated at Cupboard install time against the host's pack catalog; same shape as a blueprint's dependencies.",
+      "description": "Tool/pack/plugin/event deps this unit's tools + reactions need (tool-distribution-granularity D-003 plugin-to-tool deps; events axis: cupboard-public-release-2026-07-12 D-003). Validated at Cupboard install time against the host's pack catalog; same shape as a blueprint's dependencies.",
       "properties": {
         "tools": { "type": "array", "items": { "type": "string" } },
         "packs": { "type": "array", "items": { "type": "string" } },
-        "plugins": { "type": "array", "items": { "type": "string" } }
+        "plugins": { "type": "array", "items": { "type": "string" } },
+        "events": {
+          "type": "array",
+          "description": "Event-family deps (D-003). Resolved against provides.events across the pack catalog: an installed provider satisfies it, a Cupboard provider makes it installable, neither is a HARD failure like an unresolvable tool dep — unless optional:true (listen-if-present soft dep).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["family"],
+            "properties": {
+              "family": { "type": "string", "minLength": 1, "description": "The provided event-family id this unit needs." },
+              "optional": { "type": "boolean", "description": "optional:true = listen-if-present soft dep; an unresolvable optional event dep never blocks install." }
+            }
+          }
+        }
+      }
+    },
+    "provides": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Distribution-unit provisions surfaced to the Cupboard catalog + dependency resolver (cupboard-public-release-2026-07-12 D-003). Mirrors the provides_tools axis at the unit level. Pure DATA — a runtime-less kind:'pack' may declare provides.events (the pack-purity check allows it); actually emitting a family or reacting to one is runtime that rides a plugin.",
+      "properties": {
+        "events": {
+          "type": "array",
+          "description": "Awaitable event-key families this unit provides. Structural subset of the events:catalog EventCatalogEntry; the installed-tier catalog merge lifts these over the builtin registry with provenance.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["family", "keyTemplate"],
+            "properties": {
+              "family": { "type": "string", "minLength": 1, "description": "Stable family id — the catalog lookup key + buildKey handle. Unique within provides.events." },
+              "keyTemplate": { "type": "string", "minLength": 1, "description": "Exact key template with <param> placeholders; a no-param family is a literal key. Every <name> needs a matching params entry (validated at load)." },
+              "params": {
+                "type": "array",
+                "description": "Placeholders the keyTemplate interpolates, in order.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "required", "describe"],
+                  "properties": {
+                    "name": { "type": "string", "minLength": 1, "description": "Placeholder name as it appears in the template." },
+                    "required": { "type": "boolean", "description": "Must a caller supply it? An omitted optional param collapses its :<name> segment." },
+                    "describe": { "type": "string", "description": "One line for the catalog + sugar arg docs." }
+                  }
+                }
+              },
+              "describe": { "type": "string", "description": "What firing this key MEANS (one line), for the catalog." }
+            }
+          }
+        }
       }
     },
     "papercusp": {

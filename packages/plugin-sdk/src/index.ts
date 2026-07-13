@@ -625,6 +625,81 @@ export interface PluginReactionRule {
 
 
 /* ─────────────────────────────────────────────────────────────────────
+ * Events as a dependency axis (cupboard-public-release-2026-07-12 D-003 /
+ * P-005). A distribution unit can DECLARE the awaitable event-key families it
+ * PROVIDES and the ones it DEPENDS ON, mirroring the provides_tools /
+ * dependencies.tools axis (tool-distribution-granularity-2026-06-05 D-002).
+ *
+ * These declarations are pure DATA: a runtime-less `kind:'pack'` may carry them
+ * (they are not runtime-bearing surfaces, so the loader's pack-purity check
+ * allows them). Actually EMITTING a family or REACTING to one is runtime that
+ * rides a plugin — `reactions`/`hooks` stay pack-forbidden — but a pack's js
+ * tool handler may still emit, which is why a pack is allowed to declare what
+ * it provides.
+ *
+ * `ManifestProvidedEvent` is a structural subset of operator-core's
+ * `EventCatalogEntry` (events/await/catalog.ts): the installed-tier
+ * `events:catalog` merge (P-006) lifts these over the builtin registry with
+ * provenance, and the resolver (P-007) answers "who provides family X?".
+ * ───────────────────────────────────────────────────────────────────── */
+
+/** A `<placeholder>` slot in a provided family's key template. */
+export interface ManifestEventParam {
+  /** Placeholder name as it appears in the template, e.g. `id` for `foo:done:<id>`. */
+  name: string;
+  /** Must a caller supply it to build a concrete key? An omitted OPTIONAL param collapses its `:<name>` segment. */
+  required: boolean;
+  /** One line for the catalog + sugar arg docs. */
+  describe: string;
+}
+
+/** One awaitable event-key FAMILY a unit declares it provides (D-003, P-005). */
+export interface ManifestProvidedEvent {
+  /** Stable family id — the catalog lookup key + `buildKey` handle. Unique within `provides.events`. */
+  family: string;
+  /** Exact key TEMPLATE with `<param>` placeholders. A no-param family is a literal key. */
+  keyTemplate: string;
+  /** Placeholders the template interpolates, in order. Every `<name>` in `keyTemplate` needs one, and vice versa. */
+  params?: ManifestEventParam[];
+  /** What firing this key MEANS (one line), for the catalog. */
+  describe?: string;
+}
+
+/**
+ * One event-family DEPENDENCY a unit requires (D-003, P-005). Resolved at
+ * Cupboard install time (P-007) against `provides.events` across the pack
+ * catalog: an installed provider → satisfied, a Cupboard provider →
+ * installable, neither → HARD failure like an unresolvable tool dep — UNLESS
+ * `optional`, which marks a listen-if-present soft dep that never blocks.
+ */
+export interface ManifestEventDependency {
+  /** The provided family id this unit needs. */
+  family: string;
+  /** optional:true = listen-if-present soft dep (an unresolvable optional dep is non-blocking). */
+  optional?: boolean;
+}
+
+/** Unit-level provisions surfaced to the Cupboard catalog + dependency resolver (D-003). */
+export interface ManifestProvides {
+  /** Event-key families this unit provides. */
+  events?: ManifestProvidedEvent[];
+}
+
+/**
+ * Unit-level dependencies resolved at Cupboard install time against the host's
+ * pack catalog (same shape as a blueprint's `dependencies`; the JSON manifest
+ * has carried tools/packs/plugins since tool-distribution-granularity D-003).
+ * `events` (D-003, P-005) joins them.
+ */
+export interface ManifestDependencies {
+  tools?: string[];
+  packs?: string[];
+  plugins?: string[];
+  events?: ManifestEventDependency[];
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────
  * Plugin schema — Postgres DDL the plugin owns.
  * ───────────────────────────────────────────────────────────────────── */
 
@@ -857,6 +932,23 @@ export interface Plugin {
    * declarative subset) merge with these; on id collision the code rule wins.
    */
   reactions?: PluginReactionRule[];
+
+  /**
+   * Event-key families this unit PROVIDES — the provider half of the
+   * events-as-a-dependency axis (D-003, cupboard-public-release-2026-07-12
+   * P-005). Pure data: declaring is `kind:'pack'`-legal; emitting/reacting is
+   * runtime that rides a plugin. See {@link ManifestProvides}.
+   */
+  provides?: ManifestProvides;
+
+  /**
+   * Unit-level tool/pack/plugin/event dependencies, resolved at Cupboard
+   * install time against the host's pack catalog (mirrors a blueprint's
+   * `dependencies`; the JSON manifest has carried tools/packs/plugins for a
+   * while — the typed field surfaces them for `Plugin` literals too). The
+   * `events` axis is D-003 / P-005. See {@link ManifestDependencies}.
+   */
+  dependencies?: ManifestDependencies;
 
   /** Full-route UI mounted at /harness/<slug>. */
   ui?: UiContribution;
@@ -1338,4 +1430,75 @@ export function isWasmRuntime(rt: Pick<PluginRuntime, 'kind'> | undefined): bool
 /** True when the runtime is a subprocess daemon. */
 export function isDaemonRuntime(rt: Pick<PluginRuntime, 'kind'> | undefined): boolean {
   return rt?.kind === 'daemon';
+}
+
+/**
+ * Cross-field validation of a manifest's event declarations (D-003, P-005) —
+ * the semantic layer above the JSON schema's shape check. Pure; returns one
+ * human-readable issue string per problem (empty array = clean). Enforces the
+ * contract `buildKey` (operator-core events/await/catalog.ts) relies on, so a
+ * declared family can actually build concrete keys:
+ *   - `provides.events` family ids are non-empty and unique;
+ *   - every `<name>` placeholder in a `keyTemplate` has a matching `params`
+ *     entry, AND every declared param name appears as a `<name>` placeholder
+ *     (a typo either way would silently mis-build keys);
+ *   - `dependencies.events` family ids are non-empty.
+ *
+ * The provider RESOLUTION of a dependency (is family X available / installable
+ * / unknown?) is deliberately NOT checked here — that needs the host pack
+ * catalog and is the resolver's job (P-007).
+ */
+export function validateManifestEventDeclarations(manifest: {
+  provides?: { events?: ManifestProvidedEvent[] } | null;
+  dependencies?: { events?: ManifestEventDependency[] } | null;
+}): string[] {
+  const issues: string[] = [];
+
+  const provided = manifest.provides?.events ?? [];
+  const seen = new Set<string>();
+  provided.forEach((ev, i) => {
+    const at = `provides.events[${i}]`;
+    const family = typeof ev?.family === 'string' ? ev.family.trim() : '';
+    if (!family) {
+      issues.push(`${at} — missing family id`);
+    } else if (seen.has(family)) {
+      issues.push(`${at} — duplicate family "${family}" (family ids must be unique within provides.events)`);
+    } else {
+      seen.add(family);
+    }
+    const template = typeof ev?.keyTemplate === 'string' ? ev.keyTemplate : '';
+    if (!template) {
+      issues.push(`${at} — missing keyTemplate (family "${family || '?'}")`);
+      return;
+    }
+    const placeholders = new Set<string>();
+    for (const m of template.matchAll(/<([^<>]+)>/g)) placeholders.add(m[1]);
+    const declared = new Set<string>();
+    for (const p of ev?.params ?? []) {
+      const name = typeof p?.name === 'string' ? p.name : '';
+      if (name) declared.add(name);
+    }
+    for (const name of placeholders) {
+      if (!declared.has(name)) {
+        issues.push(
+          `${at} — keyTemplate placeholder "<${name}>" has no matching params entry (family "${family || '?'}")`,
+        );
+      }
+    }
+    for (const name of declared) {
+      if (!placeholders.has(name)) {
+        issues.push(
+          `${at} — params entry "${name}" does not appear as "<${name}>" in keyTemplate "${template}" (family "${family || '?'}")`,
+        );
+      }
+    }
+  });
+
+  const deps = manifest.dependencies?.events ?? [];
+  deps.forEach((dep, i) => {
+    const family = typeof dep?.family === 'string' ? dep.family.trim() : '';
+    if (!family) issues.push(`dependencies.events[${i}] — missing family id`);
+  });
+
+  return issues;
 }
