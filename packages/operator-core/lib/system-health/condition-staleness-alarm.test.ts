@@ -14,6 +14,7 @@ function mkState(over: Partial<ConditionState> = {}): ConditionState {
     from: 'system-watchdog',
     category: 'severe-event',
     first_seen: '2026-07-05T00:00:00.000Z',
+    open_since: '2026-07-05T00:00:00.000Z',
     last_seen: '2026-07-05T00:00:00.000Z',
     alarm_count: 1,
     latest_summary: 'git-sync stalled',
@@ -38,6 +39,39 @@ describe('evaluateStaleConditions (pure)', () => {
     expect(sigs[0].severity).toBe('advisory');
     expect(sigs[0].summary).toContain('60m');
     expect(sigs[0].summary).toContain('git-sync stalled');
+  });
+
+  it('EI-10653: a FLAPPING condition freshly reopened is judged by open_since, not first_seen', () => {
+    // first alarm 1967m ago (the reported symptom), but it recovered many times
+    // and only reopened 3m ago → open_since is recent → NOT stuck-open.
+    const now = Date.parse('2026-07-05T00:00:00.000Z');
+    const flapping = mkState({
+      condition_key: 'infra-liveness:panel:infra',
+      first_seen: new Date(now - 1967 * 60_000).toISOString(),
+      open_since: new Date(now - 3 * 60_000).toISOString(),
+      last_seen: new Date(now - 3 * 60_000).toISOString(),
+      resolved_at: new Date(now - 8 * 60_000).toISOString(),
+      alarm_count: 40,
+    });
+    // Anchoring on open_since (3m) → below the 45m stale bar → no reminder.
+    expect(evaluateStaleConditions([flapping], now, 45 * 60_000)).toEqual([]);
+    // Anchoring on the OLD first_seen would (wrongly) have fired — pin that the
+    // regression is real: same state, but if we pretend open_since == first_seen
+    // it does trip the bar.
+    expect(
+      evaluateStaleConditions([mkState({ ...flapping, open_since: flapping.first_seen })], now, 45 * 60_000),
+    ).toHaveLength(1);
+  });
+
+  it('EI-10653: a genuinely-stuck (never-recovered) condition still fires — open_since == first_seen', () => {
+    const now = Date.parse('2026-07-05T01:00:00.000Z'); // 60min continuously open
+    const stuck = mkState({
+      first_seen: '2026-07-05T00:00:00.000Z',
+      open_since: '2026-07-05T00:00:00.000Z',
+      last_seen: '2026-07-05T00:00:00.000Z',
+      resolved_at: null,
+    });
+    expect(evaluateStaleConditions([stuck], now, 45 * 60_000)).toHaveLength(1);
   });
 
   it('a RESOLVED condition never fires, regardless of age', () => {

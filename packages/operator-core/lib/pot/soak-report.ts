@@ -33,7 +33,23 @@ export interface BgHostJournalMetrics {
   restartCount: number;
   peakMemoryMb: number | null;
   highMemoryPeakCount: number;
+  /** null when the journal was read successfully. Otherwise WHY it could not be —
+   *  and the counts above are then zero for want of evidence, NOT because the host
+   *  was clean. computeSoakReport reds on this: a gate that cannot see restarts
+   *  must say so, never silently pass. */
+  journalError: string | null;
 }
+
+/** The journal lines the parsers below actually look for. They are ALSO handed to
+ *  `journalctl --grep` so the fetch only carries matching lines: this host's 24h
+ *  user journal is ~400MB, which blew execFile's maxBuffer, rejected the read, and
+ *  hit a catch that returned all-zeros — so the OOM/restart/memory criteria silently
+ *  reported CLEAN while bg-host had in fact restarted 9 times and peaked at 23.8GB.
+ *  Keeping the fetch filter and the parse patterns in one place is what stops the
+ *  two from drifting apart again. */
+export const BG_HOST_RESTART_PATTERN = 'Started papercup-bg-host\\.service';
+export const BG_HOST_OOM_PATTERN = 'OOM killer|FatalProcessOutOfMemory|ReportOOMFailure|Out of memory';
+export const BG_HOST_MEMORY_PEAK_PATTERN = 'memory peak';
 
 export interface RoleTurnSuccess {
   role: 'cup' | 'mug' | 'kettle';
@@ -149,33 +165,41 @@ function parseMemoryPeakMb(line: string): number | null {
 
 export function parseBgHostUnitJournal(text: string): BgHostJournalMetrics {
   const lines = text.split('\n').filter(Boolean);
+  const restartRe = new RegExp(BG_HOST_RESTART_PATTERN, 'i');
+  const oomRe = new RegExp(BG_HOST_OOM_PATTERN, 'i');
   let oomKillCount = 0;
   let restartCount = 0;
   let peakMemoryMb: number | null = null;
   let highMemoryPeakCount = 0;
   for (const line of lines) {
-    if (/Started papercup-bg-host\.service/i.test(line)) restartCount += 1;
-    if (/OOM killer|FatalProcessOutOfMemory|ReportOOMFailure|Out of memory/i.test(line)) oomKillCount += 1;
+    if (restartRe.test(line)) restartCount += 1;
+    if (oomRe.test(line)) oomKillCount += 1;
     const peakMb = parseMemoryPeakMb(line);
     if (peakMb != null) {
       peakMemoryMb = peakMemoryMb == null ? peakMb : Math.max(peakMemoryMb, peakMb);
       if (peakMb >= 3200) highMemoryPeakCount += 1;
     }
   }
-  return { oomKillCount, restartCount, peakMemoryMb, highMemoryPeakCount };
+  return { oomKillCount, restartCount, peakMemoryMb, highMemoryPeakCount, journalError: null };
 }
 
 export function parseBgHostGlobalJournal(text: string): number {
+  const oomRe = new RegExp(BG_HOST_OOM_PATTERN, 'i');
   return text
     .split('\n')
     .filter((line) => /papercup-bg-host|bg-host/i.test(line))
-    .filter((line) => /OOM killer|FatalProcessOutOfMemory|ReportOOMFailure|Out of memory/i.test(line)).length;
+    .filter((line) => oomRe.test(line)).length;
 }
 
 export function computeSoakReport(input: SoakReportInput): PotSoakReport {
   const reasons: string[] = [];
   if (!input.bgHost.tickerUp) {
     reasons.push(`bg-host ticker unhealthy${input.bgHost.tickerNote ? `: ${input.bgHost.tickerNote}` : ''}`);
+  }
+  // No journal ⇒ no OOM/restart evidence either way. Say so and red, rather than let
+  // the zeros below read as a clean bill of health the gate never actually verified.
+  if (input.bgHost.journalError) {
+    reasons.push(`bg-host journal unreadable — OOM/restart evidence unavailable (${input.bgHost.journalError})`);
   }
   if (input.bgHost.oomKillCount > 0) {
     reasons.push(`bg-host OOM evidence in window (${input.bgHost.oomKillCount})`);
@@ -287,18 +311,45 @@ function toMs(v: string | Date): number {
 
 async function readBgHostJournal(windowHours: number): Promise<BgHostJournalMetrics> {
   const since = `${windowHours} hours ago`;
+  // --grep server-side so only candidate lines cross the pipe (~3KB, not ~400MB).
+  const base = ['--user', '--since', since, '--no-pager', '--case-sensitive=false'];
+  const maxBuffer = 32 * 1024 * 1024;
   try {
     const [unit, global] = await Promise.all([
-      execFileAsync('journalctl', ['--user', '-u', 'papercup-bg-host.service', '--since', since, '--no-pager'], { maxBuffer: 8 * 1024 * 1024 }),
-      execFileAsync('journalctl', ['--user', '--since', since, '--no-pager'], { maxBuffer: 8 * 1024 * 1024 }),
+      execFileAsync(
+        'journalctl',
+        [
+          ...base,
+          '-u',
+          'papercup-bg-host.service',
+          '--grep',
+          [BG_HOST_RESTART_PATTERN, BG_HOST_OOM_PATTERN, BG_HOST_MEMORY_PEAK_PATTERN].join('|'),
+        ],
+        { maxBuffer },
+      ),
+      execFileAsync('journalctl', [...base, '--grep', BG_HOST_OOM_PATTERN], { maxBuffer }),
     ]);
     const parsed = parseBgHostUnitJournal(unit.stdout);
     return {
       ...parsed,
       oomKillCount: Math.max(parsed.oomKillCount, parseBgHostGlobalJournal(global.stdout)),
     };
-  } catch {
-    return { oomKillCount: 0, restartCount: 0, peakMemoryMb: null, highMemoryPeakCount: 0 };
+  } catch (err) {
+    // journalctl exits 1 when --grep matches nothing: that is a genuinely clean
+    // window, not a failed read. Anything else (missing binary, no user journal,
+    // maxBuffer) leaves the counts UNKNOWN, and journalError makes the gate say so.
+    const e = err as { code?: unknown; stdout?: unknown; stderr?: unknown };
+    if (e.code === 1 && !String(e.stderr ?? '').trim()) {
+      return { oomKillCount: 0, restartCount: 0, peakMemoryMb: null, highMemoryPeakCount: 0, journalError: null };
+    }
+    const why = String(e.stderr ?? '').trim() || (err as Error)?.message || 'journalctl read failed';
+    return {
+      oomKillCount: 0,
+      restartCount: 0,
+      peakMemoryMb: null,
+      highMemoryPeakCount: 0,
+      journalError: why.slice(0, 200),
+    };
   }
 }
 

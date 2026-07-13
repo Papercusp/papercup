@@ -108,6 +108,9 @@ function mapRun(r: Record<string, unknown>): RecallCanaryRun {
     baselineRAt10: num(r.baseline_r_at_10),
     delta: num(r.delta),
     zeroHitRate: num(r.zero_hit_rate),
+    // NULL on any run recorded before migration 590 (and on 'decayed' runs, which score nothing).
+    retrievalZeroHitRate: num(r.retrieval_zero_hit_rate),
+    retrievalRAt10: num(r.retrieval_r_at_10),
     latencyP50Ms: num(r.latency_p50_ms),
     status: String(r.status ?? 'ok') as RecallCanaryStatus,
     notes: r.notes == null ? null : String(r.notes),

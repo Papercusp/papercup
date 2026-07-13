@@ -68,6 +68,15 @@ const DEFAULT_INTERVAL_MS = 5 * 60_000;
  * PURE: which currently-OPEN conditions have been open longer than `staleMs`, as of `now`.
  * A condition already resolved (per computeConditionStates) never appears here, regardless
  * of how long it took to resolve — this alarm is only about conditions still stuck open.
+ *
+ * EI-10653: the "how long has it been open" clock anchors on `open_since` (the CURRENT open
+ * episode's start), NOT `first_seen` (the first-ever alarm). For a FLAPPING condition —
+ * one that fires, recovers, and re-fires repeatedly (e.g. `infra-liveness:panel:infra`) —
+ * first_seen stays pinned at the very first alarm forever, so anchoring on it reported a
+ * condition that had recovered many times and only just reopened as "OPEN for 1967m" — a
+ * misleading stuck-condition reminder for what was really a fresh flap. open_since gives
+ * the age of the current continuous open episode, so a freshly-reopened flap reads young
+ * (below staleMs) and only a genuinely-stuck condition trips the reminder.
  */
 export function evaluateStaleConditions(
   states: readonly ConditionState[],
@@ -77,9 +86,11 @@ export function evaluateStaleConditions(
   const out: StaleConditionSignal[] = [];
   for (const s of states) {
     if (!s.open) continue;
-    const firstSeenMs = Date.parse(s.first_seen);
-    if (!Number.isFinite(firstSeenMs)) continue;
-    const ageMs = now - firstSeenMs;
+    // Anchor on the current episode's start; fall back to first_seen only when a
+    // (legacy / partial) fold left open_since unset for an open condition.
+    const openSinceMs = Date.parse(s.open_since ?? s.first_seen);
+    if (!Number.isFinite(openSinceMs)) continue;
+    const ageMs = now - openSinceMs;
     if (ageMs <= staleMs) continue;
     out.push({
       key: `stale-condition:${s.condition_key}`,

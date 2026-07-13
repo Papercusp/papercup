@@ -118,6 +118,7 @@ export function computeConditionStates(
         category:
           typeof e["category"] === "string" ? (e["category"] as string) : null,
         first_seen: ts,
+        open_since: ts, // this alarm opens the first episode
         last_seen: ts,
         alarm_count: 1,
         latest_summary:
@@ -127,6 +128,9 @@ export function computeConditionStates(
       });
     } else {
       prev.alarm_count += 1;
+      // Re-open a resolved (closed) key: this alarm starts a new episode. While
+      // an episode is already open, keep its original start.
+      if (prev.open_since === null) prev.open_since = ts;
       if (ts < prev.first_seen) prev.first_seen = ts;
       if (ts >= prev.last_seen) {
         prev.last_seen = ts;
@@ -141,6 +145,11 @@ export function computeConditionStates(
   const out = [...byKey.values()];
   for (const s of out) {
     s.open = s.alarm_count > 0 && (!s.resolved_at || s.last_seen > s.resolved_at);
+    // Keep open_since consistent with the finalized open flag: a resolved
+    // condition carries no current episode; an open one always has a start
+    // (defensively fall back to last_seen if out-of-order folding left it null).
+    if (!s.open) s.open_since = null;
+    else if (s.open_since === null) s.open_since = s.last_seen;
   }
   // Open first, then most-recently-active first.
   out.sort((a, b) =>

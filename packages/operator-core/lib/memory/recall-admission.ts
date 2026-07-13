@@ -24,11 +24,18 @@
  * a caller-policy filter, not a property of recall.
  */
 
-/** The minimum shape a hit needs to run the gates. Callers keep their own richer types. */
+/**
+ * The minimum shape a hit needs to run the gates. Callers keep their own richer types (the
+ * generic preserves them through admission).
+ *
+ * `id`/`score` are `unknown` on purpose: these hits arrive off the wire from `memory:search`, so
+ * neither is guaranteed. The gates below typeof-CHECK before they compare — a hit with a
+ * non-numeric score must FAIL OPEN (admitted), never be silently floored on a bad cast.
+ */
 export interface AdmissibleHit {
-  id?: string;
+  id?: unknown;
   memory?: string;
-  score?: number;
+  score?: unknown;
 }
 
 /**

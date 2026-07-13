@@ -286,6 +286,31 @@ It was filed by the same agent, in the same session, that wrote this document.
 > Write the kill condition into the idea *at filing time*, when you are not yet invested in it. Then
 > run it first.
 
+### …and it was still lying in wait in the FIX (EI-10666)
+
+The remedy for "a gate's decision is not an event" is **measure at the consumer**: the memory recall
+canary was counting a zero-hit as *"the backend returned no rows"* (`top.length === 0`), which scores
+a HIT whenever a healthy retrieval is discarded downstream — it would have reported GREEN straight
+through EI-10372, where the backend returned 5 rows and orient's relevance floor dropped all 5. So
+the canary now runs its results through the **same admission gates orient runs**, from one shared
+module (`lib/memory/recall-admission.ts`), and alarms on what a consumer *received*.
+
+The obvious way to write that is to apply the relevance floor to the canary's hits. **That would
+re-create EI-10372 inside the canary.** The floor is `0.05`; a *healthy* hybrid response returns RRF
+scores on the 0.01–0.03 band (rank-1 both-legs ≈ 0.0328 — a strong hit). An unconditional floor
+discards every healthy hit, so the monitor built to detect the blackout would itself black out — and
+alarm forever, on a system that was fine. The floor is only correct **inside the degraded regime it
+was written for**, which is why it is regime-scoped in `orient` and why the canary has to carry the
+same scoping (`degradedRegime`, defaulting to healthy — never invent a degradation).
+
+> **A gate copied without its regime is a different gate.** When you instrument a decision, you have
+> to model the *conditions* under which it fires, not just the comparison it makes. Half a gate in a
+> monitor is not a monitor — it is the original bug with a pager attached.
+
+The general rule this leaves behind: the probe must call **the same code the consumer calls**, not a
+faithful-looking copy of it. A re-implemented pipeline drifts from the real one, and a canary that
+drifts goes green while production goes dark — which is Shape 4 again, wearing the costume of a fix.
+
 ## The meta-lesson, now earned three separate ways
 
 EI-10372 diagnosed the score-scale class **in its own bug body** and called for a follow-up. The

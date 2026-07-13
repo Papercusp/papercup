@@ -15,7 +15,24 @@ describe('parseBgHostUnitJournal', () => {
       restartCount: 2,
       peakMemoryMb: 6656,
       highMemoryPeakCount: 1,
+      journalError: null,
     });
+  });
+
+  it('parses the lines systemd actually emits (unit name + description suffix)', () => {
+    // Verbatim from `journalctl --user -u papercup-bg-host.service` on the dev host.
+    // The synthetic fixture above is trimmed to the bare message; production lines
+    // carry a timestamp/host/pid prefix AND a " - <Description>" suffix, so pin the
+    // real shape — the parser is worthless if it only matches the test's own strings.
+    const journal = [
+      'Jul 12 12:14:44 host systemd[4022]: papercup-bg-host.service: Consumed 20h 24min 15.394s CPU time, 23.8G memory peak, 0B memory swap peak.',
+      'Jul 12 12:14:44 host systemd[4022]: Started papercup-bg-host.service - Papercusp dedicated background host — DBOS routines/git-sync/substrate primary (P1-3).',
+    ].join('\n');
+
+    const parsed = parseBgHostUnitJournal(journal);
+    expect(parsed.restartCount).toBe(1);
+    expect(parsed.peakMemoryMb).toBe(24371);
+    expect(parsed.highMemoryPeakCount).toBe(1);
   });
 });
 
@@ -44,6 +61,7 @@ describe('computeSoakReport', () => {
         restartCount: 0,
         peakMemoryMb: 2048,
         highMemoryPeakCount: 0,
+        journalError: null,
         tickerUp: true,
         tickerNote: null,
       },
@@ -79,7 +97,7 @@ describe('computeSoakReport', () => {
       surveySlugs: ['papercusp'],
       windowHours: 24,
       generatedAtMs: Date.UTC(2026, 6, 2, 10, 0, 0),
-      bgHost: { oomKillCount: 0, restartCount: 0, peakMemoryMb: null, highMemoryPeakCount: 0, tickerUp: true, tickerNote: null },
+      bgHost: { oomKillCount: 0, restartCount: 0, peakMemoryMb: null, highMemoryPeakCount: 0, journalError: null, tickerUp: true, tickerNote: null },
       roleSuccess: [
         { role: 'cup', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
         { role: 'mug', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
@@ -117,6 +135,7 @@ describe('computeSoakReport', () => {
         restartCount: 2,
         peakMemoryMb: 8192,
         highMemoryPeakCount: 2,
+        journalError: null,
         tickerUp: false,
         tickerNote: 'ticker stale',
       },
@@ -158,5 +177,54 @@ describe('computeSoakReport', () => {
         'post-compaction error markers in window (3)',
       ]),
     );
+  });
+
+  it('an unreadable journal reds the gate — zero counts are NOT a clean bill of health', () => {
+    // The false-green this guards: readBgHostJournal used to swallow any journalctl
+    // failure and return all-zero counts, which the verdict read as "no OOMs, no
+    // restarts" — a PASS. On the dev host the read failed every single time (the 24h
+    // user journal is ~400MB, far past execFile's maxBuffer), so the gate reported a
+    // spotless bg-host while it had actually restarted 9 times and peaked at 23.8GB.
+    // Absent evidence must never masquerade as evidence of absence.
+    const report = computeSoakReport({
+      potSlug: 'papercusp',
+      surveyScope: 'members',
+      surveySlugs: ['papercusp'],
+      windowHours: 24,
+      generatedAtMs: Date.UTC(2026, 6, 2, 10, 0, 0),
+      bgHost: {
+        oomKillCount: 0,
+        restartCount: 0,
+        peakMemoryMb: null,
+        highMemoryPeakCount: 0,
+        journalError: 'stdout maxBuffer length exceeded',
+        tickerUp: true,
+        tickerNote: null,
+      },
+      roleSuccess: [
+        { role: 'cup', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
+        { role: 'mug', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
+        { role: 'kettle', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
+      ],
+      infraCurse: { placementsSeen: 10, infraCurses: 0, rate: 0 },
+      escalationBacklog: { openNow: 0, olderOpenCount: 0, newerOpenCount: 0, improving: true },
+      gateGreenRatio: { green: 5, total: 5, ratio: 1 },
+      deployLatency: { samples: 2, meanMs: 120000 },
+      contextBurn: {
+        loopWakes: 0,
+        meanWakeChars: null,
+        maxWakeChars: null,
+        estMeanWakeTokens: null,
+        requestedCompactions: 0,
+        sessionsCompacting: 0,
+        compactionsPerSession: null,
+        postCompactionErrorMarkers: 0,
+      },
+    });
+
+    expect(report.ready).toBe(false);
+    expect(report.reasons).toEqual([
+      'bg-host journal unreadable — OOM/restart evidence unavailable (stdout maxBuffer length exceeded)',
+    ]);
   });
 });

@@ -31,6 +31,10 @@ const okRun = {
   baselineRAt10: 0.9,
   delta: -0.01,
   zeroHitRate: 0,
+  // EI-10666: zeroHitRate is now measured AT THE CONSUMER; the retrieval-level pair is the
+  // diagnostic that says which layer went dark. Equal here — a healthy run, nothing gated.
+  retrievalZeroHitRate: 0,
+  retrievalRAt10: 0.89,
   latencyP50Ms: 120,
   status: 'ok' as const,
   notes: null,
