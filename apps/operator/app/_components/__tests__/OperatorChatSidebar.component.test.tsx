@@ -103,6 +103,30 @@ afterEach(() => {
   document.documentElement.style.removeProperty('--op-chat-w');
 });
 
+describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', () => {
+  // The operator-vite LeftSidebar injects an equal-specificity
+  // `body.has-left-sidebar { padding-left: calc(--op-chat-w + --left-sidebar-w) }`.
+  // Cascade order between the two <style> tags is NOT a contract, so THIS
+  // sidebar's shift rules must compute the identical full sum — an
+  // op-chat-only padding here puts the rail on top of the main pane
+  // (owner-reported overlap, 2026-07-13).
+  it('the injected shift rules compose --left-sidebar-w (and --dev-rail-w on the header width)', async () => {
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    const bodyRule = css.match(/body\.has-op-chat\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(bodyRule).toContain('var(--op-chat-w');
+    expect(bodyRule).toContain('var(--left-sidebar-w, 0px)');
+    const headerRule = css.match(/body\.has-op-chat \.pc-header\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(headerRule).toContain('var(--left-sidebar-w, 0px)');
+    expect(headerRule).toContain('var(--dev-rail-w, 0px)');
+  });
+});
+
 describe('OperatorChatSidebar collapse behavior', () => {
   it('collapses to a slim rail and can be expanded again', async () => {
     window.localStorage.setItem(wsLocalKey('papercusp.operatorChat.width'), '420');

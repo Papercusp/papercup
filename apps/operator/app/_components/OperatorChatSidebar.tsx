@@ -634,18 +634,33 @@ const OP_CHAT_SIDEBAR_CSS = `
    Pages with margin: auto centered content stay centered within the
    remaining space (the centering algorithm absorbs the loss into
    what used to be margin). Edge-to-edge pages may need their own
-   per-page padding tweaks. */
+   per-page padding tweaks.
+
+   ⚠ COMMUTATION CONTRACT (WI-4725): the LeftSidebar rail (operator-vite
+   left-sidebar.styles.ts) sets an equal-specificity body.has-left-sidebar
+   rule: padding-left: calc(--op-chat-w + --left-sidebar-w). When BOTH are
+   open, cascade order between the two independently-injected <style> tags
+   decides which rule applies — so BOTH rules must compute the IDENTICAL
+   full sum (each var defaults 0px when its surface is absent; the owning
+   component sets its var before adding its body class and removes it on
+   unmount). An op-chat-only padding-left: var(--op-chat-w) here silently
+   clobbers the rail's additive rule and the rail lands ON TOP of the main
+   pane (owner-reported overlap, 2026-07-13). Same for the .pc-header
+   width leg below. Keep the formulas in the two files in lockstep. */
 body.has-op-chat {
-  padding-left: var(--op-chat-w, 360px);
+  padding-left: calc(var(--op-chat-w, 360px) + var(--left-sidebar-w, 0px));
 }
 
-/* Only the global fixed header needs an explicit left/width offset.
+/* Only the global sticky header needs an explicit width clamp.
    The harness strip (.h-header) already sits inside body content, so the
    body padding-left above shifts it naturally; offsetting it again doubles
-   the shift and clips the right-side controls after chat mount / resize. */
+   the shift and clips the right-side controls after chat mount / resize.
+   Width must subtract EVERY docked rail (see the commutation contract
+   above) — 100vw minus only --op-chat-w over-widens by the rail width and
+   pushes the right-side nav off-viewport when the rail is open. */
 body.has-op-chat .pc-header {
   left: var(--op-chat-w, 360px);
-  width: calc(100vw - var(--op-chat-w, 360px));
+  width: calc(100vw - var(--op-chat-w, 360px) - var(--left-sidebar-w, 0px) - var(--dev-rail-w, 0px));
 }
 
 .op-chat-sidebar {
