@@ -405,13 +405,13 @@ describe('assembleRolePrompt — code-run note (code-execution-tool-orchestratio
     mockTools.length = 0;
     const { assembleRolePrompt } = await import('./prompt-assembly');
     const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
-    expect(out.text).toContain('## Collapse a multi-step tool flow into ONE `code:run`');
+    expect(out.text).toContain('## Optimize tool flows for MODEL turns — use parallel calls or one `code:run`');
     expect(out.text).toContain('round-trip');
     expect(out.text).toContain('SUMMARIZE CONSERVATIVELY');
-    // owner refinement 2026-06-23: the conscious "fewer calls?" token framing + the corrected
-    // bundle cutoff (judgment mid-flow, NOT data dependency).
-    expect(out.text).toContain('can I get this result in FEWER calls');
-    expect(out.text).toContain("NOT whether one call uses another's result");
+    // MODEL-turn refinement: the cost is MODEL inference turns, not raw RPC count; the corrected
+    // bundle cutoff (judgment mid-flow, NOT mere data dependency).
+    expect(out.text).toContain('Count MODEL inference turns, not raw tool/RPC calls');
+    expect(out.text).toContain('Mere data dependency is not judgment');
     expect(out.sections.some((s) => s.name === 'code-run-note')).toBe(true);
   });
 });
