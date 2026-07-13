@@ -33,6 +33,13 @@
  * without spam. FELT COST: the hint leads with the running round-trip count (the token cost an agent
  * never otherwise sees) — making the invisible cost visible in-loop is the lever prose can't pull.
  *
+ * TURNS, not raw calls (P-012, agent-operability-clarity-full-audit-2026-07-13): every trigger and
+ * every "N round-trips" figure in the hint text is keyed on distinct INFERENCE TURNS (see
+ * `clusterTurns`/`TURN_GAP_MS`), not on raw call counts. Several tool calls dispatched from ONE
+ * turn (parallel tool_use — exactly what the harness tells agents to do for independent calls) cost
+ * a single round-trip; counting them as N would nudge an agent AWAY from that best practice. Only a
+ * burst that actually SPANS multiple turns has a round-trip to save.
+ *
  * Cheap + safe by construction:
  *  - In-process only (no PG, no network): a per-session ring of recent {tool, at} + a small backoff
  *    counter. The hot path is a push + a window trim on the common call.
