@@ -45,7 +45,7 @@
  *      `spawn` keeps the event loop free so the servers can actually answer.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
+import { runHookProcess } from './spawn-hook';
 import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -84,22 +84,12 @@ function closeServer(server: http.Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-interface RunResult { status: number | null; stdout: string; stderr: string }
-
-/** Async child-process runner — see the file header for why this must NOT be `spawnSync`. */
-function runAsync(command: string, args: string[], opts: { input?: string; env: NodeJS.ProcessEnv }): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env: opts.env });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d; });
-    child.stderr.on('data', (d) => { stderr += d; });
-    child.on('error', reject);
-    child.on('close', (status) => resolve({ status, stdout, stderr }));
-    if (opts.input !== undefined) child.stdin.write(opts.input);
-    child.stdin.end();
-  });
-}
+/**
+ * Async child-process runner — see the file header for why this must NOT be `spawnSync`, and
+ * ./spawn-hook.ts for the second invariant it also owns (a hook may exit before it reads stdin,
+ * so EPIPE on the write is expected rather than a failure).
+ */
+const runAsync = runHookProcess;
 
 describe('cc-hooks — WI-710 live proxy-bypass mechanism proof', () => {
   const cleanups: Array<() => void | Promise<void>> = [];

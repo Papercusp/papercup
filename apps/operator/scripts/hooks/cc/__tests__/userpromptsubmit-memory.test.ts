@@ -10,10 +10,10 @@
  * input or the operator's health.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawn } from 'node:child_process';
 import { createServer, type Server, type IncomingMessage } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runHookProcess } from './spawn-hook';
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'userpromptsubmit-memory.sh');
 const SID = 'su-hook-test';
@@ -47,37 +47,27 @@ afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
 });
 
-// ASYNC spawn on purpose: the operator stub lives in THIS process, and a
-// spawnSync would block the event loop — the stub could never answer and
-// every server-hitting case would look like a hook-side timeout.
+// Async spawn + EPIPE-tolerant stdin: see ./spawn-hook.ts, which owns both invariants.
 function runHook(
   input: unknown,
   env: Record<string, string | undefined> = {},
 ): Promise<{ stdout: string; status: number | null }> {
-  return new Promise((resolvePromise) => {
-    const child = spawn('bash', [SCRIPT], {
-      env: Object.fromEntries(
-        Object.entries({
-          PATH: process.env.PATH,
-          HOME: process.env.HOME,
-          PAPERCUSP_SID: SID,
-          PAPERCUSP_OPERATOR_URL: baseUrl,
-          PAPERCUSP_WORKSPACE: 'ws-test',
-          PAPERCUSP_HARNESS_SLUG: 'papercusp',
-          // Never inherit real proxy env into the hermetic call.
-          http_proxy: undefined,
-          https_proxy: undefined,
-          ...env,
-        }).filter(([, v]) => v !== undefined),
-      ) as Record<string, string>,
-    });
-    let stdout = '';
-    child.stdout.on('data', (c) => {
-      stdout += String(c);
-    });
-    child.on('close', (status) => resolvePromise({ stdout, status }));
-    child.stdin.write(typeof input === 'string' ? input : JSON.stringify(input));
-    child.stdin.end();
+  return runHookProcess('bash', [SCRIPT], {
+    input: typeof input === 'string' ? input : JSON.stringify(input),
+    env: Object.fromEntries(
+      Object.entries({
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        PAPERCUSP_SID: SID,
+        PAPERCUSP_OPERATOR_URL: baseUrl,
+        PAPERCUSP_WORKSPACE: 'ws-test',
+        PAPERCUSP_HARNESS_SLUG: 'papercusp',
+        // Never inherit real proxy env into the hermetic call.
+        http_proxy: undefined,
+        https_proxy: undefined,
+        ...env,
+      }).filter(([, v]) => v !== undefined),
+    ) as Record<string, string>,
   });
 }
 
