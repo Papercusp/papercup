@@ -107,6 +107,32 @@ That is precisely the mechanism above, so the flake reddens **on purpose**.
 The lane aggregates and reports a **red-rate**, and exits non-zero if *any* repeat
 failed — so "it passed once" can never again be mistaken for "it passes".
 
+### Soak a SUITE, not a lone file — contention is the mechanism, not slowness
+
+The obvious way to build this lane is wrong, and it fails in the direction that
+makes you *confident*. Measured against the real pre-fix `MugTab` fixture:
+
+| config | red-rate |
+| --- | --- |
+| fixture **alone**, 2 pinned cores | **1/6** |
+| fixture **alone**, 1 pinned core (harsher!) | **0/6** |
+| fixture **with its siblings**, 2 pinned cores | see `--self-test` (the default) |
+
+Turning the starvation *up* on an isolated file made the flake **less** likely, not
+more. That falsifies the naive theory ("slow it down and races appear"). A lone test
+file has no parallel workers to compete with, so its event loop is *quiet*: the
+throttled timer always gets its turn before the assertion runs. It just executes
+slowly.
+
+**The parallel workers ARE the load.** The race needs a *congested* event loop, not a
+slow one — which is exactly why the original flake "passed in isolation, reddened in
+the full suite." So the lane points at a **directory/suite** by default (`--self-test`
+runs the fixture alongside its siblings); `--isolate` exists only for diagnosis.
+
+Generalize: when reproducing a timing bug, ask what the timer is *competing with*.
+Starving a lone process starves its competitors too, and can dissolve the very race
+you are hunting.
+
 Deliberately **not** used: `systemd-run` / cgroup CPU quotas. The agent host blocks
 them (native-scheduler lockout hook), and `taskset` needs no scheduler, no root, and
 no daemon.

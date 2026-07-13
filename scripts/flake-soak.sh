@@ -21,13 +21,26 @@
 # agent host blocks it (native-scheduler lockout hook), and taskset needs no
 # scheduler, no root, and no daemon.
 #
+# CONTENTION — SOAK A SUITE, NOT A LONE FILE. The starvation only produces the
+# race if there is something to contend WITH. Measured on the real pre-fix MugTab
+# flake: the fixture soaked ALONE on 2 pinned cores reddened just 1/6, while the
+# same flake reddened ~60% inside the full suite. The parallel workers ARE the
+# load — pinning a single-file run just makes it slow, not congested. So point
+# this lane at a DIRECTORY / suite (the default for --self-test), not one file,
+# or you will build a detector that confidently misses the bug it was made for.
+#
 # USAGE
 #   scripts/flake-soak.sh [options] [-- <vitest args...>]
 #     --repeats N      run the target N times            (default $FLAKE_SOAK_REPEATS or 6)
 #     --cores M        pin the run to M cores            (default $FLAKE_SOAK_CORES or 2)
 #     --cwd DIR        package dir holding node_modules  (default $FLAKE_SOAK_CWD or apps/operator-vite)
 #     --self-test F    run flakeproof fixture F and PASS iff it reddens (proves the
-#                      throttle can actually induce a load-flake — see below)
+#                      throttle can actually induce a load-flake — see below).
+#                      Runs F alongside its SIBLINGS (its directory) by default,
+#                      because the contention that produces the race comes from the
+#                      parallel workers — see CONTENTION below.
+#     --isolate        with --self-test: run the fixture ALONE (weaker; measured
+#                      1/6 red vs the suite's ~60% — kept only for diagnosis)
 #     -- <args>        everything after -- is passed through to `vitest run`
 #
 #   # soak a specific suspect suite 8x on 2 cores:
@@ -60,6 +73,7 @@ CORES="${FLAKE_SOAK_CORES:-2}"
 CWD="${FLAKE_SOAK_CWD:-apps/operator-vite}"
 NICE="${FLAKE_SOAK_NICE:-19}"
 SELFTEST_FIXTURE=""
+ISOLATE=0
 declare -a VITEST_ARGS=()
 
 # ---- arg parse -------------------------------------------------------------
@@ -70,6 +84,7 @@ while [ "$#" -gt 0 ]; do
     --cwd)     CWD="$2";     shift 2 ;;
     --nice)    NICE="$2";    shift 2 ;;
     --self-test) SELFTEST_FIXTURE="$2"; shift 2 ;;
+    --isolate)   ISOLATE=1; shift ;;
     --) shift; VITEST_ARGS+=("$@"); break ;;
     -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
     *) VITEST_ARGS+=("$1"); shift ;;
@@ -145,9 +160,21 @@ if [ -n "$SELFTEST_FIXTURE" ]; then
     *.flakeproof.test.tsx|*.flakeproof.test.ts) : ;;
     *) echo "flake-soak: --self-test fixture must be a *.flakeproof.test.tsx file" >&2; exit 2 ;;
   esac
-  banner "SELF-TEST (expect RED) $SELFTEST_FIXTURE" "$SELFTEST_FIXTURE"
+  # Run the fixture ALONGSIDE ITS SIBLINGS (its containing directory), not alone.
+  # This is not a detail — it is the difference between a detector that works and
+  # one that lies. The MugTab flake reddened ~60% in the FULL SUITE and ~0% in
+  # isolation, because the race needs a CONGESTED event loop: it is the parallel
+  # workers timesharing the pinned cores that delay the throttled nuqs flush past
+  # the remount. Soaking the fixture on its own starves it of exactly the
+  # contention that produces the bug — measured 1/6 alone vs. the suite's real
+  # ~60%. `--isolate` restores the (weaker) fixture-only run.
+  local_target="$SELFTEST_FIXTURE"
+  if [ "$ISOLATE" -eq 0 ]; then
+    local_target="$(dirname "$SELFTEST_FIXTURE")"
+  fi
+  banner "SELF-TEST (expect RED) $SELFTEST_FIXTURE" "$local_target"
   for i in $(seq 1 "$REPEATS"); do
-    if run_once "FLAKE_SOAK_SELFTEST=1" "$SELFTEST_FIXTURE"; then
+    if run_once "FLAKE_SOAK_SELFTEST=1" "$local_target"; then
       RESULTS+=("PASS"); pass=$((pass+1)); printf "  run %2d/%d  PASS\n" "$i" "$REPEATS"
     else
       RESULTS+=("FAIL"); fail=$((fail+1)); printf "  run %2d/%d  \033[31mFAIL\033[0m\n" "$i" "$REPEATS"

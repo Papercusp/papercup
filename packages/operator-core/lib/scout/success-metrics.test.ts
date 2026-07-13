@@ -286,21 +286,33 @@ describe('evaluateProgramSuccess — lens diversity (D-004, WI-4482)', () => {
 
 describe('evaluateProgramSuccess — verdict roll-up', () => {
   it('only a fully-passing gate closes the program', () => {
+    // Two ideas spanning two lenses: a fully-green gate must ALSO satisfy the D-004
+    // lens-diversity bar (WI-4482), which a single-lens fixture cannot.
     const r = evaluateProgramSuccess(
       inputs(
-        [ranTick({ ideasRouted: 1, detail: { cycleId: 'c1', signalScore: 30 } })],
+        [ranTick({ ideasRouted: 2, detail: { cycleId: 'c1', signalScore: 30 } })],
         [
           idea({
+            ideaId: 'i-analogical',
+            lens: 'analogical' as unknown as RoutedIdeaProvenance['lens'],
             addressesPatternRefs: ['rubric:su-agent-behavior/tool-discipline'],
             humanGrade: 5,
             humanFeedback: 'ship it',
+            gradedBy: 'owner',
+          }),
+          idea({
+            ideaId: 'i-reframing',
+            lens: 'reframing' as unknown as RoutedIdeaProvenance['lens'],
+            addressesPatternRefs: ['rubric:su-agent-behavior/tool-discipline'],
+            humanGrade: 4,
+            humanFeedback: 'also good',
             gradedBy: 'owner',
           }),
         ],
       ),
     );
     expect(r.verdict).toBe('pass');
-    expect(r.passed).toBe(5);
+    expect(r.passed).toBe(6);
     expect(r.failed + r.unknown).toBe(0);
   });
 
@@ -326,7 +338,8 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
     const r = evaluateProgramSuccess(inputs([], []));
     expect(r.verdict).toBe('incomplete');
     expect(r.failed).toBe(0);
-    expect(r.unknown).toBe(5);
+    // Every bar (incl. lens-diversity) is unknown on an empty window — nothing certifies.
+    expect(r.unknown).toBe(6);
   });
 });
 
