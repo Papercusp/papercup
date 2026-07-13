@@ -147,7 +147,7 @@ export async function assertRoute(
       ok: false,
       code: 'route_mismatch',
       error: `Route mismatch: expected ${String(expectedRoute)}, got ${route.value.pathname}${route.value.search}`,
-      evidence: route.value,
+      evidence: { ...route.value },
     };
   }
   return route;
@@ -178,7 +178,7 @@ export async function assertScope(
         ok: false,
         code: 'scope_mismatch',
         error: `Scope mismatch: expected ${key}=${String(expectedValue)}, got ${String(scope.value[key as keyof ScopeInfo])}`,
-        evidence: scope.value,
+        evidence: { ...scope.value },
       };
     }
   }

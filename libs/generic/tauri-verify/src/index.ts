@@ -89,7 +89,7 @@ export function createVerifier(config?: VerifyConfig): Verifier {
         ok: false,
         code: 'screen_route_mismatch',
         error: `Screen ${screenId} does not match ${route.value.pathname}${route.value.search}`,
-        evidence: route.value,
+        evidence: { ...route.value },
       };
     }
     const selectors = JSON.stringify(screen.requiredElements ?? []);
