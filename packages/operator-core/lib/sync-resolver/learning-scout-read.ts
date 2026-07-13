@@ -45,6 +45,39 @@ export interface ScoutTickSummary {
   detail: string | null;
 }
 
+/**
+ * One tick's economics for the Ideas-view strip (learning-tab-alignment-2026-07-13
+ * P-002): stop reason, spend, the generated→routed funnel, and the per-cycle lens
+ * mix. The 17-day WI-4482 single-lens collapse and the budget-exhausted+0-routed
+ * starvation both lived exactly in these columns, invisibly — this shape makes the
+ * tick ledger's economics a first-class UI read (same rows quality-metrics and
+ * blender:success-metrics judge from, D-001: no parallel derivation).
+ */
+export interface ScoutTickEconomics {
+  /** ISO timestamp of the tick. */
+  at: string | null;
+  /** ran | gated | error (migration 208 `status`). */
+  status: string | null;
+  /**
+   * Why the tick ended: a ran cycle's `detail.stop` ('completed' |
+   * 'budget-exhausted' | …), a gated tick's gate name ('min-interval' |
+   * 'no-trigger' | 'circuit'), or a short error summary for error ticks.
+   */
+  stop: string | null;
+  /** Ideas the ideators produced (0 for gated ticks). */
+  generated: number;
+  /** Routed-ledger provenance rows persisted (the funnel's right side). */
+  routed: number;
+  /** Ideas the critics pruned — scored − survivors. */
+  deduped: number;
+  /** LLM spend of the cycle (USD), when recorded. */
+  spendUsd: number | null;
+  /** The cycle id (`detail.cycleId`) — joins this tick to its routed-ledger rows. */
+  cycleId: string | null;
+  /** Lens → routed-count for THIS tick's cycle (joined by cycle_id; empty when none routed). */
+  lenses: Record<string, number>;
+}
+
 /** One routed idea, as the Scout view lists it (the ledger row, UI-shaped). */
 export interface ScoutRoutedItem {
   ideaId: string;
@@ -74,6 +107,12 @@ export interface ScoutSnapshot {
   recent: ScoutRoutedItem[];
   /** Newest scout tick, or null when none recorded (or the table doesn't exist yet). */
   lastTick: ScoutTickSummary | null;
+  /**
+   * Tick-economics strip (learning-tab-alignment P-002): the newest scout ticks,
+   * newest-first, with stop reason / spend / generated→routed funnel / lens mix.
+   * Empty when the ledger is missing or empty — best-effort like `lastTick`.
+   */
+  ticks: ScoutTickEconomics[];
   /**
    * Current persisted per-lens sampling weights (`scout_lens_weights`, written
    * by refreshScoutOutcomes) — the steering the grades feed (C-1c / P-007).
@@ -127,6 +166,43 @@ export function normalizeScoutTick(row: Record<string, unknown> | null | undefin
   };
 }
 
+const toCount = (v: unknown): number => {
+  const n = typeof v === 'string' ? Number(v) : v;
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+};
+
+/**
+ * Map one scout_ticks row into the economics-strip shape (P-002). `stop` prefers
+ * the ran cycle's `detail.stop`, then a gated tick's gate name, then a bounded
+ * error summary — mirroring how the tick recorder writes each status. Lens
+ * counts are joined separately (by cycleId) and start empty here.
+ */
+export function normalizeTickEconomics(row: Record<string, unknown>): ScoutTickEconomics {
+  const detailObj =
+    row.detail && typeof row.detail === 'object' && !Array.isArray(row.detail)
+      ? (row.detail as Record<string, unknown>)
+      : null;
+  const status = firstString(row, ['status']);
+  const errText = detailObj ? firstString(detailObj, ['error', 'reason']) : null;
+  const stop =
+    (detailObj ? firstString(detailObj, ['stop']) : null) ??
+    firstString(row, ['gate']) ??
+    (status === 'error' && errText ? errText.slice(0, 120) : null);
+  const spend = row.budget_used_usd == null ? null : Number(row.budget_used_usd);
+  const cycleId = detailObj ? firstString(detailObj, ['cycleId']) : null;
+  return {
+    at: toIso(row.tick_at ?? row.ticked_at ?? row.created_at ?? row.at),
+    status,
+    stop,
+    generated: toCount(row.ideas_generated),
+    routed: toCount(row.ideas_routed),
+    deduped: toCount(row.ideas_deduped),
+    spendUsd: spend != null && Number.isFinite(spend) ? spend : null,
+    cycleId,
+    lenses: {},
+  };
+}
+
 /** Routed-ideas-by-rail + last tick for one workspace. */
 export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<ScoutSnapshot> {
   const rails = (await sql`
@@ -168,17 +244,44 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
 
   // scout_ticks lands with P-034 (a peer owns the migration); until then — and
   // under any column-shape drift — omit the tick half rather than failing the
-  // routed-ideas half.
+  // routed-ideas half. P-002 widens this leg from LIMIT 1 to the newest 12 rows
+  // (the tick-economics strip); `lastTick` stays derived from row 0 so existing
+  // consumers keep their shape.
   let lastTick: ScoutTickSummary | null = null;
+  let ticks: ScoutTickEconomics[] = [];
   try {
-    const ticks = (await sql`
+    const tickRows = (await sql`
       SELECT * FROM harness_shared.scout_ticks
        WHERE workspace_id = ${workspaceId}
          AND origin = 'scout'
        ORDER BY tick_at DESC
-       LIMIT 1
+       LIMIT 12
     `) as Array<Record<string, unknown>>;
-    lastTick = normalizeScoutTick(ticks[0]);
+    lastTick = normalizeScoutTick(tickRows[0]);
+    ticks = tickRows.map(normalizeTickEconomics);
+    // Lens chips: join each ran tick's cycle to its routed-ledger rows. Same
+    // ledger the funnel's `routed` count claims to summarize — so a mismatch is
+    // VISIBLE here (the WI-4476 reconcile class), not papered over.
+    const cycleIds = [...new Set(ticks.map((t) => t.cycleId).filter((c): c is string => !!c))];
+    if (cycleIds.length > 0) {
+      const lensRows = (await sql`
+        SELECT cycle_id, lens, count(*)::int AS count
+          FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${workspaceId}
+           AND cycle_id IN ${sql(cycleIds)}
+         GROUP BY cycle_id, lens
+      `) as Array<Record<string, unknown>>;
+      const byCycle = new Map<string, Record<string, number>>();
+      for (const r of lensRows) {
+        const cid = typeof r.cycle_id === 'string' ? r.cycle_id : '';
+        const lens = typeof r.lens === 'string' && r.lens ? r.lens : 'unknown';
+        if (!cid) continue;
+        const bucket = byCycle.get(cid) ?? {};
+        bucket[lens] = (bucket[lens] ?? 0) + Number(r.count ?? 0);
+        byCycle.set(cid, bucket);
+      }
+      ticks = ticks.map((t) => (t.cycleId && byCycle.has(t.cycleId) ? { ...t, lenses: byCycle.get(t.cycleId)! } : t));
+    }
   } catch (err) {
     if (!isUndefinedTable(err)) {
       console.warn('[learning.scout] tick read failed:', err instanceof Error ? err.message : err);
@@ -199,5 +302,5 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
-  return { totalRouted, railCounts, recent, lastTick, lensWeights };
+  return { totalRouted, railCounts, recent, lastTick, ticks, lensWeights };
 }

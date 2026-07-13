@@ -277,7 +277,12 @@ export default defineTool({
           includeObservations: args.includeObservations === true,
           limit: args.limit ?? null,
         },
-        tags: ["harness_features_consolidated"],
+        // WI-4491: tag with the base TABLE `work_items` (the emit_change_notify producer,
+        // bumped on EVERY work-item write), NOT the compat VIEW `harness_features_consolidated`
+        // (relkind 'v' post-mig-374 — emits no `.changed`, so tagging it left this list
+        // TTL-only-invalidated and serving stale backlogs after a write). Table-level is
+        // correct for a list read: any work-item write can change the result set.
+        tags: ["work_items"],
         softTtlMs: WORK_ITEMS_LIST_SOFT_TTL_MS,
       },
       async () => {

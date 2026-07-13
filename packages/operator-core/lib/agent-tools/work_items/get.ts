@@ -19,10 +19,28 @@ import { getWorkItemCheckpointWithMeta } from "../../work-item-checkpoint";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
- * A per-id entry is tagged with BOTH the unified table AND harness_features_consolidated:<id>,
- * so the data-model generic-notify fix's per-row .changed bump invalidates exactly that
- * item on a write. The short soft TTL backstops the un-tagged dimensions a detail read
- * folds in (topics / thread posts / links). Not on the claim hot path (D-004-safe).
+ *
+ * WI-4491: the cache tag MUST be the base TABLE that carries the emit_change_notify
+ * trigger — `work_items` — NOT a compat view. mig-374 renamed the base table
+ * `harness_features_consolidated` -> `work_items` and folded engineer_issues into it;
+ * `harness_features_consolidated` / `engineer_issues` are now relkind 'v' VIEWS that
+ * CANNOT carry a row trigger, so a write NEVER emits `<view>.changed` — it always fires
+ * `harness_shared.work_items.changed`. This tool used to tag with the stale VIEW name
+ * `harness_features_consolidated`, so NEITHER of its tags was ever bumped by a write:
+ * the entry was invalidated by nothing but TTL, and a read-after-write returned the
+ * pre-write row (proven live, WI-4508 repro — a create→update→get served the stale body
+ * while Postgres held the new one). Tag with `work_items` (table-level) — bumped on
+ * EVERY work-item write — as the read-your-writes correctness floor.
+ *
+ * The `work_items:<id>` row tag is kept for PRECISE per-row invalidation, but it only
+ * fires once emit_change_notify emits the row PK for this table: `work_items` keys on
+ * `feature_id` (no `id` column), and the trigger currently reads `to_jsonb(row)->'id'`
+ * (JSON null here), so the row tag is presently inert and correctness rides the table
+ * tag. Restoring the row PK emission (COALESCE ->'id', ->'feature_id') is tracked as a
+ * separate defect (row-level tag dead for work_items + sync-bridge per-row scoping);
+ * until it lands the table tag is what guarantees correctness. The short soft TTL
+ * backstops the un-tagged dimensions a detail read folds in (topics / thread posts /
+ * links). Not on the claim hot path (D-004-safe).
  */
 const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
 
@@ -75,8 +93,12 @@ export default defineTool({
       ids,
       async (id) => {
         // Cache the per-id read (cache-expensive-tool-reads P-005). Tagged with the
-        // unified table + the per-row tag so a write to THIS item invalidates exactly
-        // its entry. Not-found is NOT cached (cacheEmpty default false) — a just-created
+        // base TABLE `work_items` (the trigger producer — bumped on EVERY work-item
+        // write, so a read-after-write is never stale) + the per-row tag `work_items:<id>`
+        // (precise once the trigger emits this table's row PK — see the note above; inert
+        // but harmless until then). NOT the compat VIEW name (WI-4491 — a view emits no
+        // .changed, so tagging it left the entry TTL-only-invalidated → read-your-writes
+        // staleness). Not-found is NOT cached (cacheEmpty default false) — a just-created
         // item must surface immediately, and a miss is cheap to recompute.
         const workItem = await cachedRead(
           ctx as CachedReadCtx,
@@ -87,10 +109,7 @@ export default defineTool({
               harness: args.harness ?? null,
               detail: args.detail === true,
             },
-            tags: [
-              "harness_features_consolidated",
-              `harness_features_consolidated:${id}`,
-            ],
+            tags: ["work_items", `work_items:${id}`],
             softTtlMs: WORK_ITEMS_GET_SOFT_TTL_MS,
           },
           () =>
