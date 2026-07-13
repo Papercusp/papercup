@@ -228,6 +228,17 @@ export interface GracefulShutdownOpts {
   isSaturated?: () => boolean;
   /** Forwarded to gracefulHostRecycle (hard-exit backstop). */
   hardExitMs?: number;
+  /**
+   * Forwarded to gracefulHostRecycle. When true, the process SIGKILLs itself
+   * AFTER the HTTP/substrate drain instead of calling process.exit(), so Node's
+   * native environment teardown cannot fire the WI-3849 Napi::Error abort.
+   * The supervising service is already stopping/restarting and the OS reclaims
+   * every remaining native resource. Default false for library callers; the
+   * operator host enables it for every real process-exit path.
+   */
+  hardExitOnRecycle?: boolean;
+  /** Test seam for hardExitOnRecycle; forwarded to gracefulHostRecycle. */
+  killSelf?: () => void;
   /** Test seam — defaults to console.log. */
   log?: (msg: string) => void;
 }
@@ -265,6 +276,8 @@ export function installGracefulShutdown(opts: GracefulShutdownOpts): void {
       closeSubstrate: opts.closeSubstrate,
       isSaturated: opts.isSaturated,
       hardExitMs: opts.hardExitMs,
+      hardExitOnRecycle: opts.hardExitOnRecycle,
+      killSelf: opts.killSelf,
     });
   };
 

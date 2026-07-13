@@ -372,8 +372,16 @@ function startRequestServers(): void {
   // stop, not the non-zero recycle code). The true-cluster PRIMARY serves no HTTP and
   // keeps its own worker-draining handler (gated to cluster mode below). Kill-switch:
   // PAPERCUSP_SIGTERM_DRAIN=0 restores Node's default immediate exit.
+  // WI-3849 recurrence (2026-07-13): process.exit() itself runs Node's native
+  // environment teardown, where onnxruntime/node-pty/sharp can throw an uncaught
+  // Napi::Error. The staging host reproduced it on a routine sanctioned restart
+  // and remained in do_exit past TimeoutStopSec. Drain first, then SIGKILL self:
+  // no native teardown runs and systemd already owns the restart.
   if (process.env.PAPERCUSP_SIGTERM_DRAIN !== '0') {
-    installGracefulShutdown({ server: server as { close?: (cb?: () => void) => void } });
+    installGracefulShutdown({
+      server: server as { close?: (cb?: () => void) => void },
+      hardExitOnRecycle: true,
+    });
   }
 
   // infra-self-healing-supervision-2026-06-19 (R4-2/R4-3/R4-4/R4-8): request-path
@@ -416,6 +424,9 @@ function startRequestServers(): void {
       gracefulHostRecycle({
         server: server as { close?: (cb?: () => void) => void },
         recycleExitCode: code,
+        // WI-3849: lag-recycle is another full process exit. Avoid the same
+        // Node native env teardown that aborts on SIGTERM/memory recycle.
+        hardExitOnRecycle: true,
       });
     },
   });
@@ -548,7 +559,11 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
     watchdog?.stop(); // stop watching first so it doesn't fight the graceful drain
     bootedHandlesBroadcaster?.stop();
     clusterHandle.drain?.(sig);
-    setTimeout(() => process.exit(0), 2000).unref?.();
+    // WI-3849: the primary loads the same native modules as workers. Calling
+    // process.exit() after worker drain still runs their hazardous env teardown;
+    // SIGKILL after the bounded drain leaves cleanup to the OS/systemd and cannot
+    // throw through node-addon-api.
+    setTimeout(() => process.kill(process.pid, 'SIGKILL'), 2000).unref?.();
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

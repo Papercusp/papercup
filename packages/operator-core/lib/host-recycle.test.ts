@@ -428,6 +428,33 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
     warnSpy.mockRestore();
   });
+
+  it('can drain SIGTERM and then hard-exit without running Node native teardown', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const exit = vi.fn();
+    const killSelf = vi.fn();
+    const closeSubstrate = vi.fn(() => Promise.resolve());
+    const { server, drain } = makeServer();
+    const { on, fire } = fakeSignals();
+
+    installGracefulShutdown({
+      server,
+      on,
+      exit,
+      killSelf,
+      closeSubstrate,
+      hardExitOnRecycle: true,
+    });
+    fire('SIGTERM');
+    expect(killSelf).not.toHaveBeenCalled();
+    drain();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(closeSubstrate).toHaveBeenCalledTimes(1);
+    expect(killSelf).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 // WI-3849: arms Node's diagnostic-report-on-SIGABRT so the next native
