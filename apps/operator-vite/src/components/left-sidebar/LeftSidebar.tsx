@@ -6,7 +6,8 @@
  *
  * Architecture mirrors the proven DevAdminRail (dev-admin-sidebar-2026-06-05):
  *   - DOCKED, not floating — reserves layout space (body.has-left-sidebar
- *     padding-left + --left-sidebar-w) so the app shifts right.
+ *     padding-left + --left-sidebar-w) so the app shifts right; sits AFTER the
+ *     op-chat sidebar (offset by --op-chat-w).
  *   - Collapses to a thin icon rail (the three tab icons — clicking one
  *     expands straight into that tab), never disappears.
  *   - Drag-resizable from its RIGHT edge, width persisted per-workspace.
@@ -193,9 +194,14 @@ export default function LeftSidebar() {
     };
   }, []);
 
-  // Drag-to-resize from the RIGHT edge: the rail is docked at left: 0, so its
-  // width is just the pointer's clientX.
+  // Drag-to-resize from the RIGHT edge: the rail starts at --op-chat-w, so its
+  // width is clientX minus that left offset.
   const draggingRef = useRef(false);
+  const leftOffset = () => {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--op-chat-w');
+    const n = Number.parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+  };
   const onHandleDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = true;
     (e.target as Element).setPointerCapture?.(e.pointerId);
@@ -204,7 +210,7 @@ export default function LeftSidebar() {
   }, []);
   const onHandleMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
-    setWidth(clampWidth(e.clientX, window.innerWidth));
+    setWidth(clampWidth(e.clientX - leftOffset(), window.innerWidth));
   }, []);
   const onHandleUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = false;

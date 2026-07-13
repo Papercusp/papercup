@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import {
   CONTROL_ANCHOR_MAX_TOKENS,
+  CONTROL_TRANSITION_MAX_TOKENS,
+  CONTROL_TRANSITION_SCHEMA,
+  decideControlTransitionDelivery,
   estimateControlAnchorTokens,
   normalizeControlAnchorState,
   persistControlAnchor,
@@ -41,6 +44,7 @@ function inMemoryPersistSql() {
       control_generation: generation,
       control_state: current,
       control_updated_at: updatedAt,
+      control_transition: null,
     }];
   }) as unknown as Sql;
   return sql;
@@ -100,5 +104,81 @@ describe('compact durable CTRL anchor', () => {
     expect(anchor.provenance.source).toBe('harness_shared.session_briefs.control_state');
     expect(anchor.budget.estimatedTokens).toBe(estimateControlAnchorTokens(anchor));
     expect(anchor.budget.estimatedTokens).toBeLessThanOrEqual(CONTROL_ANCHOR_MAX_TOKENS);
+  });
+
+  it('delivers only an exact next-generation transition and preserves mutation provenance', () => {
+    const transition = {
+      schemaVersion: CONTROL_TRANSITION_SCHEMA,
+      previousGeneration: 4,
+      generation: 5,
+      state: state({ carry: 'cold' }),
+      provenance: {
+        origin: 'owner' as const,
+        actorId: 'su-x',
+        source: 'mode:set' as const,
+        ownerDirected: true,
+        recordedAt: '2026-07-13T18:01:00.000Z',
+      },
+      resync: {
+        verb: 'coord:orient' as const,
+        args: { afterCompaction: true as const },
+        rule: 'replace-full-never-merge-behind' as const,
+      },
+    };
+    const delivery = decideControlTransitionDelivery({
+      ownerId: 'su-x',
+      deliveredGeneration: 4,
+      generation: 5,
+      state: transition.state,
+      transition,
+      updatedAt: transition.provenance.recordedAt,
+    });
+    expect(delivery).toMatchObject({
+      kind: 'transition',
+      reason: 'next-generation',
+      previousGeneration: 4,
+      generation: 5,
+      provenance: { origin: 'owner', actorId: 'su-x', ownerDirected: true },
+    });
+    expect(delivery.budget.estimatedTokens).toBeLessThanOrEqual(CONTROL_TRANSITION_MAX_TOKENS);
+  });
+
+  it('rejects generation-behind payloads and full-resyncs from current anchor state', () => {
+    const current = state({ carry: 'cold', modes: ['auto'] });
+    const stale = {
+      schemaVersion: CONTROL_TRANSITION_SCHEMA,
+      previousGeneration: 2,
+      generation: 3,
+      state: state({ carry: 'warm', modes: ['ideate'] }),
+      provenance: {
+        origin: 'agent' as const,
+        actorId: 'su-old',
+        source: 'loop:arm' as const,
+        ownerDirected: false,
+        recordedAt: '2026-07-13T18:00:00.000Z',
+      },
+      resync: {
+        verb: 'coord:orient' as const,
+        args: { afterCompaction: true as const },
+        rule: 'replace-full-never-merge-behind' as const,
+      },
+    };
+    const delivery = decideControlTransitionDelivery({
+      ownerId: 'su-x',
+      deliveredGeneration: 2,
+      generation: 5,
+      state: current,
+      transition: stale,
+      updatedAt: '2026-07-13T18:02:00.000Z',
+    });
+    expect(delivery).toMatchObject({
+      kind: 'full-resync',
+      reason: 'generation-mismatch',
+      previousGeneration: 2,
+      generation: 5,
+      state: { carry: 'cold', modes: ['auto'] },
+      provenance: { origin: 'system', source: 'control-anchor:reconcile' },
+    });
+    expect(delivery.state).not.toEqual(stale.state);
   });
 });

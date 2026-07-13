@@ -17,8 +17,10 @@ import { latestFleetMembership } from '../../fleet-membership-store';
 import { getSessionBrief } from '../../session-brief';
 
 export const CONTROL_ANCHOR_SCHEMA = 'ctrl-v1' as const;
+export const CONTROL_TRANSITION_SCHEMA = 'ctrl-transition-v1' as const;
 /** D-008: duplication is allowed only under a measured, enforced budget. */
 export const CONTROL_ANCHOR_MAX_TOKENS = 384;
+export const CONTROL_TRANSITION_MAX_TOKENS = 384;
 const MAX_SCOPE_ITEMS = 12;
 const MAX_ID_CHARS = 120;
 
@@ -57,10 +59,40 @@ export interface ControlAnchor {
   budget: { estimatedTokens: number; maxTokens: number };
 }
 
+export type ControlTransitionOrigin = 'owner' | 'agent' | 'system';
+
+export interface ControlTransitionProvenance {
+  origin: ControlTransitionOrigin;
+  actorId: string;
+  source: 'mode:set' | 'loop:arm' | 'loop:end' | 'fleet:membership' | 'control-anchor:reconcile';
+  ownerDirected: boolean;
+  recordedAt: string;
+}
+
+export interface ControlTransition {
+  schemaVersion: typeof CONTROL_TRANSITION_SCHEMA;
+  previousGeneration: number;
+  generation: number;
+  state: ControlAnchorState;
+  provenance: ControlTransitionProvenance;
+  resync: {
+    verb: 'coord:orient';
+    args: { afterCompaction: true };
+    rule: 'replace-full-never-merge-behind';
+  };
+}
+
+export interface ControlTransitionDelivery extends ControlTransition {
+  kind: 'transition' | 'full-resync';
+  reason: 'next-generation' | 'missing-transition' | 'schema-mismatch' | 'generation-mismatch';
+  budget: { estimatedTokens: number; maxTokens: number };
+}
+
 interface PersistedControlAnchor {
   generation: number;
   state: ControlAnchorState;
   updatedAt: string;
+  transition: ControlTransition | null;
 }
 
 interface ScopeClaimRow {
@@ -106,6 +138,91 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
 /** Conservative token estimate used only for the hard compactness budget. */
 export function estimateControlAnchorTokens(value: unknown): number {
   return Math.ceil(Buffer.byteLength(JSON.stringify(value), 'utf8') / 4);
+}
+
+const TRANSITION_RESYNC = {
+  verb: 'coord:orient' as const,
+  args: { afterCompaction: true as const },
+  rule: 'replace-full-never-merge-behind' as const,
+};
+
+function defaultTransitionProvenance(ownerId: string): ControlTransitionProvenance {
+  return {
+    origin: 'system',
+    actorId: ownerId,
+    source: 'control-anchor:reconcile',
+    ownerDirected: false,
+    recordedAt: new Date().toISOString(),
+  };
+}
+
+export function renderControlTransitionDelivery(
+  input: Omit<ControlTransitionDelivery, 'budget'>,
+): ControlTransitionDelivery {
+  const base = {
+    ...input,
+    state: normalizeControlAnchorState(input.state),
+  };
+  let estimatedTokens = estimateControlAnchorTokens({
+    ...base,
+    budget: { estimatedTokens: 0, maxTokens: CONTROL_TRANSITION_MAX_TOKENS },
+  });
+  estimatedTokens = estimateControlAnchorTokens({
+    ...base,
+    budget: { estimatedTokens, maxTokens: CONTROL_TRANSITION_MAX_TOKENS },
+  });
+  if (estimatedTokens > CONTROL_TRANSITION_MAX_TOKENS) {
+    throw new Error(
+      `control_transition_budget_exceeded: ${estimatedTokens} > ${CONTROL_TRANSITION_MAX_TOKENS} tokens`,
+    );
+  }
+  return { ...base, budget: { estimatedTokens, maxTokens: CONTROL_TRANSITION_MAX_TOKENS } };
+}
+
+/** Pure ordering decision. Never returns a generation-behind transition. */
+export function decideControlTransitionDelivery(input: {
+  ownerId: string;
+  deliveredGeneration: number;
+  generation: number;
+  state: ControlAnchorState;
+  transition: ControlTransition | null;
+  updatedAt: string;
+}): ControlTransitionDelivery {
+  const pending = input.transition;
+  const exactNext =
+    pending?.schemaVersion === CONTROL_TRANSITION_SCHEMA &&
+    pending.previousGeneration === input.deliveredGeneration &&
+    pending.generation === input.generation;
+  if (exactNext) {
+    return renderControlTransitionDelivery({
+      ...pending,
+      kind: 'transition',
+      reason: 'next-generation',
+    });
+  }
+  const reason: ControlTransitionDelivery['reason'] = !pending
+    ? 'missing-transition'
+    : pending.schemaVersion !== CONTROL_TRANSITION_SCHEMA
+      ? 'schema-mismatch'
+      : 'generation-mismatch';
+  // Reject the pending payload wholesale. Full-state replacement is built
+  // from the current authoritative anchor row, never the stale transition.
+  return renderControlTransitionDelivery({
+    schemaVersion: CONTROL_TRANSITION_SCHEMA,
+    kind: 'full-resync',
+    reason,
+    previousGeneration: input.deliveredGeneration,
+    generation: input.generation,
+    state: input.state,
+    provenance:
+      pending?.generation === input.generation
+        ? pending.provenance
+        : {
+            ...defaultTransitionProvenance(input.ownerId),
+            recordedAt: input.updatedAt,
+          },
+    resync: TRANSITION_RESYNC,
+  });
 }
 
 export function renderControlAnchor(input: {
@@ -156,21 +273,48 @@ export function renderControlAnchor(input: {
  * only when jsonb structural equality says the state changed.
  */
 export async function persistControlAnchor(
-  input: { ownerId: string; workspaceId: string; state: ControlAnchorState },
+  input: {
+    ownerId: string;
+    workspaceId: string;
+    state: ControlAnchorState;
+    transition?: Omit<ControlTransitionProvenance, 'recordedAt'> & { recordedAt?: string };
+  },
   sql: Sql = getOrgPg().sql,
 ): Promise<PersistedControlAnchor> {
   const state = normalizeControlAnchorState(input.state);
   const stateJson = JSON.stringify(state);
+  const provenance: ControlTransitionProvenance = {
+    ...(input.transition ?? defaultTransitionProvenance(input.ownerId)),
+    recordedAt: input.transition?.recordedAt ?? new Date().toISOString(),
+  };
+  const initialTransition: ControlTransition = {
+    schemaVersion: CONTROL_TRANSITION_SCHEMA,
+    previousGeneration: 0,
+    generation: 1,
+    state,
+    provenance,
+    resync: TRANSITION_RESYNC,
+  };
+  const transitionJson = JSON.stringify(initialTransition);
   const rows = await sql<Array<{
     control_generation: number | string;
     control_state: ControlAnchorState;
     control_updated_at: Date | string;
+    control_transition: ControlTransition | null;
   }>>`
     INSERT INTO harness_shared.session_briefs
-      (owner_id, workspace_id, control_generation, control_state, control_updated_at)
-    VALUES (${input.ownerId}, ${input.workspaceId}, 1, ${stateJson}::text::jsonb, now())
+      (owner_id, workspace_id, control_generation, control_state, control_updated_at, control_transition)
+    VALUES (${input.ownerId}, ${input.workspaceId}, 1, ${stateJson}::text::jsonb, now(), ${transitionJson}::text::jsonb)
     ON CONFLICT (owner_id) DO UPDATE SET
       workspace_id = EXCLUDED.workspace_id,
+      control_transition = CASE
+        WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM EXCLUDED.control_state
+          THEN jsonb_set(
+            jsonb_set(EXCLUDED.control_transition, '{previousGeneration}', to_jsonb(harness_shared.session_briefs.control_generation), true),
+            '{generation}', to_jsonb(harness_shared.session_briefs.control_generation + 1), true
+          )
+        ELSE harness_shared.session_briefs.control_transition
+      END,
       control_generation = CASE
         WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM EXCLUDED.control_state
           THEN harness_shared.session_briefs.control_generation + 1
@@ -182,7 +326,7 @@ export async function persistControlAnchor(
         ELSE harness_shared.session_briefs.control_updated_at
       END,
       control_state = EXCLUDED.control_state
-    RETURNING control_generation, control_state, control_updated_at
+    RETURNING control_generation, control_state, control_updated_at, control_transition
   `;
   const row = rows[0];
   if (!row) throw new Error('control_anchor_persist_returned_no_row');
@@ -190,7 +334,56 @@ export async function persistControlAnchor(
     generation: Number(row.control_generation),
     state: normalizeControlAnchorState(row.control_state),
     updatedAt: new Date(row.control_updated_at).toISOString(),
+    transition: row.control_transition ?? null,
   };
+}
+
+/** Atomically consume the newest undelivered generation for the turn-start hook. */
+export async function consumePendingControlTransition(
+  ownerId: string,
+  workspaceId: string,
+  sql: Sql = getOrgPg().sql,
+): Promise<ControlTransitionDelivery | null> {
+  const rows = await sql<Array<{
+    control_generation: number | string;
+    control_state: ControlAnchorState;
+    control_updated_at: Date | string | null;
+    control_transition: ControlTransition | null;
+    delivered_generation: number | string;
+  }>>`
+    WITH candidate AS (
+      SELECT owner_id, control_generation, control_state, control_updated_at,
+             control_transition, control_delivered_generation
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
+         AND control_state IS NOT NULL
+         AND control_generation > control_delivered_generation
+       FOR UPDATE
+    )
+    UPDATE harness_shared.session_briefs brief
+       SET control_delivered_generation = candidate.control_generation
+      FROM candidate
+     WHERE brief.owner_id = candidate.owner_id
+    RETURNING candidate.control_generation, candidate.control_state,
+              candidate.control_updated_at, candidate.control_transition,
+              candidate.control_delivered_generation AS delivered_generation
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  return decideControlTransitionDelivery({
+    ownerId,
+    deliveredGeneration: Number(row.delivered_generation),
+    generation: Number(row.control_generation),
+    state: row.control_state,
+    transition: row.control_transition,
+    updatedAt: row.control_updated_at
+      ? new Date(row.control_updated_at).toISOString()
+      : new Date().toISOString(),
+  });
+}
+
+export function renderControlTransitionContext(delivery: ControlTransitionDelivery): string {
+  return `⟦CTRL:${delivery.kind}⟧ ${JSON.stringify(delivery)}`;
 }
 
 /** Reconcile the existing authoritative stores into the compact projection. */
@@ -242,11 +435,15 @@ export async function buildControlAnchorState(
 export async function buildAndPersistControlAnchor(
   ownerId: string,
   workspaceId: string,
-  opts: { sql?: Sql; loop?: LoopStatus | null } = {},
+  opts: {
+    sql?: Sql;
+    loop?: LoopStatus | null;
+    transition?: Omit<ControlTransitionProvenance, 'recordedAt'> & { recordedAt?: string };
+  } = {},
 ): Promise<ControlAnchor> {
   const state = await buildControlAnchorState(ownerId, workspaceId, opts);
   const persisted = await persistControlAnchor(
-    { ownerId, workspaceId, state },
+    { ownerId, workspaceId, state, transition: opts.transition },
     opts.sql ?? getOrgPg().sql,
   );
   return renderControlAnchor({ ownerId, ...persisted });

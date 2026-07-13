@@ -9,12 +9,15 @@
  * showed a permanent blank left column (on the owner's instance 760px, the
  * bootstrap having restored a drag-resized width from localStorage).
  *
- * The sidebar is now RETIRED outright (design-simplification-2026-07-09 P-010;
- * see _retired/legacy-web-chats/) — the desktop chat is the terminal-native pui
- * dock. So NOTHING writes `--op-chat-w` any more, and the layout rails that
- * used to offset by it (they read it with a `0px` fallback, i.e. always 0)
- * no longer mention it. This guard fails if either the pre-paint reservation
- * or a rail's phantom offset comes back.
+ * The sidebar was retired 2026-07-09 and REVIVED 2026-07-13
+ * (operator-chat-sidebar-revival-2026-07-13): OperatorChatSidebar writes
+ * `has-op-chat` + `--op-chat-w` again — but only AT MOUNT, removing them on
+ * unmount, exactly the D-017 contract. Flags are still unknowable pre-paint
+ * (the sidebar is gated by FLAGS.OPERATOR_CHAT_SIDEBAR), so the pre-paint
+ * reservation stays banned: this guard fails if anyone re-adds an
+ * unconditional index.html bootstrap. The layout rails legitimately offset
+ * by --op-chat-w again (mount-time writer exists), so the retired-era
+ * "no rail mentions it" assertion is gone with the revival.
  */
 
 import { readFileSync } from 'node:fs';
