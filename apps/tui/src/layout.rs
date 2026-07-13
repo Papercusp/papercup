@@ -273,6 +273,15 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // Sentinel glyph/kind ⇒ same group_rank, and it sits adjacent to the
     // front pane, so the P-011 regroup never reorders it.
     let sentinel_deep_cmd_block = "command \"psu-sentinel-deep\"";
+    // WI-4485: the deep half rides in a HIDDEN FLOATING pane, not a tiled sibling — the
+    // only way to honour D-001's "the split must never be visible in the dock". The tab
+    // sets hide_floating_panes=true, so it is not drawn; it still launches (verified on
+    // zellij 0.44.3), so the front-end can wake it over coord exactly as before. It keeps
+    // the SAME front-door label: on the off-chance a user toggles floating panes into
+    // view, they see the one "Papercup" identity, never a "-deep" internal role name.
+    let sentinel_deep_floating_block = format!(
+        "    floating_panes {{\n        pane name=\"{sentinel_name}\" {{\n            {sentinel_deep_cmd_block}\n        }}\n    }}"
+    );
     // P-004 / D-009: the operator pane is psu, so the reactive agent stack has a
     // dedicated driver — the `pui dock-driver` pane runs the reactive loop
     // (dock_agent_panes) and renders the fleet roster as the dock's controller.
@@ -324,12 +333,26 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // launch as role=overwatch, mirroring the sentinel pane's --role=operator launch
     // (--role=overwatch MUST use `=`; psu-launcher drops a space-separated --role).
     // 👁 glyph + indigo identity come from AgentPaneKind::Overwatch (B-01). It is the
-    // Queen's sibling system-health supervisor. Pane order (owner ask 2026-06-22;
-    // deep pane added voice-public-release-readiness P-014): top-to-bottom:
-    // 🥤 sentinel (the front-door agent leads the dock), 🥤 deep (same label —
-    // hidden split, D-001), 🫖 overwatch, ☕ mug, cups (dock-driver + its
-    // worker TUIs), ⏸ wakes. The front pane gave up 12% to the deep pane
-    // (40% → 28%) so the rest of the dock is untouched.
+    // Queen's sibling system-health supervisor. Pane order (owner ask 2026-06-22):
+    // top-to-bottom: 🥤 sentinel (the front-door agent leads the dock), 🫖 overwatch,
+    // ☕ mug, cups (dock-driver + its worker TUIs), ⏸ wakes.
+    //
+    // WI-4485 — the papercup-DEEP pane is NOT in this tiled list. P-014 originally
+    // emitted it as a TILED SIBLING at 12% carrying the SAME "🥤 papercup" label
+    // (front 40% → 28% to make room), on the theory that an identical label made the
+    // fast/deep split invisible. It does the OPPOSITE: two visible identically-named
+    // panes read as a DUPLICATE — strictly worse than a distinct name — and the owner
+    // reported exactly that ("why do I see 2x papercup agents ... there should only be
+    // 1", 2026-07-13). Same-naming conceals nothing; only NOT RENDERING it does.
+    // D-001 says the split "must never be visible in the dock" and the deep half is
+    // "never user-facing" (it speaks only over coord), so the deep pane is now a
+    // HIDDEN FLOATING pane (see `sentinel_deep_floating_block` + the tab's
+    // hide_floating_panes=true) and the front pane takes its 12% back (28% → 40%).
+    // Falsification-tested on zellij 0.44.3: a pane declared in `floating_panes` under
+    // a `hide_floating_panes=true` tab STILL LAUNCHES ITS COMMAND — so the deep session
+    // still starts, still records ~/.papercusp/sentinel-deep-pane, and stays wakeable
+    // over coord. That was the load-bearing risk; a deep half that never launched would
+    // be a far worse regression than a cosmetic duplicate.
     // The Mug's stacked sub-panes (prompt/wakes/mail/work) are glyph-PREFIXED with the
     // Mug's own kind-glyph so AgentPaneKind::from_glyph_prefix regroups them with the
     // Mug (P-011), not as loose panes. DERIVE it — these four used to hardcode the
@@ -339,11 +362,8 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     let dock_body = {
         format!(
             r#"    pane split_direction="horizontal" {{
-        pane name="{sentinel_name}" focus=true size="28%" {{
+        pane name="{sentinel_name}" focus=true size="40%" {{
             {sentinel_cmd_block}
-        }}
-        pane name="{sentinel_name}" size="12%" {{
-            {sentinel_deep_cmd_block}
         }}
         pane name="{overwatch_name}" size="12%" {{
             command "pui"
