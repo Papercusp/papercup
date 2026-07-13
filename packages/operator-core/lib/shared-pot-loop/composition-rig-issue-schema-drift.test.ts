@@ -77,8 +77,13 @@ export function extractIssueCols(issuesEngineerSource: string): string[] {
  * Scoped to `engineer_issues` so a sibling table's ALTERs (the rig alters
  * several) never leak in.
  */
-export function extractEngineerIssuesColumns(sources: string[]): Set<string> {
+export function extractEngineerIssuesColumns(rawSources: string[]): Set<string> {
   const columns = new Set<string>();
+  // Strip `--` line comments FIRST — Postgres ignores them, and a comment that
+  // contains a `;` (the rig's do — e.g. "…feature_order; the column…") would
+  // otherwise prematurely terminate the non-greedy ALTER-block capture below,
+  // hiding real columns declared after the comment.
+  const sources = rawSources.map((s) => s.replace(/--[^\n]*/g, ''));
   for (const src of sources) {
     // CREATE TABLE … engineer_issues ( … );  → first identifier of each column line.
     const createRe = /CREATE TABLE (?:IF NOT EXISTS )?harness_shared\.engineer_issues\s*\(([\s\S]*?)\n\s*\);/g;
