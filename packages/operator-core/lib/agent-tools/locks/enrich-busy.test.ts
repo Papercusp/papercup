@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const h = vi.hoisted(() => ({ getPresence: vi.fn() }));
 vi.mock('../coordination/presence', () => ({ getPresence: h.getPresence }));
 
-import { busyToJson, enrichBusy } from './enrich-busy';
+import { busyToJson, enrichBusy, intentsDiverged } from './enrich-busy';
 import type { AcquireBusy } from './su-lock-store';
 
 const busy = (over: Partial<AcquireBusy> = {}): AcquireBusy =>
@@ -84,5 +84,71 @@ describe('enrichBusy', () => {
     expect(h.getPresence).toHaveBeenCalledTimes(1); // one lookup for the shared owner
     expect(rows.every((r) => r.holder_intent === 'big refactor')).toBe(true);
     expect(rows.every((r) => r.holder_focused === true)).toBe(true);
+  });
+
+  // EI-10433: the orphaned-lock signal. A lock acquired for one task whose
+  // holder has since declared a DIFFERENT coord intent (without releasing) is
+  // stale, not actively contended — surface it so a blocked peer needn't
+  // cross-reference coord:presence by hand or wait out the ~20min TTL.
+  it('flags holder_intent_diverged when the holder moved to an unrelated intent (the EI-10433 case)', async () => {
+    h.getPresence.mockResolvedValue({ intent: 'WI-1819/WI-1812 drain-loop picks', currentFiles: ['apps/other.ts'] });
+    const [row] = await enrichBusy([busy({ intent: 'WI-4138: add prReviewerSettings.byHarness named-query entry' })]);
+    expect(row.holder_intent_diverged).toBe(true);
+  });
+
+  it('does NOT flag divergence while the holder is still focused on THIS path', async () => {
+    h.getPresence.mockResolvedValue({ intent: 'WI-1819 something else entirely', currentFiles: ['apps/a.ts'] });
+    const [row] = await enrichBusy([busy({ path: 'apps/a.ts', intent: 'WI-4138: the named-query entry' })]);
+    expect(row.holder_focused).toBe(true);
+    expect(row.holder_intent_diverged).toBeUndefined();
+  });
+
+  it('does NOT flag divergence when the holder still cites the same work-item ref', async () => {
+    h.getPresence.mockResolvedValue({ intent: 'still on WI-4138, now writing the tests', currentFiles: ['apps/other.ts'] });
+    const [row] = await enrichBusy([busy({ intent: 'WI-4138: add prReviewerSettings.byHarness named-query entry' })]);
+    expect(row.holder_intent_diverged).toBeUndefined();
+  });
+
+  it('does NOT flag divergence for an uninformative (hook-stamped) lock intent', async () => {
+    // The common per-edit lock's intent is 'PreToolUse:Edit' / 'capability:edit' —
+    // it identifies nothing to compare against, so divergence is uncomputable.
+    h.getPresence.mockResolvedValue({ intent: 'WI-1819 unrelated work', currentFiles: ['apps/other.ts'] });
+    const [edit] = await enrichBusy([busy({ intent: 'PreToolUse:Edit' })]);
+    expect(edit.holder_intent_diverged).toBeUndefined();
+    const [cap] = await enrichBusy([busy({ intent: 'capability:edit' })]);
+    expect(cap.holder_intent_diverged).toBeUndefined();
+  });
+
+  it('does NOT flag divergence when the holder has no meaningful declared intent', async () => {
+    h.getPresence.mockResolvedValue({ intent: '(active — see coord:presence for current work)', currentFiles: [] });
+    const [row] = await enrichBusy([busy({ intent: 'WI-4138: the named-query entry' })]);
+    expect(row.holder_intent).toBeUndefined();
+    expect(row.holder_intent_diverged).toBeUndefined();
+  });
+});
+
+describe('intentsDiverged', () => {
+  it('is true for two clearly different threads with no shared ref', () => {
+    expect(intentsDiverged('WI-4138: named-query entry', 'WI-1819/WI-1812 drain-loop picks')).toBe(true);
+    expect(intentsDiverged('refactoring the sync resolver', 'writing the release notes')).toBe(true);
+  });
+
+  it('is false when the intents share a work-item ref', () => {
+    expect(intentsDiverged('WI-4138: named-query entry', 'still on WI-4138, now the tests')).toBe(false);
+  });
+
+  it('is false for equal or substring-related intents', () => {
+    expect(intentsDiverged('add the named-query entry', 'add the named-query entry')).toBe(false);
+    expect(intentsDiverged('add the named-query entry', 'add the named-query entry (part 2)')).toBe(false);
+  });
+
+  it('is false for an uninformative or empty lock intent', () => {
+    expect(intentsDiverged('PreToolUse:Edit', 'anything else')).toBe(false);
+    expect(intentsDiverged('capability:write', 'anything else')).toBe(false);
+    expect(intentsDiverged('', 'anything else')).toBe(false);
+  });
+
+  it('is false when the holder intent is empty', () => {
+    expect(intentsDiverged('WI-4138: real intent', '   ')).toBe(false);
   });
 });

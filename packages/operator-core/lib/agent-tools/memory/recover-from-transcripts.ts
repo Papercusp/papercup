@@ -43,6 +43,11 @@ export interface RecoveryCandidate {
   kind?: string;
   updateOf?: string;
   retriedOkSameSession: boolean;
+  /** The failed result already carried the write-ahead journal's stamp
+   *  (`journaled:true`) — the drain will re-store it, so it is PARKED, not lost;
+   *  the handler excludes these from recovery candidates (re-mining would just
+   *  double-journal the same fact). */
+  alreadyJournaled: boolean;
 }
 
 function transcriptsRoot(): string {
@@ -82,6 +87,18 @@ function looksFailed(text: string, isError: boolean | undefined): boolean {
   if (isError) return true;
   const squashed = text.replace(/[\\\s]/g, '');
   return squashed.includes('"ok":false') || FAIL_PAT.test(text);
+}
+
+/** A modern failed write already carries the write-ahead journal's stamp
+ *  (`journaled:true`, set by remember.ts whenever journalPendingWrite returned
+ *  an id): the drain WILL re-store it, so the fact is parked — NOT lost — and
+ *  re-mining it just double-journals the same content. Only failures WITHOUT
+ *  the stamp are genuinely at-risk: journalId was null (journaling itself
+ *  degraded) or the transcript predates the journal — precisely "the hole the
+ *  journal itself misses" this tool exists to backfill. Escape-tolerant,
+ *  mirroring looksFailed's squashed form (`\"journaled\":true`). */
+function wasJournaled(text: string): boolean {
+  return text.replace(/[\\\s]/g, '').includes('"journaled":true');
 }
 
 function scopeOfInput(input: Record<string, unknown>): string {
@@ -150,6 +167,7 @@ export async function mineTranscript(file: string): Promise<RecoveryCandidate[]>
               ? { updateOf: call.input.id }
               : {}),
             retriedOkSameSession: false,
+            alreadyJournaled: wasJournaled(text),
           });
         } else {
           succeeded.push(content);
@@ -193,11 +211,14 @@ export default defineTool({
       all.push(...(await mineTranscript(file)));
     }
 
-    // Drop writes the same session already retried successfully, then dedup
-    // across sessions by content prefix (keep the earliest), oldest first.
+    // Drop writes the same session already retried successfully, OR that the
+    // write-ahead journal already parked (journaled:true — the drain re-stores
+    // them, so re-mining would double-journal the same fact), then dedup across
+    // sessions by content prefix (keep the earliest), oldest first.
+    const alreadyJournaled = all.filter((c) => c.alreadyJournaled).length;
     const seen = new Set<string>();
     const candidates = all
-      .filter((c) => !c.retriedOkSameSession)
+      .filter((c) => !c.retriedOkSameSession && !c.alreadyJournaled)
       .sort((a, b) => a.ts.localeCompare(b.ts))
       .filter((c) => {
         const key = c.content.slice(0, 120);
@@ -215,6 +236,7 @@ export default defineTool({
             ok: true,
             mode: 'dry-run',
             scanned_failures: all.length,
+            already_journaled: alreadyJournaled,
             candidates: candidates.map((c) => ({
               session: c.session, ts: c.ts, tool: c.tool, reason: c.reason,
               scope: c.scope || '(per-user default)',
@@ -272,6 +294,7 @@ export default defineTool({
           ok: failedToJournal.length === 0,
           mode: 'journaled',
           journaled,
+          already_journaled: alreadyJournaled,
           ...(failedToJournal.length > 0 ? { failed_to_journal: failedToJournal.length } : {}),
           hint: 'The embed-backfill drain re-stores these within ~5 minutes; recovered entries carry metadata.recovered_from = transcript-miner. Verify via memory:search.',
         }),

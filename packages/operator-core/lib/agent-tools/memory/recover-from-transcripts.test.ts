@@ -7,7 +7,7 @@ import * as os from 'os';
 // transcripts tree and feeds it. Fixture reproduces the real wire shapes from
 // the 2026-07-10 forensic pass — including the ESCAPED `\"ok\":false` result
 // form that made the first grep return 0.
-import { mineTranscript } from './recover-from-transcripts';
+import recoverTool, { mineTranscript } from './recover-from-transcripts';
 
 const line = (o: unknown): string => JSON.stringify(o);
 const toolUse = (id: string, name: string, input: Record<string, unknown>, ts: string) =>
@@ -75,5 +75,50 @@ describe('mineTranscript (memory:recover-from-transcripts P-008)', () => {
     await fs.writeFile(junk, 'not json\n{"message":{"content":"also not a list"}}\n');
     await expect(mineTranscript(junk)).resolves.toEqual([]);
     await expect(mineTranscript(path.join(dir, 'nope.jsonl'))).resolves.toEqual([]);
+  });
+
+  it('flags a failure the write-ahead journal already parked (journaled:true)', async () => {
+    // remember.ts stamps journaled:true whenever journalPendingWrite returned an
+    // id — the fact is parked (the drain re-stores it), NOT lost. A failure with
+    // NO stamp (journalId was null / pre-journal transcript) is genuinely at-risk.
+    const jf = path.join(dir, 'session-journaled.jsonl');
+    await fs.writeFile(jf, [
+      toolUse('j1', 'memory:remember', { content: 'parked fact', kind: 'user' }, '2026-07-11T10:00:00Z'),
+      toolResult('j1', '{"ok":false,"reason":"memory_timeout","journaled":true,"will_retry":true,"journal_id":"j-1"}'),
+      toolUse('j2', 'memory:remember', { content: 'genuinely lost fact', kind: 'user' }, '2026-07-11T10:01:00Z'),
+      toolResult('j2', '{"ok":false,"reason":"memory_timeout"}'),
+    ].join('\n') + '\n');
+    const found = await mineTranscript(jf);
+    expect(found).toHaveLength(2);
+    expect(found.find((c) => c.content === 'parked fact')?.alreadyJournaled).toBe(true);
+    expect(found.find((c) => c.content === 'genuinely lost fact')?.alreadyJournaled).toBe(false);
+  });
+});
+
+describe('memory:recover-from-transcripts handler (dry-run)', () => {
+  it('excludes already-journaled failures from candidates and counts them', async () => {
+    const scanDir = await fs.mkdtemp(path.join(os.tmpdir(), 'miner-handler-'));
+    await fs.writeFile(path.join(scanDir, 'session-h.jsonl'), [
+      toolUse('h1', 'memory:remember', { content: 'parked fact', kind: 'user' }, '2026-07-11T10:00:00Z'),
+      toolResult('h1', '{"ok":false,"reason":"memory_timeout","journaled":true,"will_retry":true,"journal_id":"j-9"}'),
+      toolUse('h2', 'memory:remember', { content: 'genuinely lost fact', kind: 'user' }, '2026-07-11T10:01:00Z'),
+      toolResult('h2', '{"ok":false,"reason":"memory_timeout"}'),
+    ].join('\n') + '\n');
+
+    const prev = process.env.PAPERCUSP_SESSION_TRANSCRIPTS_DIR;
+    process.env.PAPERCUSP_SESSION_TRANSCRIPTS_DIR = scanDir;
+    try {
+      const res = await recoverTool.handler({ window_hours: 48, confirm: false, limit: 50 } as never, {} as never);
+      const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+      expect(out.mode).toBe('dry-run');
+      expect(out.scanned_failures).toBe(2);
+      expect(out.already_journaled).toBe(1);
+      expect(out.candidates).toHaveLength(1);
+      expect(out.candidates[0].content_preview).toBe('genuinely lost fact');
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_SESSION_TRANSCRIPTS_DIR;
+      else process.env.PAPERCUSP_SESSION_TRANSCRIPTS_DIR = prev;
+      await fs.rm(scanDir, { recursive: true, force: true });
+    }
   });
 });

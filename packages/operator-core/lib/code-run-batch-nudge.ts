@@ -63,12 +63,60 @@ import { collectCandidateArrays } from './empty-mapping-hint';
 
 /** Same tool this many times inside the window → the same-tool nudge is a candidate. Lowered 3→2
  *  (code-run-adoption directive 2026-06-29): the 2nd identical round-trip already IS the loop — by
- *  the 3rd the cheap calls are spent. Catch it at the earliest point the pattern is unambiguous. */
+ *  the 3rd the cheap calls are spent. Catch it at the earliest point the pattern is unambiguous.
+ *  Since P-012 (agent-operability-clarity-full-audit-2026-07-13) this counts distinct INFERENCE
+ *  TURNS the tool was called from, not raw calls — see TURN_GAP_MS below. */
 export const BATCH_NUDGE_THRESHOLD = 2;
 
 /** This many DISTINCT (non-excluded) tools inside the window → the fan-out nudge is a candidate.
- *  Lowered 4→3 (2026-06-29): three different reads in one burst is already a Promise.all-able fan-out. */
+ *  Lowered 4→3 (2026-06-29): three different reads in one burst is already a Promise.all-able fan-out.
+ *  Since P-012 this is gated jointly with `distinctTurnsInWindow` (see maybeBatchNudge) — a burst
+ *  hitting this many distinct TOOLS but landing inside ONE inference turn (already-parallel dispatch)
+ *  must not fire; only a burst that actually SPANS this many separate turns wastes round-trips. */
 export const FANOUT_DISTINCT_THRESHOLD = 3;
+
+/**
+ * P-012 (agent-operability-clarity-full-audit-2026-07-13): the batching guidance must measure
+ * MODEL INFERENCE TURNS — the actual cost driver — not raw downstream tool/RPC count. The harness
+ * lets an agent fire several INDEPENDENT tool calls from a single inference turn (parallel
+ * tool_use blocks in one assistant message); those calls cost exactly ONE round-trip, same as a
+ * single call, because no extra "re-read your whole context" inference happens between them. Only
+ * calls that land in SEPARATE turns each pay that re-read cost. Before P-012 this module counted
+ * raw calls (`sameToolCount`, `seen.size`) as if every call were its own round-trip, so a caller
+ * who correctly followed the "make independent calls in the same response block" guidance and
+ * fired 3 parallel reads got told "that's 3 round-trips, fold them into one code:run" — false:
+ * they had ALREADY collapsed it to one, and were nudged AWAY from best practice.
+ *
+ * There is no client-supplied turn id on this path (the MCP transport sees each tool call as its
+ * own request), so turns are inferred from timing: two calls recorded this close together (or
+ * closer) are treated as dispatched from the SAME turn. The gap needed to separate two GENUINE
+ * turns is a live LLM inference round-trip (network + generation) — at minimum several hundred ms,
+ * typically 1-3s+ for the models this fleet runs. Truly parallel dispatch (concurrent async calls
+ * emitted from one turn) lands within tens of ms of each other server-side, rarely beyond ~100-200ms
+ * even under load. TURN_GAP_MS sits with margin on both sides of that gap.
+ */
+export const TURN_GAP_MS = 400;
+
+/**
+ * Assign a 0-based TURN-CLUSTER id to each event, in chronological order: a new turn starts
+ * whenever the gap since the previous event exceeds TURN_GAP_MS. `events` need not be pre-sorted
+ * (the ring is insertion-order, which is usually but not guaranteedly chronological) — this sorts a
+ * local index array by `at`. Pure; shared by the same-tool and fan-out/pipeline triggers so "how
+ * many separate round-trips did this burst actually take" is computed exactly once.
+ */
+export function clusterTurns(events: readonly { at: number }[]): number[] {
+  const order = events.map((_, i) => i).sort((a, b) => events[a].at - events[b].at);
+  const turnOf = new Array<number>(events.length);
+  let turn = -1;
+  let prevAt: number | undefined;
+  for (const i of order) {
+    const at = events[i].at;
+    if (prevAt === undefined || at - prevAt > TURN_GAP_MS) turn++;
+    turnOf[i] = turn;
+    prevAt = at;
+  }
+  return turnOf;
+}
 
 /** Sliding window over which recent calls are counted. Only a bursty flurry (the actually-batchable
  *  shape) trips a trigger; calls spread wider than this are treated as separate, deliberate steps. */
@@ -522,12 +570,11 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
     st.recent.splice(0, st.recent.length - MAX_RECENT_PER_SESSION);
   }
 
-  // Window stats: same-tool count, distinct tools (first-seen order), total recent calls.
-  let sameToolCount = 0;
+  // Window stats: distinct tools (first-seen order) + total recent calls — still raw-call counts,
+  // used only for the "N tool calls total" context, never for the trigger/cost math below.
   const seen = new Set<string>();
   const distinctOrder: string[] = [];
   for (const c of st.recent) {
-    if (c.tool === toolName) sameToolCount++;
     if (!seen.has(c.tool)) {
       seen.add(c.tool);
       distinctOrder.push(c.tool);
@@ -535,12 +582,29 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   }
   const totalRecent = st.recent.length;
 
+  // P-012: the trigger + the "N round-trips" cost text are keyed on INFERENCE TURNS, not raw
+  // calls — several calls dispatched from ONE turn (parallel tool_use) cost a single round-trip,
+  // same as one call, so they must count as one. turnOf[i] is the turn cluster for st.recent[i].
+  const turnOf = clusterTurns(st.recent);
+  const toolTurns = new Set<number>();
+  const allTurns = new Set<number>();
+  for (let i = 0; i < st.recent.length; i++) {
+    allTurns.add(turnOf[i]);
+    if (st.recent[i].tool === toolName) toolTurns.add(turnOf[i]);
+  }
+  const sameToolTurns = toolTurns.size;
+  const distinctTurnsInWindow = allTurns.size;
+
   // Pick a trigger. Same-tool wins ties (its loop skeleton is the more precise fix); a multi-tool
   // burst splits into PIPELINE (the same id/slug threaded through different verbs — chained) vs
   // FAN-OUT (independent reads), so the text never mislabels a chain as "independent" (P-002).
+  // The fan-out/pipeline gate requires BOTH ≥N distinct tools AND ≥N distinct TURNS — a burst that
+  // hits the tool-diversity bar but landed inside one inference turn (already collapsed to one
+  // round-trip by parallel dispatch) has nothing left to fix and must stay silent (P-012).
   let kind: BatchNudgeKind | null = null;
-  if (sameToolCount >= BATCH_NUDGE_THRESHOLD) kind = 'same-tool';
-  else if (seen.size >= FANOUT_DISTINCT_THRESHOLD) kind = isChainedBurst(st.recent) ? 'pipeline' : 'fanout';
+  if (sameToolTurns >= BATCH_NUDGE_THRESHOLD) kind = 'same-tool';
+  else if (seen.size >= FANOUT_DISTINCT_THRESHOLD && distinctTurnsInWindow >= FANOUT_DISTINCT_THRESHOLD)
+    kind = isChainedBurst(st.recent) ? 'pipeline' : 'fanout';
   if (!kind) return null;
 
   // Backoff gate: the first nudge fires immediately; later ones wait out an exponential cooldown.
@@ -554,10 +618,10 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   const banner = escalationPrefix(st.nudgeCount);
   const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
   if (kind === 'same-tool') {
-    const burst = totalRecent > sameToolCount ? ` (${totalRecent} tool calls total this burst)` : '';
+    const burst = totalRecent > sameToolTurns ? ` (${totalRecent} tool calls total this burst)` : '';
     const text =
-      `${banner}you've called "${toolName}" ${sameToolCount}× in the last ~${windowS}s${burst} — that's ` +
-      `${sameToolCount} separate round-trips, each re-reading your whole context. If these are ` +
+      `${banner}you've called "${toolName}" from ${sameToolTurns}× separate turns in the last ~${windowS}s${burst} — ` +
+      `that's ${sameToolTurns} separate round-trips, each re-reading your whole context. If these are ` +
       `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton, ` +
       `\`inputs\` prefilled from this burst (extend it instead of firing another solo call):\n` +
       `${sameToolSkeleton(toolName, st.recent)}\n${TRAILER}${activate}`;
@@ -565,8 +629,9 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   }
   if (kind === 'pipeline') {
     const text =
-      `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools in the last ` +
-      `~${windowS}s — that's ~${totalRecent} round-trips, each re-reading your whole context. These calls thread ` +
+      `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools spanning ` +
+      `${distinctTurnsInWindow} separate turns in the last ~${windowS}s — that's ~${distinctTurnsInWindow} ` +
+      `round-trips, each re-reading your whole context. These calls thread ` +
       `the SAME object through different verbs — a CHAINED pipeline, and dependence does NOT mean ` +
       `one-call-per-turn: a script threads one result into the next (and can branch on it). Sequence the chain ` +
       `INSIDE one code:run — this burst as one round-trip (args prefilled):\n` +
@@ -575,8 +640,9 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   }
   // fan-out
   const text =
-    `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools in the last ` +
-    `~${windowS}s — that's ~${totalRecent} round-trips, each re-reading your whole context. Collapse the burst ` +
+    `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools spanning ` +
+    `${distinctTurnsInWindow} separate turns in the last ~${windowS}s — that's ~${distinctTurnsInWindow} ` +
+    `round-trips, each re-reading your whole context. Collapse the burst ` +
     `into ONE code:run — Promise.all when the calls are independent, sequential awaits when one feeds the ` +
     `next — ready-to-paste skeleton (args prefilled from your last calls):\n` +
     `${fanoutSkeleton(distinctOrder, st.recent)}\n${TRAILER}${activate}`;
