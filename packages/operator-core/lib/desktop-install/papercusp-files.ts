@@ -681,8 +681,8 @@ async function writeShim(
     '  local root rel candidate\n' +
     '  for root in "${PAPERCUSP_INTEGRATION_ROOT:-}" "${PAPERCUSP_RELEASE_ROOT:-}"; do\n' +
     '    [ -n "$root" ] || continue\n' +
-    '    for rel in\n' +
-    `      ${relativeLiterals.join('\n      ')}\n` +
+    '    for rel in \\\n' +
+    `      ${relativeLiterals.join(' \\\n      ')}\n` +
     '    do\n' +
     '      candidate="$root/$rel"\n' +
     '      if [ -f "$candidate" ]; then\n' +
@@ -691,8 +691,8 @@ async function writeShim(
     '      fi\n' +
     '    done\n' +
     '  done\n' +
-    '  for candidate in\n' +
-    `    ${fallbackLiterals.join('\n    ')}\n` +
+    '  for candidate in \\\n' +
+    `    ${fallbackLiterals.join(' \\\n    ')}\n` +
     '  do\n' +
     '    if [ -f "$candidate" ]; then\n' +
     '      printf \'%s\\n\' "$candidate"\n' +

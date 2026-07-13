@@ -449,6 +449,79 @@ function warnOnceFactory(reason: string): void {
   console.warn(`[mem0-session] ${reason}.`);
 }
 
+// ---------------------------------------------------------------------------
+// Gateway egress for the extraction transport (EI-11042)
+// ---------------------------------------------------------------------------
+//
+// The session rung runs `runAgentChat({ backend: 'anthropic-direct' })`, whose
+// egress base URL is `resolveAnthropicBaseUrl()` (chat-stream.ts): it routes
+// through the inference gateway's ACCOUNT POOL — which strips the incoming auth
+// and re-auths to a bound pool account WITH cross-account 429 failover
+// (gateway.ts STRIP_REQUEST + the injected pool-account OAuth) — but ONLY when
+// `PAPERCUSP_ANTHROPIC_URL`/`ANTHROPIC_BASE_URL` is set in process.env. That env
+// is NOT set globally; it is OPT-IN per in-process caller (scout
+// `register-scout-action.ts`, the gym `autoloop-cycle.ts` each apply
+// `gatewayLlmEnv`). The memory-extraction path never opted in, so it egressed on
+// whatever happened to be in env: pooled in the live operator ONLY when scout/gym
+// had already mutated the global env, and DIRECT to a SINGLE account in the bench
+// subprocess (`setupBenchMemoryHost` is its own process; nothing applies the env)
+// — so every `remember()` write probe failed extraction (0/N stored) during any
+// window that one account was rate-limited (the EI-11042 flake).
+//
+// Fix: at the shared extraction chokepoint (`getSessionExtractionLlm`, called by
+// the live operator, the bench, and the live probe), point the anthropic-direct
+// egress at the gateway pool — the exact idiom scout/gym use. This preserves the
+// $0 subscription intent (every gateway pool account is a Max-subscription OAuth
+// credential) and adds the pool's failover. Gated on the existing
+// INFERENCE_GATEWAY flag (OFF ⇒ unchanged direct egress — no new/dark flag).
+
+/**
+ * Idempotently apply the gateway egress env patch. PURE + injectable-env so it is
+ * unit-testable without touching the real `process.env`. Sets a key only when it
+ * is UNSET (mirrors `gatewayLlmEnv`'s own `if (!process.env[k])` idiom), so it is
+ * a NO-OP wherever the egress is already pointed (the live operator, via scout/gym)
+ * and only takes effect where it is not (the bench subprocess) — hence zero
+ * live-extraction regression risk. Returns the keys it actually set.
+ */
+export function applyExtractionGatewayEgress(
+  enabled: boolean,
+  patch: Record<string, string>,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (!enabled) return [];
+  const setKeys: string[] = [];
+  for (const [k, v] of Object.entries(patch)) {
+    if (!env[k]) {
+      env[k] = v;
+      setKeys.push(k);
+    }
+  }
+  return setKeys;
+}
+
+/**
+ * Best-effort wiring of the real INFERENCE_GATEWAY flag + `gatewayLlmEnv` into the
+ * pure applier above. Any failure (flag infra or the gateway module unavailable)
+ * leaves egress exactly as before this fix. Inert under vitest so a unit test's
+ * `process.env` is never mutated as a side effect — the pure applier is what the
+ * unit tests exercise, and the live `session-extraction-live.ts` probe covers the
+ * real end-to-end wiring.
+ */
+async function ensureExtractionGatewayEgress(): Promise<void> {
+  if (process.env.VITEST) return;
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) return;
+    const { gatewayLlmEnv } = await import('../inference-gateway/spawn-env');
+    applyExtractionGatewayEgress(true, gatewayLlmEnv(true));
+  } catch {
+    /* best-effort: leave egress unchanged, exactly as before this fix */
+  }
+}
+
 /**
  * Resolve the session-backed extraction LLM, or null when the rung is
  * unavailable (the key cascade then runs exactly as before):
@@ -464,7 +537,13 @@ function warnOnceFactory(reason: string): void {
 export async function getSessionExtractionLlm(deps?: {
   readToken?: () => string | null;
   probe?: (token: string) => Promise<boolean>;
+  /** Injectable for tests. Points the anthropic-direct extraction egress at the
+   *  gateway account pool (EI-11042). Runs regardless of which rung serves, so
+   *  the fallback key rung benefits too — hence it is applied BEFORE the
+   *  session-disabled escape hatch below. */
+  ensureGatewayEgress?: () => Promise<void>;
 }): Promise<ExtractionLlm | null> {
+  await (deps?.ensureGatewayEgress ?? ensureExtractionGatewayEgress)();
   if (process.env.PAPERCUSP_MEM0_SESSION_EXTRACTION === '0') return null;
   if (_sessionRungDead) return null;
   const token = (deps?.readToken ?? readClaudeOauthToken)();

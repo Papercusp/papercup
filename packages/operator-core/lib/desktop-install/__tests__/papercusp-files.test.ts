@@ -365,7 +365,8 @@ describe('installPapercuspFiles', () => {
       const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
       const psu = await fs.readFile(result.psuPath, 'utf8');
       const launcher = path.join(tmpAppRoot, 'scripts', 'psu.mjs');
-      expect(psu).toContain(`exec ${JSON.stringify(bundledNode)} ${JSON.stringify(launcher)} "$@"`);
+      expect(psu).toContain(`exec ${JSON.stringify(bundledNode)} "$launcher" "$@"`);
+      expect(psu).toContain(JSON.stringify(launcher));
       expect(psu).not.toContain('exec "node"'); // not the PATH fallback
     } finally {
       if (priorSidecarBin === undefined) {

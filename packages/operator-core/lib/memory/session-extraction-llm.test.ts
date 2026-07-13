@@ -6,6 +6,7 @@ import {
 } from '@papercusp/memory';
 import {
   SessionExtractionLlm,
+  applyExtractionGatewayEgress,
   extractStrictJson,
   getSessionExtractionLlm,
   sessionExtractionUsage,
@@ -231,6 +232,52 @@ describe('getSessionExtractionLlm — the probe-gated factory (P-003)', () => {
     await expect(
       getSessionExtractionLlm({ readToken: () => 'oauth-token-ok', probe: async () => true }),
     ).resolves.toBeNull();
+  });
+
+  it('applies the gateway-egress seam BEFORE resolving (so the fallback key rung is pooled too)', async () => {
+    const ensureGatewayEgress = vi.fn(async () => {});
+    // Session disabled: still must run the egress seam first (it precedes the
+    // escape-hatch early-return), because the fallback key rung egresses too.
+    vi.stubEnv('PAPERCUSP_MEM0_SESSION_EXTRACTION', '0');
+    await getSessionExtractionLlm({ readToken: () => 'oauth-token-ok', probe: async () => true, ensureGatewayEgress });
+    expect(ensureGatewayEgress).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('applyExtractionGatewayEgress — anthropic-direct extraction egress via the gateway pool (EI-11042)', () => {
+  const PATCH = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788', PAPERCUSP_ANTHROPIC_URL: 'http://127.0.0.1:8788' };
+
+  it('flag OFF → sets nothing (unchanged direct egress)', () => {
+    const env: NodeJS.ProcessEnv = {};
+    expect(applyExtractionGatewayEgress(false, PATCH, env)).toEqual([]);
+    expect(env).toEqual({});
+  });
+
+  it('flag ON + unset env → points both egress vars at the gateway', () => {
+    const env: NodeJS.ProcessEnv = {};
+    const set = applyExtractionGatewayEgress(true, PATCH, env);
+    expect(set.sort()).toEqual(['ANTHROPIC_BASE_URL', 'PAPERCUSP_ANTHROPIC_URL']);
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:8788');
+    expect(env.PAPERCUSP_ANTHROPIC_URL).toBe('http://127.0.0.1:8788');
+  });
+
+  it('flag ON but a var is ALREADY set → respects the pre-set override (no-op on it)', () => {
+    // The live-operator case: scout/gym already pointed egress at the gateway,
+    // so this must be a NO-OP there (zero live-extraction regression).
+    const env: NodeJS.ProcessEnv = {
+      ANTHROPIC_BASE_URL: 'http://preset.example:9999',
+      PAPERCUSP_ANTHROPIC_URL: 'http://preset.example:9999',
+    };
+    expect(applyExtractionGatewayEgress(true, PATCH, env)).toEqual([]);
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://preset.example:9999');
+    expect(env.PAPERCUSP_ANTHROPIC_URL).toBe('http://preset.example:9999');
+  });
+
+  it('flag ON + only ONE var preset → sets only the unset one', () => {
+    const env: NodeJS.ProcessEnv = { ANTHROPIC_BASE_URL: 'http://preset.example:9999' };
+    expect(applyExtractionGatewayEgress(true, PATCH, env)).toEqual(['PAPERCUSP_ANTHROPIC_URL']);
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://preset.example:9999');
+    expect(env.PAPERCUSP_ANTHROPIC_URL).toBe('http://127.0.0.1:8788');
   });
 });
 

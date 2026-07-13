@@ -51,6 +51,29 @@ if (!sessionLlm) {
 }
 log('preflight ok: session extraction LLM resolved (probe passed)');
 
+// 1b. EI-11042 invariant: with INFERENCE_GATEWAY on, `getSessionExtractionLlm`
+//     (just called) must have pointed the anthropic-direct extraction egress at
+//     the localhost gateway POOL (cross-account 429 failover) — never direct to
+//     api.anthropic.com on a single account, the wall that flaked the bench write
+//     probes. Off ⇒ direct egress is expected, so this only asserts when the
+//     gateway is on. A gateway URL or any explicit override passes; only the bare
+//     direct path fails.
+{
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const { resolveAnthropicBaseUrl } = await import('@papercusp/papercusp-shared/agent');
+  const gatewayOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
+  const egress = resolveAnthropicBaseUrl();
+  log(`extraction egress: ${egress} (INFERENCE_GATEWAY ${gatewayOn ? 'ON' : 'off'})`);
+  if (gatewayOn && /(^|\/\/)api\.anthropic\.com/.test(egress)) {
+    console.error(
+      `FAIL: INFERENCE_GATEWAY is on but extraction still egresses DIRECT to ${egress} ` +
+        `(single-account, no 429 failover) — the EI-11042 gateway-pool egress did not apply.`,
+    );
+    process.exit(1);
+  }
+}
+
 // 2. Isolated schema + host pointed at it (operator seams carried over,
 //    including the session rung).
 setupBenchMemoryHost(LIVE_SCHEMA);
