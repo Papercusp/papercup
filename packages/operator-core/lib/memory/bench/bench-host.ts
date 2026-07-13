@@ -14,7 +14,8 @@
  */
 import { Client } from 'pg';
 
-import { configureMemory, memoryHost, pgClientFields } from '@papercusp/memory';
+import { configureMemory, memoryHost, pgClientFields, VEC_TABLE, MODE_DIMS } from '@papercusp/memory';
+import type { ResolvedVecMode } from '@papercusp/memory';
 // Side-effect import: wires the operator host (admin URL, credentials,
 // embedder cascade) that we then override schema-wise below.
 import '../configure';
@@ -68,14 +69,19 @@ export async function ensureBenchSchema(client: Client, schema: string = BENCH_S
     CREATE INDEX IF NOT EXISTS memory_canonical_user_id_idx
       ON ${schema}.memory_canonical ((payload->>'user_id'))
   `);
-  // One vec table per embedding SPACE — must mirror the production set
-  // (migration 534 added memory_vec_gemma). Omitting a space makes a bench run
-  // in that mode fail on a missing relation instead of measuring it.
-  for (const vec of ['memory_vec_openai', 'memory_vec_local', 'memory_vec_gemma']) {
+  // One vec table per embedding SPACE — DERIVED from the shared VEC_TABLE /
+  // MODE_DIMS maps (vec-write.ts) so a new production embedding space can never
+  // silently miss the bench again. The previous hand-copied 3-entry list did
+  // exactly that: migration 547 added memory_vec_harrier (1024-dim), the
+  // 2026-07-10 embedder eval made harrier the active mode, and every PG-backed
+  // seed then failed on `relation "bench_memory.memory_vec_harrier" does not
+  // exist` — zeroing mem0/hybrid in the 2026-07-13 run (WI-4509).
+  for (const mode of Object.keys(VEC_TABLE) as ResolvedVecMode[]) {
+    const vec = VEC_TABLE[mode];
     await client.query(`
       CREATE TABLE IF NOT EXISTS ${schema}.${vec} (
         memory_id uuid PRIMARY KEY REFERENCES ${schema}.memory_canonical(id) ON DELETE CASCADE,
-        vector vector(384) NOT NULL,
+        vector vector(${MODE_DIMS[mode]}) NOT NULL,
         embedded_at timestamptz NOT NULL DEFAULT now()
       )
     `);

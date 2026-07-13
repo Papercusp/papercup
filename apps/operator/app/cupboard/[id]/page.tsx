@@ -39,6 +39,7 @@ import type { HarnessListing, ListingAction } from '@papercusp/operator-core/lib
 import {
   listingActionFor,
   listingKindOf,
+  isHiveBlueprintListing,
   listingRepoSlug,
   listingContributorCount,
   listingTopLanguage,
@@ -107,6 +108,14 @@ export default function CupboardDetailPage() {
     // and lands in a hive only through the normal conflict review.
     if (kind === 'learning-pack') {
       void fetchLearningPackFromComb();
+      return;
+    }
+    // template (cupboard-full-dogfood P-003 / public-release P-002): clone the
+    // app/aspect template dir into the local user template store so
+    // `templates:new-app` materializes it via the standard path. MUST branch
+    // before the plugin fall-through — a template is NOT a plugin manifest.
+    if (kind === 'template') {
+      void installTemplateFromCupboard();
       return;
     }
     // plugin | tool-pack — the remaining install kinds — clone into
@@ -216,6 +225,44 @@ export default function CupboardDetailPage() {
     }
   };
 
+  // template Install (cupboard-full-dogfood P-003): clone the app/aspect
+  // template dir into the writable user template store (shadows the bundled
+  // floor). After install, `templates:new-app` materializes it via the same
+  // local path as a bundled template.
+  const installTemplateFromCupboard = async () => {
+    if (!listing || busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/cupboard/install-template', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ listingId: listing.id }),
+      });
+      const d = (await r.json().catch(() => ({}))) as {
+        ok?: boolean;
+        id?: string;
+        ref?: string;
+        title?: string;
+        version?: string;
+        installedTo?: string;
+        error?: string;
+        detail?: string;
+      };
+      if (!r.ok || !d.ok) {
+        toast.error(`Install failed: ${d.error ?? `HTTP ${r.status}`}${d.detail ? ` — ${d.detail}` : ''}`);
+        return;
+      }
+      toast.success(
+        `Template "${d.title ?? d.id ?? d.ref}"${d.version ? ` v${d.version}` : ''} installed — ` +
+          `use it with templates:new-app (or the app-create flow) to scaffold a new app.`,
+      );
+    } catch (e) {
+      toast.error(`Install crashed: ${(e as Error)?.message ?? String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // plugin / pack Install: clone the listing's repo into global-plugins. We do
   // NOT pass harness/acceptCapabilities — the global install only registers the
   // unit; per-harness capability consent stays explicit at enable-time (D-009).
@@ -296,6 +343,8 @@ export default function CupboardDetailPage() {
   }
 
   const kind = listingKindOf(listing);
+  // D-002: a pot blueprint reads as "pot template" on its detail page too.
+  const isPotTemplate = isHiveBlueprintListing(listing);
   const repoSlug = listingRepoSlug(listing);
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
@@ -329,8 +378,8 @@ export default function CupboardDetailPage() {
               display: 'inline-flex', alignItems: 'center', gap: 4,
               background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`,
               color: COLORS.textMuted,
-            }} data-testid="cupboard-detail-kind" data-kind={kind}>
-              <ActionIcon action={action} size={12} /> {kind}
+            }} data-testid="cupboard-detail-kind" data-kind={kind} data-pot-template={isPotTemplate ? 'true' : undefined}>
+              <ActionIcon action={action} size={12} /> {isPotTemplate ? `${t('pot', { lower: true })} template` : kind}
             </span>
             <ClaimStatusBadge
               status={listing.claim_status}

@@ -356,7 +356,7 @@ export default function CupboardClient() {
               {t('cupboard')}
             </h1>
             <p style={{ fontFamily: FONTS.ui, fontSize: 13, lineHeight: 1.6, color: COLORS.textMuted, margin: '10px 0 0' }}>
-              Discover installable {t('pot', { plural: true, lower: true })}, blueprints, plugins, packs, and tools from the shared Papercusp registry.
+              Discover installable {t('pot', { plural: true, lower: true })}, blueprints, templates, plugins, packs, and tools from the shared Papercusp registry.
             </p>
             {/* P-012: the in-UI "how sharing works" explainer (D-004). */}
             <div style={{ margin: '8px 0 0' }}>
@@ -711,6 +711,9 @@ export function ListingCard({
 }) {
   const t = useLexicon();
   const kind = listingKindOf(listing);
+  // D-002: a pot blueprint (blueprint_kind='pot') is a POT TEMPLATE — badged
+  // distinctly inside the single Blueprints tab (the old separate tab is gone).
+  const isPotTemplate = isHiveBlueprintListing(listing);
   const rawAction = listingActionFor(listing);
   const action = suppressViewHive && rawAction === 'view-hive' ? null : rawAction;
   const repoSlug = listingRepoSlug(listing);
@@ -760,7 +763,7 @@ export function ListingCard({
           {listing.title || listing.slug || repoSlug || 'Untitled'}
         </button>
         <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <KindBadge kind={kind} />
+          <KindBadge kind={kind} potTemplate={isPotTemplate} />
           <ClaimStatusBadge
             status={listing.claim_status}
             claimantLogin={listing.claimant_github_login}
@@ -863,13 +866,18 @@ export function ListingCard({
   );
 }
 
-/** Small kind tag on a card. */
-function KindBadge({ kind }: { kind: ListingKind }) {
+/** Small kind tag on a card. A pot blueprint (`potTemplate`) reads as
+ *  "pot template" with a hexagon glyph, distinguishing it inside the single
+ *  Blueprints tab (D-002) from an ordinary role blueprint. */
+function KindBadge({ kind, potTemplate }: { kind: ListingKind; potTemplate?: boolean }) {
+  const t = useLexicon();
   const tone = CUPBOARD_LISTING_KIND_TONE[kind];
+  const label = potTemplate ? `${t('pot', { lower: true })} template` : kind;
   return (
     <span
       data-testid="cupboard-kind-badge"
       data-kind={kind}
+      data-pot-template={potTemplate ? 'true' : undefined}
       className="pc-badge"
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 3,
@@ -878,7 +886,7 @@ function KindBadge({ kind }: { kind: ListingKind }) {
         color: tone.fg,
       }}
     >
-      <KindIcon kind={kind} size={10} /> {kind}
+      {potTemplate ? <Hexagon size={10} /> : <KindIcon kind={kind} size={10} />} {label}
     </span>
   );
 }
