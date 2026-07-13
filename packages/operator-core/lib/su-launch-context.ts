@@ -96,8 +96,6 @@ export function composeLaunchContext(input: LaunchContextInput): string {
 
   if ((input.profile ?? 'engineer') === 'engineer') {
     lines.push(
-      '<!-- papercusp-rule:file-locking=automatic-hooks -->',
-      '- **Edits:** managed hooks claim/release file locks automatically; inspect hook health if a write is not covered.',
       '<!-- papercusp-rule:test-router=test-file -->',
       '- **Exact tests:** `npm run test:file -- <test paths>` routes files to their owning Vitest configs.',
       '<!-- papercusp-rule:app-runtime=tauri -->',

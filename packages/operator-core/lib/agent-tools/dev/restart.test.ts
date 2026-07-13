@@ -91,6 +91,26 @@ describe('dev:restart dry run', () => {
     expect(acquireM).not.toHaveBeenCalled();
     expect(guardM).not.toHaveBeenCalled();
   });
+
+  // EI-10896: the gateway/bg-host/embed-sidecar had NO sanctioned restart path —
+  // the enum was ['dev','staging'] only, so a gateway fix could ONLY be landed by
+  // the raw `systemctl` this tool's own guidance forbids. Guard that every shared
+  // unit dispatches to its real systemd unit, and that each cooldown-bearing
+  // (shared, coalescing) target advertises the debounce in its dry-run note. If a
+  // target is dropped from the enum/TARGETS map, `cfg.unit` throws here.
+  it.each([
+    ['dev', 'papercup-dev-api.service', false],
+    ['staging', 'papercup-staging-api.service', true],
+    ['gateway', 'papercup-inference-gateway.service', true],
+    ['bg-host', 'papercup-bg-host.service', true],
+    ['embed-sidecar', 'papercup-embed-sidecar.service', true],
+  ] as const)('target:%s dispatches to %s (coalescing note: %s)', async (target, unit, coalesces) => {
+    const b = body(await call({ target }));
+    expect(b).toMatchObject({ ok: true, dry_run: true, target, would_run: `systemctl --user restart ${unit}` });
+    if (coalesces) expect(b.note).toMatch(/coalesced/);
+    else expect(b.note).not.toMatch(/coalesced/);
+    expect(acquireM).not.toHaveBeenCalled();
+  });
 });
 
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {

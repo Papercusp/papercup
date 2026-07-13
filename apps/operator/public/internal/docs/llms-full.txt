@@ -17815,6 +17815,69 @@ These are complementary, not redundant: the deploy path stays fail-loud on purpo
 * `papercup-release` checkout SHA stops advancing while `origin/main` moves.
 * The live operator stays healthy (rollback works) — the failure is silent unless you look at the deploy log, so a stalled release SHA is the tell.
 
+# Mobile apps (Android + iOS) — how the monitoring-first phone app works
+
+> The papercup-rust-mobile app, its device API, push, build, and the gotchas that make "why is my phone silent" diagnosable. From mobile-apps-revival-v2-2026-07-13.
+
+The phone app is a **monitoring interface, not a work surface**. The desktop is where the owner works; the phone shows what the fleet is doing and what needs the owner, with **no execute/approve/claim affordances**. Keep that principle when extending it — add read-only tiles and attention producers, not action buttons.
+
+## Where the code lives
+
+[Section titled “Where the code lives”](#where-the-code-lives)
+
+* **App:** `papercup-rust-mobile/` — a **separate git repo** on branch `master`, **NOT** covered by the papercup git-sync auto-commit. Edits there need a **manual commit**, and the papercup Edit-tool worktree guard refuses it (it can’t tell a separate repo from a stray worktree) — edit via `sed`/`bash` and commit by hand. Rust core (`crates/papercup-core`) + UniFFI bindings, Jetpack Compose (Android), SwiftUI (iOS).
+* **Server (device API):** `packages/operator-core/lib/endpoint-route/routes/device/*` — `defineTool` routes gated by `DEVICE_AUTH` (`{ kind: ['device'] }`). The phone reaches them at `https://api.papercuspai.com/api/device/*`.
+* **Device auth:** `lib/device-jwt.ts` (HS256, `MOBILE_JWT_SECRET`), `lib/device-store.ts` (paired devices + push tokens), `lib/device-push-dispatcher.ts` (FCM + APNs send).
+* **Monitoring producers:** `lib/device-monitoring.ts` (fail-soft, dependency-injected).
+
+## The gotchas that cost hours
+
+[Section titled “The gotchas that cost hours”](#the-gotchas-that-cost-hours)
+
+1. **The public URL tunnel is Cloudflare-DASHBOARD-managed.** `api.papercuspai.com` is served by `cloudflared` (tunnel `c53515b3`, user unit `cloudflared-papercupai-api.service`) whose ingress config lives in the Cloudflare **dashboard**, not the local `~/.cloudflared/papercupai-api.yml` — editing that local file does **nothing** (and SIGHUP-ing cloudflared after a bad local edit can kill the tunnel → both domains 530). If the public API is down, check the systemd unit is `active` first; don’t touch the local yml.
+2. **`/api/health` 404 on the public domain is a red herring** — it routes to a different internal port (`:3057`), not `:3070`. The phone never calls it. Test reachability with a real device route (`/api/device/attention` with a device JWT).
+3. **`MOBILE_JWT_SECRET` durability = device-token durability.** Device JWTs are HS256-signed with it; if it’s unset in dev, `getSecret()` mints a **per-process** secret that rotates on every restart → all paired phones silently stop working until they re-pair. It’s set durably in `apps/operator/.env.local` (gitignored, survives deploys, identical in the release + staging trees). `mobileJwtSecretStatus()` reports durability; a one-time boot/first-use warning fires when it’s ephemeral.
+4. **Two-port model applies.** Device routes run on the GREEN operator (`:3070`, release checkout). A server-side device-route edit reaches `:3070` only via the deploy pipeline (or a forced `deploy-cli --execute`); `:3170` is staging. Probe where your write actually lands.
+
+## Push (the owner’s remote control)
+
+[Section titled “Push (the owner’s remote control)”](#push-the-owners-remote-control)
+
+Both providers **mint their auth token in-process** (the old design expected a pre-signed env token refreshed by a job that never existed, so pushes silently no-op’d):
+
+* **FCM (Android, LIVE):** `google-auth-library` JWT client signs a service-account JWT from `FCM_SERVICE_ACCOUNT_PATH` (default `~/.papercusp/firebase-admin.json`, project `papercusp-mobile`) → OAuth access token → HTTP v1 send.
+* **APNs (iOS, DORMANT):** `jose` signs an ES256 provider JWT from a `.p8` (`APNS_KEY_PATH`/`APNS_KEY_ID`/`APNS_TEAM_ID`), cached \~50 min, sent over **HTTP/2** (APNs rejects HTTP/1.1). **Blocked on Apple Developer enrollment** — absent creds ⇒ cleanly skipped, so iOS registration is harmless until enrolled.
+
+Unconfigured providers are skipped, never thrown — `dispatchPush` returns `PushSendResult[]`. `pushEnabled()` reports which providers are live.
+
+## The monitoring surface (Phase B)
+
+[Section titled “The monitoring surface (Phase B)”](#the-monitoring-surface-phase-b)
+
+`lib/device-monitoring.ts` exposes fail-soft, dependency-injected producers reused across routes — a failed read returns a `null` tile, never a broken dashboard:
+
+* `releaseGateTile()` — reuses `fetchOrientPipeline` (cached). `stale-verdict` is **not** treated as red (load-bearing silence — don’t raise a phantom alarm).
+* `poolTile()` — `accountStatus` + `accountRoutingExhausted` (inference-pool health).
+* `fleetsAndPotsTile()` — `listPresence` + `fetchPresenceFleet`, grouped by fleet + pot.
+* `connectionTile()` — `deviceConnectionSnapshot` (paired? push registered? secret durable?).
+* `systemAlerts()` — PURE composer: red-gate + pool-exhaustion → owner-attention alerts.
+
+Routes: `GET /device/monitoring` (all tiles), and `GET /device/attention` carries `systemAlerts` alongside its existing `groups` + `workItems`. Most owner-attention surfaces (fleet-leader escalations, open owner questions, needs-human) are **already** produced by `plans:attention` (which the device attention route reads) — only the system-health conditions (red-gate, pool-exhaustion) were missing.
+
+## Building
+
+[Section titled “Building”](#building)
+
+Android: `cd papercup-rust-mobile && export ANDROID_NDK_HOME=$HOME/Android/Sdk/ndk/27.0.12077973 ANDROID_HOME=$HOME/Android/Sdk && make tokens bindings-kotlin && tools/build-scripts/build-android.sh` (the last step does the 4-ABI cargo-ndk release cross-compile + `gradlew assembleDebug`; `make build-android` additionally runs `install-and-launch.sh`, which needs an adb device). APK → `android/app/build/outputs/apk/debug/app-debug.apk`. iOS: needs the Mac VM (`ssh -p 2222`, `~/.papercusp/build-vms.env`) + `make build-ios`.
+
+## What stays owner-gated
+
+[Section titled “What stays owner-gated”](#what-stays-owner-gated)
+
+* **APNs enrollment** — Apple Developer account + `.p8` key (iOS push is dead until then).
+* **On-device verification** — the owner re-pairs their own phones (`/settings/mobile`) and confirms a push actually lands; can’t be done without their devices.
+* **Graduating the `mobile-pairing` onboarding item** out of `ONBOARDING_PREVIEW_FEATURES` — wait until pairing + push are owner-verified end-to-end (Android works; iOS pending enrollment), or a fresh install is promised notifications that don’t fire.
+
 # Mobile endpoints are a defineRoute flag, not a separate router
 
 > The mobile API moved off the bespoke _hono/mobile.ts router onto defineRoute under /api/device/* + a `cors: true` flag. Device JWTs resolve through requirePrincipal; isRevoked treats unknown devices as revoked, which bites synthetic test JWTs.
@@ -27805,6 +27868,40 @@ PAPERCUSP_PGBOUNCER=1 npx vitest run <file>
 ```
 
 If that reproduces, add the offending variable to the hermetic scrub (with a comment naming the incident) rather than patching the individual test.
+
+# Agent CLI spawn fails with opaque 'exited ?' — the operator's PATH lacks ~/.local/bin (EI-11519)
+
+> The Tauri dev shell's spawned operator inherits a PATH WITHOUT ~/.local/bin, where the claude native installer (2.1.207+) lives — spawn('claude') ENOENTs, the child 'error' event was swallowed, and the UI showed only "claude-code exited ?" with empty stderr. Fixed at the shared chokepoint — withAgentBinDirs() PATH augmentation + spawn-error capture in papercusp-shared chat-stream.ts.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+An agent-backed chat surface (e.g. the Quick Panel brainstorm partner) dies instantly with the terminal error **`claude-code exited ?`** — no exit code, no stderr, nothing in the operator log. Only on operators spawned by the **Tauri dev shell** (`:3270`); the release operator on `:3070` works.
+
+## Root cause (two stacked defects)
+
+[Section titled “Root cause (two stacked defects)”](#root-cause-two-stacked-defects)
+
+1. **PATH divergence by spawner.** The claude native installer (2.1.207+, since 2026-07-11) installs to `~/.local/bin`. A systemd-started operator inherits a login-ish PATH that includes it; the Tauri dev shell spawns its sidecar operator with a MINIMAL PATH **without `~/.local/bin`** → `spawn('claude')` ENOENT.
+2. **The error was swallowed.** `child.on('error', () => { … })` discarded the error object, so the ENOENT never reached stderr/logs and the stream layer reported the generic `exited ?` (exitCode never set — the process never started).
+
+## Fix (shared chokepoint, not the launcher)
+
+[Section titled “Fix (shared chokepoint, not the launcher)”](#fix-shared-chokepoint-not-the-launcher)
+
+In `libs/papercusp-shared/src/agent/chat-stream.ts`:
+
+* **`withAgentBinDirs(env)`** — exported helper that APPENDS (never prepends) the well-known per-user bin dirs that exist on disk but are missing from `env.PATH`: `~/.local/bin`, `~/.bun/bin`, `~/.cargo/bin`, `/home/linuxbrew/.linuxbrew/bin`. Identity return when nothing is missing. Every agent-CLI spawn in this file now goes through it.
+* **Spawn-error capture** — `child.on('error', e => …)` records `failed to spawn <cmd>: <message>` into the stderr buffer and the terminal error message, so the NEXT PATH-class failure names itself instead of reporting `exited ?`.
+
+Unit tests: `chat-stream-resolve.test.ts` (`withAgentBinDirs` describe block).
+
+## How to recognize the class
+
+[Section titled “How to recognize the class”](#how-to-recognize-the-class)
+
+Any “worked under systemd, broken under X” where X spawns the process tree (Tauri shell, a test runner, a container): diff the PATH first — `tr ':' '\n' </proc/<pid>/environ`-style inspection of the ACTUAL spawner env, not your interactive shell. An `exited ?`-style error with EMPTY stderr and no exit code is the signature of a swallowed `spawn` error: the process never ran.
 
 # Two impls of one classifier WILL drift — generate both from one table
 
@@ -73045,7 +73142,7 @@ Some code is **retired but deliberately kept** in the tree for reference — not
 | Legacy `@papercusp/orchestrator` run-loop (`runMainLoop` + the `pre-loop`/`synthesizer`/`actions-block`/`checkpoints(-pg)`/`snapshot-state`/`snapshots-pg`/`mission-state-pg`/`dispatches-pg`/`distributed-claim-fetch` cluster + `bin/run.ts`, plus `git.ts`/`branch-iso.ts`)                                                                                                                                                             | `libs/papercusp/_retired/orchestrator-run-loop/` (+ superproject `_retired/orchestrator-run-loop/apps-operator-test/` for the 4 integration tests) | Retired 2026-06-06 (`archive-legacy-orchestrator-deadcode`). 0 live importers; superseded by the DBOS pipeline. Barrel + 4 package.json subpath exports pruned; the `cost-cap.ts`→`mission-state-pg` cross-edge severed (cost-cap is now FS-only). `lint:no-retired` guards against re-imports + a reappearing `/api/plugins/orchestrator/spawn` fetch.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `libs/papercusp/_retired/orchestrator-run-loop/RESTORE.md` + submodule git tag `legacy-orchestrator-run-loop-retired-2026-06-06` |
 | `@papercupai/orchestrator-spawn` plugin (never installed)                                                                                                                                                                                                                                                                                                                                                                                  | `libs/papercusp/_retired/orchestrator-spawn-plugin/`                                                                                               | Retired 2026-06-06. Superseded by `fleet/operator-spawn.ts`; its `/api/plugins/orchestrator/spawn` path 404’d.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `libs/papercusp/_retired/orchestrator-spawn-plugin/RESTORE.md`                                                                   |
 | The harness-snapshot system (`@papercusp/export-state` FS-tarball lib + `snapshots:*` tools + `/api/snapshots/*` routes + the Cupboard `kind=snapshot` path + worker R2 blob store + the `SNAPSHOTS` flag + `snapshot_index` PG table)                                                                                                                                                                                                     | `_retired/snapshot-system/`                                                                                                                        | Retired 2026-06-09 (`retire-snapshots-instance-spec`). A monolithic-era abstraction; its jobs re-homed — distribution→blueprints, backup→git+PG, reproducible clone→the lightweight `InstanceSpec` (`packages/operator-core/lib/instance-spec/`, capture/boot/vary). `@papercusp/export-state` dropped from the workspace glob + lockfile; migration 199 drops `snapshot_index`. NOT the legacy `harness_snapshots(_consolidated)` iteration-snapshot tables (still live). `lint:no-retired` guards re-imports.                                                                                                                                                                                                                                                                                                                                      | `_retired/snapshot-system/RESTORE.md` + git tag `snapshot-system-retired-2026-06-09`                                             |
-| Legacy web chats (`OracleDock` chat dock + `OperatorChatSidebar` “Papercup chat” web sidebar + inner `OperatorChat` + `TutorialButton`)                                                                                                                                                                                                                                                                                                    | `_retired/legacy-web-chats/`                                                                                                                       | Retired 2026-07-09 (design-simplification-2026-07-09 P-003, owner D1: the only chat surface is the terminal-native pui chat pane in the zellij dock). All three mounts were already `FLAGS.TESTING`-gated (prod-dark). Shared chat infra stays live (`OperatorConversationProvider`, `chat/ChatConversation`, `chat-cards/*`, `AudienceModeSelector`, `ChatwootWidget`; `SupportChatButton` self-falls-back to `/support`). Dead `.oracle-*`/`.op-chat-*` CSS in globals.css tracked for removal in design-simplification P-010.                                                                                                                                                                                                                                                                                                                     | `_retired/legacy-web-chats/RESTORE.md`                                                                                           |
+| Legacy web chats (`OracleDock` chat dock + inner `OperatorChat` + `TutorialButton` — **`OperatorChatSidebar` was REVIVED 2026-07-13** and is live again as the primary chat surface)                                                                                                                                                                                                                                                       | `_retired/legacy-web-chats/`                                                                                                                       | Retired 2026-07-09 (design-simplification-2026-07-09 P-003, owner D1: the only chat surface is the terminal-native pui chat pane in the zellij dock). **Reversed for the sidebar 2026-07-13** (operator-chat-sidebar-revival-2026-07-13, owner decision): `OperatorChatSidebar` moved back to `apps/operator/app/_components/`, mounts in ChromeShell behind `FLAGS.OPERATOR_CHAT_SIDEBAR` (default ON), and the zellij dock is now the TESTING-gated dev surface (P-014/D-004 — bundled but dark by default; Rust spawns it only via the webview’s `native_terminal_set_enabled` relay). `OracleDock`/`TutorialButton` stay retired. Shared chat infra stays live (`OperatorConversationProvider`, `chat/ChatConversation`, `chat-cards/*`, `AudienceModeSelector`, `ChatwootWidget`; `SupportChatButton` self-falls-back to `/support`).           | `_retired/legacy-web-chats/RESTORE.md`                                                                                           |
 | Legacy per-slug harness dashboard (`/harness/$slug` dock shell `HarnessDockShell` + insights/projects pages, `dock/sample-panels` + the `Real*`/`Pinned*` dock data panels, shell-only dock chrome (`DockNavChevrons`/`DockOnboarding`/`LayoutsMenu`/`useDockLayout`), orphaned dashboard tabs (`InsightsPanel`/`MemoryBrowser`/`PromptsTab`/`PromptBudgetView`), `h-proposals.css`, the vite `/harness/$slug` routes, `e2e/dock.spec.ts`) | `_retired/harness-dashboard/`                                                                                                                      | Retired 2026-07-09 (design-simplification-2026-07-09 P-008, owner D2: `app/harness/` dashboard is legacy; `/adv` is the harness surface). Retire set derived by per-file importer inventory + reachability closure. **Stays live in `apps/operator/app/harness/`:** the design-system primitives (`Button`/`Checkbox`/`Modal`/`Select`/`Tooltip`/`Popover`/`Kanban`/`theme.ts`/`primitives.tsx`/`harness.css`, …) AND the dock ENGINE (`HarnessDock`/`panel-registry`/`dock-actions`/…) — `/adv` + `/workbench` are built on it — plus every audit-listed component the inventory proved live (`AgentInspectorModal`, `TrustBadge`, `PrsTab`, `FeatureEditor`, `InsightsTab`, the dogfood-substrate insights cards, `PiTerminalsDock`/`PiPanel`). Old `/harness/<slug>` deep links translate via the `routes/harness/$.tsx` splat redirect → `/adv`. | `_retired/harness-dashboard/RESTORE.md`                                                                                          |
 
 **Convention for retiring-but-keeping a surface:** (1) move it under `_retired/` — this drops it from the `apps/*` / `packages/*` workspace globs so npm, the affected-test runner, knip, and nx stop treating it as live (the structural signal that fools agents, not a prose note); (2) remove its root `package.json` scripts and banner any deploy config — **preserve, don’t delete**; (3) add a `RESTORE.md` in the moved directory with the exact re-wiring steps + the last-active commit, and cut a `git tag <name>-retired-<date>` restore point; (4) add a row to the table above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the RESTORE.md steps.
@@ -74813,7 +74910,7 @@ The standalone webapp was retired on 2026-05-14. The dev shell still binds ports
 
 Start the shell with `cd papercusp-desktop && npm run dev` (or attach to an already-running one — see §1) and drive that webview via the **`tauri-agent-tools`** CLI documented below. It speaks to a debug-only Rust bridge inside the webview, so DOM queries, `eval`, `click`, `type`, IPC monitoring, and DOM-targeted screenshots all work without focus-stealing or OCR.
 
-The shell also opens a **second window** — a ghostty terminal running the zellij `pui` dock with the live agent TUIs (the **Papercup chat** there is a Claude-Code session, and the **Mug** runs beside it). `tauri-agent-tools` **cannot** see that window; drive/observe it with `zellij action` + screenshots — see **§16**.
+The shell **used to** also open a **second window** — a ghostty terminal running the zellij `pui` dock with the live agent TUIs. Since 2026-07-13 the dock is **testing-gated dark** (operator-chat-sidebar-revival-2026-07-13 P-014/D-004): it stays fully bundled, but spawns only when `FLAGS.TESTING` is ON (the webview relays the flag to Rust’s `native_terminal_set_enabled` — no boot-time spawn). With the flag off (the shipped default) there is **no dock window**, and the revived **operator chat sidebar** in the webview is the chat surface. When the flag is on and the dock is up, `tauri-agent-tools` **cannot** see that window; drive/observe it with `zellij action` + screenshots — see **§16**.
 
 Marketing/website surfaces (`/`, `/marketplace`, `/support`, `/docs`, auth pages) deliberately omit some app-side affordances (e.g. the Oracle dock); don’t flag those as failures — see the route table for which surfaces each feature should appear on.
 
@@ -76394,7 +76491,9 @@ Plain `.click()` on buttons works fine (React listens natively for clicks) — t
 
 [Section titled “16. Driving the zellij pui chat dock (the Papercup / Mug TUIs)”](#16-driving-the-zellij-pui-chat-dock-the-papercup--mug-tuis)
 
-Everything above drives the **Tauri webview**. The desktop ALSO opens a *second* window: a **ghostty terminal running a zellij `pui` dock** — the live agent TUIs (owner directive 2026-06-11: “every agent chat is a LIVE TUI”). This is where the **Papercup chat** and the **Mug** actually run for the user. `tauri-agent-tools` **cannot see it** (it’s not the webview) — drive it with `zellij action` + window screenshots instead.
+> **⚠ Testing-gated since 2026-07-13** (operator-chat-sidebar-revival-2026-07-13 P-014/D-004): the dock no longer spawns by default. It stays fully bundled (all code + `pui`/`zellij` binaries ship), but the desktop opens it ONLY when `FLAGS.TESTING` is on — the webview relays the resolved flag to Rust’s `native_terminal_set_enabled` (`NativeTerminalGate`); there is no boot-time spawn. Flag off ⇒ no dock window; the revived **operator chat sidebar** is the user-facing chat surface. Everything below applies when the flag is ON (or when you launch `pui chat` manually from any terminal — that path is unaffected by the gate).
+
+Everything above drives the **Tauri webview**. With `FLAGS.TESTING` on, the desktop ALSO opens a *second* window: a **ghostty terminal running a zellij `pui` dock** — the live agent TUIs. `tauri-agent-tools` **cannot see it** (it’s not the webview) — drive it with `zellij action` + window screenshots instead.
 
 ### 16.1 What’s in the dock
 

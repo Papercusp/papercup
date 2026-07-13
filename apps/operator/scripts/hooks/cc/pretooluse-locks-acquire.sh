@@ -76,14 +76,24 @@ def write_marker(name, value):
 
 
 def mark_success():
-    write_marker('last-success.json', {'ts': now_iso()})
+    value = {'ts': now_iso()}
+    write_marker('last-success.json', value)
+    owner_value = globals().get('owner')
+    if isinstance(owner_value, str) and owner_value:
+        value['owner'] = owner_value
+        write_marker(owner_marker_name('success'), value)
 
 
 def mark_error(phase, detail):
-    write_marker('last-error.json', {
+    value = {
         'ts': now_iso(), 'handler': 'pretooluse', 'phase': phase,
         'detail': str(detail)[:200], 'operator_url': operator_url,
-    })
+    }
+    write_marker('last-error.json', value)
+    owner_value = globals().get('owner')
+    if isinstance(owner_value, str) and owner_value:
+        value['owner'] = owner_value
+        write_marker(owner_marker_name('error'), value)
 
 
 def now_iso():
@@ -150,6 +160,12 @@ owner = (
     else session_id if isinstance(session_id, str) and session_id
     else agent_id)
 )
+
+
+def owner_marker_name(kind):
+    """Owner-scoped runtime proof; the global marker remains for machine health."""
+    safe = re.sub(r'[^A-Za-z0-9._-]', '_', owner)[:160] or 'unknown'
+    return 'owner-' + safe + '-last-' + kind + '.json'
 
 
 def patch_text(ti):
@@ -613,14 +629,16 @@ def _locks_acquire_once():
 def _grant(granted):
     """Cache the lock_id for the matching PostToolUse release, then allow."""
     lock_id = granted.get('lock_id')
-    write_marker('last-decision.json', {
+    decision = {
         'ts': now_iso(),
         'decision': 'granted',
         'owner': owner,
         'tool': tool_name,
         'paths': repo_relative[:50],
         'lock_id': lock_id,
-    })
+    }
+    write_marker('last-decision.json', decision)
+    write_marker(owner_marker_name('decision'), decision)
     if lock_id and tool_use_id:
         try:
             with open(os.path.join(cache_dir, tool_use_id + '.lock'), 'w') as f:

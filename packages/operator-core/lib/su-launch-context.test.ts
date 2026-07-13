@@ -24,6 +24,7 @@ describe('composeLaunchContext', () => {
     expect(out).toContain('cross_harness:docs_*');
     expect(out).not.toContain('**Plan:**');
     expect(out).toContain('papercusp-rule:test-router=test-file');
+    expect(out).not.toContain('papercusp-rule:file-locking');
     expect(out.endsWith('\n')).toBe(true);
   });
 

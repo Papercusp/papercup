@@ -27,7 +27,7 @@ INPUT=$(cat)
 # Fail-open backstop: release is best-effort (TTL covers a missed one), so
 # never let a Python error exit non-zero from this hook.
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF' || exit 0
-import json, os, sys, time, urllib.request, urllib.parse
+import json, os, re, sys, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]
@@ -85,6 +85,11 @@ owner = (
     else agent_id)
 )
 
+
+def owner_marker_name(kind):
+    safe = re.sub(r'[^A-Za-z0-9._-]', '_', owner)[:160] or 'unknown'
+    return 'owner-' + safe + '-last-' + kind + '.json'
+
 cache_path = os.path.join(cache_dir, tool_use_id + '.lock')
 if not os.path.exists(cache_path):
     sys.exit(0)
@@ -120,13 +125,18 @@ req = urllib.request.Request(
 )
 try:
     urllib.request.urlopen(req, timeout=10).read()
-    write_marker('last-success.json', {'ts': now_iso()})
+    value = {'ts': now_iso(), 'owner': owner}
+    write_marker('last-success.json', value)
+    write_marker(owner_marker_name('success'), value)
 except Exception as e:
     # Best-effort; TTL covers a missed release. Record for /coord health.
-    write_marker('last-error.json', {
+    value = {
         'ts': now_iso(), 'handler': 'posttooluse', 'phase': 'connect',
         'detail': str(e)[:200], 'operator_url': operator_url,
-    })
+        'owner': owner,
+    }
+    write_marker('last-error.json', value)
+    write_marker(owner_marker_name('error'), value)
 
 try:
     os.remove(cache_path)
