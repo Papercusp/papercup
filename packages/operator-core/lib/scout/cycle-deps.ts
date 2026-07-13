@@ -499,6 +499,17 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       } catch {
         /* best-effort */
       }
+      // TOOL-TELEMETRY lane (blender-self-learning-2026-07-12 P-009 / WI-4454):
+      // measured tool DX friction from tool_invocations — per-tool error rates,
+      // arg-limit rejections, retry/batching-waste loops, chronic p95 latency.
+      // Fail-soft (the lane module returns [] on outage).
+      try {
+        const { buildToolTelemetryLane } = await import('./tool-telemetry-lane');
+        const ttLane = await buildToolTelemetryLane();
+        if (ttLane.length > 0) digest.toolTelemetry = ttLane;
+      } catch {
+        /* best-effort */
+      }
       // DELTA-FIRST substrate (blender-self-learning-2026-07-12 P-003 /
       // WI-4319): diff this digest against the previous fired cycle's persisted
       // snapshot — read the previous refs, persist the CLEAN fresh digest as

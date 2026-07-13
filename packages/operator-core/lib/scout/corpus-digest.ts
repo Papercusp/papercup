@@ -216,6 +216,7 @@ const META_PATTERN_CATEGORIES = [
   'watchdog-health',
   'gate-pipeline-health',
   'coord-health',
+  'tool-telemetry',
 ] as const;
 
 /**
@@ -297,6 +298,11 @@ export const DigestSchema = z.object({
    *  directed mail, inbox/wake floods, claim conflicts. OPTIONAL: populated by
    *  the cycle seam (cycle-deps readCorpus), like watchdogHealth. */
   coordHealth: z.array(MetaPatternSchema).optional(),
+  /** TOOL TELEMETRY (blender-self-learning-2026-07-12 P-009 / WI-4454) — measured
+   *  tool DX friction from tool_invocations: per-tool error rates, arg-limit
+   *  rejections, retry/batching-waste loops, chronic p95 latency. OPTIONAL:
+   *  populated by the cycle seam (cycle-deps readCorpus), like watchdogHealth. */
+  toolTelemetry: z.array(MetaPatternSchema).optional(),
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS cycle's persisted digest snapshot carried
    *  (scout_digest_snapshots, migration 582). renderDigest leads with the

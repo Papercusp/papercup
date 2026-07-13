@@ -179,6 +179,9 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // P-008 (blender-self-learning): coordination breakdown rides the flatten so
     // ideation targets escalation storms / unanswered mail / wake floods directly.
     ['coord-health', digest.coordHealth ?? []],
+    // P-009 (blender-self-learning): measured tool DX friction rides the flatten so
+    // ideation targets failing / slow / arg-limit-rejecting / over-called tools directly.
+    ['tool-telemetry', digest.toolTelemetry ?? []],
   ];
   const out: MetaPattern[] = [];
   for (const [category, patterns] of lanes) {
@@ -217,6 +220,8 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Gate / pipeline health (release ship-path — standing reds, promotion/deploy stall, chronic pipeline failures)';
     case 'coord-health':
       return 'Coord health (coordination breakdown — escalation storms, unanswered directed mail, inbox/wake floods, claim conflicts)';
+    case 'tool-telemetry':
+      return 'Tool telemetry (measured DX friction — per-tool error rates, arg-limit rejections, retry/batching-waste loops, chronic p95 latency)';
   }
 }
 
