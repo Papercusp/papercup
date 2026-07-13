@@ -11,13 +11,7 @@
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 // @ts-expect-error — the .mjs script has no declaration file (same as test-file-router.test.ts).
-import {
-  reachableStatic,
-  computeEagerExternalized,
-  shortestStaticChain,
-  decideEager,
-  ALLOWED_EAGER_BUILTINS,
-} from '../../../scripts/trace-vite-externalized.mjs';
+import { reachableStatic, computeEagerExternalized, shortestStaticChain, decideEager, ALLOWED_EAGER_BUILTINS } from '../../../scripts/trace-vite-externalized.mjs';
 
 // A miniature SPA graph. main → {buffer-polyfill, __root}; __root → provider → reducer →
 // {safe-leaf, run-script}. lazyRoute/server-blob are reached ONLY via a dynamic (await import)
