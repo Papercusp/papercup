@@ -260,7 +260,7 @@ describe('armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
   });
 
-  it('runs the onFire hook before the process-group kill so the watchdog can emit a loud red verdict', () => {
+  it('runs a SYNC onFire hook before the process-group kill so the watchdog can emit a loud red verdict', () => {
     const release = vi.fn();
     const kill = vi.fn();
     const onFire = vi.fn();
@@ -270,6 +270,62 @@ describe('armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(onFire).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
     expect(onFire.mock.invocationCallOrder[0]).toBeLessThan(kill.mock.invocationCallOrder[0]);
+  });
+
+  /** WI-4528 (EI-10800 class). The REAL onFire is async — it awaits emitAwaitedEvent for the
+   *  `green-checkpoint:red[:<pipeline>]` verdict that agents park on via checkpoint:await. The old
+   *  test above (sync vi.fn + invocationCallOrder) only proved onFire was *invoked* before the kill,
+   *  which is TRUE of the broken code too: it fire-and-forgot the emit and then SIGKILLed its own
+   *  process group on the very next sync line, so the emit never got an event-loop turn and the wake
+   *  was lost with certainty. The contract that actually matters is COMPLETION-before-kill. */
+  it('WI-4528: AWAITS an async onFire to COMPLETION before the process-group kill (a fire-and-forget red emit is a lost wake)', async () => {
+    const order: string[] = [];
+    const release = vi.fn();
+    const kill = vi.fn((p: number, sig: NodeJS.Signals) => order.push(`kill:${p}:${sig}`));
+    armSelfWatchdog(
+      { release },
+      {
+        ms: 1000,
+        kill,
+        pid: 999,
+        log: () => {},
+        onFireGraceMs: 5000,
+        onFire: async () => {
+          order.push('emit:start');
+          // a real emitAwaitedEvent is several awaited DB round-trips — the broken code killed
+          // the process group long before anything like this could land.
+          await Promise.resolve();
+          await Promise.resolve();
+          order.push('emit:done');
+        },
+      },
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(order).toEqual(['emit:start', 'emit:done', 'kill:-999:SIGKILL']);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-4528: a WEDGED onFire can never block the guaranteed kill — the grace bounds it', async () => {
+    const order: string[] = [];
+    const release = vi.fn();
+    const kill = vi.fn((p: number, sig: NodeJS.Signals) => order.push(`kill:${p}:${sig}`));
+    const log = vi.fn();
+    armSelfWatchdog(
+      { release },
+      {
+        ms: 1000,
+        kill,
+        pid: 999,
+        log,
+        onFireGraceMs: 5000,
+        onFire: () => new Promise<void>(() => order.push('emit:start')), // never settles
+      },
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(order).toEqual(['emit:start']); // still hanging — no kill yet
+    await vi.advanceTimersByTimeAsync(5000); // grace elapses
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('did not settle within 5000ms'));
   });
 
   it('logs a process-group snapshot before killing a wedged checkpoint run (WI-2957)', () => {

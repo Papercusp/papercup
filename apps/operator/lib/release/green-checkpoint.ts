@@ -287,6 +287,38 @@ export function snapshotCheckpointProcessGroup(pid: number): string | null {
   }
 }
 
+/** WI-4528 (EI-10800 class): how long the self-watchdog waits for an ASYNC `onFire` — the loud
+ *  RED-verdict emit + the urgent attention-notify — to actually SETTLE before it delivers the
+ *  guaranteed SIGKILL. Negligible against the 3h watchdog, and BOUNDED so a wedged/hanging emit
+ *  can never block the kill this watchdog exists to deliver. */
+export const SELF_WATCHDOG_ONFIRE_GRACE_MS = 8_000;
+
+/** Await `p`, but never longer than `graceMs` — resolves when `p` settles OR the grace elapses,
+ *  whichever comes first, and swallows a rejection (the caller proceeds either way). This is what
+ *  lets armSelfWatchdog land an async last-gasp emit without ever letting it wedge the kill. */
+async function awaitBounded(p: Promise<unknown>, graceMs: number, log: (msg: string) => void): Promise<void> {
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      p.then(
+        () => undefined,
+        () => undefined,
+      ),
+      new Promise<void>((resolve) => {
+        graceTimer = setTimeout(() => {
+          log(
+            `[green-checkpoint] self-watchdog onFire hook did not settle within ${graceMs}ms — ` +
+              `proceeding to SIGKILL (the red verdict may not have been emitted)`,
+          );
+          resolve();
+        }, graceMs);
+      }),
+    ]);
+  } finally {
+    if (graceTimer) clearTimeout(graceTimer);
+  }
+}
+
 /** WI-1319 root fix (c) — the watchdog described above, ACTUALLY ARMED. (The
  *  constant above shipped 2026-07-02 with the full design in its comment, but
  *  nothing ever called `setTimeout` — this closes that gap.) Call once, right
@@ -306,7 +338,17 @@ export function armSelfWatchdog(
     pid?: number;
     log?: (msg: string) => void;
     snapshotProcessGroup?: (pid: number) => string | null;
-    onFire?: () => void;
+    /** WI-4528 (EI-10800 class): onFire MAY BE ASYNC. It emits the loud RED verdict that parked
+     *  agents wake on (`checkpoint:await` → `green-checkpoint:red:<pipeline>`) plus the urgent
+     *  attention-notify — both are async DB/IO writes. We BOUND-AWAIT a returned promise before
+     *  the SIGKILL below, because fire-and-forgetting it here is a GUARANTEED lost wake: the kill
+     *  targets our OWN process group on the very next synchronous line, so the event loop never
+     *  turns again and the emit's continuation never runs. (A sync/absent onFire keeps the
+     *  original fully-synchronous kill path.) */
+    onFire?: () => void | Promise<void>;
+    /** Max wait for an async `onFire` to settle before the guaranteed kill (injected in tests).
+     *  Defaults to SELF_WATCHDOG_ONFIRE_GRACE_MS. */
+    onFireGraceMs?: number;
   } = {},
 ): { cancel: () => void } {
   const ms = opts.ms ?? SELF_WATCHDOG_MS;
@@ -314,6 +356,7 @@ export function armSelfWatchdog(
   const kill = opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
   const log = opts.log ?? ((m: string) => console.error(m));
   const snapshotProcessGroup = opts.snapshotProcessGroup ?? snapshotCheckpointProcessGroup;
+  const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const timer = setTimeout(() => {
     log(
       `[green-checkpoint] self-watchdog fired after ${Math.round(ms / 60_000)}m with no normal exit — ` +
@@ -333,15 +376,28 @@ export function armSelfWatchdog(
     } catch {
       /* best-effort — a missing/already-gone lock must not stop the kill below */
     }
+    const doKill = () => {
+      try {
+        kill(-pid, 'SIGKILL'); // negative pid → the whole group (this process + every runCmd-spawned vitest/tsx worker)
+      } catch {
+        /* group already gone */
+      }
+    };
+    let fired: void | Promise<void>;
     try {
-      opts.onFire?.();
+      fired = opts.onFire?.();
     } catch {
       /* best-effort — emit the loud red verdict first, even if the hook fails */
+      fired = undefined;
     }
-    try {
-      kill(-pid, 'SIGKILL'); // negative pid → the whole group (this process + every runCmd-spawned vitest/tsx worker)
-    } catch {
-      /* group already gone */
+    // WI-4528 (EI-10800 class): if onFire went async, its emit is still IN FLIGHT right now. The
+    // kill below SIGKILLs our OWN process group, so the event loop would never turn again and the
+    // emit would be lost with CERTAINTY (not merely raced) — every agent parked on the red verdict
+    // would silently hang to its own timeout. Let it LAND first, bounded, then kill regardless.
+    if (fired && typeof (fired as PromiseLike<void>).then === 'function') {
+      void awaitBounded(fired as Promise<void>, onFireGraceMs, log).then(doKill, doKill);
+    } else {
+      doKill();
     }
   }, ms);
   timer.unref();
@@ -2384,7 +2440,14 @@ if (require.main === module) {
     // canceled on every normal exit path below, so it only ever fires on a genuine
     // wedge (see armSelfWatchdog's doc comment).
     const watchdog = armSelfWatchdog(lock, {
-      onFire: () => {
+      // WI-4528 (EI-10800 class): ASYNC + AWAITED. These two effects used to be fire-and-forget
+      // `void import(...).then(emit)` — a GUARANTEED lost wake, not merely a race: armSelfWatchdog
+      // SIGKILLs this process's own group on the very next synchronous line, so the dynamic
+      // import()s (which cannot even begin resolving until the sync stack unwinds) never got a
+      // single event-loop turn. Every agent parked on the red verdict via checkpoint:await missed
+      // it and hung to its own timeout — in the ONE situation (lost parent, abnormal exit) where
+      // that wake matters most. armSelfWatchdog now BOUND-awaits this hook before the kill.
+      onFire: async () => {
         const red: CheckpointResult = {
           advanced: false,
           candidate: candidateArg ?? cfg.integrationBranch,
@@ -2396,35 +2459,39 @@ if (require.main === module) {
             `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
         };
         emitResult(red);
-        void import('@papercusp/operator-core/lib/events/await/engine')
-          .then(async ({ emitAwaitedEvent }) => {
-            const pipeline = pipelineName(cfg.integrationRoot);
-            const payload = { sha: red.candidate, from: red.from, pipeline, summary: red.summary };
-            await emitAwaitedEvent({
-              key: 'green-checkpoint:red',
-              summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
-              payload,
-              source: 'green-checkpoint',
-            });
-            await emitAwaitedEvent({
-              key: `green-checkpoint:red:${pipeline}`,
-              summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
-              payload,
-              source: 'green-checkpoint',
-            });
-          })
-          .catch(() => {});
-        void import('@papercusp/operator-core/lib/attention-notify')
-          .then(async ({ notifyAttention }) => {
-            await notifyAttention({
-              kind: 'intervention',
-              title: 'Release pipeline RED — green-checkpoint self-watchdog fired',
-              body: red.summary ?? 'self-watchdog fired with no summary',
-              importance: 'urgent',
-              data: { candidate: red.candidate, reason: red.reason },
-            });
-          })
-          .catch(() => {});
+        const pipeline = pipelineName(cfg.integrationRoot);
+        const payload = { sha: red.candidate, from: red.from, pipeline, summary: red.summary };
+        try {
+          const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
+          await emitAwaitedEvent({
+            key: 'green-checkpoint:red',
+            summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
+            payload,
+            source: 'green-checkpoint',
+          });
+          await emitAwaitedEvent({
+            key: `green-checkpoint:red:${pipeline}`,
+            summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
+            payload,
+            source: 'green-checkpoint',
+          });
+        } catch (e) {
+          console.error(
+            `[green-checkpoint] self-watchdog red-verdict emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
+          );
+        }
+        try {
+          const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
+          await notifyAttention({
+            kind: 'intervention',
+            title: 'Release pipeline RED — green-checkpoint self-watchdog fired',
+            body: red.summary ?? 'self-watchdog fired with no summary',
+            importance: 'urgent',
+            data: { candidate: red.candidate, reason: red.reason },
+          });
+        } catch {
+          /* best-effort — the kill proceeds regardless */
+        }
       },
     });
     const releaseAndExit = (code: number): never => {
