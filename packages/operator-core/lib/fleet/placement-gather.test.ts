@@ -11,6 +11,8 @@ import {
   partitionTasksByReadiness,
   isPlacementHardBlocked,
   isNonPlaceableWorkItemState,
+  isObservationLaneItem,
+  isClaimHoldParked,
   deriveBeeAliveFromPresence,
   NO_PRESENCE_BEE_BOOTSTRAP_GRACE_MS,
 } from './placement-gather';

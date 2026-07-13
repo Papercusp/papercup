@@ -57,6 +57,39 @@ export function isNonPlaceableWorkItemState(state: string | null | undefined): b
 }
 
 /**
+ * EI-10692: a `payload.lane === 'observation'` row is a turn-end reflection / rubric
+ * scorecard filed via `improvements:capture { lane:'observation' }` — by DESIGN it
+ * "never enters the work queue/triage/auto-implement; only Scout's corpus-digest + the
+ * Observations pane read it" (D-005). It is NOT work-queue material, so it must never be
+ * a placement candidate. The SQL self-select path already floors it
+ * (`observationLaneExclusionSql`, used by `claimNextWorkItem`); this is the SAME floor at
+ * the `fleet:place_batch` frontier chokepoint, applied to BOTH gather paths (explicit ids
+ * AND harness backlog) so the Queen can't spawn a cup onto a raw reflection by ANY route.
+ * `place_batch`'s own frontier-pull was missing it: a dry-run proposed fresh-spawning
+ * observation rows (EI-10689 et al.) as placeable work. Pure; exported for the unit test.
+ */
+export function isObservationLaneItem(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  return (payload as Record<string, unknown>).lane === 'observation';
+}
+
+/**
+ * EI-10692: a `payload._claimHold === true` row was deliberately parked out of self-select
+ * by an agent/leader (`work_items:release { claimHold:true }` / `setWorkItemClaimHold`,
+ * WI-2797) — "durably parks the item out of claim_next/scheduler:get_next self-select". It
+ * stays claimable BY ID, but must never be an AUTOMATIC placement candidate. Mirrors the
+ * SQL floor (`claimHoldExclusionSql`: `->> '_claimHold' IS DISTINCT FROM 'true'`) at the
+ * place_batch frontier so a claimHold-parked item (e.g. a genuinely-stale ticket like the
+ * reported WI-4141) is never re-surfaced as a spawn target on every dry-run. Text-compare
+ * (`String(...) === 'true'`) mirrors the SQL `->>` extraction, matching both the boolean
+ * `true` `setWorkItemClaimHold` writes and a legacy string `'true'`. Pure; exported.
+ */
+export function isClaimHoldParked(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  return String((payload as Record<string, unknown>)._claimHold) === 'true';
+}
+
+/**
  * WI-677 — does a `cursed` placement HARD-BLOCK re-placement? Only a GENUINELY
  * PATHOLOGY-cursed item does — one the 3-strike breaker tripped on real task
  * failures (`fail_count >= breakerThreshold`). A `cursed` row with `fail_count`
@@ -410,6 +443,19 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
         });
         continue;
       }
+      // EI-10692: an observation-lane row is a captured reflection, never work-queue
+      // material (D-005) — the SAME floor the SQL self-select applies, so the Queen
+      // can't fresh-spawn a cup onto a raw observation even by explicit id.
+      if (isObservationLaneItem(wi.payload)) {
+        skipped.push({ id, reason: "observation-lane (payload.lane='observation') — a captured reflection, never work-queue material (D-005)" });
+        continue;
+      }
+      // EI-10692: a claimHold-parked row was deliberately held out of self-select
+      // (WI-2797) — it stays claimable by id but is never an AUTOMATIC placement target.
+      if (isClaimHoldParked(wi.payload)) {
+        skipped.push({ id, reason: 'claim-hold parked (payload._claimHold) — deliberately held out of self-select (WI-2797)' });
+        continue;
+      }
       // G2 admission (shared-hive-trust-admission P-005): the Queen must not place a remote,
       // un-admitted item even by explicit id — it stays quarantined until the auditor admits
       // it (or its author is trusted, Phase 3).
@@ -441,10 +487,15 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
       // EI-8438: also exclude a deliberately-parked item (blocked/needs-human) —
       // the same claimable-state floor work_items:claim_next / scheduler:get_next
       // already enforce (they only ever request states:['todo','open','failing']).
+      // EI-10692: also exclude an observation-lane reflection (never work-queue material,
+      // D-005) and a claimHold-parked item (deliberately held out of self-select, WI-2797)
+      // — belt-and-braces at the frontier so a leak can't ride a downstream default drift.
       .filter(
         (wi) =>
           !wi.assignee &&
           !isNonPlaceableWorkItemState(wi.state) &&
+          !isObservationLaneItem(wi.payload) &&
+          !isClaimHoldParked(wi.payload) &&
           !cursedIds.has(wi.id) &&
           isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trustedAuthors),
       )
