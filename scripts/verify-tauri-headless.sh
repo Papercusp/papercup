@@ -63,8 +63,11 @@
 #     tears down (even on a failing assertion), and exits with the assertion
 #     command's own exit code. Example:
 #       scripts/verify-tauri-headless.sh -- bash -c '
-#         tauri-agent-tools check --pid "$VERIFY_TAURI_PID" \
-#           --selector body --text Papercusp --no-errors'
+#         tauri-agent-tools eval --pid "$VERIFY_TAURI_PID" \
+#           "window.__TSR_ROUTER__?.navigate({ to: "/settings/p2p" })"
+#         "$VERIFY_TAURI_POLL" --selector body --text Peer --no-errors'
+#     VERIFY_TAURI_POLL retries a data-dependent DOM assertion after navigation
+#     (bounded by VERIFY_TAURI_DOM_TIMEOUT) instead of racing it with a fixed sleep.
 #
 #   scripts/verify-tauri-headless.sh --boot-only
 #     Boots the instance, prints its env (source-able) plus a stop-script
@@ -78,6 +81,10 @@
 #   VERIFY_TAURI_DISPLAY_NUM    Xvfb display number (default: auto-picked, >=90)
 #   VERIFY_TAURI_TIMEOUT        seconds to wait for the bridge (default 180 —
 #                                a cold/changed src-tauri rebuild is slower)
+#   VERIFY_TAURI_DOM_TIMEOUT    seconds VERIFY_TAURI_POLL waits for a DOM
+#                                assertion after navigation (default 30)
+#   VERIFY_TAURI_DOM_POLL_INTERVAL
+#                               seconds between DOM assertion attempts (default 1)
 #   VERIFY_TAURI_SKIP_GL_CHECK  1 = skip the VirtualGL real-GPU sanity check
 #                                (screenshots will be blank white — DOM/eval
 #                                via the bridge still work; agent-e2e.mdx §15.4)
@@ -276,6 +283,41 @@ export VERIFY_TAURI_PORT="$DEV_PORT"
 export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
 export VERIFY_TAURI_LOG="$LOG"
 
+# A route change can finish before its sync-backed data has reached the DOM.
+# Fixed sleeps make those checks depend on machine/DB timing, so expose a
+# bounded assertion helper for every run. Callers pass normal
+# `tauri-agent-tools check` arguments; the helper pins our verified PID and
+# retries until the assertion succeeds or the diagnostic timeout expires.
+POLL="$WORK/poll-dom.sh"
+cat > "$POLL" <<'POLL_SCRIPT'
+#!/usr/bin/env bash
+set -uo pipefail
+
+timeout="${VERIFY_TAURI_DOM_TIMEOUT:-30}"
+interval="${VERIFY_TAURI_DOM_POLL_INTERVAL:-1}"
+case "$timeout" in
+  ''|*[!0-9]*) echo "FATAL: VERIFY_TAURI_DOM_TIMEOUT must be a non-negative integer" >&2; exit 2 ;;
+esac
+[ "$#" -gt 0 ] || { echo "FATAL: pass tauri-agent-tools check arguments to VERIFY_TAURI_POLL" >&2; exit 2; }
+
+deadline=$((SECONDS + timeout))
+last_output=""
+while :; do
+  if last_output="$(tauri-agent-tools check --pid "$VERIFY_TAURI_PID" "$@" 2>&1)"; then
+    [ -n "$last_output" ] && printf '%s\n' "$last_output"
+    exit 0
+  fi
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    echo "FATAL: DOM assertion did not pass within ${timeout}s (pid=$VERIFY_TAURI_PID)" >&2
+    [ -n "$last_output" ] && printf '%s\n' "$last_output" >&2
+    exit 1
+  fi
+  sleep "$interval"
+done
+POLL_SCRIPT
+chmod +x "$POLL"
+export VERIFY_TAURI_POLL="$POLL"
+
 log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT display=$VERIFY_TAURI_DISPLAY"
 
 # ⚠️ EI-10387: display/ports/process are isolated — the DATABASE AND WORKSPACE ARE NOT.
@@ -310,6 +352,7 @@ export VERIFY_TAURI_PID=$VERIFY_TAURI_PID
 export VERIFY_TAURI_PORT=$VERIFY_TAURI_PORT
 export VERIFY_TAURI_DISPLAY=$VERIFY_TAURI_DISPLAY
 export VERIFY_TAURI_LOG=$VERIFY_TAURI_LOG
+export VERIFY_TAURI_POLL=$VERIFY_TAURI_POLL
 export VERIFY_TAURI_STOP=$WORK/stop.sh
 # tear down when done — NEVER leave this running unattended (WI-2115: a
 # leaked isolated instance/display starves the next run):

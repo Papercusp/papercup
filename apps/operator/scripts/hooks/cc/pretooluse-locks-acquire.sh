@@ -320,24 +320,40 @@ workspace_root = os.path.realpath(
 
 # ── Resolve to repo-relative POSIX, refuse symlinked paths ─────────────
 repo_relative = []
+
+
+def _external_home_key(abs_path):
+    """Reserved key for hidden HOME configuration. A user's HOME may itself
+    be a git repo, so this check cannot depend on find_repo_root returning None.
+    Keep automatic scope to dot-directories; an unrelated ~/project repo stays
+    outside Papercusp coordination. Explicit locks:acquire external_paths may
+    authorize any file below HOME."""
+    try:
+        home_root = os.path.realpath(
+            os.environ.get('PAPERCUSP_EXTERNAL_LOCK_HOME')
+            or os.path.expanduser('~'))
+        logical_abs = os.path.abspath(abs_path)
+        rel_home = os.path.relpath(logical_abs, home_root)
+        first = rel_home.split(os.sep, 1)[0]
+        if (rel_home and rel_home != '..'
+                and not rel_home.startswith('..' + os.sep)
+                and not os.path.isabs(rel_home)
+                and first.startswith('.')):
+            return '@external/home/' + rel_home.replace(os.sep, '/')
+    except Exception:
+        pass
+    return None
+
+
 for p in raw_paths:
     abs_p = p if os.path.isabs(p) else os.path.join(cwd, p)
     abs_p = os.path.abspath(abs_p)
 
     root = find_repo_root(abs_p)
     if not root:
-        try:
-            _home_root = os.path.realpath(
-                os.environ.get('PAPERCUSP_EXTERNAL_LOCK_HOME')
-                or os.path.expanduser('~'))
-            _logical_abs = os.path.abspath(abs_p)
-            _rel_home = os.path.relpath(_logical_abs, _home_root)
-            if (_rel_home and _rel_home != '..'
-                    and not _rel_home.startswith('..' + os.sep)
-                    and not os.path.isabs(_rel_home)):
-                repo_relative.append('@external/home/' + _rel_home.replace(os.sep, '/'))
-        except Exception:
-            pass
+        _external_key = _external_home_key(abs_p)
+        if _external_key:
+            repo_relative.append(_external_key)
         continue  # Outside a repo and outside HOME remains uncoordinated.
 
     # ── Worktree discipline: only the canonical staging tree is editable ──
@@ -424,6 +440,9 @@ for p in raw_paths:
         pass  # The guard must never wedge an edit on its own error (fail-open).
 
     if os.path.realpath(os.path.dirname(root)) != workspace_root:
+        _external_key = _external_home_key(abs_p)
+        if _external_key:
+            repo_relative.append(_external_key)
         continue  # A git repo, but not a papercup-workspace worktree.
 
     rel = os.path.relpath(abs_p, root)
