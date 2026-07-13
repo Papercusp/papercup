@@ -183,19 +183,25 @@ export default defineTool({
     const ident = resolveAgentIdentity(ctx);
     const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };
     const list: CreateOneWorkItemArgs[] = args.items?.length
-      ? args.items.map((it) => ({
-          ...it,
-          harness: it.harness ?? args.harness,
-          workspace: args.workspace,
-          assign_to: resolveSelfLiteral(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
-          ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
-          ...(it.links ? { links: it.links } : {}),
-        }))
+      ? args.items.map((it) => {
+          // WI-4492: `body` is an accepted alias for `summary`. Drop the raw `body` key
+          // (createOneWorkItem takes `summary`) and resolve the single value from either.
+          const { body: _body, ...rest } = it;
+          return {
+            ...rest,
+            summary: resolveBodyAlias(it),
+            harness: it.harness ?? args.harness,
+            workspace: args.workspace,
+            assign_to: resolveSelfLiteral(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+            ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
+            ...(it.links ? { links: it.links } : {}),
+          };
+        })
       : [
           {
             kind: args.kind as string,
             title: args.title as string,
-            summary: args.summary,
+            summary: resolveBodyAlias(args), // WI-4492: `body` is an accepted alias for `summary`
             harness: args.harness,
             pot: args.pot,
             workspace: args.workspace,

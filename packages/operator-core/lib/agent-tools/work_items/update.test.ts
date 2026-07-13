@@ -177,3 +177,54 @@ describe('work_items:update args schema — rejects lifecycle-state footguns (EI
     if (!r.success) expect(r.error.issues.some((i) => /pass \{ id/.test(i.message))).toBe(true);
   });
 });
+
+// WI-4492: the item's primary text column had inverted names across the CRUD triad —
+// get RETURNS `summary`, create took `summary`, update took `body` — and each write verb
+// SILENTLY DISCARDED the wrong one (Zod stripped it) while returning ok:true. So the
+// natural get→edit→update round-trip dropped the body. update now ACCEPTS `summary` as an
+// alias for `body`, is `.strict()` (an unknown field is a loud error, not a silent drop),
+// and rejects both-with-different-values.
+describe('work_items:update — body/summary alias + strict (WI-4492)', () => {
+  it('maps a `summary` arg to `body` when calling updateWorkItem (the get→update round-trip)', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1' } } as never);
+    await body({ id: 'EI-1', summary: 'the real text' });
+    expect(updM).toHaveBeenCalledWith(
+      'EI-1',
+      expect.objectContaining({ body: 'the real text' }),
+      'me',
+      expect.any(Object),
+    );
+  });
+
+  it('maps a per-item `summary` to body inside items:[…]', async () => {
+    updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+    await body({ items: [{ id: 'EI-1', summary: 'a' }, { id: 'EI-2', body: 'b' }] });
+    expect(updM).toHaveBeenNthCalledWith(1, 'EI-1', expect.objectContaining({ body: 'a' }), 'me', expect.any(Object));
+    expect(updM).toHaveBeenNthCalledWith(2, 'EI-2', expect.objectContaining({ body: 'b' }), 'me', expect.any(Object));
+  });
+
+  describe('args schema', () => {
+    it('ACCEPTS `summary` as an alias for `body`', () => {
+      expect(tool.args.safeParse({ id: 'EI-1', summary: 'text' }).success).toBe(true);
+    });
+
+    it('REJECTS an unknown field loudly instead of silently stripping it (strict)', () => {
+      const r = tool.args.safeParse({ id: 'EI-1', boddy: 'a typo for body' });
+      expect(r.success).toBe(false);
+    });
+
+    it('REJECTS both `body` and `summary` with DIFFERENT values (ambiguous)', () => {
+      const r = tool.args.safeParse({ id: 'EI-1', body: 'x', summary: 'y' });
+      expect(r.success).toBe(false);
+      if (!r.success) expect(r.error.issues.some((i) => /same field/i.test(i.message))).toBe(true);
+    });
+
+    it('ACCEPTS both `body` and `summary` when EQUAL (no false positive)', () => {
+      expect(tool.args.safeParse({ id: 'EI-1', body: 'same', summary: 'same' }).success).toBe(true);
+    });
+
+    it('REJECTS an unknown field inside items:[…]', () => {
+      expect(tool.args.safeParse({ items: [{ id: 'EI-1', notafield: 1 }] }).success).toBe(false);
+    });
+  });
+});

@@ -111,3 +111,45 @@ describe('work_items:create handler (keyed-array)', () => {
     expect(b.results[1]).toMatchObject({ ok: false, title: 'dup', error: 'duplicate_mirror', existing: { id: 'WI-9' } });
   });
 });
+
+// WI-4492: create took `summary` and SILENTLY DROPPED a `body` arg (Zod stripped it), so a
+// caller who learned the name `body` from work_items:update filed an EMPTY-BODIED item with
+// a cheerful ok — proven live when WI-4491/WI-4492 themselves were filed as empty shells.
+// create now ACCEPTS `body` as an alias for `summary`, is `.strict()` (unknown field → loud
+// error), and rejects both-with-different-values.
+describe('work_items:create — body/summary alias + strict (WI-4492)', () => {
+  it('maps a `body` arg to `summary` when calling createOneWorkItem (no stray `body` leaks through)', async () => {
+    await body({ kind: 'bug', title: 'boom', body: 'the real text' });
+    expect(createM).toHaveBeenCalledWith(expect.objectContaining({ title: 'boom', summary: 'the real text' }), expect.anything());
+    expect(createM.mock.calls[0][0]).not.toHaveProperty('body');
+  });
+
+  it('maps a per-item `body` alias to summary inside items:[…]', async () => {
+    await body({ items: [{ kind: 'bug', title: 'a', body: 'aa' }, { kind: 'bug', title: 'b', summary: 'bb' }] });
+    expect(createM).toHaveBeenNthCalledWith(1, expect.objectContaining({ title: 'a', summary: 'aa' }), expect.anything());
+    expect(createM).toHaveBeenNthCalledWith(2, expect.objectContaining({ title: 'b', summary: 'bb' }), expect.anything());
+    expect(createM.mock.calls[0][0]).not.toHaveProperty('body');
+  });
+
+  describe('args schema', () => {
+    it('ACCEPTS `body` as an alias for `summary`', () => {
+      expect(() => parse({ kind: 'bug', title: 'x', body: 'text' })).not.toThrow();
+    });
+
+    it('REJECTS an unknown field loudly instead of silently stripping it (strict)', () => {
+      expect(() => parse({ kind: 'bug', title: 'x', summry: 'a typo for summary' })).toThrow();
+    });
+
+    it('REJECTS both `body` and `summary` with DIFFERENT values (ambiguous)', () => {
+      expect(() => parse({ kind: 'bug', title: 'x', body: 'a', summary: 'b' })).toThrow(/same field/i);
+    });
+
+    it('ACCEPTS both `body` and `summary` when EQUAL (no false positive)', () => {
+      expect(() => parse({ kind: 'bug', title: 'x', body: 'same', summary: 'same' })).not.toThrow();
+    });
+
+    it('REJECTS an unknown field inside items:[…]', () => {
+      expect(() => parse({ items: [{ kind: 'bug', title: 'x', bogus: 1 }] })).toThrow();
+    });
+  });
+});

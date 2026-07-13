@@ -3358,6 +3358,40 @@ export function LearningStyles() {
         .pc-learning__hivepicklabel { display: none; }
       }
 
+      /* Release-readiness strip (learning-tab-alignment P-001) — the Verify stage's GO/NO-GO gate. */
+      .pc-learning__readiness {
+        display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+        padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-1);
+      }
+      .pc-learning__readiness-verdict {
+        display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px;
+        border: 1px solid transparent; border-radius: 999px;
+        font-size: 10.5px; font-weight: 740; text-transform: uppercase; letter-spacing: 0;
+      }
+      .pc-learning__readiness-verdict em { font-style: normal; font-weight: 620; font-variant-numeric: tabular-nums; opacity: .85; }
+      .pc-learning__readiness-verdict--pass { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); background: color-mix(in srgb, var(--good) 10%, transparent); }
+      .pc-learning__readiness-verdict--fail { color: #fb7185; border-color: color-mix(in srgb, #fb7185 45%, transparent); background: color-mix(in srgb, #fb7185 10%, transparent); }
+      .pc-learning__readiness-verdict--incomplete { color: #fbbf24; border-color: color-mix(in srgb, #fbbf24 45%, transparent); background: color-mix(in srgb, #fbbf24 10%, transparent); }
+      .pc-learning__readiness-verdict--unknown { color: var(--fg-mute); border-color: var(--border); background: var(--bg-2); }
+      .pc-learning__readiness-bar {
+        display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+        border: 1px solid var(--border); border-radius: 999px; background: var(--bg-2);
+        font-size: 10.5px; font-weight: 620; color: var(--fg-mute); cursor: default;
+      }
+      .pc-learning__readiness-bar--pass svg { color: var(--good); }
+      .pc-learning__readiness-bar--fail { color: var(--fg-dim); border-color: color-mix(in srgb, #fb7185 40%, var(--border)); }
+      .pc-learning__readiness-bar--fail svg { color: #fb7185; }
+      .pc-learning__readiness-bar--unknown svg { color: var(--fg-mute); }
+      .pc-learning__readiness-rubric {
+        margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+        font-size: 10.5px; font-weight: 620; color: var(--fg-mute); cursor: default;
+      }
+      .pc-learning__readiness-rubric--active svg { color: var(--good); }
+      .pc-learning__readiness-rubric--proposed svg { color: #fbbf24; }
+      @container learning (max-width: 720px) {
+        .pc-learning__readiness-rubric { margin-left: 0; }
+      }
+
       /* Flow strip (P-041) — compact in/out chips above the stock scoreboard. */
       .pc-learning__flow { display: flex; flex-wrap: wrap; gap: 6px; }
       .pc-learning__flowchip {
