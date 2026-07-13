@@ -14,6 +14,8 @@ import {
   reachableStatic,
   computeEagerExternalized,
   shortestStaticChain,
+  decideEager,
+  ALLOWED_EAGER_BUILTINS,
 } from '../../../scripts/trace-vite-externalized.mjs';
 
 // A miniature SPA graph. main → {buffer-polyfill, __root}; __root → provider → reducer →
@@ -78,6 +80,34 @@ describe('computeEagerExternalized', () => {
     const onlyLazy = new Map<string, Set<string>>([['child_process', new Set(['/lib/server-blob.ts'])]]);
     const { eager } = computeEagerExternalized({ eagerRoots, staticEdges, builtinStaticImporters: onlyLazy });
     expect(eager).toEqual([]);
+  });
+});
+
+describe('decideEager — the white-page guard verdict', () => {
+  it('passes when the only eager reach is an allowlisted browser-polyfilled builtin (buffer)', () => {
+    const r = decideEager({ eager: [{ builtin: 'buffer', eagerImporters: ['/src/buffer-polyfill.ts'] }] });
+    expect(r.ok).toBe(true);
+    expect(r.violations).toEqual([]);
+    expect(r.allowed).toEqual(['buffer']);
+  });
+
+  it('FAILS + names the builtin when a non-allowlisted server builtin reaches the SPA eagerly', () => {
+    const r = decideEager({
+      eager: [
+        { builtin: 'buffer', eagerImporters: ['/src/buffer-polyfill.ts'] },
+        { builtin: 'worker_threads', eagerImporters: ['/lib/run-script.ts'] },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.builtin)).toEqual(['worker_threads']);
+  });
+
+  it('an empty eager set is trivially ok', () => {
+    expect(decideEager({ eager: [] })).toEqual({ ok: true, violations: [], allowed: [] });
+  });
+
+  it('buffer is the only allowlisted eager builtin (allowlist stays minimal)', () => {
+    expect([...ALLOWED_EAGER_BUILTINS]).toEqual(['buffer']);
   });
 });
 

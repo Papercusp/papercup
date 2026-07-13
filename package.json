@@ -168,6 +168,8 @@
     "lint:tsc": "node scripts/lint-tsc.mjs",
     "typecheck": "node scripts/lint-tsc.mjs",
     "lint:vite-externalized": "node scripts/check-vite-externalized-warnings.mjs",
+    "trace:vite-externalized": "node scripts/trace-vite-externalized.mjs",
+    "lint:vite-eager": "node scripts/trace-vite-externalized.mjs --check",
     "lint:boundary-check": "node scripts/check-transitive-boundary.mjs",
     "lint:migrations": "node scripts/lint-migrations.mjs",
     "db:next-migration": "node scripts/next-migration.mjs",
