@@ -4,7 +4,8 @@
  *     false-positives the raw-transaction-control check,
  *   - top-level BEGIN;/COMMIT;/ROLLBACK;/START TRANSACTION detection,
  *   - duplicate-NNN grouping,
- *   - unreserved-number detection from the ENFORCED_FROM epoch.
+ *   - unreserved-number detection from the ENFORCED_FROM epoch,
+ *   - unguarded RENAME CONSTRAINT detection (WI-4547).
  */
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -13,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import {
   stripSqlBodies,
   findRawTxControl,
+  findUnguardedConstraintRename,
   duplicateNumberGroups,
   unreservedNumbers,
   ENFORCED_FROM,
@@ -71,6 +73,57 @@ describe('findRawTxControl', () => {
   });
 });
 
+// WI-4547: `ALTER TABLE IF EXISTS t RENAME CONSTRAINT x TO y` reads as guarded and
+// is not — IF EXISTS binds the TABLE, not the CONSTRAINT, so an absent constraint
+// still throws 42704 and aborts the migration. Migration 592 hit exactly this (an
+// earlier migration had dropped the constraint's column, taking the CHECK with it),
+// failed on EVERY database, and broke every fresh-DB integration test in the repo.
+// It survived review precisely because it LOOKS guarded — which is why it needs a lint.
+describe('findUnguardedConstraintRename', () => {
+  it('flags a bare RENAME CONSTRAINT — including the deceptive ALTER TABLE IF EXISTS form', () => {
+    expect(
+      findUnguardedConstraintRename(
+        'ALTER TABLE harness_shared.t RENAME CONSTRAINT old_pkey TO new_pkey;\n',
+      ),
+    ).toEqual(['old_pkey']);
+    // The exact shape that shipped in 592 and failed everywhere: the IF EXISTS
+    // makes it read as safe, so this MUST still be caught.
+    expect(
+      findUnguardedConstraintRename(
+        'ALTER TABLE IF EXISTS harness_shared.t\n  RENAME CONSTRAINT a_nonempty TO b_nonempty;\n',
+      ),
+    ).toEqual(['a_nonempty']);
+  });
+
+  it('accepts the guarded DO-block form (the prescribed fix shape)', () => {
+    // Renames inside a dollar-quoted body are stripped, so the conditional form
+    // — rename only if the old name exists and the new one does not — passes.
+    const guarded = [
+      'DO $$',
+      'BEGIN',
+      '  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = $q$old_pkey$q$) THEN',
+      '    ALTER TABLE harness_shared.t RENAME CONSTRAINT old_pkey TO new_pkey;',
+      '  END IF;',
+      'END $$;',
+    ].join('\n');
+    expect(findUnguardedConstraintRename(guarded)).toEqual([]);
+  });
+
+  it('does not flag a genuinely-guarded ALTER INDEX IF EXISTS … RENAME TO', () => {
+    // Here IF EXISTS binds to the INDEX itself, so it really is guarded — a
+    // false positive would push authors toward pointless DO-block ceremony.
+    expect(
+      findUnguardedConstraintRename(
+        'ALTER INDEX IF EXISTS harness_shared.old_idx RENAME TO new_idx;\n',
+      ),
+    ).toEqual([]);
+  });
+
+  it('ignores RENAME CONSTRAINT mentioned in a comment', () => {
+    expect(findUnguardedConstraintRename('-- never do a bare RENAME CONSTRAINT x TO y\n')).toEqual([]);
+  });
+});
+
 describe('duplicateNumberGroups', () => {
   it('groups files sharing a numeric prefix (below the enforced boundary, pass 0 to test pure grouping)', () => {
     const groups = duplicateNumberGroups(
@@ -124,6 +177,21 @@ describe('the real libs/papercusp/libs/db/sql/ directory (gate wiring)', () => {
       const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
       if (num < ENFORCED_FROM) continue; // pre-contract files are grandfathered (ledgered history)
       const hits = findRawTxControl(readFileSync(join(SQL_DIR, f), 'utf8'));
+      if (hits.length) violations.push(`${f}: ${hits.join(', ')}`);
+    }
+    expect(violations).toEqual([]);
+  });
+
+  // WI-4547. The instance (592) is fixed; this is the recurrence guard, wired into
+  // the same gate-run block as checks 1–2 so the CLASS cannot come back silently.
+  // A bare RENAME CONSTRAINT aborts its migration with 42704 the moment the
+  // constraint is absent — which takes down every fresh-DB integration test at once.
+  it('has no unguarded RENAME CONSTRAINT in an enforced-era migration', () => {
+    const violations: string[] = [];
+    for (const f of files) {
+      const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+      if (num < ENFORCED_FROM) continue; // applied history: immutable, and it already survived
+      const hits = findUnguardedConstraintRename(readFileSync(join(SQL_DIR, f), 'utf8'));
       if (hits.length) violations.push(`${f}: ${hits.join(', ')}`);
     }
     expect(violations).toEqual([]);

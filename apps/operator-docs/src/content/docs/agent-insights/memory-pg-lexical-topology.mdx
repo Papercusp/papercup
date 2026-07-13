@@ -105,11 +105,34 @@ claude topic files + PG) but would double-write when both legs share
   `canonical-lexical-search.integration.test.ts` → "ranks an OLD strong match above
   many NEWER weak ones" (60 newer common-word rows vs one old identifier row), which
   fails if a recency-ordered candidate cap is ever reintroduced.
+- **A cap is a SAFETY bound on pathological input — never a relevance knob.**
+  `LEXICAL_MAX_TOKENS` was `12`, while real recall queries run ~20 tokens
+  (gold-set v1: p50 10, **p95 24, max 28**). So the cap silently discarded ~40%
+  of every long query — and it discarded the *tail*, which is where the
+  discriminative terms live (a paraphrase query front-loads common words and
+  reaches its answer through the rare ones at the end). Worse, the score was
+  then normalized by the **truncated** token count, so a mangled query still
+  looked confidently scored. Measured on the lexical leg alone (lexical-gap
+  MRR): cap 12 → **0.432**, 16 → 0.428, 24 → 0.544, 32 → **0.546**, uncapped →
+  0.546 (the claude-file leg: 0.552). Fixed at 32 — comfortably above p95, still
+  a real bound on a runaway input.
+  **Why it hid for two whole diagnostic rounds:** *exact-identifier MRR is 1.000
+  at EVERY cap* — those queries are short, so they never hit it. Only the
+  paraphrase class regressed, which made a **tokenizer** bug present as a
+  *fusion/ranking* bug, and sent two plausible ranking "fixes" through the
+  acceptance gate before the real cause was isolated. When one query class
+  regresses and another is untouched, suspect the INPUT PATH the two classes
+  don't share (here: query length) before you re-litigate the scorer. Guard:
+  `canonical-store.test.ts` → "does NOT truncate a real natural-language query"
+  (a 28-token query must survive intact).
 - The bench's isolated `bench_memory` schema used to hand-mirror production
   DDL and drifted TWICE in one day (missing `memory_vec_harrier`, then missing
   the temporal-lite columns) — every PG backend benched at literal zero
   (EI-10793). `ensureBenchSchema` now clones live tables
-  (`LIKE harness_shared.* INCLUDING ALL`).
+  (`LIKE harness_shared.* INCLUDING ALL`), and **drops + recreates at run
+  START** — a killed run used to leave rows behind that contaminated the next
+  run's corpus (and two concurrently-launched runs cross-seeded the same schema,
+  garbaging both; EI-10854).
 - Unscoped topic files used to surface under ANY scope via the claude-file
   backend's visibility-first trick. The import maps them to the OWNER'S USER
   POOL because the live `memory:search` fan-out queries

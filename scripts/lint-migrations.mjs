@@ -2,7 +2,7 @@
 /**
  * lint:migrations — migration-file discipline (audit P-074, EI-170).
  *
- * Three checks over libs/papercusp/libs/db/sql/*.sql (the live dir only —
+ * Four checks over libs/papercusp/libs/db/sql/*.sql (the live dir only —
  * archive/ holds pre-baseline history):
  *
  *   1. DUPLICATE NNN — two files sharing a numeric prefix. The reservations
@@ -20,12 +20,19 @@
  *      files (116–200) carry their own BEGIN/COMMIT from before the
  *      runner-wraps contract — they are ledgered history (editing them would
  *      break their recorded sha256) and are reported informationally only.
- *   3. UNRESERVED NUMBER — every NNN ≥ ENFORCED_FROM must have a row in
+ *   3. UNGUARDED RENAME CONSTRAINT — a bare top-level `RENAME CONSTRAINT`.
+ *      `ALTER TABLE IF EXISTS … RENAME CONSTRAINT` guards the TABLE, not the
+ *      CONSTRAINT, so it throws 42704 whenever the constraint is absent — which
+ *      is how migration 592 came to fail on EVERY database and break every
+ *      fresh-DB integration test in the repo (WI-4547). It looks guarded, so
+ *      review misses it; the guarded DO-block form passes. Enforced from
+ *      ENFORCED_FROM (applied history is immutable and already survived).
+ *   4. UNRESERVED NUMBER — every NNN ≥ ENFORCED_FROM must have a row in
  *      harness_shared.migration_reservations (i.e. was allocated via
  *      db:next-migration, not `ls | tail`). Skipped with a notice when PG is
  *      unreachable (CI without a database).
  *
- * Checks 1–2 are pure-filesystem and always run. Exit 1 on any violation.
+ * Checks 1–3 are pure-filesystem and always run. Exit 1 on any violation.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -105,6 +112,40 @@ export function findRawTxControl(sqlText) {
   while ((m = re.exec(stripped)) !== null) {
     hits.push(m[1].trim().replace(/\s+/g, ' '));
   }
+  return hits;
+}
+
+/**
+ * Top-level `RENAME CONSTRAINT` statements — the 42704 footgun (WI-4547).
+ *
+ * `ALTER TABLE IF EXISTS t RENAME CONSTRAINT x TO y` READS as guarded and is NOT:
+ * `IF EXISTS` covers the TABLE, not the CONSTRAINT. If the table exists but `x`
+ * does not, Postgres still throws 42704 and aborts the whole migration.
+ *
+ * That is not hypothetical. Migration 592 (knowledge-packs rename) renamed five
+ * constraints this way. One of them — `learning_pack_candidates_workspace_nonempty`
+ * — had been destroyed long before by migration 377, which DROPPED the
+ * `workspace_id` column (a CHECK constraint dies with its column). So it existed
+ * on NO database, fresh or live: 592 failed deterministically EVERYWHERE, which
+ * broke every fresh-DB integration test in the repo (createFreshPgDb applies the
+ * full migration set) and would have failed the deploy's migration step too.
+ *
+ * The bug is invisible at review time precisely BECAUSE the statement looks
+ * guarded, so a human check will keep missing it — hence a lint.
+ *
+ * The FIX SHAPE is a DO-block that renames only when the old name exists and the
+ * new one does not (see 592). Because `stripSqlBodies` removes dollar-quoted
+ * bodies, a rename inside a `DO $$ … $$` block is invisible here and passes,
+ * while a bare top-level one is caught — which is exactly the intended contract.
+ * `ALTER INDEX IF EXISTS … RENAME TO` is genuinely guarded (the IF EXISTS binds
+ * to the index itself) and is correctly not flagged.
+ */
+export function findUnguardedConstraintRename(sqlText) {
+  const stripped = stripSqlBodies(sqlText);
+  const hits = [];
+  const re = /\bRENAME\s+CONSTRAINT\s+("?[A-Za-z_][\w$]*"?)/gi;
+  let m;
+  while ((m = re.exec(stripped)) !== null) hits.push(m[1]);
   return hits;
 }
 
@@ -196,7 +237,19 @@ async function main() {
     console.log(`· ${grandfathered} pre-${ENFORCED_FROM} applied file(s) carry legacy BEGIN/COMMIT — grandfathered (ledgered history, do not edit)`);
   }
 
-  // 3. unreserved numbers (PG optional)
+  // 3. unguarded RENAME CONSTRAINT (the 42704 footgun — WI-4547)
+  for (const f of files) {
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+    if (num < ENFORCED_FROM) continue; // applied history: immutable, and it already survived
+    const hits = findUnguardedConstraintRename(readFileSync(join(SQL_DIR, f), 'utf8'));
+    if (!hits.length) continue;
+    failed = true;
+    console.error(
+      `✗ ${f}: bare RENAME CONSTRAINT (${hits.join(', ')}) — \`ALTER TABLE IF EXISTS\` guards the TABLE, not the CONSTRAINT, so this throws 42704 and aborts the migration when the constraint is absent (e.g. an earlier migration dropped its column). Wrap it in a DO block that renames only if the old name exists and the new one does not — see 592-knowledge-packs-rename.sql.`,
+    );
+  }
+
+  // 4. unreserved numbers (PG optional)
   const fileNums = files
     .map((f) => /^(\d+)-/.exec(f)?.[1])
     .filter(Boolean)
