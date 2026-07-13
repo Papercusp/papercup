@@ -288,6 +288,27 @@ describe('plan page', () => {
     expect(html).toContain('After.');
   });
 
+  // Every real plan body opens with `# <its own title>`, so the page was rendering
+  // the title twice — once as the page heading, once as the first line of the prose.
+  it('does not print the plan title twice', () => {
+    const html = renderPlanPageHtml(
+      plan({ title: 'A Plan', content: '# A Plan\n\nBody text.' }),
+      { generatedAt: GENERATED_AT, analytics: null, version: '0.0.9' },
+    );
+    expect(html).toContain('Body text.');
+    expect(html).toContain('<h1 class="plan-title">A Plan</h1>'); // the page heading stays
+    expect(html).not.toMatch(/<h1>A Plan<\/h1>/); // ...the markdown's copy of it does not
+  });
+
+  it('keeps a first heading that is NOT the title — that is content, not a duplicate', () => {
+    const html = renderPlanPageHtml(
+      plan({ title: 'A Plan', content: '# Background\n\nBody text.' }),
+      { generatedAt: GENERATED_AT, analytics: null, version: '0.0.9' },
+    );
+    expect(html).toContain('Background');
+    expect(html).toContain('Body text.');
+  });
+
   it('does not publish our internal plan status to testers', () => {
     const html = renderPlanPageHtml(plan({ status: 'draft' }), {
       generatedAt: GENERATED_AT,

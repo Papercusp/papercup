@@ -252,6 +252,11 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     limits: { maxCostUsd: budget.maxCostUsd, maxIdeators: budget.maxIdeators },
     cycleId,
     ...(onPhase ? { onPhase } : {}),
+    // WI-4475: the scheduler's absolute kill-deadline. Bounds every in-cycle LLM call's governor
+    // ADMISSION wait to the time actually left, so a call queued behind a shared rate-limit pause
+    // can no longer be guillotined by an outer timer and misreported as transport death ($0 spent,
+    // 0 ideas) — nor consume the entire cycle. Absent ⇒ unchanged behavior.
+    ...(deadlineMs !== undefined ? { deadlineMs } : {}),
     // P-009: per-blueprint Scout tuning (lenses/novelty/buckets/routing). Undefined ⇒
     // buildScoutCycleDeps falls back to DEFAULT_SCOUT_CONFIG (behavior-neutral).
     ...(scoutConfig ? { scoutConfig } : {}),

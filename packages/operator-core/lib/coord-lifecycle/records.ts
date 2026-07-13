@@ -30,7 +30,23 @@ export const LIFECYCLE_CATEGORIES = [
 ] as const;
 export type LifecycleCategory = (typeof LIFECYCLE_CATEGORIES)[number];
 
-export const CompletionVerifiedHowSchema = z.enum(['unit', 'integration', 'live-drove-ui', 'manual', 'already-passing']);
+/**
+ * HOW the work was verified. WI-4536: this is a CLOSED ENUM, but it sits among free-text
+ * siblings (`testsRun`, `testResult` are prose), so callers naturally write a sentence here
+ * and get rejected — the enum members were discoverable ONLY from the rejection. Name them in
+ * the schema so they surface in the tool description / typed signature instead.
+ *   unit            — a unit test suite
+ *   integration     — an integration test (real PG / containers / a live dependency)
+ *   live-drove-ui   — drove the running UI (e.g. the Tauri shell) and observed it
+ *   manual          — verified by hand (ran the build/command, inspected real output)
+ *   already-passing — no new verification; the existing suite already covered it
+ */
+export const CompletionVerifiedHowSchema = z
+  .enum(['unit', 'integration', 'live-drove-ui', 'manual', 'already-passing'])
+  .describe(
+    "HOW it was verified — one of exactly: 'unit' | 'integration' | 'live-drove-ui' | 'manual' | 'already-passing'. " +
+      'NOT free text (put prose in `testsRun` / `testResult`).',
+  );
 
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */

@@ -321,9 +321,39 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
   // Reflect-and-capture STEP at the completion boundary (self-learning-central P-001/B).
   const reflect = renderReflectStep({ harnessActive: Boolean(workItem?.harness) });
 
+  // WI-4529 — `ok` MUST reflect the state transition the caller asked for, not merely that the
+  // completion record got written.
+  //
+  // THE BUG: a `state` that did not land (held-open refusal, completion-integrity gate, or an
+  // alias that silently downgraded a terminal request to a NON-terminal state — e.g. issue-family
+  // 'done' → 'open') still returned ok:true, with the real failure buried in a sibling `stateError`
+  // / `stateWarning` STRING. Every caller checks `ok` — so every caller read it as success and
+  // walked away leaving the item OPEN and re-claimable, believing it closed. That is precisely the
+  // silent-success class (a write that reports success while doing half the thing).
+  //
+  // EI-24 IS PRESERVED — this does NOT hard-reject or drop anything. The completion record is
+  // still built, still returned on the result, and still BROADCAST: the `emits` rule keys on
+  // `result.completion`, which is present on the ok:false result too (BulkItemResult carries an
+  // index signature). A failed state write still never loses the completion. We only stop lying
+  // about whether the item actually closed.
+  //
+  // Scoped deliberately: this ONLY fires when the caller passed `state` (i.e. asked to close).
+  // A bare completion with no `state` is a legitimate record-only call and stays ok:true with the
+  // existing loud `stateWarning`.
+  const closeRequested = Boolean(it.state);
+  const closeLanded = TERMINAL_WORK_ITEM_STATES.has(finalState);
+  const stateNotApplied = closeRequested && !closeLanded;
+  const landedState = workItem?.state ?? existing.state;
+  const stateFailure = !stateNotApplied
+    ? undefined
+    : stateError
+      ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — it is still '${landedState}' and stays claimable. The state write failed: ${stateError}`
+      : `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — you requested state '${requestedState ?? it.state}' and it applied as '${appliedState ?? landedState}'${aliasNote ? ` (${aliasNote})` : ''}, which is NOT terminal, so the item stays claimable and the auto-loop may re-place work on it. Pass a TERMINAL state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated').`;
+
   return {
-    ok: true,
+    ok: !stateNotApplied,
     id: it.id,
+    ...(stateFailure ? { error: stateFailure } : {}),
     workItem,
     completion,
     reflect,
@@ -342,9 +372,9 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    'Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect, stateError? } | error], counts }.',
+    "Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect } | { ok:false, id, error, completion }], counts }. PER-ITEM `ok` REFLECTS THE STATE TRANSITION (WI-4529): if you passed `state` and the item did NOT reach a terminal state (held open by a peer, integrity gate, or a non-terminal alias), that item comes back ok:false with the reason in `error` — the completion record is still written and broadcast, but the item did NOT close and is still claimable. Do not treat ok:false as 'the completion was lost'. `completion.verifiedHow` is a CLOSED ENUM: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' (prose goes in `testsRun`/`testResult`).",
   guidance: {
-    when: 'You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Duplicate? Set `completion.duplicateOf` to the surviving id — auto-links + notifies the prior assignee (EI-8993).',
+    when: 'You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). CHECK PER-ITEM `ok` (WI-4529): ok:false means the item did NOT close (the `error` says why — e.g. HELD OPEN by a peer); the completion record still landed, so fix the cause and re-call rather than re-writing the record. `completion.verifiedHow` must be one of \'unit\'|\'integration\'|\'live-drove-ui\'|\'manual\'|\'already-passing\' — it is NOT free text. Duplicate? Set `completion.duplicateOf` to the surviving id — auto-links + notifies the prior assignee (EI-8993).',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.',
     chaining: 'work_items:claim → … → work_items:complete { id, completion }. Auto-emits to coord:inbox (no coord:send needed). Read the returned `reflect` step (self-learning loop): file a friction marker via improvements:capture if one bit you, else nothing.',
     seeAlso: [

@@ -255,6 +255,10 @@ h1 {
   background: linear-gradient(135deg, var(--fg) 0%, var(--accent-deep) 100%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
+/* a plan TITLE is a sentence, not a wordmark — "Papercusp releases" carries a 52px
+   hero; "Desktop auto-update fully operational (manifest fixes → proxy → 2-cut E2E
+   on win/mac/linux VMs)" at that size is three lines of shouting. */
+h1.plan-title { font-size: clamp(1.7rem, 3.2vw, 2.15rem); line-height: 1.2; }
 h2 { font-size: 1.45rem; margin: 0; letter-spacing: -.02em; font-weight: 640; }
 a { color: var(--accent-deep); text-decoration-color: rgba(2, 132, 199, .35); text-underline-offset: 2px; }
 a:hover { color: var(--accent); }
@@ -553,13 +557,13 @@ export function renderPlanPageHtml(
   plan: ShippedPlan,
   opts: PageOptions & { version: string },
 ): string {
-  const md = stripFrontmatter(plan.content).trim();
+  const md = stripDuplicateTitle(stripFrontmatter(plan.content).trim(), plan.title).trim();
   const content = md
     ? `<div class="prose">${renderMarkdown(md)}</div>`
     : `<p class="empty">This plan has no written content.</p>`;
 
   const body = `<a class="back" href="../index.html">← All releases</a>
-<h1>${escapeHtml(plan.title)}</h1>
+<h1 class="plan-title">${escapeHtml(plan.title)}</h1>
 <p class="sub">${plan.itemCount} work item${plan.itemCount === 1 ? '' : 's'} shipped in ${escapeHtml(opts.version)}</p>
 ${content}`;
 

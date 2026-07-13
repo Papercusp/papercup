@@ -61,6 +61,14 @@ export type ScoutCycleRunner = (ctx: {
    *  plans (register-scout-action.ts) instead of fresh ideation. */
   queenFeedback?: QueenFeedbackItem[];
   signal?: AbortSignal;
+  /**
+   * WI-4475 — absolute epoch-ms deadline the scheduler will kill this cycle at. `signal` says
+   * "you're out of time" only AFTER the fact; the deadline lets the cycle bound its inner waits
+   * BEFORE they overrun. Every LLM call made under it caps its governor ADMISSION wait at the
+   * time actually remaining, so no single call queued behind a rate-limit pause can consume the
+   * whole cycle. Absent ⇒ no bound (pre-WI-4475 behavior).
+   */
+  deadlineMs?: number;
   onPhase?: (phase: ScoutCyclePhase) => void;
 }) => Promise<ScoutCycleLike>;
 

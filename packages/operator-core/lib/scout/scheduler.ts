@@ -269,17 +269,26 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   let activePhase: ScoutCyclePhase | undefined;
   await deps.recordFire?.('attempt');
   try {
+    // WI-4475: resolve the cycle budget ONCE and hand the runner the absolute DEADLINE it will
+    // be killed at — not just an abort signal that fires after the fact. Every LLM call inside
+    // the cycle then bounds its governor ADMISSION wait by the time actually left, so an inner
+    // wait can no longer equal the whole cycle budget (the 600s inner default == the 600s
+    // @singleton cycle cap) and eat it, which is what produced "Scout cycle timed out after
+    // 600000ms during phase route|critique|recombine".
+    const cycleTimeoutMs = opts.cycleTimeoutMs ?? scoutCycleTimeoutMs();
+    const deadlineMs = Date.now() + cycleTimeoutMs;
     const cycle = await withScoutCycleTimeout(
       (signal) => deps.runCycle({
         budget,
         cycleId,
         ...(queenFeedback.length > 0 ? { queenFeedback } : {}),
         signal,
+        deadlineMs,
         onPhase: (phase) => {
           activePhase = phase;
         },
       }),
-      opts.cycleTimeoutMs ?? scoutCycleTimeoutMs(),
+      cycleTimeoutMs,
       () => activePhase,
     );
     const provenance = cycle.provenance ?? [];

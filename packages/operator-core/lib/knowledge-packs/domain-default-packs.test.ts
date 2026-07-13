@@ -17,6 +17,7 @@
 import { describe, expect, it } from 'vitest';
 import { validatePack, filterByShapes } from './pack-format';
 import { loadKnowledgePack } from './load-packs';
+import { resolveSeedPackKey } from './seed-pack-key';
 import { operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 
@@ -120,17 +121,26 @@ describe('blueprint → default-pack wiring (resolved via the pot-create path)',
     expect(v.blueprint!.learning?.loops).toContain('scout');
   });
 
-  it('still reads a pre-rename blueprint that declares the deprecated `learning.pack`', () => {
+  it('still reads a PRE-RENAME blueprint that declares the deprecated `learning.pack`', () => {
     // Blueprint YAML is a true boundary (knowledge-packs-2026-07-11 D-001): a
     // blueprint authored before the rename — or already installed in a user's
-    // tree, which we never rewrite — still says `learning.pack`. It must parse,
-    // and pot:create falls back to it (see _create.ts).
+    // tree, which we never rewrite — still says `learning.pack`. It must still
+    // PARSE (the schema keeps the key) and still SEED the author's pack.
+    //
+    // This is the merge that used to be a silent wrong-pack bug: extending
+    // `coding` now inherits `knowledge.pack: coding`, while the author's own line
+    // says `learning.pack: my-pack`. resolveSeedPackKey arbitrates in the
+    // author's favour (see seed-pack-key.test.ts for the full matrix).
     const v = resolveAndValidate(
-      { id: 'probe-legacy', kind: 'pot', learning: { pack: 'coding' } },
+      { id: 'probe-legacy', extends: 'coding', learning: { pack: 'my-pack' } },
       resolver,
     );
     expect(v.ok, v.parseError ?? JSON.stringify(v.validation?.errors)).toBe(true);
-    expect(v.blueprint!.learning?.pack).toBe('coding');
-    expect(v.blueprint!.knowledge?.pack).toBeUndefined();
+    expect(v.blueprint!.learning?.pack).toBe('my-pack'); // the deprecated key still parses
+    expect(v.blueprint!.knowledge?.pack).toBe('coding'); // inherited from the base
+
+    const seed = resolveSeedPackKey(v.blueprint!);
+    expect(seed.packId).toBe('my-pack'); // the AUTHOR's choice wins, not the base's
+    expect(seed.deprecatedKey).toBe(true);
   });
 });

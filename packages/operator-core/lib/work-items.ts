@@ -1342,8 +1342,10 @@ export async function setWorkItemState(
   ) {
     throw new Error(
       `work_item '${id}' is already terminally completed (by ${wi.terminalOwner}: "${wi.terminalCompletionRef}") — ` +
-        `reopening into '${state}' would silently discard that completion. Pass { force: true } if you are ` +
-        `deliberately reopening it (e.g. the completion was wrong), otherwise investigate the peer's completion first.`,
+        `reopening into '${state}' would silently discard that completion. To deliberately reopen it (e.g. the ` +
+        `completion was wrong), use work_items:set_state { id: '${id}', state: '${state}', force: true } — ` +
+        `NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530). ` +
+        `Otherwise investigate the peer's completion first.`,
     );
   }
   // P-006 (fleet-deltas-leader-primitives, EI-8993): an item HELD OPEN by someone
@@ -1361,10 +1363,20 @@ export async function setWorkItemState(
     !isSettledWorkItemState(wi.state) &&
     isSettledWorkItemState(state)
   ) {
+    // WI-4530: name the REAL verbs. This message used to say "or { force: true }", which is
+    // true for work_items:set_state but NOT for work_items:complete (it has no `force` arg) —
+    // and complete is the tool most callers are holding when they hit this. An error that names
+    // an arg the caller's tool does not accept is worse than one that names nothing: it sends
+    // them to pass a flag that is silently dropped, and the item stays open.
     throw new Error(
       `work_item '${id}' is HELD OPEN by ${heldOpen.by}${heldOpen.reason ? ` ("${heldOpen.reason}")` : ''} — ` +
-        `closing it into '${state}' requires the holder (or { force: true } with a reason the holder can audit). ` +
-        `If you believe the hold is stale, coordinate with the holder first (coord:send).`,
+        `closing it into '${state}' requires the holder. ` +
+        `If the hold is STALE (holder gone/finished), CLEAR it first: ` +
+        `work_items:hold_open { id: '${id}', clear: true, force: true, reason: '<why it is stale>' } ` +
+        `(leader override — audited, and the holder is notified), then close normally. ` +
+        `To close PAST the hold without clearing it: work_items:set_state { id: '${id}', state: '${state}', force: true } ` +
+        `— NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored. ` +
+        `Otherwise coordinate with the holder (coord:send).`,
     );
   }
   let result: WorkItem | null;

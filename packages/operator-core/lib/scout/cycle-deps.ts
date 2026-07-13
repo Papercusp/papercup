@@ -542,6 +542,10 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
         // P-010: per-blueprint ideator mission framing (default ⇒ byte-identical).
         mission: scoutConfig.framing.ideatorMission,
         model: scoutConfig.models.ideator,
+        // WI-4475: the owning cycle's deadline bounds the ADMISSION wait (queueing behind the
+        // shared rate-limit governor), while the ideator's own cap bounds GENERATION. Absent ⇒
+        // unchanged behavior.
+        ...(ctx.deadlineMs !== undefined ? { cycleDeadlineMs: ctx.deadlineMs } : {}),
       });
       // P-002 (transport-death observability): if EVERY ideator errored AND zero ideas
       // resulted, this is a TOTAL transport failure (gateway wedge / token 401 — $0 spent),

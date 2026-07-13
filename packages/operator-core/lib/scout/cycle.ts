@@ -114,6 +114,14 @@ export interface ScoutCallRecord {
 /** Options every LLM-touching port receives (the recorder-wrapped call). */
 export interface ScoutStepCtx {
   llmCall: ScoutLlmCall;
+  /**
+   * WI-4475 — absolute epoch-ms deadline of the owning cycle, when the scheduler imposed one.
+   * A port that wants to reserve part of the remaining budget (the ideator holds room back for
+   * GENERATION, so queue-wait can't eat it) derives its own admission cap from this. Ports that
+   * ignore it still get a deadline-derived bound automatically from the cycle's `recordingLlm`
+   * wrapper — this is the opt-in for a port that needs a *more precise* one.
+   */
+  deadlineMs?: number;
 }
 
 export interface ScoutCyclePorts {
@@ -140,6 +148,13 @@ export interface ScoutCycleDeps extends ScoutCyclePorts {
   cycleId?: string;
   /** Best-effort phase reporter used by the scheduler's timeout/error diagnostics. */
   onPhase?: (phase: ScoutCyclePhase) => void;
+  /**
+   * WI-4475 — absolute epoch-ms deadline the scheduler will kill this cycle at. Every LLM call
+   * the cycle makes gets its governor ADMISSION wait bounded by the time left on it (see
+   * `recordingLlm`), so an inner wait can never equal or outlive the cycle that owns it.
+   * Absent ⇒ no bound imposed (host default), i.e. pre-WI-4475 behavior.
+   */
+  deadlineMs?: number;
 }
 
 /**
@@ -273,8 +288,25 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
 
   // Wrap the injected call so every step's LLM use is recorded once (cost +
   // the no-human-prompt invariant), tagged with the step that issued it.
+  //
+  // WI-4475 — this wrapper is also where the cycle's DEADLINE becomes every call's ADMISSION
+  // bound. `llmCall` blocks in the shared rate-limit governor waiting for a permit before it
+  // issues a request; with no bound, that inner wait defaults to 600s — which EQUALS the whole
+  // @singleton cycle budget. So a single call queued behind a rate-limit pause could consume
+  // the entire cycle and kill it ("Scout cycle timed out after 600000ms during phase
+  // route|critique|recombine"). Bounding admission HERE means no port can forget to: ideate,
+  // critique and recombine all inherit it. A caller that computed a more precise budget of its
+  // own (the ideator reserves room for generation) keeps it — we only fill the gap.
+  const admissionBudgetMs = (): number | undefined => {
+    if (deps.deadlineMs === undefined || !Number.isFinite(deps.deadlineMs)) return undefined;
+    return Math.max(0, deps.deadlineMs - Date.now());
+  };
   const recordingLlm: ScoutLlmCall = async (opts) => {
-    const result = await deps.llmCall(opts);
+    const budget = opts.governorMaxWaitMs ?? admissionBudgetMs();
+    const result = await deps.llmCall({
+      ...opts,
+      ...(budget !== undefined ? { governorMaxWaitMs: budget } : {}),
+    });
     calls.push({
       step: currentStep,
       system: opts.system,
@@ -341,6 +373,9 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   const ideas = await deps.ideate(digest, {
     llmCall: recordingLlm,
     maxIdeators: deps.limits?.maxIdeators,
+    // WI-4475: the ideator reserves room for GENERATION out of the remaining budget, so it
+    // needs the raw deadline rather than the wrapper's whole-remaining default.
+    ...(deps.deadlineMs !== undefined ? { deadlineMs: deps.deadlineMs } : {}),
   });
   if (ideas.length === 0) return finish('no-ideas', { digest, ideas });
   // EI-10779: generation is now PAID FOR — do NOT discard it on a budget overrun.
