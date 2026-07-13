@@ -25,6 +25,13 @@ export interface BusyJson {
   holder_intent?: string;
   /** True when the holder declared THIS path among their current_files. */
   holder_focused?: boolean;
+  /** EI-10433: true when the lock's OWN stated intent and the holder's CURRENT
+   *  declared coord intent are on clearly different threads AND the holder is
+   *  not focused on this path — i.e. the holder acquired this lock for one task,
+   *  has since declared they moved to another, and never released it. A blocked
+   *  peer reads this as "likely orphaned, not actively contended" so it needn't
+   *  cross-reference coord:presence by hand or wait out the full TTL. */
+  holder_intent_diverged?: boolean;
 }
 
 export function busyToJson(b: AcquireBusy): BusyJson {
@@ -41,6 +48,43 @@ export function busyToJson(b: AcquireBusy): BusyJson {
  *  as "nothing meaningful declared" rather than surfacing it. */
 // PLACEHOLDER_INTENT is imported from coordination/presence-payload (canonical —
 // one string shared by the read-side normalization + this busy-holder detection).
+
+/** Hook/dispatch-stamped lock intents that don't identify WHAT the holder is
+ *  changing, so the lock's own intent can't be compared against the holder's
+ *  declared coord intent (e.g. 'PreToolUse:Edit', 'capability:edit'). */
+function isUninformativeLockIntent(intent: string): boolean {
+  const s = intent.trim();
+  if (!s || s === PLACEHOLDER_INTENT) return true;
+  return /^(?:PreToolUse:|PostToolUse:|capability:)/i.test(s);
+}
+
+/** Work-item-ish refs (WI-4138, EI-10433, F-FIX-046, P-011, …). Extracted so a
+ *  shared ref between the two intents counts as "same thread, not diverged". */
+function intentRefs(s: string): string[] {
+  return (s.match(/\b[a-z]{1,4}-\d[\w-]*/gi) ?? []).map((r) => r.toUpperCase());
+}
+
+function normIntent(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * EI-10433: true when the lock's OWN stated intent and the holder's CURRENT
+ * declared coord intent are on clearly different threads — the "orphaned lock"
+ * signal. Conservative (favours NOT flagging): an uninformative/placeholder
+ * lock intent, an empty/equal holder intent, a substring relationship, or a
+ * shared work-item ref all mean "not diverged".
+ */
+export function intentsDiverged(lockIntent: string, holderIntent: string): boolean {
+  if (isUninformativeLockIntent(lockIntent)) return false;
+  const a = normIntent(lockIntent);
+  const b = normIntent(holderIntent);
+  if (!a || !b || a === b) return false;
+  if (a.includes(b) || b.includes(a)) return false; // one thread refining the other
+  const [ra, rb] = [intentRefs(a), intentRefs(b)];
+  if (ra.length && rb.length && ra.some((r) => rb.includes(r))) return false; // same work-item
+  return true;
+}
 
 /**
  * Enrich busy rows with the holder's declared coord intent (presence).
@@ -61,6 +105,16 @@ export async function enrichBusy(rows: AcquireBusy[]): Promise<BusyJson[]> {
     const intent = p?.intent?.trim();
     if (intent && intent !== PLACEHOLDER_INTENT) json.holder_intent = intent;
     if (p?.currentFiles?.includes(b.path)) json.holder_focused = true;
+    // EI-10433: flag a likely-orphaned lock — the holder's CURRENT declared
+    // intent has moved off the lock's OWN stated intent and they aren't focused
+    // on this path, so it's stale rather than actively contended.
+    if (
+      json.holder_intent &&
+      json.holder_focused !== true &&
+      intentsDiverged(b.intent, json.holder_intent)
+    ) {
+      json.holder_intent_diverged = true;
+    }
     return json;
   });
 }
