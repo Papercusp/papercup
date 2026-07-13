@@ -68,7 +68,18 @@
 
 set -uo pipefail
 
-REPEATS="${FLAKE_SOAK_REPEATS:-6}"
+# MEASURED SENSITIVITY — READ THIS BEFORE TRUSTING A GREEN.
+# Against the real pre-fix MugTab flake, this lane reproduces at ~10-17% PER RUN
+# (1/6 and 1/10 in two independent soaks), versus ~60% on the genuinely loaded
+# 128-core box where the flake was originally found. It is a real detector, not a
+# strong one: it recovers a synthetic fraction of the host's ambient chaos.
+#
+# Consequence for the default: at p≈0.15, 12 repeats gives ~86% detection, 6 gives
+# ~62%. So the default is 12, and an ALL-GREEN soak is evidence, NOT proof. Quote
+# the red-rate ("0/12 under load"), never "the soak passed, it's fine" — that is
+# the same over-claim (a green run treated as a disproof) that let the original
+# flake survive two peer reports.
+REPEATS="${FLAKE_SOAK_REPEATS:-12}"
 # 8 cores + 8 competing hogs + nice 10 is the TUNED window (see start_load /
 # classify_run): enough preemption to delay a throttled timer past a remount,
 # not so much that vitest's pool times out starting a worker and executes zero
@@ -228,14 +239,13 @@ if [ -n "$SELFTEST_FIXTURE" ]; then
     *.flakeproof.test.tsx|*.flakeproof.test.ts) : ;;
     *) echo "flake-soak: --self-test fixture must be a *.flakeproof.test.tsx file" >&2; exit 2 ;;
   esac
-  # Run the fixture ALONGSIDE ITS SIBLINGS (its containing directory), not alone.
-  # This is not a detail — it is the difference between a detector that works and
-  # one that lies. The MugTab flake reddened ~60% in the FULL SUITE and ~0% in
-  # isolation, because the race needs a CONGESTED event loop: it is the parallel
-  # workers timesharing the pinned cores that delay the throttled nuqs flush past
-  # the remount. Soaking the fixture on its own starves it of exactly the
-  # contention that produces the bug — measured 1/6 alone vs. the suite's real
-  # ~60%. `--isolate` restores the (weaker) fixture-only run.
+  # Sibling contention was a THEORY THAT DIDN'T SURVIVE MEASUREMENT: running the
+  # fixture alongside its whole directory on pinned cores reddened it 0/6. What
+  # actually reproduces the race is the competing-hog load above (being niced
+  # relative to normal-priority work), which is orthogonal to how many test files
+  # run. So the default stays on the DIRECTORY (a real soak should cover the suite
+  # you care about anyway), but --isolate is a first-class, fully-supported mode —
+  # it is faster and reddens the fixture just as well (1/10, 0 invalid).
   local_target="$SELFTEST_FIXTURE"
   if [ "$ISOLATE" -eq 0 ]; then
     local_target="$(dirname "$SELFTEST_FIXTURE")"
