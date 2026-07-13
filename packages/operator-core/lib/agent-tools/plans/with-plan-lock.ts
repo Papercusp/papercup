@@ -286,15 +286,23 @@ export async function withPlanLock<T>(
           -- never reaches the outbox/log (so a later replay reverts it).
           origin        = 'local'
       `;
-    } else if (writesTemplateData && cur) {
-      // Structured-only template_data write (plans:set-template-data, P-005): bump
-      // version + write the validated jsonb, leaving `content` + the derived index
-      // untouched. `updated_at = now()` so the mig-211 trigger counts it as REAL
-      // activity (it would otherwise skip the bump — template_data is not in its
-      // meaningful-column set). A revision is recorded against the unchanged body
-      // via afterWrite below (writtenBody = the current content).
-      newVersion = curVersion + 1;
-      writtenBody = cur.content;
+    }
+    if (writesTemplateData && (cur || newBody !== null)) {
+      // template_data write (plans:set-template-data, P-005) — structured-only OR
+      // COMBINED with a body write in the same locked transaction (EI-10751's
+      // ratifyRubric flips the frontmatter status AND stamps the ratifier atomically).
+      // This used to be an `else if`, which SILENTLY DROPPED the templateData patch
+      // whenever the mutator also returned a body — the signature advertised the
+      // combined form while the write path ignored half of it (a claimed contract
+      // that wasn't one). Structured-only: bump version + record a revision against
+      // the unchanged body. Combined: the body write above already bumped the
+      // version; this just adds the jsonb in the same tx. `updated_at = now()` so
+      // the mig-211 trigger counts it as REAL activity (template_data is not in its
+      // meaningful-column set).
+      if (newBody === null) {
+        newVersion = curVersion + 1;
+        writtenBody = cur!.content;
+      }
       const dataJson = templateData!.data === null ? null : JSON.stringify(templateData!.data);
       await tx`
         UPDATE harness_shared.harness_plans
