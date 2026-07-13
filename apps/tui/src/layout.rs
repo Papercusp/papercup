@@ -454,8 +454,9 @@ layout {{
             plugin location="zellij:status-bar"
         }}
     }}
-    tab name="this hive" focus=true {{
+    tab name="this hive" focus=true hide_floating_panes=true {{
 {dock_body}
+{sentinel_deep_floating_block}
     }}
     tab name="network" {{
         pane name="network" {{
@@ -1133,48 +1134,70 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_deep_pane_sits_under_the_sentinel_with_the_same_label() {
-        // voice-public-release-readiness-2026-07-12 P-014 (D-001/D-005/D-006):
-        // the papercup-DEEP pane — the hidden heavy half of the ONE "Papercup"
-        // identity — sits directly UNDER the front-door pane and launches via
-        // the `psu-sentinel-deep` wrapper (role=papercup-deep, default
-        // opus:xhigh). D-001: its NAME is the SAME lexed front-door label; the
-        // fast/deep split must never be visible in the dock.
+    fn chat_dock_deep_pane_is_hidden_never_a_second_visible_papercup() {
+        // WI-4485 — REGRESSION PIN. This test previously asserted the OPPOSITE and is
+        // why the bug shipped: it required a SECOND TILED pane ("deep pane unfocused at
+        // 12%") while its own comment claimed "the fast/deep split must never be visible
+        // in the dock". Both cannot be true. Two visible panes sharing the one
+        // "🥤 papercup" label do not hide the split — they read as a DUPLICATE, and the
+        // owner reported exactly that ("why do I see 2x papercup agents ... there should
+        // only be 1"). An identical NAME conceals nothing; only NOT RENDERING it does.
+        //
+        // The invariant, pinned: exactly ONE papercup pane is DRAWN. The deep half still
+        // exists and still launches — as a HIDDEN FLOATING pane (falsification-tested on
+        // zellij 0.44.3: a pane under `floating_panes` in a `hide_floating_panes=true`
+        // tab does run its command), so the coord-driven delegate chain is intact.
         let kdl = chat_dock_kdl(
             &["psu".to_string(), "--brain".to_string()],
             &Lexicon::default(),
         );
-        // TWO panes carry the one front-door label (front + deep) …
-        assert_eq!(
-            kdl.matches("name=\"🥤 papercup\"").count(),
-            2,
-            "one identity, two panes (front + deep): {kdl}"
+
+        // 1. The tab hides floating panes → the deep pane is never drawn.
+        assert!(
+            kdl.contains("tab name=\"this hive\" focus=true hide_floating_panes=true"),
+            "the dock tab must hide floating panes: {kdl}"
         );
-        // … and NOTHING in the layout reveals the split: no "deep" in any
-        // user-visible pane NAME (the wrapper command is not rendered).
+
+        // 2. The deep half is INSIDE the floating block — not a tiled sibling.
+        let floating_at = kdl
+            .find("floating_panes {")
+            .expect("the deep pane must ride in a floating_panes block");
+        let deep_at = kdl
+            .find("command \"psu-sentinel-deep\"")
+            .expect("the deep session must still be launched");
+        assert!(
+            floating_at < deep_at,
+            "the deep pane must be declared inside floating_panes, not tiled: {kdl}"
+        );
+
+        // 3. The FRONT pane is the only papercup pane in the TILED body, and it has its
+        //    12% back (28% → 40%). Anything claiming a tiled 12% papercup is the old bug.
+        let tiled = &kdl[..floating_at];
+        assert_eq!(
+            tiled.matches("name=\"🥤 papercup\"").count(),
+            1,
+            "exactly ONE visible papercup pane in the dock: {tiled}"
+        );
+        assert!(
+            tiled.contains("name=\"🥤 papercup\" focus=true size=\"40%\""),
+            "front pane focused at 40% (it took the deep pane's 12% back): {tiled}"
+        );
+        assert!(
+            !tiled.contains("command \"psu-sentinel-deep\""),
+            "the deep pane must NOT be a tiled sibling — that is the 2x-papercup bug: {tiled}"
+        );
+
+        // 4. The split is never NAMED: no internal "-deep" role leaks into a pane label,
+        //    even if a user toggles floating panes into view.
         assert!(
             !kdl.contains("name=\"🥤 papercup-deep\"") && !kdl.contains("deep\" {"),
             "the deep pane must not be labeled as deep: {kdl}"
         );
-        // Only the FRONT pane takes focus; the deep pane parks unfocused, and
-        // the front pane gave up the deep pane's 12% (40% → 28%).
-        assert!(
-            kdl.contains("name=\"🥤 papercup\" focus=true size=\"28%\""),
-            "front pane focused at 28%: {kdl}"
-        );
-        assert!(
-            kdl.contains("name=\"🥤 papercup\" size=\"12%\""),
-            "deep pane unfocused at 12%: {kdl}"
-        );
-        // Order: front pane → deep pane → overwatch (the deep pane sits inside
-        // the sentinel block, above the rest of the dock).
+
+        // 5. The front-door pane still leads the tiled dock, above overwatch.
         let front = kdl.find("command \"psu-sentinel\"").unwrap();
-        let deep = kdl.find("command \"psu-sentinel-deep\"").unwrap();
         let ow = kdl.find("name=\"🫖 kettle\"").unwrap();
-        assert!(
-            front < deep && deep < ow,
-            "deep pane sits under the front pane, above overwatch"
-        );
+        assert!(front < ow, "the front pane leads the dock, above overwatch");
     }
 
     #[test]

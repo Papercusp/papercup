@@ -74,10 +74,11 @@ export interface ReleaseRow {
 export interface Snapshot {
   items: ShippedItem[];
   plans: ShippedPlan[];
-  /** Internal engineer-issue observations in the window. COUNTED, never listed —
-   *  see `isUserFacing`. Surfaced so the page can say "and N internal fixes"
-   *  rather than silently dropping them. */
-  internalCount: number;
+  /** Internal engineer-issue ids (EI-*) in the window. These ARE recorded in the
+   *  release row — the row states the fact ("everything that went terminal"), and
+   *  the VIEW decides what to show. The page counts them rather than listing them
+   *  (see `isUserFacing`), but nothing is silently dropped from the record. */
+  internalIds: string[];
 }
 
 /**
@@ -170,17 +171,52 @@ export async function snapshotWindow(
      ORDER BY updated_ts ASC
   `;
 
-  const userFacing = rows.filter((r) => isUserFacing(r.feature_id));
-  const items: ShippedItem[] = userFacing.map((r) => ({
-    id: r.feature_id,
-    title: r.title ?? '',
-    planSlug: r.source_plan_slug,
-  }));
+  const items: ShippedItem[] = rows
+    .filter((r) => isUserFacing(r.feature_id))
+    .map((r) => ({ id: r.feature_id, title: r.title ?? '', planSlug: r.source_plan_slug }));
+  const internalIds = rows.map((r) => r.feature_id).filter((id) => !isUserFacing(id));
 
   const slugs = [...new Set(items.map((i) => i.planSlug).filter((s): s is string => !!s))];
   const plans = slugs.length > 0 ? await fetchPlans(sql, scope, slugs, items) : [];
 
-  return { items, plans, internalCount: rows.length - userFacing.length };
+  return { items, plans, internalIds };
+}
+
+/**
+ * Look up the display data for a release's FROZEN id lists.
+ *
+ * The row stores ids, not titles — deliberately. The SET of items is the fact we
+ * freeze at cut time; a title someone later clarifies should show its improved
+ * wording, but must never change WHICH items shipped. So: frozen ids in, current
+ * titles out.
+ */
+export async function hydrateRelease(
+  sql: Sql,
+  scope: Scope,
+  row: ReleaseRow,
+): Promise<{ items: ShippedItem[]; plans: ShippedPlan[]; internalCount: number }> {
+  const userFacingIds = row.workItemIds.filter(isUserFacing);
+  const internalCount = row.workItemIds.length - userFacingIds.length;
+  if (userFacingIds.length === 0) return { items: [], plans: [], internalCount };
+
+  const rows = await sql<
+    Array<{ feature_id: string; title: string; source_plan_slug: string | null }>
+  >`
+    SELECT feature_id, title, source_plan_slug
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${scope.workspaceId}
+       AND harness_slug = ${scope.harnessSlug}
+       AND feature_id = ANY(${sql.array(userFacingIds)})
+     ORDER BY updated_ts ASC
+  `;
+  const items: ShippedItem[] = rows.map((r) => ({
+    id: r.feature_id,
+    title: r.title ?? '',
+    planSlug: r.source_plan_slug,
+  }));
+  const plans =
+    row.planSlugs.length > 0 ? await fetchPlans(sql, scope, row.planSlugs, items) : [];
+  return { items, plans, internalCount };
 }
 
 async function fetchPlans(
