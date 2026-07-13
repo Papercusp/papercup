@@ -163,7 +163,7 @@ export function evaluateLivenessAlarm(
     signals.push({
       key: 'health-tick-stale',
       severity: 'blocker',
-      summary: `system-health tick stale for ${Math.round(snapshotAgeMs / 60_000)}m — the background routine engine (DBOS) is likely frozen; routines / git-sync / Queen will be stalled and the in-engine watchdog is blind.`,
+      summary: `system-health tick stale for ${Math.round(snapshotAgeMs / 60_000)}m — the background routine engine (DBOS) is likely frozen; routines / git-sync / Mug will be stalled and the in-engine watchdog is blind.`,
     });
   }
 
@@ -185,7 +185,7 @@ export function evaluateLivenessAlarm(
     signals.push({
       key: 'queen-dark',
       severity: 'blocker',
-      summary: `Queen loop dark (started, no live wake) — ${health.panels.queen?.summary ?? ''}`.trim(),
+      summary: `Mug loop dark (started, no live wake) — ${health.panels.queen?.summary ?? ''}`.trim(),
     });
   }
 
@@ -194,7 +194,7 @@ export function evaluateLivenessAlarm(
     signals.push({
       key: 'overwatch-dark',
       severity: 'advisory',
-      summary: `Overwatch supervisor loop dark — ${health.panels.overwatch?.summary ?? ''}`.trim(),
+      summary: `Kettle supervisor loop dark — ${health.panels.overwatch?.summary ?? ''}`.trim(),
     });
   }
 
@@ -212,8 +212,8 @@ export function evaluateLivenessAlarm(
       severity: 'advisory',
       summary:
         e?.status === 'partial-only'
-          ? `Overwatch emitting only PARTIAL pot-coordination-health scorecards since its last wake (${e.missingCount} criteria unrated) — Owner #1 mandate (a COMPLETE scorecard EVERY wake) truncated.`
-          : `Overwatch woke but emitted NO complete pot-coordination-health scorecard since its last wake — Owner #1 mandate (a scorecard EVERY wake) skipped; the health-trend is going blind.`,
+          ? `Kettle emitting only PARTIAL pot-coordination-health scorecards since its last wake (${e.missingCount} criteria unrated) — Owner #1 mandate (a COMPLETE scorecard EVERY wake) truncated.`
+          : `Kettle woke but emitted NO complete pot-coordination-health scorecard since its last wake — Owner #1 mandate (a scorecard EVERY wake) skipped; the health-trend is going blind.`,
     });
   }
 
@@ -351,9 +351,9 @@ const PANEL_LABEL_TO_KEY: Record<string, PanelKey> = {
   ...Object.fromEntries(
     (Object.entries(PANEL_LABELS) as Array<[PanelKey, string]>).map(([k, v]) => [v, k]),
   ),
-  Queen: 'queen',
+  Mug: 'queen',
   'Bees / fleet': 'bees',
-  Overwatch: 'overwatch',
+  Kettle: 'overwatch',
   'Scout / ideation': 'scout',
 };
 
@@ -370,8 +370,8 @@ export function deriveSignatureFromSummary(summary: string): string | null {
   s = s.trim();
   if (s.startsWith('system-health tick stale')) return 'health-tick-stale';
   if (/dead routine\(s\)/.test(s)) return 'dead-routines';
-  if (s.startsWith('Queen loop dark')) return 'queen-dark';
-  if (s.startsWith('Overwatch supervisor loop dark')) return 'overwatch-dark';
+  if (s.startsWith('Mug loop dark')) return 'queen-dark';
+  if (s.startsWith('Kettle supervisor loop dark')) return 'overwatch-dark';
   if (/LLM pool account\(s\) paused/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
   // EI-9794 fire-staleness form: "<role>@<harness> has not fired in ...".

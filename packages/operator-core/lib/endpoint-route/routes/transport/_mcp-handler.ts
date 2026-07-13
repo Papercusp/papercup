@@ -1255,7 +1255,7 @@ seen this run), bootstrap in ONE call:
   - **Claim your lane.** When the work is plan items, pass them:
     \`coord:orient { intent, planSlug, planItems: ['P-001', …] }\` CLAIMS
     those items for you (and releases ones you've moved off). An unclaimed
-    lane is invisible to the Queen and peers, so work gets double-placed.
+    lane is invisible to the Mug and peers, so work gets double-placed.
     (Flipping an item \`wip\` via \`plans:set-status\` also auto-claims;
     \`done\` releases. A \`claim_conflict\` means a live peer holds it —
     coordinate with the holder, don't take it.)

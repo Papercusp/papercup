@@ -107,7 +107,7 @@ async function alertMissingStartedOverwatch(workspaceId: string, installSlug: st
     if (!owner) return;
     const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
     await wakeRecipients([owner], {
-      summary: `⚠️ Self-cleared started Overwatch "${installSlug}" because its Hive is missing from the workspace registry.`,
+      summary: `⚠️ Self-cleared started Kettle "${installSlug}" because its Hive is missing from the workspace registry.`,
       source: 'overwatch-watchdog:missing-harness',
       workspaceId,
     });
@@ -218,7 +218,7 @@ export async function armFallbackOverwatchWake(opts: {
       return { outcome: "skipped", reason: "a wake is already armed" };
     }
     const kickoff =
-      `Overwatch watchdog wake (${source}): ${opts.reason} — your previous turn ended without declaring a wake. ` +
+      `Kettle watchdog wake (${source}): ${opts.reason} — your previous turn ended without declaring a wake. ` +
       `Survey system health (the brief), act on the anomalies, and ALWAYS declare your next wake before ending a turn. ` +
       `Frequent watchdog wakes are a prompt bug to fix.`;
     const at = new Date(
@@ -321,7 +321,7 @@ export async function overwatchWatchdogSweep(
         await setOverwatchStarted(workspaceId, installSlug, false);
         await clearOverwatchTimeWake(sql, installSlug, { workspaceId });
         await alertMissingStartedOverwatch(workspaceId, installSlug);
-        results.push({ outcome: 'skipped', reason: 'started Overwatch Hive missing from registry; self-cleared' });
+        results.push({ outcome: 'skipped', reason: 'started Kettle Hive missing from registry; self-cleared' });
         continue;
       }
       const live = await overwatchLivenessCheck(sql, installSlug, {

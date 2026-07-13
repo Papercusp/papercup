@@ -1269,3 +1269,9 @@ try {
 } catch {
   /* never block boot */
 }
+
+// EI-10966 — prompt-weight budget self-check. LAST import: every tool above has
+// registered, so this sees the full projected catalog. Warns (operator logs only,
+// never under vitest) when a tool is over budget, so an over-budget guidance EDIT
+// surfaces at hot-reload time instead of hours later at the fleet-blocking gate.
+import './tool-weight-selfcheck';

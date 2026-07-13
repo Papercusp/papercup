@@ -301,7 +301,7 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
           : `looping — last wake ${agoMin(lastWakeAt, now)}, next ${untilMin(nextFireAt, now)}`;
     return {
       status, summary, data,
-      link: { label: 'Queen pane', href: '/adv?tab=harnesses' },
+      link: { label: 'Mug pane', href: '/adv?tab=harnesses' },
       metrics: [
         m('state', !started ? 'paused' : stalled ? 'stalled' : midTurn ? 'working' : 'looping', status),
         m('last wake', agoMin(lastWakeAt, now)),
@@ -1703,7 +1703,7 @@ async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPa
           : `looping — last wake ${agoMin(lastWakeAt, now)}, next ${untilMin(nextFireAt, now)}`;
     return {
       status, summary, data,
-      link: { label: 'Overwatch', href: '/adv?tab=overwatch' },
+      link: { label: 'Kettle', href: '/adv?tab=overwatch' },
       metrics: [
         m('state', stateLabel, status === 'crit' ? 'crit' : status === 'warn' ? 'warn' : undefined),
         m('cadence', `${Math.round(cs.cadenceSec / 60)}m`),

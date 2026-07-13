@@ -768,7 +768,7 @@ async function recipeHygieneTick(): Promise<void> {
       if (r.sweptIds.length > 0 || r.promoteCandidates > 0 || r.mergeClusters > 0) {
         console.log(
           `[recipe-hygiene] retired ${r.sweptIds.length} stale one-off recipe(s); ` +
-            `${r.promoteCandidates} promote candidate(s), ${r.mergeClusters} merge cluster(s) awaiting Queen review`,
+            `${r.promoteCandidates} promote candidate(s), ${r.mergeClusters} merge cluster(s) awaiting Mug review`,
         );
       }
     } catch (err) {

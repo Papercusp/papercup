@@ -134,7 +134,7 @@ export async function setOverwatchStarted(
   const scope = workspaceBrainScopeKey(workspaceId, installSlug, on);
   const value = started ? 'true' : 'false';
   const description =
-    'Start/Pause Overwatch state (overwatch-role B-07). true = the overwatch supervisor loop should be running; the loop (B-04) + liveness watchdog (B-09) hold the wake-armed invariant only while true.';
+    'Start/Pause Kettle state (overwatch-role B-07). true = the overwatch supervisor loop should be running; the loop (B-04) + liveness watchdog (B-09) hold the wake-armed invariant only while true.';
   await writeSetting(startedKey(workspaceId, scope), value, description);
   if (on && installSlug !== scope) {
     await writeSetting(startedKey(workspaceId, installSlug), value, description);
@@ -171,7 +171,7 @@ export async function setOverwatchCadenceSec(
   await writeSetting(
     cadenceKey(workspaceId, scope),
     String(clamped),
-    'Overwatch wake cadence in seconds (overwatch-role B-07). The loop (B-04) declares its next wake this far out while started.',
+    'Kettle wake cadence in seconds (overwatch-role B-07). The loop (B-04) declares its next wake this far out while started.',
   );
   return clamped;
 }

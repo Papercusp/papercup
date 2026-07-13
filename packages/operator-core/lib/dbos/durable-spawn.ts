@@ -577,7 +577,7 @@ async function recordDurableSpawnAdmission(
              cancel_requested = true,
              cancel_reason = COALESCE(
                a.cancel_reason,
-               'DBOS workflow is terminal but the Queen singleton nursery row was still running; retired during singleton admission'
+               'DBOS workflow is terminal but the Mug singleton nursery row was still running; retired during singleton admission'
              ),
              cancelled_at = COALESCE(a.cancelled_at, now()),
              finished_at = COALESCE(a.finished_at, now()),
@@ -685,8 +685,8 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
     );
     if (!admission.admitted) {
       console.warn(
-        `[durable-spawn] skipped duplicate Queen launch (${input.label ?? ''}); ` +
-          `workspace ${rec.workspaceId} already has active Queen ${admission.activeSpawnId}` +
+        `[durable-spawn] skipped duplicate Mug launch (${input.label ?? ''}); ` +
+          `workspace ${rec.workspaceId} already has active Mug ${admission.activeSpawnId}` +
           `${admission.activeHarnessSlug ? ` (${admission.activeHarnessSlug})` : ''}`,
       );
       return;
@@ -738,7 +738,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
           // D-007/D-010 fail-loud: the fire holds the connection for the agent's run, so r.ok
           // ≈ "the run finished" — but HTTP 200 does NOT mean the agent actually RAN. On an
           // unstable/restarting launcher host the invoke returns ok-shaped while the agent
-          // never produced a turn (the ~3s, 0-token Queen/overwatch wakes that were recorded
+          // never produced a turn (the ~3s, 0-token Mug/overwatch wakes that were recorded
           // 'done' → silent placement/scorecard stalls). Inspect the invoke body (the route
           // returns { ok: exitCode===0 && !timedOut, agentOutput, ... }): treat a parseable
           // result reporting the agent did NOT complete a turn (route ok:false, OR empty

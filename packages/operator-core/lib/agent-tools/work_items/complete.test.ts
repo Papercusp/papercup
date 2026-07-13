@@ -29,6 +29,15 @@ vi.mock('../../work-items', () => ({
   subscribeWorkItem: (...a: unknown[]) => subscribeWorkItem(...a),
 }));
 
+const setWorkItemCheckpoint = vi.fn();
+vi.mock('../../work-item-checkpoint', () => ({
+  setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
+}));
+const fireReactionInProcess = vi.fn();
+vi.mock('../../events', () => ({
+  fireReactionInProcess: (...a: unknown[]) => fireReactionInProcess(...a),
+}));
+
 // TEST-COMPLETION GATE (P-006): the flag + the gate helper are mocked so these unit tests
 // exercise the gate WIRING in completeOne (flag-off skips, flag-on consults, refusal blocks)
 // without PG. The default beforeEach state is flag OFF + gate OK (= today's behavior).
@@ -84,6 +93,10 @@ beforeEach(() => {
   linkWorkItem.mockResolvedValue({ ok: true });
   subscribeWorkItem.mockReset();
   subscribeWorkItem.mockResolvedValue({ ok: true });
+  setWorkItemCheckpoint.mockReset();
+  setWorkItemCheckpoint.mockResolvedValue(null);
+  fireReactionInProcess.mockReset();
+  fireReactionInProcess.mockResolvedValue({ ok: true });
 });
 
 describe('work_items:complete (keyed-array)', () => {
@@ -124,6 +137,76 @@ describe('work_items:complete (keyed-array)', () => {
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({ by: expect.any(String) }));
     expect(r.workItem.state).toBe('passed');
     expect(r.ok).toBe(true);
+    expect(r.finish).toMatchObject({
+      complete: true,
+      checkpointCleared: true,
+      planItem: 'not-linked',
+      claimRelease: 'not-linked',
+    });
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'papercup', workItemId: 'F-12' }),
+      null,
+    );
+  });
+
+  it('synchronously converges a linked plan item and claim release before reporting success', async () => {
+    const linked = {
+      ...item,
+      payload: { plan_item: { plan_slug: 'release-plan', item_id: 'P-007', harness_slug: 'papercup' } },
+    };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'passed' }));
+
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: { summary: 'verified and shipped', tests: '12 green' },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.finish).toMatchObject({
+      idempotent: true,
+      complete: true,
+      planItem: 'done',
+      claimRelease: 'released-or-absent',
+    });
+    expect(fireReactionInProcess).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        fire: 'plans:set-status',
+        args: expect.objectContaining({ slug: 'release-plan', itemId: 'P-007', status: 'done' }),
+      }),
+    );
+    expect(fireReactionInProcess).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        fire: 'plan_items:release',
+        args: { harness: 'papercup', plan: 'release-plan', item: 'P-007' },
+      }),
+    );
+  });
+
+  it('fails loudly after a partial finish and tells the caller the same call is retry-safe', async () => {
+    const linked = {
+      ...item,
+      payload: { plan_item: { plan_slug: 'release-plan', item_id: 'P-007', harness_slug: 'papercup' } },
+    };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'passed' }));
+    fireReactionInProcess
+      .mockResolvedValueOnce({ ok: false, error: 'plan lock unavailable' })
+      .mockResolvedValueOnce({ ok: true });
+
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: { summary: 'verified', tests: '12 green' },
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/FINISH DID NOT FULLY CONVERGE/);
+    expect(r.error).toMatch(/Re-call the SAME completion/);
+    expect(r.finish).toMatchObject({ complete: false, planItem: 'failed' });
   });
 
   it('refuses terminal completion of a remote-authored issue before emitting a false completion', async () => {

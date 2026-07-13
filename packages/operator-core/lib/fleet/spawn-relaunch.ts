@@ -74,7 +74,7 @@ export async function relaunchReclaimedSpawn(
         workspaceId: spawn.workspaceId,
         kickoff:
           opts.kickoff ??
-          `Re-launched by the boot spawn-reclaim reconcile after a host restart killed the prior Queen ` +
+          `Re-launched by the boot spawn-reclaim reconcile after a host restart killed the prior Mug ` +
             `(EI-85) — resume hive orchestration for '${spawn.harnessSlug}'.`,
       });
       // A root Queen launch returns a spawn correlation (durable workflow id or a

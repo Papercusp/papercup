@@ -32,6 +32,15 @@ interface StampedWorkItem {
   payload?: { plan_item?: PlanItemStamp } | null;
 }
 
+interface FinishReceipt {
+  planItem?: string;
+  claimRelease?: string;
+}
+
+function finishOf(e: ToolInvocationEvent): FinishReceipt | null {
+  return ((e.result?.data as { finish?: FinishReceipt } | undefined)?.finish ?? null);
+}
+
 /** plans:set-status only accepts P-NNN ids — guard so a rule never fires a doomed flip. */
 const PLAN_ITEM_ID = /^P-\d{3,}$/;
 
@@ -99,13 +108,16 @@ registerReactionRule({
   when: (e) =>
     Boolean((e.result?.data as { completion?: unknown } | undefined)?.completion) &&
     stampOf(e) !== null &&
+    !['done', 'dropped'].includes(finishOf(e)?.planItem ?? '') &&
     COMPLETE_REFLECTABLE.has(reflectedStatus(workItemOf(e).state) ?? ''),
   fire: 'plans:set-status',
   args: (e) => {
     const wi = workItemOf(e);
     return setStatusArgs(e, reflectedStatus(wi.state)!, wi.state ? `completed (${wi.state})` : 'completed');
   },
-  onlyOnSuccess: true,
+  // A synchronous finish leg may fail AFTER the work-item closed, yielding
+  // ok:false. Fire as a durable convergence fallback in that case.
+  onlyOnSuccess: false,
   source: 'plan-item-reflect',
 });
 
@@ -153,10 +165,13 @@ registerReactionRule({
   id: 'plan-item-reflect:complete-releases-lease',
   on: 'work_items:complete',
   when: (e) =>
-    Boolean((e.result?.data as { completion?: unknown } | undefined)?.completion) && stampOf(e) !== null,
+    Boolean((e.result?.data as { completion?: unknown } | undefined)?.completion) &&
+    stampOf(e) !== null &&
+    TERMINAL_STATES.has(workItemOf(e).state ?? '') &&
+    finishOf(e)?.claimRelease !== 'released-or-absent',
   fire: 'plan_items:release',
   args: leaseReleaseArgs,
-  onlyOnSuccess: true,
+  onlyOnSuccess: false,
   source: 'plan-item-reflect',
 });
 

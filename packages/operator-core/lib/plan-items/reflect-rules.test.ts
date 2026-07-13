@@ -93,6 +93,18 @@ describe('plan-item-reflect:complete', () => {
     });
   });
 
+  it('does not duplicate the plan flip when the synchronous finish receipt already converged it', () => {
+    const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
+    const e = evt(
+      'work_items:complete',
+      stamped('resolved', {
+        completion: { summary: 's' },
+        finish: { planItem: 'done', claimRelease: 'released-or-absent' },
+      }),
+    );
+    expect(fires(rule, e)).toBe(false);
+  });
+
   it('EI-8353: a completion that CLOSES/deprecates the item reflects → dropped, never done', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
     const closed = evt('work_items:complete', stamped('closed', { completion: { summary: 's' } }));
@@ -141,12 +153,25 @@ describe('plan-item-reflect:set-state', () => {
 describe('lease release mirrors (complete / release also drop the plan-item lease)', () => {
   it('complete fires plan_items:release with the stamp scope', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete-releases-lease');
-    const e = evt('work_items:complete', stamped('open', { completion: { summary: 's' } }));
+    const e = evt('work_items:complete', stamped('resolved', { completion: { summary: 's' } }));
     expect(fires(rule, e)).toBe(true);
     expect(renderArgs(rule, e)).toEqual({ harness: 'papercup', plan: 'demo-plan', item: 'P-007' });
-    // No completion record / no stamp → no fire.
+    // No completion record / no stamp / non-terminal result → no fire.
     expect(fires(rule, evt('work_items:complete', stamped('open')))).toBe(false);
     expect(fires(rule, evt('work_items:complete', { ok: true, workItem: { id: 'WI-9' }, completion: {} }))).toBe(false);
+    expect(fires(rule, evt('work_items:complete', stamped('open', { completion: { summary: 's' } })))).toBe(false);
+    expect(
+      fires(
+        rule,
+        evt(
+          'work_items:complete',
+          stamped('resolved', {
+            completion: { summary: 's' },
+            finish: { planItem: 'done', claimRelease: 'released-or-absent' },
+          }),
+        ),
+      ),
+    ).toBe(false);
   });
 
   it('work_items:release fires plan_items:release for any stamped item (terminal or not)', () => {

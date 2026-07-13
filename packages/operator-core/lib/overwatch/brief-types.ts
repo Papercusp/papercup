@@ -449,14 +449,14 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   const cap = { ...DEFAULT_OVERWATCH_BRIEF_CAPS, ...caps };
   const out: string[] = [];
 
-  out.push(`## Overwatch wake brief — system-health snapshot for ${brief.potSlug}`);
+  out.push(`## Kettle wake brief — system-health snapshot for ${brief.potSlug}`);
   out.push(
     'This is the deterministic snapshot the watchdog computed for this wake — the state of ' +
-      "the hive's Queen, bees, work-feed, tokens, plans, and observation lane, plus the " +
+      "the hive's Mug, bees, work-feed, tokens, plans, and observation lane, plus the " +
       'anomalies detected and the action suggested for each. Act on the anomalies: NUDGE the ' +
       'relevant agent (`coord:send`), record an OBSERVATION (`improvements:capture` ' +
       'lane:observation), or ESCALATE a structural issue you must NOT auto-fix (`coord:escalate`). ' +
-      'You NUDGE agents; you never re-place work — that is the Queen.',
+      'You NUDGE agents; you never re-place work — that is the Mug.',
   );
 
   if (brief.wokeBy && brief.wokeBy.trim()) {
@@ -496,17 +496,17 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   // HEALTH PANELS — supporting context (one line each).
   const q = brief.queen;
   out.push('');
-  out.push('### Queen');
+  out.push('### Mug');
   out.push(`- last woke ${q.lastWakeAt ?? 'unknown'}${q.stalled ? ' [STALLED]' : ''} · cadence ${q.cadenceOk ? 'ok' : 'OFF'} · ` + `driving ${q.workingTracked} placement(s) · next ${q.nextFireAt ?? 'unscheduled'}`);
   // Queen nudges use the stable role slot. A concrete coordOwner is diagnostic
   // only: Queen sessions are fresh-per-wake and direct owner sends can race the
   // session ending before Overwatch sends.
-  out.push(`- nudge the Queen via \`coord:send { to: ['@role:queen'], wake: 'optimistic', summary, body }\` (role-slot drains into her next wake brief)`);
-  out.push(q.coordOwner ? `- latest Queen session owner (diagnostic only): ${q.coordOwner}` : `- latest Queen session owner: unknown (role-slot nudge still parks for the next Queen wake)`);
+  out.push(`- nudge the Mug via \`coord:send { to: ['@role:queen'], wake: 'optimistic', summary, body }\` (role-slot drains into her next wake brief)`);
+  out.push(q.coordOwner ? `- latest Mug session owner (diagnostic only): ${q.coordOwner}` : `- latest Mug session owner: unknown (role-slot nudge still parks for the next Mug wake)`);
 
   const b = brief.bees;
   out.push('');
-  out.push('### Bees (Queen-placed only — NOT the whole fleet)');
+  out.push('### Bees (Mug-placed only — NOT the whole fleet)');
   out.push(`- running ${b.running} · completed ${b.completed} · churning ${b.churning} · dead claims ${b.deadClaims} · invalid-model failures ${b.invalidModelFailures}`);
   // EI-6493: this panel counts ONLY nursery rows with child_role='bee'
   // (gatherLiveBees's own WHERE clause) — su fleet members, autonomous loop
@@ -518,7 +518,7 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   // prior wake. Say so explicitly so a reader (or a carry-note) never mistakes
   // "no Queen-dispatched bees this window" for "nothing is happening".
   if (b.running === 0) {
-    out.push('  (zero here means no Queen-dispatched bee is active — it does NOT mean the fleet is idle; cross-check fleet:assignments/coord:presence before reading this as a stall)');
+    out.push('  (zero here means no Mug-dispatched bee is active — it does NOT mean the fleet is idle; cross-check fleet:assignments/coord:presence before reading this as a stall)');
   }
 
   const wf = brief.workFeed;

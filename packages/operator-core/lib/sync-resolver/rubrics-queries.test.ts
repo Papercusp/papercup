@@ -46,6 +46,8 @@ describe('rubrics.* / scorecards.* resolvers', () => {
         characteristic: 'agent-behavior',
         title: 'SU agent behavior',
         status: 'ratified',
+        proposedBy: 'su-author',
+        ratifiedBy: 'su-ratifier',
         criteria: [{ key: 'a' }, { key: 'b' }],
         ratingScale: ['pass', 'partial', 'fail', 'unknown'],
         methodRef: null,
@@ -56,6 +58,8 @@ describe('rubrics.* / scorecards.* resolvers', () => {
         characteristic: 'x',
         title: 'Never graded',
         status: 'proposed',
+        proposedBy: 'su-author',
+        ratifiedBy: null,
         criteria: [{ key: 'a' }],
         ratingScale: ['healthy', 'broken'],
         methodRef: 'm',
@@ -83,7 +87,14 @@ describe('rubrics.* / scorecards.* resolvers', () => {
     expect(graded.criteriaCount).toBe(2);
     expect(graded.avgScore10).toBe(7); // (4+10)/2 — the null-scored card excluded
     expect(graded.latestScore10).toBe(10); // rides the newest-createdAt scorecard
+    // WI-4506: governance provenance passes through so the UI can surface author≠ratifier.
+    expect(graded.status).toBe('ratified');
+    expect(graded.proposedBy).toBe('su-author');
+    expect(graded.ratifiedBy).toBe('su-ratifier');
     const ungraded = out.find((row) => row.rubricId === 'never-graded')!;
+    expect(ungraded.status).toBe('proposed');
+    expect(ungraded.proposedBy).toBe('su-author');
+    expect(ungraded.ratifiedBy).toBeNull();
     expect(ungraded.scorecardCount).toBe(0);
     expect(ungraded.latestScorecardAt).toBeNull();
     expect(ungraded.avgScore10).toBeNull();

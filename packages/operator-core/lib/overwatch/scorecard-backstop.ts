@@ -144,7 +144,7 @@ export interface OverwatchScorecardCheckResult {
 }
 
 const UNKNOWN_EVIDENCE =
-  'auto-synth floor — the Overwatch agent turn emitted no scorecard; this criterion needs a live agent turn to assess';
+  'auto-synth floor — the Kettle agent turn emitted no scorecard; this criterion needs a live agent turn to assess';
 
 const unknown = (): ScorecardRating => ({ rating: 'unknown', evidence: UNKNOWN_EVIDENCE });
 
@@ -210,7 +210,7 @@ export function synthesizeCoordinationScorecard(
     const rating = stuck > 0 && tracked === 0 ? 'degraded' : 'unknown';
     r['queen-workitem-selection'] = {
       rating,
-      evidence: `auto-synth: Queen workingTracked=${tracked}, ${stuck} auto-eligible items unplaced, queen ${
+      evidence: `auto-synth: Mug workingTracked=${tracked}, ${stuck} auto-eligible items unplaced, queen ${
         queen?.stalled ? 'STALLED' : 'not stalled'
       }; selection QUALITY needs a live agent turn`,
     };
@@ -273,7 +273,7 @@ export function synthesizeCoordinationScorecard(
   r['overwatch-observation-quality'] = {
     rating: 'unknown',
     evidence:
-      'auto-synth floor — the Overwatch agent turn emitted no scorecard, so this is the deterministic backstop, NOT an agent self-assessment (a synth-floor turn is a habit bug for the agent to fix)',
+      'auto-synth floor — the Kettle agent turn emitted no scorecard, so this is the deterministic backstop, NOT an agent self-assessment (a synth-floor turn is a habit bug for the agent to fix)',
   };
 
   return r;

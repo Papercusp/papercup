@@ -28,7 +28,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
@@ -53,6 +53,8 @@ import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
+import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { fireReactionInProcess } from '../../events';
 
 // EI-7031: coerce common LLM mis-shapes (bare string, scalar↔array swaps, missing
 // summary) to the CompletionRecord contract BEFORE validation — a finished
@@ -147,10 +149,149 @@ function completionEvidenceFromRecord(
   return Object.keys(evidence).length > 0 ? evidence : undefined;
 }
 
+interface FinishPlanStamp {
+  plan_slug: string;
+  item_id: string;
+  harness_slug: string;
+}
+
+export interface FinishWorkReceipt {
+  idempotent: true;
+  complete: boolean;
+  workItemState: string;
+  completionEvidenceStored: boolean;
+  checkpointCleared: boolean;
+  planItem: 'not-linked' | 'done' | 'dropped' | 'failed';
+  claimRelease: 'not-linked' | 'released-or-absent' | 'failed';
+  errors?: string[];
+}
+
+function finishPlanStamp(workItem: Record<string, unknown>): FinishPlanStamp | null {
+  const payload = workItem.payload as { plan_item?: Partial<FinishPlanStamp> } | null | undefined;
+  const stamp = payload?.plan_item;
+  if (!stamp?.plan_slug || !stamp.item_id || !stamp.harness_slug) return null;
+  if (!/^P-\d{3,}$/.test(stamp.item_id)) return null;
+  return stamp as FinishPlanStamp;
+}
+
+function reflectedTerminalStatus(state: string): 'done' | 'dropped' | null {
+  if (state === 'passed' || state === 'resolved' || state === 'done') return 'done';
+  if (state === 'deprecated' || state === 'closed' || state === 'dropped') return 'dropped';
+  return null;
+}
+
+/**
+ * Synchronously converge every mechanical finish leg before reporting success.
+ * The operation is retry-safe: terminal state writes, plan status flips, claim
+ * release, and checkpoint clear are all idempotent. This is a small finish saga
+ * rather than a cross-store SQL transaction (plan docs are filesystem-canonical),
+ * but it has atomic CALLER semantics: `complete:false` means do not walk away;
+ * re-call the same completion and it resumes/converges the missing legs.
+ */
+export async function synchronizeFinishWork(
+  opts: {
+    id: string;
+    workItem: Record<string, unknown>;
+    completionEvidenceStored: boolean;
+    ctx: UnifiedToolContext;
+  },
+  deps: {
+    clearCheckpoint?: typeof setWorkItemCheckpoint;
+    fire?: typeof fireReactionInProcess;
+  } = {},
+): Promise<FinishWorkReceipt> {
+  const clearCheckpoint = deps.clearCheckpoint ?? setWorkItemCheckpoint;
+  const fire = deps.fire ?? fireReactionInProcess;
+  const state = String(opts.workItem.state ?? '').toLowerCase();
+  const reflected = reflectedTerminalStatus(state);
+  const stamp = finishPlanStamp(opts.workItem);
+  const errors: string[] = [];
+
+  let checkpointCleared = false;
+  try {
+    await clearCheckpoint(
+      {
+        harness: (opts.workItem.harness as string | null | undefined) ?? null,
+        workItemId: opts.id,
+        workspaceId: opts.ctx.workspaceId,
+      },
+      null,
+    );
+    checkpointCleared = true;
+  } catch (error) {
+    errors.push(`checkpoint cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let planItem: FinishWorkReceipt['planItem'] = 'not-linked';
+  let claimRelease: FinishWorkReceipt['claimRelease'] = 'not-linked';
+  if (stamp && reflected) {
+    const statusResult = await fire({
+      fire: 'plans:set-status',
+      args: {
+        harness: stamp.harness_slug,
+        slug: stamp.plan_slug,
+        itemId: stamp.item_id,
+        status: reflected,
+        note: `← ${opts.id} completed (${state})`,
+      },
+      parentCtx: opts.ctx,
+      cause: {
+        depth: 1,
+        chain: ['work-items:finish'],
+        ruleId: 'work-items:finish:plan-status',
+        rootRunId: typeof opts.ctx.runId === 'string' ? opts.ctx.runId : null,
+      },
+    }).catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }));
+    if (statusResult.ok) planItem = reflected;
+    else {
+      planItem = 'failed';
+      errors.push(`plan-item status failed: ${statusResult.error ?? 'unknown error'}`);
+    }
+
+    const releaseResult = await fire({
+      fire: 'plan_items:release',
+      args: { harness: stamp.harness_slug, plan: stamp.plan_slug, item: stamp.item_id },
+      parentCtx: opts.ctx,
+      cause: {
+        depth: 1,
+        chain: ['work-items:finish'],
+        ruleId: 'work-items:finish:claim-release',
+        rootRunId: typeof opts.ctx.runId === 'string' ? opts.ctx.runId : null,
+      },
+    }).catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }));
+    if (releaseResult.ok) claimRelease = 'released-or-absent';
+    else {
+      claimRelease = 'failed';
+      errors.push(`claim release failed: ${releaseResult.error ?? 'unknown error'}`);
+    }
+  }
+
+  const complete =
+    Boolean(reflected) &&
+    opts.completionEvidenceStored &&
+    checkpointCleared &&
+    planItem !== 'failed' &&
+    claimRelease !== 'failed';
+  return {
+    idempotent: true,
+    complete,
+    workItemState: state,
+    completionEvidenceStored: opts.completionEvidenceStored,
+    checkpointCleared,
+    planItem,
+    claimRelease,
+    ...(errors.length ? { errors } : {}),
+  };
+}
+
 /** Complete ONE item — confirm it exists, optionally transition state (a failed
  *  state write NEVER loses the completion, EI-24), fill provenance defaults, and
  *  return the reflect step. Self-describes its id. */
-async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabel?: string }): Promise<BulkItemResult> {
+async function completeOne(
+  it: CompleteItem,
+  ident: { ownerId: string; ownerLabel?: string },
+  ctx: UnifiedToolContext,
+): Promise<BulkItemResult> {
   const existing = await getWorkItem(it.id, it.harness);
   if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
   if (it.state && existing.family === 'issue' && existing.origin === 'remote') {
@@ -394,10 +535,23 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
       ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — it is still '${landedState}' and stays claimable. The state write failed: ${stateError}`
       : `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — you requested state '${requestedState ?? it.state}' and it applied as '${appliedState ?? landedState}'${aliasNote ? ` (${aliasNote})` : ''}, which is NOT terminal, so the item stays claimable and the auto-loop may re-place work on it. Pass a TERMINAL state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated').`;
 
+  const finish = closeLanded
+    ? await synchronizeFinishWork({
+        id: it.id,
+        workItem: workItem as unknown as Record<string, unknown>,
+        completionEvidenceStored: true,
+        ctx,
+      })
+    : undefined;
+  const finishFailed = Boolean(finish && !finish.complete);
+  const finishFailure = finishFailed
+    ? `COMPLETION RECORDED AND ITEM CLOSED, BUT FINISH DID NOT FULLY CONVERGE — ${finish!.errors?.join('; ') ?? 'a finish leg failed'}. Re-call the SAME completion; finish is idempotent and resumes the missing legs.`
+    : undefined;
+
   return {
-    ok: !stateNotApplied,
+    ok: !stateNotApplied && !finishFailed,
     id: it.id,
-    ...(stateFailure ? { error: stateFailure } : {}),
+    ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     workItem,
     completion,
     reflect,
@@ -409,6 +563,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
+    ...(finish ? { finish } : {}),
   };
 }
 
@@ -515,7 +670,7 @@ export default defineTool({
     const list: CompleteItem[] = args.items?.length
       ? args.items.map((it) => ({ ...it, harness: it.harness ?? args.harness }))
       : [{ id: args.id as string, harness: args.harness, state: args.state, completion: args.completion!, outputPayload: args.outputPayload }];
-    const env = await runBulk(list, (it) => completeOne(it, ident), { keyOf: (it) => ({ id: it.id }) });
+    const env = await runBulk(list, (it) => completeOne(it, ident, ctx), { keyOf: (it) => ({ id: it.id }) });
     return bulkContent(env);
   },
 });

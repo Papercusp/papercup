@@ -76,11 +76,11 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'queen-dark',
       severity: 'critical',
       subject: 'mug',
-      detail: 'Queen liveness has gone dark — no fresh heartbeat (who-watches-the-watcher, D-004).',
+      detail: 'Mug liveness has gone dark — no fresh heartbeat (who-watches-the-watcher, D-004).',
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
-        message: 'Queen — you have gone dark. Waking you: re-derive your survey and resume placement. If this wake misses (woken:0), escalate — a Queen that will not wake is structural.',
+        message: 'Mug — you have gone dark. Waking you: re-derive your survey and resume placement. If this wake misses (woken:0), escalate — a Mug that will not wake is structural.',
       },
     });
   } else if (queen.stalled) {
@@ -88,11 +88,11 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'queen-stalled',
       severity: 'critical',
       subject: 'mug',
-      detail: `Queen last woke ${queen.lastWakeAt ?? 'unknown'} and is past her cadence` + `${queen.workingTracked > 0 ? ` with ${queen.workingTracked} placement(s) in flight` : ''}.`,
+      detail: `Mug last woke ${queen.lastWakeAt ?? 'unknown'} and is past her cadence` + `${queen.workingTracked > 0 ? ` with ${queen.workingTracked} placement(s) in flight` : ''}.`,
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
-        message: 'Queen — you have stalled past your cadence. Wake, clear your recovering placements, and declare a fresh wake.',
+        message: 'Mug — you have stalled past your cadence. Wake, clear your recovering placements, and declare a fresh wake.',
       },
     });
   }
@@ -117,14 +117,14 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'queen-placement-stalled',
       severity: 'warning',
       subject: 'mug',
-      detail: `Queen is alive + waking on cadence but her last ${queen.consecutiveZeroTokenWakes} wake(s) ran 0 LLM tokens ` + `(the LLM never executed) while ${workFeed.frontier} placeable item(s) wait — placement is stalled, not idle.`,
+      detail: `Mug is alive + waking on cadence but her last ${queen.consecutiveZeroTokenWakes} wake(s) ran 0 LLM tokens ` + `(the LLM never executed) while ${workFeed.frontier} placeable item(s) wait — placement is stalled, not idle.`,
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
         message:
-          `Queen alive but ${queen.consecutiveZeroTokenWakes} consecutive wakes ran 0 LLM tokens while ${workFeed.frontier} items are placeable — ` +
+          `Mug alive but ${queen.consecutiveZeroTokenWakes} consecutive wakes ran 0 LLM tokens while ${workFeed.frontier} items are placeable — ` +
           `she launches but never reaches an LLM turn. Likely the account pool is rate-limit-exhausted (or the launcher host is down); ` +
-          `this is an infra/capacity stall the Queen cannot self-fix.`,
+          `this is an infra/capacity stall the Mug cannot self-fix.`,
       },
     });
   }
@@ -144,7 +144,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         suggestedAction: {
           type: 'escalate',
           target: 'owner',
-          message: `All paused (${buckets}) with zero fallback accounts — a structural rate/account fix is needed ` + '(scale-out or rate config). Overwatch cannot rebind the gateway or flip rate config.',
+          message: `All paused (${buckets}) with zero fallback accounts — a structural rate/account fix is needed ` + '(scale-out or rate config). Kettle cannot rebind the gateway or flip rate config.',
         },
       });
     } else {
@@ -176,7 +176,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         type: 'escalate',
         target: 'owner',
         message:
-          'Gateway wedged (watchdog auto-restarting :8788). If this recurs, it is a structural capacity fix — scale out the account pool or provision per-account egress IPs (B-GW-3). Overwatch cannot rebind the gateway or add capacity.',
+          'Gateway wedged (watchdog auto-restarting :8788). If this recurs, it is a structural capacity fix — scale out the account pool or provision per-account egress IPs (B-GW-3). Kettle cannot rebind the gateway or add capacity.',
       },
     });
   } else if (tokens.gatewaySustainedThrottle) {
@@ -205,7 +205,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         type: 'escalate',
         target: 'owner',
         message:
-          `Admission starvation: ${tokens.accountsAvailable} idle account(s) available but the live admission ceiling is starving the queue. Raise the provider floor: operator:rate_limit_config { providerFloors: { anthropic: { maxConcurrent: <higher> } } } (mirrors the 2026-07-09 manual mitigation). Overwatch cannot flip live rate-limit config itself (D-001).`,
+          `Admission starvation: ${tokens.accountsAvailable} idle account(s) available but the live admission ceiling is starving the queue. Raise the provider floor: operator:rate_limit_config { providerFloors: { anthropic: { maxConcurrent: <higher> } } } (mirrors the 2026-07-09 manual mitigation). Kettle cannot flip live rate-limit config itself (D-001).`,
       },
     });
   }
@@ -250,7 +250,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
-        message: `Queen — ${freshFrontier} fresh frontier item(s) are ready to place; place them.`,
+        message: `Mug — ${freshFrontier} fresh frontier item(s) are ready to place; place them.`,
       },
     });
   }
@@ -264,7 +264,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
-        message: `Queen — ${workFeed.blockedStranded} item(s) are stranded blocked-on-a-resolved-constraint; re-open them so they re-enter the frontier.`,
+        message: `Mug — ${workFeed.blockedStranded} item(s) are stranded blocked-on-a-resolved-constraint; re-open them so they re-enter the frontier.`,
       },
     });
   }
@@ -283,7 +283,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
-        message: `Queen — bees: ${parts.join(', ')}; re-place the abandoned unit(s) and check the churning bee(s) for a wedged loop.`,
+        message: `Mug — bees: ${parts.join(', ')}; re-place the abandoned unit(s) and check the churning bee(s) for a wedged loop.`,
       },
     });
   }
@@ -313,7 +313,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
-        message: `${plans.agingEscalations} human-attention escalation(s) have aged past the attention threshold. Review the Planning Needs you queue and resolve, answer, or dismiss stale items; the Queen cannot clear owner-decision backlog by being nudged.`,
+        message: `${plans.agingEscalations} human-attention escalation(s) have aged past the attention threshold. Review the Planning Needs you queue and resolve, answer, or dismiss stale items; the Mug cannot clear owner-decision backlog by being nudged.`,
       },
     });
   }
@@ -533,7 +533,7 @@ export async function computeOverwatchBrief(workspaceId: string, potSlug: string
       const { sql } = getOrgPg();
       brief.queen.coordOwner = await resolveMugOwner(sql, workspaceId, potSlug);
     } catch (e) {
-      console.warn(`[overwatch-brief] could not resolve the Queen coord owner for '${potSlug}' — nudges will escalate:`, e instanceof Error ? e.message : e);
+      console.warn(`[overwatch-brief] could not resolve the Mug coord owner for '${potSlug}' — nudges will escalate:`, e instanceof Error ? e.message : e);
     }
     // Pre-fold the overwatch's OWN coord inbox (mirrors the Queen's brief) so it sees
     // replies / owner directives without a separate coord:inbox call. The owner is the

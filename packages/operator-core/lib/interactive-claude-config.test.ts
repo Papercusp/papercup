@@ -500,6 +500,14 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
       expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
       expect(ctx).toContain('coord:orient { afterCompaction: true }');
       expect(ctx).toContain('HYPOTHESES to re-verify');
+      // EI-10942: the anchor hands the successor a single batched ToolSearch so the
+      // core deferred su tools reload in ONE round-trip instead of being rediscovered
+      // call-by-call — and it must come BEFORE the coord:orient FIRST ACTION (coord:orient
+      // is itself one of the deferred tools being preloaded).
+      expect(ctx).toContain('TOOL PRELOAD');
+      expect(ctx).toContain('select:mcp__papercusp-su__coord_orient');
+      expect(ctx).toContain('mcp__papercusp-su__work_items_checkpoint');
+      expect(ctx.indexOf('TOOL PRELOAD')).toBeLessThan(ctx.indexOf('FIRST ACTION'));
       // turn-provenance P-004: native continuations are stamped machine-generated.
       expect(ctx).toContain('⟦turn-provenance⟧ MACHINE-GENERATED CONTINUATION');
       expect(ctx).toContain('Never attribute its text to the owner');
@@ -525,6 +533,11 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
     const ctx = out.hookSpecificOutput.additionalContext as string;
     expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
     expect(ctx).toContain('coord:orient { afterCompaction: true }');
+    // EI-10942: the tool-preload line is STATIC — it must land even with the operator
+    // down (it needs no live data, and a blind post-compaction turn is exactly when a
+    // degraded operator is most likely).
+    expect(ctx).toContain('TOOL PRELOAD');
+    expect(ctx).toContain('select:mcp__papercusp-su__coord_orient');
     expect(ctx).not.toContain('carry brief (read live');
   });
 

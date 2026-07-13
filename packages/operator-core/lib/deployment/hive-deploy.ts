@@ -87,9 +87,9 @@ export async function deployHive(
     if (!deps.deployControlFrame) throw new Error('deployHive: queen.placement=dedicated requires deps.deployControlFrame');
     const queenDeployment = spec.queen?.deployment ?? spec.swarm;
     controlFrame = await deps.deployControlFrame(spec.potId, workspaceId, queenDeployment);
-    deps.log?.('info', `[hive] ${spec.potId} Queen on dedicated control frame ${controlFrame.id}`);
+    deps.log?.('info', `[hive] ${spec.potId} Mug on dedicated control frame ${controlFrame.id}`);
   } else {
-    deps.log?.('info', `[hive] ${spec.potId} Queen is ${placement === 'local' ? 'the local control peer' : 'co-located on an execution frame'} — no separate control frame`);
+    deps.log?.('info', `[hive] ${spec.potId} Mug is ${placement === 'local' ? 'the local control peer' : 'co-located on an execution frame'} — no separate control frame`);
   }
 
   const members: HiveMemberResult[] = [];

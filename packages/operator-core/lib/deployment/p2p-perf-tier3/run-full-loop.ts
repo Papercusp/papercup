@@ -268,7 +268,7 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
     (e) => e.evt === 'queen-result' && Number(e.epoch) === 1,
     steerTimeoutMs,
   );
-  if (!turn1) throw new Error('runFullLoop: Queen turn 1 never completed');
+  if (!turn1) throw new Error('runFullLoop: Mug turn 1 never completed');
 
   const steerSeen = await Promise.all(
     handles.map((h) => h.waitFor((e) => e.evt === 'steer-seen' && Number(e.epoch) >= 1, steerTimeoutMs)),
@@ -278,7 +278,7 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
     const missing = steerSeen.map((r, i) => (r ? null : i)).filter((i) => i !== null);
     throw new Error(`runFullLoop: steering epoch 1 never federated to Swarm(s) ${missing.join(',')}`);
   }
-  log(`Queen turn 1 steered ${steeredOrder.length} items; epoch 1 visible on every Swarm`);
+  log(`Mug turn 1 steered ${steeredOrder.length} items; epoch 1 visible on every Swarm`);
 
   // 4. Go.
   const t0 = Date.now();
@@ -356,7 +356,7 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
     (e) => e.evt === 'queen-result' && Number(e.epoch) === 2,
     steerTimeoutMs,
   );
-  if (!turn2) throw new Error('runFullLoop: Queen turn 2 never completed');
+  if (!turn2) throw new Error('runFullLoop: Mug turn 2 never completed');
 
   // 9. Final authority store dump (adoption's lease-current lookup). Dead authority →
   //    no lease-current view → adoption falls back to the total order (D-007 rule 3).

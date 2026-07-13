@@ -579,7 +579,7 @@ export function neologismProposal(entry: NeologismEntry, windowDays: number): Pr
     cheapExperiment: {
       hypothesis: `"${entry.term}" denotes a recurring mechanism agents need to reference precisely — not a passing turn of phrase.`,
       method:
-        `Owner/Queen review: write the one-paragraph definition (docs or insight page), link this traffic, ` +
+        `Owner/Mug review: write the one-paragraph definition (docs or insight page), link this traffic, ` +
         `and if the concept holds, mint the primitive it implies (verb, table, routine, or doc anchor).`,
       falsifiableSignal:
         `Usage fades (no new mentions in the next ${windowDays}d) or review finds the concept already ` +

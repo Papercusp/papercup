@@ -26,61 +26,18 @@
  */
 import { describe, it, expect } from 'vitest';
 import '../agent-tools/index'; // side-effect: register the full real tool catalog
-import { listAllProjectedTools } from '@papercusp/tooldef';
-
-// Raised 1200 → 1500 by owner decision (2026-06-14). Rationale: a uniform budget is
-// blunt — a load-bearing, multi-mode coordination primitive (coord:send's
-// required/optimistic wake semantics) legitimately earns more guidance than a trivial
-// tool. HARD_CAP unchanged, so the soft-ratchet / hard-cap two-tier is preserved; this
-// raises the soft ceiling, it does not remove the bound. (token-usage-reduction P-011.)
-const BUDGET = 1500;
-const HARD_CAP = 1600;
-
-/** Grandfathered over-budget tools. Shrink-only: an entry here still must stay
- *  ≤ HARD_CAP and may be removed the moment the tool fits the budget. After the
- *  2026-06-14 raise to 1,500, only locks:acquire remains over — the other five
- *  (watch:create, plans:promote, substrate:revoke_contributor, improvements:capture,
- *  events:await) now fit and were removed. */
-const ALLOW_OVER_BUDGET = new Set<string>([]);
-
-interface GuidanceShape {
-  when?: string;
-  notWhen?: string;
-  chaining?: string;
-  byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
-}
-
-function promptWeight(tool: { description?: string; guidance?: GuidanceShape }): number {
-  const g = tool.guidance ?? {};
-  const byRole = Object.values(g.byRole ?? {}).reduce(
-    (acc, r) => acc + (r.when?.length ?? 0) + (r.notWhen?.length ?? 0) + (r.chaining?.length ?? 0),
-    0,
-  );
-  return (
-    (tool.description?.length ?? 0) +
-    (g.when?.length ?? 0) +
-    (g.notWhen?.length ?? 0) +
-    (g.chaining?.length ?? 0) +
-    byRole
-  );
-}
-
-interface NamedToolWeight {
-  name: string;
-  weight: number;
-}
-
-/** The real projected catalog, one { name, weight } per MCP-exposed tool. */
-function namedToolWeights(): NamedToolWeight[] {
-  const tools = listAllProjectedTools() as unknown as Array<{
-    description?: string;
-    guidance?: GuidanceShape;
-    expose?: { mcp?: { name?: string } };
-  }>;
-  return tools
-    .map((t) => ({ name: t.expose?.mcp?.name ?? '(unexposed)', weight: promptWeight(t) }))
-    .filter((t) => t.name !== '(unexposed)');
-}
+// Constants + weight formula + self-serve trim message live in the PRODUCTION module
+// (EI-10966) so the live operator's boot/hot-reload self-check and this gate test share
+// ONE source of truth — the numbers can't drift between "warned at edit time" and
+// "redded at the gate".
+import {
+  BUDGET,
+  HARD_CAP,
+  ALLOW_OVER_BUDGET,
+  namedToolWeights,
+  budgetViolations,
+  formatViolations,
+} from '../agent-tools/tool-guidance-budget';
 
 /**
  * The full P-011 budget ratchet suite. Called from BOTH
@@ -90,27 +47,39 @@ function namedToolWeights(): NamedToolWeight[] {
  */
 export function describeToolGuidanceBudget(): void {
   const named = namedToolWeights();
+  // Single computation, shared with the live operator self-check (EI-10966): the
+  // failure message names each tool AND the exact chars to cut, so a fixer never
+  // has to reverse-engineer the number.
+  const violations = budgetViolations(named);
 
   describe('tool guidance budget (P-011 ratchet)', () => {
     it('the registry loaded a real catalog', () => {
-      expect(named.length).toBeGreaterThan(100);
+      // 655 tools today; a floor well above any partial-registration failure mode
+      // (a barrel that failed to register the package-side tools yields ~40) so a
+      // vacuous "0 over budget because the catalog is empty" can never pass green.
+      expect(named.length).toBeGreaterThan(500);
     });
 
     it(`every non-grandfathered tool fits the ${BUDGET}-char description+guidance budget`, () => {
-      const over = named
-        .filter((t) => t.weight > BUDGET && !ALLOW_OVER_BUDGET.has(t.name))
-        .map((t) => `${t.name} (${t.weight})`);
+      const over = violations.filter((v) => !v.grandfathered && !v.hardCap).map((v) => v.name);
       expect(
         over,
-        `Over the ${BUDGET}-char prompt-weight budget: ${over.join(', ')}. ` +
-          `Trim the guidance (prefer a docs pointer over prose-in-place) or — only if ` +
-          `genuinely irreducible — add an ALLOW_OVER_BUDGET entry with a reason.`,
+        over.length === 0
+          ? ''
+          : `Over the ${BUDGET}-char prompt-weight budget:\n${formatViolations(
+              violations.filter((v) => !v.grandfathered && !v.hardCap),
+            )}`,
       ).toEqual([]);
     });
 
     it(`nothing exceeds the ${HARD_CAP}-char hard cap (grandfathered included)`, () => {
-      const over = named.filter((t) => t.weight > HARD_CAP).map((t) => `${t.name} (${t.weight})`);
-      expect(over, `Over the ${HARD_CAP}-char hard cap: ${over.join(', ')}`).toEqual([]);
+      const over = violations.filter((v) => v.hardCap).map((v) => v.name);
+      expect(
+        over,
+        over.length === 0
+          ? ''
+          : `Over the ${HARD_CAP}-char hard cap:\n${formatViolations(violations.filter((v) => v.hardCap))}`,
+      ).toEqual([]);
     });
 
     it('grandfather list stays shrink-only (no stale entries for now-fitting tools)', () => {

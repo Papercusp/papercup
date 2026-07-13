@@ -201,7 +201,7 @@ export async function listFleetAssignments(
           // plan-item claims stamp the PLAN-STORE scope (resolvePlanScope →
           // DEFAULT_WORKSPACE_ID for operator-scope plans). Filtering the
           // union by the presence workspace alone silently dropped EVERY
-          // claim row, so fleet:assignments / the Queen's placement reads /
+          // claim row, so fleet:assignments / the Mug's placement reads /
           // the claim-discipline watcher all ran on claims:0 fleet-wide.
           // Accept the plan-store default alongside the caller's workspace
           // until the workspace axes are unified (federation lane).

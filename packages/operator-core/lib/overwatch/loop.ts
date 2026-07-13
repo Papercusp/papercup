@@ -356,12 +356,12 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = async ({
 
 function classifyInvokeBodyFailure(text: string, label: string): string | null {
   if (!text.trim()) {
-    return `error: invoke produced no Overwatch turn — ${label} returned an empty invoke response body; Overwatch is a monitor, so empty/uncertain launch results fail closed and run the scorecard backstop`;
+    return `error: invoke produced no Kettle turn — ${label} returned an empty invoke response body; Kettle is a monitor, so empty/uncertain launch results fail closed and run the scorecard backstop`;
   }
 
   const outcome = agentProducedTurn(text, label);
   if (!outcome.ran)
-    return `error: invoke produced no Overwatch turn — ${outcome.detail.trim()}`;
+    return `error: invoke produced no Kettle turn — ${outcome.detail.trim()}`;
 
   let parsed: unknown;
   try {

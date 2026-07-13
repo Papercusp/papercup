@@ -162,7 +162,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['plans:set-status'],
     humanSurface: 'Plan view — needs-human item gate',
     coverage: 'covered',
-    notes: 'authority=owner: a milestone/design gate is the owner\'s to clear. The Queen can propose (flip wip→done with rationale) but the gate stays owner-authority unless graduated.',
+    notes: 'authority=owner: a milestone/design gate is the owner\'s to clear. The Mug can propose (flip wip→done with rationale) but the gate stays owner-authority unless graduated.',
   },
   {
     id: 'plan.ratify-decision',
@@ -173,7 +173,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['plans:add-decision'],
     humanSurface: 'Plan view — decision ratification ("RATIFIED by owner")',
     coverage: 'partial',
-    notes: 'plans:add-decision authors a decision; there is no distinct "mark ratified" verb — ratification is encoded as prose in the body. Build item (EI-458) adds an explicit ratification state/verb so the Queen can propose-vs-ratify distinctly.',
+    notes: 'plans:add-decision authors a decision; there is no distinct "mark ratified" verb — ratification is encoded as prose in the body. Build item (EI-458) adds an explicit ratification state/verb so the Mug can propose-vs-ratify distinctly.',
   },
   {
     id: 'plan.set-status-now',
@@ -317,7 +317,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: [],
     humanSurface: 'Pipeline reviewer role / git-sync merge (no owner-facing approve verb)',
     coverage: 'gap',
-    notes: 'COVERAGE GAP (P-016, filed EI-457): code-review approval + merge-to-staging is handled by pipeline roles + the git-sync routine + merge-resolver; there is no Queen-accessible "approve review / approve merge" verb. Build item adds one so review&merge is a governable category.',
+    notes: 'COVERAGE GAP (P-016, filed EI-457): code-review approval + merge-to-staging is handled by pipeline roles + the git-sync routine + merge-resolver; there is no Mug-accessible "approve review / approve merge" verb. Build item adds one so review&merge is a governable category.',
   },
 
   // ── release & deploy (PROTECTED) ──────────────────────────────────────────────────
@@ -350,9 +350,9 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     reversibility: 'irreversible',
     authority: 'owner',
     queenVerbs: [],
-    humanSurface: 'green-checkpoint automation (FF main); no manual Queen verb',
+    humanSurface: 'green-checkpoint automation (FF main); no manual Mug verb',
     coverage: 'partial',
-    notes: 'Promotion to green is automation-only (green-checkpoint FFs main on a passing suite); a pre-push hook blocks manual pushes. The Queen influences it only via deploy:* + the staging suite. Intentionally near-uncovered — promotion to green stays automation/owner. Noted, not necessarily a build item.',
+    notes: 'Promotion to green is automation-only (green-checkpoint FFs main on a passing suite); a pre-push hook blocks manual pushes. The Mug influences it only via deploy:* + the staging suite. Intentionally near-uncovered — promotion to green stays automation/owner. Noted, not necessarily a build item.',
   },
 
   // ── spend & budget (PROTECTED) ────────────────────────────────────────────────────
@@ -486,7 +486,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['trust:add', 'trust:remove'],
     humanSurface: 'Trust list (trust:list) — owner trust grants',
     coverage: 'covered',
-    notes: 'PROTECTED. trust:add grants a VERIFIED remote author auto-run privilege (the admission gate trust leg, shared-hive-trust-admission P-010); trust:remove revokes it (reversible). Owner-authority security grant, off the Queen autonomous surface — mirrors policy_set (D-006). trust:list is read-only (not a governed action).',
+    notes: 'PROTECTED. trust:add grants a VERIFIED remote author auto-run privilege (the admission gate trust leg, shared-hive-trust-admission P-010); trust:remove revokes it (reversible). Owner-authority security grant, off the Mug autonomous surface — mirrors policy_set (D-006). trust:list is read-only (not a governed action).',
   },
 
   // ── knowledge-curation ────────────────────────────────────────────────────────────

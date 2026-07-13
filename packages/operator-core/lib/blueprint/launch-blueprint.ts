@@ -526,8 +526,8 @@ const defaultFire: LaunchFireFn = async ({
       );
       if (!admission.admitted) {
         console.warn(
-          `[launch-blueprint] skipped duplicate Queen launch (${installSlug}/${role}); ` +
-            `workspace ${workspaceId} already has active Queen ${admission.activeSpawnId}` +
+          `[launch-blueprint] skipped duplicate Mug launch (${installSlug}/${role}); ` +
+            `workspace ${workspaceId} already has active Mug ${admission.activeSpawnId}` +
             `${admission.activeHarnessSlug ? ` (${admission.activeHarnessSlug})` : ''}`,
         );
         return { spawnId: admission.activeSpawnId, runId: null, durable: false };

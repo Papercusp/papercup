@@ -100,4 +100,65 @@ describe("RubricsPanel visual coverage matrix", () => {
     render(<RubricsPanel onStatus={onStatus} />);
     await waitFor(() => expect(onStatus).toHaveBeenCalledWith("good"));
   });
+
+  // ── WI-4506: governance visibility (proposed-vs-active prominence + provenance) ──
+  it("hoists a rubric awaiting ratification into a prominent banner", () => {
+    render(<RubricsPanel />);
+    const banner = screen.getByRole("status", {
+      name: /awaiting ratification/i,
+    });
+    expect(banner).toBeTruthy();
+    // the draft rubric is named in the banner as a governance action item
+    expect(banner.textContent).toContain("Cost efficiency");
+    // the count is surfaced
+    expect(banner.querySelector("strong")?.textContent).toBe("1");
+  });
+
+  it("clicking a banner item drills into that rubric (the ratifier's entry point)", () => {
+    const onSelect = vi.fn();
+    render(<RubricsPanel onSelect={onSelect} />);
+    const banner = screen.getByRole("status", {
+      name: /awaiting ratification/i,
+    });
+    fireEvent.click(
+      banner.querySelector(".pc-rubrics__awaiting-item") as HTMLElement,
+    );
+    expect(onSelect).toHaveBeenCalledWith("rubric-cost");
+  });
+
+  it("surfaces proposer/ratifier provenance and flags an independent (split) ratifier", () => {
+    render(<RubricsPanel />);
+    expect(
+      screen.getByRole("columnheader", { name: "Governance" }),
+    ).toBeTruthy();
+    // the active rubric shows both identities...
+    const govCells = document.querySelectorAll(".pc-rubrics__gov");
+    const active = Array.from(govCells).find((c) =>
+      c.className.includes("--active"),
+    );
+    expect(active?.textContent).toContain("su-f69a7079");
+    expect(active?.textContent).toContain("su-eb9b7ae3");
+    // ...and, because author ≠ ratifier, the split-provenance badge (D-012)
+    expect(active?.querySelector(".pc-rubrics__gov-split")).not.toBeNull();
+  });
+
+  it("does NOT flag a split when the same actor proposed and ratified", () => {
+    const same = "su-single-0000-0000-0000-000000000000";
+    useSyncQuery.mockReturnValue({
+      data: [{ ...rows[0], proposedBy: same, ratifiedBy: same }],
+      error: null,
+      loading: false,
+    });
+    render(<RubricsPanel />);
+    expect(
+      document.querySelector(".pc-rubrics__gov-split"),
+    ).toBeNull();
+  });
+
+  it("omits the awaiting banner in the compact selected rail", () => {
+    render(
+      <RubricsPanel compact collapseUnscored selectedId="rubric-quality" />,
+    );
+    expect(screen.queryByRole("status", { name: /awaiting ratification/i })).toBeNull();
+  });
 });

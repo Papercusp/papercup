@@ -77,7 +77,7 @@ export function evaluatePrimaryCount(count: number): PrimaryVerdict {
       severity: 'blocker',
       key: 'no-primary',
       summary:
-        'NO background primary running — DBOS routines, git-sync, and the Queen wake-loop are all down (the silent routine-engine-death class). Start the bg-host / restore a background worker.',
+        'NO background primary running — DBOS routines, git-sync, and the Mug wake-loop are all down (the silent routine-engine-death class). Start the bg-host / restore a background worker.',
     };
   }
   return {

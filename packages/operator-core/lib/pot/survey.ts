@@ -624,6 +624,19 @@ export interface PotSurvey {
   frontier: Ranked<PlacementCandidate>[];
   /** Frontier rows dropped because their `blocked_by` wasn't satisfied (W-01/P-010). */
   frontierBlocked: number;
+  /**
+   * Frontier rows WITHHELD purely by the G2 admission gate (remote + un-admitted)
+   * — the silent-starvation signal (EI-8498). `frontier.length === 0 &&
+   * frontierQuarantined > 0` is an admission DEADLOCK, not an idle pot: the pot
+   * has placeable-SHAPED work (todo, unassigned, not cursed, in-scope) it is
+   * structurally blocked from touching. Surfaced so an empty frontier is
+   * diagnosable AT A GLANCE — the WI-4563 fix. Before this, a survey that
+   * returned `frontier: []` for the same reason wake after wake was
+   * indistinguishable from "no work to do", and read as a mysterious read-path
+   * bug for 14+ consecutive Mug wakes. The counts EXISTED
+   * ({@link countQuarantinedFrontier}); the survey just never wired one in.
+   */
+  frontierQuarantined: number;
 }
 
 export interface SurveyDeps {
@@ -632,6 +645,11 @@ export interface SurveyDeps {
   fetchFrontier: (surveySlugs: readonly string[], limit: number) => Promise<FrontierRow[]>;
   /** Resolve one harness's blocking graph for the readiness filter (W-01/P-010). */
   fetchBlockGraph: (harness: string) => Promise<HarnessBlockGraph>;
+  /** Count the frontier withheld PURELY by the G2 admission gate (remote +
+   *  un-admitted), scoped to the SAME surveySlugs as the frontier fetch — the
+   *  silent-starvation signal (EI-8498 / WI-4563). Injectable so the survey
+   *  unit-tests with no DB, mirroring {@link fetchFrontier}. */
+  fetchQuarantinedCount: (surveySlugs: readonly string[]) => Promise<number>;
   now: () => number;
 }
 
@@ -652,6 +670,21 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
     fetchBlockGraph: (harness) => {
       const { sql } = getOrgPg();
       return fetchHarnessBlockGraph(sql, workspaceId, harness);
+    },
+    fetchQuarantinedCount: async (surveySlugs) => {
+      // The silent-starvation count (EI-8498 / WI-4563). FAIL-OPEN: a legibility
+      // signal must never blank or break the Mug's placement survey — worst case
+      // we under-report the deadlock (→ 0), the pre-WI-4563 behaviour. A read-only
+      // aggregate, safe to re-issue on a transient pooler blip (mirrors the plan read).
+      try {
+        const { sql } = getOrgPg();
+        return await withPgRetry(() => countQuarantinedFrontier(sql, workspaceId, surveySlugs), {
+          label: 'pot-survey.countQuarantinedFrontier',
+        });
+      } catch (err) {
+        console.warn('[pot-survey] quarantined-frontier count failed — reporting 0:', err instanceof Error ? err.message : err);
+        return 0;
+      }
     },
     now: () => Date.now(),
   };
@@ -704,7 +737,7 @@ export async function surveyPot(
     planSlugs = Array.from(new Set([potHomeSlug, ...reg.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug)]));
   }
 
-  const [planRowsPerHarness, frontierRows] = await Promise.all([
+  const [planRowsPerHarness, frontierRows, frontierQuarantined] = await Promise.all([
     Promise.all(
       planSlugs.map(async (slug) => {
         try {
@@ -719,6 +752,10 @@ export async function surveyPot(
       }),
     ),
     deps.fetchFrontier(surveySlugs, opts.frontierLimit ?? 50),
+    // The admission-withheld count, scoped identically to the frontier fetch (the
+    // same surveySlugs) so `frontier: []` is diagnosable as deadlock-vs-idle
+    // (EI-8498 / WI-4563). Fail-open in the default dep → never blanks the survey.
+    deps.fetchQuarantinedCount(surveySlugs),
   ]);
 
   const planCandidates: PlacementCandidate[] = [];
@@ -782,7 +819,7 @@ export async function surveyPot(
     rankPlacements(frontierCandidates),
   ]);
 
-  return { home: membership.home, members: membership.members, scope: membership.scope, plans, frontier, frontierBlocked: blockedCount };
+  return { home: membership.home, members: membership.members, scope: membership.scope, plans, frontier, frontierBlocked: blockedCount, frontierQuarantined };
 }
 
 // ── Cross-pot workspace survey (P-003 / D-002 — the central dispatcher) ───────
@@ -806,6 +843,9 @@ export interface WorkspaceSurvey {
     plans: Ranked<PlacementCandidate>[];
     frontier: Ranked<PlacementCandidate>[];
     frontierBlocked: number;
+    /** Admission-withheld frontier summed across every surveyed pot (EI-8498 /
+     *  WI-4563) — so the cross-pot view is deadlock-vs-idle legible too. */
+    frontierQuarantined: number;
   };
   /** The pot home slugs surveyed (registry order). */
   hives: string[];
@@ -886,10 +926,12 @@ export async function surveyWorkspace(
   const planCandidates = new Map<string, { candidate: PlacementCandidate; scope: SurveyScope }>();
   const frontierCandidates = new Map<string, { candidate: PlacementCandidate; scope: SurveyScope }>();
   let frontierBlocked = 0;
+  let frontierQuarantined = 0;
   for (const { pot, survey } of perPot) {
     for (const c of survey.plans) addCrossPotCandidate(planCandidates, { ...c, pot }, survey.scope);
     for (const c of survey.frontier) addCrossPotCandidate(frontierCandidates, { ...c, pot }, survey.scope);
     frontierBlocked += survey.frontierBlocked;
+    frontierQuarantined += survey.frontierQuarantined;
   }
   const [plans, frontier] = await Promise.all([
     rankPlacements([...planCandidates.values()].map((v) => v.candidate)),
@@ -898,7 +940,7 @@ export async function surveyWorkspace(
 
   return {
     perPot,
-    crossPot: { plans, frontier, frontierBlocked },
+    crossPot: { plans, frontier, frontierBlocked, frontierQuarantined },
     hives: potSlugs,
   };
 }

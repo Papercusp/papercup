@@ -139,15 +139,15 @@ export default function OverwatchTab({ active }: { active: boolean }) {
       <div className="pc-owsb pc-owsb--empty">
         <div className="pc-owsb__placeholder">
           {snap.error
-            ? `Overwatch unavailable — ${String(snap.error)}`
+            ? `Kettle unavailable — ${String(snap.error)}`
             : snap.loading || ctrl.loading
               ? 'Loading the overwatch brief…'
-              : 'Overwatch is dark. The full system health is on the Health tab.'}
+              : 'Kettle is dark. The full system health is on the Health tab.'}
         </div>
         {/* Model override is settable even while dark — it applies on the next start. */}
         {overwatchModel.error && <div className="pc-owsb__err">Model override - {overwatchModel.error}</div>}
         <ModelOverride
-          label="Overwatch model"
+          label="Kettle model"
           override={overwatchModel.override}
           onWrite={overwatchModel.setOverride}
           busy={overwatchModel.busy}
@@ -222,7 +222,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
           </Tooltip>
         </header>
 
-        <div className="pc-owsb__metrics" aria-label="Overwatch telemetry">
+        <div className="pc-owsb__metrics" aria-label="Kettle telemetry">
           <Metric
             icon={<Activity size={11} aria-hidden />}
             label="Cadence"
@@ -248,7 +248,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
 
         {overwatchModel.error && <div className="pc-owsb__err">Model override - {overwatchModel.error}</div>}
         <ModelOverride
-          label="Overwatch model"
+          label="Kettle model"
           override={overwatchModel.override}
           onWrite={overwatchModel.setOverride}
           busy={overwatchModel.busy}

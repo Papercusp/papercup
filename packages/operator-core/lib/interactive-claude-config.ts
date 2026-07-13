@@ -350,7 +350,16 @@ async function compactAnchor(intent) {
     // continuation cannot be pre-tagged by any injector (Claude generates it
     // internally), so the compact-source hook is the one place that can stamp it.
     '⟦turn-provenance⟧ MACHINE-GENERATED CONTINUATION — this post-compaction turn (the summary above it and any continuation prompt) was produced by the compaction machinery, NOT typed by the human owner. Never attribute its text to the owner; owner directives must trace to a turn stamped OWNER (interactive) or to the pre-compaction verbatim transcript (sessions:search).',
-    'FIRST ACTION: run coord:orient { afterCompaction: true } — its recovery block re-delivers your held work-items\\u2019 checkpoints, armed-loop status, staleness warnings (what changed AFTER your summary was written), and the self-recall pointer.',
+    // EI-10942: the MCP tool schemas a Claude session loads are DEFERRED and do NOT
+    // survive a compaction — so a post-compaction turn starts blind and re-discovers
+    // the SAME core su tools one failed call at a time (measured: 11 ToolSearch calls in
+    // one session, the same 5 core tools re-selected 4-5× each). Hand the successor the
+    // exact single batched select up front so the whole core loads in ONE round-trip.
+    // Deliberately the SHORT post-compaction-resume subset (not the full ~40-tool OMP
+    // spine) — enough to orient, resume held items, reply, file, and batch, without
+    // burning anchor context on tools this turn is unlikely to touch.
+    'TOOL PRELOAD (do this FIRST — deferred MCP schemas were dropped by the compaction; re-load the core su set in ONE ToolSearch instead of rediscovering them call-by-call): ToolSearch { query: "select:mcp__papercusp-su__coord_orient,mcp__papercusp-su__work_items_get,mcp__papercusp-su__work_items_checkpoint,mcp__papercusp-su__work_items_complete,mcp__papercusp-su__improvements_capture,mcp__papercusp-su__coord_send,mcp__papercusp-su__code_run" }',
+    'FIRST ACTION (after the preload): run coord:orient { afterCompaction: true } — its recovery block re-delivers your held work-items\\u2019 checkpoints, armed-loop status, staleness warnings (what changed AFTER your summary was written), and the self-recall pointer.',
     'VOLATILE-CLAIMS CHECKLIST — your compaction summary is a STALE SNAPSHOT of a live system. Treat these summary statements as HYPOTHESES to re-verify, never facts:',
     '- liveness / fleet counts ("N members alive/working") — re-read via coord:presence + fleet:status;',
     '- service up/down states (deploys, ports, restarts, wedged/fixed) — re-probe before acting on them;',
