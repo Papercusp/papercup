@@ -295,6 +295,11 @@ const scoutSnapshot = {
       humanGrade: null,
       humanFeedback: null,
       gradedBy: null,
+      // P-004 trace fields: grounded in one opaque wi: ref (title resolved via
+      // groundingTitles below) + one readable typed ref.
+      origin: "scout",
+      cycleId: "scout-100",
+      addressesPatternRefs: ["wi:EI-100", "fact:workspace:some-standing-fact"],
     },
     {
       ideaId: "idea-2",
@@ -308,6 +313,9 @@ const scoutSnapshot = {
       humanGrade: 4,
       humanFeedback: "Sharp framing — ship it",
       gradedBy: "Queen",
+      origin: "scout",
+      cycleId: "scout-99",
+      addressesPatternRefs: [],
     },
   ],
   lastTick: {
@@ -315,6 +323,34 @@ const scoutSnapshot = {
     outcome: "gated",
     detail: "min-interval",
   },
+  // P-002 tick-economics strip (newest first) + P-003 server-evaluated health.
+  ticks: [
+    {
+      at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      status: "gated",
+      stop: "min-interval",
+      generated: 0,
+      routed: 0,
+      deduped: 0,
+      spendUsd: null,
+      cycleId: null,
+      lenses: {},
+    },
+    {
+      at: new Date(Date.now() - 35 * 60_000).toISOString(),
+      status: "ran",
+      stop: "completed",
+      generated: 8,
+      routed: 3,
+      deduped: 2,
+      spendUsd: 1.62,
+      cycleId: "scout-100",
+      lenses: { reframing: 2, analogical: 1 },
+    },
+  ],
+  health: { status: "good", markers: [] },
+  // P-004: server-resolved titles for the opaque wi: grounding refs.
+  groundingTitles: { "wi:EI-100": "coord invariant: wake-queue depth growth" },
 };
 
 let improvementsResult: Record<string, unknown> = {
@@ -968,13 +1004,16 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
       screen.getAllByRole("button", { name: /Cache-warmup|Tighter scoper/ })
         .length,
     ).toBe(2); // rows are openable
-    const tickChip = screen.getByLabelText("scout tick health");
-    expect(tickChip.textContent).toContain("last tick");
-    expect(tickChip.textContent).toContain("5m ago");
-    expect(tickChip.textContent).toContain("gated · min-interval"); // status + the self-gate that withheld the cycle
+    // P-002 strip: the newest ticks' economics — the gated tick's gate name and
+    // the ran tick's generated→routed funnel + spend + lens mix.
+    const strip = screen.getByLabelText("scout tick economics, newest first");
+    expect(strip.textContent).toContain("min-interval");
+    expect(strip.textContent).toContain("8→3");
+    expect(strip.textContent).toContain("completed");
+    expect(strip.textContent).toContain("$1.62");
   });
 
-  it("renders the graceful empty state when nothing has been routed and no tick exists", () => {
+  it("renders the graceful empty state when nothing has been routed and no tick exists (legacy pre-P-002 payload shape)", () => {
     scoutResult = {
       data: [{ totalRouted: 0, railCounts: [], lastTick: null }],
       loading: false,
@@ -984,9 +1023,56 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     };
     render(<ScoutView />);
     expect(screen.getByText("No routed ideas")).toBeTruthy();
-    expect(screen.getByLabelText("scout tick health").textContent).toContain(
-      "none yet",
+    expect(
+      screen.getByLabelText("scout tick economics, newest first").textContent,
+    ).toContain("none yet");
+  });
+
+  it("expands an idea into its pipeline trace — grounding → lens → route → grade → outcome (P-004)", () => {
+    render(<ScoutView />);
+    // Closed by default: the trace (and its 'pending' outcome cell) is absent.
+    expect(
+      screen.queryByLabelText("Pipeline trace for Cache-warmup plan draft"),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Cache-warmup plan draft/ }),
     );
+    const trace = screen.getByLabelText(
+      "Pipeline trace for Cache-warmup plan draft",
+    );
+    // Grounding: the wi: ref resolved to its title (clickable), the readable
+    // typed ref rendered as-is.
+    expect(trace.textContent).toContain(
+      "EI-100 · coord invariant: wake-queue depth growth",
+    );
+    expect(trace.textContent).toContain("workspace:some-standing-fact");
+    // Lens + origin, the routed artifact, the grade GAP, and the outcome.
+    expect(trace.textContent).toContain("reframing");
+    expect(trace.textContent).toContain("scout");
+    expect(trace.textContent).toContain("plan:scout-cache-warmup");
+    expect(trace.textContent).toContain("ungraded"); // the gap IS the signal
+    expect(trace.textContent).toContain("pending");
+    // Toggle closed again.
+    fireEvent.click(
+      screen.getByRole("button", { name: /Cache-warmup plan draft/ }),
+    );
+    expect(
+      screen.queryByLabelText("Pipeline trace for Cache-warmup plan draft"),
+    ).toBeNull();
+  });
+
+  it("renders the trace's grounding gap dimmed when no refs were recorded (P-004)", () => {
+    render(<ScoutView />);
+    fireEvent.click(screen.getByRole("button", { name: /Reviewed ideas/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /Tighter scoper prompt/ }),
+    );
+    const trace = screen.getByLabelText(
+      "Pipeline trace for Tighter scoper prompt",
+    );
+    expect(trace.textContent).toContain("none recorded");
+    expect(trace.textContent).toContain("★4 · Queen"); // graded stage filled
+    expect(trace.textContent).toContain("won");
   });
 
   it("turns route bars into filters and defaults to an eight-item decision queue", () => {

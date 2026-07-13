@@ -2710,6 +2710,8 @@ export function ScoutView({
       desc: "Routed idea",
       color: "#94a3b8",
     };
+    // Pre-P-004 server snapshots lack the field — degrade to "none recorded".
+    const refs = item.addressesPatternRefs ?? [];
     const eff = effectiveGrade(item);
     const outcome = item.outcome ?? "pending";
     const outcomeTone =
@@ -2725,12 +2727,12 @@ export function ScoutView({
         aria-label={`Pipeline trace for ${item.title ?? item.routedRef}`}
       >
         <div
-          className={`pc-learning__tracestage${item.addressesPatternRefs.length === 0 ? " pc-learning__tracestage--missing" : ""}`}
+          className={`pc-learning__tracestage${refs.length === 0 ? " pc-learning__tracestage--missing" : ""}`}
         >
           <em>grounded in</em>
-          {item.addressesPatternRefs.length > 0 ? (
+          {refs.length > 0 ? (
             <span className="pc-learning__tracechips">
-              {item.addressesPatternRefs.map(renderGroundingChip)}
+              {refs.map(renderGroundingChip)}
             </span>
           ) : (
             <strong title="No grounding evidence was recorded for this idea (su-ideate filings often ground informally).">

@@ -24,15 +24,22 @@ const h = vi.hoisted(() => {
   FakeAuthError,
   resolveGithubBearer: vi.fn(),
   isCupboardOperator: vi.fn(() => true),
-  audit: vi.fn(async () => {}),
+  // Type the hoisted mocks whose return/args the tests read (WI-4519). `vi.fn(async () => [])`
+  // infers Promise<never[]> — so mockResolvedValue([{ id }]) hits TS2322 (never) — and a
+  // zero-arg factory makes `.mock.calls[0]` a length-0 tuple — so [0][2]/[0][3] reads hit
+  // TS2493. Give each an explicit function-type generic. Returns stay permissive
+  // (Record<string, unknown>[]) because the tests pass PARTIAL rows ({ id }, { pubkey }),
+  // not full HarnessRow/BannedPubkeyRow; `audit`'s param tuple mirrors db.ts so the
+  // call-arg index reads (kind at [2], detail at [3]) type-check.
+  audit: vi.fn<(db: unknown, ts: number, kind: string, detail?: Record<string, unknown>) => Promise<void>>(async () => {}),
   getHarnessById: vi.fn(),
   getReportById: vi.fn(),
   listReports: vi.fn(async () => []),
-  listPendingReview: vi.fn(async () => []),
+  listPendingReview: vi.fn<(db: unknown, limit?: number) => Promise<Array<Record<string, unknown>>>>(async () => []),
   setReviewStatus: vi.fn(async () => {}),
   markHarnessUnlisted: vi.fn(async () => {}),
   resolveReport: vi.fn(async () => 1),
-  listBannedPubkeys: vi.fn(async () => []),
+  listBannedPubkeys: vi.fn<(db: unknown) => Promise<Array<Record<string, unknown>>>>(async () => []),
   banPublisherPubkey: vi.fn(async () => {}),
   unbanPublisherPubkey: vi.fn(async () => {}),
   };
