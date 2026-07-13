@@ -24,7 +24,7 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
-import { PotStatusStrip, compactAge } from './PotStatusStrip';
+import { PotStatusStrip, compactAge, compactCount } from './PotStatusStrip';
 
 const NOW = Date.now();
 
@@ -103,6 +103,18 @@ describe('PotStatusStrip (P-018 variant A)', () => {
     expect(screen.getByText('2 need you')).toBeTruthy();
   });
 
+  it('caps the need-you badge display at 99+ but keeps the honest count in aria-label + title (WI-4724)', () => {
+    // 1 non-info anomaly + 268 aging escalations = 269
+    seedSnapshot({ plans: { agingEscalations: 268 } });
+    render(<PotStatusStrip />);
+    const badge = screen.getByText('99+ need you');
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('title')).toBe('269 need you');
+    expect(
+      screen.getByRole('button', { name: /269 need you/ }),
+    ).toBeTruthy();
+  });
+
   it('renders nothing while both overwatch queries are cold', () => {
     const { container } = render(<PotStatusStrip />);
     expect(container.innerHTML).toBe('');
@@ -139,6 +151,15 @@ describe('PotStatusStrip (P-018 variant A)', () => {
     // steering
     expect(screen.getByText(/Focus the sidebar revival/)).toBeTruthy();
     expect(screen.getByText(/New work: allowed/)).toBeTruthy();
+  });
+});
+
+describe('compactCount', () => {
+  it('passes small counts through and caps above 99 (WI-4724)', () => {
+    expect(compactCount(1)).toBe('1');
+    expect(compactCount(99)).toBe('99');
+    expect(compactCount(100)).toBe('99+');
+    expect(compactCount(269)).toBe('99+');
   });
 });
 

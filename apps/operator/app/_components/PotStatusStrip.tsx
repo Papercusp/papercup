@@ -43,6 +43,13 @@ export function compactAge(from: string | number | null | undefined, now = Date.
   return `${Math.round(h / 24)}d`;
 }
 
+/** Display-cap a badge count: 1..99 verbatim, above that "99+" (WI-4724 — the
+ *  raw aging-escalations count can reach the hundreds and blows out the badge).
+ *  The HONEST full count stays in the strip's aria-label + the badge title. */
+export function compactCount(n: number, cap = 99): string {
+  return n > cap ? `${cap}+` : String(n);
+}
+
 const ACTION_CHIP: Record<string, string> = {
   nudge: 'NUDGE',
   escalate: 'ESCALATE',
@@ -127,7 +134,11 @@ export function PotStatusStrip() {
         <span className="op-pot-strip-item">{working} working</span>
         <span className="op-pot-sep" aria-hidden="true">·</span>
         <span className="op-pot-strip-item">{ready} ready</span>
-        {needYou > 0 && <span className="op-pot-badge">{needYou} need you</span>}
+        {needYou > 0 && (
+          <span className="op-pot-badge" title={`${needYou} need you`}>
+            {compactCount(needYou)} need you
+          </span>
+        )}
         <span className="op-pot-caret" aria-hidden="true">{potOpen ? '▴' : '▾'}</span>
       </button>
 
