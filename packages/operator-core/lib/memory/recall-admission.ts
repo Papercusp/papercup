@@ -4,7 +4,7 @@
  * A backend `search()` returning rows does not mean an agent received anything. Between the
  * store and the agent sit three gates, each of which can discard a hit:
  *
- *   backend rows → [relevance floor] → [queen-loop withhold] → [aggregate char budget] → admitted
+ *   backend rows → [relevance floor] → [queen-loop withhold] → [near-duplicate collapse] → [aggregate char budget] → admitted
  *
  * **A GATE'S DECISION IS NOT AN EVENT.** Probing what the backend *returned* tells you nothing
  * about what the consumer *received* — the failure the memory recall canary exists to catch can
@@ -258,11 +258,27 @@ export function admitRecallHits<H extends AdmissibleHit>(
     });
   }
 
+  // Gate 2.5 — near-duplicate collapse (P-008 / WI-4538). Keep the HIGHEST-RANKED copy of each
+  // near-duplicate cluster (kept is relevance-ordered) so the budget below is never spent on the
+  // same fact under multiple ids. Runs BEFORE the budget by design — that is the whole point.
+  const dedupThreshold = opts.dedupeThreshold ?? orientMemoryDedupThreshold();
+  const { kept: deduped, droppedIndices } = collapseNearDuplicates(kept, (h) => h.memory ?? '', dedupThreshold);
+  const droppedSet = new Set(droppedIndices);
+  kept.forEach((h, i) => {
+    decisions.push({
+      gate: 'orient.recall.dedup',
+      expect: 'guards', // most recalls have no near-dupes — never collapsing is HEALTHY
+      verdict: droppedSet.has(i) ? 'reject' : 'pass',
+      subject: subjectOf(h),
+    });
+  });
+  const collapsedDuplicates = kept.length - deduped.length;
+
   // Gate 3 — aggregate char budget, relevance order, first hit always admitted.
   const budget = opts.budgetChars ?? orientMemoryBudgetChars();
   const admitted: H[] = [];
   let spentChars = 0;
-  for (const h of kept) {
+  for (const h of deduped) {
     const cost = (h.memory?.length ?? 0) + (typeof h.id === 'string' ? h.id.length : 8) + 24;
     const over = admitted.length > 0 && spentChars + cost > budget;
     decisions.push({
@@ -282,7 +298,8 @@ export function admitRecallHits<H extends AdmissibleHit>(
     admitted,
     filteredLowScore,
     withheld: withheld.length,
-    withheldBudget: kept.length - admitted.length,
+    collapsedDuplicates,
+    withheldBudget: deduped.length - admitted.length,
     decisions,
   };
 }
