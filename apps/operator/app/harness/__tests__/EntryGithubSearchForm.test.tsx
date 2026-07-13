@@ -18,7 +18,17 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 // useLexicon reads THE_HIVE via useFlag — mock it (default-on → the-hive pack)
 // so jsdom never touches the real flag bootstrap (fetch + EventSource).
 const flagValues = vi.hoisted(() => ({}) as Record<string, boolean>);
-vi.mock('@/lib/flag-hooks', () => ({ useFlag: (key: string) => flagValues[key] ?? true }));
+vi.mock('../../../lib/flag-hooks', () => ({ useFlag: (key: string) => flagValues[key] ?? true }));
+
+// Root/watchdog selection omits apps/operator's setupFiles. Keep Radix-backed
+// result/form transitions independent of that package-only configuration.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+}
 
 const mockFetch = vi.fn<typeof fetch>();
 beforeEach(() => {

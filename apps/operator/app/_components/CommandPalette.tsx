@@ -17,7 +17,7 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 
 import type { CSSProperties, ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Command as CmdK } from 'cmdk';
-import { useLexicon } from '@/lib/useLexicon';
+import { useLexicon } from '../../lib/useLexicon';
 
 export interface Command {
   id: string;

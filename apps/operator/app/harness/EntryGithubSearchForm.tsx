@@ -29,7 +29,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { EntryGithubUrlForm, parseGithubUrlClient, type FormMode } from './EntryGithubUrlForm';
-import { useLexicon } from '@/lib/useLexicon';
+import { useLexicon } from '../../lib/useLexicon';
 import { CLAIM_STATUS_COPY } from '../_components/ClaimStatusBadge';
 
 /**

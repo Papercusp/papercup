@@ -11,9 +11,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-vi.mock('@/lib/useLexicon', () => ({
+vi.mock('../../lib/useLexicon', () => ({
   useLexicon: () => (term: string) => term,
 }));
+
+// Root/watchdog selection does not inherit apps/operator's setupFiles. Radix
+// may touch ResizeObserver while mounting the force-mounted dialog tree.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+}
 
 // cmdk drives the active item into view via scrollIntoView, which jsdom
 // does not implement — polyfill it so the list can mount.
