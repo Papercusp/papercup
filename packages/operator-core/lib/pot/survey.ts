@@ -480,6 +480,54 @@ export async function countPlaceableFrontier(
 }
 
 /**
+ * COUNT of the frontier withheld PURELY by the G2 admission gate — rows identical
+ * to {@link countPlaceableFrontier}'s (feature-kind, `todo`, unassigned, not cursed,
+ * in-scope) that fail ONLY `autoPickableWhereSql`: a remote item with no `admit`
+ * verdict and no trusted verified author.
+ *
+ * This is the SILENT-STARVATION signal, and it exists because the loop had no way
+ * to say why it was idle. On 2026-07-13 the papercusp pot's ENTIRE placeable pool
+ * was 10 federated `feature` items, every one of them quarantined here; the Mug woke
+ * every ~20min, surveyed a frontier of zero, correctly placed nothing, and reported
+ * a SUCCESSFUL turn — for five hours, with every health signal green. An empty
+ * frontier caused by quarantine is indistinguishable from "no work to do" unless
+ * something counts the withheld rows, so nothing ever raised a hand.
+ *
+ * The gate itself is correct (never auto-execute unvetted remote work). What was
+ * missing is that a pot starving BEHIND it must be loud: callers pair this with the
+ * placeable depth — `placeable === 0 && quarantined > 0` is a deadlock, not an idle
+ * pot, and there is no admit path in production that will clear it on its own.
+ */
+export async function countQuarantinedFrontier(
+  sql: postgres.Sql,
+  workspaceId: string,
+  surveySlugs: readonly string[],
+): Promise<number> {
+  const breakerThreshold = placementConfig().breakerThreshold;
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.harness_features_consolidated f
+     WHERE workspace_id = ${workspaceId}
+       AND ${frontierPlacementKindClause(sql, workspaceId)}
+       AND status = 'todo'
+       AND (taken_by IS NULL OR taken_by = '')
+       -- The ONE inverted leg: everything else mirrors countPlaceableFrontier, so
+       -- the two partition the same row set into admissible vs. quarantined.
+       AND NOT ${autoPickableWhereSql(sql, workspaceId)}
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.pot_placements p
+          WHERE p.workspace_id = f.workspace_id
+            AND p.work_item_id = f.feature_id
+            AND p.status = 'cursed'
+            AND p.fail_count >= ${breakerThreshold}
+            ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
+       )
+       ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
+       AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}`;
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
  * Resolve a pot's membership and return its placeable-frontier depth (WI-267) —
  * the count a per-pot starvation breach should use instead of the workspace-wide
  * `potDemandCheck.todoItems`. Member-scoped when membership is wired, else the
@@ -492,6 +540,37 @@ export async function potPlaceableFrontierDepth(
   const { sql } = getOrgPg();
   const membership = await resolvePotMembership(workspaceId, potHomeSlug);
   return countPlaceableFrontier(sql, workspaceId, membership.surveySlugs);
+}
+
+/** A pot's frontier split by the admission gate: what it MAY place vs. what is
+ *  withheld from it. `placeable === 0 && quarantined > 0` is the silent-starvation
+ *  deadlock (see {@link countQuarantinedFrontier}) — the pot has work and cannot
+ *  touch any of it. */
+export interface FrontierAdmission {
+  placeable: number;
+  quarantined: number;
+}
+
+/** Both halves of the frontier in ONE membership resolve — the pair a starvation
+ *  check needs (an empty frontier only means "deadlock" when something is being
+ *  withheld; on its own it just means "no work"). */
+export async function potFrontierAdmission(
+  workspaceId: string,
+  potHomeSlug: string,
+): Promise<FrontierAdmission> {
+  const { sql } = getOrgPg();
+  const membership = await resolvePotMembership(workspaceId, potHomeSlug);
+  const [placeable, quarantined] = await Promise.all([
+    countPlaceableFrontier(sql, workspaceId, membership.surveySlugs),
+    countQuarantinedFrontier(sql, workspaceId, membership.surveySlugs),
+  ]);
+  return { placeable, quarantined };
+}
+
+/** Is the pot DEADLOCKED behind the admission gate — nothing it may place, but work
+ *  being withheld? Pure, so the readiness gate can assert it with no DB. */
+export function isAdmissionStarved(f: FrontierAdmission): boolean {
+  return f.placeable === 0 && f.quarantined > 0;
 }
 
 /**

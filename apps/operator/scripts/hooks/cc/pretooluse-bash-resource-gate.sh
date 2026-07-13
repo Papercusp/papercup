@@ -167,7 +167,8 @@ def _strip_shell_quotes(s):
     return ''.join(out)
 
 if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
-        r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|at|batch|systemd-run)\b',
+        r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|batch|systemd-run)\b'
+        r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',
         _strip_shell_quotes(command)):
     deny(
         'native-scheduler lockout: agent sessions must not create OS schedules '
@@ -338,6 +339,15 @@ def _heavy_admission():
         _next = re.sub(
             r'^(?:'
             r'cd\s+([\'"]?)[^&|;<>\s\'"]+\1\s*(?:&&|;)\s*'  # cd <dir> && / ;
+            # `set -o pipefail && …` / `set -euo pipefail; …`. A `set` builtin only
+            # flips shell options — it runs NO command — so peeling it can't hide a
+            # heavy command, and NOT peeling it made this gate deny the very remedy its
+            # own error message prescribes: `cd d && set -o pipefail && scripts/
+            # pc-heavy.sh -- vitest` stopped peeling at `set`, missed the pc-heavy lead,
+            # and got denied as a raw `vitest`. Same "the remedy doesn't work" trap
+            # EI-9634 fixed for `cd`/subshell — and it punished exactly the right habit,
+            # since pipefail is what stops `… | tail` from masking a real exit code.
+            r'|set\s+(?:-o\s+[\w-]+|\+o\s+[\w-]+|[-+][A-Za-z]+)(?:\s+(?:-o\s+[\w-]+|\+o\s+[\w-]+|[-+][A-Za-z]+))*\s*(?:&&|;)\s*'
             r'|\(\s*'  # one subshell open: ( scripts/pc-heavy.sh … ) &
             r'|sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*\s+'
             r'|env(?:\s+[A-Za-z_]\w*=\S*)*\s+'
@@ -383,7 +393,10 @@ def _heavy_admission():
         r')',
         re.IGNORECASE,
     )
-    if not heavy_re.search(command):
+    # Use the same peeled command used for the pc-heavy bypass check so benign
+    # wrappers such as `timeout 90` cannot hide a raw heavy command from the
+    # admission gate while still allowing the blessed wrapper above through.
+    if not heavy_re.search(_pc_lead):
         return
     # Local load signal — captures ALL contributors (vitest+tsc+onnx+…), more
     # robust than counting only wrapped runs. Env overrides for tests.

@@ -359,6 +359,36 @@ export function familyKeyPrefix(entry: EventCatalogEntry): string {
   return prefix;
 }
 
+/**
+ * EI-10870 — the ORPHAN-AWAIT guard: does ANY known family emit this concrete key?
+ *
+ * `events:await` accepts an arbitrary key string, so an invented or mistyped key
+ * registers happily and can then only ever TIME OUT. That failure is invisible by
+ * construction — a lost wake fails in the SAFE-LOOKING direction (the agent simply
+ * waits), so nothing raises an error. Live proof: `overwatch:surface-landed` had 14
+ * settled awaits, 0 real fires ever, and appears NOWHERE in the tree. The catalog
+ * always knew every family's emitter; it was just never consulted at await time.
+ *
+ * Matches by family PREFIX, not exact string — a templated key must match every
+ * concrete instantiation (`release:deployed:<sha>` → any sha). Mirrors buildKey's
+ * collapse rule via familyKeyPrefix, so the global (`release:deployed`) and the
+ * scoped (`release:deployed:abc123`) both resolve to the `deploy` family.
+ *
+ * Pass the MERGED catalog (builtin + installed `provides.events`) so a key emitted
+ * by an installed pack is never misreported as an orphan.
+ */
+export function keyMatchesCatalog(
+  key: string,
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): boolean {
+  const k = String(key ?? '').trim();
+  if (!k) return false;
+  return entries.some((e) => {
+    const prefix = familyKeyPrefix(e);
+    return prefix.length > 0 && (k === prefix || k.startsWith(`${prefix}:`));
+  });
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * INSTALLED TIER (cupboard-public-release-2026-07-12 P-006, D-003).
  *

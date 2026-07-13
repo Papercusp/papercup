@@ -4243,6 +4243,80 @@ describe('ttyCandidates + writeOscTitle — the OMP twin of pc_tty.py (WI-3665)'
   });
 });
 
+describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling)', () => {
+  it('a claim naming a DIFFERENT session blocks the write to PAPERCUSP_TTY (the on-camera bug)', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'omp-tty-claim-'));
+    const claimsDir = join(dir, 'claims');
+    await fs.mkdir(claimsDir, { recursive: true });
+    const owned = join(dir, 'recycled.tty');
+    await fs.writeFile(owned, '');
+    // A NEW session (windows-parity's own relaunch, or an unrelated one) claimed this
+    // recycled path — our stale env still spells the same path, but it's no longer ours.
+    await fs.writeFile(join(claimsDir, 'recycled_tty'), 'su-someone-else');
+    const osc = buildDisplayTitleOsc('👑 windows-parity 🟦 · su-9859e');
+    await writeOscTitle(osc, {
+      PAPERCUSP_TTY: owned,
+      PAPERCUSP_SID: 'su-9859ea5e-926d-4c65-b8fb-4d7c25a21353',
+      PAPERCUSP_TTY_CLAIMS_DIR: claimsDir,
+    } as NodeJS.ProcessEnv);
+    // The load-bearing assertion: the recycled path itself was never touched — whether
+    // writeOscTitle then fell through to this test process's OWN /dev/tty (environment-
+    // dependent; harmless here) is not what this guards against.
+    expect(await fs.readFile(owned, 'utf8')).toBe('');
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('a claim naming OUR OWN session still lands the write', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'omp-tty-claim-'));
+    const claimsDir = join(dir, 'claims');
+    await fs.mkdir(claimsDir, { recursive: true });
+    const owned = join(dir, 'mine.tty');
+    await fs.writeFile(owned, '');
+    const sid = 'su-9859ea5e-926d-4c65-b8fb-4d7c25a21353';
+    await fs.writeFile(join(claimsDir, 'mine_tty'), sid);
+    const osc = buildDisplayTitleOsc('su-9859e');
+    const wrote = await writeOscTitle(osc, {
+      PAPERCUSP_TTY: owned,
+      PAPERCUSP_SID: sid,
+      PAPERCUSP_TTY_CLAIMS_DIR: claimsDir,
+    } as NodeJS.ProcessEnv);
+    expect(wrote).toBe(true);
+    expect(await fs.readFile(owned, 'utf8')).toBe(osc);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('no claim on record fails OPEN — a session that predates the registry keeps working', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'omp-tty-claim-'));
+    const owned = join(dir, 'unclaimed.tty');
+    await fs.writeFile(owned, '');
+    const osc = buildDisplayTitleOsc('su-9859e');
+    const wrote = await writeOscTitle(osc, {
+      PAPERCUSP_TTY: owned,
+      PAPERCUSP_SID: 'su-9859ea5e-926d-4c65-b8fb-4d7c25a21353',
+      PAPERCUSP_TTY_CLAIMS_DIR: join(dir, 'no-such-claims-dir'),
+    } as NodeJS.ProcessEnv);
+    expect(wrote).toBe(true);
+    expect(await fs.readFile(owned, 'utf8')).toBe(osc);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('no PAPERCUSP_SID also fails OPEN — nothing to compare the claim against', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'omp-tty-claim-'));
+    const claimsDir = join(dir, 'claims');
+    await fs.mkdir(claimsDir, { recursive: true });
+    const owned = join(dir, 'nosid.tty');
+    await fs.writeFile(owned, '');
+    await fs.writeFile(join(claimsDir, 'nosid_tty'), 'su-someone-else');
+    const osc = buildDisplayTitleOsc('x');
+    const wrote = await writeOscTitle(osc, {
+      PAPERCUSP_TTY: owned,
+      PAPERCUSP_TTY_CLAIMS_DIR: claimsDir,
+    } as NodeJS.ProcessEnv);
+    expect(wrote).toBe(true);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+});
+
 describe('buildDisplayTitleOsc + statusNoticeKey (single-source display pipe, 2026-07-05)', () => {
   const ESC = '\x1b]0;';
   const BEL = '\x07';

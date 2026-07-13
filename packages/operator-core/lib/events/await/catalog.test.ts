@@ -13,6 +13,8 @@ import {
   renderCatalog,
   sugaredFamilies,
   familyKeyPrefix,
+  keyMatchesCatalog,
+  type EventCatalogEntry,
 } from './catalog';
 
 describe('events catalog — registry integrity', () => {
@@ -158,6 +160,62 @@ describe('familyKeyPrefix (EI-9000 — the live-awaiter-count join key)', () => 
       const concreteParams = Object.fromEntries(e.params.map((p) => [p.name, 'x']));
       const concreteKey = buildKey(e.family, concreteParams);
       expect(concreteKey.startsWith(prefix), `${e.family}: '${concreteKey}' should start with '${prefix}'`).toBe(true);
+    }
+  });
+});
+
+describe('EI-10870 — keyMatchesCatalog (the orphan-await guard)', () => {
+  it('matches a TEMPLATED family for any concrete instantiation', () => {
+    // release:green:<pipeline> — the key whose lost wake started all of this.
+    expect(keyMatchesCatalog('release:green:papercusp')).toBe(true);
+    expect(keyMatchesCatalog('release:green:some-other-pipeline')).toBe(true);
+    expect(keyMatchesCatalog('green-checkpoint:red:papercusp')).toBe(true);
+    expect(keyMatchesCatalog('work-item:done:WI-4528')).toBe(true);
+    expect(keyMatchesCatalog('lock:grant:ticket-1')).toBe(true);
+  });
+
+  it('matches BOTH the global and the scoped form of an optional-param family (buildKey collapse rule)', () => {
+    expect(keyMatchesCatalog('release:deployed')).toBe(true); // global — optional <sha> collapsed
+    expect(keyMatchesCatalog('release:deployed:abc123')).toBe(true); // scoped
+  });
+
+  it('REJECTS the real orphan key: overwatch:surface-landed had 14 awaits, 0 fires ever, and no emitter anywhere in the tree', () => {
+    expect(keyMatchesCatalog('overwatch:surface-landed')).toBe(false);
+  });
+
+  it('rejects a plausible TYPO of a real key — the near-miss that silently never rendezvouses', () => {
+    expect(keyMatchesCatalog('release:greeen:papercusp')).toBe(false);
+    expect(keyMatchesCatalog('work-item:finished:WI-1')).toBe(false);
+    expect(keyMatchesCatalog('')).toBe(false);
+  });
+
+  it('does NOT prefix-match a longer family name (release:green must not swallow release:greenish:x)', () => {
+    // Guards the `k.startsWith(prefix)` sloppiness: matching must be on a ':' boundary.
+    expect(keyMatchesCatalog('release:greenish:x')).toBe(false);
+  });
+
+  it('honours an INSTALLED pack family, so a pack-emitted key is never misreported as an orphan', () => {
+    const installed = [
+      ...EVENT_CATALOG,
+      {
+        family: 'my-pack',
+        keyTemplate: 'my-pack:thing-happened:<id>',
+        params: [{ name: 'id', required: true }],
+        describe: 'a pack-declared event',
+        emitter: 'my-pack',
+        awaitable_now: true,
+      } as unknown as EventCatalogEntry,
+    ];
+    expect(keyMatchesCatalog('my-pack:thing-happened:42', installed)).toBe(true);
+    // …and it is still an orphan against the builtin-only catalog.
+    expect(keyMatchesCatalog('my-pack:thing-happened:42')).toBe(false);
+  });
+
+  it('every family in the live catalog matches its own concrete key (no family can self-report as an orphan)', () => {
+    for (const e of EVENT_CATALOG) {
+      const params: Record<string, string> = {};
+      for (const p of e.params) params[p.name] = 'x';
+      expect(keyMatchesCatalog(buildKey(e.family, params)), `${e.family} must match itself`).toBe(true);
     }
   });
 });

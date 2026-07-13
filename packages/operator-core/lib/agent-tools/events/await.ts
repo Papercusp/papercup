@@ -16,6 +16,12 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { getMessageById } from '../coordination/messages';
 import { readGateRefs } from '../coordination/ref-hydrate';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
+import {
+  keyMatchesCatalog,
+  mergeInstalledEventCatalog,
+  type EventCatalogEntry,
+} from '../../events/await/catalog';
+import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import { registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../events/await/store';
 import { registerComposedAwait } from '../../events/await/compose';
 import { ComposedSpecError, type ComposedSpec } from '../../events/await/compose-spec';
@@ -276,6 +282,33 @@ export default defineTool({
       } catch { /* best-effort — never block a registration */ }
     }
 
+    // ── EI-10870: the ORPHAN-AWAIT guard. `event` is a free-form string, so an
+    // invented or mistyped key registers happily and can then only ever TIME OUT
+    // — silently, in the safe-looking direction (the agent just waits, and reports
+    // "it never happened"). Live proof: `overwatch:surface-landed` — 14 settled
+    // awaits, 0 fires EVER, a key that appears nowhere in the tree. The catalog
+    // already knew every family's emitter; nothing consulted it at await time.
+    //
+    // WARN, never reject — a key absent from the catalog is often legitimate (an
+    // announced gate, a hand-minted pair key), and a hard reject would break them.
+    // And if the installed tier cannot be CONFIRMED, stay silent: a false "nothing
+    // emits this" is worse than no warning at all (it trains the warning out).
+    let unknownEventKey = false;
+    if (!patternAwait && !announcedGate) {
+      const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+      const probe = await withBoundedTimeout(
+        (async () => {
+          const installed = await readInstalledUnitEvents({
+            harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+          });
+          return mergeInstalledEventCatalog(installed).entries as readonly EventCatalogEntry[];
+        })(),
+        { fallback: null, timeoutMs: 1_500, label: 'events-await:orphanKey' },
+      );
+      // A null probe (timeout / discovery failure) ⇒ we cannot be sure ⇒ say nothing.
+      if (probe.value) unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
+    }
+
     // ── linking-notify-family-hardening P-006: the unblocked-key LATCH.
     // `work-item:unblocked:<id>` fires only on a blocked→unblocked EDGE, so a
     // registration against an item with NO live blocker (or already settled)
@@ -342,6 +375,12 @@ export default defineTool({
               ? {
                   near_miss: nearMiss,
                   near_miss_advice: `No declaration matches "${eventKey}" exactly, but a near-identical key is active: "${nearMiss[0].key}" (${nearMiss[0].kind}). If you meant that key, events:cancel this await and re-await it EXACTLY — normalized-near keys never rendezvous.`,
+                }
+              : {}),
+            ...(unknownEventKey
+              ? {
+                  unknown_event_key: true,
+                  unknown_event_key_advice: `NO REGISTERED EMITTER for "${eventKey}" — it matches no family in events:catalog and no announced gate, so nothing in this system will ever fire it and this await can only TIME OUT. If you mistyped a key, events:cancel and re-await the exact one (events:catalog lists them). If a peer is meant to emit it, have them DECLARE it first (events:emit { announce:true }) and await the key it returns. Registered anyway — this is a warning, not a refusal.`,
                 }
               : {}),
             expires_ts: row.expiresTs,

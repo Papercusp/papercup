@@ -20,6 +20,22 @@
  *     reply both satisfy it (mirrors reply-deadline-sweep's own NOT EXISTS
  *     check). A message is "unanswered" only while neither exists.
  *
+ * WI-4537 — what this counter must NOT count. It is wired to PREEMPT an agent's
+ * work ("a directed message awaiting YOUR answer OUTRANKS your own work"), so a
+ * false positive costs a real interruption. Measured live, 2791 "unanswered"
+ * rows fleet-wide were mostly things nobody was waiting on:
+ *   (a) auto:true machine lifecycle chatter (work-item:done, hold_open_clear…);
+ *   (b) machine SENDERS that never carried the flag — claim-discipline-watch
+ *       (390!), plan-clobber-watch, system:delivery-ladder (the sweep whose job
+ *       is to nag you about unread directed mail, itself generating unread
+ *       directed mail), … — see machine-authored.ts, whose pattern is shared
+ *       with sendMessage's new write-time stamp so the two cannot drift;
+ *   (c) the ACK-PING-PONG: a message that is itself a REPLY to something the
+ *       RECIPIENT sent. An answer arriving was counted as a question landing,
+ *       clearable only by acking the ack — forever (184 rows).
+ * All three are excluded below. What remains is what the name promises: a
+ * message from a real correspondent, still awaiting this recipient's reply.
+ *
  * Batched: ONE query for the whole roster (mirrors fetchContextPressure /
  * fetchWakeability) — enriching N members costs one read, not N. Bounded to a
  * recent lookback window (default 3d) so an ancient backlog from a long-idle
@@ -30,6 +46,7 @@
  * fold is a PURE function (rowsToUnansweredMap) so it unit-tests without PG.
  */
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
+import { MACHINE_SENDER_PATTERN } from './machine-authored';
 
 export interface UnansweredDirectedEntry {
   msgId: string;
@@ -142,6 +159,31 @@ export async function fetchUnansweredDirected(
          AND r = ANY(${recipientIds}::text[])
          AND e.body->>'from' IS DISTINCT FROM r
          AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
+         -- WI-4537 (a): machine LIFECYCLE chatter is not an obligation. sendMessage now
+         -- auto-stamps this for every machine sender (messages.ts), so it is reliable going
+         -- forward.
+         AND (e.body->>'auto') IS DISTINCT FROM 'true'
+         -- WI-4537 (b): …and the SAME machine-sender rule again, structurally — because the
+         -- write-time stamp cannot reach the rows ALREADY written without it, and those are the
+         -- bulk of the noise today (~490 unflagged robot rows vs ~314 flagged). Shared pattern,
+         -- so this and the stamp can never disagree.
+         AND NOT (e.body->>'from' ~ ${MACHINE_SENDER_PATTERN})
+         -- WI-4537 (c): the ACK-PING-PONG. A message that is itself a REPLY to something the
+         -- RECIPIENT sent is an ANSWER arriving, not a question landing — yet it was counted as
+         -- a fresh obligation on the recipient, who could only clear it by acking the ack (whose
+         -- ack the peer would then owe…). 184 of 2791 unanswered rows fleet-wide were exactly
+         -- this: peers' "done ✓" / "Ack — confirmed" replies, logged forever as mail the asker
+         -- still owes an answer to.
+         AND NOT (
+           e.body ? 'related_msg_id'
+           AND EXISTS (
+             SELECT 1 FROM harness_shared.coord_event_log e3
+              WHERE e3.workspace_id = e.workspace_id
+                AND e3.surface = 'messages'
+                AND e3.body->>'msg_id' = e.body->>'related_msg_id'
+                AND e3.body->>'from' = r
+           )
+         )
     ),
     unanswered AS (
       SELECT d.* FROM directed d

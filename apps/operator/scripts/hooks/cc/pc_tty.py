@@ -36,11 +36,55 @@ Consumed by `statusline-fleet.sh` (Claude) and `posttooluse-objective-title.sh`
 
 Everything here is FAIL-OPEN: a title is cosmetic and must never break a hook,
 a tool call, or a turn.
+
+CLAIM CHECK (EI-10377, 2026-07-12/13). PAPERCUSP_TTY is a device PATH, resolved
+ONCE at launch. A Linux pty's minor number is recycled once its old holder closes
+it, and the path alone can't tell a recycled terminal from the one we were given —
+so a session that keeps firing hooks after its OWN window is gone (an orphaned
+hook process, a fleet loop still warm past its xterm being killed) can silently
+retitle a totally unrelated, currently-live session's terminal that happens to
+have been handed the same recycled pts number. `psu-launcher.claimTtyOwnership`
+stamps a small marker file per terminal path, naming the session that currently
+owns it, on every launch that resolves one — so a later launch on a recycled path
+always overwrites the stale claim. `tty_owned_by_us` below checks that marker
+before a PAPERCUSP_TTY write; a claim naming someone else is treated exactly like
+a closed terminal (skip to the next candidate). No claim on record (older psu
+build, or the registry directory is unreadable) fails OPEN, matching the
+pre-existing behavior for a session that predates this check.
 """
 
 import os
+import re
 
-__all__ = ['strip_control', 'tty_candidates', 'osc_title', 'write_osc_title']
+__all__ = ['strip_control', 'tty_candidates', 'tty_owned_by_us', 'osc_title', 'write_osc_title']
+
+
+def _tty_claims_dir(env):
+    override = (env.get('PAPERCUSP_TTY_CLAIMS_DIR') or '').strip()
+    return override or os.path.join(os.path.expanduser('~'), '.papercusp', 'tty-claims')
+
+
+def _tty_claim_filename(tty_path):
+    return re.sub(r'[^a-zA-Z0-9]+', '_', tty_path).lstrip('_')
+
+
+def tty_owned_by_us(path, sid, env=None):
+    """Does the CURRENT claim on terminal `path` still name our own session `sid`?
+
+    See the module docstring's CLAIM CHECK section. No sid, no claims dir entry,
+    or an unreadable claim file ⇒ True (fail open) — a title is cosmetic and a
+    missing claim must never turn into a hard failure.
+    """
+    if not sid:
+        return True
+    env = os.environ if env is None else env
+    claim_path = os.path.join(_tty_claims_dir(env), _tty_claim_filename(path))
+    try:
+        with open(claim_path) as fh:
+            claimed_by = fh.read().strip()
+    except Exception:
+        return True  # no claim on record — fail open, as before this check existed
+    return claimed_by == sid
 
 
 def strip_control(title):
@@ -98,11 +142,20 @@ def write_osc_title(title, env=None, extra_first=()):
     Tries each candidate in order and stops at the first success. Returns False
     when every candidate fails (headless session, closed terminal, no tty
     anywhere) — the caller ignores the result; a title is cosmetic.
+
+    EI-10377: the PAPERCUSP_TTY candidate specifically is skipped when its claim
+    (see tty_owned_by_us) now names a different session — a recycled pty must
+    never be clobbered just because our stale env var still spells its old path.
     """
     osc = osc_title(title)
     if not osc:
         return False
+    env = os.environ if env is None else env
+    sid = (env.get('PAPERCUSP_SID') or '').strip()
+    owned_path = (env.get('PAPERCUSP_TTY') or '').strip()
     for path in tty_candidates(env, extra_first):
+        if path == owned_path and not tty_owned_by_us(path, sid, env):
+            continue  # the claim on this path has moved to a different session
         try:
             with open(path, 'w') as fh:
                 fh.write(osc)

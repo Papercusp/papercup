@@ -1546,15 +1546,50 @@ export function ttyCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
   return out;
 }
 
+/** The directory holding one claim marker per terminal device — the TS twin of
+ *  pc_tty.py's `_tty_claims_dir` / psu-launcher.mjs's `TTY_CLAIMS_DIR`. */
+function ttyClaimsDir(env: NodeJS.ProcessEnv): string {
+  return (env.PAPERCUSP_TTY_CLAIMS_DIR ?? '').trim() || join(homedir(), '.papercusp', 'tty-claims');
+}
+
+function ttyClaimFilename(ttyPath: string): string {
+  return ttyPath.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+/, '');
+}
+
+/**
+ * Does the CURRENT claim on terminal `path` still name our own session `sid`?
+ *
+ * EI-10377 — the TS twin of pc_tty.py's `tty_owned_by_us` (read that docstring for the
+ * full rationale: a Linux pty's minor number is recycled once its old holder closes it,
+ * so a session whose PAPERCUSP_TTY outlives its own window can silently retitle whatever
+ * unrelated session now owns that recycled path). No sid, or no claim on record, ⇒ true
+ * (fail open) — a title is cosmetic and a missing claim must never hard-fail a write.
+ */
+async function ttyOwnedByUs(path: string, sid: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  if (!sid) return true;
+  try {
+    const claimedBy = (await fsp.readFile(join(ttyClaimsDir(env), ttyClaimFilename(path)), 'utf8')).trim();
+    return claimedBy === sid;
+  } catch {
+    return true; // no claim on record — fail open, as before this check existed
+  }
+}
+
 /**
  * Write an OSC escape to the first terminal that accepts it. Resolves true when some
  * terminal took the write; false when there was nothing to write, or when every candidate
  * failed (headless bee / closed terminal / no tty). Callers ignore the result — it exists
  * for tests. Never throws: a title is cosmetic and must never break a turn.
+ *
+ * EI-10377: the PAPERCUSP_TTY candidate specifically is skipped when its claim now names a
+ * different session — see ttyOwnedByUs.
  */
 export async function writeOscTitle(osc: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   if (osc.length === 0) return false;
+  const sid = (env.PAPERCUSP_SID ?? '').trim();
+  const ownedPath = (env.PAPERCUSP_TTY ?? '').trim();
   for (const path of ttyCandidates(env)) {
+    if (path === ownedPath && !(await ttyOwnedByUs(path, sid, env))) continue;
     try {
       const fh = await fsp.open(path, 'w');
       try {

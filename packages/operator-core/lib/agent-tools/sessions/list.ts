@@ -117,7 +117,22 @@ export default defineTool({
     // window held 100 sessions or 500, and the max limit (100) made the ambiguity
     // permanent. Report the real total and say plainly whether more remain.
     const total = rows[0]?.total_matching ?? 0;
-    const sessions = rows.map(({ total_matching: _drop, ...row }) => row);
+    // Project explicitly rather than rest-spreading `total_matching` away: the
+    // window-function column is a transport detail of THIS query, and an explicit
+    // projection guarantees it can never leak into a row the caller reads as data.
+    const sessions = rows.map((r) => ({
+      source_kind: r.source_kind,
+      session_id: r.session_id,
+      turns: r.turns,
+      prompt_count: r.prompt_count,
+      owner: r.owner,
+      harness_slug: r.harness_slug,
+      cwd: r.cwd,
+      first_ts: r.first_ts,
+      last_ts: r.last_ts,
+      response_count: r.response_count,
+      tool_call_count: r.tool_call_count,
+    }));
     const hasMore = total > sessions.length;
 
     return {

@@ -277,6 +277,10 @@ import './accounts/session-override';
 // EI-7357 — restores accounts:test-egress (the clean-IP gate probe egress-probe.ts's own
 // doc comment references, but which was never actually registered as an MCP tool).
 import './accounts/test-egress';
+// WI-288 (B-PROV, deferred residue of B-GW-ACCT / gateway-live-control-and-egress-plan-2026-06-20
+// Phase 3) — egress:provision/list/release/health: programmatic egress-IP provisioning over the
+// pluggable EgressProvider backends (inference-gateway/egress-providers/).
+import './egress/egress';
 // gateway-clamp-advisory-capacity-probe-2026-07-09 P-001 — accounts:probe-capacity: ask upstream for the
 // REAL unified-5h/7d budget and record it. The only way a usage-walled account (routed no live traffic,
 // so its projection can never self-heal) gets a fresh reading short of waiting out its projected reset.
@@ -541,6 +545,11 @@ import './coordination/tools/wake-queue';
 // One cheap combined fleet glance (wake gate + staged wakes + bees + governor +
 // contextual tips) — the high-frequency statusline/TUI read.
 import './coordination/tools/glance';
+// EI-10890: "what is blocked on the OWNER" — the missing READ over the two surfaces
+// agents already write owner-gated blockers to (loop:checkpoint { walls } + work-items
+// in needs-human). Without it a registered wall was visible only to the agent that
+// raised it: a lane sat parked 5h on an owner decision nobody had surfaced.
+import './coordination/tools/walls';
 // COMPOUND agent wake-orientation read (code-execution B-CX-1B): my assignments +
 // claimable backlog + inbox summary in one round-trip (the work-centric sibling of glance).
 import './coordination/tools/orient';
@@ -659,6 +668,11 @@ import './sessions/search';
 import './sessions/read';
 import './sessions/list';
 import './sessions/timeline';
+// EI-10888: "what WAS this session" as a first-class verb — kickoff intent + closing
+// turn + WHY it stopped (EI-10889), for one session or a whole window. Replaces the
+// list → per-session tail-read → "hope the last turn was a summary" pattern, which
+// returns nothing for exactly the sessions that matter (crashed / wedged / running).
+import './sessions/digest';
 // sentinel-herald Phase 8 P-037 — pre-existing override mechanisms now self-register as
 // config-override concerns so config:list-overrides is the canonical audit surface. These
 // stores are already transitively imported by their tools; importing them here makes the

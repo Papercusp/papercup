@@ -19,7 +19,13 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { probeBgHostTicker } from '../service-health';
 import { activeWorkspaceId } from '../workspace-registry';
-import { resolvePotMembership } from './survey';
+import {
+  countPlaceableFrontier,
+  countQuarantinedFrontier,
+  isAdmissionStarved,
+  resolvePotMembership,
+  type FrontierAdmission,
+} from './survey';
 
 const execFileAsync = promisify(execFile);
 
@@ -138,6 +144,10 @@ export interface PotSoakReport {
   gateGreenRatio: { green: number; total: number; ratio: number | null };
   deployLatency: DeployLatencyMetrics;
   contextBurn: ContextBurnMetrics;
+  /** The frontier split by the G2 admission gate — what the pot MAY place vs. what
+   *  is withheld from it. A pot with `placeable: 0, quarantined: N>0` is DEADLOCKED,
+   *  not idle (see the readiness reason below). */
+  frontier: FrontierAdmission;
 }
 
 export interface PotSoakReportSnapshot {
@@ -157,6 +167,7 @@ export interface SoakReportInput {
   gateGreenRatio: { green: number; total: number; ratio: number | null };
   deployLatency: DeployLatencyMetrics;
   contextBurn: ContextBurnMetrics;
+  frontier: FrontierAdmission;
 }
 
 function clampWindowHours(windowHours?: number): number {
@@ -225,6 +236,24 @@ export function computeSoakReport(input: SoakReportInput): PotSoakReport {
       `bg-host FAILED ${input.bgHost.failureCount} time(s) in window (crash/OOM/watchdog — deliberate restarts excluded)`,
     );
   }
+  // ADMISSION DEADLOCK — the pot has work and may place NONE of it.
+  //
+  // This reason exists because the loop had no way to say why it was idle. On
+  // 2026-07-13 papercusp's entire placeable pool was 10 federated `feature` items,
+  // all quarantined by the G2 gate (remote origin, no `admit` verdict, no trusted
+  // author — and NOTHING in production writes that verdict, so nothing would ever
+  // clear them). The Mug woke every ~20min, surveyed a frontier of zero, correctly
+  // placed nothing, and reported SUCCESS. Five hours, zero cups, every gate green.
+  //
+  // A zero frontier is only healthy when there is genuinely nothing to do; when work
+  // is being WITHHELD it is a deadlock no amount of waiting resolves. Never let the
+  // two look the same again.
+  if (isAdmissionStarved(input.frontier)) {
+    reasons.push(
+      `placement DEADLOCKED: 0 placeable, ${input.frontier.quarantined} item(s) quarantined by the admission gate ` +
+        `(remote origin, unaudited) — the loop has work it may never place, and no admit path will clear it`,
+    );
+  }
   if (input.infraCurse.rate == null) {
     reasons.push('no placement evidence for infra-curse rate');
   } else if (input.infraCurse.infraCurses > 0) {
@@ -280,6 +309,7 @@ export function computeSoakReport(input: SoakReportInput): PotSoakReport {
     gateGreenRatio: input.gateGreenRatio,
     deployLatency: input.deployLatency,
     contextBurn: input.contextBurn,
+    frontier: input.frontier,
   };
 }
 

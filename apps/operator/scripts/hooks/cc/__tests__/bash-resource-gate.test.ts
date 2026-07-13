@@ -122,6 +122,7 @@ describe('native-scheduler lockout (agent sessions)', () => {
     ['sed with a quoted pipe-alternation', "sed -E 's/(a|batch)/x/' code-run-batch-nudge.ts"],
     ['quoted semicolon before batch (echo only)', 'echo "run this; batch job"'],
     ['batch only as a filename substring (no command-position token)', 'wc -l packages/operator-core/lib/code-run-batch-nudge.ts'],
+    ['SQL heredoc column named at (not an OS schedule)', 'cat > /tmp/health.mts <<EOF\nSELECT at, statuses FROM harness_shared.system_health_ticks WHERE at >= 0\nEOF'],
   ])('allows %s', (_label, command) => {
     expectAllow(runGate(bashCmd(command), AGENT));
   });
@@ -335,6 +336,18 @@ describe('heavy-command admission control (WI-3821)', () => {
     ['cd <dir> && (scripts/pc-heavy.sh -- <heavy>) & both wrappers stacked (EI-10001)', 'cd packages/operator-core && (scripts/pc-heavy.sh -- npx tsc --noEmit) &'],
     ['timeout <seconds> && scripts/pc-heavy.sh -- <heavy> (EI-10439)', 'timeout 90 scripts/pc-heavy.sh -- npx vitest run lib/x.test.ts'],
     ['timeout with long option && scripts/pc-heavy.sh -- <heavy> (EI-10439)', 'timeout --preserve-status 90 ./scripts/pc-heavy.sh -- npm run test:affected'],
+    // WI-4547 follow-on: `set -o pipefail` was NOT in the peel set, so the whole
+    // remedy collapsed the moment an agent used it — `cd d && set -o pipefail &&
+    // scripts/pc-heavy.sh -- vitest` stopped peeling at `set`, never saw the
+    // pc-heavy lead, and got denied as a raw vitest with a message telling it to
+    // do the thing it had just done. It punished exactly the right habit, too:
+    // pipefail is what stops `… | tail` from masking a real exit code (which is how
+    // a failing migration run reported "exit 0" earlier the same day). `set` only
+    // flips shell options — it runs no command — so peeling it is safe.
+    ['set -o pipefail && scripts/pc-heavy.sh -- <heavy>', 'set -o pipefail && scripts/pc-heavy.sh -- npx vitest run lib/x.test.ts'],
+    ['cd <dir> && set -o pipefail && scripts/pc-heavy.sh -- <heavy> (the real-world form)', 'cd packages/operator-core && set -o pipefail && scripts/pc-heavy.sh -- npx vitest run lib/x.test.ts'],
+    ['set -euo pipefail; scripts/pc-heavy.sh -- <heavy> (semicolon + combined flags)', 'set -euo pipefail; scripts/pc-heavy.sh -- npm run test:affected'],
+    ['set -e && set -o pipefail && scripts/pc-heavy.sh -- <heavy> (stacked sets)', 'set -e && set -o pipefail && scripts/pc-heavy.sh -- npx tsc --noEmit'],
   ])('allows the in-band bypass %s even over the threshold (EI-9634)', (_label, command) => {
     expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
@@ -349,6 +362,10 @@ describe('heavy-command admission control (WI-3821)', () => {
     ['a raw heavy leading a pc-heavy chain, behind a cd (EI-10001 guard)', 'cd packages/operator-core && npm test && scripts/pc-heavy.sh -- vitest run b.test.ts'],
     ['timeout-wrapped raw heavy remains gated (EI-10439 guard)', 'timeout 90 npm run test:affected'],
     ['PC_HEAVY_BYPASS with the wrong value does not bypass', 'env PC_HEAVY_BYPASS=0 vitest run x.test.ts'],
+    // The `set` peel must not become a free pass either: it strips the option-setting
+    // builtin, then stops dead at the first REAL command.
+    ['set -o pipefail && <raw heavy> stays gated', 'set -o pipefail && vitest run x.test.ts'],
+    ['set -o pipefail && a raw heavy leading a pc-heavy chain stays gated', 'set -o pipefail && npm test && scripts/pc-heavy.sh -- vitest run b.test.ts'],
   ])('does NOT over-bypass %s (EI-9634 guard)', (_label, command) => {
     expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });

@@ -24,12 +24,18 @@ vi.mock('../../events/await/store', () => ({
 }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
 vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
+// EI-10870: the orphan-key guard reads the INSTALLED tier to avoid false-warning on a
+// pack-declared key. Default: no installed packs ⇒ the builtin catalog decides.
+vi.mock('../../events/await/installed-events', () => ({
+  readInstalledUnitEvents: vi.fn(async () => []),
+}));
 
 import awaitTool from './await';
 import { registerAwait } from '../../events/await/store';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
+import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
@@ -172,5 +178,71 @@ describe('events:await wrapper defaults', () => {
       expect(schema.safeParse({}).success).toBe(false);
       expect(schema.safeParse({ fromMsg: 'm-1' }).success).toBe(true);
     });
+  });
+});
+
+describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever time out)', () => {
+  it('WARNS on a key with no registered emitter — and still REGISTERS it (warn, never reject)', async () => {
+    // The real orphan: 14 settled awaits, 0 fires ever, appears nowhere in the tree.
+    const out = await call({ event: 'overwatch:surface-landed' });
+
+    expect(out.unknown_event_key).toBe(true);
+    expect(out.unknown_event_key_advice).toMatch(/NO REGISTERED EMITTER/);
+    expect(out.unknown_event_key_advice).toMatch(/can only TIME OUT/);
+
+    // Fail-open: the await is still registered. A hard reject would break the
+    // legitimate not-yet-catalogued cases (hand-minted pair keys, announced gates).
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays SILENT on a real catalogued key — no false alarm on the happy path', async () => {
+    const out = await call({ event: 'release:green:papercusp' });
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.unknown_event_key_advice).toBeUndefined();
+    expect(out.await_id).toBe(99);
+  });
+
+  it('stays silent on a PATTERN await (a glob is not a key and has no single emitter)', async () => {
+    const out = await call({ event: 'work-item:done:*' });
+    expect(out.pattern).toBe(true);
+    expect(out.unknown_event_key).toBeUndefined();
+  });
+
+  it('does NOT warn on a key declared by an INSTALLED pack (the false-positive that would train the warning out)', async () => {
+    vi.mocked(readInstalledUnitEvents).mockResolvedValueOnce([
+      {
+        unit: 'my-pack',
+        events: [
+          {
+            family: 'my-pack',
+            keyTemplate: 'my-pack:thing-happened:<id>',
+            params: [{ name: 'id', required: true }],
+            describe: 'a pack-declared event',
+            emitter: 'my-pack',
+          },
+        ],
+      },
+    ] as never);
+
+    const out = await call({ event: 'my-pack:thing-happened:42' });
+    expect(out.unknown_event_key).toBeUndefined();
+  });
+
+  it('stays SILENT when the installed tier cannot be confirmed — an unverifiable claim is worse than no warning', async () => {
+    // Discovery throws ⇒ withBoundedTimeout degrades to the null fallback ⇒ we cannot
+    // prove the key is an orphan ⇒ say nothing (and never break the registration).
+    // The degradation IS logged (a cold plugin host should be visible in the logs) —
+    // assert that explicitly rather than let it leak past fail-on-console.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(readInstalledUnitEvents).mockRejectedValueOnce(new Error('plugin host cold'));
+
+    const out = await call({ event: 'overwatch:surface-landed' });
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99); // the await still registers — the guard is advisory
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:orphanKey'));
+    warn.mockRestore();
   });
 });

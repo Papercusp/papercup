@@ -3308,6 +3308,55 @@ function defaultPsTty(pid) {
   return execFileSync('ps', ['-o', 'tty=', '-p', String(pid)], { encoding: 'utf8', timeout: 1000 });
 }
 
+/** Default claim-registry directory — one small marker file per terminal device.
+ *  Override (tests only) via PAPERCUSP_TTY_CLAIMS_DIR. */
+export const TTY_CLAIMS_DIR = join(homedir(), '.papercusp', 'tty-claims');
+
+/** Turn a device path into a safe, collision-free filename for the claims dir. */
+function ttyClaimFilename(ttyPath) {
+  return ttyPath.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+/, '');
+}
+
+/**
+ * Claim `ttyPath` as owned by `sid`, overwriting whatever session claimed it before.
+ *
+ * EI-10377 (2026-07-12/13, caught on camera during a demo shoot). A Linux pty's minor
+ * number is NOT a stable identity: devpts allocates each `/dev/pts/N`'s inode
+ * deterministically from N itself (measured on this box: ino == minor + 3), so once a
+ * pty is closed, its number is handed to the very next terminal that opens one — the
+ * new terminal is indistinguishable from the old at the path level. PAPERCUSP_TTY
+ * (WI-3665) is resolved ONCE at launch and then lives in a session's env for its
+ * entire lifetime; a session that keeps firing hooks after the WINDOW that spawned it
+ * is gone (an orphaned hook process, or a fleet loop still warm past its xterm being
+ * killed) will happily `open(its stale PAPERCUSP_TTY, 'w')` and SUCCEED, because that
+ * path now belongs to a completely different, unrelated session. `open()` has no way
+ * to detect that from the path alone — which is exactly how su-9859e's title landed on
+ * su-c70f4's (luna's) terminal on stage :110.
+ *
+ * The fix: every launch that owns a terminal stamps a claim file for that path with its
+ * own session id, overwriting any prior claim — including a STALE one left by whichever
+ * session used to own that path. A writer then checks the CURRENT claim before it opens
+ * PAPERCUSP_TTY (see pc_tty.py's `tty_owned_by_us` / coord-hook.ts's `ttyOwnedByUs` — the
+ * two must stay in lockstep with this, same as every other WI-3665 title mechanic); if
+ * the claim now names someone else, the write is skipped exactly like a closed terminal.
+ * A recycled path is ALWAYS re-stamped before it's usable again (the new xterm's own psu
+ * launch runs this same code first), so the stale writer's next attempt sees the
+ * mismatch and backs off instead of clobbering it.
+ *
+ * Fire-and-forget / best-effort, like every other title mechanic here: a claim-file
+ * write must never fail a launch.
+ */
+export function claimTtyOwnership(ttyPath, sid, { dir } = {}) {
+  if (!ttyPath || !sid) return;
+  const claimsDir = dir || TTY_CLAIMS_DIR;
+  try {
+    mkdirSync(claimsDir, { recursive: true });
+    writeFileSync(join(claimsDir, ttyClaimFilename(ttyPath)), sid, 'utf8');
+  } catch {
+    /* cosmetic guard — never fail a launch over a claim-file write */
+  }
+}
+
 /** The settings.json a claude launch will actually read: the per-session isolated
  *  CLAUDE_CONFIG_DIR when psu pinned one (EI-155), else the shared user-level dir. */
 function effectiveClaudeSettingsPath(env, home = homedir()) {
@@ -3721,6 +3770,13 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null })
   const ownedTty = resolveOwnedTtyPath();
   if (ownedTty) env.PAPERCUSP_TTY = ownedTty;
   else delete env.PAPERCUSP_TTY;
+  // EI-10377: re-stamp this terminal's claim on EVERY launch that owns one, so a stale
+  // writer left over from whoever owned this (possibly-recycled) pty path before us is
+  // told, on its very next write attempt, that the claim has moved on. See
+  // claimTtyOwnership for the full rationale.
+  if (ownedTty && env.PAPERCUSP_SID) {
+    claimTtyOwnership(ownedTty, env.PAPERCUSP_SID, { dir: env.PAPERCUSP_TTY_CLAIMS_DIR || undefined });
+  }
   // ONE writer per title. Claude Code writes its own topic title and would otherwise fight
   // the statusline's fleet identity (last writer wins ⇒ flicker). Silence Claude's writer,
   // but ONLY when our statusline is the one it will actually load — see shouldSilenceClaudeTitle.

@@ -1,0 +1,126 @@
+/**
+ * session-end-reason — WHY did this session stop?
+ *
+ * EI-10889. A session row carried turns/prompts/tools/timestamps but nothing about
+ * its terminal state, and the states an operator actually cares about are not
+ * structural at all — they arrive as an ordinary assistant turn whose TEXT happens
+ * to be a provider error:
+ *
+ *   "Your organization has disabled Claude subscription access for Claude Code"
+ *   "You've hit your session limit · resets 4am"
+ *   "API Error: 400 This model does not support effort level 'xhigh'"
+ *
+ * Those are indistinguishable from normal output to every query in the system, so
+ * the only way to learn that a session is WEDGED is to read its transcript. During
+ * the 2026-07-13 audit that is exactly what happened: a warm-loop program session
+ * had been dead on an auth wall for hours, its loop routine flagged only as a
+ * generic "dead routine", and nobody could see the cause without opening the tail.
+ *
+ * Classifying it once, here, makes the wedge queryable — and lets the fleet tell
+ * the difference between "this agent finished" and "this agent was killed by the
+ * provider and is silently doing nothing".
+ *
+ * Deliberately pattern-based over the last assistant turn: the provider messages
+ * ARE the only signal that exists. Patterns are ordered hard-stop first, and every
+ * match carries the matched EVIDENCE so a caller never has to trust the label
+ * blindly (and so a drifting provider string shows up as `settled` with a visible
+ * tail rather than a confidently wrong reason).
+ */
+
+export type SessionEndReason =
+  /** Provider/org killed the session: the account cannot run Claude Code at all. */
+  | 'auth_wall'
+  /** Rate/usage/session cap hit — recovers on its own when the window resets. */
+  | 'usage_limit'
+  /** The call was rejected on its own parameters (bad model, bad effort level, 4xx). */
+  | 'model_error'
+  /** Context/prompt overflow. */
+  | 'context_limit'
+  /** Alive and taking turns right now. */
+  | 'active'
+  /** Alive but parked on something only a human can clear. */
+  | 'awaiting_owner'
+  /** Ended normally (wrote a closing turn, no error signature). */
+  | 'settled'
+  /** No last turn to classify. */
+  | 'unknown';
+
+/** True when the reason means the session is STUCK — it is not going to make
+ *  progress on its own and a human/relaunch is required. The distinction that
+ *  matters operationally: `settled` is fine, `auth_wall` is an outage. */
+export function isWedged(reason: SessionEndReason): boolean {
+  return reason === 'auth_wall' || reason === 'model_error' || reason === 'context_limit';
+}
+
+interface Pattern {
+  reason: SessionEndReason;
+  re: RegExp;
+}
+
+/**
+ * Ordered hard-stop-first. `auth_wall` precedes `usage_limit` because an org-level
+ * disablement often *also* mentions limits, and the two demand opposite responses:
+ * a usage limit resolves itself on reset; an auth wall never does.
+ */
+const PATTERNS: readonly Pattern[] = [
+  { reason: 'auth_wall', re: /organization has disabled|subscription access.*disabled|disabled Claude subscription|use an Anthropic API key instead|ask your admin to enable/i },
+  { reason: 'usage_limit', re: /hit your (?:session|usage) limit|usage limit reached|limit(?:\s|·|,)*resets|quota exceeded/i },
+  { reason: 'context_limit', re: /prompt is too long|context (?:window )?(?:exceeded|overflow|too long)|maximum context length/i },
+  { reason: 'model_error', re: /^\s*API Error:|does not support effort level|invalid_request_error|model .* not found|rate.?limit(?:ed)?\b|\b429\b/i },
+];
+
+export interface ClassifySessionEndInput {
+  /** The session's LAST assistant turn — where a provider error lands. */
+  lastAssistantText: string | null | undefined;
+  /** Epoch ms of the session's last activity. */
+  lastTsMs: number | null | undefined;
+  /** Now, epoch ms. */
+  nowMs: number;
+  /** The agent has an open owner-gated wall (loop carry-note / needs-human item). */
+  hasOpenWall?: boolean;
+  /** Consider the session ACTIVE if it spoke within this window (default 10 min). */
+  activeWithinMs?: number;
+}
+
+export interface SessionEndClassification {
+  reason: SessionEndReason;
+  /** The matched substring (bounded) — so a caller can verify the label, never trust it blind. */
+  evidence: string | null;
+  wedged: boolean;
+}
+
+const EVIDENCE_MAX = 200;
+
+export function classifySessionEnd(input: ClassifySessionEndInput): SessionEndClassification {
+  const text = (input.lastAssistantText ?? '').trim();
+  const activeWithin = input.activeWithinMs ?? 10 * 60 * 1000;
+
+  // A provider kill is terminal REGARDLESS of recency — in fact a fresh auth-wall
+  // turn is the most urgent case there is (the session is being woken and dying on
+  // every wake), so error classification must run BEFORE the liveness check. Doing
+  // it the other way round labels a session that is failing once a minute "active".
+  for (const p of PATTERNS) {
+    const m = p.re.exec(text);
+    if (m) {
+      const at = Math.max(0, m.index - 20);
+      return {
+        reason: p.reason,
+        evidence: text.slice(at, at + EVIDENCE_MAX),
+        wedged: isWedged(p.reason),
+      };
+    }
+  }
+
+  if (!text) return { reason: 'unknown', evidence: null, wedged: false };
+
+  if (input.hasOpenWall) {
+    return { reason: 'awaiting_owner', evidence: null, wedged: false };
+  }
+
+  const lastMs = input.lastTsMs ?? null;
+  if (lastMs != null && input.nowMs - lastMs <= activeWithin) {
+    return { reason: 'active', evidence: null, wedged: false };
+  }
+
+  return { reason: 'settled', evidence: null, wedged: false };
+}
