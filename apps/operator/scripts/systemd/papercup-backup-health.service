@@ -1,0 +1,13 @@
+[Unit]
+Description=Papercusp DB-backup freshness + failure probe (EI-10733)
+Documentation=https://github.com/papercusp/papercup/blob/main/apps/operator/scripts/systemd/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Detection + escalation ONLY — never re-runs a dump, kills a process, or edits backup
+# config (EI-8901: a health check must not hold mutate authority over what it judges).
+ExecStart=/home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/papercup-backup-health-check.sh

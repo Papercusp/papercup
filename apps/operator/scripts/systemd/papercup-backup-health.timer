@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the Papercusp DB-backup health probe hourly (EI-10733)
+
+[Timer]
+OnBootSec=10min
+# OnUnitInactiveSec (NOT OnUnitActiveSec) — schedules from when the run FINISHES, so the
+# interval is a real gap BETWEEN runs. OnUnitActiveSec schedules from run START, and if a
+# unit's runtime ever exceeds its interval systemd releases the queued start the instant it
+# deactivates => a silent back-to-back HOT LOOP. That is exactly the bug that made
+# kopia-snapshots run continuously (EI-10730), pinning pg_dump locks and wedging the release
+# pipeline for 9h. This probe is fast, but it uses the safe directive on principle.
+OnUnitInactiveSec=1h
+AccuracySec=1min
+Persistent=true
+Unit=papercup-backup-health.service
+
+[Install]
+WantedBy=timers.target

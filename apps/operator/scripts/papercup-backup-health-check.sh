@@ -69,6 +69,12 @@ now_s() { date +%s 2>/dev/null || echo 0; }
 age_h() { local f="$1"; [ -f "$f" ] || { echo 999999; return; }; echo $(( ( $(now_s) - $(cat "$f" 2>/dev/null || echo 0) ) / 3600 )); }
 jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 
+# Mark a RED as filed, so we file once per BACKUP_RED_REFILE_H window instead of every tick.
+# NEVER writes the marker on a dry-run: file_ei() no-ops under BACKUP_NO_FILE=1, so writing
+# the marker anyway would let a harmless dry-run SUPPRESS the next REAL filing for 12h — a
+# dry-run that disarms the alarm it is testing. Caught by the discrimination test below.
+mark_red() { [ "$BACKUP_NO_FILE" = 1 ] && return 0; echo "$(now_s)" >"$1"; }
+
 file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are the fallback
   [ "$BACKUP_NO_FILE" = 1 ] && { log "BACKUP_NO_FILE=1 — would have filed: $1"; return 0; }
   local resp

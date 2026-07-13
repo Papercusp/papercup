@@ -61,6 +61,8 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
       fireStale: false,
       fireStaleReason: null,
       lastGreenAtMs: null,
+      verdictStale: false,
+      verdictStaleReason: null,
       lastFixerStatus: null,
       lastFixerCandidate: null,
       flakyWorkspaces: [],
