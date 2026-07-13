@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll } from 'vitest';
+import { describe, expect, it, beforeAll, afterEach, vi } from 'vitest';
 
 // Set a deterministic secret before importing — module reads it at load time.
 beforeAll(() => {
@@ -6,7 +6,13 @@ beforeAll(() => {
 });
 
 const mod = await import('./device-jwt');
-const { signDeviceToken, verifyDeviceToken } = mod;
+const {
+  signDeviceToken,
+  verifyDeviceToken,
+  mobileJwtSecretStatus,
+  warnIfMobileJwtSecretNotDurable,
+  __resetDeviceJwtForTest,
+} = mod;
 
 describe('device-jwt sign/verify', () => {
   const claims = {
@@ -86,5 +92,70 @@ describe('device-jwt sign/verify', () => {
     const b = signDeviceToken({ ...claims, sub: 'device-B' });
     expect(verifyDeviceToken(a)?.sub).toBe('device-A');
     expect(verifyDeviceToken(b)?.sub).toBe('device-B');
+  });
+});
+
+// P-001 (mobile-apps-revival-v2): the signing secret must be DURABLE across
+// operator restarts/deploys or paired phones silently stop working. These
+// exercise the inspector the boot warning + the phone connection-health route
+// (P-010) both read, and the warn-once behaviour.
+describe('device-jwt secret durability (P-001)', () => {
+  const savedSecret = process.env.MOBILE_JWT_SECRET;
+  const savedNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    if (savedSecret === undefined) delete process.env.MOBILE_JWT_SECRET;
+    else process.env.MOBILE_JWT_SECRET = savedSecret;
+    if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = savedNodeEnv;
+    __resetDeviceJwtForTest();
+    vi.restoreAllMocks();
+  });
+
+  it('reports durable:env when a >=32-char secret is set (the ship state)', () => {
+    process.env.MOBILE_JWT_SECRET = 'x'.repeat(40);
+    expect(mobileJwtSecretStatus()).toEqual({ durable: true, source: 'env' });
+  });
+
+  it('reports ephemeral in dev when the secret is unset — tokens will not survive a restart', () => {
+    delete process.env.MOBILE_JWT_SECRET;
+    process.env.NODE_ENV = 'development';
+    const status = mobileJwtSecretStatus();
+    expect(status.durable).toBe(false);
+    expect(status.source).toBe('ephemeral');
+  });
+
+  it('reports unset-production when the secret is unset in production (signing would throw)', () => {
+    delete process.env.MOBILE_JWT_SECRET;
+    process.env.NODE_ENV = 'production';
+    const status = mobileJwtSecretStatus();
+    expect(status.durable).toBe(false);
+    expect(status.source).toBe('unset-production');
+  });
+
+  it('treats a too-short (<32-char) secret as not durable', () => {
+    process.env.MOBILE_JWT_SECRET = 'short';
+    process.env.NODE_ENV = 'development';
+    expect(mobileJwtSecretStatus().source).toBe('ephemeral');
+  });
+
+  it('warns exactly once for an ephemeral secret (boot-time / first-use warning)', () => {
+    delete process.env.MOBILE_JWT_SECRET;
+    process.env.NODE_ENV = 'development';
+    __resetDeviceJwtForTest();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warnIfMobileJwtSecretNotDurable();
+    warnIfMobileJwtSecretNotDurable();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('MOBILE_JWT_SECRET');
+  });
+
+  it('stays silent when the secret is durable', () => {
+    process.env.MOBILE_JWT_SECRET = 'y'.repeat(40);
+    __resetDeviceJwtForTest();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const status = warnIfMobileJwtSecretNotDurable();
+    expect(warn).not.toHaveBeenCalled();
+    expect(status).toEqual({ durable: true, source: 'env' });
   });
 });
