@@ -131,7 +131,7 @@ describe("cc PreToolUse hook — operator-independent paths", () => {
       }),
       {
         PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1/api/mcp",
-        PAPERCUSP_SID: owner,
+        PAPERCUSP_LOCK_SID: owner,
       },
     );
     expect(r.status).toBe(0);

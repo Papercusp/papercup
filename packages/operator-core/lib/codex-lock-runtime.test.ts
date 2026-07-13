@@ -44,7 +44,12 @@ describe('readCodexLockRuntimeVerdict', () => {
         cacheDir: dir,
         nowMs: Date.parse('2026-07-13T20:01:00Z'),
       }),
-    ).toMatchObject({ lockMode: 'automatic', hookHealth: 'verified', runtimeProbed: true });
+    ).toMatchObject({
+      lockMode: 'automatic',
+      hookHealth: 'verified',
+      runtimeProbed: true,
+      effectiveInstruction: expect.stringContaining('verified PreToolUse hook'),
+    });
   });
 
   it('returns manual when a later owner-scoped error supersedes success', () => {

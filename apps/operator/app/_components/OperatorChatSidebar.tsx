@@ -27,6 +27,7 @@ import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-cor
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
+import { PotStatusStrip } from './PotStatusStrip';
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { useShortcutAction } from '@/lib/hotkeys';
@@ -247,6 +248,10 @@ export function OperatorChatSidebar() {
             </div>
           </div>
         </div>
+        {/* P-018 (mockup variant A): the pot status strip — ambient Mug/Kettle
+            health under the header, folding out into the pot panel (attention /
+            cups / up-next / steering). The digest, not the dashboards. */}
+        <PotStatusStrip />
         <OperatorChat
           messages={conv.messages}
           busy={conv.busy}
