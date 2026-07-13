@@ -189,6 +189,7 @@ describe('Cupboard ListingCard — per-listing action (D-005 / comb-retire)', ()
     { kind: 'plugin', action: 'install', label: 'Install' },
     { kind: 'tool-pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (mig 006, renamed mig 008)
     { kind: 'learning-pack', action: 'install', label: 'Install' }, // curated hive learnings (learning-packs mig 008)
+    { kind: 'template', action: 'install', label: 'Install' }, // app/aspect template (cupboard-public-release P-002)
   ];
   for (const c of cases) {
     it(`${c.kind} → ${c.action} action`, () => {
@@ -250,6 +251,59 @@ describe('Cupboard ListingCard — per-listing action (D-005 / comb-retire)', ()
       />,
     );
     expect(screen.getByTestId('cupboard-kind-badge').getAttribute('data-kind')).toBe('plugin');
+  });
+
+  it('renders a template card without crashing (regression: missing CUPBOARD_LISTING_KIND_TONE[template] threw on tone.fg)', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'template', title: 'Agentic Desktop App' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('cupboard-kind-badge').getAttribute('data-kind')).toBe('template');
+    expect(screen.getByTestId('cupboard-action').getAttribute('data-action')).toBe('install');
+  });
+});
+
+describe('Cupboard ListingCard — D-002 pot-template badge (single Blueprints tab)', () => {
+  it('a pot blueprint (blueprint_kind=pot) badges as a "pot template", not a plain blueprint', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'blueprint', blueprint_kind: 'pot', title: 'Work Pot' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    const badge = screen.getByTestId('cupboard-kind-badge');
+    // Kind stays 'blueprint' (data-driven), but it reads + flags as a pot template.
+    expect(badge.getAttribute('data-kind')).toBe('blueprint');
+    expect(badge.getAttribute('data-pot-template')).toBe('true');
+    expect(badge.textContent).toContain('pot template');
+  });
+
+  it('the legacy pre-rename value (blueprint_kind=hive) also badges as a pot template', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'blueprint', blueprint_kind: 'hive' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('cupboard-kind-badge').getAttribute('data-pot-template')).toBe('true');
+  });
+
+  it('an ordinary role blueprint is NOT flagged as a pot template', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'blueprint', blueprint_kind: 'harness', title: 'review' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    const badge = screen.getByTestId('cupboard-kind-badge');
+    expect(badge.getAttribute('data-pot-template')).toBeNull();
+    expect(badge.textContent).toContain('blueprint');
   });
 
   it('renders a repo slug derived from worker fields when github_repo is absent', () => {

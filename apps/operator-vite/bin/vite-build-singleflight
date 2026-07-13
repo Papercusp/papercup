@@ -102,7 +102,37 @@ fi
 # Append-open: never truncate a live holder's pid record while we're still
 # waiting for the lock.
 exec 9>>"$LOCK"
-if ! flock -w "$WAIT_SECS" 9; then
+# Serialize concurrent one-shot builds. flock(1) where present; on macOS — which
+# ships NO flock(1) (WI-3307/EI-160, the same gap build-desktop-sidecar.sh and
+# stage-source-tree.sh fall back for) — a mkdir spinlock with stale-PID reclaim,
+# BOTH bounded by WAIT_SECS so a wedged holder can never block a build forever.
+# Without this fallback the mac `flock` invocation is "command not found", the
+# `if !` fires 0s in, and the build dies with a MISLEADING "TIMED OUT after 300s"
+# — exactly what broke the mac release leg on the 2026-07-13 0.0.9 cut.
+LOCKDIR="$LOCK.lockdir"
+MKDIR_LOCK=""   # set to LOCKDIR only when WE created it, so the trap removes only our own
+trap 'rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} 2>/dev/null || true' EXIT
+took_lock=0
+if command -v flock >/dev/null 2>&1; then
+  if flock -w "$WAIT_SECS" 9; then took_lock=1; fi
+else
+  deadline=$(( $(date +%s) + WAIT_SECS ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+      echo "$$" > "$LOCKDIR/pid"
+      MKDIR_LOCK="$LOCKDIR"
+      took_lock=1
+      break
+    fi
+    holder="$(cat "$LOCKDIR/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+      rm -rf "$LOCKDIR"   # stale holder — reclaim and retry immediately
+      continue
+    fi
+    sleep 2
+  done
+fi
+if [ "$took_lock" -ne 1 ]; then
   HOLDER="$(head -n 1 "$LOCK" 2>/dev/null || true)"
   echo "[vite-build-singleflight] TIMED OUT after ${WAIT_SECS}s waiting for a concurrent 'vite build' (pid ${HOLDER:-unknown}) to finish writing dist/." >&2
   echo "[vite-build-singleflight] Two one-shot builds interleaving into one dist/ is EI-9836 — this lock exists to queue them instead of racing." >&2
