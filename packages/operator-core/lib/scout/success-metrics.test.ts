@@ -15,6 +15,7 @@ import {
   type ProgramSuccessInputs,
 } from './success-metrics';
 import type { ScoutQualityInputs } from './quality-metrics';
+import { isCapacityError } from './scheduler';
 import type { ScoutTickRecord } from './tick-ledger';
 import type { RoutedIdeaProvenance, LensOutcomeReport } from './outcome-feedback';
 import { SU_IDEATION_LENSES, type SuIdeationLens, type CreativeLens } from './types';
@@ -269,5 +270,43 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
     expect(r.verdict).toBe('incomplete');
     expect(r.failed).toBe(0);
     expect(r.unknown).toBe(5);
+  });
+});
+
+describe('isCapacityError — the no-capacity classifier (scheduler)', () => {
+  it('classifies the LIVE rate-limit signatures as capacity, not failure', () => {
+    // Every string below was taken verbatim from real error ticks (2026-07-12 window).
+    expect(isCapacityError('rate-limit pause exceeds maxWait')).toBe(true);
+    expect(
+      isCapacityError(
+        'scout: all 1 ideator LLM call(s) failed — transport death (0 ideas, $0 spent): rate-limit pause exceeds maxWait',
+      ),
+    ).toBe(true);
+    expect(
+      isCapacityError('scout: all 1 ideator LLM call(s) failed — transport death: 429 {"type":"error","error":{"type":"rate_limit_error"'),
+    ).toBe(true);
+  });
+
+  it('does NOT swallow genuine failures — the whole point of keeping it narrow', () => {
+    // A timeout is PLAUSIBLY capacity-induced, but that link is unproven: mis-filing a real
+    // hang as "pool busy" would hide a defect, which is this classification's own failure mode.
+    expect(isCapacityError('Scout ideator analogical timed out after 180000ms')).toBe(false);
+    expect(isCapacityError('Scout cycle timed out after 600000ms during phase critique')).toBe(false);
+    expect(isCapacityError('401 unauthorized: token expired')).toBe(false);
+    expect(isCapacityError('ECONNREFUSED 127.0.0.1:8788')).toBe(false);
+    expect(isCapacityError('TypeError: cannot read property of undefined')).toBe(false);
+  });
+
+  it('a starved-but-healthy loop reads as PASS on the error bar, with the pressure still visible', () => {
+    const ticks: ScoutTickRecord[] = [
+      ...[...Array(10)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } })),
+      ...[...Array(9)].map((): ScoutTickRecord => ({ status: 'gated', gate: 'no-capacity' })),
+    ];
+    const r = evaluateProgramSuccess(inputs(ticks, []));
+    const errBar = bar(r, 'cycle-error-rate');
+    // Pre-fix these 9 were status:'error' => 9/19 = 47% => FAIL. They are a starved pool, not breakage.
+    expect(errBar.status).toBe('pass');
+    // ...but the starvation must NOT vanish — it is reported, and actionable.
+    expect(errBar.observed).toContain('9 cycle(s) withheld by the no-capacity gate');
   });
 });

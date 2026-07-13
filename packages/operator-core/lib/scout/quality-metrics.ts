@@ -59,7 +59,14 @@ import { computeNoveltyGainReport, mapProvenanceToNoveltyRow } from './novelty-m
  * is the load-bearing evidence for the P-015 "spend drops in quiet periods" bar, so it is
  * zeroed like every other gate.
  */
-export const SCOUT_TICK_GATES = ['min-interval', 'no-trigger', 'no-signal', 'circuit', 'claim-lost'] as const;
+export const SCOUT_TICK_GATES = [
+  'min-interval',
+  'no-trigger',
+  'no-signal',
+  'no-capacity',
+  'circuit',
+  'claim-lost',
+] as const;
 
 /**
  * Injected snapshots the pure core folds — production via {@link buildQualityReportInputs},

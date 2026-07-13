@@ -71,6 +71,9 @@ function stubDeps(over: Partial<RecallCanaryDeps> = {}): {
       return recorded.length;
     },
     prevStatus: async () => 'ok',
+    // Hermetic: never reach for the live embedder-cooldown probe. Healthy regime by default,
+    // which is also the fail-soft default in the run path.
+    degradedRegime: () => false,
     notify: async (n) => {
       notified.push(n.conditionKey);
     },
@@ -145,6 +148,63 @@ describe('measureCanaryPairs', () => {
     expect(m.zeroHits).toBe(2);
     expect(m.latencyP50Ms).not.toBeNull();
   });
+
+  /**
+   * EI-10666 — THE BUG THIS CANARY USED TO HAVE.
+   *
+   * `zeroHits` meant "the backend returned nothing". But an agent receives what survives the
+   * consumer-admission gates, and in the degraded regime the relevance floor can discard a
+   * complete, healthy-looking retrieval. That is EI-10372 exactly: the backend returned 5 rows,
+   * orient's floor dropped all 5, every agent's fold was EMPTY — and the old canary, reading
+   * only `top.length`, would have scored 5 HITS and reported GREEN through the blackout.
+   */
+  describe('measures what a CONSUMER receives, not what the backend returned (EI-10666)', () => {
+    /** A full retrieval of low-band scores — healthy RRF values, and also what noise looks like. */
+    const lowBand = (id: string): MemoryEntry => ({ id, text: 'x', scope: 'pool-a', score: 0.0164 });
+    /** A PERFECT retrieval: every probe gets its own target back, plus filler. The store is fine. */
+    const fullRetrieval = async (q: string) => [
+      lowBand(`mem-${q.split(' ')[1]}`),
+      lowBand('o1'),
+      lowBand('o2'),
+    ];
+
+    it('DEGRADED regime: the floor eats a full retrieval ⇒ CONSUMER zero-hit, though retrieval was not empty', async () => {
+      const m = await measureCanaryPairs(fullRetrieval, pairsOf(4), { degraded: true });
+      // What an agent actually got: nothing, on every probe.
+      expect(m.zeroHits).toBe(4);
+      expect(m.hits).toBe(0);
+      // ...while the store was answering fine the whole time. This is the pair of numbers that
+      // says WHICH layer went dark — and the old canary only had the second one.
+      expect(m.retrievalZeroHits).toBe(0);
+      expect(m.retrievalHits).toBe(4);
+    });
+
+    it('the OLD definition would have called that exact run PERFECTLY HEALTHY', async () => {
+      const m = await measureCanaryPairs(fullRetrieval, pairsOf(4), { degraded: true });
+      // The old code was `if (top.length === 0) zeroHits += 1` and `top.some(...)` for hits —
+      // i.e. today's retrieval-level counters. Pin the discrimination: on this run the old
+      // numbers are a flawless 0% zero-hit / 100% recall, and the new ones are a total blackout.
+      expect(m.retrievalZeroHits / m.scored).toBe(0); // old zeroHitRate → "perfect"
+      expect(m.retrievalHits / m.scored).toBe(1); // old r@10 → "perfect"
+      expect(m.zeroHits / m.scored).toBe(1); // new zeroHitRate → total blackout
+      expect(m.hits / m.scored).toBe(0);
+    });
+
+    it('HEALTHY regime: the same low-band RRF scores are NOT floored (no cry-wolf)', async () => {
+      // The floor must stay regime-scoped. Applying it unconditionally — the tempting way to
+      // "model the consumer" — re-creates EI-10372 inside the canary and alarms forever.
+      const m = await measureCanaryPairs(fullRetrieval, pairsOf(4), { degraded: false });
+      expect(m.zeroHits).toBe(0);
+      expect(m.hits).toBe(4);
+      expect(m.zeroHits).toBe(m.retrievalZeroHits); // consumer == retrieval when nothing gates
+    });
+
+    it('an empty retrieval is still a zero-hit at BOTH layers (the store-dark case)', async () => {
+      const m = await measureCanaryPairs(async () => [], pairsOf(3), { degraded: false });
+      expect(m.zeroHits).toBe(3);
+      expect(m.retrievalZeroHits).toBe(3);
+    });
+  });
 });
 
 describe('runRecallCanary', () => {
@@ -218,6 +278,39 @@ describe('runRecallCanary', () => {
     expect(out.ran && out.status).toBe('degraded');
     if (out.ran) expect(out.metrics.notes).toContain('blackout');
     expect(notified.length).toBe(1);
+  });
+
+  it('EI-10666: a DECISION-SIDE blackout alerts, and the alert names the layer', async () => {
+    // The store is healthy — every probe returns its target — but the consumer is in the
+    // degraded regime, so the relevance floor discards the whole (low-band) retrieval and
+    // agents receive nothing. Pre-EI-10666 this run recorded a flawless r@10 = 1.0 and status
+    // 'ok'. It must now be a LOUD degradation, and the alert must not send anyone to the store.
+    const pairs = pairsOf(10);
+    const { deps, notified, recorded } = stubDeps({
+      loadSet: async () => frozenSet(pairs, 0.9),
+      degradedRegime: () => true,
+      backend: {
+        name: 'hybrid',
+        search: async (q: string) => [
+          { id: `mem-${q.split(' ')[1]}`, text: 'x', scope: 'pool-a', score: 0.0164 },
+        ],
+      },
+    });
+    const out = await runRecallCanary(INPUT, deps);
+
+    expect(out.ran && out.status).toBe('degraded');
+    expect(notified).toEqual(['memory-live-recall-canary:degraded']);
+    expect(recorded.length).toBe(1);
+    if (out.ran) {
+      expect(out.metrics.zeroHitRate).toBe(1); // the consumer got NOTHING
+      expect(out.metrics.retrievalZeroHitRate).toBe(0); // ...and the store was fine
+      expect(out.metrics.retrievalRAt10).toBe(1); // it returned the target every time
+      expect(out.metrics.rAt10).toBe(0); // none of which reached an agent
+      // The note must point DOWNSTREAM, not at the store — a blackout alert that misdirects
+      // the reader to the database costs the same hours the canary was built to save.
+      expect(out.metrics.notes).toContain('DOWNSTREAM');
+      expect(out.metrics.notes).not.toContain('swallowed-store-error');
+    }
   });
 
   it('does not re-alert while already degraded; resolves on recovery', async () => {

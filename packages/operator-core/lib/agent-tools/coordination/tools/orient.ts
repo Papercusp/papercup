@@ -37,7 +37,7 @@ import { withBoundedTimeout } from '../../../bounded-timeout';
 import { shapeOrient } from './orient-shape';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
-import { admitRecallHits } from '../../../memory/recall-admission';
+import { admitRecallHits, MEMORY_TEXT_CAP } from '../../../memory/recall-admission';
 import { readOwnerPresence } from '../../../power-user-sessions';
 import { listActiveAnnouncements } from '../../../events/await/store';
 import { announcementVisibleTo } from '../../../events/await/announce-key';
@@ -57,8 +57,9 @@ import {
 import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta';
 
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
- *  context as bulk input on every later turn. */
-const MEMORY_TEXT_CAP = 200;
+ *  context as bulk input on every later turn. (MEMORY_TEXT_CAP lives with the admission
+ *  gates in lib/memory/recall-admission.ts — the char budget is charged against the
+ *  truncated text, so the canary must truncate identically to model the same fold.) */
 const MEMORY_HITS_CAP = 10;
 /** P-003: the non-exhaustive advisory folded alongside a non-empty recall — agents
  *  must neither re-search the intent they just got recall for, NOR treat this fold

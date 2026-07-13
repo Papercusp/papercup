@@ -51,8 +51,23 @@ export interface RecallCanaryRunMetrics {
   rAt10: number | null;
   baselineRAt10: number | null;
   delta: number | null;
-  /** Fraction of scored queries that returned ZERO results — the swallowed-PG-error smell. */
+  /**
+   * EI-10666 — measured AT THE CONSUMER: the fraction of scored queries after which an agent
+   * would have received NOTHING (retrieval empty, OR the consumer-admission gates discarded
+   * every hit). This is the number the alarm reads. It used to mean "the backend returned
+   * nothing", which scored a HIT whenever a gate ate a healthy retrieval — the canary would
+   * have reported GREEN straight through EI-10372.
+   */
   zeroHitRate: number | null;
+  /**
+   * DIAGNOSTIC (EI-10666): the fraction of scored queries where the BACKEND returned nothing.
+   * Compare with `zeroHitRate` to locate the blackout: equal ⇒ the store went dark (the
+   * swallowed-PG-error smell); `retrievalZeroHitRate` much LOWER ⇒ the store was fine and the
+   * consumer-side gates discarded everything. You cannot tell those apart from one number.
+   */
+  retrievalZeroHitRate: number | null;
+  /** DIAGNOSTIC: recall@10 against the RAW backend rows, before the consumer's gates. */
+  retrievalRAt10: number | null;
   latencyP50Ms: number | null;
   status: RecallCanaryStatus;
   notes?: string | null;
@@ -159,11 +174,13 @@ export async function recordRecallCanaryRun(
   const rows = (await sql`
     INSERT INTO harness_shared.memory_live_recall_canary_run
       (workspace_id, set_version, backend, pairs_total, pairs_scored, pairs_missing,
-       hits, r_at_10, baseline_r_at_10, delta, zero_hit_rate, latency_p50_ms, status, notes)
+       hits, r_at_10, baseline_r_at_10, delta, zero_hit_rate,
+       retrieval_zero_hit_rate, retrieval_r_at_10, latency_p50_ms, status, notes)
     VALUES
       (${workspaceId}, ${m.setVersion}, ${m.backend}, ${m.pairsTotal}, ${m.pairsScored},
        ${m.pairsMissing}, ${m.hits}, ${m.rAt10}, ${m.baselineRAt10}, ${m.delta},
-       ${m.zeroHitRate}, ${m.latencyP50Ms}, ${m.status}, ${m.notes ?? null})
+       ${m.zeroHitRate}, ${m.retrievalZeroHitRate ?? null}, ${m.retrievalRAt10 ?? null},
+       ${m.latencyP50Ms}, ${m.status}, ${m.notes ?? null})
     RETURNING id
   `) as Array<{ id: number }>;
   return Number(rows[0]?.id ?? 0);

@@ -32,6 +32,14 @@ export interface AdmissibleHit {
 }
 
 /**
+ * D-008 COMPACT bound: per-hit text cap in the folded payload. It lives here, with the gates,
+ * because the char BUDGET below is charged against the TRUNCATED text — anything modelling what
+ * a consumer receives (the canary) has to truncate identically or its costs, and therefore its
+ * recall@10, silently drift from the real fold.
+ */
+export const MEMORY_TEXT_CAP = 200;
+
+/**
  * P-004 (fleet-member-dx, EI-9017): drop near-zero-relevance hits — a degraded embedder (quota
  * outage → lexical fallback) returns hits scored 0.01–0.03 that are pure noise yet still cost
  * fold tokens on EVERY orient. A hit with NO numeric score passes (fail-open).

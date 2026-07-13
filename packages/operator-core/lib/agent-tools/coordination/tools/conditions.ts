@@ -38,8 +38,16 @@ export interface ConditionState {
   from: string;
   /** ambient category of the latest alarm (e.g. 'severe-event'). */
   category: string | null;
-  /** ts of the FIRST alarm ever seen for this key. */
+  /** ts of the FIRST alarm ever seen for this key (across ALL episodes — a
+   *  flapping condition keeps this at its very first alarm forever). */
   first_seen: string;
+  /** ts the CURRENT open episode began — the first alarm strictly newer than the
+   *  latest resolution (equals `first_seen` when the key never resolved). null
+   *  when the condition is currently resolved. Distinct from `first_seen` for a
+   *  FLAPPING condition: use THIS, not first_seen, to judge how long a condition
+   *  has been *continuously* open (EI-10653 — the staleness alarm reported a
+   *  freshly-reopened flap as "OPEN for 1967m" by anchoring on first_seen). */
+  open_since: string | null;
   /** ts of the LATEST alarm. */
   last_seen: string;
   /** total alarm broadcasts for this key (re-alarms after flapping included). */
@@ -75,6 +83,10 @@ export function computeConditionStates(
           s.resolved_summary =
             typeof e["summary"] === "string" ? (e["summary"] as string) : null;
         }
+        // This recovery CLOSES the current open episode: the next alarm strictly
+        // after it opens a fresh one (guarded so an out-of-order resolution older
+        // than the current episode's open can't wrongly close it).
+        if (s.open_since !== null && ts >= s.open_since) s.open_since = null;
       } else {
         // A resolution for a key we never saw alarm (log GC ate the alarm, or
         // a partial window). Record it resolved so it never reads as open.
@@ -84,6 +96,7 @@ export function computeConditionStates(
           from: typeof e["from"] === "string" ? (e["from"] as string) : "",
           category: null,
           first_seen: ts,
+          open_since: null,
           last_seen: ts,
           alarm_count: 0,
           latest_summary: null,

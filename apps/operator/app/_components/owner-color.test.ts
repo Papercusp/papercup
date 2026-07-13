@@ -6,9 +6,12 @@ import { ownerHue, ownerColor } from './owner-color';
 
 describe('ownerHue / ownerColor', () => {
   it('is deterministic + case/space-insensitive for the same identity', () => {
-    expect(ownerHue('avi@x.com')).toBe(ownerHue('avi@x.com'));
-    expect(ownerHue('Dev@X.com ')).toBe(ownerHue('avi@x.com'));
-    expect(ownerColor('avi@x.com')).toBe(ownerColor('AVI@X.COM'));
+    // The point of these three is that ONE identity, written three ways, lands on
+    // ONE hue — so the spellings must differ only in case/whitespace, never in the
+    // identity itself.
+    expect(ownerHue('dev@x.com')).toBe(ownerHue('dev@x.com'));
+    expect(ownerHue('Dev@X.com ')).toBe(ownerHue('dev@x.com'));
+    expect(ownerColor('dev@x.com')).toBe(ownerColor('DEV@X.COM'));
   });
 
   it('spreads distinct identities across the wheel (no trivial collision)', () => {

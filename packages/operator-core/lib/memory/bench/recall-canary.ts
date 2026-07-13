@@ -27,6 +27,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
 import type { MemoryBackend, MemoryEntry } from '../backend';
+import { admitRecallHits, MEMORY_TEXT_CAP } from '../recall-admission';
 import {
   loadLatestRecallCanarySet,
   recordRecallCanaryRun,
@@ -143,20 +144,43 @@ export function buildCanaryPairs(
 
 export interface PairMeasurement {
   scored: number;
+  /** Target found in what the CONSUMER receives (post-admission). The number r@10 is built on. */
   hits: number;
+  /** Probes where the CONSUMER received NOTHING — retrieval empty OR the gates ate it all. */
   zeroHits: number;
+  /** Probes where the BACKEND returned nothing. The diagnostic that says WHICH layer went dark. */
+  retrievalZeroHits: number;
+  /** Target present in the RAW backend rows, before the consumer's gates. */
+  retrievalHits: number;
   latencyP50Ms: number | null;
 }
 
 type SearchFn = (query: string, opts: { scope: string; limit: number }) => Promise<MemoryEntry[]>;
 
-/** Replay pairs through `search` (read-only), bounded concurrency. */
+/**
+ * Replay pairs through `search` (read-only), bounded concurrency, then run the results through
+ * the CONSUMER-ADMISSION GATES (EI-10666).
+ *
+ * Why both numbers: `retrievalZeroHits` is what this canary used to measure — the backend
+ * returning nothing. But a hit the backend returns and the consumer's gates then discard never
+ * reaches an agent, and scoring that as a HIT is how the canary would have reported GREEN
+ * straight through EI-10372 (backend returned 5, orient's floor dropped all 5, every agent's
+ * fold was empty). So the ALARM reads `zeroHits` (what the consumer got) and the DIAGNOSTIC
+ * keeps `retrievalZeroHits` (which layer went dark) — you need both to know where to look.
+ *
+ * `degraded` REGIME-SCOPES the relevance floor and must reflect what a consumer would actually
+ * see right now (the EI-9031 marker). Passing `degraded: true` unconditionally would floor
+ * healthy RRF scores (rank-1 ≈ 0.016 < 0.05) and re-create EI-10372 inside the canary itself.
+ */
 export async function measureCanaryPairs(
   search: SearchFn,
   pairs: readonly RecallCanaryPair[],
+  opts: { degraded?: boolean } = {},
 ): Promise<PairMeasurement> {
   let hits = 0;
   let zeroHits = 0;
+  let retrievalZeroHits = 0;
+  let retrievalHits = 0;
   const latencies: number[] = [];
   const queue = [...pairs];
   async function worker(): Promise<void> {
@@ -165,8 +189,17 @@ export async function measureCanaryPairs(
       const results = await search(p.query, { scope: p.scope, limit: SEARCH_LIMIT });
       latencies.push(Date.now() - t0);
       const top = results.slice(0, SEARCH_LIMIT);
-      if (top.length === 0) zeroHits += 1;
-      if (top.some((e) => e.id === p.memoryId)) hits += 1;
+      if (top.length === 0) retrievalZeroHits += 1;
+      if (top.some((e) => e.id === p.memoryId)) retrievalHits += 1;
+
+      // The same gates orient runs, from the same module — never a re-implementation.
+      // Truncate exactly as the fold does: the char budget is charged against the capped text.
+      const { admitted } = admitRecallHits(
+        top.map((e) => ({ id: e.id, memory: e.text?.slice(0, MEMORY_TEXT_CAP), score: e.score })),
+        { degraded: opts.degraded },
+      );
+      if (admitted.length === 0) zeroHits += 1;
+      if (admitted.some((e) => e.id === p.memoryId)) hits += 1;
     }
   }
   await Promise.all(
@@ -174,7 +207,7 @@ export async function measureCanaryPairs(
   );
   latencies.sort((a, b) => a - b);
   const p50 = latencies.length > 0 ? latencies[Math.floor(latencies.length / 2)] : null;
-  return { scored: pairs.length, hits, zeroHits, latencyP50Ms: p50 };
+  return { scored: pairs.length, hits, zeroHits, retrievalZeroHits, retrievalHits, latencyP50Ms: p50 };
 }
 
 /** Test/seam injection — swap PG, the live backend, the flag, and the alert route. */
@@ -190,6 +223,13 @@ export interface RecallCanaryDeps {
   record?: typeof recordRecallCanaryRun;
   /** Previous run's status (alert dedupe); default reads the latest run row. */
   prevStatus?: (sql: Sql, workspaceId: string) => Promise<RecallCanaryStatus | null>;
+  /**
+   * EI-10666: is a consumer's recall in the DEGRADED regime right now? This REGIME-SCOPES the
+   * relevance floor exactly as it is scoped for orient — the floor is what can silently eat an
+   * entire fold, and it only applies to a degraded response. Defaults to the live embedder
+   * cooldown check (the same signal that stamps `degraded` on a memory:search response).
+   */
+  degradedRegime?: () => Promise<boolean> | boolean;
   notify?: (n: { title: string; body: string; conditionKey: string; workspaceId: string }) => Promise<void>;
   resolve?: (n: { conditionKey: string; workspaceId: string }) => Promise<void>;
   log?: (m: string) => void;
@@ -264,11 +304,12 @@ export async function seedRecallCanarySet(
   backend: Pick<MemoryBackend, 'name' | 'search'>,
   workspaceId: string,
   deps: Pick<RecallCanaryDeps, 'sample' | 'saveSet'> = {},
+  degraded = false,
 ): Promise<{ set: RecallCanarySet; measured: PairMeasurement }> {
   const candidates = await (deps.sample ?? sampleCanaryCandidates)(sql);
   const pairs = buildCanaryPairs(candidates);
   if (pairs.length === 0) throw new Error('recall canary: no eligible live memories to sample');
-  const measured = await measureCanaryPairs((q, o) => backend.search(q, o), pairs);
+  const measured = await measureCanaryPairs((q, o) => backend.search(q, o), pairs, { degraded });
   const baselineRAt10 = measured.scored > 0 ? measured.hits / measured.scored : 0;
   const saved = await (deps.saveSet ?? saveRecallCanarySet)(sql, workspaceId, {
     backend: backend.name,
@@ -314,6 +355,18 @@ export async function runRecallCanary(
       backend = getMemoryBackend();
     }
 
+    // EI-10666: the regime a CONSUMER is in right now — it scopes the relevance floor below.
+    // Fail-soft to the healthy regime: assuming `degraded` would floor healthy RRF scores
+    // (rank-1 ≈ 0.016 < 0.05) and alarm on every run.
+    let degradedRegime = false;
+    try {
+      if (deps.degradedRegime) degradedRegime = await deps.degradedRegime();
+      else {
+        const { isOpenAiEmbedInCooldown } = await import('../configure');
+        degradedRegime = isOpenAiEmbedInCooldown();
+      }
+    } catch { /* unknown ⇒ healthy regime (never invent a degradation) */ }
+
     let set = await (deps.loadSet ?? loadLatestRecallCanarySet)(sql, input.workspaceId);
     let seededNote: string | null = null;
 
@@ -325,7 +378,9 @@ export async function runRecallCanary(
     }
 
     if (!set) {
-      const { set: fresh, measured } = await seedRecallCanarySet(sql, backend, input.workspaceId, deps);
+      const { set: fresh, measured } = await seedRecallCanarySet(
+        sql, backend, input.workspaceId, deps, degradedRegime,
+      );
       const metrics: RecallCanaryRunMetrics = {
         setVersion: fresh.version,
         backend: backend.name,
@@ -337,6 +392,8 @@ export async function runRecallCanary(
         baselineRAt10: fresh.baselineRAt10,
         delta: 0,
         zeroHitRate: measured.scored > 0 ? measured.zeroHits / measured.scored : null,
+        retrievalZeroHitRate: measured.scored > 0 ? measured.retrievalZeroHits / measured.scored : null,
+        retrievalRAt10: measured.scored > 0 ? measured.retrievalHits / measured.scored : null,
         latencyP50Ms: measured.latencyP50Ms,
         status: 'seeded',
         notes: seededNote ?? `seeded v${fresh.version} (${fresh.pairs.length} pairs)`,
@@ -356,7 +413,9 @@ export async function runRecallCanary(
     const living = set.pairs.filter((p) => alive.has(p.memoryId));
     const missing = set.pairs.length - living.length;
     if (living.length === 0 || missing / set.pairs.length > RECALL_CANARY_DECAY_MISSING_FRAC) {
-      const { set: fresh } = await seedRecallCanarySet(sql, backend, input.workspaceId, deps);
+      const { set: fresh } = await seedRecallCanarySet(
+        sql, backend, input.workspaceId, deps, degradedRegime,
+      );
       const metrics: RecallCanaryRunMetrics = {
         setVersion: set.version,
         backend: backend.name,
@@ -368,6 +427,8 @@ export async function runRecallCanary(
         baselineRAt10: set.baselineRAt10,
         delta: null,
         zeroHitRate: null,
+        retrievalZeroHitRate: null,
+        retrievalRAt10: null,
         latencyP50Ms: null,
         status: 'decayed',
         notes: `set v${set.version} decayed (${missing}/${set.pairs.length} targets gone); reseeded v${fresh.version}`,
@@ -378,14 +439,28 @@ export async function runRecallCanary(
     }
 
     const prev = await (deps.prevStatus ?? defaultPrevStatus)(sql, input.workspaceId);
-    const measured = await measureCanaryPairs((q, o) => backend.search(q, o), living);
+    const measured = await measureCanaryPairs((q, o) => backend.search(q, o), living, {
+      degraded: degradedRegime,
+    });
+    // EI-10666: r@10 and zeroHitRate are measured AT THE CONSUMER (post-admission) — what an
+    // agent actually receives. The retrieval-level pair is kept as the DIAGNOSTIC that says
+    // which layer went dark.
     const rAt10 = measured.scored > 0 ? measured.hits / measured.scored : null;
     const zeroHitRate = measured.scored > 0 ? measured.zeroHits / measured.scored : null;
+    const retrievalZeroHitRate =
+      measured.scored > 0 ? measured.retrievalZeroHits / measured.scored : null;
+    const retrievalRAt10 = measured.scored > 0 ? measured.retrievalHits / measured.scored : null;
     const delta = rAt10 == null ? null : rAt10 - set.baselineRAt10;
 
     const blackout = zeroHitRate != null && zeroHitRate >= RECALL_CANARY_ZERO_HIT_DEGRADED;
     const dropped = delta != null && delta < -RECALL_CANARY_ALERT_DROP;
     const status: RecallCanaryStatus = blackout || dropped ? 'degraded' : 'ok';
+
+    // WHICH LAYER: the store returned rows and the consumer still got nothing ⇒ the gates ate
+    // it (the EI-10372 shape). Naming the layer is the whole point of carrying both numbers —
+    // "recall is dark" sends you to the store; this says whether the store was ever the problem.
+    const decisionSideBlackout =
+      blackout && retrievalZeroHitRate != null && retrievalZeroHitRate < zeroHitRate!;
 
     const metrics: RecallCanaryRunMetrics = {
       setVersion: set.version,
@@ -398,9 +473,16 @@ export async function runRecallCanary(
       baselineRAt10: set.baselineRAt10,
       delta,
       zeroHitRate,
+      retrievalZeroHitRate,
+      retrievalRAt10,
       latencyP50Ms: measured.latencyP50Ms,
       status,
-      notes: blackout ? 'zero-hit blackout — swallowed-store-error smell' : null,
+      notes: !blackout
+        ? null
+        : decisionSideBlackout
+          ? 'zero-hit blackout DOWNSTREAM of retrieval — the store returned rows and the ' +
+            'consumer-admission gates (relevance floor / budget) discarded them'
+          : 'zero-hit blackout at RETRIEVAL — swallowed-store-error smell',
     };
     const rowId = await (deps.record ?? recordRecallCanaryRun)(sql, input.workspaceId, metrics);
 
@@ -410,10 +492,17 @@ export async function runRecallCanary(
       const body =
         `Live memory recall dropped on the canary set (v${set.version}, backend ${backend.name}): ` +
         `recall@10 ${fmt(rAt10)} vs baseline ${fmt(set.baselineRAt10)} (Δ ${fmt(delta)}), ` +
-        `zero-hit rate ${fmt(zeroHitRate)} over ${measured.scored} probes. ` +
-        (blackout
-          ? 'Most probes returned NOTHING — check for swallowed store errors (schema drift / migration mismatch, the PG 42703 class) and embedder/sidecar health.'
-          : 'Check recent migrations, embedder config, and the memory backend selection.');
+        `zero-hit rate ${fmt(zeroHitRate)} over ${measured.scored} probes ` +
+        `(AT THE CONSUMER — post floor/budget; at retrieval it was ${fmt(retrievalZeroHitRate)}). ` +
+        (decisionSideBlackout
+          ? 'DECISION-SIDE BLACKOUT: the store RETURNED rows and the consumer-admission gates ' +
+            'discarded them, so agents received an EMPTY recall fold while the backend looked ' +
+            'healthy (the EI-10372 shape). Do not go looking at the store — check the relevance ' +
+            'floor and its degraded-regime scoping in lib/memory/recall-admission.ts, and the ' +
+            `embedder degradation that scoped it (degraded regime: ${degradedRegime}).`
+          : blackout
+            ? 'Most probes returned NOTHING FROM THE STORE — check for swallowed store errors (schema drift / migration mismatch, the PG 42703 class) and embedder/sidecar health.'
+            : 'Check recent migrations, embedder config, and the memory backend selection.');
       await (deps.notify ?? defaultNotify)({
         title: 'Memory recall degraded — live canary below baseline',
         body,
@@ -429,7 +518,8 @@ export async function runRecallCanary(
 
     log(
       `run #${rowId} ${status}: r@10=${fmt(rAt10)} baseline=${fmt(set.baselineRAt10)} ` +
-        `Δ=${fmt(delta)} zeroHit=${fmt(zeroHitRate)} scored=${measured.scored} missing=${missing}`,
+        `Δ=${fmt(delta)} zeroHit=${fmt(zeroHitRate)} (retrieval ${fmt(retrievalZeroHitRate)}) ` +
+        `scored=${measured.scored} missing=${missing} degradedRegime=${degradedRegime}`,
     );
     return { ran: true, status, metrics, rowId };
   } catch (e) {

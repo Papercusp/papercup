@@ -208,7 +208,16 @@ export function evaluateProgramSuccess(
   });
 
   // ── 3. cycle error rate < 5% ────────────────────────────────────────────────
+  // Counts only genuine FAILURES. A cycle withheld because the LLM pool had no capacity is
+  // gated ('no-capacity'), not errored (scheduler.ts isCapacityError) — pool busy-ness is a
+  // resource ceiling, not breakage, and counting it here is what pinned this bar at ~30%.
+  // The capacity gate is reported alongside so the pressure stays VISIBLE rather than merely
+  // reclassified out of sight: a high no-capacity count with a green error bar is a real and
+  // actionable signal (the loop is healthy but starved).
   const errorRate = report.totalTicks > 0 ? report.errorTicks / report.totalTicks : null;
+  const noCapacity = report.gatedTickBreakdown['no-capacity'] ?? 0;
+  const capacityNote =
+    noCapacity > 0 ? ` — plus ${noCapacity} cycle(s) withheld by the no-capacity gate (pool starved, not broken)` : '';
   criteria.push({
     key: 'cycle-error-rate',
     bar: `cycle error rate < ${pct(maxErrorRate)} (was ~30%)`,
@@ -220,7 +229,7 @@ export function evaluateProgramSuccess(
         }
       : {
           status: (errorRate < maxErrorRate ? 'pass' : 'fail') as SuccessStatus,
-          observed: `${report.errorTicks} error ticks / ${report.totalTicks} total = ${pct(errorRate)}`,
+          observed: `${report.errorTicks} error ticks / ${report.totalTicks} total = ${pct(errorRate)}${capacityNote}`,
         }),
   });
 

@@ -75,7 +75,7 @@ describe('matchesCommit', () => {
   it('matches on sha / subject / author / ref (case-insensitive needle)', () => {
     expect(matchesCommit(c, 'dead')).toBe(true);
     expect(matchesCommit(c, 'widget')).toBe(true);
-    expect(matchesCommit(c, 'avi')).toBe(true);
+    expect(matchesCommit(c, 'dev')).toBe(true); // author 'Dev' — the needle is lowercased
     expect(matchesCommit(c, 'origin/main')).toBe(true);
   });
   it('returns false when the needle is nowhere in the haystack', () => {
