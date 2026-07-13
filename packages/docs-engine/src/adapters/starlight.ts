@@ -164,12 +164,17 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): D
       const slugs = slug === '' ? [] : slug.split('/');
       const url = slug === '' ? `${baseUrl}/` : `${baseUrl}/${slug}`;
       const title = meta.title ?? humanize(slugs[slugs.length - 1] ?? 'index');
+      // EI-10937: `searchable: false` frontmatter keeps generated aggregator pages
+      // (the *-index title-dumps) OUT of the search corpus. Only an explicit
+      // `false` opts out — anything else (absent, `true`, junk) stays searchable.
+      const searchable = meta.searchable === 'false' ? false : undefined;
       const page: StarlightPage = {
         slug,
         slugs,
         url,
         title,
         ...(meta.description ? { description: meta.description } : {}),
+        ...(searchable === false ? { searchable: false as const } : {}),
         toc: extractHeadings(body),
         absolutePath: abs,
       };

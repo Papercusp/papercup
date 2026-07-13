@@ -83,6 +83,10 @@ function build(): string {
       description:
         'A sortable index of every agent-insights runbook page — title, tags, status, and one-line description. Generated from the insight frontmatter.',
       sidebarOrder: 3,
+      // EI-10937: this page is a 304KB dump of every insight's title+description —
+      // it lexically matched every docs:search query and buried the real answer.
+      // Navigation, not an answer. Still browsable; just not a search hit.
+      searchable: false,
     }),
   );
   lines.push('');

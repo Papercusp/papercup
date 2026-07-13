@@ -114,7 +114,7 @@ describe('install loop — end-to-end with the real example-tool-pack', () => {
 
     expect(res.ok).toBe(true);
     expect(res.installed.map((u) => u.name)).toEqual([PACK_NAME]);
-    expect(res.stillMissing).toEqual({ tools: [], packs: [], plugins: [] });
+    expect(res.stillMissing).toEqual({ tools: [], packs: [], plugins: [], events: [] });
 
     // The real install core physically placed the pack in global-plugins.
     const onDisk = JSON.parse(await fs.readFile(join(globalPluginsDir, PACK_NAME, 'papercusp.json'), 'utf8'));

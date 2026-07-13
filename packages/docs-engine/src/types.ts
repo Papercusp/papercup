@@ -26,6 +26,23 @@ export interface DocPage {
   description?: string;
   /** Table of contents — headings extracted from the markdown source. */
   toc: DocHeading[];
+  /**
+   * EI-10937: `false` ⇒ exclude this page from `searchDocs` (it still renders on
+   * the site and is still reachable via `docs:get` / the outline).
+   *
+   * For GENERATED AGGREGATOR pages — `reference/agent-insights-index` (304KB of
+   * every insight's title+description) and `reference/plans-index` (276KB of every
+   * plan). Because they concatenate the vocabulary of the WHOLE corpus, they
+   * lexically match every possible query and out-score the one focused doc that
+   * actually answers it. Measured: the correct doc landed at rank #5 or vanished
+   * entirely, so agents concluded "undocumented" and re-derived knowledge that
+   * was already written down (this is a large part of why "tribal knowledge"
+   * persists — see EI-10904/EI-10941).
+   *
+   * They are NAVIGATION artifacts, not content. Set via `searchable: false`
+   * frontmatter; undefined means searchable.
+   */
+  searchable?: boolean;
 }
 
 export interface SectionMeta {

@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { computeWhyChain, recentFailingFiles, type WhyChainDeps, type AdmissionSnapshotLite } from './why-chain';
+import {
+  computePipelineHealth,
+  computeWhyChain,
+  recentFailingFiles,
+  type AdmissionSnapshotLite,
+  type WhyChainDeps,
+} from './why-chain';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import type { DevDeployState } from './dev-deploy-state';
 import type { AccountStatusRow } from './deployment/account-pool-store';
@@ -259,5 +265,133 @@ describe('computeWhyChain (EI-7349)', () => {
       }) as unknown as WhyChainDeps['sql'],
     });
     expect(files).toEqual([]);
+  });
+});
+
+/**
+ * WI-4533 — the gate's COLOUR, and the two things it must refuse to say.
+ *
+ * The chain is what an agent reads to decide what to go fix, so a wrong colour here does not just
+ * misinform: it DISPATCHES someone. Both silences below are load-bearing.
+ */
+const withRoutines = (s: GitPipelineSnapshot, hasGate = true): GitPipelineSnapshot =>
+  ({
+    ...s,
+    routines: {
+      gitSync: null,
+      greenCheckpoint: hasGate ? ({ name: 'green-checkpoint', active: true } as unknown) : null,
+      releaseTrigger: null,
+    },
+  }) as GitPipelineSnapshot;
+
+/** A gate whose recorded RED is stale (WI-4489): the streak is real, the verdict is superseded. */
+const staleRed = (reds = 4) =>
+  withRoutines(
+    snap({
+      gate: {
+        consecutiveReds: reds,
+        verdictStale: true,
+        verdictStaleReason: 'the release pin advanced past the pin this red was recorded against',
+      } as Partial<GitPipelineSnapshot['gate']>,
+    }),
+  );
+
+describe('WI-4533 — gateLabel + the stale-verdict rule', () => {
+  it('a STALE red is NOT reported as red — it is an UNKNOWN colour', async () => {
+    const res = await computeWhyChain(deps({ snap: staleRed() }));
+    const gate = res.stages[0];
+    expect(gate.status).toBe('degraded'); // not 'blocked' — we do NOT know it is broken
+    expect(gate.reason).toContain('STALE');
+    expect(gate.reason).toContain('UNKNOWN');
+    // The precise regression WI-4489 was filed for: a starved gate_health blob reported 4 reds
+    // while every real run was green, and the chain's confident RED dispatched the release-fixer.
+    expect(gate.reason).not.toMatch(/gate red \(/);
+  });
+
+  it('a stale verdict names NO failing tests — naming them is what re-arms the phantom dispatch', async () => {
+    const res = await computeWhyChain(
+      deps({
+        snap: staleRed(),
+        sql: (async () => [{ file_path: 'lib/innocent.test.ts', finished_at: new Date().toISOString() }]) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    // The file is in recentFailingFiles (it really did fail in the window) — but the STALE gate
+    // stage must not hand it to anyone as "the thing to go fix".
+    expect(res.recentFailingFiles).toContain('lib/innocent.test.ts');
+    expect(res.stages[0].reason).not.toContain('innocent.test.ts');
+  });
+
+  it('a FRESH red still reports red, with its failing files (the stale rule must not muzzle a real red)', async () => {
+    const res = await computeWhyChain(
+      deps({
+        snap: withRoutines(snap({ gate: { consecutiveReds: 2 } })),
+        sql: (async () => [{ file_path: 'lib/broken.test.ts', finished_at: new Date().toISOString() }]) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.stages[0].status).toBe('degraded');
+    expect(res.stages[0].reason).toContain('gate red (2 consecutive');
+    expect(res.stages[0].reason).toContain('lib/broken.test.ts');
+  });
+
+  it('a WEDGED (non-firing) gate outranks a stale verdict — the routine not running is the bigger fact', async () => {
+    const s = withRoutines(
+      snap({ gate: { consecutiveReds: 3, verdictStale: true, fireStale: true, fireStaleReason: 'no fire in 6h' } as Partial<GitPipelineSnapshot['gate']> }),
+    );
+    const res = await computeWhyChain(deps({ snap: s }));
+    expect(res.stages[0].status).toBe('blocked');
+    expect(res.stages[0].reason).toContain('WEDGED');
+  });
+});
+
+describe('WI-4533 — computePipelineHealth (the coord:orient fold)', () => {
+  it('reports known:false for a harness with NO green-checkpoint routine (never a false green)', async () => {
+    const res = await computePipelineHealth(deps({ snap: withRoutines(snap(), false) }));
+    // A harness that runs no checkpoint has a zero-red gate_health by default — which would render
+    // as a confident "green" to a waking agent. A detector with no data must say UNKNOWN.
+    expect(res.known).toBe(false);
+    expect(res.rootCause).toBeNull();
+  });
+
+  it('a GREEN gate pays for NO failing-files query (the hot-path cost discipline)', async () => {
+    let queried = 0;
+    const res = await computePipelineHealth(
+      deps({
+        snap: withRoutines(snap()),
+        sql: (async () => {
+          queried++;
+          return [];
+        }) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.gateLabel).toBe('green');
+    expect(res.known).toBe(true);
+    expect(queried).toBe(0); // no red ⇒ no query. This leg rides orient; it must be ~free when healthy.
+  });
+
+  it('a RED gate fetches its failing files and names the gate as root cause', async () => {
+    const res = await computePipelineHealth(
+      deps({
+        snap: withRoutines(snap({ gate: { consecutiveReds: 1 } })),
+        sql: (async () => [{ file_path: 'lib/red.test.ts', finished_at: new Date().toISOString() }]) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.gateLabel).toBe('red');
+    expect(res.recentFailingFiles).toEqual(['lib/red.test.ts']);
+    expect(res.rootCause?.stage).toBe('gate');
+  });
+
+  it('carries the DEPLOY position — a green gate whose tip is not live is still not-shipped', async () => {
+    const res = await computePipelineHealth(
+      deps({ snap: withRoutines(snap({ deploy: { readyBehindMain: 49 } })) }),
+    );
+    expect(res.gateLabel).toBe('green');
+    expect(res.readyBehindMain).toBe(49);
+    expect(res.rootCause?.stage).toBe('deploy'); // the gate is fine; the promotion is not
+  });
+
+  it('labels a stale verdict distinctly, so the orient fold can refuse to name its tests', async () => {
+    const res = await computePipelineHealth(deps({ snap: staleRed(2) }));
+    expect(res.gateLabel).toBe('stale-verdict');
+    expect(res.verdictStale).toBe(true);
   });
 });

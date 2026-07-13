@@ -1695,10 +1695,21 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(args).not.toContain('-e');
   });
 
+  it('omp: --model spec becomes native model argv', () => {
+    const { args } = roleLaunchArgs('omp', { ...files, model: 'sonnet:high' });
+    const modelAt = args.indexOf('--model');
+    expect(args.slice(modelAt, modelAt + 2)).toEqual(['--model', 'sonnet:high']);
+  });
+
   it('codex: raw codex, hook-trust + approvals/sandbox bypass (CODEX_HOME via envelopeEnv)', () => {
     const { bin, args } = roleLaunchArgs('codex', files);
     expect(bin).toBe('codex');
     expect(args).toEqual(['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox']);
+  });
+
+  it('codex: --model spec becomes model and reasoning-effort argv', () => {
+    const { args } = roleLaunchArgs('codex', { ...files, model: 'gpt-5:high' });
+    expect(args.slice(-4)).toEqual(['-m', 'gpt-5', '-c', 'model_reasoning_effort="high"']);
   });
 
   it('unknown backend: throws', () => {

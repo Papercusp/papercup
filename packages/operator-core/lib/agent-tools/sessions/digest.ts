@@ -37,6 +37,43 @@ const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
  *  100-session digest stays one affordable call rather than a transcript dump. */
 const EXCERPT_MAX = 400;
 
+/**
+ * The row shape the digest query returns.
+ *
+ * This is declared as a real interface and used to ANNOTATE the `rows` const —
+ * not just passed as `ctx.tx<...>`'s type argument — because that type argument
+ * is DECORATIVE. `ToolContext<Tx = any>` (tooldef/src/types.ts) types `tx` as
+ * `any`, so `ctx.tx<Array<{…}>>` is a generic call on an `any`: TypeScript
+ * discards the argument and hands back `any`. Every sessions tool has been
+ * writing that generic under the impression it typed the result; none of them
+ * were checked. It only SURFACED here because this file is the first to run a
+ * callback over the rows (`rows.map((r) => …)`), and a callback param off an
+ * `any` receiver is an implicit-any — TS7006 — which the operator-core tsc
+ * baseline gates on.
+ *
+ * Annotating the const is what actually binds the type: `rows` is a real
+ * DigestRow[], `r`/`d` infer from it, and a query/shape mismatch is now caught
+ * at build instead of silently becoming `any` at runtime. Filed as the wider
+ * finding (the type arg is a no-op across every ctx.tx caller); fixing it at the
+ * framework is a separate, much larger change.
+ */
+interface DigestRow {
+  source_kind: string;
+  session_id: string;
+  turns: number;
+  prompt_count: number;
+  owner: string | null;
+  harness_slug: string | null;
+  cwd: string | null;
+  first_ts: string | null;
+  last_ts: string | null;
+  last_ts_ms: string | null;
+  tool_call_count: number | null;
+  kickoff_text: string | null;
+  closing_text: string | null;
+  total_matching: number;
+}
+
 function excerpt(text: string | null | undefined, max = EXCERPT_MAX): string | null {
   const t = (text ?? '').replace(/\s+/g, ' ').trim();
   if (!t) return null;
@@ -108,14 +145,7 @@ export default defineTool({
     // session was for) + the LAST assistant turn (where it got to / how it died).
     // DISTINCT ON gives both ends without a second round-trip per session, which is
     // the whole point: the old pattern cost one read PER SESSION.
-    const rows = await ctx.tx<Array<{
-      source_kind: string; session_id: string; turns: number; prompt_count: number;
-      owner: string | null; harness_slug: string | null; cwd: string | null;
-      first_ts: string | null; last_ts: string | null; last_ts_ms: string | null;
-      tool_call_count: number | null;
-      kickoff_text: string | null; closing_text: string | null;
-      total_matching: number;
-    }>>`
+    const rows: DigestRow[] = await ctx.tx<DigestRow[]>`
       WITH scoped AS (
         SELECT *
           FROM harness_shared.session_turns

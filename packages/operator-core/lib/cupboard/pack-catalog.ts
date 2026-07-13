@@ -29,7 +29,9 @@ import {
   type DependencyHostSets,
   type PackCatalogView,
   type PackDescriptor,
+  type ProvidedEventFamily,
 } from '@papercusp/blueprint-distribution';
+import { EVENT_CATALOG } from '../events/await/catalog';
 import { availableBlueprintIds } from '../blueprint/installed-blueprints';
 import { getCatalog, listAllProjectedTools } from '@papercusp/agent-mcp';
 import { resolveCupboardBaseUrl } from './base-url';
@@ -47,6 +49,8 @@ export interface CupboardUnitRow {
   kind: 'plugin' | 'pack';
   listingId: string | null;
   providesTools: string[];
+  /** Event families the listing declares (`provides_events`, D1 migration 012). */
+  providesEvents?: ProvidedEventFamily[];
   description?: string | null;
 }
 
@@ -66,6 +70,38 @@ export interface InstalledUnitInput {
   description?: string;
   kind?: string;
   tools?: Array<{ name?: unknown; expose?: { mcp?: { name?: unknown } } } | null>;
+  /** Unit-level provisions (D-003, P-005): the event families this unit provides. */
+  provides?: { events?: unknown } | null;
+}
+
+/**
+ * Coerce a unit's declared event families (manifest `provides.events` or a
+ * listing's `provides_events` JSON) into the pure model's shape. Fail-soft:
+ * a malformed entry is DROPPED, never thrown — a bad third-party manifest must
+ * not take down the whole catalog derivation for every other unit.
+ */
+export function parseProvidedEvents(raw: unknown): ProvidedEventFamily[] {
+  let value = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  const out: ProvidedEventFamily[] = [];
+  const seen = new Set<string>();
+  for (const e of value) {
+    if (e == null || typeof e !== 'object') continue;
+    const { family, keyTemplate, describe } = e as Record<string, unknown>;
+    if (typeof family !== 'string' || family.length === 0) continue;
+    if (typeof keyTemplate !== 'string' || keyTemplate.length === 0) continue;
+    if (seen.has(family)) continue; // first declaration wins within a unit
+    seen.add(family);
+    out.push({ family, keyTemplate, describe: typeof describe === 'string' ? describe : null });
+  }
+  return out;
 }
 
 /**
@@ -97,6 +133,13 @@ export interface PackCatalogInputs {
   /** Cupboard listing rows (kind plugin|pack), already fetched. */
   cupboardUnits: CupboardUnitRow[];
   cupboardReachable: boolean;
+  /**
+   * The host's BUILTIN event families (family → keyTemplate), i.e. operator-core's
+   * `EVENT_CATALOG`. INJECTED so the assembler stays pure + testable, exactly as
+   * `legacyCatalogNames` is for tools; `derivePackCatalog` supplies the real one.
+   * Omitted ⇒ no builtin event floor (every existing caller keeps its behavior).
+   */
+  builtinEvents?: ReadonlyMap<string, string>;
 }
 
 /** Pure assembly of the pack catalog from injected registry snapshots. */
@@ -124,6 +167,7 @@ export function assemblePackCatalog(inputs: PackCatalogInputs): DerivedPackCatal
     packs.push({
       name: m.name,
       tools: live && live.length > 0 ? live : manifestToolNames(m),
+      events: parseProvidedEvents(m.provides?.events),
       kind: isPack ? 'pack' : 'plugin',
       hasRuntime: !isPack,
       source: 'installed',
@@ -143,6 +187,7 @@ export function assemblePackCatalog(inputs: PackCatalogInputs): DerivedPackCatal
     packs.push({
       name: u.name,
       tools: u.providesTools,
+      events: u.providesEvents ?? [],
       kind: u.kind,
       hasRuntime: u.kind === 'plugin',
       source: 'cupboard',
@@ -151,8 +196,17 @@ export function assemblePackCatalog(inputs: PackCatalogInputs): DerivedPackCatal
     });
   }
 
-  const view = buildPackCatalogView(packs, builtinTools);
+  const view = buildPackCatalogView(packs, builtinTools, inputs.builtinEvents ?? new Map());
   return { view, packs: view.packs, builtinTools, cupboardReachable: inputs.cupboardReachable };
+}
+
+/**
+ * The builtin event floor: operator-core's `EVENT_CATALOG` projected to
+ * family → keyTemplate. This is the set an installed/Cupboard unit may NEVER
+ * shadow (P-006 merge policy; `resolveEventProvider`'s builtin-first ladder).
+ */
+export function builtinEventFamilies(): ReadonlyMap<string, string> {
+  return new Map(EVENT_CATALOG.map((e) => [e.family, e.keyTemplate]));
 }
 
 interface CupboardListingRow {
@@ -162,6 +216,8 @@ interface CupboardListingRow {
   title?: string | null;
   description?: string | null;
   provides_tools?: unknown;
+  /** D1 migration 012 — JSON array of declared event families. Absent on a worker predating it. */
+  provides_events?: unknown;
 }
 
 /** Parse a listing's `provides_tools` (JSON string or array) → string[]. */
@@ -206,6 +262,9 @@ export async function fetchCupboardUnits(
         kind,
         listingId: r.id != null ? String(r.id) : null,
         providesTools: parseProvidesTools(r.provides_tools),
+        // Absent on a worker deployed before D1 012 → [] (no events declared),
+        // which is exactly right: an old worker cannot claim to provide any.
+        providesEvents: parseProvidedEvents(r.provides_events),
         description: r.description ?? null,
       });
     }
@@ -250,6 +309,7 @@ export async function derivePackCatalog(
           description: p.description,
           kind: p.kind,
           tools: (lp as { toolDefinitions?: InstalledUnitInput['tools'] }).toolDefinitions ?? p.tools,
+          provides: p.provides ?? null,
         });
       }
     } catch {
@@ -276,6 +336,7 @@ export async function derivePackCatalog(
     legacyCatalogNames,
     cupboardUnits: cupboard.units,
     cupboardReachable: cupboard.reachable,
+    builtinEvents: builtinEventFamilies(),
   });
 }
 

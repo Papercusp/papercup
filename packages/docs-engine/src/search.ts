@@ -1,10 +1,30 @@
 /**
  * searchDocs — substring/keyword scoring over a DocSource.
  *
- * Title ×4, description ×2, body ×1. Tokenizes on common punctuation,
- * dedupes, ignores tokens shorter than 2 chars. Reads page bodies via
- * source.getContent — fine for ~120 pages, swap to PG tsvector when
- * the corpus 10×s.
+ * Title ×4, description ×2, body via BM25-style length-normalized term
+ * frequency. Tokenizes on common punctuation, dedupes, ignores tokens
+ * shorter than 2 chars.
+ *
+ * EI-10937 — why the body term is length-normalized:
+ * The body used to score as a RAW occurrence count (`count * 1`), unnormalized
+ * by document length. That makes ranking a proxy for FILE SIZE: a long document
+ * accumulates more raw hits than a short one no matter how focused the short one
+ * is. In the live corpus (669 pages, mean 10.1KB) the effect was severe — the two
+ * generated aggregator pages `reference/agent-insights-index` (304KB — every
+ * insight's title+description) and `reference/plans-index` (276KB) matched
+ * essentially EVERY query and out-ranked the one doc that actually answered it.
+ * Measured before this fix: the correct doc landed at rank #5 (semantic leg only)
+ * or did not appear at all, and every junk hit was one of the 12 largest files in
+ * the corpus. Agents therefore concluded "not documented" and re-derived knowledge
+ * that was already written down — a silent wrong answer, and a major source of the
+ * hand-carried "tribal knowledge" problem (EI-10904 / EI-10941).
+ *
+ * Two independent guards, because either alone is insufficient:
+ *   1. `page.searchable === false` drops generated NAVIGATION aggregators from the
+ *      corpus entirely (see DocPage.searchable).
+ *   2. BM25 length normalization kills the CLASS — without it, excluding the two
+ *      known index pages would simply promote the next-largest docs
+ *      (project-sharing 99KB, agent-e2e 98KB, lifecycle 75KB) into the same role.
  */
 
 import type { DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types.js';
@@ -80,6 +100,24 @@ function slugMatchBonus(query: string, page: { slug: string; slugs: string[] }):
   return 0;
 }
 
+/**
+ * BM25 term-frequency saturation with length normalization (EI-10937).
+ *
+ * k1 caps how much repetition can buy (TF saturates rather than growing
+ * linearly); b=0.75 is the standard length-normalization strength. The net
+ * effect: a term appearing 3× in a focused 5KB doc outranks the same term
+ * appearing 400× in a 300KB aggregate dump — which is exactly the inversion
+ * the old raw-count scoring produced.
+ */
+const BM25_K1 = 1.2;
+const BM25_B = 0.75;
+
+function bm25BodyScore(count: number, bodyLen: number, avgBodyLen: number): number {
+  if (count === 0) return 0;
+  const norm = 1 - BM25_B + BM25_B * (bodyLen / (avgBodyLen || 1));
+  return (count * (BM25_K1 + 1)) / (count + BM25_K1 * norm);
+}
+
 function makeExcerpt(body: string, tokens: string[], window = 120): string {
   const hitAt = firstMatchIndex(body, tokens);
   if (hitAt === -1) {
@@ -101,7 +139,12 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
     return { query: args.query, tokenCount: 0, hitCount: 0, hits: [] };
   }
 
-  const pages = await source.listPages();
+  const allPages = await source.listPages();
+  // EI-10937 guard 1: generated navigation aggregators opt out via
+  // `searchable: false` frontmatter. They stay fully reachable through
+  // docs:get and the outline — they are simply not ANSWERS to a query.
+  const pages = allPages.filter((p) => p.searchable !== false);
+  const excludedCount = allPages.length - pages.length;
   if (ctx.signal?.aborted) throw new Error('cancelled');
   ctx.progress?.(10, `searching ${pages.length} pages`);
 
@@ -124,15 +167,24 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
   if (ctx.signal?.aborted) throw new Error('cancelled');
   ctx.progress?.(85, 'ranking');
 
+  // EI-10937 guard 2: mean body length across the searched corpus is the BM25
+  // normalization baseline, so "long" is measured relative to THIS corpus rather
+  // than a hard-coded byte threshold that would rot as the docs grow.
+  const avgBodyLen = rendered.length
+    ? rendered.reduce((sum, r) => sum + r.body.length, 0) / rendered.length
+    : 1;
+
   const scored: SearchHit[] = [];
   for (const { page, body } of rendered) {
     const title = page.title ?? '';
     const description = page.description ?? '';
     let score = 0;
     for (const t of tokens) {
+      // Title/description are short, bounded metadata fields — a raw weighted
+      // count is right there. Only the unbounded body needs normalizing.
       score += countOccurrences(title, t) * 4;
       score += countOccurrences(description, t) * 2;
-      score += countOccurrences(body, t);
+      score += bm25BodyScore(countOccurrences(body, t), body.length, avgBodyLen);
     }
     score += slugMatchBonus(args.query, page);
     if (score === 0) continue;
@@ -150,7 +202,12 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
   scored.sort((a, b) => b.score - a.score || a.slug.localeCompare(b.slug));
   const hits = scored.slice(0, limit);
 
-  ctx.metadata?.({ query_tokens: tokens.length, hit_count: scored.length, returned: hits.length });
+  ctx.metadata?.({
+    query_tokens: tokens.length,
+    hit_count: scored.length,
+    returned: hits.length,
+    non_searchable_excluded: excludedCount,
+  });
 
   return { query: args.query, tokenCount: tokens.length, hitCount: scored.length, hits };
 }

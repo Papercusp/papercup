@@ -56,6 +56,9 @@ function build(rows: PlanRow[]): string {
       description:
         'Every Papercusp plan, grouped by status, with item-count histograms and the current next-action. Generated from the PG plan store (a snapshot — may lag live state).',
       sidebarOrder: 5,
+      // EI-10937: 276KB dump of every plan — same lexical black-hole problem as the
+      // insights index. Navigation, not an answer.
+      searchable: false,
     }),
   );
   lines.push('');

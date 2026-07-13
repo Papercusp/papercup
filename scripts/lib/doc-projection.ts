@@ -58,8 +58,22 @@ export function frontmatter(opts: {
   title: string;
   description: string;
   sidebarOrder?: number;
+  /**
+   * EI-10937: pass `false` for a generated AGGREGATOR page (an index/catalog that
+   * concatenates every other page's title+description). Such a page contains the
+   * vocabulary of the whole corpus, so it lexically matches EVERY query and buries
+   * the one doc that actually answers it — `reference/agent-insights-index` (304KB)
+   * and `reference/plans-index` (276KB) did exactly that, at 30× the 10.1KB corpus
+   * mean. `searchable: false` keeps them off docs:search while leaving them fully
+   * reachable via the sidebar, docs:get, and the outline. They are navigation, not
+   * answers.
+   */
+  searchable?: boolean;
 }): string {
   const lines = ['---', `title: ${yamlScalar(opts.title)}`, `description: ${yamlScalar(opts.description)}`];
+  if (opts.searchable === false) {
+    lines.push('searchable: false');
+  }
   if (opts.sidebarOrder !== undefined) {
     lines.push('sidebar:', `  order: ${opts.sidebarOrder}`);
   }

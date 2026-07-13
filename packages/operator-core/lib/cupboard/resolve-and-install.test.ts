@@ -13,6 +13,8 @@ interface WorldUnit {
   name: string;
   kind: 'plugin' | 'pack';
   tools: string[];
+  /** Event families this unit PROVIDES (D-003, P-007). */
+  events?: Array<{ family: string; keyTemplate: string }>;
   /** Deps this unit declares — surfaced by installUnit for transitive recursion. */
   declaredDeps?: Partial<DepSet>;
 }
@@ -22,11 +24,13 @@ function makeCatalog(
   cupboard: WorldUnit[],
   builtins: string[],
   cupboardReachable = true,
+  builtinEvents: ReadonlyMap<string, string> = new Map(),
 ): DerivedPackCatalog {
   const packs: PackDescriptor[] = [
     ...installed.map((u) => ({
       name: u.name,
       tools: u.tools,
+      events: u.events ?? [],
       kind: u.kind,
       hasRuntime: u.kind !== 'pack',
       source: 'installed' as const,
@@ -34,6 +38,7 @@ function makeCatalog(
     ...cupboard.map((u) => ({
       name: u.name,
       tools: u.tools,
+      events: u.events ?? [],
       kind: u.kind,
       hasRuntime: u.kind !== 'pack',
       source: 'cupboard' as const,
@@ -41,7 +46,7 @@ function makeCatalog(
     })),
   ];
   const builtinTools = new Set(builtins);
-  const view = buildPackCatalogView(packs, builtinTools);
+  const view = buildPackCatalogView(packs, builtinTools, builtinEvents);
   return { view, packs: view.packs, builtinTools, cupboardReachable };
 }
 
@@ -50,6 +55,7 @@ function makeWorld(opts: {
   installed?: WorldUnit[];
   cupboard?: WorldUnit[];
   builtins?: string[];
+  builtinEvents?: ReadonlyMap<string, string>;
   cupboardReachable?: boolean;
   /** Force-fail installs for these unit names. */
   failInstalls?: string[];
@@ -65,7 +71,13 @@ function makeWorld(opts: {
     deriveCalls: () => deriveCalls,
     deriveCatalog: async () => {
       deriveCalls++;
-      return makeCatalog([...installed.values()], [...cupboard.values()], builtins, opts.cupboardReachable ?? true);
+      return makeCatalog(
+        [...installed.values()],
+        [...cupboard.values()],
+        builtins,
+        opts.cupboardReachable ?? true,
+        opts.builtinEvents ?? new Map(),
+      );
     },
     installUnit: async (u) => {
       if (fail.has(u.name)) return { ok: false, error: 'simulated install failure' };
@@ -101,7 +113,7 @@ describe('resolveAndInstallDeps', () => {
     expect(res.installed).toEqual([
       { name: 'md-tools', kind: 'pack', listingId: 'lid-md-tools', tools: ['md.render', 'md.lint'] },
     ]);
-    expect(res.stillMissing).toEqual({ tools: [], packs: [], plugins: [] });
+    expect(res.stillMissing).toEqual({ tools: [], packs: [], plugins: [], events: [] });
   });
 
   it('resolves a declared pack name directly to its listing', async () => {
@@ -121,7 +133,7 @@ describe('resolveAndInstallDeps', () => {
     const res = await resolveAndInstallDeps({ tools: ['a.tool'] }, world);
     expect(res.ok).toBe(true);
     expect(world.installs).toEqual(['A', 'B']); // A first, then its transitive dep B
-    expect(res.stillMissing).toEqual({ tools: [], packs: [], plugins: [] });
+    expect(res.stillMissing).toEqual({ tools: [], packs: [], plugins: [], events: [] });
   });
 
   it('terminates on a cyclic declaration graph (A↔B), installing each once', async () => {

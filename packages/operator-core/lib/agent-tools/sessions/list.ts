@@ -12,6 +12,28 @@ import { sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS } from './_s
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
+/**
+ * The row shape this query returns. Declared as an interface and used to
+ * ANNOTATE the `rows` const, because `ctx.tx`'s type argument does NOT type the
+ * result: `ToolContext<Tx = any>` makes `tx` an `any`, so `ctx.tx<Array<{…}>>`
+ * is a generic call on an `any` and TypeScript throws the argument away. The
+ * annotation is what actually binds it — see the same note on sessions/digest.ts.
+ */
+interface SessionListRow {
+  source_kind: string;
+  session_id: string;
+  turns: number;
+  prompt_count: number;
+  owner: string | null;
+  harness_slug: string | null;
+  cwd: string | null;
+  first_ts: string | null;
+  last_ts: string | null;
+  response_count: number | null;
+  tool_call_count: number | null;
+  total_matching: number;
+}
+
 export default defineTool({
   name: 'sessions:list',
   crossWorkspace: true,
@@ -69,13 +91,7 @@ export default defineTool({
     //
     // NOTE: keep backticks out of the SQL template below — it is a JS template
     // literal, and a stray backtick in a comment silently terminates the string.
-    const rows = await ctx.tx<Array<{
-      source_kind: string; session_id: string; turns: number; prompt_count: number;
-      owner: string | null; harness_slug: string | null; cwd: string | null;
-      first_ts: string | null; last_ts: string | null;
-      response_count: number | null; tool_call_count: number | null;
-      total_matching: number;
-    }>>`
+    const rows: SessionListRow[] = await ctx.tx<SessionListRow[]>`
       WITH turns_agg AS (
         SELECT source_kind, session_id, count(*)::int AS turns,
                count(*) FILTER (WHERE speaker = 'user')::int AS prompt_count,

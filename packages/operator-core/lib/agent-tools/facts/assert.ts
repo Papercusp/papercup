@@ -17,6 +17,33 @@ import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS, type
 import { resolveScopeRefAlias } from './scope-ctx';
 import { provenanceLintField } from '../../carry-surface-provenance-lint';
 
+/**
+ * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
+ * case (no field on the response) — same warn-only shape as provenanceLint.
+ *
+ * PURE (unit-tested without PG): compares what the caller SENT against what the
+ * store actually PERSISTED, so it reports the real stored/dropped counts rather
+ * than re-deriving the clamp and hoping the two agree.
+ */
+export function truncationField(
+  rawBody: string,
+  storedBody: string,
+): { storedChars: number; droppedChars: number; note: string } | undefined {
+  const raw = rawBody.trim();
+  if (raw.length <= storedBody.length) return undefined;
+  return {
+    storedChars: storedBody.length,
+    droppedChars: raw.length - storedBody.length,
+    note:
+      `TRUNCATED to the ${FACT_BODY_MAX_CHARS}-char cap — the write was KEPT (a fact is never lost to a length ` +
+      `error), but ${raw.length - storedBody.length} chars were dropped and the stored body now ends mid-sentence ` +
+      `with '…'. This matters more than a normal clip: facts fold VERBATIM into every future orient as BINDING ` +
+      `context, so a truncated fact reads as a complete instruction that stops halfway. Re-assert the SAME key with ` +
+      `a tighter conclusion (facts are conclusions, not documents) and put the detail on the work-item / insight ` +
+      `the fact points at.`,
+  };
+}
+
 export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
@@ -99,8 +126,26 @@ export default defineTool({
     });
     // WI-3801: warn-only nudge — undefined (no field) on the common clean case.
     const provenanceLint = provenanceLintField(args.body);
+    // EI-10952: a body over the cap is TRUNCATED, not rejected (P-007 — the hard
+    // reject cost 7 whole facts in 14d, so truncate-not-reject stays). But the
+    // caller was never TOLD: the response was a clean `ok:true` and the fact
+    // shipped cut mid-sentence. Facts fold VERBATIM into every future orient and
+    // are BINDING context, so a silently-truncated fact is not a clipped note —
+    // it is a mid-sentence INSTRUCTION presented as complete, to every future
+    // agent, until someone retracts it. Keep the write; stop calling it clean.
+    const truncation = truncationField(args.body, fact.body);
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, fact, ...(provenanceLint ? { provenanceLint } : {}) }) }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            fact,
+            ...(truncation ? { truncated: truncation } : {}),
+            ...(provenanceLint ? { provenanceLint } : {}),
+          }),
+        },
+      ],
     };
   },
 });

@@ -637,6 +637,7 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
       // surface. The kickoff tools:invoke escape hatch remains the positive redirect.
       '--no-lsp',
       replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
+      ...modelArgsFor('omp', model),
     ];
     if (coordExtPath) args.push('-e', coordExtPath);
     return { bin: 'omp', args };
@@ -648,7 +649,14 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
     // the only hooks there are ours). The approvals/sandbox bypass remains the
     // managed-launch default until the current Codex MCP-under-sandbox path has
     // a live Papercusp smoke; the orchestrator fleet path wraps Codex externally.
-    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox'] };
+    return {
+      bin: 'codex',
+      args: [
+        '--dangerously-bypass-hook-trust',
+        '--dangerously-bypass-approvals-and-sandbox',
+        ...modelArgsFor('codex', model),
+      ],
+    };
   }
   throw new Error(`roleLaunchArgs: backend '${backend}' has no interactive role launch`);
 }
