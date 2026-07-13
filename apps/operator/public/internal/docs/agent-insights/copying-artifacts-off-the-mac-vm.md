@@ -16,7 +16,10 @@ See WI-4364. Assume anything touching these filenames is booby-trapped.)
 
 ```bash
 # WRONG
-rsync -av "aviweiss@127.0.0.1:~/build/Papercusp\ GUI.app.tar.gz" ./
+The mac VM account is machine-local config — `. ~/.papercusp/build-vms.env`
+first, which exports `VM_MAC_USER` (WI-4419: never hardcode it here).
+
+rsync -av ""$VM_MAC_USER"@127.0.0.1:~/build/Papercusp\ GUI.app.tar.gz" ./
 # rsync: link_stat ".../Papercusp\ GUI.app.tar.gz" failed: No such file or directory (2)
 # rsync error: some files/attrs were not transferred (code 23)
 ```
@@ -31,7 +34,7 @@ That is the documented fix for spaces in remote paths… on **GNU** rsync.
 
 ```bash
 # WRONG on macOS
-rsync -avs "aviweiss@127.0.0.1:~/build/Papercusp GUI.app.tar.gz" ./
+rsync -avs ""$VM_MAC_USER"@127.0.0.1:~/build/Papercusp GUI.app.tar.gz" ./
 # rsync: on remote machine: -slogDtpre.iLsfxCIvu: unknown option
 # rsync error: syntax or usage error (code 12) [server=2.6.9]
 ```
@@ -45,8 +48,8 @@ rejects the whole blob. Note the tell in the error: `[server=2.6.9]`.
 Skip rsync entirely. Quote the remote path *once*, for the remote shell:
 
 ```bash
-ssh -i ~/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1 \
-  "cat '/Users/aviweiss/build/.../Papercusp GUI.app.tar.gz'" \
+ssh -i ~/.ssh/papercup-vm-mac -p 2222 "$VM_MAC_USER"@127.0.0.1 \
+  "cat '/Users/"$VM_MAC_USER"/build/.../Papercusp GUI.app.tar.gz'" \
   > "Papercusp GUI.app.tar.gz"
 ```
 

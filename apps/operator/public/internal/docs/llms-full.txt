@@ -78,6 +78,78 @@ See [Agent policies §19](/internal/docs/agent-policies#19-agent-insights) for t
 
 If something is obsolete, set `status: superseded` or `retired` in the frontmatter (don’t delete the file) and add an “Update:/Superseded:” note in the body. Entries stay in the sidebar and the generated [insights index](/internal/docs/reference/agent-insights-index) regardless of status — the index surfaces `status` as a column rather than hiding non-active pages.
 
+# A flag-comment mismatch is a QUESTION, not a verdict — check the data before you "restore the baseline"
+
+> flag-comment-lint proves a comment and DARK_FLAGS disagree; it cannot say which side is wrong. Eight instances taught the fleet "the comment is the truth" — and then five flags in a row inverted, turning the standard fix into a 79,000-row data-hiding event and an auth relaxation.
+
+## The one-line version
+
+[Section titled “The one-line version”](#the-one-line-version)
+
+**`flag-comment-lint` tells you a comment and `DARK_FLAGS` DISAGREE. It cannot tell you WHICH SIDE IS WRONG.** Eight consecutive instances happened to be “comment right, code wrong”, the fleet generalised that into a rule, and then five flags in a row were the other way — where the “standard fix” hides \~79,000 live rows and relaxes auth enforcement.
+
+## The bug class the rule came from (and it is real)
+
+[Section titled “The bug class the rule came from (and it is real)”](#the-bug-class-the-rule-came-from-and-it-is-real)
+
+`EI-7230`: a flag’s comment says `DEFAULT OFF — DELIBERATE`, but the flag was never added to `DARK_FLAGS`, so the 2026-06-29 P-011 inversion (`FLAG_DEFAULTS = !DARK_FLAGS.has(k)`) silently derived it **default-ON**. Eight flags hit this — `WATCHDOG_AUTO_CLOSE`, `SUBSTRATE_SIDECAR`, `RECLAIM_STALLED`, `PSU_END_USER`, `PLAN_PART_FEDERATION`, `SUBSTRATE_LOG_SNAPSHOT`, `GIT_SYNC_DERIVED_ATTRIBUTION`, `DOC_STEWARD`. Every one was genuinely “the comment is right, the code is the bug”, and the fix was genuinely “add it to `DARK_FLAGS`”.
+
+So a rule crystallised: **trust the comment, restore the dark baseline.** It got applied to the whole `PENDING_MISMATCHES` list without re-derivation.
+
+## Where the rule detonates
+
+[Section titled “Where the rule detonates”](#where-the-rule-detonates)
+
+Of the ten mismatches outstanding on 2026-07-12, **five were the inverse** — the code was right and the *comment* was stale archaeology. For those, “restoring the documented dark baseline” is not a fix. It is a regression, and in two cases a catastrophic one.
+
+| flag                     | what OFF actually does                                                                                                                                                                                   |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COORD_PER_WORKSPACE`    | Re-points every coord read/write at the legacy `default` partition. **67,468** live coord events sit in the workspace partition; `default` holds **74**.                                                 |
+| `ISSUES_PER_WORKSPACE`   | Same swing for issues. **11,730** live rows vs a **2,443**-row corpus whose last write was **2026-06-22**. Flipping OFF hides the entire work-item backlog — *including the tickets describing the bug*. |
+| `SCOPED_SUPERUSER_CLAMP` | OFF restores the **unscoped `*` superuser**. ON is the narrower state. “Restoring the baseline” *relaxes* auth.                                                                                          |
+| `UI_WORKSPACE_GUARD`     | OFF = **no cross-workspace check at all**. ON blocks it.                                                                                                                                                 |
+| `ROUTINES_PER_WORKSPACE` | OFF re-opens the cross-workspace routine clobber the flag exists to close.                                                                                                                               |
+
+Two work-items (`WI-4238`, `WI-4239`) and one critical needs-human escalation (`EI-9769`) each presented that action to the owner as **the safe, conservative option**. `EI-9769` called it “a planned, attended rollback.” It was three hops from approval.
+
+## Why the comments lie in this specific way
+
+[Section titled “Why the comments lie in this specific way”](#why-the-comments-lie-in-this-specific-way)
+
+Every one of those comments contains some form of **“OFF = today’s behavior, byte-identical; reversible kill-switch.”** That sentence was **true when it was written** — before the flag had ever been on.
+
+> **Reversibility is a property of the DATA, not of the flag.**
+
+Once a partition-swinging flag has been live for weeks, state accretes under the new behavior, and “reversible” quietly expires. Nobody goes back to update the comment, because the comment *reads* as a design note rather than a claim with a shelf life.
+
+And note the extra trap on `COORD_/ISSUES_PER_WORKSPACE`: the cutover was **deliberate and finished before P-011** (workspace-partition writes begin 2026-06-05; `default` dies 2026-06-22 — both ahead of the 06-29 inversion; `coordination/log.ts` has said “graduated default-ON in WI-599” the whole time). They were never inversion collateral at all. The lint could not know that, and neither could anyone who trusted the lint’s framing.
+
+## The four questions before you “restore” any flag
+
+[Section titled “The four questions before you “restore” any flag”](#the-four-questions-before-you-restore-any-flag)
+
+1. **Which side is actually wrong?** The lint proves a contradiction, not a culprit. Go read the flag’s ON and OFF branches. This is the whole insight.
+2. **Which direction is safer?** For a guard rail (`*_GUARD`, `*_CLAMP`, `*_PER_WORKSPACE`), **ON is usually the narrow/safe state** and OFF is the widening. “Restoring the dark baseline” on a guard rail *removes a guard*.
+3. **Does OFF swing a data partition?** If the flag chooses which scope reads/writes target, count the rows on both sides and check `max(created_at)`. A partition whose last write was three weeks ago is a fossil, and flipping toward it is a data-hiding event, not a rollback.
+4. **Is “OFF = byte-identical” still true, or just still written down?** Check when the flag actually went live, then check what was written since.
+
+## The generalisable rule
+
+[Section titled “The generalisable rule”](#the-generalisable-rule)
+
+> **A signal that does not carry its own evidence forces every recipient to re-derive it — and they will not all derive it correctly.**
+
+An `ok` that did nothing, an empty result that explains nothing, an alarm that describes nothing, and **a lint that names a contradiction without naming its resolution** are one bug. The lint’s own fixture suite is careful and correct; it simply stops one step short of the thing every reader needs. `WI-4496` tracks teaching it to carry the direction (and, for partition flags, the live row counts) so nobody has to guess again.
+
+## Postscript: it caught me too
+
+[Section titled “Postscript: it caught me too”](#postscript-it-caught-me-too)
+
+While writing this up I concluded `SCOPED_SUPERUSER_CLAMP` had **zero consumers** and was dead code. It was false. A previous `cd libs/flags` had left the shell there, so `grep -r ... packages/ apps/` searched paths that do not exist, and `2>/dev/null` swallowed the `No such file or directory` that would have said so. **An empty result that explained nothing, one step from being published as a finding.**
+
+* The Bash tool’s **cwd persists between calls** — `cd` to the repo root, or use absolute paths, before any recursive search.
+* **Never** send stderr to `/dev/null` on a search whose *emptiness* you intend to treat as evidence.
+
 # A score is not a similarity: thresholding an ORDINAL rank-fusion score as if it were a METRIC
 
 > Three consumers thresholded memory's `score` as a 0..1 similarity. The live backend returns RRF rank-fusion — an ORDINAL value with a ceiling of 2/61 ≈ 0.033. An admit-floor above the ceiling admitted NOTHING; two suppress-thresholds above it suppressed NOTHING. Same defect, opposite symptoms, all silent. Why no constant fixes it, and how to audit for it.
@@ -3909,6 +3981,76 @@ Note
 
 These are queries, not a dashboard — deliberately (P-005 is “document the queries, no new plumbing”). If a standing scorecard is later wanted, register these against the `scorecards:*` / rubric surface rather than adding a bespoke report.
 
+# option_env! bakes at COMPILE time — and the compile happens on a build VM, so the env does not cross ssh
+
+> PAPERCUSP_RELEASE_HOST is baked into the binary by option_env! at compile time. Mac and Windows compile on build VMs reached over ssh, where env does not travel — so cargo bakes an EMPTY string and the build SUCCEEDS. The app then polls nothing and the Tauri updater reports 'up to date' forever. Gate on the built bytes, not on the variable being set.
+
+`main.rs` resolves the update source like this:
+
+```rust
+std::env::var("PAPERCUSP_RELEASE_HOST")                       // runtime override
+    .unwrap_or_else(|| option_env!("PAPERCUSP_RELEASE_HOST")  // BAKED AT COMPILE TIME
+    .unwrap_or("").to_string())
+```
+
+A packaged install has no runtime env, so **the baked value is the only one that will ever exist in the field**. And `option_env!` reads the environment of the **cargo process** — which, for mac and windows, runs **on a build VM, over ssh**.
+
+**Environment does not cross ssh.** It arrives only if something explicitly puts it there:
+
+```bash
+ssh vm 'export PAPERCUSP_BUILD_SHA=...      # <- present
+        export PAPERCUSP_RELEASE_HOST=...   # <- was MISSING (WI-4389)
+        bash bin/mac-vm-build.sh'
+```
+
+When it is missing, `option_env!` evaluates to `None` → `""` → **and the compile SUCCEEDS**. Nothing is red. Nothing warns.
+
+## Why this is the worst possible shape of bug
+
+[Section titled “Why this is the worst possible shape of bug”](#why-this-is-the-worst-possible-shape-of-bug)
+
+The resulting app is *perfect* in every observable way: the installer runs, the bundle is signed, `latest.json` is valid, the minisign signature verifies. The only defect is that the app polls **nothing** — and the **Tauri updater cannot distinguish “no update available” from “the check failed”**. It renders the failure as **“up to date.” Forever.**
+
+That is the 0.0.8 defect. It was invisible until someone `grep`ped the *shipped binary* and found zero occurrences of the release host. Cost: a forced rebuild of every platform and a **manual reinstall** for every install — an auto-updater that cannot deliver the fix to its own brokenness has no way out but hands.
+
+## The rule: LABELED != PACKED
+
+[Section titled “The rule: LABELED != PACKED”](#the-rule-labeled--packed)
+
+> An env var that is “set in the script” is a **label**. The only evidence it was **packed** is finding the bytes inside the artifact.
+
+Every silent failure in this release class is the same shape — something that *names* a value diverging from what actually *shipped*:
+
+| Labeled                                          | Packed                                            | Symptom                                  |
+| ------------------------------------------------ | ------------------------------------------------- | ---------------------------------------- |
+| `PAPERCUSP_RELEASE_HOST` set in release-local.sh | absent from the VM’s cargo env                    | updater says “up to date” forever        |
+| `latest.json` URL contains the filename          | the space is unencoded, so the URL is unfetchable | download fails → “up to date” forever    |
+| `.gitignore` lists `.papercusp/scratch/`         | pattern is anchored, misses nested copies         | agent scratch auto-committed and shipped |
+
+Note the same terminal symptom three times. **204 is indistinguishable from a failed check**, so *any* break in the update path presents identically.
+
+## The gate
+
+[Section titled “The gate”](#the-gate)
+
+`bin/assert-release-host-baked.sh` — the post-hoc probe that found the bug, promoted to a cut-time gate. It greps the built binary for the configured host and **fails the build** if it is absent:
+
+```bash
+bash bin/assert-release-host-baked.sh "path/to/Papercusp GUI.app"
+# exit 0 = host found in the bytes (or no host configured — nothing to assert)
+# exit 1 = a host IS configured but is ABSENT  <-- the silent killer
+```
+
+It is wired into the **producer** (`mac-vm-build.sh`, right after `tauri build`), not into the callers — so no leg can forget it. Same reasoning as the release-bundle audit gate.
+
+## Generalization: any compile-time bake, across any remote-build boundary
+
+[Section titled “Generalization: any compile-time bake, across any remote-build boundary”](#generalization-any-compile-time-bake-across-any-remote-build-boundary)
+
+This is not really about Tauri, or updaters, or even ssh. It is about the **assumption that the environment you configured is the environment that compiled your code** — and it breaks whenever the compile moves to another machine (build VM, container, CI runner, cross-compile host). `option_env!` (Rust), `process.env` inlined at bundle time, `--define`, `ARG`/`ENV` in a multi-stage Dockerfile, `-X` ldflags in Go: all bake at build time, and all silently produce an empty/default value rather than an error when the variable is absent.
+
+**If a value must end up inside a binary, assert that it is inside the binary.** Do not assert that you set it.
+
 # Component RTL testing in apps/operator — the proven jsdom pattern + the env gotchas that bite
 
 > How to add green React-Testing-Library unit tests for apps/operator + apps/operator-vite components so they appear in the /adv Tests tab. The canonical mock recipe (jsdom pragma, @papercusp/sync mock, NuqsTestingAdapter, stub heavy children, plain-DOM assertions) plus the box-specific gotchas — jsdom localStorage is broken, @xterm/xterm dynamic import is unmockable, sonner must be inline-mocked, cmdk needs scrollIntoView.
@@ -4670,7 +4812,11 @@ The mac desktop bundles are named **with spaces** — `Papercusp GUI.app.tar.gz`
 
 ```bash
 # WRONG
-rsync -av "aviweiss@127.0.0.1:~/build/Papercusp\ GUI.app.tar.gz" ./
+The mac VM account is machine-local config — `. ~/.papercusp/build-vms.env`
+first, which exports `VM_MAC_USER` (WI-4419: never hardcode it here).
+
+
+rsync -av ""$VM_MAC_USER"@127.0.0.1:~/build/Papercusp\ GUI.app.tar.gz" ./
 # rsync: link_stat ".../Papercusp\ GUI.app.tar.gz" failed: No such file or directory (2)
 # rsync error: some files/attrs were not transferred (code 23)
 ```
@@ -4685,7 +4831,7 @@ That is the documented fix for spaces in remote paths… on **GNU** rsync.
 
 ```bash
 # WRONG on macOS
-rsync -avs "aviweiss@127.0.0.1:~/build/Papercusp GUI.app.tar.gz" ./
+rsync -avs ""$VM_MAC_USER"@127.0.0.1:~/build/Papercusp GUI.app.tar.gz" ./
 # rsync: on remote machine: -slogDtpre.iLsfxCIvu: unknown option
 # rsync error: syntax or usage error (code 12) [server=2.6.9]
 ```
@@ -4699,8 +4845,8 @@ rsync -avs "aviweiss@127.0.0.1:~/build/Papercusp GUI.app.tar.gz" ./
 Skip rsync entirely. Quote the remote path *once*, for the remote shell:
 
 ```bash
-ssh -i ~/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1 \
-  "cat '/Users/aviweiss/build/.../Papercusp GUI.app.tar.gz'" \
+ssh -i ~/.ssh/papercup-vm-mac -p 2222 "$VM_MAC_USER"@127.0.0.1 \
+  "cat '/Users/"$VM_MAC_USER"/build/.../Papercusp GUI.app.tar.gz'" \
   > "Papercusp GUI.app.tar.gz"
 ```
 
@@ -14675,6 +14821,132 @@ The two transports hit different limit pools / negotiation paths: the raw shared
 
 su-1e4ef’s Scout test campaign (coord stream, 2026-06-11). This page was written by a *peer* session from the coord fragments after the lesson nearly went uncaptured — if you ran the campaign and know the precise mechanism (which limiter, which credential pool), please sharpen the **Why** section.
 
+# A single green run cannot disprove a flake: load-sensitive races, and the soak lane that reddens them on purpose
+
+> The MugTab flake was ~60% red under CPU pressure and 100% green in isolation — so re-running it once and seeing green 'cleared' it, twice, wrongly. The bug was a throttled nuqs URL flush racing a remount key; the real defect was the DETECTOR. How to reproduce a load-sensitive flake deterministically (taskset core-starvation), and how to prove your flake guard can actually catch one before you trust it.
+
+## The failure, in one line
+
+[Section titled “The failure, in one line”](#the-failure-in-one-line)
+
+Two peers reported `MugTab.test.tsx` RED. I re-ran the file once, got 15/15 green, and told them both it was a **false alarm**. It was not. The test was \~60% red under CPU load and 100% green unthrottled — so my “disproof” was a coin flip I happened to win.
+
+**A single green run cannot disprove a flake.** It is not weak evidence; for a load-sensitive race it is *no* evidence, because the condition that produces the red (CPU starvation) is absent in the very run you use to clear it.
+
+## The race itself (the shallow lesson)
+
+[Section titled “The race itself (the shallow lesson)”](#the-race-itself-the-shallow-lesson)
+
+`MugTab`’s reset path does two things that fight:
+
+* `resetActivePane()` bumps `capacityResetVersion` — a **remount key** that discards local drafts. It applies **synchronously**.
+* The models section’s open flag is **nuqs-backed** (`?qModels`). nuqs applies a set **optimistically** but commits the URL write on a **throttle**.
+
+A same-tick `expand → reset` therefore races: if the remount lands inside the throttle window, the fresh hook re-reads a URL that never heard about the expand, and the section comes back **collapsed**. Whether the remount or the flush wins is pure CPU timing — on an idle box the remount always lost, so a synchronous `getByLabelText('std model spec')` right after the reset always found the input. Under load it won, and the test threw `Unable to find a label with the text of…`.
+
+The fix is to stop depending on which side won a race the test was never trying to test:
+
+```tsx
+// Re-open the section if the remount closed it, then assert the value.
+const reExpand = screen.queryByRole('button', { name: 'Expand models' });
+if (reExpand) fireEvent.click(reExpand);
+const savedSpec = await screen.findByLabelText('std model spec');
+expect((savedSpec as HTMLInputElement).value).toBe('sonnet');
+```
+
+Note what this is **not**: it is not a `waitFor` wrapped around the old assertion. That was one of three wrong hypotheses (below), and it still failed — because the input never comes back at all when the section is collapsed. Waiting longer for something that will never appear is not a fix.
+
+### Three wrong hypotheses, for calibration
+
+[Section titled “Three wrong hypotheses, for calibration”](#three-wrong-hypotheses-for-calibration)
+
+Each looked plausible and each was disproved by actually reproducing the failure:
+
+1. **“It’s a timeout.”** Bumped `findByLabelText`’s timeout. A **no-op** — `configure({ asyncUtilTimeout: 5_000 })` is already set globally in `libs/test-config/src/setup-testing-library-timeout.ts`, and the failure was *fast* (\~200ms), not a timeout.
+2. **“It’s a transient unmount.”** Wrapped the assertion in `waitFor`. It then burned the full 5s and failed — **proving the input never returns**, which is what pointed at “collapsed”, not “not yet rendered”.
+3. **“Wait for the expand to settle.”** Awaited the `Collapse models` label flip. Still red \~3/6 — because the flipped label only proves nuqs’ *optimistic* value applied, **not** that the throttled URL write committed. The optimistic value is exactly the thing the remount doesn’t see.
+
+The through-line: every hypothesis that treated the symptom as *slowness* failed. The bug was a *lost write*, and only reproducing it under real starvation showed that.
+
+## The actual defect: the detector
+
+[Section titled “The actual defect: the detector”](#the-actual-defect-the-detector)
+
+The race is a normal bug. The thing worth writing down is that **nothing in the system could have caught it**, and the human process actively suppressed the signal:
+
+* CI/`test:affected` runs the suite **once**. A 60% flake passes 40% of the time.
+* The natural “let me verify” reflex — re-run the file, alone, on an idle box — runs it in the exact configuration where it is **100% green**. The check is anti-correlated with the bug.
+* So two independent peer RED reports were overridden by one green run. The evidence was pointing the right way and the detector pointed the other way.
+
+This is the `prove-it-discriminates-before-it-acts` class wearing a testing hat: a check that cannot separate the bad case from the good one is not a check.
+
+## Reproducing a load-sensitive flake deterministically
+
+[Section titled “Reproducing a load-sensitive flake deterministically”](#reproducing-a-load-sensitive-flake-deterministically)
+
+The flake needs **CPU starvation**, not merely a busy box (which is unreliable and unrepeatable). `scripts/flake-soak.sh` pins the whole parallel vitest run to a small set of cores with `taskset`:
+
+```bash
+# soak a suspect suite 8x under 2-core starvation
+scripts/flake-soak.sh --repeats 8 --cores 2 -- src/components/left-sidebar/MugTab.test.tsx
+```
+
+Pinning the *parallel* suite (many worker processes) to 2 of 128 cores makes the workers timeshare hard: event loops congest, throttled timers (nuqs flushes, React effect scheduling, RTL async) fire late, and same-tick races resolve the losing way. That is precisely the mechanism above, so the flake reddens **on purpose**.
+
+The lane aggregates and reports a **red-rate**, and exits non-zero if *any* repeat failed — so “it passed once” can never again be mistaken for “it passes”.
+
+### Soak a SUITE, not a lone file — contention is the mechanism, not slowness
+
+[Section titled “Soak a SUITE, not a lone file — contention is the mechanism, not slowness”](#soak-a-suite-not-a-lone-file--contention-is-the-mechanism-not-slowness)
+
+The obvious way to build this lane is wrong, and it fails in the direction that makes you *confident*. Measured against the real pre-fix `MugTab` fixture:
+
+| config                                        | red-rate                        |
+| --------------------------------------------- | ------------------------------- |
+| fixture **alone**, 2 pinned cores             | **1/6**                         |
+| fixture **alone**, 1 pinned core (harsher!)   | **0/6**                         |
+| fixture **with its siblings**, 2 pinned cores | see `--self-test` (the default) |
+
+Turning the starvation *up* on an isolated file made the flake **less** likely, not more. That falsifies the naive theory (“slow it down and races appear”). A lone test file has no parallel workers to compete with, so its event loop is *quiet*: the throttled timer always gets its turn before the assertion runs. It just executes slowly.
+
+**The parallel workers ARE the load.** The race needs a *congested* event loop, not a slow one — which is exactly why the original flake “passed in isolation, reddened in the full suite.” So the lane points at a **directory/suite** by default (`--self-test` runs the fixture alongside its siblings); `--isolate` exists only for diagnosis.
+
+Generalize: when reproducing a timing bug, ask what the timer is *competing with*. Starving a lone process starves its competitors too, and can dissolve the very race you are hunting.
+
+Deliberately **not** used: `systemd-run` / cgroup CPU quotas. The agent host blocks them (native-scheduler lockout hook), and `taskset` needs no scheduler, no root, and no daemon.
+
+> **Why not just `nice`?** `scripts/pc-heavy.sh` nices and holds a concurrency semaphore; under an *already busy* box that starves the run enough to expose this class, which is how the flake was originally caught. But it depends on ambient load, so it is not reproducible. Core-pinning is.
+
+## Prove your flake guard can actually redden
+
+[Section titled “Prove your flake guard can actually redden”](#prove-your-flake-guard-can-actually-redden)
+
+A guard that only ever shows green has proven nothing — and a soak lane is *itself* a detector, so it needs the same skepticism it exists to enforce.
+
+`*.flakeproof.test.tsx` is a reserved scratch convention for exactly this:
+
+* **gitignored** (`.gitignore`) — a deliberately-red fixture must never reach the tree, or CI goes red;
+* **excluded from every normal run** (`apps/operator-vite/vitest.config.ts`) unless `FLAKE_SOAK_SELFTEST=1`, so it can’t become a landmine in anyone’s suite;
+* run only by the lane’s self-test, which **passes iff the fixture reddens**:
+
+```bash
+# drop a known-flaky fixture next to the code, then:
+scripts/flake-soak.sh --self-test src/components/left-sidebar/MugTab.flakeproof.test.tsx
+#   → exit 0  : the throttle induced the race. The lane discriminates.
+#   → exit 1  : fixture stayed ALL-GREEN. The lane is NOT catching a known
+#               load-flake — do not trust it until that is fixed.
+```
+
+The fixture used to validate this lane was not synthetic: it is the **real pre-fix `MugTab.test.tsx`**, extracted straight from git (`git show <fix-commit>^:<path>`). If the lane can redden the exact test that fooled three people, it can redden the next one.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+* **Never clear a flake report with a single green run.** Soak it, and quote a red-rate over N runs. `0/8 under 2-core starvation` is a disproof; `1 green run` is not.
+* **A flake that only reproduces under load is still a real red** — “it passes in isolation” is a description of the *detector’s* blind spot, not a property of the test.
+* **When a peer reports RED and you get green, believe the peer** until you have reproduced *their* conditions. The asymmetry is brutal: a false green costs the whole fleet, a false red costs one investigation.
+
 # Locating a live session by ownerId: process, DB, and session-dir routes
 
 > Given a coord ownerId (or a fresh spawn you just launched), how to find its live claude pid, its session directory, and its transcript jsonl — the three routes (psu-pty discovery file, tool_invocations/adv_sessions DB rollup, session-claude directory walk) and the gotchas in each, so the next agent doesn't re-derive this from scratch.
@@ -22709,7 +22981,7 @@ A psu su launch is assembled by `buildSuLaunchSpec` (`packages/operator-core/lib
 
 # Prove it discriminates before you let it act: thresholds that cannot separate, selectors that cannot select
 
-> Six instances, three shapes: thresholds that cannot separate, a selector that cannot select, a metric that cannot be nonzero. One defect — a decision procedure allowed to ACT without anyone computing what it does on real data. Why the class is invisible (a decision is not an event), and why the proposed watchdog for it walked straight into the same trap.
+> Nine instances, four shapes: thresholds that cannot separate, a selector that cannot select, a metric that cannot be nonzero — and a verdict that is computed correctly and then read by nothing. One defect — a decision procedure allowed to ACT (or to stay silent) without anyone checking what it actually does on real data. Why the class is invisible (a decision is not an event; an absence is not a row), and why the proposed watchdog for it walked straight into the same trap.
 
 ## The rule
 
@@ -22719,7 +22991,9 @@ A psu su launch is assembled by `buildSuLaunchSpec` (`packages/operator-core/lib
 >
 > Not “does the code run.” Not “is the value in range.” **Compute what the procedure actually does on real data — the live distribution, the live match set — and look at it.** Every instance below shipped, and in each one that single check was never performed by anyone.
 
-It has now been found **six times in this tree, in three shapes** — and a seventh time in a *proposed fix for it*, which is the subject of the last section.
+It has now been found **nine times in this tree, in four shapes** — plus once more in a *proposed fix for it*, which is the subject of the second-to-last section.
+
+Shapes 1-3 are all one accusation: *the decision procedure is broken.* **Shape 4 is the harder one — the procedure is correct, and its verdict is read by nothing.** It passes every audit the first three demand. Add step 8 to your checklist and it takes ten seconds to find: **grep for the caller.**
 
 ## Shape 1 — a THRESHOLD that cannot SEPARATE
 
@@ -22799,6 +23073,41 @@ So `ideasGrounded` and `shipped` were pinned at zero for every su agent, forever
 
 The guard for this one therefore asserts the *outcome*, not the call: feed `computeObservationsImpact` the ledger row that `capture` **actually writes** and assert `ideasGrounded: 1`; feed it the pre-fix row and assert `0`. A test that only checked “`recordRoutedIdea` was called with the field” would have pinned the plumbing and still told us nothing about whether the funnel could ever report a nonzero — the same blindness as Shape 2’s mock.
 
+## Shape 4 — a VERDICT that nothing READS (EI-10625, EI-10660)
+
+[Section titled “Shape 4 — a VERDICT that nothing READS (EI-10625, EI-10660)”](#shape-4--a-verdict-that-nothing-reads-ei-10625-ei-10660)
+
+Shapes 1-3 are all the same accusation: *the decision procedure is broken.* Shape 4 is the one that took longest to see, because the decision procedure is **perfect**.
+
+The memory recall-blackout canary (EI-10047) was built to detect exactly one thing: the memory system going dark. It **never ran — not once — in its entire life.** Zero routine rows, zero runs, on a live store of 10,491 memories. Not because anything failed. Because adding a loop to `LEARNING_SINGLETONS` **does not schedule it**: the materializer had exactly one caller, a one-shot platform-mode enablement. Registering a loop *looked* complete — list entry, blueprint, feature flag, database tables, health-panel line, all present and correct — and the one step that makes it RUN was a CLI somebody had to remember to re-run. Its sibling `memory-precision` has a routine row only because someone happened to re-run that CLI on 2026-06-30. The canary was added afterwards. Nobody re-ran anything. It was **dead on arrival, silently.**
+
+And here is the part that matters. **The system knew.** `computeLearningLoopHealth` classified the canary as `absent` — correctly, on every single call, for its entire life. The verdict was right, it was computed, and then:
+
+```ts
+(r.status === 'absent' && r.alwaysOn) ||   // ← the canary is a frontier loop: alwaysOn === false
+```
+
+…`summarizeLearningLoopHealth` dropped it from `needsAttention`, the only field anyone reads. **A loop that was merely LATE demanded attention. A loop that DID NOT EXIST did not.** The classifier never lied. Nobody asked it.
+
+The same session turned up a third instance one level up: `validateActiveRoutines` (EI-10660) — the recurrence guard for exactly this family of drift — was **dead code with zero callers**, and its own docstring said *“Called by: the health-check loop (every 30-60s), the startup validation (on boot).”* Both claims were false; `service-health.ts` is not even a loop, so the caller it named could not have existed. It had never executed, with four green unit tests to its name. A guard that documents callers it does not have is worse than no guard: **it retires the very suspicion that would find the gap.** (Now wired into `host-bootstrap.ts` beside its two siblings, and the docstring’s periodic claim is deleted rather than retro-justified — do not describe a caller you have not grepped for.)
+
+> **A CORRECT VERDICT THAT NOTHING READS IS NOT A CHECK. A CHECK THAT NOTHING CALLS IS NOT A CHECK.**
+
+This shape is invisible to every audit in Shapes 1-3, because it passes all of them. The threshold separates. The selector selects. The metric can move. The tests are green, and they are *right*. The output just goes nowhere — and nothing anywhere reports an error, because **nothing went wrong.**
+
+Two rules fall out, and they are cheap:
+
+1. **`rg` for the caller before you trust the guard.** A detector’s test proves the detector works; it says nothing about whether it runs. These are different questions and only one of them is usually asked. Do not trust a `Called by:` comment — comments are aspirations that were true when someone hoped them.
+2. **Absence is the most severe state, not the most excusable.** Every one of these bugs hinges on the same inversion: a thing that *does not exist* is quieter than a thing that is *broken*. A never-ran monitor renders `n/a`. A dead pipeline computes a perfect `0%` (`zeroHit/recalls` with a `: 0` fallback — see the fix in `memoryStatus`). A missing routine row cannot be found by any check that iterates the rows it has. **You cannot find a missing row by looking at the rows you have** — the only way to see an absence is to diff against the DECLARATION.
+
+### How you guard against Shape 4: test the CALL SITE, not just the check
+
+[Section titled “How you guard against Shape 4: test the CALL SITE, not just the check”](#how-you-guard-against-shape-4-test-the-call-site-not-just-the-check)
+
+The unit test is the wrong instrument here and no amount of it helps. Ask what a per-module suite can actually see: it imports the function and asserts on what it returns. **A green unit test proves a check WORKS. It can never prove the check RUNS** — those are different questions, and only the first one is ever asked. `validateActiveRoutines` had four green tests and zero callers, and there is no test you could have added *to that file* that would have noticed.
+
+So the guard has to live where the wiring does. `host-bootstrap.startup-guards.test.ts` asserts the boot file calls each of the three startup guards by name — crude, and it fails the instant a call site is deleted, which is the regression that went unnoticed for months. Prove such a test discriminates the same way you would any other: run it against the tree from *before* the fix. Ours fails on the real 2026-07-06 `host-bootstrap.ts` for exactly the two guards that were unwired and passes for the one that was. **A wiring test that passes on the broken tree is itself a Shape-4 defect** — a check whose verdict nobody can act on, which is where you came in.
+
 ## The audit — run this on anything that thresholds or joins before it acts
 
 [Section titled “The audit — run this on anything that thresholds or joins before it acts”](#the-audit--run-this-on-anything-that-thresholds-or-joins-before-it-acts)
@@ -22810,6 +23119,8 @@ The guard for this one therefore asserts the *outcome*, not the call: feed `comp
 5. **Ask what the other side does when the branch never fires** — a threshold above the ceiling admits nothing *or* suppresses nothing depending only on the comparison direction, and both are invisible.
 6. **Prove the metric CAN move.** If it is a funnel/join metric, construct the input that should make it nonzero and assert that it does. A stage with no writer reports a perfect, honest-looking zero forever (EI-10607).
 7. **Then sweep every other consumer of the same field.** Each was written against the semantics that field had *when it was written*, and nothing stops the producer changing them underneath.
+8. **Grep for the CALLER.** A green test proves the check works, never that it runs. `rg` the function name repo-wide: if the only hits are its own test file, it is decoration (EI-10660). Ignore `Called by:` comments — verify them.
+9. **Ask what happens when the thing is ABSENT, not just wrong.** Absence is the state every one of these bugs hides in: no observations render as a passing `0%`, a never-ran monitor renders `n/a`, a missing row is invisible to any check that iterates rows. If your detector enumerates what exists, it is structurally blind to what does not — **diff against the declaration instead** (EI-10625).
 
 ## Why the whole class is invisible: a DECISION is not an EVENT
 
@@ -22831,7 +23142,25 @@ The obvious follow-up to six instances is *“why does nobody catch these?”* �
 
 > **A gate’s DECISION is not an event.** `tool_invocations` records what the tool *returned*, never what it *decided* on the way there. Every instance in this doc is an internal admit / suppress / refuse / propagate / count that leaves **no trace at all**. `error_code` is a *proxy* for the decision — and the proxy is uncorrelated with it.
 
-That is the real reason this class is only ever found by hand: **there is nothing to look at.** The fix is not to mine the existing telemetry harder, it is to **emit the decision** (`gate`, `verdict`, the compared `value`, the `threshold`) — then `max(value) < threshold` is a *proof* of an unreachable branch, not a heuristic. Filed as EI-10619 under the constraint-removal lens.
+That is the real reason this class is only ever found by hand: **there is nothing to look at.** The fix is not to mine the existing telemetry harder, it is to **emit the decision** (`gate`, `verdict`, the compared `value`, the `threshold`). Filed as EI-10619 under the constraint-removal lens, and **shipped** — `harness_shared.gate_decisions`, with the memory recall gates wired to emit and a `gates:degenerate-check` reader. But the detection rule took two wrong turns before it was sound, and both are the class biting the fix again.
+
+### The detector’s rule is `expect`, not `max(value) < threshold` (EI-10619, shipped)
+
+[Section titled “The detector’s rule is expect, not max(value) < threshold (EI-10619, shipped)”](#the-detectors-rule-is-expect-not-maxvalue--threshold-ei-10619-shipped)
+
+The filing said `max(value) < threshold` would be a *proof* of an unreachable branch. **It is not** — it is Shape 1 one more rung up, and it fails identically to EI-10609. A *healthy* gate is routinely one-sided:
+
+| gate                                | verdicts    | threshold vs value range | healthy?    |
+| ----------------------------------- | ----------- | ------------------------ | ----------- |
+| orient’s relevance floor (EI-10372) | 100% reject | above the whole range    | **BROKEN**  |
+| a rate limiter under normal traffic | 100% pass   | above the whole range    | **HEALTHY** |
+| an auth check every caller passes   | 100% pass   | —                        | **HEALTHY** |
+
+A broken discriminator and a healthy limit-that-never-trips are **observationally identical** over `(verdict, value, threshold)`. No statistic over those columns separates them, because the separating fact is not in the data — it is *what the gate is for*. So the gate **declares** it: `expect: 'discriminates'` (one-sided ⇒ a defect) vs `expect: 'guards'` (never firing ⇒ the healthy case). The detector applies its rule only to `discriminates`. `value`/`threshold` stop being the detection and become the **explanation** — which direction, and by how far off-scale (the *margin* is the proof).
+
+> **You cannot infer a gate’s intent from its behaviour; a monitor that tries is guessing.** This is Rule (b) one level up — you cannot find a missing row by looking at the rows you have, and you cannot find a *mis-scaled* gate by looking at its outputs. Diff against the **declaration**: make the gate state what it is for, then check the behaviour against that. Unlike the docstring lie of EI-10660, the declaration is *checked* — a `guards` gate that fires constantly is surfaced as mis-declared — so it is a claim with a feedback loop, not a comment nobody tests.
+
+And this was, once again, the same instinct: reaching for a *threshold* (`max(value) < threshold`) where what was needed was a check that the decision **separates at all**. Fourth time in the same three days — and this time the bug was inside the fix *for* the class, caught only because the discrimination test carried a negative fixture (a healthy `guards` gate that never fires) and the `expect`-is-load-bearing test asserted the detector goes blind when intent is stripped.
 
 ## The trap is recursive — the proposed fix walked into it
 
@@ -22844,6 +23173,18 @@ It was filed by the same agent, in the same session, that wrote this document.
 > **Knowing the rule does not exempt you from it.** The instinct that produces the bug — *“this quantity obviously separates, I don’t need to check”* — is the same instinct whether you are writing the gate or writing the gate’s watchdog. The only thing that saved EI-10609 from shipping as a false-positive generator was that it carried a **falsification criterion it could not wriggle out of**, and that the criterion was **run before any code was written**.
 >
 > Write the kill condition into the idea *at filing time*, when you are not yet invested in it. Then run it first.
+
+### …and it was still lying in wait in the FIX (EI-10666)
+
+[Section titled “…and it was still lying in wait in the FIX (EI-10666)”](#and-it-was-still-lying-in-wait-in-the-fix-ei-10666)
+
+The remedy for “a gate’s decision is not an event” is **measure at the consumer**: the memory recall canary was counting a zero-hit as *“the backend returned no rows”* (`top.length === 0`), which scores a HIT whenever a healthy retrieval is discarded downstream — it would have reported GREEN straight through EI-10372, where the backend returned 5 rows and orient’s relevance floor dropped all 5. So the canary now runs its results through the **same admission gates orient runs**, from one shared module (`lib/memory/recall-admission.ts`), and alarms on what a consumer *received*.
+
+The obvious way to write that is to apply the relevance floor to the canary’s hits. **That would re-create EI-10372 inside the canary.** The floor is `0.05`; a *healthy* hybrid response returns RRF scores on the 0.01–0.03 band (rank-1 both-legs ≈ 0.0328 — a strong hit). An unconditional floor discards every healthy hit, so the monitor built to detect the blackout would itself black out — and alarm forever, on a system that was fine. The floor is only correct **inside the degraded regime it was written for**, which is why it is regime-scoped in `orient` and why the canary has to carry the same scoping (`degradedRegime`, defaulting to healthy — never invent a degradation).
+
+> **A gate copied without its regime is a different gate.** When you instrument a decision, you have to model the *conditions* under which it fires, not just the comparison it makes. Half a gate in a monitor is not a monitor — it is the original bug with a pager attached.
+
+The general rule this leaves behind: the probe must call **the same code the consumer calls**, not a faithful-looking copy of it. A re-implemented pipeline drifts from the real one, and a canary that drifts goes green while production goes dark — which is Shape 4 again, wearing the costume of a fix.
 
 ## The meta-lesson, now earned three separate ways
 
@@ -46720,7 +47061,7 @@ Prerequisite: complete the WSL onboarding (`wsl_setup` state machine must reach 
 
    * A new Windows Terminal window appears (not a tab).
    * The tab title contains `wsl.exe -d papercup-runtime`.
-   * `pwd` inside is the Linux-side cwd (e.g. `/home/avi/papercup`).
+   * `pwd` inside is the Linux-side cwd (e.g. `$HOME/papercup`).
    * `echo $PAPERCUSP_HARNESS_SLUG` works the same way as on Linux.
 
 When `wt.exe` isn’t present (older Win10 without Windows Terminal), the launcher falls back to bare `wsl.exe` with `CREATE_NEW_CONSOLE`. Each click still produces a separate console window.

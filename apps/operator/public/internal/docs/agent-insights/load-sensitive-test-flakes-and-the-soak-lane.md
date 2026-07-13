@@ -1,0 +1,174 @@
+# A single green run cannot disprove a flake: load-sensitive races, and the soak lane that reddens them on purpose
+URL: /internal/docs/agent-insights/load-sensitive-test-flakes-and-the-soak-lane
+
+The MugTab flake was ~60% red under CPU pressure and 100% green in isolation — so re-running it once and seeing green 'cleared' it, twice, wrongly. The bug was a throttled nuqs URL flush racing a remount key; the real defect was the DETECTOR. How to reproduce a load-sensitive flake deterministically (taskset core-starvation), and how to prove your flake guard can actually catch one before you trust it.
+
+## The failure, in one line
+
+Two peers reported `MugTab.test.tsx` RED. I re-ran the file once, got 15/15 green,
+and told them both it was a **false alarm**. It was not. The test was \~60% red
+under CPU load and 100% green unthrottled — so my "disproof" was a coin flip I
+happened to win.
+
+**A single green run cannot disprove a flake.** It is not weak evidence; for a
+load-sensitive race it is *no* evidence, because the condition that produces the
+red (CPU starvation) is absent in the very run you use to clear it.
+
+## The race itself (the shallow lesson)
+
+`MugTab`'s reset path does two things that fight:
+
+* `resetActivePane()` bumps `capacityResetVersion` — a **remount key** that
+  discards local drafts. It applies **synchronously**.
+* The models section's open flag is **nuqs-backed** (`?qModels`). nuqs applies a
+  set **optimistically** but commits the URL write on a **throttle**.
+
+A same-tick `expand → reset` therefore races: if the remount lands inside the
+throttle window, the fresh hook re-reads a URL that never heard about the expand,
+and the section comes back **collapsed**. Whether the remount or the flush wins is
+pure CPU timing — on an idle box the remount always lost, so a synchronous
+`getByLabelText('std model spec')` right after the reset always found the input.
+Under load it won, and the test threw `Unable to find a label with the text of…`.
+
+The fix is to stop depending on which side won a race the test was never trying
+to test:
+
+```tsx
+// Re-open the section if the remount closed it, then assert the value.
+const reExpand = screen.queryByRole('button', { name: 'Expand models' });
+if (reExpand) fireEvent.click(reExpand);
+const savedSpec = await screen.findByLabelText('std model spec');
+expect((savedSpec as HTMLInputElement).value).toBe('sonnet');
+```
+
+Note what this is **not**: it is not a `waitFor` wrapped around the old assertion.
+That was one of three wrong hypotheses (below), and it still failed — because the
+input never comes back at all when the section is collapsed. Waiting longer for
+something that will never appear is not a fix.
+
+### Three wrong hypotheses, for calibration
+
+Each looked plausible and each was disproved by actually reproducing the failure:
+
+1. **"It's a timeout."** Bumped `findByLabelText`'s timeout. A **no-op** —
+   `configure({ asyncUtilTimeout: 5_000 })` is already set globally in
+   `libs/test-config/src/setup-testing-library-timeout.ts`, and the failure was
+   *fast* (\~200ms), not a timeout.
+2. **"It's a transient unmount."** Wrapped the assertion in `waitFor`. It then
+   burned the full 5s and failed — **proving the input never returns**, which is
+   what pointed at "collapsed", not "not yet rendered".
+3. **"Wait for the expand to settle."** Awaited the `Collapse models` label flip.
+   Still red \~3/6 — because the flipped label only proves nuqs' *optimistic* value
+   applied, **not** that the throttled URL write committed. The optimistic value is
+   exactly the thing the remount doesn't see.
+
+The through-line: every hypothesis that treated the symptom as *slowness* failed.
+The bug was a *lost write*, and only reproducing it under real starvation showed that.
+
+## The actual defect: the detector
+
+The race is a normal bug. The thing worth writing down is that **nothing in the
+system could have caught it**, and the human process actively suppressed the
+signal:
+
+* CI/`test:affected` runs the suite **once**. A 60% flake passes 40% of the time.
+* The natural "let me verify" reflex — re-run the file, alone, on an idle box — runs
+  it in the exact configuration where it is **100% green**. The check is
+  anti-correlated with the bug.
+* So two independent peer RED reports were overridden by one green run. The
+  evidence was pointing the right way and the detector pointed the other way.
+
+This is the `prove-it-discriminates-before-it-acts` class wearing a testing hat: a
+check that cannot separate the bad case from the good one is not a check.
+
+## Reproducing a load-sensitive flake deterministically
+
+The flake needs **CPU starvation**, not merely a busy box (which is unreliable and
+unrepeatable). `scripts/flake-soak.sh` pins the whole parallel vitest run to a
+small set of cores with `taskset`:
+
+```bash
+# soak a suspect suite 8x under 2-core starvation
+scripts/flake-soak.sh --repeats 8 --cores 2 -- src/components/left-sidebar/MugTab.test.tsx
+```
+
+Pinning the *parallel* suite (many worker processes) to 2 of 128 cores makes the
+workers timeshare hard: event loops congest, throttled timers (nuqs flushes, React
+effect scheduling, RTL async) fire late, and same-tick races resolve the losing way.
+That is precisely the mechanism above, so the flake reddens **on purpose**.
+
+The lane aggregates and reports a **red-rate**, and exits non-zero if *any* repeat
+failed — so "it passed once" can never again be mistaken for "it passes".
+
+### Soak a SUITE, not a lone file — contention is the mechanism, not slowness
+
+The obvious way to build this lane is wrong, and it fails in the direction that
+makes you *confident*. Measured against the real pre-fix `MugTab` fixture:
+
+| config                                        | red-rate                        |
+| --------------------------------------------- | ------------------------------- |
+| fixture **alone**, 2 pinned cores             | **1/6**                         |
+| fixture **alone**, 1 pinned core (harsher!)   | **0/6**                         |
+| fixture **with its siblings**, 2 pinned cores | see `--self-test` (the default) |
+
+Turning the starvation *up* on an isolated file made the flake **less** likely, not
+more. That falsifies the naive theory ("slow it down and races appear"). A lone test
+file has no parallel workers to compete with, so its event loop is *quiet*: the
+throttled timer always gets its turn before the assertion runs. It just executes
+slowly.
+
+**The parallel workers ARE the load.** The race needs a *congested* event loop, not a
+slow one — which is exactly why the original flake "passed in isolation, reddened in
+the full suite." So the lane points at a **directory/suite** by default (`--self-test`
+runs the fixture alongside its siblings); `--isolate` exists only for diagnosis.
+
+Generalize: when reproducing a timing bug, ask what the timer is *competing with*.
+Starving a lone process starves its competitors too, and can dissolve the very race
+you are hunting.
+
+Deliberately **not** used: `systemd-run` / cgroup CPU quotas. The agent host blocks
+them (native-scheduler lockout hook), and `taskset` needs no scheduler, no root, and
+no daemon.
+
+> **Why not just `nice`?** `scripts/pc-heavy.sh` nices and holds a concurrency
+> semaphore; under an *already busy* box that starves the run enough to expose this
+> class, which is how the flake was originally caught. But it depends on ambient
+> load, so it is not reproducible. Core-pinning is.
+
+## Prove your flake guard can actually redden
+
+A guard that only ever shows green has proven nothing — and a soak lane is *itself*
+a detector, so it needs the same skepticism it exists to enforce.
+
+`*.flakeproof.test.tsx` is a reserved scratch convention for exactly this:
+
+* **gitignored** (`.gitignore`) — a deliberately-red fixture must never reach the
+  tree, or CI goes red;
+* **excluded from every normal run** (`apps/operator-vite/vitest.config.ts`) unless
+  `FLAKE_SOAK_SELFTEST=1`, so it can't become a landmine in anyone's suite;
+* run only by the lane's self-test, which **passes iff the fixture reddens**:
+
+```bash
+# drop a known-flaky fixture next to the code, then:
+scripts/flake-soak.sh --self-test src/components/left-sidebar/MugTab.flakeproof.test.tsx
+#   → exit 0  : the throttle induced the race. The lane discriminates.
+#   → exit 1  : fixture stayed ALL-GREEN. The lane is NOT catching a known
+#               load-flake — do not trust it until that is fixed.
+```
+
+The fixture used to validate this lane was not synthetic: it is the **real pre-fix
+`MugTab.test.tsx`**, extracted straight from git (`git show <fix-commit>^:<path>`).
+If the lane can redden the exact test that fooled three people, it can redden the
+next one.
+
+## The rule
+
+* **Never clear a flake report with a single green run.** Soak it, and quote a
+  red-rate over N runs. `0/8 under 2-core starvation` is a disproof; `1 green run`
+  is not.
+* **A flake that only reproduces under load is still a real red** — "it passes in
+  isolation" is a description of the *detector's* blind spot, not a property of the
+  test.
+* **When a peer reports RED and you get green, believe the peer** until you have
+  reproduced *their* conditions. The asymmetry is brutal: a false green costs the
+  whole fleet, a false red costs one investigation.
