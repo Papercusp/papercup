@@ -415,17 +415,21 @@ export const CONTEXT_DEATH_MARKER = 'Prompt is too long';
  *     on a 1M window, "dying" every wake);
  *   - a code comment a cup/worker Read (e.g. this file's own comments);
  *   - the OverwatchBrief, which lists these deaths verbatim.
- * All of those embed the phrase MID-string / behind an escaped quote, never as the
- * value-start of an unescaped JSON string, so the lookbehind excludes them while
- * still catching the genuine error entry.
+ * A session can also write a meta-commentary text block that STARTS with the
+ * marker and continues (`"text":"Prompt is too long — ..."`). That is not the
+ * API error either, so the matcher requires the whole JSON `text` value to be
+ * exactly the marker. All of the data-read shapes are additionally behind an
+ * escaped quote, so the lookbehind excludes them while still catching the
+ * genuine error entry.
  */
-const CONTEXT_DEATH_RE = /(?<!\\)"Prompt is too long/;
+const CONTEXT_DEATH_RE = /(?<!\\)"text"\s*:\s*"Prompt is too long"\s*(?=[,}])/;
 
 /**
  * Pure (WI-4608): does this transcript-TAIL text carry claude-code's ACTUAL
  * window-overflow API error, as opposed to the phrase appearing as data the
- * session merely read? Exported for a direct unit test (detectContextDeathForOwner
- * is fs/PG-bound). See CONTEXT_DEATH_RE for the real-vs-data discriminator.
+ * session merely read or quoted in meta-commentary? Exported for a direct unit
+ * test (detectContextDeathForOwner is fs/PG-bound). See CONTEXT_DEATH_RE for
+ * the real-vs-data discriminator.
  */
 export function tailCarriesContextDeath(tail: string): boolean {
   return CONTEXT_DEATH_RE.test(tail);

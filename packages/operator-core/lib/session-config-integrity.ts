@@ -53,9 +53,10 @@
  * EVERY globally-defined hook missing plus the PSU MCP server absent. The result: a
  * healthy Codex session got a red configIntegrity block claiming its edit-locks,
  * coord inbox, and coord MCP were all dead — a spurious diagnosis of a bug that
- * cannot affect it. We detect the client from disk (the presence of the Claude-shaped
- * per-session config dir) and SHORT-CIRCUIT the check to ok:true for anything that
- * isn't a Claude session; the repair path is a natural no-op through the same gate.
+ * cannot affect it. The client-neutral caller now gates this checker with the
+ * authoritative `adv_sessions.agent` value. A recorded Codex/OMP session skips the
+ * Claude-shaped check even if stale Claude files remain; a recorded Claude session
+ * is still diagnosed if its whole config directory was deleted.
  */
 
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
@@ -169,7 +170,9 @@ export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIn
     );
   }
   if (permissionsDowngraded) {
-    consequences.push('PERMISSIONS DOWNGRADED: the bypassPermissions grant this session was materialized with is gone.');
+    consequences.push(
+      'PERMISSIONS DOWNGRADED: the bypassPermissions grant this session was materialized with is gone.',
+    );
   }
 
   return {
@@ -207,8 +210,8 @@ function readJson(path: string): Record<string, unknown> | null {
 
 /**
  * Load the four documents for a psu session id from disk. Fail-soft: an unreadable
- * document reads as null, and `checkSessionConfigIntegrity` treats a null session
- * settings as "nothing to compare" rather than inventing a wipe.
+ * document reads as null. The client-aware caller decides whether null session
+ * documents mean a damaged Claude session or an expected non-Claude layout.
  *
  * The session's CLAUDE_CONFIG_DIR is ~/.papercusp/session-claude/<ownerId>/ (see
  * interactive-claude-config.ts).

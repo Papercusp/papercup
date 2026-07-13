@@ -55,6 +55,14 @@ describe('tailCarriesContextDeath — real overflow vs. phrase-as-data (WI-4608)
     expect(tailCarriesContextDeath(tail)).toBe(false);
   });
 
+  it('FALSE: an assistant meta-commentary text block that starts with the marker but continues', () => {
+    // A session can discuss the error in its own text without having received it.
+    const tail =
+      '{"type":"assistant","message":{"content":[{"type":"text",' +
+      '"text":"Prompt is too long — this is the phrase from the escalation I am explaining"}]}}\n';
+    expect(tailCarriesContextDeath(tail)).toBe(false);
+  });
+
   it('FALSE: an empty / marker-less tail', () => {
     expect(tailCarriesContextDeath('')).toBe(false);
     expect(tailCarriesContextDeath('{"type":"assistant","message":{"content":[{"type":"text","text":"done, all green"}]}}\n')).toBe(false);

@@ -56,10 +56,7 @@ export interface ForceReleaseDeps {
     workspaceId: string,
     ownerId: string,
   ) => Promise<{ fleetSlug: string | null; fleetRole: string | null } | null>;
-  getFleet?: (
-    workspaceId: string,
-    fleetSlug: string,
-  ) => Promise<{ leaderOwnerId: string | null } | null>;
+  getFleet?: (workspaceId: string, fleetSlug: string) => Promise<{ leaderOwnerId: string | null } | null>;
   endedRecordedOwnerIds?: (ownerIds: string[]) => Promise<Set<string>>;
   now?: () => number;
 }
@@ -91,8 +88,7 @@ export async function assessForceRelease(
 ): Promise<ForceReleaseVerdict> {
   const now = (deps.now ?? Date.now)();
   const getPresence =
-    deps.getPresence ??
-    (async (o: string) => (await import('../coordination/presence')).getPresence(o));
+    deps.getPresence ?? (async (o: string) => (await import('../coordination/presence')).getPresence(o));
   const endedOwnersOf =
     deps.endedRecordedOwnerIds ??
     (async (ownerIds: string[]) => (await import('../../adv-sessions')).endedRecordedOwnerIds(ownerIds));
@@ -117,8 +113,7 @@ export async function assessForceRelease(
     recordedEnded,
     heartbeatAt: holderPres?.heartbeatAt ?? null,
     lastActiveAt: holderPres?.lastActiveAt ?? null,
-    itemLastProgressAt:
-      input.itemLastProgressAt == null ? null : String(input.itemLastProgressAt),
+    itemLastProgressAt: input.itemLastProgressAt == null ? null : String(input.itemLastProgressAt),
     freshestAgeMs: freshest == null ? null : now - freshest,
     live,
   };
@@ -140,14 +135,12 @@ export async function assessForceRelease(
 
   const membershipOf =
     deps.latestFleetMembership ??
-    (async (ws: string, o: string) =>
-      (await import('../../fleet-membership-store')).latestFleetMembership(ws, o));
+    (async (ws: string, o: string) => (await import('../../fleet-membership-store')).latestFleetMembership(ws, o));
   const fleetOf =
     deps.getFleet ??
     (async (ws: string, slug: string) => (await import('../../agent-fleets-store')).getFleet(ws, slug));
 
-  const holderFleet =
-    (await membershipOf(input.workspaceId, input.holderOwnerId).catch(() => null))?.fleetSlug ?? null;
+  const holderFleet = (await membershipOf(input.workspaceId, input.holderOwnerId).catch(() => null))?.fleetSlug ?? null;
   const leaderOwnerId = holderFleet
     ? ((await fleetOf(input.workspaceId, holderFleet).catch(() => null))?.leaderOwnerId ?? null)
     : null;

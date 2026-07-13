@@ -112,7 +112,11 @@ describe('checkSessionConfigIntegrity', () => {
 
   it('never invents a hook block when the GLOBAL settings carry none', () => {
     const v = checkSessionConfigIntegrity(
-      state({ settings: HEALTHY_SETTINGS, globalSettings: { theme: 'dark' }, claudeJson: { mcpServers: { [PSU_MCP_SERVER]: {} } } }),
+      state({
+        settings: HEALTHY_SETTINGS,
+        globalSettings: { theme: 'dark' },
+        claudeJson: { mcpServers: { [PSU_MCP_SERVER]: {} } },
+      }),
     );
     expect(v.missingHookEvents).toEqual([]);
     expect(v.ok).toBe(true);
@@ -136,18 +140,13 @@ describe('checkSessionConfigIntegrityForClient', () => {
   });
 
   it('checks a recorded Claude session even when both session documents are missing', () => {
-    const v = checkSessionConfigIntegrityForClient(
-      state({ settings: null, claudeJson: null }),
-      'claude',
-    );
+    const v = checkSessionConfigIntegrityForClient(state({ settings: null, claudeJson: null }), 'claude');
     expect(v).toMatchObject({ ok: false, mcpServerMissing: true });
   });
 
   it('checks legacy sessions only when Claude-shaped documents provide positive evidence', () => {
     expect(checkSessionConfigIntegrityForClient(state(), null)?.ok).toBe(false);
-    expect(
-      checkSessionConfigIntegrityForClient(state({ settings: null, claudeJson: null }), null),
-    ).toBeNull();
+    expect(checkSessionConfigIntegrityForClient(state({ settings: null, claudeJson: null }), null)).toBeNull();
   });
 });
 
@@ -206,9 +205,7 @@ describe('computeSessionConfigRepair', () => {
 
   it('is idempotent — repairing a repaired config changes nothing further', () => {
     const first = computeSessionConfigRepair(state());
-    const second = computeSessionConfigRepair(
-      state({ settings: first.settings, claudeJson: first.claudeJson }),
-    );
+    const second = computeSessionConfigRepair(state({ settings: first.settings, claudeJson: first.claudeJson }));
     expect(second.fixed).toEqual([]);
   });
 });

@@ -1291,7 +1291,9 @@ export default defineTool({
           '../../../session-config-integrity'
         );
         const state = loadSessionConfigState(ownerId);
-        const recordedClient = (await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId))?.agent;
+        const recordedClient = (
+          await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId)
+        )?.agent;
         const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
         if (verdict && !verdict.ok) {
           const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient);
