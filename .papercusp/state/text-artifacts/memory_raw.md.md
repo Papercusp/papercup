@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1783861458705
+updated_at: 1783903579780
 _body: "content"
 ---
 
@@ -31,3 +31,5 @@ _body: "content"
 
 [2026-07-12T10:38:00Z] worker EI-10177: coord-invariant COUNT thresholds fall to the SAME "don't measure the human's/fleet's normal backlog" anti-pattern as age thresholds (EI-6910/EI-8664). wake-queue depth alarm at flat 50 fired on 57 legit live-owner young staged wakes (0 stale). Fix = recalibrate the count above steady-state with a principled anchor (below BOARD_READ_LIMIT=500), not a round number that undershoots a busy fleet. Sweeps reap only dead-owner + >staleHours; young live-owner wakes are expected review backlog, never a filed bug.
 [2026-07-12T13:05:00Z] worker EI-10270: An auto-implement EI (esp. a recurring coord-invariant monitor bug) can be a STALE-DEPLOYMENT re-file — the fix already landed in code but the running :3070 operator hadn't picked it up when the monitor fired. Before writing code, check `git log -L` on the threshold + `dev:pipeline_position`: if the fix is committed/on-main but `deployed:false`, and a regression test already exists, resolve `fixed` (fix is gone from code) rather than re-implementing. Runtime monitor thresholds = `{...DEFAULT_THRESHOLDS, ...routine.payload_template}` — check the live routine row too, since an empty payload_template means the code default wins.
+[2026-07-13T00:46:00Z] worker EI-10653: condition-staleness-alarm anchored open-duration on ConditionState.first_seen (first-EVER alarm) not the current episode — a FLAPPING condition (fires/recovers/re-fires, e.g. infra-liveness:panel:infra) got reported "OPEN for 1967m" seconds after reopening. Fix: added open_since (first alarm strictly after latest resolution; null when resolved) to computeConditionStates and anchored evaluateStaleConditions on it. Lesson: for a flap-tracked condition, first_seen ≠ how-long-open; use the current-episode start.
+
