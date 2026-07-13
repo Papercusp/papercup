@@ -151,3 +151,12 @@ apps/operator/public/internal/docs.old.*/
 
 # WI-3336: esbuild-bundled host entry (bundle-host.sh) — built per bg-host restart
 apps/operator/dist-host/
+
+# WI-4481: flake-soak "prove it discriminates" fixtures. A flake fix drops a
+# KNOWN-FLAKY *.flakeproof.test.tsx next to the code under test and runs
+# `scripts/flake-soak.sh --self-test <fixture>` to prove the soak lane can
+# actually redden a load-sensitive race. They are deliberately red, so they must
+# never reach the tree (CI would go red) — the package vitest.config also
+# excludes them from every run except the soak's own self-test.
+**/*.flakeproof.test.ts
+**/*.flakeproof.test.tsx

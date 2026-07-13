@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useEffect, useState, type HTMLAttributes } from 'react';
+import { useEffect, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import AdminShell from '../../components/admin/AdminShell';
 import { SubstrateSummaryCardClient } from '@/app/harness/insights/SubstrateSummaryCardClient';
@@ -120,9 +120,7 @@ function DogfoodSubstratePage() {
               rows={rows}
               columns={columns}
               getRowId={(row) => `${row.workspaceId}::${row.harnessSlug}`}
-              rowProps={({ row }): HTMLAttributes<HTMLDivElement> => ({
-                'data-testid': `dogfood-substrate-row-${row.harnessSlug}`,
-              })}
+              rowProps={({ row }) => ({ 'data-testid': `dogfood-substrate-row-${row.harnessSlug}` })}
               rowMinHeight={32}
             />
           </div>

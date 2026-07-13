@@ -123,6 +123,7 @@
     "test:all": "node scripts/affected-tests.mjs --all",
     "test:all:integration": "node scripts/affected-tests.mjs --all --integration",
     "test:doctor": "node scripts/test-doctor.mjs",
+    "test:flake-soak": "bash scripts/flake-soak.sh",
     "check:fleet-auth": "node scripts/check-fleet-auth.mjs",
     "preflight:addons": "tsx scripts/preflight-native-addons.ts",
     "mcp:call": "node scripts/mcp-call.mjs",
