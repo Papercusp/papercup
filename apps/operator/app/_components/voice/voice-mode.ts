@@ -1782,6 +1782,62 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
 const WAKE_CONVERSATION_WINDOW_MS = 25_000;
 let wakeConversationUntil = 0;
 
+// ── Half-duplex + hallucination guards for always-on capture (WI-4500) ──────
+// The always-on energy-VAD mic runs while papercup's OWN kokoro TTS plays out the
+// speakers. On the Tauri WebKitGTK webview, browser AEC (echoCancellation:true) is
+// weak/absent (same platform reality as the crossOriginIsolated/SharedArrayBuffer
+// gap, WI-4498), so the mic HEARS the reply. whisper.cpp then transcribes that
+// self-audio — or hallucinates a stable token on the near-silent tail — and because
+// the follow-up conversation window is open, the garbage dispatches AND refreshes the
+// window, so papercup talks to its own echo forever. Owner saw this as papercup
+// "picking up its own mic, keeps saying omid".
+//
+// COOLDOWN after playout ends: the speaker doesn't fall silent the instant the synth
+// queue drains (buffer + room decay), so gate for a short tail too. Set by the synth
+// lifecycle (processSynthQueue / barge-in cancel).
+const SELF_AUDIO_COOLDOWN_MS = 700;
+let synthQuietSince = 0; // wall-clock ms when TTS playout last ENDED; 0 = never spoke
+
+/** True while papercup is speaking, or within the AEC-settle tail after it stopped. */
+function isSelfAudioLikely(nowMs: number = Date.now()): boolean {
+  if (isSynthSpeaking) return true;
+  if (synthQuietSince > 0 && nowMs - synthQuietSince < SELF_AUDIO_COOLDOWN_MS) return true;
+  return false;
+}
+
+/** Test seam: mark playout as just-ended (drives the cooldown branch). */
+export function __markSynthPlayoutEnded(atMs: number = Date.now()): void {
+  synthQuietSince = atMs;
+}
+
+// whisper.cpp on non-speech audio (silence, room tone, a TTS tail) does not only emit
+// bracketed [BLANK_AUDIO] markers — isBlankTranscript already catches those. It also
+// emits STABLE REAL WORDS/phrases with no speech behind them. These are the well-known
+// ones plus the token the owner hit ("omid"). Matched only in ALWAYS-ON (a hands-free
+// utterance is low-intent); PTT is never filtered — the button press IS the intent.
+// Kept conservative: single-token / short stock phrases only, so a real one-word reply
+// ("yes", "stop", "no") is NOT in here and still gets through.
+const WHISPER_HALLUCINATION_TOKENS = new Set<string>([
+  'omid',
+  'you',
+  'thank you',
+  'thank you.',
+  'thanks for watching',
+  'thanks for watching!',
+  'thank you for watching',
+  'please subscribe',
+  'bye',
+  'bye.',
+  'you.',
+  '.',
+]);
+
+/** True when an always-on transcript is a known whisper non-speech hallucination. */
+export function isLikelyWhisperHallucination(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/\s+/g, ' ');
+  return WHISPER_HALLUCINATION_TOKENS.has(t);
+}
+
 /** Exported for tests. */
 export function gateAlwaysOnTranscript(
   text: string,
@@ -1804,6 +1860,7 @@ export function gateAlwaysOnTranscript(
 /** Test seam: reset the conversation window between tests. */
 export function resetWakeConversationWindow(): void {
   wakeConversationUntil = 0;
+  synthQuietSince = 0;
 }
 
 function dispatchAlwaysOnUtterance(text: string): void {
