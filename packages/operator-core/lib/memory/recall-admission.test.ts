@@ -127,8 +127,8 @@ describe('near-duplicate collapse — pure helpers', () => {
     ).toBe(true); // one-word paraphrase
     expect(
       isNearDuplicateText(
-        '[owner:Avi verbatim] save the age benchmark for the next release',
-        '[owner:Avi verbatim] flip the memory backend to hybrid-pg after review',
+        '[owner verbatim] save the age benchmark for the next release',
+        '[owner verbatim] flip the memory backend to hybrid-pg after review',
       ),
     ).toBe(false); // shared boilerplate, DIFFERENT directive → must not collapse
   });
@@ -173,8 +173,8 @@ describe('admitRecallHits — near-duplicate collapse gate', () => {
 
   it('keeps genuinely distinct memories that merely share boilerplate framing', () => {
     const r = admitRecallHits([
-      memHit('id1', '[owner:Avi 2026-07-11, verbatim] save the age benchmark for the next release', 0.9),
-      memHit('id2', '[owner:Avi 2026-07-11, verbatim] flip the memory backend to hybrid-pg after review', 0.8),
+      memHit('id1', '[owner 2026-07-11, verbatim] save the age benchmark for the next release', 0.9),
+      memHit('id2', '[owner 2026-07-11, verbatim] flip the memory backend to hybrid-pg after review', 0.8),
     ]);
     expect(r.admitted.map((h) => h.id)).toEqual(['id1', 'id2']);
     expect(r.collapsedDuplicates).toBe(0);

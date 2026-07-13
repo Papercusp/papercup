@@ -460,7 +460,7 @@ test('detectAnomalies — aging escalations → escalation-aging ESCALATE owner'
   assert.equal(a.suggestedAction.type, 'escalate');
   assert.equal(a.suggestedAction.target, 'owner');
   assert.match(a.suggestedAction.message ?? '', /Planning Needs you queue/);
-  assert.match(a.suggestedAction.message ?? '', /Queen cannot clear owner-decision backlog/);
+  assert.match(a.suggestedAction.message ?? '', /Mug cannot clear owner-decision backlog/);
 });
 
 test('detectAnomalies — observation lane flat while bees run → observation-dark OBSERVE; quiet when no bees run', () => {

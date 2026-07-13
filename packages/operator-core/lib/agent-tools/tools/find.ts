@@ -170,7 +170,9 @@ export default defineTool({
     'its field names. e.g. tools:find("feature flag"), tools:find("spawn a worker"). ACTIVATION IS ' +
     'CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list ' +
     '(activated:true) and are directly callable; on a full-catalog session there is nothing to expand ' +
-    '(activated:false) — call them via tools:invoke. Always read `activated` + `howToCall` rather than ' +
+    '(activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, ' +
+    'connection-refused, process-running-with-no-window) route their decisive diagnostic to hit #1. ' +
+    'Always read `activated` + `howToCall` rather than ' +
     'assuming a direct call resolves.',
   guidance: {
     when:

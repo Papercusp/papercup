@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ToolDiscoveryEntry } from './tools-discovery';
-import { cosineSimilarity, findTools } from './tool-find';
+import { cosineSimilarity, decisiveToolForSymptom, findTools } from './tool-find';
 
 const entry = (tool: string, description: string): ToolDiscoveryEntry =>
   ({
@@ -21,6 +21,10 @@ const corpus: ToolDiscoveryEntry[] = [
   entry('cup:spawn', 'place a worker bee'),
   entry('coord:orient', 'orientation bootstrap read'),
   entry('coord:glance', 'quick peer status'),
+  entry('dev:why', 'top-down runtime causal chain'),
+  entry('gateway:status', 'gateway queue admission details for slow agents'),
+  entry('accounts:status', 'account capacity and rate limit status'),
+  entry('dev:service_health', 'probe local services and desktop'),
 ];
 
 // Deterministic embedding space: one orthogonal axis per concept.
@@ -97,6 +101,20 @@ describe('findTools', () => {
   it('respects limit', async () => {
     const hits = await findTools(corpus, 'coord', { limit: 1 });
     expect(hits.length).toBe(1);
+  });
+
+  it('routes a natural-language slowness symptom to the causal-chain tool first', async () => {
+    const hits = await findTools(corpus, 'why are all agent turns slow and queued?', { limit: 3 });
+    expect(hits[0].tool).toBe('dev:why');
+  });
+
+  it('routes connection-refused / running-with-no-window symptoms to service health first', async () => {
+    expect((await findTools(corpus, 'the process is running but no window appears'))[0].tool)
+      .toBe('dev:service_health');
+  });
+
+  it('never overrides an explicit exact tool name', () => {
+    expect(decisiveToolForSymptom('gateway:status for slow agents')).toBeNull();
   });
 
   it('degrades to lexical when the embedder throws', async () => {

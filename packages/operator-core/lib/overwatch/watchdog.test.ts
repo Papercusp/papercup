@@ -177,7 +177,7 @@ describe('overwatchWatchdogSweep (every condition gates)', () => {
   it('missing registry Hive → self-clears the started bit and wake instead of re-arming', async () => {
     isRegisteredHive.mockResolvedValue(false);
     const res = await overwatchWatchdogSweep({ now: NOW });
-    expect(res).toEqual([{ outcome: 'skipped', reason: 'started Overwatch Hive missing from registry; self-cleared' }]);
+    expect(res).toEqual([{ outcome: 'skipped', reason: 'started Kettle Hive missing from registry; self-cleared' }]);
     expect(setOverwatchStarted).toHaveBeenCalledWith(WS, SLUG, false);
     expect(clearOverwatchTimeWake).toHaveBeenCalledWith(fakeSql, SLUG, { workspaceId: WS });
     expect(declareOverwatchTimeWake).not.toHaveBeenCalled();

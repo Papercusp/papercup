@@ -94,11 +94,12 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe the dev services now (:3070 operator, :3055 vite, :3350 scout, the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts, AND the papercup-bg-host DBOS ticker via routine fire-freshness) — up/down + status + latency, PLUS a `supervision` block per critical-process-supervisor entry (layer/autoRestart/consecutiveProbeFailures/restartsLast10m/flapState) sourced from the failed-unit reconciler. The "bg-host-ticker" entry is a SEPARATE service from :3070: when it reads down, git-sync + every scheduled routine are FROZEN even though :3070 is up — do NOT dev:restart the operator for that, the bg-host needs reviving. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a "connection refused".',
+    'Probe dev services now (:3070, :3055, :3350, Tauri desktop, bg-host ticker) and return the standard runtime fields { configured, effective, evidence, rootCause, nextVerb } alongside per-service latency/status and supervisor flap state. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. First read for connection-refused or process-running-with-no-window symptoms.',
   guidance: {
     when: 'Confirm which dev services are up before testing against one; diagnose a "connection refused" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the "bg-host-ticker" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).',
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
+    returns: "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }",
     seeAlso: [
       "dev:restart (restart a down service)",
       "dev:pg_health (Postgres health specifically)",

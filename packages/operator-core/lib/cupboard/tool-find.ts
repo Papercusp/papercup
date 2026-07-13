@@ -71,6 +71,27 @@ export interface ToolFindOptions {
 const DEFAULT_LIMIT = 10;
 const DEFAULT_MIN_COSINE = 0.35;
 
+/**
+ * High-confidence symptom → decisive first-read routing. Semantic similarity is
+ * excellent for recall but cannot promise the causal-chain tool outranks every
+ * detail surface. These rules cover recurring incident language where the
+ * platform already has one authoritative first read. An explicit `group:verb`
+ * in the query always wins through the normal exact-name lexical ranking.
+ */
+export function decisiveToolForSymptom(query: string): string | null {
+  const q = query.trim().toLowerCase();
+  if (/[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*/i.test(q)) return null;
+  if (/connection refused|service (?:is )?(?:down|unreachable)|process (?:is )?running but no window|app (?:will not|won't) open/.test(q)) {
+    return 'dev:service_health';
+  }
+  if (
+    /why (?:is|are).*(?:slow|stalled|stuck|queued|not shipping|not deploying)|(?:agents?|turns?|runs?).*(?:slow|queued|stalling)|capacity crunch|out of (?:quota|capacity)|rate limit|\b429\b/.test(q)
+  ) {
+    return 'dev:why';
+  }
+  return null;
+}
+
 function entryHit(e: ToolDiscoveryEntry, via: ToolFindHit['via'], cosine: number | null): ToolFindHit {
   return {
     tool: e.tool,
@@ -124,17 +145,27 @@ export async function findTools(
   for (const e of lexical) {
     const c = cosByName.get(e.tool);
     out.push(entryHit(e, c != null ? 'both' : 'lexical', c ?? null));
-    if (out.length >= limit) return out;
-  }
-  const semanticOnly = [...cosByName.entries()]
-    .filter(([name]) => !lexicalNames.has(name))
-    .sort((a, b) => b[1] - a[1]);
-  const byName = new Map(corpus.map((e) => [e.tool, e]));
-  for (const [name, c] of semanticOnly) {
-    const e = byName.get(name);
-    if (!e) continue;
-    out.push(entryHit(e, 'semantic', c));
     if (out.length >= limit) break;
   }
-  return out;
+  const byName = new Map(corpus.map((e) => [e.tool, e]));
+  if (out.length < limit) {
+    const semanticOnly = [...cosByName.entries()]
+      .filter(([name]) => !lexicalNames.has(name))
+      .sort((a, b) => b[1] - a[1]);
+    for (const [name, c] of semanticOnly) {
+      const e = byName.get(name);
+      if (!e) continue;
+      out.push(entryHit(e, 'semantic', c));
+      if (out.length >= limit) break;
+    }
+  }
+
+  const decisive = decisiveToolForSymptom(query);
+  const decisiveEntry = decisive ? byName.get(decisive) : undefined;
+  if (decisiveEntry) {
+    const existing = out.find((hit) => hit.tool === decisive);
+    const routed = existing ?? entryHit(decisiveEntry, 'lexical', cosByName.get(decisive) ?? null);
+    return [routed, ...out.filter((hit) => hit.tool !== decisive)].slice(0, limit);
+  }
+  return out.slice(0, limit);
 }

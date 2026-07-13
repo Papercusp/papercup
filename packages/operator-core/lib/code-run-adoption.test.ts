@@ -268,8 +268,26 @@ describe('readCodeRunAdoption — runs the BOUNDED query (WI-3815) through an in
     const fakeRun = async <T,>(query: string, params: unknown[]): Promise<T[]> => {
       captured.push({ query, params });
       return [
-        { role: 'cup', day: '2026-06-26', work_calls: 4, distinct_tools: 4, max_same_tool: 1, used_code_run: false },
-        { role: 'cup', day: '2026-06-26', work_calls: 5, distinct_tools: 4, max_same_tool: 1, used_code_run: true },
+        {
+          role: 'cup',
+          day: '2026-06-26',
+          work_calls: 4,
+          distinct_tools: 4,
+          max_same_tool: 1,
+          max_same_tool_turns: 1,
+          distinct_turns: 4,
+          used_code_run: false,
+        },
+        {
+          role: 'cup',
+          day: '2026-06-26',
+          work_calls: 5,
+          distinct_tools: 4,
+          max_same_tool: 1,
+          max_same_tool_turns: 1,
+          distinct_turns: 4,
+          used_code_run: true,
+        },
       ] as unknown as T[];
     };
     const out = await readCodeRunAdoption(fakeRun, { sinceDays: 14 });
@@ -355,7 +373,16 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
   // scan per window, so a fresh full scan can never be triggered per call again.
 
   const rows = [
-    { role: 'cup', day: '2026-07-02', work_calls: 5, distinct_tools: 4, max_same_tool: 1, used_code_run: true },
+    {
+      role: 'cup',
+      day: '2026-07-02',
+      work_calls: 5,
+      distinct_tools: 4,
+      max_same_tool: 1,
+      max_same_tool_turns: 1,
+      distinct_turns: 4,
+      used_code_run: true,
+    },
   ] as const;
 
   it('SINGLE-FLIGHT: concurrent callers for the same window share ONE scan', async () => {

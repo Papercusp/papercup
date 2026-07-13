@@ -336,6 +336,7 @@ function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
         `. This is an ADMISSION-PATH DEFECT, not a capacity shortage: the work is waiting on capacity that already exists, ` +
         `so more pool headroom will NOT fix it. Suspect a per-tier cap refusing an idle slot, or a tier whose cap the AIMD shed drove to its floor (WI-4541). ` +
         `Read gateway:status for the per-tier detail.`,
+      nextVerb: 'gateway:status',
     };
   }
   // A deep AIMD shrink is not itself a bug (it is the gateway protecting upstream from sustained
@@ -345,6 +346,7 @@ function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
       stage: 'admission',
       status: 'degraded',
       reason: `gateway AIMD has shrunk effective concurrency to ${adm.aimdEffective}/${adm.aimdCap} under sustained upstream pressure — throughput is throttled on purpose, but a shed this deep also squeezes the bottom tiers' caps toward their floor of 1 (the WI-4541 precondition); watch for queued-while-idle`,
+      nextVerb: 'gateway:status',
     };
   }
   if (adm.queued > 0) {
@@ -352,6 +354,8 @@ function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
       stage: 'admission',
       status: 'degraded',
       reason: `${adm.queued} request(s) queued, but the pool is genuinely FULL (running ${adm.running}/${adm.maxConcurrent}) — admission is behaving correctly; this is real saturation, look at the pool stage`,
+      // Admission is behaving correctly here — the decisive next read is the pool it's saturated on.
+      nextVerb: 'accounts:status',
     };
   }
   return { stage: 'admission', status: 'ok', reason: `gateway admission healthy — ${adm.running}/${adm.maxConcurrent} in flight, nothing queued` };
@@ -359,7 +363,12 @@ function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
 
 function poolStage(accounts: AccountStatusRow[]): WhyChainStage {
   if (accounts.length === 0) {
-    return { stage: 'pool', status: 'degraded', reason: 'no accounts registered in the pool (unable to assess)' };
+    return {
+      stage: 'pool',
+      status: 'degraded',
+      reason: 'no accounts registered in the pool (unable to assess)',
+      nextVerb: 'accounts:status',
+    };
   }
   const available = accounts.filter((a) => a.available);
   const sustained = accounts.filter((a) => a.sustainedlyLimited);
@@ -371,6 +380,7 @@ function poolStage(accounts: AccountStatusRow[]): WhyChainStage {
       stage: 'pool',
       status: 'blocked',
       reason: `all ${accounts.length} account(s) in the pool are currently unavailable (${walled} usage-walled until their window resets, ${accounts.length - walled} rate-limited/paused) — no spawn capacity`,
+      nextVerb: 'accounts:status',
     };
   }
   if (sustained.length > 0) {
@@ -378,6 +388,7 @@ function poolStage(accounts: AccountStatusRow[]): WhyChainStage {
       stage: 'pool',
       status: 'degraded',
       reason: `${sustained.length}/${accounts.length} account(s) sustained-limited (${available.length} still available)`,
+      nextVerb: 'accounts:status',
     };
   }
   return { stage: 'pool', status: 'ok', reason: `${available.length}/${accounts.length} accounts available, none sustained-limited` };

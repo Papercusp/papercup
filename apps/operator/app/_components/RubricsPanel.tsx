@@ -14,6 +14,7 @@ import { useEffect, type CSSProperties } from "react";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { ChevronDown, ShieldAlert } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
+import { Tooltip } from "../harness/Tooltip";
 
 interface RubricRow {
   rubricId: string;
@@ -288,16 +289,19 @@ export default function RubricsPanel({
           </span>
           <span className="pc-rubrics__awaiting-list">
             {awaiting.slice(0, 3).map((row) => (
-              <button
+              <Tooltip
                 key={row.rubricId}
-                type="button"
-                className="pc-rubrics__awaiting-item"
-                onClick={onSelect ? () => onSelect(row.rubricId) : undefined}
-                title={`${row.title} — proposed by ${row.proposedBy ?? "unknown"}; needs an independent ratifier (D-012)`}
+                label={`${row.title} — proposed by ${row.proposedBy ?? "unknown"}; needs an independent ratifier (D-012)`}
               >
-                {row.title}
-                <em>prop {shortActor(row.proposedBy)}</em>
-              </button>
+                <button
+                  type="button"
+                  className="pc-rubrics__awaiting-item"
+                  onClick={onSelect ? () => onSelect(row.rubricId) : undefined}
+                >
+                  {row.title}
+                  <em>prop {shortActor(row.proposedBy)}</em>
+                </button>
+              </Tooltip>
             ))}
             {awaiting.length > 3 ? (
               <span className="pc-rubrics__awaiting-more">

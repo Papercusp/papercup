@@ -54,8 +54,8 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   const out = renderOverwatchBrief(unhealthyBrief());
 
   // Header carries the hive + the nudge-not-replace mandate (D-001).
-  assert.match(out, /## Overwatch wake brief — system-health snapshot for papercup-hive/);
-  assert.match(out, /you never re-place work — that is the Queen/);
+  assert.match(out, /## Kettle wake brief — system-health snapshot for papercup-hive/);
+  assert.match(out, /you never re-place work — that is the Mug/);
   assert.match(out, /\*\*Woke by:\*\* timer/);
 
   // Anomalies section + all three lines, with the action verb + target + message.
@@ -103,7 +103,7 @@ test('renderOverwatchBrief — empty anomalies render an explicit healthy signal
   // The panels still render with the neutral defaults.
   assert.match(out, /- last woke unknown · cadence ok · driving 0 placement\(s\) · next unscheduled/);
   // No resolvable Queen coord owner (null default) still has a stable role-slot route.
-  assert.match(out, /role-slot nudge still parks for the next Queen wake/);
+  assert.match(out, /role-slot nudge still parks for the next Mug wake/);
   assert.match(out, /- queen alive · overwatch alive/);
   assert.match(out, /by role: none/);
   assert.match(out, /paused buckets: none/);
