@@ -2879,6 +2879,13 @@ impl App {
     /// spawns; engineer shells and the brain are NOT paned — owner ask) not
     /// yet paned. Prunes departed owners from the dedup set so a returning
     /// bee re-panes; interactive launch panes are excluded via `tracked_panes`.
+    ///
+    /// Claude bees are additionally gated on their transcript being ON DISK
+    /// (`claude_transcript_on_disk`): the /invoke route seeds the presence row
+    /// BEFORE the agent process starts writing, and the exit-hook archives +
+    /// deletes the jsonl when the turn ends — an ungated resume fires into that
+    /// gap, dies instantly, and the dedup set would swallow the bee's pane for
+    /// the rest of its roster lifetime.
     fn bee_panes_to_open(&mut self) -> Vec<crate::mux::PaneSpec> {
         let is_bee = |r: &crate::models::RosterEntry| r.is_live() && r.source == "fleet-spawn";
         let live: std::collections::HashSet<&str> = self
@@ -2907,6 +2914,11 @@ impl App {
             let Some(argv) = r.dock_pane_argv() else {
                 continue;
             };
+            // Skip WITHOUT marking (same contract as a missing argv): the pane
+            // opens on a later refresh once the transcript lands on disk.
+            if !claude_transcript_on_disk(r) {
+                continue;
+            }
             let title = r
                 .agent
                 .clone()
@@ -6568,11 +6580,79 @@ fn short_owner(owner: &str) -> String {
     owner.chars().take(8).collect()
 }
 
+/// Is this claude bee's transcript actually on disk under its isolated config
+/// dir (`<configDir>/projects/<cwd-slug>/<sessionId>.jsonl`)? The dock resume
+/// pane only works while it is: the file appears a few seconds after spawn and
+/// the exit-hook archives + deletes it at turn end. Non-claude handles and
+/// legacy payloads (no configDir) have nothing to check → `true`, preserving
+/// their pre-gate behavior. The cwd-slug segment is claude's own munging —
+/// scan `projects/*` for the session file instead of re-deriving it.
+fn claude_transcript_on_disk(r: &crate::models::RosterEntry) -> bool {
+    use crate::models::NativeSessionHandle;
+    let Some(NativeSessionHandle::Claude {
+        session_id: Some(sid),
+        config_dir: Some(dir),
+        ..
+    }) = &r.native_session
+    else {
+        return true;
+    };
+    let (sid, dir) = (sid.trim(), dir.trim());
+    if sid.is_empty() || dir.is_empty() {
+        return true;
+    }
+    let file = format!("{sid}.jsonl");
+    match std::fs::read_dir(std::path::Path::new(dir).join("projects")) {
+        Ok(entries) => entries
+            .flatten()
+            .any(|e| e.path().join(&file).is_file()),
+        Err(_) => false, // no projects dir yet → nothing to resume yet
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{ActivityRow, PlanSummary, WorkItem};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn claude_transcript_gate_tracks_disk_state() {
+        use crate::models::{NativeSessionHandle, RosterEntry};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cfg = tmp.path().join("s-bee");
+        let entry = |dir: Option<String>, sid: Option<String>| RosterEntry {
+            owner_id: "s-bee".into(),
+            native_session: Some(NativeSessionHandle::Claude {
+                source: "adv_sessions".into(),
+                owner_id: Some("s-bee".into()),
+                session_id: sid,
+                config_dir: dir,
+                exact_resume_supported: true,
+                missing_reason: None,
+            }),
+            ..Default::default()
+        };
+        let dir = cfg.to_string_lossy().to_string();
+        // configDir advertised but nothing on disk yet (pre-spawn window) → gated.
+        let e = entry(Some(dir.clone()), Some("uuid-t".into()));
+        assert!(!claude_transcript_on_disk(&e));
+        // transcript lands under projects/<cwd-slug>/<sid>.jsonl → open.
+        let proj = cfg.join("projects").join("-repo-dir");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join("uuid-t.jsonl"), b"{}").unwrap();
+        assert!(claude_transcript_on_disk(&e));
+        // exit-hook archived + deleted the jsonl → gated again.
+        std::fs::remove_file(proj.join("uuid-t.jsonl")).unwrap();
+        assert!(!claude_transcript_on_disk(&e));
+        // Legacy payload (no configDir) → nothing to check, never gated.
+        assert!(claude_transcript_on_disk(&entry(None, Some("uuid-t".into()))));
+        // Non-claude / no-handle entries → never gated.
+        assert!(claude_transcript_on_disk(&RosterEntry {
+            owner_id: "s-plain".into(),
+            ..Default::default()
+        }));
+    }
 
     fn key(c: char, mods: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(KeyCode::Char(c), mods))

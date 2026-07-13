@@ -1,3 +1,4 @@
+import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { describe, expect, it } from 'vitest';
 import type { AdvSessionRow } from './adv-sessions';
 import {
@@ -37,6 +38,7 @@ describe('nativeSessionHandleForAdvSession', () => {
       source: 'adv_sessions',
       ownerId: 'su-1',
       sessionId: 'claude-session',
+      configDir: sessionClaudeConfigDir('su-1'),
       exactResumeSupported: true,
       missingReason: null,
     });
@@ -94,6 +96,7 @@ describe('nativeSessionHandleForSpawnedAgent', () => {
       source: 'spawned_agents',
       ownerId: 'owner-1',
       sessionId: 'claude-spawn-session',
+      configDir: sessionClaudeConfigDir('owner-1'),
       exactResumeSupported: true,
       missingReason: null,
     });

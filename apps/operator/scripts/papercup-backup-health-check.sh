@@ -157,16 +157,19 @@ if [ "${1:-}" = "--self-test" ]; then
   # <name> <stale:yes|no> <want-marker:yes|no> [ENV=VAL ...]
   check() {
     local name="$1" stale="$2" want_marker="$3"; shift 3
-    rm -rf "${t:?}/state"; mkdir -p "$t/state"
-    : > "$t/dump/pg-5432.sql.gz"
-    if [ "$stale" = yes ]; then touch -d '10 hours ago' "$t/dump/pg-5432.sql.gz"; fi
+    rm -rf "${t:?}/state" "$t/dump/pg"; mkdir -p "$t/state" "$t/dump/pg/papercusp" "$t/dump/pg/restart"
+    # A directory artifact, matching db-backup.sh's pg_dump -Fd output shape.
+    : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
+    if [ "$stale" = yes ]; then touch -d '10 hours ago' "$t/dump/pg/papercusp" "$t/dump/pg/restart"; fi
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
-        BACKUP_HOOK_LOG="$t/no-such-hook.log" \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         "$@" bash "$self" >/dev/null 2>&1
+    # BACKUP_ARTIFACTS can name several dumps, so a red writes one stale-* marker PER
+    # artifact — glob-match ANY of them (a bare `[ -f state/stale-* ]` errors with
+    # "binary operator expected" the moment the glob expands to >1 file).
     local got_marker=no
-    # shellcheck disable=SC2144
-    [ -f "$t"/state/stale-* ] && got_marker=yes
+    compgen -G "$t/state/stale-*" >/dev/null 2>&1 && got_marker=yes
     if [ "$got_marker" = "$want_marker" ]; then
       printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
     else
@@ -202,7 +205,7 @@ for art in $BACKUP_ARTIFACTS; do
   if [ ! -e "$f" ]; then
     TITLE="DB backup artifact MISSING: $art (no dump has ever succeeded at $BACKUP_DUMP_DIR)"
     BODY="EI-10733 durable backup-health probe: expected dump artifact '$f' does not exist at all. There is NO recoverable database dump. Check ~/.config/kopia/db-backup.sh, its timer (systemctl --user status papercusp-db-backup.timer), and $BACKUP_HOOK_LOG."
-    RED_MARKER="$STATE_DIR/missing-$art"
+    RED_MARKER="$STATE_DIR/missing-${art//\//-}"   # art may contain '/' (pg/papercusp) — flatten for the filename
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (missing $art) — skipping duplicate filing."
     else
@@ -214,7 +217,7 @@ for art in $BACKUP_ARTIFACTS; do
   age_hours=$(( ( $(now_s) - mtime ) / 3600 ))
   size="$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f" 2>/dev/null || echo 0)"
   log "artifact $art: age ${age_hours}h, size ${size}B (max age ${BACKUP_MAX_AGE_H}h)"
-  RED_MARKER="$STATE_DIR/stale-$art"
+  RED_MARKER="$STATE_DIR/stale-${art//\//-}"   # flatten '/' in the artifact path for the marker filename
   if [ "$age_hours" -ge "$BACKUP_MAX_AGE_H" ] 2>/dev/null; then
     TITLE="DB backup is STALE: $art is ${age_hours}h old (>= ${BACKUP_MAX_AGE_H}h threshold) — we may have no recoverable database"
     BODY="EI-10733 durable backup-health probe: '$f' has not advanced in ${age_hours} hours (size ${size}B). The DB dump is supposed to run ~hourly.
@@ -245,24 +248,25 @@ done
 if [ ! -f "$BACKUP_HOOK_LOG" ]; then
   log "SKIP consecutive-fail probe: no hook log at $BACKUP_HOOK_LOG"
 else
-  # Walk the tail newest→oldest; count FAILs until the first ok. "skip" lines are neutral
-  # (the cadence guard legitimately skips when a dump is still fresh) and must not reset
-  # the streak NOR count as failures.
-  TRAILING_FAILS="$(tac "$BACKUP_HOOK_LOG" 2>/dev/null | grep -aE 'pg-[0-9]+ (ok|FAIL)' | awk '
-    /FAIL/ { n++; next }
-    /ok/   { exit }
+  # Walk the tail newest→oldest; count FAILED runs until the first OK. db-backup.sh writes
+  # exactly one per-run summary line — "backup OK in Ns: ..." or "backup FAILED in Ns: ..." —
+  # so this counts RUNS, not per-DB legs. Matching is anchored to that summary token so a
+  # per-DB "papercusp FAIL" line inside a run never double-counts.
+  TRAILING_FAILS="$(tac "$BACKUP_HOOK_LOG" 2>/dev/null | grep -aE 'backup (OK|FAILED)' | awk '
+    /backup FAILED/ { n++; next }
+    /backup OK/     { exit }
     { next }
     END { print n+0 }')"
   TRAILING_FAILS="${TRAILING_FAILS:-0}"
   log "hook log: $TRAILING_FAILS trailing FAIL(s) with no intervening ok (threshold $BACKUP_MAX_FAILS)"
   RED_MARKER="$STATE_DIR/consecutive-fails"
   if [ "$TRAILING_FAILS" -ge "$BACKUP_MAX_FAILS" ] 2>/dev/null; then
-    TITLE="DB backup has FAILED $TRAILING_FAILS times consecutively with no success — backups are broken"
-    BODY="EI-10733 durable backup-health probe: $BACKUP_HOOK_LOG shows $TRAILING_FAILS consecutive 'FAIL' entries with no intervening 'ok' (threshold $BACKUP_MAX_FAILS).
+    TITLE="DB backup has FAILED $TRAILING_FAILS runs consecutively with no success — backups are broken"
+    BODY="EI-10733 durable backup-health probe: $BACKUP_HOOK_LOG shows $TRAILING_FAILS consecutive 'backup FAILED' runs with no intervening 'backup OK' (threshold $BACKUP_MAX_FAILS).
 
 This fires EARLY, before the artifact ages past the freshness bar — precisely so a broken backup is caught in hours, not the 30 DAYS it went unnoticed on 2026-07-12 (EI-10733).
 
-Read the pg_dumpall error appended to $BACKUP_HOOK_LOG. The original root cause was 'timeout 60' against a 1.4GB dump: the dump was SIGTERMed mid-stream every cycle and its orphaned pg_dump child was left holding AccessShareLock on ~593 tables, which then wedged the release pipeline for 9h (EI-10730). DO NOT simply raise the timeout without reading the actual error — and check for orphaned pg_dump backends (pre-snapshot.sh's reap_orphan_dumps)."
+Read the per-DB error in $BACKUP_HOOK_LOG (db-backup.sh logs 'db FAIL (...)' per database) and $BACKUP_DUMP_DIR/STATUS.json (failed[]). db-backup.sh only accepts a dump that passes pg_restore -l, so a FAILED run means the dump errored or produced an unreadable archive — read the actual pg_dump error, do NOT blindly raise PC_BACKUP_TIMEOUT_SEC. Also check for an orphaned pg_dump backend holding AccessShareLock on ~593 tables, which can wedge the release pipeline for hours (EI-10730): SELECT pid, application_name, backend_start FROM pg_stat_activity WHERE application_name LIKE 'pg_dump%'."
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (consecutive fails) — skipping duplicate filing."
     else
