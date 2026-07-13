@@ -91,4 +91,10 @@ describe('toReadinessNodes', () => {
     const none = toReadinessNodes([{ id: 'Z', status: 'todo' }], new Map());
     expect(none[0]!.blockedBy).toEqual([]);
   });
+
+  it('preserves external blockers when present', () => {
+    const items = [{ id: 'A', status: 'todo', externalBlockers: ['event:deploy:ready'] }];
+    const nodes = toReadinessNodes(items, new Map());
+    expect(nodes).toEqual([{ id: 'A', status: 'todo', blockedBy: [], externalBlockers: ['event:deploy:ready'] }]);
+  });
 });

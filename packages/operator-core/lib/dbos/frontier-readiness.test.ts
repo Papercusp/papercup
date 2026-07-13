@@ -62,3 +62,71 @@ describe('selectReady — partition dispatchable nodes into ready / blocked', ()
     expect([...TERMINAL_STATUSES].sort()).toEqual(['deprecated', 'passed']);
   });
 });
+
+describe('selectReady — external blockers (event/gate/runtime/human)', () => {
+  it('an item with active external blockers is blocked, even if all work-item blockers are satisfied', () => {
+    const nodes: ReadinessNode[] = [
+      { id: 'A', status: 'todo', blockedBy: [] },
+      { id: 'B', status: 'todo', blockedBy: [], externalBlockers: ['event:deploy:ready:staging'] },
+    ];
+    const { ready, blocked } = selectReady(nodes, NONE, TODO);
+    expect(ready.map((n) => n.id)).toEqual(['A']);
+    expect(blocked.map((n) => n.id)).toEqual(['B']);
+  });
+
+  it('an item with multiple active external blockers is blocked', () => {
+    const nodes: ReadinessNode[] = [
+      { 
+        id: 'C', 
+        status: 'todo', 
+        blockedBy: [], 
+        externalBlockers: ['gate:release-green', 'runtime:dolphin:dbus', 'human:approval:deploy'] 
+      },
+    ];
+    const { ready, blocked } = selectReady(nodes, NONE, TODO);
+    expect(ready).toEqual([]);
+    expect(blocked.map((n) => n.id)).toEqual(['C']);
+  });
+
+  it('an item with no external blockers but satisfied work-item blockers is ready', () => {
+    const nodes: ReadinessNode[] = [
+      { id: 'A', status: 'passed', blockedBy: [] },
+      { id: 'B', status: 'todo', blockedBy: ['A'], externalBlockers: [] },
+    ];
+    const { ready } = selectReady(nodes, NONE, TODO);
+    expect(ready.map((n) => n.id)).toEqual(['B']);
+  });
+
+  it('combined: both work-item blocker unsatisfied AND external blockers block readiness', () => {
+    const nodes: ReadinessNode[] = [
+      { id: 'X', status: 'todo', blockedBy: [] },
+      { id: 'Y', status: 'todo', blockedBy: [] },
+      { 
+        id: 'Z', 
+        status: 'todo', 
+        blockedBy: ['X'], 
+        externalBlockers: ['event:ready'] 
+      },
+    ];
+    const { ready, blocked } = selectReady(nodes, NONE, TODO);
+    expect(ready.map((n) => n.id).sort()).toEqual(['X', 'Y']);
+    expect(blocked.map((n) => n.id)).toEqual(['Z']);
+  });
+
+  it('clearing external blockers (empty array) makes an item ready', () => {
+    const nodes: ReadinessNode[] = [
+      { id: 'A', status: 'passed', blockedBy: [] },
+      { id: 'B', status: 'todo', blockedBy: ['A'], externalBlockers: [] }, // empty array = cleared
+    ];
+    const { ready } = selectReady(nodes, NONE, TODO);
+    expect(ready.map((n) => n.id)).toEqual(['B']);
+  });
+
+  it('omitted externalBlockers field (undefined) means no external blockers', () => {
+    const nodes: ReadinessNode[] = [
+      { id: 'A', status: 'todo', blockedBy: [] }, // no externalBlockers field
+    ];
+    const { ready } = selectReady(nodes, NONE, TODO);
+    expect(ready.map((n) => n.id)).toEqual(['A']);
+  });
+});

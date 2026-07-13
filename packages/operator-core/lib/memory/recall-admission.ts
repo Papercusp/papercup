@@ -74,6 +74,99 @@ export function orientMemoryBudgetChars(): number {
   return 1_600;
 }
 
+/**
+ * P-008 (WI-4538): near-duplicate COLLAPSE. A limited recall budget was being spent on the
+ * SAME fact under multiple ids — coord:orient returned one owner directive 3× (ids
+ * f928834a/a88e504f/b048739a) and claim-recall returned the "save the age benchmark"
+ * directive twice verbatim (dd421ac7/8b5a6542) — crowding distinct facts out of the budget
+ * and then reporting "the memory budget is full". This is a READ-SIDE collapse: no store
+ * mutation, fully reversible via the threshold, run BEFORE the budget so a dupe never eats a
+ * slot. TEXT-based on purpose — this module is pure (no embeddings) and the dominant real
+ * case is verbatim / near-verbatim repetition. The HIGHEST-RANKED copy of each cluster
+ * survives (callers pass hits in relevance order), so collapsing only ever drops a
+ * lower-ranked near-identical twin.
+ */
+export const MEMORY_DEDUP_JACCARD_DEFAULT = 0.82;
+
+/**
+ * Word-token Jaccard threshold for the FUZZY near-duplicate test. Exact-normalized-equality
+ * ALWAYS collapses regardless of this (an identical memory under two ids is pure waste); the
+ * threshold gates only the paraphrase case. Env `PAPERCUSP_ORIENT_MEMORY_DEDUP_JACCARD`; set
+ * `>= 1` to keep ONLY exact-equality collapse (fuzzy off), never below the conservative
+ * default without evidence (a low threshold risks collapsing distinct owner directives that
+ * share boilerplate).
+ */
+export function orientMemoryDedupThreshold(): number {
+  const raw = Number(process.env.PAPERCUSP_ORIENT_MEMORY_DEDUP_JACCARD);
+  return Number.isFinite(raw) ? raw : MEMORY_DEDUP_JACCARD_DEFAULT;
+}
+
+/** Normalize for comparison: lowercase, collapse whitespace, trim. */
+export function normalizeForDedup(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function tokenSetOf(norm: string): Set<string> {
+  return new Set(norm.split(' ').filter(Boolean));
+}
+
+/** Word-token Jaccard similarity in [0,1]. Two empty token sets are identical (1). */
+export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  let inter = 0;
+  for (const t of small) if (large.has(t)) inter++;
+  const union = a.size + b.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+/** Near-duplicate iff normalized texts are EQUAL, or their word-token Jaccard ≥ threshold. */
+export function isNearDuplicateText(a: string, b: string, threshold = MEMORY_DEDUP_JACCARD_DEFAULT): boolean {
+  const na = normalizeForDedup(a);
+  const nb = normalizeForDedup(b);
+  if (na === nb) return true;
+  return jaccardSimilarity(tokenSetOf(na), tokenSetOf(nb)) >= threshold;
+}
+
+interface DedupNorm { norm: string; tokens: Set<string> }
+function matchesNorm(prev: DedupNorm, norm: string, tokens: Set<string>, threshold: number): boolean {
+  if (prev.norm === norm) return true; // exact-equal always collapses (threshold-independent)
+  return jaccardSimilarity(prev.tokens, tokens) >= threshold;
+}
+
+/**
+ * Collapse near-duplicate items, keeping the FIRST of each cluster (callers pass items in
+ * relevance/priority order, so the best copy survives). Empty-text items are never collapsed.
+ * Pure — SHARED by orient's admitRecallHits and the launch/claim buildLaunchMemoryBlock, so a
+ * fix here lowers the budget waste on every recall surface at once. Returns the kept items
+ * plus the indices (into the input) that were dropped, for per-item decision logging.
+ */
+export function collapseNearDuplicates<T>(
+  items: readonly T[],
+  getText: (item: T) => string,
+  threshold: number = orientMemoryDedupThreshold(),
+): { kept: T[]; droppedIndices: number[] } {
+  const kept: T[] = [];
+  const norms: DedupNorm[] = [];
+  const droppedIndices: number[] = [];
+  items.forEach((item, i) => {
+    const text = getText(item) ?? '';
+    if (text.length === 0) {
+      kept.push(item);
+      return;
+    }
+    const norm = normalizeForDedup(text);
+    const tokens = tokenSetOf(norm);
+    if (norms.some((p) => matchesNorm(p, norm, tokens, threshold))) {
+      droppedIndices.push(i);
+      return;
+    }
+    kept.push(item);
+    norms.push({ norm, tokens });
+  });
+  return { kept, droppedIndices };
+}
+
 export interface AdmitRecallOpts<H> {
   /** The EI-9031 `degraded` marker from the recall response — REGIME-SCOPES the floor. */
   degraded?: boolean;
@@ -84,6 +177,11 @@ export interface AdmitRecallOpts<H> {
    * queen-loop control withhold). Default: withhold nothing.
    */
   withhold?: (hits: H[]) => { kept: H[]; withheld: unknown[] };
+  /**
+   * P-008: word-token Jaccard threshold for the near-duplicate collapse. Defaults to
+   * {@link orientMemoryDedupThreshold}. Exact-equal hits always collapse regardless.
+   */
+  dedupeThreshold?: number;
 }
 
 export interface AdmissionResult<H> {
@@ -93,6 +191,8 @@ export interface AdmissionResult<H> {
   filteredLowScore: number;
   /** Discarded by the caller-policy withhold. */
   withheld: number;
+  /** Discarded by the P-008 near-duplicate collapse (the same fact under multiple ids). */
+  collapsedDuplicates: number;
   /** Discarded by the aggregate char budget. */
   withheldBudget: number;
   /**

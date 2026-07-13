@@ -199,7 +199,7 @@ describe('extractReferencedTables (P-005)', () => {
 });
 
 /** A tagged-template `sql` stub returning canned information_schema rows. */
-function stubClient(rows: Array<{ table_schema: string; table_name: string; column_name: string }>) {
+function stubClient(rows: Array<{ table_schema: string; table_name: string; column_name: string; data_type?: string }>) {
   const calls: unknown[][] = [];
   const sql = async (_strings: TemplateStringsArray, ...values: unknown[]) => {
     calls.push(values);
@@ -211,27 +211,30 @@ function stubClient(rows: Array<{ table_schema: string; table_name: string; colu
 describe('describeReferencedTableColumns (P-005a — the 42703 column hint)', () => {
   it('returns each referenced table with its columns in ordinal order', async () => {
     const { sql } = stubClient([
-      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'issue_id' },
-      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'title' },
-      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'state' },
+      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'issue_id', data_type: 'text' },
+      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'title', data_type: 'text' },
+      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'state', data_type: 'character varying' },
     ]);
     const out = await describeReferencedTableColumns(
       'SELECT wrong_col FROM harness_shared.engineer_issues',
       { client: sql },
     );
     expect(out).toEqual([
-      { table: 'harness_shared.engineer_issues', columns: ['issue_id', 'title', 'state'] },
+      {
+        table: 'harness_shared.engineer_issues',
+        columns: ['issue_id: text', 'title: text', 'state: character varying'],
+      },
     ]);
   });
 
   it('resolves a bare name matched in many schemas to the preferred one (harness_shared first)', async () => {
     const { sql } = stubClient([
-      { table_schema: 'harness_zzz_clone', table_name: 'messages', column_name: 'clone_col' },
-      { table_schema: 'harness_shared', table_name: 'messages', column_name: 'id' },
-      { table_schema: 'harness_shared', table_name: 'messages', column_name: 'body' },
+      { table_schema: 'harness_zzz_clone', table_name: 'messages', column_name: 'clone_col', data_type: 'text' },
+      { table_schema: 'harness_shared', table_name: 'messages', column_name: 'id', data_type: 'bigint' },
+      { table_schema: 'harness_shared', table_name: 'messages', column_name: 'body', data_type: 'text' },
     ]);
     const out = await describeReferencedTableColumns('SELECT nope FROM messages', { client: sql });
-    expect(out).toEqual([{ table: 'harness_shared.messages', columns: ['id', 'body'] }]);
+    expect(out).toEqual([{ table: 'harness_shared.messages', columns: ['id: bigint', 'body: text'] }]);
   });
 
   it('returns [] without querying when the SQL references no tables', async () => {
@@ -254,10 +257,12 @@ describe('buildTenantScopeAdvisory (P-005b — the wrong-tenant footgun)', () =>
     const { sql } = stubClient(TENANT_ROWS);
     const advisory = await buildTenantScopeAdvisory(
       "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'my-plan'",
-      { client: sql },
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
     );
     expect(advisory).toContain('harness_shared.harness_plans');
     expect(advisory).toContain('workspace_id + harness_slug');
+    expect(advisory).toContain("workspace_id = 'papercusp-workspace'");
+    expect(advisory).toContain("harness_slug = 'papercusp'");
     expect(advisory).toContain('raw-sql-plan-slug-needs-workspace-harness-scope');
   });
 

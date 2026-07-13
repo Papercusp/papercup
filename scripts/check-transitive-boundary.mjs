@@ -55,6 +55,20 @@ const FORBIDDEN_PATTERNS = [
   /^(ssh2|cpu-features)($|\/)/,
   // Build tools (dev-only)
   /^(tsx|vite|rollup|esbuild|webpack|vitest|jest)($|\/)/,
+  // Backend-only operator-core subtrees. Client-safe leaves under the same
+  // package are traversed, so a future relative re-export of one of these is
+  // still caught with the complete chain that introduced it.
+  /^@papercusp\/operator-core\/lib\/agent-tools(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/cross-hive-asks-pg(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/dbos(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/endpoint-route(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/harness-(?:readers|issues)(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/harness\/routines(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/memory\/knowledge-read(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/(?:operator-audit|operator-notes|plugin-loader|storage|text-artifacts|work-items)(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/sync\/hyperbee(?:\/|$)/,
+  /^@papercusp\/operator-core\/lib\/sync-resolver(?:$|\/(?!list-meta$))/,
+  /^@papercusp\/(?:papercusp-db|db)(?:\/|$)/,
 ];
 
 /**
@@ -75,10 +89,10 @@ function getPackageName(spec) {
  * @param {string} specifier - Specifier or package name
  * @returns {boolean}
  */
-function isForbidden(specifier) {
+export function isForbidden(specifier) {
   if (specifier.startsWith('.') || specifier.startsWith('/')) return false;
   const pkg = getPackageName(specifier);
-  return FORBIDDEN_PATTERNS.some((p) => p.test(pkg));
+  return FORBIDDEN_PATTERNS.some((p) => p.test(specifier) || p.test(pkg));
 }
 
 /**
@@ -106,7 +120,7 @@ function loadSourceFile(path) {
  * @param {string} fromFile - Resolving file's absolute path
  * @returns {string | null} Resolved path, or null if not found
  */
-function resolveModulePath(spec, fromFile) {
+export function resolveModulePath(spec, fromFile) {
   if (spec.startsWith('@/')) {
     // @/ alias → apps/operator
     const path = resolve(OPERATOR_DIR, spec.slice(2));
@@ -126,7 +140,11 @@ function resolveModulePath(spec, fromFile) {
     return findFile(path);
   }
 
-  // Bare package import (handled by caller, not resolved here)
+  // Package seams are the graph boundary. Server-heavy package subpaths are
+  // denied above; client-safe workspace packages retain their own leaf tests.
+  // Walking arbitrary package source here would ignore Vite's browser aliases
+  // and report the intentionally shimmed server graph as hundreds of false
+  // positives rather than identifying the client import that crossed the seam.
   return null;
 }
 
@@ -135,7 +153,8 @@ function resolveModulePath(spec, fromFile) {
  * @param {string} base - Base path without extension
  * @returns {string | null} Resolved path or null
  */
-function findFile(base) {
+export function findFile(base) {
+  if (statSync(base, { throwIfNoEntry: false })?.isFile()) return base;
   for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs']) {
     const withExt = base + ext;
     if (statSync(withExt, { throwIfNoEntry: false })?.isFile()) {
@@ -157,8 +176,13 @@ function findFile(base) {
  * @param {ts.SourceFile} source - Source file
  * @returns {string[]} Array of module specifiers
  */
-function extractImports(source) {
+export function extractImports(source) {
   const specs = [];
+
+  const add = (node, spec, kind, typeOnly = false) => {
+    const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
+    specs.push({ spec, kind, typeOnly, line: line + 1 });
+  };
 
   function visit(node) {
     if (!node) return;
@@ -166,13 +190,13 @@ function extractImports(source) {
     // import ... from '...'
     if (ts.isImportDeclaration(node)) {
       if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-        specs.push(node.moduleSpecifier.text);
+        add(node, node.moduleSpecifier.text, 'import', node.importClause?.isTypeOnly === true);
       }
     }
     // export ... from '...'
     else if (ts.isExportDeclaration(node)) {
       if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-        specs.push(node.moduleSpecifier.text);
+        add(node, node.moduleSpecifier.text, 'export', node.isTypeOnly === true);
       }
     }
     // require('...') or import('...')
@@ -187,7 +211,7 @@ function extractImports(source) {
         node.arguments.length > 0 &&
         ts.isStringLiteral(node.arguments[0])
       ) {
-        specs.push(node.arguments[0].text);
+        add(node, node.arguments[0].text, 'require');
       }
       // import('...')
       else if (
@@ -195,7 +219,7 @@ function extractImports(source) {
         node.arguments.length > 0 &&
         ts.isStringLiteral(node.arguments[0])
       ) {
-        specs.push(node.arguments[0].text);
+        add(node, node.arguments[0].text, 'dynamic-import');
       }
     }
 
@@ -211,7 +235,7 @@ function extractImports(source) {
  * @param {string} entryFile - Absolute path to entry
  * @returns {{ files: Set<string>, violations: Map<string, string[][]> }}
  */
-function walkGraph(entryFile) {
+export function walkGraph(entryFile) {
   const visited = new Set(); // Visited file paths
   const violations = new Map(); // forbidden module -> array of import chains
 
@@ -226,14 +250,21 @@ function walkGraph(entryFile) {
     const specs = extractImports(source);
     const currentChain = [...chain, filePath];
 
-    for (const spec of specs) {
+    for (const imported of specs) {
+      if (imported.typeOnly) continue;
+      const { spec } = imported;
       // Check if this direct import is forbidden
       if (isForbidden(spec)) {
         if (!violations.has(spec)) {
           violations.set(spec, []);
         }
         // Record the chain that leads to this forbidden import
-        violations.get(spec).push(currentChain);
+        violations.get(spec).push({
+          chain: currentChain,
+          importer: filePath,
+          line: imported.line,
+          kind: imported.kind,
+        });
       } else {
         // Not forbidden, recurse into it
         const resolved = resolveModulePath(spec, filePath);
@@ -254,22 +285,21 @@ function walkGraph(entryFile) {
  * @param {string} forbidden - The forbidden module name
  * @returns {string}
  */
-function formatChain(chain, forbidden) {
+export function formatChain(chain, forbidden, line) {
   const formatted = chain.map((item) => {
     const rel = relative(ROOT, item);
     return rel.startsWith('..') ? item : rel;
   });
   return [
     '        ' + formatted.join('\n        ↓\n        '),
-    '        → ' + forbidden,
+    `        → ${forbidden}${line ? ` (line ${line})` : ''}`,
   ].join('\n');
 }
 
 /**
  * Main entrypoint
  */
-function main() {
-  const verbose = process.argv.includes('--verbose');
+export function main() {
 
   // Allow custom entry point (for testing)
   let entryFile = null;
@@ -314,17 +344,8 @@ function main() {
   for (const [module, chains] of sorted) {
     totalChains += chains.length;
     console.error(`  ⚠  ${module}`);
-    if (verbose && chains.length > 0) {
-      // Show up to 3 example chains
-      const example = chains.slice(0, 3);
-      for (let i = 0; i < example.length; i++) {
-        const chain = example[i];
-        if (chain.length <= 1) continue; // Skip if just the direct import
-        console.error(`\n${formatChain(chain.slice(0, 15), module)}`);
-      }
-      if (chains.length > 3) {
-        console.error(`\n      (+ ${chains.length - 3} more import path${chains.length > 4 ? 's' : ''})`);
-      }
+    for (const violation of chains) {
+      console.error(`\n${formatChain(violation.chain, module, violation.line)}`);
     }
   }
 
@@ -337,7 +358,6 @@ Fix options:
   3. Add shim: Add entry to apps/operator-vite/vite.config.ts resolve.alias
   4. Re-export: Deep-import from origin instead of importing barrel
 
-Run with --verbose to see full import chains.
 Read more: /internal/docs/agent-insights/fcp-server-libs-leak-into-eager-client-bundle
 `);
 

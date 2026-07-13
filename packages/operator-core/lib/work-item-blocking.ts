@@ -118,6 +118,7 @@ export function toReadinessNodes(
     id: it.id,
     status: it.status,
     blockedBy: blockers.get(it.id) ?? [],
+    ...(it.externalBlockers && it.externalBlockers.length > 0 ? { externalBlockers: it.externalBlockers } : {}),
   }));
 }
 

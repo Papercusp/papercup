@@ -37,8 +37,15 @@ beforeEach(() => {
 describe('dev:pg_query — P-005 guard wiring', () => {
   it('attaches the tenant-scope advisory to a successful result', async () => {
     advisoryMock.mockResolvedValue('⚠ tenant scope: …');
-    const res = await pgQueryTool.handler({ sql: 'SELECT 1' } as never, {} as never);
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT 1' } as never,
+      { workspaceId: 'ws-1', harnessSlug: 'h-1' } as never,
+    );
     expect(payloadOf(res as never)).toMatchObject({ advisory: '⚠ tenant scope: …', rowCount: 1 });
+    expect(advisoryMock).toHaveBeenCalledWith('SELECT 1', {
+      workspaceId: 'ws-1',
+      harnessSlug: 'h-1',
+    });
   });
 
   it('omits the advisory field when the guard finds nothing (or throws)', async () => {
@@ -55,7 +62,7 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       Object.assign(new Error('column "updated_at" does not exist'), { code: '42703' }),
     );
     describeColumnsMock.mockResolvedValue([
-      { table: 'harness_shared.engineer_issues', columns: ['issue_id', 'updated_ts'] },
+      { table: 'harness_shared.engineer_issues', columns: ['issue_id: text', 'updated_ts: bigint'] },
     ]);
     const res = await pgQueryTool.handler(
       { sql: 'SELECT updated_at FROM harness_shared.engineer_issues' } as never,
@@ -64,7 +71,9 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect((res as { isError?: boolean }).isError).toBe(true);
     expect(payloadOf(res as never)).toMatchObject({
       code: '42703',
-      knownColumns: { 'harness_shared.engineer_issues': ['issue_id', 'updated_ts'] },
+      knownColumns: {
+        'harness_shared.engineer_issues': ['issue_id: text', 'updated_ts: bigint'],
+      },
     });
   });
 

@@ -62,13 +62,16 @@ export default defineTool({
       .optional()
       .describe('statement_timeout in ms (default 5000, max 30000).'),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     try {
       const result = await pgReadQuery(args.sql, { maxRows: args.maxRows, timeoutMs: args.timeoutMs });
       // P-005(b): tenant-scope advisory on a filtered read of a multi-tenant
       // table with no workspace_id/harness_slug predicate — the silent
       // wrong-tenant match footgun. Advisory only; never blocks the result.
-      const advisory = await buildTenantScopeAdvisory(args.sql).catch(() => null);
+      const advisory = await buildTenantScopeAdvisory(args.sql, {
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.harnessSlug,
+      }).catch(() => null);
       return {
         content: [
           {

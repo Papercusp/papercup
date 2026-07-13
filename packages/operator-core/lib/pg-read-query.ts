@@ -139,6 +139,7 @@ interface SchemaHintRow {
   table_schema: string;
   table_name: string;
   column_name: string;
+  data_type: string;
 }
 
 /** Prefer the schema an agent almost certainly meant when a BARE table name
@@ -153,12 +154,12 @@ function preferSchema(a: string, b: string): number {
 async function readReferencedColumns(
   tables: string[],
   client?: OrgSql,
-): Promise<Map<string, { schema: string; columns: string[] }>> {
+): Promise<Map<string, { schema: string; columns: string[]; typedColumns: string[] }>> {
   const qualified = tables.filter((t) => t.includes('.'));
   const bare = tables.filter((t) => !t.includes('.'));
   const sql = client ?? getOrgPg().sql;
   const rows = (await sql`
-    SELECT table_schema, table_name, column_name
+    SELECT table_schema, table_name, column_name, data_type
       FROM information_schema.columns
      WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
        AND (lower(table_schema || '.' || table_name) = ANY(${qualified})
@@ -167,17 +168,18 @@ async function readReferencedColumns(
   `) as unknown as SchemaHintRow[];
 
   // Group by schema.table, then pick ONE schema per referenced name.
-  const bySchemaTable = new Map<string, { schema: string; table: string; columns: string[] }>();
+  const bySchemaTable = new Map<string, { schema: string; table: string; columns: string[]; typedColumns: string[] }>();
   for (const r of rows) {
     const key = `${r.table_schema}.${r.table_name}`.toLowerCase();
     let g = bySchemaTable.get(key);
     if (!g) {
-      g = { schema: r.table_schema, table: r.table_name, columns: [] };
+      g = { schema: r.table_schema, table: r.table_name, columns: [], typedColumns: [] };
       bySchemaTable.set(key, g);
     }
     g.columns.push(r.column_name);
+    g.typedColumns.push(`${r.column_name}: ${r.data_type || 'unknown'}`);
   }
-  const byRef = new Map<string, { schema: string; columns: string[] }>();
+  const byRef = new Map<string, { schema: string; columns: string[]; typedColumns: string[] }>();
   for (const g of bySchemaTable.values()) {
     const bareName = g.table.toLowerCase();
     const ref = qualified.includes(`${g.schema}.${g.table}`.toLowerCase())
@@ -188,7 +190,7 @@ async function readReferencedColumns(
     if (!ref) continue;
     const existing = byRef.get(ref);
     if (!existing || preferSchema(g.schema, existing.schema) < 0) {
-      byRef.set(ref, { schema: g.schema, columns: g.columns });
+      byRef.set(ref, { schema: g.schema, columns: g.columns, typedColumns: g.typedColumns });
     }
   }
   return byRef;
@@ -211,7 +213,7 @@ export async function describeReferencedTableColumns(
     const hit = byRef.get(ref);
     if (!hit) continue;
     const table = ref.includes('.') ? ref : `${hit.schema}.${ref}`;
-    out.push({ table, columns: hit.columns });
+    out.push({ table, columns: hit.typedColumns });
   }
   return out;
 }
@@ -267,7 +269,7 @@ async function readTenantScopeInfo(
  */
 export async function buildTenantScopeAdvisory(
   rawSql: string,
-  opts: { client?: OrgSql } = {},
+  opts: { client?: OrgSql; workspaceId?: string | null; harnessSlug?: string | null } = {},
 ): Promise<string | null> {
   const stripped = stripSqlLiteralsAndComments(rawSql);
   if (!/\bwhere\b/i.test(stripped)) return null;
@@ -286,10 +288,17 @@ export async function buildTenantScopeAdvisory(
     if (offenders.length >= 3) break;
   }
   if (!offenders.length) return null;
+  const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+  const suggested: string[] = [];
+  if (opts.workspaceId) suggested.push(`workspace_id = ${quote(opts.workspaceId)}`);
+  if (opts.harnessSlug) suggested.push(`harness_slug = ${quote(opts.harnessSlug)}`);
+  const actionable = suggested.length
+    ? ` Add: ${suggested.join(' AND ')}.`
+    : ' Add the resolved workspace_id/harness_slug scope predicate(s).';
   return (
     `⚠ tenant scope: ${offenders.join(', ')} — multi-tenant, but this filtered query has no ` +
     'workspace_id/harness_slug predicate — a bare slug/id filter can silently match ANOTHER ' +
-    "tenant's rows and read as stale/diverged state. Add the scope predicate(s) " +
+    `tenant's rows and read as stale/diverged state.${actionable} ` +
     '(agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).'
   );
 }
