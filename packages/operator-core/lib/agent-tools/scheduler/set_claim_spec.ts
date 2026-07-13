@@ -17,6 +17,12 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { fetchWakeability } from '../coordination/presence-wakeability';
+import {
+  positiveIdCohortIds,
+  validateClaimSpec,
+  type ClaimSpec,
+} from '../../scheduler/claim-spec';
+import type { ClaimFloorAttribution } from '../../work-items';
 
 /**
  * The coding-FACTORY push-pipeline roles: each is HANDED a FEATURE_ID by the orchestrator
@@ -93,6 +99,114 @@ export function claimSpecWakeabilityWarning(cupId: string, wakeable: boolean | n
   );
 }
 
+export interface ClaimSpecAdmissionPreview {
+  mode: 'dynamic' | 'fixed-cohort';
+  checked: boolean;
+  cohortIds?: string[];
+  checkedIssueIds?: string[];
+  admissibleIds?: string[];
+  floored?: ClaimFloorAttribution[];
+  effectiveStates?: readonly string[];
+  reason?: string;
+}
+
+type ExplainIssueFloors = (
+  harness: string,
+  ids: readonly string[],
+  opts?: { assignee?: string; rigAvailable?: boolean; states?: readonly string[] },
+) => Promise<ClaimFloorAttribution[]>;
+
+/**
+ * WI-4429: reject a fixed issue cohort that is already 0-admissible BEFORE the
+ * spec is stored. Reuses explainIssueClaimFloors (the claim path's own SQL floor
+ * fragments) and the same conservative ID extractor the issue fallback uses.
+ */
+export async function previewClaimSpecAdmission(args: {
+  spec: ClaimSpec;
+  harness?: string;
+  assignee: string;
+  explain?: ExplainIssueFloors;
+}): Promise<{ preview: ClaimSpecAdmissionPreview; errors: string[]; warning?: string }> {
+  const cohortIds = positiveIdCohortIds(args.spec.view.filter);
+  if (cohortIds === null) {
+    return {
+      preview: {
+        mode: 'dynamic',
+        checked: false,
+        reason: 'no conservatively-extractable positive ID cohort; admissibility remains live and is evaluated at pull time',
+      },
+      errors: [],
+    };
+  }
+
+  const issueIds = cohortIds.filter((id) => /^(?:WI|EI)-/i.test(id));
+  if (issueIds.length === 0) {
+    return {
+      preview: {
+        mode: 'fixed-cohort',
+        checked: false,
+        cohortIds,
+        checkedIssueIds: [],
+        reason: 'cohort contains no WI-/EI- issue-family ids; feature-family floors remain enforced at pull time',
+      },
+      errors: [],
+    };
+  }
+  if (!args.harness) {
+    return {
+      preview: {
+        mode: 'fixed-cohort',
+        checked: false,
+        cohortIds,
+        checkedIssueIds: issueIds,
+        reason: 'a concrete harness is required to evaluate issue-family claim floors',
+      },
+      errors: [
+        'harness is required when a claim spec names WI-/EI- ids — the write-time floor preview cannot safely infer their scope',
+      ],
+    };
+  }
+
+  const effectiveStates = args.spec.states ?? ['todo'];
+  const explain = args.explain ?? (await import('../../work-items')).explainIssueClaimFloors;
+  const rows = await explain(args.harness, issueIds, {
+    assignee: args.assignee,
+    states: effectiveStates,
+  });
+  const admissibleIds = rows.filter((row) => row.admissible).map((row) => row.id);
+  const floored = rows.filter((row) => !row.admissible);
+  const preview: ClaimSpecAdmissionPreview = {
+    mode: 'fixed-cohort',
+    checked: true,
+    cohortIds,
+    checkedIssueIds: issueIds,
+    admissibleIds,
+    floored,
+    effectiveStates,
+  };
+  const floorSummary = floored.map((row) => `${row.id}:${row.refusedBy ?? 'unknown'}`).join(', ');
+  const allNamedIdsAreIssues = issueIds.length === cohortIds.length;
+  if (allNamedIdsAreIssues && admissibleIds.length === 0) {
+    return {
+      preview,
+      errors: [
+        `claim spec names ${issueIds.length} issue-family id(s); 0 are claim-path admissible under states=[${effectiveStates.join(',')}]: ${floorSummary}`,
+      ],
+    };
+  }
+  return {
+    preview,
+    errors: [],
+    ...(floored.length > 0
+      ? {
+          warning:
+            `${floored.length}/${issueIds.length} named issue-family id(s) are currently floored ` +
+            `under states=[${effectiveStates.join(',')}]: ${floorSummary}`,
+        }
+      : {}),
+  };
+}
+
 /**
  * Best-effort: resolve the role a `cupId` was spawned as, by looking it up in the nursery
  * (harness_shared.spawned_agents). `cupId` is the bee's session/owner id, which the nursery records
@@ -150,6 +264,13 @@ export default defineTool({
         .describe(
           'a FLEET slug to steer as a whole (fleet-scheduler-hardening P-002): stores the spec under the fleet:<slug> sentinel; every member WITHOUT a per-bee spec inherits it on their next get_next (bee spec → fleet spec → default). The standing-lane lever for fleet relaunches — fresh members inherit the lane with no per-bee re-authoring. A per-bee spec always wins over the fleet spec.',
         ),
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'harness used by the WRITE-TIME admission preview for a fixed WI-/EI- cohort. Required for a named issue cohort unless the caller is harness-scoped; dynamic/property specs do not need it.',
+        ),
       spec: z
         .record(z.string(), z.unknown())
         .describe(
@@ -171,6 +292,29 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const validated = validateClaimSpec(args.spec);
+    if (!validated.ok || !validated.spec) {
+      return { data: { ok: false, errors: validated.errors } };
+    }
+    const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const ctxHarness =
+      typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*'
+        ? ctxHarnessRaw
+        : undefined;
+    const admission = await previewClaimSpecAdmission({
+      spec: validated.spec,
+      harness: args.harness ?? ctxHarness,
+      assignee: ident.ownerId,
+    });
+    if (admission.errors.length > 0) {
+      return {
+        data: {
+          ok: false,
+          errors: admission.errors,
+          admissibilityPreview: admission.preview,
+        },
+      };
+    }
     // Fleet target (P-002): validate the fleet exists (mirrors WI-1408 — a typo'd slug
     // must fail loud, not store a spec no member will ever inherit), then store under
     // the sentinel key. Membership-spec resolution happens bee-side in getClaimSpec.
@@ -238,6 +382,10 @@ export default defineTool({
     // (Skipped for a FLEET target — the sentinel key is not a spawned agent.)
     const spawnedRole = args.fleet ? null : await lookupSpawnedRole(targetBeeId);
     const out: Record<string, unknown> = { ...res };
+    out.admissibilityPreview = admission.preview;
+    if (admission.warning) {
+      out.warning = out.warning ? `${out.warning as string}\n${admission.warning}` : admission.warning;
+    }
     const roleWarning = args.fleet ? null : claimSpecInertWarning(targetBeeId, spawnedRole);
     if (roleWarning) {
       // Append — never clobber the store's WI-1564 strand warning.
