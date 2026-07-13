@@ -855,8 +855,11 @@ async function injectPsuHostWake(
       extras = renderCarryBriefColdExtras(
         await buildBrief(d.subscriberId, { workspaceId: d.workspaceId }),
       );
-    } catch {
-      /* note-only injection */
+    } catch (e) {
+      // Note-only injection — but NEVER silently (EI-8593, then EI-11484: twice a
+      // CarryBrief contract drift crashed the renderer here and this swallow hid a
+      // fleet-wide loss of cold-wake continuity extras until a test caught it).
+      console.warn('[wake-executor] cold carry-brief extras failed (note-only injection):', e as Error);
     }
     // turn-provenance P-002: the cold injection is composed HERE (not by the
     // callers, who tag the warm text) — tag it as a loop fire so the reset/

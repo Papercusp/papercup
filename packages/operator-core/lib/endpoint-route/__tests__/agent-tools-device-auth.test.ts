@@ -13,7 +13,7 @@
  * Capability-gate behavior for the real `mobile:*` surface is covered
  * once those tools land (Phase E4).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `principalFromDeviceJwt` (Phase E4) runs `isRevoked` — which treats a
 // device absent from `mobile_devices` as revoked. The synthetic JWT
@@ -33,7 +33,16 @@ import {
 
 import catchall from '../routes/agent-tools/catchall';
 import type { RouteContext } from '../define-route';
-import { signDeviceToken } from '../../device-jwt';
+import { signDeviceToken, __resetDeviceJwtForTest } from '../../device-jwt';
+
+// A durable MOBILE_JWT_SECRET for the whole file: without one, the first
+// signDeviceToken() lazily emits the "ephemeral secret" console.warn
+// (warnIfMobileJwtSecretNotDurable), which vitest-fail-on-console rejects.
+// The durability warning has its own dedicated tests in device-jwt.test.ts —
+// here we only care about the JWT auth path.
+const PRIOR_MOBILE_JWT_SECRET = process.env.MOBILE_JWT_SECRET;
+process.env.MOBILE_JWT_SECRET = 'device-auth-e2e-test-secret-0123456789abcdef';
+__resetDeviceJwtForTest();
 
 const CTX: RouteContext = {
   principal: null,
@@ -88,6 +97,11 @@ beforeEach(() => {
 });
 afterEach(() => {
   _resetProjectionRegistryForTests();
+});
+afterAll(() => {
+  if (PRIOR_MOBILE_JWT_SECRET === undefined) delete process.env.MOBILE_JWT_SECRET;
+  else process.env.MOBILE_JWT_SECRET = PRIOR_MOBILE_JWT_SECRET;
+  __resetDeviceJwtForTest();
 });
 
 describe('agent-tools catch-all — mobile JWT auth (E2)', () => {

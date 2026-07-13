@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { classifyArtifact, releaseTag, scanArtifacts } from './record-release-cli';
+import { classifyArtifact, releaseTag, scanArtifacts, scanMobileArtifacts } from './record-release-cli';
 
 describe('classifyArtifact — real filenames from real cuts, not invented ones', () => {
   it('maps the linux artifacts', () => {
@@ -35,6 +35,25 @@ describe('classifyArtifact — real filenames from real cuts, not invented ones'
     expect(classifyArtifact('Papercusp_GUI_0.0.8_amd64.AppImage.sig')).toBeNull();
     expect(classifyArtifact('Papercusp GUI_0.0.8_amd64.deb.sha256')).toBeNull();
     expect(classifyArtifact('latest.json')).toBeNull();
+  });
+
+  it('maps the mobile apps to their own product (not gui/server)', () => {
+    expect(classifyArtifact('Papercusp_0.0.9_android.apk')).toEqual({
+      product: 'mobile',
+      platform: 'android-universal',
+    });
+    expect(classifyArtifact('app-debug.apk')).toEqual({
+      product: 'mobile',
+      platform: 'android-universal',
+    });
+    expect(classifyArtifact('Papercusp_0.0.9_android.aab')?.platform).toBe('android-universal');
+    expect(classifyArtifact('Papercusp_0.0.9_ios.ipa')).toEqual({
+      product: 'mobile',
+      platform: 'ios-arm64',
+    });
+    // "Server" in a mobile filename must NOT flip it to the server product — the
+    // extension decides mobile, and mobile is its own product.
+    expect(classifyArtifact('Papercusp Server_0.0.9_android.apk')?.product).toBe('mobile');
   });
 });
 
@@ -146,5 +165,66 @@ describe('scanArtifacts', () => {
     expect(artifact.sha256).not.toBe(
       createHash('sha256').update(bytes.subarray(0, chunk)).digest('hex'),
     );
+  });
+});
+
+describe('scanMobileArtifacts — the phone builds live in a SEPARATE repo, unversioned names', () => {
+  it('returns nothing when the mobile root is null or absent (a desktop-only cut is legal)', () => {
+    expect(scanMobileArtifacts(null, '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
+    expect(scanMobileArtifacts('/no/such/mobile/root', '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
+  });
+
+  it('records a debug APK under a SYNTHESIZED versioned name + a RELATIVE url', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
+    const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
+    fs.mkdirSync(apkDir, { recursive: true });
+    // The built APK carries NO version — that is the whole reason this function
+    // synthesizes the recorded name instead of filtering by a version substring.
+    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), 'apk-bytes');
+
+    const found = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha');
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      product: 'mobile',
+      platform: 'android-universal',
+      name: 'Papercusp_0.0.9_android.apk',
+      url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_android.apk',
+      size: 'apk-bytes'.length,
+    });
+    expect(found[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(found[0].url).not.toMatch(/^https?:\/\//); // base path is the secret
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('prefers the release APK over the debug APK — one row, release bytes', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
+    fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/release'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/debug'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/release/app-release.apk'), 'RELEASE');
+    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/debug/app-debug.apk'), 'debug-bytes');
+
+    const apks = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha').filter((a) =>
+      a.name.endsWith('.apk'),
+    );
+    expect(apks).toHaveLength(1);
+    expect(apks[0].size).toBe('RELEASE'.length); // release bytes, not debug
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('finds an iOS .ipa nested under ios/build once a signed build exists (dormant until enrollment)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
+    const ipaDir = path.join(root, 'ios/build/export');
+    fs.mkdirSync(ipaDir, { recursive: true });
+    fs.writeFileSync(path.join(ipaDir, 'Papercup.ipa'), 'ipa-bytes');
+
+    const ios = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha').find(
+      (a) => a.platform === 'ios-arm64',
+    );
+    expect(ios).toMatchObject({
+      product: 'mobile',
+      name: 'Papercusp_0.0.9_ios.ipa',
+      url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_ios.ipa',
+    });
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });
