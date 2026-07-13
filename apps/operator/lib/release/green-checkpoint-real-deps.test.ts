@@ -21,7 +21,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
+import { hasNpmScript, realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
 import { releaseConfig, type ReleaseConfig } from './release-config';
 
 interface ExecResp { code: number; stdout?: string; stderr?: string }
@@ -54,6 +54,13 @@ const cpTree = mkdtempSync(join(tmpdir(), 'green-cp-tree-'));
 writeFileSync(join(cpTree, 'package.json'), JSON.stringify({ name: 'cp-fixture' }));
 afterAll(() => rmSync(cpTree, { recursive: true, force: true }));
 
+const typecheckTree = mkdtempSync(join(tmpdir(), 'green-cp-typecheck-tree-'));
+writeFileSync(
+  join(typecheckTree, 'package.json'),
+  JSON.stringify({ name: 'cp-typecheck-fixture', scripts: { 'lint:tsc': 'node scripts/lint-tsc.mjs' } }),
+);
+afterAll(() => rmSync(typecheckTree, { recursive: true, force: true }));
+
 const cfg: ReleaseConfig = releaseConfig({
   integrationRoot: '/int',
   releaseRoot: '/int',
@@ -65,6 +72,40 @@ const cfg: ReleaseConfig = releaseConfig({
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(' ');
 
 describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
+  it('detects the optional lint:tsc script without requiring it from subject hives', () => {
+    expect(hasNpmScript(cpTree, 'lint:tsc')).toBe(false);
+    expect(hasNpmScript(typecheckTree, 'lint:tsc')).toBe(true);
+  });
+
+  it('runs the Papercusp lint:tsc leg before the SPA build when the candidate provides it', async () => {
+    // suite green → typecheck green → marker grep clean → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    expect(calls).toHaveLength(4);
+    expect(calls[1].cmd).toBe('npm');
+    expect(calls[1].args).toEqual(['run', 'lint:tsc']);
+    expect(calls[1].opts?.cwd).toBe(typecheckTree);
+    expect(calls[1].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    expect(calls[1].opts?.env?.AFFECTED_BASE).toBe('base-sha');
+    expect(calls[2].cmd).toBe('git');
+    expect(calls[3].args).toContain('build');
+  });
+
+  it('holds the candidate when lint:tsc reports a type regression and skips the SPA build', async () => {
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: 'operator-core/lib/broken.ts: TS2322' },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain('lint:tsc');
+    expect(r.summary).toContain('TYPECHECK FAILED');
+    expect(calls).toHaveLength(2);
+  });
+
   it('green suite + clean tree + green build → green, with the stripped checkpoint env on the green command', async () => {
     // suite green → EI-1836 conflict-marker grep (code 1 = clean) → SPA build (code 0).
     const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);

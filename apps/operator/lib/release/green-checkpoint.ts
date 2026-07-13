@@ -1852,6 +1852,24 @@ export function isNothingToGate(greenCmd: string, treeHasPackageJson: boolean): 
   return npmGreenCmd && !treeHasPackageJson;
 }
 
+/** Whether the isolated candidate checkout exposes the platform typecheck leg.
+ *
+ * The Papercusp root owns `lint:tsc`; subject hives are allowed to omit it, so the
+ * release gate must discover the script rather than blindly running an operator-only
+ * command in every per-hive checkout. A missing script means there is no typecheck leg
+ * for that subject, not a typecheck failure.
+ */
+export function hasNpmScript(treeDir: string, scriptName: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(treeDir, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, unknown>;
+    };
+    return typeof pkg.scripts?.[scriptName] === 'string' && pkg.scripts[scriptName].trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = runCmd): CheckpointDeps {
   const log = (s: string) => console.log(`[green-checkpoint] ${s}`);
   // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
@@ -1949,6 +1967,28 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       const env = buildGreenCheckpointEnv(base);
       const r = await exec(cmd, args, { cwd: treeDir, env, allowNonZero: true });
 
+      // WI-4493: `test:affected` is an esbuild/Vitest gate and does not typecheck
+      // operator-core. The Papercusp root's `lint:tsc` ratchet catches new per-file
+      // regressions, so run it in the same isolated candidate tree before allowing
+      // the candidate through the release gate. Subject hives without that script
+      // retain their existing gate semantics.
+      let typecheckOut = '';
+      let typecheckOk = true;
+      if (r.code === 0 && hasNpmScript(treeDir, 'lint:tsc')) {
+        const typecheck = await exec('npm', ['run', 'lint:tsc'], {
+          cwd: treeDir,
+          env,
+          allowNonZero: true,
+        });
+        typecheckOk = typecheck.code === 0;
+        if (!typecheckOk) {
+          typecheckOut =
+            '\n\n=== TYPECHECK FAILED (npm run lint:tsc) — operator-core type regressions block the release ===\n' +
+            typecheck.stdout +
+            typecheck.stderr;
+        }
+      }
+
       // P-005: the SPA build is PART of "green". A build break (a bad import, a type
       // error in a bundled module) passes the Vitest suite, then fails at the deploy's
       // swap step (`--build-spa`) and rolls back — needlessly draining + restarting the
@@ -1965,7 +2005,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       // made `npm --workspace @papercusp/operator-vite run build` die with "No workspaces
       // found" on every per-hive gate, holding that hive's `main` forever (oddsmith).
       const spaWorkspace = cfg.spaBuildWorkspace;
-      if (r.code === 0 && spaWorkspace) {
+      if (r.code === 0 && typecheckOk && spaWorkspace) {
         // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a
         // cryptic CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such
         // markers in globals.css (a bad git-sync auto-merge — the live-merge resolver
@@ -2002,8 +2042,8 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
           }
         }
       }
-      let green = r.code === 0 && buildOk;
-      const fullOutput = r.stdout + r.stderr + buildOut;
+      let green = r.code === 0 && typecheckOk && buildOk;
+      const fullOutput = r.stdout + r.stderr + typecheckOut + buildOut;
 
       // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
       // SUITE is what failed (r.code !== 0; the build only runs on a green suite, so
@@ -2055,6 +2095,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       // the SPA build break in, so the release-fixer dedups by WHAT failed, not the candidate
       // sha. The de-noised 2000-char tail rides the held-gate broadcast/escalation.
       let failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
+      if (!typecheckOk && !failingTests.includes('lint:tsc')) failingTests.push('lint:tsc');
       let summary = summarizeSuiteOutput(fullOutput);
       if (!green && buildOk && failingTests.length) {
         try {
