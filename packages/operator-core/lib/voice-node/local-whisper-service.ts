@@ -250,6 +250,31 @@ async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promis
     return { ok: false, reason: 'spawn-storm', detail: `${MAX_SPAWNS_PER_WINDOW} spawns in ${SPAWN_WINDOW_MS / 60000}min — refusing to spawn-loop a failing whisper-server` };
   }
 
+  const port = deps.port ?? WHISPER_SERVER_DEFAULT_PORT;
+  const url = `http://127.0.0.1:${port}`;
+  const timeoutMs = deps.healthTimeoutMs ?? 15_000;
+  const intervalMs = deps.healthIntervalMs ?? 500;
+
+  // NEVER spawn onto a bound port (WI-4501). whisper-server binds SO_REUSEPORT, so a duplicate
+  // spawn does NOT fail with EADDRINUSE — it silently stacks, and the kernel then round-robins
+  // /health probes across the pile, so a sick listener answering one probe triggers ANOTHER
+  // spawn (17 servers × --threads 127 on this box). If something already holds the port:
+  // still-loading whisper → poll /health until it answers (use it as external); anything that
+  // never answers → 'port-occupied', a loud reason instead of a silent duplicate.
+  const tcpProbe = deps.tcpProbe ?? defaultTcpProbe;
+  if (await tcpProbe(port)) {
+    const bindDeadline = now() + timeoutMs;
+    while (now() < bindDeadline) {
+      if (await probe(url)) return { ok: true, url, source: 'external' };
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return {
+      ok: false,
+      reason: 'port-occupied',
+      detail: `something is bound to 127.0.0.1:${port} but never answered /health within ${timeoutMs}ms — refusing to stack a duplicate whisper-server on it`,
+    };
+  }
+
   const detectHw = deps.detectHw ?? detectHardware;
   const hw = await detectHw();
   const platformKey = platformKeyFor(whisperPlatformSpec(hw));
@@ -262,15 +287,49 @@ async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promis
     return { ok: false, reason: 'not-provisioned', detail: modelPlan.detail };
   }
 
-  const port = deps.port ?? WHISPER_SERVER_DEFAULT_PORT;
-  const url = `http://127.0.0.1:${port}`;
   const args = renderWhisperServerArgs({ modelPath: modelPlan.weightsPath, port });
   const spawnFn = deps.spawnFn ?? spawn;
 
+  // Cross-process spawn lock: `state.starting` coalesces within ONE process; this serializes
+  // ACROSS processes (a deploy restarts several hono-hosts at once — each spawned "its own
+  // singleton" on 2026-07-12). A fresh foreign lock means a sibling is mid-spawn: poll its
+  // server's health instead of spawning a duplicate.
+  const lock = await acquireSpawnLock(deps.home);
+  if (lock === 'held') {
+    const lockDeadline = now() + timeoutMs;
+    while (now() < lockDeadline) {
+      if (await probe(url)) return { ok: true, url, source: 'external' };
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return {
+      ok: false,
+      reason: 'unhealthy',
+      detail: `another process holds the whisper spawn lock and its server never answered /health within ${timeoutMs}ms`,
+    };
+  }
+  try {
+    return await spawnAndHealthGate({ deps, probe, url, args, binPath: cached.binPath, spawnFn, now, timeoutMs, intervalMs });
+  } finally {
+    void releaseSpawnLock(deps.home);
+  }
+}
+
+async function spawnAndHealthGate(opts: {
+  deps: LocalWhisperDeps;
+  probe: (u: string) => Promise<boolean>;
+  url: string;
+  args: string[];
+  binPath: string;
+  spawnFn: typeof spawn;
+  now: () => number;
+  timeoutMs: number;
+  intervalMs: number;
+}): Promise<EnsureWhisperResult> {
+  const { probe, url, args, binPath, spawnFn, now, timeoutMs, intervalMs } = opts;
   state.spawnTimes.push(now());
   let child: ChildProcess;
   try {
-    child = spawnFn(cached.binPath, args, { stdio: 'ignore', detached: false });
+    child = spawnFn(binPath, args, { stdio: 'ignore', detached: false });
   } catch (e) {
     return { ok: false, reason: 'spawn-failed', detail: e instanceof Error ? e.message : String(e) };
   }
@@ -285,8 +344,6 @@ async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promis
   });
 
   // Health-gate: the model load takes ~1s (base) — poll until it answers or time out.
-  const timeoutMs = deps.healthTimeoutMs ?? 15_000;
-  const intervalMs = deps.healthIntervalMs ?? 500;
   const deadline = now() + timeoutMs;
   const healthy: Promise<EnsureWhisperResult> = (async () => {
     while (now() < deadline) {
