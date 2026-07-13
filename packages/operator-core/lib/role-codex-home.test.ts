@@ -229,7 +229,9 @@ describe('writeRoleCodexHome', () => {
       (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-locks-release.sh'),
     );
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
+    expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
+    expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
     // Objective-title hook (session-objective-display-2026-06-22): terminal title
     // ← coord:glance self.objective, matcher .*, baked SID = the session id.
     const objective = hooks.hooks.PostToolUse.find(
@@ -481,7 +483,9 @@ describe('writeSuCodexHome', () => {
       (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-locks-release.sh'),
     );
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+    expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+    expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
 
     // The activity-bridge hook — an SU/engineer session is a worker too.
     const activity = hooks.hooks.PostToolUse.find(

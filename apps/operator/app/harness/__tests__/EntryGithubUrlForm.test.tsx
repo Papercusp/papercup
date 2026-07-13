@@ -19,6 +19,17 @@ import {
   stepForErrorCode,
 } from '../EntryGithubUrlForm';
 
+// Test-watchdog selection does not always inherit apps/operator's setupFiles.
+// Radix exercises ResizeObserver only after particular form transitions, so a
+// missing global otherwise produces a misleading partially-red suite.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+}
+
 // useLexicon → flag bootstrap (fetch + EventSource) is mocked out; the form
 // only resolves the 'pot' term ("Hive"/"hive").
 vi.mock('@/lib/useLexicon', () => ({

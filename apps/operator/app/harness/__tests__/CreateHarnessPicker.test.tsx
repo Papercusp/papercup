@@ -18,6 +18,18 @@ import { CreateHarnessPicker } from '../CreateHarnessPicker';
 
 // ── Global mock setup ──────────────────────────────────────────────────────
 
+// This file is also selected by test-watchdog runs that do not always inherit
+// apps/operator/vitest.config.ts's setupFiles. Radix touches ResizeObserver
+// only in the picker branches that open a popover, which otherwise leaves a
+// misleading mix of passing and failing cases. Keep the suite self-contained.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+}
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));

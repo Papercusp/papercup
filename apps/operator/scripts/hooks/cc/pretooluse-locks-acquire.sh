@@ -124,11 +124,31 @@ cwd = payload.get('cwd') or os.getcwd()
 # one owner — the bug PAPERCUSP_SID fixes). Pre + Post share the env, so
 # release still matches acquire.
 env_sid = os.environ.get('PAPERCUSP_SID')
+lock_sid = os.environ.get('PAPERCUSP_LOCK_SID')
 session_id = payload.get('session_id')
+
+
+def diagnostic_lock_sid():
+    """Per-session CODEX_HOME is a second deterministic owner source. It lets
+    an already-running Codex session pick up an identity repair even when Codex
+    cached an older hook command/environment at launch."""
+    try:
+        codex_home = os.environ.get('CODEX_HOME')
+        if not codex_home:
+            return None
+        with open(os.path.join(codex_home, 'papercusp-diagnostics.json')) as f:
+            value = json.load(f).get('lockOwnerSid')
+        return value if isinstance(value, str) and value else None
+    except Exception:
+        return None
+
+
 owner = (
+    lock_sid if isinstance(lock_sid, str) and lock_sid
+    else diagnostic_lock_sid() or (
     env_sid if isinstance(env_sid, str) and env_sid
     else session_id if isinstance(session_id, str) and session_id
-    else agent_id
+    else agent_id)
 )
 
 

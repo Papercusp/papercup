@@ -36,12 +36,21 @@ edit tools), a `hookSpecificOutput` decision on stdout. All are **fail-open**
 | `userpromptsubmit-provenance.sh`      | UserPromptSubmit | **Turn provenance** (turn-provenance-owner-vs-agent-2026-07-11): classify every submitted prompt against the injectors' `⟦turn-origin:… nonce:…⟧` envelope + short-TTL JSONL ledger (`~/.papercusp/turn-provenance/`) → `additionalContext` stamp: VERIFIED agent-origin / UNVERIFIED origin claim / affirmative OWNER (interactive). The LEDGER decides, never the text (D-002). Local-file-only hot path, fail-open, never blocks a prompt. **Claude-only** — codex has no prompt-submit event (Layer-1 envelope only there); lockstep mirror of `packages/operator-core/lib/turn-provenance/turn-provenance.ts`. |
 
 **Codex env caveat (D-006):** Codex hands hooks a **minimal env**, so the Codex
-`hooks.json` **bakes** `PAPERCUSP_SID` (+ `PAPERCUSP_AGENT=codex`) into the
+`hooks.json` **bakes** `PAPERCUSP_LOCK_SID`/`PAPERCUSP_SID` (+
+`PAPERCUSP_AGENT=codex`) into the
 command; Claude reads them from the inherited session env, so its
 `settings.json` entry is just the script path. Current Codex supports
 PreToolUse/PostToolUse matchers for `Bash`, `apply_patch` (plus `Edit`/`Write`
 aliases), and MCP tools; missing hook scripts still degrade fail-open, so
 diagnostics tell agents when explicit `locks:*` calls are required.
+
+The edit hook coordinates canonical-tree files by repo-relative path and hidden
+home configuration (`~/.config`, `~/.papercusp`, `~/.codex`, etc.) through the
+reserved `@external/home/*` keyspace. Explicit callers use
+`locks:acquire { external_paths:["/absolute/home/path"] }`; other repositories
+remain outside Papercusp coordination. `/api/su-locks/hook-health` exposes the
+last automatic decision (owner, tool, logical paths, lock id) as well as
+success/error health, so enforcement is inspectable instead of inferred.
 
 Installed to `~/.papercusp/hooks/cc/` by `install-standalone-mcp.sh`, which
 also merges the Claude `settings.json` entries. The Codex entries are written

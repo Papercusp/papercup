@@ -61,11 +61,28 @@ if not isinstance(tool_use_id, str) or not tool_use_id:
 # owner == acquirer). PreToolUse resolves PAPERCUSP_SID → session_id →
 # agent_id, in that order; mirror it exactly so release matches acquire.
 env_sid = os.environ.get('PAPERCUSP_SID')
+lock_sid = os.environ.get('PAPERCUSP_LOCK_SID')
 session_id = payload.get('session_id')
+
+
+def diagnostic_lock_sid():
+    try:
+        codex_home = os.environ.get('CODEX_HOME')
+        if not codex_home:
+            return None
+        with open(os.path.join(codex_home, 'papercusp-diagnostics.json')) as f:
+            value = json.load(f).get('lockOwnerSid')
+        return value if isinstance(value, str) and value else None
+    except Exception:
+        return None
+
+
 owner = (
+    lock_sid if isinstance(lock_sid, str) and lock_sid
+    else diagnostic_lock_sid() or (
     env_sid if isinstance(env_sid, str) and env_sid
     else session_id if isinstance(session_id, str) and session_id
-    else agent_id
+    else agent_id)
 )
 
 cache_path = os.path.join(cache_dir, tool_use_id + '.lock')

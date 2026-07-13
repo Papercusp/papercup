@@ -144,7 +144,7 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
       },
       // Mirrors the generated Codex hook command: the per-session owner is
       // baked because the inherited Codex hook environment can be stale.
-      { PAPERCUSP_SID: 'codex-session-owner' },
+      { PAPERCUSP_LOCK_SID: 'codex-session-owner', PAPERCUSP_SID: 'codex-session-owner' },
     );
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');

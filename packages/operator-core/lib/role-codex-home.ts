@@ -353,7 +353,9 @@ export function writeCodexLockHooks(
   // Codex gives hook commands a minimal/stale environment. The lock hooks MUST
   // use the exact same per-session owner as the MCP URL; otherwise an explicit
   // multi-file claim by this session blocks its own automatic per-edit acquire.
-  const lockIdentity = opts.lockSid ? ` PAPERCUSP_SID=${shellSingleQuote(opts.lockSid)}` : '';
+  const lockIdentity = opts.lockSid
+    ? ` PAPERCUSP_LOCK_SID=${shellSingleQuote(opts.lockSid)} PAPERCUSP_SID=${shellSingleQuote(opts.lockSid)}`
+    : '';
 
   type CodexHook = { matcher: string; hooks: { type: 'command'; command: string }[] };
   const postToolUse: CodexHook[] = [
