@@ -50,6 +50,7 @@ import type {
 import type { CorpusEntry } from './critique-core';
 import type { RoutingDecision } from './router';
 import type { RoutedIdeaProvenance } from './outcome-feedback';
+import { flattenDigest } from './lenses';
 
 /* ────────────────────────────────────────────────────────────────────────
  * Budget + observability
@@ -176,14 +177,20 @@ export type ScoutCycleStop =
  * nothing exists to ground an idea in, so running the ideator roster over it is
  * pure spend (a fresh/quiet hive paid the full 4-lens roster just to exit
  * 'no-ideas'). `headline`/`generatedAt` don't count; only patterns ground ideas.
+ *
+ * DRIFT FIX (blender-self-learning-2026-07-12 P-013): "every lane" must mean EVERY
+ * grounding lane, not the four free-text lanes this check hardcoded at EI-303 time.
+ * Since then `rubricRatings`, `reverts`, `standingFacts`, `nicheMap`, and the P-008/
+ * P-009/P-010 signal lanes were added, and each grounds ideas (they're in
+ * `flattenDigest` — the canonical valid-ref set an idea cites). Hardcoding four lanes
+ * silently UNDERCOUNTED: a digest whose ONLY signal is a MEASURED rubric regression —
+ * exactly the case P-004 rubric-seeding exists to ideate on, and exactly what a drill
+ * injects — read as "empty" and short-circuited before the seeded slot ever ran. Reuse
+ * `flattenDigest` (the single source of truth for "what grounds an idea", the same set
+ * `digestRefSet`/invariants ride) so this can never drift from the grounding set again.
  */
 export function digestIsEmpty(digest: CorpusDigest): boolean {
-  return (
-    digest.recurringFriction.length === 0 &&
-    digest.timeTokenSinks.length === 0 &&
-    digest.chronicDeferrals.length === 0 &&
-    digest.capabilityGaps.length === 0
-  );
+  return flattenDigest(digest).length === 0;
 }
 
 /**
