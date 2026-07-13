@@ -576,7 +576,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('   or: record-release-cli --regenerate [--out <dir>]   # re-render pages only');
     return 2;
   }
-  const channel = arg(argv, '--channel') ?? 'alpha';
+  const opts = buildRunOpts(argv);
+  if (regenerate) return regenerateOnly(opts.scope, opts.outDir);
+  return run(opts);
+}
+
+/**
+ * Assemble the full RecordOpts from argv/env. PURE (no DB) so it is unit-testable
+ * — and extracted from main() specifically to GUARD the opts wiring. main() used
+ * to compute `mobileRoot` locally and then forget to include it in the run({...})
+ * object, so `scanMobileArtifacts` was handed `undefined` and silently recorded
+ * NO mobile artifact on every real cut. Every unit test passed; only an
+ * end-to-end dry-run caught it. Building one object here (and asserting its fields
+ * in the buildRunOpts test) makes that class of drop impossible to reintroduce
+ * without a red test.
+ */
+export function buildRunOpts(argv: string[]): RecordOpts {
   const changelogFile = arg(argv, '--changelog-file');
   const changelogMd = changelogFile ? fs.readFileSync(changelogFile, 'utf8') : null;
   const cutAtRaw = arg(argv, '--cut-at');
@@ -598,12 +613,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',
     harnessSlug: arg(argv, '--harness') ?? 'papercusp',
   };
-
-  if (regenerate) return regenerateOnly(scope, outDir);
-
-  return run({
-    version: version as string,
-    channel,
+  return {
+    version: (arg(argv, '--version') ?? '') as string,
+    channel: arg(argv, '--channel') ?? 'alpha',
     gitSha: arg(argv, '--git-sha'),
     cutAt: cutAtRaw ? new Date(cutAtRaw) : new Date(),
     since: sinceRaw ? new Date(sinceRaw) : null,
@@ -616,7 +628,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     dryRun: argv.includes('--dry-run'),
     genChangelog: argv.includes('--generate-changelog'),
     forceChangelog: argv.includes('--force-changelog'),
-  });
+  };
 }
 
 if (isCliEntry(import.meta.url)) {

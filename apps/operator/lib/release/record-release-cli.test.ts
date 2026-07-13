@@ -3,7 +3,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { classifyArtifact, releaseTag, scanArtifacts, scanMobileArtifacts } from './record-release-cli';
+import {
+  buildRunOpts,
+  classifyArtifact,
+  releaseTag,
+  scanArtifacts,
+  scanMobileArtifacts,
+} from './record-release-cli';
 
 describe('classifyArtifact — real filenames from real cuts, not invented ones', () => {
   it('maps the linux artifacts', () => {
@@ -226,5 +232,45 @@ describe('scanMobileArtifacts — the phone builds live in a SEPARATE repo, unve
       url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_ios.ipa',
     });
     fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
+  // main() once computed `mobileRoot` and then FORGOT to put it in the run({...})
+  // object, so scanMobileArtifacts got `undefined` and silently recorded NO mobile
+  // artifact on every real cut. Every unit test passed; only an end-to-end dry-run
+  // caught it. buildRunOpts builds ONE object; asserting its fields here makes that
+  // whole class of "computed-but-not-wired" drop impossible without a red test.
+  it('wires --mobile-root through onto the opts object', () => {
+    const opts = buildRunOpts(['--version', '0.0.9', '--mobile-root', '/tmp/some-mobile-root']);
+    expect(opts.mobileRoot).toBe('/tmp/some-mobile-root');
+    expect(opts.version).toBe('0.0.9');
+    expect(Array.isArray(opts.bundleDirs)).toBe(true);
+  });
+
+  it('falls back to PAPERCUSP_MOBILE_ROOT when --mobile-root is absent', () => {
+    const prev = process.env.PAPERCUSP_MOBILE_ROOT;
+    process.env.PAPERCUSP_MOBILE_ROOT = '/tmp/env-mobile-root';
+    try {
+      expect(buildRunOpts(['--version', '0.0.9']).mobileRoot).toBe('/tmp/env-mobile-root');
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_MOBILE_ROOT;
+      else process.env.PAPERCUSP_MOBILE_ROOT = prev;
+    }
+  });
+
+  it('carries the channel + dry-run flags through the same object', () => {
+    const opts = buildRunOpts([
+      '--version',
+      '1.2.3',
+      '--channel',
+      'beta',
+      '--dry-run',
+      '--mobile-root',
+      '/x',
+    ]);
+    expect(opts.channel).toBe('beta');
+    expect(opts.dryRun).toBe(true);
+    expect(opts.mobileRoot).toBe('/x');
   });
 });
