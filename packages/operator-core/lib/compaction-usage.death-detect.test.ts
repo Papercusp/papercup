@@ -63,6 +63,16 @@ describe('tailCarriesContextDeath — real overflow vs. phrase-as-data (WI-4608)
     expect(tailCarriesContextDeath(tail)).toBe(false);
   });
 
+  it('FALSE: assistant prose quoting the marker mid-sentence', () => {
+    // Exact residual shape from WI-4608: the session reports an escalation
+    // containing the phrase, but the assistant text is ordinary commentary.
+    const tail =
+      '{"type":"assistant","message":{"content":[{"type":"text",' +
+      '"text":"Two fresh escalations claimed this session \\"died on Prompt is too long\\" — ' +
+      'despite the session still running"}]}}\n';
+    expect(tailCarriesContextDeath(tail)).toBe(false);
+  });
+
   it('FALSE: an assistant text block that is exactly the marker but is ordinary prose', () => {
     const tail =
       '{"type":"assistant","message":{"content":[{"type":"text","text":"Prompt is too long"}]}}\n';
