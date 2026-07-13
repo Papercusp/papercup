@@ -67,6 +67,42 @@ describe('scrubIdentity', () => {
   });
 });
 
+// ── The identity we did NOT enumerate. This is the one that got out.
+describe('shape-based patterns catch the identity no literal knew about', () => {
+  it("redacts an email that is NOT the box's git identity — the real second leak", () => {
+    // The scrub knew `user.email` and redacted it perfectly. The plans' frontmatter
+    // carried `owner: <a different personal address>` — same human, an address this
+    // box has never heard of, so no literal matched and it went onto the page.
+    const text = 'owner: someone-else@gmail.com';
+    expect(scrubIdentity(text, LITS)).toBe('owner: [email]');
+    // ...and the GATE must see it too, or it certifies the leak as clean.
+    expect(findIdentityLeaks(text, LITS)).toEqual([{ kind: 'email', count: 1 }]);
+  });
+
+  it("redacts somebody else's home directory, on all three platforms", () => {
+    expect(scrubIdentity('/home/otheruser/build.log', LITS)).toBe('~/build.log');
+    expect(scrubIdentity('/Users/buildbot/Library', LITS)).toBe('~/Library');
+    expect(scrubIdentity('C:\\Users\\tester\\AppData', LITS)).toBe('~\\AppData');
+  });
+
+  it('scrubs with the ENUMERATED literal first — the shapes are the backstop, not the winner', () => {
+    // The SCRUB is ordered: this box's own home is a known literal, so it redacts as
+    // `home` and the generic unix-home pattern never sees it. (The GATE is different
+    // by design — it reports EVERY shape it finds in the raw text, overlapping or
+    // not: its job is "is there any identity in these bytes", not "which rule owns
+    // this byte". Both must end up clean.)
+    expect(scrubIdentity('/home/jdoe/x', LITS)).toBe('~/x');
+    expect(findIdentityLeaks('/home/jdoe/x', LITS).map((h) => h.kind)).toContain('home');
+    expect(findIdentityLeaks(scrubIdentity('/home/jdoe/x', LITS), LITS)).toEqual([]);
+  });
+
+  it('does not fire on ordinary prose that merely contains an @', () => {
+    const text = 'Import @papercusp/sync and ping the team in #releases.';
+    expect(scrubIdentity(text, LITS)).toBe(text);
+    expect(findIdentityLeaks(text, LITS)).toEqual([]);
+  });
+});
+
 describe('findIdentityLeaks — the gate, separate from the fix', () => {
   it('finds and counts what leaked', () => {
     const leaks = findIdentityLeaks('/home/jdoe and again /home/jdoe, signed Jane', LITS);

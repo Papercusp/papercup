@@ -94,6 +94,18 @@ const issues = await import('./issues-engineer');
 const feed = await import('./topics-feed');
 const blocks = await import('./issue-blocks-merge');
 
+/** WI-4488: updateIssue returns `EngineerIssue | null | ShrinkGuardTripped` since the
+ * body-shrink guard landed. None of the patches below touch `body`, so narrow the
+ * sentinel away with a REAL runtime check — an unexpected trip fails loudly. */
+function notTripped(
+  r: import('./issues-engineer').EngineerIssue | null | import('./issues-engineer').ShrinkGuardTripped,
+): import('./issues-engineer').EngineerIssue | null {
+  if (r && 'shrinkGuardTripped' in r) {
+    throw new Error(`body-shrink guard unexpectedly tripped: ${JSON.stringify(r)}`);
+  }
+  return r;
+}
+
 const NOW = '2026-06-04T00:00:00.000Z';
 // EI-2760 regression guard: a deliberately NON-'default' workspace. issue ROWS land in this
 // per-workspace partition (issuesScopeWorkspace) while their coord metadata — tags / subs /
@@ -194,7 +206,7 @@ describe('engineer issues surface (real PG)', () => {
     expect(new Date((await issues.getIssue('EI-1'))!.updatedAt).getTime()).toBeLessThan(Date.now() - 3_600_000); // trigger honored the explicit ts
 
     await backdate();
-    expectFresh((await issues.updateIssue('EI-1', { title: 'edited' }))?.updatedAt);
+    expectFresh(notTripped(await issues.updateIssue('EI-1', { title: 'edited' }))?.updatedAt);
     await backdate();
     expectFresh((await issues.setIssueState('EI-1', 'resolved', 'agA', 'test'))?.updatedAt);
     await backdate();
@@ -464,10 +476,10 @@ describe('engineer issues surface (real PG)', () => {
       createdBy: 'agA',
     });
     expect(a.kind).toBe('bug');
-    const updated = await issues.updateIssue(a.id, { kind: 'change', by: 'agA', silent: true });
+    const updated = notTripped(await issues.updateIssue(a.id, { kind: 'change', by: 'agA', silent: true }));
     expect(updated?.kind).toBe('change');
     // Untouched fields survive; a patch without kind leaves it alone.
-    const retitled = await issues.updateIssue(a.id, { title: 'retitled', by: 'agA', silent: true });
+    const retitled = notTripped(await issues.updateIssue(a.id, { title: 'retitled', by: 'agA', silent: true }));
     expect(retitled?.kind).toBe('change');
     expect(retitled?.title).toBe('retitled');
   });

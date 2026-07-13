@@ -250,4 +250,87 @@ describe('plan page', () => {
     expect(html).toContain('document.referrer'); // the beacon is on this page too
     expect(html).not.toContain('$current_url');
   });
+
+  // ── The frontmatter leak, found by rendering a REAL plan page and reading it.
+  it('strips YAML frontmatter — it is metadata, and `owner:` is a live email address', () => {
+    const content = [
+      '---',
+      'title: A Plan',
+      'slug: a-plan',
+      'status: draft',
+      'owner: someone@gmail.com',
+      '---',
+      '',
+      '## Now',
+      '',
+      'The real body.',
+    ].join('\n');
+
+    const html = renderPlanPageHtml(plan({ content }), {
+      generatedAt: GENERATED_AT,
+      analytics: null,
+      version: '0.0.9',
+    });
+
+    expect(html).toContain('The real body.');
+    expect(html).not.toContain('someone@gmail.com');
+    expect(html).not.toContain('slug: a-plan');
+    expect(html).not.toContain('status: draft');
+  });
+
+  it('keeps a body that merely CONTAINS a --- rule', () => {
+    const html = renderPlanPageHtml(plan({ content: '# Title\n\nBefore.\n\n---\n\nAfter.' }), {
+      generatedAt: GENERATED_AT,
+      analytics: null,
+      version: '0.0.9',
+    });
+    expect(html).toContain('Before.');
+    expect(html).toContain('After.');
+  });
+
+  it('does not publish our internal plan status to testers', () => {
+    const html = renderPlanPageHtml(plan({ status: 'draft' }), {
+      generatedAt: GENERATED_AT,
+      analytics: null,
+      version: '0.0.9',
+    });
+    expect(html).toContain('1 work item shipped in 0.0.9');
+    expect(html).not.toContain('draft');
+  });
+});
+
+describe('the Server artifact is disclosed, not silently dropped', () => {
+  const withServer = hydrated({
+    row: row({
+      artifacts: [
+        {
+          product: 'gui',
+          platform: 'linux-x86_64',
+          name: 'gui_0.0.9_amd64.deb',
+          url: 'desktop-v0.0.9-alpha/gui_0.0.9_amd64.deb',
+          size: 3_600_000_000,
+          sha256: 'aaa',
+        },
+        {
+          product: 'server',
+          platform: 'linux-x86_64',
+          name: 'server_0.0.9_amd64.deb',
+          url: 'desktop-v0.0.9-alpha/server_0.0.9_amd64.deb',
+          size: 3_600_000_000,
+          sha256: 'bbb',
+        },
+      ],
+    }),
+  });
+
+  it('keeps the installer in the table and the server build as a footnote', () => {
+    const html = renderIndexHtml([withServer], { generatedAt: GENERATED_AT, analytics: null });
+    // The GUI installer is what a tester came for — it stays in the download table.
+    expect(html).toContain('<table class="dl">');
+    expect(html).toContain('gui_0.0.9_amd64.deb');
+    // The Server build shipped too. Omitting it entirely would make this page's
+    // account of the release quietly incomplete.
+    expect(html).toContain('server_0.0.9_amd64.deb');
+    expect(html).toContain('headless server build');
+  });
 });

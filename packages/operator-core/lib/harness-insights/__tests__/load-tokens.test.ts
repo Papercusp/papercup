@@ -29,7 +29,13 @@ function makeRunQuery(rows: {
     if (query.includes("NULLIF(role")) return rows.byRole ?? [];
     return rows.totals ?? [];
   });
-  return { runQuery, queries };
+  // loadHarnessTokens declares runQuery as a GENERIC fn (<T>(q, p) => Promise<T[]>);
+  // a concrete vi.fn can never satisfy a generic signature, so cast at this one seam
+  // (WI-4488). No test reaches for the Mock methods — `queries` carries the capture.
+  return {
+    runQuery: runQuery as unknown as <T = unknown>(query: string, params: unknown[]) => Promise<T[]>,
+    queries,
+  };
 }
 
 const baseOpts = { workspace_id: 'ws-1', harness_slug: 'papercusp' };

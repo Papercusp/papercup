@@ -152,7 +152,7 @@ describe('openChildrenPg / directChildrenPg', () => {
   it('counts active descendants and follows past a terminal ancestor', async () => {
     await seedTree();
     expect(await openChildrenPg(sql, WS, 'R')).toBe(3); // A, B, GA all running
-    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'A', status: 'passed' });
+    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'A', status: 'done' });
     // A is terminal but its row still bridges to GA, which is still active.
     expect(await openChildrenPg(sql, WS, 'R')).toBe(2); // B + GA
   });
@@ -167,10 +167,10 @@ describe('openChildrenPg / directChildrenPg', () => {
 describe('status transitions', () => {
   it('finishSpawnPg sets status, finished_at, and a duration', async () => {
     await recordSpawnPg(sql, spawn('R'));
-    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'passed', exitCode: 0 });
+    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'done', exitCode: 0 });
     const [row] = await sql<{ status: string; finished_at: Date | null; duration_ms: number | null }[]>`
       SELECT status, finished_at, duration_ms FROM harness_shared.spawned_agents WHERE spawn_id = 'R'`;
-    expect(row.status).toBe('passed');
+    expect(row.status).toBe('done');
     expect(row.finished_at).not.toBeNull();
     expect(Number(row.duration_ms)).toBeGreaterThanOrEqual(0);
   });
@@ -201,7 +201,7 @@ describe('status transitions', () => {
   // finishSpawnPg is their only remaining chance to record ANY non-null value.
   it('finishSpawnPg stamps last_output_at when outputTail is non-null (cheap terminal fallback)', async () => {
     await recordSpawnPg(sql, spawn('R'));
-    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'passed', outputTail: 'done.' });
+    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'done', outputTail: 'done.' });
     const [row] = await sql<{ last_output_at: Date | null }[]>`
       SELECT last_output_at FROM harness_shared.spawned_agents WHERE spawn_id = 'R'`;
     expect(row.last_output_at).not.toBeNull();
@@ -220,7 +220,7 @@ describe('status transitions', () => {
     await sql`UPDATE harness_shared.spawned_agents SET last_output_at = now() WHERE spawn_id = 'R'`;
     const [before] = await sql<{ last_output_at: Date }[]>`
       SELECT last_output_at FROM harness_shared.spawned_agents WHERE spawn_id = 'R'`;
-    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'passed', outputTail: 'done.' });
+    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'done', outputTail: 'done.' });
     const [after] = await sql<{ last_output_at: Date }[]>`
       SELECT last_output_at FROM harness_shared.spawned_agents WHERE spawn_id = 'R'`;
     expect(after.last_output_at.getTime()).toBeGreaterThanOrEqual(before.last_output_at.getTime());

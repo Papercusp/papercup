@@ -34,6 +34,42 @@ export interface IdentityLiteral {
   value: string;
 }
 
+/**
+ * ⚠ THE ENUMERATED LITERALS ABOVE ARE ONLY THE IDENTITIES WE ALREADY KNEW ABOUT.
+ * The leak is always the one we did not enumerate — proven, on the real page:
+ *
+ * The scrub resolved the box's git email (`user.email`) and redacted it faithfully.
+ * But the plans' YAML frontmatter carries `owner: <a DIFFERENT personal address>` —
+ * two more of the owner's real email addresses, neither of which is this box's git
+ * identity, so neither literal existed and both sailed onto pages bound for beta
+ * testers. Enumerating harder would not have helped: there is no list of every
+ * address a human has ever used.
+ *
+ * So the scrub gates on the SHAPE of an identity, not only on known values. An
+ * email address is PII whoever it belongs to; `/home/<anyone>` reveals the box
+ * whoever the user is. These run AFTER the enumerated literals (which are more
+ * specific and produce better placeholders), and — this is the point — they are
+ * checked by the GATE too, so an unknown identity fails the publish instead of
+ * shipping.
+ */
+export interface IdentityPattern {
+  kind: 'email' | 'unix-home' | 'mac-home' | 'windows-home';
+  pattern: RegExp;
+  placeholder: string;
+}
+
+export const IDENTITY_PATTERNS: IdentityPattern[] = [
+  // Any email address, not just this box's. Over-redacting a doc's `you@example.com`
+  // costs nothing; under-redacting the owner's inbox costs him the thing he asked
+  // us to prevent.
+  { kind: 'email', pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, placeholder: '[email]' },
+  // Someone's home directory — ours is an enumerated literal and is redacted first;
+  // these catch a path belonging to a VM, a build box, or another human entirely.
+  { kind: 'unix-home', pattern: /\/home\/[A-Za-z0-9._-]+/g, placeholder: '~' },
+  { kind: 'mac-home', pattern: /\/Users\/[A-Za-z0-9._-]+/g, placeholder: '~' },
+  { kind: 'windows-home', pattern: /[A-Za-z]:\\Users\\[A-Za-z0-9._-]+/g, placeholder: '~' },
+];
+
 /** Generic values that are not anybody's identity — matching them would redact
  *  half the page and teach the next person to switch the gate off. */
 const GENERIC_USERS = new Set(['root', 'runner', 'build', 'ubuntu', 'user', 'admin']);
@@ -144,6 +180,10 @@ export function scrubIdentity(text: string, literals: IdentityLiteral[]): string
   for (const lit of ordered) {
     out = out.replace(literalPattern(lit.value), PLACEHOLDER[lit.kind]);
   }
+  // Then the shape-based patterns, for every identity we could not enumerate.
+  for (const p of IDENTITY_PATTERNS) {
+    out = out.replace(p.pattern, p.placeholder);
+  }
   return out;
 }
 
@@ -158,11 +198,18 @@ export function scrubIdentity(text: string, literals: IdentityLiteral[]): string
 export function findIdentityLeaks(
   text: string,
   literals: IdentityLiteral[],
-): Array<{ kind: IdentityLiteral['kind']; count: number }> {
-  const hits: Array<{ kind: IdentityLiteral['kind']; count: number }> = [];
+): Array<{ kind: IdentityLiteral['kind'] | IdentityPattern['kind']; count: number }> {
+  const hits: Array<{ kind: IdentityLiteral['kind'] | IdentityPattern['kind']; count: number }> = [];
   for (const lit of literals) {
     const matches = text.match(literalPattern(lit.value));
     if (matches && matches.length > 0) hits.push({ kind: lit.kind, count: matches.length });
+  }
+  // The gate MUST look for the un-enumerated shapes too. A gate that only knows
+  // the literals the scrub already knows can never catch the scrub's blind spot —
+  // it would have called the page with the owner's gmail address on it CLEAN.
+  for (const p of IDENTITY_PATTERNS) {
+    const matches = text.match(p.pattern);
+    if (matches && matches.length > 0) hits.push({ kind: p.kind, count: matches.length });
   }
   return hits;
 }

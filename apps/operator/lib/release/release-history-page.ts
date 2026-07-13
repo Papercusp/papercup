@@ -86,6 +86,25 @@ export function renderMarkdown(md: string): string {
   return marked.parse(md, { async: false, gfm: true, breaks: false }) as string;
 }
 
+/**
+ * Drop a plan's YAML frontmatter before it is rendered.
+ *
+ * It is METADATA, and on a public page it is both noise and a leak. Noise: the
+ * title is already the <h1>, and `status: draft` / `created:` / `slug:` mean
+ * nothing to a beta tester. Leak: `owner:` is a human's EMAIL ADDRESS — and it is
+ * how two of the owner's personal gmail addresses reached a page bound for beta
+ * testers (neither was this box's git identity, so no enumerated literal matched;
+ * the scrub's shape-based email pattern is the backstop, this is the fix).
+ *
+ * Markdown does not treat frontmatter as metadata — `marked` sees the closing
+ * `---` as a setext underline and renders the whole block as a HEADING, so it
+ * arrives not merely present but as the loudest text on the page.
+ */
+export function stripFrontmatter(md: string): string {
+  const m = /^﻿?---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/.exec(md);
+  return m ? md.slice(m[0].length) : md;
+}
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '—';
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
@@ -250,10 +269,32 @@ ${beacon}
 }
 
 function renderArtifacts(artifacts: ReleaseArtifact[]): string {
-  const gui = artifacts.filter((a) => a.product !== 'server' && !a.name.endsWith('.sig'));
-  if (gui.length === 0) {
+  const real = artifacts.filter((a) => !a.name.endsWith('.sig'));
+  const gui = real.filter((a) => a.product !== 'server');
+  const server = real.filter((a) => a.product === 'server');
+  if (real.length === 0) {
     return `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
   }
+
+  // The Server build is a real published artifact, and it is NOT what a beta
+  // tester wants — they want the GUI installer. It gets a footnote, not a row in
+  // the main table, and specifically not silence: dropping it entirely would make
+  // this page's account of what shipped quietly incomplete, which is the same
+  // class of half-truth as a manifest that advertises a file that isn't there.
+  const serverNote =
+    server.length > 0
+      ? `\n<p class="n">Also published: ${server
+          .map(
+            (a) =>
+              `<a href="${escapeHtml(a.url)}">${escapeHtml(a.name)}</a> (${escapeHtml(formatBytes(a.size))})`,
+          )
+          .join(', ')} — the headless server build. If you're testing the app, you want the installer above.</p>`
+      : '';
+
+  if (gui.length === 0) {
+    return `<p class="empty">No installer was recorded for this release.</p>${serverNote}`;
+  }
+
   const rows = gui
     .map(
       (a) => `      <tr>
@@ -269,7 +310,7 @@ function renderArtifacts(artifacts: ReleaseArtifact[]): string {
   <tbody>
 ${rows}
   </tbody>
-</table>`;
+</table>${serverNote}`;
 }
 
 function renderItemList(items: ShippedItem[]): string {
@@ -291,9 +332,12 @@ function renderWork(rel: HydratedRelease): string {
 
   const body = groups
     .map((g) => {
+      // No plan STATUS on the public page: `draft` / `ready` / `shipped` is our
+      // internal workflow state, it says nothing to a tester, and on a page listing
+      // what SHIPPED, "plan draft" reads as a contradiction rather than as metadata.
       const heading = g.plan
         ? `<h4><a href="${escapeHtml(planPagePath(g.plan.slug))}">${escapeHtml(g.plan.title)}</a></h4>
-      <p class="n">${g.items.length} item${g.items.length === 1 ? '' : 's'} · plan ${escapeHtml(g.plan.status)}</p>`
+      <p class="n">${g.items.length} item${g.items.length === 1 ? '' : 's'}</p>`
         : `<h4>Not part of a plan</h4>
       <p class="n">${g.items.length} item${g.items.length === 1 ? '' : 's'}</p>`;
       return `    <div class="plan-group">
@@ -362,13 +406,14 @@ export function renderPlanPageHtml(
   plan: ShippedPlan,
   opts: PageOptions & { version: string },
 ): string {
-  const content = plan.content.trim()
-    ? `<div class="prose">${renderMarkdown(plan.content)}</div>`
+  const md = stripFrontmatter(plan.content).trim();
+  const content = md
+    ? `<div class="prose">${renderMarkdown(md)}</div>`
     : `<p class="empty">This plan has no written content.</p>`;
 
   const body = `<a class="back" href="../index.html">← All releases</a>
 <h1>${escapeHtml(plan.title)}</h1>
-<p class="sub">${plan.itemCount} work item${plan.itemCount === 1 ? '' : 's'} shipped in ${escapeHtml(opts.version)} · plan status ${escapeHtml(plan.status)}</p>
+<p class="sub">${plan.itemCount} work item${plan.itemCount === 1 ? '' : 's'} shipped in ${escapeHtml(opts.version)}</p>
 ${content}`;
 
   const beacon = opts.analytics ? beaconScript(opts.analytics, 'plan', opts.version) : '';
