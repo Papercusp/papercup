@@ -37,6 +37,7 @@ import { HiveThemeBridge } from '@/app/_components/HiveThemeBridge';
 import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier';
 import DesktopConsoleLaunchBridge from '@/app/_components/DesktopConsoleLaunchBridge';
 import TerminalDivider from '@/app/_components/TerminalDivider';
+import NativeTerminalGate from '@/app/_components/NativeTerminalGate';
 import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
@@ -287,6 +288,12 @@ function RootComponent() {
                   on every route. No-op outside Tauri / when no docked native
                   terminal backend is running / behind FLAGS.TERMINAL_DIVIDER. */}
               <TerminalDivider />
+              {/* D-004 (operator-chat-sidebar-revival P-014): relays the
+                  webview's resolved FLAGS.TESTING to Rust's
+                  native_terminal_set_enabled — the ONLY spawn path for the
+                  testing-gated native dock (Rust no longer spawns at boot).
+                  Renders nothing; no-op outside Tauri. */}
+              <NativeTerminalGate />
               <PerfObserverProvider />
               <RecorderHost />
               {/* Dev admin rail — collapsible right cockpit (flags / run /

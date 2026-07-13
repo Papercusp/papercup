@@ -42,7 +42,8 @@ export function classifyReleaseParity(input: ReleaseParityInput): ReleaseParityV
     ? {
         name: 'release:trace',
         args: { sha: input.testedSha },
-        reason: 'Re-read the exact tested SHA against the current green/deploy authorities before recording live proof.',
+        reason:
+          'Re-read the exact tested SHA against the current green/deploy authorities before recording live proof.',
       }
     : {
         name: 'release:trace',

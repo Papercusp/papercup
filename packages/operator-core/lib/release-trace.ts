@@ -313,10 +313,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
     greenPinSha: testedSha,
   });
   const parity =
-    targetSha != null &&
-    input.position.positions.inMain &&
-    input.position.positions.deployed &&
-    pinParity.ok;
+    targetSha != null && input.position.positions.inMain && input.position.positions.deployed && pinParity.ok;
   const nextVerb = safeNextVerb(input);
   const ok = input.position.positions.deployed && parity && constraints.every((c) => !c.blocking);
 

@@ -100,6 +100,15 @@ export const commands = {
 	// Show/hide the native sibling terminal. Returns the new running state.
 	nativeTerminalToggle: () => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_toggle")),
 	/**
+	 *  D-004 (operator-chat-sidebar-revival P-014): the webview relays its
+	 *  resolved FLAGS.TESTING across the seam here, once flags load and again on
+	 *  any live flip. Rust no longer spawns the dock at boot — this is the ONLY
+	 *  path that opens the gate. Enabled + not running ⇒ spawn (restores today's
+	 *  dock exactly); disabled + running ⇒ shutdown (a live flag-off flip hides
+	 *  the dock without a relaunch). Returns the new running state.
+	 */
+	nativeTerminalSetEnabled: (enabled: boolean) => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_set_enabled", { enabled })),
+	/**
 	 *  Tauri command — invoked from the webview. The wire shape mirrors
 	 *  what `apps/operator/lib/transport-adapters/ipc-stream.ts` sends.
 	 */

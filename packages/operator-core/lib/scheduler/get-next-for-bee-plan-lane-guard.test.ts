@@ -32,13 +32,13 @@ vi.mock('./plan-item-lane-guard', () => ({
   planItemLaneBlockReason: (...args: unknown[]) => planItemLaneBlockReasonMock(...args),
 }));
 
-const releaseWorkItemMock = vi.fn(async () => null);
+const releaseWorkItemMock = vi.fn(async (..._args: unknown[]) => null);
 vi.mock('../work-items', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../work-items')>()),
   releaseWorkItem: (...args: unknown[]) => releaseWorkItemMock(...args),
 }));
 
-const matchesWorkItemClaimSpecMock = vi.fn(() => true);
+const matchesWorkItemClaimSpecMock = vi.fn((..._args: unknown[]) => true);
 vi.mock('./claim-spec-match', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./claim-spec-match')>()),
   matchesWorkItemClaimSpec: (...args: unknown[]) => matchesWorkItemClaimSpecMock(...args),
@@ -48,7 +48,7 @@ import { getNextForBee } from './claim-spec-store';
 
 function claimResult(id: string) {
   return {
-    workItem: { id, payload: { plan_item: { plan_slug: 'a-plan', item_id: id } }, harness: 'papercusp' },
+    workItem: { id, family: 'feature' as 'feature' | 'issue', payload: { plan_item: { plan_slug: 'a-plan', item_id: id } }, harness: 'papercusp' },
     claimedUnder: { specId: 'default', revision: 1 },
   };
 }

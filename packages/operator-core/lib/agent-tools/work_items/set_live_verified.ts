@@ -30,8 +30,10 @@ export default defineTool({
     'Mark a feature-family work-item LIVE-VERIFIED only when exact tested-SHA = claimed-deployed-SHA = actual-live-SHA = green-pin-SHA. Re-reads release authority and refuses mismatched or abbreviated SHAs; does not change lifecycle state. Read release:trace first, pass its testedSha + deployedSha and exercise evidence. clear:true retracts it. Non-feature items return applicable:false.',
   guidance: {
     when: 'A feature-family work-item is done on staging and you have exercised it live. Pass the exact testedSha and deployedSha from one fresh release:trace snapshot; this tool independently re-reads actual live + green-pin SHAs before writing.',
-    notWhen: 'Not for the lifecycle state (work_items:set_state) — this is an additive live-confirmation marker, not a state. Issue-family items return applicable:false.',
-    chaining: 'release:trace { sha, work_item } → exercise live behavior → work_items:set_live_verified { id, testedSha, deployedSha, evidence }. A refused response returns the parity state + release:trace as the recovery verb. clear:true retracts on rollback.',
+    notWhen:
+      'Not for the lifecycle state (work_items:set_state) — this is an additive live-confirmation marker, not a state. Issue-family items return applicable:false.',
+    chaining:
+      'release:trace { sha, work_item } → exercise live behavior → work_items:set_live_verified { id, testedSha, deployedSha, evidence }. A refused response returns the parity state + release:trace as the recovery verb. clear:true retracts on rollback.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -97,7 +99,12 @@ export default defineTool({
     const res = await setWorkItemLiveVerified(args.id, marker, { harness: args.harness });
     if (!res) return json({ ok: false, error: `work_item '${args.id}' not found` });
     if (!res.applicable) {
-      return json({ ok: true, applicable: false, id: res.id, note: 'live_verified applies to feature-family work-items only' });
+      return json({
+        ok: true,
+        applicable: false,
+        id: res.id,
+        note: 'live_verified applies to feature-family work-items only',
+      });
     }
     return json({
       ok: true,

@@ -144,6 +144,9 @@ const PLATFORM_LABELS: Record<string, string> = {
   'darwin-aarch64': 'macOS (Apple Silicon)',
   'darwin-x86_64': 'macOS (Intel)',
   'windows-x86_64': 'Windows (x86_64)',
+  'android-universal': 'Android (APK)',
+  'android-arm64': 'Android (arm64)',
+  'ios-arm64': 'iOS (iPhone / iPad)',
 };
 
 function platformLabel(p: string): string {
@@ -286,6 +289,7 @@ a:hover { color: var(--accent); }
   letter-spacing: -.01em; font-weight: 640;
   background: none; -webkit-background-clip: border-box; background-clip: border-box;
 }
+h3.dl-group { font-size: .95rem; margin: 1.4rem 0 .5rem; color: var(--fg-dim); font-weight: 640; letter-spacing: -.01em; }
 table.dl { width: 100%; border-collapse: collapse; margin: 0; font-size: .9rem; }
 table.dl th {
   text-align: left; color: var(--muted); font-weight: 600; font-size: .72rem;
@@ -367,9 +371,31 @@ ${beacon}
   return scrubIdentity(html, redact);
 }
 
+/** One download table (Platform / Download / Size / SHA-256) for a set of artifacts. */
+function renderDownloadTable(list: ReleaseArtifact[]): string {
+  if (list.length === 0) return '';
+  const rows = list
+    .map(
+      (a) => `      <tr>
+        <td>${escapeHtml(platformLabel(a.platform))}</td>
+        <td><a href="${escapeHtml(a.url)}">${escapeHtml(a.name)}</a></td>
+        <td>${escapeHtml(formatBytes(a.size))}</td>
+        <td class="sha">${escapeHtml(a.sha256 || '—')}</td>
+      </tr>`,
+    )
+    .join('\n');
+  return `<table class="dl">
+  <thead><tr><th>Platform</th><th>Download</th><th>Size</th><th>SHA-256</th></tr></thead>
+  <tbody>
+${rows}
+  </tbody>
+</table>`;
+}
+
 function renderArtifacts(artifacts: ReleaseArtifact[]): string {
   const real = artifacts.filter((a) => !a.name.endsWith('.sig'));
-  const gui = real.filter((a) => a.product !== 'server');
+  const desktop = real.filter((a) => a.product === 'gui');
+  const mobile = real.filter((a) => a.product === 'mobile');
   const server = real.filter((a) => a.product === 'server');
   if (real.length === 0) {
     return `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
@@ -390,26 +416,20 @@ function renderArtifacts(artifacts: ReleaseArtifact[]): string {
           .join(', ')} — the headless server build. If you're testing the app, you want the installer above.</p>`
       : '';
 
-  if (gui.length === 0) {
+  if (desktop.length === 0 && mobile.length === 0) {
     return `<p class="empty">No installer was recorded for this release.</p>${serverNote}`;
   }
 
-  const rows = gui
-    .map(
-      (a) => `      <tr>
-        <td>${escapeHtml(platformLabel(a.platform))}</td>
-        <td><a href="${escapeHtml(a.url)}">${escapeHtml(a.name)}</a></td>
-        <td>${escapeHtml(formatBytes(a.size))}</td>
-        <td class="sha">${escapeHtml(a.sha256 || '—')}</td>
-      </tr>`,
-    )
-    .join('\n');
-  return `<table class="dl">
-  <thead><tr><th>Platform</th><th>Download</th><th>Size</th><th>SHA-256</th></tr></thead>
-  <tbody>
-${rows}
-  </tbody>
-</table>${serverNote}`;
+  // Mobile apps get their OWN labelled section so a phone build never reads as a
+  // desktop installer (or vice-versa). Android is a sideloadable APK; iOS shows
+  // up here only once a signed .ipa exists (Apple Developer enrollment) — until
+  // then there is simply no iOS row, which is honest rather than a dead link.
+  const mobileSection =
+    mobile.length > 0
+      ? `\n<h3 class="dl-group">Mobile apps</h3>\n${renderDownloadTable(mobile)}`
+      : '';
+
+  return `${renderDownloadTable(desktop)}${mobileSection}${serverNote}`;
 }
 
 function renderItemList(items: ShippedItem[]): string {

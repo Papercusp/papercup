@@ -25,7 +25,7 @@ const migration = join(repoRoot, 'libs/papercusp/packages/locks/src/sql/019-regi
 const resource = 'windows-vm-build:user@127.0.0.1:2223:papercup-build-release';
 
 const tempDirs: string[] = [];
-const children: ChildProcessWithoutNullStreams[] = [];
+const children: PipedChild[] = [];
 
 afterEach(() => {
   for (const child of children.splice(0)) child.kill('SIGKILL');
@@ -103,7 +103,7 @@ function envFor(f: ReturnType<typeof fixture>) {
   };
 }
 
-async function waitForOutput(child: ChildProcessWithoutNullStreams, needle: string): Promise<string> {
+async function waitForOutput(child: PipedChild, needle: string): Promise<string> {
   return new Promise((resolve, reject) => {
     let output = '';
     const timer = setTimeout(() => reject(new Error(`timed out waiting for ${needle}; output=${output}`)), 8_000);

@@ -18,6 +18,7 @@ import {
   type ExecuteWakeDeps,
 } from './wake-executor';
 import { PtyError } from '../../pty-bridge';
+import type { CarryBrief } from '../../carry-brief';
 import { renderColdWakeInjection } from '../../su-cold-loop';
 import type { DeliveryWork, WakeHandle } from './types';
 
@@ -1149,16 +1150,20 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
 
   it('P-003 (compaction-continuity-hardening): the cold injection appends the carry-brief EXTRAS (held items + walls/facts + awaits + fleet) after the note; the note stays the core', async () => {
     const injectPsuHost = vi.fn(async () => true);
-    const buildCarryBriefFn = vi.fn(async (ownerId: string) => ({
+    // The return is TYPED as CarryBrief on purpose: this fixture has now been
+    // bitten TWICE by contract drift (EI-8593: missing `walls`; then EI-11484:
+    // missing `directives`) — each time the renderer threw on the absent field,
+    // the note-only catch swallowed it, and the extras were silently dropped.
+    // With the explicit type, the NEXT CarryBrief field addition fails tsc HERE
+    // instead of failing this assertion at runtime.
+    const buildCarryBriefFn = vi.fn(async (ownerId: string): Promise<CarryBrief> => ({
       ownerId,
       loop: null,
       heldItems: [
         { id: 'WI-3319', title: 'Shared carry-brief builder', body: null, harness: 'papercusp', checkpoint: 'watchdog wired; cold anchor next' },
       ],
-      // `walls` is a REQUIRED CarryBrief field — the real buildCarryBrief always
-      // sets it (carry-brief.ts:181). Omitting it made renderCarryBriefColdExtras
-      // throw on `brief.walls.length`, which the note-only catch swallowed → the
-      // extras were silently dropped and this assertion failed (EI-8593).
+      directives: [],
+      directivesTotalOpen: 0,
       walls: [],
       facts: [{ key: 'zombie-pids-wall', body: '3 PIDs await owner OK' }],
       awaits: [{ eventKey: 'deploy:done:release-77', note: null }],
@@ -1182,20 +1187,31 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(data.indexOf('WI-3319')).toBeLessThan(data.indexOf('Before you END this turn'));
   });
 
-  it('P-003 fail-soft: a THROWING carry-brief reader injects the note alone (byte-identical to the extras-less injection)', async () => {
+  it('P-003 fail-soft: a THROWING carry-brief reader injects the note alone (byte-identical to the extras-less injection) AND warns — the swallow must never be silent', async () => {
     const injectPsuHost = vi.fn(async () => true);
-    const out = await executeWake(
-      work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
-      coldDeps({
-        injectPsuHost: injectPsuHost as never,
-        buildCarryBriefFn: vi.fn(async () => {
-          throw new Error('pg down');
-        }) as never,
-      }),
-    );
-    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
-    const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
-    expect(data).toBe(renderColdWakeInjection('## Next action\nresume the wiring'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+        coldDeps({
+          injectPsuHost: injectPsuHost as never,
+          buildCarryBriefFn: vi.fn(async () => {
+            throw new Error('pg down');
+          }) as never,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+      const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+      expect(data).toBe(renderColdWakeInjection('## Next action\nresume the wiring'));
+      // Detector guard (EI-8593 / EI-11484 class): a dropped extras leg means a cold
+      // wake silently loses held-items/walls/facts continuity — it must at least log.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('cold carry-brief extras failed'),
+        expect.any(Error),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('the HYBRID cadence recycles every Nth wake (wakeCount 8 → RECYCLE, channel psu-socket-recycle)', async () => {
