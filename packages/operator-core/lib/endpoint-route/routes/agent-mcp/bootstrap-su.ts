@@ -30,6 +30,7 @@ import { markAdvSessionEnded, reactivateAdvSession, recordAdvSession } from '../
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
+import { lintInstructionText, type InstructionLintReport } from '../../../instruction-lint';
 import { deriveLaunchPromptText } from '../../../agent-tools/plans/launch-prompt';
 import { writeSuCodexHome } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
@@ -90,6 +91,9 @@ export interface BootstrapSuResult {
    * `.md` (--append-system-prompt[-file]). codex: the CODEX_HOME AGENTS.md.
    */
   promptFile: string;
+  /** Bounded lint of the compiled instructions. Conflicts/stale rules are
+   * visible to launchers and diagnostics instead of silently reaching agents. */
+  instructionLint?: InstructionLintReport;
   /**
    * Per-session CODEX_HOME for a codex su session (AGENTS.md = playbook,
    * config.toml = superuser MCP, settings.json = lock hooks, auth symlink).
@@ -1259,6 +1263,18 @@ const post = defineTool({
       promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${AUTO_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
     }
 
+    // Audit the ACTUAL final prompt after launch-context/provenance/mode overlays,
+    // not merely the base launch spec. Findings are observable in the bootstrap
+    // response; launch stays fail-open because duplicate prose is a cleanup signal,
+    // while generated-rule conflicts are already explicit in the report.
+    const instructionLint = lintInstructionText(promptText);
+    if (instructionLint.conflicts.length > 0 || instructionLint.staleRules.length > 0) {
+      process.stderr.write(
+        `[bootstrap-su] instruction lint: ${instructionLint.conflicts.length} conflict(s), ` +
+          `${instructionLint.staleRules.length} stale rule(s)\n`,
+      );
+    }
+
     // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
     // gets a per-session CODEX_HOME (P-030); claude/omp get a launch-context
     // prompt file and rely on their USER-LEVEL papercusp-su MCP (it survives
@@ -1409,6 +1425,7 @@ const post = defineTool({
       harnessSlug,
       planSlug,
       promptFile,
+      instructionLint,
       codexHome,
       coordExtPath,
       envelopeEnv,

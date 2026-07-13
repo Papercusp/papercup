@@ -577,6 +577,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           characteristic: r.characteristic,
           title: r.title,
           status: r.status,
+          // Governance provenance (WI-4506): who authored the current document vs who
+          // ratified it. The author≠ratifier split (D-012) is the whole point of the gate
+          // rubric's governance, so the list surfaces it rather than burying it in detail.
+          // Persisted in template_data (EI-10751); listRubrics already projects both.
+          proposedBy: r.proposedBy,
+          ratifiedBy: r.ratifiedBy,
           criteriaCount: r.criteria.length,
           ratingScale: r.ratingScale,
           methodRef: r.methodRef,

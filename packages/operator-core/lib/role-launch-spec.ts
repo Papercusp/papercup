@@ -60,6 +60,7 @@ import { resolveProjectDir } from './spawn-config';
 import { getPromptOverride } from './harness-prompt-overrides';
 import { renderSuPlaybook } from './desktop-install/papercusp-files';
 import { composeLaunchContext } from './su-launch-context';
+import { lintInstructionText, type InstructionLintReport } from './instruction-lint';
 import { readSuperuserToken } from './superuser-token';
 import { papercuspPathForWorkspace } from './papercusp-root';
 
@@ -448,6 +449,9 @@ export interface LaunchSpec {
   /** Resolved persona tier (su path; context-trimming-tiers P-017/P-020) — the
    *  launch route reads it to prune the fleet member's plugin surface. */
   personaTier?: 'full' | 'fleet';
+  /** Launch-time lint over the final compiled instruction text. This is
+   * diagnostic and bounded; it never silently rewrites policy. */
+  instructionLint?: InstructionLintReport;
 }
 
 /**
@@ -590,8 +594,10 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     planSlug: input.planSlug ?? null,
     planTitle: input.planTitle ?? null,
     planNow: input.planNow ?? null,
+    profile: launchProfile,
   });
   const promptText = launchCtx ? suPersonaText.replace(/\n+$/, '') + '\n\n' + launchCtx : suPersonaText;
+  const instructionLint = lintInstructionText(promptText);
 
   // 3. Superuser MCP — the existing loopback door (NOT a signed,
   //    role-scoped URL): `?superuser=1&workspace=<ws>` + the bearer from
@@ -655,5 +661,6 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     mcpUrl: mcpUrlStr,
     mcpJsonContents,
     personaTier,
+    instructionLint,
   };
 }

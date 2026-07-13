@@ -12,7 +12,7 @@
 import { useSyncQuery } from "@papercusp/sync";
 import { useEffect, type CSSProperties } from "react";
 import * as Collapsible from "@radix-ui/react-collapsible";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ShieldAlert } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
 
 interface RubricRow {
@@ -20,6 +20,10 @@ interface RubricRow {
   characteristic: string;
   title: string;
   status: string;
+  // Governance provenance (WI-4506): who authored the current document vs who ratified it.
+  // The author≠ratifier split (D-012) is the point of the gate rubric's governance.
+  proposedBy: string | null;
+  ratifiedBy: string | null;
   criteriaCount: number;
   ratingScale: string[];
   methodRef: string | null;
@@ -28,6 +32,25 @@ interface RubricRow {
   latestScorecardAt: string | null;
   latestScore10: number | null;
   avgScore10: number | null;
+}
+
+// A rubric is LIVE (its spec governs grading) only once `active`. Any other status —
+// `proposed`, `draft`, `superseded` — is NOT the enforced spec. The one that is a
+// governance ACTION is `proposed`/`draft`: a spec awaiting an independent ratifier
+// (D-012 author≠ratifier). We surface that state prominently rather than as one more
+// grey row (WI-4506).
+function isActive(status: string): boolean {
+  return status === "active" || status === "ratified";
+}
+function awaitsRatification(status: string): boolean {
+  return status === "proposed" || status === "draft";
+}
+
+/** Shorten a long agent ownerId (su-eb9b7ae3-…) to a stable, readable handle. */
+function shortActor(actor: string | null): string {
+  if (!actor) return "—";
+  const m = /^([a-z]+-[0-9a-f]{4,8})/i.exec(actor);
+  return m ? m[1] : actor.length > 16 ? `${actor.slice(0, 15)}…` : actor;
 }
 
 function formatWhen(iso: string | null): string {
@@ -85,6 +108,9 @@ export default function RubricsPanel({
     );
   }
 
+  // Prominence (WI-4506): rubrics awaiting an independent ratifier are a governance
+  // action, not just another row — hoist them into a banner above the table.
+  const awaiting = rows.filter((row) => awaitsRatification(row.status));
   const graded = rows.filter((row) => row.avgScore10 != null);
   const avgScore =
     graded.length > 0
@@ -104,10 +130,55 @@ export default function RubricsPanel({
       header: "Rubric",
       render: (row) => (
         <span className="pc-rubrics__identity">
-          <i className={`is-${row.status}`} aria-hidden />
+          <i
+            className={`is-${row.status}${awaitsRatification(row.status) ? " is-awaiting" : ""}`}
+            aria-hidden
+          />
           <span>
             <strong>{row.title}</strong>
             <small>{row.rubricId}</small>
+          </span>
+        </span>
+      ),
+    },
+    {
+      key: "governance",
+      header: "Governance",
+      render: (row) => (
+        <span
+          className={`pc-rubrics__gov pc-rubrics__gov--${isActive(row.status) ? "active" : awaitsRatification(row.status) ? "awaiting" : "inactive"}`}
+        >
+          <span className="pc-rubrics__gov-status">
+            {isActive(row.status)
+              ? "Active"
+              : awaitsRatification(row.status)
+                ? "Awaiting ratification"
+                : row.status}
+          </span>
+          <span
+            className="pc-rubrics__gov-chain"
+            title={`proposed by ${row.proposedBy ?? "unknown"}${
+              row.ratifiedBy ? ` · ratified by ${row.ratifiedBy}` : ""
+            }`}
+          >
+            <em>prop</em> {shortActor(row.proposedBy)}
+            {isActive(row.status) ? (
+              <>
+                {" "}
+                <em>·&nbsp;ratif</em>{" "}
+                {shortActor(row.ratifiedBy)}
+                {row.ratifiedBy &&
+                row.proposedBy &&
+                row.ratifiedBy !== row.proposedBy ? (
+                  <b
+                    className="pc-rubrics__gov-split"
+                    title="Independent ratifier — author ≠ ratifier (D-012)"
+                  >
+                    ✓ split
+                  </b>
+                ) : null}
+              </>
+            ) : null}
           </span>
         </span>
       ),
@@ -205,6 +276,37 @@ export default function RubricsPanel({
       className={`pc-rubrics${compact ? " is-compact" : ""}`}
       aria-label="Rubric coverage"
     >
+      {awaiting.length > 0 ? (
+        <div
+          className="pc-rubrics__awaiting"
+          role="status"
+          aria-label={`${awaiting.length} rubric${awaiting.length === 1 ? "" : "s"} awaiting ratification`}
+        >
+          <ShieldAlert size={13} aria-hidden />
+          <span className="pc-rubrics__awaiting-lead">
+            <strong>{awaiting.length}</strong> awaiting ratification
+          </span>
+          <span className="pc-rubrics__awaiting-list">
+            {awaiting.slice(0, 3).map((row) => (
+              <button
+                key={row.rubricId}
+                type="button"
+                className="pc-rubrics__awaiting-item"
+                onClick={onSelect ? () => onSelect(row.rubricId) : undefined}
+                title={`${row.title} — proposed by ${row.proposedBy ?? "unknown"}; needs an independent ratifier (D-012)`}
+              >
+                {row.title}
+                <em>prop {shortActor(row.proposedBy)}</em>
+              </button>
+            ))}
+            {awaiting.length > 3 ? (
+              <span className="pc-rubrics__awaiting-more">
+                +{awaiting.length - 3}
+              </span>
+            ) : null}
+          </span>
+        </div>
+      ) : null}
       {compact ? (
         <div className="pc-rubrics__compact-summary">
           <span>
@@ -320,6 +422,24 @@ export default function RubricsPanel({
         .pc-rubrics__identity { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
         .pc-rubrics__identity > i { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--fg-mute); }
         .pc-rubrics__identity > i.is-ratified, .pc-rubrics__identity > i.is-active { background: #34d399; box-shadow: 0 0 0 3px color-mix(in srgb, #34d399 12%, transparent); }
+        .pc-rubrics__identity > i.is-awaiting { background: #fbbf24; box-shadow: 0 0 0 3px color-mix(in srgb, #fbbf24 15%, transparent); }
+        .pc-rubrics__awaiting { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 9px; padding: 7px 10px; border: 1px solid color-mix(in srgb, #fbbf24 45%, var(--border)); border-radius: 9px; background: color-mix(in srgb, #fbbf24 9%, var(--bg-2)); color: var(--fg); }
+        .pc-rubrics__awaiting > svg { color: #f59e0b; flex: none; }
+        .pc-rubrics__awaiting-lead { font-size: 10.5px; color: var(--fg-mute); }
+        .pc-rubrics__awaiting-lead strong { color: #f59e0b; font-size: 12px; font-variant-numeric: tabular-nums; }
+        .pc-rubrics__awaiting-list { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+        .pc-rubrics__awaiting-item { display: inline-flex; align-items: baseline; gap: 5px; max-width: 260px; padding: 3px 8px; border: 1px solid color-mix(in srgb, #fbbf24 40%, var(--border)); border-radius: 999px; background: var(--bg-1); color: var(--fg); font: inherit; font-size: 10px; cursor: pointer; overflow: hidden; }
+        .pc-rubrics__awaiting-item:hover { border-color: #f59e0b; }
+        .pc-rubrics__awaiting-item em { color: var(--fg-mute); font-style: normal; font-family: var(--font-mono, ui-monospace, monospace); font-size: 8.5px; white-space: nowrap; }
+        .pc-rubrics__awaiting-more { color: var(--fg-mute); font-size: 9.5px; }
+        .pc-rubrics__gov { display: inline-grid; gap: 2px; min-width: 0; }
+        .pc-rubrics__gov-status { font-size: 9.5px; font-weight: 700; letter-spacing: 0; text-transform: uppercase; }
+        .pc-rubrics__gov--active .pc-rubrics__gov-status { color: #34d399; }
+        .pc-rubrics__gov--awaiting .pc-rubrics__gov-status { color: #f59e0b; }
+        .pc-rubrics__gov--inactive .pc-rubrics__gov-status { color: var(--fg-mute); }
+        .pc-rubrics__gov-chain { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 3px; color: var(--fg-mute); font-family: var(--font-mono, ui-monospace, monospace); font-size: 9px; }
+        .pc-rubrics__gov-chain em { color: color-mix(in srgb, var(--fg-mute) 75%, transparent); font-style: normal; }
+        .pc-rubrics__gov-split { display: inline-flex; align-items: center; margin-left: 3px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, #34d399 16%, transparent); color: #34d399; font-size: 8.5px; font-weight: 700; }
         .pc-rubrics__identity span { min-width: 0; }
         .pc-rubrics__identity strong, .pc-rubrics__identity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .pc-rubrics__identity small { margin-top: 2px; color: var(--fg-mute); font-family: var(--font-mono, ui-monospace, monospace); font-size: 9px; }

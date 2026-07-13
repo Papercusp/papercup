@@ -33,6 +33,8 @@ export interface LaunchContextInput {
   planTitle?: string | null;
   /** The plan's `## Now` block, if the plan was readable at launch. */
   planNow?: { state: string; next: string } | null;
+  /** Controls which repo-specific shortcuts belong in the launch brief. */
+  profile?: 'engineer' | 'power' | 'generic';
 }
 
 /**
@@ -44,10 +46,10 @@ export function composeLaunchContext(input: LaunchContextInput): string {
   if (!harnessSlug && !planSlug) return '';
 
   const lines: string[] = [
-    '# This launch',
+    '# Operating brief — this launch',
     '',
-    '> Scope + plan context for THIS `psu` launch, composed at launch time.',
-    '> It supplements — it does not restate — the playbook above.',
+    '> Generated from the selected scope and plan. This compact index points into',
+    '> the full playbook; it does not replace its safety rules.',
     '',
   ];
 
@@ -58,43 +60,28 @@ export function composeLaunchContext(input: LaunchContextInput): string {
     // `harness_required` until a harness is named on the call. The old over-promise made
     // agents omit `harness` and eat a wasted round-trip. State the per-call model truthfully.
     lines.push(
-      `You picked **harness \`${harnessSlug}\`** as this launch's working context (its repo ` +
-        'cwd + the plan/docs you were launched on). Per the SU model, harness-scoped tools ' +
-        'are **not** auto-scoped: pass ' +
-        `\`harness: '${harnessSlug}'\` on each \`docs:*\` / \`features:*\` / \`issues:*\` / ` +
-        "`plans:*` call (or `harness: 'all'` for Papercusp's own plans/docs). To read a " +
-        '*different* harness, use `cross_harness:docs_*` / `cross_harness:plans_*` (read-only).',
-      '',
+      '<!-- papercusp-rule:harness-scope=explicit-per-call -->',
+      `- **Scope:** harness \`${harnessSlug}\`; pass \`harness: '${harnessSlug}'\` to ` +
+        '`docs:*`, `features:*`, `issues:*`, and `plans:*`.',
+      '- **Other harnesses:** read through `cross_harness:docs_*` / `cross_harness:plans_*`.',
     );
   } else {
     lines.push(
-      'You launched with **no harness scope** (workspace level). ' +
-        '`docs:*` / `features:*` / `plans:*` fall through to workspace-level ' +
-        'views. To work *on a specific harness*: relaunch via `psu` and pick ' +
-        'it, or pass an explicit slug to harness-scoped tools and use ' +
-        '`cross_harness:docs_*` / `cross_harness:plans_*` to read its docs and plans.',
-      '',
+      '<!-- papercusp-rule:harness-scope=explicit-per-call -->',
+      '- **Scope:** workspace level; pass a concrete harness to harness-scoped tools.',
+      '- **Other harnesses:** read through `cross_harness:docs_*` / `cross_harness:plans_*`.',
     );
   }
 
   if (planSlug) {
     lines.push(
-      `You launched **bound to plan \`${planSlug}\`**${planTitle ? ` — ${planTitle}` : ''}.`,
+      `- **Plan:** bound to \`${planSlug}\`${planTitle ? ` — ${planTitle}` : ''}.`,
     );
     if (planNow && (planNow.state || planNow.next)) {
-      lines.push('Its current focus:');
-      if (planNow.state) lines.push(`> **Now:** ${planNow.state}`);
-      if (planNow.next) lines.push(`> **Next:** ${planNow.next}`);
-      lines.push(
-        '',
-        `Re-read the full plan with \`plans:get { slug: '${planSlug}' }\` before ` +
-          'acting, and keep `## Now` current as you work (`plans:set-now`).',
-      );
+      if (planNow.state) lines.push(`  - **Now:** ${planNow.state}`);
+      if (planNow.next) lines.push(`  - **Next:** ${planNow.next}`);
     } else {
-      lines.push(
-        `Read it with \`plans:get { slug: '${planSlug}' }\` to pick up its ` +
-          '`## Now` focus.',
-      );
+      lines.push(`  - Read \`plans:get { slug: '${planSlug}' }\` for its current \`## Now\`.`);
     }
     // improve-fleet-launch-autokickoff (EI-5503) stopgap: a scripted/fleet plan
     // launch now seeds a kickoff first-turn, but belt-and-suspenders — if any launch
@@ -102,13 +89,22 @@ export function composeLaunchContext(input: LaunchContextInput): string {
     // positional-prompt seam, a server kickoff-derive miss, a future launcher), it
     // must START ON ITS OWN rather than park waiting to be told.
     lines.push(
-      '',
-      '**If you were launched to work this plan and find yourself otherwise idle ' +
-        'with no kickoff instruction, do not wait — begin now:** read `## Now`, claim ' +
-        'the next actionable item, and work it. A plan-bound launch means the work is ' +
-        'yours to start.',
+      `- **First move:** read \`${planSlug}\`, claim its next actionable item, and begin; a ` +
+        'plan-bound launch is already a work assignment.',
     );
-    lines.push('');
+  }
+
+  if ((input.profile ?? 'engineer') === 'engineer') {
+    lines.push(
+      '<!-- papercusp-rule:file-locking=automatic-hooks -->',
+      '- **Edits:** managed hooks claim/release file locks automatically; inspect hook health if a write is not covered.',
+      '<!-- papercusp-rule:test-router=test-file -->',
+      '- **Exact tests:** `npm run test:file -- <test paths>` routes files to their owning Vitest configs.',
+      '<!-- papercusp-rule:app-runtime=tauri -->',
+      '- **UI verification:** drive the Tauri shell; server-side staging changes run on `:3170`.',
+      '<!-- papercusp-rule:git-ownership=background-sync -->',
+      '- **Git:** leave verified edits in `staging`; the background sync owns commit and push.',
+    );
   }
 
   return lines.join('\n').trimEnd() + '\n';

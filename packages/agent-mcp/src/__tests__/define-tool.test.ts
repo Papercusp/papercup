@@ -66,7 +66,12 @@ describe('defineTool', () => {
           return { data: null };
         },
       }),
-    ).toThrow(/collision/);
+      // The registration guard's message was reworded to be self-explaining — it now
+      // says the second registration "silently shadows the first" (the same anchor its
+      // dedicated tests in tool-projection.test.ts assert on). The old `/collision/`
+      // assertion here was never updated to match, so it red on every run independent of
+      // any change. Anchor both suites on the message's actual, intentional phrase.
+    ).toThrow(/silently shadows the first/);
   });
 
   it('role-gated tools dispatch without a principal', async () => {

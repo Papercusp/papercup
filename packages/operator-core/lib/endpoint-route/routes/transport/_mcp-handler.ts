@@ -24,7 +24,6 @@
 
 import { createMcpHandler } from 'mcp-handler';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
-import { z } from 'zod';
 import {
   getCatalog,
   toArgsJsonSchema,

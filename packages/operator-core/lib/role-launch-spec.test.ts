@@ -305,9 +305,10 @@ describe('buildLaunchSpec — kind dispatch', () => {
     expect(renderSuPlaybookMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'omp' }));
     // base playbook + the composed scope/plan addendum.
     expect(spec.promptText).toContain('SU PLAYBOOK BODY');
-    expect(spec.promptText).toContain('# This launch');
+    expect(spec.promptText).toContain('# Operating brief — this launch');
     expect(spec.promptText).toContain('papercup');
     expect(spec.promptText).toContain('my-plan');
+    expect(spec.instructionLint).toMatchObject({ markerCount: 5, clean: true });
   });
 
   it("kind:'su' surfaces a harness that isn't registered in the workspace", async () => {
