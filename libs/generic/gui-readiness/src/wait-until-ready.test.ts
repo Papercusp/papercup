@@ -98,8 +98,7 @@ describe('waitUntilReady — level-triggered, never hangs', () => {
       pollIntervalMs: 5,
     });
     const wallClockMs = Date.now() - startedAt;
-    expect(outcome.ok).toBe(false);
-    expect(outcome.reason).toBe('timeout');
+    expect(outcome).toMatchObject({ ok: false, reason: 'timeout' });
     // Generous real-world bound (well under any plausible "it actually hung" duration) —
     // proves this call returned promptly instead of blocking forever on the wedged probe.
     expect(wallClockMs).toBeLessThan(2000);

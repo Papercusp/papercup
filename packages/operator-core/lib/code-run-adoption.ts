@@ -326,7 +326,7 @@ work_rows AS (
 ),
 gapped AS (
   -- ms since the PREVIOUS work call in this spawn (NULL for the first) — the raw signal
-  -- `turned` below thresholds against TURN_GAP_MS to find turn boundaries.
+  -- "turned" below thresholds against TURN_GAP_MS to find turn boundaries.
   SELECT
     spawn_id, tool_name, invoked_at,
     EXTRACT(EPOCH FROM (invoked_at - LAG(invoked_at) OVER w)) * 1000 AS gap_ms
@@ -405,61 +405,7 @@ export function buildCodeRunAdoptionQuery(days: number): string {
   const safeDays = clampSinceDays(days);
   return `
 SET LOCAL statement_timeout = '${CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS}ms';
-WITH calls AS (
-  SELECT
-    spawn_id,
-    role,
-    (invoked_at AT TIME ZONE 'UTC')::date::text AS day,
-    tool_name,
-    lower(regexp_replace(tool_name, '[^a-zA-Z0-9]', '', 'g')) AS norm
-  FROM harness_shared.tool_invocations
-  WHERE invoked_at >= now() - interval '${safeDays} days'
-    AND status = 'ok'
-    -- P-006 (2026-07-03): agent traffic ONLY. The raw table is dominated by UI HTTP
-    -- polling (the measuring-code-run-adoption doc's own denominator warning) and a
-    -- NULL spawn_id would collapse every un-attributed call into one mega-spawn via
-    -- GROUP BY. Without these two filters the fleet number graded polling, not agents.
-    AND transport = 'mcp'
-    AND spawn_id IS NOT NULL
-),
-per_spawn AS (
-  SELECT
-    spawn_id,
-    max(role) AS role,
-    max(day)  AS day,
-    bool_or(norm IN ('coderun','recipesrun')) AS used_code_run
-  FROM calls
-  GROUP BY spawn_id
-),
-work_tool_counts AS (
-  SELECT spawn_id, tool_name, count(*) AS cnt
-  FROM calls
-  WHERE norm NOT IN (
-    'coderun','codetools','recipesrun','recipessearch','recipeslist',
-    'recipesget','recipesmerge','recipessweep','recipescandidates',
-    -- POLLER_TOOL_NORMS (P-006): machine-cadence reads are not batchable LLM decisions.
-    'activityrecent'
-  )
-  GROUP BY spawn_id, tool_name
-),
-work_agg AS (
-  SELECT
-    spawn_id,
-    COALESCE(sum(cnt), 0)::int  AS work_calls,
-    count(*)::int               AS distinct_tools,
-    COALESCE(max(cnt), 0)::int  AS max_same_tool
-  FROM work_tool_counts
-  GROUP BY spawn_id
-)
-SELECT
-  ps.role,
-  ps.day,
-  COALESCE(wa.work_calls, 0)     AS work_calls,
-  COALESCE(wa.distinct_tools, 0) AS distinct_tools,
-  COALESCE(wa.max_same_tool, 0)  AS max_same_tool,
-  ps.used_code_run
-FROM per_spawn ps
-LEFT JOIN work_agg wa USING (spawn_id)
+${adoptionQueryBody(`invoked_at >= now() - interval '${safeDays} days'`)}
 LIMIT ${CODE_RUN_ADOPTION_ROW_CAP}
 `;
 }
@@ -553,6 +499,8 @@ export async function readCodeRunAdoption(
       work_calls: number | string;
       distinct_tools: number | string;
       max_same_tool: number | string;
+      max_same_tool_turns: number | string;
+      distinct_turns: number | string;
       used_code_run: boolean;
     }>(buildCodeRunAdoptionQuery(sinceDays), []);
     const spawnRows: SpawnAdoptionRow[] = rows.map((r) => ({
@@ -561,6 +509,8 @@ export async function readCodeRunAdoption(
       workCalls: Number(r.work_calls) || 0,
       distinctTools: Number(r.distinct_tools) || 0,
       maxSameTool: Number(r.max_same_tool) || 0,
+      maxSameToolTurns: Number(r.max_same_tool_turns) || 0,
+      distinctTurns: Number(r.distinct_turns) || 0,
       usedCodeRun: r.used_code_run === true,
     }));
     const summary = summarizeSpawnAdoption(spawnRows);

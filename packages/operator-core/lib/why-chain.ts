@@ -44,6 +44,17 @@ export interface WhyChainStage {
   stage: 'gate' | 'deploy' | 'admission' | 'pool';
   status: WhyChainStatus;
   reason: string;
+  /**
+   * WI-4577 — the DECISIVE next tool call for this stage, present ONLY when `status !== 'ok'`
+   * (an ok stage needs no action). This is not new advice: it is the exact drill-down mapping
+   * `dev:why`'s own `guidance.chaining` already spells out in prose (gate → testing:flakiness,
+   * deploy → release:deploy/dev:pipeline_position, admission → gateway:status, pool →
+   * accounts:status) — surfaced here as DATA on the stage that names it, so a caller parsing the
+   * JSON response gets the decisive tool without a second read of this tool's own guidance text
+   * (the same "derived claim without its caveat/action" gap EI-10951 named: advice that only
+   * lives in prose an agent must separately notice is advice a machine-following agent can miss).
+   */
+  nextVerb?: string;
 }
 
 export interface WhyChainResult {
@@ -153,6 +164,8 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
       stage: 'gate',
       status: 'blocked',
       reason: `an OPEN merge conflict is unresolved (scopes: ${snap.openConflict.scopes.join(', ') || 'unknown'}) — git-sync cannot advance staging until it resolves`,
+      // Resolution is a coordination hand-off (merge-resolver), not a single diagnostic call —
+      // no nextVerb: naming one here would misrepresent a routing decision as a tool call.
     };
   }
   if (g.fireStale) {
@@ -160,6 +173,7 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
       stage: 'gate',
       status: 'blocked',
       reason: `green-checkpoint gate is WEDGED — not firing (${g.fireStaleReason ?? 'stale'})`,
+      nextVerb: 'dev:pipeline_position',
     };
   }
   // WI-4533: a STALE red is not a red — it is an UNKNOWN, and it must never be rendered as the
@@ -183,6 +197,8 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
         `gate verdict is STALE (${g.verdictStaleReason ?? 'superseded/unverified'}) — the recorded ` +
         `${g.consecutiveReds} red(s) are NOT current, so the gate's colour is UNKNOWN. Do not dispatch ` +
         `anyone at the test(s) it names; re-run the checkpoint to get a real verdict (WI-4489).`,
+      // The decisive action for a STALE verdict is a fresh verdict, never the named tests.
+      nextVerb: 'release:checkpoint-run',
     };
   }
   if (g.stalled) {
@@ -190,6 +206,7 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
       stage: 'gate',
       status: 'blocked',
       reason: `green-checkpoint gate STALLED after ${g.consecutiveReds} consecutive reds${filesNote}`,
+      nextVerb: 'testing:flakiness',
     };
   }
   if (g.consecutiveReds > 0) {
@@ -197,6 +214,7 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
       stage: 'gate',
       status: 'degraded',
       reason: `gate red (${g.consecutiveReds} consecutive, not yet stalled)${filesNote}`,
+      nextVerb: 'testing:flakiness',
     };
   }
   return { stage: 'gate', status: 'ok', reason: 'green-checkpoint gate is green' };
@@ -228,10 +246,16 @@ function deployStage(snap: GitPipelineSnapshot): WhyChainStage {
       stage: 'deploy',
       status: 'degraded',
       reason: `the green pin (\`main\`) is green and ${d.deployedBehindGreenPin} commit(s) ahead of what's live on :3070 — gated but not yet deployed/restarted`,
+      nextVerb: 'release:deploy',
     };
   }
   if (d.errors.length) {
-    return { stage: 'deploy', status: 'degraded', reason: `deploy snapshot incomplete: ${d.errors.join('; ')}` };
+    return {
+      stage: 'deploy',
+      status: 'degraded',
+      reason: `deploy snapshot incomplete: ${d.errors.join('; ')}`,
+      nextVerb: 'dev:pipeline_position',
+    };
   }
   const buffer =
     d.greenPinBehindStaging != null && d.greenPinBehindStaging > 0

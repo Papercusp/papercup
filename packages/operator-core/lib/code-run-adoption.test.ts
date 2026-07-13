@@ -7,7 +7,7 @@
  * boundary so a drift between metric and nudge flips RED.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { BATCH_NUDGE_THRESHOLD, FANOUT_DISTINCT_THRESHOLD } from './code-run-batch-nudge';
+import { BATCH_NUDGE_THRESHOLD, FANOUT_DISTINCT_THRESHOLD, TURN_GAP_MS } from './code-run-batch-nudge';
 import {
   isBatchableSpawn,
   spawnRowsFromCalls,

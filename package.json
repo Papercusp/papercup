@@ -81,7 +81,8 @@
     "libs/generic/eval-battery",
     "libs/generic/bench-metrics",
     "libs/generic/resource-profile",
-    "libs/generic/resumable-download"
+    "libs/generic/resumable-download",
+    "libs/generic/gui-readiness"
   ],
   "scripts": {
     "preinstall": "npx --yes only-allow npm",
