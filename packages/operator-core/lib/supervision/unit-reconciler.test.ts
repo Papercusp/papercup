@@ -12,10 +12,12 @@ import {
   reconcileTick,
   _resetReconcilerState,
   checkRestartPolicyDrift,
+  checkSilentCrashLoop,
   BACKOFF_SEQUENCE_SEC,
   GIVE_UP_THRESHOLD,
   GIVE_UP_WINDOW_MS,
   HEALTHY_RESET_MS,
+  SILENT_LOOP_THRESHOLD,
   type SystemctlUnitStatus,
   type ReconcilerDeps,
 } from './unit-reconciler';
@@ -311,6 +313,69 @@ describe('checkRestartPolicyDrift (P-003(b) config-drift guard)', () => {
     // Simulate the drift recurring on a later tick — it warns again since the latch was cleared.
     const redrift = checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', fixed.nextWarned);
     expect(redrift).toEqual({ warn: true, nextWarned: true });
+  });
+});
+
+describe('checkSilentCrashLoop (EI-10750 silent-crash-loop guard)', () => {
+  it('a missing NRestarts reading carries state unchanged (no page, obs preserved)', () => {
+    const obs = [{ at: 100, n: 3 }];
+    const r = checkSilentCrashLoop(undefined, obs, false, 1000);
+    expect(r).toEqual({ escalate: false, restartsInWindow: 0, nextObs: obs, nextEscalated: false });
+  });
+
+  it('a first observation of an already-high NRestarts does NOT page (no restarts seen DURING our window yet)', () => {
+    // e.g. after an operator restart re-inits obs while systemd has long been at 43.
+    const r = checkSilentCrashLoop(43, [], false, 1000);
+    expect(r.escalate).toBe(false);
+    expect(r.restartsInWindow).toBe(0);
+    expect(r.nextObs).toEqual([{ at: 1000, n: 43 }]);
+  });
+
+  it('NRestarts climbing ≥ SILENT_LOOP_THRESHOLD within the window pages ONCE, then latches (no per-tick re-page)', () => {
+    let obs: { at: number; n: number }[] = [];
+    let escalated = false;
+    let paged = 0;
+    // 0..THRESHOLD, each 30s apart (all inside the 10-min window).
+    for (let i = 0; i <= SILENT_LOOP_THRESHOLD; i++) {
+      const r = checkSilentCrashLoop(i, obs, escalated, i * 30_000);
+      obs = r.nextObs;
+      escalated = r.nextEscalated;
+      if (r.escalate) paged++;
+    }
+    expect(paged).toBe(1); // exactly one page, at the tick the delta first reaches the threshold
+    // A further stable tick (NRestarts unchanged) must NOT re-page while still latched.
+    const stable = checkSilentCrashLoop(SILENT_LOOP_THRESHOLD, obs, escalated, SILENT_LOOP_THRESHOLD * 30_000 + 5_000);
+    expect(stable.escalate).toBe(false);
+    expect(stable.nextEscalated).toBe(true);
+  });
+
+  it('below-threshold clears the latch so a fresh loop pages again', () => {
+    // Loop-then-settle: once the early restarts age out of the window, the delta drops below
+    // threshold and the latch clears.
+    const settled = checkSilentCrashLoop(6, [{ at: 0, n: 6 }], true, GIVE_UP_WINDOW_MS + 1);
+    // The only in-window observation is the fresh {now, 6}; delta 0 → below threshold → latch cleared.
+    expect(settled.escalate).toBe(false);
+    expect(settled.restartsInWindow).toBe(0);
+    expect(settled.nextEscalated).toBe(false);
+  });
+
+  it('a DECREASE in NRestarts is treated as a systemd counter reset — fresh window + latch cleared', () => {
+    const obs = [{ at: 0, n: 43 }, { at: 1000, n: 44 }];
+    const r = checkSilentCrashLoop(0, obs, true, 2000);
+    expect(r.nextObs).toEqual([{ at: 2000, n: 0 }]);
+    expect(r.restartsInWindow).toBe(0);
+    expect(r.escalate).toBe(false);
+    expect(r.nextEscalated).toBe(false);
+  });
+
+  it('observations older than the 10-minute window are pruned before computing the delta', () => {
+    // An old {n:0} that has aged out must not inflate the in-window delta.
+    const now = GIVE_UP_WINDOW_MS + 100_000;
+    const obs = [{ at: 0, n: 0 }, { at: now - 60_000, n: 40 }];
+    const r = checkSilentCrashLoop(41, obs, false, now);
+    // Only the {n:40} obs is still in-window; delta = 41 - 40 = 1, below threshold.
+    expect(r.restartsInWindow).toBe(1);
+    expect(r.escalate).toBe(false);
   });
 });
 

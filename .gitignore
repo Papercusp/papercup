@@ -160,3 +160,10 @@ apps/operator/dist-host/
 # excludes them from every run except the soak's own self-test.
 **/*.flakeproof.test.ts
 **/*.flakeproof.test.tsx
+
+# Whisper voice-service scratch recordings. The local whisper service writes an
+# 8-byte probe .wav into its runtime CWD (packages/operator-core) on each
+# invocation and never cleans them up; git-sync's blanket `git add -A` was
+# committing the junk and re-dirtying the tree continuously, which blocks every
+# release cut (release-local.sh refuses a -dirty superproject). Ignore them.
+whisper-server-*.wav

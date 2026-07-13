@@ -431,6 +431,28 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     }
     state.restartDriftWarned = drift.nextWarned;
 
+    // EI-10750: silent-crash-loop guard. A supervised unit that reads healthy at every 60s tick
+    // while systemd's OWN restart counter (`NRestarts`) climbs fast is crash-looping UNDER
+    // systemd's `Restart=` faster than this reconciler can ever observe "down" — so the down-path
+    // give-up counter (built ONLY from restarts WE perform) stays empty and never escalates. That
+    // is exactly how 43 restarts / 25 min of :3170 (papercup-staging-api) down produced ZERO pages.
+    // Detection is INDEPENDENT of FLAGS.supervisorAutoRestart: when systemd (not us) is doing the
+    // restarting, paging on the loop must still happen. Only evaluated while the unit currently
+    // reads healthy — a unit we can see DOWN is already owned by the decide → restart → give-up path.
+    if (entry.autoRestart && !isUnitDown(status)) {
+      const loop = checkSilentCrashLoop(show?.nRestarts, state.nRestartsObs, state.silentLoopEscalated, now);
+      state.nRestartsObs = loop.nextObs;
+      state.silentLoopEscalated = loop.nextEscalated;
+      if (loop.escalate) {
+        await deps
+          .notify({
+            summary: `🚨 supervision: \`${entry.unit}\` is SILENTLY crash-looping — systemd restarted it ${loop.restartsInWindow}× in <10min under its own \`Restart=\`, faster than the reconciler observes "down". The unit reads \`active\` each tick but is NOT healthy — a code fault (inspect \`systemctl --user status ${entry.unit}\` + its journal).`,
+            kind: 'escalation',
+          })
+          .catch(() => {});
+      }
+    }
+
     const { action, nextState } = decideReconcile({
       entry,
       status,
@@ -540,7 +562,11 @@ export function supervisionSnapshot(
   return registry.map((entry) => {
     const state = entry.unit ? flapStateByUnit.get(entry.unit) : undefined;
     const restartsLast10m = state ? state.restarts.filter((t) => now - t < GIVE_UP_WINDOW_MS).length : 0;
-    const flapState: SupervisionFlapState = state?.gaveUp ? 'gave-up' : restartsLast10m > 0 ? 'damping' : 'ok';
+    // EI-10750: a silent crash-loop (systemd absorbing the restarts) leaves `restarts` empty, so
+    // fold the silent-loop latch into the verdict — otherwise the snapshot reads 'ok' during a
+    // live loop, the same blindness the paging path just fixed.
+    const flapState: SupervisionFlapState =
+      state?.gaveUp || state?.silentLoopEscalated ? 'gave-up' : restartsLast10m > 0 ? 'damping' : 'ok';
     return {
       name: entry.name,
       layer: entry.layer,
