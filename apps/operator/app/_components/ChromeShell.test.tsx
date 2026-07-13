@@ -7,8 +7,11 @@
  *   - chromeless path prefixes (/pi, /project-docs, /el-min) → render null
  *   - a normal route → the header + primary nav links render
  *   - onAdv branch: on /adv the OPS CTA is a non-link "current page" span
- *   - testingFlag gating: Plugins link + the web OperatorChatSidebar + the
- *     RES and PUI header CTAs appear only when the TESTING flag is on
+ *   - testingFlag gating: Plugins link + the RES and PUI header CTAs appear
+ *     only when the TESTING flag is on
+ *   - OPERATOR_CHAT_SIDEBAR gating: the revived OperatorChatSidebar renders
+ *     iff ITS flag is on (independent of TESTING); OracleDock + Tutorial
+ *     stay retired regardless of flags
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -16,11 +19,16 @@ import { cleanup, render, screen } from '@testing-library/react';
 /* ── Hook mocks (controllable per-test) ────────────────────────────── */
 let pathname = '/';
 let testingFlag = false;
+let operatorChatSidebarFlag = false;
 vi.mock('@/lib/router-compat/navigation', () => ({
   usePathname: () => pathname,
 }));
 vi.mock('@/lib/flag-hooks', () => ({
-  useFlag: () => testingFlag,
+  // The sidebar has its OWN flag (operator-chat-sidebar-revival-2026-07-13);
+  // every other flag read (TESTING, RES_ALLOCATION) follows testingFlag, as
+  // the pre-revival tests assumed.
+  useFlag: (key: string) =>
+    key === 'papercusp-operator-chat-sidebar' ? operatorChatSidebarFlag : testingFlag,
 }));
 vi.mock('@/lib/visual-effects', () => ({
   reconcileVisualEffectsMode: vi.fn(),
@@ -31,7 +39,12 @@ vi.mock('@papercusp/operator-core/lib/shortcut-registry', () => ({
   reconcileShortcutOverrides: vi.fn(),
 }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
-vi.mock('@papercusp/flags', () => ({ FLAGS: { TESTING: 'papercusp-testing' } }));
+vi.mock('@papercusp/flags', () => ({
+  FLAGS: {
+    TESTING: 'papercusp-testing',
+    OPERATOR_CHAT_SIDEBAR: 'papercusp-operator-chat-sidebar',
+  },
+}));
 vi.mock('motion', () => ({ animate: vi.fn(() => ({ stop: vi.fn() })), stagger: vi.fn(() => 0) }));
 vi.mock('motion/react', () => ({ useReducedMotion: () => false }));
 vi.mock('@papercusp/operator-core/lib/lazy-with-retry', () => ({
@@ -53,8 +66,10 @@ vi.mock('./AutoLoginWelcomeToast', () => ({ default: () => null }));
 vi.mock('./UpdateChip', () => ({ default: () => null }));
 vi.mock('./NotificationCenter', () => ({ NotificationCenter: () => null }));
 vi.mock('./RecentActionsCenter', () => ({ RecentActionsCenter: () => null }));
-// (TutorialButton + OperatorChatSidebar + OracleDock retired 2026-07-09 →
-// _retired/legacy-web-chats/ — design-simplification-2026-07-09 P-003.)
+// (TutorialButton + OracleDock stay retired 2026-07-09 →
+// _retired/legacy-web-chats/ — design-simplification-2026-07-09 P-003.
+// OperatorChatSidebar is REVIVED: operator-chat-sidebar-revival-2026-07-13.)
+vi.mock('./OperatorChatSidebar', () => ({ OperatorChatSidebar: () => <div data-testid="op-chat" /> }));
 vi.mock('./AnimatedPapercuspCup', () => ({ AnimatedPapercuspCup: () => null }));
 vi.mock('./RouteLink', () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
@@ -69,6 +84,7 @@ import ChromeShell from './ChromeShell';
 beforeEach(() => {
   pathname = '/';
   testingFlag = false;
+  operatorChatSidebarFlag = false;
 });
 afterEach(cleanup);
 
@@ -128,13 +144,32 @@ describe('ChromeShell', () => {
     expect(screen.getByRole('link', { name: 'Resources' })).toBeTruthy();
   });
 
-  it('never renders the retired legacy web chats (OracleDock / OperatorChatSidebar / Tutorial), regardless of flags', () => {
-    // Recurrence guard for design-simplification-2026-07-09 P-003 (owner D1):
-    // the only chat surface is the terminal-native pui chat in the zellij dock.
+  it('renders the operator chat sidebar when OPERATOR_CHAT_SIDEBAR is on, even with TESTING off', () => {
+    // operator-chat-sidebar-revival-2026-07-13: the sidebar is the app's
+    // primary chat surface on its OWN default-ON flag — NOT a testing surface.
     pathname = '/';
-    testingFlag = true;
+    testingFlag = false;
+    operatorChatSidebarFlag = true;
+    render(<ChromeShell />);
+    expect(screen.getByTestId('op-chat')).toBeTruthy();
+  });
+
+  it('hides the operator chat sidebar when OPERATOR_CHAT_SIDEBAR is off', () => {
+    pathname = '/';
+    testingFlag = true; // TESTING must NOT leak the sidebar back in
+    operatorChatSidebarFlag = false;
     render(<ChromeShell />);
     expect(screen.queryByTestId('op-chat')).toBeNull();
+  });
+
+  it('never renders the still-retired legacy chats (OracleDock / Tutorial), regardless of flags', () => {
+    // Recurrence guard for design-simplification-2026-07-09 P-003: OracleDock
+    // and TutorialButton stay in _retired/legacy-web-chats/ — only the
+    // OperatorChatSidebar was revived.
+    pathname = '/';
+    testingFlag = true;
+    operatorChatSidebarFlag = true;
+    render(<ChromeShell />);
     expect(screen.queryByText('Tutorial')).toBeNull();
     expect(document.querySelector('[data-oracle-dock]')).toBeNull();
   });

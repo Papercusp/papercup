@@ -28,13 +28,16 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import { isChromeShellNavActive } from './chrome-shell-nav';
-// Legacy web chats RETIRED (design-simplification-2026-07-09 P-003, owner
-// decision D1): the ONLY chat surface is the terminal-native pui "Papercup
-// chat" panes in the zellij dock. OracleDock + OperatorChatSidebar (+ the
-// TutorialButton that fired OracleDock's walkthrough event) moved to
-// `_retired/legacy-web-chats/` — see its RESTORE.md. The shared
-// operator:converse backend + OperatorConversationProvider remain live (the
-// pui chat uses them too).
+// OracleDock + TutorialButton remain RETIRED (design-simplification-2026-07-09
+// P-003; see _retired/legacy-web-chats/RESTORE.md). OperatorChatSidebar was
+// retired with them but is REVIVED as the app's PRIMARY chat surface
+// (operator-chat-sidebar-revival-2026-07-13, owner decision — the zellij pui
+// dock is now the TESTING-gated dev path instead). The chat must appear on
+// first paint, not pop in seconds later: import it eagerly so it ships in the
+// main bundle and mounts immediately — a lazy() chunk fetch (or, in the Tauri
+// dev shell, an on-demand compile of that chunk) is exactly what caused the
+// visible delay before. The docks below stay lazy/idle-deferred.
+import { OperatorChatSidebar } from './OperatorChatSidebar';
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
@@ -91,6 +94,7 @@ export default function ChromeShell() {
   const onRes = isChromeShellNavActive(pathname, '/res');
   const testingFlag = useFlag(FLAGS.TESTING);
   const resFlag = useFlag(FLAGS.RES_ALLOCATION);
+  const operatorChatSidebarFlag = useFlag(FLAGS.OPERATOR_CHAT_SIDEBAR);
   const t = useLexicon();
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
@@ -265,9 +269,17 @@ export default function ChromeShell() {
       <VoiceLeaderBootstrap />
       <AriaLiveRegions />
       <AutoLoginWelcomeToast />
-      {/* The web operator chat sidebar is RETIRED (see the retirement note at
-          the top of this file) — the desktop chat is the TERMINAL-NATIVE pui
-          chat panes in the zellij dock. */}
+      {/* Operator chat sidebar — fixed left, full-height, on every
+          non-chromeless page (operator-chat-sidebar-revival-2026-07-13).
+          The sidebar shifts the rest of the app right via body.has-op-chat
+          padding-left, set INSIDE the component at mount and removed on
+          unmount — there is deliberately no pre-paint reservation (D-017:
+          flags are unknowable pre-paint), so a one-frame shift on first
+          paint is the accepted cost. Iframe-target routes (CHROMELESS
+          prefixes) skip ChromeShell entirely so the sidebar is absent
+          there too — desired, those routes are embedded inside other
+          pages that already host the sidebar. */}
+      {operatorChatSidebarFlag && <OperatorChatSidebar />}
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );

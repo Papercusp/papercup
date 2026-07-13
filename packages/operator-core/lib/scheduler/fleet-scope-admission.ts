@@ -9,14 +9,10 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import { sendMessage } from '../agent-tools/coordination/messages';
-import { listFleetAssignments } from '../fleet/assignments';
-import { latestFleetMembership } from '../fleet-membership-store';
 import { activeWorkspaceId } from '../workspace-registry';
-import { getWorkItem, releaseWorkItem, type WorkItem } from '../work-items';
+import type { WorkItem } from '../work-items';
 import type { ClaimSpecRecord } from './claim-spec-store';
-import { getClaimSpecRecord, resolveClaimSpecWorkspace } from './claim-spec-store';
-import { compileFilter } from './get-next';
+import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 import {
   matchesClaimSpecFilter,
   matchesWorkItemClaimSpec,
@@ -46,6 +42,11 @@ export async function resolveFleetScopeContext(
   ownerIdOrName: string,
   workspaceId?: string | null,
 ): Promise<FleetScopeContext | null> {
+  // Lazy seams keep assignment-tool unit tests from loading the entire scheduler /
+  // coord graph merely because they import a handler. The calls still reuse the
+  // canonical stores; only module evaluation is deferred until admission is needed.
+  const { latestFleetMembership } = await import('../fleet-membership-store');
+  const { listFleetAssignments } = await import('../fleet/assignments');
   const ws = resolveClaimSpecWorkspace(workspaceId);
   let ownerId = ownerIdOrName;
   let membership = await latestFleetMembership(ws, ownerId).catch(() => null);
@@ -62,12 +63,14 @@ export async function resolveFleetScopeContext(
   }
 
   if (!membership?.fleetSlug || membership.fleetRole !== 'member') return null;
+  const { getClaimSpecRecord } = await import('./claim-spec-store');
   const record = await getClaimSpecRecord({ cupId: ownerId, workspaceId: ws });
   return { ownerId, fleetSlug: membership.fleetSlug, fleetRole: 'member', record };
 }
 
 async function featureMatchesRecord(item: WorkItem, record: ClaimSpecRecord): Promise<boolean> {
   const { sql } = getOrgPg();
+  const { compileFilter } = await import('./get-next');
   const filter = compileFilter(sql, record.spec.view.filter);
   const rows = await sql<{ matched: boolean }[]>`
     SELECT EXISTS (
@@ -107,6 +110,7 @@ export async function admitWorkItemForFleetTarget(args: {
   const scope = await resolveFleetScopeContext(args.target, args.workspaceId);
   if (!scope) return { allowed: true, scoped: false };
   if (scope.record.source === 'default') return denyMissing(scope);
+  const { getWorkItem } = await import('../work-items');
   const item = await getWorkItem(args.workItemId, args.harness);
   if (!item) return { allowed: true, scoped: true, scope }; // the claim seam returns not_found
   if (await itemMatchesScope(item, scope)) return { allowed: true, scoped: true, scope };
@@ -148,6 +152,7 @@ export async function notifyFleetScopeRefusal(
   admission: Extract<FleetScopeAdmission, { allowed: false }>,
   action: string,
 ): Promise<void> {
+  const { sendMessage } = await import('../agent-tools/coordination/messages');
   await sendMessage(identity, {
     to: [`@fleet-leader:${admission.scope.fleetSlug}`],
     summary: `fleet-scope admission blocked ${action}`,
@@ -169,6 +174,8 @@ export async function reconcileFleetScopeClaims(args: {
 }): Promise<FleetScopeReconciliation> {
   const scope = await resolveFleetScopeContext(args.ownerId, args.workspaceId);
   if (!scope) return { scope: null, quarantinedIds: [] };
+  const { listFleetAssignments } = await import('../fleet/assignments');
+  const { getWorkItem, releaseWorkItem } = await import('../work-items');
   const rows = await listFleetAssignments({
     workspaceId: resolveClaimSpecWorkspace(args.workspaceId),
     agent: scope.ownerId,
@@ -184,6 +191,7 @@ export async function reconcileFleetScopeClaims(args: {
     if (released) quarantinedIds.push(id);
   }
   if (quarantinedIds.length > 0 && args.identity) {
+    const { sendMessage } = await import('../agent-tools/coordination/messages');
     await sendMessage(args.identity, {
       to: [`@fleet-leader:${scope.fleetSlug}`],
       summary: `quarantined ${quarantinedIds.length} out-of-scope fleet claim(s)`,

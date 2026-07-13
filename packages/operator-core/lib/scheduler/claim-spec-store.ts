@@ -20,6 +20,8 @@ import { releaseWorkItem, type OrgSql } from '../work-items';
 import { planItemLaneBlockReason } from './plan-item-lane-guard';
 import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
+import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
+export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
 export interface SetClaimSpecResult {
   ok: boolean;
@@ -46,13 +48,6 @@ export interface SetClaimSpecResult {
  * today's local-only behavior rather than guessing a volatile registry
  * default (the EI-1460 strand class).
  */
-export function resolveClaimSpecWorkspace(
-  identWorkspaceId: string | null | undefined,
-): string | undefined {
-  const ws = identWorkspaceId?.trim();
-  return ws && ws !== '*' ? ws : undefined;
-}
-
 /** Queen: validate + store a bee's claim spec (upsert; revision bumps unless the spec carries a higher one). */
 export async function setClaimSpec(
   args: {

@@ -22,6 +22,14 @@ export const FLAGS = {
   // separate `papercusp-oracle` key was folded into this one by owner ask
   // (2026-06-10): the Oracle is a testing surface.
   TESTING: "papercusp-testing",
+  // The operator chat sidebar — the docked, full-height left web chat
+  // (OperatorChatSidebar in ChromeShell), REVIVED as the app's primary chat
+  // surface by owner decision (operator-chat-sidebar-revival-2026-07-13; it
+  // was retired 2026-07-09 in favor of the zellij pui dock, which is itself
+  // now TESTING-gated). Its OWN flag — deliberately NOT under FLAGS.TESTING
+  // (that flag is parked/cut for V1). Default ON (derived FLAG_DEFAULTS);
+  // flip OFF via /admin/features to hide the sidebar without a rebuild.
+  OPERATOR_CHAT_SIDEBAR: "papercusp-operator-chat-sidebar",
   // Quick Panel — the global-shortcut popup window's tabbed body (Saved Prompts
   // outline / Docs search / Brainstorm), served at /quick-panel
   // (quick-panel-saved-prompts-2026-07-13). Default ON (derived FLAG_DEFAULTS —
