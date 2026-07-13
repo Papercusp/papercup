@@ -273,9 +273,12 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
       await new Promise((r) => setTimeout(r, opts.generationMs ?? 0));
       if (o.signal?.aborted) throw new Error('aborted during generation');
       return {
-        text: JSON.stringify([
-          { title: 'i', rationale: 'r', addressesPatternRefs: ['wi:F-1'], cheapExperiment: 'e' },
-        ]),
+        text: '',
+        json: {
+          ideas: [
+            { title: 'idea', body: 'a body long enough', mechanism: 'the mechanism', addressesPatternRefs: ['wi:F-1'] },
+          ],
+        },
         costUsd: 0,
         inputTokens: 10,
         outputTokens: 20,
@@ -323,8 +326,9 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
       llmCall: call,
       perLens: 1,
       lenses: ['analogical'],
-      ideatorTimeoutMs: 5_000, // generation cap is generous; admission is what fails
-      cycleDeadlineMs: Date.now() + 30, // ~nothing left ⇒ admission budget ~0
+      ideatorTimeoutMs: 40, // generation cap; admission is what fails here
+      cycleDeadlineMs: Date.now() + 10, // ~nothing left ⇒ admission budget ~0
+      admissionBackstopGraceMs: 20, // keep the unit test fast (prod default is 5s)
     });
     expect(res.ideas).toHaveLength(0);
     const err = res.ideators[0]?.error ?? '';

@@ -25,7 +25,9 @@
 # ⚠️  WHAT IS **NOT** ISOLATED — READ THIS BEFORE YOU CLICK ANYTHING (EI-10387)
 #
 #   ISOLATED:      the X display, the devUrl port, the pty port, the sidecar
-#                  *process*.
+#                  *process*, and (EI-10364) the SPA MODULE BUNDLE — a frozen
+#                  snapshot the fleet's shared `vite build --watch` can't touch,
+#                  so this webview's module graph is stable for the whole run.
 #   **NOT** ISOLATED: the DATABASE and the WORKSPACE. The sidecar inherits the
 #                  ambient env, so it connects to the SAME `DATABASE_URL` /
 #                  `PAPERCUSP_WORKSPACE` as the live system.
@@ -165,16 +167,59 @@ else
   log "WARNING: vglrun unavailable or skipped — screenshots will be blank white (agent-e2e.mdx §15.4). DOM/eval via the bridge still work."
 fi
 
+# ── freeze the SPA bundle into a PRIVATE dir so this instance owns its module
+#    server too (EI-10364) ────────────────────────────────────────────────────
+# The isolated sidecar (below) serves the SPA from PAPERCUSP_SPA_DIST if it is
+# set (apps/operator/bin/host-spa.ts resolveSpaDistRoot). WITHOUT it the sidecar
+# falls through to the SHARED apps/operator-vite/dist/ — the SAME bundle the
+# fleet's `vite build --watch` continuously rewrites AND empties. That makes the
+# "isolated" claim FALSE at the SPA layer: the shared watcher yanks this webview's
+# lazy chunks out from under it mid-run ("Importing a module script failed",
+# EI-10360) and flip-flops it between stale and fresh modules, so a verification
+# run is a coin-flip and can even report a broken thing as fixed. Freezing a
+# snapshot the shared watcher can't touch makes THIS instance's module graph
+# stable AND genuinely isolated for the whole run.
+SHARED_SPA_DIST="$REPO_DIR/apps/operator-vite/dist"
+SPA_DIST=""
+if [ -f "$SHARED_SPA_DIST/index.html" ]; then
+  SPA_DIST="$WORK/spa"
+  mkdir -p "$SPA_DIST"
+  # Copy the whole tree, then re-copy index.html LAST so the frozen index matches
+  # the chunks we captured. The shared build retains old hashed chunks
+  # (emptyOutDir:false — operator-vite/vite.config.ts), so a rebuild racing this
+  # copy still leaves our index's chunks present in the snapshot.
+  cp -a "$SHARED_SPA_DIST/." "$SPA_DIST/" 2>/dev/null || true
+  cp -a "$SHARED_SPA_DIST/index.html" "$SPA_DIST/index.html" 2>/dev/null || true
+  # Best-effort freshness read from the vite-watch heartbeat (EI-5202) so the
+  # caller can see WHICH build this snapshot froze — a snapshot is immutable, so
+  # picking up a newer edit means restarting the instance, not reloading.
+  SPA_HB="${VITE_WATCH_HEARTBEAT:-${VITE_WATCH_LOCK:-/tmp/papercup-operator-vite-watch.lock}.heartbeat}"
+  SPA_SHA=""
+  [ -f "$SPA_HB" ] && SPA_SHA="$(sed -n 's/.*"gitSha": *"\([0-9a-f]*\)".*/\1/p' "$SPA_HB" 2>/dev/null | head -1)"
+  log "SPA snapshot frozen at $SPA_DIST${SPA_SHA:+ (shared build ${SPA_SHA:0:12})} — IMMUTABLE for this run; restart to pick up a newer build."
+else
+  log "WARNING: no built SPA at $SHARED_SPA_DIST (operator-vite not built yet) — NOT freezing a"
+  log "         snapshot; the sidecar falls through to the shared dist as before. Build"
+  log "         operator-vite first for a genuinely isolated (watcher-proof) module server."
+fi
+
 # ── launch the isolated dev instance (agent-e2e.mdx §1.3 recipe, packaged) ──
 # setsid makes this its own process group so teardown can `kill -- -$PID`
 # the WHOLE tree (cargo, node, the built binary, webkit helper processes) —
 # a bare `kill $PID` regularly leaves the actual webview process orphaned.
+# Build the SPA-pin env assignment in a var so the quotes survive into the
+# generated launch.sh (a plain `$VAR` heredoc expansion keeps them; a bare
+# WORK dir has no spaces, but keep it correct anyway) and the whole line
+# disappears when no snapshot was frozen.
+SPA_ENV_LINE=""
+[ -n "$SPA_DIST" ] && SPA_ENV_LINE="PAPERCUSP_SPA_DIST=\"$SPA_DIST\""
 cat > "$WORK/launch.sh" <<LAUNCH
 #!/usr/bin/env bash
 cd "$DESKTOP_DIR"
 exec env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   OPERATOR_DEV_PORT="$DEV_PORT" OPERATOR_DEV_PTY_PORT="$PTY_PORT" \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL=0 \\
+  $SPA_ENV_LINE \\
   ${LAUNCH_PREFIX[*]} npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:$DEV_PORT"}}'
 LAUNCH
 chmod +x "$WORK/launch.sh"
@@ -241,7 +286,8 @@ cat >&2 <<'WARN'
   ┌────────────────────────────────────────────────────────────────────────┐
   │  ⚠️  THIS INSTANCE SHARES THE **LIVE DATABASE AND WORKSPACE**          │
   │                                                                        │
-  │  Isolated: X display · devUrl port · pty port · sidecar process        │
+  │  Isolated: X display · devUrl port · pty port · sidecar process · SPA  │
+  │            module bundle (a frozen snapshot — EI-10364)                 │
   │  NOT isolated: DATABASE_URL · PAPERCUSP_HOME · PAPERCUSP_WORKSPACE     │
   │                                                                        │
   │  READS are safe. **WRITES ARE REAL** — a Mug steering click here       │

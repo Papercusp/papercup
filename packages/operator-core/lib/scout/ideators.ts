@@ -181,6 +181,12 @@ export interface RunIdeatorsOptions extends BuildRosterInput {
    */
   cycleDeadlineMs?: number;
   /**
+   * Grace added to the admission backstop before we give up on a transport that never signals
+   * admission (default {@link ADMISSION_BACKSTOP_GRACE_MS}). Exists so the governor's own honest
+   * capacity error wins that race in production; tests inject a small value to stay fast.
+   */
+  admissionBackstopGraceMs?: number;
+  /**
    * Optional gym-QD stepping-stone priming (P-012 archive→Scout): appended to
    * every ideator's grounded substrate so generation builds on the gym's
    * discovered elites. Empty/absent ⇒ cold start (no priming).
@@ -464,23 +470,31 @@ async function callIdeatorLlm(
     return Math.max(0, remaining - reserve);
   })();
 
-  if (!hasGenerationCap && admissionBudgetMs === undefined && !opts.signal) {
+  // The TOTAL wall-clock ceiling armed at call time. This must ALWAYS exist when a cap was
+  // asked for: not every transport signals admission (the codex-gateway path and the subprocess
+  // backends never do), and a timer that only starts on `onAdmitted` would leave those calls
+  // completely UNBOUNDED — strictly worse than the bug we're fixing. So we always arm, and
+  // merely RE-ARM on admission:
+  //   - no deadline  ⇒ ceiling = the generation cap. Byte-identical to the pre-WI-4475 contract
+  //                    (same bound, same message), so legacy callers are untouched.
+  //   - a deadline   ⇒ ceiling = admission budget + generation cap. On admission we re-arm to
+  //                    the generation cap ALONE, so queue-wait is never charged to generation.
+  const grace = opts.admissionBackstopGraceMs ?? ADMISSION_BACKSTOP_GRACE_MS;
+  const totalCeilingMs = (() => {
+    if (admissionBudgetMs === undefined) return hasGenerationCap ? generationTimeoutMs : undefined;
+    return admissionBudgetMs + (hasGenerationCap ? generationTimeoutMs : 0) + grace;
+  })();
+
+  if (totalCeilingMs === undefined && !opts.signal) {
     return opts.llmCall(input);
   }
 
   const ctrl = new AbortController();
-  let generationTimer: ReturnType<typeof setTimeout> | null = null;
-  let admissionTimer: ReturnType<typeof setTimeout> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   let parentAbort: (() => void) | null = null;
+  let admitted = false;
   // Assigned synchronously by the Promise executor below, before `llmCall` is ever invoked.
   let onAdmitted: () => void = () => {};
-
-  const clearTimers = () => {
-    if (generationTimer) clearTimeout(generationTimer);
-    if (admissionTimer) clearTimeout(admissionTimer);
-    generationTimer = null;
-    admissionTimer = null;
-  };
 
   const rejectOnAbort = new Promise<never>((_, reject) => {
     const abort = (err: Error) => {
@@ -496,43 +510,47 @@ async function callIdeatorLlm(
       opts.signal.addEventListener('abort', parentAbort, { once: true });
     }
 
-    // Backstop: the governor should bail on its own at `governorMaxWaitMs`, but if a transport
-    // neither admits nor returns we must not hang until the cycle dies. The grace lets the
-    // governor's own honest capacity error win the race whenever it is working.
-    if (admissionBudgetMs !== undefined) {
-      admissionTimer = setTimeout(
-        () =>
-          abort(
-            new Error(
-              `Scout ideator ${slot.lens} was never admitted within ${Math.trunc(admissionBudgetMs)}ms ` +
-                `— no capacity within the cycle's remaining budget (not a transport timeout)`,
-            ),
-          ),
-        admissionBudgetMs + ADMISSION_BACKSTOP_GRACE_MS,
-      );
-      if (typeof admissionTimer.unref === 'function') admissionTimer.unref();
-    }
-
-    // The GENERATION cap starts only once the request is actually issued.
-    onAdmitted = () => {
-      if (admissionTimer) {
-        clearTimeout(admissionTimer);
-        admissionTimer = null;
-      }
-      if (!hasGenerationCap) return;
-      // Re-armed per attempt: a retry re-acquires a permit, so it gets a fresh budget.
-      if (generationTimer) clearTimeout(generationTimer);
-      generationTimer = setTimeout(
-        () =>
+    // The failure MESSAGE is chosen when the timer FIRES, from whether we were ever admitted —
+    // so a capacity starve can never again be misreported as transport death (the WI-4475 lie
+    // that sent us hunting a phantom hang).
+    const arm = (ms: number) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (admitted) {
           abort(
             new Error(
               `Scout ideator ${slot.lens} timed out after ${Math.trunc(generationTimeoutMs)}ms of GENERATION ` +
                 `(admitted — the model was streaming; this is not a capacity wait)`,
             ),
-          ),
-        generationTimeoutMs,
-      );
-      if (typeof generationTimer.unref === 'function') generationTimer.unref();
+          );
+        } else if (admissionBudgetMs !== undefined) {
+          abort(
+            new Error(
+              `Scout ideator ${slot.lens} was never admitted within ${Math.trunc(admissionBudgetMs)}ms ` +
+                `— no capacity within the cycle's remaining budget (not a transport timeout)`,
+            ),
+          );
+        } else {
+          // Legacy shape: no deadline was supplied, so we cannot tell queue-wait from generation.
+          // Keep the original message verbatim — callers/tests depend on it.
+          abort(new Error(`Scout ideator ${slot.lens} timed out after ${Math.trunc(generationTimeoutMs)}ms`));
+        }
+      }, ms);
+      if (typeof timer.unref === 'function') timer.unref();
+    };
+
+    if (totalCeilingMs !== undefined) arm(totalCeilingMs);
+
+    // ADMITTED — the request is really on the wire. Re-arm with the GENERATION budget alone, so
+    // however long we queued, the model still gets its full (and only its own) budget. Fires per
+    // retry attempt: each attempt re-acquires a permit, so each gets a fresh generation budget.
+    onAdmitted = () => {
+      admitted = true;
+      if (hasGenerationCap) arm(generationTimeoutMs);
+      else if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
     };
   });
 
@@ -547,7 +565,7 @@ async function callIdeatorLlm(
       rejectOnAbort,
     ]);
   } finally {
-    clearTimers();
+    if (timer) clearTimeout(timer);
     if (parentAbort && opts.signal) opts.signal.removeEventListener('abort', parentAbort);
   }
 }

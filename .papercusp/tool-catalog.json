@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 633,
+  "count": 649,
   "tools": [
     {
       "name": "ablation:report",
@@ -27,6 +27,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -62,6 +63,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -96,6 +98,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -130,6 +133,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -165,6 +169,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -199,6 +204,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -215,7 +221,7 @@
           "POST"
         ]
       },
-      "description": "Pin an agent to a pool account on the inference gateway, LIVE (no respawn). `agent` = the TARGET agent's owner/spawn id — pass your OWN id to pin yourself, or another agent's id to pin them. `account` = a pool account id (see gateway:status / accounts:list). `hard:true` ⇒ NEVER fail over off it (waits / 429s on that account); default (soft) prefers it but yields if it is paused/exhausted. The gateway routes that agent's SUBSEQUENT requests to the account, overriding its spawn-time pin. CAUTION: concentrating many agents on one account rate-throttles it — prefer accounts with headroom (gateway:status) and spread load. In-memory: re-apply after a gateway restart. Returns {ok, ownerId, pin}.",
+      "description": "Pin an agent to a pool account on the inference gateway, LIVE (no respawn) — the dynamic account re-pin verb (WI-4402). `agent` = the TARGET agent's owner/spawn id — pass your OWN id to pin yourself, or another agent's id to pin them. `account` = a pool account id (see gateway:status / accounts:list). `hard:true` ⇒ NEVER fail over off it (waits / 429s on that account); default (soft) prefers it but yields if it is paused/exhausted. Effective on that agent's NEXT model call — no respawn, no lost context. Reaches any session whose launch path forwards the `x-papercusp-owner` identity header (every fresh spawn, and every `psu --resume`'d session routed `auto`/a pool account). A `--account=default` session is a deliberate gateway-free escape hatch and CANNOT be dynamically re-pinned — respawn it instead. CAUTION: concentrating many agents on one account rate-throttles it — spread load. DURABLE (survives a gateway restart). Returns {ok, ownerId, pin}.",
       "capabilities": [
         "harness:write"
       ],
@@ -232,13 +238,14 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "guidance": {
         "when": "Dynamically routing an agent (yourself or another) to a specific pool account without respawning it.",
-        "notWhen": "Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override.",
-        "chaining": "gateway:status (pick an account with headroom) → accounts:pin { agent, account } → accounts:unpin to revert."
+        "notWhen": "Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override. Re-pinning a `--account=default` session — not reachable; respawn it instead.",
+        "chaining": "gateway:status (pick an account with headroom) → accounts:pin { agent, account } → gateway:owner_report { agent } (confirm it took) → accounts:unpin to revert."
       }
     },
     {
@@ -266,6 +273,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -300,6 +308,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -334,6 +343,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -367,6 +377,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -400,6 +411,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -464,6 +476,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -499,6 +512,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -531,6 +545,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -565,6 +580,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1143,6 +1159,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1247,6 +1264,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1536,6 +1554,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1552,7 +1571,7 @@
           "POST"
         ]
       },
-      "description": "Score a real desktop-agent run against the 8-check behaviour standard. mode:\"score\" reads an existing transcript by sessionId or transcriptPath; mode:\"launch\" runs a visible agent on a fixture plan, captures the transcript, and scores it. Returns the behaviour report plus session/transcript metadata, and best-effort dual-emits ONE su-agent-behavior rubric scorecard (observation lane) so the checks feed rubrics:trend — the `scorecard` field reports that emit; it never alters the verdict.",
+      "description": "Score a real desktop-agent run against the 8-check behaviour standard. mode:\"score\" reads an existing transcript by sessionId or transcriptPath; mode:\"launch\" runs a visible agent on a fixture plan, captures the transcript, and scores it. Returns the behaviour report plus session/transcript metadata, and best-effort dual-emits ONE su-agent-behavior rubric scorecard (observation lane) so the checks feed rubrics:trend — the `scorecard` field reports that emit; it never alters the verdict. Also returns `graduation` { blocked, reason, deterministicVerdict, captureGate }: the battery-graduation decision — blocked when the deterministic verdict failed OR the knowledge-capture teeth engage (4 consecutive agent-attributed non-capture batteries in the su-agent-behavior history; a capturing battery resets; fail-open — D-017). A battery grader reads `graduation.blocked`, not just `report.verdict`.",
       "capabilities": [
         "harness:read"
       ],
@@ -1569,6 +1588,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1586,7 +1606,7 @@
           "POST"
         ]
       },
-      "description": "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer Blender's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef.",
+      "description": "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer Blender's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.",
       "capabilities": [
         "harness:write"
       ],
@@ -1605,7 +1625,37 @@
       "guidance": {
         "when": "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Mug's triage path: grade each ungraded routed draft).",
         "notWhen": "Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Mug vs owner surface).",
-        "chaining": "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade."
+        "chaining": "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. A su-ideate grade with feedback auto-notifies the originator (revisionWake in the result: ≤3 wakes them to revise or defend, >3 is an unwoken FYI). applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade."
+      }
+    },
+    {
+      "name": "blender:ideate-pass-record",
+      "http": {
+        "path": "/api/agent-tools/blender/ideate-pass-record",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record one su IDEATE pass on the Scout tick ledger: a status='ran', origin='su-ideate' tick attributed to you, carrying the pass's yield. Pass `ideasFiled` (required), `observationsMined?`, `notes?`. origin='su-ideate' keeps the row OFF Scout's cadence floor and health reads — a su pass is observed, never mistaken for a Scout cycle. Best-effort observability: call it once at the end of an ideate pass.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "At the END of an su IDEATE pass — after you have filed/routed the pass's ideas (improvements:capture / blender:route-idea) — to leave a durable, measurable trace of the pass (its yield + your attribution).",
+        "notWhen": "Filing an individual idea (improvements:capture) or routing one to a plan (blender:route-idea) — this records the PASS, not an idea. Recording a Scout-cycle tick — that is the scout-cycle routine, not this tool.",
+        "chaining": "improvements:capture / blender:route-idea (file the ideas) → blender:ideate-pass-record { ideasFiled, observationsMined?, notes? } (record the pass). The su-partition pacing/observability reads (Phase 3) aggregate these origin=su-ideate ticks."
       }
     },
     {
@@ -1616,7 +1666,7 @@
           "POST"
         ]
       },
-      "description": "Your IDEATE-pass read of your OWN past graded proposals: the owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature'), formatted as a grader-feedback priming block (newest-first; owner grades outrank Mug volume grades). Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
+      "description": "Your IDEATE-pass read of your OWN past proposals: owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature'), each filing's real-world outcome (outcomes[]: won/lost/pending — resolved ⇒ won, deprecated ⇒ lost), and lensWinRates[] (per-lens win-rates, floored sampling weight) so you lean into stances that land. Open every pass { scope:'mine', intent:'<your pass focus>' }: scope:'mine' also folds observationsImpact — your 7d lane:observation filings and the pattern → idea → shipped chain they seeded; intent re-ranks grades+outcomes by semantic relevance to this pass (fail-open to newest-first). A federated workspace also gets federated — nearby foreign elites, crowded niches, and this hive's empty-frontier slice. Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
       "capabilities": [
         "curation:read"
       ],
@@ -1633,9 +1683,69 @@
         "curator"
       ],
       "guidance": {
-        "when": "Opening an IDEATE-mode grounding pre-pass — pull this to see how your past feature proposals were graded, so the pass builds on what landed / what the grader flagged rather than starting cold. Pairs with curation:state-of-pot + rubrics:list + scorecards:freshness as the IDEATE grounding reads.",
+        "when": "Opening an IDEATE-mode grounding pre-pass — how your past proposals were graded AND how they fared. Pairs with curation:state-of-pot + rubrics:list + scorecards:freshness as the IDEATE grounding reads.",
         "notWhen": "Grading an idea — that is blender:grade-idea. Reading Blender's OWN lens-routed ideas or lens weights — a different, lens-learning surface; this returns your su-ORIGINATED ideas only.",
-        "chaining": "curation:state-of-pot + rubrics:list + scorecards:freshness + blender:ideation-feedback → your IDEATE pass, grounded."
+        "chaining": "curation:state-of-pot + rubrics:list + scorecards:freshness + blender:ideation-feedback { scope:'mine', intent } → your IDEATE pass, grounded → improvements:capture { ideation:{lens} } → blender:route-idea → blender:ideate-pass-record."
+      }
+    },
+    {
+      "name": "blender:route-idea",
+      "http": {
+        "path": "/api/agent-tools/blender/route-idea",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Route an su idea onto the PLAN rail: create a DRAFT plan (Queen/owner greenlights it) and record it in the routed-idea ledger (origin='su-ideate') so grade→outcome→feedback learning attributes back to it. Pass `draft {title, framing, mechanism, bet?, cheapExperiment?, lens?}` for a fresh idea, OR `featureId` to re-route an already-filed su feature — that path links the wi to the plan and leaves the wi OPEN for triage. Only rail:'plan' is supported (gym/instance land later).",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "You have an su IDEATE-pass idea worth a real plan (not just a backlog item). Route a fresh idea with `draft`, or promote an already-filed feature with `featureId`. The draft lands in the Create tab as `status: draft` for Mug/owner review.",
+        "notWhen": "A small fix or friction — that is improvements:capture (kind bug/change). Grading a routed idea — blender:grade-idea. gym/instance rails — not wired here yet.",
+        "chaining": "blender:route-idea → the draft plan appears for Mug/owner triage; greenlighting it (promoting the draft) starts the normal plan lifecycle, and classifyIdeaOutcome follows the plan:<slug> terminal state so the idea earns won/lost credit automatically."
+      }
+    },
+    {
+      "name": "blender:success-metrics",
+      "http": {
+        "path": "/api/agent-tools/blender/success-metrics",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The blender-self-learning program's done-check, over the LIVE ledgers: five bars — rubric-grounded routed ideas >0, zero score-0 cycles fired, cycle error rate <5%, ledger rows reconcile with tick routed counts (per cycle), >=1 grader suggestion adopted with attribution — each PASS/FAIL/UNKNOWN with the measurement behind it. verdict='pass' only when every bar passes; 'incomplete' when a bar has no evidence yet (an empty window never certifies the program done); 'fail' on any real regression. Read-only.",
+      "capabilities": [
+        "curation:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live rather than merely shipped.",
+        "notWhen": "Asking whether Scout ideas are getting BETTER over time (that is the quality/degradation report — this is an absolute done-check, not a trend). Grading an individual idea (blender:grade-idea).",
+        "chaining": "blender:success-metrics → read `verdict`: 'incomplete' names which bar lacks evidence (act on THAT bar's unknownReason); 'fail' names the regression + the rows behind it."
       }
     },
     {
@@ -1663,6 +1773,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1697,6 +1808,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1731,6 +1843,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1783,6 +1896,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1834,6 +1948,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -1883,6 +1998,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -1956,6 +2072,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2029,6 +2146,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2102,6 +2220,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2175,6 +2294,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2248,6 +2368,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2321,6 +2442,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2425,6 +2547,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2457,6 +2580,36 @@
         "when": "VERIFY a code claim before you report or diagnose: typecheck a package after a suspected type error, or run a package / test-file suite to confirm a failure actually reproduces. This is the sanctioned read-only exec for confined fleet agents (capability:bash is gated for them).",
         "notWhen": "To READ a file use capability:read; to SEARCH use the Grep tool. To run an arbitrary or mutating command you need capability:bash (gated — escalate if you truly need it). This tool runs ONLY tsc --noEmit / tests, never a free-form command.",
         "chaining": "capability:read / Grep (inspect) → capability:inspect (typecheck/test to CONFIRM) → report a VERIFIED diagnosis. For a long suite pass run_in_background:true and poll capability:bash_output."
+      }
+    },
+    {
+      "name": "capability:launch-agent",
+      "http": {
+        "path": "/api/agent-tools/capability/launch-agent",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent's FIRST TURN, so it starts working immediately instead of parking idle.",
+      "capabilities": [
+        "capability:terminal"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "You want another agent working: an ad-hoc task (`brief`), a plan (`plan`), a dead agent brought back mid-thread with its context intact (`resume: { agentId: \"su-…\" }`), or a branch off a live one (`fork: true`). `fleet` is optional — a non-leader can launch a plain unfleeted agent.",
+        "notWhen": "To run a COMMAND (dev server, build, REPL) rather than an agent: capability:terminal / capability:bash. For N members on a plan with fleet seats + capacity advice in one call, fleet:launch-on-plan is still the ergonomic door.",
+        "chaining": "Returns once spawned; does NOT wait. `resume: { agentId }` resolves that agent's latest session (no uuid hunting); a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children."
       }
     },
     {
@@ -2498,6 +2651,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2633,6 +2787,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -2754,6 +2909,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -2788,6 +2944,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -2822,6 +2979,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -2857,6 +3015,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -2996,6 +3155,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -3069,6 +3229,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -3300,6 +3461,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -3463,6 +3625,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3497,6 +3660,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3531,6 +3695,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3565,6 +3730,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3599,6 +3765,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3633,6 +3800,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3667,6 +3835,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3701,6 +3870,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3734,6 +3904,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3768,6 +3939,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3801,6 +3973,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3835,6 +4008,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3868,6 +4042,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3901,6 +4076,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3935,6 +4111,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -3951,7 +4128,7 @@
           "POST"
         ]
       },
-      "description": "Hand a lane to a peer in ONE call: assign the plan items to `to` (durable lane) + deliver the `note` to its inbox + WAKE it now, then report pickup ({ woken, delivered, sessionState }). Replaces hand-composing plan_items:assign + coord:send + events:emit + the coord:inbox-wake:<id> key. FLAGS a non-wakeable target: an `ended` sessionState (or recipient_dead) means the lane was assigned but no live process will pick it up until a relaunch — a loud miss, never a silent woken:0. `planSlug`+`items` are optional (omit for a pure directed wake — \"resume what I sent you\").",
+      "description": "Hand a lane to a peer in ONE call: assign the plan items to `to` (durable lane) + deliver the `note` to its inbox (with each assigned item's own body inlined, bounded — WI-4165, the receiver reads WHAT to do without re-fetching the plan) + WAKE it now, then report pickup ({ woken, delivered, sessionState, itemsHydrated }). Replaces hand-composing plan_items:assign + coord:send + events:emit + the coord:inbox-wake:<id> key. FLAGS a non-wakeable target: an `ended` sessionState (or recipient_dead) means the lane was assigned but no live process will pick it up until a relaunch — a loud miss, never a silent woken:0. `planSlug`+`items` are optional (omit for a pure directed wake — \"resume what I sent you\").",
       "capabilities": [
         "coord:write"
       ],
@@ -3968,13 +4145,14 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "guidance": {
         "when": "You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — \"su-7a2a, take fleet-dispatch P-001..P-004\". One call assigns + wakes + confirms. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.",
-        "notWhen": "Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim / coord:declare-intent items). A broadcast — dispatch is single-target + wake, never \"*\". The target is `ended` (coord:presence) — it needs a relaunch/resume, not a dispatch (the wake cannot land).",
-        "chaining": "coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `woken`/`warning`. A woken target then: coord:orient → plan_items:my_items → claim + work the dispatched lane."
+        "notWhen": "Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never \"*\". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.",
+        "chaining": "coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `woken`/`warning`. The woken target then orients, claims the lane, and works it."
       }
     },
     {
@@ -4002,6 +4180,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4036,6 +4215,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward",
         "merge-resolver",
@@ -4072,6 +4252,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4105,6 +4286,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4138,6 +4320,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4154,7 +4337,7 @@
           "POST"
         ]
       },
-      "description": "Record a work transition. Either OPEN a new handoff to other agents (provide `to[]`, `plan_slug`, `summary`, etc.) OR ACCEPT an existing one by passing `accept_msg_id` alone.",
+      "description": "Record a work transition. Either OPEN a new handoff to other agents (provide `to[]`, `plan_slug`, `summary`, etc. — optionally `items` (P-NNN ids of `plan_slug`) to inline each item's own body into the delivered note, WI-4165) OR ACCEPT an existing one by passing `accept_msg_id` alone.",
       "capabilities": [
         "coord:write"
       ],
@@ -4171,6 +4354,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4235,6 +4419,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4268,6 +4453,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4301,6 +4487,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4335,13 +4522,14 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "guidance": {
         "when": "At the START of a turn / on waking. Pass `intent` (your one-line task) for the whole bootstrap in ONE round-trip: assignments + claimable + inbox + plan-events + a memory recall + your intent DECLARED to peers. Omit `intent` for a lighter re-orientation. On a repeating LEADER/MONITOR tick pass `mode:'monitor'` — skips the claimable/facts/plan-events/fleet/recipes/recall legs, keeping fleet:assignments + inbox + declare.",
         "notWhen": "A human status-surface render (coord:glance display block — orient folds only the health counts) or the full presence roster (coord:presence). After a successful orient do NOT re-call coord:plan-events / memory:search / coord:inbox / coord:glance / coord:declare-intent — it ALREADY returned them (pass afterCompaction:true for fuller inbox + the recovery block).",
-        "chaining": "Bundles fleet:assignments + work_items:list + coord:inbox + coord:plan-events [+ memory:search + recipes:search + declare with `intent`] — prefer at wake over separate calls. A close `recipes` hit → recipes:run it. → work_items:pickup { id, intent }."
+        "chaining": "Bundles fleet:assignments + work_items:list + coord:inbox + coord:plan-events [+ memory:search + recipes:search + declare with `intent`] — prefer at wake over separate calls. A close `recipes` hit → recipes:run it. → work_items:pickup { id, intent }. claimable[] is advisory (EI-6468)."
       }
     },
     {
@@ -4369,6 +4557,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4402,13 +4591,48 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "guidance": {
         "when": "Use before dispatch or handoff to see who is live, parked, wakeable, and already occupied. Parked + wakeable is the normal dispatch target; ended needs relaunch. Pass owner:<id> for one specific agent.",
-        "notWhen": "Not for file freedom (locks:queue), not as a default every-turn poll when coord deltas already cover changes, and not for a full historical ended-agent dump.",
+        "notWhen": "Not for file freedom (locks:queue), not as a default every-turn poll when coord deltas already cover changes, and not for a full historical ended-agent dump. Presence is liveness truth, NOT edit-activity: fleet labels persist while parked and a declared intent can be hours stale (the [idle 2h41m] prefix + intentStale mark this) — to check whether anyone is ACTUALLY editing files, read locks:list + git status + file mtimes instead.",
         "chaining": "Read once, then follow coord deltas. If you must re-poll, pass since:<etag>; unchanged state returns a tiny stub instead of the full roster."
+      }
+    },
+    {
+      "name": "coord:read",
+      "http": {
+        "path": "/api/agent-tools/coord/read",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Fetch ONE coord message's FULL, untruncated body by `msg_id` — the cheap fix for a finding that rendered truncated in coord:inbox (its default ~600-char per-entry render cap). Returns { ok, found, msg_id, message } where `message` is the complete envelope (from/to/ts/kind/summary/body/files/…) with no truncation applied. `found:false` when no message with that id exists (never throws). Prefer checkpointing a substantive finding onto its work-item instead of relying on this — coord:read is the recovery path for a body that already went out oversized, not a substitute for the write-side discipline.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "A coord:inbox / coord:feed entry rendered with `body_truncated:true` (or you were told \"see coord msg <id>\") and you need its exact full text — one cheap lookup by msg_id instead of a since_ts poll or a payloadTier:\"full\" retry (payloadTier does not affect per-entry body truncation).",
+        "notWhen": "For the whole conversation around a message (replies/acks/resolutions) — use coord:thread. For a fresh inbox sweep — use coord:inbox. Before SENDING a long finding — write it onto the work-item (work_items:checkpoint / a comment) and send only a 1-line pointer; do not rely on the recipient coord:read-ing it back."
       }
     },
     {
@@ -4436,6 +4660,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4471,12 +4696,47 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "guidance": {
         "when": "The human (or an authorised agent acting on their behalf) has decided how to proceed on open escalation(s). Resolve several at once via msg_ids:[…]+choice or items:[…].",
         "notWhen": "Acknowledging without deciding — use coord:ack. The escalation file is the human-resolution surface."
+      }
+    },
+    {
+      "name": "coord:retract",
+      "http": {
+        "path": "/api/agent-tools/coord/retract",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Withdraw a coord message you are authorized over: marks it retracted (a durable retraction-notice row — the log is append-only) and delivers the notice to the ORIGINALLY-DELIVERED audience so every recipient sees \"disregard that\". Read surfaces (coord:inbox, the [coord+N] injection, coord:feed, coord:catch-up, orient folds) then SUPPRESS the retracted message; coord:thread deliberately keeps both (forensics). Invoker must be the original sender, THEIR fleet's current leader, the queen, or the owner. Idempotent — retracting an already-retracted message reports alreadyRetracted without a duplicate notice. Pass wake:true to also re-invoke sleeping concrete recipients so they see the retraction NOW (a broadcast audience cannot be woken). v1 records no who-retracted ledger.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "A sent message is wrong/dangerous and recipients must disregard it — a mistaken directive, a leaked-scope broadcast (the EI-9501 cleanup), superseded instructions.",
+        "notWhen": "To CORRECT a message, just send a follow-up reply (related_msg_id) — retraction hides the original from every feed, which is heavier than most corrections need. Not an edit tool; the original text stays in the log (coord:thread) for forensics."
       }
     },
     {
@@ -4504,6 +4764,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4538,6 +4799,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4602,6 +4864,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4635,6 +4898,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward",
         "voter",
@@ -4670,6 +4934,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4703,6 +4968,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4737,6 +5003,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4770,6 +5037,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4803,6 +5071,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4836,6 +5105,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -4869,6 +5139,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -5258,6 +5529,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5331,6 +5603,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5404,6 +5677,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5477,6 +5751,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5550,6 +5825,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5623,6 +5899,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5696,6 +5973,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5769,6 +6047,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5873,6 +6152,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -5963,6 +6243,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -5998,6 +6279,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -6063,6 +6345,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -6097,6 +6380,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -6131,6 +6415,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -6163,6 +6448,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -6196,6 +6482,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -6364,6 +6651,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -6546,6 +6834,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -6643,6 +6932,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -6804,6 +7094,7 @@
         "curator",
         "cup",
         "papercup",
+        "papercup-deep",
         "kettle",
         "release-fixer",
         "merge-resolver",
@@ -6903,7 +7194,7 @@
           "POST"
         ]
       },
-      "description": "Restart the operator dev server, coordinated. DRY RUN unless confirm:true. With confirm, acquires exclusive(dev-server) and drains current users (wait:{max_drain_sec}) before restarting, then releases (broadcasts \"back up\"). The real restart also requires PAPERCUSP_ALLOW_DEV_RESTART=1 on the host. Prefer this over a raw systemctl restart.",
+      "description": "Restart the operator dev server (target:\"dev\", default) or the staging operator (target:\"staging\"), coordinated. DRY RUN unless confirm:true. With confirm, acquires exclusive(<target>-server) and drains current users (wait:{max_drain_sec}) before restarting, then releases (broadcasts \"back up\"). staging additionally DEBOUNCES (WI-4221): a restart requested within ~2min of a peer's real staging restart is coalesced (skipped, not re-run) instead of firing a redundant one. The real restart also requires PAPERCUSP_ALLOW_DEV_RESTART=1 on the host. Prefer this over a raw systemctl restart.",
       "capabilities": [
         "locks:write"
       ],
@@ -6934,6 +7225,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -6963,9 +7255,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need to restart the dev server (e.g. to pick up a lib/** edit). Run dry first to see who is using it; then confirm to drain + restart.",
-        "notWhen": "Just probing the server — that needs no restart. Never restart casually on a shared box; it disrupts every agent using the app.",
-        "chaining": "dev:restart (dry) → review holders → dev:restart { confirm: true, max_drain_sec } → connection drops as it restarts."
+        "when": "You need to restart the dev server (e.g. to pick up a lib/** edit), or — target:\"staging\" — the staging operator (:3170) to pick up a live server-side edit per CLAUDE.md's \"test a server-side edit live\" workflow. Run dry first to see who is using it; then confirm to drain + restart.",
+        "notWhen": "Just probing the server — that needs no restart. Never restart casually on a shared box; it disrupts every agent using the app. Never shell out to a raw `systemctl --user restart papercup-staging-api.service` — it bypasses the drain AND the debounce, which is exactly the uncoordinated-churn defect (WI-4221) this tool exists to fix.",
+        "chaining": "dev:restart (dry) → review holders → dev:restart { confirm: true, max_drain_sec, target } → connection drops as it restarts (or, for staging within the cooldown window, a coalesced:true no-op — probe :3170 directly, a peer already restarted it)."
       }
     },
     {
@@ -7144,6 +7436,7 @@
         "curator",
         "cup",
         "papercup",
+        "papercup-deep",
         "kettle",
         "release-fixer",
         "merge-resolver",
@@ -7263,7 +7556,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "papercup-deep"
       ],
       "guidance": {
         "when": "You have slugs from docs:outline and need page contents. Use `heading` (single-slug) when only one section of a long page is relevant.",
@@ -7323,7 +7617,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "papercup-deep"
       ],
       "guidance": {
         "when": "You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.",
@@ -7339,7 +7634,7 @@
           "POST"
         ]
       },
-      "description": "Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or the macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key — one await for \"any lane item finished\" instead of N.",
+      "description": "Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or the macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key — one await for \"any lane item finished\" instead of N. Or pass `spec` instead of `event` for a composed all/any/some THRESHOLD TREE — one wake when the combination is satisfied.",
       "capabilities": [
         "coord:write"
       ],
@@ -7356,9 +7651,9 @@
         "curator"
       ],
       "guidance": {
-        "when": "You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit. To wait on a WHOLE family at once (any work item done, any item in a plan) pass a glob `work-item:done:*` or a macro `@plan:<slug>` / `@fleet:<slug>` instead of one exact key. Before polling, check events:catalog for an awaitable key, register it, then end your turn. HAND-MINTED pair key? Have the completion's OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you).",
+        "when": "You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion's OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you). work-item:unblocked:<id> latches at registration: an already-unblocked target returns already_unblocked instead of a dead wait.",
         "notWhen": "Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer the sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.",
-        "chaining": "events:catalog → events:await { event } (or a sugar verb) → end your turn. Use events:cancel to retract and events:status to inspect active awaits."
+        "chaining": "events:catalog → events:await { event } (or a sugar verb) → END YOUR TURN → the wake carries the payload → re-register if you need the NEXT occurrence (one-shot: a fired await is gone). events:cancel retracts; events:status inspects."
       }
     },
     {
@@ -7369,7 +7664,7 @@
           "POST"
         ]
       },
-      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), or ACK a pending/parked wake delivery you already saw via the inbox nudge (delivery_id — you will not be resumed for it). Pass at least one.",
+      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), cancel a whole composed await TREE by its root_id (cascades to every leaf + node), or ACK a pending/parked wake delivery you already saw via the inbox nudge (delivery_id — you will not be resumed for it). Pass at least one.",
       "capabilities": [
         "coord:write"
       ],
@@ -7488,7 +7783,7 @@
           "POST"
         ]
       },
-      "description": "Inspect the await-event surface: your active awaits, your recent wake deliveries (with channel + status), and optionally the workspace wake meter (per-agent wake counts, last 24h — the wake-storm detector).",
+      "description": "Inspect the await-event surface: your active awaits, your active composed await TREES (spec + fired/pending leaves), your recent wake deliveries (with channel + status), and optionally the workspace wake meter (per-agent wake counts, last 24h — the wake-storm detector).",
       "capabilities": [
         "coord:read"
       ],
@@ -7507,6 +7802,35 @@
       "guidance": {
         "when": "Checking what you are (still) waiting on, whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).",
         "notWhen": "Reading your message stream — that is coord:inbox. Following an area — topics:feed."
+      }
+    },
+    {
+      "name": "events:unsubscribe",
+      "http": {
+        "path": "/api/agent-tools/events/unsubscribe",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Unsubscribe from one OR many standing event-key inject subscriptions (watch:create wake:false targetKind:\"event\"). Idempotent — unsubscribing from a key you do not follow is a no-op. Single: { key }. Many: { keys:[…] } or items:[{ key }]. Returns { ok, results:[{ ok, key, error? }], counts }.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "A standing watch:create({wake:false, targetKind:\"event\"}) subscription is no longer relevant.",
+        "notWhen": "A wake watch (wake:true) — use events:cancel instead. A topic subscription — use topics:unsubscribe instead."
       }
     },
     {
@@ -7672,6 +7996,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -7745,6 +8070,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -7818,6 +8144,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -8036,6 +8363,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8070,6 +8398,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8135,6 +8464,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8170,6 +8500,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8205,6 +8536,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8270,6 +8602,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8305,6 +8638,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8339,6 +8673,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8373,6 +8708,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8438,6 +8774,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8475,7 +8812,7 @@
       ],
       "guidance": {
         "when": "The owner wants a new su fleet working a plan immediately — desktop terminals by default, `headless:true` for windowless (both are su members, not cups). Pass plan slug, fleet name, count; disclose owner-chosen `headless`/`carry`; members start on boot.",
-        "notWhen": "Not for background cups (cup:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.",
+        "notWhen": "Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for background cups (cup:spawn), plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.",
         "chaining": "plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional — plan items become claimable work-items only through it; skipped, the fleet launches onto an empty backlog (this tool backstops it idempotently). As leader, loop:arm a lean monitor; avoid polling full rosters every wake."
       }
     },
@@ -8487,7 +8824,7 @@
           "POST"
         ]
       },
-      "description": "A leader's ONE-call fleet-health brief: per-member sessionState, lifecycle `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, current claims (doing/queuedCount/load), progress-stalled flag, unanswered directed messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure (ok|high|critical), and bench state (parkedOn — active events:await keys). Scoped to ONE fleet (yours by default) instead of the whole workspace roster fleet:assignments returns. Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise repeats every monitor wake.",
+      "description": "A leader's ONE-call fleet-health brief: per-member sessionState, lifecycle `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, current claims (doing/queuedCount/load), progress-stalled flag, unanswered directed messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure (ok|high|critical), bench state (parkedOn), and benchSuggestion (EI-9943: alive+speaking but not advancing, not yet benched — nudge toward fleet:bench). Scoped to ONE fleet (yours by default) instead of the whole workspace roster fleet:assignments returns. Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise repeats every monitor wake.",
       "capabilities": [
         "work_items:read"
       ],
@@ -8504,6 +8841,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8511,7 +8849,7 @@
       "guidance": {
         "when": "On a leader's repeating monitor tick: \"who is actually working / stuck / unanswered / about to compact right now, across MY fleet\". Folded automatically into coord:orient { mode:'monitor' } for a resolvable fleet leader.",
         "notWhen": "The Queen/placement-decision read over the WHOLE workspace roster (fleet:assignments), or full message history for one member (coord:inbox { agent }).",
-        "chaining": "A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero `unanswered` → coord:send a follow-up or coord:catch-up the thread."
+        "chaining": "A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero `unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → fleet:bench it onto the gate it is actually blocked on, instead of live-loop-polling."
       }
     },
     {
@@ -8608,6 +8946,36 @@
       }
     },
     {
+      "name": "fleet:pause",
+      "http": {
+        "path": "/api/agent-tools/fleet/pause",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "PAUSE a named fleet — an ALIAS of fleet:wind-down: the same typed, binding control state (registry control_state=winding-down) + fleet-scoped member cue. Invokers: the owner (su session), THAT fleet's leader, or the queen. Lift with fleet:resume.",
+      "capabilities": [
+        "fleet:pause"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "You'd say 'pause the fleet' — same semantics as fleet:wind-down.",
+        "notWhen": "To pause the Mug/pot — pot:pause. To pause the Kettle — kettle:pause. To pause one plan — plans:pause.",
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+      }
+    },
+    {
       "name": "fleet:place_batch",
       "http": {
         "path": "/api/agent-tools/fleet/place_batch",
@@ -8701,6 +9069,36 @@
       }
     },
     {
+      "name": "fleet:resume",
+      "http": {
+        "path": "/api/agent-tools/fleet/resume",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "RESUME a wound-down fleet — flips the registry control_state back to active (+ reason/by/ts) and sends live members a typed fleet-scoped control cue to pick their lanes back up. Invokers: the owner (su session), THAT fleet's leader, or the queen. The inverse of fleet:wind-down / fleet:pause.",
+      "capabilities": [
+        "fleet:resume"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Lifting a stand-down: the risky change landed, the incident cleared, the mission is back on.",
+        "notWhen": "The fleet was never wound down — a no-op resume just refreshes reason/by/ts (reported alreadyInState).",
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
+      }
+    },
+    {
       "name": "fleet:sandbox_deps",
       "http": {
         "path": "/api/agent-tools/fleet/sandbox_deps",
@@ -8751,6 +9149,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8817,6 +9216,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8883,6 +9283,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8890,6 +9291,36 @@
       "guidance": {
         "when": "Before fleet:cancel (see what would be torn down) or before completing a nursery (the completion gate refuses while a child lives).",
         "chaining": "fleet:tree → fleet:cancel { spawn_id }."
+      }
+    },
+    {
+      "name": "fleet:wind-down",
+      "http": {
+        "path": "/api/agent-tools/fleet/wind-down",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "WIND DOWN a named fleet — a TYPED, BINDING control state (registry control_state=winding-down + reason/by/ts), not a free-text ask: live members get a fleet-scoped control cue (checkpoint → release claims/locks → loop:end → ack leader; pull no new work), and LATE JOINERS see the state at orient. Invokers: the owner (su session), THAT fleet's leader, or the queen — anyone else is refused (EI-9501 class). Reverse with fleet:resume; fleet:pause is an alias of this.",
+      "capabilities": [
+        "fleet:wind-down"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Standing a fleet down at end-of-mission, before a risky shared-tree change, or on the owner's stand-down order — anywhere 'stop pulling work' must bind members who haven't read chat.",
+        "notWhen": "To stop ONE member — coord:send them a yield / turn:interrupt. To pause a plan — plans:pause. To evict nursery cups — fleet:drain (the cup-fleet surface). A free-text \"please pause\" stays advisory by definition; this verb is the binding form.",
+        "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
       }
     },
     {
@@ -8923,6 +9354,36 @@
       }
     },
     {
+      "name": "gates:degenerate-check",
+      "http": {
+        "path": "/api/agent-tools/gates/degenerate-check",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read harness_shared.gate_decisions and report gates that CANNOT DISCRIMINATE: a gate declared `discriminates` whose verdict collapsed to one side (its branch is unreachable — EI-10372/EI-10562 class), a REGISTERED gate that emitted no decisions at all (never-ran — the severest state), or a `guards` limit firing so constantly it is mis-declared. Each finding carries the value/threshold MARGIN that proves the branch is off-scale rather than merely unlucky. This is the reader for the decision log that tool_invocations could never provide (a gate's decision is not an event).",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Auditing whether the memory recall gates (or any registered gate) are actually discriminating on live traffic — especially before trusting a green health panel, since a floor that admits nothing reports the tool as ok. Also the direct check for the cannot-discriminate class.",
+        "notWhen": "The decision log is empty because the emitting code path has not run since deploy — a never-ran on EVERY gate means \"no data yet\", not \"all broken\". Verify the window has traffic first.",
+        "chaining": "gates:degenerate-check → a `never-admits` with \"unreachable by scale\" is a proof: fix the constant, not the store. A `never-ran` means the emit is unwired or the gate is not executing — check the call site (gates/decision-wiring.test.ts is the guard)."
+      }
+    },
+    {
       "name": "gateway:egress_mode",
       "http": {
         "path": "/api/agent-tools/gateway/egress_mode",
@@ -8947,6 +9408,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -8981,6 +9443,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9015,6 +9478,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9049,6 +9513,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9066,7 +9531,7 @@
           "POST"
         ]
       },
-      "description": "Per-owner inference-gateway outcome report (GET :8788/admin/owner-report) — gateway-rayobyte-hardening P-008. With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin. Without `agent`: the top ~25 owners ranked by bad outcomes (429s+errors+sheds+stalls) — 'who is having a bad time right now' in one call. Counters are since the last gateway restart.",
+      "description": "Per-owner inference-gateway outcome report (GET :8788/admin/owner-report) — gateway-rayobyte-hardening P-008. With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin — this IS the 'what account is this session actually routed to right now' read (the dual of accounts:pin). Without `agent`: the top ~25 owners ranked by bad outcomes (429s+errors+sheds+stalls) — 'who is having a bad time right now' in one call. Counters are since the last gateway restart.",
       "capabilities": [
         "harness:read"
       ],
@@ -9083,11 +9548,12 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "guidance": {
-        "when": "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Also fleet-wide triage (no args) after an error storm.",
+        "when": "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Also fleet-wide triage (no args) after an error storm. Also: confirming an accounts:pin actually took effect / reading a session's current routing before deciding whether to re-pin it.",
         "notWhen": "Pool-level health — gateway:status (config/AIMD) or the /stats endpoint. Per-account usage — accounts:list.",
         "chaining": "gateway:owner_report { agent } → (if pin yields/429s on a capped pin) accounts:pin to move it, or accounts:list to find headroom."
       }
@@ -9117,6 +9583,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9151,6 +9618,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9398,6 +9866,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9433,6 +9902,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9466,6 +9936,7 @@
         "documenter",
         "curator",
         "papercup",
+        "papercup-deep",
         "kettle"
       ],
       "profile": "engineer",
@@ -9499,6 +9970,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9551,6 +10023,7 @@
         "documenter",
         "curator",
         "papercup",
+        "papercup-deep",
         "kettle"
       ],
       "profile": "engineer",
@@ -9685,6 +10158,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -9718,6 +10192,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10015,6 +10490,153 @@
       }
     },
     {
+      "name": "health:ack",
+      "http": {
+        "path": "/api/agent-tools/health/ack",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Acknowledge/snooze a Health-tab panel: mutes its warn/crit out of the overall light (the card renders muted with your reason) until it RECOVERS to ok or the snooze expires. An ack at warn does NOT cover a later crit — escalation re-alarms. Panels: queen, bees, workItems, workFeed, loops, tokens, watchdog, deploy, plans, escalations, autonomy, observations, improvements, infra, suFleet, coordination, overwatch, scout, memory, toolEfficiency.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A panel is warn/crit for a KNOWN, accepted reason (a deliberately paused Mug, a standing backlog being worked elsewhere) and its standing color is drowning fresh signal.",
+        "notWhen": "To silence a condition nobody has diagnosed — an ack without a real reason is how reds become wallpaper. Fix or file it instead.",
+        "chaining": "health:unack reverses it. The ack auto-clears on recovery, so no cleanup is needed for transient conditions."
+      }
+    },
+    {
+      "name": "health:unack",
+      "http": {
+        "path": "/api/agent-tools/health/unack",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Remove a Health-tab panel acknowledgement (set by health:ack) so the panel counts toward the overall light again. Acks also auto-clear on recovery — this is the manual \"re-alarm me now\".",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "An acked condition needs attention again before it recovers, or the ack reason no longer holds.",
+        "notWhen": "The panel already recovered — the sweep cleared the ack automatically."
+      }
+    },
+    {
       "name": "hooks:known",
       "http": {
         "path": "/api/agent-tools/hooks/known",
@@ -10052,7 +10674,7 @@
           "POST"
         ]
       },
-      "description": "Capture a papercusp improvement you discovered (a friction, a missing affordance, a bug in the tooling) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible later; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link to it instead) unless force. Pass `paths` when you know the files involved — it feeds the protected-path safety gate. Pass lane:\"observation\" for a turn-end-reflection PRE-IDEA — it files into a separate lane that NEVER enters the work queue (Scout-digest + the Observations pane only).",
+      "description": "Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. An su kind=feature filing also gets a REPORT-ONLY novelty pre-check (`priorArt[]`, incl. already-tried-and-failed priors) — never blocks. Pass `paths` (files involved) to feed the protected-path gate. lane:\"observation\" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).",
       "capabilities": [
         "coord:write"
       ],
@@ -10069,15 +10691,16 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward",
         "scanner"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You hit a papercusp DX / tooling / code friction worth fixing but out of your current scope. File it here so it lands in the triage backlog instead of being lost. Use kind=bug for something broken, kind=change for a desired improvement, kind=feature for net-new (the last two stay human-gated). Include `paths` (repo-relative files involved) when known — the auto-implement risk gate reads them.",
+        "when": "The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation) — filing is mandatory, not a judgment call: file (kind:bug, evidence in body) even with no fix and even if it self-recovered; only fix-now-vs-leave-filed is the judgment call. Also DX/tooling/code friction out of scope. Include `paths` — the auto-implement risk gate reads them.",
         "notWhen": "A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.",
-        "chaining": "improvements:capture { kind, title, paths? } → (later) improvements:digest triages it → an agent claims + fixes it self/inline, or the auto-implement loop picks up the bugs and improvements:resolve closes them."
+        "chaining": "improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them."
       }
     },
     {
@@ -10105,6 +10728,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10140,6 +10764,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10175,6 +10800,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10210,6 +10836,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10307,6 +10934,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10342,6 +10970,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10377,6 +11006,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10410,6 +11040,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10445,6 +11076,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10480,6 +11112,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10551,6 +11184,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10586,6 +11220,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10621,6 +11256,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10629,6 +11265,186 @@
         "when": "The user clicks Start Kettle / asks to boot the system-health supervisor, or you are bringing a paused Kettle back to autonomous operation.",
         "notWhen": "To start the Mug / pot — pot:start (distinct loop). To start one plan — plans:start. The Kettle nudges + observes; it never places work.",
         "chaining": "kettle:pause to suspend. The papercusp-overwatch flag (/admin/features) must be ON for the loop to actually run (B-04 gate)."
+      }
+    },
+    {
+      "name": "knowledge_packs:candidates",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/candidates",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List knowledge-pack item CANDIDATEs — cross-hive recurring lessons the recurrence-escalation loop staged for owner review (default: pending only). Each carries provenance: the friction signature, the scopes it recurred across, the recurrence count, and the source improvement-item ids.",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "The owner asks what fleet lessons await review, or before knowledge_packs:decide_candidate (the id comes from here).",
+        "notWhen": "To read a hive's installed learnings (knowledge_packs:list / memory:list) or the pack catalog (knowledge_packs:list).",
+        "chaining": "knowledge_packs:decide_candidate { id, action } to adopt into the fleet-lessons pack or dismiss; after an adopt, hives pick the item up via knowledge_packs:install/upgrade."
+      }
+    },
+    {
+      "name": "knowledge_packs:decide_candidate",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/decide_candidate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Decide one OR many pending knowledge-pack candidates: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). This is an OWNER decision; candidates are never auto-published. Single: { id, action, note?, title?, text? }. Many same action: { ids:[…], action }. Many heterogeneous: items:[{ id, action, note?, title?, text? }]. Returns { ok, results:[{ ok, id, action?, … | error }], counts } — correlate by id, not by position; one bad candidate never fails the rest.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "The owner has reviewed pending candidate(s) (knowledge_packs:candidates) and says adopt/dismiss — or asks you to apply their edits while adopting. Decide several at once via ids:[…]+action or items:[…].",
+        "notWhen": "To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via knowledge_packs:install/upgrade). Unprompted bulk adoption — each candidate is an explicit owner call.",
+        "chaining": "knowledge_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → knowledge_packs:upgrade { hive, pack: \"fleet-lessons\" }; others via knowledge_packs:install. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
+      }
+    },
+    {
+      "name": "knowledge_packs:export",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/export",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Export a hive's shared learnings into the standard pack shape (knowledge-packs/<packId>/ — manifest + one-learning-per-file) inside a member repo's working tree, ready to commit + publish. Defaults to the hive's ORGANIC learnings only; includePackRows re-exports installed-pack content too (explicit opt-in).",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "The user wants to share their pot's accumulated learnings — first step of the publish flow.",
+        "notWhen": "Installing or browsing packs — knowledge_packs:list/install.",
+        "chaining": "After the files are committed + pushed by the project's normal flow, knowledge_packs:publish lists the pack on the Comb (it publishes PENDING — operator approval gates public visibility, D-007)."
+      }
+    },
+    {
+      "name": "knowledge_packs:install",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/install",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a knowledge pack into an existing hive's shared memory, with the install-time conflict review: incoming learnings are classified clean/duplicate/conflict against the hive's current pool; clashes require explicit per-item resolutions (install · skip · replace · keep-both). Defaults skip clashes — existing content outranks the incoming pack.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "Adding a pack to an EXISTING hive (a new hive seeds its pack at creation). Call once to get the review; re-call with resolutions (or acceptDefaults: true) to apply.",
+        "notWhen": "At hive creation (pot:create seeds automatically). To re-adopt a newer version of an already-installed pack — knowledge_packs:upgrade.",
+        "chaining": "knowledge_packs:list { pot } first (what's installed); after install, learning.hive invalidates so the Learnings view refreshes."
+      }
+    },
+    {
+      "name": "knowledge_packs:list",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List resolvable knowledge packs (builtin + Comb-installed) and, when `pot` is given, that hive's installed state: per-pack rows present/edited, enabled/disabled, and whether a newer pack version is adoptable.",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "Before knowledge_packs:install/upgrade (what's available + what's already in the hive), or when the user asks what learnings their hive carries.",
+        "notWhen": "To read the actual learning texts — learning.hive backs the Learnings UI, and memory:list { hive_slug } returns the rows.",
+        "chaining": "knowledge_packs:install { pot, pack } to add one; knowledge_packs:upgrade when updateAvailable; knowledge_packs:set_enabled to mute a pack without uninstalling."
+      }
+    },
+    {
+      "name": "knowledge_packs:publish",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/publish",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List an exported knowledge pack on the Comb: resolves the member repo's GitHub coords, publishes a kind='knowledge-pack' listing (listing_ref = packId) with the operator's gh token + attestation. The listing lands PENDING (D-007) — an operator must approve it before anyone else sees it.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "After knowledge_packs:export and the files are pushed to the GitHub repo.",
+        "notWhen": "The pack files are not on GitHub yet — publish points at the repo; export first, push, then publish.",
+        "chaining": "The response carries review_status pending — the submitter sees it on their own listing; operators approve at /admin/cupboard-moderation."
+      }
+    },
+    {
+      "name": "knowledge_packs:set_enabled",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/set_enabled",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Enable or disable one OR many knowledge packs' injection for a hive WITHOUT uninstalling them — the rows stay stored; agents just stop recalling them. Cheap to flip, fully reversible. Single: { pot, pack, enabled }. Many packs same hive: { pot, packs:[…], enabled }. Many heterogeneous: items:[{ pot, pack, enabled }]. Returns { ok, results:[{ ok, hive, pack, enabled? | error }], counts } — correlate by hive+pack, not by position; one failure never fails the rest.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "Trying out whether a pack helps, or quarantining one that seems to misdirect agents — before reaching for uninstall. Flip several at once via packs:[…] or items:[…].",
+        "notWhen": "Permanently removing a pack — knowledge_packs:uninstall.",
+        "chaining": "knowledge_packs:list { pot } shows enabled state per installed pack. Bulk: single | items[] (or packs) → { ok, results, counts }; correlate by hive+pack not position; one failure never fails the rest."
+      }
+    },
+    {
+      "name": "knowledge_packs:sweep",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/sweep",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Re-run the conflict judge across a hive's whole shared memory pool and report contradiction pairs — catches conflicts that emerged AFTER install (pack learnings vs what the hive organically learned later). Read-only; capped at 200 rows per sweep.",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "Periodic hygiene (a Queen idle-turn task), after installing a pack into a hive with many organic learnings, or when agents seem to be following contradictory guidance.",
+        "notWhen": "At install time — knowledge_packs:install runs its own per-item review.",
+        "chaining": "Resolve a reported pair deliberately: memory:forget the wrong side, or memory:update it to reconcile."
+      }
+    },
+    {
+      "name": "knowledge_packs:uninstall",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/uninstall",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Remove a knowledge pack's rows from a hive's shared memory (provenance-driven). Rows the user edited since seeding are KEPT by default and reported; keepEdited: false removes those too. Organic (hive-learned) rows are never touched.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "The user wants a pack gone from a pot, or before re-installing a pack from scratch.",
+        "notWhen": "To temporarily mute a pack — knowledge_packs:set_enabled { enabled: false } keeps the rows and just stops injecting them.",
+        "chaining": "knowledge_packs:list { pot } shows what remains; kept edited rows are listed in the response."
+      }
+    },
+    {
+      "name": "knowledge_packs:upgrade",
+      "http": {
+        "path": "/api/agent-tools/knowledge_packs/upgrade",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Adopt a newer version of an installed knowledge pack: NEW items (no row in the hive's pool) are classified like an install and added per your resolutions; rows already present are never auto-modified. Call once for the plan, re-call with resolutions (or acceptDefaults: true) to apply.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "knowledge_packs:list shows updateAvailable for an installed pack.",
+        "notWhen": "First-time install — knowledge_packs:install.",
+        "chaining": "The response reports installedVersions vs availableVersion + the adoptable-new-items review."
       }
     },
     {
@@ -10663,186 +11479,6 @@
       }
     },
     {
-      "name": "learning_packs:candidates",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/candidates",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "List learning-pack item CANDIDATEs — cross-hive recurring lessons the recurrence-escalation loop staged for owner review (default: pending only). Each carries provenance: the friction signature, the scopes it recurred across, the recurrence count, and the source improvement-item ids.",
-      "capabilities": [
-        "memory:read"
-      ],
-      "guidance": {
-        "when": "The owner asks what fleet lessons await review, or before learning_packs:decide_candidate (the id comes from here).",
-        "notWhen": "To read a hive's installed learnings (learning_packs:list / memory:list) or the pack catalog (learning_packs:list).",
-        "chaining": "learning_packs:decide_candidate { id, action } to adopt into the fleet-lessons pack or dismiss; after an adopt, hives pick the item up via learning_packs:install/upgrade."
-      }
-    },
-    {
-      "name": "learning_packs:decide_candidate",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/decide_candidate",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Decide one OR many pending learning-pack candidates: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). This is an OWNER decision; candidates are never auto-published. Single: { id, action, note?, title?, text? }. Many same action: { ids:[…], action }. Many heterogeneous: items:[{ id, action, note?, title?, text? }]. Returns { ok, results:[{ ok, id, action?, … | error }], counts } — correlate by id, not by position; one bad candidate never fails the rest.",
-      "capabilities": [
-        "memory:write"
-      ],
-      "guidance": {
-        "when": "The owner has reviewed pending candidate(s) (learning_packs:candidates) and says adopt/dismiss — or asks you to apply their edits while adopting. Decide several at once via ids:[…]+action or items:[…].",
-        "notWhen": "To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via learning_packs:install/upgrade). Unprompted bulk adoption — each candidate is an explicit owner call.",
-        "chaining": "learning_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → learning_packs:upgrade { hive, pack: \"fleet-lessons\" }; others via learning_packs:install. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
-      }
-    },
-    {
-      "name": "learning_packs:export",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/export",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Export a hive's shared learnings into the standard pack shape (learning-packs/<packId>/ — manifest + one-learning-per-file) inside a member repo's working tree, ready to commit + publish. Defaults to the hive's ORGANIC learnings only; includePackRows re-exports installed-pack content too (explicit opt-in).",
-      "capabilities": [
-        "memory:read"
-      ],
-      "guidance": {
-        "when": "The user wants to share their pot's accumulated learnings — first step of the publish flow.",
-        "notWhen": "Installing or browsing packs — learning_packs:list/install.",
-        "chaining": "After the files are committed + pushed by the project's normal flow, learning_packs:publish lists the pack on the Comb (it publishes PENDING — operator approval gates public visibility, D-007)."
-      }
-    },
-    {
-      "name": "learning_packs:install",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/install",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Install a learning pack into an existing hive's shared memory, with the install-time conflict review: incoming learnings are classified clean/duplicate/conflict against the hive's current pool; clashes require explicit per-item resolutions (install · skip · replace · keep-both). Defaults skip clashes — existing content outranks the incoming pack.",
-      "capabilities": [
-        "memory:write"
-      ],
-      "guidance": {
-        "when": "Adding a pack to an EXISTING hive (a new hive seeds its pack at creation). Call once to get the review; re-call with resolutions (or acceptDefaults: true) to apply.",
-        "notWhen": "At hive creation (pot:create seeds automatically). To re-adopt a newer version of an already-installed pack — learning_packs:upgrade.",
-        "chaining": "learning_packs:list { pot } first (what's installed); after install, learning.hive invalidates so the Learnings view refreshes."
-      }
-    },
-    {
-      "name": "learning_packs:list",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/list",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "List resolvable learning packs (builtin + Comb-installed) and, when `pot` is given, that hive's installed state: per-pack rows present/edited, enabled/disabled, and whether a newer pack version is adoptable.",
-      "capabilities": [
-        "memory:read"
-      ],
-      "guidance": {
-        "when": "Before learning_packs:install/upgrade (what's available + what's already in the hive), or when the user asks what learnings their hive carries.",
-        "notWhen": "To read the actual learning texts — learning.hive backs the Learnings UI, and memory:list { hive_slug } returns the rows.",
-        "chaining": "learning_packs:install { pot, pack } to add one; learning_packs:upgrade when updateAvailable; learning_packs:set_enabled to mute a pack without uninstalling."
-      }
-    },
-    {
-      "name": "learning_packs:publish",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/publish",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "List an exported learning pack on the Comb: resolves the member repo's GitHub coords, publishes a kind='learning-pack' listing (listing_ref = packId) with the operator's gh token + attestation. The listing lands PENDING (D-007) — an operator must approve it before anyone else sees it.",
-      "capabilities": [
-        "harness:write"
-      ],
-      "guidance": {
-        "when": "After learning_packs:export and the files are pushed to the GitHub repo.",
-        "notWhen": "The pack files are not on GitHub yet — publish points at the repo; export first, push, then publish.",
-        "chaining": "The response carries review_status pending — the submitter sees it on their own listing; operators approve at /admin/cupboard-moderation."
-      }
-    },
-    {
-      "name": "learning_packs:set_enabled",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/set_enabled",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Enable or disable one OR many learning packs' injection for a hive WITHOUT uninstalling them — the rows stay stored; agents just stop recalling them. Cheap to flip, fully reversible. Single: { pot, pack, enabled }. Many packs same hive: { pot, packs:[…], enabled }. Many heterogeneous: items:[{ pot, pack, enabled }]. Returns { ok, results:[{ ok, hive, pack, enabled? | error }], counts } — correlate by hive+pack, not by position; one failure never fails the rest.",
-      "capabilities": [
-        "memory:write"
-      ],
-      "guidance": {
-        "when": "Trying out whether a pack helps, or quarantining one that seems to misdirect agents — before reaching for uninstall. Flip several at once via packs:[…] or items:[…].",
-        "notWhen": "Permanently removing a pack — learning_packs:uninstall.",
-        "chaining": "learning_packs:list { pot } shows enabled state per installed pack. Bulk: single | items[] (or packs) → { ok, results, counts }; correlate by hive+pack not position; one failure never fails the rest."
-      }
-    },
-    {
-      "name": "learning_packs:sweep",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/sweep",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Re-run the conflict judge across a hive's whole shared memory pool and report contradiction pairs — catches conflicts that emerged AFTER install (pack learnings vs what the hive organically learned later). Read-only; capped at 200 rows per sweep.",
-      "capabilities": [
-        "memory:read"
-      ],
-      "guidance": {
-        "when": "Periodic hygiene (a Queen idle-turn task), after installing a pack into a hive with many organic learnings, or when agents seem to be following contradictory guidance.",
-        "notWhen": "At install time — learning_packs:install runs its own per-item review.",
-        "chaining": "Resolve a reported pair deliberately: memory:forget the wrong side, or memory:update it to reconcile."
-      }
-    },
-    {
-      "name": "learning_packs:uninstall",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/uninstall",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Remove a learning pack's rows from a hive's shared memory (provenance-driven). Rows the user edited since seeding are KEPT by default and reported; keepEdited: false removes those too. Organic (hive-learned) rows are never touched.",
-      "capabilities": [
-        "memory:write"
-      ],
-      "guidance": {
-        "when": "The user wants a pack gone from a pot, or before re-installing a pack from scratch.",
-        "notWhen": "To temporarily mute a pack — learning_packs:set_enabled { enabled: false } keeps the rows and just stops injecting them.",
-        "chaining": "learning_packs:list { pot } shows what remains; kept edited rows are listed in the response."
-      }
-    },
-    {
-      "name": "learning_packs:upgrade",
-      "http": {
-        "path": "/api/agent-tools/learning_packs/upgrade",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Adopt a newer version of an installed learning pack: NEW items (no row in the hive's pool) are classified like an install and added per your resolutions; rows already present are never auto-modified. Call once for the plan, re-call with resolutions (or acceptDefaults: true) to apply.",
-      "capabilities": [
-        "memory:write"
-      ],
-      "guidance": {
-        "when": "learning_packs:list shows updateAvailable for an installed pack.",
-        "notWhen": "First-time install — learning_packs:install.",
-        "chaining": "The response reports installedVersions vs availableVersion + the adoptable-new-items review."
-      }
-    },
-    {
       "name": "lexicon:active_pack",
       "http": {
         "path": "/api/agent-tools/lexicon/active_pack",
@@ -10867,6 +11503,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -10915,6 +11552,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -10988,6 +11626,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11061,6 +11700,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11134,6 +11774,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11207,6 +11848,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11280,6 +11922,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11352,6 +11995,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11425,6 +12069,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11498,6 +12143,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11570,6 +12216,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11643,6 +12290,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11716,6 +12364,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -11775,6 +12424,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -11810,6 +12460,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -11845,6 +12496,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -11880,6 +12532,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -11915,6 +12568,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -11933,13 +12587,13 @@
           "POST"
         ]
       },
-      "description": "Delete one OR many memory entries by id — pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, error? }], counts } — correlate each result by its id, not by position; a not-found / timed-out id comes back as that item's { ok:false } without failing the rest.",
+      "description": "Delete one OR many memory entries by id — pass `id` for one or `ids` for several. Default is a HARD delete (gone for good — the right call for privacy asks). Pass soft:true to instead close the memory's validity window (temporal-lite): it drops out of recall but stays retrievable via include_superseded / as_of on memory:search. Returns { ok, results:[{ ok, id, error? }], counts } — correlate each result by its id, not by position; a not-found / timed-out id comes back as that item's { ok:false } without failing the rest.",
       "capabilities": [
         "memory:write"
       ],
       "guidance": {
-        "when": "When the user explicitly says \"forget X\" / \"don't remember that anymore\" / \"that's wrong, drop it\". Pass every id to drop at once via `ids`. Always inform the user out loud (\"Removed that from memory\").",
-        "notWhen": "To CORRECT a memory (replace its content), use memory:update — preserves history. Only use forget for outright removal.",
+        "when": "When the user explicitly says \"forget X\" / \"don't remember that anymore\" / \"that's wrong, drop it\". Pass every id to drop at once via `ids`. Use soft:true when the fact STOPPED BEING TRUE but its history has value (\"we no longer use gemma\") — hard-delete (the default) when the user wants it GONE (privacy). Always inform the user out loud (\"Removed that from memory\").",
+        "notWhen": "To CORRECT a memory (replace its content), use memory:update — preserves history and can record supersession (`supersedes`). Only use forget for removal.",
         "chaining": "memory:search / memory:list → memory:forget { ids:[…] } to drop several found memories in one call. Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
       }
     },
@@ -11958,6 +12612,24 @@
       "guidance": {
         "when": "When the user asks to inspect their memory (\"what have you stored about me?\") or you need a filter-only query.",
         "notWhen": "For semantic lookup (\"what did I say about X?\"), use memory:search instead."
+      }
+    },
+    {
+      "name": "memory:recover-from-transcripts",
+      "http": {
+        "path": "/api/agent-tools/memory/recover-from-transcripts",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retroactively recover memory writes lost to an embedder/store outage by mining session transcripts for FAILED memory:remember/update calls. DRY-RUN by default (lists candidates); confirm:true parks them in the write-ahead journal so the standard drain re-stores them (near-dup-guarded, provenance-tagged) within ~5 minutes.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "After a memory outage window that predates the write-ahead journal, or when an agent reports a fact it saved was never stored. Run once WITHOUT confirm to review candidates, then re-run with confirm:true.",
+        "notWhen": "Not for live writes — memory:remember journals its own failures now (the envelope says journaled:true). Not a search tool.",
+        "chaining": "dry-run → review candidates → { confirm:true } → journal drain lands them within ~5 min (memory:search then finds them; recovered entries carry metadata.recovered_from)."
       }
     },
     {
@@ -12004,7 +12676,7 @@
           "POST"
         ]
       },
-      "description": "Edit one OR many memory entries: replace content and/or patch metadata (kind, workspaceId, scope/recall-pool) — preserving each id. Metadata patches are vec-safe (no re-embed). Single: { id, content?, kind?, … }. Many same patch: { ids:[…], kind?/scope?/… }. Many heterogeneous: items:[{ id, content?, kind?, … }]. Returns { ok, results:[{ ok, id, error? }], counts } — correlate by id, not by position; a not-found / timed-out id never fails the rest.",
+      "description": "Edit one OR many memory entries: replace content and/or patch metadata (kind, workspaceId, scope/recall-pool) — preserving each id. Pass supersedes:<old-id> to record that this memory REPLACES an old one (the old one drops out of default recall, history preserved — temporal-lite). Metadata patches are vec-safe (no re-embed). Single: { id, content?, kind?, … }. Many same patch: { ids:[…], kind?/scope?/… }. Many heterogeneous: items:[{ id, content?, kind?, … }]. Returns { ok, results:[{ ok, id, superseded?, error? }], counts } — correlate by id, not by position; a not-found / timed-out id never fails the rest.",
       "capabilities": [
         "memory:write"
       ],
@@ -12091,7 +12763,7 @@
           "POST"
         ]
       },
-      "description": "Declare a reusable entity TYPE (a \"datatype\" — bet, wager, forecast, position, …) into the workspace datatype registry, so blueprints can reference it via dependencies.datatypes and (generic-kind tier) work_items can be created with its kind. DEDUP-ONLY authority: a hard unique id + a soft semantic gate — if a similar datatype exists you get { ok:false, reason:\"similar_exists\", candidates } so you reuse it or pass force:true. Re-declaring the same name UPDATES it in place.",
+      "description": "Declare a reusable entity TYPE (a \"datatype\" — bet, wager, forecast, position, …) into the workspace datatype registry, so blueprints can reference it via dependencies.datatypes and (generic-kind tier) work_items can be created with its kind. DEDUP-ONLY authority: the id is unique, and an unmistakable duplicate (`orders` when `order` exists — singular/plural normalized) returns { ok:false, reason:\"similar_exists\" } so you reuse it (force:true overrides). A merely SIMILAR datatype never blocks you: it declares, and the nearest existing datatypes come back as `related` so you can reuse one if you meant it. Re-declaring the same name UPDATES it in place.",
       "capabilities": [
         "intel:write"
       ],
@@ -12122,6 +12794,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -12195,6 +12868,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -12254,6 +12928,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -12289,6 +12964,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -12324,6 +13000,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -12359,6 +13036,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13162,6 +13840,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13281,6 +13960,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13315,6 +13995,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13349,6 +14030,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13383,6 +14065,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13417,6 +14100,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13451,6 +14135,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13485,6 +14170,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13519,6 +14205,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13553,6 +14240,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13587,6 +14275,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13621,6 +14310,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -13669,6 +14359,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -13742,6 +14433,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -13908,6 +14600,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -14011,6 +14704,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -14239,6 +14933,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -14374,6 +15069,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -14447,6 +15143,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -14506,6 +15203,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward",
         "promote"
@@ -14556,6 +15254,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -14841,6 +15540,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -14914,6 +15614,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -14987,6 +15688,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15060,6 +15762,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15133,6 +15836,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15206,6 +15910,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15279,6 +15984,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15352,6 +16058,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15425,6 +16132,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15498,6 +16206,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15571,6 +16280,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15644,6 +16354,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15717,6 +16428,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15820,6 +16532,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15893,6 +16606,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -15966,6 +16680,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -16039,6 +16754,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -16112,6 +16828,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -16154,7 +16871,7 @@
           "POST"
         ]
       },
-      "description": "Send a local improvement UPSTREAM from a platform-mode install. kind:'learning-pack' exports the self-hive's organic learnings + lists them on the Comb (lands PENDING — operator-moderated); kind:'pr' pushes the change to the USER'S FORK and opens a human-reviewed PR fork→canonical Papercusp (never a direct push). Root-only, reason-audited. By default it PREPARES but does not send: the live push/PR/publish fires ONLY with confirm:true AND credentials/remote present, else returns {ok, prepared:true, needs:[...]}.",
+      "description": "Send a local improvement UPSTREAM from a platform-mode install. kind:'knowledge-pack' exports the self-hive's organic learnings + lists them on the Comb (lands PENDING — operator-moderated); kind:'pr' pushes the change to the USER'S FORK and opens a human-reviewed PR fork→canonical Papercusp (never a direct push). Root-only, reason-audited. By default it PREPARES but does not send: the live push/PR/publish fires ONLY with confirm:true AND credentials/remote present, else returns {ok, prepared:true, needs:[...]}.",
       "capabilities": [
         "harness:write"
       ],
@@ -16171,13 +16888,14 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The user explicitly wants to contribute a platform-mode improvement UPSTREAM to Papercusp — publish a learning-pack to the Comb, or open a fork→canonical PR. Requires platform:enable first (the self-hive must be standing).",
-        "notWhen": "Enabling platform mode / standing up the self-hive — platform:enable. Publishing a pack for an ARBITRARY (non-platform) hive — learning_packs:export + learning_packs:publish. Opening a PR for a normal harness feature — the orchestrator fork-PR hook.",
+        "when": "The user explicitly wants to contribute a platform-mode improvement UPSTREAM to Papercusp — publish a knowledge-pack to the Comb, or open a fork→canonical PR. Requires platform:enable first (the self-hive must be standing).",
+        "notWhen": "Enabling platform mode / standing up the self-hive — platform:enable. Publishing a pack for an ARBITRARY (non-platform) hive — knowledge_packs:export + knowledge_packs:publish. Opening a PR for a normal harness feature — the orchestrator fork-PR hook.",
         "chaining": "platform:enable (stand up the self-hive) → set the self-hive member's fork_remote (for kind:'pr') → platform:contribute (prepared) → review the plan/needs → platform:contribute { confirm:true } to send."
       }
     },
@@ -16206,6 +16924,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16241,13 +16960,14 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "The user explicitly opts into platform mode / \"Papercusp inside Papercusp\" / wants this install to improve Papercusp-the-platform itself (layer 3). One call stands up the self-hive + arms the loops.",
-        "notWhen": "Onboarding an ARBITRARY repo as a hive — pot:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a learning-pack) — platform:contribute (the separate, gated path).",
+        "notWhen": "Onboarding an ARBITRARY repo as a hive — pot:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a knowledge-pack) — platform:contribute (the separate, gated path).",
         "chaining": "platform:enable → improvements:learning_loops to see the armed (dark) layer-3 loops → arm the watchdog via the routines admin → platform:contribute to send an improvement upstream."
       }
     },
@@ -16276,6 +16996,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16415,6 +17136,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16450,6 +17172,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16485,6 +17208,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16544,6 +17268,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16610,6 +17335,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16645,6 +17371,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16680,6 +17407,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16715,6 +17443,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16750,6 +17479,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16785,6 +17515,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16820,6 +17551,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16854,6 +17586,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16889,6 +17622,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16948,6 +17682,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -16983,6 +17718,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17042,6 +17778,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17077,6 +17814,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17112,6 +17850,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17147,6 +17886,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17182,6 +17922,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17217,6 +17958,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17252,6 +17994,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17287,6 +18030,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17321,6 +18065,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17380,6 +18125,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17415,6 +18161,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17734,6 +18481,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17768,6 +18516,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17802,6 +18551,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17836,6 +18586,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17901,6 +18652,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17935,6 +18687,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -17982,6 +18735,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -18055,6 +18809,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -18128,6 +18883,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -18231,6 +18987,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -18304,6 +19061,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -18431,6 +19189,39 @@
         "when": "You've fixed or quarantined the reds and want a FRESH green verdict now rather than waiting for the next hourly green-checkpoint. Or the gate looks stale and you want to re-run the suite on demand.",
         "notWhen": "To retune/pause the checkpoint cadence use routines:set. To SHIP an already-green pin use release:deploy op:trigger (checkpoint-run produces green; it does not deploy). To force an UN-green deploy use release:deploy op:force.",
         "chaining": "fix/quarantine reds → release:checkpoint-run → (watch /admin/git for advanced/green) → release:deploy { op:status } → op:trigger { confirm:true }."
+      }
+    },
+    {
+      "name": "release:cut",
+      "http": {
+        "path": "/api/agent-tools/release/cut",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ LOCAL-only, never GitHub). Wraps bin/release-local.sh. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (WI-4233: fire ONE platform leg — linux/mac/windows/arm64 — on its own unit, for a fleet-split cut; same gate). op:abort-leg (stop one leg). op:status (poll; optional `platform` for a per-leg poll). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic).",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "cup",
+        "release-fixer",
+        "release-manager"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Cutting a desktop release. Solo: preflight → run{confirm:true} → poll status → verify → handoff. Fleet-split (one agent per leg): each agent gate-status first (agree on ONE buildSha) → run-leg{platform,confirm:true} → poll status{platform} → once every leg is done, handoff (collects across all legs).",
+        "notWhen": "Not the web operator (:3070 — release:deploy) or the green-checkpoint verdict (release:checkpoint-run). Never publish to GitHub."
       }
     },
     {
@@ -18658,7 +19449,7 @@
           "POST"
         ]
       },
-      "description": "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, …) without raw SQL: change its cron and/or active flag (active:false = PAUSE, active:true = RESUME). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
+      "description": "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, scout, …) without raw SQL: change its cron, its active flag (active:false = PAUSE, active:true = RESUME), its trigger_config, and/or DEEP-merge a patch into its payload_template (the routine's own run knobs — e.g. the scout singleton's payload.budget.maxIdeators). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
       "capabilities": [
         "operator:write"
       ],
@@ -18676,9 +19467,45 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine's cadence (cron), or patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.",
+        "when": "Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine's cadence (cron), patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps), or retune a routine's RUN KNOBS (payloadTemplate — e.g. the scout singleton's budget.maxIdeators / models.ideator) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.",
         "notWhen": "For a harness blueprint autoloop, use autoloop:control. To just SEE routines, routines:list. (These routine rows are their own store; they do not appear in config:list-overrides.)",
         "chaining": "routines:list first to get the exact name + installSlug; routines:list after to confirm the change."
+      }
+    },
+    {
+      "name": "rubrics:amend",
+      "http": {
+        "path": "/api/agent-tools/rubrics/amend",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Amend ONE criterion prose field (model | method | driftMarkers | replication | title) and/or set the rubric-level methodRef — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A targeted rubric improvement: fold a new replication-drill variant into one criterion, sharpen one model/driftMarkers paragraph, or point methodRef at a runbook — without resubmitting the whole document.",
+        "notWhen": "Adding/removing criteria, renaming keys, or changing rating scales — those reshape grading history: use rubrics:propose (whole-document) so the loss-guards see the full picture.",
+        "chaining": "rubrics:get (read the stored field first) → rubrics:amend → the result reports `completeness` like propose/ratify."
       }
     },
     {
@@ -18706,6 +19533,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -18741,6 +19569,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -18759,7 +19588,7 @@
           "POST"
         ]
       },
-      "description": "Propose a rubric (the shared standard for a system characteristic) → status \"proposed\". Any agent may propose — typically on noticing a cluster of free-text observations about one characteristic with no rubric. The Queen/owner ratifies it active (rubrics:ratify). Idempotent on rubric_id (re-propose updates the content).",
+      "description": "Propose a rubric (the shared standard for a system characteristic) → status \"proposed\". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricId replaces ALL of its content — rubrics:get it first, edit, and resubmit EVERY criterion with its full method/replication text (a partial criteria list deletes the rest). Loss-guards enforce this: dropping a stored criterion key needs a dropKeys ack; shrinking a criterion's method+replication procedure >40% (or losing its REPLICATION DRILL marker) needs allowMethodShrink + shrinkReason.",
       "capabilities": [
         "coord:write"
       ],
@@ -18776,14 +19605,15 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You see a recurring characteristic worth grading consistently and no rubric covers it. Author the criteria (each: model + how-to-investigate + drift markers); reference an agent-insights runbook via methodRef for the long-form method.",
+        "when": "You see a recurring characteristic worth grading consistently and no rubric covers it — or you are REVISING an existing rubric (rubrics:get first; resubmit ALL criteria). Author each criterion: model + method + driftMarkers + its own replication drill (the copy-runnable testing procedure); methodRef points at the rubric-level long-form runbook.",
         "notWhen": "A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.",
-        "chaining": "rubrics:search (dedup) → rubrics:propose → rubrics:ratify (Mug/owner)."
+        "chaining": "rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → rubrics:ratify (Mug/owner). The result reports `completeness` (criteria lacking a replication drill; missing methodRef) — fill the gaps."
       }
     },
     {
@@ -18794,7 +19624,7 @@
           "POST"
         ]
       },
-      "description": "Ratify one OR many proposed rubrics → status \"active\" (D-001: the Mug/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricId }. Many: { rubricIds:[…] }. Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a not-found id never fails the rest.",
+      "description": "Ratify one OR many proposed rubrics → status \"active\" (D-001: the Mug/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricId }. Many: { rubricIds:[…] }. Returns { ok, results:[{ ok, rubricId, rubric?, completeness? | error }], counts } — correlate by rubricId, not by position; a not-found id never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) — the owner shape is one procedure per aspect PLUS one main methodRef; review the gaps before ratifying.",
       "capabilities": [
         "coord:write"
       ],
@@ -18811,6 +19641,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -18846,6 +19677,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -18881,6 +19713,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -18969,6 +19802,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19004,14 +19838,15 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are a SELF-PULLING agent picking up your next item — a coding-pot cup (role=\"cup\"), or an su fleet MEMBER pulling its lane (su-loop-capability-parity). Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your Mug's / fleet leader's judgment expressed as your claim spec; the pickup is yours. NOTE the contrast: the coding-FACTORY is a different model — a scoper→architect→worker PUSH pipeline whose roles are HANDED a FEATURE_ID and never call get_next. So a claim-spec self-pulling worker is a cup or an su fleet member, NOT a scoper.",
+        "when": "You are a SELF-PULLING agent picking up your next item — a coding-pot cup (role=\"cup\"), or an su fleet MEMBER pulling its lane (su-loop-capability-parity). Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your Mug's / fleet leader's judgment expressed as your claim spec; the pickup is yours. A claim-spec self-puller is a cup or an su fleet member, NOT a coding-factory pipeline role (see notWhen).",
         "notWhen": "You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull — never call get_next. Claiming a SPECIFIC item by id — that is work_items:claim. Plain oldest-first self-select with NO per-agent spec — work_items:claim_next.",
-        "chaining": "scheduler:get_next → work_items:set_state (progress) → work_items:release. Your queen or fleet leader re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next)."
+        "chaining": "scheduler:get_next → work_items:set_state (progress) → work_items:release. Your queen or fleet leader re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next). A MISS returns the idle recipe: park on ONE events:await (work-item:claimable) — never a timer re-poll."
       }
     },
     {
@@ -19039,6 +19874,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19074,6 +19910,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19109,6 +19946,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19144,6 +19982,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19178,6 +20017,7 @@
         "documenter",
         "curator",
         "papercup",
+        "papercup-deep",
         "kettle"
       ],
       "guidance": {
@@ -19227,6 +20067,7 @@
         "documenter",
         "curator",
         "papercup",
+        "papercup-deep",
         "kettle"
       ],
       "guidance": {
@@ -19304,6 +20145,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -19345,7 +20187,7 @@
           "POST"
         ]
       },
-      "description": "List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with turn counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time.",
+      "description": "List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time. UNITS (EI-9970): `turns` = indexed TEXT-turn rows only (real user+assistant text; excludes tool_use/tool_result/thinking-only lines by design) — NOT a raw record count, NOT one row per model call; don't use it alone for cost/effort audits. Use `prompt_count` (real user prompts), `response_count` (distinct model-inference calls, deduped by request/message id — one call can span several raw lines), and `tool_call_count` (real tool invocations) instead; the latter two are null for source_kind=agent_chat (no tool-call signal in that shape).",
       "capabilities": [
         "search:read"
       ],
@@ -19364,7 +20206,7 @@
         "kettle"
       ],
       "guidance": {
-        "when": "\"What sessions has agent X had\", \"find my session from yesterday\", or picking a session id for sessions:read. Covers the whole fleet, not one client.",
+        "when": "\"What sessions has agent X had\", \"find my session from yesterday\", or picking a session id for sessions:read. Covers the whole fleet, not one client. For a COST/EFFORT audit, compare prompt_count/response_count/tool_call_count, not turns — see description.",
         "notWhen": "Searching CONTENT — sessions:search. Live \"who is on what\" — coord:presence / fleet:assignments.",
         "chaining": "session_id → sessions:read / sessions:search { session }."
       }
@@ -19377,7 +20219,7 @@
           "POST"
         ]
       },
-      "description": "Read a bounded window of turns from one indexed session transcript — around a turn (a sessions:search hit's readMore), a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included).",
+      "description": "Read a bounded window of turns from one indexed session transcript — around a turn (a sessions:search hit's readMore), a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included). NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
       "capabilities": [
         "search:read"
       ],
@@ -19665,6 +20507,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19875,6 +20718,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19909,6 +20753,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19943,6 +20788,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -19991,6 +20837,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -20064,6 +20911,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -20137,6 +20985,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -20210,6 +21059,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -20283,6 +21133,7 @@
         "release-fixer",
         "doc-steward",
         "papercup",
+        "papercup-deep",
         "kettle",
         "researcher",
         "research-director",
@@ -20342,6 +21193,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -20375,6 +21227,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -20409,6 +21262,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -20443,6 +21297,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -20459,7 +21314,7 @@
           "POST"
         ]
       },
-      "description": "Subscribe to one OR many topics so their updates are injected into your inbox — the named sugar for watch(topic,{wake:false}). mode = full | digest | mention (D-006 noise tiering). Subscribe to the built-in `new_topic` to learn of new topics as they appear. Idempotent — re-subscribing updates the mode/TTL. Single: { topic, mode?, ttl_sec? }. Many same mode: { topics:[…], mode?, ttl_sec? }. Many heterogeneous: items:[{ topic, mode?, ttl_sec? }]. Returns { ok, results:[{ ok, topic, subscription? | error }], counts } — correlate by topic, not position; one failure never fails the rest.",
+      "description": "Subscribe to one OR many topics so their updates are INJECTED into your inbox at your next turn — inject-only, this never WAKES an idle session (the named sugar for watch(topic,{wake:false}); to be re-invoked on a specific announced key, use events:await instead — the only waking verb, one-shot). mode tiers the injected volume (D-006): full = every update | digest = coalesced count + one-line | mention = only when @-addressed or on resolution. Subscribe to the built-in `new_topic` to learn of new topics as they appear. Idempotent — re-subscribing updates the mode/TTL. Single: { topic, mode?, ttl_sec? }. Many same mode: { topics:[…], mode?, ttl_sec? }. Many heterogeneous: items:[{ topic, mode?, ttl_sec? }]. Returns { ok, results:[{ ok, topic, subscription? | error }], counts } — correlate by topic, not position; one failure never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -20476,12 +21331,13 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "guidance": {
         "when": "A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet. Subscribe to several at once via topics:[…] or items:[…].",
-        "notWhen": "You only need a one-time look — just topics:list. To follow a specific object (one thread/issue), that is the object’s own subscribe, not a topic.",
+        "notWhen": "You only need a one-time look — just topics:list. To follow a specific object (one thread/issue), that is the object’s own subscribe, not a topic. To be WOKEN by one specific event, that is events:await (a subscription is inject-only and never wakes).",
         "chaining": "topics:list → topics:subscribe; topics:unsubscribe to stop."
       }
     },
@@ -20510,6 +21366,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -20544,6 +21401,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -20697,6 +21555,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -20849,7 +21708,7 @@
           "POST"
         ]
       },
-      "description": "Delegate a HARD-THINKING question (analysis/research/deep comparison) to an ephemeral background agent. The answer comes back into your pane as `[deep-answer WI-NNN] …` — present + speak it then. Capped at 2 in flight.",
+      "description": "Delegate a HARD-THINKING question (analysis/research/deep comparison) to the deep brain (the live papercup-deep session; ephemeral agent fallback). The answer comes back into your pane as `[deep-answer WI-NNN] …` — present + speak it then. Capped at 2 in flight.",
       "capabilities": [
         "operator:read"
       ],
@@ -20988,7 +21847,7 @@
           "POST"
         ]
       },
-      "description": "The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects updates into your coord inbox (next natural turn, no token cost); wake:true (opt-in, a turn = tokens) re-invokes you when it fires. CARDINALITY — once:true is one-shot (auto-consumes — a grant); once:false is standing (re-fires per match). Sugar: events:await = watch(key,{wake:true,once:true}); topics:subscribe = watch(topic,{wake:false}). Lifecycle: events:cancel / events:status (wake) · topics:unsubscribe (inject). PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec — the engine polls a read-only tool under YOUR role and wakes you on the false→true cross.",
+      "description": "The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects into your inbox (no token cost); wake:true (opt-in, tokens) re-invokes you. CARDINALITY — once:true one-shot; once:false standing. TARGET (wake:false only): targetKind \"topic\" (default) or \"event\" (exact event key — see arg). Sugar: events:await = watch(key,{wake:true,once:true}); topics:subscribe = watch(topic,{wake:false}). PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec polls a read-only tool under YOUR role, wakes on false→true.",
       "capabilities": [
         "coord:write"
       ],
@@ -21007,7 +21866,7 @@
       "guidance": {
         "when": "Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness (\"wake me when THIS grant/lock/deadline is ready\"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following.",
         "notWhen": "A sub-minute wait inside one turn — just do the bounded blocking call. A recurring TIME schedule — the pot/routines own time-based wakes. Ambient interest where a wake would burn turns — use wake:false.",
-        "chaining": "wake:true → end your turn; on wake the turn text carries the event + payload. events:cancel (wake) / topics:unsubscribe (inject) to stop; events:status to inspect your active wake watches + recent wakes."
+        "chaining": "wake:true → end your turn; on wake the turn text carries the event + payload. events:cancel (wake) / topics:unsubscribe or events:unsubscribe (inject) to stop; events:status to inspect your active wake watches + recent wakes."
       }
     },
     {
@@ -21096,6 +21955,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21131,6 +21991,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21166,6 +22027,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21201,6 +22063,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21236,6 +22099,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21271,6 +22135,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21306,6 +22171,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21341,6 +22207,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21359,7 +22226,7 @@
           "POST"
         ]
       },
-      "description": "Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect, stateError? } | error], counts }.",
+      "description": "Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect } | { ok:false, id, error, completion }], counts }. PER-ITEM `ok` REFLECTS THE STATE TRANSITION (WI-4529): if you passed `state` and the item did NOT reach a terminal state (held open by a peer, integrity gate, or a non-terminal alias), that item comes back ok:false with the reason in `error` — the completion record is still written and broadcast, but the item did NOT close and is still claimable. Do not treat ok:false as 'the completion was lost'. `completion.verifiedHow` is a CLOSED ENUM: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' (prose goes in `testsRun`/`testResult`).",
       "capabilities": [
         "work_items:write"
       ],
@@ -21376,12 +22243,13 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Duplicate? Set `completion.duplicateOf` to the surviving id — auto-links + notifies the prior assignee (EI-8993).",
+        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). CHECK PER-ITEM `ok` (WI-4529): ok:false means the item did NOT close (the `error` says why — e.g. HELD OPEN by a peer); the completion record still landed, so fix the cause and re-call rather than re-writing the record. `completion.verifiedHow` must be one of 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' — it is NOT free text. Duplicate? Set `completion.duplicateOf` to the surviving id — auto-links + notifies the prior assignee (EI-8993).",
         "notWhen": "For a contextual aside (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.",
         "chaining": "work_items:claim → … → work_items:complete { id, completion }. Auto-emits to coord:inbox (no coord:send needed). Read the returned `reflect` step (self-learning loop): file a friction marker via improvements:capture if one bit you, else nothing."
       }
@@ -21411,6 +22279,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21428,7 +22297,7 @@
           "POST"
         ]
       },
-      "description": "Create ONE or MANY work-items of any kind — feature | chunk | bug | change | task. Returns kind-independent WI-NNN ids. bug/change/task file a tracked issue; feature/chunk enter the harness work queue. Single: { kind, title, … }. Many: items:[{ kind, title, … }] with batch-level harness / workspace / assign_all_to_self. Returns { ok, results:[{ ok, id, title, workItem } | { ok:false, title, error }], counts } — a mirror-duplicate or one bad item never fails the rest. Dedup with work_items:list/search first.",
+      "description": "Create ONE or MANY work-items of any kind — feature | chunk | bug | change | task. Returns kind-independent WI-NNN ids. bug/change/task file a tracked issue; feature/chunk enter the harness work queue. Single: { kind, title, … }. Many: items:[{ kind, title, … }] with batch-level harness / workspace / assign_all_to_self. Returns { ok, results:[{ ok, id, title, workItem } | { ok:false, title, error }], counts } — a mirror-duplicate or one bad item never fails the rest.",
       "capabilities": [
         "work_items:write"
       ],
@@ -21445,12 +22314,13 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for most coding work-items), feature (a pipeline-sized coding work-unit that plans into chunks), chunk (a sub-unit of a feature, pass `parent`), or task (NON-CODE work only — research a library, make a decision, a manual verification / ops step). File several at once via items:[…] instead of a round-trip each.",
+        "when": "Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for most coding work-items), feature (a pipeline-sized coding work-unit that plans into chunks), chunk (a sub-unit of a feature, pass `parent`), or task (NON-CODE work only — research a library, make a decision, an ops step). A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several at once via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.",
         "notWhen": "NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.",
         "chaining": "work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run."
       }
@@ -21480,6 +22350,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21515,6 +22386,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21550,6 +22422,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21584,6 +22457,7 @@
         "curator",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21602,7 +22476,7 @@
           "POST"
         ]
       },
-      "description": "Link one OR many work-items to targets (rel: blocks | relates | duplicates | fixes) — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). Blocking works across kinds. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
+      "description": "Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). Blocking works across kinds. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
       "capabilities": [
         "work_items:write"
       ],
@@ -21619,12 +22493,13 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You discovered one or more dependencies/relationships: a work-item blocks/relates-to/duplicates/fixes other work-items or plan items. Create several edges at once via items:[…].",
+        "when": "You discovered one or more dependencies/relationships. Picking the rel: `blocks` = src gates dst (the only rel with scheduler semantics; kept acyclic); `fixes` = src is the change that resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst (a bug, EI, or event); `about` = src concerns a target it neither fixes nor investigates (a topic, event key, or object); `caused-by` = src exists because of dst (the regression source); `relates` = worth a cross-reference but none of the above. Create several edges at once via items:[…].",
         "chaining": "work_items:get both sides → work_items:link { rel:\"blocks\", target_id } (or items:[…])."
       }
     },
@@ -21653,6 +22528,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21688,6 +22564,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21722,6 +22599,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21757,6 +22635,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21792,6 +22671,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21858,6 +22738,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21893,6 +22774,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21911,7 +22793,7 @@
           "POST"
         ]
       },
-      "description": "Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent's live claim: a non-holder caller gets `{ ok:false, error:\"not_holder\", holder }` per item — `force:true` (leader/reaper override only, NOT routine members) releases it anyway. A voluntary release records a short re-claim cooldown. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and stamps you as holder — it stays directly claimable by id; `claimHold:false` clears the hold. To hold WITHOUT releasing your claim, use work_items:hold_open.",
+      "description": "Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent's live claim (`{ ok:false, error:\"not_holder\", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder's fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and stamps you as holder — it stays directly claimable by id; `claimHold:false` clears the hold. To hold WITHOUT releasing your claim, use work_items:hold_open.",
       "capabilities": [
         "work_items:write"
       ],
@@ -21928,13 +22810,14 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You claimed work-item(s) but are no longer working them. Release several at once via ids:[…]. Add claimHold:true when the item must NOT be opportunistically re-claimed by the next self-selecting agent (a recurring do-not-pick-up ticket) — plain release lets it re-surface immediately.",
-        "notWhen": "A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force. `force:true` exists for the legitimate leader/reaper override path (reclaiming a dead/stuck agent's item), not for routine members clearing a peer's in-flight claim.",
+        "when": "You claimed work-item(s) but are no longer working them. Add claimHold:true when the item must NOT be opportunistically re-claimed by the next self-selecting agent (a recurring do-not-pick-up ticket) — plain release lets it re-surface immediately.",
+        "notWhen": "A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force: force is for reclaiming a dead/stuck agent's item, never for clearing a peer's in-flight claim.",
         "chaining": "work_items:claim → … → work_items:release."
       }
     },
@@ -21963,6 +22846,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -21998,6 +22882,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -22032,6 +22917,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -22067,6 +22953,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -22102,6 +22989,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -22120,7 +23008,7 @@
           "POST"
         ]
       },
-      "description": "Set lifecycle state for one OR many work-items. Feature-family uses feature statuses; issue-family stores only open|resolved|closed, so blocked/needs-human/in_progress/wip/todo/done/dropped alias to open. EI-9360: for issue-family, requesting needs-human (any dialect spelling) now AUTOMATICALLY sets payload.needsHuman (EI-7776's floor — reads as fully drained, not pending) and requesting blocked AUTOMATICALLY applies the WI-2797 self-select claim hold (reads as pending-but-gated) — either way the item is durably excluded from claim_next/scheduler:get_next self-selection (still directly claimable by id) without a separate manual call; see aliasNote. Reopening another agent's terminal completion into non-terminal is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — check `aliased`/`appliedState`, not just `ok` (EI-7712).",
+      "description": "Set lifecycle state for one OR many work-items. Feature-family uses feature statuses; issue-family stores only open|resolved|closed, so blocked/needs-human/in_progress/wip/todo/done/dropped alias to open. EI-9360: issue-family needs-human auto-sets payload.needsHuman; blocked auto-applies the WI-2797 self-select claim hold — both durably exclude the item from claim_next/scheduler:get_next (still directly claimable by id) without a separate call; see aliasNote. Reopening another agent's terminal completion is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — check `aliased`/`appliedState`, not just `ok` (EI-7712).",
       "capabilities": [
         "work_items:write"
       ],
@@ -22137,12 +23025,13 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use after moving lifecycle. Batch a wave with { ids:[…], state } or items:[…]. Prefer work_items:complete for terminal evidence. Issue-family needs-human/blocked requests are auto-excluded from self-select on alias to open (EI-9360) — no extra call needed; blocked can be un-parked via release{claimHold:false}, needs-human clears when the diagnosis is addressed. If \"already terminally completed\", read terminalOwner/ref before any `force:true` reopen.",
+        "when": "Use after moving lifecycle. Batch a wave with { ids:[…], state } or items:[…]. Prefer work_items:complete for terminal evidence. needs-human/blocked auto-exclude from self-select (EI-9360) — no extra call needed; un-park blocked via release{claimHold:false}. If already terminally completed, read terminalOwner/ref before any `force:true` reopen.",
         "chaining": "work_items:claim → … → work_items:set_state { state }."
       }
     },
@@ -22154,7 +23043,7 @@
           "POST"
         ]
       },
-      "description": "Subscribe to one OR many work-items so their updates fan out to your inbox — pass `id` for one or `ids` for several (shared `mode`: full | digest | mention). Returns { ok, results:[{ ok, id, error? }], counts }.",
+      "description": "Follow one OR many work-items: their updates are INJECTED into your inbox at your next turn — inject-only, this never WAKES an idle session (to be re-invoked when a specific item settles, use events:await on its event key instead). mode tiers the injected volume: full = every update (default) | digest = coalesced summaries | mention = only @-mentions and resolution. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, error? }], counts }.",
       "capabilities": [
         "work_items:write"
       ],
@@ -22171,12 +23060,14 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to follow one or more work-items you do not own (e.g. ones that block yours). Subscribe to several at once via `ids`.",
+        "when": "You want to SEE the progress of one or more work-items you do not own (e.g. ones that block yours). Subscribe to several at once via `ids`.",
+        "notWhen": "You are BLOCKED until an item settles and need to be woken — that is events:await { event: \"work-item:done:<id>\" } (one-shot wake), not a subscription (inject-only, never wakes).",
         "chaining": "work_items:get → work_items:subscribe."
       }
     },
@@ -22205,6 +23096,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
@@ -22239,6 +23131,7 @@
         "cup",
         "mug",
         "papercup",
+        "papercup-deep",
         "kettle",
         "doc-steward"
       ],
