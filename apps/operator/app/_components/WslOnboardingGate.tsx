@@ -12,7 +12,7 @@
  *                           After it returns we transition to PendingReboot.
  *   PendingReboot         → "Reboot Windows now / I'll do it myself" UI.
  *                           On next launch we re-check and proceed.
- *   InstalledNoDistro     → "Importing papercup runtime…" — runs
+ *   InstalledNoDistro     → "Importing Papercusp runtime…" — runs
  *                           `wsl_import` automatically.
  *   PendingBootstrap      → "Configuring runtime…" — runs `wsl_bootstrap`
  *                           automatically.
@@ -112,7 +112,7 @@ export default function WslOnboardingGate({ children }: Props) {
         // wslFinalizeReady triggers app.restart(); the only way control
         // returns is if it failed to start. Surface for the user.
         finalizingRef.current = false;
-        toast.error(`Could not restart papercup: ${err}`, {
+        toast.error(`Could not restart Papercusp: ${err}`, {
           description: 'Please quit and reopen.',
           duration: Infinity,
         });
@@ -203,10 +203,10 @@ export default function WslOnboardingGate({ children }: Props) {
         }}
       >
         <h1 style={{ fontSize: 20, fontWeight: 600, margin: '0 0 8px' }}>
-          Papercup setup — Windows
+          Papercusp setup — Windows
         </h1>
         <p style={{ fontSize: 13.5, color: 'var(--fg-mute, #9a9aa3)', margin: '0 0 24px', lineHeight: 1.55 }}>
-          Papercup runs inside a small Linux environment (WSL2) on Windows because
+          Papercusp runs inside a small Linux environment (WSL2) on Windows because
           its build tools are POSIX-native. We&apos;ll set it up for you — it takes
           about 5 minutes.
         </p>
@@ -236,7 +236,7 @@ export default function WslOnboardingGate({ children }: Props) {
               type="button"
               onClick={async () => {
                 const ok = await askConfirm({
-                  title: 'Reset the papercup runtime?',
+                  title: 'Reset the Papercusp runtime?',
                   body: 'This removes the WSL distro and you will have to reinstall.',
                   confirmLabel: 'Reset',
                   destructive: true,
@@ -300,7 +300,7 @@ function Step({
                   // from PowerShell's Start-Process -Verb RunAs.
                   const ok = await askConfirm({
                     title: 'WSL install needs administrator privileges',
-                    body: 'Re-launch papercup as admin? You\'ll see a Windows UAC prompt next.',
+                    body: 'Re-launch Papercusp as admin? You\'ll see a Windows UAC prompt next.',
                     confirmLabel: 'Re-launch as admin',
                   });
                   if (ok) {
@@ -329,7 +329,7 @@ function Step({
       return (
         <div>
           <p style={{ margin: '0 0 8px', lineHeight: 1.55 }}>
-            WSL2 is installed. <strong>Please reboot Windows</strong>, then re-launch papercup —
+            WSL2 is installed. <strong>Please reboot Windows</strong>, then re-launch Papercusp —
             we&apos;ll pick up where we left off.
           </p>
           <p style={{ margin: '0 0 16px', fontSize: 12, color: 'var(--fg-mute, #9a9aa3)' }}>
@@ -344,11 +344,11 @@ function Step({
       return (
         <div>
           <p style={{ margin: '0 0 16px', lineHeight: 1.55 }}>
-            <Spinner /> Importing papercup runtime…
+            <Spinner /> Importing Papercusp runtime…
           </p>
           <p style={{ margin: 0, fontSize: 12, color: 'var(--fg-mute, #9a9aa3)' }}>
             One-time, ~30 seconds. We&apos;re unpacking a small Ubuntu environment that
-            papercup will run in.
+            Papercusp will run in.
           </p>
         </div>
       );

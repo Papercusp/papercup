@@ -8,7 +8,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { evaluateProgramSuccess, type ProgramSuccessReport, type ProgramSuccessInputs } from './success-metrics';
+import {
+  evaluateProgramSuccess,
+  LEDGER_RECONCILE_EPOCH_MS,
+  type ProgramSuccessReport,
+  type ProgramSuccessInputs,
+} from './success-metrics';
 import type { ScoutQualityInputs } from './quality-metrics';
 import type { ScoutTickRecord } from './tick-ledger';
 import type { RoutedIdeaProvenance, LensOutcomeReport } from './outcome-feedback';
@@ -156,6 +161,36 @@ describe('evaluateProgramSuccess — ledger reconciliation', () => {
         ],
       ),
     );
+    expect(bar(r, 'ledger-reconciles').status).toBe('fail');
+  });
+
+  it('EXCLUDES pre-fix cycles — their rows were destroyed by the pre-P-003 overwrite bug, so judging them would red-pin the bar on unrepairable history forever', () => {
+    const preFix = `scout-${LEDGER_RECONCILE_EPOCH_MS - 60_000}`;
+    const postFix = `scout-${LEDGER_RECONCILE_EPOCH_MS + 60_000}`;
+    const r = evaluateProgramSuccess(
+      inputs(
+        [
+          ranTick({ ideasRouted: 3, detail: { cycleId: preFix } }), // destroyed history — must NOT count
+          ranTick({ ideasRouted: 1, detail: { cycleId: postFix } }), // the fix governs this one
+        ],
+        [idea({ cycleId: postFix })],
+      ),
+    );
+    expect(bar(r, 'ledger-reconciles').status).toBe('pass');
+    expect(bar(r, 'ledger-reconciles').observed).toContain('1 pre-fix cycle(s) excluded');
+  });
+
+  it('still FAILS on post-fix drift — the epoch floor excuses history, never a live regression', () => {
+    const postFix = `scout-${LEDGER_RECONCILE_EPOCH_MS + 60_000}`;
+    const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 3, detail: { cycleId: postFix } })], []));
+    expect(bar(r, 'ledger-reconciles').status).toBe('fail');
+  });
+
+  it('reconcileEpochMs:0 re-opens all of history — the escape hatch for measuring the pre-fix damage', () => {
+    const preFix = `scout-${LEDGER_RECONCILE_EPOCH_MS - 60_000}`;
+    const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 3, detail: { cycleId: preFix } })], []), {
+      reconcileEpochMs: 0,
+    });
     expect(bar(r, 'ledger-reconciles').status).toBe('fail');
   });
 

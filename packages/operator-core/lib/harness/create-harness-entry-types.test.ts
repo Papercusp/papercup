@@ -84,7 +84,7 @@ describe('validateCreateHarnessEntry — Entry 3', () => {
   const base: CreateHarnessEntryInput = {
     kind: 'entry_3_existing_folder',
     slug: 'mything',
-    path: '/home/avi/mything',
+    path: '/home/dev/mything',
   };
 
   it('ok for well-formed', () => {

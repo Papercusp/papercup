@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 const ENVELOPE = {
-  cwd: '/home/avi/papercup',
+  cwd: '/home/dev/papercup',
   env: {},
   mcpJsonContents: '{}',
   greetingCmd: 'psu',

@@ -88,6 +88,50 @@ describe('UpdateChip', () => {
     await waitFor(() => expect(checkForUpdate).toHaveBeenCalled());
   });
 
+  // A FAILED check and an UP-TO-DATE check both arrive as `available: false` —
+  // the Tauri updater protocol reports an unreachable release host as a plain
+  // "no update". Telling the user "you're on the latest" there is a lie we
+  // cannot detect in the field: the app sits on a stale version forever and
+  // never says a word. `check_failed` is the only thing separating them.
+  it('reports a FAILED check as failed — never as "you are on the latest"', async () => {
+    checkForUpdate.mockResolvedValue({
+      available: false,
+      current_version: '1.2.3',
+      new_version: null,
+      notes: null,
+      check_failed: true,
+      check_reason: 'fetch_failed',
+    });
+    render(<UpdateChip />);
+    const chip = await screen.findByRole('button', { name: /v1\.2\.3/ });
+    fireEvent.click(chip);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    const [title, opts] = vi.mocked(toast.error).mock.calls.at(-1) as [string, { description?: string }];
+    expect(title).toMatch(/couldn.t check/i);
+    expect(opts?.description).toMatch(/fetch_failed/);
+    // The load-bearing assertion: we must NOT have claimed the user is current.
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('still reports a genuine up-to-date check as up to date', async () => {
+    checkForUpdate.mockResolvedValue({
+      available: false,
+      current_version: '1.2.3',
+      new_version: null,
+      notes: null,
+      check_failed: false,
+      check_reason: null,
+    });
+    render(<UpdateChip />);
+    const chip = await screen.findByRole('button', { name: /v1\.2\.3/ });
+    fireEvent.click(chip);
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    expect(vi.mocked(toast.success).mock.calls.at(-1)?.[0]).toMatch(/latest/i);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it('does NOT background-check while the operator is offline (silent mount poll skipped)', async () => {
     offlineState = true;
     render(<UpdateChip />);

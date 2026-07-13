@@ -43,6 +43,8 @@ const GENERIC_USERS = new Set([
   // Keep this list to non-personal accounts only — it is not a place to silence
   // a real name to make the build pass.
   'pcusp', 'papercusp', 'papercup', 'tester', 'User', 'x',
+  // Stand-ins that name nobody: test fixtures and doc examples.
+  'test', 'testuser', 'owner', 'host', 'whoever', 'all', 'paper', 'submission',
 ]);
 /** Anonymous by construction: a redaction (`/home/.../`, `/home/<user>/`) or a
  *  1–2 char stand-in a test/doc uses precisely because it names nobody. */
@@ -60,9 +62,11 @@ const SKIP = [
   /(^|\/)__pycache__\//, /\.pyc$/,
   /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|zst|gz|tgz|zip|pdf|mp[34]|wav|lock)$/i,
   /(^|\/)package-lock\.json$/, /(^|\/)junit\.xml$/,
-  // Root-level agent handoff/brief notes: internal coordination, not in the bundle's
-  // top-level allowlist (stage-source-tree.sh), so they never reach a user.
+  // Internal coordination notes that are NOT in the bundle's top-level allowlist
+  // (stage-source-tree.sh), so they never reach a user.
   /^(HANDOFF|BRIEF|FLEET|SELF-BRIEF|LIVE)-.*\.md$/,
+  /^shared-pot-release-testing\//,
+  /(^|\/)\.papercusp-\w+\//, /\.(swp|swo|swn)$/,
 ];
 
 const HOME_PATH = /\/(home|Users)\/([A-Za-z0-9._-]+)(?=[/'"`\s\\)\]:,;]|$)/g;
@@ -97,11 +101,14 @@ if (findings.length === 0) {
 console.error(`\n✗ ${findings.length} hardcoded home path(s) in tracked source.\n`);
 console.error('  These name ONE developer\'s machine. They are wrong on every other');
 console.error('  checkout, and they ship to users inside the release source drop.\n');
-for (const f of findings.slice(0, 40)) {
+const limit = process.argv.includes('--all') ? findings.length : 40;
+for (const f of findings.slice(0, limit)) {
   console.error(`  ${f.file}:${f.line}  (user "${f.user}")`);
   console.error(`      ${f.text}`);
 }
-if (findings.length > 40) console.error(`  … and ${findings.length - 40} more`);
+if (findings.length > limit) {
+  console.error(`  … and ${findings.length - limit} more (re-run with --all)`);
+}
 console.error('\n  FIX by deriving the path, not by adding an exception:');
 console.error('    node/ts   os.homedir()  ·  path relative to import.meta.url / __dirname');
 console.error('    shell     "$HOME"  ·  git -C "$(dirname "$0")" rev-parse --show-toplevel');

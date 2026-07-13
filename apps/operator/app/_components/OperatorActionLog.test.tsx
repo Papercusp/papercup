@@ -103,7 +103,7 @@ describe('isOpenableHref', () => {
     expect(isOpenableHref(null)).toBe(false);
     expect(isOpenableHref(undefined)).toBe(false);
     expect(isOpenableHref('')).toBe(false);
-    expect(isOpenableHref('/home/avi/.papercusp/runs/foo.log')).toBe(false);
+    expect(isOpenableHref('/home/dev/.papercusp/runs/foo.log')).toBe(false);
     expect(isOpenableHref('/var/log/x')).toBe(false);
     expect(isOpenableHref('relative/path')).toBe(false);
   });
@@ -206,7 +206,7 @@ describe('<OperatorActionLog />', () => {
   it('renders an openable detail link as an anchor, and hides it for filesystem-path detailUrls', () => {
     sync.data = [
       mkAction({ id: 1, kind: 'with-link', detailUrl: 'https://example.com/run/1', summary: 'ok' }),
-      mkAction({ id: 2, kind: 'fs-path', detailUrl: '/home/avi/.papercusp/runs/x.log', summary: 'ok' }),
+      mkAction({ id: 2, kind: 'fs-path', detailUrl: '/home/dev/.papercusp/runs/x.log', summary: 'ok' }),
     ];
     render(<OperatorActionLog slug="my-harness" />);
     const links = screen.getAllByText(/open ↗/);

@@ -54,7 +54,7 @@ beforeEach(() => {
 describe('POST /api/agent-mcp/console/record', () => {
   it('records a console-mode adv_sessions row from cwd/terminalBin/label/planSlug', async () => {
     const res = await callPost({
-      cwd: '/home/avi/papercup',
+      cwd: '/home/dev/papercup',
       terminalBin: 'wt.exe',
       label: 'my session',
       planSlug: 'some-plan',
@@ -67,7 +67,7 @@ describe('POST /api/agent-mcp/console/record', () => {
       expect.objectContaining({
         workspaceId: 'default',
         mode: 'console',
-        cwd: '/home/avi/papercup',
+        cwd: '/home/dev/papercup',
         terminalBin: 'wt.exe',
         label: 'my session',
         planSlug: 'some-plan',
@@ -83,10 +83,10 @@ describe('POST /api/agent-mcp/console/record', () => {
   });
 
   it('defaults optional fields to null / [] shape when omitted', async () => {
-    await callPost({ cwd: '/home/avi/papercup' });
+    await callPost({ cwd: '/home/dev/papercup' });
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        cwd: '/home/avi/papercup',
+        cwd: '/home/dev/papercup',
         terminalBin: null,
         label: null,
         planSlug: null,
@@ -99,7 +99,7 @@ describe('POST /api/agent-mcp/console/record', () => {
     // A Windows-side wt.exe/wsl.exe pid smuggled in via the request body must
     // never reach adv_sessions.pid: it lives in a different pid namespace than
     // the WSL-hosted operator that later `process.kill(pid, 0)`s it.
-    await callPost({ cwd: '/home/avi/papercup', pid: 123456 });
+    await callPost({ cwd: '/home/dev/papercup', pid: 123456 });
     expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
     const call = recordAdvSessionMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.pid).toBeUndefined();
@@ -109,33 +109,33 @@ describe('POST /api/agent-mcp/console/record', () => {
 describe('POST /api/agent-mcp/console/record — Windows window-title wiring (P-010)', () => {
   it('on a Windows-desktop host, stores `Papercup — <sessionId>` as the windowId', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
-    const res = await callPost({ cwd: '/home/avi/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
+    const res = await callPost({ cwd: '/home/dev/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
     expect(res.status).toBe(200);
     expect(setAdvSessionWindowIdMock).toHaveBeenCalledWith(42, 'Papercup — 550e8400-e29b-41d4-a716-446655440000');
   });
 
   it('never sets a windowId off a Windows-desktop host, even with a sessionId present', async () => {
     isWindowsDesktopHostMock.mockReturnValue(false);
-    await callPost({ cwd: '/home/avi/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
+    await callPost({ cwd: '/home/dev/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
     expect(setAdvSessionWindowIdMock).not.toHaveBeenCalled();
   });
 
   it('never sets a windowId when no sessionId was supplied', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
-    await callPost({ cwd: '/home/avi/papercup' });
+    await callPost({ cwd: '/home/dev/papercup' });
     expect(setAdvSessionWindowIdMock).not.toHaveBeenCalled();
   });
 
   it('refuses a malformed sessionId (not the crypto.randomUUID() alphabet) rather than splice it into a title', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
-    await callPost({ cwd: '/home/avi/papercup', sessionId: '; rm -rf / #' });
+    await callPost({ cwd: '/home/dev/papercup', sessionId: '; rm -rf / #' });
     expect(setAdvSessionWindowIdMock).not.toHaveBeenCalled();
   });
 
   it('skips the windowId write when recordAdvSession itself returned no id', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
     recordAdvSessionMock.mockResolvedValueOnce(null);
-    await callPost({ cwd: '/home/avi/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
+    await callPost({ cwd: '/home/dev/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
     expect(setAdvSessionWindowIdMock).not.toHaveBeenCalled();
   });
 });

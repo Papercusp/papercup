@@ -103,9 +103,38 @@ export interface ProgramSuccessOptions {
    * gate untrustworthy and then ignored).
    */
   ledgerTruncated?: boolean;
+  /**
+   * Cycles started before this epoch-ms are EXCLUDED from the reconciliation bar (default
+   * {@link LEDGER_RECONCILE_EPOCH_MS} — the P-003 fix's enablement). Pass 0 to judge all of
+   * history, e.g. to re-measure the scale of the pre-fix damage.
+   */
+  reconcileEpochMs?: number;
 }
 
 const DEFAULT_MAX_ERROR_RATE = 0.05;
+
+/**
+ * ENABLEMENT EPOCH for the reconciliation bar (the D-013 pattern already used by
+ * ungraded-filings-watchdog's SU_IDEATE_UNGRADED_EPOCH_MS — same problem, same shape).
+ *
+ * Cycles BEFORE this predate the P-003 ledger-gap fix (scheduler.ts persistRouted): idea ids
+ * were POSITIONAL and the ledger upserts ON CONFLICT (idea_id), so every cycle OVERWROTE the
+ * previous cycle's rows. Those rows are destroyed and unrecoverable (tracked for annotation
+ * in WI-4467) — judging them here would red-pin this bar FOREVER on damage that no fix can
+ * repair, and a gate that can never go green is a gate everyone learns to ignore. So the bar
+ * judges only cycles the fix actually governs.
+ *
+ * Set to the bg-host restart that loaded the fix (2026-07-12 14:50 EDT). VERIFIED at that
+ * boundary: 432 pre-fix routing cycles → 4 reconciled / 428 drifted; 7 post-fix cycles →
+ * 7 reconciled / 0 drifted.
+ */
+export const LEDGER_RECONCILE_EPOCH_MS = Date.parse('2026-07-12T18:50:00Z');
+
+/** A scout cycleId is `scout-<epochMs>` — recover the cycle's wall-clock for the epoch floor. */
+function cycleStartMs(cycleId: string): number | null {
+  const ms = Number(cycleId.replace(/^scout-/, '').split(':')[0]);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
 
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
@@ -205,17 +234,28 @@ export function evaluateProgramSuccess(
   for (const idea of inputs.cadence.routedIdeas) {
     if (idea.cycleId) byCycle.set(idea.cycleId, (byCycle.get(idea.cycleId) ?? 0) + 1);
   }
+  const epoch = opts.reconcileEpochMs ?? LEDGER_RECONCILE_EPOCH_MS;
   const mismatches: string[] = [];
   let reconciled = 0;
+  let preFixSkipped = 0;
   for (const t of ranTicks) {
     const cycleId = typeof t.detail?.cycleId === 'string' ? t.detail.cycleId : undefined;
     if (!cycleId) continue;
     const claimed = t.ideasRouted ?? 0;
     const actual = byCycle.get(cycleId) ?? 0;
     if (claimed === 0 && actual === 0) continue; // trivially consistent — not evidence
+    // Pre-fix cycles are EXCLUDED, not counted as drift (see LEDGER_RECONCILE_EPOCH_MS). A
+    // cycle with an unparseable id is judged rather than silently skipped — an unknown-age
+    // cycle must not become a free pass.
+    const startedMs = cycleStartMs(cycleId);
+    if (startedMs !== null && startedMs < epoch) {
+      preFixSkipped += 1;
+      continue;
+    }
     if (claimed === actual) reconciled += 1;
     else mismatches.push(`${cycleId}: tick claims ${claimed}, ledger has ${actual}`);
   }
+  const preFixNote = preFixSkipped > 0 ? ` (${preFixSkipped} pre-fix cycle(s) excluded — their rows were destroyed by the pre-P-003 overwrite bug; see WI-4467)` : '';
   criteria.push({
     key: 'ledger-reconciles',
     bar: 'ledger rows reconcile with tick routed counts (per cycle)',
@@ -229,15 +269,15 @@ export function evaluateProgramSuccess(
       : reconciled === 0 && mismatches.length === 0
         ? {
             status: 'unknown' as const,
-            observed: 'no cycle in the window both ran and routed ideas',
-            unknownReason: 'nothing to reconcile — no routing activity in the window',
+            observed: `no post-fix cycle in the window both ran and routed ideas${preFixNote}`,
+            unknownReason: 'nothing to reconcile — no routing activity the P-003 fix governs',
           }
         : {
             status: (mismatches.length === 0 ? 'pass' : 'fail') as SuccessStatus,
             observed:
               mismatches.length === 0
-                ? `${reconciled} cycle(s) reconcile exactly`
-                : `${mismatches.length} mismatch(es): ${mismatches.slice(0, 5).join('; ')}`,
+                ? `${reconciled} cycle(s) reconcile exactly${preFixNote}`
+                : `${mismatches.length} mismatch(es)${preFixNote}: ${mismatches.slice(0, 5).join('; ')}`,
           }),
   });
 

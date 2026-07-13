@@ -278,12 +278,16 @@ describe('coord:escalate handler', () => {
     );
     expect(second.msg_id).toBe(first.msg_id); // same row, bumped — not a new one
 
+    // Exactly one open row survives both firings — the leak this key exists to stop.
+    // (repeatCount/lastSeenTs are asserted only here as "not a second row": the bump is
+    // PERSISTED by the PG projection path, while the append-only in-memory fold this
+    // double exercises can only return a bumped view — it must not rewrite a past event.)
     const open = parse(await run(escalationsTool, { status: 'open' }));
     const mine = open.escalations.filter(
       (e: { msg_id: string }) => e.msg_id === first.msg_id,
     );
     expect(mine).toHaveLength(1);
-    expect(mine[0].repeatCount).toBe(2);
+    expect(mine[0].summary).toBe('Mug stalled ~7h — 8 auto-eligible items stuck');
   });
 
   it('still opens distinct rows for distinct conditionKeys', async () => {
