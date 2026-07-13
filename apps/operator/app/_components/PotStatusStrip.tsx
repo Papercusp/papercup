@@ -56,6 +56,20 @@ const ACTION_CHIP: Record<string, string> = {
   observe: 'OBSERVE',
 };
 
+/** Chip tone class per suggested action (mockup .act-chip.esc/.nudge). */
+const ACTION_TONE: Record<string, string> = {
+  nudge: 'nudge',
+  escalate: 'esc',
+  observe: 'obs',
+};
+
+/** Split a leading work-item id off a cup's `doing` line so it renders in
+ *  accent mono like the mockup's `.doing .wi` ("WI-4662 fleet-spec …"). */
+export function splitLeadingWi(doing: string): { wi: string | null; rest: string } {
+  const m = doing.match(/^((?:WI|EI|F)-\d+)\s+(.*)$/);
+  return m ? { wi: m[1]!, rest: m[2]! } : { wi: null, rest: doing };
+}
+
 export function PotStatusStrip() {
   const [potOpen, setPotOpen] = useQueryState('pot', parseAsBoolean.withDefault(false));
 
@@ -102,14 +116,18 @@ export function PotStatusStrip() {
         ...(snap?.anomalies ?? []).map((a) => ({
           key: `anomaly:${a.kind}:${a.subject}`,
           severity: a.severity,
-          text: `${a.subject} — ${a.detail}`,
+          subj: a.subject as string | null,
+          text: a.detail,
           chip: ACTION_CHIP[a.suggestedAction.type] ?? 'OBSERVE',
+          tone: ACTION_TONE[a.suggestedAction.type] ?? 'obs',
         })),
         ...floor.escalations.map((e) => ({
           key: e.id,
           severity: e.severity === 'critical' ? ('critical' as const) : ('warning' as const),
+          subj: null as string | null,
           text: e.summary,
           chip: 'ESCALATE',
+          tone: 'esc',
         })),
       ]
     : [];
@@ -126,20 +144,22 @@ export function PotStatusStrip() {
         onClick={() => void setPotOpen(!potOpen)}
       >
         <span className={`op-pot-dot ${mugOk ? 'ok' : 'bad'}`} aria-hidden="true" />
-        <span className="op-pot-strip-item">Mug {mugAge}</span>
+        <span className="op-pot-who">Mug</span>
+        <span className="op-pot-age">{mugAge}</span>
         <span className="op-pot-sep" aria-hidden="true">·</span>
         <span className={`op-pot-dot ${kettleOk ? 'ok' : 'bad'}`} aria-hidden="true" />
-        <span className="op-pot-strip-item">Kettle {kettleAge}</span>
+        <span className="op-pot-who">Kettle</span>
+        <span className="op-pot-age">{kettleAge}</span>
         <span className="op-pot-sep" aria-hidden="true">·</span>
         <span className="op-pot-strip-item">{working} working</span>
         <span className="op-pot-sep" aria-hidden="true">·</span>
         <span className="op-pot-strip-item">{ready} ready</span>
         {needYou > 0 && (
-          <span className="op-pot-badge" title={`${needYou} need you`}>
-            {compactCount(needYou)} need you
+          <span className="op-pot-needs" title={`${needYou} need you`}>
+            <span className="op-pot-badge">{compactCount(needYou)}</span> need you
           </span>
         )}
-        <span className="op-pot-caret" aria-hidden="true">{potOpen ? '▴' : '▾'}</span>
+        <span className="op-pot-caret" aria-hidden="true">▾</span>
       </button>
 
       {potOpen && (
@@ -149,7 +169,8 @@ export function PotStatusStrip() {
             <>
               <section className="op-pot-section">
                 <h3 className="op-pot-h">
-                  Needs attention{attention.length > 0 ? ` (${attention.length})` : ''}
+                  Needs attention
+                  {attention.length > 0 && <span className="op-pot-h-badge">{attention.length}</span>}
                 </h3>
                 {attention.length === 0 ? (
                   <div className="op-pot-empty">nothing — system healthy</div>
@@ -157,8 +178,16 @@ export function PotStatusStrip() {
                   <ul className="op-pot-list">
                     {attention.map((a) => (
                       <li key={a.key} className={`op-pot-attn sev-${a.severity}`}>
-                        <span className="op-pot-attn-text">{a.text}</span>
-                        <span className="op-pot-chip">{a.chip}</span>
+                        <span className="op-pot-attn-text">
+                          {a.subj != null && (
+                            <>
+                              <b className="op-pot-attn-subj">{a.subj}</b>
+                              {' — '}
+                            </>
+                          )}
+                          {a.text}
+                        </span>
+                        <span className={`op-pot-chip ${a.tone}`}>{a.chip}</span>
                       </li>
                     ))}
                   </ul>
@@ -166,25 +195,48 @@ export function PotStatusStrip() {
               </section>
 
               <section className="op-pot-section">
-                <h3 className="op-pot-h">Cups ({floor.cups.length})</h3>
+                <h3 className="op-pot-h">
+                  Cups
+                  {floor.cups.length > 0 && <span className="op-pot-h-badge n">{floor.cups.length}</span>}
+                </h3>
                 {floor.cups.length === 0 ? (
                   <div className="op-pot-empty">no live cups</div>
                 ) : (
-                  <ul className="op-pot-list">
-                    {floor.cups.map((c) => (
-                      <li key={c.id} className="op-pot-cup">
-                        <span className={`op-pot-dot ${c.alive ? 'ok' : 'bad'}`} aria-hidden="true" />
-                        <span className="op-pot-cup-id">{c.id}</span>
-                        <span className="op-pot-cup-doing">{c.doing ?? 'idle'}</span>
-                        <span className="op-pot-cup-load">{c.load}</span>
-                      </li>
-                    ))}
+                  <ul className="op-pot-list op-pot-cups">
+                    {floor.cups.map((c) => {
+                      const doing = c.doing != null ? splitLeadingWi(c.doing) : null;
+                      return (
+                        <li key={c.id} className={`op-pot-cup${c.doing != null ? '' : ' idle'}`}>
+                          <span className="op-pot-cup-glyph" aria-hidden="true">☕</span>
+                          <span className="op-pot-cup-id">{c.id}</span>
+                          <span className="op-pot-cup-doing">
+                            {doing == null ? (
+                              'idle'
+                            ) : (
+                              <>
+                                {doing.wi != null && (
+                                  <>
+                                    <span className="op-pot-wi">{doing.wi}</span>{' '}
+                                  </>
+                                )}
+                                {doing.rest}
+                              </>
+                            )}
+                          </span>
+                          <span className="op-pot-cup-load">{c.load}</span>
+                          <span className={`op-pot-dot ${c.alive ? 'ok' : 'bad'}`} aria-hidden="true" />
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </section>
 
               <section className="op-pot-section">
-                <h3 className="op-pot-h">Up next ({floor.frontierTotal})</h3>
+                <h3 className="op-pot-h">
+                  Up next
+                  {floor.frontierTotal > 0 && <span className="op-pot-h-badge n">{floor.frontierTotal}</span>}
+                </h3>
                 {floor.frontier.length === 0 ? (
                   <div className="op-pot-empty">
                     {floor.frontierQuarantined > 0
@@ -204,9 +256,16 @@ export function PotStatusStrip() {
                 <div className="op-pot-foot">
                   {moreFrontier > 0 ? `+${moreFrontier} more · ` : ''}
                   {floor.frontierBlocked} blocked · {floor.frontierQuarantined} quarantined
-                  {floor.openPlacements.recovering > 0
-                    ? ` · ${floor.openPlacements.recovering} recovering ↻`
-                    : ''}
+                  {floor.openPlacements.recovering > 0 ? (
+                    <>
+                      {' · '}
+                      <span className="op-pot-recovering">
+                        {floor.openPlacements.recovering} recovering ↻
+                      </span>
+                    </>
+                  ) : (
+                    ''
+                  )}
                   {floor.openPlacements.stranded > 0
                     ? ` · ${floor.openPlacements.stranded} stranded`
                     : ''}
@@ -220,11 +279,13 @@ export function PotStatusStrip() {
                     {floor.steering.directive && (
                       <div className="op-pot-directive">“{floor.steering.directive}”</div>
                     )}
-                    <div className="op-pot-foot">
-                      New work: {floor.steering.pauseNewWork ? 'paused' : 'allowed'}
-                      {floor.steering.eligiblePlans.length > 0
-                        ? ` · Eligible: ${floor.steering.eligiblePlans.join(', ')}`
-                        : ''}
+                    <div className="op-pot-steer-facts">
+                      <span>
+                        New work: <b>{floor.steering.pauseNewWork ? 'paused' : 'allowed'}</b>
+                      </span>
+                      {floor.steering.eligiblePlans.length > 0 && (
+                        <span>Eligible: {floor.steering.eligiblePlans.join(', ')}</span>
+                      )}
                     </div>
                   </div>
                 ) : (

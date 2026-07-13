@@ -26880,15 +26880,20 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   border-bottom: 1px solid rgb(from var(--accent-strong) r g b / 0.10);
 }
 
+/* The one-line ambient strip — approved variant-A mockup: soft accent
+   gradient wash, emphasized role names beside mono ages, GLOWING liveness
+   dots, an amber count-pill need-you badge, a rotating fold chevron
+   (WI-4726 fidelity pass; letter-spacing stays 0 per the design docs +
+   design-primitives lint). */
 .op-pot-strip {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   width: 100%;
   padding: 7px 14px;
   border: none;
-  background: rgba(255, 255, 255, 0.02);
-  color: color-mix(in srgb, var(--accent-soft), transparent 18%);
+  background: linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.06), rgb(from var(--accent-strong) r g b / 0.02));
+  color: var(--fg-mute);
   font-size: 11.5px;
   line-height: 1;
   cursor: pointer;
@@ -26897,12 +26902,21 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 }
 
 .op-pot-strip:hover {
-  background: rgb(from var(--accent-strong) r g b / 0.06);
+  background: rgb(from var(--accent-strong) r g b / 0.09);
 }
 
 .op-pot-strip:focus-visible {
   outline: 2px solid var(--accent-strong);
   outline-offset: -2px;
+}
+
+.op-pot-who { flex: none; color: var(--fg); font-weight: 600; }
+
+.op-pot-age {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--fg-mute);
 }
 
 .op-pot-strip-item { flex: none; }
@@ -26918,22 +26932,60 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 
 /* Status colors ride the DTCG semantic tokens (--good/--warn/--bad) so the
  * strip re-themes with frost/black/honeycomb instead of pinning one palette
- * (operator-chat-sidebar-revival-2026-07-13 P-013 token reconcile). */
-.op-pot-dot.ok { background: var(--good); }
-.op-pot-dot.bad { background: var(--bad); }
-
-.op-pot-badge {
-  flex: none;
-  margin-left: 4px;
-  padding: 2px 7px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--bad), transparent 84%);
-  color: color-mix(in srgb, var(--bad), var(--fg) 35%);
-  font-size: 10px;
-  font-weight: 700;
+ * (operator-chat-sidebar-revival-2026-07-13 P-013 token reconcile).
+ * Mockup: a live dot GLOWS; a dead peer is a hollow ring tinted to --bad. */
+.op-pot-dot.ok {
+  background: var(--good);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--good), transparent 30%);
+}
+.op-pot-dot.bad {
+  background: transparent;
+  border: 1.5px solid color-mix(in srgb, var(--bad), var(--fg-mute) 35%);
 }
 
-.op-pot-caret { margin-left: auto; opacity: 0.6; }
+/* need-you: amber count pill + label, right-aligned (mockup .needs/.badge —
+ * the pill holds ONLY the display-capped count; the honest total lives in
+ * the wrapper title + the strip aria-label, WI-4724). */
+.op-pot-needs {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: color-mix(in srgb, var(--warn), var(--fg) 35%);
+  font-weight: 650;
+}
+
+.op-pot-badge {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--warn), transparent 84%);
+  color: color-mix(in srgb, var(--warn), var(--fg) 35%);
+  border: 1px solid color-mix(in srgb, var(--warn), transparent 65%);
+}
+
+.op-pot-caret {
+  flex: none;
+  margin-left: auto;
+  color: var(--fg-mute);
+  font-size: 10px;
+  transition: transform 160ms ease;
+}
+
+.op-pot-needs + .op-pot-caret { margin-left: 2px; }
+
+.op-pot-strip[aria-expanded="true"] .op-pot-caret { transform: rotate(180deg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .op-pot-caret { transition: none; }
+}
 
 .op-pot-panel {
   display: flex;

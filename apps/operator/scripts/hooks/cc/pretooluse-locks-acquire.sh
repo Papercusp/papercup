@@ -326,17 +326,31 @@ else:
             'lane would attribute your work to the ORIGIN author.'))
 
 
+def _valid_git_entry(d):
+    """A `.git` entry only marks a repo root when VALID: a FILE (submodule /
+    linked-worktree gitlink) or a DIR containing HEAD (every real git dir has
+    one). A stray EMPTY `.git` dir (2026-07-13: an accidental `mkdir .git` at
+    /tmp) must not re-key locks / red-pin tests — mirrors operator-core
+    locks/valid-git-entry.ts (parity contract; keep in sync)."""
+    g = os.path.join(d, '.git')
+    if os.path.isfile(g):
+        return True
+    if os.path.isdir(g):
+        return os.path.exists(os.path.join(g, 'HEAD'))
+    return False
+
+
 def find_repo_root(abs_path):
     """Walk up from a file (or its nearest existing parent) to the dir
-    holding a `.git` entry — file (worktree) or dir. Returns the repo
-    root or None. Deriving the root per-edit keeps the hook correct
-    across the many worktrees in this workspace (a hardcoded root would
-    mis-key locks in every checkout but one)."""
+    holding a VALID `.git` entry — gitlink file (worktree) or git dir with
+    HEAD. Returns the repo root or None. Deriving the root per-edit keeps
+    the hook correct across the many worktrees in this workspace (a
+    hardcoded root would mis-key locks in every checkout but one)."""
     d = abs_path
     if not os.path.isdir(d):
         d = os.path.dirname(d)
     while d and d != '/':
-        if os.path.exists(os.path.join(d, '.git')):
+        if _valid_git_entry(d):
             return d
         d = os.path.dirname(d)
     return None
