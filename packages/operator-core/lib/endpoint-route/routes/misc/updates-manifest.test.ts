@@ -19,8 +19,14 @@ vi.mock('./updates-github', () => ({
   releaseHostBase: vi.fn(() => null),
 }));
 
-import route, { pickAssetUrl, normalizeTagVersion } from './updates-manifest';
+import route, {
+  pickAssetUrl,
+  normalizeTagVersion,
+  resolveChannel,
+  DEFAULT_CHANNEL,
+} from './updates-manifest';
 import { resolveGithubToken, fetchAssetText, releaseHostBase } from './updates-github';
+import { readOperatorState } from '../../../operator-state-pg';
 
 const mockFetch = vi.fn<typeof fetch>();
 vi.stubGlobal('fetch', mockFetch);
