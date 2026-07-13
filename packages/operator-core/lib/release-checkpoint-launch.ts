@@ -322,7 +322,7 @@ export function buildCheckpointSystemdArgv(
   /** WI-4494: when given, the run RECORDS ITS OWN VERDICT for this harness (gate_health + the
    *  pipeline event) instead of discarding it. Omitted ⇒ pre-WI-4494 behaviour (the caller records
    *  — which for a detached manual run meant nobody did). */
-  target?: GateVerdictTarget | null,
+  verdictTarget?: GateVerdictTarget | null,
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -342,7 +342,9 @@ export function buildCheckpointSystemdArgv(
   // WI-4494: a detached unit does NOT inherit the launcher's env (same reason the partial-green
   // flag above has to be forwarded explicitly), so the record target must be passed as --setenv or
   // the run has no idea whose gate it is judging and silently declines to record.
-  const verdictEnv = target ? Object.entries(gateVerdictEnv(target)).map(([k, v]) => `--setenv=${k}=${v}`) : [];
+  const verdictEnv = verdictTarget
+    ? Object.entries(gateVerdictEnv(verdictTarget)).map(([k, v]) => `--setenv=${k}=${v}`)
+    : [];
   return [
     '--user',
     '--collect',

@@ -1850,7 +1850,7 @@ export const DARK_FLAGS_REVIEW_BY = '2026-07-24';
 //
 // The DarkCase discriminator ('incomplete' | 'owner-authority' | 'cutover' | 'parked')
 // already exists and is exactly the split the ceiling needs; it simply is not used here.
-// Filed as WI-4493 (make the ceiling per-case: a TIGHT budget on parked+incomplete — the
+// Filed as WI-4495 (make the ceiling per-case: a TIGHT budget on parked+incomplete — the
 // actual abuse — and review-by-date governance, not a size cap, on the safety cases).
 // Until then this stays one number and each raise must justify itself in-line, as above.
 export const DARK_FLAGS_HIGH_WATERMARK = 26; // +papercusp-queen-full-autonomy 2026-07-12 (WI-4238)

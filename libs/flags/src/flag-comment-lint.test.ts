@@ -208,7 +208,7 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
     // every later reader generalised that the comment is always the truth and the code is
     // always the bug. For five of the ten that was backwards. A mismatch is a QUESTION, not
     // a verdict: go read what the flag's ON and OFF branches actually DO, and check the data
-    // written under each, before you "restore" anything. (WI-4494 tracks teaching the lint to
+    // written under each, before you "restore" anything. (WI-4496 tracks teaching the lint to
     // carry that evidence itself instead of making each reader re-derive it.)
     { key: 'AUTHORITY_RPC_PROTOMUX', reason: 'WI-3855 SPECIAL CARE — cross-machine lock-authority RPC transport; real-hardware-unverified (P-003); bundled into WI-4240; owner-ratification pending. NOT re-derived in the 2026-07-12 pass (needs a two-machine rig, not a code read) — its direction-of-safety is still unestablished.' },
     { key: 'AUTHORITY_EVICTION_PROBE', reason: 'WI-3855 SPECIAL CARE — cross-machine failure-detector eviction; rides the same unverified cross-machine proof as AUTHORITY_RPC_PROTOMUX; bundled into WI-4240. NOT re-derived in the 2026-07-12 pass (same two-machine rig gap).' },
