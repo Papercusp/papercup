@@ -3,8 +3,8 @@
  *
  * Question: when a task is the canonical "do X for each of N" shape — list a
  * collection, then make a per-item tool call over all of it — does the engineer
- * REACH for `code:run` (collapsing the N round-trips into one orchestration
- * script) instead of hand-looping the per-item tool one call at a time?
+ * REACH for `code:run` (one returned summary, no per-item intermediate context)
+ * instead of serially hand-looping the per-item tool across model turns?
  *
  * The user asks for the BLOCKED open work items + why. `work_items:list` returns
  * 12 items WITHOUT per-item state (override), so answering requires a
@@ -50,7 +50,7 @@ export const SU_S13_CODE_RUN_BATCH: Scenario = {
       name: 'does-not-hand-loop-per-item-get',
       claim:
         'The engineer hand-looped work_items:get one call at a time instead of batching the loop ' +
-        'into a code:run script — exactly the round-trip-per-item cost code:run exists to remove.',
+        'into a code:run script — exactly the sequential-turn/intermediate-context cost code:run removes.',
       suggestion:
         'Do the per-item get inside a code:run loop; a couple of direct probe gets are fine, but the bulk should run in the script.',
     }),

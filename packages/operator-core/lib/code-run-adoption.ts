@@ -169,19 +169,22 @@ export function summarizeSpawnAdoption(rows: SpawnAdoptionRow[]): AdoptionSummar
   return out;
 }
 
-/** Build per-spawn rows from raw call rows (the from-raw path: tests + callers already holding rows). */
+/** Build per-spawn rows from raw call rows (the from-raw path: tests + callers already holding rows).
+ *  Turn-clusters each spawn's work calls (P-012, via the SAME `clusterTurns`/`TURN_GAP_MS` the live
+ *  nudge uses) so `maxSameToolTurns`/`distinctTurns` measure inference turns, not raw call counts. */
 export function spawnRowsFromCalls(calls: CallRow[]): SpawnAdoptionRow[] {
   interface Acc {
     role: string;
     day: string;
     usedCodeRun: boolean;
-    workToolCounts: Map<string, number>;
+    /** Work (non-batch, non-poller) calls kept for turn-clustering: tool name + timestamp. */
+    workCalls: { toolName: string; at: number }[];
   }
   const bySpawn = new Map<string, Acc>();
   for (const c of calls) {
     let a = bySpawn.get(c.spawnId);
     if (!a) {
-      a = { role: c.role, day: c.day, usedCodeRun: false, workToolCounts: new Map() };
+      a = { role: c.role, day: c.day, usedCodeRun: false, workCalls: [] };
       bySpawn.set(c.spawnId, a);
     }
     const norm = normalize(c.toolName);
@@ -190,23 +193,37 @@ export function spawnRowsFromCalls(calls: CallRow[]): SpawnAdoptionRow[] {
       !BATCH_TOOL_NORMS.includes(norm as (typeof BATCH_TOOL_NORMS)[number]) &&
       !POLLER_TOOL_NORMS.has(norm)
     ) {
-      a.workToolCounts.set(c.toolName, (a.workToolCounts.get(c.toolName) ?? 0) + 1);
+      a.workCalls.push({ toolName: c.toolName, at: c.invokedAt });
     }
   }
   const out: SpawnAdoptionRow[] = [];
   for (const a of bySpawn.values()) {
-    let workCalls = 0;
+    const turnOf = clusterTurns(a.workCalls);
+    const allTurns = new Set<number>();
+    const turnsByTool = new Map<string, Set<number>>();
+    const rawCountByTool = new Map<string, number>();
+    a.workCalls.forEach((w, i) => {
+      allTurns.add(turnOf[i]);
+      rawCountByTool.set(w.toolName, (rawCountByTool.get(w.toolName) ?? 0) + 1);
+      let s = turnsByTool.get(w.toolName);
+      if (!s) {
+        s = new Set<number>();
+        turnsByTool.set(w.toolName, s);
+      }
+      s.add(turnOf[i]);
+    });
+    let maxSameToolTurns = 0;
+    for (const s of turnsByTool.values()) if (s.size > maxSameToolTurns) maxSameToolTurns = s.size;
     let maxSameTool = 0;
-    for (const cnt of a.workToolCounts.values()) {
-      workCalls += cnt;
-      if (cnt > maxSameTool) maxSameTool = cnt;
-    }
+    for (const cnt of rawCountByTool.values()) if (cnt > maxSameTool) maxSameTool = cnt;
     out.push({
       role: a.role,
       day: a.day,
-      workCalls,
-      distinctTools: a.workToolCounts.size,
+      workCalls: a.workCalls.length,
+      distinctTools: rawCountByTool.size,
       maxSameTool,
+      maxSameToolTurns,
+      distinctTurns: allTurns.size,
       usedCodeRun: a.usedCodeRun,
     });
   }
@@ -253,21 +270,33 @@ export function clampSinceDays(sinceDays: number | undefined): number {
   return Math.min(n, CODE_RUN_ADOPTION_MAX_SINCE_DAYS);
 }
 
-/** The canonical live query — pre-aggregates per spawn over the last `$1` days of SUCCESSFUL calls.
- *  Runnable as-is via dev:pg_query (see agent-insights/code-run-adoption-metric) — kept
- *  parameterized for that ad-hoc/manual use. `readCodeRunAdoption` itself does NOT run this
- *  directly; it runs the bounded `buildCodeRunAdoptionQuery(...)` below (WI-3815). Mirrors the
- *  normalize() + BATCH_TOOL_NORMS / BATCH_RUNNER_NORMS sets above. */
-export const CODE_RUN_ADOPTION_SQL = `
+/**
+ * The shared CTE body for both CODE_RUN_ADOPTION_SQL (ad-hoc, $1-parameterized) and
+ * buildCodeRunAdoptionQuery (bounded, WI-3815) — factored out so the two can never drift on the
+ * turn-clustering logic. `dateWhereClause` is the only variance between the two callers (a $1 bind
+ * vs an inlined, clamped interval literal).
+ *
+ * P-012 (agent-operability-clarity-full-audit-2026-07-13): `gapped`/`turned` cluster each spawn's
+ * WORK calls into inferred INFERENCE TURNS via the SAME timing-gap heuristic the live nudge uses
+ * (TURN_GAP_MS, code-run-batch-nudge.ts — imported as a literal here since SQL can't import TS) — a
+ * new turn starts whenever the gap since the PREVIOUS call in that spawn exceeds TURN_GAP_MS ms.
+ * Several calls landing inside ONE turn (parallel tool_use) cost a single round-trip and must not
+ * inflate `max_same_tool_turns`/`distinct_turns` as if each were its own — that was the raw-call-count
+ * flaw this migration fixes. `max_same_tool`/`distinct_tools` (raw, non-turn-aware) are kept
+ * alongside for informational/debugging parity with the pre-P-012 shape.
+ */
+function adoptionQueryBody(dateWhereClause: string): string {
+  return `
 WITH calls AS (
   SELECT
     spawn_id,
     role,
     (invoked_at AT TIME ZONE 'UTC')::date::text AS day,
     tool_name,
+    invoked_at,
     lower(regexp_replace(tool_name, '[^a-zA-Z0-9]', '', 'g')) AS norm
   FROM harness_shared.tool_invocations
-  WHERE invoked_at >= now() - (($1)::int || ' days')::interval
+  WHERE ${dateWhereClause}
     AND status = 'ok'
     -- P-006 (2026-07-03): agent traffic ONLY. The raw table is dominated by UI HTTP
     -- polling (the measuring-code-run-adoption doc's own denominator warning) and a
@@ -285,8 +314,8 @@ per_spawn AS (
   FROM calls
   GROUP BY spawn_id
 ),
-work_tool_counts AS (
-  SELECT spawn_id, tool_name, count(*) AS cnt
+work_rows AS (
+  SELECT spawn_id, tool_name, invoked_at
   FROM calls
   WHERE norm NOT IN (
     'coderun','codetools','recipesrun','recipessearch','recipeslist',
@@ -294,27 +323,66 @@ work_tool_counts AS (
     -- POLLER_TOOL_NORMS (P-006): machine-cadence reads are not batchable LLM decisions.
     'activityrecent'
   )
+),
+gapped AS (
+  -- ms since the PREVIOUS work call in this spawn (NULL for the first) — the raw signal
+  -- `turned` below thresholds against TURN_GAP_MS to find turn boundaries.
+  SELECT
+    spawn_id, tool_name, invoked_at,
+    EXTRACT(EPOCH FROM (invoked_at - LAG(invoked_at) OVER w)) * 1000 AS gap_ms
+  FROM work_rows
+  WINDOW w AS (PARTITION BY spawn_id ORDER BY invoked_at, tool_name)
+),
+turned AS (
+  SELECT
+    spawn_id, tool_name,
+    SUM(CASE WHEN gap_ms IS NULL OR gap_ms > ${TURN_GAP_MS} THEN 1 ELSE 0 END)
+      OVER (PARTITION BY spawn_id ORDER BY invoked_at, tool_name) AS turn_id
+  FROM gapped
+),
+tool_turn_counts AS (
+  SELECT spawn_id, tool_name, count(DISTINCT turn_id) AS turns_for_tool, count(*) AS raw_calls
+  FROM turned
   GROUP BY spawn_id, tool_name
 ),
 work_agg AS (
   SELECT
     spawn_id,
-    COALESCE(sum(cnt), 0)::int  AS work_calls,
-    count(*)::int               AS distinct_tools,
-    COALESCE(max(cnt), 0)::int  AS max_same_tool
-  FROM work_tool_counts
+    COALESCE(sum(raw_calls), 0)::int      AS work_calls,
+    count(*)::int                         AS distinct_tools,
+    COALESCE(max(raw_calls), 0)::int      AS max_same_tool,
+    COALESCE(max(turns_for_tool), 0)::int AS max_same_tool_turns
+  FROM tool_turn_counts
+  GROUP BY spawn_id
+),
+spawn_turns AS (
+  SELECT spawn_id, count(DISTINCT turn_id)::int AS distinct_turns
+  FROM turned
   GROUP BY spawn_id
 )
 SELECT
   ps.role,
   ps.day,
-  COALESCE(wa.work_calls, 0)     AS work_calls,
-  COALESCE(wa.distinct_tools, 0) AS distinct_tools,
-  COALESCE(wa.max_same_tool, 0)  AS max_same_tool,
+  COALESCE(wa.work_calls, 0)          AS work_calls,
+  COALESCE(wa.distinct_tools, 0)      AS distinct_tools,
+  COALESCE(wa.max_same_tool, 0)       AS max_same_tool,
+  COALESCE(wa.max_same_tool_turns, 0) AS max_same_tool_turns,
+  COALESCE(st.distinct_turns, 0)      AS distinct_turns,
   ps.used_code_run
 FROM per_spawn ps
 LEFT JOIN work_agg wa USING (spawn_id)
+LEFT JOIN spawn_turns st USING (spawn_id)
 `;
+}
+
+/** The canonical live query — pre-aggregates per spawn over the last `$1` days of SUCCESSFUL calls.
+ *  Runnable as-is via dev:pg_query (see agent-insights/code-run-adoption-metric) — kept
+ *  parameterized for that ad-hoc/manual use. `readCodeRunAdoption` itself does NOT run this
+ *  directly; it runs the bounded `buildCodeRunAdoptionQuery(...)` below (WI-3815). Mirrors the
+ *  normalize() + BATCH_TOOL_NORMS / BATCH_RUNNER_NORMS sets above. */
+export const CODE_RUN_ADOPTION_SQL = adoptionQueryBody(
+  "invoked_at >= now() - (($1)::int || ' days')::interval",
+);
 
 /**
  * WI-3815: the query `readCodeRunAdoption` ACTUALLY runs — `CODE_RUN_ADOPTION_SQL`'s body,

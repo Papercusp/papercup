@@ -128,6 +128,32 @@ export function assertToolCallCountAtLeast(specs: string[], min: number, meta: M
   };
 }
 
+/**
+ * ERROR unless the agent either uses code:run OR emits the required direct calls together in a
+ * single assistant/model turn. P-012: raw RPC count is not inference cost — three parallel tool_use
+ * blocks in one response are already one inference turn and must pass the batching rubric.
+ */
+export function assertCodeRunOrSingleTurnFanout(
+  specs: string[],
+  requiredDirectCalls: number,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      if (allToolCalls(run).some((tc) => nameMatches(tc.name, ['code:run']))) return [];
+      const hitTurns = run.turns
+        .map((turn, index) => ({ index, count: turn.toolCalls.filter((tc) => nameMatches(tc.name, specs)).length }))
+        .filter((row) => row.count > 0);
+      const directCount = hitTurns.reduce((sum, row) => sum + row.count, 0);
+      return directCount >= requiredDirectCalls && hitTurns.length === 1
+        ? []
+        : [violation(meta, hitTurns[1]?.index ?? hitTurns[0]?.index)];
+    },
+  };
+}
+
 /** ERROR unless the given predicate finds a matching tool call. Use for
  *  compound conditions (e.g. design-phase:* OR docs:* with a design-ish arg). */
 export function assertToolMatch(

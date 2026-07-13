@@ -23,6 +23,7 @@ import { describe, it, expect } from 'vitest';
 import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
 import {
+  assertCodeRunOrSingleTurnFanout,
   assertTextForbidsInTurnAfter,
   assertTextForbidsFromTurn,
   assertTextRequiresFromTurn,
@@ -169,5 +170,34 @@ describe('assertTextForbidsFromTurn', () => {
     ]);
     const violations = assertTextForbidsFromTurn(/debounce/i, 1, META).eval(run);
     expect(violations).toEqual([]);
+  });
+});
+
+describe('assertCodeRunOrSingleTurnFanout', () => {
+  const assertion = assertCodeRunOrSingleTurnFanout(['work_items:get'], 3, META);
+
+  it('passes three direct RPCs emitted together in one model turn', () => {
+    const run = mkRun([mkTurn({
+      toolCalls: [
+        { name: 'work_items:get', input: { id: 'WI-1' } },
+        { name: 'work_items:get', input: { id: 'WI-2' } },
+        { name: 'work_items:get', input: { id: 'WI-3' } },
+      ],
+    })]);
+    expect(assertion.eval(run)).toEqual([]);
+  });
+
+  it('passes code:run even though inner per-item calls are not model-visible events', () => {
+    const run = mkRun([mkTurn({ toolCalls: [{ name: 'code:run', input: { script: 'return []' } }] })]);
+    expect(assertion.eval(run)).toEqual([]);
+  });
+
+  it('fails the same three direct calls when they span model turns', () => {
+    const run = mkRun([
+      mkTurn({ toolCalls: [{ name: 'work_items:get', input: { id: 'WI-1' } }] }),
+      mkTurn({ toolCalls: [{ name: 'work_items:get', input: { id: 'WI-2' } }] }),
+      mkTurn({ toolCalls: [{ name: 'work_items:get', input: { id: 'WI-3' } }] }),
+    ]);
+    expect(assertion.eval(run)).toHaveLength(1);
   });
 });

@@ -45,6 +45,9 @@ export const GATE_REGISTRY: ReadonlyArray<{ gate: string; expect: GateExpectatio
   // detector free of the false positives that killed EI-10609.
   { gate: 'orient.recall.relevance-floor', expect: 'discriminates', owner: 'memory/recall-admission' },
   { gate: 'orient.recall.queen-loop-withhold', expect: 'guards', owner: 'memory/recall-admission' },
+  // P-008: near-duplicate collapse — most recalls have no near-dupes, so never collapsing is
+  // HEALTHY (guards), same posture as the withhold and budget below.
+  { gate: 'orient.recall.dedup', expect: 'guards', owner: 'memory/recall-admission' },
   { gate: 'orient.recall.char-budget', expect: 'guards', owner: 'memory/recall-admission' },
 ];
 
