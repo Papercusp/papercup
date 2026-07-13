@@ -69,11 +69,18 @@
 set -uo pipefail
 
 REPEATS="${FLAKE_SOAK_REPEATS:-6}"
-CORES="${FLAKE_SOAK_CORES:-2}"
+# 8 cores + 8 competing hogs + nice 10 is the TUNED window (see start_load /
+# classify_run): enough preemption to delay a throttled timer past a remount,
+# not so much that vitest's pool times out starting a worker and executes zero
+# tests. 2 cores was too weak (1/6); 4 cores + 12 hogs at nice 19 killed the
+# runner outright (6/6 "red" with 0 tests run — a lying detector).
+CORES="${FLAKE_SOAK_CORES:-8}"
+LOAD="${FLAKE_SOAK_LOAD:-8}"
 CWD="${FLAKE_SOAK_CWD:-apps/operator-vite}"
-NICE="${FLAKE_SOAK_NICE:-19}"
+NICE="${FLAKE_SOAK_NICE:-10}"
 SELFTEST_FIXTURE=""
 ISOLATE=0
+invalid=0
 declare -a VITEST_ARGS=()
 
 # ---- arg parse -------------------------------------------------------------
@@ -81,6 +88,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --repeats) REPEATS="$2"; shift 2 ;;
     --cores)   CORES="$2";   shift 2 ;;
+    --load)    LOAD="$2";    shift 2 ;;
     --cwd)     CWD="$2";     shift 2 ;;
     --nice)    NICE="$2";    shift 2 ;;
     --self-test) SELFTEST_FIXTURE="$2"; shift 2 ;;
@@ -131,8 +139,45 @@ fi
 # admission gate (this wrapper already self-limits to $CORES cores), and — in
 # self-test mode — sets FLAKE_SOAK_SELFTEST=1 so the package config includes the
 # flakeproof fixture.
+# ---- competing load --------------------------------------------------------
+# THE INGREDIENT THAT ACTUALLY REPRODUCES THE RACE. Pinning vitest to N cores is
+# NOT starvation — those cores are otherwise idle, so its workers timeshare fairly
+# and every event loop still gets scheduled promptly. Measured: pinned-only
+# reddened the real MugTab flake 1/6 at 2 cores and 0/6 at 1 core (harsher pinning,
+# FEWER reds — the naive theory is simply wrong).
+#
+# The original repro was vitest NICED (pc-heavy, +10) competing against a box at
+# load 150-240. The race needs the runner to be LOW-PRIORITY RELATIVE TO COMPETING
+# WORK, so its threads get preempted for long stretches and the throttled nuqs URL
+# flush lands after the remount. So: run niced vitest against real competing hogs
+# at NORMAL priority on the same cores.
+#
+# Too much of this and the runner stops running at all (worker start timeout, 0
+# tests) — see classify_run. LOAD is therefore a tuned knob, not "as much as
+# possible", and the invalid-run guard is what keeps a too-hot config from being
+# misread as a flake.
+HOG_PIDS=()
+start_load() {
+  [ "$LOAD" -gt 0 ] || return 0
+  local h
+  for h in $(seq 1 "$LOAD"); do
+    ${TASKSET_BIN:+"$TASKSET_BIN" -c "$CPUSET"} bash -c 'while :; do :; done' &
+    HOG_PIDS+=($!)
+  done
+}
+stop_load() {
+  [ "${#HOG_PIDS[@]}" -gt 0 ] || return 0
+  kill "${HOG_PIDS[@]}" 2>/dev/null
+  wait "${HOG_PIDS[@]}" 2>/dev/null
+  HOG_PIDS=()
+}
+# Never leak hogs if the soak is interrupted — they are uncapped busy loops.
+trap 'stop_load; exit 130' INT TERM
+trap 'stop_load' EXIT
+
 run_once() {
   local extra_env="$1"; shift
+  start_load
   (
     cd "$PKG_DIR" || exit 2
     # shellcheck disable=SC2086
@@ -141,6 +186,9 @@ run_once() {
       nice -n "$NICE" \
       "$VITEST_BIN" run "$@" >/tmp/flake-soak-run.$$.log 2>&1
   )
+  local rc=$?
+  stop_load
+  return $rc
 }
 
 # Classify the last run: "pass" | "red" | "invalid".
@@ -169,7 +217,7 @@ declare -a RESULTS=()
 banner() {
   echo "──────────────────────────────────────────────────────────────"
   echo " flake-soak: $1"
-  echo "   pkg=$CWD  repeats=$REPEATS  cores=$CORES (cpuset $CPUSET)  nice=$NICE"
+  echo "   pkg=$CWD  repeats=$REPEATS  cores=$CORES (cpuset $CPUSET)  load=$LOAD hogs  nice=$NICE"
   echo "   target=${*:2}"
   echo "──────────────────────────────────────────────────────────────"
 }
@@ -220,20 +268,27 @@ fi
 # -------- normal mode: the target must stay ALL-green --------------------
 banner "SOAK (expect all PASS)" "${VITEST_ARGS[*]:-<whole $CWD suite>}"
 for i in $(seq 1 "$REPEATS"); do
-  if run_once "" "${VITEST_ARGS[@]}"; then
-    RESULTS+=("PASS"); pass=$((pass+1)); printf "  run %2d/%d  PASS\n" "$i" "$REPEATS"
-  else
-    RESULTS+=("FAIL"); fail=$((fail+1)); printf "  run %2d/%d  \033[31mFAIL\033[0m  (log: /tmp/flake-soak-run.$$.log)\n" "$i" "$REPEATS"
-    # keep the failing log for inspection
-    cp /tmp/flake-soak-run.$$.log "/tmp/flake-soak-fail-${i}.$$.log" 2>/dev/null || true
-  fi
+  run_once "" "${VITEST_ARGS[@]}"; rc=$?
+  case "$(classify_run "$rc")" in
+    pass)    pass=$((pass+1));       printf "  run %2d/%d  PASS\n" "$i" "$REPEATS" ;;
+    red)     fail=$((fail+1));       printf "  run %2d/%d  \033[31mRED\033[0m (real test failure)\n" "$i" "$REPEATS"
+             cp /tmp/flake-soak-run.$$.log "/tmp/flake-soak-fail-${i}.$$.log" 2>/dev/null || true ;;
+    invalid) invalid=$((invalid+1)); printf "  run %2d/%d  \033[33mINVALID\033[0m (runner died — 0 tests ran; NOT scored)\n" "$i" "$REPEATS" ;;
+  esac
 done
 
-RED_RATE=$(( fail * 100 / REPEATS ))
+SCORED=$(( pass + fail ))
 echo "──────────────────────────────────────────────────────────────"
-echo " soak result: $pass PASS / $fail FAIL over $REPEATS runs  (red-rate ${RED_RATE}%)"
+if [ "$SCORED" -eq 0 ]; then
+  echo " ⚠️  NO VALID RUNS ($invalid invalid) — every run died before executing a"
+  echo "    test. This is a verdict about the LOAD, not about the code. Lower"
+  echo "    --load / raise --cores and re-run; do not read this as green OR red."
+  exit 2
+fi
+RED_RATE=$(( fail * 100 / SCORED ))
+echo " soak result: $pass PASS / $fail RED over $SCORED valid runs  (red-rate ${RED_RATE}%)${invalid:+  [$invalid invalid, not scored]}"
 if [ "$fail" -eq 0 ]; then
-  echo " ✅ stable under $CORES-core starvation."
+  echo " ✅ stable under load ($CORES cores, $LOAD competing hogs)."
   exit 0
 fi
 echo " ❌ FLAKY under load — failing-run logs at /tmp/flake-soak-fail-*.$$.log"

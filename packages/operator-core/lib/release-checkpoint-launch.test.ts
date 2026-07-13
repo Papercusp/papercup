@@ -76,6 +76,31 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).toContain('apps/operator/lib/release/green-checkpoint.ts');
     expect(inner).toContain("PAPERCUSP_INTEGRATION_ROOT='/tree'");
   });
+
+  /**
+   * WI-4494 — THE REGRESSION THAT CAUSED THE 10h PIPELINE FREEZE.
+   *
+   * A detached manual run ran the full suite, produced a real green/red, and discarded it, because
+   * nothing ever told it WHOSE gate it was judging. Meanwhile it held the run-lock, so the hourly
+   * routine — the only thing that DID record — got `skipped-locked` on three consecutive fires and
+   * recorded nothing either. gate_health froze on a stale red; the release pin sat unmoved ~10h.
+   *
+   * A detached unit inherits none of the launcher's env, so the stamp must be explicit --setenv or
+   * the run silently declines to record and we are right back where we started.
+   */
+  it('⭐ stamps the record target so a MANUAL run records its own verdict instead of discarding it', () => {
+    const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin', false, undefined, {
+      workspaceId: 'papercusp-workspace',
+      installSlug: 'papercusp',
+    });
+    expect(argv).toContain('--setenv=PAPERCUSP_GATE_VERDICT_WORKSPACE=papercusp-workspace');
+    expect(argv).toContain('--setenv=PAPERCUSP_GATE_VERDICT_HARNESS=papercusp');
+  });
+
+  it('stamps nothing without a target — the run then does not record and its caller does (pre-WI-4494 behaviour)', () => {
+    const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin', false, undefined, null);
+    expect(argv.some((a) => a.includes('GATE_VERDICT'))).toBe(false);
+  });
 });
 
 /** A fake ChildProcess whose close/error we drive. */

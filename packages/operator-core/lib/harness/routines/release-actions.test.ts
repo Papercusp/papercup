@@ -70,6 +70,8 @@ import {
   annotateFailingTestsWithFlakeStats,
   releaseToolingStatus,
   RELEASE_FIXER_DEDUP_MS,
+  recordCheckpointVerdict,
+  buildCheckpointDetail,
   type AutoServePlan,
   type DeployEventRow,
   type ReleaseFixerRecord,
@@ -761,5 +763,116 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     const [cmd] = spawnMock.mock.calls[0] as [string, string[]];
     expect(cmd).not.toBe('systemd-run');
     expect(cmd).toContain('tsx');
+  });
+});
+
+/**
+ * WI-4494 — THE RUN THAT PRODUCES A VERDICT IS THE RUN THAT RECORDS IT.
+ *
+ * Before this, `gate_health` + the pipeline event were written ONLY by the routine that parsed the
+ * CLI's stdout. A detached manual run (`release:checkpoint-run`) therefore ran the full suite,
+ * computed a real green/red — and threw it away, while HOLDING the run-lock that forced the hourly
+ * routine (the only recorder) to log `skipped-locked` and record nothing either. Live 2026-07-12:
+ * three consecutive fires skipped, gate_health frozen on a stale red, release pin unmoved ~10h, and
+ * the WI-4486 memory-blackout fix unable to ship on a green pin. Our own code had named the root
+ * cause ten days earlier — "only ROUTINE-invoked runs write pipeline events / gate_health" — and
+ * both prior attempts reconciled the wrong value instead of removing the wrongness.
+ */
+describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
+  beforeEach(() => {
+    appendPipelineEvent.mockClear();
+    fakeSql.unsafe.mockClear();
+  });
+
+  it('⭐ a lock collision records NOTHING — the run holding the lock has the real verdict', () => {
+    // This is the fix's load-bearing asymmetry. A colliding run must stay silent (it observed
+    // nothing), while the run that WON the lock records. If a `skipped-locked` could record, it
+    // would clobber a real verdict with a non-observation — the same bug, mirrored.
+    return recordCheckpointVerdict({ workspaceId: 'ws-42', installSlug: 'my-harness' }, { reason: 'skipped-locked' }).then(
+      (recorded) => {
+        expect(recorded).toBe(false);
+        expect(appendPipelineEvent).not.toHaveBeenCalled();
+        expect(fakeSql.unsafe).not.toHaveBeenCalled(); // gate_health untouched
+      },
+    );
+  });
+
+  it('⭐ a RED from ANY runner lands in gate_health + the pipeline history', async () => {
+    const recorded = await recordCheckpointVerdict(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      { reason: 'not-green', green: false, candidate: 'abc123def456789', from: '28a3a3d50258', failingTests: ['lib/x.test.ts'] },
+    );
+    expect(recorded).toBe(true);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-42',
+        installSlug: 'my-harness',
+        kind: 'green_checkpoint',
+        status: 'not-green',
+        detail: expect.objectContaining({ green: false, candidate: 'abc123def456', failingTests: ['lib/x.test.ts'] }),
+      }),
+    );
+    // …and the gate_health blob was read + written for that harness (the streak now moves).
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
+  });
+
+  it('a GREEN from any runner records too — that is what resets a frozen streak', async () => {
+    expect(
+      await recordCheckpointVerdict({ workspaceId: 'ws-42', installSlug: 'my-harness' }, { reason: 'advanced', green: true, candidate: 'deadbeefcafe' }),
+    ).toBe(true);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'advanced' }));
+  });
+
+  it('buildCheckpointDetail truncates shas to 12 and caps the lists (parity with the routine it replaced)', () => {
+    const d = buildCheckpointDetail({
+      reason: 'advanced-prefix',
+      green: false,
+      candidate: 'a'.repeat(40),
+      from: 'b'.repeat(40),
+      advancedTo: 'c'.repeat(40),
+      failingTests: Array.from({ length: 30 }, (_, i) => `t${i}.test.ts`),
+    });
+    expect(d.candidate).toBe('a'.repeat(12));
+    expect(d.from).toBe('b'.repeat(12));
+    expect(d.advancedTo).toBe('c'.repeat(12));
+    expect((d.failingTests as string[]).length).toBe(20);
+  });
+});
+
+describe('WI-4494: the routine defers to a run that already recorded (no double-counted reds)', () => {
+  const GREEN_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+
+  beforeEach(() => {
+    appendPipelineEvent.mockClear();
+    fakeSql.unsafe.mockClear();
+  });
+
+  it('⭐ recorded:true ⇒ the routine records NOTHING — a second trackGateStall would count one red twice', async () => {
+    const stdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'not-green', green: false, candidate: 'abc123', recorded: true })}\n`;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(appendPipelineEvent).not.toHaveBeenCalled();
+    // The decisive one: no gate_health read-modify-write, so the streak moves exactly once per
+    // verdict — by the run that produced it.
+    expect(fakeSql.unsafe).not.toHaveBeenCalledWith(expect.stringContaining('gate_health'), expect.anything());
+  });
+
+  it('⭐ no `recorded` flag (an OLD CLI — the deployed routine drives the integration tree) ⇒ the routine STILL records', async () => {
+    // The version-skew safety valve. This is why the change cannot blind the gate: absent the flag
+    // we fall straight back to pre-WI-4494 behaviour.
+    const stdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'not-green', green: false, candidate: 'abc123' })}\n`;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'not-green' }));
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
+  });
+
+  it('⭐ hands the CLI the record target — without this env the run cannot know whose gate it judges', async () => {
+    const stdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'up-to-date', green: true, recorded: true })}\n`;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    const opts = spawnMock.mock.calls[0]![2] as { env?: Record<string, string> };
+    expect(opts.env?.PAPERCUSP_GATE_VERDICT_WORKSPACE).toBe('ws-42');
+    expect(opts.env?.PAPERCUSP_GATE_VERDICT_HARNESS).toBe('my-harness');
   });
 });
