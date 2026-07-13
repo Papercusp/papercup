@@ -141,7 +141,7 @@ vi.mock('../self-marker', () => ({
   ),
 }));
 
-vi.mock('../../workspace-registry', () => ({
+vi.mock('../../../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(() => 'test-ws'),
 }));
 

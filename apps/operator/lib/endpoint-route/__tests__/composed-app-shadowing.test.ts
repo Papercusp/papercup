@@ -21,12 +21,9 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import type { Hono as HonoType } from 'hono';
 
-vi.mock('../telemetry', () => ({
-  recordRouteInvocation: vi.fn(),
-}));
 // The composed route stack runs INSIDE @papercusp/operator-core, so it calls
 // operator-core's telemetry (route-stack.ts → './telemetry'), NOT this app's
-// `../telemetry` above. Mock the operator-core module too (it resolves to the
+// endpoint-route module. Mock the operator-core module (it resolves to the
 // same file route-stack imports) so the route stack never reaches a live PG:
 // telemetry's best-effort write console.warns on a down DB, which
 // vitest-fail-on-console turns into a test failure. Keeps the test hermetic

@@ -10,7 +10,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // Stub operator-side deps that can't resolve in vitest — plan-block-handler.ts
 // imports these only for the tool-registration path, not the pure parser logic.
 vi.mock('../../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
-vi.mock('../plans/runner', () => ({
+vi.mock('../../plans/runner', () => ({
   SU_ROLES: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'operator'],
 }));
 

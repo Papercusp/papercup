@@ -39,7 +39,7 @@ vi.mock('./disk', () => ({
   dirSizeBytes: () => 0,
   gatherProtectedSessionIdentity: async () => ({ ok: true, identity: { ownerIds: new Set(), sessionKeys: new Set() } }),
 }));
-vi.mock('./session-dir-gc', () => ({
+vi.mock('../session-dir-gc', () => ({
   defaultSessionDirRoots: () => [],
   discoverSessionDirCandidates: () => [],
   planSessionDirGc: () => ({ remove: [], keptProtected: [], keptFresh: [] }),

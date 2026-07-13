@@ -20,8 +20,6 @@ vi.mock('@papercusp/flags/server', () => ({
   },
   onFlagChange: () => {},
 }));
-vi.mock('./flag-distinct-id', () => ({ systemDistinctId: () => 'system' }));
-
 const enableTracking = vi.fn();
 const bootAll = vi.fn(async (opts?: { bootHarness?: (o: any) => Promise<any>; skipSendSideWiring?: boolean }) => {
   if (opts?.bootHarness) {
