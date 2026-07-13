@@ -178,6 +178,7 @@ export interface AssembledSection {
     | 'plan-discipline-note'
     | 'work-record-note'
     | 'observation-capture-note'
+    | 'write-through-note'
     | 'turn-end-observation'
     | 'code-run-note'
     | 'finish-the-rollout-note'

@@ -25,7 +25,8 @@
  * is released (and TTL covers a crashed run).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { runHookProcess } from './spawn-hook';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { homedir } from 'node:os';
@@ -137,26 +138,21 @@ async function callTool(client: string, tool: string, args: unknown): Promise<Re
   throw new Error(`no tool result in response: ${raw.slice(0, 300)}`);
 }
 
-/** Spawn a hook script with a Claude-shaped stdin payload; returns stdout + exit code. */
-function runHook(
+/**
+ * Spawn a hook script with a Claude-shaped stdin payload; returns stdout + exit code.
+ * ./spawn-hook.ts owns the two invariants (async spawn, and an EPIPE-tolerant stdin write —
+ * the hook exits before reading stdin on its guard paths, by design).
+ */
+async function runHook(
   script: string,
   payload: unknown,
   env: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('bash', [script], {
-      env: { ...process.env, ...env },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => (stdout += d));
-    child.stderr.on('data', (d) => (stderr += d));
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ stdout, stderr, code }));
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
+  const { status, stdout, stderr } = await runHookProcess('bash', [script], {
+    input: JSON.stringify(payload),
+    env: { ...process.env, ...env },
   });
+  return { stdout, stderr, code: status };
 }
 
 let home: string, cache: string, ws: string, repo: string;
