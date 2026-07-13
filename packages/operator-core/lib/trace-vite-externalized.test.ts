@@ -68,7 +68,7 @@ describe('computeEagerExternalized', () => {
 
   it('does NOT flag a builtin whose only static importer is reachable ONLY lazily (child_process)', () => {
     const { eager } = computeEagerExternalized({ eagerRoots, staticEdges, builtinStaticImporters });
-    expect(eager.find((e) => e.builtin === 'child_process')).toBeUndefined();
+    expect(eager.find((e: { builtin: string }) => e.builtin === 'child_process')).toBeUndefined();
   });
 
   it('reports the eager-reachable module count', () => {
