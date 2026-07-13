@@ -51,49 +51,51 @@ import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 
 // ─── Linux terminal selection ────────────────────────────────────────
 
-// PROCESS-PER-WINDOW emulators — each launched binary IS its own terminal
-// window and binds the injected DISPLAY/XAUTHORITY directly, so it opens on the
-// resolved seat regardless of session / D-Bus / GNOME-session state. These are
-// RELIABLE from the headless operator (a systemd --user service), which is how
-// EVERY console window is spawned (resume/fork, the "+" button,
-// capability:terminal, fleet:launch-on-plan — all share spawnConsole). Preferred
-// first. (This is the same set findDisplayHonoringTerminal uses for the WI-4272
-// demo-stage displayOverride path — for the same reason.)
-const PROCESS_PER_WINDOW_TERMINALS: Array<[string, string[]]> = [
-  ['alacritty', ['-e']],
-  ['kitty', ['--']],
-  ['wezterm', ['start', '--always-new-process', '--']],
-  ['xterm', ['-e']],
-];
-
-// CLIENT-SERVER emulators — the launched binary is a thin client that hands the
-// window off to a per-session D-Bus factory / server (gnome-terminal-server,
-// konsole's session app), which opens the window on ITS OWN display, NOT the
-// DISPLAY the client was spawned with (this is also why findDisplayHonoringTerminal
-// excludes them). From the HEADLESS operator service they are UNRELIABLE: the
-// factory can't be reached/activated with the right seat env, so gnome-terminal
-// falls back to a standalone `gnome-terminal.real --wait` that maps NO window and
-// lingers — the early-exit probe then falsely passes and the launch reports `ok`
-// with an invisible/missing window. Reproduced end-to-end on the dev box
-// 2026-07-13 (resume-in-new-terminal-invisible-window): the real operator POST
-// returned ok+gnome-terminal but opened ZERO windows on the owner's seat (:1),
-// for the resume button AND capability:terminal AND fleet:launch-on-plan alike,
-// while `xterm` from the identical operator env opened reliably. So these are a
-// LAST resort — only chosen on a box that has NO process-per-window emulator at
-// all. (`--wait` keeps gnome-terminal's client alive for the window's lifetime so
-// an adv_sessions row doesn't look "ended" while the terminal is still open — a
-// process-per-window emulator gets that for free, its process IS the window.)
+// CLIENT-SERVER emulators — the user's STANDARD desktop terminals. The launched
+// binary is a thin client that hands the window off to a per-session D-Bus
+// factory / server (gnome-terminal-server, konsole's session app), which opens
+// the window on ITS OWN display, NOT the DISPLAY the client was spawned with
+// (this is also why findDisplayHonoringTerminal excludes them). This is what the
+// owner sees when they open a terminal by hand, so — when a real desktop session
+// is running — it is what "Resume in new terminal" / the "+" button /
+// capability:terminal / fleet:launch-on-plan should open too.
+//
+// These WORK from the headless operator (a systemd --user service) ONLY when the
+// spawn env carries the D-Bus address of the SESSION the server lives on.
+// resolveLinuxDesktopEnv now resolves that from the live session
+// (resolveSessionBus — reads it from the running gnome-terminal-server /
+// gnome-shell for the active seat), so gnome-terminal reaches its server and
+// opens the owner's standard window whether the session uses the systemd user
+// bus (/run/user/<uid>/bus, a normal box) or a session-spawned dbus-daemon
+// (/tmp/dbus-*, this dev box — GNOME started its own bus). BEFORE that fix the
+// operator injected a hardcoded /run/user/<uid>/bus that had no server on it, so
+// gnome-terminal's client fell back to a standalone `gnome-terminal.real --wait`
+// that mapped NO window and lingered — the "invisible window" of WI-4711 /
+// resume-in-new-terminal-invisible-window (2026-07-13), which WI-4711 worked
+// around by preferring xterm (why the owner saw "weird" terminals instead of
+// their standard gnome-terminal). Root cause + the corrected fix: WI-4718.
+// (`--wait` keeps gnome-terminal's client alive for the window's lifetime so an
+// adv_sessions row doesn't look "ended" while the terminal is still open.)
 const CLIENT_SERVER_TERMINALS: Array<[string, string[]]> = [
   ['gnome-terminal', ['--wait', '--window', '--']],
   ['konsole', ['--new-window', '-e']],
   ['xfce4-terminal', ['--window', '-e']],
 ];
 
-// Full preference order: reliable process-per-window first, unreliable-from-a-
-// headless-service client-server terminals only as a last resort.
-const LINUX_TERMINALS: Array<[string, string[]]> = [
-  ...PROCESS_PER_WINDOW_TERMINALS,
-  ...CLIENT_SERVER_TERMINALS,
+// PROCESS-PER-WINDOW emulators — each launched binary IS its own terminal window
+// and binds the injected DISPLAY/XAUTHORITY directly, so it opens on the resolved
+// seat regardless of session / D-Bus / desktop-session state. RELIABLE with no
+// desktop session at all — so they are the FALLBACK when no client-server server
+// can be reached (a bare Xvfb / sandbox stage with no GNOME/KDE session, or a box
+// with no standard terminal installed). This is also the set
+// findDisplayHonoringTerminal uses for the WI-4272 demo-stage displayOverride
+// path, for the same reason (a client-server terminal would open on the seat's
+// server, ignoring the override display).
+const PROCESS_PER_WINDOW_TERMINALS: Array<[string, string[]]> = [
+  ['alacritty', ['-e']],
+  ['kitty', ['--']],
+  ['wezterm', ['start', '--always-new-process', '--']],
+  ['xterm', ['-e']],
 ];
 
 function isOnPath(bin: string): boolean {
@@ -104,14 +106,19 @@ function isOnPath(bin: string): boolean {
 
 /**
  * Pure terminal selection given a PATH-membership probe. Preference: an explicit
- * `$TERMINAL` (the user's own choice, honored as-is), then the LINUX_TERMINALS
- * order — process-per-window emulators first (reliable from the headless
- * operator), client-server ones (gnome-terminal/konsole/xfce4) only as a last
- * resort. Exported (with an injectable `onPath`) so the ordering is unit-testable
- * without depending on whatever the host happens to have installed.
+ * `$TERMINAL` (the user's own choice, honored as-is); then, driven by
+ * `preferClientServer`, either the standard desktop terminals first
+ * (gnome-terminal/konsole/xfce4 — chosen when a real desktop session was detected
+ * and its D-Bus bus resolved, so they reliably open the owner's standard window)
+ * or the process-per-window emulators first (chosen when NO desktop session is
+ * reachable — a bare Xvfb/sandbox — where a client-server terminal would ghost).
+ * The other group is always appended as a fallback. Exported (with an injectable
+ * `onPath`) so the ordering is unit-testable without depending on whatever the
+ * host happens to have installed. (WI-4718)
  */
 export function pickLinuxTerminal(
   onPath: (bin: string) => boolean,
+  preferClientServer = false,
 ): { bin: string; args: string[] } | null {
   const fromEnv = process.env.TERMINAL;
   if (fromEnv && onPath(fromEnv)) {
@@ -119,20 +126,29 @@ export function pickLinuxTerminal(
       ? { bin: fromEnv, args: ['--wait', '--'] }
       : { bin: fromEnv, args: ['-e'] };
   }
-  for (const [bin, args] of LINUX_TERMINALS) {
+  const order = preferClientServer
+    ? [...CLIENT_SERVER_TERMINALS, ...PROCESS_PER_WINDOW_TERMINALS]
+    : [...PROCESS_PER_WINDOW_TERMINALS, ...CLIENT_SERVER_TERMINALS];
+  for (const [bin, args] of order) {
     if (onPath(bin)) return { bin, args: [...args] };
   }
   return null;
 }
 
-// Cache the terminal selection — it's the same on every call (terminal
-// binaries don't appear/disappear at runtime), and the existsSync sweep across
-// LINUX_TERMINALS was adding noticeable latency to every console launch.
-let cachedTerminal: { bin: string; args: string[] } | null | undefined;
-export function findLinuxTerminal(): { bin: string; args: string[] } | null {
-  if (cachedTerminal !== undefined) return cachedTerminal;
-  cachedTerminal = pickLinuxTerminal(isOnPath);
-  return cachedTerminal;
+// Cache the terminal selection — the underlying set doesn't change at runtime
+// (terminal binaries don't appear/disappear), and the existsSync sweep was adding
+// noticeable latency to every console launch. Keyed by preferClientServer because
+// the two preferences can resolve to different terminals on a box that has both a
+// standard and a process-per-window emulator installed.
+const cachedTerminal: Map<boolean, { bin: string; args: string[] } | null> = new Map();
+export function findLinuxTerminal(
+  preferClientServer = false,
+): { bin: string; args: string[] } | null {
+  const cached = cachedTerminal.get(preferClientServer);
+  if (cached !== undefined) return cached;
+  const picked = pickLinuxTerminal(isOnPath, preferClientServer);
+  cachedTerminal.set(preferClientServer, picked);
+  return picked;
 }
 
 /** Test-only: clear the memoized terminal so a test can re-resolve after stubbing
@@ -142,7 +158,7 @@ export function findLinuxTerminal(): { bin: string; args: string[] } | null {
  *  and failed on a headless one (packaged install / CI runner) with "no terminal
  *  emulator found". */
 export function _resetTerminalCacheForTests(): void {
-  cachedTerminal = undefined;
+  cachedTerminal.clear();
 }
 
 // WI-4272: emulators that honor the DISPLAY env var for window placement. The
@@ -452,12 +468,97 @@ function realActiveSeatDisplays(): string[] {
   }
 }
 
+// WI-4718: the desktop-session processes whose D-Bus session bus is the one a
+// standard client-server terminal (gnome-terminal/konsole) must connect to. Ranked
+// most-authoritative first: gnome-terminal-server IS the process that renders the
+// gnome-terminal window, so its bus is definitively the right one whenever it's
+// running; gnome-shell / gnome-session-binary / plasmashell are the always-present
+// session leaders used when no terminal server is up yet (fresh session).
+const DESKTOP_SESSION_PROCS = [
+  'gnome-terminal-server',
+  'gnome-shell',
+  'gnome-session-binary',
+  'plasmashell',
+];
+
+/** Read a process's environ as a map (empty on any error — e.g. EACCES for a
+ *  different-uid process, or the pid exiting mid-read). */
+function readProcEnviron(pid: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  try {
+    const raw = readFileSync(`/proc/${pid}/environ`, 'utf8');
+    for (const kv of raw.split('\0')) {
+      const eq = kv.indexOf('=');
+      if (eq > 0) env[kv.slice(0, eq)] = kv.slice(eq + 1);
+    }
+  } catch {
+    /* environ unreadable — skip this pid */
+  }
+  return env;
+}
+
+/**
+ * WI-4718: resolve the D-Bus session bus address of the owner's LIVE desktop
+ * session by scanning /proc for a known desktop-session process (see
+ * DESKTOP_SESSION_PROCS) and reading its DBUS_SESSION_BUS_ADDRESS. This is what a
+ * client-server terminal (gnome-terminal/konsole) needs to reach its window
+ * server — and it is NOT always the systemd user bus: on the dev box GNOME
+ * started its own dbus-daemon at /tmp/dbus-*, so a hardcoded /run/user/<uid>/bus
+ * pointed the terminal client at an empty bus and it ghosted (the invisible
+ * window). Best-effort + pure-ish (reads /proc): returns the bus string, or null
+ * when no desktop session is detected (a bare Xvfb / genuinely headless box) — in
+ * which case the caller falls back to the systemd user bus AND prefers a
+ * process-per-window terminal.
+ *
+ * When `display` is given, a process whose DISPLAY matches the resolved active
+ * seat wins over one that doesn't (disambiguates a box with more than one
+ * session). Among equal candidates, the earliest DESKTOP_SESSION_PROCS entry
+ * (gnome-terminal-server → gnome-shell → …) wins.
+ */
+function realSessionBus(display: string | null): string | null {
+  try {
+    let pids: string[];
+    try {
+      pids = readdirSync('/proc').filter((n) => /^\d+$/.test(n));
+    } catch {
+      return null;
+    }
+    let best: { rank: number; matchesDisplay: boolean; bus: string } | null = null;
+    for (const pid of pids) {
+      let comm: string;
+      try {
+        comm = readFileSync(`/proc/${pid}/comm`, 'utf8').trim();
+      } catch {
+        continue;
+      }
+      const rank = DESKTOP_SESSION_PROCS.indexOf(comm);
+      if (rank < 0) continue;
+      const env = readProcEnviron(pid);
+      const bus = env.DBUS_SESSION_BUS_ADDRESS;
+      if (!bus) continue;
+      const matchesDisplay = display != null && env.DISPLAY === display;
+      // Prefer a display match, then the most-authoritative process rank.
+      const better =
+        best === null ||
+        (matchesDisplay && !best.matchesDisplay) ||
+        (matchesDisplay === best.matchesDisplay && rank < best.rank);
+      if (better) best = { rank, matchesDisplay, bus };
+      // gnome-terminal-server on the matching display is as good as it gets.
+      if (rank === 0 && matchesDisplay) break;
+    }
+    return best?.bus ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const realProbes = (): DesktopEnvProbes => ({
   existsSync,
   readdirSync: (p: string) => readdirSync(p),
   uid: process.getuid?.() ?? 1000,
   home: process.env.HOME ?? '/root',
   activeSeatDisplays: realActiveSeatDisplays,
+  sessionBus: realSessionBus,
 });
 
 /**

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { blockingInstructionConflicts, lintInstructionText } from './instruction-lint';
+import {
+  blockingInstructionConflicts,
+  buildInstructionPrecedenceTrace,
+  lintInstructionText,
+  renderInstructionPrecedenceContext,
+} from './instruction-lint';
 
 describe('lintInstructionText', () => {
   it('reports duplicate, conflicting, and retired generated rules', () => {
@@ -66,5 +71,79 @@ describe('lintInstructionText', () => {
       ].join('\n'),
     );
     expect(out).toMatchObject({ markerCount: 1, conflicts: [], duplicateRules: [], clean: true });
+  });
+
+  it('resolves active AUTO over the generic confirm-first posture and explains a bound-plan mission', () => {
+    const out = lintInstructionText('<!-- papercusp-rule:test-router=test-file -->', 20, {
+      source: 'bootstrap-su',
+      ownerId: 'su-x',
+      modes: ['auto'],
+      route: { kind: 'self' },
+      scope: { workspace: 'ws', harness: 'papercusp', plan: 'plan-x', items: ['P-002', 'P-001'] },
+      observedAt: '2026-07-13T20:00:00.000Z',
+    });
+    expect(out.precedenceTrace).toMatchObject({
+      schemaVersion: 'instruction-precedence-v1',
+      effectiveMission: {
+        constraint: 'execute-bound-plan',
+        source: 'plan:plan-x',
+      },
+      decisions: expect.arrayContaining([
+        expect.objectContaining({
+          key: 'execution-authorization',
+          effective: expect.objectContaining({ value: 'act-with-disclosure' }),
+          suppressed: [expect.objectContaining({ value: 'confirm-before-execution' })],
+        }),
+        expect.objectContaining({
+          key: 'mission',
+          effective: expect.objectContaining({ value: 'execute-bound-plan' }),
+        }),
+      ]),
+    });
+    expect(renderInstructionPrecedenceContext(out.precedenceTrace!)).toContain('⟦INSTRUCTION-PRECEDENCE⟧');
+  });
+
+  it('makes DRAIN the mission constraint over fleet/plan generics and produces a stable watermark', () => {
+    const a = buildInstructionPrecedenceTrace({
+      source: 'coord:orient',
+      ownerId: 'su-x',
+      modes: ['auto', 'drain'],
+      route: { kind: 'fleet', fleet: 'bugs', role: 'leader' },
+      scope: { plan: 'drain-plan', items: ['P-002', 'P-001'] },
+      observedAt: '2026-07-13T20:00:00.000Z',
+    });
+    const b = buildInstructionPrecedenceTrace({
+      source: 'coord:orient',
+      ownerId: 'su-x',
+      modes: ['drain', 'auto'],
+      route: { kind: 'fleet', fleet: 'bugs', role: 'leader' },
+      scope: { plan: 'drain-plan', items: ['P-001', 'P-002'] },
+      observedAt: '2026-07-13T21:00:00.000Z',
+    });
+    expect(a.effectiveMission).toMatchObject({
+      constraint: 'drain-active-scope-to-terminal',
+      source: 'mode:drain',
+    });
+    expect(a.decisions.find((d) => d.key === 'mission')?.suppressed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: 'generic-backlog-selection' }),
+        expect.objectContaining({ value: 'solo-implementation' }),
+      ]),
+    );
+    expect(a.watermark).toBe(b.watermark);
+    expect(a.resync.rule).toBe('replace-full-never-merge-behind');
+  });
+
+  it('records a canonical replacement as effective and suppresses its retired compiled value', () => {
+    const out = lintInstructionText(
+      ['<!-- papercusp-rule:test-router=raw-vitest -->', '<!-- papercusp-rule:test-router=test-file -->'].join('\n'),
+      20,
+      { source: 'bootstrap-su', route: { kind: 'self' } },
+    );
+    expect(out.precedenceTrace?.decisions.find((d) => d.key === 'test-router')).toMatchObject({
+      status: 'effective',
+      effective: { value: 'test-file' },
+      suppressed: [{ value: 'raw-vitest' }],
+    });
   });
 });

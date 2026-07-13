@@ -32,8 +32,11 @@ import { launchContextDir, launchContextPathFor } from '../../../su-launch-conte
 import { buildLaunchSpec } from '../../../role-launch-spec';
 import {
   blockingInstructionConflicts,
+  buildInstructionPrecedenceTrace,
   lintInstructionText,
+  renderInstructionPrecedenceContext,
   type InstructionLintReport,
+  type InstructionRuntimeContext,
 } from '../../../instruction-lint';
 import { deriveLaunchPromptText } from '../../../agent-tools/plans/launch-prompt';
 import { writeSuCodexHome } from '../../../role-codex-home';
@@ -1333,11 +1336,39 @@ const post = defineTool({
       promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${AUTO_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
     }
 
+    // P-022: compile the ACTUAL launch-time mode/route/scope precedence into a
+    // machine-readable trace. This does not delete the generic conditional
+    // playbook clauses (a later mode transition may need them); it explicitly
+    // marks the rules that are suppressed NOW and tells the agent how to full-
+    // resync on any watermark/control change.
+    const instructionRuntime: InstructionRuntimeContext = {
+      source: 'bootstrap-su',
+      ownerId: sid,
+      modes: drainMode ? ['auto', 'drain'] : autoMode || fleetPin.fleetSlug ? ['auto'] : [],
+      route: fleetPin.fleetSlug
+        ? {
+            kind: 'fleet',
+            fleet: fleetPin.fleetSlug,
+            role: fleetPin.fleetRole,
+          }
+        : { kind: 'self' },
+      scope: {
+        workspace,
+        harness: harnessSlug,
+        plan: planSlug,
+        items: [],
+      },
+    };
+    const launchPrecedence = buildInstructionPrecedenceTrace(instructionRuntime);
+    promptText =
+      `${promptText.replace(/\n+$/, '')}\n\n---\n## Effective instruction precedence\n\n` +
+      `${renderInstructionPrecedenceContext(launchPrecedence)}\n`;
+
     // Audit the ACTUAL final prompt after launch-context/provenance/mode overlays,
     // not merely the base launch spec. Findings are observable in the bootstrap
     // response; launch stays fail-open because duplicate prose is a cleanup signal,
     // while generated-rule conflicts are already explicit in the report.
-    let instructionLint = lintInstructionText(promptText);
+    let instructionLint = lintInstructionText(promptText, 20, instructionRuntime);
     if (instructionLint.conflicts.length > 0 || instructionLint.staleRules.length > 0) {
       process.stderr.write(
         `[bootstrap-su] instruction lint: ${instructionLint.conflicts.length} conflict(s), ` +
@@ -1379,10 +1410,11 @@ const post = defineTool({
           // Seed launch-dir trust so a fresh CODEX_HOME doesn't block at codex's
           // "Do you trust this directory?" boot prompt (an su launch is trusted).
           trustDir: cwd,
+          instructionRuntime,
         });
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics
-        instructionLint = ch.instructionLint ?? lintInstructionText(promptText);
+        instructionLint = ch.instructionLint ?? lintInstructionText(promptText, 20, instructionRuntime);
         if (blockingInstructionConflicts(instructionLint).length > 0) {
           return jsonRes(
             {

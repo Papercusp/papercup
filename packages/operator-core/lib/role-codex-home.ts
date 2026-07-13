@@ -45,7 +45,7 @@ import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import { codexGatewayConfigToml, tomlEscape } from '@papercusp/orchestrator/codex-gateway-config';
 import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
-import { lintInstructionText, type InstructionLintReport } from './instruction-lint';
+import { lintInstructionText, type InstructionLintReport, type InstructionRuntimeContext } from './instruction-lint';
 
 import { dirname as __esmDirname } from 'node:path';
 import { fileURLToPath as __esmFileURLToPath } from 'node:url';
@@ -803,6 +803,9 @@ export function writeSuCodexHome(opts: {
    *  Seeded as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME
    *  does not block at codex's "Do you trust this directory?" boot prompt. */
   trustDir?: string | null;
+  /** Canonical launch-time mode/route/scope state for the machine-readable
+   * instruction precedence trace carried by the exact AGENTS.md lint. */
+  instructionRuntime?: InstructionRuntimeContext;
 }): SuCodexHome {
   const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
   const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
@@ -843,7 +846,7 @@ export function writeSuCodexHome(opts: {
   });
   const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: opts.sid, hooksConfigured: hooksInstalled });
   const agentsText = codexAgentsPrompt(opts.promptText, lockRuntime);
-  const instructionLint = lintInstructionText(agentsText);
+  const instructionLint = lintInstructionText(agentsText, 20, opts.instructionRuntime);
   writeFileSync(agentsPath, agentsText, { mode: 0o600 });
   writeCodexHomeDiagnostics(codexHome, {
     hooksInstalled,

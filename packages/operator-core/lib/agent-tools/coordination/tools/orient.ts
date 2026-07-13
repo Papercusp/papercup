@@ -1341,10 +1341,12 @@ export default defineTool({
     // A peer-set mode thus takes effect at the target's next turn boundary.
     // Best-effort: a mode-read failure never breaks orientation.
     let modes: { active: Array<Record<string, unknown>>; contracts: string } | undefined;
+    let runtimeModeIds: string[] | null = null;
     if (ownerId) {
       try {
         const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
         const rows = await getModes(ws, ownerId);
+        runtimeModeIds = rows.map((row) => row.mode);
         if (rows.length) {
           modes = {
             active: rows.map((r) => ({
@@ -1360,6 +1362,43 @@ export default defineTool({
               .join('\n\n'),
           };
         }
+      } catch {
+        /* fail-soft */
+      }
+    }
+    // P-022: the structured counterpart of the prose mode contracts. Resolve
+    // the effective mission from canonical runtime mode + live fleet role +
+    // durable session scope, and explicitly suppress generic rules that do not
+    // apply now. A failed mode read omits the trace rather than falsely falling
+    // back to confirm-first. The watermark is content-addressed; any mismatch
+    // requires a full coord:orient replacement, never a partial merge.
+    let instructionPrecedence: unknown;
+    if (ownerId && runtimeModeIds) {
+      try {
+        const [{ buildInstructionPrecedenceTrace }, { getSessionBrief }] = await Promise.all([
+          import('../../../instruction-lint'),
+          import('../../../session-brief'),
+        ]);
+        const brief = await getSessionBrief({ ownerId });
+        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+        instructionPrecedence = buildInstructionPrecedenceTrace({
+          source: 'coord:orient',
+          ownerId,
+          modes: runtimeModeIds,
+          route: fleetMembership?.fleetSlug
+            ? {
+                kind: 'fleet',
+                fleet: fleetMembership.fleetSlug,
+                role: fleetMembership.fleetRole,
+              }
+            : { kind: 'self' },
+          scope: {
+            workspace: ws,
+            harness: args.harness ?? brief?.harnessSlug ?? null,
+            plan: args.planSlug ?? brief?.currentPlanSlug ?? null,
+            items: args.planItems ?? [],
+          },
+        });
       } catch {
         /* fail-soft */
       }
@@ -1493,6 +1532,7 @@ export default defineTool({
       ...(ownerDirectives ? { ownerDirectives } : {}),
       ...(self ? { self } : {}),
       ...(modes ? { modes } : {}),
+      ...(instructionPrecedence ? { instructionPrecedence } : {}),
       ...(ideate ? { ideate } : {}),
       ...(captureMiss ? { captureMiss } : {}),
       ...(configIntegrity ? { configIntegrity } : {}),

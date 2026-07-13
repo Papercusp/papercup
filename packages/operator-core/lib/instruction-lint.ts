@@ -7,6 +7,8 @@
  * normative lines are reported separately as compaction candidates.
  */
 
+import { createHash } from 'node:crypto';
+
 export interface InstructionRuleOccurrence {
   key: string;
   value: string;
@@ -19,7 +21,66 @@ export interface InstructionLintReport {
   conflicts: Array<{ key: string; values: string[]; lines: number[] }>;
   staleRules: Array<{ key: string; value: string; line: number; replacement: string }>;
   duplicateDirectives: Array<{ directive: string; lines: number[] }>;
+  /** Runtime-effective rule resolution. Present only when the caller supplies
+   * canonical mode/route/scope state; this never guesses runtime state from prose. */
+  precedenceTrace?: InstructionPrecedenceTrace;
   clean: boolean;
+}
+
+export const INSTRUCTION_PRECEDENCE_SCHEMA = 'instruction-precedence-v1' as const;
+
+export interface InstructionRuntimeContext {
+  source: 'bootstrap-su' | 'coord:orient' | 'control-anchor';
+  ownerId?: string | null;
+  modes?: string[];
+  route?: { kind: 'self' } | { kind: 'mug' } | { kind: 'fleet'; fleet: string; role?: string | null };
+  scope?: {
+    workspace?: string | null;
+    harness?: string | null;
+    plan?: string | null;
+    items?: string[];
+  };
+  loop?: { active: boolean; intervalSec?: number | null };
+  observedAt?: string;
+}
+
+export interface InstructionPrecedenceSuppression {
+  value: string;
+  source: string;
+  reason: string;
+  lines?: number[];
+}
+
+export interface InstructionPrecedenceDecision {
+  key: string;
+  status: 'effective' | 'conflict';
+  effective: { value: string; source: string; lines?: number[] } | null;
+  suppressed: InstructionPrecedenceSuppression[];
+  reason: string;
+}
+
+export interface InstructionPrecedenceTrace {
+  schemaVersion: typeof INSTRUCTION_PRECEDENCE_SCHEMA;
+  /** Content-addressed runtime watermark. Consumers replace the full trace
+   * whenever it changes; they never merge a prior trace into a newer one. */
+  watermark: string;
+  effectiveMission: {
+    constraint: string;
+    source: string;
+    explanation: string;
+  };
+  decisions: InstructionPrecedenceDecision[];
+  provenance: {
+    source: InstructionRuntimeContext['source'];
+    ownerId: string | null;
+    observedAt: string;
+  };
+  resync: {
+    on: readonly ['watermark-mismatch', 'mode-transition', 'route-transition', 'scope-transition'];
+    verb: 'coord:orient';
+    args: { afterCompaction: true };
+    rule: 'replace-full-never-merge-behind';
+  };
 }
 
 const RULE_RE = /<!--\s*papercusp-rule:([a-z0-9-]+)=([a-z0-9-]+)\s*-->/gi;
@@ -55,6 +116,242 @@ const STALE_RULE_VALUES: Record<string, Record<string, string>> = {
   'app-runtime': { browser: 'tauri' },
 };
 
+function stableRuntimeContext(input: InstructionRuntimeContext) {
+  return {
+    source: input.source,
+    ownerId: input.ownerId ?? null,
+    modes: [...new Set(input.modes ?? [])].sort(),
+    route: input.route ?? { kind: 'self' as const },
+    scope: {
+      workspace: input.scope?.workspace ?? null,
+      harness: input.scope?.harness ?? null,
+      plan: input.scope?.plan ?? null,
+      items: [...new Set(input.scope?.items ?? [])].sort(),
+    },
+    loop: input.loop ? { active: Boolean(input.loop.active), intervalSec: input.loop.intervalSec ?? null } : null,
+  };
+}
+
+function runtimeDecision(
+  key: string,
+  value: string,
+  source: string,
+  reason: string,
+  suppressed: InstructionPrecedenceSuppression[] = [],
+): InstructionPrecedenceDecision {
+  return { key, status: 'effective', effective: { value, source }, suppressed, reason };
+}
+
+/**
+ * Resolve the machine-readable EFFECTIVE instruction set from canonical
+ * runtime state. Generic playbook clauses remain available for a later mode
+ * transition, but the trace explicitly suppresses the ones that do not apply
+ * NOW. Nothing is inferred from natural-language prompt prose.
+ */
+export function buildInstructionPrecedenceTrace(
+  runtime: InstructionRuntimeContext,
+  occurrences: InstructionRuleOccurrence[] = [],
+): InstructionPrecedenceTrace {
+  const stable = stableRuntimeContext(runtime);
+  const modes = new Set(stable.modes);
+  const auto = modes.has('auto') || modes.has('drain');
+  const drain = modes.has('drain');
+  const ideate = modes.has('ideate');
+  const decisions: InstructionPrecedenceDecision[] = [];
+
+  const byKey = new Map<string, InstructionRuleOccurrence[]>();
+  for (const occurrence of occurrences) {
+    const group = byKey.get(occurrence.key) ?? [];
+    group.push(occurrence);
+    byKey.set(occurrence.key, group);
+  }
+  for (const [key, group] of [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const values = [...new Set(group.map((entry) => entry.value))];
+    const canonical =
+      values.length === 1
+        ? values[0]!
+        : (values.find((candidate) => values.some((value) => STALE_RULE_VALUES[key]?.[value] === candidate)) ?? null);
+    if (!canonical) {
+      decisions.push({
+        key,
+        status: 'conflict',
+        effective: null,
+        suppressed: [],
+        reason: `No declared precedence resolves compiled values: ${values.join(', ')}.`,
+      });
+      continue;
+    }
+    const effectiveRows = group.filter((entry) => entry.value === canonical);
+    decisions.push({
+      key,
+      status: 'effective',
+      effective: {
+        value: canonical,
+        source: 'compiled-rule',
+        lines: effectiveRows.map((entry) => entry.line),
+      },
+      suppressed: values
+        .filter((value) => value !== canonical)
+        .map((value) => ({
+          value,
+          source: 'compiled-rule',
+          lines: group.filter((entry) => entry.value === value).map((entry) => entry.line),
+          reason: `Retired value; canonical replacement is ${canonical}.`,
+        })),
+      reason:
+        values.length === 1
+          ? 'Only one compiled value is active.'
+          : `Canonical replacement ${canonical} supersedes retired compiled values.`,
+    });
+  }
+
+  decisions.push(
+    auto
+      ? runtimeDecision(
+          'execution-authorization',
+          'act-with-disclosure',
+          drain ? 'mode:drain' : 'mode:auto',
+          'The active owner-authorized mode overrides the generic confirm-first posture.',
+          [
+            {
+              value: 'confirm-before-execution',
+              source: 'generic-playbook',
+              reason: 'Suppressed while AUTO or DRAIN is active.',
+            },
+          ],
+        )
+      : runtimeDecision(
+          'execution-authorization',
+          'confirm-before-execution',
+          'generic-playbook',
+          'No active AUTO-implying mode supersedes the default posture.',
+        ),
+  );
+
+  let mission: InstructionPrecedenceTrace['effectiveMission'];
+  if (drain) {
+    mission = {
+      constraint: 'drain-active-scope-to-terminal',
+      source: 'mode:drain',
+      explanation:
+        'Drive every item in the active scoped queue to a terminal state; completion integrity outranks speed.',
+    };
+  } else if (stable.route.kind === 'fleet' && stable.route.role === 'leader') {
+    mission = {
+      constraint: 'lead-fleet-plan-to-terminal',
+      source: `fleet:${stable.route.fleet}:leader`,
+      explanation: 'Drive the selected plan through the fleet; do not silently fall back to solo implementation.',
+    };
+  } else if (stable.route.kind === 'fleet') {
+    mission = {
+      constraint: 'execute-fleet-plan-only',
+      source: `fleet:${stable.route.fleet}:member`,
+      explanation: 'Pull only work admitted by the fleet scope/spec; do not fall through to the generic backlog.',
+    };
+  } else if (stable.scope.plan) {
+    mission = {
+      constraint: 'execute-bound-plan',
+      source: `plan:${stable.scope.plan}`,
+      explanation: 'The bound plan and claimed items are the active mission; unrelated backlog is out of scope.',
+    };
+  } else if (stable.route.kind === 'mug') {
+    mission = {
+      constraint: 'execute-pot-placement',
+      source: 'route:mug',
+      explanation: 'Advance the work placed by the pot; route-level placement outranks generic backlog selection.',
+    };
+  } else {
+    mission = {
+      constraint: 'execute-owner-directed-scope',
+      source: 'route:self',
+      explanation: 'Advance the current owner-directed task and its registered work; do not invent a parallel mission.',
+    };
+  }
+  const missionSuppressed: InstructionPrecedenceSuppression[] = [
+    {
+      value: 'generic-backlog-selection',
+      source: 'generic-playbook',
+      reason: `${mission.constraint} is the effective mission constraint.`,
+    },
+  ];
+  if (stable.route.kind === 'fleet') {
+    missionSuppressed.push({
+      value: stable.route.role === 'leader' ? 'solo-implementation' : 'solo-route-selection',
+      source: 'generic-playbook',
+      reason: 'Fleet role is a sticky execution route until explicitly changed.',
+    });
+  }
+  decisions.push(
+    runtimeDecision('mission', mission.constraint, mission.source, mission.explanation, missionSuppressed),
+    ideate
+      ? runtimeDecision(
+          'ideation',
+          auto ? 'invent-and-implement' : 'invent-and-propose',
+          'mode:ideate',
+          auto
+            ? 'IDEATE plus AUTO authorizes implementing the strongest net-new ideas.'
+            : 'IDEATE without AUTO authorizes proposals but retains the execution gate.',
+          [
+            {
+              value: 'direct-improvements-only',
+              source: 'generic-playbook',
+              reason: 'Suppressed while IDEATE is active.',
+            },
+          ],
+        )
+      : runtimeDecision(
+          'ideation',
+          'direct-improvements-only',
+          'generic-playbook',
+          'IDEATE is not active; stay within the directed improvement scope.',
+        ),
+  );
+  if (stable.loop) {
+    decisions.push(
+      runtimeDecision(
+        'recurrence',
+        stable.loop.active ? 'continue-on-engine-loop' : 'one-shot-unless-open-ended',
+        stable.loop.active ? 'runtime:loop' : 'runtime:no-loop',
+        stable.loop.active
+          ? 'The engine loop owns recurrence until explicitly ended.'
+          : 'No active engine loop currently carries the mission across turns.',
+      ),
+    );
+  }
+
+  const watermark = createHash('sha256')
+    .update(
+      JSON.stringify({
+        runtime: stable,
+        decisions: decisions.map(({ key, effective, suppressed }) => ({ key, effective, suppressed })),
+      }),
+    )
+    .digest('hex')
+    .slice(0, 24);
+  return {
+    schemaVersion: INSTRUCTION_PRECEDENCE_SCHEMA,
+    watermark,
+    effectiveMission: mission,
+    decisions,
+    provenance: {
+      source: runtime.source,
+      ownerId: runtime.ownerId ?? null,
+      observedAt: runtime.observedAt ?? new Date().toISOString(),
+    },
+    resync: {
+      on: ['watermark-mismatch', 'mode-transition', 'route-transition', 'scope-transition'],
+      verb: 'coord:orient',
+      args: { afterCompaction: true },
+      rule: 'replace-full-never-merge-behind',
+    },
+  };
+}
+
+/** Compact prompt delivery. The structured trace remains the authority. */
+export function renderInstructionPrecedenceContext(trace: InstructionPrecedenceTrace): string {
+  return `⟦INSTRUCTION-PRECEDENCE⟧ ${JSON.stringify(trace)}`;
+}
+
 function normalizedDirective(line: string): string | null {
   const plain = line
     .replace(/<!--.*?-->/g, '')
@@ -68,7 +365,11 @@ function normalizedDirective(line: string): string | null {
   return plain.replace(/[.!:;]+$/g, '');
 }
 
-export function lintInstructionText(text: string, maxFindings = 20): InstructionLintReport {
+export function lintInstructionText(
+  text: string,
+  maxFindings = 20,
+  runtime?: InstructionRuntimeContext,
+): InstructionLintReport {
   const lines = text.split(/\r?\n/);
   const occurrences: InstructionRuleOccurrence[] = [];
   lines.forEach((line, index) => {
@@ -143,6 +444,7 @@ export function lintInstructionText(text: string, maxFindings = 20): Instruction
     conflicts: conflicts.slice(0, maxFindings),
     staleRules: staleRules.slice(0, maxFindings),
     duplicateDirectives,
+    ...(runtime ? { precedenceTrace: buildInstructionPrecedenceTrace(runtime, occurrences) } : {}),
     clean:
       duplicateRules.length === 0 &&
       conflicts.length === 0 &&
