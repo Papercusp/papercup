@@ -3758,6 +3758,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             ticks: [],
             health: { status: 'neutral', markers: [] },
             lensWeights: null,
+            groundingTitles: {},
           },
         ];
       }

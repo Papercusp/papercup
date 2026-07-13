@@ -30,6 +30,8 @@ function fakeSql(opts: {
   lensJoin?: Handler;
   /** The P-003 newest-N origin='scout' lens sample (query tagged newest-lens-sample). */
   lensSample?: Handler;
+  /** The P-004 wi:-ref title lookup over engineer_issues (query tagged grounding-titles). */
+  groundingTitles?: Handler;
 }): Sql {
   const fn = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
     const text = strings.join(' ');
@@ -44,6 +46,7 @@ function fakeSql(opts: {
     if (text.includes('GROUP BY rail')) return (opts.rails ?? (async () => []))();
     if (text.includes('GROUP BY cycle_id')) return (opts.lensJoin ?? (async () => []))();
     if (text.includes('newest-lens-sample')) return (opts.lensSample ?? (async () => []))();
+    if (text.includes('grounding-titles')) return (opts.groundingTitles ?? (async () => []))();
     if (text.includes('scout_lens_weights')) return (opts.weights ?? (async () => []))();
     if (text.includes('idea_id')) return (opts.items ?? (async () => []))();
     if (text.includes('scout_ticks')) return (opts.ticks ?? (async () => []))();
@@ -106,6 +109,9 @@ describe('readScoutSnapshot', () => {
           human_grade: 4,
           human_feedback: 'sharp framing, do more of these',
           graded_by: 'Queen',
+          origin: 'scout',
+          cycle_id: 'scout-42',
+          addresses_pattern_refs: ['wi:EI-100', 'fact:workspace:some-standing-fact', 42], // non-strings filtered
         },
       ],
     });
@@ -122,6 +128,9 @@ describe('readScoutSnapshot', () => {
         humanGrade: null,
         humanFeedback: null,
         gradedBy: null,
+        origin: null,
+        cycleId: null,
+        addressesPatternRefs: [],
       },
       {
         ideaId: 'scout-idea-analogical-1-0',
@@ -134,6 +143,9 @@ describe('readScoutSnapshot', () => {
         humanGrade: 4,
         humanFeedback: 'sharp framing, do more of these',
         gradedBy: 'Queen',
+        origin: 'scout',
+        cycleId: 'scout-42',
+        addressesPatternRefs: ['wi:EI-100', 'fact:workspace:some-standing-fact'],
       },
     ]);
   });
@@ -155,6 +167,7 @@ describe('readScoutSnapshot', () => {
       ticks: [],
       health: { status: 'neutral', markers: [] },
       lensWeights: null,
+      groundingTitles: {},
     });
     expect(warn).not.toHaveBeenCalled();
   });
@@ -201,6 +214,71 @@ describe('readScoutSnapshot', () => {
     const snap = await readScoutSnapshot(sql, 'ws-1');
     expect(snap.lensWeights).toBeNull();
     expect(snap.totalRouted).toBe(1); // the routed half survives
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe('grounding titles (learning-tab-alignment P-004 pipeline trace)', () => {
+  const itemsWithRefs: Handler = async () => [
+    {
+      idea_id: 'i-1',
+      lens: 'analogical',
+      rail: 'improvement',
+      routed_ref: 'wi:EI-500',
+      addresses_pattern_refs: ['wi:EI-100', 'wi:EI-101', 'fact:workspace:readable-slug'],
+      routed_at: '1781210000000',
+    },
+    {
+      idea_id: 'i-2',
+      lens: 'first-principles',
+      rail: 'gym',
+      routed_ref: 'gym:SP-001',
+      addresses_pattern_refs: ['wi:EI-100', 'watchdog:papercusp-governor-starvation'], // EI-100 deduped across rows
+      routed_at: '1781209000000',
+    },
+  ];
+
+  it('resolves the wi: grounding refs to titles, keyed by the FULL ref (non-wi refs not looked up)', async () => {
+    const sql = fakeSql({
+      items: itemsWithRefs,
+      groundingTitles: async () => [
+        { issue_id: 'EI-100', title: 'coord invariant: wake-queue depth growth' },
+        { issue_id: 'EI-101', title: null }, // titleless row — no entry
+      ],
+    });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.groundingTitles).toEqual({ 'wi:EI-100': 'coord invariant: wake-queue depth growth' });
+    // and the refs themselves ride the recent rows for the trace UI
+    expect(snap.recent[0].addressesPatternRefs).toEqual(['wi:EI-100', 'wi:EI-101', 'fact:workspace:readable-slug']);
+  });
+
+  it('skips the lookup entirely when no recent row carries a wi: ref', async () => {
+    let lookups = 0;
+    const sql = fakeSql({
+      items: async () => [
+        { idea_id: 'i-1', lens: 'analogical', rail: 'gym', routed_ref: 'gym:SP-1', addresses_pattern_refs: ['fact:workspace:x'] },
+      ],
+      groundingTitles: async () => {
+        lookups += 1;
+        return [];
+      },
+    });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(lookups).toBe(0);
+    expect(snap.groundingTitles).toEqual({});
+  });
+
+  it('degrades to {} (warn, never a crash) when the title read fails — the trace falls back to raw refs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({
+      items: itemsWithRefs,
+      groundingTitles: async () => {
+        throw Object.assign(new Error('permission denied'), { code: '42501' });
+      },
+    });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.groundingTitles).toEqual({});
+    expect(snap.recent).toHaveLength(2); // the routed half survives
     expect(warn).toHaveBeenCalled();
   });
 });
@@ -373,6 +451,9 @@ const mkIdea = (over: Partial<ScoutRoutedItem>): ScoutRoutedItem => ({
   humanGrade: null,
   humanFeedback: null,
   gradedBy: null,
+  origin: 'scout',
+  cycleId: null,
+  addressesPatternRefs: [],
   ...over,
 });
 
