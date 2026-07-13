@@ -1,0 +1,99 @@
+// The typecheck RATCHET (EI-10611).
+//
+// `vite build` does NOT typecheck — rolldown only links — so nothing in the build,
+// the test suite, or CI was enforcing TypeScript for the SPA. Predictably, errors
+// accumulated: 219 when this was filed (2026-07-12), 48 of them in operator-vite's
+// own `src/`, the rest in files tsc drags in through imports (apps/operator,
+// packages/operator-core, libs/*) which this app does not own and cannot
+// unilaterally fix.
+//
+// So there are two different jobs, and one test:
+//
+//   OURS  — `src/**` must stay at ZERO errors. Non-negotiable: we just cleaned it,
+//           and the whole point is that it cannot silently re-rot.
+//   THEIRS— the foreign backlog is a HIGH-WATERMARK that may only SHRINK. A new
+//           error in someone else's file fails this test; fixing their errors
+//           lowers the ceiling, and the number can never climb back. (Same shape as
+//           the repo's DARK_FLAGS_HIGH_WATERMARK, for the same reason: a strict
+//           zero-gate on a 170-error inheritance would just get skipped, and a
+//           gate everyone skips enforces nothing.)
+//
+// When you drive the foreign count down, LOWER the watermark in the same commit —
+// the test tells you the exact number to write.
+import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+
+const APP_ROOT = resolve(__dirname, '../..');
+
+/**
+ * Foreign (non-`src/**`) errors permitted, from packages operator-vite imports but
+ * does not own. RATCHET: this may only ever go DOWN. Never raise it to make a red
+ * run green — that is the rot this exists to stop; fix the error, or if you truly
+ * added a file that inherits foreign errors, fix those too.
+ */
+const FOREIGN_ERROR_WATERMARK = 170;
+
+interface TscError {
+  file: string;
+  line: string;
+}
+
+function runTsc(): TscError[] {
+  let out = '';
+  try {
+    out = execFileSync('npx', ['tsc', '--noEmit'], {
+      cwd: APP_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (e) {
+    // tsc exits non-zero when there are errors — that is the expected path here.
+    const err = e as { stdout?: string };
+    out = err.stdout ?? '';
+  }
+  return out
+    .split('\n')
+    .filter((l) => / error TS\d+: /.test(l))
+    .map((line) => ({ file: line.split('(')[0] ?? '', line }));
+}
+
+describe('typecheck ratchet (EI-10611)', () => {
+  const errors = runTsc();
+  const ours = errors.filter((e) => e.file.startsWith('src/'));
+  const foreign = errors.filter((e) => !e.file.startsWith('src/'));
+
+  it('operator-vite\'s OWN src/** has ZERO type errors', () => {
+    expect(
+      ours.map((e) => e.line),
+      `operator-vite's own code must stay type-clean (it was cleaned to zero in EI-10539/EI-10611).\n` +
+        `\`vite build\` does NOT typecheck, so nothing else will catch this — fix the error, don't skip the test.\n`,
+    ).toEqual([]);
+  });
+
+  it('the FOREIGN error backlog only shrinks — never grows', () => {
+    const byFile = new Map<string, number>();
+    for (const e of foreign) byFile.set(e.file, (byFile.get(e.file) ?? 0) + 1);
+    const worst = [...byFile.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+    expect(
+      foreign.length,
+      `Foreign type errors rose to ${foreign.length}, above the watermark of ${FOREIGN_ERROR_WATERMARK}.\n` +
+        `These live in packages operator-vite imports but does not own.\n` +
+        `Worst files:\n${worst.map(([f, n]) => `  ${n}  ${f}`).join('\n')}\n\n` +
+        `Do NOT raise the watermark to go green. Fix the new error.\n`,
+    ).toBeLessThanOrEqual(FOREIGN_ERROR_WATERMARK);
+  });
+
+  it('the watermark is kept HONEST — lower it when the backlog drops', () => {
+    // A watermark far above reality is a dead gate: it would let a big regression
+    // slip in unnoticed. If this fails, set FOREIGN_ERROR_WATERMARK to the number
+    // it reports — you earned it.
+    expect(
+      foreign.length,
+      `The foreign backlog is down to ${foreign.length}, well under the ${FOREIGN_ERROR_WATERMARK} watermark.\n` +
+        `Lower FOREIGN_ERROR_WATERMARK to ${foreign.length} so the gate keeps its teeth.\n`,
+    ).toBeGreaterThan(FOREIGN_ERROR_WATERMARK - 25);
+  });
+}, 180_000);

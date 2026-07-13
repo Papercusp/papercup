@@ -101,10 +101,75 @@ describe('routines:set', () => {
     expect(b).toMatchObject({ ok: true, applied: true });
   });
 
-  it('requires cron, active, or triggerConfig', async () => {
+  it('requires cron, active, triggerConfig, or payloadTemplate', async () => {
     await expect(
       setTool.handler({ name: 'git-sync' } as never, { role: 'operator' } as never),
-    ).rejects.toThrow(/requires cron, active, and\/or triggerConfig/i);
+    ).rejects.toThrow(/requires cron, active, triggerConfig, and\/or payloadTemplate/i);
+  });
+
+  // WI-4482: the scout singleton's run knobs live in payload_template, NOT trigger_config —
+  // so retuning budget.maxIdeators had no sanctioned path and required the raw
+  // `UPDATE harness_shared.routines` the playbook forbids.
+  it('DEEP-merges a payload_template patch — retunes one nested knob without clobbering its siblings', async () => {
+    // The live scout singleton payload shape: budget + models + cadence under `payload`.
+    sqlMock.mockResolvedValue([
+      {
+        trigger_config: { cron: '0 */30 * * * *' },
+        payload_template: {
+          blueprintId: 'scout',
+          cycleTimeoutMs: 600000,
+          payload: {
+            budget: { maxCostUsd: 1, maxIdeators: 1, maxCriticsPerIdea: 1 },
+            models: { ideator: 'chatgpt:5.5', critic: 'chatgpt:5.5' },
+            cadence: { idleThreshold: 0.5, frictionThreshold: 3 },
+          },
+        },
+        active: true,
+        next_fire_at: null,
+      },
+    ]);
+    const b = body(
+      await setTool.handler(
+        {
+          name: 'bp-singleton-scout-0',
+          installSlug: '@singleton',
+          payloadTemplate: { payload: { budget: { maxIdeators: 4, maxCriticsPerIdea: 2 } } },
+        } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+    expect(b).toMatchObject({ ok: true, applied: true });
+    const wrote = sqlMock.mock.calls
+      .flat()
+      .find((v) => typeof v === 'string' && v.includes('maxIdeators')) as string | undefined;
+    expect(wrote).toBeDefined();
+    const written = JSON.parse(wrote!);
+    // The two patched keys applied...
+    expect(written.payload.budget.maxIdeators).toBe(4);
+    expect(written.payload.budget.maxCriticsPerIdea).toBe(2);
+    // ...the UNPATCHED sibling key inside the SAME nested object survived...
+    expect(written.payload.budget.maxCostUsd).toBe(1);
+    // ...and the sibling OBJECTS survived. A shallow Object.assign of { payload: {...} } would
+    // have replaced `payload` wholesale and silently dropped models + cadence — turning a
+    // one-key retune into a config wipe. This assertion is the whole reason the merge is deep.
+    expect(written.payload.models).toEqual({ ideator: 'chatgpt:5.5', critic: 'chatgpt:5.5' });
+    expect(written.payload.cadence).toEqual({ idleThreshold: 0.5, frictionThreshold: 3 });
+    expect(written.blueprintId).toBe('scout');
+    expect(written.cycleTimeoutMs).toBe(600000);
+  });
+
+  it('payload_template arrays and scalars REPLACE (a patched list is the new list, not a merge)', async () => {
+    sqlMock.mockResolvedValue([
+      { trigger_config: {}, payload_template: { payload: { lenses: ['a', 'b', 'c'], n: 1 } }, active: true, next_fire_at: null },
+    ]);
+    await setTool.handler(
+      { name: 'r', payloadTemplate: { payload: { lenses: ['z'], n: 9 } } } as never,
+      { role: 'operator' } as never,
+    );
+    const wrote = sqlMock.mock.calls.flat().find((v) => typeof v === 'string' && v.includes('lenses')) as string;
+    const written = JSON.parse(wrote);
+    expect(written.payload.lenses).toEqual(['z']);
+    expect(written.payload.n).toBe(9);
   });
 
   it('patches trigger_config (P-017) — merges the patch, preserves cron, ignores a cron key in the patch', async () => {

@@ -17,18 +17,44 @@ import { runControlMutation } from '../../gateway-control/control-harness';
 
 interface RoutineSnap {
   triggerConfig: Record<string, unknown>;
+  payloadTemplate: Record<string, unknown>;
   active: boolean;
   nextFireAtIso: string | null;
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Recursively merge a config patch into a routine's payload_template.
+ *
+ * DEEP, not shallow (WI-4482): a routine payload is NESTED
+ * (`payload.budget.maxIdeators`, `payload.models.ideator`, `payload.cadence.*`), so a
+ * shallow `Object.assign` of `{ payload: { budget: {...} } }` would REPLACE the whole
+ * `payload` object and silently drop `models` / `cadence` — turning a one-key retune into
+ * a config wipe. Plain objects merge; arrays and scalars REPLACE wholesale (an array patch
+ * means "this is the new list", never an element-wise merge).
+ */
+function deepMergePlain(
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    const cur = out[k];
+    out[k] = isPlainObject(cur) && isPlainObject(v) ? deepMergePlain(cur, v) : v;
+  }
+  return out;
 }
 
 export default defineTool({
   name: 'routines:set',
   profile: 'engineer',
   description:
-    "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, …) without raw SQL: change its cron and/or active flag (active:false = PAUSE, active:true = RESUME). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
+    "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, scout, …) without raw SQL: change its cron, its active flag (active:false = PAUSE, active:true = RESUME), its trigger_config, and/or DEEP-merge a patch into its payload_template (the routine's own run knobs — e.g. the scout singleton's payload.budget.maxIdeators). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
   capability: 'operator:write',
   guidance: {
-    when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), or patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
+    when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps), or retune a routine\'s RUN KNOBS (payloadTemplate — e.g. the scout singleton\'s budget.maxIdeators / models.ideator) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
     notWhen: 'For a harness blueprint autoloop, use autoloop:control. To just SEE routines, routines:list. (These routine rows are their own store; they do not appear in config:list-overrides.)',
     chaining: 'routines:list first to get the exact name + installSlug; routines:list after to confirm the change.',
     seeAlso: [
@@ -48,14 +74,23 @@ export default defineTool({
       .record(z.string(), z.unknown())
       .optional()
       .describe('Merge these keys into the routine trigger_config (live-configurability-audit P-017 — e.g. the bee-transcript-cap caps max_tasks / max_carried_read_tokens / max_transcript_entries). The safe way to retune a routine CONFIG value without raw SQL. `cron` is ignored here — set it via the validated `cron` arg.'),
+    payloadTemplate: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("DEEP-merge this patch into the routine's payload_template — the routine's own run knobs (e.g. the scout singleton's payload.budget.maxIdeators / payload.models.ideator). Nested plain objects merge, so { payload: { budget: { maxIdeators: 4 } } } retunes ONE key without disturbing payload.models or payload.cadence; arrays and scalars replace. Previously the only way to change these was the raw UPDATE harness_shared.routines the playbook forbids (WI-4482)."),
     dryRun: z.boolean().optional(),
   }),
   async handler(args, ctx) {
     if (!isOperatorConfigWriteRole(ctx.role)) {
       throw new Error('routines:set requires operator, architect, or mug role');
     }
-    if (args.cron === undefined && args.active === undefined && args.triggerConfig === undefined) {
-      throw new Error('set requires cron, active, and/or triggerConfig');
+    if (
+      args.cron === undefined &&
+      args.active === undefined &&
+      args.triggerConfig === undefined &&
+      args.payloadTemplate === undefined
+    ) {
+      throw new Error('set requires cron, active, triggerConfig, and/or payloadTemplate');
     }
     // Validate the cron BEFORE touching anything — a typo must not silently kill a routine.
     if (args.cron !== undefined && !computeNextFireAt(args.cron, new Date())) {
@@ -67,21 +102,27 @@ export default defineTool({
     const slug = args.installSlug ?? operatorHomeHarnessSlug();
 
     const readSnap = async (): Promise<RoutineSnap> => {
-      const rows = await sql<Array<{ trigger_config: Record<string, unknown> | null; active: boolean; next_fire_at: Date | null }>>`
-        SELECT trigger_config, active, next_fire_at
+      const rows = await sql<Array<{ trigger_config: Record<string, unknown> | null; payload_template: Record<string, unknown> | null; active: boolean; next_fire_at: Date | null }>>`
+        SELECT trigger_config, payload_template, active, next_fire_at
           FROM harness_shared.routines
          WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${args.name}
          LIMIT 1`;
       if (rows.length === 0) throw new Error(`routine not found: ${slug}/${args.name} (use routines:list to see names)`);
       const r = rows[0];
       const nextIso = r.next_fire_at && !Number.isNaN(new Date(r.next_fire_at).getTime()) ? new Date(r.next_fire_at).toISOString() : null;
-      return { triggerConfig: r.trigger_config ?? {}, active: r.active, nextFireAtIso: nextIso };
+      return {
+        triggerConfig: r.trigger_config ?? {},
+        payloadTemplate: r.payload_template ?? {},
+        active: r.active,
+        nextFireAtIso: nextIso,
+      };
     };
 
     const writeSnap = async (snap: RoutineSnap): Promise<void> => {
       await sql`
         UPDATE harness_shared.routines
            SET trigger_config = ${JSON.stringify(snap.triggerConfig)}::text::jsonb,
+               payload_template = ${JSON.stringify(snap.payloadTemplate)}::text::jsonb,
                active = ${snap.active},
                next_fire_at = ${snap.nextFireAtIso}::timestamptz,
                updated_at = now()
@@ -109,7 +150,16 @@ export default defineTool({
             const { cron: _ignoredCron, ...patch } = args.triggerConfig;
             Object.assign(triggerConfig, patch);
           }
-          const next: RoutineSnap = { triggerConfig, active: args.active ?? prev.active, nextFireAtIso: nextIso };
+          const payloadTemplate =
+            args.payloadTemplate !== undefined
+              ? deepMergePlain(prev.payloadTemplate, args.payloadTemplate)
+              : prev.payloadTemplate;
+          const next: RoutineSnap = {
+            triggerConfig,
+            payloadTemplate,
+            active: args.active ?? prev.active,
+            nextFireAtIso: nextIso,
+          };
           await writeSnap(next);
           return next;
         },
@@ -118,14 +168,25 @@ export default defineTool({
           const cur = await readSnap();
           const ok =
             cur.active === next.active &&
-            (args.cron === undefined || (cur.triggerConfig as { cron?: string }).cron === args.cron);
+            (args.cron === undefined || (cur.triggerConfig as { cron?: string }).cron === args.cron) &&
+            // The payload merge must actually be READABLE back, not just written — a silent
+            // no-op write here would leave the caller believing a live knob was retuned.
+            (args.payloadTemplate === undefined ||
+              JSON.stringify(cur.payloadTemplate) === JSON.stringify(next.payloadTemplate));
           return { ok, detail: ok ? undefined : 'routine row did not reflect the change' };
         },
         describe: (prev) => ({
-          current: { cron: (prev.triggerConfig as { cron?: string }).cron ?? null, active: prev.active },
+          current: {
+            cron: (prev.triggerConfig as { cron?: string }).cron ?? null,
+            active: prev.active,
+            ...(args.payloadTemplate !== undefined ? { payloadTemplate: prev.payloadTemplate } : {}),
+          },
           proposed: {
             cron: args.cron ?? ((prev.triggerConfig as { cron?: string }).cron ?? null),
             active: args.active ?? prev.active,
+            ...(args.payloadTemplate !== undefined
+              ? { payloadTemplate: deepMergePlain(prev.payloadTemplate, args.payloadTemplate) }
+              : {}),
           },
         }),
       },
