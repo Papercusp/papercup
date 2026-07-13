@@ -108,3 +108,63 @@ describe('plugin dependency + config fields', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005)', () => {
+  const base = { name: '@test/events', version: '0.1.0', kind: 'plugin', papercusp: '^1.0', capabilities: [] as string[] };
+
+  it('accepts a provides.events family declaration', () => {
+    const r = validateManifest({
+      ...base,
+      provides: {
+        events: [
+          {
+            family: 'widget-done',
+            keyTemplate: 'widget:done:<id>',
+            params: [{ name: 'id', required: true, describe: 'the widget id' }],
+            describe: 'A widget finished.',
+          },
+        ],
+      },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepts a no-param (literal-key) provided family', () => {
+    const r = validateManifest({
+      ...base,
+      provides: { events: [{ family: 'heartbeat', keyTemplate: 'widget:heartbeat' }] },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepts dependencies.events with an optional flag', () => {
+    const r = validateManifest({
+      ...base,
+      dependencies: { events: [{ family: 'widget-done' }, { family: 'other', optional: true }] },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects a provided event missing keyTemplate', () => {
+    const r = validateManifest({ ...base, provides: { events: [{ family: 'x' }] } });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects an unknown subfield on a provided event (additionalProperties:false)', () => {
+    const r = validateManifest({
+      ...base,
+      provides: { events: [{ family: 'x', keyTemplate: 'a:b', wat: 1 }] },
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects an unknown key under provides (additionalProperties:false)', () => {
+    const r = validateManifest({ ...base, provides: { tools: ['x'] } });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects a dependencies.events entry missing family', () => {
+    const r = validateManifest({ ...base, dependencies: { events: [{ optional: true }] } });
+    expect(r.ok).toBe(false);
+  });
+});

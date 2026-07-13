@@ -25,6 +25,7 @@ import { workItemRedundancyEnabled } from '../../work-item-redundancy';
 import { localSwarmId } from '../../fleet/swarm-identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getNextForBee, resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-store';
+import { cancelClaimableAwaits } from '../../events/await/store';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -247,6 +248,9 @@ export default defineTool({
         'workItem' in claimed
           ? { ok: true as const, workItem: claimed.workItem, claimedUnder: claimed.claimedUnder }
           : { ok: true as const, workItem: claimed };
+      // EI-10541: idle -> working transition — cancel this agent's stale `work-item:claimable`
+      // idle-park await(s) (best-effort, see cancelClaimableAwaits). Mutually exclusive with holding a claim.
+      await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
       return { content: [{ type: 'text' as const, text: JSON.stringify(memory ? { ...base, memory } : base) }] };
     }
@@ -267,6 +271,8 @@ export default defineTool({
       const miss = await missResult();
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ...miss, claimed }) }] };
     }
+    // EI-10541: claimed >=1 item — cancel this agent's stale `work-item:claimable` idle-park await(s).
+    await cancelClaimableAwaits(assignee).catch(() => 0);
     const memory = await recallFor(claimed.map((c) => wiOf(c)));
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(memory ? { ok: true, claimed, memory } : { ok: true, claimed }) }],

@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelAwait, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes } =
   await import('./store');
 
 let rootSql: postgres.Sql;
@@ -176,6 +176,25 @@ describe('await-event store (PG)', () => {
     const a = await registerAwait({ subscriberId: 'owner', eventKey: 'k:mine' });
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'not-owner' })).toBe(false); // cannot cancel a peer's
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'owner' })).toBe(true); // owner can
+  });
+
+  // EI-10541: on a successful claim, the claim path cancels the agent's stale idle-park
+  // `work-item:claimable` await(s) so they stop firing spurious timeout wakes while it works.
+  it('cancelClaimableAwaits cancels ONLY the caller\'s work-item:claimable await(s), key- and subscriber-scoped', async () => {
+    // sub-1's standing idle-park claimable await (once:false) — the one that lingers post-claim
+    await registerAwait({ subscriberId: 'sub-1', eventKey: 'work-item:claimable', once: false, timeoutSec: 1800 });
+    // sub-1's claimable await from a re-register (once:true variant) — also stale on claim
+    await registerAwait({ subscriberId: 'sub-1', eventKey: 'work-item:claimable', once: true });
+    // sub-1's await on an UNRELATED key → must survive (only claimable is mutually exclusive with a claim)
+    await registerAwait({ subscriberId: 'sub-1', eventKey: 'lock:grant:xyz' });
+    // a PEER's claimable await → subscriber-scoped, must survive
+    await registerAwait({ subscriberId: 'sub-2', eventKey: 'work-item:claimable', once: false });
+
+    expect(await cancelClaimableAwaits('sub-1')).toBe(2); // both of sub-1's claimable rows
+    expect(await cancelClaimableAwaits('sub-1')).toBe(0); // idempotent: already cancelled → no-op
+
+    expect((await listActiveAwaits('sub-1')).map((r) => r.eventKey)).toEqual(['lock:grant:xyz']); // unrelated await kept
+    expect((await listActiveAwaits('sub-2')).map((r) => r.eventKey)).toEqual(['work-item:claimable']); // peer's kept
   });
 
   // ── P-001 (fleet-member-dx-improvements-2026-07-10): parked-on-event read ──

@@ -143,6 +143,52 @@ describe('pack manifest validation (kind=pack)', () => {
     expectError(await loadPluginFromDir(dir, 'global'), /declares no tools/);
   });
 
+  it('accepts a pack declaring provides.events + dependencies.events (pure data, no runtime)', async () => {
+    // events-as-a-dependency axis (D-003 / P-005): a runtime-less pack MAY
+    // declare what event families it provides/requires — they are data, not a
+    // runtime-bearing surface, so pack purity allows them.
+    const dir = await makeUnit({
+      kind: 'pack',
+      tools: [{ name: 'alpha' }],
+      manifestExtra: {
+        provides: {
+          events: [
+            {
+              family: 'alpha-done',
+              keyTemplate: 'alpha:done:<id>',
+              params: [{ name: 'id', required: true, describe: 'the id' }],
+            },
+          ],
+        },
+        dependencies: { events: [{ family: 'upstream-thing', optional: true }] },
+      },
+    });
+    const lp = expectClean(await loadPluginFromDir(dir, 'global'));
+    assert.equal(lp.toolDefinitions.length, 1);
+  });
+
+  it('rejects a pack declaring reactions (event REACTIONS are plugin runtime)', async () => {
+    // The reaction carries its events:listen cap so it clears reaction-capability
+    // validation and reaches the pack-purity check — which rejects `reactions`
+    // as a runtime-bearing surface (a pack contributes tools only).
+    const dir = await makeUnit({
+      kind: 'pack',
+      capabilities: ['events:listen:alpha:done'],
+      manifestExtra: { reactions: [{ id: 'r1', on: 'alpha:done', fire: 'alpha.noop' }] },
+    });
+    expectError(await loadPluginFromDir(dir, 'global'), /runtime-bearing surface.*reactions/);
+  });
+
+  it('rejects a pack whose provides.events keyTemplate placeholder has no matching param', async () => {
+    // The semantic validator (validateManifestEventDeclarations) runs at load
+    // for every manifest — a mis-declared family is a hard load failure.
+    const dir = await makeUnit({
+      kind: 'pack',
+      manifestExtra: { provides: { events: [{ family: 'alpha-done', keyTemplate: 'alpha:done:<id>' }] } },
+    });
+    expectError(await loadPluginFromDir(dir, 'global'), /placeholder "<id>" has no matching params/);
+  });
+
   it('a plain plugin (kind omitted) with the same runtime surfaces still loads', async () => {
     const dir = await makeUnit({
       capabilities: ['ui:tui-pane'],

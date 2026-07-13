@@ -313,6 +313,40 @@ describe('runRecallCanary', () => {
     }
   });
 
+  it('P-010: a BLIND lexical leg alerts even while fused recall is perfect', async () => {
+    // The failure the probe exists for: cosine carries the fused product, so
+    // recall@10 looks flawless while the exact-identifier column is dark.
+    const pairs = pairsOf(10);
+    const { deps, notified } = stubDeps({
+      loadSet: async () => frozenSet(pairs, 0.9, 'hybrid-pg'),
+      backend: {
+        name: 'hybrid-pg',
+        search: async (q: string) => [entry(`mem-${q.split(' ')[1]}`)],
+        searchLexical: async () => [], // the leg is dark
+      },
+    });
+    const out = await runRecallCanary(INPUT, deps);
+    expect(out.ran && out.status).toBe('degraded');
+    expect(notified).toEqual(['memory-live-recall-canary:degraded']);
+    if (out.ran) expect(out.metrics.notes).toContain('LEXICAL LEG BLIND');
+  });
+
+  it('P-010: a live lexical leg stamps its r@10 into notes and stays ok', async () => {
+    const pairs = pairsOf(10);
+    const { deps, notified } = stubDeps({
+      loadSet: async () => frozenSet(pairs, 0.9),
+      backend: {
+        name: 'hybrid',
+        search: async (q: string) => [entry(`mem-${q.split(' ')[1]}`)],
+        searchLexical: async (q: string) => [entry(`mem-${q.split(' ')[1]}`)],
+      },
+    });
+    const out = await runRecallCanary(INPUT, deps);
+    expect(out.ran && out.status).toBe('ok');
+    expect(notified).toEqual([]);
+    if (out.ran) expect(out.metrics.notes).toContain('lex r@10 1.000');
+  });
+
   it('does not re-alert while already degraded; resolves on recovery', async () => {
     const pairs = pairsOf(10);
     const still = stubDeps({

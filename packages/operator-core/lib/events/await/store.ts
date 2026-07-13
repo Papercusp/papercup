@@ -237,6 +237,29 @@ export async function cancelInboxWakeAwaits(subscriberId: string): Promise<numbe
   return rows.length;
 }
 
+/** Cancel a subscriber's standing `work-item:claimable` await(s) — called when the
+ *  agent SUCCESSFULLY claims work (scheduler:get_next / work_items:claim_next). Holding a
+ *  claim and waiting for claimable work are mutually exclusive: the documented idle model is
+ *  serial (park ONE `work-item:claimable` await when a self-pull misses → wake → claim → work
+ *  → re-park on the next miss), so a claimable await that outlives its claim is always stale.
+ *  EI-10541: a pre-claim idle-park await that isn't cancelled when the agent later claims via a
+ *  leader-fed spec bump keeps firing spurious ~30-min timeout wakes while the agent is busy,
+ *  each costing a full re-orient turn. Subscriber-scoped (you can only cancel your own, like
+ *  cancelInboxWakeAwaits); best-effort at the call site. Returns how many rows were cancelled. */
+export async function cancelClaimableAwaits(subscriberId: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    UPDATE harness_shared.event_awaits
+       SET cancelled_at = now()
+     WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
+       AND event_key = 'work-item:claimable'
+       AND fired_at IS NULL AND cancelled_at IS NULL
+    RETURNING id
+  `;
+  return rows.length;
+}
+
 /** Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's). */
 export async function cancelAwait(input: {
   awaitId: number;

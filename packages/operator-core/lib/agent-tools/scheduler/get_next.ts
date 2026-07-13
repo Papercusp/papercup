@@ -19,6 +19,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getNextForBee, resolveClaimSpecWorkspace, getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
+import { cancelClaimableAwaits } from '../../events/await/store';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
 type ClaimNextStates = ('todo' | 'open' | 'failing')[] | undefined;
@@ -230,6 +231,15 @@ export default defineTool({
       memory = await import('../../memory/claim-port')
         .then((m) => m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }))
         .catch(() => null);
+    }
+    // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
+    // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
+    // for claimable work are mutually exclusive, and a pre-claim await left armed (e.g. this claim
+    // came from a leader-fed spec bump, not the await firing) otherwise keeps firing spurious ~30-min
+    // timeout wakes while the agent is busy. Best-effort + subscriber-scoped: a cancel failure must
+    // never break the claim path (fails soft, like the recall port above).
+    if (res?.workItem) {
+      await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
     }
     // WI-4413: a MISS must explain itself. `work_items:claim_next` has run diagnoseClaimNextMiss
     // on a miss since EI-5803 — but THIS path (the one every fleet member self-pulls through, and
