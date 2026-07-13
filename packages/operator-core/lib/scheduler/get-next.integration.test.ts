@@ -357,6 +357,71 @@ describe('get_next — floors ALWAYS apply (D-002: spec narrows+reorders, never 
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// 2b. `states` rides the spec (drain-claim-spec-hardening-2026-07-13 D-002, fixes
+//     EI-11300): a fleet leader sets `states` ONCE on the spec; every member inheriting
+//     it defaults to that claimable-status subset instead of the plain ['todo'] floor.
+//     A per-call `opts.states` override still wins.
+// ────────────────────────────────────────────────────────────────────────────
+describe('get_next — `states` rides the spec (D-002, EI-11300)', () => {
+  it('a spec-carried `states` claims an item OUTSIDE the plain [\'todo\'] default', async () => {
+    await seedFeature('F-failing', { status: 'failing', createdTs: 10 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'drain-failing',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      states: ['failing'],
+    });
+    // No per-call `states` override — falls back to the spec's own `states`.
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-failing');
+  });
+
+  it('WITHOUT a spec `states` and no per-call override, the plain [\'todo\'] default is unchanged', async () => {
+    await seedFeature('F-failing-2', { status: 'failing', createdTs: 10 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'no-states',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+  });
+
+  it('an explicit per-call `opts.states` OVERRIDES the spec\'s `states` (member judgment wins)', async () => {
+    await seedFeature('F-todo-only', { status: 'todo', createdTs: 5 });
+    await seedFeature('F-failing-3', { status: 'failing', createdTs: 1 }); // older, but excluded by the override
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'spec-wants-failing',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      states: ['failing'],
+    });
+    // The caller explicitly passes states:['todo'] — this wins over the spec's ['failing'].
+    const r = await getNextWorkItem(s, BEE, { harness: H, states: ['todo'] });
+    expect(r?.workItem.id).toBe('F-todo-only');
+  });
+
+  it('a spec `states` covering BOTH todo+failing claims whichever ranks first', async () => {
+    await seedFeature('F-multi-failing', { status: 'failing', featureOrder: 1, createdTs: 10 });
+    await seedFeature('F-multi-todo', { status: 'todo', featureOrder: 9, createdTs: 20 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'drain-both',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+      states: ['todo', 'failing'],
+    });
+    // featureOrder 1 (highest priority) wins regardless of which status it carries.
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-multi-failing');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // 3. Concurrency — two get_next claim DIFFERENT items (FOR UPDATE SKIP LOCKED).
 // ────────────────────────────────────────────────────────────────────────────
 describe('get_next — concurrent claims take DIFFERENT items (SKIP LOCKED)', () => {
@@ -709,5 +774,33 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     // (extracting only the id branch would silently drop the `kind` branch's OR semantics), so
     // tier 3 is skipped entirely — a conservative miss, not a wrong-item claim.
     expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+  });
+
+  // EI-11291 (drain-claim-spec-hardening-2026-07-13 P-001): a `kind`-filtered claim spec
+  // must match on the `item_kind` discriminator, NEVER the legacy `kind` column (unrelated
+  // free-text metadata — 'security'/'infra'/etc on a handful of rows, NULL on the rest). The
+  // live repro that filed the EI found no evidence the mapping was actually wrong (the
+  // FIELD_MAP already targeted item_kind) — this test pins the exact repro shape the EI names
+  // AND additionally proves the legacy `kind` column, even when POPULATED with a conflicting
+  // value, can never win (P-001/D-001's COALESCE(item_kind, kind) — item_kind first).
+  it('EI-11291: a bare-leaf `{ field:"kind", op:"in", value:["bug"] }` spec matches an open item_kind=\'bug\' row, ignoring a populated legacy `kind` column', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    // The legacy `kind` column is populated with an UNRELATED value (real production rows carry
+    // things like 'security'/'infra' there) — if the evaluator ever regressed to reading `kind`
+    // instead of `item_kind`, this row would silently fail to match, reproducing EI-11291 exactly.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, kind, status, workspace_id, created_ts, updated_ts)
+      VALUES (${H}, 'EI-11291-bug', 'bug', 'infra', 'open', ${WS}, 100, 0)`;
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'ei-11291-kind-bug-drain',
+      revision: 1,
+      view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H, states: ['open'] });
+    expect(r?.workItem.id).toBe('EI-11291-bug');
+    expect(r?.workItem.kind).toBe('bug');
   });
 });

@@ -145,7 +145,14 @@ interface FieldMap {
 
 const FIELD_MAP: Record<string, FieldMap> = {
   priority: { col: (sql) => sql`feature_order`, kind: 'scalar-num', inverted: true },
-  kind: { col: (sql) => sql`item_kind`, kind: 'scalar-text' },
+  // `kind` — EI-11291/D-001 (drain-claim-spec-hardening-2026-07-13): the discriminator is
+  // `item_kind` (NOT NULL, defaulted 'feature' by mig 136), never the legacy `kind` column
+  // (unrelated free-text metadata on a handful of rows — 'security'/'infra'/etc — NOT an
+  // item-kind value; always NULL for the vast majority of rows). COALESCE(item_kind, kind)
+  // per D-001: item_kind is structurally never NULL today, so this is defense-in-depth (a
+  // future schema regression that let item_kind go NULL would silently fall back to the
+  // legacy column instead of never matching), not a behavior change.
+  kind: { col: (sql) => sql`COALESCE(item_kind, kind)`, kind: 'scalar-text' },
   age: { col: (sql) => sql`created_ts`, kind: 'scalar-num' },
   est_cost: { col: (sql) => sql`expected_cost_cents`, kind: 'scalar-num' },
   redundancy: { col: (sql) => sql`COALESCE(redundancy, 1)`, kind: 'scalar-num' },

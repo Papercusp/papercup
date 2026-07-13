@@ -533,7 +533,7 @@ describe('claim-spec `states` field (D-002, EI-11300)', () => {
     }
   });
 
-  it('DEFAULT_CLAIM_SPEC carries no `states` (today’s ['todo']-default behavior, unchanged)', () => {
+  it("DEFAULT_CLAIM_SPEC carries no `states` (today's ['todo']-default behavior, unchanged)", () => {
     expect(DEFAULT_CLAIM_SPEC.states).toBeUndefined();
   });
 });
