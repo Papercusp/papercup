@@ -187,7 +187,7 @@ describe('Cupboard ListingCard — per-listing action (D-005 / comb-retire)', ()
     { kind: 'blueprint', action: 'install', label: 'Install' },
     // ('snapshot → fork' removed — snapshot kind retired by retire-snapshots-instance-spec-2026-06-09 D-005.)
     { kind: 'plugin', action: 'install', label: 'Install' },
-    { kind: 'tool-pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (mig 006, renamed mig 008)
+    { kind: 'pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (canonical 'pack', mig 010 / P-003)
     { kind: 'learning-pack', action: 'install', label: 'Install' }, // curated hive learnings (learning-packs mig 008)
     { kind: 'template', action: 'install', label: 'Install' }, // app/aspect template (cupboard-public-release P-002)
   ];

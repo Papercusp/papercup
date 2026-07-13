@@ -425,6 +425,60 @@ mod tests {
     use super::*;
     use tokio::net::UnixListener;
 
+    #[test]
+    fn discover_socket_prefers_per_port_and_skips_dead_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = std::process::id() as i64;
+        // pid_max caps well below this — /proc/<dead> never exists.
+        let dead: i64 = 999_999_999;
+        let pp = dir.path().join("endpoint-ipc.3070.json");
+        let single = dir.path().join("endpoint-ipc.json");
+        // Live per-port writer wins over the singleton.
+        std::fs::write(
+            &pp,
+            format!(r#"{{"socketPath":"/tmp/pp.sock","pid":{me},"port":3070}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            &single,
+            format!(r#"{{"socketPath":"/tmp/single.sock","pid":{dead}}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            discover_socket_in(dir.path(), 3070).unwrap(),
+            PathBuf::from("/tmp/pp.sock")
+        );
+        // Dead per-port writer → fall back to a live singleton.
+        std::fs::write(
+            &pp,
+            format!(r#"{{"socketPath":"/tmp/pp.sock","pid":{dead}}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            &single,
+            format!(r#"{{"socketPath":"/tmp/single.sock","pid":{me}}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            discover_socket_in(dir.path(), 3070).unwrap(),
+            PathBuf::from("/tmp/single.sock")
+        );
+        // Both writers dead → error, not a corpse dial.
+        std::fs::write(
+            &single,
+            format!(r#"{{"socketPath":"/tmp/single.sock","pid":{dead}}}"#),
+        )
+        .unwrap();
+        assert!(discover_socket_in(dir.path(), 3070).is_err());
+        // Legacy pid-less singleton (no per-port file) stays usable.
+        std::fs::remove_file(&pp).unwrap();
+        std::fs::write(&single, r#"{"socketPath":"/tmp/legacy.sock"}"#).unwrap();
+        assert_eq!(
+            discover_socket_in(dir.path(), 3070).unwrap(),
+            PathBuf::from("/tmp/legacy.sock")
+        );
+    }
+
     fn event_bin_frame(id: u64, name: &str, bin: &[u8]) -> Vec<u8> {
         let mut p = Vec::new();
         p.extend_from_slice(&id.to_be_bytes());

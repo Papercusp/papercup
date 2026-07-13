@@ -142,7 +142,12 @@ export interface ScoutCycleDeps extends ScoutCyclePorts {
   onPhase?: (phase: ScoutCyclePhase) => void;
 }
 
-/** Why the cycle stopped — `completed` is the full pass; the rest are early exits. */
+/**
+ * Why the cycle stopped — `completed` is the full pass; the rest are early exits.
+ * `budget-exhausted` is a PRE-SPEND refusal only (a zero/negative cap halts before
+ * the first costed step); a cycle that overruns a POSITIVE cap after generation is
+ * NOT budget-exhausted — it completes and routes, flagged `overBudget` (EI-10779).
+ */
 export type ScoutCycleStop =
   | 'completed'
   | 'empty-digest'
@@ -189,6 +194,14 @@ export interface ScoutCycleResult {
   calls: ScoutCallRecord[];
   /** Total LLM spend this cycle (sum of `calls[].costUsd`). */
   costUsd: number;
+  /**
+   * True when spend exceeded a POSITIVE `limits.maxCostUsd`. The cycle no longer
+   * discards paid-for generation on an overrun (EI-10779) — it routes what it
+   * generated and raises this flag so the tick ledger can still surface the overrun
+   * for cadence/roster tuning. (A zero/negative-cap pre-spend refusal spends $0, so
+   * it reports `overBudget: false` — it did not overrun, it declined to start.)
+   */
+  overBudget: boolean;
   /** Why the cycle ended. */
   stop: ScoutCycleStop;
 }
@@ -300,6 +313,7 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
     provenance: partial.provenance ?? [],
     calls,
     costUsd: spent(),
+    overBudget: overBudget(),
     stop,
   });
 
@@ -329,7 +343,16 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
     maxIdeators: deps.limits?.maxIdeators,
   });
   if (ideas.length === 0) return finish('no-ideas', { digest, ideas });
-  if (overBudget()) return finish('budget-exhausted', { digest, ideas });
+  // EI-10779: generation is now PAID FOR — do NOT discard it on a budget overrun.
+  // The old between-stage `budget-exhausted` exit here killed the pipeline right
+  // after paying for the (dominant-cost) ideate stage but BEFORE routing, destroying
+  // the entire generation for routed=0 (measured: ~$3.6 burned per tick under a $1
+  // cap, ideas_routed=0). We instead continue: critique/recombine are the cheaper
+  // stages and routing is ~$0, so completing the pipeline to route what we already
+  // paid to generate is strictly better than throwing it away. The overrun is not
+  // lost — `overBudget` is flagged on the result (the cap is a soft ceiling, not a
+  // mid-flight kill). Pre-flight feasibility + mid-stage bounding (the other two
+  // flaws in EI-10779) are a follow-up; the sunk-cost destruction is the harm here.
 
   // 3. Adversarial critics (P-005) — search-first novelty vs the corpus + feasibility.
   markPhase('read-novelty-corpus');
