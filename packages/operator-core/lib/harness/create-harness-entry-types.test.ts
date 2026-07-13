@@ -27,7 +27,7 @@ describe('validateCreateHarnessEntry — Entry 1', () => {
   const base: CreateHarnessEntryInput = {
     kind: 'entry_1_init',
     slug: 'mything',
-    parentDir: '/home/avi',
+    parentDir: '/home/dev',
     folderName: 'mything',
   };
 

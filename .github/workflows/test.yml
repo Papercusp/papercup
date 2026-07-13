@@ -212,6 +212,20 @@ jobs:
       - name: Lint no raw control bytes
         run: npm run lint:no-control-bytes
 
+      # Box-identity guard (WI-4419): the 0.0.8 cut shipped the owner's home path
+      # 53,811 times inside sidecar/source.tar.zst — every release bundles a tar of
+      # the working tree and hands it to whoever we give a build to. The release GATE
+      # (papercusp-desktop/bin/audit-release-bundle.py) catches that, but only at CUT
+      # time on the finished artifact — the most expensive moment to learn the fix is
+      # a source change. GATING here, at EDIT time. It cannot know any box's name (and
+      # must not, or it only works on one machine — the bug it prevents), so it detects
+      # the CLASS: an absolute /home/<user>/ or /Users/<user>/ path in tracked source.
+      # That is not merely a privacy rail — such a path is already broken on every
+      # checkout but the author's. BASELINE IS EMPTY: fix the path, never add an
+      # exception to make the build pass.
+      - name: Lint no box identity in tracked source
+        run: npm run lint:no-box-identity
+
       # Committed conflict-marker guard (EI-1836): a COMMITTED git conflict bracket
       # (the live-merge resolver does NOT catch one already committed by a bad
       # git-sync auto-merge) broke `vite build` with a cryptic CssSyntaxError, which

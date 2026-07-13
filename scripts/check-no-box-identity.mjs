@@ -51,6 +51,13 @@ const GENERIC_USERS = new Set([
 const isRedacted = (user) =>
   /^[.<{$%]/.test(user) || user === '$USER' || user === 'USER' || user.length <= 2;
 
+/** `/home/instructions.txt` is a FILE that lives in /home — not a person's home
+ *  directory. A home dir never carries a file extension, so a segment ending in
+ *  one names nobody and cannot be a box-identity leak. (The real thing this lint
+ *  hunts is always `/home/<user>/…` or a bare `/home/<user>`, and neither has an
+ *  extension — so this costs the check nothing.) */
+const isFileInHome = (seg) => /\.[A-Za-z0-9]{1,5}$/.test(seg);
+
 /** Not shipped / not source / regenerated. The dirs the release gate already strips
  *  from the bundle (.harness, .tmp, .papercusp, agent-briefs, docs/plans, junit.xml)
  *  are skipped here too, so the lint and the gate agree on what "shipped" means. */
@@ -87,7 +94,7 @@ for (const f of files) {
   src.split('\n').forEach((line, i) => {
     for (const m of line.matchAll(HOME_PATH)) {
       const user = m[2];
-      if (GENERIC_USERS.has(user) || isRedacted(user)) continue;
+      if (GENERIC_USERS.has(user) || isRedacted(user) || isFileInHome(user)) continue;
       findings.push({ file: f, line: i + 1, user, text: line.trim().slice(0, 110) });
     }
   });
