@@ -391,7 +391,7 @@ export interface DesktopEnvProbes {
 
 /**
  * EI-8289: parse `who`'s TTY column for real X-session displays. An X login
- * reports its DISPLAY value directly there (e.g. `marsh-office :1  2026-07-04
+ * reports its DISPLAY value directly there (e.g. `dev :1  2026-07-04
  * … (:1)`), independent of whether `/tmp/.X11-unix/X<N>` exists for it — which
  * it frequently does NOT for a GNOME/XWayland real seat. Plain `who` (not
  * `who -a`) already excludes exited/dead sessions. Best-effort: any failure
@@ -1064,7 +1064,7 @@ export function wrapHeadlessSigtermDiagnostic(oneliner: string): string {
 
 /**
  * EI-9748 DURABLE FIX — Route (A), leader-ruled (su-286379e2, 2026-07-11,
- * under owner Avi's delegation): a narrow, DOCUMENTED exemption for the
+ * under the owner's delegation): a narrow, DOCUMENTED exemption for the
  * PRODUCT headless-spawn path (and ONLY this path — never agent-invoked Bash)
  * to escape the operator service's own cgroup via `systemd-run --user --scope`.
  *

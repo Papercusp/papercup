@@ -94,7 +94,7 @@ describe('writeRoleCodexHome', () => {
 
   it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh role CODEX_HOME never blocks at the boot trust prompt', async () => {
     const writeRoleCodexHome = await load();
-    const dir = '/home/marsh-office/papercupai-workspace/papercusp';
+    const dir = '/home/dev/papercupai-workspace/papercusp';
     const out = writeRoleCodexHome({
       sessionKey: 'role-trust',
       mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
@@ -368,7 +368,7 @@ describe('writeSuCodexHome', () => {
 
   it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh CODEX_HOME never blocks at the boot trust prompt', async () => {
     const { writeSuCodexHome } = await loadMod();
-    const dir = '/home/marsh-office/papercupai-workspace/papercusp';
+    const dir = '/home/dev/papercupai-workspace/papercusp';
     const out = writeSuCodexHome({
       sessionKey: 'trust',
       mcpUrl: 'http://x/api/mcp?superuser=1',

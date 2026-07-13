@@ -15,13 +15,13 @@ const delimiter = process.platform === 'win32' ? ';' : ':';
 describe('sanitizeInheritedEnv (EI-8868/EI-8877)', () => {
   it('strips npm_config_local_prefix, npm_package_*, npm_lifecycle_*, and INIT_CWD', () => {
     const dirty = {
-      npm_config_local_prefix: '/home/marsh-office/papercupai-workspace/papercup-release',
-      npm_package_json: '/home/marsh-office/papercupai-workspace/papercup-release/apps/operator/package.json',
+      npm_config_local_prefix: '/home/dev/papercupai-workspace/papercup-release',
+      npm_package_json: '/home/dev/papercupai-workspace/papercup-release/apps/operator/package.json',
       npm_package_name: '@papercupai/papercusp-monorepo',
       npm_lifecycle_event: 'dev',
       npm_lifecycle_script: 'next dev',
-      INIT_CWD: '/home/marsh-office/papercupai-workspace/papercup-release/apps/operator',
-      HOME: '/home/marsh-office',
+      INIT_CWD: '/home/dev/papercupai-workspace/papercup-release/apps/operator',
+      HOME: '/home/dev',
       PAPERCUSP_HARNESS_SLUG: 'papercusp',
     };
     const clean = sanitizeInheritedEnv(dirty);
@@ -32,25 +32,25 @@ describe('sanitizeInheritedEnv (EI-8868/EI-8877)', () => {
     expect(clean.npm_lifecycle_script).toBeUndefined();
     expect(clean.INIT_CWD).toBeUndefined();
     // untouched
-    expect(clean.HOME).toBe('/home/marsh-office');
+    expect(clean.HOME).toBe('/home/dev');
     expect(clean.PAPERCUSP_HARNESS_SLUG).toBe('papercusp');
   });
 
   it('filters ONLY papercup-release PATH segments, preserving order + everything else', () => {
     const dirty = {
       PATH: [
-        '/home/marsh-office/.local/bin',
-        '/home/marsh-office/papercupai-workspace/papercup-release/node_modules/.bin',
-        '/home/marsh-office/papercupai-workspace/papercup-release/apps/operator/node_modules/.bin',
-        '/home/marsh-office/papercupai-workspace/papercusp/node_modules/.bin',
+        '/home/dev/.local/bin',
+        '/home/dev/papercupai-workspace/papercup-release/node_modules/.bin',
+        '/home/dev/papercupai-workspace/papercup-release/apps/operator/node_modules/.bin',
+        '/home/dev/papercupai-workspace/papercusp/node_modules/.bin',
         '/usr/bin',
       ].join(delimiter),
     };
     const clean = sanitizeInheritedEnv(dirty);
     const segs = clean.PATH.split(delimiter);
     expect(segs).toEqual([
-      '/home/marsh-office/.local/bin',
-      '/home/marsh-office/papercupai-workspace/papercusp/node_modules/.bin',
+      '/home/dev/.local/bin',
+      '/home/dev/papercupai-workspace/papercusp/node_modules/.bin',
       '/usr/bin',
     ]);
   });
@@ -58,7 +58,7 @@ describe('sanitizeInheritedEnv (EI-8868/EI-8877)', () => {
   it('is a no-op on an already-clean env (no PATH mutation, nothing dropped)', () => {
     const clean = {
       PATH: ['/usr/bin', '/bin'].join(delimiter),
-      HOME: '/home/marsh-office',
+      HOME: '/home/dev',
     };
     const out = sanitizeInheritedEnv(clean);
     expect(out).toEqual(clean);

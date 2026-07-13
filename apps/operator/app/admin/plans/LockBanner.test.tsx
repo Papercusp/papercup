@@ -27,7 +27,7 @@ function lock(overrides: Partial<ActiveLock> = {}): ActiveLock {
   return {
     path: 'apps/operator/docs/plans/x.md',
     owner: 'su-abc',
-    owner_label: 'Avi',
+    owner_label: 'Dev',
     intent: 'editing the now block',
     acquired_ts: new Date(BASE_NOW).toISOString(),
     expires_ts: new Date(BASE_NOW + 45_000).toISOString(),
@@ -45,7 +45,7 @@ describe('LockBanner', () => {
     render(<LockBanner lock={lock()} />);
     const banner = screen.getByRole('status');
     expect(banner.getAttribute('aria-live')).toBe('polite');
-    expect(screen.getByText('Avi')).toBeTruthy();
+    expect(screen.getByText('Dev')).toBeTruthy();
   });
 
   it('falls back to the raw owner id when owner_label is null', () => {

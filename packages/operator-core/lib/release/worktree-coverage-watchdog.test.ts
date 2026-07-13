@@ -12,7 +12,7 @@ import {
   type WorktreeInfo,
 } from './worktree-coverage-watchdog';
 
-const CANONICAL = '/home/marsh-office/papercupai-workspace/papercusp';
+const CANONICAL = '/home/dev/papercupai-workspace/papercusp';
 
 function wt(path: string, dirty: boolean, dirtyFileCount = dirty ? 1 : 0): WorktreeInfo {
   return { path, dirty, dirtyFileCount };
@@ -31,34 +31,34 @@ describe('findUncoveredDirtyWorktrees (pure classifier)', () => {
 
   it('does not flag a dirty -release / -checkpoint sibling tree (reset every run by design)', () => {
     const worktrees = [
-      wt('/home/marsh-office/papercupai-workspace/papercup-release', true, 12),
-      wt('/home/marsh-office/papercupai-workspace/papercup-checkpoint', true, 3),
-      wt('/home/marsh-office/papercupai-workspace/papercusp-checkpoint', true, 7),
+      wt('/home/dev/papercupai-workspace/papercup-release', true, 12),
+      wt('/home/dev/papercupai-workspace/papercup-checkpoint', true, 3),
+      wt('/home/dev/papercupai-workspace/papercusp-checkpoint', true, 7),
     ];
     expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
   });
 
   it('does not flag a dirty D-006 env-tree (env-tree-prepare.ts — force-recreatable, never committed)', () => {
     const worktrees = [
-      wt('/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/env-trees/staging', true, 3730),
+      wt('/home/dev/.papercusp-workspaces/papercusp-workspace/.papercusp/env-trees/staging', true, 3730),
     ];
     expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
   });
 
   it('does not flag a dirty migration/synthesis isolation worktree', () => {
-    const worktrees = [wt('/home/marsh-office/papercupai-workspace/papercusp/.papercusp/worktrees/migrate-xyz', true, 2)];
+    const worktrees = [wt('/home/dev/papercupai-workspace/papercusp/.papercusp/worktrees/migrate-xyz', true, 2)];
     expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual([]);
   });
 
   it('FLAGS a dirty worktree matching none of the known patterns — the WI-3449 class', () => {
-    const worktrees = [wt('/home/marsh-office/some-random-clone-of-papercusp', true, 4)];
+    const worktrees = [wt('/home/dev/some-random-clone-of-papercusp', true, 4)];
     expect(findUncoveredDirtyWorktrees(worktrees, CANONICAL)).toEqual(worktrees);
   });
 
   it('only flags the uncovered entries out of a mixed set', () => {
-    const covered = wt('/home/marsh-office/papercupai-workspace/papercup-release', true, 1);
-    const clean = wt('/home/marsh-office/stray', false);
-    const stray = wt('/home/marsh-office/stray-worktree-with-edits', true, 2);
+    const covered = wt('/home/dev/papercupai-workspace/papercup-release', true, 1);
+    const clean = wt('/home/dev/stray', false);
+    const stray = wt('/home/dev/stray-worktree-with-edits', true, 2);
     expect(findUncoveredDirtyWorktrees([covered, clean, stray], CANONICAL)).toEqual([stray]);
   });
 
@@ -71,18 +71,18 @@ describe('findUncoveredDirtyWorktrees (pure classifier)', () => {
 describe('parseWorktreeListPorcelain', () => {
   it('extracts every worktree path from real --porcelain output', () => {
     const out = [
-      'worktree /home/marsh-office/papercupai-workspace/papercusp',
+      'worktree /home/dev/papercupai-workspace/papercusp',
       'HEAD 1c3be69157abcdef',
       'branch refs/heads/staging',
       '',
-      'worktree /home/marsh-office/papercupai-workspace/papercup-release',
+      'worktree /home/dev/papercupai-workspace/papercup-release',
       'HEAD 466b932774abcdef',
       'detached',
       '',
     ].join('\n');
     expect(parseWorktreeListPorcelain(out)).toEqual([
-      '/home/marsh-office/papercupai-workspace/papercusp',
-      '/home/marsh-office/papercupai-workspace/papercup-release',
+      '/home/dev/papercupai-workspace/papercusp',
+      '/home/dev/papercupai-workspace/papercup-release',
     ]);
   });
 

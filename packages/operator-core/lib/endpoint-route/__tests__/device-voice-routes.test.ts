@@ -48,7 +48,7 @@ const MOBILE_PRINCIPAL: Principal = {
   authMethod: 'jwt',
   trust: 'verified',
   capabilities: new Set(['device:*', 'voice:*']),
-  label: 'avi@storewolf.com',
+  label: 'dev@example.com',
 };
 
 // Returns RouteContext<never> to match the handler param: routeByPath casts the routes to

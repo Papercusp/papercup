@@ -7,13 +7,16 @@
  * The frame is persisted before install, so `deploy:teardown` / teardownHarness can always reclaim it.
  */
 import '../packages/operator-core/lib/deployment/configure'; // side-effect: registers latitude+hetzner drivers
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import { deployHarness, defaultDeployDeps } from '../packages/operator-core/lib/deployment/deploy';
 
 async function main() {
   const slug = process.argv[2] || 'cloud-e2e-smoke';
   const ws = process.argv[3] || 'papercusp-workspace';
   const account = process.argv[4] || 'aviynw10';
-  const credentialRef = `token:/home/marsh-office/.papercusp/deploy-credentials/${account}`;
+  const credentialRef = `token:${join(homedir(), '.papercusp/deploy-credentials', account)}`;
 
   const log = (lvl: string, msg: string) =>
     console.log(`[${new Date().toISOString().slice(11, 19)}][${lvl}] ${msg}`);

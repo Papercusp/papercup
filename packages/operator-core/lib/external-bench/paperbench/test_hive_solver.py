@@ -5,7 +5,7 @@ monkeypatched `_drive_hive`, with NO operator / NO docker / NO LLM. Runs in the 
 the REAL paperbench BasePBSolver / AgentOutput / ComputerInterface), NOT papercup's vitest CI:
 
   cd ~/.papercusp/bench-harnesses/preparedness/project/paperbench
-  PYTHONPATH=/home/marsh-office/papercupai-workspace/papercup/packages/operator-core/lib/external-bench/paperbench \
+  PYTHONPATH=/home/dev/papercupai-workspace/papercup/packages/operator-core/lib/external-bench/paperbench \
     uv run pytest -q test_hive_solver.py
 """
 

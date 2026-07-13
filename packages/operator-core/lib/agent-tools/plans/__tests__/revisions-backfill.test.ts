@@ -17,7 +17,7 @@ import type { GitCommit } from '../git-history';
 function commit(over: Partial<GitCommit> = {}): GitCommit {
   return {
     hash: 'abc1234',
-    author: 'Avi',
+    author: 'Dev',
     date: '2026-05-20T12:00:00Z',
     subject: 'plans P-001: ensure the revision table',
     ...over,
@@ -31,7 +31,7 @@ describe('commitToBackfillInput', () => {
       contentHash: hashPlanContent(content),
       content,
       rationale: 'plans P-001: ensure the revision table',
-      authorId: 'Avi',
+      authorId: 'Dev',
       createdAt: Date.parse('2026-05-20T12:00:00Z'),
     });
   });

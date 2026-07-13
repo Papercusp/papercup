@@ -25,7 +25,7 @@ const PLAYWRIGHT_HEADLESS =
 const PLAYWRIGHT_REMOTE_DEBUG =
   '/usr/bin/chromium --remote-debugging-port=0 --user-data-dir=/tmp/pw-xyz about:blank';
 const LIVE_TAURI_DESKTOP =
-  '/home/marsh-office/.local/share/papercusp/papercusp --some-real-flag';
+  '/home/dev/.local/share/papercusp/papercusp --some-real-flag';
 const LIVE_WEBKIT_CHILD = '/usr/lib/webkit2gtk-4.1/WebKitWebProcess 7 12';
 const LIVE_USER_CHROME = '/opt/google/chrome/chrome --profile-directory=Default https://news.example';
 const NON_BROWSER = '/usr/bin/node /home/x/papercup/apps/operator/bin/hono-host.ts';
@@ -221,7 +221,7 @@ function makeDeps(overrides: Partial<DesktopKillDeps> = {}): DesktopKillDeps {
   return {
     listProc: async () => ['1', '2', '3', '100', '200'],
     readCmdline: async (pid) => {
-      if (pid === 100) return '/home/marsh-office/.cargo-target/debug/papercusp-desktop\0';
+      if (pid === 100) return '/home/dev/.cargo-target/debug/papercusp-desktop\0';
       if (pid === 200) return '/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitWebProcess 4 42\0';
       return `process-${pid}`;
     },

@@ -286,7 +286,7 @@ mod tests {
             "source": "claude",
             "intent": "pending workbench launch",
             "currentFiles": [],
-            "host": "main-server-Precision-7865-Tower",
+            "host": "dev-box-linux",
             "pid": null,
             "startedAt": "2026-06-06T04:16:25.864Z",
             "heartbeatAt": "2026-06-06T04:16:25.864Z",
@@ -310,7 +310,7 @@ mod tests {
             "launchStartedAt": "2026-06-06T04:16:25.864Z",
             "display": "workbench",
             "launchArgv": [
-              "/home/marsh-office/.local/bin/psu",
+              "/home/dev/.local/bin/psu",
               "--no-picker",
               "--agent=claude",
               "--plan=pui-reactive-session-panes-2026-06-05"
@@ -332,7 +332,7 @@ mod tests {
         let out = panes_to_open(
             &TrackedPanes::new(),
             &resp.pending,
-            "main-server-Precision-7865-Tower",
+            "dev-box-linux",
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].adv_session_id, 608);

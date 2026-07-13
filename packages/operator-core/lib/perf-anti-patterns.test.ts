@@ -94,7 +94,7 @@ const RULES: Rule[] = [
 ];
 
 // Resolved from the module location, NOT hardcoded to a box path — the old
-// absolute /home/marsh-office/… roots made the walk return nothing on any
+// absolute /home/dev/… roots made the walk return nothing on any
 // other checkout (the CI runner), so every BASELINE entry read as stale
 // (WI-123, nightly rounds 2–3).
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');

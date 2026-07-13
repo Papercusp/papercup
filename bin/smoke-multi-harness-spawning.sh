@@ -11,6 +11,9 @@
 
 set -uo pipefail
 
+# Paths derive from THIS checkout / the invoking user — never one box (WI-4419).
+REPO_ROOT="${PAPERCUSP_REPO_ROOT:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
+
 OPERATOR_BASE="${PAPERCUSP_OPERATOR_BASE:-http://localhost:3055}"
 PASS=0; FAIL=0
 results=()
@@ -23,11 +26,11 @@ token_for() {
   local slug="$1"
   local cfg
   for cfg in \
-    "/home/marsh-office/.papercusp-workspaces/default/.papercusp/projects/$slug/.papercusp/config.json" \
-    "/home/marsh-office/.papercusp/projects/$slug/.papercusp/config.json" \
-    "/home/marsh-office/$slug/.papercusp/config.json" \
-    "/home/marsh-office/.restart-org/.papercusp/config.json" \
-    "/home/marsh-office/sheets-clone/.papercusp/config.json"; do
+    "$HOME/.papercusp-workspaces/default/.papercusp/projects/$slug/.papercusp/config.json" \
+    "$HOME/.papercusp/projects/$slug/.papercusp/config.json" \
+    "$HOME/$slug/.papercusp/config.json" \
+    "$HOME/.restart-org/.papercusp/config.json" \
+    "$HOME/sheets-clone/.papercusp/config.json"; do
     if [ -f "$cfg" ]; then
       jq -r '.harness_token // empty' "$cfg" 2>/dev/null && return 0
     fi
@@ -47,7 +50,7 @@ PGUSER=${PGUSER:-postgres_app} PGPASSWORD=${PGPASSWORD:-postgres} PGHOST=${PGHOS
     DELETE FROM harness_shared.token_index WHERE harness_slug LIKE 'smoke-%';
     DELETE FROM harness_shared.projects WHERE slug LIKE 'smoke-%';
   " 2>/dev/null | tail -2 >/dev/null
-rm -rf /home/marsh-office/.papercusp/projects/smoke-* /home/marsh-office/.papercusp-workspaces/default/.papercusp/projects/smoke-* 2>/dev/null
+rm -rf $HOME/.papercusp/projects/smoke-* $HOME/.papercusp-workspaces/default/.papercusp/projects/smoke-* 2>/dev/null
 echo "  done"
 
 # ── Smoke D — auth model (cheap, no LLM, run first to fail-fast on infra) ──
@@ -105,9 +108,9 @@ else
   [ -n "$MSG" ] && ok "C2 message landed in child inbox" || bad "C2 missing: $MSG"
 
   # Tier 2 substrate context for parent
-  if [ -f /home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/orchestrator/src/tiered-context.ts ]; then
+  if [ -f $REPO_ROOT/libs/papercusp/packages/orchestrator/src/tiered-context.ts ]; then
     cat > /tmp/smoke-tiered-parent.mjs <<EOFJ
-import { fetchSubstrateContext } from '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/orchestrator/src/tiered-context.ts';
+import { fetchSubstrateContext } from '$REPO_ROOT/libs/papercusp/packages/orchestrator/src/tiered-context.ts';
 const ctx = await fetchSubstrateContext({ selfSlug: 'papercup-org', parentSlug: null });
 process.stdout.write(ctx);
 EOFJ
@@ -121,7 +124,7 @@ EOFJ
 
   # Tier 2 substrate context for child should show parent + 5 siblings
   cat > /tmp/smoke-tiered-child.mjs <<EOFJ
-import { fetchSubstrateContext } from '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/orchestrator/src/tiered-context.ts';
+import { fetchSubstrateContext } from '$REPO_ROOT/libs/papercusp/packages/orchestrator/src/tiered-context.ts';
 const ctx = await fetchSubstrateContext({ selfSlug: 'papercup-org-business', parentSlug: 'papercup-org' });
 process.stdout.write(ctx);
 EOFJ
@@ -196,7 +199,7 @@ else
     if [ -d "$CHILD_PATH" ]; then
       cd "$CHILD_PATH"
       PROJECT_DIR="$CHILD_PATH" STATE_DIR="$CHILD_PATH/.papercusp" PAPERCUSP_OPERATOR_BASE="$OPERATOR_BASE" \
-        bash /home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/harness/hooks/builtins/afterDone.sh
+        bash $REPO_ROOT/libs/papercusp/packages/harness/hooks/builtins/afterDone.sh
       sleep 1
       DONE=$(curl -sS "$OPERATOR_BASE/api/harness/papercup-org/inbox?status=all" | jq -e ".messages[] | select(.from_slug == \"$CHILD_SLUG\" and .kind == \"Completion\")" 2>&1)
       [ -n "$DONE" ] && ok "A7 afterDone fired; Completion in parent inbox" || bad "A7 missing: $DONE"

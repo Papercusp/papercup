@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS harness_shared.mobile_devices (
   user_email     TEXT NOT NULL,
   workspace_id   TEXT NOT NULL,
   device_kind    TEXT NOT NULL DEFAULT 'mobile' CHECK (device_kind IN ('mobile')),
-  device_label   TEXT,                                   -- "Avi's iPhone 15", set by phone on first contact
+  device_label   TEXT,                                   -- "the owner's iPhone 15", set by phone on first contact
   paired_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen      TIMESTAMPTZ,
   revoked_at     TIMESTAMPTZ

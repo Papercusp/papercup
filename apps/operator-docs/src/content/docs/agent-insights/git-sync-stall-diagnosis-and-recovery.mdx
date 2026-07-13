@@ -28,7 +28,7 @@ the bg-host (mode 1) or wait/route (modes 2/3).
 Run these read-only checks (replace the path with the canonical tree):
 
 ```
-cd /home/marsh-office/papercupai-workspace/papercup
+cd /home/dev/papercupai-workspace/papercup
 git log -1 --format='%h %cr'          # how stale is HEAD?
 git status --porcelain | wc -l        # dirty count (climbing?)
 journalctl --user -u papercup-bg-host.service -n 1 --no-pager   # is it logging NOW?

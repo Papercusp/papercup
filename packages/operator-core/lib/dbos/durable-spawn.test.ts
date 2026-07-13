@@ -753,7 +753,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       timedOut: false,
       stderr: '',
       rawStdoutTail:
-        '[2026-06-25T09:29:56.452Z] invoke queen rc=1 (stdout: /home/marsh-office/papercupai-workspace/papercup/.papercusp/logs/1782379790-queen.out)',
+        '[2026-06-25T09:29:56.452Z] invoke queen rc=1 (stdout: /home/dev/papercupai-workspace/papercup/.papercusp/logs/1782379790-queen.out)',
     }));
     await expect(
       durableSpawnFireImpl({
@@ -785,7 +785,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       timedOut: false,
       stderr: '',
       rawStdoutTail:
-        '[2026-06-25T21:45:18.129Z] invoke queen rc=1 (stdout: /home/marsh-office/papercupai-workspace/papercup/.papercusp/logs/1782438318-queen.out)',
+        '[2026-06-25T21:45:18.129Z] invoke queen rc=1 (stdout: /home/dev/papercupai-workspace/papercup/.papercusp/logs/1782438318-queen.out)',
     }));
 
     await expect(

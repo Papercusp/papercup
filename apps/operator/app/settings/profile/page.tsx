@@ -101,7 +101,7 @@ export default function ProfilePage() {
         </FormField>
 
         <FormField label="Display name" error={errors.display_name?.message} description={`Shown next to your ${t('pot', { lower: true })} runs and proposals.`}>
-          <input type="text" className="pc-input" placeholder="Avi" {...register('display_name')} />
+          <input type="text" className="pc-input" placeholder="Your name" {...register('display_name')} />
         </FormField>
 
         <FormField label="Default project directory" error={errors.default_project_dir?.message} description={

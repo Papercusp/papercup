@@ -4,7 +4,7 @@
 > discovery artifact: the map, the guardrails, the collision map, and **where
 > every rename lives**, so the agent that picks this up **proceeds straight to
 > fixing** without re-running discovery. Authored 2026-07-11 by su-7a3c4041
-> under owner mandate [Avi 2026-07-11 10:38 EDT]: *"zero residuals of our old
+> under owner mandate [owner 2026-07-11 10:38 EDT]: *"zero residuals of our old
 > names anywhere in our app, frontend or backend."*
 >
 > **Status: discovery DONE, execution DEFERRED ("we'll finish it later" — Avi,

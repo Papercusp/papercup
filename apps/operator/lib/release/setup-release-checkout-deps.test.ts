@@ -390,7 +390,7 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
   it('integration: real better-sqlite3 loads cleanly under the current Node ABI (no rebuild needed)', () => {
     // Run the guard against the REAL integration tree's release checkout to confirm
     // the 2026-06-19 outage class is not currently manifesting.
-    const releaseRoot = '/home/marsh-office/papercupai-workspace/papercup-release';
+    const releaseRoot = '/home/dev/papercupai-workspace/papercup-release';
     if (!existsSync(join(releaseRoot, 'node_modules', 'better-sqlite3'))) {
       // Release checkout not set up — skip (CI / fresh clone); not a test failure.
       return;

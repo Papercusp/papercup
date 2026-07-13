@@ -47,7 +47,7 @@ describe('enrichPlanListRows', () => {
   it('enriches the owner to a verified github member when pot_members has a match', async () => {
     const sql = fakeSql({
       members: [
-        { github_user_id: 42, github_username: 'aviynw2', display_name: 'Avi', avatar_url: 'https://a/42.png', device_attestations: [] },
+        { github_user_id: 42, github_username: 'aviynw2', display_name: 'Dev', avatar_url: 'https://a/42.png', device_attestations: [] },
       ],
     });
     const rows = (await enrichPlanListRows([{ slug: 'a', owner: 'aviynw2@gmail.com', harness: 'papercup' }], {

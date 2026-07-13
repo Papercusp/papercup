@@ -434,7 +434,7 @@ export interface ProposeRubricInput {
 }
 
 // ─── WI-4287: loss-guards + completeness — never silently drop a testing procedure ────
-// [owner:Avi 2026-07-12] "how can we improve our system so that the next agent who
+// [owner 2026-07-12] "how can we improve our system so that the next agent who
 // updates the rubric also knows to add the full detailed testing procedure and doesn't
 // drop it? … i think each aspect should come with its own testing procedure in addition
 // to one main one for the whole rubric." proposeRubric REPLACES the whole document, so

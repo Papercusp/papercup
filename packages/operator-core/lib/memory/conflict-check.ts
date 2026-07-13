@@ -5,7 +5,7 @@
  *
  * P-016's dedup-on-write catches *semantic similarity*, but two
  * memories can be semantically related yet directly contradict (e.g.,
- * "Avi prefers terse responses" vs "Avi prefers verbose responses" —
+ * "Dev prefers terse responses" vs "Dev prefers verbose responses" —
  * not high-cosine, but in conflict). This module runs a small Haiku
  * call against the top-K nearest neighbors to detect that.
  *

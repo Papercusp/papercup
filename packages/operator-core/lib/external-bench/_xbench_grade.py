@@ -10,7 +10,7 @@ import json, os, subprocess, sys
 
 OUT_DIR = os.environ.get("XBENCH_OUT_DIR", "/tmp/xbench-compare-out")
 SAMPLE = os.environ.get("XBENCH_SAMPLE", "/tmp/xbench-sample.jsonl")
-EVAL_DIR = os.environ.get("PAPERCUSP_SWEBENCH_EVAL_DIR", "/home/marsh-office/.papercusp/bench-harnesses/SWE-bench_Pro-os")
+EVAL_DIR = os.environ.get("PAPERCUSP_SWEBENCH_EVAL_DIR", "/home/dev/.papercusp/bench-harnesses/SWE-bench_Pro-os")
 PY = os.environ.get("PAPERCUSP_SWEBENCH_PYTHON", os.path.join(EVAL_DIR, ".venv/bin/python"))
 WORKERS = os.environ.get("PAPERCUSP_SWEBENCH_NUM_WORKERS", "4")
 DOCKERHUB_USER = os.environ.get("PAPERCUSP_SWEBENCH_DOCKERHUB_USER", "jefzda")

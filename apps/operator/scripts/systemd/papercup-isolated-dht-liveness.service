@@ -17,4 +17,4 @@ IOSchedulingPriority=7
 # The probe itself has its own ~15s connect timeout + a 5s teardown budget;
 # 60s gives headroom for node startup + a slow box without masking a genuine hang.
 TimeoutStartSec=60
-ExecStart=/home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/papercup-dht-liveness-check.sh
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-dht-liveness-check.sh

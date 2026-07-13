@@ -51,9 +51,9 @@ Re-run the auditor on every artifact:
 ```sh
 papercusp-desktop/bin/audit-bundle.sh \
   "papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp GUI_0.0.3_amd64.deb" \
-  "/home/marsh-office/Papercusp GUI_0.0.3_x64.dmg" \
-  "/home/marsh-office/Papercusp GUI_0.0.3_x64_en-US.msi" \
-  "/home/marsh-office/Papercusp GUI_0.0.3_x64-setup.exe"
+  "/home/dev/Papercusp GUI_0.0.3_x64.dmg" \
+  "/home/dev/Papercusp GUI_0.0.3_x64_en-US.msi" \
+  "/home/dev/Papercusp GUI_0.0.3_x64-setup.exe"
 ```
 
 Or click **Audit prod bundles for PostHog leaks** in `/admin`. Should print
@@ -185,7 +185,7 @@ In the Mac VM:
 
 ```sh
 scp -i ~/.ssh/papercup-vm-mac -P 2222 \
-  "/home/marsh-office/Papercusp GUI_0.0.3_x64.dmg" \
+  "/home/dev/Papercusp GUI_0.0.3_x64.dmg" \
   aviweiss@127.0.0.1:~
 
 hdiutil attach "~/Papercusp GUI_0.0.3_x64.dmg"
@@ -267,7 +267,7 @@ instead.
 
 ```sh
 scp -i ~/.ssh/papercup-vm-win -P 2223 \
-  "/home/marsh-office/Papercusp GUI_0.0.3_x64_en-US.msi" \
+  "/home/dev/Papercusp GUI_0.0.3_x64_en-US.msi" \
   User@127.0.0.1:.
 
 ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
@@ -344,9 +344,9 @@ Copy this and run top to bottom:
 # 1. Auditor pass
 papercusp-desktop/bin/audit-bundle.sh \
   "papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp GUI_0.0.3_amd64.deb" \
-  "/home/marsh-office/Papercusp GUI_0.0.3_x64.dmg" \
-  "/home/marsh-office/Papercusp GUI_0.0.3_x64_en-US.msi" \
-  "/home/marsh-office/Papercusp GUI_0.0.3_x64-setup.exe"
+  "/home/dev/Papercusp GUI_0.0.3_x64.dmg" \
+  "/home/dev/Papercusp GUI_0.0.3_x64_en-US.msi" \
+  "/home/dev/Papercusp GUI_0.0.3_x64-setup.exe"
 
 # 2. Linux install + launch + smoke
 sudo dpkg -i "papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp GUI_0.0.3_amd64.deb"

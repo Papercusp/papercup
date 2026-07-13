@@ -26,7 +26,7 @@ const MEMBERS = [
   {
     githubUserId: 42,
     githubUsername: 'aviynw2',
-    displayName: 'Avi',
+    displayName: 'Dev',
     avatarUrl: 'https://avatars/42.png',
     deviceAttestations: [att('pk-avi-laptop'), att('pk-avi-desktop')],
   },
@@ -78,7 +78,7 @@ describe('buildIdentityIndex', () => {
   it('dedupes by github_user_id, preferring a row with an avatar', () => {
     const i = buildIdentityIndex([
       { githubUserId: 42, githubUsername: 'aviynw2', displayName: null, avatarUrl: null, deviceAttestations: [] },
-      { githubUserId: 42, githubUsername: 'aviynw2', displayName: 'Avi', avatarUrl: 'https://a/42.png', deviceAttestations: [] },
+      { githubUserId: 42, githubUsername: 'aviynw2', displayName: 'Dev', avatarUrl: 'https://a/42.png', deviceAttestations: [] },
     ]);
     expect(i.byUsername.get('aviynw2')?.avatarUrl).toBe('https://a/42.png');
   });

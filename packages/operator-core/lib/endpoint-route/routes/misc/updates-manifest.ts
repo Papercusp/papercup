@@ -382,7 +382,7 @@ export default defineTool({
 
     // ── LOCAL-only releases: the static release host is AUTHORITATIVE (WI-4389).
     //
-    // [owner:Avi 2026-07-08, restated 07-12] "We are no longer using github for
+    // [owner 2026-07-08, restated 07-12] "We are no longer using github for
     // our releases so just build the installer locally and I will upload it to
     // the right spot." Releases are therefore never published to GitHub — which
     // silently KILLED auto-update: the GitHub path below discovers candidates

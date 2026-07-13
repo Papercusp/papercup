@@ -9,7 +9,7 @@ CORRECT empty-list encoding ("[]" not "'[]'", so eval() yields [] not the string
 """
 import json, sys, ast
 
-SRC = "/home/marsh-office/.papercusp/bench-harnesses/SWE-bench_Pro-os/helper_code/sweap_eval_full_v2.jsonl"
+SRC = "/home/dev/.papercusp/bench-harnesses/SWE-bench_Pro-os/helper_code/sweap_eval_full_v2.jsonl"
 OUT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/xbench-sample.jsonl"
 IDS_FILE = sys.argv[2] if len(sys.argv) > 2 else "/tmp/xbench-chosen-ids.txt"
 

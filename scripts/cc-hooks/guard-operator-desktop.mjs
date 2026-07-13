@@ -17,10 +17,25 @@
  *
  * Source of truth: papercup repo CLAUDE.md → "Running / testing this app".
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DESKTOP_CMD =
-  'cd /home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop && npm run dev';
+/** The desktop dir of THE CHECKOUT THIS HOOK LIVES IN — not one box's path. */
+function desktopDir() {
+  const here = fileURLToPath(new URL('.', import.meta.url));
+  try {
+    const root = execFileSync('git', ['-C', here, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+    }).trim();
+    return join(root, 'papercusp-desktop');
+  } catch {
+    return join(here, '..', '..', 'papercusp-desktop');
+  }
+}
+
+const DESKTOP_CMD = `cd ${desktopDir()} && npm run dev`;
 
 const BLOCK_MSG = [
   '',

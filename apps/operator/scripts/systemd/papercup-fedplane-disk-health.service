@@ -14,4 +14,4 @@ Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 TimeoutStartSec=60
-ExecStart=/home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-disk-health-check.sh
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-disk-health-check.sh

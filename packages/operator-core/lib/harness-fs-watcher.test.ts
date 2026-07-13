@@ -23,7 +23,7 @@ describe('harness-fs-watcher: ignored predicate', () => {
   it('does NOT ignore files inside .papercusp/', () => {
     // The original bug: /\/\.\w/.test('.papercusp/summary.md') → true.
     // Catching this regression is the whole point of this test.
-    expect(ignored('/home/marsh-office/sheets-clone/.papercusp/summary.md')).toBe(false);
+    expect(ignored('/home/dev/sheets-clone/.papercusp/summary.md')).toBe(false);
     expect(ignored('/foo/bar/.papercusp/pending-reviews/abc.json')).toBe(false);
     expect(ignored('/foo/bar/.papercusp/proposals/p1.json')).toBe(false);
   });

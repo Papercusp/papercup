@@ -3,7 +3,7 @@
   "capturedAt": "2026-06-07T01:22:50.344Z",
   "profile": "ci",
   "host": {
-    "hostname": "main-server-Precision-7865-Tower",
+    "hostname": "dev-box-linux",
     "platform": "linux",
     "cpus": 128
   },

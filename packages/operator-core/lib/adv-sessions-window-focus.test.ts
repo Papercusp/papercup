@@ -117,9 +117,9 @@ describe('matchWindowIdInWmctrlOutput — full-title match (owner-hit 2026-07-11
   // terminal titles itself with the coord-owner short id DEEP in the title; the
   // operator's own console-spawn LEADS the title with an "[adv:<id>]" tag.
   const SAMPLE = [
-    '0x01a0000a  2 12345 main-server-Precision-7865-Tower ▶ · ☕2 · 3p · su-78d15 · 🔭 Investigate MCP flakiness',
-    '0x03400017  0 999 main-server-Precision-7865-Tower Claude — Mozilla Firefox',
-    '0x01b00002  1 6789 main-server-Precision-7865-Tower [adv:11569] resuming plan-run 11569…',
+    '0x01a0000a  2 12345 dev-box-linux ▶ · ☕2 · 3p · su-78d15 · 🔭 Investigate MCP flakiness',
+    '0x03400017  0 999 dev-box-linux Claude — Mozilla Firefox',
+    '0x01b00002  1 6789 dev-box-linux [adv:11569] resuming plan-run 11569…',
   ].join('\n');
 
   it('matches a psu short owner-id that sits DEEP in the title (the fix)', async () => {

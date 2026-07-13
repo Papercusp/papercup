@@ -1,7 +1,7 @@
 /**
  * SU-S30 — a suspected bug is FILED unconditionally, even when it self-recovered / looked transient.
  *
- * The BEHAVIORAL test for the "filing is not a judgment call" hardening (owner Avi, 2026-07-11):
+ * The BEHAVIORAL test for the "filing is not a judgment call" hardening (the owner, 2026-07-11):
  * the shared FRICTION_TRIPWIRE + OBSERVATION_CAPTURE_NOTE + the su persona now say that the moment
  * an agent believes it saw a bug — INCLUDING a sub-optimal / false-alarm / self-recovered signal —
  * it must FILE it; only fix-now-vs-leave-filed is the judgment call. This asserts the agent BEHAVES

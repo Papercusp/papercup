@@ -190,7 +190,7 @@ function findBundledPluginsParent(): string | null {
     const { dirname, join } = require('node:path') as typeof import('node:path');
     // Search both cwd and __dirname-equivalent (this module's path).
     // The operator dev server is typically launched from the home dir
-    // (`/home/marsh-office`), so cwd won't find the in-repo plugin
+    // (`/home/dev`), so cwd won't find the in-repo plugin
     // dir; the module's own path always traces back to
     // packages/operator-core/lib and walking up gets us to the repo root.
     const seeds = [process.cwd(), __dirname];
@@ -1335,7 +1335,7 @@ export function _resetPluginHostForTests(): void {
     // plugin's index.cjs not taking effect after POST /api/plugins/host/refresh.
     //
     // Search from BOTH cwd and __dirname. Dev operator launched from the
-    // home dir has cwd=/home/marsh-office where no libs/papercusp/plugins
+    // home dir has cwd=/home/dev where no libs/papercusp/plugins
     // exists — the module's own __dirname is what reliably traces back
     // to the repo.
     const projectPluginRoots = [

@@ -3,6 +3,9 @@
  * Mirrors the deploy:pot MCP tool, with the swarm config carrying our chosen account's deploy token
  * so every member frame runs on THAT account's rate budget. Queen placement = local (no extra frame).
  */
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import '../packages/operator-core/lib/deployment/configure'; // registers latitude+hetzner drivers
 import { deployHive, defaultHiveDeployDeps } from '../packages/operator-core/lib/deployment/hive-deploy';
 
@@ -18,10 +21,10 @@ async function main() {
     region: 'ash',
     provider: {
       sshKeys: ['papercusp-frame-deploy'],
-      runtimeTarball: '/home/marsh-office/.papercusp/frame-runtime.tgz',
-      sshIdentityFile: '/home/marsh-office/.ssh/papercusp-latitude-frame',
+      runtimeTarball: join(homedir(), '.papercusp/frame-runtime.tgz'),
+      sshIdentityFile: join(homedir(), '.ssh/papercusp-latitude-frame'),
     },
-    credentialRef: `token:/home/marsh-office/.papercusp/deploy-credentials/${account}`,
+    credentialRef: `token:${join(homedir(), '.papercusp/deploy-credentials', account)}`,
     accountId: account,
   } as const;
 

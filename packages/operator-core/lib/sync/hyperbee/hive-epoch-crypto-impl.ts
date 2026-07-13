@@ -3,7 +3,7 @@
  * seam (shared-pot-release-testing Brief RE-KEY / C-001 / E-001 / Move 2).
  * su-ed300's half; K (su-313d1) owns the boundary/distribution/serving consumer.
  *
- * OWNER-GREENLIT (Avi, 2026-06-19): member-remove / go-private MUST cut a removed
+ * OWNER-GREENLIT (the owner, 2026-06-19): member-remove / go-private MUST cut a removed
  * peer's READ access to post-boundary content. The load-bearing cut is CRYPTO:
  * content is encrypted under a per-epoch key, and on a boundary the epoch advances
  * and the new key is wrapped to the REMAINING members only.

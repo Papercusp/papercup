@@ -14,7 +14,7 @@ function commit(over: Partial<LaidOutCommit> = {}): LaidOutCommit {
     sha: 'abc123',
     parents: [],
     subject: 'init',
-    author: 'Avi',
+    author: 'Dev',
     ts: Date.now(),
     refs: [],
     lane: 0,
@@ -68,7 +68,7 @@ describe('refLabel', () => {
 });
 
 describe('matchesCommit', () => {
-  const c = commit({ sha: 'deadbeef', subject: 'Fix the widget', author: 'Avi', refs: ['origin/main'] });
+  const c = commit({ sha: 'deadbeef', subject: 'Fix the widget', author: 'Dev', refs: ['origin/main'] });
   it('matches every commit on an empty needle', () => {
     expect(matchesCommit(c, '')).toBe(true);
   });

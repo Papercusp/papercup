@@ -23,7 +23,8 @@
 set -uo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────
-REPO_ROOT="${PAPERCUSP_REPO_ROOT:-/home/marsh-office/papercupai-workspace/papercusp}"
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${PAPERCUSP_REPO_ROOT:-$(git -C "$_HERE" rev-parse --show-toplevel 2>/dev/null || (cd "$_HERE/../../.." && pwd))}"
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:3055}"
 LOG_DIR="${LLM_TEST_LOG_DIR:-$HOME/.papercusp/llm-test-logs}"
 TARGETS="${LLM_TEST_TARGETS:-operator oracle}"

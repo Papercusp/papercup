@@ -14,7 +14,7 @@
  *
  * ADDITIVE: the local roster is unchanged. On a single box with no federated
  * peers (shared_presence empty — the current dev reality), this contributes
- * nothing; it lights up when real peers announce. Per-USER aggregation ("Avi is
+ * nothing; it lights up when real peers announce. Per-USER aggregation ("the owner is
  * here on 2 machines") is a display concern — group the records by `userId`.
  */
 

@@ -19,9 +19,12 @@ import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const BASELINE_PATH =
-  '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql/000-baseline.sql';
+/** Repo-relative — resolved from THIS script's location, not a hardcoded box path. */
+const BASELINE_PATH = fileURLToPath(
+  new URL('../../../libs/papercusp/libs/db/sql/000-baseline.sql', import.meta.url),
+);
 
 /**
  * Extract the live emit_change_notify() definition from the baseline dump.

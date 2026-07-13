@@ -11,7 +11,7 @@
 // pane. In particular, when the source detail query resolves EMPTY (a webview
 // race where the SSE cache answers before the row is materialized), the clicked
 // row's ANCHOR must stay visible — never a bare "Select a thread" that reads as
-// "the click did nothing" (the symptom Avi reported). MessagesView already had
+// "the click did nothing" (the symptom the owner reported). MessagesView already had
 // this list-row fallback; ThreadsView/DeliberationsView/AgentChatsView did not.
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

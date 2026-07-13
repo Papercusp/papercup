@@ -57,10 +57,10 @@ describe('runtimeRoot', () => {
 
   it('win32 + LOCALAPPDATA → joins under it', async () => {
     setPlatform('win32');
-    process.env.LOCALAPPDATA = 'C:\\Users\\Avi\\AppData\\Local';
+    process.env.LOCALAPPDATA = 'C:\\Users\\dev\\AppData\\Local';
     const m = await loadRuntimeDir();
     expect(m.runtimeRoot()).toBe(
-      join('C:\\Users\\Avi\\AppData\\Local', 'Papercusp', 'runtime'),
+      join('C:\\Users\\dev\\AppData\\Local', 'Papercusp', 'runtime'),
     );
   });
 

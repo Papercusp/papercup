@@ -8,11 +8,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { evaluateProgramSuccess, type ProgramSuccessReport } from './success-metrics';
+import { evaluateProgramSuccess, type ProgramSuccessReport, type ProgramSuccessInputs } from './success-metrics';
 import type { ScoutQualityInputs } from './quality-metrics';
 import type { ScoutTickRecord } from './tick-ledger';
 import type { RoutedIdeaProvenance, LensOutcomeReport } from './outcome-feedback';
-import { SU_IDEATION_LENSES, type SuIdeationLens } from './types';
+import { SU_IDEATION_LENSES, type SuIdeationLens, type CreativeLens } from './types';
 
 const emptyOutcomes = (): LensOutcomeReport<SuIdeationLens> => ({
   byLens: Object.fromEntries(
@@ -37,10 +37,16 @@ const idea = (over: Partial<RoutedIdeaProvenance> = {}): RoutedIdeaProvenance =>
   ...over,
 });
 
-const inputs = (
-  ticks: ScoutTickRecord[],
-  routedIdeas: RoutedIdeaProvenance[],
-): ScoutQualityInputs<SuIdeationLens> => ({ ticks, routedIdeas, lensOutcomes: emptyOutcomes() });
+/**
+ * The two-partition shape: cadence bars read the SCOUT tick partition, idea bars read every
+ * routed idea. The fixtures pass the same ideas as both the cadence partition's ledger (so
+ * the per-cycle reconcile join has rows) and the union — which is what production does for
+ * a scout-origin idea.
+ */
+const inputs = (ticks: ScoutTickRecord[], routedIdeas: RoutedIdeaProvenance[]): ProgramSuccessInputs => ({
+  cadence: { ticks, routedIdeas, lensOutcomes: emptyOutcomes() } as unknown as ScoutQualityInputs<CreativeLens>,
+  ideas: routedIdeas,
+});
 
 const bar = (r: ProgramSuccessReport, key: string) => r.criteria.find((c) => c.key === key)!;
 

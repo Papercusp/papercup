@@ -61,7 +61,10 @@ export interface ReleaseConfig {
   memoryCanaryPolicy: 'off' | 'report' | 'block';
 }
 
-const FALLBACK_INTEGRATION = '/home/marsh-office/papercupai-workspace/papercusp';
+/** Last resort when `git rev-parse` fails: walk up from THIS file (apps/operator/lib/release)
+ *  to the repo root. Never a hardcoded /home/<user>/… — that is wrong on every machine but
+ *  one, and it ships the owner's identity in the release source drop (WI-4419). */
+const FALLBACK_INTEGRATION = path.resolve(__dirname, '..', '..', '..', '..');
 
 /** Repo root containing THIS script (the integration tree, since it's committed there). */
 function scriptRepoRoot(): string {

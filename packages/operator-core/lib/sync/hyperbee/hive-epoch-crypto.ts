@@ -2,7 +2,7 @@
  * hive-epoch-crypto — the SEAM between the read-plane re-key's two halves
  * (shared-pot-release-testing Brief RE-KEY / C-001 / E-001 / Move 2).
  *
- * OWNER-GREENLIT (Avi, 2026-06-19): member-remove / go-private MUST cut a removed
+ * OWNER-GREENLIT (the owner, 2026-06-19): member-remove / go-private MUST cut a removed
  * peer's READ access to post-boundary content. The load-bearing cut is CRYPTO: content
  * is encrypted under a per-epoch key, and on a boundary the epoch advances and the new
  * key is distributed to the REMAINING members only — a removed peer can still replicate

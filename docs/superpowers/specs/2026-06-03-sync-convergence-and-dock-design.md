@@ -1,7 +1,7 @@
 # Spec: app-wide live-query convergence + generalized dock
 
 Date: 2026-06-03
-Author: Claude (autonomous run, authorized by Avi)
+Author: Claude (autonomous run, authorized by the owner)
 Status: **IN PROGRESS** — see Status Log at bottom.
 
 > This doc is BOTH the design record AND the resumable execution checklist.

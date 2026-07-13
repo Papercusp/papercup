@@ -32,7 +32,7 @@ describe('parsePromptEditLog', () => {
     expect(edits[0]).toEqual({
       sha: SHA_A,
       tsMs: 1765522800_000,
-      author: 'Avi',
+      author: 'Dev',
       subject: 'tighten su playbook locking rules',
       file: 'apps/operator/prompts/papercusp-su-engineer.tools.md',
     });
@@ -54,7 +54,7 @@ describe('parsePromptEditLog', () => {
     // A header with a garbage timestamp invalidates its file group only.
     const mixed = [`${SHA_A}\tnot-a-ts\tAvi\tbad`, 'a.md', '', `${SHA_B}\t1700000000\tAvi\tgood`, 'b.md'].join('\n');
     expect(parsePromptEditLog(mixed)).toEqual([
-      { sha: SHA_B, tsMs: 1700000000_000, author: 'Avi', subject: 'good', file: 'b.md' },
+      { sha: SHA_B, tsMs: 1700000000_000, author: 'Dev', subject: 'good', file: 'b.md' },
     ]);
   });
 });
@@ -91,7 +91,7 @@ describe('scanRepoPromptEdits', () => {
       targetKind: 'prompt-file',
       target: 'apps/operator/prompts/papercusp-su-engineer.tools.md',
       diffRef: SHA_A,
-      actor: 'Avi',
+      actor: 'Dev',
       recordedAtMs: 1765522800_000,
     });
   });

@@ -14,7 +14,7 @@ needs a restart — that's the part with the restart instructions.
 ## Level 1 — Unit suite (no restart, ~3s, proves the code)
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp/packages/operator-core
+cd /home/dev/papercupai-workspace/papercusp/packages/operator-core
 npx vitest run lib/behaviour-suite/ lib/agent-tools/behaviour/
 ```
 
@@ -29,7 +29,7 @@ This runs the exact scoring path the live tool uses, straight from the library, 
 sessions that already ran. No operator restart, no launch.
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp/packages/operator-core
+cd /home/dev/papercupai-workspace/papercusp/packages/operator-core
 npx tsx -e '
 import { resolveSessionTranscript } from "./lib/behaviour-suite/runner-node";
 import { scoreTranscriptLines } from "./lib/behaviour-suite/runner";

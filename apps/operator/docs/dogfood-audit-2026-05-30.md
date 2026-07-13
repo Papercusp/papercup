@@ -1,7 +1,7 @@
 # Dogfood arc — code-truth audit (2026-05-30)
 
 Item-by-item audit of the whole dogfood plan corpus against the real codebase at
-`/home/marsh-office/papercupai-workspace/papercup` (branch `main`). **Code is the only
+`/home/dev/papercupai-workspace/papercup` (branch `main`). **Code is the only
 source of truth** — every verdict below was traced to actual implementation + wiring
 (not the plan's own status claims, which are frequently optimistic). Verdicts:
 IMPLEMENTED (built + wired) · PARTIAL · STUB (code exists, no caller/route) · MISSING ·

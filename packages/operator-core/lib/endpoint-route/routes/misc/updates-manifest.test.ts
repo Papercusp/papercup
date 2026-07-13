@@ -348,7 +348,7 @@ describe('GET /api/updates/manifest — graceful degradation when GitHub is unre
 
 /**
  * WI-4389: LOCAL-only release discovery. Releases are no longer published to
- * GitHub [owner:Avi 2026-07-08], so the GitHub path finds no candidate and
+ * GitHub [owner 2026-07-08], so the GitHub path finds no candidate and
  * returns a 204 the updater reads as "up to date" — auto-update dies silently.
  * When PAPERCUSP_RELEASE_HOST is set it is now the AUTHORITATIVE source and
  * GitHub must not be consulted at all.

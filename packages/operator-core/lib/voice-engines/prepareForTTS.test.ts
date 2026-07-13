@@ -93,10 +93,10 @@ describe('{name} token + budget', () => {
   it('strips {name} within 5-min budget window', () => {
     const r = call('Heads up, {name} — replan.', {
       mode: 'apologetic',
-      name: 'Avi',
+      name: 'Dev',
       lastNameUseAt: NOW - 60_000,
     });
-    expect(r.text).not.toContain('Avi');
+    expect(r.text).not.toContain('Dev');
     expect(r.nameUsed).toBe(false);
   });
   it('substitutes outside budget window in apologetic mode', () => {
@@ -104,7 +104,7 @@ describe('{name} token + budget', () => {
     const samples = Array.from({ length: 30 }, () =>
       call('Heads up, {name} — replan.', {
         mode: 'apologetic',
-        name: 'Avi',
+        name: 'Dev',
         lastNameUseAt: NOW - 10 * 60_000,
       }),
     );
@@ -116,28 +116,28 @@ describe('{name} token + budget', () => {
     const samples = Array.from({ length: 50 }, () =>
       call('Heads up, {name} — done.', {
         mode: 'default',
-        name: 'Avi',
+        name: 'Dev',
         lastNameUseAt: NOW - 10 * 60_000,
       }),
     );
     expect(samples.every((s) => !s.nameUsed)).toBe(true);
-    expect(samples.every((s) => !s.text!.includes('Avi'))).toBe(true);
+    expect(samples.every((s) => !s.text!.includes('Dev'))).toBe(true);
   });
   it('refuses substitution when {name} is first', () => {
     const r = call('{name}, replan now.', {
       mode: 'apologetic',
-      name: 'Avi',
+      name: 'Dev',
       lastNameUseAt: NOW - 10 * 60_000,
     });
     expect(r.nameUsed).toBe(false);
-    expect(r.text).not.toContain('Avi');
+    expect(r.text).not.toContain('Dev');
   });
   it('refuses substitution when {name} is last', () => {
     // Even with 100% rate, last-position should strip.
     const samples = Array.from({ length: 20 }, () =>
       call('That was wrong, {name}.', {
         mode: 'apologetic',
-        name: 'Avi',
+        name: 'Dev',
         lastNameUseAt: NOW - 10 * 60_000,
       }),
     );

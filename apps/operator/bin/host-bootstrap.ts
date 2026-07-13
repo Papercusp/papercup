@@ -227,6 +227,26 @@ export function runBootstrap(): void {
     }
   })();
 
+  // [EI-10625 startup validation] Declared-vs-materialized learning singletons. The guard
+  // above checks that the routines we HAVE resolve; this one checks that the routines we
+  // DECLARED exist at all — a loop added to LEARNING_SINGLETONS whose routine row was never
+  // materialized has no row to inspect, so no row-scanning check can ever see it. That is
+  // how the memory recall canary (EI-10047) sat dead on arrival for its whole life: 0 runs,
+  // no error, and a health panel that read `n/a`. Read-only + fail-soft: a boot must never
+  // die over a health check, and healing is an explicit human act (--reconcile --execute).
+  void (async () => {
+    try {
+      const { validateDeclaredSingletons } = await import(
+        '@papercusp/operator-core/lib/startup/validate-declared-singletons'
+      );
+      const r = await validateDeclaredSingletons();
+      if (r.ok) console.log(`[declared-singletons] startup validation passed — ${r.checked} loop(s) materialized`);
+      // The not-ok path already logged FATAL, naming each loop that will never run.
+    } catch (e) {
+      console.warn('[declared-singletons] startup validation skipped (non-fatal):', (e as Error)?.message ?? e);
+    }
+  })();
+
   // [ship-papercusp-as-single-hive 2026-06-23, owner-directed] On a PACKAGED desktop
   // install, ensure the `papercusp` dogfood hive exists — clone the repo on first
   // boot (too large to bundle, ~5GB) and home on it — so the app ships with

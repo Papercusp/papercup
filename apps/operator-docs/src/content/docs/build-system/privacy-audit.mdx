@@ -88,9 +88,9 @@ If `7z` (or `hdiutil`/`rpm2cpio`) isn't available for a given format, the script
 
 ```sh
 bin/audit-bundle.sh path/to/Papercusp_0.0.1_amd64.deb
-bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x86_64.dmg \
-                    /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
-                    /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+bin/audit-bundle.sh /home/dev/Papercusp_0.0.1_x86_64.dmg \
+                    /home/dev/Papercusp_0.0.1_x64_en-US.msi \
+                    /home/dev/Papercusp_0.0.1_x64-setup.exe
 ```
 
 Exit codes:
@@ -103,7 +103,7 @@ Exit codes:
 Three integration points:
 
 1. **Inside each prod-build command** (Linux, Mac, Windows): the build script runs the auditor on its own output before declaring success. A bundled leak fails the build.
-2. **Standalone "Audit prod bundles for PostHog leaks" card** — re-runs against the local `papercusp-desktop/src-tauri/target/release/bundle/{deb,rpm}` artifacts plus any `.dmg`/`.msi`/`.exe` in `/home/marsh-office/`.
+2. **Standalone "Audit prod bundles for PostHog leaks" card** — re-runs against the local `papercusp-desktop/src-tauri/target/release/bundle/{deb,rpm}` artifacts plus any `.dmg`/`.msi`/`.exe` in `/home/dev/`.
 3. **CI-equivalent local check** — `papercusp-desktop/bin/audit-bundle.sh` can be called from any context; consider adding it to a pre-release script if/when one exists.
 
 ## Verified-clean status (2026-05-13)

@@ -22,8 +22,13 @@
 # 50-staging-checkout.conf drop-in, daemon-reload, restart papercup-staging-api.
 set -euo pipefail
 
-INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-/home/marsh-office/papercupai-workspace/papercusp}"
-STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-/home/marsh-office/papercupai-workspace/papercusp-staging}"
+# Default to the checkout this script actually lives in — never one box's path
+# (WI-4419: a hardcoded /home/<user>/… default is wrong on every other machine
+# AND ships the owner's identity inside the release source drop).
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_DEFAULT="$(git -C "$_HERE" rev-parse --show-toplevel 2>/dev/null || (cd "$_HERE/../../../.." && pwd))"
+INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$_REPO_DEFAULT}"
+STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp-staging}"
 UNIT="${PAPERCUSP_STAGING_UNIT:-papercup-staging-api.service}"
 HEALTH_URL="${PAPERCUSP_STAGING_HEALTH_URL:-http://127.0.0.1:3170/api/health}"
 BRANCH="${PAPERCUSP_INTEGRATION_BRANCH:-staging}"

@@ -3,7 +3,7 @@ Description=Live 2-peer federation gate (WI-261) — runs the two-instance smoke
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop
+WorkingDirectory=%h/papercupai-workspace/papercusp/papercusp-desktop
 # SKIP_FROMREPO=1: the from-repo leg is expected-RED while WI-971 is open (outbox drain
 # never wired for joined/created hive harnesses; WI-259 was closed as its duplicate,
 # WI-280 + WI-1666 are resolved) — running it would file a noise EI for a known-open bug.

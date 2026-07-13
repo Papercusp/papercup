@@ -74,7 +74,7 @@ async function recordOriginal(over: { planSlug?: string | null; cwd?: string } =
     mode: 'console',
     workspaceId: WS,
     planSlug: over.planSlug ?? 'my-plan-2026-07-02',
-    cwd: over.cwd ?? '/home/marsh-office/papercupai-workspace/papercusp',
+    cwd: over.cwd ?? '/home/dev/papercupai-workspace/papercusp',
     coordOwnerId,
     sessionId: nativeId,
   });
@@ -98,7 +98,7 @@ async function mintFork(original: { id: number; coordOwnerId: string; nativeId: 
     coordOwnerId: original.coordOwnerId,
     id: original.id,
     workspaceId: WS,
-    cwd: '/home/marsh-office/papercupai-workspace/papercusp',
+    cwd: '/home/dev/papercupai-workspace/papercusp',
     planSlug: 'my-plan-2026-07-02',
   };
   const body = forkBootstrapBody(source); // REAL launcher fn

@@ -115,7 +115,7 @@ const MOBILE_PRINCIPAL: Principal = {
   authMethod: 'jwt',
   trust: 'verified',
   capabilities: new Set(['device:*']),
-  label: 'avi@storewolf.com',
+  label: 'dev@example.com',
 };
 
 function ctx(overrides: Partial<RouteContext<any>> = {}): RouteContext<any> {

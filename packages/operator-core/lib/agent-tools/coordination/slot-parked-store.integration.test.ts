@@ -264,7 +264,7 @@ describe('user mailbox (@user: offline-member assign)', () => {
     await parkAssignment('asg1', 'gh:12345', 1000);
 
     // The member returns; their session resolves the full key ladder.
-    const keys = ['gh:12345', 'avi@storewolf.com', 'pus-returning-session'];
+    const keys = ['gh:12345', 'dev@example.com', 'pus-returning-session'];
     const first = await drainUserMailbox(sql, { keys, toOwner: 'pus-returning-session', nowMs: 2000 });
     expect(first.map((e) => e.msg_id)).toEqual(['asg1']);
 

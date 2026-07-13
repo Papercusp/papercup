@@ -122,7 +122,7 @@ console.log(relay.stats());
 #### 1. Implement or extend voice-mesh scenario (if not done)
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercup
+cd /home/dev/papercupai-workspace/papercup
 
 # The scenario structure should:
 # - Launch N operator voice-nodes (N=2, 5, 10)

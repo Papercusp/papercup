@@ -26,9 +26,10 @@
 //     not covered — this hook pairs with the persona row, it does not replace review.
 //   - `--self-test` runs the embedded cases (no stdin needed) and exits non-zero on failure.
 //
+import { homedir } from 'node:os';
 import process from 'node:process';
 
-const HOME = process.env.HOME || '/home/marsh-office';
+const HOME = process.env.HOME || homedir();
 const DEFAULT_TREES = [`${HOME}/papercupai-workspace/`, `${HOME}/.papercusp-workspaces/clones/`];
 
 const PATTERNS = [

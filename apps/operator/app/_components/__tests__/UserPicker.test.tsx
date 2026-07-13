@@ -45,7 +45,7 @@ beforeEach(() => {
     if (url === '/api/auth/me') {
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ user: { id: 'u1', username: 'avi', display_name: 'Avi', has_password: true }, autoLogin: false }),
+        json: () => Promise.resolve({ user: { id: 'u1', username: 'avi', display_name: 'Dev', has_password: true }, autoLogin: false }),
       });
     }
     if (url === '/api/auth/logout') {

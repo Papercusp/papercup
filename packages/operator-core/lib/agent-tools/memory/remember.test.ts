@@ -203,7 +203,7 @@ describe('memory:remember — anchor extraction (P-015)', () => {
 
     await remember.handler(
       {
-        content: 'Avi prefers terse responses',
+        content: 'Dev prefers terse responses',
         kind: 'feedback',
       },
       fakeCtx,
@@ -250,12 +250,12 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
 
   it('refuses an unmistakable duplicate (near-verbatim text)', async () => {
     const b = fakeBackend([
-      { id: 'mem-old', text: 'Avi prefers terse responses', score: 0.95 },
+      { id: 'mem-old', text: 'Dev prefers terse responses', score: 0.95 },
     ]);
     useBackend(b);
 
     const res = await remember.handler(
-      { content: 'Avi prefers terse responses.', kind: 'feedback' },
+      { content: 'Dev prefers terse responses.', kind: 'feedback' },
       fakeCtx,
     );
     const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
@@ -264,7 +264,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     expect(parsed.reason).toBe('similar_exists');
     expect(parsed.similar_memory_id).toBe('mem-old');
     expect(parsed.similar_score).toBeGreaterThanOrEqual(0.9);
-    expect(parsed.similar_text).toBe('Avi prefers terse responses');
+    expect(parsed.similar_text).toBe('Dev prefers terse responses');
     expect(b.remember).not.toHaveBeenCalled();
   });
 
@@ -319,12 +319,12 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     // intent never once worked on the live backend, and erring toward keeping a
     // fact is the safe side of this trade. Follow-up: expose a real metric leg.
     const b = fakeBackend([
-      { id: 'mem-old', text: 'Avi prefers terse responses', score: 0.95 },
+      { id: 'mem-old', text: 'Dev prefers terse responses', score: 0.95 },
     ]);
     useBackend(b);
 
     const res = await remember.handler(
-      { content: 'Avi prefers short responses', kind: 'feedback' },
+      { content: 'Dev prefers short responses', kind: 'feedback' },
       fakeCtx,
     );
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
@@ -347,13 +347,13 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
 
   it('force: true bypasses the dedup check', async () => {
     const b = fakeBackend([
-      { id: 'mem-old', text: 'Avi prefers terse responses', score: 0.99 },
+      { id: 'mem-old', text: 'Dev prefers terse responses', score: 0.99 },
     ]);
     useBackend(b);
 
     const res = await remember.handler(
       {
-        content: 'Avi prefers terse responses',
+        content: 'Dev prefers terse responses',
         kind: 'feedback',
         force: true,
       },
@@ -424,7 +424,7 @@ describe('memory:remember — runbook-shape boundary nudge (EI-2032)', () => {
   const runbook = '# Runbook\n\n' + Array.from({ length: 18 }, (_, i) => `## Step ${i}\n- ${'do the thing '.repeat(6)}`).join('\n\n');
 
   it('no nudge for a short fact', () => {
-    expect(runbookShapeHint('Avi prefers terse responses.')).toBeNull();
+    expect(runbookShapeHint('Dev prefers terse responses.')).toBeNull();
   });
 
   it('no nudge for a long but UNSTRUCTURED single-paragraph fact', () => {
@@ -496,7 +496,7 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
     } as unknown as ReturnType<typeof getOrgPg>);
 
     await remember.handler(
-      { content: 'Avi prefers terse responses', kind: 'feedback' },
+      { content: 'Dev prefers terse responses', kind: 'feedback' },
       fakeCtx,
     );
     await new Promise((r) => setImmediate(r));
@@ -780,7 +780,7 @@ describe('memory:remember kind coercion (WI-1982)', () => {
 
   describe('through the real args schema (the ~12 kind-rejections that now parse)', () => {
     it("a legacy kind:'identity' now parses to 'user' (was: kind Invalid option)", () => {
-      expect(parse({ content: 'Avi is the owner', kind: 'identity' }).kind).toBe('user');
+      expect(parse({ content: 'Dev is the owner', kind: 'identity' }).kind).toBe('user');
     });
 
     it("a free-form kind:'fact' parses to 'reference'", () => {

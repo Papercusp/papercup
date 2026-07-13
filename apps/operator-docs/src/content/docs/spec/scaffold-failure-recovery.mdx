@@ -104,8 +104,8 @@ PGUSER=postgres_app PGPASSWORD=postgres psql -d papercusp <<SQL
 DELETE FROM harness_shared.token_index WHERE harness_slug LIKE 'smoke-%';
 DELETE FROM harness_shared.projects WHERE slug LIKE 'smoke-%';
 SQL
-rm -rf /home/marsh-office/.papercusp/projects/smoke-* \
-       /home/marsh-office/.papercusp-workspaces/default/.papercusp/projects/smoke-*
+rm -rf /home/dev/.papercusp/projects/smoke-* \
+       /home/dev/.papercusp-workspaces/default/.papercusp/projects/smoke-*
 ```
 
 For schema drops: enumerate `\dn harness_*` in psql and drop the offending ones with `DROP SCHEMA ... CASCADE`.

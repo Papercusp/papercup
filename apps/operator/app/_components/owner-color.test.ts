@@ -7,7 +7,7 @@ import { ownerHue, ownerColor } from './owner-color';
 describe('ownerHue / ownerColor', () => {
   it('is deterministic + case/space-insensitive for the same identity', () => {
     expect(ownerHue('avi@x.com')).toBe(ownerHue('avi@x.com'));
-    expect(ownerHue('Avi@X.com ')).toBe(ownerHue('avi@x.com'));
+    expect(ownerHue('Dev@X.com ')).toBe(ownerHue('avi@x.com'));
     expect(ownerColor('avi@x.com')).toBe(ownerColor('AVI@X.COM'));
   });
 

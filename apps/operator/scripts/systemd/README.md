@@ -174,7 +174,7 @@ safe — their parent is definitively dead.
 ## Install (one-time)
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+cd /home/dev/papercupai-workspace/papercusp/apps/operator/scripts/systemd
 ln -sf "$(pwd)/papercup-webkit-reaper.service" ~/.config/systemd/user/
 ln -sf "$(pwd)/papercup-webkit-reaper.timer"   ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -192,7 +192,7 @@ systemctl --user status papercup-webkit-reaper.service
 
 ```bash
 # Dry run (logs what it would kill without touching anything):
-WEBKIT_REAPER_DRY_RUN=1 /home/marsh-office/papercupai-workspace/papercusp/bin/reap-leaked-webviews.sh
+WEBKIT_REAPER_DRY_RUN=1 /home/dev/papercupai-workspace/papercusp/bin/reap-leaked-webviews.sh
 
 # Live run:
 systemctl --user start papercup-webkit-reaper.service
@@ -241,7 +241,7 @@ filed EI, not something this script does automatically.
 ## Install (one-time)
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+cd /home/dev/papercupai-workspace/papercusp/apps/operator/scripts/systemd
 ln -sf "$(pwd)/papercup-isolated-dht-liveness.service" ~/.config/systemd/user/
 ln -sf "$(pwd)/papercup-isolated-dht-liveness.timer"   ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -321,7 +321,7 @@ off the filed EI.
 ## Install — Linux (systemd --user)
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+cd /home/dev/papercupai-workspace/papercusp/apps/operator/scripts/systemd
 ln -sf "$(pwd)/papercup-fedplane-disk-health.service" ~/.config/systemd/user/
 ln -sf "$(pwd)/papercup-fedplane-disk-health.timer"   ~/.config/systemd/user/
 systemctl --user daemon-reload

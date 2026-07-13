@@ -13,7 +13,7 @@
  *   recipient sessionState LIVE) auto-fires that recipient's standing
  *   inbox-wake (`coord:inbox-wake:<ownerId>`, always-armed at SessionStart).
  *
- * Ratified defaults (self-ratified under AUTO 2026-07-11, disclosed to Avi):
+ * Ratified defaults (self-ratified under AUTO 2026-07-11, disclosed to the owner):
  *   - TTL 5 min (env PAPERCUSP_COORD_LADDER_TTL_MS, clamped >=60s).
  *   - "Directed" = explicit ownerId sends ONLY — never a broadcast or
  *     `@audience` selector (no `audience` stamp; mirrors unanswered-directed's

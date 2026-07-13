@@ -10,11 +10,12 @@
 #
 # Pin: XBENCH_TIER=opus46 (claude-opus-4-6:xhigh) — the fair same-model comparison vs mini-swe-agent.
 set -uo pipefail
-cd /home/marsh-office/papercupai-workspace/papercup
+REPO="${PAPERCUSP_REPO_ROOT:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
+cd "$REPO"
 
 OUT=/tmp/xbench-strat30-su-46v2
-SAMPLE=/home/marsh-office/.papercusp/bench-results/stratified-30/tasks.jsonl
-SCRIPT=/home/marsh-office/papercupai-workspace/papercup/packages/operator-core/lib/external-bench/_xbench_su_compare.ts
+SAMPLE="$HOME/.papercusp/bench-results/stratified-30/tasks.jsonl"
+SCRIPT="$REPO/packages/operator-core/lib/external-bench/_xbench_su_compare.ts"
 CANON=/tmp/_canon30.txt
 RESULTS=$OUT/su-independent.results.jsonl
 MAX_ROUNDS=${XBENCH_RESUME_ROUNDS:-5}

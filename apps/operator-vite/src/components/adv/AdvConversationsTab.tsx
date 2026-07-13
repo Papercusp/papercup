@@ -1301,7 +1301,7 @@ function FeedView() {
   // The clicked row's ROOT (a reply/ack folds into its parent) is what the
   // detail pane renders — mirroring the curated Conversations master/detail:
   // left LIST rail of rows, click → open in the main detail pane (WI-4216,
-  // [owner:Avi 2026-07-12] "make it work just like the curated Conversations
+  // [owner 2026-07-12] "make it work just like the curated Conversations
   // pane"). NOT a full-width inline-expand stream.
   const selectedRoot = rootForOpen ? allRows.find((r) => r.msg_id === rootForOpen) : null;
 
@@ -3891,7 +3891,7 @@ function AdvConvStyles() {
         border-color: color-mix(in oklab, var(--advconv-accent), transparent 58%);
         background: var(--advconv-accent-soft);
       }
-      /* ── Master/detail (WI-4216, owner:Avi 2026-07-12 "make it work just like
+      /* ── Master/detail (WI-4216, owner 2026-07-12 "make it work just like
          the curated Conversations pane"). The feed renders inside ConvFrame's
          list rail (compact clickable rows) + main detail pane (the opened
          message), instead of a full-width inline-expand stream. ── */

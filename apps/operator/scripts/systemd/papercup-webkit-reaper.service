@@ -14,4 +14,4 @@ IOSchedulingPriority=7
 # Reaper should finish in seconds; 30s timeout prevents a stuck ps/proc read
 # from blocking the next timer tick.
 TimeoutStartSec=30
-ExecStart=/home/marsh-office/papercupai-workspace/papercusp/bin/reap-leaked-webviews.sh
+ExecStart=%h/papercupai-workspace/papercusp/bin/reap-leaked-webviews.sh

@@ -66,7 +66,7 @@ class HiveSolver(BasePBSolver):
     """Drive the Papercup opus hive to replicate a paper, then upload its `/home/submission`."""
 
     operator_dir: str = chz.field(
-        default="/home/marsh-office/papercupai-workspace/papercup",
+        default="/home/dev/papercupai-workspace/papercup",
         doc="The papercup checkout the hive driver runs from (cwd for the tsx driver).",
     )
     driver_script: str = chz.field(

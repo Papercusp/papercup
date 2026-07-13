@@ -10,8 +10,8 @@
 import { describe, expect, it } from 'vitest';
 import { resolveSuLaunchCwd } from './su-launch-cwd';
 
-const HOME = '/home/marsh-office';
-const INTERNAL = '/home/marsh-office/.papercusp'; // envelope.cwd — under ~, not ~
+const HOME = '/home/dev';
+const INTERNAL = '/home/dev/.papercusp'; // envelope.cwd — under ~, not ~
 
 describe('resolveSuLaunchCwd (EI-202)', () => {
   it('relocates a no-harness $HOME caller cwd to the internal workspace root', () => {
@@ -27,14 +27,14 @@ describe('resolveSuLaunchCwd (EI-202)', () => {
   });
 
   it('keeps a non-$HOME caller cwd (a real project dir) — resume-friendly, no leak', () => {
-    const projectDir = '/home/marsh-office/papercupai-workspace/papercup';
+    const projectDir = '/home/dev/papercupai-workspace/papercup';
     expect(
       resolveSuLaunchCwd({ harnessSlug: null, callerCwd: projectDir, envelopeCwd: INTERNAL, home: HOME }),
     ).toBe(projectDir);
   });
 
   it('keeps a cwd one level below $HOME (only the exact-$HOME case leaks)', () => {
-    const sub = '/home/marsh-office/work';
+    const sub = '/home/dev/work';
     expect(
       resolveSuLaunchCwd({ harnessSlug: null, callerCwd: sub, envelopeCwd: INTERNAL, home: HOME }),
     ).toBe(sub);
@@ -47,7 +47,7 @@ describe('resolveSuLaunchCwd (EI-202)', () => {
   });
 
   it('a harness launch always uses the harness repo (envelope.cwd), ignoring the caller cwd', () => {
-    const repo = '/home/marsh-office/papercupai-workspace/papercup';
+    const repo = '/home/dev/papercupai-workspace/papercup';
     // Even if the caller cwd were $HOME, a harness launch never uses it.
     expect(
       resolveSuLaunchCwd({ harnessSlug: 'papercup', callerCwd: HOME, envelopeCwd: repo, home: HOME }),

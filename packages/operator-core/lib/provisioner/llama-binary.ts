@@ -5,7 +5,7 @@
  * Resolves (os, gpu-vendor, cuda-version) -> a llama.cpp GitHub-release prebuilt asset
  * when one matches; falls back to build-from-source using the PROVEN recipe this exact
  * box already used to serve ornith-35b (WI-1590 P-001), verified against the box's live
- * build (`/home/marsh-office/llama.cpp/build`):
+ * build (`/home/dev/llama.cpp/build`):
  *   - CMAKE_CUDA_ARCHITECTURES pinned to the detected GPU's compute capability
  *     (this box's RTX 3090 = 86; CMakeCache.txt confirms `CMAKE_CUDA_ARCHITECTURES:UNINITIALIZED=86`).
  *   - CUDA host compiler pinned to gcc-12/g++-12 via `-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-12`

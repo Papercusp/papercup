@@ -44,7 +44,7 @@ Always run `tsc` from `apps/operator/`, but **scope your check to the
 files you touched**, not the total:
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercup/apps/operator && \
+cd /home/dev/papercupai-workspace/papercup/apps/operator && \
   ../../node_modules/.bin/tsc --noEmit --ignoreDeprecations 6.0 2>&1 | \
   tee /tmp/tsc.log | grep -cE 'error TS'   # capture baseline
 

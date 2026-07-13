@@ -37,11 +37,31 @@
 import { groundingLaneHistogram } from './scheduler';
 import { computeScoutQualityReport, buildQualityReportInputs, type ScoutQualityInputs } from './quality-metrics';
 import type { BuildQualityInputsOptions } from './quality-metrics';
-import type { SuIdeationLens } from './types';
+import type { RoutedIdeaProvenance } from './outcome-feedback';
+import type { CreativeLens, SuIdeationLens } from './types';
 import { SU_IDEATION_LENSES } from './types';
 
 /** The digest lane a rubric-RATING-grounded idea is attributed to (scheduler's histogram key). */
 export const RUBRIC_GROUNDING_LANE = 'rubric-rating';
+
+/**
+ * The program spans TWO ledger partitions, and the bars do not all live on the same one —
+ * reading only one silently turns half the gate into UNKNOWN (the first live run of this
+ * module did exactly that, and it looked like missing data rather than a bug in the read):
+ *
+ *  - **cadence** (`origin:'scout'`) — the ticks the CADENCE GATE actually governs. Only a
+ *    Scout cycle is gated, scored, and joined to a cycleId, so the volume-mode, error-rate
+ *    and reconciliation bars can ONLY be judged here. A `su-ideate` tick is a hand-recorded
+ *    pass (blender:ideate-pass-record): it never gates, never carries a signal score, and
+ *    never routes under a cycleId — asking it those questions is a category error.
+ *  - **ideas** — every routed idea, BOTH origins. Rubric grounding and grader adoption are
+ *    properties of the SUBSTRATE'S OUTPUT, wherever the idea came from; partitioning them
+ *    would hide (e.g.) the fact that every graded+adopted idea today is Scout-origin.
+ */
+export interface ProgramSuccessInputs {
+  cadence: ScoutQualityInputs<CreativeLens>;
+  ideas: readonly RoutedIdeaProvenance[];
+}
 
 export type SuccessStatus = 'pass' | 'fail' | 'unknown';
 
@@ -94,24 +114,26 @@ const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
  * inputs, no IO, no clock.
  */
 export function evaluateProgramSuccess(
-  inputs: ScoutQualityInputs<SuIdeationLens>,
+  inputs: ProgramSuccessInputs,
   opts: ProgramSuccessOptions = {},
 ): ProgramSuccessReport {
-  const report = computeScoutQualityReport(inputs, { lenses: SU_IDEATION_LENSES });
+  const report = computeScoutQualityReport(inputs.cadence);
   const maxErrorRate = opts.maxErrorRate ?? DEFAULT_MAX_ERROR_RATE;
-  const ranTicks = inputs.ticks.filter((t) => t.status === 'ran');
+  const ranTicks = inputs.cadence.ticks.filter((t) => t.status === 'ran');
+  const ideas = inputs.ideas;
   const criteria: SuccessCriterion[] = [];
 
   // ── 1. rubric-grounded routed ideas > 0 ─────────────────────────────────────
   // The program's founding defect: the rubric digest lane produced ZERO grounded ideas for
   // its entire life and nobody could see it. Reuse the scheduler's own lane histogram so
   // this reads the SAME attribution the tick detail records (one classifier, not two).
-  const lanes = groundingLaneHistogram(inputs.routedIdeas);
+  const lanes = groundingLaneHistogram(ideas);
   const rubricGrounded = lanes[RUBRIC_GROUNDING_LANE] ?? 0;
+  const anyGrounded = Object.values(lanes).reduce((a, b) => a + b, 0);
   criteria.push({
     key: 'rubric-grounded-ideas',
     bar: 'rubric-grounded routed ideas > 0 (sustained)',
-    ...(inputs.routedIdeas.length === 0
+    ...(ideas.length === 0
       ? {
           status: 'unknown' as const,
           observed: 'no routed ideas in the window',
@@ -119,7 +141,15 @@ export function evaluateProgramSuccess(
         }
       : {
           status: (rubricGrounded > 0 ? 'pass' : 'fail') as SuccessStatus,
-          observed: `${rubricGrounded} of ${inputs.routedIdeas.length} routed ideas grounded in the rubric lane (all lanes: ${JSON.stringify(lanes)})`,
+          // When EVERY lane is zero the defect is upstream of the rubric lane: no idea
+          // carries `addressesPatternRefs` at all, so the grounding histogram (and the
+          // P-006 groundingLanes tick metric built on it) is structurally empty. Say so —
+          // "0 rubric-grounded" and "nothing is grounded to anything" are very different
+          // bugs, and the second one masquerades as the first.
+          observed:
+            anyGrounded === 0
+              ? `NO routed idea carries pattern refs at all (0 of ${ideas.length}) — every grounding lane is empty, so the rubric lane cannot be non-zero. The defect is upstream: addressesPatternRefs is never populated on the ledger write.`
+              : `${rubricGrounded} of ${ideas.length} routed ideas grounded in the rubric lane (all lanes: ${JSON.stringify(lanes)})`,
         }),
   });
 
@@ -169,8 +199,10 @@ export function evaluateProgramSuccess(
   // Per-CYCLE join (not a window total): a tick claiming it routed N ideas must have N rows
   // on the ledger under its cycleId. A window-level sum would cancel a +3/-3 drift to zero
   // and certify a broken write path as healthy.
+  // Joined WITHIN the cadence partition: a scout tick's cycleId can only match a
+  // scout-origin ledger row, so a cross-origin join would report phantom drift.
   const byCycle = new Map<string, number>();
-  for (const idea of inputs.routedIdeas) {
+  for (const idea of inputs.cadence.routedIdeas) {
     if (idea.cycleId) byCycle.set(idea.cycleId, (byCycle.get(idea.cycleId) ?? 0) + 1);
   }
   const mismatches: string[] = [];
@@ -215,8 +247,8 @@ export function evaluateProgramSuccess(
   // grader (gradedBy), and a routedRef (it was adopted onto a rail, not just scored). That
   // triple is the closed learning loop the program set out to build: a grade that CHANGED
   // something and can be traced back to who said it.
-  const graded = inputs.routedIdeas.filter((i) => i.humanGrade != null);
-  const adopted = inputs.routedIdeas.filter(
+  const graded = ideas.filter((i) => i.humanGrade != null);
+  const adopted = ideas.filter(
     (i) => i.humanFeedback && i.humanFeedback.trim().length > 0 && i.gradedBy && i.routedRef,
   );
   criteria.push({
@@ -225,12 +257,12 @@ export function evaluateProgramSuccess(
     ...(graded.length === 0
       ? {
           status: 'unknown' as const,
-          observed: `0 of ${inputs.routedIdeas.length} routed ideas are graded at all`,
+          observed: `0 of ${ideas.length} routed ideas are graded at all`,
           unknownReason: 'no grades in the window — the grading channel has not produced input yet',
         }
       : {
           status: (adopted.length > 0 ? 'pass' : 'fail') as SuccessStatus,
-          observed: `${adopted.length} graded+attributed idea(s) routed onto a rail (of ${graded.length} graded / ${inputs.routedIdeas.length} routed)`,
+          observed: `${adopted.length} graded+attributed idea(s) routed onto a rail (of ${graded.length} graded / ${ideas.length} routed)`,
         }),
   });
 
@@ -244,9 +276,9 @@ export function evaluateProgramSuccess(
     unknown,
     verdict: failed > 0 ? 'fail' : unknown > 0 ? 'incomplete' : 'pass',
     window: {
-      ticks: inputs.ticks.length,
+      ticks: inputs.cadence.ticks.length,
       ranCycles: ranTicks.length,
-      routedIdeas: inputs.routedIdeas.length,
+      routedIdeas: ideas.length,
       ledgerTruncated: opts.ledgerTruncated === true,
     },
   };
@@ -261,24 +293,36 @@ export interface BuildProgramSuccessOptions
 const DEFAULT_LEDGER_LIMIT = 500;
 
 /**
- * Read the real ledgers and evaluate the program's done-check. Reuses
- * {@link buildQualityReportInputs} over the `su-ideate` partition, so this gate and the
- * standing quality report can never read different rows.
+ * Read the real ledgers and evaluate the program's done-check. Reads BOTH partitions via
+ * {@link buildQualityReportInputs} (see {@link ProgramSuccessInputs} for why the bars split
+ * across them) and reuses that same assembly, so this gate and the standing quality report
+ * can never read different rows.
+ *
+ * The tick window is RECENCY-bounded (newest-first, `tickLimit`): the error-rate bar asks
+ * "is the loop healthy NOW", and a lifetime window would keep it pinned red on long-fixed
+ * history forever.
  */
 export async function buildProgramSuccessReport(
   opts: BuildProgramSuccessOptions = {},
 ): Promise<ProgramSuccessReport> {
   const limit = opts.limit ?? DEFAULT_LEDGER_LIMIT;
-  const inputs = await buildQualityReportInputs<SuIdeationLens>({
-    ...opts,
-    limit,
-    origin: 'su-ideate',
-    lenses: SU_IDEATION_LENSES,
-  });
-  return evaluateProgramSuccess(inputs, {
-    ...(opts.maxErrorRate != null ? { maxErrorRate: opts.maxErrorRate } : {}),
-    // A full page back means the read almost certainly hit the cap and older rows are
-    // unseen — reconciliation must not FAIL on rows it never fetched.
-    ledgerTruncated: inputs.routedIdeas.length >= limit,
-  });
+  const [cadence, suIdeate] = await Promise.all([
+    buildQualityReportInputs<CreativeLens>({ ...opts, limit, origin: 'scout' }),
+    buildQualityReportInputs<SuIdeationLens>({
+      ...opts,
+      limit,
+      origin: 'su-ideate',
+      lenses: SU_IDEATION_LENSES,
+    }),
+  ]);
+  const ideas = [...cadence.routedIdeas, ...suIdeate.routedIdeas];
+  return evaluateProgramSuccess(
+    { cadence, ideas },
+    {
+      ...(opts.maxErrorRate != null ? { maxErrorRate: opts.maxErrorRate } : {}),
+      // A full page back on EITHER partition means the read almost certainly hit the cap and
+      // older rows are unseen — reconciliation must not FAIL on rows it never fetched.
+      ledgerTruncated: cadence.routedIdeas.length >= limit || suIdeate.routedIdeas.length >= limit,
+    },
+  );
 }

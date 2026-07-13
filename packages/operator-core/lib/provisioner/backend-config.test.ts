@@ -12,7 +12,7 @@ describe('renderLlamaServerUnit', () => {
       ctxTotal: 180224,
       kvCacheType: 'q8_0',
       flashAttn: true,
-      logPath: '/home/marsh-office/.papercusp/provisioner-ornith.log',
+      logPath: '/home/dev/.papercusp/provisioner-ornith.log',
     });
     expect(unit).toContain('[Unit]');
     expect(unit).toContain('[Service]');

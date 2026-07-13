@@ -9,7 +9,7 @@
  * Previously each of those routes carried its OWN inline per-provider fetch
  * block, so the ElevenLabs model / OpenAI model+voice / Cartesia model
  * defaults drifted between them (voice-consolidation-2026-07-09, WI-3448 —
- * owner Avi). A THIRD copy lived in the client `voice-engines/*` adapter
+ * the owner). A THIRD copy lived in the client `voice-engines/*` adapter
  * framework, which was dead (only its own tests called it) and — because it
  * read server-only API keys — was never viable client-side anyway; it has
  * been removed. Add a provider HERE and every route gets it.

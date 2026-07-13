@@ -97,7 +97,7 @@ describe('agent-tools catch-all — mobile JWT auth (E2)', () => {
       sub: 'device-e2e-test',
       workspace_id: 'ws-e2e',
       device_kind: 'mobile',
-      user_email: 'avi@storewolf.com',
+      user_email: 'dev@example.com',
     });
 
     const req = new Request('http://x.test/api/agent-tools/fix/whoami', {

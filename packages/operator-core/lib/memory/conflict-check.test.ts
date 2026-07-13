@@ -56,8 +56,8 @@ describe('checkConflicts — happy path', () => {
       conflicts: [{ memory_id: 'm1', summary: 'opposes the new memory' }],
     }));
     const r = await checkConflicts({
-      newText: 'Avi prefers vim',
-      neighbors: [{ id: 'm1', text: 'Avi prefers emacs' }],
+      newText: 'Dev prefers vim',
+      neighbors: [{ id: 'm1', text: 'Dev prefers emacs' }],
       judge,
     });
     expect(r.conflicts).toEqual([
@@ -108,12 +108,12 @@ describe('checkConflicts — failure handling', () => {
 describe('buildConflictPrompt', () => {
   it('lists neighbors with index + id + text', () => {
     const neighbors: NeighborMemory[] = [
-      { id: 'm1', text: 'Avi prefers emacs' },
+      { id: 'm1', text: 'Dev prefers emacs' },
       { id: 'm2', text: 'unrelated fact' },
     ];
-    const p = buildConflictPrompt({ newText: 'Avi prefers vim', neighbors });
+    const p = buildConflictPrompt({ newText: 'Dev prefers vim', neighbors });
     expect(p).toContain('NEW memory:\nAvi prefers vim');
-    expect(p).toContain('[1] id=m1: Avi prefers emacs');
+    expect(p).toContain('[1] id=m1: Dev prefers emacs');
     expect(p).toContain('[2] id=m2: unrelated fact');
     expect(p).toContain('{"conflicts": [{"memory_id":');
   });

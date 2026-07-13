@@ -18,7 +18,7 @@ staging (integration) ──git-sync (all WIP, every ~10 min)──►  churns c
       │    migrations → restart → health + path-verify → broadcast   (rollback on failure)
       ▼
    release checkout  ────────────────────────────────────────►  what the operator runs
-   (/home/marsh-office/papercupai-workspace/papercup-release)
+   (/home/dev/papercupai-workspace/papercup-release)
 ```
 
 A restart can **never** deploy raw churning HEAD by construction, and nothing

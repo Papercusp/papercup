@@ -37,7 +37,7 @@ the repo checkout root, which is typically 40–80 chars on a real machine.
 name >63 bytes.
 
 Live incident (2026-06-09): the GREEN release checkout
-`/home/marsh-office/papercupai-workspace/papercup-release` is 56 chars → channel
+`/home/dev/papercupai-workspace/papercup-release` is 56 chars → channel
 was 65 bytes.  Every `grant_cascade()` call that had a waiting waiter called
 `pg_notify` on that name, which **aborted the entire release transaction** —
 rolling back the DELETE from `agent_file_locks` too.  The lock stayed held; the

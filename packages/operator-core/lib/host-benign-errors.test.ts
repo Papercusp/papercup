@@ -57,7 +57,7 @@ function pgNullWriteError(variant: 'esm' | 'cjs' | 'bundled' = 'esm'): TypeError
   const modulePath =
     variant === 'bundled'
       ? // Verbatim from the 2026-07-10 journal: postgres-js inlined into the bundle.
-        'file:///home/marsh-office/papercupai-workspace/papercup-release/apps/operator/dist-host/hono-host.mjs:296941:23'
+        'file:///home/dev/papercupai-workspace/papercup-release/apps/operator/dist-host/hono-host.mjs:296941:23'
       : variant === 'cjs'
         ? 'file:///home/x/papercup-release/node_modules/postgres/cjs/src/connection.js:255:22'
         : 'file:///home/x/papercup-release/node_modules/postgres/src/connection.js:255:22';

@@ -8,7 +8,7 @@ import { isOptInValidFor, assertProductionOptIn, type ChampionOptIn } from '../o
  * record before that outward action.
  */
 const optIn: ChampionOptIn = {
-  approvedBy: 'avi@storewolf.com',
+  approvedBy: 'dev@example.com',
   championVariantId: 'v-champ-7',
   targetHarnessSlug: 'papercup',
   approvedAt: 1_780_000_000_000,
