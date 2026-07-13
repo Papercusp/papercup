@@ -345,9 +345,19 @@ function startRequestServers(): void {
         // reconnect flash. The process is fully exiting, so the OS reclaims the
         // sockets/fds/LISTEN backends anyway — skipping only defers the same
         // peer-timeout socket-linger the saturated path already accepts.
+        // EI-10702: skipSubstrateTeardown does NOT prevent the Napi::Error/SIGABRT
+        // (exit 134) — the WI-3849 coredumps proved the abort is thrown by a native
+        // addon (onnxruntime-node / node-pty / sharp) during Node's ENV TEARDOWN on
+        // process.exit(), not by the P2P substrate close (which the flag skips). So
+        // ALSO hard-exit (SIGKILL self) once the HTTP drain is done: SIGKILL runs no
+        // env cleanup and no native destructor/callback, so the abort has no path to
+        // fire. The host is fully recycling (supervisor restarts a fresh low-RSS
+        // process; the OS reclaims all resources), making a clean, deterministic exit
+        // strictly better than the SIGABRT crash + coredump + webview recovery flash.
         gracefulHostRecycle({
           server: server as { close?: (cb?: () => void) => void },
           skipSubstrateTeardown: true,
+          hardExitOnRecycle: true,
         });
       },
     });

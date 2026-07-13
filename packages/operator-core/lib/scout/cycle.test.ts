@@ -128,6 +128,7 @@ describe('runScoutCycle — full pass', () => {
     expect(r.proposals).toHaveLength(1);
     expect(r.routed).toHaveLength(1);
     expect(r.routed[0]).toMatchObject({ proposalId: 'P-1', rail: 'plan', routedRef: 'plan:P-1' });
+    expect(r.overBudget).toBe(false); // no cap set → not over budget
   });
 
   it('records every LLM call across the three spending steps and sums cost', async () => {
@@ -248,13 +249,32 @@ describe('runScoutCycle — early exits', () => {
     expect(r.routed).toHaveLength(0);
   });
 
-  it('halts at budget-exhausted once spend exceeds maxCostUsd (before recombine)', async () => {
-    // ideate costs 0.01 > cap 0.005 → stop right after ideate, before critique.
+  it('EI-10779: an over-budget cap does NOT discard paid-for generation — it routes and flags overBudget', async () => {
+    // ideate ($0.01) already exceeds the $0.005 cap. The OLD behavior stopped right
+    // after ideate with stop='budget-exhausted' and routed NOTHING — pure sunk-cost
+    // destruction (the measured $3.6-for-routed=0 pathology). The cap is now a SOFT
+    // ceiling: once generation is paid for, the cycle completes the cheaper remaining
+    // stages and routes what it generated, surfacing the overrun via `overBudget`.
     const { deps } = makeDeps({ costUsd: 0.01, limits: { maxCostUsd: 0.005 } });
     const r = await runScoutCycle(deps);
+
+    expect(r.stop).toBe('completed'); // NOT 'budget-exhausted' — generation is not thrown away
+    expect(r.overBudget).toBe(true); // the overrun is surfaced, not swallowed
+    expect(r.calls.map((c) => c.step)).toEqual(['ideate', 'critique', 'recombine']);
+    expect(r.routed).toHaveLength(1); // the paid-for ideas were ROUTED, not discarded
+    expect(r.provenance.length).toBeGreaterThan(0);
+  });
+
+  it('a zero cap still refuses to spend at all — budget-exhausted, $0, overBudget false (EI-305)', async () => {
+    // The pre-spend refusal is unchanged: a 0 cap halts before the first costed step.
+    // It declined to start (spent $0), so it did not overrun → overBudget is false.
+    const { deps } = makeDeps({ costUsd: 0.01, limits: { maxCostUsd: 0 } });
+    const r = await runScoutCycle(deps);
     expect(r.stop).toBe('budget-exhausted');
-    expect(r.calls.map((c) => c.step)).toEqual(['ideate']); // never reached critique
-    expect(r.proposals).toHaveLength(0);
+    expect(r.calls).toHaveLength(0);
+    expect(r.costUsd).toBe(0);
+    expect(r.overBudget).toBe(false);
+    expect(r.routed).toHaveLength(0);
   });
 });
 

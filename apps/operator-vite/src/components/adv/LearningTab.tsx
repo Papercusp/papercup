@@ -2535,6 +2535,13 @@ export function ScoutView({
   // allowed, so the stars stay interactive on graded rows.
   const [gradeOpen, setGradeOpen] = useQueryState("grade", parseAsString);
   const [railFilter, setRailFilter] = useQueryState("irail", parseAsString);
+  // P-004: the pipeline-trace expansion is URL state (`?itrace=<ideaId>`) so
+  // agents can drive it — clicking an idea shows its whole loop (grounding →
+  // lens → route → grade → outcome), not four silos.
+  const [traceOpen, setTraceOpen] = useQueryState("itrace", parseAsString);
+  // Titles for the opaque wi: grounding refs (server-resolved, P-004);
+  // pre-deploy snapshots lack the field — fall back to the raw ref.
+  const groundingTitles = snap?.groundingTitles ?? {};
   const [showEarlier, setShowEarlier] = useState(false);
   const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>(
     {},
@@ -2634,6 +2641,16 @@ export function ScoutView({
   const [, setLane] = useQueryState("lane", parseAsString);
   const [, setSrcSel] = useQueryState("lsrc", parseAsString);
   const [, setLsel] = useQueryState("lsel", parseAsString);
+  // The improvements backlog, selecting THAT row (?lsel) and resetting the
+  // lane/source filters so the target is guaranteed visible (a sticky
+  // lane=auto would hide a human-tier item and the click would look like a
+  // no-op). Shared by openRouted and the trace's wi: grounding chips (P-004).
+  const openImprovement = (id: string) => {
+    void setLsel(id);
+    void setLane(null);
+    void setSrcSel(null);
+    void setLviewRaw("improvements");
+  };
   const openRouted = (item: ScoutRoutedItem) => {
     if (item.rail === "plan" && item.routedRef.startsWith("plan:")) {
       void setPlanSel(item.routedRef.slice("plan:".length));
@@ -2644,19 +2661,141 @@ export function ScoutView({
     } else if (item.rail === "instance") {
       void setLviewRaw("benchmark");
     } else {
-      // improvement (wi:EI-…) and anything unknown → the improvements backlog,
-      // selecting THAT row (?lsel) and resetting the lane/source filters so the
-      // target is guaranteed visible (a sticky lane=auto would hide a
-      // human-tier item and the click would look like a no-op).
-      const id = item.routedRef.startsWith("wi:")
-        ? item.routedRef.slice("wi:".length)
-        : item.routedRef;
-      void setLsel(id);
-      void setLane(null);
-      void setSrcSel(null);
-      void setLviewRaw("improvements");
+      // improvement (wi:EI-…) and anything unknown → the improvements backlog.
+      openImprovement(
+        item.routedRef.startsWith("wi:")
+          ? item.routedRef.slice("wi:".length)
+          : item.routedRef,
+      );
     }
   };
+  // P-004: one grounding-evidence chip. wi: refs get their resolved title and
+  // deep-link to the improvements backlog; the other typed refs
+  // (fact:/rubric:/watchdog:/plan:/…) are already readable slugs.
+  const renderGroundingChip = (ref: string) => {
+    const sep = ref.indexOf(":");
+    const kind = sep > 0 ? ref.slice(0, sep) : "ref";
+    const rest = sep > 0 ? ref.slice(sep + 1) : ref;
+    if (kind === "wi") {
+      const title = groundingTitles[ref];
+      return (
+        <button
+          key={ref}
+          type="button"
+          className="pc-learning__tracechip pc-learning__tracechip--link"
+          title={title ? `${rest} — ${title}` : rest}
+          onClick={() => openImprovement(rest)}
+        >
+          <i>{kind}</i>
+          {title ? `${rest} · ${title}` : rest}
+        </button>
+      );
+    }
+    return (
+      <span key={ref} className="pc-learning__tracechip" title={ref}>
+        <i>{kind}</i>
+        {rest}
+      </span>
+    );
+  };
+
+  // P-004: the pipeline trace — the idea's whole loop as ONE row of stages:
+  // grounding evidence → lens → routed artifact → grade → outcome. Every field
+  // comes from the same ledger read the list renders (D-001); a missing stage
+  // renders dimmed (the gap IS the signal — e.g. "ungraded" on a starving
+  // grading loop).
+  const renderTrace = (item: ScoutRoutedItem) => {
+    const meta = RAIL_META[item.rail] ?? {
+      label: item.rail,
+      desc: "Routed idea",
+      color: "#94a3b8",
+    };
+    const eff = effectiveGrade(item);
+    const outcome = item.outcome ?? "pending";
+    const outcomeTone =
+      outcome === "won" ? "good" : outcome === "lost" ? "bad" : "missing";
+    const arrow = (
+      <span className="pc-learning__tracearrow" aria-hidden>
+        →
+      </span>
+    );
+    return (
+      <div
+        className="pc-learning__trace"
+        aria-label={`Pipeline trace for ${item.title ?? item.routedRef}`}
+      >
+        <div
+          className={`pc-learning__tracestage${item.addressesPatternRefs.length === 0 ? " pc-learning__tracestage--missing" : ""}`}
+        >
+          <em>grounded in</em>
+          {item.addressesPatternRefs.length > 0 ? (
+            <span className="pc-learning__tracechips">
+              {item.addressesPatternRefs.map(renderGroundingChip)}
+            </span>
+          ) : (
+            <strong title="No grounding evidence was recorded for this idea (su-ideate filings often ground informally).">
+              none recorded
+            </strong>
+          )}
+        </div>
+        {arrow}
+        <div className="pc-learning__tracestage">
+          <em>lens</em>
+          <strong
+            title={
+              item.cycleId
+                ? `Produced by the '${item.lens}' lens in cycle ${item.cycleId}`
+                : `Produced by the '${item.lens}' lens`
+            }
+          >
+            {item.lens}
+            {item.origin ? <i> · {item.origin}</i> : null}
+          </strong>
+        </div>
+        {arrow}
+        <div className="pc-learning__tracestage">
+          <em>routed to</em>
+          <button
+            type="button"
+            className="pc-learning__tracechip pc-learning__tracechip--link"
+            title={`${meta.desc} — open ${item.routedRef}`}
+            onClick={() => openRouted(item)}
+          >
+            <i style={{ color: meta.color }}>{meta.label}</i>
+            {item.routedRef}
+          </button>
+        </div>
+        {arrow}
+        <div
+          className={`pc-learning__tracestage${eff ? "" : " pc-learning__tracestage--missing"}`}
+        >
+          <em>grade</em>
+          <strong
+            title={
+              eff
+                ? (eff.feedback ??
+                  `Graded by ${graderLabel(eff.gradedBy, t("brain"))}`)
+                : "Ungraded — the grade→learn half of the loop has not seen this idea."
+            }
+          >
+            {eff
+              ? `★${eff.grade} · ${graderLabel(eff.gradedBy, t("brain"))}`
+              : "ungraded"}
+          </strong>
+        </div>
+        {arrow}
+        <div
+          className={`pc-learning__tracestage${outcomeTone === "missing" ? " pc-learning__tracestage--missing" : ` pc-learning__tracestage--${outcomeTone}`}`}
+        >
+          <em>outcome</em>
+          <strong title="Outcome derived from the change feed (won / lost / pending) — did the routed artifact pan out?">
+            {outcome}
+          </strong>
+        </div>
+      </div>
+    );
+  };
+
   const renderIdeaRow = (item: ScoutRoutedItem) => {
     const meta = RAIL_META[item.rail] ?? {
       label: item.rail,
@@ -2666,6 +2805,7 @@ export function ScoutView({
     const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
     const eff = effectiveGrade(item);
     const isOpen = gradeOpen === item.ideaId;
+    const isTraceOpen = traceOpen === item.ideaId;
     const saving = savingId === item.ideaId;
     return (
       <li
@@ -2675,7 +2815,9 @@ export function ScoutView({
         <button
           type="button"
           className="pc-learning__rowmain"
-          onClick={() => openRouted(item)}
+          aria-expanded={isTraceOpen}
+          title="Show this idea's pipeline trace — grounding, lens, route, grade, outcome"
+          onClick={() => void setTraceOpen(isTraceOpen ? null : item.ideaId)}
         >
           <span
             className="pc-learning__sev"
@@ -2760,6 +2902,7 @@ export function ScoutView({
             </Popover>
           </span>
         </span>
+        {isTraceOpen ? renderTrace(item) : null}
       </li>
     );
   };
@@ -3537,6 +3680,45 @@ export function LearningStyles() {
       .pc-learning__tick--bad { border-color: color-mix(in srgb, #fb7185 50%, transparent); background: color-mix(in srgb, #fb7185 7%, transparent); }
       .pc-learning__tick--bad strong { color: #fb7185; }
       .pc-learning__tick--idle { opacity: 0.75; }
+
+      /* P-004 pipeline trace: the idea's loop as one row of stages. Spans the
+         scout row's grid; stages wrap on narrow panes (the arrows ride along). */
+      .pc-learning__trace {
+        grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 7px; flex-wrap: wrap;
+        margin-top: 7px; padding: 8px 11px; border-radius: 9px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03));
+      }
+      .pc-learning__tracestage { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
+      .pc-learning__tracestage > em {
+        font-style: normal; font-size: 8.5px; font-weight: 720; text-transform: uppercase;
+        letter-spacing: 0.05em; color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__tracestage > strong {
+        font-size: 11px; font-weight: 650; color: var(--fg-dim, #b9d4e8);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px;
+      }
+      .pc-learning__tracestage > strong i { font-style: normal; font-size: 9.5px; font-weight: 600; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__tracestage--missing > strong { color: var(--fg-mute, #7f9bb4); font-weight: 550; }
+      .pc-learning__tracestage--good > strong { color: #86efac; }
+      .pc-learning__tracestage--bad > strong { color: #fb7185; }
+      .pc-learning__tracearrow { align-self: center; color: var(--fg-mute, #7f9bb4); font-size: 11px; opacity: 0.7; }
+      .pc-learning__tracechips { display: flex; flex-wrap: wrap; gap: 3px; max-width: 460px; }
+      .pc-learning__tracechip {
+        display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px;
+        font-size: 10px; font-weight: 600; border-radius: 999px; font-family: inherit;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-dim, #b9d4e8);
+        max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .pc-learning__tracechip i {
+        font-style: normal; font-size: 8.5px; font-weight: 720; text-transform: uppercase;
+        letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); flex-shrink: 0;
+      }
+      .pc-learning__tracechip--link { cursor: pointer; }
+      .pc-learning__tracechip--link:hover, .pc-learning__tracechip--link:focus-visible {
+        border-color: var(--accent, rgba(125, 211, 252, 0.45)); color: var(--accent, #7dd3fc);
+      }
 
       .pc-learning__scoreboard { display: flex; flex-wrap: wrap; gap: 8px; }
       .pc-learning__throughputhive { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }

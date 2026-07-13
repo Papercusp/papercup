@@ -224,6 +224,125 @@ describe('gracefulHostRecycle', () => {
       expect(exit).toHaveBeenCalledExactlyOnceWith(75);
     });
   });
+
+  // EI-10702: skipSubstrateTeardown did NOT prevent the Napi::Error/SIGABRT
+  // (exit 134). The WI-3849 coredumps proved the abort is thrown during Node's
+  // ENV TEARDOWN on process.exit() by a native addon (onnxruntime-node/node-pty/
+  // sharp), not by the P2P substrate close the flag skips. hardExitOnRecycle
+  // makes the memory recycle SIGKILL itself once the HTTP drain is done — a
+  // no-cleanup exit that runs no native destructor/callback, so the abort has no
+  // path to fire. The regression guard: the memory recycle must take the
+  // no-cleanup exit path (killSelf), NOT process.exit (which runs the teardown
+  // that aborts).
+  describe('EI-10702 — hardExitOnRecycle exits without running Node native teardown (no SIGABRT)', () => {
+    it('SIGKILLs self (no-cleanup exit) after the drain, and does NOT call process.exit', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const killSelf = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({
+        server,
+        exit,
+        killSelf,
+        closeSubstrate,
+        skipSubstrateTeardown: true,
+        hardExitOnRecycle: true,
+      });
+
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      // The no-cleanup path is taken exactly once; process.exit — which would run
+      // the native env teardown that throws Napi::Error → SIGABRT — is never used.
+      expect(killSelf).toHaveBeenCalledTimes(1);
+      expect(exit).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('still drains HTTP FIRST — killSelf only fires after server.close completes', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const killSelf = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({
+        server,
+        exit: vi.fn(),
+        killSelf,
+        closeSubstrate,
+        skipSubstrateTeardown: true,
+        hardExitOnRecycle: true,
+      });
+      // In-flight HTTP not yet drained → no exit of any kind.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(killSelf).not.toHaveBeenCalled();
+
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(killSelf).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+
+    it('the hard-exit backstop also takes the no-cleanup path when the drain hangs', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const killSelf = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server } = makeServer(); // drain never called
+
+      gracefulHostRecycle({
+        server,
+        exit,
+        killSelf,
+        closeSubstrate,
+        skipSubstrateTeardown: true,
+        hardExitOnRecycle: true,
+        hardExitMs: 1000,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      // A hung drain must still avoid the SIGABRT — the backstop SIGKILLs, it does
+      // not process.exit.
+      expect(killSelf).toHaveBeenCalledTimes(1);
+      expect(exit).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('never double-exits: killSelf fires exactly once even if drain + backstop both fire', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const killSelf = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({
+        server,
+        exit: vi.fn(),
+        killSelf,
+        closeSubstrate,
+        skipSubstrateTeardown: true,
+        hardExitOnRecycle: true,
+        hardExitMs: 1000,
+      });
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000); // backstop would fire too
+      expect(killSelf).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+
+    it('defaults to false — a normal recycle still uses process.exit (no behavior change)', async () => {
+      const exit = vi.fn();
+      const killSelf = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, killSelf, closeSubstrate }); // no hardExitOnRecycle
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+      expect(killSelf).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () => {

@@ -56,6 +56,7 @@ import { checkAndRecordUserPublishHourly, checkIpListPerMinute, RateLimitError }
 
 interface PublishBody {
   listing_kind?: string;             // migration 004; defaults to 'harness'
+  blueprint_kind?: string;           // migration 009 / P-018: blueprint.yaml kind ('hive'|'harness'), blueprint listings only
   project_ref?: string;              // papercupai project remote (D-008)
   listing_ref?: string;              // within-project discriminator; REQUIRED for non-harness kinds
   github_repository_id: number;

@@ -95,6 +95,35 @@ export interface GracefulRecycleOpts {
    * paths keep their existing `isSaturated`-gated behavior unchanged).
    */
   skipSubstrateTeardown?: boolean;
+  /**
+   * EI-10702: once the HTTP drain is done, exit via a NO-CLEANUP hard termination
+   * (SIGKILL to self) instead of `process.exit(code)`. `process.exit()` runs Node's
+   * environment teardown, and the WI-3849 coredump forensics (see this file's
+   * `installFatalDiagnostics` doc) proved the recurring `Napi::Error` → C++
+   * `terminate` → SIGABRT (exit 134) is thrown DURING that teardown by a native
+   * addon still mapped into the process — onnxruntime-node, @lydell/node-pty, or
+   * sharp (the only mapped addons that even link the `Napi::Error` C++ class),
+   * from an in-flight AsyncWorker completion / a child-exit callback firing as the
+   * env is torn down. Critically, the P2P substrate is NOT the thrower (2 of 4 live
+   * coredumps aborted with `closeAllBootedHarnesses()` skipped entirely), so
+   * `skipSubstrateTeardown` does not — and cannot — prevent it: EI-9649's mitigation
+   * covered the wrong path. A memory-watchdog recycle is fully exiting anyway
+   * (systemd/supervisor restarts a fresh low-RSS host; the OS reclaims every
+   * socket/fd/thread on exit), so we SIGKILL ourselves — an uncatchable, immediate
+   * termination that runs NO env cleanup and NO native destructor/callback, so the
+   * abort has no path to fire. The exit becomes deterministic (no coredump, no
+   * `terminate called…` stderr, no exit 134). Default false: the SIGTERM/lag paths
+   * keep `process.exit` so an intentional deploy stop retains its controllable exit
+   * code (they drain cleanly under `Restart=on-failure`/`always` regardless).
+   */
+  hardExitOnRecycle?: boolean;
+  /**
+   * Test seam for the no-cleanup hard exit (`hardExitOnRecycle`). Default:
+   * `process.kill(process.pid, 'SIGKILL')`. Overridden in tests to assert the
+   * recycle takes the no-cleanup path — and so a test never actually SIGKILLs the
+   * runner.
+   */
+  killSelf?: () => void;
 }
 
 /**
@@ -110,11 +139,31 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   const closeSubstrate = opts.closeSubstrate ?? closeAllBootedHarnesses;
   const isSaturated = opts.isSaturated ?? isLoopElevated;
   const skipSubstrateTeardown = opts.skipSubstrateTeardown ?? false;
+  const hardExitOnRecycle = opts.hardExitOnRecycle ?? false;
+  const killSelf =
+    opts.killSelf ?? (() => process.kill(process.pid, 'SIGKILL'));
 
   let exited = false;
   const exitOnce = (code: number) => {
     if (exited) return;
     exited = true;
+    // EI-10702: skip Node's env teardown — that is where a native addon
+    // (onnxruntime-node / node-pty / sharp) throws the uncaught Napi::Error →
+    // SIGABRT (exit 134). A SIGKILL to self runs no destructor/callback, so the
+    // abort cannot fire. Log FIRST (SIGKILL is immediate and won't flush a
+    // deferred write), then kill. Fall back to process.exit only if the kill
+    // itself throws (never for a self-SIGKILL).
+    if (hardExitOnRecycle) {
+      console.warn(
+        '[host-recycle] hard-exit (SIGKILL self, no native teardown) — a memory-watchdog recycle exits WITHOUT running the Node env teardown that fires the onnxruntime/node-pty/sharp Napi::Error → SIGABRT (EI-10702); the process is fully exiting so the OS reclaims every socket/fd/thread on exit',
+      );
+      try {
+        killSelf();
+        return;
+      } catch {
+        // SIGKILL failed (should be impossible for self) — fall through to exit.
+      }
+    }
     exit(code);
   };
 

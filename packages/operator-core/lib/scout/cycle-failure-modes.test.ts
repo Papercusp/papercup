@@ -23,8 +23,11 @@
  *    near-empty digest (≥1 pattern in any lane) still runs the full cycle; refs
  *    the model invents are stripped (ungrounded) and the cycle proceeds.
  *  - Zero survivors → stop 'no-survivors' with zero recombine/route spend.
- *  - Budget (D-010): checked BETWEEN steps with strict `spent() > cap` — spend equal
- *    to the cap proceeds; the halt lands before the next LLM-spending step.
+ *  - Budget (D-010, softened by EI-10779): `maxCostUsd` is a SOFT cap. A zero/negative
+ *    cap refuses to spend at all (halts before the first costed step); but once
+ *    generation is PAID FOR, an overrun never discards it — the cycle completes
+ *    routing what it generated and flags `overBudget` (killing the pipeline after
+ *    generation but before the ~$0 route stage was pure sunk-cost destruction).
  *  - Routing rail failure: `routeProposals` isolates per sink — a rejecting rail
  *    fails only its own decision (error recorded on the RoutingDecision, no
  *    routedRef → no provenance), siblings dispatch, the cycle still 'completed'.
