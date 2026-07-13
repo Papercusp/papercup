@@ -7,11 +7,12 @@
 
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
-import { probeAll } from "../../service-health";
+import { probeAll, type ProbeResult } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot, type SupervisionStatusEntry, type SupervisionFlapState } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
+import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
 
 function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
   return s.gaveUp ? "gave-up" : s.respawnAttemptsInWindow > 0 ? "damping" : "ok";
@@ -39,6 +40,54 @@ export function overlayNodeChildSupervision(
       restartsLast10m: status.respawnAttemptsInWindow,
       flapState: sidecarFlapState(status),
     };
+  });
+}
+
+type ServiceRootCause = { component: string; reason: string };
+
+function nextVerbForService(name: string): string {
+  if (name.includes("bg-host")) return 'dev:restart { target:"bg-host" }';
+  if (name === "operator") return 'dev:restart { target:"dev" }';
+  if (name === "staging-api") return 'dev:restart { target:"staging" }';
+  if (name.includes("gateway")) return 'dev:restart { target:"gateway" }';
+  if (name.includes("embed")) return 'dev:restart { target:"embed-sidecar" }';
+  return "dev:processes";
+}
+
+/** Additive stable scan path over the existing service/supervision payload. */
+export function buildServiceHealthDiagnostic(
+  services: ProbeResult[],
+  supervision: SupervisionStatusEntry[],
+): RuntimeDiagnostic<
+  { services: string[]; supervised: string[] },
+  { up: number; down: number; absent: number; supervisionUnhealthy: number },
+  { checked: number; failures: ProbeResult[]; unhealthySupervision: SupervisionStatusEntry[] },
+  ServiceRootCause
+> {
+  const absent = services.filter((s) => s.present === false);
+  const failures = services.filter((s) => s.present !== false && !s.up);
+  const unhealthySupervision = supervision.filter((s) => s.flapState !== "ok");
+  const first = failures[0];
+  const supervisor = unhealthySupervision[0];
+  const rootCause: ServiceRootCause | null = first
+    ? { component: first.name, reason: first.note ?? `probe failed (status ${first.status ?? "none"})` }
+    : supervisor
+      ? { component: supervisor.name, reason: `supervisor state ${supervisor.flapState}` }
+      : null;
+  return runtimeDiagnostic({
+    configured: {
+      services: services.map((s) => s.name),
+      supervised: supervision.map((s) => s.name),
+    },
+    effective: {
+      up: services.length - absent.length - failures.length,
+      down: failures.length,
+      absent: absent.length,
+      supervisionUnhealthy: unhealthySupervision.length,
+    },
+    evidence: { checked: services.length, failures, unhealthySupervision },
+    rootCause,
+    nextVerb: rootCause ? nextVerbForService(rootCause.component) : null,
   });
 }
 
@@ -73,6 +122,11 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const services = await probeAll();
+    const supervision = overlayNodeChildSupervision(
+      supervisionSnapshot(),
+      substrateSidecarSupervisionStatus(),
+      spawnerSidecarSupervisionStatus(),
+    );
     return {
       content: [
         {
@@ -85,11 +139,8 @@ export default defineTool({
             // fields above are UNCHANGED — the systemd-user layer is sourced from the P-002
             // reconciler's own flap state, the node-child sidecars from THEIR OWN respawn
             // modules (P-006) — no second probe pass, everything here is sync/in-memory.
-            supervision: overlayNodeChildSupervision(
-              supervisionSnapshot(),
-              substrateSidecarSupervisionStatus(),
-              spawnerSidecarSupervisionStatus(),
-            ),
+            supervision,
+            ...buildServiceHealthDiagnostic(services, supervision),
           }),
         },
       ],

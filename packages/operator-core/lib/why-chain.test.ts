@@ -94,6 +94,10 @@ describe('computeWhyChain (EI-7349)', () => {
     expect(res.stages.map((s) => s.status)).toEqual(['ok', 'ok', 'ok', 'ok']);
     expect(res.rootCause).toBeNull();
     expect(res.summary).toContain('nominal');
+    expect(res.configured.stageOrder).toEqual(['gate', 'deploy', 'admission', 'pool']);
+    expect(res.effective).toEqual({ status: 'ok', blockingStage: null });
+    expect(res.evidence.stages).toBe(res.stages);
+    expect(res.nextVerb).toBeNull();
   });
 
   it('gate red but not stalled: degraded, cites recent failing files', async () => {
@@ -109,6 +113,8 @@ describe('computeWhyChain (EI-7349)', () => {
     expect(res.stages[0].reason).toContain('3 consecutive');
     expect(res.stages[0].reason).toContain('apps/x/y.test.ts');
     expect(res.rootCause?.stage).toBe('gate');
+    expect(res.effective).toEqual({ status: 'degraded', blockingStage: 'gate' });
+    expect(res.nextVerb).toBe('testing:flakiness');
   });
 
   it('gate stalled: blocked root cause', async () => {
@@ -124,6 +130,7 @@ describe('computeWhyChain (EI-7349)', () => {
     );
     expect(res.stages[0].reason).toContain('WEDGED');
     expect(res.stages[0].reason).toContain('no fire in 90m');
+    expect(res.nextVerb).toBe('release:checkpoint-run');
   });
 
   it('open merge conflict blocks the gate stage regardless of red streak', async () => {
@@ -183,6 +190,7 @@ describe('computeWhyChain (EI-7349)', () => {
     expect(res.stages[3].status).toBe('blocked');
     expect(res.stages[3].reason).toContain('unavailable');
     expect(res.rootCause?.stage).toBe('pool');
+    expect(res.nextVerb).toBe('accounts:status');
   });
 
   it('some accounts sustained-limited but others available: pool stage degraded, not blocked', async () => {

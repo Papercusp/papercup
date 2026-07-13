@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('../../fleet-rate-status', () => ({ buildFleetRateStatus: h.buildFleetRateStatus }));
 
-import tool from './rate_governor_status';
+import tool, { buildRateGovernorDiagnostic } from './rate_governor_status';
 
 function fakeStatus(bucketCount: number) {
   return {
@@ -25,6 +25,7 @@ function fakeStatus(bucketCount: number) {
     fleet: { cap: 8, inFlight: 0, effective: 8, floor: 1 },
     buckets: Array.from({ length: bucketCount }, (_, i) => ({ key: `b${i}` })),
     usage: { windowMs: 0, calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, spendUsd: 0, buckets: [] },
+    opusBudget: null,
   };
 }
 
@@ -32,7 +33,15 @@ function fakeStatus(bucketCount: number) {
 async function run(args: { usageWindowMinutes?: number }) {
   // The handler signature is (args, ctx) — ctx is unused here.
   const res = await (tool.handler as (a: unknown, c?: unknown) => Promise<{ content: { text: string }[] }>)(args, {});
-  return JSON.parse(res.content[0].text) as { bucketCount: number; ok: boolean };
+  return JSON.parse(res.content[0].text) as {
+    bucketCount: number;
+    ok: boolean;
+    configured: unknown;
+    effective: unknown;
+    evidence: unknown;
+    rootCause: unknown;
+    nextVerb: string | null;
+  };
 }
 
 beforeEach(() => {
@@ -56,5 +65,22 @@ describe('dev:rate_governor_status (Gap 15 — wrapper)', () => {
     const out = await run({ usageWindowMinutes: 10 });
     expect(out.bucketCount).toBe(3);
     expect(out.ok).toBe(true);
+    expect(out).toHaveProperty('configured');
+    expect(out).toHaveProperty('effective');
+    expect(out).toHaveProperty('evidence');
+    expect(out).toHaveProperty('rootCause');
+    expect(out).toHaveProperty('nextVerb');
+  });
+});
+
+describe('buildRateGovernorDiagnostic', () => {
+  it('distinguishes configured cap from effective AIMD cap and points to gateway admission next', () => {
+    const status = fakeStatus(0);
+    status.fleet.effective = 2;
+    const out = buildRateGovernorDiagnostic(status as never);
+    expect(out.configured).toEqual(status.config);
+    expect(out.effective).toMatchObject({ cap: 8, effective: 2 });
+    expect(out.rootCause?.reason).toContain('2/8');
+    expect(out.nextVerb).toBe('gateway:status');
   });
 });

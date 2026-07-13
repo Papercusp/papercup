@@ -11,7 +11,33 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { buildFleetRateStatus } from '../../fleet-rate-status';
+import { buildFleetRateStatus, type FleetRateStatus } from '../../fleet-rate-status';
+import { runtimeDiagnostic, type RuntimeDiagnostic } from '../../runtime-diagnostic';
+
+type GovernorRootCause = { component: 'governor'; reason: string };
+
+export function buildRateGovernorDiagnostic(status: FleetRateStatus): RuntimeDiagnostic<
+  FleetRateStatus['config'],
+  FleetRateStatus['fleet'],
+  { pausedBuckets: FleetRateStatus['buckets']; usage: FleetRateStatus['usage']; opusBudget: FleetRateStatus['opusBudget'] },
+  GovernorRootCause
+> {
+  const pausedBuckets = status.buckets.filter((bucket) => bucket.paused);
+  const rootCause: GovernorRootCause | null = pausedBuckets.length > 0
+    ? { component: 'governor', reason: `${pausedBuckets.length} rate bucket(s) paused` }
+    : status.fleet.effective < status.fleet.cap
+      ? { component: 'governor', reason: `AIMD effective concurrency ${status.fleet.effective}/${status.fleet.cap}` }
+      : null;
+  return runtimeDiagnostic({
+    configured: status.config,
+    effective: status.fleet,
+    evidence: { pausedBuckets, usage: status.usage, opusBudget: status.opusBudget },
+    rootCause,
+    // Admission is the decisive next read before anyone edits a rate cap: it
+    // distinguishes genuine upstream pacing from queued-while-idle defects.
+    nextVerb: rootCause ? 'gateway:status' : null,
+  });
+}
 
 export default defineTool({
   name: 'dev:rate_governor_status',
@@ -44,7 +70,14 @@ export default defineTool({
   async handler(args) {
     const status = await buildFleetRateStatus((args.usageWindowMinutes ?? 60) * 60_000);
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ...status, bucketCount: status.buckets.length }) }],
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          ...status,
+          bucketCount: status.buckets.length,
+          ...buildRateGovernorDiagnostic(status),
+        }),
+      }],
     };
   },
 });

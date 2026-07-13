@@ -17,6 +17,7 @@
  */
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
 import { accountStatus, type AccountStatusRow } from './deployment/account-pool-store';
+import { runtimeDiagnostic, type RuntimeDiagnostic } from './runtime-diagnostic';
 
 /** A postgres-js-like tagged-template client; injectable so this stays unit-testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown[]>;
@@ -57,7 +58,12 @@ export interface WhyChainStage {
   nextVerb?: string;
 }
 
-export interface WhyChainResult {
+export interface WhyChainResult extends RuntimeDiagnostic<
+  { stageOrder: WhyChainStage['stage'][]; workspaceId: string | null; harnessSlug: string | null },
+  { status: WhyChainStatus; blockingStage: WhyChainStage['stage'] | null },
+  { stages: WhyChainStage[]; recentFailingFiles: string[] },
+  WhyChainStage
+> {
   generatedAtMs: number;
   stages: WhyChainStage[];
   /** The upstream-most non-ok stage — the leaf an owner should look at first. */
@@ -65,6 +71,18 @@ export interface WhyChainResult {
   /** One causal sentence per stage, joined into the full chain. */
   summary: string;
   recentFailingFiles: string[];
+}
+
+function nextVerbForRoot(rootCause: WhyChainStage | null): string | null {
+  if (!rootCause) return null;
+  if (rootCause.stage === 'gate') {
+    return rootCause.reason.includes('STALE') || rootCause.reason.includes('WEDGED')
+      ? 'release:checkpoint-run'
+      : 'testing:flakiness';
+  }
+  if (rootCause.stage === 'deploy') return 'release:deploy';
+  if (rootCause.stage === 'admission') return 'gateway:status';
+  return 'accounts:status';
 }
 
 export interface WhyChainDeps {
@@ -290,7 +308,12 @@ function deployStage(snap: GitPipelineSnapshot): WhyChainStage {
  */
 function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
   if (!adm) {
-    return { stage: 'admission', status: 'degraded', reason: 'inference gateway unreachable on :8788 (admission state unknown — is papercup-inference-gateway.service running?)' };
+    return {
+      stage: 'admission',
+      status: 'degraded',
+      reason: 'inference gateway unreachable on :8788 (admission state unknown — is papercup-inference-gateway.service running?)',
+      nextVerb: 'gateway:status',
+    };
   }
   const reserve = adm.tier1Reserve ?? 0;
   // Free SHARED capacity — what a tier > 1 is actually allowed to occupy. The tier-1 reserve is
@@ -509,11 +532,26 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
     ? `${chainLine}\n\nROOT CAUSE: ${rootCause.stage} — ${rootCause.reason}`
     : `${chainLine}\n\nAll stages nominal — nothing in the gate/deploy/pool chain appears to be blocking shipping right now.`;
 
+  const diagnostic = runtimeDiagnostic({
+    configured: {
+      stageOrder: stages.map((s) => s.stage),
+      workspaceId: deps.workspaceId ?? null,
+      harnessSlug: deps.harnessSlug ?? null,
+    },
+    effective: {
+      status: rootCause?.status ?? 'ok',
+      blockingStage: rootCause?.stage ?? null,
+    },
+    evidence: { stages, recentFailingFiles: failingFiles },
+    rootCause,
+    nextVerb: nextVerbForRoot(rootCause),
+  });
+
   return {
     generatedAtMs: Date.now(),
     stages,
-    rootCause,
     summary,
     recentFailingFiles: failingFiles,
+    ...diagnostic,
   };
 }

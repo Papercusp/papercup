@@ -35,19 +35,57 @@ beforeEach(() => __resetCodeRunAdoptionCacheForTests());
 
 const fanTools = ['plans:get', 'work_items:get', 'docs:search', 'coord:inbox'];
 
-function calls(spawnId: string, role: string, day: string, toolNames: string[]): CallRow[] {
-  return toolNames.map((toolName) => ({ spawnId, role, day, toolName }));
+// Default spacing between calls in the `calls()` helper: comfortably ABOVE TURN_GAP_MS so each
+// call in these fixtures lands in its OWN inference turn — i.e. distinct calls == distinct turns,
+// matching every test's original intent (each call IS a separate round-trip) unless a test
+// overrides the spacing to prove the turn-aware behavior (see the P-012 describe block below).
+const SEPARATE_TURN_GAP = TURN_GAP_MS + 1000;
+
+function calls(
+  spawnId: string,
+  role: string,
+  day: string,
+  toolNames: string[],
+  opts: { gapMs?: number; startAt?: number } = {},
+): CallRow[] {
+  const gapMs = opts.gapMs ?? SEPARATE_TURN_GAP;
+  const startAt = opts.startAt ?? 0;
+  return toolNames.map((toolName, i) => ({ spawnId, role, day, toolName, invokedAt: startAt + i * gapMs }));
 }
 
-describe('isBatchableSpawn — reuses the live nudge thresholds', () => {
-  it('same-tool AT the threshold is an opportunity; one below is not', () => {
-    expect(isBatchableSpawn({ maxSameTool: BATCH_NUDGE_THRESHOLD, distinctTools: 1 })).toBe(true);
-    expect(isBatchableSpawn({ maxSameTool: BATCH_NUDGE_THRESHOLD - 1, distinctTools: 1 })).toBe(false);
+describe('isBatchableSpawn — reuses the live nudge thresholds (turn-based, P-012)', () => {
+  it('same-tool AT the threshold (by TURNS) is an opportunity; one below is not', () => {
+    expect(
+      isBatchableSpawn({ maxSameToolTurns: BATCH_NUDGE_THRESHOLD, distinctTools: 1, distinctTurns: 1 }),
+    ).toBe(true);
+    expect(
+      isBatchableSpawn({ maxSameToolTurns: BATCH_NUDGE_THRESHOLD - 1, distinctTools: 1, distinctTurns: 1 }),
+    ).toBe(false);
   });
 
-  it('distinct-tools AT the fan-out threshold is an opportunity; one below is not', () => {
-    expect(isBatchableSpawn({ maxSameTool: 1, distinctTools: FANOUT_DISTINCT_THRESHOLD })).toBe(true);
-    expect(isBatchableSpawn({ maxSameTool: 1, distinctTools: FANOUT_DISTINCT_THRESHOLD - 1 })).toBe(false);
+  it('distinct-tools AT the fan-out threshold, ALSO spanning that many turns, is an opportunity', () => {
+    expect(
+      isBatchableSpawn({
+        maxSameToolTurns: 1,
+        distinctTools: FANOUT_DISTINCT_THRESHOLD,
+        distinctTurns: FANOUT_DISTINCT_THRESHOLD,
+      }),
+    ).toBe(true);
+    expect(
+      isBatchableSpawn({
+        maxSameToolTurns: 1,
+        distinctTools: FANOUT_DISTINCT_THRESHOLD - 1,
+        distinctTurns: FANOUT_DISTINCT_THRESHOLD - 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('distinct-tools AT the threshold but confined to ONE turn is NOT an opportunity (P-012)', () => {
+    // The tool-diversity bar is hit, but every call landed in the SAME inference turn (already
+    // collapsed to one round-trip via parallel dispatch) — nothing left to fold into code:run.
+    expect(
+      isBatchableSpawn({ maxSameToolTurns: 1, distinctTools: FANOUT_DISTINCT_THRESHOLD, distinctTurns: 1 }),
+    ).toBe(false);
   });
 });
 
@@ -57,12 +95,69 @@ describe('spawnRowsFromCalls — excludes batch tools from the work counts', () 
       ...calls('s1', 'cup', '2026-06-26', ['code:run', 'recipes:search', 'plans:get']),
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ workCalls: 1, distinctTools: 1, maxSameTool: 1, usedCodeRun: true });
+    expect(rows[0]).toMatchObject({
+      workCalls: 1,
+      distinctTools: 1,
+      maxSameTool: 1,
+      maxSameToolTurns: 1,
+      distinctTurns: 1,
+      usedCodeRun: true,
+    });
   });
 
   it('matches both name forms (code_run / code:run) for the adoption signal', () => {
     const rows = spawnRowsFromCalls(calls('s1', 'cup', '2026-06-26', ['code_run', 'plans:get']));
     expect(rows[0].usedCodeRun).toBe(true);
+  });
+});
+
+// ── P-012 (agent-operability-clarity-full-audit-2026-07-13): the metric must measure INFERENCE
+//    TURNS, not raw downstream RPC count — mirrors the live nudge's fix in code-run-batch-nudge.ts.
+describe('spawnRowsFromCalls — turn-aware opportunity classification (P-012)', () => {
+  it('a same-tool burst confined to ONE turn (parallel dispatch) scores maxSameToolTurns=1, NOT an opportunity', () => {
+    const burst = Array(BATCH_NUDGE_THRESHOLD + 1).fill('work_items:get');
+    const rows = spawnRowsFromCalls(calls('par1', 'cup', '2026-06-26', burst, { gapMs: 10 }));
+    expect(rows[0].maxSameTool).toBe(BATCH_NUDGE_THRESHOLD + 1); // raw count still reflects the calls
+    expect(rows[0].maxSameToolTurns).toBe(1); // but they all landed in ONE turn
+    expect(isBatchableSpawn(rows[0])).toBe(false);
+  });
+
+  it('the same same-tool burst SPREAD across separate turns scores maxSameToolTurns == call count, IS an opportunity', () => {
+    const burst = Array(BATCH_NUDGE_THRESHOLD).fill('work_items:get');
+    const rows = spawnRowsFromCalls(calls('seq1', 'cup', '2026-06-26', burst)); // default: separate turns
+    expect(rows[0].maxSameToolTurns).toBe(BATCH_NUDGE_THRESHOLD);
+    expect(isBatchableSpawn(rows[0])).toBe(true);
+  });
+
+  it('a fan-out confined to ONE turn (a legitimate parallel batch) is NOT an opportunity', () => {
+    const rows = spawnRowsFromCalls(calls('par2', 'cup', '2026-06-26', fanTools, { gapMs: 10 }));
+    expect(rows[0].distinctTools).toBe(fanTools.length); // tool diversity is real
+    expect(rows[0].distinctTurns).toBe(1); // but it is all ONE turn
+    expect(isBatchableSpawn(rows[0])).toBe(false);
+  });
+
+  it('the same distinct-tool spread across separate turns IS an opportunity', () => {
+    const rows = spawnRowsFromCalls(calls('seq2', 'cup', '2026-06-26', fanTools)); // default: separate turns
+    expect(rows[0].distinctTurns).toBe(fanTools.length);
+    expect(isBatchableSpawn(rows[0])).toBe(true);
+  });
+
+  it('mixed burst: one turn of 2 parallel calls + a later turn of a 3rd tool == 2 distinct turns, below threshold', () => {
+    const mixed: CallRow[] = [
+      { spawnId: 'mix1', role: 'cup', day: '2026-06-26', toolName: 'plans:get', invokedAt: 0 },
+      { spawnId: 'mix1', role: 'cup', day: '2026-06-26', toolName: 'work_items:get', invokedAt: 10 },
+      {
+        spawnId: 'mix1',
+        role: 'cup',
+        day: '2026-06-26',
+        toolName: 'docs:search',
+        invokedAt: SEPARATE_TURN_GAP,
+      },
+    ];
+    const rows = spawnRowsFromCalls(mixed);
+    expect(rows[0].distinctTools).toBe(3); // tool-diversity threshold reached
+    expect(rows[0].distinctTurns).toBe(2); // but only 2 real round-trips — below FANOUT_DISTINCT_THRESHOLD
+    expect(isBatchableSpawn(rows[0])).toBe(false);
   });
 });
 
