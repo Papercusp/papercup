@@ -277,6 +277,11 @@ export const CUPBOARD_LISTING_KIND_TONE: Record<string, CategoryTone> = {
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   'tool-pack': { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
   'learning-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
+  // app/aspect templates (app-templates-2026-07-04) — a distinct rose hue so a
+  // Templates card reads apart from blueprint (good/green) + pack (accent-cool).
+  // Without this entry KindBadge/ListingCard crash on `tone.fg` for a template
+  // row (cupboard-public-release-2026-07-12 P-002).
+  template: { fg: 'var(--rose-400)', bg: 'color-mix(in srgb, var(--rose-400), transparent 86%)', border: 'color-mix(in srgb, var(--rose-400), transparent 74%)' },
 };
 
 // Memory-kind chip hues (settings/user/memory). Categorical, not status —

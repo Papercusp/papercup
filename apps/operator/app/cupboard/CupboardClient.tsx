@@ -28,7 +28,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import type { HarnessListing, ListingKind, HiveBrowseGroup } from '@papercusp/operator-core/lib/cupboard/types';
@@ -60,13 +60,14 @@ import { useLexicon } from '@/lib/useLexicon';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
 type KindFilter = 'all' | ListingKind;
-/** The tab row's domain: listing-kind filters + the tool-level discovery view +
- *  'hive-blueprint' (P-018) — a CLIENT facet over blueprint listings split on
- *  blueprint_kind='hive' (the installable Hive templates), distinct from the
- *  running-hive 'harness' tab and from harness-blueprints. */
-type ViewFilter = KindFilter | 'tools' | 'hive-blueprint';
+/** The tab row's domain: listing-kind filters + the tool-level discovery view.
+ *  (cupboard-public-release-2026-07-12 D-002: the old 'hive-blueprint' facet is
+ *  RETIRED — pot blueprints now fold into the single 'blueprint' tab, badged
+ *  distinctly per-card; the 'template' listing kind gets its own tab for the
+ *  app/aspect templates.) */
+type ViewFilter = KindFilter | 'tools';
 
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'hive-blueprint', 'plugin', 'tool-pack', 'learning-pack', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'template', 'plugin', 'tool-pack', 'learning-pack', 'tools'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -81,6 +82,7 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
     case 'plugin': return <Plug size={size} />;
     case 'tool-pack': return <Box size={size} />;
     case 'learning-pack': return <Brain size={size} />;
+    case 'template': return <LayoutTemplate size={size} />;
     default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
   }
 }
@@ -143,7 +145,7 @@ export default function CupboardClient() {
       all: 'All',
       harness: t('pot', { plural: true }),
       blueprint: 'Blueprints',
-      'hive-blueprint': `${t('pot')} Templates`,
+      template: 'Templates',
       plugin: 'Plugins',
       'tool-pack': 'Tool packs',
       'learning-pack': 'Learning Packs',
@@ -245,21 +247,16 @@ export default function CupboardClient() {
   const hiveGroups = hive ? groupListingsByKind(hiveListings) : [];
   // WI-3259: EVERY kind tab is now a pure client-side facet over the one full
   // (unfiltered) fetch (fetchListings no longer sends `kind` to the server —
-  // see above), so ALL tabs — not just blueprint/hive-blueprint (P-018) — are
-  // re-filtered here with zero network cost. 'all' shows everything; the
-  // 'blueprint'/'hive-blueprint' split stays as before (both server kind
-  // 'blueprint', disambiguated client-side by blueprint_kind); every other
-  // kind now gets its own explicit client-side filter (previously relied on
-  // the server having already scoped it, since that request always fetched
-  // that one kind). The hive ROLLUP (hiveListings) keeps the raw set.
+  // see above), so ALL tabs are re-filtered here with zero network cost. 'all'
+  // shows everything; every kind gets its own explicit client-side filter.
+  // cupboard-public-release D-002: the old hive-blueprint/blueprint SPLIT is
+  // gone — the single 'blueprint' tab now shows ALL blueprint listings (role +
+  // pot), distinguished per-card by the pot-template badge. The hive ROLLUP
+  // (hiveListings) keeps the raw set.
   const viewListings =
     kindFilter === 'all'
       ? listings
-      : kindFilter === 'hive-blueprint'
-        ? listings.filter(isHiveBlueprintListing)
-        : kindFilter === 'blueprint'
-          ? listings.filter((l) => listingKindOf(l) === 'blueprint' && !isHiveBlueprintListing(l))
-          : listings.filter((l) => listingKindOf(l) === kindFilter);
+      : listings.filter((l) => listingKindOf(l) === kindFilter);
   const groupedListings = groupListingsByKind(viewListings);
   const facetCount = groupedListings.length;
   // Flat hive-first browse (P-002): harness member rows fold into ONE card per
@@ -401,8 +398,6 @@ export default function CupboardClient() {
             >
               {k === 'tools' ? (
                 <Wrench size={11} />
-              ) : k === 'hive-blueprint' ? (
-                <Hexagon size={11} />
               ) : k !== 'all' ? (
                 <KindIcon kind={k} />
               ) : null}

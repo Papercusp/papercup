@@ -1,11 +1,32 @@
 /**
  * work_items:list / work_items:get cache integration (cache-expensive-tool-reads-2026-06-22
  * P-005). REAL handlers + REAL operator cache; only the data layer is mocked.
- * Pins: hit-on-repeat, per-item invalidation (work_items:get tags harness_features_consolidated:<id>),
- * table-level invalidation (work_items:list), no cross-arg / cross-workspace leak, CACHE_LAYER bypass.
+ * Pins: hit-on-repeat, per-item invalidation, table-level invalidation, no cross-arg /
+ * cross-workspace leak, CACHE_LAYER bypass.
+ *
+ * WI-4491 REGRESSION GUARD: the invalidation tests bump the tags a REAL work-item write
+ * emits — derived from the ECA rule (`tagsForTableChange` for a `harness_shared.work_items.changed`
+ * event), NOT the literal tag string the tool happens to use. The old tests hardcoded
+ * `harness_features_consolidated` (the tool's own tag) on BOTH sides, so they stayed green
+ * while the tool tagged a stale compat-VIEW name that no write ever bumps — the cache was
+ * invalidated by nothing but TTL, and a read-after-write served the pre-write row (proven
+ * live, WI-4508). Tying the bump to the rule's output means a tool that tags the wrong
+ * table now FAILS here instead of silently going stale.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
+import { tagsForTableChange } from "../../events/cache-eca-rule";
+
+// The base TABLE that carries emit_change_notify (mig-374 unified work-items here). A
+// write to ANY work-item — feature OR issue family, raw-SQL or federated — fires
+// `harness_shared.work_items.changed`, and the CACHE_TAG_ECA rule bumps exactly these
+// tags. This is the SINGLE SOURCE OF TRUTH for "what a work-item write invalidates" —
+// the tool's cache tags MUST intersect it or reads go stale.
+const WORK_ITEM_TABLE = "work_items";
+/** Tags a real `work_items.changed` event bumps for row `id` (table tag + row tag). */
+const writeTags = (id: string): string[] => tagsForTableChange(WORK_ITEM_TABLE, id);
+/** Tags a real work_items write emits when the trigger yields no row PK (table tag only). */
+const writeTableTag = (): string[] => tagsForTableChange(WORK_ITEM_TABLE, null);
 
 const M = vi.hoisted(() => ({
   listWorkItems: vi.fn(async () => [] as unknown[]),
@@ -84,21 +105,17 @@ describe("work_items:list — cache wiring", () => {
     expect(M.listWorkItems).toHaveBeenCalledTimes(1);
   });
 
-  it("a work-item write BUSTS it (tag=harness_features_consolidated)", async () => {
+  it("a REAL work-item write BUSTS it (bumps the work_items base-table tag the ECA emits)", async () => {
     await list({});
-    getOperatorCache().invalidateByTags("ws-wi", [
-      "harness_features_consolidated",
-    ]);
+    // Exactly what the ECA fires on a work_items.changed with no row PK (today's trigger).
+    getOperatorCache().invalidateByTags("ws-wi", writeTableTag());
     await list({});
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
   });
 
-  it("a per-row bump also busts the list (table tag is bumped alongside the row tag)", async () => {
+  it("a per-row work-item write also busts the list (table tag rides alongside the row tag)", async () => {
     await list({});
-    getOperatorCache().invalidateByTags("ws-wi", [
-      "harness_features_consolidated",
-      "harness_features_consolidated:WI-9",
-    ]);
+    getOperatorCache().invalidateByTags("ws-wi", writeTags("WI-9"));
     await list({});
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
   });
@@ -133,24 +150,37 @@ describe("work_items:get — per-item cache wiring", () => {
     expect(M.getWorkItem).toHaveBeenCalledTimes(1);
   });
 
-  it("PER-ITEM invalidation: bumping WI-1 busts WI-1 but NOT WI-2", async () => {
+  it("READ-YOUR-WRITES: a real work-item write busts the get cache (base-table tag)", async () => {
+    // The primary WI-4491 guard: the table tag a work_items write emits TODAY (no row PK)
+    // MUST bust the get entry — else a read-after-write serves the pre-write row.
+    await get({ id: "WI-1" });
+    expect(M.getWorkItem).toHaveBeenCalledTimes(1);
+    getOperatorCache().invalidateByTags("ws-wi", writeTableTag());
+    await get({ id: "WI-1" }); // rebuilt — reflects the write
+    expect(M.getWorkItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("PER-ITEM invalidation: a per-row work_items write busts WI-1 but NOT WI-2", async () => {
+    // Row-tag readiness (WI-4491): the tool's `work_items:<id>` row tag is correctly named
+    // for the ECA's row-tag scheme. NOTE the row tag only fires LIVE once emit_change_notify
+    // emits work_items' PK (feature_id) — tracked as the separate row-PK defect; until then
+    // correctness rides the table tag above. This asserts the tag CORRESPONDENCE regardless.
     await get({ id: "WI-1" });
     await get({ id: "WI-2" });
     expect(M.getWorkItem).toHaveBeenCalledTimes(2);
-    getOperatorCache().invalidateByTags("ws-wi", [
-      "harness_features_consolidated:WI-1",
-    ]);
+    // Bump ONLY the row tag (writeTags also carries the table tag, which would bust every
+    // entry) — isolates the per-row dimension.
+    const rowTagOnly = writeTags("WI-1").filter((t) => t !== WORK_ITEM_TABLE);
+    getOperatorCache().invalidateByTags("ws-wi", rowTagOnly);
     await get({ id: "WI-1" }); // rebuilt
     await get({ id: "WI-2" }); // still cached
     expect(M.getWorkItem).toHaveBeenCalledTimes(3);
   });
 
-  it("a table-wide bump busts every id", async () => {
+  it("a table-wide work-item write busts every id", async () => {
     await get({ id: "WI-1" });
     await get({ id: "WI-2" });
-    getOperatorCache().invalidateByTags("ws-wi", [
-      "harness_features_consolidated",
-    ]);
+    getOperatorCache().invalidateByTags("ws-wi", writeTableTag());
     await get({ id: "WI-1" });
     await get({ id: "WI-2" });
     expect(M.getWorkItem).toHaveBeenCalledTimes(4);

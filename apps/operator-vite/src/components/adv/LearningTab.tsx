@@ -46,6 +46,7 @@ import type { ImprovementFlow } from "@papercusp/operator-core/lib/harness/impro
 import type {
   ScoutSnapshot,
   ScoutRoutedItem,
+  ScoutTickEconomics,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
 import type { HiveLearningsSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-read";
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
@@ -2085,6 +2086,27 @@ function railMeta(
   };
 }
 
+/** Tone for one tick-economics cell (learning-tab-alignment P-002): an errored
+    tick is red; a ran cycle that exhausted its budget without routing anything
+    is amber (the WI-4482 starvation signature — spend with no yield); a
+    completed run is green; a self-gated tick is idle/neutral. */
+function tickTone(
+  tk: ScoutTickEconomics,
+): "good" | "warn" | "bad" | "idle" {
+  if (tk.status === "error") return "bad";
+  if (tk.status === "ran")
+    return tk.stop === "budget-exhausted" && tk.routed === 0 ? "warn" : "good";
+  return "idle";
+}
+
+/** Compact lens initials for the strip's chips ("first-principles" → "fp",
+    "analogical" → "a") — the full name + count rides the chip tooltip. */
+const lensAbbrev = (lens: string): string =>
+  lens
+    .split("-")
+    .map((w) => w[0] ?? "")
+    .join("");
+
 /** The grade a row should display: an in-flight optimistic owner write wins,
     then the snapshot's stored grade, else null (ungraded). */
 interface EffectiveGrade {
@@ -2496,6 +2518,9 @@ export function ScoutView({
   const recent = snap?.recent ?? [];
   const tick = snap?.lastTick ?? null;
   const tickMs = tick?.at ? Date.parse(tick.at) : NaN;
+  // P-002: tick-economics rows (newest first). Older server snapshots (pre-P-002
+  // deploy) lack the field — degrade to the empty strip, never a crash.
+  const econTicks = snap?.ticks ?? [];
 
   // Grading (P-006): the note popover's open-state is URL state (`?grade=<ideaId>`)
   // so agents can drive it; in-flight optimistic grades + errors are transient
@@ -2752,29 +2777,75 @@ export function ScoutView({
           </button>
         }
       />
+      {/* Tick-economics strip (learning-tab-alignment P-002): the last N ticks'
+          stop reason, spend, generated→routed funnel + lens mix — the columns
+          where the 17-day WI-4482 lens collapse and the budget-exhausted
+          starvation lived, invisibly. Newest first; same ledger rows the
+          quality/success metrics judge from (D-001). */}
       <div
-        className="pc-learning__flow"
-        aria-label={`${t("scout")} tick health`}
+        className="pc-learning__tickstrip"
+        role="list"
+        aria-label={`${t("scout")} tick economics, newest first`}
       >
-        <span
-          className="pc-learning__flowchip"
-          title={
-            tick
-              ? `The newest ${t("scout")} tick and its gate outcome.${tick.detail ? ` ${tick.detail}` : ""}`
-              : `${t("scout")} records a row per tick (gate outcomes, ideas generated/routed) once tick observability lands — no ticks recorded yet.`
-          }
-        >
-          <Radar size={11} aria-hidden />
-          last tick{" "}
-          <strong>
-            {tick && !Number.isNaN(tickMs) ? whenLabel(tickMs) : "none yet"}
-          </strong>
-          {tick?.outcome ? (
-            <em>
-              {tick.detail ? `${tick.outcome} · ${tick.detail}` : tick.outcome}
-            </em>
-          ) : null}
-        </span>
+        {econTicks.length === 0 ? (
+          <span
+            className="pc-learning__flowchip"
+            title={`${t("scout")} records a row per tick (stop reason, spend, ideas generated/routed) — no ticks recorded yet.`}
+          >
+            <Radar size={11} aria-hidden />
+            last tick{" "}
+            <strong>
+              {tick && !Number.isNaN(tickMs) ? whenLabel(tickMs) : "none yet"}
+            </strong>
+          </span>
+        ) : (
+          econTicks.map((tk, i) => {
+            const ms = tk.at ? Date.parse(tk.at) : NaN;
+            const tone = tickTone(tk);
+            const lensPairs = Object.entries(tk.lenses).sort(
+              (a, b) => b[1] - a[1],
+            );
+            const spend =
+              tk.spendUsd != null ? `$${tk.spendUsd.toFixed(2)}` : null;
+            const tip =
+              tk.status === "ran"
+                ? `${!Number.isNaN(ms) ? whenLabel(ms) : ""} · ${tk.stop ?? "ran"} — generated ${tk.generated}, pruned ${tk.deduped}, routed ${tk.routed}${spend ? `, spend ${spend}` : ""}${lensPairs.length > 0 ? ` · lenses: ${lensPairs.map(([l, n]) => `${l}×${n}`).join(" ")}` : tk.routed === 0 ? " · nothing routed" : ""}`
+                : tk.status === "gated"
+                  ? `${!Number.isNaN(ms) ? whenLabel(ms) : ""} · self-gated (${tk.stop ?? "gate"}) — no cycle ran, no spend`
+                  : `${!Number.isNaN(ms) ? whenLabel(ms) : ""} · tick errored${tk.stop ? `: ${tk.stop}` : ""}`;
+            return (
+              <span
+                key={tk.cycleId ?? tk.at ?? i}
+                role="listitem"
+                className={`pc-learning__tick pc-learning__tick--${tone}`}
+                title={tip}
+              >
+                <em>{!Number.isNaN(ms) ? whenLabel(ms) : "—"}</em>
+                <strong>
+                  {tk.status === "ran"
+                    ? `${tk.generated}→${tk.routed}`
+                    : (tk.status ?? "?")}
+                </strong>
+                {tk.stop ? (
+                  <span className="pc-learning__tickstop">{tk.stop}</span>
+                ) : null}
+                {spend ? (
+                  <span className="pc-learning__tickspend">{spend}</span>
+                ) : null}
+                {lensPairs.map(([lens, n]) => (
+                  <i
+                    key={lens}
+                    className="pc-learning__ticklens"
+                    title={`${lens} ×${n}`}
+                  >
+                    {lensAbbrev(lens)}
+                    {n > 1 ? `×${n}` : ""}
+                  </i>
+                ))}
+              </span>
+            );
+          })
+        )}
       </div>
 
       {snap ? (
@@ -3413,6 +3484,33 @@ export function LearningStyles() {
       .pc-learning__flowdot--good { background: var(--good); box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
       .pc-learning__flowdot--warn { background: var(--warn); box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
       .pc-learning__flowdot--bad { background: var(--bad); box-shadow: 0 0 5px rgba(248, 113, 113, 0.6); }
+
+      /* Tick-economics strip (learning-tab-alignment P-002) — one cell per scout
+         tick: when · gen→routed funnel · stop reason · spend · lens chips. */
+      .pc-learning__tickstrip { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+      .pc-learning__tick {
+        display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+        padding: 4px 9px; font-size: 10.5px; font-weight: 600; border-radius: 999px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
+        cursor: default; white-space: nowrap;
+      }
+      .pc-learning__tick em { font-style: normal; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+      .pc-learning__tick strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
+      .pc-learning__tickstop { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); max-width: 132px; overflow: hidden; text-overflow: ellipsis; }
+      .pc-learning__tickspend { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+      .pc-learning__ticklens {
+        font-style: normal; font-size: 9px; font-weight: 700; padding: 1px 5px;
+        border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+        color: var(--accent-strong, var(--accent)); background: color-mix(in srgb, var(--accent) 10%, transparent);
+      }
+      .pc-learning__tick--good { border-color: rgba(52, 211, 153, 0.4); }
+      .pc-learning__tick--good strong { color: #86efac; }
+      .pc-learning__tick--warn { border-color: color-mix(in srgb, #fbbf24 45%, transparent); background: color-mix(in srgb, #fbbf24 7%, transparent); }
+      .pc-learning__tick--warn strong { color: #fbbf24; }
+      .pc-learning__tick--bad { border-color: color-mix(in srgb, #fb7185 50%, transparent); background: color-mix(in srgb, #fb7185 7%, transparent); }
+      .pc-learning__tick--bad strong { color: #fb7185; }
+      .pc-learning__tick--idle { opacity: 0.75; }
 
       .pc-learning__scoreboard { display: flex; flex-wrap: wrap; gap: 8px; }
       .pc-learning__throughputhive { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
