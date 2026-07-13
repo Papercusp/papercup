@@ -532,7 +532,7 @@ async function callIdeatorLlm(
           abort(
             new Error(
               `Scout ideator ${slot.lens} did not receive an upstream response before the cycle deadline ` +
-                `(${locallyAdmitted ? 'left the local governor but remained queued/stalled downstream' : 'never left the local governor'}; ` +
+                `(${locallyAdmitted ? 'left the local governor but remained queued/stalled downstream' : 'never admitted by the local governor — no capacity within the remaining budget'}; ` +
                 `not generation)`,
             ),
           );

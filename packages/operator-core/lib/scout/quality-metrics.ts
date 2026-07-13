@@ -424,6 +424,13 @@ export async function checkAndFlagQuality(deps: CheckAndFlagQualityDeps): Promis
 export interface BuildQualityInputsOptions extends ScoutLedgerOpts {
   /** Max tick rows in the window snapshot (newest-first). Default 500. */
   tickLimit?: number;
+  /** Inclusive epoch-ms floor for the tick read. With no tickLimit, reads the full time box. */
+  tickSinceMs?: number;
+  /**
+   * Tick-ledger host scope when it differs from the routed-idea harness scope. Workspace-global
+   * learning loops write ticks under `@singleton` while their ideas remain harness-scoped.
+   */
+  tickInstallSlug?: string;
   /** Lens-weight options forwarded to gatherLensOutcomes. */
   weights?: LensWeightOptions;
 }
@@ -455,8 +462,13 @@ export async function buildQualityReportInputs<L extends string = CreativeLens>(
   const [ticks, routedIdeas, lensOutcomes] = await Promise.all([
     tickLedger.readScoutTicks({
       ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-      ...(opts.harnessSlug ? { installSlug: opts.harnessSlug } : {}),
+      ...(opts.tickInstallSlug
+        ? { installSlug: opts.tickInstallSlug }
+        : opts.harnessSlug
+          ? { installSlug: opts.harnessSlug }
+          : {}),
       ...(opts.tickLimit != null ? { limit: opts.tickLimit } : {}),
+      ...(opts.tickSinceMs != null ? { sinceMs: opts.tickSinceMs } : {}),
       ...(opts.origin ? { origin: opts.origin } : {}),
     }),
     routedLedger.readRoutedIdeas(ledgerOpts),

@@ -43,7 +43,9 @@ export const successMetricsArgs = z
       .min(1)
       .max(5000)
       .optional()
-      .describe('max scout_ticks rows in the window (default 500, newest-first)'),
+      .describe(
+        'optional safety cap inside the default 48h scout_ticks time box. Omit to read the complete time box; this is not the release window definition.',
+      ),
     maxErrorRate: z
       .number()
       .min(0)
@@ -73,7 +75,7 @@ export async function runSuccessMetrics(
 export default defineTool({
   name: 'blender:success-metrics',
   description:
-    "The blender-self-learning program's done-check, over the LIVE ledgers: five bars — rubric-grounded routed ideas >0, zero score-0 cycles fired, cycle error rate <5%, ledger rows reconcile with tick routed counts (per cycle), >=1 grader suggestion adopted with attribution — each PASS/FAIL/UNKNOWN with the measurement behind it. verdict='pass' only when every bar passes; 'incomplete' when a bar has no evidence yet (an empty window never certifies the program done); 'fail' on any real regression. Read-only.",
+    "The blender-self-learning program's done-check, over the LIVE ledgers: six bars — rubric-grounded routed ideas >0, zero score-0 cycles fired, cycle error rate <5% over a time-boxed 48h singleton-tick window, ledger rows reconcile with tick routed counts (per cycle), >=1 grader suggestion adopted with attribution, and recent lens diversity — each PASS/FAIL/UNKNOWN with the measurement behind it. verdict='pass' only when every bar passes; 'incomplete' when a bar has no evidence yet (an empty window never certifies the program done); 'fail' on any real regression. Read-only.",
   capability: 'curation:read',
   guidance: {
     when: "Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live rather than merely shipped.",

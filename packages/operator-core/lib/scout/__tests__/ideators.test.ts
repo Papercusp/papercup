@@ -339,7 +339,8 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
     const err = res.ideators[0]?.error ?? '';
     expect(err).toMatch(/GENERATION/);
     // It must NOT be blamed on capacity — this one really was the model.
-    expect(err).not.toMatch(/admission wait/);
+    expect(err).toMatch(/upstream response started/);
+    expect(err).not.toMatch(/no capacity|queued\/stalled/);
   });
 
   it('never admitted ⇒ an HONEST capacity error, never a bogus transport "timeout"', async () => {

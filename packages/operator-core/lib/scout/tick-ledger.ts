@@ -116,6 +116,12 @@ export interface ReadScoutTicksOpts {
   /** Max rows, newest-first. Default 500 — the standing-quality window. */
   limit?: number;
   /**
+   * Inclusive epoch-ms floor. When present without `limit`, the read is fully time-boxed
+   * and does NOT apply the legacy newest-500 cap (release gates must not pin or hide errors
+   * according to how many unrelated ticks happened to accrue).
+   */
+  sinceMs?: number;
+  /**
    * Provenance partition to read (migration 571). Default 'scout' — a su-ideate
    * pass is not a Scout tick, so Scout consumers (quality-metrics, system-health)
    * never see one. Pass 'su-ideate' for the su-partition read.
@@ -144,7 +150,8 @@ interface TickRow {
 export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<ScoutTickRow[]> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const limit = opts.limit ?? 500;
+  const sinceMs = opts.sinceMs != null && Number.isFinite(opts.sinceMs) ? opts.sinceMs : undefined;
+  const limit = opts.limit ?? (sinceMs === undefined ? 500 : undefined);
   const origin = opts.origin ?? 'scout';
   const rows = await sql<TickRow[]>`
     SELECT install_slug, tick_at, status, gate, ideas_generated, ideas_routed,
@@ -153,8 +160,9 @@ export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<Sco
      WHERE workspace_id = ${ws}
        AND origin = ${origin}
        ${opts.installSlug ? sql`AND install_slug = ${opts.installSlug}` : sql``}
+       ${sinceMs !== undefined ? sql`AND tick_at >= to_timestamp(${sinceMs} / 1000.0)` : sql``}
      ORDER BY tick_at DESC
-     LIMIT ${limit}`;
+     ${limit !== undefined ? sql`LIMIT ${limit}` : sql``}`;
   return rows.map((r) => {
     const spend = r.budget_used_usd == null ? null : Number(r.budget_used_usd);
     return {

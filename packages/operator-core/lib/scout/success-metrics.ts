@@ -104,7 +104,16 @@ export interface ProgramSuccessReport {
    */
   verdict: 'pass' | 'fail' | 'incomplete';
   /** Window provenance, so a verdict is never read without knowing what it saw. */
-  window: { ticks: number; ranCycles: number; routedIdeas: number; ledgerTruncated: boolean };
+  window: {
+    ticks: number;
+    ranCycles: number;
+    routedIdeas: number;
+    ledgerTruncated: boolean;
+    /** Assembly-time tick window; absent for injected pure-core fixtures. */
+    tickWindowMs?: number;
+    tickSinceMs?: number;
+    tickInstallSlug?: string;
+  };
 }
 
 export interface ProgramSuccessOptions {
@@ -399,10 +408,51 @@ export function evaluateProgramSuccess(
 export interface BuildProgramSuccessOptions
   extends Pick<BuildQualityInputsOptions, 'workspaceId' | 'harnessSlug' | 'limit' | 'tickLimit'> {
   maxErrorRate?: number;
+  /** Release-bar time box. Default 48h, matching blender-release-readiness. */
+  cycleWindowMs?: number;
+  /** Deterministic clock injection for tests. */
+  nowMs?: number;
 }
 
 /** Default ledger row cap — also the truncation probe (rows === limit ⇒ older rows unseen). */
 const DEFAULT_LEDGER_LIMIT = 500;
+/** The active blender-release-readiness rubric's cycle-error window. */
+export const CYCLE_ERROR_WINDOW_MS = 48 * 60 * 60 * 1000;
+/** Workspace-global Scout ticks moved here; routed ideas remain harness-scoped. */
+export const SCOUT_TICK_INSTALL_SLUG = '@singleton';
+
+/**
+ * Build the two production reader scopes in one pure helper. The split is load-bearing:
+ * `harnessSlug:'papercusp'` scopes routed ideas, but Scout cadence ticks live under
+ * `install_slug='@singleton'`. Coupling those fields produced a falsely-green 0/167 error
+ * reading while a current singleton status=error row existed (EI-11418).
+ */
+export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}): {
+  cadence: BuildQualityInputsOptions & { origin: 'scout' };
+  suIdeate: BuildQualityInputsOptions & { origin: 'su-ideate'; lenses: readonly SuIdeationLens[] };
+  tickWindowMs: number;
+  tickSinceMs: number;
+} {
+  const tickWindowMs = opts.cycleWindowMs ?? CYCLE_ERROR_WINDOW_MS;
+  const tickSinceMs = (opts.nowMs ?? Date.now()) - tickWindowMs;
+  const shared: BuildQualityInputsOptions = {
+    ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+    ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+    ...(opts.limit != null ? { limit: opts.limit } : {}),
+    ...(opts.tickLimit != null ? { tickLimit: opts.tickLimit } : {}),
+  };
+  return {
+    cadence: {
+      ...shared,
+      origin: 'scout',
+      tickInstallSlug: SCOUT_TICK_INSTALL_SLUG,
+      tickSinceMs,
+    },
+    suIdeate: { ...shared, origin: 'su-ideate', lenses: SU_IDEATION_LENSES },
+    tickWindowMs,
+    tickSinceMs,
+  };
+}
 
 /**
  * Read the real ledgers and evaluate the program's done-check. Reads BOTH partitions via
@@ -410,25 +460,21 @@ const DEFAULT_LEDGER_LIMIT = 500;
  * across them) and reuses that same assembly, so this gate and the standing quality report
  * can never read different rows.
  *
- * The tick window is RECENCY-bounded (newest-first, `tickLimit`): the error-rate bar asks
- * "is the loop healthy NOW", and a lifetime window would keep it pinned red on long-fixed
- * history forever.
+ * The tick window is TIME-bounded (48h by default): newest-N pinned the bar on stale pre-fix
+ * rows when the loop was quiet and could also hide a current error when harness scoping omitted
+ * the workspace-global singleton rows. A release bar is about elapsed time, not row volume.
  */
 export async function buildProgramSuccessReport(
   opts: BuildProgramSuccessOptions = {},
 ): Promise<ProgramSuccessReport> {
   const limit = opts.limit ?? DEFAULT_LEDGER_LIMIT;
+  const scopes = programSuccessReadScopes({ ...opts, limit });
   const [cadence, suIdeate] = await Promise.all([
-    buildQualityReportInputs<CreativeLens>({ ...opts, limit, origin: 'scout' }),
-    buildQualityReportInputs<SuIdeationLens>({
-      ...opts,
-      limit,
-      origin: 'su-ideate',
-      lenses: SU_IDEATION_LENSES,
-    }),
+    buildQualityReportInputs<CreativeLens>(scopes.cadence),
+    buildQualityReportInputs<SuIdeationLens>(scopes.suIdeate),
   ]);
   const ideas = [...cadence.routedIdeas, ...suIdeate.routedIdeas];
-  return evaluateProgramSuccess(
+  const report = evaluateProgramSuccess(
     { cadence, ideas },
     {
       ...(opts.maxErrorRate != null ? { maxErrorRate: opts.maxErrorRate } : {}),
@@ -437,4 +483,13 @@ export async function buildProgramSuccessReport(
       ledgerTruncated: cadence.routedIdeas.length >= limit || suIdeate.routedIdeas.length >= limit,
     },
   );
+  return {
+    ...report,
+    window: {
+      ...report.window,
+      tickWindowMs: scopes.tickWindowMs,
+      tickSinceMs: scopes.tickSinceMs,
+      tickInstallSlug: SCOUT_TICK_INSTALL_SLUG,
+    },
+  };
 }

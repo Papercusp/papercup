@@ -10,8 +10,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   evaluateProgramSuccess,
+  CYCLE_ERROR_WINDOW_MS,
   LEDGER_RECONCILE_EPOCH_MS,
   LENS_DIVERSITY_SAMPLE,
+  programSuccessReadScopes,
+  SCOUT_TICK_INSTALL_SLUG,
   type ProgramSuccessReport,
   type ProgramSuccessInputs,
 } from './success-metrics';
@@ -132,6 +135,37 @@ describe('evaluateProgramSuccess — cycle error rate', () => {
       { status: 'error' },
     ];
     expect(bar(evaluateProgramSuccess(inputs(ticks, [])), 'cycle-error-rate').status).toBe('fail');
+  });
+
+  it('counts the live EI-11417 downstream-wait timeout as a genuine error', () => {
+    const ticks: ScoutTickRecord[] = [
+      ...[...Array(12)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } })),
+      {
+        status: 'error',
+        detail: {
+          cycleId: 'scout-1783958405158',
+          error:
+            'Scout ideator analogical did not receive an upstream response before the cycle deadline (left the local governor but remained queued/stalled downstream; not generation)',
+        },
+      },
+    ];
+    const r = evaluateProgramSuccess(inputs(ticks, []));
+    expect(bar(r, 'cycle-error-rate').status).toBe('fail');
+    expect(bar(r, 'cycle-error-rate').observed).toContain('1 error ticks / 13 total');
+  });
+});
+
+describe('programSuccessReadScopes — release window and singleton host', () => {
+  it('keeps harness-scoped ideas but reads Scout ticks from @singleton over a full 48h time box', () => {
+    const nowMs = Date.parse('2026-07-13T16:30:00Z');
+    const scopes = programSuccessReadScopes({ harnessSlug: 'papercusp', nowMs });
+    expect(scopes.cadence.harnessSlug).toBe('papercusp');
+    expect(scopes.cadence.tickInstallSlug).toBe(SCOUT_TICK_INSTALL_SLUG);
+    expect(scopes.cadence.tickSinceMs).toBe(nowMs - CYCLE_ERROR_WINDOW_MS);
+    expect(scopes.cadence.tickLimit).toBeUndefined();
+    // su-ideate is a per-harness partition; it must not inherit the singleton tick host.
+    expect(scopes.suIdeate.harnessSlug).toBe('papercusp');
+    expect(scopes.suIdeate.tickInstallSlug).toBeUndefined();
   });
 });
 
