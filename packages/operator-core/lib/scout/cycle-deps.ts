@@ -476,6 +476,17 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       } catch {
         /* best-effort */
       }
+      // GATE / PIPELINE-HEALTH lane (blender-self-learning-2026-07-12 P-010 /
+      // WI-4455): the release ship-path — standing gate reds + stall,
+      // promotion/deploy lag, and chronic pipeline_events failures, joined into
+      // one incident. Fail-soft (the lane module returns [] on outage / no gate).
+      try {
+        const { buildGatePipelineHealthLane } = await import('./gate-pipeline-health-lane');
+        const gpLane = await buildGatePipelineHealthLane();
+        if (gpLane.length > 0) digest.gatePipelineHealth = gpLane;
+      } catch {
+        /* best-effort */
+      }
       // DELTA-FIRST substrate (blender-self-learning-2026-07-12 P-003 /
       // WI-4319): diff this digest against the previous fired cycle's persisted
       // snapshot — read the previous refs, persist the CLEAN fresh digest as

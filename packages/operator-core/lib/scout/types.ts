@@ -96,7 +96,11 @@ export type MetaPatternCategory =
   // blender-self-learning-2026-07-12 P-007: the watchdog's chronic collector
   // signals + standing open conditions — infrastructure pain measured every
   // 15min, fed to ideation directly instead of waiting for a human filing.
-  | 'watchdog-health';
+  | 'watchdog-health'
+  // blender-self-learning-2026-07-12 P-010: the release pipeline's ship-path
+  // health — standing gate reds + stall, promotion/deploy lag, and chronic
+  // pipeline_events failure classes, JOINED into one incident (WI-4455).
+  | 'gate-pipeline-health';
 
 /**
  * A grounded meta-pattern: a cross-corpus regularity (not a single capture),
@@ -160,6 +164,13 @@ export interface CorpusDigest {
    *  (`ref` = `watchdog:<collector>` / `watchdog:open:<key>`). OPTIONAL:
    *  populated by the cycle seam, like standingFacts / nicheMap. */
   watchdogHealth?: MetaPattern[];
+  /** GATE / PIPELINE HEALTH (blender-self-learning-2026-07-12 P-010) — the
+   *  release ship-path: standing gate reds + stall, promotion/deploy lag, and
+   *  chronic pipeline_events failure classes, joined into one incident
+   *  (`ref` = `pipeline:gate` / `pipeline:promotion-stall` /
+   *  `pipeline:event:<kind>:<status>`). OPTIONAL: populated by the cycle seam,
+   *  like watchdogHealth. */
+  gatePipelineHealth?: MetaPattern[];
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS fired cycle's persisted digest snapshot
    *  carried (scout_digest_snapshots, migration 582). {@link renderDigest}

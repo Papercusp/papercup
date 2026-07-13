@@ -120,6 +120,11 @@ function main() {
           'instead of raising this baseline — raising it is a hand-edit of ' +
           `${baselineFile} with a justification.`,
       );
+      console.error(
+        '   To ATTRIBUTE the reach — which client src module and import chain is responsible, and ' +
+          'whether it is an EAGER eval-time white-page risk vs a benign lazy chunk — run ' +
+          '`npm run trace:vite-externalized` (scripts/trace-vite-externalized.mjs, WI-4518).',
+      );
       process.exit(1);
       break;
     case 'ok-ratchet':

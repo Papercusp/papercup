@@ -214,6 +214,7 @@ const META_PATTERN_CATEGORIES = [
   'standing-fact',
   'niche-map',
   'watchdog-health',
+  'gate-pipeline-health',
 ] as const;
 
 /**
@@ -285,6 +286,11 @@ export const DigestSchema = z.object({
    *  collector signals + standing open conditions (watchdog_ticks). OPTIONAL:
    *  populated by the cycle seam (cycle-deps readCorpus), like nicheMap. */
   watchdogHealth: z.array(MetaPatternSchema).optional(),
+  /** GATE / PIPELINE HEALTH (blender-self-learning-2026-07-12 P-010) — the
+   *  release ship-path: standing gate reds + stall, promotion/deploy lag, and
+   *  chronic pipeline_events failure classes (WI-4455). OPTIONAL: populated by
+   *  the cycle seam (cycle-deps readCorpus), like watchdogHealth. */
+  gatePipelineHealth: z.array(MetaPatternSchema).optional(),
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS cycle's persisted digest snapshot carried
    *  (scout_digest_snapshots, migration 582). renderDigest leads with the

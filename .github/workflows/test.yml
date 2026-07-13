@@ -341,6 +341,18 @@ jobs:
       - name: Lint vite build for new externalized-module warnings
         run: npm run lint:vite-externalized
 
+      # Vite EAGER externalized-reach guard (WI-4518): the sibling gate above counts
+      # ALL externalized warnings, but the vast majority sit behind `await import()`
+      # lazy-chunk boundaries and are benign. The genuine white-page risk is a server
+      # builtin reached EAGERLY (static `import` edges from the SPA entry, no lazy
+      # boundary) — it blanks the whole app when its module evaluates (2026-07-04,
+      # 2026-07-12). This guard classifies eager-vs-lazy via the REAL build graph and
+      # HARD-FAILS + names the client import chain on any non-allowlisted eager reach.
+      # Allowlist: browser-polyfilled builtins only (buffer). See
+      # scripts/trace-vite-externalized.mjs.
+      - name: Lint vite build for EAGER server-module reach (white-page guard)
+        run: npm run lint:vite-eager
+
       # Drizzle drift: regenerate generated.ts from the live test PG and
       # fail if it differs from HEAD. Proves `.sql` is the source of
       # truth (PRs that forget to re-run pull-schema fail here).

@@ -1,5 +1,5 @@
 /**
- * session-config-integrity.ts — WI-4562.
+ * session-config-integrity.ts — WI-4562 (+ WI-4617 client-awareness).
  *
  * Claude Code persists its OWN config (/model, /effort, theme, the dangerous-mode
  * prompt) by REWRITING the session's `settings.json` from its in-memory keys — and
