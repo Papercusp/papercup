@@ -145,6 +145,7 @@
     "lint:no-control-bytes": "node scripts/check-no-control-bytes.mjs",
     "lint:no-box-identity": "node scripts/check-no-box-identity.mjs",
     "lint:no-box-identity:all": "node scripts/check-no-box-identity.mjs --all",
+    "lint:no-owner-name-tags": "node scripts/check-no-owner-name-tags.mjs",
     "lint:no-conflict-markers": "node scripts/check-conflict-markers.mjs",
     "lint:no-self-referential-export": "node scripts/check-no-self-referential-export.mjs",
     "lint:host-bundle-builds": "node scripts/check-host-bundle-builds.mjs",

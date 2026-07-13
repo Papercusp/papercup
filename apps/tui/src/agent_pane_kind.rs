@@ -136,6 +136,28 @@ impl AgentPaneKind {
         }
     }
 
+    /// Does this kind already OWN a fixed pane in the chat dock (`chat_dock_kdl`)?
+    /// True for the three SINGLETON roles — Mug (`brain-view --queen`), Kettle
+    /// (`brain-view --overwatch`), Papercup (the `psu-sentinel` front door) — and
+    /// false for the worker Bee/cup, which is what the reactive dock stack is FOR.
+    ///
+    /// Owner ask 2026-07-13 ("all the mug turns should happen in the single mug
+    /// pane"): a singleton role is ONE long-lived agent that takes a NEW session
+    /// per wake, so paning it per-session stacks a fresh dead pane every turn
+    /// (24h of live data: kettle 122 sessions, papercup 81, mug 56 — 259 panes).
+    /// Its fixed pane already rolls forward to each new wake's transcript on its
+    /// own (`brain_view::resolve_session` re-resolves the newest session for the
+    /// role every tick), so the per-wake pane is pure duplication. A Bee is the
+    /// opposite: one distinct agent per work item, and one pane each is the point.
+    pub fn has_fixed_dock_pane(self) -> bool {
+        match self {
+            Self::Queen | Self::Overwatch | Self::Sentinel => true,
+            // A worker gets its own reactive pane; planner/su are excluded from
+            // the dock stack upstream (su is the owner's own terminal).
+            Self::Bee | Self::Planner | Self::Su => false,
+        }
+    }
+
     /// The dock-stack GROUP order (P-011): same-type panes stack together, in
     /// this rank order — Sentinel (owner-facing chat) leads, then Overwatch, then
     /// the Queen, then the worker Bees (colony), then Planners. Matches the static
@@ -172,6 +194,30 @@ impl AgentPaneKind {
         .into_iter()
         .find(|&k| t.starts_with(k.glyph()))
     }
+}
+
+/// Does a roster row carrying this `role` already have a FIXED pane in the dock,
+/// and therefore need NO reactive per-session pane? (Owner ask 2026-07-13: "all
+/// the mug turns should happen in the single mug pane ... same for kettle ...
+/// same for papercup".)
+///
+/// Keyed on the roster's `role`, NOT its stamped `agentPaneKind`, and that is
+/// deliberate: the backend classifier (`classifyAgentPane`) has no arm for the
+/// `papercup` role — it matches `operator`/`oracle` and lets `papercup` fall
+/// through to the default `cup` arm — so a papercup row arrives stamped as a
+/// WORKER. Trusting that field would keep paning the very role the owner named.
+/// pui's own `from_wire` maps the role vocabulary correctly, so we re-derive.
+///
+/// `papercup-deep` is the hidden heavy half of the ONE Papercup identity and is
+/// deliberately PANELESS (WI-4485: it is woken over coord and never takes pane
+/// input) — it must not be reactively paned either, and it does not parse as a
+/// kind, so it is matched explicitly.
+pub fn role_has_fixed_dock_pane(role: &str) -> bool {
+    let r = role.trim().to_ascii_lowercase();
+    if r == "papercup-deep" {
+        return true;
+    }
+    AgentPaneKind::from_wire(&r).is_some_and(AgentPaneKind::has_fixed_dock_pane)
 }
 
 /// Prefix a pane title/name with the kind's glyph (P-010). An unknown/missing

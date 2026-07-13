@@ -15,7 +15,7 @@ marketplace surface is **no longer the current distribution path.**
 What replaced it: the in-app **Cupboard** — a GitHub-backed listing service
 served by `apps/operator-public` (Cloudflare Workers + Hono + D1), with the
 desktop operator owning the listing UI. Listings span five kinds
-(`harness | blueprint | plugin | tool-pack | learning-pack`); the `snapshot`
+(`harness | blueprint | plugin | tool-pack | knowledge-pack`); the `snapshot`
 kind was retired (Cupboard migration 008 drops it from the `listing_kind`
 CHECK constraint — see `retire-snapshots-instance-spec-2026-06-09`). Publish/install
 flow through the

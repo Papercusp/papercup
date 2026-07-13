@@ -427,18 +427,20 @@ describe('failure: budget exhaustion mid-cycle (limits.maxCostUsd)', () => {
 
     const r = await runScoutCycle(deps);
 
-    expect(r.stop).toBe('budget-exhausted');
-    expect(r.calls.map((c) => c.step)).toEqual(['ideate']); // critique never spent
-    expect(r.ideas).toHaveLength(4); // the partial pipeline is carried in the result
-    expect(r.scored).toEqual([]);
-    expect(r.survivors).toEqual([]);
-    expect(r.proposals).toEqual([]);
-    expect(r.routed).toEqual([]);
-    expect(r.provenance).toEqual([]);
-    expect(routeBatches).toHaveLength(0);
-    // Overshoot is bounded by the last step's spend: cost ≤ cap + the last call.
-    expect(r.costUsd).toBeLessThanOrEqual(0.005 + 0.01);
-    expect(r.costUsd).toBeCloseTo(0.01, 5);
+    // EI-10779: the cycle no longer discards paid-for generation on budget overrun.
+    // It continues through to route (the cheapest stage, ~$0) and flags overBudget instead.
+    expect(r.stop).toBe('completed');
+    expect(r.overBudget).toBe(true);
+    expect(r.calls.map((c) => c.step)).toEqual(['ideate', 'critique', 'recombine']); // all stages run
+    expect(r.ideas).toHaveLength(4); // the full pipeline is carried in the result
+    expect(r.scored).toHaveLength(4); // scored from critique
+    expect(r.survivors).toHaveLength(4); // survivors from critique
+    expect(r.proposals).toHaveLength(1); // one recombined proposal from all survivors
+    expect(r.routed).toHaveLength(1); // one routing decision for that proposal
+    expect(routeBatches).toHaveLength(1); // routing batch with the proposal
+    // EI-10779: the cycle completes all stages, no longer discarding sunk cost (generation).
+    // Cost is 3 steps × 0.01 each = 0.03 (exceeds the 0.005 cap, but overBudget flags it).
+    expect(r.costUsd).toBeCloseTo(0.03, 5);
   });
 
   it('halts after critique, BEFORE the recombine spend; survivors are still surfaced', async () => {
@@ -446,14 +448,18 @@ describe('failure: budget exhaustion mid-cycle (limits.maxCostUsd)', () => {
 
     const r = await runScoutCycle(deps);
 
-    expect(r.stop).toBe('budget-exhausted');
-    expect(r.calls.map((c) => c.step)).toEqual(['ideate', 'critique']); // recombine never spent
+    // EI-10779: the cycle no longer discards paid-for generation on budget overrun.
+    // It continues through to route (the cheapest stage, ~$0) and flags overBudget instead.
+    expect(r.stop).toBe('completed');
+    expect(r.overBudget).toBe(true);
+    expect(r.calls.map((c) => c.step)).toEqual(['ideate', 'critique', 'recombine']); // all stages run
     expect(r.scored).toHaveLength(4);
-    expect(r.survivors).toHaveLength(4); // computed before the halt — observability kept
-    expect(r.proposals).toEqual([]);
-    expect(r.routed).toEqual([]);
-    expect(routeBatches).toHaveLength(0); // routing (post-recombine) never reached
-    expect(r.costUsd).toBeLessThanOrEqual(0.015 + 0.01);
+    expect(r.survivors).toHaveLength(4); // computed before budget check, observability kept
+    expect(r.proposals).toHaveLength(1); // one recombined proposal from all survivors
+    expect(r.routed).toHaveLength(1); // routing still happens
+    expect(routeBatches).toHaveLength(1); // routing (post-recombine) still reached
+    // EI-10779: the cycle completes all stages. Cost is 3 steps × 0.01 each = 0.03.
+    expect(r.costUsd).toBeCloseTo(0.03, 5);
   });
 
   it('spend exactly AT the cap does not halt (the check is strictly greater-than)', async () => {

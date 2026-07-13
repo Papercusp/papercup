@@ -37,7 +37,7 @@ describe('lintCarrySurfaceProvenance', () => {
   });
 
   it('does NOT flag when the line already carries a recognized source tag', () => {
-    expect(lintCarrySurfaceProvenance('[owner:avi 2026-07-10] the owner said to hold off until Friday').flagged).toBe(false);
+    expect(lintCarrySurfaceProvenance('[owner:jane 2026-07-10] the owner said to hold off until Friday').flagged).toBe(false);
     expect(lintCarrySurfaceProvenance('[self-imposed] do not resolve WI-3532 until the UI pass is done').flagged).toBe(false);
     expect(lintCarrySurfaceProvenance('[peer:su-4dc3b] the owner approved this').flagged).toBe(false);
     expect(lintCarrySurfaceProvenance('[inferred] owner wants this merged').flagged).toBe(false);

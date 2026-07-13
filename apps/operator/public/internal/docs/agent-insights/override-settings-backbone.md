@@ -72,7 +72,7 @@ Resolution order reads **left → right; the LAST present layer wins.**
 | capability-tier-overrides | per-capability tier reclassification                                                        | workspace                 | `operator_capability_tiers`             | baked EXACT table → PG override, **DARK** (`papercusp-auth-config-overrides`)                                  | `capability-tier-overrides` ✅                          |
 | auth-config-overrides     | §G auth/sandbox dials (full-access bypass roles, scoped-SU safe-tools, sandbox mask/egress) | workspace                 | `operator_auth_config`                  | baked literals → PG override, **DARK** (`papercusp-auth-config-overrides`); tighten/replace-only, never widens | `auth-config-overrides` ✅                              |
 | flags                     | runtime flag overrides                                                                      | workspace                 | `operator_flag_overrides`               | code flag defaults → row                                                                                       | (flag-bus; not yet a concern)                          |
-| learning-packs            | installed pack enable/config                                                                | workspace/pot             | learning-pack store                     | pack default → install row                                                                                     | (not yet a concern)                                    |
+| knowledge-packs           | installed pack enable/config                                                                | workspace/pot             | knowledge-pack store                    | pack default → install row                                                                                     | (not yet a concern)                                    |
 
 ### Why two families were skipped (P-037)
 
@@ -90,7 +90,7 @@ Resolution order reads **left → right; the LAST present layer wins.**
   shared literal + adding a reset; tracked as a follow-up rather than bolted on
   awkwardly here.
 
-(`flags` and `learning-packs` are likewise candidates for a future concern but
+(`flags` and `knowledge-packs` are likewise candidates for a future concern but
 were out of this phase's scope.)
 
 ## Guardrail — new override surfaces

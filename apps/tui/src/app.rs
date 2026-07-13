@@ -2875,10 +2875,12 @@ impl App {
 
     /// The dock agent stack's bee panes to open THIS roster refresh
     /// (hive-agent-tabs P-004): one live `claude --resume <session_id>` Claude
-    /// TUI per running FLEET BEE (`source == "fleet-spawn"` — Queen/orchestrator
-    /// spawns; engineer shells and the brain are NOT paned — owner ask) not
-    /// yet paned. Prunes departed owners from the dedup set so a returning
-    /// bee re-panes; interactive launch panes are excluded via `tracked_panes`.
+    /// TUI per running WORKER CUP — a `source == "fleet-spawn"` row (an
+    /// autonomous spawn; engineer shells are NOT paned — owner ask) whose role
+    /// does NOT already own a fixed dock pane (`role_has_fixed_dock_pane`: the
+    /// singleton mug/kettle/papercup, owner ask 2026-07-13). Prunes departed
+    /// owners from the dedup set so a returning cup re-panes; interactive launch
+    /// panes are excluded via `tracked_panes`.
     ///
     /// Claude bees are additionally gated on their transcript being ON DISK
     /// (`claude_transcript_on_disk`): the /invoke route seeds the presence row
@@ -2899,6 +2901,27 @@ impl App {
         let mut opened_owners: Vec<String> = Vec::new();
         for r in &self.roster {
             if !is_bee(r) || self.paned_bees.contains(&r.owner_id) {
+                continue;
+            }
+            // Owner ask 2026-07-13 ("all the mug turns should happen in the single
+            // mug pane ... same for kettle ... same for papercup"): the SINGLETON
+            // roles already own a fixed dock pane (chat_dock_kdl), so they must
+            // never be appended to the reactive stack — that stack is for CUPS.
+            //
+            // `source == "fleet-spawn"` is the identity TIER (an autonomous agent
+            // vs. the owner's own shell) — mug/kettle/papercup are autonomous too,
+            // so it never separated the singletons from the workers. Each of their
+            // wakes is a NEW adv_session with a NEW owner id, so the owner_id dedup
+            // below reads every turn as a brand-new bee and stacks another dead
+            // `claude --resume` pane behind the live one: 24h of roster data showed
+            // kettle 122 sessions, papercup 81, mug 56 — 259 panes for 3 agents.
+            // Their fixed panes already follow the newest wake by themselves
+            // (brain_view::resolve_session re-resolves the role's latest session
+            // each tick), so the per-wake pane was never anything but duplication.
+            if r.role
+                .as_deref()
+                .is_some_and(crate::agent_pane_kind::role_has_fixed_dock_pane)
+            {
                 continue;
             }
             // Already an interactive pane in this dock (a reactive launch).

@@ -100,31 +100,62 @@ That is precisely the mechanism above, so the flake reddens **on purpose**.
 The lane aggregates and reports a **red-rate**, and exits non-zero if *any* repeat
 failed — so "it passed once" can never again be mistaken for "it passes".
 
-### Soak a SUITE, not a lone file — contention is the mechanism, not slowness
+### Building the lane took three falsified theories — the log is the lesson
 
-The obvious way to build this lane is wrong, and it fails in the direction that
+Every "obvious" way to induce the race failed, and each failed in the direction that
 makes you *confident*. Measured against the real pre-fix `MugTab` fixture:
 
-| config                                        | red-rate                        |
-| --------------------------------------------- | ------------------------------- |
-| fixture **alone**, 2 pinned cores             | **1/6**                         |
-| fixture **alone**, 1 pinned core (harsher!)   | **0/6**                         |
-| fixture **with its siblings**, 2 pinned cores | see `--self-test` (the default) |
+| config                                      | result             | verdict                        |
+| ------------------------------------------- | ------------------ | ------------------------------ |
+| fixture alone, 2 pinned cores               | 1/6 red            | too weak                       |
+| fixture alone, **1** pinned core (harsher!) | **0/6** red        | harsher pinning = FEWER reds   |
+| fixture + siblings, 2 pinned cores          | **0/6** red        | sibling contention didn't help |
+| 12 competing hogs, nice 19, 4 cores         | **6/6 "red"**      | **FALSE — 0 tests ran**        |
+| **8 cores, 8 hogs, nice 10**                | **1/10 red, real** | ships                          |
 
-Turning the starvation *up* on an isolated file made the flake **less** likely, not
-more. That falsifies the naive theory ("slow it down and races appear"). A lone test
-file has no parallel workers to compete with, so its event loop is *quiet*: the
-throttled timer always gets its turn before the assertion runs. It just executes
-slowly.
+1. **"Starve it harder."** Falsified: pinning to *one* core reddened it **less**.
+   Pinning gives a process *dedicated* (idle) cores — its workers timeshare fairly
+   and every event loop still gets scheduled promptly. Pinning makes a run **slow**,
+   not **preempted**.
+2. **"The parallel workers are the load."** Also falsified: running the fixture with
+   its whole directory on 2 cores was 0/6.
+3. **What actually works: be low-priority *relative to competing work*.** The original
+   repro was vitest **niced** (pc-heavy, +10) against a box at load 150–240. The race
+   needs the runner's threads *preempted for long stretches* so the throttled nuqs URL
+   flush lands after the remount. Reproduced with real competing CPU hogs at **normal**
+   priority sharing the niced runner's cores.
 
-**The parallel workers ARE the load.** The race needs a *congested* event loop, not a
-slow one — which is exactly why the original flake "passed in isolation, reddened in
-the full suite." So the lane points at a **directory/suite** by default (`--self-test`
-runs the fixture alongside its siblings); `--isolate` exists only for diagnosis.
+### The trap that nearly shipped: a 6/6 red-rate with zero tests run
 
-Generalize: when reproducing a timing bug, ask what the timer is *competing with*.
-Starving a lone process starves its competitors too, and can dissolve the very race
-you are hunting.
+Turn that competing load up too far and vitest stops being slow and starts being
+**broken**: `Failed to start forks worker` → `Timeout waiting for worker to respond` →
+`Test Files  no tests`. A **non-zero exit in which no test ever executed.**
+
+Scored naively that reads **6/6 red** — a detector reporting a 100% flake rate for a
+test it never ran. It would have "proven" the lane worked. This is the same disease as
+the original bug, one level up: **a check that cannot tell the failure it's looking for
+from an unrelated failure.**
+
+So `classify_run()` scores three outcomes, not two — `pass` / `red` / **`invalid`** — and
+an infrastructure death is never counted as flake evidence. **A red is only trustworthy
+if you read WHY it reddened**; the lane keeps the failing log so you can. The shipped
+config's red is the real thing:
+
+```
+× resets Capacity without clearing Now or Work settings
+TestingLibraryElementError: Unable to find a label with the text of: std model spec
+Tests  1 failed | 14 passed (15)      ← tests actually RAN
+```
+
+### Sensitivity — an all-green soak is evidence, not proof
+
+The lane reproduces the real flake at **\~10–17% per run**, against the \~60% the truly
+loaded box produced: it recovers a synthetic *fraction* of ambient chaos. At p≈0.15,
+**12 repeats ≈ 86% detection** (the default); 6 would be \~62%.
+
+So quote the **red-rate** — "0/12 under load" — never "the soak passed, it's fine."
+Collapsing a probabilistic result into a binary reassurance is the exact move that let
+this flake survive two peer reports.
 
 Deliberately **not** used: `systemd-run` / cgroup CPU quotas. The agent host blocks
 them (native-scheduler lockout hook), and `taskset` needs no scheduler, no root, and

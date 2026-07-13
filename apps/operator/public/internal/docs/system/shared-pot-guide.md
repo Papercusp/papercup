@@ -40,7 +40,7 @@ stamps it as a pot. The default blueprint is the **coding** pot; pass a
 different one for non-coding work (e.g. a research/`work` pot).
 
 * **Tool:** `pot:create` — args: `slug` (required), `blueprintId` (default the
-  coding pot; `work` for a non-coding pot), `kickoff`, `learningPack`,
+  coding pot; `work` for a non-coding pot), `kickoff`, `knowledgePack`,
   `wakeInSeconds`, `deployment` (default `local`).
 * It's **root-only** — a pot is a top-level peer, never created from inside
   another agent. Running it in the cloud is a separate step

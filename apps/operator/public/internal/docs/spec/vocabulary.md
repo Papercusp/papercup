@@ -44,8 +44,8 @@ A package that extends one or more harness instances with new capabilities — a
 @papercupai/cloudflare-pages contributes a "Publish" button; @papercupai/slack-notifier sends a Slack message on mission-done. The retired @papercupai/vscode-server pilot used to contribute a code-server tab; IDE tabs remain plugin-shaped, not core. Multiple plugins compose per instance.
 
 Marketplace package kind
-The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a five-kind storefront (LISTING\_KINDS in packages/operator-core/lib/cupboard/types.ts): harness (the repo→Pot lookup index), blueprint (a GitHub-repo-backed harness recipe — the term that superseded the original template), plugin, tool-pack (the runtime-less code-tool pack — renamed from pack by migration 008; the legacy pack value still parses as an alias), and learning-pack (a distributable set of curated pot learnings).
-All five go through the same publish + signing + retraction infrastructure; only the install handler differs. blueprint + learning-pack listings publish pending and surface only after operator approval.
+The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a five-kind storefront (LISTING\_KINDS in packages/operator-core/lib/cupboard/types.ts): harness (the repo→Pot lookup index), blueprint (a GitHub-repo-backed harness recipe — the term that superseded the original template), plugin, tool-pack (the runtime-less code-tool pack — renamed from pack by migration 008; the legacy pack value still parses as an alias), and knowledge-pack (a distributable set of curated pot learnings).
+All five go through the same publish + signing + retraction infrastructure; only the install handler differs. blueprint + knowledge-pack listings publish pending and surface only after operator approval.
 
 Goal
 The top-level mission. Every task traces back to a goal through a parent chain. Goals can themselves nest.

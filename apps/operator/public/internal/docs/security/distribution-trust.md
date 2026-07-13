@@ -1,20 +1,20 @@
 # Distribution trust posture
 URL: /internal/docs/security/distribution-trust
 
-The v1 trust model for distributing harnesses, blueprints, plugins, tool-packs, and learning-packs through the Cupboard — why forking/installing pulls a supply-chain surface, how capability-gating + install-consent contain it, why instruction-carrying kinds are review-gated, what we defer, and what's out of scope.
+The v1 trust model for distributing harnesses, blueprints, plugins, tool-packs, and knowledge-packs through the Cupboard — why forking/installing pulls a supply-chain surface, how capability-gating + install-consent contain it, why instruction-carrying kinds are review-gated, what we defer, and what's out of scope.
 
 import { Aside } from '@astrojs/starlight/components';
 
 The **Cupboard** is one storefront with five listing kinds, each with a
 different consumer action and a different trust surface:
 
-| Kind            | Action      | Pulls code?                                                             | Trust surface                                                                        |
-| --------------- | ----------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `harness`       | **join**    | No — joins a Hypercore swarm by topic                                   | Peer/membership trust ([shared harnesses](/internal/docs/security/shared-harnesses)) |
-| `blueprint`     | **fork**    | **Yes** — clones the project remote + any bundled plugin code           | Supply chain + review gate (this page)                                               |
-| `plugin`        | **install** | **Yes** — installs a distributable plugin (a pack *with* a runtime)     | Supply chain (this page)                                                             |
-| `tool-pack`     | **install** | **Yes** — installs a runtime-less code-tool pack, registering MCP tools | Supply chain (this page)                                                             |
-| `learning-pack` | **install** | No code — seeds curated learnings into a pot's shared memory            | Injected agent context + review gate (this page)                                     |
+| Kind             | Action      | Pulls code?                                                             | Trust surface                                                                        |
+| ---------------- | ----------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `harness`        | **join**    | No — joins a Hypercore swarm by topic                                   | Peer/membership trust ([shared harnesses](/internal/docs/security/shared-harnesses)) |
+| `blueprint`      | **fork**    | **Yes** — clones the project remote + any bundled plugin code           | Supply chain + review gate (this page)                                               |
+| `plugin`         | **install** | **Yes** — installs a distributable plugin (a pack *with* a runtime)     | Supply chain (this page)                                                             |
+| `tool-pack`      | **install** | **Yes** — installs a runtime-less code-tool pack, registering MCP tools | Supply chain (this page)                                                             |
+| `knowledge-pack` | **install** | No code — seeds curated learnings into a pot's shared memory            | Injected agent context + review gate (this page)                                     |
 
 > The `snapshot` kind was **retired**
 > (`retire-snapshots-instance-spec-2026-06-09`, D-005). It is no longer in
@@ -26,7 +26,7 @@ different consumer action and a different trust surface:
 
 This page is the trust posture for the kinds that either **pull code** —
 forking a blueprint, installing a plugin or tool-pack — or **inject agent
-context** — a learning-pack. It records the v1 decision
+context** — a knowledge-pack. It records the v1 decision
 (`harness-blueprint-distribution-2026-06-03`, **P-009 / D-007 / D-009**) and,
 importantly, what is **deferred** and what is **out of scope**.
 
@@ -40,7 +40,7 @@ operator's plugin host with access to host services (tasks, secrets, fetch,
 compute). **Unconstrained, that is a classic supply-chain risk** — a published
 listing could ship a plugin that reads secrets or exfiltrates over the network.
 
-A `learning-pack` pulls *no executable code*, but it injects curated learnings
+A `knowledge-pack` pulls *no executable code*, but it injects curated learnings
 into a pot's shared memory — i.e. content that lands in agent context. That is
 a different risk (prompt injection), addressed by the review gate below rather
 than by capability-gating.
@@ -127,10 +127,10 @@ it does **not** cover **prompt-injection** risk from content that lands in agent
 context. So the two **instruction-carrying** kinds now carry a **pre-publication
 review gate**:
 
-* A **learning-pack** injects curated learnings into a pot's shared memory.
+* A **knowledge-pack** injects curated learnings into a pot's shared memory.
 * A **blueprint** runs agent roles.
 
-`REVIEW_POLICY_KINDS = ['learning-pack', 'blueprint']`. At publish, a listing of
+`REVIEW_POLICY_KINDS = ['knowledge-pack', 'blueprint']`. At publish, a listing of
 one of these kinds lands `review_status='pending'` (every other kind, and every
 pre-008 row, is `'approved'`). Pending/rejected listings are **excluded from
 public list and read** — only the publisher can read their own pending listing
@@ -170,7 +170,7 @@ project-remote-backed in v1).
 * **Plugin signing.** No cryptographic signature on plugin code.
 
 Note that a **review gate is no longer fully deferred**: the instruction-carrying
-kinds (blueprint, learning-pack) are now pre-publication review-gated (above).
+kinds (blueprint, knowledge-pack) are now pre-publication review-gated (above).
 What remains deferred is review/curation for the **pure code kinds** (plugin,
 tool-pack), which keep install-consent + reactive moderation as their floor, and
 cryptographic signing for all kinds.
@@ -192,13 +192,13 @@ are real users installing third-party listings.
 
 | Concern                            | v1                                                                                                                          |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Live listing kinds                 | `harness`, `blueprint`, `plugin`, `tool-pack`, `learning-pack` (snapshot retired)                                           |
+| Live listing kinds                 | `harness`, `blueprint`, `plugin`, `tool-pack`, `knowledge-pack` (snapshot retired)                                          |
 | Forked/installed plugin capability | manifest ∩ user-consented grant (`hasCapability`) when grants present; manifest-only fallback when grants absent/unreadable |
 | Consent record                     | `plugin_capability_grants` (baseline.sql; was Migration 051)                                                                |
 | Fork capability inheritance        | parent grants copied `granted_by='system'` (`copyGrantsToNewHarness`)                                                       |
 | Already-enabled plugins            | manifest caps backfilled at boot (`granted_by='system'`); legacy JSON read-only fallback                                    |
 | Network / secret egress            | per-host / per-name capability via fetch+secrets proxies                                                                    |
-| Instruction-carrying kinds         | pre-publication review gate (`blueprint`, `learning-pack` land `pending`, hidden until operator-approved)                   |
+| Instruction-carrying kinds         | pre-publication review gate (`blueprint`, `knowledge-pack` land `pending`, hidden until operator-approved)                  |
 | Palette server-capability          | §3 re-check, confirm-for-destructive, no trust bypass, audited                                                              |
 | Publisher trust                    | advisory signals (collaborator perm, device attestation, ban-list); private repos rejected                                  |
 | Signing                            | deferred (D-009); review deferred only for pure code kinds                                                                  |

@@ -18,13 +18,13 @@ claims, the `marketplace-api`/`marketplace-site` apps, the Gitea/OCI and
 The Cupboard is **one storefront with five listing kinds**
 (`LISTING_KINDS` in `apps/operator-public/src/db.ts`): `harness` →
 join, `blueprint` → fork, `plugin` → install, `tool-pack` → install (a
-runtime-less code-tool pack), and `learning-pack` → install (curated
+runtime-less code-tool pack), and `knowledge-pack` → install (curated
 pot learnings). `pack` is **not** a current kind — it survives only as
 a normalized wire alias for older clients (`normalizeListingKind`:
 `pack` → `tool-pack`). Listings are keyed on the GitHub-backed project
 remote.
 
-Instruction-carrying kinds (`learning-pack`, `blueprint`) publish as
+Instruction-carrying kinds (`knowledge-pack`, `blueprint`) publish as
 `pending` and are publicly invisible until an operator approves them;
 code kinds (`harness`, `plugin`, `tool-pack`) publish as `approved`
 immediately. A non-approved row is `not_found` to everyone except its

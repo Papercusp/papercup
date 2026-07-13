@@ -78,7 +78,7 @@ describe('computeSoakReport', () => {
       bgHost: {
         oomKillCount: 0,
         // Deploy restarts in the window do NOT red the gate — only failures do
-        // [owner:Avi 2026-07-13 "red only on crashes"]. Shipping a routine fix
+        // [owner 2026-07-13 "red only on crashes"]. Shipping a routine fix
         // must not make readiness unsatisfiable.
         restartCount: 3,
         failureCount: 0,

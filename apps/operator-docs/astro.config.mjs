@@ -91,9 +91,15 @@ export default defineConfig({
   // signal about where the page went. Astro emits a static redirect page per entry,
   // which the postbuild mirror copies like any other page, so this works on the
   // served /internal/docs surface too (there is no server doing the redirecting).
+  //
+  // NB the TARGET must carry the `base` prefix explicitly. Astro prepends `base`
+  // to the redirect's SOURCE key but emits the DESTINATION verbatim — so a bare
+  // '/system/knowledge-packs' produces `<meta refresh url=/system/knowledge-packs>`,
+  // which 404s under the /internal/docs base. A redirect that 404s is worse than no
+  // redirect: it looks handled. Verified against the built page, not assumed.
   redirects: {
     // learning packs → knowledge packs (cupboard-public-release-2026-07-12 P-001).
-    '/system/learning-packs': '/system/knowledge-packs',
+    '/system/learning-packs': '/internal/docs/system/knowledge-packs',
   },
   // Preview builds go to ./dist-preview so they NEVER reach the committed served
   // mirror (postbuild-copy mirrors ./dist only, and the preview script never runs it).

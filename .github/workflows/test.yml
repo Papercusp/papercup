@@ -226,6 +226,19 @@ jobs:
       - name: Lint no box identity in tracked source
         run: npm run lint:no-box-identity
 
+      # Sibling rule, same WI-4419 family, different half of the class. The box-identity
+      # lint hunts a home PATH and deliberately refuses to know your git name. This one
+      # hunts the NAMED PROVENANCE TAG — `[owner:<name> <date>]` in a source comment —
+      # which is how the owner's real name keeps reaching source.tar.zst. It has killed
+      # two 0.0.9 cuts ~10 min in (the audit runs BEFORE the platform legs, so a whole
+      # build dies for a one-word comment). It also catches what the cut's audit CANNOT:
+      # that audit matches a short git name case-SENSITIVELY (\bAvi\b) — rightly, since
+      # \bavi\b would hit video.avi and Avicenna — so `[owner:avi …]` shipped silently.
+      # Anchoring on the `[owner:` tag is exact, so this rule is case-insensitive with no
+      # false-positive surface. BASELINE IS EMPTY: strip the name, never allowlist it.
+      - name: Lint no named owner provenance tags in tracked source
+        run: npm run lint:no-owner-name-tags
+
       # Committed conflict-marker guard (EI-1836): a COMMITTED git conflict bracket
       # (the live-merge resolver does NOT catch one already committed by a bad
       # git-sync auto-merge) broke `vite build` with a cryptic CssSyntaxError, which
