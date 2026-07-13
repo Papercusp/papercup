@@ -6,7 +6,7 @@
  * config.toml = [mcp_servers.papercusp] url = "<signed>", auth.json
  * symlinked to the real ~/.codex/auth.json (never copied).
  */
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -53,6 +53,20 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
   return dir;
+}
+
+function installOwnerRuntimeProof(owner: string) {
+  const dir = join(fakeHome, '.papercusp', 'locks-cache');
+  const safe = owner.replace(/[^A-Za-z0-9._-]/g, '_');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, `owner-${safe}-last-decision.json`),
+    JSON.stringify({ ts: new Date().toISOString(), owner, decision: 'granted' }),
+  );
+  writeFileSync(
+    join(dir, `owner-${safe}-last-success.json`),
+    JSON.stringify({ ts: new Date().toISOString(), owner }),
+  );
 }
 
 describe('writeRoleCodexHome', () => {
@@ -420,9 +434,31 @@ describe('writeSuCodexHome', () => {
     expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
     const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
     expect(diag.lockEnforcement).toBe('hooks-configured');
-    expect(diag.codexPreToolUseStatus).toBe('codex-hooks-stable-pretooluse');
-    expect(diag.requiresExplicitPapercuspLocks).toBe(false);
+    expect(diag.codexPreToolUseStatus).toBe('configured-unverified');
+    expect(diag.lockMode).toBe('manual');
+    expect(diag.requiresExplicitPapercuspLocks).toBe(true);
     expect(diag.lockOwnerSid).toBe('s');
+    expect(readFileSync(out.agentsPath, 'utf8')).toContain('papercusp-rule:file-locking=explicit-manual');
+  });
+
+  it('writes exactly one automatic rule after an owner-scoped runtime hook proof', async () => {
+    await installFakeHooks();
+    installOwnerRuntimeProof('s');
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({
+      sessionKey: 'probed',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText:
+        'P\n<!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-START -->\nold static lock advice\n<!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-END -->',
+      sid: 's',
+    });
+    const agents = readFileSync(out.agentsPath, 'utf8');
+    const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
+    expect(diag).toMatchObject({ lockMode: 'automatic', hookHealth: 'verified', runtimeProbed: true });
+    expect(agents).not.toContain('old static lock advice');
+    expect(agents.match(/papercusp-rule:file-locking=/g)).toHaveLength(1);
+    expect(agents).toContain('papercusp-rule:file-locking=automatic-hooks');
+    expect(out.instructionLint.conflicts).toEqual([]);
   });
 
   it('reads non-secret CODEX_HOME diagnostics, including latest rollout id and resume command', async () => {

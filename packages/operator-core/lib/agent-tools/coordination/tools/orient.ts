@@ -1407,6 +1407,31 @@ export default defineTool({
         }
       } catch { /* fail-soft — never break orientation over a config read/repair */ }
     }
+    // EI-11408 / P-004: Codex's lock policy is a RUNTIME verdict, not a
+    // static client assumption. Hooks merely present on disk remain manual
+    // until this exact owner produces a successful owner-scoped hook decision;
+    // a newer owner-scoped error flips it back to manual. This fold is the
+    // after-launch authority and carries one effective instruction only.
+    let codexLocks: unknown;
+    if (ownerId) {
+      try {
+        const session = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
+        if (session?.agent === 'codex') {
+          const [{ readCodexHomeDiagnostics }, { readCodexLockRuntimeVerdict }] = await Promise.all([
+            import('../../../role-codex-home'),
+            import('../../../codex-lock-runtime'),
+          ]);
+          const home = readCodexHomeDiagnostics(session.id);
+          const hooksConfigured =
+            home.hooksExists &&
+            home.diagnostics?.lockEnforcement === 'hooks-configured' &&
+            (!home.diagnostics.lockOwnerSid || home.diagnostics.lockOwnerSid === ownerId);
+          codexLocks = readCodexLockRuntimeVerdict({ ownerId, hooksConfigured });
+        }
+      } catch {
+        /* fail-soft: prompt snapshot remains conservative/manual */
+      }
+    }
     // EI-11484: OPEN OWNER DIRECTIVES fold — every orient (full AND monitor;
     // orient is the mandated bootstrap, so this is how a SUCCESSOR session in
     // the workspace inherits an order whose recording session died). Rendered
@@ -1417,7 +1442,7 @@ export default defineTool({
       const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
       ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws)) ?? undefined;
     } catch { /* fail-soft */ }
-    const out = { ...(ownerDirectives ? { ownerDirectives } : {}), ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(configIntegrity ? { configIntegrity } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
+    const out = { ...(ownerDirectives ? { ownerDirectives } : {}), ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(configIntegrity ? { configIntegrity } : {}), ...(codexLocks ? { codexLocks } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never

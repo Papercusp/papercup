@@ -369,6 +369,26 @@ describe('bootstrap-su', () => {
     );
   });
 
+  it('refuses a compiled prompt with contradictory file-lock modes', async () => {
+    const base = await buildLaunchSpecMock({ harnessSlug: null });
+    buildLaunchSpecMock.mockResolvedValueOnce({
+      ...base,
+      promptText: [
+        'File-lock enforcement is **NOT automatic on Codex**.',
+        '<!-- papercusp-rule:file-locking=automatic-hooks -->',
+        'managed hooks claim/release file locks automatically',
+      ].join('\n'),
+    });
+    const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null });
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      status: 'error',
+      error: expect.stringMatching(/contradictory file-lock modes/i),
+      instructionLint: { conflicts: [expect.objectContaining({ key: 'file-locking' })] },
+    });
+    expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
+  });
+
   it('omp: raw-CLI result (no wrapperBin), No-plan row + mode omp', async () => {
     const res = await callPost({ agent: 'omp', harness_slug: 'papercup', plan_slug: null });
     const json = await res.json();

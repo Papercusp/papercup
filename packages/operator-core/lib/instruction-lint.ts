@@ -24,6 +24,24 @@ export interface InstructionLintReport {
 
 const RULE_RE = /<!--\s*papercusp-rule:([a-z0-9-]+)=([a-z0-9-]+)\s*-->/gi;
 
+function semanticFileLockMode(line: string): string | null {
+  const plain = line.replace(/[`*_>#|]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (
+    /file-lock enforcement is not automatic/.test(plain) ||
+    /nothing claims locks for you/.test(plain) ||
+    /treat every edit as needing the explicit claim/.test(plain)
+  ) {
+    return 'explicit-manual';
+  }
+  if (
+    /file-lock enforcement is automatic here/.test(plain) ||
+    /managed hooks claim\/release file locks automatically/.test(plain)
+  ) {
+    return 'automatic-hooks';
+  }
+  return null;
+}
+
 /** Retired mechanisms whose replacements are now canonical. */
 const STALE_RULE_VALUES: Record<string, Record<string, string>> = {
   'harness-scope': { 'session-auto': 'explicit-per-call' },
@@ -55,6 +73,25 @@ export function lintInstructionText(text: string, maxFindings = 20): Instruction
       occurrences.push({ key: match[1]!, value: match[2]!, line: index + 1 });
     }
   });
+  const markerCount = occurrences.length;
+  // EI-11408: the original Codex contradiction was prose on one side and a
+  // generated marker on the other, so marker-only lint declared it clean.
+  // Recognize only the narrow, load-bearing lock modal phrases. A marker on
+  // the same/adjacent line already carries that rule and suppresses a duplicate.
+  lines.forEach((line, index) => {
+    const value = semanticFileLockMode(line);
+    if (!value) return;
+    const lineNo = index + 1;
+    if (
+      occurrences.some(
+        (entry) => entry.key === 'file-locking' && entry.value === value && Math.abs(entry.line - lineNo) <= 1,
+      )
+    ) {
+      return;
+    }
+    occurrences.push({ key: 'file-locking', value, line: lineNo });
+  });
+  occurrences.sort((a, b) => a.line - b.line || a.key.localeCompare(b.key));
 
   const byKey = new Map<string, InstructionRuleOccurrence[]>();
   for (const occurrence of occurrences) {
@@ -97,7 +134,7 @@ export function lintInstructionText(text: string, maxFindings = 20): Instruction
     .slice(0, maxFindings);
 
   return {
-    markerCount: occurrences.length,
+    markerCount,
     duplicateRules: duplicateRules.slice(0, maxFindings),
     conflicts: conflicts.slice(0, maxFindings),
     staleRules: staleRules.slice(0, maxFindings),
@@ -108,4 +145,9 @@ export function lintInstructionText(text: string, maxFindings = 20): Instruction
       staleRules.length === 0 &&
       duplicateDirectives.length === 0,
   };
+}
+
+/** Conflicts that make a compiled prompt unsafe to launch, rather than merely noisy. */
+export function blockingInstructionConflicts(report: InstructionLintReport) {
+  return report.conflicts.filter((conflict) => conflict.key === 'file-locking');
 }

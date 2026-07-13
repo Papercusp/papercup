@@ -44,6 +44,11 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import { codexGatewayConfigToml, tomlEscape } from '@papercusp/orchestrator/codex-gateway-config';
+import {
+  readCodexLockRuntimeVerdict,
+  type CodexLockRuntimeVerdict,
+} from './codex-lock-runtime';
+import { lintInstructionText, type InstructionLintReport } from './instruction-lint';
 
 
 import { dirname as __esmDirname } from 'node:path';
@@ -62,6 +67,8 @@ export interface RoleCodexHome {
   agentsPath: string;
   /** The config.toml (role-scoped MCP) path — diagnostics. */
   configPath: string;
+  /** Lint of the exact AGENTS.md written after runtime lock-mode resolution. */
+  instructionLint: InstructionLintReport;
 }
 
 // ── Shared codex-home internals (role + su) ───────────────────────────
@@ -102,13 +109,23 @@ const CODEX_ISOLATION_PREAMBLE = [
   '',
 ].join('\n');
 
-const CODEX_LOCK_ENFORCEMENT_NOTE = [
-  '---',
-  '## Codex Lock Enforcement Status',
-  '',
-  'Papercusp installs per-session Codex hooks when local hook scripts are present: PreToolUse acquires file locks for apply_patch/Edit/Write and gates shell resource conflicts, while PostToolUse releases locks and reports coordination/activity. If diagnostics show hooks missing or offline, explicitly acquire Papercusp locks with locks:acquire before writing and release them with locks:release.',
-  '',
-].join('\n');
+const CODEX_LOCK_GUIDANCE_RE =
+  /<!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-START -->[\s\S]*?<!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-END -->/g;
+
+function codexLockEnforcementNote(verdict: CodexLockRuntimeVerdict): string {
+  const marker = verdict.lockMode === 'automatic' ? 'automatic-hooks' : 'explicit-manual';
+  return [
+    '---',
+    '## Codex Lock Enforcement Status',
+    '',
+    `<!-- papercusp-rule:file-locking=${marker} -->`,
+    `- **Effective lockMode:** \`${verdict.lockMode}\` (hook health: \`${verdict.hookHealth}\`; runtimeProbed: \`${verdict.runtimeProbed}\`; generation: \`${verdict.generation}\`).`,
+    `- **Effective instruction:** ${verdict.effectiveInstruction}`,
+    `- **Why:** ${verdict.reason}`,
+    '- **Resync:** `coord:orient.codexLocks` is authoritative after launch. Replace this snapshot when its generation changes; never merge automatic and manual instructions.',
+    '',
+  ].join('\n');
+}
 
 // The gateway config-TOML builder + tomlEscape are SHARED with the spawned-agent path
 // (orchestrator's spawn-mcp.ts writeSignedSpawnCodexHome) via the package's
@@ -435,20 +452,31 @@ export function writeCodexLockHooks(
 
 function writeCodexHomeDiagnostics(
   codexHome: string,
-  opts: { hooksInstalled: boolean; inheritedPromptsCopied: boolean; lockOwnerSid?: string },
+  opts: {
+    hooksInstalled: boolean;
+    inheritedPromptsCopied: boolean;
+    lockOwnerSid?: string;
+    lockRuntime: CodexLockRuntimeVerdict;
+  },
 ): void {
   const body = {
     lockEnforcement: opts.hooksInstalled ? 'hooks-configured' : 'hooks-missing',
-    codexPreToolUseStatus: opts.hooksInstalled ? 'codex-hooks-stable-pretooluse' : 'hooks-not-installed',
-    requiresExplicitPapercuspLocks: !opts.hooksInstalled,
+    codexPreToolUseStatus: opts.lockRuntime.hookHealth,
+    lockMode: opts.lockRuntime.lockMode,
+    hookHealth: opts.lockRuntime.hookHealth,
+    runtimeProbed: opts.lockRuntime.runtimeProbed,
+    lockGeneration: opts.lockRuntime.generation,
+    lockReason: opts.lockRuntime.reason,
+    requiresExplicitPapercuspLocks: opts.lockRuntime.lockMode === 'manual',
     ...(opts.lockOwnerSid ? { lockOwnerSid: opts.lockOwnerSid } : {}),
     inheritedPromptsCopied: opts.inheritedPromptsCopied,
   };
   writeFileSync(join(codexHome, 'papercusp-diagnostics.json'), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
 }
 
-function codexAgentsPrompt(promptText: string): string {
-  return `${promptText.replace(/\n+$/, '')}\n\n${CODEX_LOCK_ENFORCEMENT_NOTE}`;
+function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerdict): string {
+  const withoutStaticLockAdvice = promptText.replace(CODEX_LOCK_GUIDANCE_RE, '').replace(/\n{3,}/g, '\n\n');
+  return `${withoutStaticLockAdvice.replace(/\n+$/, '')}\n\n${codexLockEnforcementNote(lockRuntime)}`;
 }
 
 /**
@@ -490,7 +518,6 @@ export function writeRoleCodexHome(opts: {
   // flag; its instruction file is $CODEX_HOME/AGENTS.md (same mechanism
   // codex-su uses for the engineer playbook).
   const agentsPath = join(codexHome, 'AGENTS.md');
-  writeFileSync(agentsPath, codexAgentsPrompt(opts.promptText), { mode: 0o600 });
 
   // config.toml: the role-scoped MCP server. The url is already signed
   // (sig-auth), so — unlike the codex-su home — there is no
@@ -523,9 +550,18 @@ export function writeRoleCodexHome(opts: {
     objectiveSid: opts.sid,
     agentSession: true,
   });
-  writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied, lockOwnerSid: opts.sid });
+  const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: opts.sid ?? `role-${opts.sessionKey}`, hooksConfigured: hooksInstalled });
+  const agentsText = codexAgentsPrompt(opts.promptText, lockRuntime);
+  const instructionLint = lintInstructionText(agentsText);
+  writeFileSync(agentsPath, agentsText, { mode: 0o600 });
+  writeCodexHomeDiagnostics(codexHome, {
+    hooksInstalled,
+    inheritedPromptsCopied,
+    lockOwnerSid: opts.sid,
+    lockRuntime,
+  });
 
-  return { codexHome, agentsPath, configPath };
+  return { codexHome, agentsPath, configPath, instructionLint };
 }
 
 export interface SuCodexHome {
@@ -535,11 +571,18 @@ export interface SuCodexHome {
   agentsPath: string;
   /** The config.toml (superuser MCP) path — diagnostics. */
   configPath: string;
+  /** Lint of the exact AGENTS.md written after runtime lock-mode resolution. */
+  instructionLint: InstructionLintReport;
 }
 
 export interface CodexPapercuspDiagnostics {
   lockEnforcement?: string;
   codexPreToolUseStatus?: string;
+  lockMode?: 'automatic' | 'manual';
+  hookHealth?: string;
+  runtimeProbed?: boolean;
+  lockGeneration?: number;
+  lockReason?: string;
   requiresExplicitPapercuspLocks?: boolean;
   lockOwnerSid?: string;
   inheritedPromptsCopied?: boolean;
@@ -584,6 +627,11 @@ function coerceCodexPapercuspDiagnostics(raw: Record<string, unknown> | null): C
   return {
     ...(typeof raw.lockEnforcement === 'string' ? { lockEnforcement: raw.lockEnforcement } : {}),
     ...(typeof raw.codexPreToolUseStatus === 'string' ? { codexPreToolUseStatus: raw.codexPreToolUseStatus } : {}),
+    ...(raw.lockMode === 'automatic' || raw.lockMode === 'manual' ? { lockMode: raw.lockMode } : {}),
+    ...(typeof raw.hookHealth === 'string' ? { hookHealth: raw.hookHealth } : {}),
+    ...(typeof raw.runtimeProbed === 'boolean' ? { runtimeProbed: raw.runtimeProbed } : {}),
+    ...(typeof raw.lockGeneration === 'number' ? { lockGeneration: raw.lockGeneration } : {}),
+    ...(typeof raw.lockReason === 'string' ? { lockReason: raw.lockReason } : {}),
     ...(typeof raw.requiresExplicitPapercuspLocks === 'boolean'
       ? { requiresExplicitPapercuspLocks: raw.requiresExplicitPapercuspLocks }
       : {}),
@@ -735,7 +783,6 @@ export function writeSuCodexHome(opts: {
   const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
-  writeFileSync(agentsPath, codexAgentsPrompt(opts.promptText), { mode: 0o600 });
 
   // Bake the per-session client identity into the url (codex can't env-expand
   // config.toml) + the superuser bearer as an http_headers Authorization
@@ -771,7 +818,16 @@ export function writeSuCodexHome(opts: {
     activitySid: opts.sid,
     objectiveSid: opts.sid,
   });
-  writeCodexHomeDiagnostics(codexHome, { hooksInstalled, inheritedPromptsCopied, lockOwnerSid: opts.sid });
+  const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: opts.sid, hooksConfigured: hooksInstalled });
+  const agentsText = codexAgentsPrompt(opts.promptText, lockRuntime);
+  const instructionLint = lintInstructionText(agentsText);
+  writeFileSync(agentsPath, agentsText, { mode: 0o600 });
+  writeCodexHomeDiagnostics(codexHome, {
+    hooksInstalled,
+    inheritedPromptsCopied,
+    lockOwnerSid: opts.sid,
+    lockRuntime,
+  });
 
-  return { codexHome, agentsPath, configPath };
+  return { codexHome, agentsPath, configPath, instructionLint };
 }

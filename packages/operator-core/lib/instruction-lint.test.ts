@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lintInstructionText } from './instruction-lint';
+import { blockingInstructionConflicts, lintInstructionText } from './instruction-lint';
 
 describe('lintInstructionText', () => {
   it('reports duplicate, conflicting, and retired generated rules', () => {
@@ -42,5 +42,29 @@ describe('lintInstructionText', () => {
       '<!-- papercusp-rule:file-locking=automatic-hooks -->',
     ].join('\n'));
     expect(out).toMatchObject({ markerCount: 3, clean: true });
+  });
+
+  it('detects the original unmarked Codex manual rule against generated automatic mode', () => {
+    const out = lintInstructionText(
+      [
+        'File-lock enforcement is **NOT automatic on Codex**; call locks:acquire yourself.',
+        '<!-- papercusp-rule:file-locking=automatic-hooks -->',
+        '- **Edits:** managed hooks claim/release file locks automatically.',
+      ].join('\n'),
+    );
+    expect(out.conflicts).toEqual([
+      { key: 'file-locking', values: ['explicit-manual', 'automatic-hooks'], lines: [1, 2] },
+    ]);
+    expect(blockingInstructionConflicts(out)).toHaveLength(1);
+  });
+
+  it('does not duplicate an adjacent marker-backed lock instruction', () => {
+    const out = lintInstructionText(
+      [
+        '<!-- papercusp-rule:file-locking=automatic-hooks -->',
+        'File-lock enforcement is **automatic here**: managed hooks cover edits.',
+      ].join('\n'),
+    );
+    expect(out).toMatchObject({ markerCount: 1, conflicts: [], duplicateRules: [], clean: true });
   });
 });

@@ -55,6 +55,7 @@ import {
   mintRecycleArgs,
   claudeStoreHasSession,
   sessionHasTranscript,
+  sessionIsResumable,
   sessionTranscriptFile,
   lastActiveModelFor,
   modelArgsFor,
@@ -2627,6 +2628,37 @@ describe('usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 
     it('is inert when unset — a plain non-TTY launch still keeps the plain spawn', () => {
       expect(usePtyHost({ env: {}, stdin: notTty, stdout: notTty })).toBe(false);
     });
+  });
+});
+
+describe('sessionIsResumable — picker keeps on-disk OR DB-archived sessions (WI-4714, off-disk migration)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  let home = '';
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-resumable-')); });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  it('KEEPS an off-disk session that is DB-archived (hasArchive) even with NO on-disk transcript', () => {
+    // The ended session's transcript was moved off disk to the DB archive — so the
+    // on-disk-only sessionHasTranscript would hide it as a ghost, but the server
+    // stamped hasArchive:true and it IS resumable (rematerialized on selection).
+    mkdirSync(join(home, '.papercusp', 'session-claude', 'su-arch', 'projects'), { recursive: true });
+    const s = { agent: 'claude', sessionId: UUID, coordOwnerId: 'su-arch', hasArchive: true };
+    expect(sessionHasTranscript(s, { home })).toBe(false); // on-disk check alone would HIDE it
+    expect(sessionIsResumable(s, { home })).toBe(true);     // …but it must be KEPT
+  });
+
+  it('HIDES a true ghost — no on-disk transcript AND not archived', () => {
+    mkdirSync(join(home, '.papercusp', 'session-claude', 'su-ghost2', 'projects'), { recursive: true });
+    const s = { agent: 'claude', sessionId: UUID, coordOwnerId: 'su-ghost2' };
+    expect(sessionIsResumable(s, { home })).toBe(false);
+  });
+
+  it('KEEPS an on-disk session regardless of the hasArchive flag', () => {
+    const owner = 'su-live';
+    const projDir = join(home, '.papercusp', 'session-claude', owner, 'projects', '-d');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+    expect(sessionIsResumable({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe(true);
   });
 });
 

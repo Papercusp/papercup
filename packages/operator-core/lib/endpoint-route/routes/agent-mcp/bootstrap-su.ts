@@ -30,7 +30,11 @@ import { markAdvSessionEnded, reactivateAdvSession, recordAdvSession } from '../
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
-import { lintInstructionText, type InstructionLintReport } from '../../../instruction-lint';
+import {
+  blockingInstructionConflicts,
+  lintInstructionText,
+  type InstructionLintReport,
+} from '../../../instruction-lint';
 import { deriveLaunchPromptText } from '../../../agent-tools/plans/launch-prompt';
 import { writeSuCodexHome } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
@@ -1267,11 +1271,21 @@ const post = defineTool({
     // not merely the base launch spec. Findings are observable in the bootstrap
     // response; launch stays fail-open because duplicate prose is a cleanup signal,
     // while generated-rule conflicts are already explicit in the report.
-    const instructionLint = lintInstructionText(promptText);
+    let instructionLint = lintInstructionText(promptText);
     if (instructionLint.conflicts.length > 0 || instructionLint.staleRules.length > 0) {
       process.stderr.write(
         `[bootstrap-su] instruction lint: ${instructionLint.conflicts.length} conflict(s), ` +
           `${instructionLint.staleRules.length} stale rule(s)\n`,
+      );
+    }
+    if (blockingInstructionConflicts(instructionLint).length > 0) {
+      return jsonRes(
+        {
+          status: 'error',
+          error: 'compiled instructions contain contradictory file-lock modes; launch refused',
+          instructionLint,
+        },
+        500,
       );
     }
 
@@ -1302,6 +1316,17 @@ const post = defineTool({
         });
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics
+        instructionLint = ch.instructionLint ?? lintInstructionText(promptText);
+        if (blockingInstructionConflicts(instructionLint).length > 0) {
+          return jsonRes(
+            {
+              status: 'error',
+              error: 'runtime-resolved Codex instructions contain contradictory file-lock modes; launch refused',
+              instructionLint,
+            },
+            500,
+          );
+        }
       } else {
         promptFile = launchContextPathFor(sessionKey);
         mkdirSync(launchContextDir(), { recursive: true });

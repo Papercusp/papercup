@@ -1305,6 +1305,21 @@ export function sessionHasTranscript(session, { home = homedir() } = {}) {
 }
 
 /**
+ * Whether a session is resumable for the `psu --resume` PICKER — an on-disk
+ * transcript OR a DB session-archive (`session.hasArchive`, stamped by the
+ * /adv/sessions/resumable endpoint). The archive-at-death lifecycle deletes an
+ * ended session's on-disk transcript ~15s after end and keeps it only in the DB,
+ * so an on-disk-only check (sessionHasTranscript) misclassifies every off-disk-
+ * but-archived session as a permanent ghost and hides it (owner-hit 2026-07-13:
+ * `psu --resume` reported "hiding N session(s) with no persisted transcript" after
+ * sessions moved off disk to the DB). An archived pick is rematerialized to disk
+ * on selection before resume. Exported for unit testing.
+ */
+export function sessionIsResumable(session, opts = {}) {
+  return sessionHasTranscript(session, opts) || Boolean(session.hasArchive);
+}
+
+/**
  * The persisted transcript file for a resolved session (tracked or untracked),
  * or null: claude → `<store>/projects/<dir>/<sid>.jsonl` (isolated configDir
  * first, EI-155); codex → the rollout jsonl under the tracked per-session
@@ -4610,11 +4625,16 @@ async function resumeFlow(args = {}) {
     return;
   }
 
-  // Only offer sessions whose agent store actually holds a transcript — a row
-  // recorded at launch whose session never persisted a first message is a
-  // permanent ghost ("No conversation found" on every attempt). Say how many
-  // were hidden so a "where did my session go?" has an answer.
-  const resumable = sessions.filter((s) => sessionHasTranscript(s));
+  // Only offer sessions that are actually resumable — an on-disk transcript OR a
+  // DB session-archive (server-stamped `hasArchive`). An ended session's on-disk
+  // transcript is deleted ~15s after death, so a resumable session may live ONLY
+  // in the archive; the on-disk-only test used to hide every such session as a
+  // ghost (owner-hit 2026-07-13: "hiding N session(s) with no persisted transcript"
+  // after sessions moved off disk to the DB). A row with NEITHER is a true ghost
+  // (recorded at launch, never persisted a first message → "No conversation found"
+  // on every attempt). Say how many were hidden so "where did my session go?" has
+  // an answer. An archived pick is rematerialized to disk on selection below.
+  const resumable = sessions.filter((s) => sessionIsResumable(s));
   const ghostCount = sessions.length - resumable.length;
   if (ghostCount > 0) {
     console.error(
@@ -4642,6 +4662,14 @@ async function resumeFlow(args = {}) {
     message: 'Resume which session?',
     source: async (term) => filterRows(rows, term),
   });
+  // An archived (off-disk) pick has NO on-disk transcript — claude/codex --resume
+  // would fail "No conversation found". Restore it from the DB archive first, the
+  // same way the explicit `--resume=<id>` path does. Only when the on-disk copy is
+  // actually absent (a live/on-disk session skips this); best-effort — launchResume
+  // still surfaces a real miss.
+  if (!sessionHasTranscript(picked)) {
+    await tryRematerializeFromArchive(picked.sessionId, picked.agent);
+  }
   // Re-pin the gateway account (prompt when interactive / honor --account) before
   // resuming — the pin is spawn-env only, otherwise lost on resume (option 1).
   const acct = await chooseResumeAccount(picked, args);

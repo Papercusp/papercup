@@ -355,3 +355,70 @@ describe('the Server artifact is disclosed, not silently dropped', () => {
     expect(html).toContain('headless server build');
   });
 });
+
+describe('the mobile apps render in their own labelled section [owner: "make sure the iphone and android builds make it onto our releases page"]', () => {
+  const withAndroid = hydrated({
+    row: row({
+      artifacts: [
+        {
+          product: 'gui',
+          platform: 'linux-x86_64',
+          name: 'papercusp_0.0.9_amd64.deb',
+          url: 'desktop-v0.0.9-alpha/papercusp_0.0.9_amd64.deb',
+          size: 3_600_000_000,
+          sha256: 'aaa',
+        },
+        {
+          product: 'mobile',
+          platform: 'android-universal',
+          name: 'Papercusp_0.0.9_android.apk',
+          url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_android.apk',
+          size: 90_000_000,
+          sha256: 'droid',
+        },
+      ],
+    }),
+  });
+
+  it('gives the phone build its OWN "Mobile apps" heading, platform-labelled, without dropping it into the desktop table', () => {
+    const html = renderIndexHtml([withAndroid], { generatedAt: GENERATED_AT, analytics: null });
+    // The desktop installer a tester came for stays in the primary download table.
+    expect(html).toContain('papercusp_0.0.9_amd64.deb');
+    // The Android build is NOT dropped and NOT mixed into the desktop table — it
+    // gets its own labelled section so an APK never reads as a desktop download.
+    expect(html).toContain('<h3 class="dl-group">Mobile apps</h3>');
+    expect(html).toContain('Android (APK)');
+    expect(html).toContain('Papercusp_0.0.9_android.apk');
+    // and its download link, size and checksum are baked into the markup (JS-off).
+    expect(html).toContain('desktop-v0.0.9-alpha/Papercusp_0.0.9_android.apk');
+    expect(html).toContain('droid');
+  });
+
+  it('surfaces an iOS build under the same Mobile apps section once a signed .ipa exists', () => {
+    // iOS is enrollment-gated today (no signed .ipa yet), but the render path must
+    // already be correct so the build appears the moment record-release finds one.
+    const withIos = hydrated({
+      row: row({
+        artifacts: [
+          {
+            product: 'mobile',
+            platform: 'ios-arm64',
+            name: 'Papercusp_0.0.9_ios.ipa',
+            url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_ios.ipa',
+            size: 40_000_000,
+            sha256: 'iphone',
+          },
+        ],
+      }),
+    });
+    const html = renderIndexHtml([withIos], { generatedAt: GENERATED_AT, analytics: null });
+    expect(html).toContain('<h3 class="dl-group">Mobile apps</h3>');
+    expect(html).toContain('iOS (iPhone / iPad)');
+    expect(html).toContain('Papercusp_0.0.9_ios.ipa');
+  });
+
+  it('omits the Mobile apps section entirely for a desktop-only release', () => {
+    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null });
+    expect(html).not.toContain('Mobile apps');
+  });
+});
