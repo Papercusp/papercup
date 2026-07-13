@@ -43,6 +43,17 @@ export interface HindsightItem {
  * Push one hindsight notification into the operator's coord inbox. Used when a live
  * voice session was NOT available to receive it directly (async delegate completion,
  * scan completion). `kind` is a free-form sub-tag for the rendering side.
+ *
+ * TWO deliveries per notification (operator-chat-sidebar-revival-2026-07-13 P-008):
+ *   1. The coord `notify` — the voice surface drains + speaks it on connect
+ *      ("[While you were away] …"). Unchanged.
+ *   2. A `system` turn appended to the SHARED operator conversation — the thread the
+ *      desktop chat sidebar / phone / TUI all render live. Before this, hindsight was
+ *      voice-drain-ONLY: with the native dock testing-gated dark (D-004) and voice
+ *      off, a settled deep-dive answer or handoff landing sat invisibly in the coord
+ *      inbox and the typed-turn user never saw it. The thread append makes the answer
+ *      land where the user actually asked the question. Fail-soft both ways: a
+ *      thread-append failure never loses the coord notify (and vice versa).
  */
 export async function notifyOperatorHindsight(headline: string, kind = 'delegate-complete'): Promise<void> {
   const env: CoordEnvelope = {
@@ -56,6 +67,27 @@ export async function notifyOperatorHindsight(headline: string, kind = 'delegate
     hindsight_kind: kind,
   };
   await coordLog.appendLine('messages', OPERATOR_COORD_OWNER, env).catch(() => {});
+  // Leg 2: land it in the shared conversation thread. Dynamic imports — this module
+  // is coord-substrate-level; PG conversations must not become a static dep of it.
+  try {
+    const [{ getOrCreateActiveConversation, appendTurn }, { notifySyncInvalidate }] =
+      await Promise.all([import('./operator-conversations'), import('./sync-sse')]);
+    const conversation = await getOrCreateActiveConversation();
+    await appendTurn({
+      conversationId: conversation.id,
+      role: 'system',
+      text: `[While you were away] ${headline}`,
+      source: 'system',
+    });
+    void notifySyncInvalidate('operatorTurns.byConversation', {
+      conversationId: conversation.id,
+    }).catch(() => {});
+  } catch (err) {
+    console.warn(
+      '[operator-hindsight] shared-thread append failed (coord notify still delivered):',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /**
