@@ -20,12 +20,15 @@ const deps = (over: {
   caller?: Pres | null;
   holderFleet?: string | null;
   leader?: string | null;
+  recordedEnded?: boolean;
 }): ForceReleaseDeps => ({
   now: () => NOW,
   getPresence: async (o) => (o === 'su-holder' ? (over.holder ?? null) : (over.caller ?? null)),
   latestFleetMembership: async () =>
     over.holderFleet === undefined ? null : { fleetSlug: over.holderFleet, fleetRole: 'member' },
   getFleet: async () => (over.leader === undefined ? null : { leaderOwnerId: over.leader }),
+  endedRecordedOwnerIds: async (owners) =>
+    over.recordedEnded ? new Set(owners.filter((owner) => owner === 'su-holder')) : new Set(),
 });
 
 describe('assessForceRelease — liveness leg (a)', () => {
@@ -52,6 +55,23 @@ describe('assessForceRelease — liveness leg (a)', () => {
     );
     expect(v.holderLiveness.live).toBe(true);
     expect(v.allowed).toBe(false); // worker pane, no fleet authority
+  });
+
+  it('authoritative recorded end overrides warm presence and recent progress after teardown', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: iso(min(1)) },
+      deps({
+        holder: { heartbeatAt: iso(0), lastActiveAt: iso(0), agentRole: 'su' },
+        recordedEnded: true,
+      }),
+    );
+    expect(v).toMatchObject({ allowed: true, basis: 'holder-not-live' });
+    expect(v.holderLiveness).toMatchObject({
+      presenceFound: true,
+      recordedEnded: true,
+      live: false,
+      freshestAgeMs: 0,
+    });
   });
 
   it('parses PG-format timestamps (space separator, 2-digit offset)', async () => {

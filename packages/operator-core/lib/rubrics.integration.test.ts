@@ -262,6 +262,12 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
       status: 'active',
       by: 'seed',
     });
+    // ATOMICITY (EI-11070): body + template_data land in ONE version bump. A fresh propose
+    // is version 1 — the former two-transaction split bumped it to 2 (body, then a separate
+    // template_data write), which is exactly the non-atomic seam the combined write closes.
+    const [afterV1] = await db.adminSql<{ version: number }[]>`
+      SELECT version FROM harness_shared.harness_plans WHERE plan_slug = 'drift-check' AND template = 'rubric'`;
+    expect(Number(afterV1.version)).toBe(1);
     // v2: 3 criteria, a DIFFERENT 6-value scale, a longer description — the whole
     // template_data document changes. The pre-EI-11070 bug landed the body write
     // (title/status/updated_at) but SILENTLY skipped this template_data write, so the
@@ -286,12 +292,14 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(r2.ratingScale).toEqual(sixValueScale);
     expect(r2.description).toContain('longer v2');
     // …AND the RAW template_data jsonb in the DB actually changed (the bug left it at v1).
-    const [row] = await db.adminSql<{ template_data: { criteria: unknown[]; ratingScale: string[]; description: string } }[]>`
-      SELECT template_data FROM harness_shared.harness_plans
+    const [row] = await db.adminSql<{ version: number; template_data: { criteria: unknown[]; ratingScale: string[]; description: string } }[]>`
+      SELECT version, template_data FROM harness_shared.harness_plans
        WHERE plan_slug = 'drift-check' AND template = 'rubric'`;
     expect(row.template_data.criteria).toHaveLength(3);
     expect(row.template_data.ratingScale).toEqual(sixValueScale);
     expect(row.template_data.description).toContain('longer v2');
+    // One more atomic bump: the re-propose is a single version increment (1 → 2), not two.
+    expect(Number(row.version)).toBe(2);
     // …and the read projection resolves the new document too.
     const got = await rubrics.getRubric('drift-check');
     expect(got?.criteria).toHaveLength(3);

@@ -1283,12 +1283,18 @@ export default defineTool({
     let configIntegrity: unknown;
     if (ownerId) {
       try {
-        const { loadSessionConfigState, checkSessionConfigIntegrity, repairSessionConfigOnDisk } = await import(
+        const {
+          loadSessionConfigState,
+          checkSessionConfigIntegrityForClient,
+          repairSessionConfigOnDisk,
+        } = await import(
           '../../../session-config-integrity'
         );
-        const verdict = checkSessionConfigIntegrity(loadSessionConfigState(ownerId));
-        if (!verdict.ok) {
-          const repair = repairSessionConfigOnDisk(ownerId);
+        const state = loadSessionConfigState(ownerId);
+        const recordedClient = (await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId))?.agent;
+        const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
+        if (verdict && !verdict.ok) {
+          const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient);
           configIntegrity = {
             ...verdict,
             repaired: repair.repaired,

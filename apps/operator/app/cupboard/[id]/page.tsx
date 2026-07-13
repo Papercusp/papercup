@@ -48,6 +48,7 @@ import {
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
 import { CupboardErrorState } from '../CupboardErrorState';
+import KnowledgePackInstall from './KnowledgePackInstall';
 import { ClaimStatusBadge } from '../../_components/ClaimStatusBadge';
 import { Button } from '../../harness/Button';
 import { Tooltip } from '../../harness/Tooltip';
@@ -128,11 +129,11 @@ export default function CupboardDetailPage() {
       void installBlueprintFromCupboard();
       return;
     }
-    // knowledge-pack (knowledge-packs P-017): fetch the pack files into the
-    // installed root — it then appears in the creation picker + Learning tab,
-    // and lands in a hive only through the normal conflict review.
+    // knowledge-pack (P-016, owner ruling 2026-07-12 "the Cupboard is the pack
+    // surface"): the in-place install panel (KnowledgePackInstall, rendered
+    // below) owns install-into-pot + the conflict review, so this kind has no
+    // primary-button action — guard against a stray call.
     if (kind === 'knowledge-pack') {
-      void fetchKnowledgePackFromComb();
       return;
     }
     // template (cupboard-full-dogfood P-003 / public-release P-002): clone the
@@ -147,39 +148,6 @@ export default function CupboardDetailPage() {
     // global-plugins directly (EI-27). Replaces the dead
     // `/harness?cupboardListing=…` navigation no consumer ever read.
     void installPluginFromCupboard();
-  };
-
-  // knowledge-pack Install (knowledge-packs P-017): stage the pack locally.
-  // Nothing is injected into any agent by the fetch itself — adding it to a
-  // hive happens in the Learning tab, through the install conflict review.
-  const fetchKnowledgePackFromComb = async () => {
-    if (!listing || busy) return;
-    setBusy(true);
-    try {
-      const r = await fetch('/api/knowledge-packs/fetch-from-comb', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ listingId: listing.id }),
-      });
-      const d = (await r.json().catch(() => ({}))) as {
-        ok?: boolean;
-        pack?: { id: string; title: string; version: string; itemCount: number };
-        error?: string;
-        detail?: string;
-      };
-      if (!r.ok || !d.ok || !d.pack) {
-        toast.error(`Fetch failed: ${d.error ?? `HTTP ${r.status}`}${d.detail ? ` — ${d.detail}` : ''}`);
-        return;
-      }
-      toast.success(
-        `Knowledge pack "${d.pack.title}" v${d.pack.version} fetched (${d.pack.itemCount} learnings). ` +
-          `Add it to a ${t('pot', { lower: true })} from the Learning tab → Learnings — incoming learnings go through the conflict review there.`,
-      );
-    } catch (e) {
-      toast.error(`Fetch crashed: ${(e as Error)?.message ?? String(e)}`);
-    } finally {
-      setBusy(false);
-    }
   };
 
   const installBlueprintFromCupboard = async () => {
@@ -585,10 +553,18 @@ export default function CupboardDetailPage() {
           <KnowledgePackContents repoSlug={repoSlug} listingRef={listing.listing_ref ?? null} />
         )}
 
+        {/* knowledge-pack install-into-pot with the per-item conflict review, in
+            place (P-016). Owns the Install action for this kind — the generic
+            primary button below is suppressed for knowledge packs. */}
+        {kind === 'knowledge-pack' && (
+          <KnowledgePackInstall listing={listing} />
+        )}
+
         {/* Per-listing primary CTA — hidden for legacy harness rows (per-harness
-            join is retired; nothing to act on). */}
+            join is retired; nothing to act on) and for knowledge packs (the
+            KnowledgePackInstall panel above owns their Install action). */}
         <div style={{ marginTop: SIZES.lg, display: 'flex', gap: 8 }}>
-          {action && (
+          {action && kind !== 'knowledge-pack' && (
           <Button
             size="lg"
             variant="primary"
@@ -638,8 +614,10 @@ export default function CupboardDetailPage() {
           )}
         </div>
 
-        {/* Trust note for code-pulling kinds (D-007/D-009). */}
-        {action === 'install' && (
+        {/* Trust note for code-pulling kinds (D-007/D-009). Knowledge packs pull
+            no code and carry no capabilities — their trust surface is the
+            browse-before-install list + the install panel's conflict review. */}
+        {action === 'install' && kind !== 'knowledge-pack' && (
           <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
             Installing pulls code from this listing. Plugin capabilities are gated by manifest + your install-time consent; review the source on GitHub first.
           </p>

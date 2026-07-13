@@ -32,6 +32,8 @@ export type ForceReleaseBasis = 'holder-not-live' | 'queen' | 'leads-holder-flee
 
 export interface HolderLiveness {
   presenceFound: boolean;
+  /** Positive lifecycle evidence: the holder's newest recorded session has ended. */
+  recordedEnded: boolean;
   heartbeatAt: string | null;
   lastActiveAt: string | null;
   itemLastProgressAt: string | null;
@@ -58,6 +60,7 @@ export interface ForceReleaseDeps {
     workspaceId: string,
     fleetSlug: string,
   ) => Promise<{ leaderOwnerId: string | null } | null>;
+  endedRecordedOwnerIds?: (ownerIds: string[]) => Promise<Set<string>>;
   now?: () => number;
 }
 
@@ -90,7 +93,14 @@ export async function assessForceRelease(
   const getPresence =
     deps.getPresence ??
     (async (o: string) => (await import('../coordination/presence')).getPresence(o));
-  const holderPres = await getPresence(input.holderOwnerId).catch(() => null);
+  const endedOwnersOf =
+    deps.endedRecordedOwnerIds ??
+    (async (ownerIds: string[]) => (await import('../../adv-sessions')).endedRecordedOwnerIds(ownerIds));
+  const [holderPres, endedOwners] = await Promise.all([
+    getPresence(input.holderOwnerId).catch(() => null),
+    endedOwnersOf([input.holderOwnerId]).catch(() => new Set<string>()),
+  ]);
+  const recordedEnded = endedOwners.has(input.holderOwnerId);
 
   const signals = [
     holderPres ? parseTs(holderPres.heartbeatAt) : NaN,
@@ -98,9 +108,13 @@ export async function assessForceRelease(
     parseTs(input.itemLastProgressAt),
   ].filter((t) => Number.isFinite(t));
   const freshest = signals.length ? Math.max(...signals) : null;
-  const live = freshest != null && now - freshest < PRESENCE_STALE_MS;
+  // An ended newest adv-session row is authoritative over the warm presence row
+  // that intentionally lingers for a short TTL after teardown. A resumed session
+  // clears ended_at / creates a newer live row, so it naturally becomes live again.
+  const live = !recordedEnded && freshest != null && now - freshest < PRESENCE_STALE_MS;
   const holderLiveness: HolderLiveness = {
     presenceFound: holderPres != null,
+    recordedEnded,
     heartbeatAt: holderPres?.heartbeatAt ?? null,
     lastActiveAt: holderPres?.lastActiveAt ?? null,
     itemLastProgressAt:

@@ -701,10 +701,17 @@ async function resolveRubricWriteScope(
 /**
  * Propose (idempotent upsert) a rubric → a `template: rubric` plan. status defaults to
  * 'proposed' (draft plan); 'active' authors a ratified rubric directly. Re-proposing the
- * same rubricId updates the plan content + template_data. Two canonical plan writes (the
- * content path and the structured template_data path cannot be combined): (1) upsert the
- * plan body (frontmatter → title/status/template columns); (2) write the validated
- * template_data jsonb.
+ * same rubricId updates the plan content + template_data.
+ *
+ * The body (frontmatter → title/status/template columns) and the validated template_data
+ * jsonb are written in ONE atomic locked transaction — withPlanLock writes template_data
+ * alongside a non-null newBody (the same combined form ratifyRubric uses). This replaces a
+ * former two-transaction split (body, then a SEPARATE structured-only template_data write):
+ * that split was (a) NON-ATOMIC — a crash or busy advisory lock on the second write, after
+ * the first had already committed, left the row with a fresh body/status but STALE
+ * template_data — and (b) carried a silent `current === null` skip that could persist
+ * nothing while the caller reported ok (EI-11070, the silent-no-op class). Combined, the
+ * template_data can never lag the body and there is no skip branch to no-op through.
  */
 export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> {
   const rubricStatus: RubricStatus = input.status ?? 'proposed';
@@ -726,27 +733,16 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
     ...(input.description !== undefined ? { description: input.description } : {}),
   });
 
-  // Write 1 — upsert the plan body (derives title/status/template columns from frontmatter).
-  const bodyResult = await withPlanLock<true>(
+  // Single atomic write: upsert the body AND the validated template_data jsonb in one
+  // locked transaction (one version bump). The mutator ignores `current` — an upsert, not a
+  // read-modify-write — so template_data lands regardless of the in-transaction row read.
+  const result = await withPlanLock<true>(
     null,
     { slug: input.rubricId, intent: `rubrics:propose ${input.rubricId}`, ...scope },
-    async () => ({ newBody: body, value: true }),
+    async () => ({ newBody: body, templateData: { data: templateData }, value: true }),
   );
-  if (bodyResult.kind === 'busy') {
+  if (result.kind === 'busy') {
     throw new Error(`proposeRubric: plan '${input.rubricId}' is being written by another caller`);
-  }
-
-  // Write 2 — the validated template_data jsonb (structured-only path: newBody:null).
-  const dataResult = await withPlanLock<boolean>(
-    null,
-    { slug: input.rubricId, intent: `rubrics:propose:data ${input.rubricId}`, ...scope },
-    async (current) =>
-      current === null
-        ? { newBody: null, value: false }
-        : { newBody: null, templateData: { data: templateData }, value: true },
-  );
-  if (dataResult.kind === 'busy') {
-    throw new Error(`proposeRubric: template_data write for '${input.rubricId}' is busy`);
   }
 
   const rubric = await getRubric(input.rubricId);

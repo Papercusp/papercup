@@ -58,18 +58,15 @@
  * isn't a Claude session; the repair path is a natural no-op through the same gate.
  */
 
-import { readFileSync, writeFileSync, copyFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /** The psu-owned MCP server. `playwright` is deliberately NOT restored (P-020 prunes it). */
 export const PSU_MCP_SERVER = 'papercusp-su';
 
-/** Which client (CLI) materialized this session — inferred from disk (WI-4617).
- *  `'claude'` iff the per-session CLAUDE_CONFIG_DIR (`session-claude/<ownerId>/`) is
- *  present; anything else — a Codex session (CODEX_HOME/config.toml) or a session
- *  never materialized psu-style — is `'unknown'` and skips the Claude-only check. */
-export type SessionClientKind = 'claude' | 'unknown';
+/** The recorded CLI that materialized a session. Unknown/legacy rows are nullable. */
+export type SessionConfigClient = 'claude' | 'codex' | 'omp' | string | null | undefined;
 
 export interface SessionConfigState {
   /** The session's CLAUDE_CONFIG_DIR settings.json (null = unreadable/absent). */
@@ -80,12 +77,6 @@ export interface SessionConfigState {
   globalSettings: Record<string, unknown> | null;
   /** The user's global ~/.claude.json — the canonical MCP server definitions. */
   globalClaudeJson: Record<string, unknown> | null;
-  /** WI-4617: which client materialized this session, inferred from disk (the
-   *  presence of the Claude-shaped per-session config dir). A non-Claude client
-   *  (`'unknown'`) short-circuits the Claude-shaped integrity check — otherwise
-   *  a healthy Codex session (with no CLAUDE_CONFIG_DIR by design) is diagnosed
-   *  with every hook missing and no coordination MCP. */
-  clientKind: SessionClientKind;
 }
 
 export interface ConfigIntegrityVerdict {
@@ -121,22 +112,10 @@ function hasHookEvent(hooks: HookMap, event: string): boolean {
  * A session whose GLOBAL settings carry no hooks at all is reported ok: there is no
  * canonical block to be missing, and we must never invent one.
  *
- * WI-4617: a session NOT materialized by Claude (clientKind !== 'claude') short-
- * circuits to ok:true. The Claude-shaped diff (globalHooks minus sessionHooks) is
- * meaningless against a Codex session's config.toml + hooks.json surface, and would
- * spuriously flag every psu hook + the coordination MCP as missing on a session
- * that never had a Claude-shaped config in the first place.
+ * This is deliberately the Claude-shaped checker. Call
+ * `checkSessionConfigIntegrityForClient` at client-neutral boundaries.
  */
 export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIntegrityVerdict {
-  if (state.clientKind !== 'claude') {
-    return {
-      ok: true,
-      missingHookEvents: [],
-      mcpServerMissing: false,
-      permissionsDowngraded: false,
-      consequences: [],
-    };
-  }
   const globalHooks = hooksOf(state.globalSettings);
   const sessionHooks = hooksOf(state.settings);
 
@@ -202,6 +181,21 @@ export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIn
   };
 }
 
+/**
+ * Gate the Claude-only integrity detector by the authoritative recorded client.
+ * A positive non-Claude identity always skips, even when a stale Claude config
+ * directory happens to remain on disk. Legacy/unrecorded sessions are checked
+ * only when at least one Claude-shaped session document exists.
+ */
+export function checkSessionConfigIntegrityForClient(
+  state: SessionConfigState,
+  client: SessionConfigClient,
+): ConfigIntegrityVerdict | null {
+  if (client != null && client !== 'claude') return null;
+  if (client == null && state.settings === null && state.claudeJson === null) return null;
+  return checkSessionConfigIntegrity(state);
+}
+
 function readJson(path: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
@@ -219,27 +213,17 @@ function readJson(path: string): Record<string, unknown> | null {
  * The session's CLAUDE_CONFIG_DIR is ~/.papercusp/session-claude/<ownerId>/ (see
  * interactive-claude-config.ts).
  *
- * WI-4617: `clientKind` is inferred from the presence of that per-session
- * CLAUDE_CONFIG_DIR. Codex sessions materialize into a `$CODEX_HOME` under a
- * different root entirely (`~/.papercusp/su-codex-homes/session-<key>/`, see
- * `session-launch-dirs.ts`), so their `session-claude/<ownerId>/` directory
- * simply does not exist — a reliable, cheap probe (one `statSync`) that keeps
- * the check on the CLAUDE-CODE-SPECIFIC failure it was designed to catch.
+ * Client identity is intentionally NOT inferred here from directory existence:
+ * a deleted Claude directory is itself damage, while a stale directory can
+ * survive a later Codex launch. The caller supplies the recorded session client.
  */
 export function loadSessionConfigState(ownerId: string, home = homedir()): SessionConfigState {
   const dir = join(home, '.papercusp', 'session-claude', ownerId);
-  let clientKind: SessionClientKind = 'unknown';
-  try {
-    if (statSync(dir).isDirectory()) clientKind = 'claude';
-  } catch {
-    /* absent / unreadable → clientKind stays 'unknown' (non-Claude session) */
-  }
   return {
     settings: readJson(join(dir, 'settings.json')),
     claudeJson: readJson(join(dir, '.claude.json')),
     globalSettings: readJson(join(home, '.claude', 'settings.json')),
     globalClaudeJson: readJson(join(home, '.claude.json')),
-    clientKind,
   };
 }
 
@@ -345,9 +329,17 @@ export interface SessionConfigRepairResult {
  * This is what makes coord:orient auto-repair rather than only warn. It is safe to call on a
  * healthy session (returns repaired:false, writes nothing) and is idempotent.
  */
-export function repairSessionConfigOnDisk(ownerId: string, home = homedir()): SessionConfigRepairResult {
+export function repairSessionConfigOnDisk(
+  ownerId: string,
+  home = homedir(),
+  client?: SessionConfigClient,
+): SessionConfigRepairResult {
   const dir = join(home, '.papercusp', 'session-claude', ownerId);
   const state = loadSessionConfigState(ownerId, home);
+  const verdict = checkSessionConfigIntegrityForClient(state, client);
+  if (verdict === null || verdict.ok) {
+    return { repaired: false, fixed: [], wrote: [], stillBroken: [], residualCaveats: [] };
+  }
   const repair = computeSessionConfigRepair(state);
 
   if (repair.fixed.length === 0) {
@@ -373,8 +365,8 @@ export function repairSessionConfigOnDisk(ownerId: string, home = homedir()): Se
   }
 
   // Disk truth, not intent: re-read and re-check.
-  const after = checkSessionConfigIntegrity(loadSessionConfigState(ownerId, home));
-  if (!after.ok) {
+  const after = checkSessionConfigIntegrityForClient(loadSessionConfigState(ownerId, home), client);
+  if (after && !after.ok) {
     for (const ev of after.missingHookEvents) stillBroken.push(`hooks.${ev}`);
     if (after.mcpServerMissing) stillBroken.push(`mcpServers.${PSU_MCP_SERVER}`);
     if (after.permissionsDowngraded) stillBroken.push('permissions.defaultMode');
