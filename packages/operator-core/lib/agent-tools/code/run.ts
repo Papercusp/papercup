@@ -42,27 +42,22 @@ export default defineTool({
   name: 'code:run',
   description:
     'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE ' +
-    'call and get back ONLY the script\'s returned summary — collapsing N tool round-trips into one. ' +
-    'WRITE THE SCRIPT DIRECTLY: no discovery pre-call needed — a wrong tool name comes back with the ' +
-    'exact typed signatures inline to fix. Use dryRun:true to preview write-effect mutations before ' +
-    'committing. TOOL NAMES — the same tool has three mechanically-related spellings (EI-10893): colon ' +
-    '`sessions:read` (the REAL name) · dotted `tools.sessions.read(args)` (INSIDE this script) · mangled ' +
-    '`mcp__papercusp-su__sessions_read` (what a client ToolSearch matches). Map colon→dotted by replacing ' +
-    '`:` and `_` with `.`; never invent a fourth.',
+    'call, returning only the script\'s summary — collapsing N round-trips into one. Write the ' +
+    'script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true ' +
+    'previews write-effect mutations before committing. Colon name → dotted call: `:`/`_` → `.` ' +
+    '(sessions:read → tools.sessions.read); never invent a fourth spelling.',
   guidance: {
     when:
-      'A task needs MANY tool calls with control flow — loop/branch/filter over results (list N ' +
-      'items then act per item, fan-out reads, retry-until). Orchestrate them in ONE code:run and ' +
-      'return a compact summary instead of paying a round-trip per call. Pass title+description so ' +
-      'the run is saved as a reusable RECIPE other agents in your hive can find.',
+      'MANY tool calls with control flow — loop/branch/filter, fan-out reads, retry-until: ' +
+      'orchestrate them in ONE call. Pass title+description so the run saves as a reusable ' +
+      'RECIPE other agents in your hive can find.',
     notWhen:
-      'A single tool call, or a step that needs YOUR judgment mid-flow (read a result, then ' +
-      'decide) — call tools directly. Preview mutations with dryRun before a committing run.',
+      'A single call, or a step that needs YOUR judgment mid-flow (read a result, then decide) ' +
+      '— call tools directly.',
     chaining:
-      'write the script → code:run { dryRun:true } → inspect plannedMutations → code:run. ' +
-      'RESPONSE SHAPES: a CORRECT tool name with a WRONG field mapping fails SILENTLY (ok:true, blank ' +
-      'rows — EI-10892). code:tools gives ARG signatures, not result shapes — read a tool\'s declared ' +
-      '`returns` (tools:find), or return ONE raw result to learn the keys, before mapping a batch.',
+      'script → code:run { dryRun:true } → inspect plannedMutations → code:run. A correct tool ' +
+      'name with a WRONG field mapping fails SILENTLY (ok:true, blank rows) — check the tool\'s ' +
+      '`returns` (tools:find), or return one raw result before mapping a batch.',
     seeAlso: [
       'code:tools (typed signatures for a namespace — optional pre-check)',
       'recipes:run (run a saved composed recipe instead)',

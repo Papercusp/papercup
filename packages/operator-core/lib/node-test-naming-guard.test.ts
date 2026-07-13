@@ -33,10 +33,13 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // et al. — a `readdirSync(root, { recursive: true })` would descend into them first.
 const IGNORE_DIRS = new Set(['node_modules', 'dist', '.next', '.git', 'coverage', '.vitest-tmp', '_retired']);
 
-// Matches the exact suffix vitest globs (`**/*.test.<ext>`). A `*.node-test.ts`
-// file has a `-` (not a `.`) before `test`, so it does NOT match — which is the
-// whole point of the contract.
-const VITEST_GLOBBED_TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
+// Matches ONLY the suffixes the operator/papercusp vitest sweep actually globs —
+// `defineVitestConfig`'s unit include is exactly `**\/*.test.ts` + `**\/*.test.tsx`
+// (libs/test-config/src/vitest-config.ts). `.test.js` / `.test.mjs` node:test files
+// (desktop tests, pot-eval fixtures, scratch demos) are NEVER collected by that
+// sweep, so they are outside the EI-10878 collision class and must NOT be flagged.
+// A `*.node-test.ts` file has a `-` (not a `.`) before `test`, so it does not match.
+const VITEST_GLOBBED_TEST_FILE = /\.test\.tsx?$/;
 
 // The node:test import that makes vitest report "No test suite found". Anchored
 // to a real import/require STATEMENT at line start (multiline) so a string

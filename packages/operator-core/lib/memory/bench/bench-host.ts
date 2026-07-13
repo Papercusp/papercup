@@ -20,7 +20,34 @@ import type { ResolvedVecMode } from '@papercusp/memory';
 // embedder cascade) that we then override schema-wise below.
 import '../configure';
 
-export const BENCH_SCHEMA = 'bench_memory';
+/**
+ * The bench's isolated schema — **UNIQUE PER RUN** (pid-suffixed).
+ *
+ * ⚠ This used to be the fixed string `'bench_memory'`, shared by every bench
+ * process in the fleet. That is a collision by construction, and it bit twice
+ * in one day (2026-07-13):
+ *
+ *  1. EI-10854 — two runs seeded the SAME schema concurrently and cross-
+ *     contaminated each other's corpus. Both runs' numbers were garbage, and
+ *     *nothing said so* — the bench happily reported a scorecard.
+ *  2. Then the EI-10854 fix (make `ensureBenchSchema` DROP+recreate at run
+ *     START, so a killed run's leftovers can't contaminate the next one) turned
+ *     that silent corruption into an ACTIVE one: a second run's DROP CASCADE
+ *     destroys the tables a first run is mid-seed on → `relation
+ *     "bench_memory.memory_canonical" does not exist`.
+ *
+ * That second failure is *louder*, which is an improvement — but the root cause
+ * was never the cleanup semantics, it was the SHARED NAME. Two runs must not be
+ * able to address the same schema at all. A pid suffix makes collision
+ * impossible rather than merely detectable.
+ *
+ * Override with PAPERCUSP_BENCH_SCHEMA to attach to a specific schema (e.g. to
+ * inspect a finished run's rows before they are dropped).
+ */
+export const BENCH_SCHEMA = process.env.PAPERCUSP_BENCH_SCHEMA ?? `bench_memory_${process.pid}`;
+
+/** Matches any run's bench schema (incl. the legacy fixed `bench_memory`). */
+const BENCH_SCHEMA_PREFIX = 'bench_memory';
 
 /**
  * Re-point the memory host at an isolated schema (default the bench's).

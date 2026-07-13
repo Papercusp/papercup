@@ -22,9 +22,9 @@ import type { CrossHiveAsksStore, CrossHiveAsk } from '../../cross-hive-asks-sto
 import type { InsertCrossHiveAskInput, ListCrossHiveAsksFilter } from '../../cross-hive-asks-pg';
 
 const ROOT_CTX = { isSuperuser: true, uiClientId: 'su-test', workspaceId: 'ws-1' } as never;
-const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> =>
-  JSON.parse(r.content[0].text);
-type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> };
+const parse = (r: { data: unknown }): Record<string, unknown> =>
+  r.data as Record<string, unknown>;
+type Tool = { handler: (a: unknown, c: unknown) => Promise<{ data: unknown }> };
 
 const allowGrant: CheckOutboundGrant = async () => ({ allowed: true, reason: 'granted' });
 

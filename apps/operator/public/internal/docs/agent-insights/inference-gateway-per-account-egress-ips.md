@@ -328,6 +328,53 @@ single IP tripping Cloudflare's per-IP burst ceiling never takes the account out
 it work: `journalctl --user -u papercup-inference-gateway.service | grep egress-ip-pool` shows the
 `rotating to a sibling IP on the SAME account` lines.
 
+## Programmatic provisioning — `egress:*` (B-PROV, WI-288)
+
+> Added 2026-07-13. Everything above still applies for the common case — the owner hands you a
+> proxyUrl/localAddress and you `accounts:register{egress}` it directly. This section is the
+> AUTOMATION layer on top: `egress:provision/list/release/health`
+> (`packages/operator-core/lib/agent-tools/egress/egress.ts`) draw a fresh egress IP from a
+> pluggable `EgressProvider` backend (`inference-gateway/egress-providers/`) instead of you
+> hand-picking one.
+
+**Backends** (`provider` arg): `'static'` — a fixed owner-supplied IP inventory (`config.entries`);
+the realistic near-term backend, since the 8 Rayobyte IPs running in production today were
+provisioned exactly this way (manually, then hand-registered). `'rayobyte'` — REST-driven
+order/list/label against Rayobyte's API (`config.baseUrl`/`config.apiKeyRef`, default
+`env:RAYOBYTE_API_KEY`); **not yet exercised against a live Rayobyte account** — confirm the
+`/proxies`, `/proxies/order`, `/proxies/:id/label` endpoint shapes against Rayobyte's current docs
+before relying on it, and adjust `rayobyte-provider.ts` / `baseUrl` if they differ. `'brightdata'`
+— stub only (the D-001 fallback path; wire it if/when the Rayobyte pool underperforms in the
+clean-IP gate).
+
+**One-call provision:**
+
+```
+egress:provision {
+  provider: "static",
+  accountId: "aviynw6",
+  config: { entries: [{ id: "rayobyte-ip-9", proxyUrl: "http://216.213.24.70:3128" }] }
+}
+```
+
+This allocates from the provider, writes the account pool (`accounts:register{egress}` equivalent,
+tagged `providerId`/`providerAllocationId` so `egress:release`/`egress:health` can route back to the
+right provider later), and runs the SAME post-apply verify probe `accounts:test-egress` uses
+(`testEgressForAccount`) — so you get proof the dispatcher works *before* the restart below. Pass
+`dryRun:true` to allocate + verify without writing the pool.
+
+**The gateway restart requirement is unchanged** — `egress:provision` only writes the pool row +
+proves the binding works standalone; the LIVE inference gateway still resolves its account pool once
+at boot (see "Restart the gateway" above), so restart it to make the freshly-provisioned egress
+actually route production traffic.
+
+`egress:list {provider, config?}` / `egress:release {provider, id, config?, accountId?}` /
+`egress:health {provider, id, config?}` round out the surface — `egress:release` with an `accountId`
+also clears that account's pool egress IFF it currently points at the released allocation (a
+provider/allocation mismatch leaves the pool untouched, so it never clobbers an unrelated manual
+edit). Tests: `inference-gateway/egress-providers/*.test.ts` (each backend, fully mocked — no live
+network) and `agent-tools/egress/egress.test.ts` (the tool-layer wiring).
+
 ## Rollback
 
 Remove an account's egress and restart — it reverts to the default shared egress with no

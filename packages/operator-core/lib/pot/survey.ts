@@ -516,14 +516,16 @@ export async function countQuarantinedFrontier(
        --
        -- COALESCE(..., FALSE) IS LOAD-BEARING — do not "simplify" it to a bare NOT.
        -- SQL three-valued logic: for the rows this counter EXISTS to find (remote,
-       -- never audited) `audit_verdict = 'admit'` is NULL, not FALSE, so the whole
-       -- admission expression is NULL — and `NOT NULL` is NULL, which a WHERE treats
-       -- as no-match. A bare `NOT (...)` therefore returns ZERO quarantined for
+       -- never audited) the audit_verdict = 'admit' test is NULL, not FALSE, so the
+       -- whole admission expression is NULL — and NOT NULL is NULL, which a WHERE
+       -- treats as no-match. A bare NOT (...) therefore returns ZERO quarantined for
        -- precisely the deadlock this counter is meant to detect, and every unit test
        -- still passes (fixtures pass booleans, never NULL). Caught against the live
        -- DB on 2026-07-13. The positive form in countPlaceableFrontier is safe as-is
        -- (a NULL there is falsy in WHERE, which correctly EXCLUDES the row) — it is
        -- only the NEGATION that must pin NULL to FALSE.
+       -- NB: no backticks anywhere in this comment — it lives inside a tagged template
+       -- literal, so a markdown-style quote would terminate the SQL and break the build.
        AND COALESCE(${autoPickableWhereSql(sql, workspaceId)}, FALSE) = FALSE
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.pot_placements p

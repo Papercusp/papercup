@@ -34,7 +34,10 @@ import type postgres from 'postgres';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-composed-iso' }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => h.ws,
   backgroundWorkspaceIds: () => [h.ws],

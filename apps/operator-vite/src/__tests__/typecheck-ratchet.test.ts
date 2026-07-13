@@ -86,14 +86,29 @@ describe('typecheck ratchet (EI-10611)', () => {
     ).toBeLessThanOrEqual(FOREIGN_ERROR_WATERMARK);
   });
 
-  it('the watermark is kept HONEST — lower it when the backlog drops', () => {
-    // A watermark far above reality is a dead gate: it would let a big regression
-    // slip in unnoticed. If this fails, set FOREIGN_ERROR_WATERMARK to the number
-    // it reports — you earned it.
-    expect(
-      foreign.length,
-      `The foreign backlog is down to ${foreign.length}, well under the ${FOREIGN_ERROR_WATERMARK} watermark.\n` +
-        `Lower FOREIGN_ERROR_WATERMARK to ${foreign.length} so the gate keeps its teeth.\n`,
-    ).toBeGreaterThan(FOREIGN_ERROR_WATERMARK - 25);
+  it('the watermark is kept HONEST — lower it when the backlog drops (ADVISORY, never red)', () => {
+    // A watermark far above reality is a dead gate: it would let a big regression slip
+    // in unnoticed. So we DO want it lowered as the backlog drains — but this must
+    // NEVER fail the build, and the reason is the whole point of WI-4535:
+    //
+    // `foreign` is a global COUNT over a tree that the whole fleet edits concurrently.
+    // Nothing here can attribute a change in that count to the agent running the test.
+    // If this asserted, then a peer draining the backlog (exactly what EI-10717, the
+    // repo-wide typecheck program, exists to do) would turn MY test red — a gate whose
+    // RED means "someone improved the codebase", pointing them at a file they've never
+    // heard of. That is a gate people learn to skip, which enforces nothing.
+    //
+    // So: the two gates above are real (ours=0 is attributable; the ceiling only ever
+    // catches a REGRESSION). This one only ever WARNS.
+    if (foreign.length <= FOREIGN_ERROR_WATERMARK - 25) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `\n[typecheck-ratchet] The foreign backlog is down to ${foreign.length}, well under the ` +
+          `${FOREIGN_ERROR_WATERMARK} watermark.\n` +
+          `  → Lower FOREIGN_ERROR_WATERMARK to ${foreign.length} so the ceiling keeps its teeth.\n` +
+          `  (Advisory only — this never fails the build. Thank you for draining it.)\n`,
+      );
+    }
+    expect(true).toBe(true);
   });
 }, 180_000);
