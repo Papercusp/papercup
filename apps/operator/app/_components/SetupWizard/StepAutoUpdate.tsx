@@ -28,6 +28,19 @@ export function StepAutoUpdate() {
         const j = await r.json();
         if (j.update_channel === 'alpha' || j.update_channel === 'beta' || j.update_channel === 'stable') {
           setChannel(j.update_channel);
+        } else {
+          // No channel persisted yet (fresh install). PERSIST the shown default
+          // ('alpha', recommended while the app is in alpha) so the updater's
+          // server-side channel resolution actually sees it. Otherwise an onboarding
+          // step that was merely VIEWED (not clicked) never pins the choice, the
+          // manifest falls back, and a default install is silently never offered an
+          // alpha release (WI-4389).
+          setChannel('alpha');
+          await fetch('/api/desktop/setup-wizard-state', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ update_channel: 'alpha' }),
+          });
         }
       } catch {
         // keep default
@@ -188,8 +201,9 @@ export function StepAutoUpdate() {
       )}
 
       <p className="pc-step__hint">
-        The Tauri updater endpoint is configured but currently channel-agnostic — your channel
-        choice is saved server-side, ready for a channel-aware release manifest backend.
+        Your channel choice is saved server-side and honored by the update manifest — the updater
+        only offers releases from the channel you pick here. While the app is in alpha, a fresh
+        install defaults to the alpha channel so auto-update works out of the box.
       </p>
     </div>
   );

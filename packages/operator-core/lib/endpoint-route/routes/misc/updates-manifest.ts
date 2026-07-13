@@ -251,11 +251,25 @@ export async function fetchReleases(token: string | null): Promise<GhRelease[] |
   return (await res.json()) as GhRelease[];
 }
 
+/**
+ * The fallback channel for a client that expressed NO preference — no `?channel=`
+ * query param AND no persisted `setup_wizard_state.update_channel`.
+ *
+ * 'alpha' during the alpha phase (WI-4389): alpha IS the public shipping channel
+ * (release-local.sh treats it so — every cut ships on alpha), and there is no stable
+ * release yet. A 'stable' default made `visibleChannels('stable')` = {stable} exclude
+ * the ONLY releases that exist → 204 no_candidate → the updater was silently DOA for
+ * every install that skipped the onboarding channel step (the manifest is polled with
+ * no channel param, and a fresh install persists none). Flip to 'stable' at GA, when a
+ * stable channel actually ships.
+ */
+export const DEFAULT_CHANNEL: Channel = 'alpha';
+
 export function resolveChannel(params: URLSearchParams, override?: string): Channel {
   const fromQuery = params.get('channel');
   if (fromQuery && CHANNELS.has(fromQuery as Channel)) return fromQuery as Channel;
   if (override && CHANNELS.has(override as Channel)) return override as Channel;
-  return 'stable';
+  return DEFAULT_CHANNEL;
 }
 
 /**
