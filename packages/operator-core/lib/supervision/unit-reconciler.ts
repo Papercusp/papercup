@@ -129,8 +129,9 @@ export interface UnitFlapState {
    *  this is a tick-count, not a time-based streak. Feeds P-004's `dev:service_health` supervision
    *  block (`consecutiveProbeFailures` in the plan's shape). */
   consecutiveDownTicks: number;
-  /** EI-10750: windowed observations of systemd's OWN restart counter (`NRestarts`), `{at, n}`,
-   *  pruned to the trailing GIVE_UP_WINDOW_MS. Used to catch a crash-loop that systemd's own
+  /** EI-10750 / EI-11344: windowed observations of systemd's OWN restart counter
+   *  (`NRestarts`), `{at, n}`, pruned to the trailing SILENT_LOOP_WINDOW_MS. Used to catch a
+   *  crash-loop that systemd's own
    *  `Restart=` is absorbing FASTER than the 60s tick can observe "down" — the down-path give-up
    *  counter (`restarts`, built only from restarts WE perform) is blind to it, which is exactly how
    *  43 restarts / 25 min of :3170 (papercup-staging-api) down produced ZERO pages. */
@@ -177,12 +178,16 @@ export function checkRestartPolicyDrift(
   return { warn: false, nextWarned: false }; // fixed (or unknown) — clear the latch so a future re-drift warns again.
 }
 
-/** EI-10750: systemd's OWN restart counter (`NRestarts`) climbing by ≥ this within
- *  GIVE_UP_WINDOW_MS, while the unit still reads healthy at each tick, is a SILENT crash-loop —
- *  systemd's `Restart=` is bouncing the unit faster than the 60s reconciler cadence can observe
- *  "down". Matches the down-path GIVE_UP_THRESHOLD by design (both mean "crash-looped ~6× in
- *  <10min → code fault, page"). */
-export const SILENT_LOOP_THRESHOLD = GIVE_UP_THRESHOLD;
+/** EI-11344: three systemd restarts inside five minutes is already a crash loop.
+ *
+ * The original EI-10750 detector reused the down-path give-up policy (6/10m). That
+ * is too blunt for a unit systemd keeps briefly active between failures: the live
+ * :3070 outage climbed NRestarts 8→12 in four minutes and never reached six within
+ * the detector's observation window, so the entire MCP plane went dark without a
+ * page. Manual `systemctl restart` does not increment NRestarts; this remains a
+ * failure-only signal, not deploy noise. */
+export const SILENT_LOOP_THRESHOLD = 3;
+export const SILENT_LOOP_WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * EI-10750: PURE detector for a crash-loop that systemd itself is absorbing. Given systemd's live
@@ -207,7 +212,7 @@ export function checkSilentCrashLoop(
   if (nRestarts == null || !Number.isFinite(nRestarts)) {
     return { escalate: false, restartsInWindow: 0, nextObs: [...obs], nextEscalated: alreadyEscalated };
   }
-  let pruned = obs.filter((o) => now - o.at < GIVE_UP_WINDOW_MS);
+  let pruned = obs.filter((o) => now - o.at < SILENT_LOOP_WINDOW_MS);
   let escalatedLatch = alreadyEscalated;
   // A decrease means the counter was reset (`reset-failed` / reload) — start a fresh window and
   // clear the latch so the next real loop re-pages.
@@ -340,6 +345,22 @@ export interface ReconcilerDeps {
   log?: (msg: string) => void;
 }
 
+/** Pull one compact failure-cause line out of `systemctl status` output. The
+ * current process's ExecMainCode is normally 0 once systemd has respawned it,
+ * so the recent journal excerpt embedded by `status --lines` is the only useful
+ * source for the failure that incremented NRestarts. */
+export function summarizeSystemctlStatusCause(output: string): string | null {
+  const lines = output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const cause = [...lines].reverse().find((line) =>
+    /EADDRINUSE|address already in use|fatal|Main process exited|Failed with result|code=(?:exited|killed)|status=\d+/i.test(line),
+  );
+  if (!cause) return null;
+  return cause.replace(/^[-\u251c\u2514\u2502\s]+/, '').slice(0, 400);
+}
+
 /** Module-singleton flap state, keyed by unit name — survives across ticks within one process
  *  (an ephemeral routine's host restart legitimately resets it, per the design note above). */
 const flapStateByUnit = new Map<string, UnitFlapState>();
@@ -444,9 +465,23 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       state.nRestartsObs = loop.nextObs;
       state.silentLoopEscalated = loop.nextEscalated;
       if (loop.escalate) {
+        let lastExitCause: string | null = null;
+        try {
+          lastExitCause = summarizeSystemctlStatusCause(
+            await deps.execUser(['status', entry.unit, '--no-pager', '--lines=50']),
+          );
+        } catch {
+          /* best-effort: the crash-loop page itself must not depend on diagnostics */
+        }
         await deps
           .notify({
-            summary: `🚨 supervision: \`${entry.unit}\` is SILENTLY crash-looping — systemd restarted it ${loop.restartsInWindow}× in <10min under its own \`Restart=\`, faster than the reconciler observes "down". The unit reads \`active\` each tick but is NOT healthy — a code fault (inspect \`systemctl --user status ${entry.unit}\` + its journal).`,
+            summary:
+              `🚨 supervision: \`${entry.unit}\` is SILENTLY crash-looping — systemd restarted it ` +
+              `${loop.restartsInWindow}× in <5min under its own \`Restart=\`, faster than the reconciler ` +
+              `observes "down". The unit reads \`active\` each tick but is NOT healthy.` +
+              (lastExitCause
+                ? ` Last exit: ${lastExitCause}`
+                : ` Last exit unavailable; inspect \`systemctl --user status ${entry.unit}\` + its journal.`),
             kind: 'escalation',
           })
           .catch(() => {});

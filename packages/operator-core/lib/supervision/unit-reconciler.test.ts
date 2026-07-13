@@ -18,6 +18,8 @@ import {
   GIVE_UP_WINDOW_MS,
   HEALTHY_RESET_MS,
   SILENT_LOOP_THRESHOLD,
+  SILENT_LOOP_WINDOW_MS,
+  summarizeSystemctlStatusCause,
   type SystemctlUnitStatus,
   type ReconcilerDeps,
 } from './unit-reconciler';
@@ -80,6 +82,23 @@ describe('parseSystemctlShowProperties', () => {
     expect(parseSystemctlShowProperties('ExecStart={ path=/bin/x ; argv[]=x }')).toEqual({
       ExecStart: '{ path=/bin/x ; argv[]=x }',
     });
+  });
+});
+
+describe('summarizeSystemctlStatusCause', () => {
+  it('extracts the most-recent concrete failure line from a restarted unit status', () => {
+    expect(
+      summarizeSystemctlStatusCause([
+        'Active: active (running)',
+        'Jul 13 10:52:48 host node[1]: Error: listen EADDRINUSE: address already in use 127.0.0.1:3070',
+        'Jul 13 10:52:48 host systemd[1]: papercup-dev-api.service: Main process exited, code=exited, status=1/FAILURE',
+        'Jul 13 10:53:19 host systemd[1]: Started papercup-dev-api.service',
+      ].join('\n')),
+    ).toContain('Main process exited, code=exited, status=1/FAILURE');
+  });
+
+  it('returns null when status has no failure evidence', () => {
+    expect(summarizeSystemctlStatusCause('Active: active (running)\nStarted cleanly')).toBeNull();
   });
 });
 
@@ -335,7 +354,7 @@ describe('checkSilentCrashLoop (EI-10750 silent-crash-loop guard)', () => {
     let obs: { at: number; n: number }[] = [];
     let escalated = false;
     let paged = 0;
-    // 0..THRESHOLD, each 30s apart (all inside the 10-min window).
+    // 0..THRESHOLD, each 30s apart (all inside the five-minute window).
     for (let i = 0; i <= SILENT_LOOP_THRESHOLD; i++) {
       const r = checkSilentCrashLoop(i, obs, escalated, i * 30_000);
       obs = r.nextObs;
@@ -352,7 +371,7 @@ describe('checkSilentCrashLoop (EI-10750 silent-crash-loop guard)', () => {
   it('below-threshold clears the latch so a fresh loop pages again', () => {
     // Loop-then-settle: once the early restarts age out of the window, the delta drops below
     // threshold and the latch clears.
-    const settled = checkSilentCrashLoop(6, [{ at: 0, n: 6 }], true, GIVE_UP_WINDOW_MS + 1);
+    const settled = checkSilentCrashLoop(6, [{ at: 0, n: 6 }], true, SILENT_LOOP_WINDOW_MS + 1);
     // The only in-window observation is the fresh {now, 6}; delta 0 → below threshold → latch cleared.
     expect(settled.escalate).toBe(false);
     expect(settled.restartsInWindow).toBe(0);
@@ -368,9 +387,9 @@ describe('checkSilentCrashLoop (EI-10750 silent-crash-loop guard)', () => {
     expect(r.nextEscalated).toBe(false);
   });
 
-  it('observations older than the 10-minute window are pruned before computing the delta', () => {
+  it('observations older than the five-minute window are pruned before computing the delta', () => {
     // An old {n:0} that has aged out must not inflate the in-window delta.
-    const now = GIVE_UP_WINDOW_MS + 100_000;
+    const now = SILENT_LOOP_WINDOW_MS + 100_000;
     const obs = [{ at: 0, n: 0 }, { at: now - 60_000, n: 40 }];
     const r = checkSilentCrashLoop(41, obs, false, now);
     // Only the {n:40} obs is still in-window; delta = 41 - 40 = 1, below threshold.
@@ -497,7 +516,7 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     expect(driftNotifies).toHaveLength(2);
   });
 
-  it('EI-10750: a unit reading healthy every tick while systemd NRestarts climbs ≥6 in <10min pages ONCE (silent crash-loop), even with the auto-restart flag OFF', async () => {
+  it('EI-11344: NRestarts climbing 8→12 in four minutes pages once with the last exit cause, even with auto-restart off', async () => {
     // The exact bug: papercup-staging-api crash-looped under systemd's own Restart= so fast that
     // every 60s reconciler tick saw it `active`. The down-path give-up counter never engaged — 43
     // restarts / 25 min of :3170 down, ZERO pages. Flag OFF (the real default) to prove the page is
@@ -511,15 +530,18 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
       execUser: vi.fn(async (args: string[]) => {
         if (args[0] === 'list-units') return upFixture;
         if (args[0] === 'show') return `Result=success\nNRestarts=${nRestarts}\nRestart=always\n`;
+        if (args[0] === 'status') {
+          return 'node:events: listen EADDRINUSE 127.0.0.1:3070\npapercup-dev-api.service: Main process exited, code=exited, status=1/FAILURE\n';
+        }
         return '';
       }),
       registry: () => [AUTORESTART_ENTRY],
     });
-    // 7 ticks, NRestarts 0..6 (systemd bouncing it), each 30s apart — all inside the 10-min window.
-    for (let i = 0; i <= GIVE_UP_THRESHOLD; i++) {
-      nRestarts = i;
+    // Exact production incident shape: baseline 8, then four restarts in four minutes.
+    for (let i = 0; i <= 4; i++) {
+      nRestarts = 8 + i;
       await reconcileTick(deps);
-      now += 30_000;
+      now += 60_000;
     }
     // One more stable tick (no further climb) must not re-page.
     await reconcileTick(deps);
@@ -527,7 +549,10 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     const silentPages = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('SILENTLY crash-looping'));
     expect(silentPages).toHaveLength(1);
     expect(String(silentPages[0][0].summary)).toContain('papercup-mcp-proxy');
+    expect(String(silentPages[0][0].summary)).toContain('3× in <5min');
+    expect(String(silentPages[0][0].summary)).toContain('Main process exited, code=exited, status=1/FAILURE');
     expect(silentPages[0][0].kind).toBe('escalation');
+    expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'status')).toBe(true);
     // It read healthy at every tick — the down/restart path never engaged.
     expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart')).toBe(false);
   });

@@ -51,6 +51,8 @@ interface SendMsg {
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
+  /** Sender-side intent: unanswered-directed should treat this as awaiting a reply. */
+  expectsReply?: boolean;
   /** H2 (coord-authority-hardening P-004): relay provenance — the coord msg_id
    *  of the ORIGINAL you are relaying, or the 'owner-turn' sentinel for the
    *  human turn you are currently answering. Platform-verified at send. */
@@ -125,6 +127,13 @@ const replyDeadlineSecArg = z
   .optional()
   .describe(
     'EI-8986: "nudge if silent" — the dual of wakeOnReply (which wakes you when a reply ARRIVES; this wakes you when one does NOT). If no reply lands within this many seconds, a periodic backstop sweep nudges you ONCE: a coord message + a fail-soft wake — never a recurring alarm. Independent of wakeOnReply — set either, both, or neither. Omit for no deadline tracking (today\'s behavior).',
+  );
+
+const expectsReplyArg = z
+  .boolean()
+  .optional()
+  .describe(
+    'Explicit sender-side reply expectation. Set true only when you are waiting for a response; omit (or set false) for FYI/status/fire-and-forget messages. When omitted, wake:"required" plus replyDeadlineSec also declares this intent.',
   );
 
 const endTurnArg = z
@@ -206,6 +215,7 @@ const itemSpec = z.object({
   files: z.array(z.string()).optional(),
   plan_slug: z.string().optional(),
   related_msg_id: z.string().optional(),
+  expectsReply: expectsReplyArg,
   relayOf: relayOfArg,
   relayQuote: relayQuoteArg,
   gateRefs: gateRefsArg,
@@ -334,6 +344,11 @@ async function sendOne(
   if (bcast?.allHive) extra[ALLHIVE_BROADCAST_FIELD] = true;
   if (wakeMode) extra.wake = true;
   if (effectiveWakeOnReply) extra.wakeOnReply = true;
+  // WI-4553: unanswered-directed must use sender intent, not the absence of a
+  // reply, to infer an obligation. A deadline is itself an explicit request
+  // for a response, so retain the ergonomic wake+deadline derivation.
+  const expectsReply =
+    msg.expectsReply ?? (wakeMode === 'required' && typeof msg.replyDeadlineSec === 'number');
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
   // (dbos/periodic-workflows.ts) can select it with a simple `<= now` compare —
   // no need to re-derive "elapsed since send" from `ts` at sweep time. Positive
@@ -365,6 +380,7 @@ async function sendOne(
     files: msg.files,
     plan_slug: msg.plan_slug,
     related_msg_id: msg.related_msg_id,
+    ...(expectsReply ? { expectsReply: true } : {}),
     // WI-3653: pass the resolved scope THROUGH, including the explicit-local
     // null — omitting it would re-trigger sendMessage's AUTO default and defeat
     // scope:'local'.
@@ -745,7 +761,7 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. In a fleet, a bare ["*"] auto-scopes to your fleet (reported `scopedBroadcast`); pass allHive:true for a genuine hive-wide notice. Default INJECTED — lands in the recipient\'s inbox, seen next turn. `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. A DIRECTED send defaults `wakeOnReply` — you\'re auto-woken when a peer replies (set false to opt out; broadcasts off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
+    'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. In a fleet, a bare ["*"] auto-scopes to your fleet (reported `scopedBroadcast`); pass allHive:true for a genuine hive-wide notice. Default INJECTED — lands in the recipient\'s inbox, seen next turn. `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Set `expectsReply:true` only when you are waiting for a response; omit it for FYI/status/fire-and-forget messages. `wake:"required"` plus `replyDeadlineSec` also declares that expectation. Single: { to, summary, body?, expectsReply?, wake?, … }. Many distinct: items:[{ to, summary, expectsReply?, … }]. A DIRECTED send defaults `wakeOnReply` — you\'re auto-woken when a peer replies (set false to opt out; broadcasts off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
   guidance: {
     when: 'Sharing context or asking a question. Use items:[…] for many distinct messages. wake:\'required\' = recipient must act now, miss → recipient_absent. wake:\'optimistic\' = best-effort over a named backstop (`backstop:`). A running recipient already sees the inject — a wake is wasted on it.',
     notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1.',
@@ -794,6 +810,7 @@ export default defineTool({
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),
     related_msg_id: z.string().optional(),
+    expectsReply: expectsReplyArg,
     relayOf: relayOfArg,
     relayQuote: relayQuoteArg,
     gateRefs: gateRefsArg,
@@ -809,7 +826,7 @@ export default defineTool({
       .min(1)
       .max(100)
       .optional()
-      .describe('send many DISTINCT messages at once — each { to, summary, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }'),
+      .describe('send many DISTINCT messages at once — each { to, summary, body?, files?, plan_slug?, related_msg_id?, expectsReply?, wake?, wakeOnReply?, endTurn? }'),
   })),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -834,6 +851,7 @@ export default defineTool({
             files: args.files,
             plan_slug: args.plan_slug,
             related_msg_id: args.related_msg_id,
+            expectsReply: args.expectsReply,
             relayOf: args.relayOf,
             relayQuote: args.relayQuote,
             gateRefs: args.gateRefs,
