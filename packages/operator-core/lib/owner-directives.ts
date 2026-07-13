@@ -32,7 +32,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { resolveConcreteWorkspaceId } from './workspace-registry';
+import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -289,13 +289,17 @@ export async function renderOpenOwnerDirectivesBlock(
   workspaceId: string | null | undefined,
   opts: { nowMs?: number; sql?: Sql } = {},
 ): Promise<string | null> {
-  if (!workspaceId) return null;
+  // A workspace-less caller (e.g. a loop routine armed without one) falls back
+  // to the active workspace — an open owner directive must not be skippable by
+  // a missing scope field.
+  const ws = workspaceId || activeWorkspaceId();
+  if (!ws) return null;
   try {
-    const rows = await listOpenOwnerDirectives(workspaceId, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql);
+    const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql);
     if (!rows.length) return null;
     const totalOpen =
       rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
-        ? await countOpenOwnerDirectives(workspaceId, opts.sql).catch(() => rows.length)
+        ? await countOpenOwnerDirectives(ws, opts.sql).catch(() => rows.length)
         : rows.length;
     return renderOwnerDirectivesBlock(rows, { nowMs: opts.nowMs, totalOpen });
   } catch {
