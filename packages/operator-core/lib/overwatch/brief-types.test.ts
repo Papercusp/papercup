@@ -65,18 +65,18 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   assert.match(out, /\[info\] observation-dark — observation lane: lane flat 40m while 4 bees run → OBSERVE: observation lane flat/);
 
   // Health panels — one line each, every field surfaced.
-  assert.match(out, /### Queen\n- last woke 2026-06-15T01:00:00Z \[STALLED\] · cadence OFF · driving 3 placement\(s\) · next unscheduled/);
-  // The Queen-nudge address is the stable role slot; the session owner is diagnostic only.
-  assert.match(out, /nudge the Queen via `coord:send \{ to: \['@role:queen'\], wake: 'optimistic'/);
-  assert.match(out, /latest Queen session owner \(diagnostic only\): s-queen-1781000000-abc/);
+  assert.match(out, /### Mug\n- last woke 2026-06-15T01:00:00Z \[STALLED\] · cadence OFF · driving 3 placement\(s\) · next unscheduled/);
+  // The Mug-nudge address is the stable role slot; the session owner is diagnostic only.
+  assert.match(out, /nudge the Mug via `coord:send \{ to: \['@role:queen'\], wake: 'optimistic'/);
+  assert.match(out, /latest Mug session owner \(diagnostic only\): s-queen-1781000000-abc/);
 
   // The pre-folded Inbox section (coord messages addressed to the overwatch).
   assert.match(out, /### Inbox — coord messages for you/);
   assert.match(out, /- \[message\] mug: re: F-FIX-021 — re-opened, thanks/);
   assert.match(out, /- \[escalation\] owner: keep an eye on the opus bucket/);
-  assert.match(out, /### Bees \(Queen-placed only — NOT the whole fleet\)\n- running 4 · completed 11 · churning 2 · dead claims 1 · invalid-model failures 3/);
+  assert.match(out, /### Bees \(Mug-placed only — NOT the whole fleet\)\n- running 4 · completed 11 · churning 2 · dead claims 1 · invalid-model failures 3/);
   // EI-6493: the zero-caveat only fires when running is actually 0 — this fixture has 4.
-  assert.doesNotMatch(out, /zero here means no Queen-dispatched bee is active/);
+  assert.doesNotMatch(out, /zero here means no Mug-dispatched bee is active/);
   assert.match(out, /### Work feed\n- frontier 7 ready · 5 auto-eligible stuck · 1 dead routine\(s\) · 2 stranded/);
   assert.match(out, /### Tokens \/ gateway\n- paused buckets: opus, sonnet · 3 failover\(s\) · 12 429\(s\) · 1 account\(s\) available/);
   assert.match(out, /### Plans \+ escalations\n- 6 active plan\(s\) · 4 stalled item\(s\) · 2 aging escalation\(s\)/);
@@ -109,10 +109,10 @@ test('renderOverwatchBrief — empty anomalies render an explicit healthy signal
   assert.match(out, /paused buckets: none/);
   // EI-6493: bees.running=0 (the empty-brief default) must carry the explicit
   // "not the whole fleet" caveat, so a reader never mistakes it for a stall.
-  assert.match(out, /### Bees \(Queen-placed only — NOT the whole fleet\)/);
+  assert.match(out, /### Bees \(Mug-placed only — NOT the whole fleet\)/);
   assert.match(
     out,
-    /zero here means no Queen-dispatched bee is active — it does NOT mean the fleet is idle/,
+    /zero here means no Mug-dispatched bee is active — it does NOT mean the fleet is idle/,
   );
 });
 
@@ -121,7 +121,7 @@ test('renderOverwatchBrief — EI-6493: the bees-running=0 caveat only fires at 
   assert.match(zero, /cross-check fleet:assignments\/coord:presence before reading this as a stall/);
 
   const nonZero = renderOverwatchBrief(unhealthyBrief());
-  assert.doesNotMatch(nonZero, /zero here means no Queen-dispatched bee is active/);
+  assert.doesNotMatch(nonZero, /zero here means no Mug-dispatched bee is active/);
 });
 
 test('renderOverwatchBrief — over-cap anomalies are digested with a "+N more" overflow line', () => {

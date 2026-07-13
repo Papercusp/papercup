@@ -77,6 +77,27 @@ export function listedFiles(output, cwd) {
   )];
 }
 
+/**
+ * The false-green refusal decision, isolated from I/O so it is unit-testable (P-009 / WI-4534).
+ *
+ * A run is SAFE only when three things all hold: Vitest's own `list` exited cleanly, every
+ * requested file resolved to a listed test, and at least one test was listed. Zero-match and
+ * partial-match are the two ways a raw `vitest run <paths>` reports success while silently
+ * skipping what you asked for — vitest exits 0 on a PARTIAL match (asked 3, ran 2), and exits 0
+ * on a zero match under `--passWithNoTests`. Neither is catchable by a vitest flag alone; only
+ * comparing REQUESTED against what `vitest list` actually resolved catches both. This is that
+ * comparison, so the caller can turn a false-green into a hard error.
+ *
+ * @param {{ routes: {absolute: string, requested: string}[], matched: string[], listStatus: number }} args
+ * @returns {{ ok: boolean, unmatched: {absolute: string, requested: string}[], requested: number, matched: number }}
+ */
+export function evaluateMatch({ routes, matched, listStatus }) {
+  const matchedSet = new Set(matched);
+  const unmatched = routes.filter((route) => !matchedSet.has(route.absolute));
+  const ok = listStatus === 0 && unmatched.length === 0 && matched.length > 0;
+  return { ok, unmatched, requested: routes.length, matched: matched.length };
+}
+
 function parseCli(argv) {
   const separator = argv.indexOf('--');
   const own = separator >= 0 ? argv.slice(0, separator) : argv;
@@ -123,13 +144,13 @@ export function main(argv = process.argv.slice(2)) {
       return 2;
     }
     const matched = listedFiles(`${listed.stdout ?? ''}\n${listed.stderr ?? ''}`, group.cwd);
-    const unmatched = group.routes.filter((route) => !matched.includes(route.absolute));
-    if (listed.status !== 0 || unmatched.length > 0 || matched.length === 0) {
+    const verdict = evaluateMatch({ routes: group.routes, matched, listStatus: listed.status });
+    if (!verdict.ok) {
       if (listed.stdout) process.stdout.write(listed.stdout);
       if (listed.stderr) process.stderr.write(listed.stderr);
-      for (const route of unmatched) console.error(`  unmatched ${route.requested}`);
+      for (const route of verdict.unmatched) console.error(`  unmatched ${route.requested}`);
       console.error(
-        `TEST_FILE_ROUTE_ERROR requested=${group.routes.length} matched=${matched.length}; refusing a false-green zero/partial-match run`,
+        `TEST_FILE_ROUTE_ERROR requested=${verdict.requested} matched=${verdict.matched}; refusing a false-green zero/partial-match run`,
       );
       return 1;
     }
