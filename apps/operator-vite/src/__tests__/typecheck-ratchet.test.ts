@@ -32,7 +32,16 @@ const APP_ROOT = resolve(__dirname, '../..');
  * run green — that is the rot this exists to stop; fix the error, or if you truly
  * added a file that inherits foreign errors, fix those too.
  */
-const FOREIGN_ERROR_WATERMARK = 0;
+/*
+ * History note (WI-4721): on 2026-07-13 this was briefly lowered 170 → 0 with the
+ * backlog intact — runTsc() had swallowed a tsc infrastructure crash into an empty
+ * error array and the advisory said "lower to 0". That redded the release gate on
+ * the whole inherited backlog. Restored to the honest measured number (169 at the
+ * time, then 152 after restoring the dropped terminal-layout/Value entries in
+ * apps/operator/lib/tauri-bindings.ts). runTsc now throws on a no-output crash so
+ * a dead tsc can never read as a clean tree again.
+ */
+const FOREIGN_ERROR_WATERMARK = 152;
 
 interface TscError {
   file: string;
