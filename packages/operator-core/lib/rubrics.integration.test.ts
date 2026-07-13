@@ -250,6 +250,54 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(all.filter((x) => x.rubricId === 'seed')).toHaveLength(1); // ON CONFLICT, not a second row
   });
 
+  it('re-propose PERSISTS changed template_data — criteria/scale/description, not just the body (EI-11070 regression)', async () => {
+    // v1: 2 criteria, 4-value scale, short description.
+    await rubrics.proposeRubric({
+      rubricId: 'drift-check',
+      characteristic: 'c',
+      title: 'Drift v1',
+      description: 'short v1 description',
+      criteria: sampleCriteria,
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+      status: 'active',
+      by: 'seed',
+    });
+    // v2: 3 criteria, a DIFFERENT 6-value scale, a longer description — the whole
+    // template_data document changes. The pre-EI-11070 bug landed the body write
+    // (title/status/updated_at) but SILENTLY skipped this template_data write, so the
+    // row kept v1's 2 criteria / 4-value scale / short description while reporting ok.
+    const threeCriteria = [
+      ...sampleCriteria,
+      { key: 'third-criterion', title: 'Third', model: 'a third model', method: 'a third method', driftMarkers: 'third drift' },
+    ];
+    const sixValueScale = ['exemplary', 'pass', 'partial', 'fail', 'severe', 'unknown'];
+    const r2 = await rubrics.proposeRubric({
+      rubricId: 'drift-check',
+      characteristic: 'c',
+      title: 'Drift v2',
+      description: 'a substantially longer v2 description that differs from v1',
+      criteria: threeCriteria,
+      ratingScale: sixValueScale,
+      status: 'active',
+      by: 'seed',
+    });
+    // The returned projection reflects the new content…
+    expect(r2.criteria).toHaveLength(3);
+    expect(r2.ratingScale).toEqual(sixValueScale);
+    expect(r2.description).toContain('longer v2');
+    // …AND the RAW template_data jsonb in the DB actually changed (the bug left it at v1).
+    const [row] = await db.adminSql<{ template_data: { criteria: unknown[]; ratingScale: string[]; description: string } }[]>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'drift-check' AND template = 'rubric'`;
+    expect(row.template_data.criteria).toHaveLength(3);
+    expect(row.template_data.ratingScale).toEqual(sixValueScale);
+    expect(row.template_data.description).toContain('longer v2');
+    // …and the read projection resolves the new document too.
+    const got = await rubrics.getRubric('drift-check');
+    expect(got?.criteria).toHaveLength(3);
+    expect(got?.ratingScale).toEqual(sixValueScale);
+  });
+
   it('a malformed propose is rejected fail-loud, never persisting a half-state', async () => {
     await expect(
       rubrics.proposeRubric({ rubricId: 'bad', characteristic: '', title: 'Bad', criteria: [], by: 'x' }),

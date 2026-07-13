@@ -42,14 +42,34 @@
  * The global ~/.claude/settings.json is the canonical hook block (writeSessionSettings
  * copies it in at materialize). We diff the session against it rather than hard-coding a
  * hook list — a hand-copied list is exactly what rotted in EI-10793.
+ *
+ * WI-4617 — CLIENT AWARENESS. The failure mode above is a CLAUDE-CODE-SPECIFIC bug
+ * (Claude persists its config by rewriting a Claude-shaped settings.json). Codex has
+ * a totally different config surface: a per-session `$CODEX_HOME/config.toml`, and
+ * `hooks.json` alongside it (see `role-codex-home.ts`). A Codex session materialized
+ * by psu therefore has NO `~/.papercusp/session-claude/<ownerId>/` directory at all —
+ * both `settings.json` and `.claude.json` reads return null, and the Claude-shaped
+ * checker (globalSettings-hook-events minus sessionSettings-hook-events) reported
+ * EVERY globally-defined hook missing plus the PSU MCP server absent. The result: a
+ * healthy Codex session got a red configIntegrity block claiming its edit-locks,
+ * coord inbox, and coord MCP were all dead — a spurious diagnosis of a bug that
+ * cannot affect it. We detect the client from disk (the presence of the Claude-shaped
+ * per-session config dir) and SHORT-CIRCUIT the check to ok:true for anything that
+ * isn't a Claude session; the repair path is a natural no-op through the same gate.
  */
 
-import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /** The psu-owned MCP server. `playwright` is deliberately NOT restored (P-020 prunes it). */
 export const PSU_MCP_SERVER = 'papercusp-su';
+
+/** Which client (CLI) materialized this session — inferred from disk (WI-4617).
+ *  `'claude'` iff the per-session CLAUDE_CONFIG_DIR (`session-claude/<ownerId>/`) is
+ *  present; anything else — a Codex session (CODEX_HOME/config.toml) or a session
+ *  never materialized psu-style — is `'unknown'` and skips the Claude-only check. */
+export type SessionClientKind = 'claude' | 'unknown';
 
 export interface SessionConfigState {
   /** The session's CLAUDE_CONFIG_DIR settings.json (null = unreadable/absent). */
@@ -60,6 +80,12 @@ export interface SessionConfigState {
   globalSettings: Record<string, unknown> | null;
   /** The user's global ~/.claude.json — the canonical MCP server definitions. */
   globalClaudeJson: Record<string, unknown> | null;
+  /** WI-4617: which client materialized this session, inferred from disk (the
+   *  presence of the Claude-shaped per-session config dir). A non-Claude client
+   *  (`'unknown'`) short-circuits the Claude-shaped integrity check — otherwise
+   *  a healthy Codex session (with no CLAUDE_CONFIG_DIR by design) is diagnosed
+   *  with every hook missing and no coordination MCP. */
+  clientKind: SessionClientKind;
 }
 
 export interface ConfigIntegrityVerdict {
@@ -94,8 +120,23 @@ function hasHookEvent(hooks: HookMap, event: string): boolean {
  *
  * A session whose GLOBAL settings carry no hooks at all is reported ok: there is no
  * canonical block to be missing, and we must never invent one.
+ *
+ * WI-4617: a session NOT materialized by Claude (clientKind !== 'claude') short-
+ * circuits to ok:true. The Claude-shaped diff (globalHooks minus sessionHooks) is
+ * meaningless against a Codex session's config.toml + hooks.json surface, and would
+ * spuriously flag every psu hook + the coordination MCP as missing on a session
+ * that never had a Claude-shaped config in the first place.
  */
 export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIntegrityVerdict {
+  if (state.clientKind !== 'claude') {
+    return {
+      ok: true,
+      missingHookEvents: [],
+      mcpServerMissing: false,
+      permissionsDowngraded: false,
+      consequences: [],
+    };
+  }
   const globalHooks = hooksOf(state.globalSettings);
   const sessionHooks = hooksOf(state.settings);
 
@@ -177,14 +218,28 @@ function readJson(path: string): Record<string, unknown> | null {
  *
  * The session's CLAUDE_CONFIG_DIR is ~/.papercusp/session-claude/<ownerId>/ (see
  * interactive-claude-config.ts).
+ *
+ * WI-4617: `clientKind` is inferred from the presence of that per-session
+ * CLAUDE_CONFIG_DIR. Codex sessions materialize into a `$CODEX_HOME` under a
+ * different root entirely (`~/.papercusp/su-codex-homes/session-<key>/`, see
+ * `session-launch-dirs.ts`), so their `session-claude/<ownerId>/` directory
+ * simply does not exist — a reliable, cheap probe (one `statSync`) that keeps
+ * the check on the CLAUDE-CODE-SPECIFIC failure it was designed to catch.
  */
 export function loadSessionConfigState(ownerId: string, home = homedir()): SessionConfigState {
   const dir = join(home, '.papercusp', 'session-claude', ownerId);
+  let clientKind: SessionClientKind = 'unknown';
+  try {
+    if (statSync(dir).isDirectory()) clientKind = 'claude';
+  } catch {
+    /* absent / unreadable → clientKind stays 'unknown' (non-Claude session) */
+  }
   return {
     settings: readJson(join(dir, 'settings.json')),
     claudeJson: readJson(join(dir, '.claude.json')),
     globalSettings: readJson(join(home, '.claude', 'settings.json')),
     globalClaudeJson: readJson(join(home, '.claude.json')),
+    clientKind,
   };
 }
 

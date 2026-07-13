@@ -66,6 +66,9 @@ const state = (over: Partial<SessionConfigState> = {}): SessionConfigState => ({
   claudeJson: { mcpServers: {} },
   globalSettings: GLOBAL_SETTINGS,
   globalClaudeJson: GLOBAL_CLAUDE_JSON,
+  // The baseline fixture models a Claude session; the WI-4617 short-circuit tests
+  // override this to 'unknown' to exercise the non-Claude path.
+  clientKind: 'claude',
   ...over,
 });
 
@@ -115,6 +118,39 @@ describe('checkSessionConfigIntegrity', () => {
     );
     expect(v.missingHookEvents).toEqual([]);
     expect(v.ok).toBe(true);
+  });
+
+  // ── WI-4617 client-awareness. A Codex session has NO Claude-shaped per-session
+  //    config dir (its config lives in `$CODEX_HOME/config.toml` + `hooks.json`,
+  //    a different root entirely), so both `settings` and `claudeJson` read as
+  //    null. Pre-fix, that reported EVERY globally-defined hook missing plus the
+  //    coordination MCP absent — a WI-4562 false positive against a healthy
+  //    session that cannot be affected by the Claude-only failure mode. The
+  //    check now short-circuits on `clientKind !== 'claude'`.
+
+  it('WI-4617: short-circuits ok:true for a non-Claude client (Codex), even with null docs', () => {
+    const v = checkSessionConfigIntegrity(
+      state({ settings: null, claudeJson: null, clientKind: 'unknown' }),
+    );
+    expect(v).toEqual({
+      ok: true,
+      missingHookEvents: [],
+      mcpServerMissing: false,
+      permissionsDowngraded: false,
+      consequences: [],
+    });
+  });
+
+  it('WI-4617: still diagnoses a genuinely clobbered CLAUDE session even when null-empty', () => {
+    // A clobbered session where the settings and claudeJson files were WIPED —
+    // clientKind: 'claude' means the per-session Claude dir is still present, so
+    // the check must NOT short-circuit; the WI-4562 diagnosis stands.
+    const v = checkSessionConfigIntegrity(
+      state({ settings: null, claudeJson: null, clientKind: 'claude' }),
+    );
+    expect(v.ok).toBe(false);
+    expect(v.missingHookEvents.length).toBeGreaterThan(0);
+    expect(v.mcpServerMissing).toBe(true);
   });
 });
 
@@ -265,5 +301,42 @@ describe('repairSessionConfigOnDisk', () => {
 
     expect(second.repaired).toBe(false);
     expect(second.wrote).toEqual([]);
+  });
+
+  // ── WI-4617 client-awareness on disk. A Codex session has no
+  //    `~/.papercusp/session-claude/<ownerId>/` directory at all. Pre-fix, orient
+  //    still ran the Claude-shaped check on Codex ownerIds and got a red block —
+  //    it now sees clientKind:'unknown' and does nothing.
+
+  it('WI-4617: loadSessionConfigState infers clientKind:unknown when the Claude dir is absent', () => {
+    layGlobals();
+    // Intentionally lay NO session-claude/<SID>/ directory.
+    const s = loadSessionConfigState(SID, home);
+    expect(s.clientKind).toBe('unknown');
+    expect(s.settings).toBeNull();
+    expect(s.claudeJson).toBeNull();
+    // The globals are still readable — the check that would run against a
+    // Claude session is still SOURCED, just gated off by clientKind.
+    expect(s.globalSettings).not.toBeNull();
+    expect(s.globalClaudeJson).not.toBeNull();
+  });
+
+  it('WI-4617: loadSessionConfigState infers clientKind:claude when the Claude dir exists', () => {
+    layGlobals();
+    laySession(HEALTHY_SETTINGS, { mcpServers: { [PSU_MCP_SERVER]: {} } });
+    const s = loadSessionConfigState(SID, home);
+    expect(s.clientKind).toBe('claude');
+  });
+
+  it('WI-4617: repairSessionConfigOnDisk is a NO-OP for a Codex-shaped session (no Claude dir)', () => {
+    layGlobals();
+    // No session-claude/<SID>/ dir laid down — this is what a Codex session looks
+    // like from this checker's perspective.
+    const res = repairSessionConfigOnDisk(SID, home);
+    expect(res).toEqual({ repaired: false, fixed: [], wrote: [], stillBroken: [], residualCaveats: [] });
+    // And crucially, checking the loaded state passes ok:true — the orient
+    // handler's `if (!verdict.ok)` gate therefore never surfaces a spurious
+    // configIntegrity block against a Codex session.
+    expect(checkSessionConfigIntegrity(loadSessionConfigState(SID, home)).ok).toBe(true);
   });
 });
