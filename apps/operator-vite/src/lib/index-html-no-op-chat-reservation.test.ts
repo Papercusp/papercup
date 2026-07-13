@@ -39,18 +39,4 @@ describe('index.html op-chat reservation (D-017)', () => {
     expect(indexHtml).not.toContain("setProperty('--op-chat-w'");
     expect(indexHtml).not.toContain('setProperty("--op-chat-w"');
   });
-
-  // Nothing has written --op-chat-w since the sidebar was retired, so a rail
-  // reading it was offsetting by a var that could only ever resolve to its 0px
-  // fallback. Re-introducing the read would be dead layout math, not a feature.
-  it('no layout rail offsets by the retired --op-chat-w', () => {
-    const rails = [
-      '../components/left-sidebar/left-sidebar.styles.ts',
-      '../components/left-sidebar/LeftSidebar.tsx',
-      '../components/dev-admin-rail/dev-admin-rail.styles.ts',
-    ];
-    for (const rail of rails) {
-      expect(readFileSync(join(__dirname, rail), 'utf8')).not.toContain('--op-chat-w');
-    }
-  });
 });

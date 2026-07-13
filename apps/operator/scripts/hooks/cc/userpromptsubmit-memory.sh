@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook — TURN-START MEMORY DELTA
-# (memory-delivery-unification-2026-07-12 P-003a, decisions D-002/D-004).
+# UserPromptSubmit hook — TURN-START CTRL TRANSITION + MEMORY DELTA
+# (agent-operability P-014; memory-delivery-unification P-003a).
 #
-# On every submitted prompt in a psu session, fetch a SMALL high-precision
-# memory delta from the local operator (/api/agent-mcp/turn-start-memory):
+# On every submitted prompt in a psu session, fetch the next one-shot compact
+# CTRL transition plus a SMALL high-precision memory delta from the local
+# operator (/api/agent-mcp/turn-start-memory):
 # the one admission pipeline runs with queryContext = this prompt, under the
 # session-epoch dedup (P-002, port 'turn-start') — so anything already
 # surfaced this epoch (the initialize prelude, an orient recall, a claim
@@ -15,17 +16,15 @@
 # provenance hook this one DOES call the operator (an embed cannot be local);
 # that is why it is a SEPARATE hook — provenance stays local-only by design.
 #
-# Kill switch: PAPERCUSP_TURN_START_MEMORY=off.
+# PAPERCUSP_TURN_START_MEMORY=off disables only memory recall. CTRL transitions
+# remain enabled: a memory preference must never hide a safety-critical mode /
+# loop / route transition.
 
 set -euo pipefail
 
 if [ -z "${PAPERCUSP_SID:-}" ]; then
   exit 0
 fi
-if [ "${PAPERCUSP_TURN_START_MEMORY:-on}" = "off" ]; then
-  exit 0
-fi
-
 INPUT=$(cat)
 
 # Fail-open backstop: any uncaught crash injects nothing and allows the turn.
@@ -38,8 +37,8 @@ try:
 except Exception:
     sys.exit(0)
 prompt = data.get('prompt') or ''
-if not isinstance(prompt, str) or len(prompt.strip()) < 40:
-    sys.exit(0)  # low-signal prompt — the endpoint would skip it anyway
+if not isinstance(prompt, str):
+    sys.exit(0)
 
 base = (os.environ.get('PAPERCUSP_OPERATOR_URL') or 'http://localhost:3070').rstrip('/')
 body = json.dumps({
@@ -47,6 +46,7 @@ body = json.dumps({
     'prompt': prompt[:4000],
     'workspace': os.environ.get('PAPERCUSP_WORKSPACE') or '',
     'harness': os.environ.get('PAPERCUSP_HARNESS_SLUG') or '',
+    'memoryEnabled': os.environ.get('PAPERCUSP_TURN_START_MEMORY', 'on') != 'off',
 }).encode('utf-8')
 
 # localhost operator: never via egress http(s)_proxy (502s the local call).

@@ -28,6 +28,7 @@ import {
   appendFleetMembershipEvent,
   appendFleetMembershipIfAbsent,
 } from '../../fleet-membership-store';
+import { refreshControlAnchorAfterMutation } from './control-anchor';
 
 export { PRESENCE_STALE_MS };
 export type { PresenceInput, PresenceRecord };
@@ -202,6 +203,14 @@ export async function setPresenceFleet(
   sql?: Sql,
 ): Promise<void> {
   await appendFleetMembershipEvent({ workspaceId, ownerId, fleetSlug, fleetRole }, sql);
+  await refreshControlAnchorAfterMutation({
+    ownerId,
+    workspaceId,
+    origin: 'agent',
+    actorId: ownerId,
+    source: 'fleet:membership',
+    sql,
+  });
 }
 
 // (WI-1893: the per-worker in-memory pending-fleet map — setPendingFleet /

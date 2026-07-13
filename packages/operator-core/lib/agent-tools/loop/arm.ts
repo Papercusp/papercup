@@ -40,6 +40,7 @@ import {
   type WakeReachabilityVerdict,
 } from '../../events/await/wake-reachability';
 import { softText, clampText } from '../limits';
+import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
 
@@ -287,6 +288,13 @@ export default defineTool({
       carry: args.carry ?? 'warm',
       continuation: args.continuation ?? 'settle',
     });
+    const control = await refreshControlAnchorAfterMutation({
+      ownerId,
+      workspaceId,
+      origin: 'agent',
+      actorId: identity.ownerId,
+      source: 'loop:arm',
+    });
 
     // WI-655 — wake-reachability is INTRINSIC to arming a loop, not a separate step.
     // (1) ARM the standing inbox-wake watch right here, so a loop is wakeable the instant
@@ -361,6 +369,7 @@ export default defineTool({
                   : loop.nextFireAt.toISOString(),
               customWakePrompt: wakePrompt != null,
               workItem: claimedWorkItem,
+              controlGeneration: control?.generation ?? null,
             },
             workItemClaim,
             reachability: reachabilityOut,

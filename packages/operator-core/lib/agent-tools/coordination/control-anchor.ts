@@ -448,3 +448,29 @@ export async function buildAndPersistControlAnchor(
   );
   return renderControlAnchor({ ownerId, ...persisted });
 }
+
+/** Refresh after a canonical mutation. The projection is safety context, but
+ * never a reason to roll back the already-committed mode/loop/route write. */
+export async function refreshControlAnchorAfterMutation(input: {
+  ownerId: string;
+  workspaceId: string;
+  origin: ControlTransitionOrigin;
+  actorId: string;
+  source: ControlTransitionProvenance['source'];
+  ownerDirected?: boolean;
+  sql?: Sql;
+}): Promise<ControlAnchor | null> {
+  try {
+    return await buildAndPersistControlAnchor(input.ownerId, input.workspaceId, {
+      sql: input.sql,
+      transition: {
+        origin: input.origin,
+        actorId: input.actorId,
+        source: input.source,
+        ownerDirected: Boolean(input.ownerDirected),
+      },
+    });
+  } catch {
+    return null;
+  }
+}

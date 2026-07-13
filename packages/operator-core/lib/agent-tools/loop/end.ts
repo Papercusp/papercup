@@ -10,6 +10,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { deactivateLoop } from '../../harness/routines/loop';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 
 export default defineTool({
   name: 'loop:end',
@@ -65,6 +67,16 @@ export default defineTool({
       }
     }
     const ended = await deactivateLoop(ownerId);
+    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const control = ended
+      ? await refreshControlAnchorAfterMutation({
+          ownerId,
+          workspaceId,
+          origin: 'agent',
+          actorId: identity.ownerId,
+          source: 'loop:end',
+        })
+      : null;
     return {
       content: [
         {
@@ -73,6 +85,7 @@ export default defineTool({
             ok: true,
             ownerId,
             ended,
+            controlGeneration: control?.generation ?? null,
             note: ended
               ? 'Loop ended — no further wakes will fire.'
               : 'No active loop found for this owner (already ended or never armed).',

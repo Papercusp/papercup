@@ -108,9 +108,11 @@ import '@/app/harness/harness.css';
  * and reads the same wsLocalKey-scoped keys the React libs use):
  *   - Color theme — `data-theme` + cached custom-theme CSS.
  *   - Visual-effects mode — `data-visual-effects` / `data-visual-effects-mode`.
- *   - Op-chat width — a body-start classic script plus a `<head>`
- *     `<style id="op-chat-width-reserve">`, since that reservation CSS is
- *     otherwise component-scoped and absent pre-paint.
+ *   - Op-chat width — was ported as a body-start script + a `<head>`
+ *     `<style id="op-chat-width-reserve">`, then REMOVED again (D-017):
+ *     flags are unknowable pre-paint, so the revived OperatorChatSidebar
+ *     reserves its own space at mount instead (see the index.html comment +
+ *     index-html-no-op-chat-reservation.test.ts).
  */
 // Dev admin rail (plan dev-admin-sidebar-2026-06-05; RUNTIME gate added by
 // desktop-build-switcher-wrapper-2026-06-09 P-007 / D-004). Two ways in:

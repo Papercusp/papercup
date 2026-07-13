@@ -3,8 +3,9 @@
  *
  * Plan: memory-delivery-unification-2026-07-12 (P-003a, decisions D-002/D-004).
  *
- * The read the UserPromptSubmit hook (userpromptsubmit-memory.sh) fetches on
- * every submitted prompt in a psu session: run the ONE admission pipeline
+ * The UserPromptSubmit hook (userpromptsubmit-memory.sh) fetches on every
+ * submitted prompt in a psu session. It first consumes the compact pending
+ * CTRL transition (P-014), then runs the ONE memory admission pipeline
  * with queryContext = the user's message, under the warm-session epoch
  * dedup (P-002, port 'turn-start') and a SMALL budget — injected lines
  * compound in a warm session, so turn-start is high-precision/low-volume
@@ -16,7 +17,9 @@
  * workspace from its launch env so this endpoint does no session-registry
  * resolution on the hot path.
  *
- * Fail-soft by contract: any failure (or a low-signal prompt) returns
+ * CTRL is checked even for a low-signal prompt ("continue") because a mode,
+ * loop, carry, or route transition must take effect at the very next boundary.
+ * Memory retains its low-signal floor. Fail-soft by contract: any failure returns
  * `{ ok: true, text: '' }` — a hook must never surface an error into a turn.
  * `auth: 'loopback'` — the hook runs on this box.
  */
@@ -47,6 +50,7 @@ const turnStartMemory = defineTool({
       prompt?: string;
       workspace?: string;
       harness?: string;
+      memoryEnabled?: boolean;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -56,27 +60,50 @@ const turnStartMemory = defineTool({
     const owner = (body.owner ?? '').trim();
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
-    if (prompt.length < MIN_PROMPT_CHARS) return Response.json({ ok: true, text: '' });
-
     try {
-      const [{ buildMemoryContextBlock }, { activeWorkspaceId }] = await Promise.all([
-        import('../../../memory/injection'),
-        import('../../../workspace-registry'),
-      ]);
-      const { getSessionUserOrDefault } = await import('../../../auth');
-      const user = await getSessionUserOrDefault().catch(() => null);
       const harness = (body.harness ?? '').trim();
       const workspace = (body.workspace ?? '').trim();
-      const text = await buildMemoryContextBlock({
-        userId: user?.id ?? null,
-        workspaceId: workspace && workspace !== '*' ? workspace : activeWorkspaceId(),
-        harnessSlugs: harness ? [harness] : [],
-        queryContext: prompt.slice(0, PROMPT_QUERY_CLAMP),
-        session: { sessionId: owner, port: 'turn-start' },
-        budgetChars: TURN_START_BUDGET_CHARS,
-        heading: 'Relevant memory (turn-start delta)',
-      });
-      return Response.json({ ok: true, text: text ?? '' });
+      const { activeWorkspaceId } = await import('../../../workspace-registry');
+      const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
+
+      const controlPromise = (async (): Promise<string> => {
+        try {
+          const { consumePendingControlTransition, renderControlTransitionContext } = await import(
+            '../../../agent-tools/coordination/control-anchor'
+          );
+          const transition = await consumePendingControlTransition(owner, workspaceId);
+          return transition ? renderControlTransitionContext(transition) : '';
+        } catch {
+          return ''; // migration/operator skew must never block the prompt
+        }
+      })();
+
+      const memoryPromise = (async (): Promise<string> => {
+        if (body.memoryEnabled === false || prompt.length < MIN_PROMPT_CHARS) return '';
+        try {
+          const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }] = await Promise.all([
+            import('../../../memory/injection'),
+            import('../../../auth'),
+          ]);
+          const user = await getSessionUserOrDefault().catch(() => null);
+          return (
+            (await buildMemoryContextBlock({
+              userId: user?.id ?? null,
+              workspaceId,
+              harnessSlugs: harness ? [harness] : [],
+              queryContext: prompt.slice(0, PROMPT_QUERY_CLAMP),
+              session: { sessionId: owner, port: 'turn-start' },
+              budgetChars: TURN_START_BUDGET_CHARS,
+              heading: 'Relevant memory (turn-start delta)',
+            })) ?? ''
+          );
+        } catch {
+          return '';
+        }
+      })();
+
+      const [control, memory] = await Promise.all([controlPromise, memoryPromise]);
+      return Response.json({ ok: true, text: [control, memory].filter(Boolean).join('\n\n') });
     } catch {
       return Response.json({ ok: true, text: '' });
     }

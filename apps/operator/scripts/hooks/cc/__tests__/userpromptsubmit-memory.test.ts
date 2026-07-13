@@ -87,18 +87,22 @@ describe('userpromptsubmit-memory.sh', () => {
     expect(out.stdout.trim()).toBe('');
   });
 
-  it('kill switch PAPERCUSP_TURN_START_MEMORY=off → silent, exit 0', async () => {
+  it('memory kill switch keeps the CTRL check enrolled', async () => {
+    lastBody = null;
+    nextResponse = { body: { ok: true, text: '⟦CTRL:transition⟧ {"generation":2}' } };
     const out = await runHook({ prompt: LONG_PROMPT }, { PAPERCUSP_TURN_START_MEMORY: 'off' });
     expect(out.status).toBe(0);
-    expect(out.stdout.trim()).toBe('');
+    expect(contextOf(out)).toContain('CTRL:transition');
+    expect(lastBody).toMatchObject({ memoryEnabled: false });
   });
 
-  it('low-signal prompt (short) → silent, no operator call', async () => {
+  it('low-signal prompt still checks for a pending CTRL transition', async () => {
     lastBody = null;
+    nextResponse = { body: { ok: true, text: '⟦CTRL:full-resync⟧ {"generation":4}' } };
     const out = await runHook({ prompt: 'continue' });
     expect(out.status).toBe(0);
-    expect(out.stdout.trim()).toBe('');
-    expect(lastBody).toBeNull();
+    expect(contextOf(out)).toContain('CTRL:full-resync');
+    expect(lastBody).toMatchObject({ owner: SID, prompt: 'continue', memoryEnabled: true });
   });
 
   it('emits additionalContext with the endpoint text; POST carries owner/prompt/dims', async () => {

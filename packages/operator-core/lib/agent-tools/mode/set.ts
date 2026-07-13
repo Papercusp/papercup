@@ -26,6 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { modeById, MODES } from '../../modes/registry';
 import { setMode } from '../../modes/store';
+import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 
 const MODE_IDS = MODES.map((m) => m.id);
 
@@ -81,6 +82,16 @@ export default defineTool({
       setBy: ident.ownerId,
       ownerDirected: args.ownerDirected,
     });
+    const control = res.ok && !res.noop
+      ? await refreshControlAnchorAfterMutation({
+          ownerId: target,
+          workspaceId: ident.workspaceId ?? 'default',
+          origin: args.ownerDirected && isSelf ? 'owner' : 'agent',
+          actorId: ident.ownerId,
+          source: 'mode:set',
+          ownerDirected: Boolean(args.ownerDirected && isSelf),
+        })
+      : null;
 
     // Peer-set: deliver the why (+ contract on enable) — or the downgraded
     // REQUEST when the owner-sticky guard refused the write. Fail-soft: a
@@ -111,6 +122,7 @@ export default defineTool({
       stickyConflict: res.stickyConflict ?? false,
       ...(res.stickyConflict ? { note: 'incumbent is owner-directed; your reason was delivered as a REQUEST — do not retry' } : {}),
       ...(res.ok && enabled && isSelf ? { contract: def.contract } : {}),
+      ...(control ? { controlGeneration: control.generation } : {}),
       ...(res.error ? { error: res.error } : {}),
     };
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
