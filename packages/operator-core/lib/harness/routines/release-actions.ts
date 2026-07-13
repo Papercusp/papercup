@@ -26,6 +26,11 @@ import * as path from 'node:path';
 import type postgres from 'postgres';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
+import {
+  gateVerdictEnv,
+  isRecordableVerdict,
+  type GateVerdictTarget,
+} from '../../release/gate-verdict-target';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import { STALE_MS } from '../../liveness';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
@@ -206,6 +211,76 @@ function runScript(
 export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 120 * 60_000;
 
 /**
+ * A green-checkpoint run's result, as the CLI reports it on its result-marker line.
+ * (Structural mirror of green-checkpoint.ts's `CheckpointResult` — operator-core must not import
+ * from apps/operator, so the shape is restated here, same convention as the result MARKERs above.)
+ */
+export interface CheckpointVerdict {
+  reason: string;
+  green?: boolean | null;
+  candidate?: string;
+  from?: string | null;
+  summary?: string;
+  failingTests?: string[];
+  flakeSuspects?: string[];
+  advancedTo?: string;
+  /** WI-4494: the CLI sets this when IT recorded the verdict (gate_health + pipeline event).
+   *  The routine then MUST NOT record it again — a second `trackGateStall` for one verdict would
+   *  double-increment the red streak. Absent/false ⇒ the caller records, exactly as pre-WI-4494. */
+  recorded?: boolean;
+}
+
+/** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
+ *  producer-side write and the routine's fallback) so a manual run's history row is identical to a
+ *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
+export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unknown> {
+  const detail: Record<string, unknown> = { green: v.green ?? null };
+  if (v.candidate) detail.candidate = v.candidate.slice(0, 12);
+  if (v.from) detail.from = v.from.slice(0, 12);
+  // P-016: on a partial advance, record the prefix sha `main` was FF'd to (the red tip stays in
+  // `candidate`) so /admin/git shows WHERE main landed vs the held tip.
+  if (v.advancedTo) detail.advancedTo = v.advancedTo.slice(0, 12);
+  // P-003 (git-sync-dx-hardening): persist the failing-test reason in the append-only event so WHY
+  // the gate was red survives the per-tick metadata overwrite (capped).
+  if (v.failingTests?.length) detail.failingTests = v.failingTests.slice(0, 20);
+  // load-flake-isolation-2026-06-23: persist the files the gate ABSORBED as load-flakes.
+  if (v.flakeSuspects?.length) detail.flakeSuspects = v.flakeSuspects.slice(0, 20);
+  return detail;
+}
+
+/**
+ * WI-4494 — RECORD A VERDICT, from whoever produced it.
+ *
+ * The single act of "this run said something about the gate": the append-only pipeline event (the
+ * /admin/git history) plus `gate_health` (the current-verdict blob every consumer reads). Before
+ * WI-4494 this lived only in the routine's action body, so ONLY routine-launched runs recorded —
+ * a manual `release:checkpoint-run` ran the full suite and threw its verdict away. See
+ * release/gate-verdict-target.ts for the failure loop that produced (and the skew-safety that
+ * governs which side calls this).
+ *
+ * Callable from the CLI itself (`green-checkpoint.ts`, via a dynamic import) — hence a plain
+ * `GateVerdictTarget` rather than the routine-only `SystemActionCtx`.
+ *
+ * Returns true when the verdict was recorded; false when it is not a verdict at all (a `skipped-*`
+ * outcome — the run that HOLDS the lock is producing the real one and records it itself).
+ */
+export async function recordCheckpointVerdict(
+  target: GateVerdictTarget,
+  verdict: CheckpointVerdict,
+): Promise<boolean> {
+  if (!isRecordableVerdict(verdict.reason)) return false;
+  await appendPipelineEvent({
+    workspaceId: target.workspaceId,
+    installSlug: target.installSlug,
+    kind: 'green_checkpoint',
+    status: verdict.reason,
+    detail: buildCheckpointDetail(verdict),
+  });
+  await trackGateStall(target, verdict.reason, verdict.candidate, verdict.failingTests, verdict.from ?? null);
+  return true;
+}
+
+/**
  * system:green-checkpoint — advance `ready` to the newest green integration
  * commit. Idempotent (FF-only, no-op when already green). Bounded so a stuck
  * suite can't wedge the routines tick.
@@ -249,7 +324,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     'apps/operator/lib/release/green-checkpoint.ts',
     [],
     GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
-    routing.extraEnv,
+    // WI-4494: hand the CLI the harness whose gate this run is judging, so the PRODUCER of the
+    // verdict is the thing that records it (see release/gate-verdict-target.ts). A CLI old enough
+    // not to know the env simply ignores it and never sets `recorded` — we then record below,
+    // exactly as before. The env is what makes that skew safe in both directions.
+    { ...routing.extraEnv, ...gateVerdictEnv({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug }) },
     // Isolate the multi-GB suite in its own transient scope/cgroup so its memory
     // never counts against (or OOM-kills) the bg-host cage that runs the hive loop.
     { memoryMaxG: CHECKPOINT_SCOPE_MEMORY_MAX_G },
@@ -269,50 +348,44 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   let summary: string | undefined;
   let failingTests: string[] | undefined;
   let flakeSuspects: string[] | undefined;
-  const detail: Record<string, unknown> = {};
   // P-008: parse the delimited result marker, not a brace-slice of all stdout.
-  const parsed = parseMarkerLine(r.stdout, GREEN_CHECKPOINT_RESULT_MARKER) as {
-    reason?: string;
-    green?: boolean | null;
-    candidate?: string;
-    from?: string | null;
-    summary?: string;
-    failingTests?: string[];
-    flakeSuspects?: string[];
-    advancedTo?: string;
-  } | null;
+  const parsed = parseMarkerLine(r.stdout, GREEN_CHECKPOINT_RESULT_MARKER) as CheckpointVerdict | null;
   if (parsed?.reason) {
     status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed | skipped-locked
     candidate = parsed.candidate;
     summary = parsed.summary;
     failingTests = parsed.failingTests;
     flakeSuspects = parsed.flakeSuspects;
-    detail.green = parsed.green ?? null;
-    if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
-    if (parsed.from) detail.from = parsed.from.slice(0, 12);
-    // P-016: on a partial advance, record the prefix sha `main` was FF'd to (the red
-    // tip stays in `candidate`) so /admin/git shows WHERE main landed vs the held tip.
-    if (parsed.advancedTo) detail.advancedTo = parsed.advancedTo.slice(0, 12);
-    // P-003 (git-sync-dx-hardening): persist the failing-test reason in the
-    // append-only event so WHY the gate was red survives the per-tick metadata
-    // overwrite (capped — the full list also goes to the release-fixer).
-    if (parsed.failingTests?.length) detail.failingTests = parsed.failingTests.slice(0, 20);
-    // load-flake-isolation-2026-06-23: persist the files the gate ABSORBED as
-    // load-flakes (red under the 8-fork load, green in isolation) so an advance that
-    // rode a flake absorption is auditable in the append-only pipeline event.
-    if (parsed.flakeSuspects?.length) detail.flakeSuspects = parsed.flakeSuspects.slice(0, 20);
-  } else {
-    // No parseable result marker (crash before print / non-zero exit) → 'error'.
-    detail.code = r.code;
-    detail.stderr = (r.stderr || r.stdout).slice(-300);
   }
-  await appendPipelineEvent({
-    workspaceId: ctx.workspaceId,
-    installSlug: ctx.installSlug,
-    kind: 'green_checkpoint',
-    status,
-    detail,
-  });
+  /**
+   * WI-4494 — did the RUN already record its own verdict?
+   *
+   * The CLI is now the producer-side recorder (gate_health + the pipeline event), which is what
+   * stops a detached `release:checkpoint-run` from computing a real green/red and discarding it.
+   * When it recorded, recording again HERE would append a duplicate history row and — worse —
+   * double-increment the red streak for a single verdict.
+   *
+   * We still record when it did NOT, and both cases are real:
+   *  - version skew — the DEPLOYED routine drives the INTEGRATION tree's CLI, so an older CLI that
+   *    knows nothing of `recorded` (or of the env that authorizes it to record) routinely runs here;
+   *  - a crash with no parseable marker (status 'error'), which the CLI cannot report on its own
+   *    behalf — it is dead. This branch is the ONLY reason the routine still holds a recorder.
+   */
+  const recordedByRun = parsed?.recorded === true;
+  if (recordedByRun) {
+    console.log(`[green-checkpoint] '${status}' — recorded by the run that produced it (WI-4494)`);
+  } else {
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status,
+      detail: parsed?.reason
+        ? buildCheckpointDetail(parsed)
+        : // No parseable result marker (crash before print / non-zero exit) → 'error'.
+          { code: r.code, stderr: (r.stderr || r.stdout).slice(-300) },
+    });
+  }
 
   // P-006 (release-pipeline-resilience-2026-06-09): a held gate auto-dispatches a
   // release-fixer agent to diagnose + fix the failing test — the test-failure
@@ -327,9 +400,13 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // LOUDER urgent alert when the gate has been HELD too long (the "stuck for a
   // while" signal, distinct from the per-candidate notification). Runs for every
   // verdict so it resets on green; fail-safe.
-  await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null).catch((e) =>
-    console.warn(`[green-checkpoint] stall tracking failed: ${e instanceof Error ? e.message : e}`),
-  );
+  // WI-4494: skipped when the run recorded its own verdict — see `recordedByRun` above. A second
+  // trackGateStall for ONE verdict would count the same red twice.
+  if (!recordedByRun) {
+    await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null).catch((e) =>
+      console.warn(`[green-checkpoint] stall tracking failed: ${e instanceof Error ? e.message : e}`),
+    );
+  }
 
   // P-009: per-workspace flake history — tally workspaces the gate marked as a
   // PROVEN flake (failed then passed on retry) and notify when one is chronically
@@ -436,7 +513,10 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
 // Exported for the EI-7472 regression test (capture the gate_health write and
 // assert the watchdog-owned dedup flag survives a red tick / clears on green).
 export async function trackGateStall(
-  ctx: SystemActionCtx,
+  // WI-4494: narrowed from SystemActionCtx to the two fields this actually reads, so the CLI (which
+  // has no routine context) can record its own verdict through the same path. A SystemActionCtx
+  // still satisfies it structurally — every existing caller is unchanged.
+  ctx: GateVerdictTarget,
   status: string,
   candidate?: string,
   failingTests?: string[],

@@ -1026,21 +1026,45 @@ export const FLAGS = {
   STEERING_POT_TREE: "papercusp-steering-hive-tree",
   // workspace-data-isolation-leaks-2026-06-17 (F-C1): scope the coordination plane
   // (messages / handoffs / escalations / plan-events via coord_event_log + watermarks)
-  // to the ACTIVE workspace instead of the single shared `default` partition. DEFAULT
-  // OFF — DELIBERATE (not the alpha default-on policy): flipping it cuts the live fleet's
-  // coordination over to per-workspace partitions, so it ships as a reversible kill-switch
-  // the owner flips ON (OFF = today's `default`-pinned behavior, byte-identical; the old
-  // `default` history is preserved, so flipping OFF fully restores it). Listed in
-  // KNOWN_DARK_FLAGS.
+  // to the ACTIVE workspace instead of the single shared `default` partition.
+  //
+  // DEFAULT ON — the cutover COMPLETED and is graduated (agent-tools/coordination/log.ts
+  // has said so since WI-599: "it graduated default-ON in WI-599"). This comment used to
+  // say "DEFAULT OFF — reversible kill-switch... flipping OFF fully restores it", which is
+  // now DANGEROUSLY STALE and was corrected 2026-07-12 (WI-4238 investigation, su-00a91).
+  //
+  // ⚠ DO NOT "RESTORE THE DARK BASELINE" ON THIS FLAG. `coordScopeWorkspace()` swings the
+  // partition every coord read/write targets: `activeWorkspaceId()` when ON vs the legacy
+  // `default` partition when OFF. The live corpus is in the workspace partition and the
+  // legacy one is a fossil — measured 2026-07-12 in harness_shared.coord_event_log:
+  //     papercusp-workspace  67,468 rows  (2026-05-30 → today, LIVE)
+  //     default                  74 rows  (dead)
+  // So flipping this OFF does NOT restore a byte-identical world — it strands ~67k live
+  // coord events and re-points the whole fleet's coordination at a 74-row husk. The old
+  // comment's "byte-identical / fully restores it" was written BEFORE the flag was ever
+  // on; two weeks of production have made it false. Reversibility is a property of the
+  // DATA, not of the flag.
   COORD_PER_WORKSPACE: "papercusp-coord-per-workspace",
   // workspace-data-isolation-leaks-2026-06-17 (owner D-001): scope the engineer-issues
   // store (engineer_issues rows + their coord tags/threads/links/subscriptions) to the
   // ACTIVE workspace instead of the single shared `default` coord workspace. EI-<n> ids
   // stay GLOBALLY allocated (nextIssueId), preserving the ObjectRef contract; only the
-  // ROWS become per-workspace. DEFAULT OFF — DELIBERATE (not alpha default-on): flipping
-  // it cuts the live shared issue bus over to per-workspace partitions, so it ships as a
-  // reversible kill-switch the owner flips ON (OFF = today's `default`-pinned behavior,
-  // byte-identical; old `default` issues preserved). Listed in KNOWN_DARK_FLAGS.
+  // ROWS become per-workspace.
+  //
+  // DEFAULT ON — the cutover COMPLETED (2026-06-22). This comment used to say "DEFAULT OFF
+  // — reversible kill-switch... old `default` issues preserved", corrected 2026-07-12
+  // (WI-4239 investigation, su-00a91).
+  //
+  // ⚠ DO NOT "RESTORE THE DARK BASELINE" ON THIS FLAG — it is a DATA-HIDING change, not a
+  // safety one. `issuesScopeWorkspace()` swings the partition every issue read/write
+  // targets: `activeWorkspaceId()` when ON vs the legacy `default` coord workspace when
+  // OFF. Measured 2026-07-12 in harness_shared.engineer_issues:
+  //     papercusp-workspace  11,730 rows  (2026-06-05 → today, LIVE — the entire backlog)
+  //     default               2,443 rows  (last write 2026-06-22 — dead 3 weeks)
+  // Flipping this OFF would instantly hide all 11,730 live issues (every EI/WI in flight,
+  // including the ones tracking this very bug) and resurrect a corpus frozen in June. The
+  // old comment's "byte-identical" claim was written BEFORE the flag was ever on and has
+  // been false since 2026-06-22. Reversibility is a property of the DATA, not of the flag.
   ISSUES_PER_WORKSPACE: "papercusp-issues-per-workspace",
   // work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008: the per-Hive authority claim
   // LEASE (decentralized-dispatch-scaling P-004) — migrated off the ad-hoc
@@ -1084,25 +1108,52 @@ export const FLAGS = {
   // workspace-data-isolation-leaks-2026-06-17 F-E1 (PHASE 1): scope the routines
   // upsert's ON CONFLICT to (workspace_id, install_slug, name) so a hive in workspace
   // B can no longer CLOBBER a same-named routine in workspace A (the latent leak — 0
-  // collisions live today). DEFAULT OFF — reversible kill-switch; OFF = today's
-  // ON CONFLICT (install_slug, name), byte-identical. Phase 2 (drop the old unique +
-  // fold workspace_id into the routine id, to let same-slug routines fully COEXIST
-  // across workspaces) is a separate staged migration. Listed in KNOWN_DARK_FLAGS.
+  // collisions live today).
+  //
+  // DEFAULT ON — live since the 2026-06-29 P-011 inversion, ~2 weeks in production with no
+  // upsert incident. Comment corrected 2026-07-12 (WI-4238 investigation, su-00a91): it
+  // used to claim "DEFAULT OFF — reversible kill-switch; OFF = today's ON CONFLICT
+  // (install_slug, name), byte-identical."
+  //
+  // ⚠ ON is the SAFER direction here, so "restoring the dark baseline" would REMOVE a live
+  // guard rail: OFF re-opens the cross-workspace clobber this flag exists to close (a hive
+  // in workspace B overwriting a same-named routine in workspace A). Phase 2 (drop the old
+  // unique + fold workspace_id into the routine id, to let same-slug routines fully COEXIST
+  // across workspaces) is still a separate staged migration.
   ROUTINES_PER_WORKSPACE: "papercusp-routines-per-workspace",
   // workspace-data-isolation-leaks-2026-06-17 F-M7: when ON, ui:dispatch / ui:get_state /
   // tui:dispatch reject a target ui_client that belongs to a DIFFERENT workspace than the
   // caller's active one (ui_intents keys on client_id with no workspace column; ui_clients
   // carries workspace_id). These tools are SU-only, so this is a guard rail (low exploitability).
-  // DEFAULT OFF — reversible; OFF = today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS.
+  // DEFAULT ON — live since the 2026-06-29 P-011 inversion. Comment corrected 2026-07-12
+  // (WI-4238 investigation, su-00a91); it used to claim "DEFAULT OFF — reversible; OFF =
+  // today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS."
+  // ⚠ ON is the SAFER direction: it BLOCKS a cross-workspace UI dispatch. "Restoring the
+  // dark baseline" would REMOVE the guard rail (OFF = no check at all), so this is not a
+  // conservative flip — it is a widening. The guard is fail-open by design (a lookup error
+  // allows), so it cannot wedge a legitimate dispatch.
   UI_WORKSPACE_GUARD: "papercusp-ui-workspace-guard",
   // scoped-superuser-workspace-clamp-2026-06-18: bind a psu workspace-scoped superuser
   // session to its launch workspace at the DISPATCH layer (its ctx workspaceId becomes that
   // concrete workspace instead of '*'), engaging the EXISTING effectiveDispatchWorkspace
   // clamp; ALSO deny crossWorkspace:true tools + the harness:'all' global plan escape for a
-  // scoped session. DEFAULT OFF — DELIBERATE (not alpha default-on): it changes auth
-  // enforcement for every superuser session, so it ships as a reversible kill-switch the
-  // owner flips ON after an attended :3170 verification (OFF = today's unscoped '*'
-  // superuser, byte-identical). Listed in KNOWN_DARK_FLAGS.
+  // scoped session.
+  //
+  // DEFAULT ON — live since the 2026-06-29 P-011 inversion (~2 weeks in production, no
+  // reported superuser breakage). Comment corrected 2026-07-12 (WI-4239, su-00a91): it used
+  // to claim "DEFAULT OFF — ... ships as a reversible kill-switch the owner flips ON after
+  // an attended :3170 verification (OFF = today's unscoped '*' superuser, byte-identical)."
+  //
+  // ⚠ OFF IS THE *WIDER* AUTH STATE, NOT THE SAFE ONE. ON clamps a scoped psu superuser to
+  // its launch workspace and denies crossWorkspace tools + the harness:'all' escape; OFF
+  // restores the UNSCOPED '*' superuser. So "restore the documented dark baseline" — the
+  // option WI-4239 originally offered as the conservative choice — would RELAX auth
+  // enforcement fleet-wide. Do not flip it OFF as a safety measure; that is backwards.
+  //
+  // STILL OWED (WI-4239): the attended verification the original comment asked for — not to
+  // decide whether to turn it ON (it has been on for two weeks) but to confirm the clamp
+  // actually ENGAGES rather than being inert. A guard that is live-but-inert looks identical
+  // to a guard that works, from the outside; only an attended :3170 check discriminates.
   SCOPED_SUPERUSER_CLAMP: "papercusp-scoped-superuser-clamp",
   // domain-generic-agent-personas-2026-06-17 P-006: resolve the `su` role's persona via the
   // blueprint prompt-resolve chain (blueprints/base/prompts/su.md) instead of the hardcoded

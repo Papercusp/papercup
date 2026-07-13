@@ -140,7 +140,9 @@ describe('buildHistoryFromStatic — the local-only rail', () => {
 
   it('lists the releases newest-first and marks what this machine can install', () => {
     const h = buildHistoryFromStatic(history, opts);
-    expect(h.map((r) => r.version)).toEqual(['0.0.9', '0.0.8']);
+    // Semver, prerelease tag included — the same normalization the updater compares
+    // against, so the list and the update check can never disagree about a version.
+    expect(h.map((r) => r.version)).toEqual(['0.0.9-alpha', '0.0.8-alpha']);
     expect(h[0].installable).toBe(true);
     // 0.0.8's installers were never uploaded — offering "Install" would 404.
     expect(h[1].installable).toBe(false);
