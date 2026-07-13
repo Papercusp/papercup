@@ -57,8 +57,11 @@ if (tool === 'locks:acquire_resource') {
   }
 } else if (tool === 'locks:heartbeat_resource') {
   const row = current();
-  output({ ok: true, counts: { ok: row?.owner === owner ? 1 : 0, failed: row?.owner === owner ? 0 : 1 },
-    results: [{ ok: row?.owner === owner, extended: row?.owner === owner }] });
+  if (row?.owner === owner) {
+    process.stdout.write('format: toon\nok: true\nresults[1]{ok,lock_id,extended,expires_ts}:\n  true,' + row.lock_id + ',true,"2099-01-01T00:00:00.000Z"\ncounts:\n  ok: 1\n  failed: 0\n');
+  } else {
+    process.stdout.write('format: toon\nok: true\nresults[1]{ok,lock_id,extended,error}:\n  false,missing,false,not_found\ncounts:\n  ok: 0\n  failed: 1\n');
+  }
 } else if (tool === 'locks:release_resource') {
   const row = current();
   const released = row?.owner === owner ? 1 : 0;

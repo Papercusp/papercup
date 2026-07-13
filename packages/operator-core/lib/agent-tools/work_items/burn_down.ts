@@ -12,6 +12,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { listPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import {
   listWorkItems,
+  getWorkItem,
   type WorkItem,
   type WorkItemKind,
 } from '../../work-items';
@@ -89,6 +90,101 @@ export interface BurnDownResult {
    *  of the burn-down delta a monitor loop otherwise has to re-derive by diffing
    *  two full work_items:list snapshots. Same capping as closedSince. */
   openedSince?: { rows: BurnDownDeltaRow[]; total: number; truncated: boolean };
+  /** P-024: exact one-row-per-requested-ID completion-integrity audit. */
+  cohortAudit?: CohortAuditResult;
+}
+
+export type CohortBucket = 'terminal' | 'parked' | 'in-flight' | 'unclaimed' | 'missing';
+export type CohortEvidenceVerdict = 'verified' | 'incomplete' | 'missing' | 'not-applicable';
+
+export interface CohortAuditRow {
+  id: string;
+  title: string | null;
+  state: string | null;
+  bucket: CohortBucket;
+  /** Exact terminal lifecycle token (done/resolved/closed/…), null while open/missing. */
+  closureKind: string | null;
+  evidenceVerdict: CohortEvidenceVerdict;
+  completionRef: string | null;
+  terminalOwner: string | null;
+  reopenRecommended: boolean;
+  recommendation: string | null;
+}
+
+export interface CohortAuditResult {
+  requested: number;
+  found: number;
+  missing: number;
+  reopenRecommended: number;
+  rows: CohortAuditRow[];
+}
+
+export function buildCohortAudit(requestedIds: readonly string[], items: readonly WorkItem[]): CohortAuditResult {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const rows = requestedIds.map((id): CohortAuditRow => {
+    const item = byId.get(id);
+    if (!item) {
+      return {
+        id,
+        title: null,
+        state: null,
+        bucket: 'missing',
+        closureKind: null,
+        evidenceVerdict: 'not-applicable',
+        completionRef: null,
+        terminalOwner: null,
+        reopenRecommended: false,
+        recommendation: 'investigate missing fixed-cohort id',
+      };
+    }
+    const terminal = TERMINAL_STATES.has(item.state);
+    const parked = hasClaimHold(item) || PARKED_STATES.has(item.state);
+    const bucket: CohortBucket = terminal
+      ? 'terminal'
+      : parked
+        ? 'parked'
+        : item.assignee
+          ? 'in-flight'
+          : 'unclaimed';
+    let evidenceVerdict: CohortEvidenceVerdict = 'not-applicable';
+    let recommendation: string | null = null;
+    let reopenRecommended = false;
+    if (terminal) {
+      const evidence = item.terminalCompletionEvidence;
+      const hasEvidence = evidence != null && Object.keys(evidence).length > 0;
+      const hasVerification = Boolean(
+        evidence?.verifiedHow && (evidence.testsRun || evidence.testResult),
+      );
+      evidenceVerdict = !hasEvidence || !item.terminalCompletionRef
+        ? 'missing'
+        : hasVerification
+          ? 'verified'
+          : 'incomplete';
+      reopenRecommended = evidenceVerdict !== 'verified';
+      recommendation = reopenRecommended
+        ? 'reopen and require structured verification evidence before counting terminal'
+        : null;
+    }
+    return {
+      id,
+      title: item.title,
+      state: item.state,
+      bucket,
+      closureKind: terminal ? item.state : null,
+      evidenceVerdict,
+      completionRef: item.terminalCompletionRef,
+      terminalOwner: item.terminalOwner,
+      reopenRecommended,
+      recommendation,
+    };
+  });
+  return {
+    requested: requestedIds.length,
+    found: rows.filter((row) => row.bucket !== 'missing').length,
+    missing: rows.filter((row) => row.bucket === 'missing').length,
+    reopenRecommended: rows.filter((row) => row.reopenRecommended).length,
+    rows,
+  };
 }
 
 function hasClaimHold(item: WorkItem): boolean {
@@ -346,6 +442,26 @@ export default defineTool({
         ),
         total: z.number(),
         truncated: z.boolean(),
+      })
+      .optional(),
+    cohortAudit: z
+      .object({
+        requested: z.number(),
+        found: z.number(),
+        missing: z.number(),
+        reopenRecommended: z.number(),
+        rows: z.array(z.object({
+          id: z.string(),
+          title: z.string().nullable(),
+          state: z.string().nullable(),
+          bucket: z.enum(['terminal', 'parked', 'in-flight', 'unclaimed', 'missing']),
+          closureKind: z.string().nullable(),
+          evidenceVerdict: z.enum(['verified', 'incomplete', 'missing', 'not-applicable']),
+          completionRef: z.string().nullable(),
+          terminalOwner: z.string().nullable(),
+          reopenRecommended: z.boolean(),
+          recommendation: z.string().nullable(),
+        })),
       })
       .optional(),
   }),

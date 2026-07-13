@@ -485,6 +485,48 @@ export function isIdOnlySelector(spec: { view?: { filter?: unknown } } | null | 
   return fields.size > 0 && [...fields].every((f) => f === 'id');
 }
 
+/**
+ * Return the exact, finite ID cohort selected by an id-only claim spec.
+ *
+ * This is the read-side counterpart to {@link isIdOnlySelector}: leaders need
+ * the literal fixed wave to audit completion without maintaining a second list.
+ * Positive `=`/`in` leaves compose exactly (`all` = intersection, `any` =
+ * union). Negative/fuzzy leaves and `not` describe an unbounded complement, so
+ * they return null instead of pretending a finite audit is authoritative.
+ */
+export function fixedCohortIds(
+  spec: { view?: { filter?: unknown } } | null | undefined,
+): string[] | null {
+  if (!isIdOnlySelector(spec)) return null;
+
+  function walk(node: unknown): Set<string> | null {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return null;
+    const obj = node as Record<string, unknown>;
+    if (obj.field === 'id') {
+      if (obj.op !== '=' && obj.op !== 'in') return null;
+      const raw = Array.isArray(obj.value) ? obj.value : [obj.value];
+      return new Set(raw.filter((v): v is string | number | boolean =>
+        typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+      ).map(String));
+    }
+    if (Array.isArray(obj.all) && obj.all.length > 0) {
+      const sets = obj.all.map(walk);
+      if (sets.some((s) => s === null)) return null;
+      const [head, ...rest] = sets as Set<string>[];
+      return new Set([...head].filter((id) => rest.every((s) => s.has(id))));
+    }
+    if (Array.isArray(obj.any) && obj.any.length > 0) {
+      const sets = obj.any.map(walk);
+      if (sets.some((s) => s === null)) return null;
+      return new Set((sets as Set<string>[]).flatMap((s) => [...s]));
+    }
+    return null;
+  }
+
+  const ids = walk(spec?.view?.filter);
+  return ids ? [...ids] : null;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // The default spec — "no spec = today's behavior" (D-003).
 // ────────────────────────────────────────────────────────────────────────────

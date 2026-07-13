@@ -20,6 +20,7 @@ import {
   FILTER_OPS,
   RANK_FUNCTIONS,
   isIdOnlySelector,
+  fixedCohortIds,
   type ClaimSpec,
 } from './claim-spec';
 
@@ -461,6 +462,33 @@ describe('isIdOnlySelector — the id-pin tripwire', () => {
   it('exposes a non-empty op + version vocabulary', () => {
     expect(FILTER_OPS.length).toBeGreaterThan(0);
     expect(SUPPORTED_SPEC_VERSIONS).toContain(CURRENT_SPEC_VERSION);
+  });
+});
+
+describe('fixedCohortIds — exact fixed-wave extraction', () => {
+  const spec = (filter: unknown) => ({ view: { filter } });
+
+  it('extracts a positive id leaf, deduping in declared order', () => {
+    expect(fixedCohortIds(spec({ field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-1'] })))
+      .toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('composes all as intersection and any as union', () => {
+    expect(fixedCohortIds(spec({
+      all: [
+        { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] },
+        { any: [
+          { field: 'id', op: '=', value: 'WI-2' },
+          { field: 'id', op: '=', value: 'WI-3' },
+        ] },
+      ],
+    }))).toEqual(['WI-2']);
+  });
+
+  it('returns null for property lanes, negative/fuzzy id sets, and complements', () => {
+    expect(fixedCohortIds(spec({ field: 'plan', op: '=', value: 'p' }))).toBeNull();
+    expect(fixedCohortIds(spec({ field: 'id', op: '!=', value: 'WI-1' }))).toBeNull();
+    expect(fixedCohortIds(spec({ not: { field: 'id', op: '=', value: 'WI-1' } }))).toBeNull();
   });
 });
 
