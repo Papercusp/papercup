@@ -28,8 +28,20 @@ const RESTORED_CHECKOUT_PREFIX = 'papercupai-workspace/papercup-';
 
 export type WhyChainStatus = 'ok' | 'degraded' | 'blocked';
 
+/** Live gateway ADMISSION snapshot (the subset of :8788/admin/stats the chain judges). EI-10880. */
+export interface AdmissionSnapshotLite {
+  running: number;
+  queued: number;
+  maxConcurrent: number;
+  tier1Reserve?: number;
+  byTier?: { tier: number; cap: number | null; inFlight: number; queued: number }[];
+  /** AIMD effective vs configured cap — a deep shrink is worth naming even when nothing is queued. */
+  aimdEffective?: number;
+  aimdCap?: number;
+}
+
 export interface WhyChainStage {
-  stage: 'gate' | 'deploy' | 'pool';
+  stage: 'gate' | 'deploy' | 'admission' | 'pool';
   status: WhyChainStatus;
   reason: string;
 }
@@ -47,6 +59,8 @@ export interface WhyChainResult {
 export interface WhyChainDeps {
   loadSnapshot?: () => Promise<GitPipelineSnapshot>;
   loadAccounts?: (ws?: string) => Promise<AccountStatusRow[]>;
+  /** Test seam / override for the live gateway ADMISSION read (EI-10880). Null ⇒ gateway unreachable. */
+  loadAdmission?: () => Promise<AdmissionSnapshotLite | null>;
   /** Test seam: inject a fake sql client for the recent-failures query. */
   sql?: SqlLike;
   workspaceId?: string;
@@ -152,6 +166,72 @@ function deployStage(snap: GitPipelineSnapshot): WhyChainStage {
   return { stage: 'deploy', status: 'ok', reason: 'deployed :3070 matches the green pin matches main HEAD — fully caught up' };
 }
 
+/**
+ * ADMISSION stage (EI-10880) — the layer between "the pool has capacity" and "a request runs".
+ *
+ * WHY THIS STAGE EXISTS. WI-4541: the gateway serialized the ENTIRE fleet through ONE admission
+ * slot (untagged traffic → the bottom tier, whose cap the AIMD shed had driven to its floor of 1)
+ * while 9-10 of 12 concurrency slots sat IDLE. Every agent was slow; the owner's voice turns hung
+ * ("processing forever"). Walking gate → deploy → pool would have found all three OK and named NO
+ * root cause — and worse, the pool stage would have reported "accounts available, none
+ * sustained-limited", which actively supports the WRONG conclusion ("must just be load"). The
+ * causal chain has to be able to see the queue itself, not just the capacity feeding it.
+ *
+ * THE DECISIVE TEST — queued while idle. If anything is QUEUED while the pool still has free
+ * shared slots (running < maxConcurrent - tier1Reserve), that is DEFINITIONALLY a bug: work is
+ * waiting on capacity that exists. No account is walled, no rate limit is involved, and adding
+ * pool headroom cannot fix it. It is an admission-path defect, and it is cheap to check.
+ *
+ * Ordered BEFORE `pool` deliberately: when both are unhappy, the admission defect is the root
+ * cause and the pool pressure is downstream of it (requests pile up because they can't get in).
+ * A genuinely walled pool with a healthy queue still falls through to poolStage below.
+ */
+function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
+  if (!adm) {
+    return { stage: 'admission', status: 'degraded', reason: 'inference gateway unreachable on :8788 (admission state unknown — is papercup-inference-gateway.service running?)' };
+  }
+  const reserve = adm.tier1Reserve ?? 0;
+  // Free SHARED capacity — what a tier > 1 is actually allowed to occupy. The tier-1 reserve is
+  // held open on purpose, so it is NOT "idle capacity" for this test; excluding it keeps the
+  // check honest (no false alarm just because the interactive floor is being held).
+  const freeShared = Math.max(0, adm.maxConcurrent - reserve - adm.running);
+
+  if (adm.queued > 0 && freeShared > 0) {
+    const perTier = (adm.byTier ?? [])
+      .filter((t) => t.queued > 0)
+      .map((t) => `tier ${t.tier} (cap ${t.cap ?? '∞'}, ${t.inFlight} in flight, ${t.queued} queued)`)
+      .join(', ');
+    return {
+      stage: 'admission',
+      status: 'blocked',
+      reason:
+        `${adm.queued} request(s) QUEUED at the gateway while ${freeShared} shared slot(s) sit IDLE ` +
+        `(running ${adm.running}/${adm.maxConcurrent}, tier-1 reserve ${reserve})` +
+        (perTier ? ` — waiting: ${perTier}` : '') +
+        `. This is an ADMISSION-PATH DEFECT, not a capacity shortage: the work is waiting on capacity that already exists, ` +
+        `so more pool headroom will NOT fix it. Suspect a per-tier cap refusing an idle slot, or a tier whose cap the AIMD shed drove to its floor (WI-4541). ` +
+        `Read gateway:status for the per-tier detail.`,
+    };
+  }
+  // A deep AIMD shrink is not itself a bug (it is the gateway protecting upstream from sustained
+  // 429s) but it IS the thing that makes a low tier cap collapse, so name it before it bites.
+  if (adm.aimdCap != null && adm.aimdEffective != null && adm.aimdEffective < adm.aimdCap / 2) {
+    return {
+      stage: 'admission',
+      status: 'degraded',
+      reason: `gateway AIMD has shrunk effective concurrency to ${adm.aimdEffective}/${adm.aimdCap} under sustained upstream pressure — throughput is throttled on purpose, but a shed this deep also squeezes the bottom tiers' caps toward their floor of 1 (the WI-4541 precondition); watch for queued-while-idle`,
+    };
+  }
+  if (adm.queued > 0) {
+    return {
+      stage: 'admission',
+      status: 'degraded',
+      reason: `${adm.queued} request(s) queued, but the pool is genuinely FULL (running ${adm.running}/${adm.maxConcurrent}) — admission is behaving correctly; this is real saturation, look at the pool stage`,
+    };
+  }
+  return { stage: 'admission', status: 'ok', reason: `gateway admission healthy — ${adm.running}/${adm.maxConcurrent} in flight, nothing queued` };
+}
+
 function poolStage(accounts: AccountStatusRow[]): WhyChainStage {
   if (accounts.length === 0) {
     return { stage: 'pool', status: 'degraded', reason: 'no accounts registered in the pool (unable to assess)' };
@@ -178,18 +258,51 @@ function poolStage(accounts: AccountStatusRow[]): WhyChainStage {
   return { stage: 'pool', status: 'ok', reason: `${available.length}/${accounts.length} accounts available, none sustained-limited` };
 }
 
-/** Compute the full why-chain (gate -> deploy -> pool), pure + read-only. */
+/** Read the live gateway admission snapshot (:8788/admin/stats). Fail-soft: null when unreachable. */
+async function loadAdmissionDefault(): Promise<AdmissionSnapshotLite | null> {
+  const port = Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/admin/stats`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return null;
+    const d = (await res.json()) as {
+      admission?: { running?: number; queued?: number; maxConcurrent?: number; tier1Reserve?: number; byTier?: AdmissionSnapshotLite['byTier'] };
+      aimd?: { effective?: number; cap?: number };
+    };
+    const a = d.admission;
+    if (!a || typeof a.running !== 'number' || typeof a.maxConcurrent !== 'number') return null;
+    return {
+      running: a.running,
+      queued: a.queued ?? 0,
+      maxConcurrent: a.maxConcurrent,
+      tier1Reserve: a.tier1Reserve,
+      byTier: a.byTier,
+      aimdEffective: d.aimd?.effective,
+      aimdCap: d.aimd?.cap,
+    };
+  } catch {
+    return null; // gateway down / not running — admissionStage reports it as degraded, never throws
+  }
+}
+
+/** Compute the full why-chain (gate -> deploy -> admission -> pool), pure + read-only. */
 export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChainResult> {
   const loadSnapshot = deps.loadSnapshot ?? (() => gitPipelineSnapshot());
   const loadAccounts = deps.loadAccounts ?? ((ws?: string) => accountStatus(ws));
+  const loadAdmission = deps.loadAdmission ?? loadAdmissionDefault;
 
-  const [snap, accounts, failingFiles] = await Promise.all([
+  const [snap, accounts, admission, failingFiles] = await Promise.all([
     loadSnapshot(),
     loadAccounts(deps.workspaceId).catch(() => [] as AccountStatusRow[]),
+    loadAdmission().catch(() => null),
     recentFailingFiles(deps),
   ]);
 
-  const stages: WhyChainStage[] = [gateStage(snap, failingFiles), deployStage(snap), poolStage(accounts)];
+  const stages: WhyChainStage[] = [
+    gateStage(snap, failingFiles),
+    deployStage(snap),
+    admissionStage(admission),
+    poolStage(accounts),
+  ];
   const rootCause = stages.find((s) => s.status !== 'ok') ?? null;
 
   const chainLine = stages.map((s) => `${s.stage.toUpperCase()}: ${s.status} (${s.reason})`).join(' → ');

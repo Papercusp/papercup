@@ -22,11 +22,16 @@ export default defineTool({
     "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
   guidance: {
     when:
-      "Following a sessions:search hit for more context, or reading where a session left off. Pass around=<turn_idx> (from the hit's provenance) or nothing for the tail.",
+      "Following a sessions:search hit for more context, or reading where a session left off. Pass around=<turn_idx> (from the hit's provenance), order:'asc' for the session's OPENING turns, or nothing for the tail.",
     notWhen:
       'Finding WHERE something was said — sessions:search. Raw un-indexed files — dev:claude_session op=read (being absorbed here).',
     chaining: 'provenance.turn_idx from sessions:search hits → around.',
-    seeAlso: ['sessions:search', 'sessions:list'],
+    // EI-10882: the RESPONSE shape, stated up front. Arg schemas were published
+    // but return shapes were not, so the only way to learn the shape was to call
+    // once and introspect — one guaranteed wasted round-trip per tool, per agent.
+    returns:
+      '{ ok, session_id, turn_count (SIZE OF THIS WINDOW, not the session total), turns: [{ turn_idx, speaker, owner?, ts, text }] } — turns are ALWAYS returned in chronological order (oldest→newest) regardless of `order`; `order` selects WHICH END of the range you get, not the sort of the output.',
+    seeAlso: ['sessions:search', 'sessions:list', 'sessions:digest'],
   },
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],
@@ -38,7 +43,19 @@ export default defineTool({
     context: z.number().int().min(1).max(50).optional().describe('Turns each side of `around` (default 5).'),
     from_idx: z.number().int().min(0).optional(),
     to_idx: z.number().int().min(0).optional(),
-    limit: z.number().int().min(1).max(200).optional().describe('Max turns (default 40). No range args = the session TAIL.'),
+    // EI-10887: the HEAD of a session was unreachable. `from_idx: 0` did NOT get
+    // you the opening turns — the query always ordered `turn_idx DESC LIMIT n`, so
+    // any range still returned its LAST `limit` rows. That made turn 0 (the kickoff
+    // prompt / launch context / loop goal — the single turn that answers "what was
+    // this session FOR") reachable only by guessing a `to_idx` bound. `order:'asc'`
+    // makes it one call.
+    order: z
+      .enum(['asc', 'desc'])
+      .optional()
+      .describe(
+        "Which END of the range to return when it has more turns than `limit`: 'desc' (DEFAULT) = the TAIL (newest — where a session left off); 'asc' = the HEAD (from turn 0 — the kickoff prompt / launch context / loop goal, i.e. what the session was FOR). Output is chronological either way.",
+      ),
+    limit: z.number().int().min(1).max(200).optional().describe('Max turns (default 40). No range args = the session TAIL (or HEAD with order:"asc").'),
   }),
   async handler(args, ctx) {
     if (!(await sessionSearchEnabled())) return disabledResult();
@@ -75,7 +92,15 @@ export default defineTool({
       hi = args.to_idx ?? null;
     }
 
-    // No range → the tail: newest `limit` turns, returned in order.
+    // EI-10887: `order` selects WHICH END of the range survives `limit`.
+    //   desc (default) → the TAIL  (newest turns — where the session left off)
+    //   asc            → the HEAD  (turn 0 onward — the kickoff prompt / loop goal)
+    // The CASE keeps this a SINGLE parameterized query: when asc, the first sort
+    // key is turn_idx (ASC) and the second is a constant; when desc, the first key
+    // is a constant (all rows tie) and the second is turn_idx (DESC). Output is
+    // ALWAYS re-normalised to chronological below, so `order` never changes the
+    // shape the caller reads — only which slice of a too-large range they get.
+    const asc = args.order === 'asc';
     const rows = await ctx.tx<Array<{ source_kind: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }>>`
       SELECT source_kind, turn_idx, speaker, owner, ts::text AS ts, left(text, 1500) AS text
         FROM harness_shared.session_turns
@@ -84,10 +109,13 @@ export default defineTool({
          AND (${args.source_kind ?? null}::text IS NULL OR source_kind = ${args.source_kind ?? null})
          AND (${lo}::int IS NULL OR turn_idx >= ${lo})
          AND (${hi}::int IS NULL OR turn_idx <= ${hi})
-    ORDER BY turn_idx DESC
+    ORDER BY CASE WHEN ${asc} THEN turn_idx END ASC NULLS LAST,
+             CASE WHEN ${asc} THEN NULL::int ELSE turn_idx END DESC NULLS LAST
        LIMIT ${limit}
     `;
-    rows.reverse();
+    // A desc (tail) fetch comes back newest-first; flip it so every response is
+    // chronological. An asc (head) fetch is already chronological.
+    if (!asc) rows.reverse();
 
     // Archive fall-through (session-db-archive-retire-dirs P-009): the index
     // prunes at 45d, but the session_archives blob store is permanent. A
@@ -111,7 +139,10 @@ export default defineTool({
           if (lo !== null || hi !== null) {
             t = t.filter((x) => (lo === null || x.turn_idx >= lo) && (hi === null || x.turn_idx <= hi));
           }
-          t = t.slice(-limit);
+          // EI-10887: honour `order` on the archive path too, or a head read would
+          // silently fall back to the tail for any session old enough to be pruned
+          // from the index — exactly the sessions whose opening turns you most need.
+          t = asc ? t.slice(0, limit) : t.slice(-limit);
           rows.push(
             ...t.map((x) => ({
               source_kind: x.source_kind,

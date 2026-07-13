@@ -21,12 +21,15 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e)).slic
 export const gatewayStatusTool = defineTool({
   name: 'gateway:status',
   description:
-    'Read the inference gateway LIVE config (GET :8788/admin/config): the account-pool config version, the live account ids, and the admission/AIMD concurrency state. Use to see what pool + concurrency the RUNNING gateway is actually using, or to confirm a gateway:reload landed (the version bumped). Returns {ok, version, accounts, admission, aimd, ...}.',
+    "WHY ARE MY AGENTS SLOW / QUEUED? — the live inference-gateway ADMISSION state, and the FIRST read when turns are stalling. Returns per-tier admission {tier, cap, inFlight, queued}, the reserved tier-1 (interactive/queen) floor, AIMD effective-vs-configured concurrency, and the account pool. THE TELL: any tier with queued > 0 while running < maxConcurrent - tier1Reserve means work is WAITING WHILE SLOTS SIT IDLE — that is an ADMISSION bug, never a capacity shortage, and no amount of pool headroom will fix it (WI-4541: the whole fleet ran single-file through ONE slot with 9-10 of 12 idle, for hours, while everyone blamed a 'capacity crunch'). CHECK THIS BEFORE concluding the account pool is exhausted. Also reads the pool config version + live account ids (confirming a gateway:reload landed). GET :8788/admin/config.",
   guidance: {
-    when: 'Confirming what the running gateway is using right now, or verifying a hot-reload took effect (version bump).',
-    notWhen: 'Editing the pool itself — accounts:register / accounts:remove (then gateway:reload to apply live).',
-    chaining: 'accounts:register/remove → gateway:reload → gateway:status (confirm version + accounts).',
+    when: "Agents/turns are SLOW, QUEUED, or stalling, or you are about to conclude 'the pool is capacity-crunched' — read this FIRST and check the queued-while-idle tell. Also: confirming what pool + concurrency the running gateway actually uses, or verifying a hot-reload took effect (version bump).",
+    notWhen: 'Editing the pool itself — accounts:register / accounts:remove (then gateway:reload to apply live). For per-AGENT outcomes (which account did MY session get, did it 429/shed/stall) use gateway:owner_report.',
+    chaining:
+      "Slowness triage: dev:why (walks every stage incl. admission) → gateway:status (the per-tier detail) → gateway:owner_report (per-agent outcomes) → accounts:status / dev:rate_governor_status (only once admission is RULED OUT). Pool edits: accounts:register/remove → gateway:reload → gateway:status (confirm version + accounts).",
     seeAlso: [
+      'dev:why (one-call "why is nothing moving" — walks gate → deploy → ADMISSION → pool)',
+      'gateway:owner_report (what THIS agent got: 429 / shed / stall / pin-yield, and on which account)',
       'gateway:reload (apply pool changes live)',
       'accounts:register (edit the pool)',
       'accounts:pin (route an agent to a specific account)',

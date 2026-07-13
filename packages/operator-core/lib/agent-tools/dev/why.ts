@@ -15,12 +15,18 @@ export default defineTool({
   name: 'dev:why',
   profile: 'engineer',
   description:
-    '"Why is nothing shipping?" in one read: walks green-checkpoint gate health -> release-gate deploy position -> account-pool rate-limit status top-down, and returns one causal sentence per stage plus a ROOT CAUSE line naming the current blocking leaf (a red test file, a stuck promotion, a saturated pool). Deterministic — no LLM. Read-only.',
+    '"Why is nothing shipping / why is everything SLOW?" in one read: walks green-checkpoint gate health -> release-gate deploy position -> gateway ADMISSION -> account-pool rate-limit status top-down, and returns one causal sentence per stage plus a ROOT CAUSE line naming the current blocking leaf (a red test file, a stuck promotion, an admission-path defect, a saturated pool). The ADMISSION stage catches the class where work is QUEUED while concurrency slots sit IDLE — definitionally a bug, not a capacity shortage (WI-4541: the whole fleet ran single-file through ONE slot with 9-10 of 12 idle, and a gate/deploy/pool-only chain reported everything nominal). Deterministic — no LLM. Read-only.',
   capability: 'intel:read',
   guidance: {
-    when: 'The owner or an agent asks "why is nothing shipping / deploying" or a deploy has been frozen/stalled for a while and you need the causal chain in one call instead of manually cross-referencing dev:pipeline_position, testing:flakiness, and accounts:status.',
+    when: 'The owner or an agent asks "why is nothing shipping / deploying", OR agents/turns are SLOW or queueing, OR you are about to conclude "the pool is capacity-crunched" — this is the top-down causal chain in one call instead of manually cross-referencing dev:pipeline_position, testing:flakiness, gateway:status and accounts:status.',
     notWhen: 'To check ONE specific path/sha\'s position, use dev:pipeline_position. To rank flaky files over a longer window, use testing:flakiness. This is the top-down "what is the root blocker right now" read.',
-    seeAlso: ['dev:pipeline_position (per-path/sha probe)', 'accounts:status (per-account detail)', 'testing:flakiness (flip-rate history)'],
+    chaining: 'dev:why (find the blocking stage) → then the stage\'s detail tool: gate → testing:flakiness; deploy → dev:pipeline_position / release:deploy; admission → gateway:status (per-tier caps/queues); pool → accounts:status.',
+    seeAlso: [
+      'gateway:status (per-tier admission detail — the ADMISSION stage\'s drill-down)',
+      'dev:pipeline_position (per-path/sha probe)',
+      'accounts:status (per-account detail)',
+      'testing:flakiness (flip-rate history)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [

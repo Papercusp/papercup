@@ -23,9 +23,13 @@ vi.mock('../../auth', () => ({
 vi.mock('@papercusp/agent-mcp', () => ({
   defineTool: (def: unknown) => def,
 }));
-vi.mock('../../harness-registry', () => ({
-  loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'papercup' }] })),
-}));
+vi.mock('../../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'papercup' }] })),
+  };
+});
 
 import list from './list';
 import search from './search';

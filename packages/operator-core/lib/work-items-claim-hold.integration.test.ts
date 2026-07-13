@@ -130,7 +130,12 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
       held_open_by: 'leader-1',
       held_open_reason: 'release gate',
     });
-    expect(wi.readWorkItemHeldOpenBy(await readPayload('F-hold-1'))).toEqual({ by: 'leader-1', reason: 'release gate' });
+    // WI-4531: the reader also surfaces `at` (held_open_at) — the hold's LEASE ANCHOR. The
+    // expiry rule (a hold must not outlive its holder) is unenforceable without it, so assert
+    // it is really a parseable timestamp rather than just widening the match to let it through.
+    const held = wi.readWorkItemHeldOpenBy(await readPayload('F-hold-1'));
+    expect(held).toEqual({ by: 'leader-1', reason: 'release gate', at: expect.any(String) });
+    expect(Number.isNaN(Date.parse(held!.at!))).toBe(false);
   });
 
   it('clearing the hold removes ALL hold keys (_claimHold + held_open_by/reason/at), keeping siblings', async () => {
