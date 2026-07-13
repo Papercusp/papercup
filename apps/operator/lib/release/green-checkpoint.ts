@@ -1529,28 +1529,29 @@ export async function runGreenCheckpoint(
           .catch(() => {});
       }
     }
-    // P-016 (D-010): longest-green-PREFIX FF. With the gate ARMED, a red TIP no longer
-    // holds the clean PREFIX behind it hostage — `main` FFs to the longest prefix that
-    // ITSELF runs green (confirm-gated, so the "always tested-green" invariant holds).
-    // Runs AFTER the red escalate/broadcast/emit above, so the red tip is still fully
-    // surfaced + the release-fixer still dispatched on it. Default-ON (opt-out via
-    // PAPERCUSP_PARTIAL_GREEN_GATE=0); a failure here just falls through to the normal
-    // hold. (release-pipeline-resilience P-016)
-    if (lastReady && partialGreenGateEnabledFromEnv()) {
-      const partial = await tryLongestGreenPrefix(cfg, deps, lastReady, candidate, failingTests, !!opts.noPush).catch(
-        (e) => {
-          deps.log(`partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`);
-          return null;
-        },
-      );
-      if (partial) return partial;
-    }
-
     // Stale-candidate re-triage: is this red still broken at TIP? The quiet-cut judges a
     // commit that is minutes-to-hours old, so a peer fix (or the far side of a half-landed
     // rename) lands between the cut and the verdict. Re-run exactly the named failing files
     // at tip: if they pass, the red is an artifact of WHEN we cut, not of what we shipped.
     // Fail-soft in every direction — any error here degrades to today's plain red.
+    //
+    // ORDERING IS LOAD-BEARING (EI-10615). This runs BEFORE the partial-green prefix
+    // salvage below, and the two were once the other way round — which made this rescue
+    // DEAD CODE on a fast fleet:
+    //   * this check is CHEAP (re-runs only the N named failing files — the 7th stale red
+    //     was disproved in 559ms) and its payoff is TOTAL (a stale red is void ⇒ refire on
+    //     tip ⇒ a FULL advance);
+    //   * the prefix salvage is the opposite trade: a SECOND full affected suite (tens of
+    //     minutes) for a PARTIAL advance at best.
+    // With the expensive step first, seven consecutive gate runs ended their log on the
+    // partial-green "confirming longest clean prefix …" line and never got another line —
+    // superseded/killed mid-confirm, so execution never reached here. Every one of those
+    // reds passed at tip. `main` sat 143 commits behind for ~9h with nothing broken.
+    //
+    // It is a CORRECTNESS bug too, not merely a scheduling one: on a stale red the failure
+    // signature does not reproduce at tip, so tryLongestGreenPrefix would localize "failing
+    // workspaces" from a PHANTOM failure and under-advance `main` to a prefix chosen to
+    // dodge it. Triage the red before reasoning from it.
     const tip = await deps.resolveTip?.().catch(() => null) ?? null;
     let retriage: (RedTriage & { tip: string | null }) | undefined;
     // Re-running needs a workspace per file (the cwd for `npm run test --workspace`), so a

@@ -566,10 +566,30 @@ export async function composeOrient(
       // failure it exists to catch. See lib/memory/recall-admission.ts.
       // P-002 / D-001: a responsive caller doesn't receive queen-loop steering as a binding
       // recall hit (it self-drained fleet leaders). Auto callers keep all.
-      const { admitted, filteredLowScore, withheld, withheldBudget } = admitRecallHits(rawHits, {
-        degraded: memDegraded,
-        withhold: (hs) => withholdQueenLoopControl(hs, driveMode, (h) => ({ body: h.memory })),
-      });
+      const { admitted, filteredLowScore, withheld, withheldBudget, decisions } = admitRecallHits(
+        rawHits,
+        {
+          degraded: memDegraded,
+          withhold: (hs) => withholdQueenLoopControl(hs, driveMode, (h) => ({ body: h.memory })),
+        },
+      );
+      // EI-10619 — SHIP THE DECISIONS. `tool_invocations` records that orient returned ok; it
+      // cannot see that the relevance floor discarded every hit on the way. That blind spot IS
+      // EI-10372, and it is why a gate's decision has to be an event of its own. Fire-and-forget,
+      // dynamic import, never load-bearing: a telemetry outage must never fail an orientation.
+      if (decisions.length > 0) {
+        void (async () => {
+          try {
+            const [{ getOrgPg }, { recordGateDecisions }] = await Promise.all([
+              import('@papercusp/db-org'),
+              import('../../../gates/decision'),
+            ]);
+            await recordGateDecisions(getOrgPg().sql, decisions);
+          } catch {
+            /* never load-bearing */
+          }
+        })();
+      }
       result.memory = {
         query: memQuery,
         hits: admitted,

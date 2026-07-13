@@ -189,7 +189,7 @@ mod tests {
     fn find_in_projects_dir_locates_uuid_under_a_munged_cwd_subdir() {
         let tmp = tempfile::tempdir().unwrap();
         let projects = tmp.path().join("projects");
-        let munged = projects.join("-home-marsh-office--papercusp-hives-papercup-hive");
+        let munged = projects.join("-home-dev--papercusp-hives-papercup-hive");
         std::fs::create_dir_all(&munged).unwrap();
         let uuid = "ca5b976a-1e92-4b70-aa3e-1ce74e93e944";
         let target = munged.join(format!("{uuid}.jsonl"));

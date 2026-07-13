@@ -7,8 +7,8 @@
 > under owner mandate [owner 2026-07-11 10:38 EDT]: *"zero residuals of our old
 > names anywhere in our app, frontend or backend."*
 >
-> **Status: discovery DONE, execution DEFERRED ("we'll finish it later" — Avi,
-> 2026-07-11).** Nothing below has been edited yet except the two counter
+> **Status: discovery DONE, execution DEFERRED ("we'll finish it later" — the
+> owner, 2026-07-11).** Nothing below has been edited yet except the two counter
 > scripts. Read §0 (guardrails) and §2 (collision map) BEFORE touching anything.
 
 ---

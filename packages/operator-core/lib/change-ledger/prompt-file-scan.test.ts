@@ -17,7 +17,7 @@ const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b1c2d3e4f5a6b7c8d9e0a1b2c3d4e5f6a7b8c9d0';
 
 const SAMPLE_LOG = [
-  `${SHA_A}\t1765522800\tAvi\ttighten su playbook locking rules`,
+  `${SHA_A}\t1765522800\tDev\ttighten su playbook locking rules`,
   'apps/operator/prompts/papercusp-su-engineer.tools.md',
   'apps/operator/prompts/operator.persona.md',
   '',
@@ -52,7 +52,7 @@ describe('parsePromptEditLog', () => {
     // A file line with no preceding valid header is dropped, not misattributed.
     expect(parsePromptEditLog('not-a-sha\t123\tx\ty\nsome/file.md')).toEqual([]);
     // A header with a garbage timestamp invalidates its file group only.
-    const mixed = [`${SHA_A}\tnot-a-ts\tAvi\tbad`, 'a.md', '', `${SHA_B}\t1700000000\tAvi\tgood`, 'b.md'].join('\n');
+    const mixed = [`${SHA_A}\tnot-a-ts\tDev\tbad`, 'a.md', '', `${SHA_B}\t1700000000\tDev\tgood`, 'b.md'].join('\n');
     expect(parsePromptEditLog(mixed)).toEqual([
       { sha: SHA_B, tsMs: 1700000000_000, author: 'Dev', subject: 'good', file: 'b.md' },
     ]);

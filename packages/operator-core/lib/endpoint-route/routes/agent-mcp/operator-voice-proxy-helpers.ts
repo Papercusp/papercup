@@ -112,14 +112,21 @@ export async function probeKokoroHealth(baseUrl = KOKORO_URL): Promise<boolean> 
 }
 
 /**
- * Probe voicemode's local Whisper (OpenAI-compatible) server. There is no
- * dedicated `/health`, so we hit `/v1/models` — a cheap authenticated-free GET
- * that only answers when the server is up. Returns false on any error/timeout.
- * Used by the settings "Re-detect engines" button (WI-3663).
+ * Probe voicemode's local Whisper server.
+ *
+ * ⚠ This used to GET `/v1/models` on the premise (stated in the old comment) that whisper
+ * "has no dedicated /health". That premise is FALSE and the probe was broken in the
+ * always-report-DOWN direction: whisper.cpp's server implements `/health` (200) and does NOT
+ * implement `/v1/models` (404) — it is only OpenAI-shaped on the `--inference-path`
+ * (/v1/audio/transcriptions) it is launched with. So a perfectly healthy, actively-transcribing
+ * whisper reported `voicemode: false` in the engine-health route and the settings UI
+ * (verified live 2026-07-13: /health → 200, /v1/models → 404, transcription → 200 with text).
+ *
+ * Hit `/health` — the endpoint that actually exists. Returns false on any error/timeout.
  */
 export async function probeVoicemodeHealth(baseUrl = VOICEMODE_URL): Promise<boolean> {
   try {
-    const r = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
     return r.ok;
   } catch {
     return false;

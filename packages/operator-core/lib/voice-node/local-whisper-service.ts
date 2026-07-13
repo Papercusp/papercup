@@ -77,7 +77,11 @@ const state: ManagedState = { child: null, url: null, starting: null, spawnTimes
 
 async function defaultProbe(baseUrl: string): Promise<boolean> {
   try {
-    const r = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(1500) });
+    // /health — NOT /v1/models. whisper.cpp's server implements /health (200) and 404s
+    // /v1/models; it is only OpenAI-shaped on its --inference-path. Probing /v1/models made a
+    // healthy, actively-transcribing whisper read as DOWN (the same bug this module inherited
+    // from probeVoicemodeHealth; fixed there too).
+    const r = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(1500) });
     return r.ok;
   } catch {
     return false;
@@ -228,7 +232,7 @@ async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promis
       await new Promise((r) => setTimeout(r, intervalMs));
     }
     child.kill('SIGTERM');
-    return { ok: false, reason: 'unhealthy' as const, detail: `whisper-server did not answer /v1/models within ${timeoutMs}ms` };
+    return { ok: false, reason: 'unhealthy' as const, detail: `whisper-server did not answer /health within ${timeoutMs}ms` };
   })();
 
   return Promise.race([healthy, spawnError]);

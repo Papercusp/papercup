@@ -23,6 +23,7 @@
  * (`withhold`) rather than imported, both to keep this module dependency-free and because it is
  * a caller-policy filter, not a property of recall.
  */
+import type { GateDecision } from '../gates/decision';
 
 /**
  * The minimum shape a hit needs to run the gates. Callers keep their own richer types (the
@@ -94,6 +95,16 @@ export interface AdmissionResult<H> {
   withheld: number;
   /** Discarded by the aggregate char budget. */
   withheldBudget: number;
+  /**
+   * EI-10619 — what each gate DECIDED, as events. Returned rather than emitted, so this module
+   * stays pure: a gate that had to `await` a telemetry write would be a gate whose decision depends
+   * on the telemetry being up. The caller ships these (`recordGateDecisions`, fire-and-forget).
+   *
+   * Note which gate declares `discriminates`: ONLY the floor. The withhold and the budget may
+   * legitimately never fire, and declaring that is what stops the detector from alarming on them
+   * forever — see gates/decision.ts.
+   */
+  decisions: GateDecision[];
 }
 
 /**
@@ -105,16 +116,47 @@ export function admitRecallHits<H extends AdmissibleHit>(
   rawHits: readonly H[],
   opts: AdmitRecallOpts<H> = {},
 ): AdmissionResult<H> {
+  const decisions: GateDecision[] = [];
+  const subjectOf = (h: H): string | null => (typeof h.id === 'string' ? h.id : null);
+
   // Gate 1 — relevance floor, degraded regime ONLY (see MEMORY_SCORE_FLOOR).
-  const floored = opts.degraded
-    ? rawHits.filter((h) => typeof h.score !== 'number' || h.score >= MEMORY_SCORE_FLOOR)
-    : [...rawHits];
+  //
+  // The floor only RUNS in the degraded regime, so it only DECIDES there. Emitting a healthy-regime
+  // "pass" for a gate that was never consulted would be a lie in the decision log — and would mask
+  // exactly the state the log exists to reveal (a floor that admits nothing when it does run).
+  const floored: H[] = [];
+  for (const h of rawHits) {
+    if (!opts.degraded) {
+      floored.push(h);
+      continue;
+    }
+    const scored = typeof h.score === 'number';
+    const pass = !scored || (h.score as number) >= MEMORY_SCORE_FLOOR; // no score ⇒ fail-open
+    decisions.push({
+      gate: 'orient.recall.relevance-floor',
+      expect: 'discriminates', // it exists to SEPARATE noise from signal; one-sided ⇒ EI-10372
+      verdict: pass ? 'pass' : 'reject',
+      value: scored ? (h.score as number) : null,
+      threshold: MEMORY_SCORE_FLOOR,
+      subject: subjectOf(h),
+    });
+    if (pass) floored.push(h);
+  }
   const filteredLowScore = rawHits.length - floored.length;
 
   // Gate 2 — caller policy (orient: queen-loop control items to a responsive caller).
   const { kept, withheld } = opts.withhold
     ? opts.withhold(floored)
     : { kept: floored, withheld: [] as unknown[] };
+  const keptSet = new Set(kept);
+  for (const h of floored) {
+    decisions.push({
+      gate: 'orient.recall.queen-loop-withhold',
+      expect: 'guards', // most callers are not queen loops — never withholding is HEALTHY
+      verdict: keptSet.has(h) ? 'pass' : 'reject',
+      subject: subjectOf(h),
+    });
+  }
 
   // Gate 3 — aggregate char budget, relevance order, first hit always admitted.
   const budget = opts.budgetChars ?? orientMemoryBudgetChars();
@@ -122,7 +164,16 @@ export function admitRecallHits<H extends AdmissibleHit>(
   let spentChars = 0;
   for (const h of kept) {
     const cost = (h.memory?.length ?? 0) + (typeof h.id === 'string' ? h.id.length : 8) + 24;
-    if (admitted.length > 0 && spentChars + cost > budget) break;
+    const over = admitted.length > 0 && spentChars + cost > budget;
+    decisions.push({
+      gate: 'orient.recall.char-budget',
+      expect: 'guards', // a fold under budget trims nothing — never firing is HEALTHY
+      verdict: over ? 'reject' : 'pass',
+      value: spentChars + cost, // the cost this hit WOULD bring the fold to
+      threshold: Number.isFinite(budget) ? budget : null,
+      subject: subjectOf(h),
+    });
+    if (over) break;
     admitted.push(h);
     spentChars += cost;
   }
@@ -132,5 +183,6 @@ export function admitRecallHits<H extends AdmissibleHit>(
     filteredLowScore,
     withheld: withheld.length,
     withheldBudget: kept.length - admitted.length,
+    decisions,
   };
 }

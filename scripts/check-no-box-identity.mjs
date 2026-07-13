@@ -78,6 +78,19 @@ const SKIP = [
 
 const HOME_PATH = /\/(home|Users)\/([A-Za-z0-9._-]+)(?=[/'"`\s\\)\]:,;]|$)/g;
 
+/** The SAME home dir with its slashes munged to dashes — the form Claude uses to
+ *  name a session/project directory (`/home/dev/x` → `-home-dev-x`). This lint
+ *  passed a clean 0 while `apps/tui/src/transcript.rs` sat there holding the
+ *  owner's real home path in exactly this shape: a slash-based regex cannot see a
+ *  string that has no slashes in it, and the release gate caught it only at CUT
+ *  time, inside a 2.6GB tarball — the most expensive possible moment to learn it.
+ *
+ *  Anchored to a quote / slash / whitespace boundary so ordinary kebab-case
+ *  ("some-home-page-header") cannot trip it, and the user segment stops at the
+ *  first dash — for a dashed username that yields a prefix ("marsh"), which is all
+ *  we need: it is not a GENERIC_USER, so we flag the line and print it. */
+const MUNGED_HOME = /(^|["'`/\s])-(home|Users)-([A-Za-z0-9._]+)(?=-)/g;
+
 const files = execFileSync('git', ['ls-files'], { encoding: 'utf8', maxBuffer: 64 << 20 })
   .split('\n')
   .filter((f) => f && !SKIP.some((rx) => rx.test(f)));
@@ -90,11 +103,16 @@ for (const f of files) {
   } catch {
     continue; // binary / unreadable
   }
-  if (!src.includes('/home/') && !src.includes('/Users/')) continue;
+  if (!/[/-](home|Users)[/-]/.test(src)) continue;
   src.split('\n').forEach((line, i) => {
     for (const m of line.matchAll(HOME_PATH)) {
       const user = m[2];
       if (GENERIC_USERS.has(user) || isRedacted(user) || isFileInHome(user)) continue;
+      findings.push({ file: f, line: i + 1, user, text: line.trim().slice(0, 110) });
+    }
+    for (const m of line.matchAll(MUNGED_HOME)) {
+      const user = m[3];
+      if (GENERIC_USERS.has(user) || isRedacted(user)) continue;
       findings.push({ file: f, line: i + 1, user, text: line.trim().slice(0, 110) });
     }
   });
