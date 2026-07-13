@@ -88,7 +88,6 @@ const scripts = (rootPkg.scripts ?? {}) as Record<string, string>;
 const roots = sharedCodeRoots(workspaces);
 const vite = operatorViteAliasTarget();
 const pcHeavy = existsSync(join(REPO_ROOT, 'scripts', 'pc-heavy.sh'));
-const rootVitest = existsSync(join(REPO_ROOT, 'node_modules', '.bin', 'vitest'));
 
 // A sample package that GENUINELY has no package-local vitest, to demonstrate the
 // "use the hoisted root binary" fact with a concrete, TRUE example. A few packages
@@ -223,12 +222,8 @@ if (process.argv.includes('--check')) {
   process.stdout.write(`✓ wrote AGENT-ENV.md (${roots.length} shared-code roots, alias target ${vite.target ?? 'n/a'})\n`);
 }
 
-// Emitted for test-doctor.mjs to import the same derivation (single source of the invariants).
-export const AGENT_ENV_INVARIANTS = {
-  sharedCodeRoots: roots,
-  rootVitestPresent: rootVitest,
-  sampleWorkspaceWithoutLocalVitest: sampleWs ?? null,
-  operatorViteAliasTarget: vite.target,
-  operatorViteAliasPresent: vite.aliasPresent,
-  pcHeavyPresent: pcHeavy,
-};
+// Note: test-doctor.mjs re-derives these same invariants inline rather than
+// importing them from here — this module runs its generation side effects at
+// module scope (it WRITES AGENT-ENV.md), so importing it would trigger a write.
+// The "AGENT-ENV.md is not stale" doctor check + the gen:agent-env:check CI gate
+// are what keep the doc and the runnable checks in agreement.

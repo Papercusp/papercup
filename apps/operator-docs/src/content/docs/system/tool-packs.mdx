@@ -148,46 +148,52 @@ carry `provides_tools` (the tool names the unit registers) so the storefront
 can render a **tools section** that resolves each tool to its providing
 listing, and the dep-validator can mark not-installed tools *installable*.
 
-### The worker wire (migrations 006 + 008)
+### The worker wire (migrations 006 + 008 + 011)
 
 The Cupboard worker (`apps/operator-public`) stores listings with
-`listing_kind ∈ {harness, blueprint, plugin, tool-pack, knowledge-pack}`
+`listing_kind ∈ {harness, blueprint, plugin, pack, knowledge-pack, template}`
 (`LISTING_KINDS` in `apps/operator-public/src/db.ts`) and a nullable
 `provides_tools` TEXT column (JSON `string[]`; migration
 `006_pack_kind_provides_tools.sql` — a table rebuild, since SQLite can't
 ALTER the kind CHECK). **Migration 008** (`learning-packs-2026-06-11` D-005)
 reshaped the kind set: `snapshot` was RETIRED (its rows are `DELETE`d),
-`pack` was RENAMED `tool-pack` (the runtime-less code-tool pack this page is
-about), and a sibling `knowledge-pack` (a distributable set of curated pot
-learnings) joined — see the `knowledge-pack` section below. `'pack'` survives
-only as a wire alias normalized to `'tool-pack'` (`normalizeListingKind` /
-`listingKindOf`), so older clients keep parsing. On `POST /listings`,
-`provides_tools` is accepted only for kinds `plugin`/`tool-pack` (1–200
+`pack` was briefly RENAMED `tool-pack`, and a sibling `learning-pack` (a
+distributable set of curated pot learnings) joined. The
+`cupboard-public-release-2026-07-12` rename then settled the names: the
+runtime-less code-tool pack this page is about is once again the **`pack`**
+kind, and its sibling is **`knowledge-pack`** (migration 011 renamed
+`learning-pack` → `knowledge-pack` — see the `knowledge-pack` section below).
+Both superseded values survive only as wire aliases normalized forward
+(`normalizeListingKind`: `tool-pack` → `pack`, `learning-pack` →
+`knowledge-pack`), so older clients keep parsing. On `POST /listings`,
+`provides_tools` is accepted only for kinds `plugin`/`pack` (1–200
 entries, each a non-empty string ≤128 chars) and returned verbatim on every
-GET. A `tool-pack` listing follows the non-harness rules: `listing_ref`
+GET. A `pack` listing follows the non-harness rules: `listing_ref`
 required, `(repo, kind, ref)` dedup, action **install** (`listingActionFor`
-returns `'install'` for the `tool-pack` case, in
+returns `'install'` for the `pack` case, in
 `operator-core/lib/cupboard/types.ts`).
 
-#### The sibling `knowledge-pack` kind (migration 008)
+#### The sibling `knowledge-pack` kind (migrations 008 + 011)
 
-Migration 008 also adds a `knowledge-pack` listing kind that coexists with
-`tool-pack` in the same worker schema and storefront this page describes — but
+Migration 008 also added a curated-pot-learnings listing kind (originally
+`learning-pack`, renamed `knowledge-pack` by migration 011) that coexists with
+`pack` in the same worker schema and storefront this page describes — but
 it is a different thing: a distributable set of curated pot learnings
 (installed into a pot's shared memory through conflict review), not a
 code-tool pack. The instruction-carrying kinds (`knowledge-pack` + `blueprint`)
 also gain a pre-publication `review_status` (`pending` / `approved` /
 `rejected`, `REVIEW_POLICY_KINDS`): they publish `pending` and surface
-publicly only on operator approval, whereas code kinds (`tool-pack` / `plugin`)
-keep install-consent + reactive moderation. The renamed `tool-pack` remains the
+publicly only on operator approval, whereas code kinds (`pack` / `plugin`)
+keep install-consent + reactive moderation. The `pack` kind remains the
 runtime-less code-tool pack documented here.
 
 ### Publishing a unit
 
 `POST /api/cupboard/publish-plugin { slug }` publishes an installed unit: a
-`kind: "pack"` manifest lists as `listing_kind='tool-pack'` (the manifest
-format keeps its own `kind:"pack"` value; only the resulting Cupboard listing
-kind was renamed by worker migration 008), anything else as `plugin`.
+`kind: "pack"` manifest lists as `listing_kind='pack'` (the manifest
+format's `kind:"pack"` value and the Cupboard listing kind now match again —
+migration 008 briefly diverged them as `tool-pack`, migration 011's release
+line settled the listing kind back to `pack`), anything else as `plugin`.
 `provides_tools` defaults to the manifest's tool names (the
 loader's `<unit>.<tool>` naming convention via `manifestToolNames`); pass
 `provides_tools: [...]` in the body to override.
@@ -226,8 +232,8 @@ the UI can offer one-click namespace filters.
 A tool never installs in isolation (D-005): the storefront's Tools view
 (`/cupboard?kind=tools`) routes an installable tool's action to its
 **providing listing's** detail page, where the normal install-consent flow
-executes. The storefront also gains a **Tool packs** kind tab (keyed on the
-`tool-pack` kind value — `VIEW_FILTERS` in `CupboardClient.tsx`, alongside the
+executes. The storefront also gains a **Packs** kind tab (keyed on the
+`pack` kind value — `VIEW_FILTERS` in `CupboardClient.tsx`, alongside the
 sibling **Knowledge Packs** tab), and plugin/pack detail pages surface the
 listing's `provides_tools`.
 

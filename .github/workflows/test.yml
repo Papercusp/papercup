@@ -106,6 +106,14 @@ jobs:
       - name: Check testing-domains contract is in sync
         run: npm run gen:contract:check
 
+      # AGENT-ENV.md is GENERATED from the real repo config (workspaces, the
+      # operator-vite alias, the test tooling) so the operating contract can't drift
+      # out of sync the way a hand-written note does (EI-10941). Pure fs/config reads,
+      # no PG → GATING. Regenerate with `npm run gen:agent-env`; `npm run doctor`
+      # asserts the same invariants as runnable checks.
+      - name: Check AGENT-ENV contract is in sync
+        run: npm run gen:agent-env:check
+
       # BORROWABLE.md is GENERATED from scripts/gen-borrowable-catalog.mjs (the
       # curated libs/generic membership + .gitmodules). Fail if it drifted — every
       # code-derived surface is CI-gated so it can't go stale

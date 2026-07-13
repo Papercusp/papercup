@@ -363,35 +363,93 @@ export async function processAutoClose(
     }
   }
 
-  const { seenKeys, ranTickCount } = await d.recentRanTickKeys(minTicks);
-  if (ranTickCount < minTicks) return []; // not enough history — never close on a fresh watchdog
   const canonical = keyed.filter((i) => canonicalByKey.get(watchdogKeyOfIssue(i))?.id === i.id);
   const inFlight = await d.inFlightDispatchIds(canonical.map((i) => i.id));
-  const nowMs = d.nowMs();
 
-  for (const i of canonical) {
-    const watchdogKey = watchdogKeyOfIssue(i);
-    const candidate: AutoCloseCandidate = {
-      issueId: i.id,
-      watchdogKey,
-      state: i.state,
-      assignee: i.assignee,
-      createdAtMs: i.createdAt ? Date.parse(i.createdAt) : NaN,
-      signalOrigin: i.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN,
-      inFlightDispatch: inFlight.has(i.id),
-    };
-    const decision = decideAutoClose(candidate, { seenKeys, ranTickCount, nowMs }, opts);
-    if (!decision.close) continue;
-    try {
-      await d.close(i.id, watchdogKey, decision.reason);
-      out.push({ issueId: i.id, watchdogKey, reason: decision.reason });
-    } catch (e) {
-      // Best-effort: one close failing must not abort the sweep.
-      console.warn(`[watchdog-auto-close] close failed for ${i.id}:`, e instanceof Error ? e.message : e);
+  // ── P-007: POSITIVE green-run resolution ────────────────────────────────────────────
+  // Runs BEFORE (and independent of) the absence path, and does NOT need ran-tick history:
+  // it resolves a red-test EI whose named test verifiably passes NOW (N consecutive greens
+  // in test_runs), attaching that as real completion evidence. A green-resolved item is
+  // then skipped by the absence loop below.
+  const greenResolved = await resolveProvenGreenRedTests(canonical, inFlight, d, opts, out);
+
+  // ── Absence-based dedup close (needs enough ran-tick history) ───────────────────────
+  const { seenKeys, ranTickCount } = await d.recentRanTickKeys(minTicks);
+  if (ranTickCount >= minTicks) {
+    const nowMs = d.nowMs();
+    for (const i of canonical) {
+      if (greenResolved.has(i.id)) continue; // already resolved on positive green evidence
+      const watchdogKey = watchdogKeyOfIssue(i);
+      const candidate: AutoCloseCandidate = {
+        issueId: i.id,
+        watchdogKey,
+        state: i.state,
+        assignee: i.assignee,
+        createdAtMs: i.createdAt ? Date.parse(i.createdAt) : NaN,
+        signalOrigin: i.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN,
+        inFlightDispatch: inFlight.has(i.id),
+      };
+      const decision = decideAutoClose(candidate, { seenKeys, ranTickCount, nowMs }, opts);
+      if (!decision.close) continue;
+      try {
+        await d.close(i.id, watchdogKey, decision.reason);
+        out.push({ issueId: i.id, watchdogKey, reason: decision.reason });
+      } catch (e) {
+        // Best-effort: one close failing must not abort the sweep.
+        console.warn(`[watchdog-auto-close] close failed for ${i.id}:`, e instanceof Error ? e.message : e);
+      }
     }
   }
   if (out.length > 0) {
     console.log(`[watchdog-auto-close] retired ${out.length} watchdog EI(s): ${out.map((o) => o.issueId).join(', ')}`);
   }
   return out;
+}
+
+/**
+ * P-007: resolve each red-test EI whose named test is PROVEN green (N consecutive passing
+ * runs) with the green run as real completion evidence, BEFORE the absence path. Returns
+ * the set of issue ids it resolved (the absence loop skips them). Fully fail-soft: a
+ * test_runs read error, or one resolve failing, never aborts the sweep. A no-op (returns
+ * an empty set) when the green deps are not injected (pre-P-007 test call sites).
+ */
+async function resolveProvenGreenRedTests(
+  canonical: EngineerIssue[],
+  inFlight: Set<string>,
+  d: AutoCloseDeps,
+  opts: AutoCloseOptions,
+  out: AutoCloseOutcome[],
+): Promise<Set<string>> {
+  const resolved = new Set<string>();
+  if (!d.recentRedTestRuns || !d.resolveGreen) return resolved;
+  const redTestItems = canonical.filter(
+    (i) => redTestPathOf(watchdogKeyOfIssue(i)) != null && !inFlight.has(i.id),
+  );
+  if (redTestItems.length === 0) return resolved;
+  const windowHours = opts.redTestGreenWindowHours ?? RED_TEST_GREEN_WINDOW_HOURS;
+  const paths = [...new Set(redTestItems.map((i) => redTestPathOf(watchdogKeyOfIssue(i))!))];
+  let runsByPath: Map<string, RedTestRun[]>;
+  try {
+    runsByPath = await d.recentRedTestRuns(paths, windowHours);
+  } catch (e) {
+    // Fail-soft: no green resolution this tick; the absence path still runs.
+    console.warn(`[watchdog-green-resolve] test_runs read failed:`, e instanceof Error ? e.message : e);
+    return resolved;
+  }
+  for (const i of redTestItems) {
+    const watchdogKey = watchdogKeyOfIssue(i);
+    const path = redTestPathOf(watchdogKey)!;
+    const decision = decideRedTestGreenResolve(watchdogKey, runsByPath.get(path) ?? [], {
+      minConsecutiveGreens: opts.redTestGreenMinConsecutive,
+    });
+    if (!decision.resolve) continue;
+    try {
+      await d.resolveGreen(i.id, watchdogKey, decision.completionRef!, decision.evidence!);
+      resolved.add(i.id);
+      out.push({ issueId: i.id, watchdogKey, reason: decision.reason });
+    } catch (e) {
+      console.warn(`[watchdog-green-resolve] resolve failed for ${i.id}:`, e instanceof Error ? e.message : e);
+    }
+  }
+  return resolved;
 }

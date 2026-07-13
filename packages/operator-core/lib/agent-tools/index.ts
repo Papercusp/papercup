@@ -817,6 +817,9 @@ import './work_items/hold_open';
 // propose/dispose audit, gated by the existing automation tier (work_items:write → medium).
 import './work_items/reorder';
 import './work_items/link';
+// First-class external dependencies (event/gate/runtime/human). Internal work
+// dependencies continue to use link{rel:'blocks'} / plan blocked-by.
+import './work_items/set_blocker';
 import './work_items/tag';
 import './work_items/subscribe';
 import './work_items/comment';

@@ -40,11 +40,13 @@ agent-mcp  backup  coordination  docs-engine  locks  omp-plugin  operator-core  
 
 ## Running tests
 
-`vitest` is **hoisted to the repo root only** — there is no package-local copy:
+`vitest` is **hoisted to the repo root**, and MOST packages have no local copy —
+so a package-local invocation is exit-127 DOA. (A few packages that pin a different
+vitest major do ship their own; the root binary is the safe default everywhere else.)
 
 ```
-node_modules/.bin/vitest            # EXISTS (the only vitest binary)
-packages/node_modules/.bin/vitest   # does NOT exist → a package-local call is exit-127 DOA
+node_modules/.bin/vitest            # EXISTS (the hoisted binary — the safe default)
+packages/agent-mcp/node_modules/.bin/vitest   # does NOT exist → a package-local call there is exit-127 DOA
 ```
 
 Run a suite one of these ways (both resolve the hoisted binary):

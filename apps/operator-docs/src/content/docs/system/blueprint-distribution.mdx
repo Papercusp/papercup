@@ -168,9 +168,16 @@ in P0 (plan D-006):
 
 The publish route reads the blueprint.yaml `kind` (default `harness`; `pot`
 for a pot template like `generic-pot`) and forwards it as `blueprint_kind:
-'pot' | 'harness'`. That discriminator selects the Cupboard storefront's tab
-— a `kind: pot` blueprint becomes a **pot template** rather than an ordinary
-harness blueprint (P-018; `availableHiveBlueprintIds` reads `kind: pot`).
+'pot' | 'harness'`. A `kind: pot` blueprint is a **pot template** — it spawns
+a whole pot rather than a single harness. Both facets live in the storefront's
+single **Blueprints** tab; a pot template is distinguished there by a "pot
+template" badge rather than getting its own tab (D-002;
+`isHiveBlueprintListing` / `KindBadge potTemplate` in `CupboardClient.tsx`;
+`availableHiveBlueprintIds` reads `kind: pot`). Note the naming: this "pot
+template" is a *blueprint* facet and is distinct from the separate `template`
+**listing kind**, which carries first-party **app templates** (app scaffolds
+materialized into a new harness — `templates:new-app`) under their own
+Templates tab.
 
 ## Install / fork
 

@@ -1,0 +1,20 @@
+{
+  "//": "EI-11021: the automatic JSX runtime (jsx: react-jsx) must live in the package tsconfig, not only in vitest.config.ts's esbuild override. These components (and their tests) omit `import React` and rely on the automatic runtime; Vite/esbuild reads jsx from the nearest tsconfig whenever a run does NOT explicitly set esbuild.jsx. Without this, any vitest invocation that uses the base @papercusp/test-config (no esbuild.jsx override) transformed the JSX to classic React.createElement and every test failed intermittently with `React is not defined`. The vitest.config.ts override remains as a belt; this tsconfig is the config-path-independent fix.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules", "storybook-static", ".vitest-tmp"]
+}

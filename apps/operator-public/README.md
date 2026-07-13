@@ -16,18 +16,29 @@ Original plan called for "Cloudflare-fronted Next.js + managed Postgres." This l
 - **D1 (SQLite)** instead of managed Postgres. Cupboard data is moderate-scale + relational + low-cost; D1's free tier covers v1 easily. Reusing the `papercusp-publish` pattern keeps the deploy + auth + rate-limit code shapes consistent.
 - **GitHub bearer auth** (validate `Authorization: Bearer <gh_token>` against `https://api.github.com/user`). Desktop operator passes the same token produced by Phase 1b `lib/identity/gh-token.ts`.
 
-## Listing kinds (migration 004 — one storefront, three kinds)
+## Listing kinds (one storefront, six kinds)
 
-Per the distribution plan (`harness-blueprint-distribution-2026-06-03`, D-005/D-008)
-the Cupboard is no longer harness-only. It is ONE storefront with three listing
-kinds, each with its own consumer action:
+Per the distribution plan (`harness-blueprint-distribution-2026-06-03`, D-005/D-008),
+extended by `tool-distribution-granularity-2026-06-05`, `learning-packs-2026-06-11`,
+`app-templates-2026-07-04`, and `cupboard-public-release-2026-07-12`, the Cupboard is
+no longer harness-only. It is ONE storefront with six listing kinds
+(`LISTING_KINDS` in `src/db.ts`), each with its own consumer action:
 
 | `listing_kind` | Consumer action | Carries |
 |----------------|-----------------|---------|
-| `harness`   | **join**    | a Hypercore `topic_hex` (the shared-harness swarm) |
-| `blueprint` | **fork**    | a blueprint stream within a project (`project_ref` + `listing_ref`) |
-| `snapshot`  | **fork**    | a captured snapshot (`project_ref` + `listing_ref`) |
-| `plugin`    | **install** | a distributable plugin (`listing_ref` = plugin slug) |
+| `harness`        | **join**    | a Hypercore `topic_hex` (the shared-pot swarm) + optional `hive_pubkey`/`hive_title` repo→Pot binding |
+| `blueprint`      | **fork**    | a blueprint stream within a project (`project_ref` + `listing_ref`); a `blueprint_kind: pot` blueprint is a **pot template** |
+| `plugin`         | **install** | a runtime-bearing pack — a distributable plugin (`listing_ref` = plugin slug); `provides_tools` |
+| `pack`           | **install** | a runtime-less code-tool pack (`listing_ref`; `provides_tools`) |
+| `knowledge-pack` | **install** | a distributable set of curated pot learnings (instruction-carrying) |
+| `template`       | **install** | a first-party app template — an app scaffold, GitHub-repo-backed per `listing_ref` like a blueprint |
+
+Retired / aliased: `snapshot` was retired (`retire-snapshots-instance-spec-2026-06-09`
+D-005); the interim `tool-pack` value normalizes to `pack` and the pre-rename
+`learning-pack` normalizes to `knowledge-pack` (`normalizeListingKind`), so older
+clients keep parsing. Instruction-carrying kinds (`knowledge-pack`, `blueprint`)
+publish `pending` and are publicly invisible until an operator approves them
+(`REVIEW_POLICY_KINDS`); the remaining kinds publish `approved` immediately.
 
 **Project-centric 1:N (D-008):** listings key on the papercupai **project remote**
 (`project_ref`) and a project hosts **N** non-harness listings, discriminated by
@@ -47,7 +58,7 @@ operator proxy use today. Once the operator proxy is cut over to `/listings?kind
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET`  | `/healthz` | none | Liveness |
-| `GET`  | `/listings` | none | Paginated public listing. Query: `kind` (`harness`/`blueprint`/`snapshot`/`plugin`/`all`), `project` (project_ref), `q`, `claim`, `limit` (1-100), `cursor` |
+| `GET`  | `/listings` | none | Paginated public listing. Query: `kind` (`harness`/`blueprint`/`plugin`/`pack`/`knowledge-pack`/`template`/`all`; legacy `tool-pack`/`learning-pack` normalize forward), `project` (project_ref), `q`, `claim`, `limit` (1-100), `cursor` |
 | `GET`  | `/listings/:id` | none | Single listing detail |
 | `POST` | `/listings` | gh-bearer | Publish (5/hr per user; private GitHub repos rejected). Body `listing_kind` (default `harness`), `project_ref`, `listing_ref` (required for non-harness), `topic_hex` (required for harness), `hive_pubkey` + `hive_title` (migration 007 repo→Pot binding; pubkey = raw-32-byte-base64 Ed25519, the pot directory encoding) |
 | `DELETE` | `/listings/:id` | gh-bearer | Unlist (publisher or claimant only) |

@@ -92,20 +92,6 @@ check('vitest is hoisted to the repo root (node_modules/.bin/vitest exists)', ()
     throw new Error('no hoisted vitest at node_modules/.bin/vitest — run npm install at the repo root');
 });
 
-check('no package-local vitest shadows the hoisted one (a pkg-local copy is exit-127 DOA)', () => {
-  const roots = ['packages', 'libs', 'apps'].filter((r) => existsSync(R(r)));
-  const shadows = [];
-  for (const root of roots) {
-    for (const entry of readdirSync(R(root), { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name === 'node_modules') continue;
-      if (existsSync(R(`${root}/${entry.name}/node_modules/.bin/vitest`)))
-        shadows.push(`${root}/${entry.name}`);
-    }
-  }
-  if (shadows.length)
-    throw new Error(`package-local vitest found in: ${shadows.join(', ')} — hoist it to the root instead`);
-});
-
 check('the two shared-code roots (libs/ and packages/) both exist', () => {
   const missing = ['libs', 'packages'].filter((r) => !existsSync(R(r)));
   if (missing.length) throw new Error(`missing shared-code root(s): ${missing.join(', ')}`);

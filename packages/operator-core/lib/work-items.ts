@@ -69,6 +69,16 @@ import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
+  readExternalBlockers,
+  type ExternalBlockerRecord,
+} from './external-blockers';
+export {
+  activeExternalBlockers,
+  readExternalBlockers,
+  updateExternalBlockerHistory,
+} from './external-blockers';
+export type { ExternalBlockerKind, ExternalBlockerRecord } from './external-blockers';
+import {
   ISSUE_KIND,
   type IssueKind,
   type IssueStoreKind,
@@ -224,109 +234,6 @@ export interface WorkItem {
   terminalCompletionEvidence: CompletionVerificationEvidence | null;
   createdAt: string;
   updatedAt: string;
-}
-
-export type ExternalBlockerKind = 'event' | 'gate' | 'runtime' | 'human';
-export interface ExternalBlockerRecord {
-  kind: ExternalBlockerKind;
-  ref: string;
-  summary: string;
-  status: 'active' | 'cleared';
-  createdAt: string;
-  createdBy: string;
-  updatedAt: string;
-  evidence?: string;
-  nextVerb?: string;
-  clearedAt?: string;
-  clearedBy?: string;
-}
-
-/** Parse defensively because payload is federated/untrusted JSON. */
-export function readExternalBlockers(payload: unknown): ExternalBlockerRecord[] {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
-  const rows = (payload as Record<string, unknown>).externalBlockers;
-  if (!Array.isArray(rows)) return [];
-  return rows.filter((row): row is ExternalBlockerRecord => {
-    if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
-    const r = row as Record<string, unknown>;
-    return (
-      ['event', 'gate', 'runtime', 'human'].includes(String(r.kind)) &&
-      typeof r.ref === 'string' &&
-      typeof r.summary === 'string' &&
-      (r.status === 'active' || r.status === 'cleared') &&
-      typeof r.createdAt === 'string' &&
-      typeof r.createdBy === 'string' &&
-      typeof r.updatedAt === 'string'
-    );
-  });
-}
-
-export function activeExternalBlockers(payload: unknown): ExternalBlockerRecord[] {
-  return readExternalBlockers(payload).filter((blocker) => blocker.status === 'active');
-}
-
-/** Pure history-preserving upsert. Clearing marks the record; it never deletes it,
- * and it never touches internal work-item dependency edges. */
-export function updateExternalBlockerHistory(
-  payload: unknown,
-  input: {
-    kind: ExternalBlockerKind;
-    ref: string;
-    summary?: string;
-    evidence?: string;
-    nextVerb?: string;
-    clear?: boolean;
-  },
-  actor: string,
-  now = new Date().toISOString(),
-): { blockers: ExternalBlockerRecord[]; changed: boolean } {
-  const blockers = readExternalBlockers(payload);
-  const index = [...blockers]
-    .map((row, i) => ({ row, i }))
-    .reverse()
-    .find(({ row }) => row.kind === input.kind && row.ref === input.ref && row.status === 'active')?.i;
-
-  if (input.clear) {
-    if (index === undefined) return { blockers, changed: false };
-    const current = blockers[index]!;
-    blockers[index] = {
-      ...current,
-      status: 'cleared',
-      updatedAt: now,
-      clearedAt: now,
-      clearedBy: actor,
-      ...(input.evidence ? { evidence: input.evidence } : {}),
-    };
-    return { blockers, changed: true };
-  }
-
-  if (index !== undefined) {
-    const current = blockers[index]!;
-    blockers[index] = {
-      ...current,
-      summary: input.summary?.trim() || current.summary,
-      updatedAt: now,
-      ...(input.evidence ? { evidence: input.evidence } : {}),
-      ...(input.nextVerb ? { nextVerb: input.nextVerb } : {}),
-    };
-    return { blockers, changed: true };
-  }
-
-  blockers.push({
-    kind: input.kind,
-    ref: input.ref,
-    summary: input.summary?.trim() || `${input.kind} dependency: ${input.ref}`,
-    status: 'active',
-    createdAt: now,
-    createdBy: actor,
-    updatedAt: now,
-    ...(input.evidence ? { evidence: input.evidence } : {}),
-    ...(input.nextVerb ? { nextVerb: input.nextVerb } : {}),
-  });
-  // Bound payload growth while preserving a useful cleared history + every active row.
-  const active = blockers.filter((row) => row.status === 'active');
-  const cleared = blockers.filter((row) => row.status === 'cleared').slice(-40);
-  return { blockers: [...cleared, ...active], changed: true };
 }
 
 /** The propose/dispose author of a work-item's rank (local-hive D-008).
@@ -2916,6 +2823,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- pool-level exclusion as observation-lane, so an all-needs-human backlog also reads
          -- drained:true rather than idling a drainer on unpickable rows.
          AND ${needsHumanExclusionSql(sql)}
+         AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: an auto-filed replication-liveness detector EI is gated to the p2p fleet and
          -- unactionable by a generic self-selector — pool-exclude it too (like observation/
          -- needsHuman) so an all-federation-EI backlog reads drained:true instead of idling a
@@ -2977,6 +2885,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- EI-7776: a needsHuman-routed row is not work-queue material either — same floor the
          -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
          AND ${needsHumanExclusionSql(sql)}
+         AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: a replication-liveness detector EI is gated to the p2p fleet — same floor the
          -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
          AND ${federationDetectorExclusionSql(sql)}
@@ -3255,6 +3164,7 @@ export async function claimNextIssueWorkItem(
           -- "routed to a human" comment forever (confirmed live: EI-7592 "resolved" 3x in one
           -- afternoon). Still directly claimable BY ID.
           AND ${needsHumanExclusionSql(sql)}
+          AND ${externalBlockersExclusionSql(sql)}
           -- WI-2633: never self-select an auto-filed replication-liveness detector EI
           -- (payload._ei.created_by='system:replication-liveness'). A generic backlog-drain
           -- worker structurally cannot action it — verifying the current verdict needs the

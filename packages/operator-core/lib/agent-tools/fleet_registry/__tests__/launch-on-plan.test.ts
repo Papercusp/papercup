@@ -523,7 +523,7 @@ describe('composeMemberLaunchContext / renderMemberBaseline', () => {
     expect(md).toContain('Flag to your LEADER');
     expect(md).toContain('Do not re-claim a ping-ponging item');
     // queen-fleet-authority-boundary P-006: a hive pause ≠ a self-drain order
-    expect(md).toContain('A hive pause is a Queen-loop signal, not a self-drain order');
+    expect(md).toContain('A hive pause is a Mug-loop signal, not a self-drain order');
     expect(md).toContain('fleet-leader(<other>)→fleet-members');
     // su-loop-capability-parity P-011: turn-end reflection + reporting integrity
     expect(md).toContain('Turn-end reflection + reporting integrity');

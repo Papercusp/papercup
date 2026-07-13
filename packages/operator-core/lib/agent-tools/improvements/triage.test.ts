@@ -173,7 +173,7 @@ describe('improvements:triage tool', () => {
       const result = (await triageTool.handler({ mode: 'triage-all' }, ctx)) as any;
 
       const response = JSON.parse(result.content[0].text);
-      expect(response.note).toContain('Queen');
+      expect(response.note).toContain('Mug');
       expect(response.note).toContain('triage-one');
     });
   });

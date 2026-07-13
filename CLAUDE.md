@@ -6,6 +6,13 @@
 > model, retired surfaces, borrowable libs, branch/commit discipline long form,
 > two-port model, database topology, test infrastructure).
 
+> **Environment quick-start:** [`AGENT-ENV.md`](AGENT-ENV.md) — the machine-checked
+> repo operating contract (where shared code lives: `libs/` vs `packages/`; how to run
+> tests: the hoisted-root `vitest`; the operator-vite `@` cross-tree alias trap). It is
+> GENERATED from the real config (`npm run gen:agent-env`) so it cannot drift, and
+> `npm run doctor` asserts the same invariants as runnable checks. Read it first if you
+> are new to the tree.
+
 ## ▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp
 
 > The most-ignored rule in the repo. Read it before you try to "open the app".
