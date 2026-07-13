@@ -296,7 +296,13 @@ describe('bootstrap-su', () => {
     );
     // The playbook+ctx prompt is written to a launch-context file.
     expect(json.promptFile).toMatch(/session-42\.md$/);
-    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
+    const prompt = readFileSync(json.promptFile, 'utf8');
+    expect(prompt).toContain('PLAYBOOK + CTX BODY');
+    expect(prompt).toContain('⟦INSTRUCTION-PRECEDENCE⟧');
+    expect(json.instructionLint.precedenceTrace).toMatchObject({
+      effectiveMission: { constraint: 'execute-bound-plan', source: 'plan:my-plan' },
+      resync: { verb: 'coord:orient', rule: 'replace-full-never-merge-behind' },
+    });
 
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ planSlug: 'my-plan', agent: 'claude', mode: 'console' }),
@@ -429,10 +435,14 @@ describe('bootstrap-su', () => {
     // writeSuCodexHome gets the spec's prompt + url + the minted sid.
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        promptText: 'PLAYBOOK + CTX BODY',
+        promptText: expect.stringContaining('⟦INSTRUCTION-PRECEDENCE⟧'),
         mcpUrl: 'http://localhost:3070/api/mcp?superuser=1&workspace=default',
         sid: expect.stringMatching(/^su-/),
         token: 'TESTBEARER',
+        instructionRuntime: expect.objectContaining({
+          source: 'bootstrap-su',
+          route: { kind: 'self' },
+        }),
       }),
     );
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex', mode: 'console' }));
@@ -459,13 +469,17 @@ describe('bootstrap-su', () => {
 
   it('claude prompt-file delivery and codex AGENTS.md delivery start from the same assembled launch spec', async () => {
     const claude = await (await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' })).json();
-    expect(readFileSync(claude.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
+    const claudePrompt = readFileSync(claude.promptFile, 'utf8');
+    expect(claudePrompt).toContain('PLAYBOOK + CTX BODY');
+    expect(claudePrompt).toContain('⟦INSTRUCTION-PRECEDENCE⟧');
 
     vi.clearAllMocks();
     recordAdvSessionMock.mockResolvedValue(43);
     const codex = await callPost({ agent: 'codex', harness_slug: 'papercup', plan_slug: 'my-plan' });
     expect(codex.status).toBe(200);
-    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({ promptText: 'PLAYBOOK + CTX BODY' }));
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ promptText: expect.stringContaining('⟦INSTRUCTION-PRECEDENCE⟧') }),
+    );
   });
 
   it('claude: mints + records + returns a native session id (the launcher forces it via --session-id)', async () => {

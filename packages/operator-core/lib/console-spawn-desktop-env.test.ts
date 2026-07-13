@@ -218,6 +218,103 @@ describe('resolveLinuxDesktopEnv (WI-1886a)', () => {
   });
 });
 
+describe('resolveLinuxDesktopEnv — session D-Bus bus resolution (WI-4718)', () => {
+  // The owner's report: "terminals launched weirdly, they used to be my standard
+  // terminals". Root cause — the operator injected a hardcoded /run/user/<uid>/bus,
+  // but the owner's GNOME session ran its own dbus-daemon at /tmp/dbus-*, so
+  // gnome-terminal's client hit an empty bus and ghosted (WI-4711 then worked
+  // around it with xterm). The fix: resolve the LIVE session's bus and mark a
+  // desktop session detected so the caller prefers the standard terminal.
+  const runtimeExists = (p: string) =>
+    p === '/run/user/1000/bus' || p === '/run/user/1000';
+
+  it('a live session bus (session-spawned dbus-daemon) is injected, and a desktop session is marked detected', () => {
+    const r = resolveLinuxDesktopEnv(
+      {},
+      probes({
+        activeSeatDisplays: () => [':1'],
+        readdirSync: () => [],
+        existsSync: () => false,
+        sessionBus: () => 'unix:path=/tmp/dbus-XMPMm4vkBg,guid=abc',
+      }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.env.DISPLAY).toBe(':1');
+    expect(r.env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/tmp/dbus-XMPMm4vkBg,guid=abc');
+    expect(r.desktopSessionDetected).toBe(true);
+    expect(r.dbusVia).toBe('session-scan');
+  });
+
+  it('the session-bus probe is asked about the RESOLVED active-seat display', () => {
+    let askedDisplay: string | null | undefined;
+    resolveLinuxDesktopEnv(
+      {},
+      probes({
+        activeSeatDisplays: () => [':1'],
+        existsSync: () => false,
+        sessionBus: (d) => {
+          askedDisplay = d;
+          return 'unix:path=/tmp/dbus-x';
+        },
+      }),
+    );
+    expect(askedDisplay).toBe(':1');
+  });
+
+  it('NO desktop session detected (probe returns null) ⇒ falls back to the systemd user bus and does NOT mark a session', () => {
+    const r = resolveLinuxDesktopEnv(
+      {},
+      probes({
+        readdirSync: () => ['X1'],
+        existsSync: runtimeExists,
+        sessionBus: () => null,
+      }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/run/user/1000/bus');
+    expect(r.desktopSessionDetected).toBe(false);
+    expect(r.dbusVia).toBe('user-bus');
+  });
+
+  it('no sessionBus probe supplied (legacy callers) ⇒ user-bus fallback, no session detected — backward compatible', () => {
+    const r = resolveLinuxDesktopEnv(
+      {},
+      probes({ readdirSync: () => ['X1'], existsSync: runtimeExists }),
+    );
+    expect(r.env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/run/user/1000/bus');
+    expect(r.desktopSessionDetected).toBe(false);
+    expect(r.dbusVia).toBe('user-bus');
+  });
+
+  it('operator already carries a DBUS bus ⇒ trusted, session detected, nothing injected, probe not consulted', () => {
+    let probeCalled = false;
+    const r = resolveLinuxDesktopEnv(
+      { DISPLAY: ':0', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/existing' },
+      probes({
+        existsSync: (p) => p === '/tmp/.X11-unix/X0',
+        sessionBus: () => {
+          probeCalled = true;
+          return 'unix:path=/should-not-be-used';
+        },
+      }),
+    );
+    expect(r.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined(); // not overridden
+    expect(r.desktopSessionDetected).toBe(true);
+    expect(r.dbusVia).toBe('operator-env');
+    expect(probeCalled).toBe(false);
+  });
+
+  it('no session AND no user bus on disk ⇒ dbusVia null, no session detected', () => {
+    const r = resolveLinuxDesktopEnv(
+      {},
+      probes({ readdirSync: () => ['X1'], existsSync: () => false, sessionBus: () => null }),
+    );
+    expect(r.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined();
+    expect(r.dbusVia).toBeNull();
+    expect(r.desktopSessionDetected).toBe(false);
+  });
+});
+
 describe('classifyEarlyExit (WI-1886b)', () => {
   it('nonzero exit is ALWAYS a failure (the "Cannot open display" shape)', () => {
     expect(classifyEarlyExit(['--wait', '--'], 1, null).failed).toBe(true);

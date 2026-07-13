@@ -118,8 +118,6 @@ const STALE_RULE_VALUES: Record<string, Record<string, string>> = {
 
 function stableRuntimeContext(input: InstructionRuntimeContext) {
   return {
-    source: input.source,
-    ownerId: input.ownerId ?? null,
     modes: [...new Set(input.modes ?? [])].sort(),
     route: input.route ?? { kind: 'self' as const },
     scope: {

@@ -113,8 +113,8 @@ describe('lintInstructionText', () => {
       observedAt: '2026-07-13T20:00:00.000Z',
     });
     const b = buildInstructionPrecedenceTrace({
-      source: 'coord:orient',
-      ownerId: 'su-x',
+      source: 'bootstrap-su',
+      ownerId: 'su-y',
       modes: ['drain', 'auto'],
       route: { kind: 'fleet', fleet: 'bugs', role: 'leader' },
       scope: { plan: 'drain-plan', items: ['P-001', 'P-002'] },

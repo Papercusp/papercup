@@ -659,6 +659,8 @@ export function resolveLinuxDesktopEnv(
             'or run the command yourself in a terminal on the machine with the display. (WI-1886)',
           warnings,
           resolvedVia: null,
+          desktopSessionDetected: false,
+          dbusVia: null,
         };
       }
       env.DISPLAY = `:${sockets[0]!.slice(1)}`;
@@ -672,9 +674,36 @@ export function resolveLinuxDesktopEnv(
     }
   }
 
+  // DBUS_SESSION_BUS_ADDRESS (WI-4718): a client-server terminal
+  // (gnome-terminal/konsole) opens its window via a per-session D-Bus server,
+  // so it must connect to the SESSION's bus — which is NOT always the systemd
+  // user bus. On the dev box GNOME started its own dbus-daemon at /tmp/dbus-*,
+  // and injecting a hardcoded /run/user/<uid>/bus pointed the terminal client at
+  // an empty bus with no server → it ghosted (the invisible window). So:
+  //   1. operator already has a bus  → trust it (it is in a desktop session);
+  //   2. else scan the live session (running gnome-terminal-server/gnome-shell)
+  //      for the real bus and inject it — this is what makes the owner's STANDARD
+  //      terminal open reliably from the headless operator;
+  //   3. else fall back to the systemd user bus, but WITHOUT marking a desktop
+  //      session detected (no window server known) so the caller prefers a
+  //      process-per-window terminal instead.
   const runtimeDir = `/run/user/${probes.uid}`;
-  if (!baseEnv.DBUS_SESSION_BUS_ADDRESS && probes.existsSync(`${runtimeDir}/bus`)) {
-    env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
+  let desktopSessionDetected = false;
+  let dbusVia: 'operator-env' | 'session-scan' | 'user-bus' | null = null;
+  if (baseEnv.DBUS_SESSION_BUS_ADDRESS) {
+    desktopSessionDetected = true;
+    dbusVia = 'operator-env';
+  } else {
+    const resolvedDisplay = env.DISPLAY ?? baseEnv.DISPLAY ?? null;
+    const sessionBus = probes.sessionBus?.(resolvedDisplay) ?? null;
+    if (sessionBus) {
+      env.DBUS_SESSION_BUS_ADDRESS = sessionBus;
+      desktopSessionDetected = true;
+      dbusVia = 'session-scan';
+    } else if (probes.existsSync(`${runtimeDir}/bus`)) {
+      env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
+      dbusVia = 'user-bus';
+    }
   }
   if (!baseEnv.XDG_RUNTIME_DIR && probes.existsSync(runtimeDir)) {
     env.XDG_RUNTIME_DIR = runtimeDir;
@@ -695,7 +724,7 @@ export function resolveLinuxDesktopEnv(
     const found = candidates.find((p) => probes.existsSync(p));
     if (found) env.XAUTHORITY = found;
   }
-  return { env, resolved: true, error: null, warnings, resolvedVia };
+  return { env, resolved: true, error: null, warnings, resolvedVia, desktopSessionDetected, dbusVia };
 }
 
 /**
@@ -989,19 +1018,14 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     desktopEnv = { DISPLAY: opts.displayOverride };
     resolvedVia = 'caller-override';
   } else {
-    term = findLinuxTerminal();
-    if (!term) {
-      return {
-        status: 'error',
-        error:
-          'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm',
-        code: 500,
-      };
-    }
-
     // WI-1886(a): the operator often runs headless (systemd user service) —
     // resolve the interactive session's desktop env and inject it; with no
     // display resolvable, fail LOUD before spawning a client that would ghost.
+    // WI-4718: resolve FIRST, then pick the terminal — desktopSessionDetected
+    // (was a live desktop session's D-Bus bus found?) decides whether to prefer
+    // the owner's standard client-server terminal (gnome-terminal, which will
+    // reach its server on the injected bus) or a reliable process-per-window
+    // emulator (a bare Xvfb/sandbox with no reachable window server).
     const desktop = resolveLinuxDesktopEnv(process.env, opts.desktopEnvProbes);
     if (!desktop.resolved) {
       return { status: 'error', error: desktop.error ?? 'no X display (WI-1886)', code: 412 };
@@ -1012,6 +1036,15 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
       // from. Log loudly (visible in the systemd journal for a service-managed
       // operator) so a recurrence has a named cause instead of a silent wedge.
       console.warn(`[console-spawn] ${desktop.warnings.join('; ')}`);
+    }
+    term = findLinuxTerminal(desktop.desktopSessionDetected);
+    if (!term) {
+      return {
+        status: 'error',
+        error:
+          'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm',
+        code: 500,
+      };
     }
     desktopEnv = desktop.env;
     // resolvedVia is non-null whenever resolved === true (checked above).

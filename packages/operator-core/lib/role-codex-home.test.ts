@@ -488,6 +488,13 @@ describe('writeSuCodexHome', () => {
       promptText:
         'P\n<!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-START -->\nold static lock advice\n<!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-END -->',
       sid: 's',
+      instructionRuntime: {
+        source: 'bootstrap-su',
+        ownerId: 's',
+        modes: ['auto'],
+        route: { kind: 'self' },
+        scope: { plan: 'plan-x' },
+      },
     });
     const agents = readFileSync(out.agentsPath, 'utf8');
     const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
@@ -496,6 +503,15 @@ describe('writeSuCodexHome', () => {
     expect(agents.match(/papercusp-rule:file-locking=/g)).toHaveLength(1);
     expect(agents).toContain('papercusp-rule:file-locking=automatic-hooks');
     expect(out.instructionLint.conflicts).toEqual([]);
+    expect(out.instructionLint.precedenceTrace).toMatchObject({
+      effectiveMission: { constraint: 'execute-bound-plan', source: 'plan:plan-x' },
+      decisions: expect.arrayContaining([
+        expect.objectContaining({
+          key: 'execution-authorization',
+          effective: expect.objectContaining({ value: 'act-with-disclosure' }),
+        }),
+      ]),
+    });
   });
 
   it('reads non-secret CODEX_HOME diagnostics, including latest rollout id and resume command', async () => {
