@@ -30,10 +30,13 @@ export interface HookRunResult {
 export function runHookProcess(
   command: string,
   args: string[],
-  opts: { input?: string; env: NodeJS.ProcessEnv },
+  // A plain string map, not NodeJS.ProcessEnv: this repo augments ProcessEnv to REQUIRE NODE_ENV,
+  // and a hook is deliberately handed a hermetic, hand-built env (no NODE_ENV) in several suites.
+  // `spawn` only ever needs a string map. `process.env` still satisfies this.
+  opts: { input?: string; env: Record<string, string | undefined> },
 ): Promise<HookRunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env: opts.env });
+    const child = spawn(command, args, { env: opts.env as NodeJS.ProcessEnv });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => {

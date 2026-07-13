@@ -48,14 +48,33 @@ export default defineTool({
     shrinkReason: z.string().min(1).max(2000).optional().describe('why the shrink is intentional (required with allowMethodShrink)'),
   }),
   async handler(args, ctx) {
-    const id = resolveAgentIdentity(ctx);
+    // ⚠ DO NOT pass `by: id.ownerId` here. AMENDING IS NOT AUTHORING (EI-10746 follow-on,
+    // 2026-07-12). A rubric persists as a PLAN, and a plan has ONE `owner` — so
+    // planRowToRubric projects createdBy AND proposedBy AND ratifiedBy from that single
+    // field (rubrics.ts:213-215). Forcing `by` to the caller therefore silently TRANSFERS
+    // AUTHORSHIP of the rubric to whoever amends it.
+    //
+    // That is not cosmetic: D-012 requires a NON-AUTHOR to ratify. So a reviewer who
+    // improves a rubric before ratifying it — exactly the diligent path — becomes its
+    // recorded author, and their ratification is silently converted into the
+    // SELF-RATIFICATION the rule exists to forbid. The act of reviewing well disqualified
+    // the reviewer. Observed live: a non-author ratifier amended blender-release-readiness
+    // and instantly became its createdBy/proposedBy, erasing su-eb9b7ae3.
+    //
+    // amendRubric already does the right thing on its own (`input.by ?? stored.createdBy`,
+    // rubrics.ts:801) — that fallback preserves the original author. It was simply DEAD,
+    // because this wrapper always supplied `by`. Omitting it lets the guard actually run.
+    //
+    // Who amended is not lost: per D-002 the plan's revision spine carries the edit history.
+    // (The deeper defect — that proposedBy/ratifiedBy are unrepresentable because all three
+    // identities collapse onto plan.owner, making D-012 unauditable — is tracked separately.)
+    resolveAgentIdentity(ctx); // still resolve: authz/identity side-effects + a clear failure if unidentified
     const rubric = await amendRubric({
       rubricId: args.rubricId,
       ...(args.criterion ? { criterion: args.criterion } : {}),
       ...(args.methodRef !== undefined ? { methodRef: args.methodRef } : {}),
       ...(args.allowMethodShrink !== undefined ? { allowMethodShrink: args.allowMethodShrink } : {}),
       ...(args.shrinkReason !== undefined ? { shrinkReason: args.shrinkReason } : {}),
-      by: id.ownerId,
     });
     if (!rubric) {
       return {

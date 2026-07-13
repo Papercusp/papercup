@@ -14,7 +14,7 @@
  * needing a live operator.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { spawn } from 'node:child_process';
+import { runHookProcess } from './spawn-hook';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
@@ -85,28 +85,26 @@ afterEach(() => {
   useSse = false;
 });
 
-// Async spawn (NOT spawnSync): spawnSync blocks the event loop, so the in-process
-// stub operator below could never serve the hook's request — it would always fall
-// through to the 10s timeout + fail-open. Async keeps the loop free to respond.
-function run(input: object, extraEnv: Record<string, string> = {}): Promise<{ status: number | null; stdout: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('bash', [HOOK], {
-      env: {
-        ...process.env,
-        HOME: home,
-        PAPERCUSP_LOCKS_CACHE_DIR: cache,
-        PAPERCUSP_WORKSPACE_ROOT: ws,
-        PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
-        ...extraEnv,
-      },
-    });
-    let stdout = '';
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.on('error', reject);
-    child.on('close', (status) => resolve({ status, stdout: stdout.trim() }));
-    child.stdin.write(JSON.stringify(input));
-    child.stdin.end();
+// Async spawn (NOT spawnSync): spawnSync blocks the event loop, so the in-process stub operator
+// below could never serve the hook's request — it would always fall through to the 10s timeout +
+// fail-open. Async keeps the loop free to respond. ./spawn-hook.ts owns that invariant, plus the
+// EPIPE-tolerant stdin write (the hook exits before reading stdin on its guard paths).
+async function run(
+  input: object,
+  extraEnv: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string }> {
+  const { status, stdout } = await runHookProcess('bash', [HOOK], {
+    input: JSON.stringify(input),
+    env: {
+      ...process.env,
+      HOME: home,
+      PAPERCUSP_LOCKS_CACHE_DIR: cache,
+      PAPERCUSP_WORKSPACE_ROOT: ws,
+      PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
+      ...extraEnv,
+    },
   });
+  return { status, stdout: stdout.trim() };
 }
 
 const editOf = (rel: string, toolUseId: string) => ({
