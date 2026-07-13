@@ -606,6 +606,8 @@ describe('maybeBatchNudge — pipeline kind (P-002): a chained burst is not "ind
     expect(hit?.text).toMatch(/const r0 = await tools\.workItems\.release\(\{"id":"WI-4222"/);
     expect(hit?.text).toMatch(/const r1 = await tools\.workItems\.claim\(/);
     expect(hit?.text).toContain('return { r0, r1, r2 }');
+    expect(hit?.suggestedScript).toMatch(/const r0 = await tools\.workItems\.release\(\{"id":"WI-4222"/);
+    expect(hit?.text).toContain(hit?.suggestedScript ?? '');
   });
 
   it('stays kind=fanout when the only shared values sit under ambient-context keys (harness etc.)', () => {
@@ -637,6 +639,9 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
     expect(hit?.text).toContain('{"id":"WI-1111"},');
     expect(hit?.text).toContain('{"id":"WI-2222"},');
     expect(hit?.text).toContain('extend this list');
+    expect(hit?.suggestedScript).toContain('{"id":"WI-1111"},');
+    expect(hit?.suggestedScript).toContain('{"id":"WI-2222"},');
+    expect(hit?.text).toContain(hit?.suggestedScript ?? '');
   });
 
   it('prefills the fan-out skeleton with each tool\'s last args; empty args keep the placeholder', () => {
@@ -656,6 +661,9 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
     expect(firstFire?.text).toContain('tools.plans.get({"slug":"alpha-plan"})');
     expect(firstFire?.text).toContain('tools.docs.search({"q":"beta-topic"})');
     expect(firstFire?.text).toContain('tools.coord.presence(/* args */)');
+    expect(firstFire?.suggestedScript).toContain('tools.plans.get({"slug":"alpha-plan"})');
+    expect(firstFire?.suggestedScript).toContain('tools.docs.search({"q":"beta-topic"})');
+    expect(firstFire?.text).toContain(firstFire?.suggestedScript ?? '');
   });
 
   it('escapes backticks and ${ in prefilled args so the skeleton stays pasteable', () => {

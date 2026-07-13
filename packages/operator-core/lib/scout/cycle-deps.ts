@@ -487,7 +487,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       } catch {
         /* best-effort */
       }
-      // COORD-HEALTH lane (blender-self-learning-2026-07-12 P-011 / WI-4453):
+      // COORD-HEALTH lane (blender-self-learning-2026-07-12 P-008 / WI-4453):
       // coordination breakdown from coord_event_log — re-mounting escalation
       // storms (leaking dedup gate), fleet-wide unanswered directed mail, per-
       // recipient inbox/wake floods, claim conflicts. Fail-soft (the lane module

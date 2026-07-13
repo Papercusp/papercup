@@ -176,7 +176,7 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // P-010 (blender-self-learning): the release ship-path incident rides the
     // flatten so ideation targets chronic gate/pipeline pain directly.
     ['gate-pipeline-health', digest.gatePipelineHealth ?? []],
-    // P-011 (blender-self-learning): coordination breakdown rides the flatten so
+    // P-008 (blender-self-learning): coordination breakdown rides the flatten so
     // ideation targets escalation storms / unanswered mail / wake floods directly.
     ['coord-health', digest.coordHealth ?? []],
   ];

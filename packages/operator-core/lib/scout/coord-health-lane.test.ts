@@ -5,7 +5,7 @@ import {
 } from './coord-health-lane';
 
 /**
- * blender-self-learning-2026-07-12 P-011 / WI-4453: the coord-health lane feeds
+ * blender-self-learning-2026-07-12 P-008 / WI-4453: the coord-health lane feeds
  * coordination breakdown (re-mounting escalation storms, unanswered directed mail,
  * inbox/wake floods, claim conflicts) from coord_event_log into the corpus digest,
  * so ideation targets the coordination fabric's chronic pain directly. These pin the

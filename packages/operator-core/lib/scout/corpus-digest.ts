@@ -292,7 +292,7 @@ export const DigestSchema = z.object({
    *  chronic pipeline_events failure classes (WI-4455). OPTIONAL: populated by
    *  the cycle seam (cycle-deps readCorpus), like watchdogHealth. */
   gatePipelineHealth: z.array(MetaPatternSchema).optional(),
-  /** COORD HEALTH (blender-self-learning-2026-07-12 P-011 / WI-4453) —
+  /** COORD HEALTH (blender-self-learning-2026-07-12 P-008 / WI-4453) —
    *  coordination breakdown from coord_event_log: escalation storms, unanswered
    *  directed mail, inbox/wake floods, claim conflicts. OPTIONAL: populated by
    *  the cycle seam (cycle-deps readCorpus), like watchdogHealth. */

@@ -1,6 +1,6 @@
 /**
  * coord-health-lane.ts — the COORD-HEALTH digest lane
- * (blender-self-learning-2026-07-12 P-011 / WI-4453).
+ * (blender-self-learning-2026-07-12 P-008 / WI-4453).
  *
  * The coordination fabric continuously records how the FLEET is failing to
  * cooperate: escalations that re-mount over and over (a known-benign transient

@@ -101,7 +101,7 @@ export type MetaPatternCategory =
   // health — standing gate reds + stall, promotion/deploy lag, and chronic
   // pipeline_events failure classes, JOINED into one incident (WI-4455).
   | 'gate-pipeline-health'
-  // blender-self-learning-2026-07-12 P-011 / WI-4453: coordination breakdown —
+  // blender-self-learning-2026-07-12 P-008 / WI-4453: coordination breakdown —
   // re-mounting escalation storms, fleet-wide unanswered directed mail, per-
   // recipient inbox/wake floods, and claim conflicts, from coord_event_log.
   | 'coord-health';
@@ -175,7 +175,7 @@ export interface CorpusDigest {
    *  `pipeline:event:<kind>:<status>`). OPTIONAL: populated by the cycle seam,
    *  like watchdogHealth. */
   gatePipelineHealth?: MetaPattern[];
-  /** COORD HEALTH (blender-self-learning-2026-07-12 P-011 / WI-4453) —
+  /** COORD HEALTH (blender-self-learning-2026-07-12 P-008 / WI-4453) —
    *  coordination breakdown from coord_event_log: re-mounting escalation storms
    *  (leaking dedup gate), fleet-wide unanswered directed mail, per-recipient
    *  inbox/wake floods, and claim conflicts

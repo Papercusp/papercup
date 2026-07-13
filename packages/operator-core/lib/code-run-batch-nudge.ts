@@ -502,6 +502,10 @@ export type BatchNudgeKind = 'same-tool' | 'fanout' | 'pipeline' | 'preempt';
 export interface BatchNudgeResult {
   /** The hint text to attach to the tool result (no `[batch-hint]` prefix — the call site adds it). */
   text: string;
+  /** Copy-paste-ready code:run replay reconstructed from the calls that triggered this hint.
+   * Reactive hints include the real recorded arguments; predictive preempt hints omit this because
+   * the per-row verb is intentionally unknown at prediction time. */
+  suggestedScript?: string;
   /** Which trigger fired — drives which feature flag gates it at the call site ('pipeline' rides
    *  the fan-out flag; telemetry records the kind verbatim, keeping the two distinguishable). */
   kind: BatchNudgeKind;
@@ -626,15 +630,17 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
   if (kind === 'same-tool') {
     const burst = totalRecent > sameToolTurns ? ` (${totalRecent} tool calls total this burst)` : '';
+    const suggestedScript = sameToolSkeleton(toolName, st.recent);
     const text =
       `${banner}you've called "${toolName}" from ${sameToolTurns}× separate turns in the last ~${windowS}s${burst} — ` +
       `that's ${sameToolTurns} separate round-trips, each re-reading your whole context. If these are ` +
       `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton, ` +
       `\`inputs\` prefilled from this burst (extend it instead of firing another solo call):\n` +
-      `${sameToolSkeleton(toolName, st.recent)}\n${TRAILER}${activate}`;
-    return { text, kind, tool: toolName };
+      `${suggestedScript}\n${TRAILER}${activate}`;
+    return { text, suggestedScript, kind, tool: toolName };
   }
   if (kind === 'pipeline') {
+    const suggestedScript = pipelineSkeleton(st.recent);
     const text =
       `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools spanning ` +
       `${distinctTurnsInWindow} separate turns in the last ~${windowS}s — that's ~${distinctTurnsInWindow} ` +
@@ -642,18 +648,19 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
       `the SAME object through different verbs — a CHAINED pipeline, and dependence does NOT mean ` +
       `one-call-per-turn: a script threads one result into the next (and can branch on it). Sequence the chain ` +
       `INSIDE one code:run — this burst as one round-trip (args prefilled):\n` +
-      `${pipelineSkeleton(st.recent)}\n${TRAILER}${activate}`;
-    return { text, kind, tool: toolName };
+      `${suggestedScript}\n${TRAILER}${activate}`;
+    return { text, suggestedScript, kind, tool: toolName };
   }
   // fan-out
+  const suggestedScript = fanoutSkeleton(distinctOrder, st.recent);
   const text =
     `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools spanning ` +
     `${distinctTurnsInWindow} separate turns in the last ~${windowS}s — that's ~${distinctTurnsInWindow} ` +
     `round-trips, each re-reading your whole context. Collapse the burst ` +
     `into ONE code:run — Promise.all when the calls are independent, sequential awaits when one feeds the ` +
     `next — ready-to-paste skeleton (args prefilled from your last calls):\n` +
-    `${fanoutSkeleton(distinctOrder, st.recent)}\n${TRAILER}${activate}`;
-  return { text, kind, tool: toolName };
+    `${suggestedScript}\n${TRAILER}${activate}`;
+  return { text, suggestedScript, kind, tool: toolName };
 }
 
 /** A subsumed re-fetch within this window after a successful coord:orient → the soft dedup nudge.
