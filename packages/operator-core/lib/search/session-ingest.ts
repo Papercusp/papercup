@@ -725,7 +725,7 @@ export async function ingestFileNow(
     const rows: TurnRow[] = turns.map((t, i) => ({
       workspace_id: 'default',
       source_kind: adapter.sourceKind,
-      session_id: t.sessionId ?? meta.sessionId,
+      session_id: t.sessionId ?? opts.sessionId ?? meta.sessionId,
       turn_idx: st.turn_count + i,
       ts: t.ts ? t.ts.toISOString() : null,
       owner: opts.owner ?? meta.owner,

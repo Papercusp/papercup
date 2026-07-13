@@ -36,11 +36,24 @@ export function isAutoPickable(
   auditVerdict: string | null | undefined,
   verifiedAuthorGithubUserId?: number | null,
   trustedGithubUserIds?: ReadonlySet<number>,
+  authorPubkey?: string | null,
+  ownAuthorPubkeys?: ReadonlySet<string>,
 ): boolean {
   // Local features always bypass the auditor — origin NULL = local (pre-G1 back-compat).
   if (origin == null || origin === 'local') return true;
   // Remote features are pickable when the auditor has admitted them…
   if (auditVerdict === 'admit') return true;
+  // …OR the OWN-NODE fast-path: the row was authored by a substrate-log key this
+  // workspace already knows as its own (see ownAuthorWhereSql for why that is sound).
+  // A blank/absent pubkey NEVER qualifies — see the guards there.
+  if (
+    authorPubkey != null &&
+    authorPubkey !== '' &&
+    ownAuthorPubkeys != null &&
+    ownAuthorPubkeys.has(authorPubkey)
+  ) {
+    return true;
+  }
   // …OR the TRUST fast-path (Phase 3 / P-010): a remote+un-admitted item whose
   // VERIFIED author (P-008, never a self-claimed id) is in the owner's LOCAL trust
   // list. The verified id must be present AND in the trusted set — a NULL verified
@@ -99,7 +112,78 @@ export function autoPickableWhereSql(sql: OrgSql, workspaceId?: string) {
   const trustLeg = workspaceId
     ? sql` OR (verified_author_github_user_id IS NOT NULL AND verified_author_github_user_id IN (SELECT trusted_github_user_id FROM harness_shared.user_trust_list WHERE workspace_id = ${workspaceId}))`
     : sql``;
-  return sql`(origin = 'local' OR origin IS NULL OR audit_verdict = 'admit'${trustLeg})`;
+  const ownLeg = workspaceId ? sql` OR ${ownAuthorWhereSql(sql, workspaceId)}` : sql``;
+  return sql`(origin = 'local' OR origin IS NULL OR audit_verdict = 'admit'${trustLeg}${ownLeg})`;
+}
+
+/**
+ * OWN-NODE admission leg — the default that makes a single owner's own machines
+ * trust each other with no configuration [owner:Avi 2026-07-13: "trust our own
+ * nodes ... that should be the default. all new papercusp installs should have
+ * that behavior without needing to do anything"].
+ *
+ * WHY THIS EXISTS. `origin` records HOW A ROW ARRIVED, not who wrote it: an item
+ * this workspace authored itself, once it round-trips through the 2-machine
+ * federation path, comes back projected as origin='remote'. With the auditor lane
+ * unbuilt (nothing in production has ever written audit_verdict) and the trust list
+ * empty, such a row satisfied NO leg of the gate — so a pot whose whole frontier had
+ * federated was quarantined against ITSELF: the Queen surveyed a frontier of zero,
+ * correctly placed nothing, and reported success. Silent placement deadlock.
+ *
+ * WHAT MAKES A KEY "OURS" — and why this is sound rather than a loophole. A row is
+ * stamped origin='local' only when OUR OWN core writes it; a peer's row is projected
+ * as 'remote'. So "has authored a local-origin row in THIS workspace" is a property a
+ * foreign key cannot manufacture from the outside — it is evidence our own substrate
+ * log produced that key's writes. It also needs no registry and no setup: a fresh
+ * install's first local write enrolls its own key, and a stranger's key never appears.
+ *
+ * NOT the device-attestation key space. `pot_members.device_attestations[].device_pubkey`
+ * is a DIFFERENT key (and base64, where author_pubkey is hex) — it does not identify the
+ * substrate log author, so it cannot answer this question.
+ *
+ * LOAD-BEARING GUARDS:
+ *   - workspace-scoped (D-004), for the same admin-handle/RLS-bypass reason as the
+ *     trust leg above; `workspaceId` omitted ⇒ the leg is dropped (fail-safe).
+ *   - author_pubkey <> '' on BOTH sides. Blank-authored local rows exist (a pre-
+ *     federation back-compat case); without this guard '' would enter the own-key set
+ *     and admit EVERY remote row that also carries a blank author — turning a scoped
+ *     trust decision into an open door.
+ * The leg is POSITIVE (an OR arm), so a NULL author_pubkey is falsy in WHERE and simply
+ * fails to admit — the three-valued-logic trap only bites a NEGATED predicate.
+ */
+export function ownAuthorWhereSql(sql: OrgSql, workspaceId: string) {
+  return sql`(author_pubkey IS NOT NULL AND author_pubkey <> '' AND author_pubkey IN (
+    SELECT DISTINCT author_pubkey
+      FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id = ${workspaceId}
+       AND (origin = 'local' OR origin IS NULL)
+       AND author_pubkey IS NOT NULL
+       AND author_pubkey <> ''
+  ))`;
+}
+
+/**
+ * Load this workspace's OWN substrate-log author keys — the JS-gate counterpart of
+ * {@link ownAuthorWhereSql}. Workspace-scoped (D-004). Empty set on any read failure
+ * (fail-safe: no own-node fast-path rather than over-broad admission).
+ */
+export async function loadOwnAuthorPubkeys(workspaceId: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!workspaceId) return out;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ author_pubkey: string }[]>`
+      SELECT DISTINCT author_pubkey
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = ${workspaceId}
+         AND (origin = 'local' OR origin IS NULL)
+         AND author_pubkey IS NOT NULL
+         AND author_pubkey <> ''`;
+    for (const r of rows) if (r.author_pubkey) out.add(r.author_pubkey);
+  } catch {
+    /* fail-safe — empty set ⇒ own-node fast-path simply doesn't fire */
+  }
+  return out;
 }
 
 /**
@@ -193,8 +277,8 @@ export async function isWorkItemAutoPickable(
 ): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ origin: string | null; audit_verdict: string | null; verified_author_github_user_id: number | string | null }[]>`
-    SELECT origin, audit_verdict, verified_author_github_user_id
+  const rows = await sql<{ origin: string | null; audit_verdict: string | null; verified_author_github_user_id: number | string | null; author_pubkey: string | null }[]>`
+    SELECT origin, audit_verdict, verified_author_github_user_id, author_pubkey
       FROM harness_shared.harness_features_consolidated
      WHERE harness_slug = ${opts.harness}
        AND workspace_id = ${ws}
@@ -203,6 +287,20 @@ export async function isWorkItemAutoPickable(
   if (!rows[0]) return false;
   // Local / auditor-admitted fast path (no trust-list read needed).
   if (isAutoPickable(rows[0].origin, rows[0].audit_verdict)) return true;
+  // OWN-NODE fast-path: authored by a key this workspace knows as its own. Checked
+  // in SQL against the SAME definition ownAuthorWhereSql uses, so this per-id path
+  // can't drift from the claim/place chokepoints.
+  const pubkey = rows[0].author_pubkey;
+  if (pubkey) {
+    const own = await sql`
+      SELECT 1
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = ${ws}
+         AND (origin = 'local' OR origin IS NULL)
+         AND author_pubkey = ${pubkey}
+       LIMIT 1`;
+    if (own.length > 0) return true;
+  }
   // TRUST fast-path: a remote+un-admitted item whose VERIFIED author is in this
   // workspace's local trust list (explicitly ws-scoped — D-004). NULL verified id
   // (unverified / revoked / local) never qualifies.

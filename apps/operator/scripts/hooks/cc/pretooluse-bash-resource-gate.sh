@@ -166,16 +166,64 @@ def _strip_shell_quotes(s):
             i += 1
     return ''.join(out)
 
-if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
-        r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|batch|systemd-run)\b'
-        r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',
-        _strip_shell_quotes(command)):
-    deny(
+# EI-10940: the refusal must answer the INTENT, not the token. `systemd-run` is
+# BOTH the scheduler (`--on-calendar=…`) and the only stock way to ask for cgroup
+# resource control (`-p CPUQuota=…`, `--scope`). An agent reaching for the SECOND
+# one is not scheduling anything — pointing it at `pot:declare-wake` (a WAKE
+# scheduler) is a non-sequitur that costs a real debugging detour before it works
+# out that the tool it was told to use cannot do the thing it wanted. The deny
+# itself is correct either way (agent sessions cannot create transient units), so
+# branch only the REASON: name the actual alternatives (`taskset` / pc-heavy.sh).
+# Mirrors isResourceLimitInvocation()/osSchedulerDenyReason() in the OMP hook
+# (scripts/hooks/omp/coord-hook.ts) — a guard fixed in one path must be fixed in
+# both, since Claude/Codex hit THIS one and OMP hits that one.
+_SYSTEMD_RESOURCE_PROP_RE = (
+    r'(?:-p|--property)[=\s]*'
+    r'(?:CPUQuota|CPUWeight|AllowedCPUs|AllowedMemoryNodes|MemoryMax|MemoryHigh'
+    r'|MemoryLimit|IOWeight|TasksMax)\b'
+    r'|--scope\b'
+)
+_SYSTEMD_SCHEDULE_FLAG_RE = (
+    r'--on-(?:calendar|active|boot|startup|unit-active|unit-inactive)\b'
+    r'|--timer-property\b'
+)
+
+
+def _is_resource_limit_invocation(cmd):
+    # True only for a `systemd-run` asking for RESOURCE CONTROL, not a schedule.
+    # A schedule flag WINS (`systemd-run --on-calendar=… -p CPUQuota=…` really is
+    # creating a timer) so the scheduling advice stays correct for the hybrid.
+    c = _strip_shell_quotes(cmd)
+    if not re.search(r'\bsystemd-run\b', c):
+        return False
+    if re.search(_SYSTEMD_SCHEDULE_FLAG_RE, c, re.I):
+        return False  # scheduling wins
+    return bool(re.search(_SYSTEMD_RESOURCE_PROP_RE, c, re.I))
+
+
+def _os_scheduler_deny_reason(cmd):
+    if _is_resource_limit_invocation(cmd):
+        return (
+            'native-scheduler lockout: agent sessions cannot create transient systemd '
+            'units, so cgroup resource control via `systemd-run` is unavailable here. '
+            'You are trying to LIMIT RESOURCES, not schedule a wake — use `taskset -c '
+            '<cores> <cmd>` to pin CPUs (no scheduler, no root, no daemon), or run heavy '
+            'commands through `scripts/pc-heavy.sh` (nice + a concurrency semaphore) on '
+            'the shared box. (`pot:declare-wake` is for SCHEDULING and is not what you want.)'
+        )
+    return (
         'native-scheduler lockout: agent sessions must not create OS schedules '
         '(crontab / at / batch / systemd-run). Declare your wake via '
         'pot:declare-wake instead — the routines table is the only scheduler '
         "the hive's pause/status/liveness machinery can see."
     )
+
+
+if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
+        r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|batch|systemd-run)\b'
+        r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',
+        _strip_shell_quotes(command)):
+    deny(_os_scheduler_deny_reason(command))
 
 # Destructive tree-wide git guard (hive-loop-supervision-2026-06-21): a
 # pathspec-less `git reset --hard` / `git checkout|restore .` (or `:/`) /

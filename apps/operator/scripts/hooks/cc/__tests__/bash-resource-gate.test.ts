@@ -136,6 +136,83 @@ describe('native-scheduler lockout (agent sessions)', () => {
   });
 });
 
+/**
+ * EI-10940 — the refusal must answer the INTENT, not the token.
+ *
+ * `systemd-run` is overloaded: it is BOTH the OS scheduler (`--on-calendar=…`)
+ * AND the only stock way to ask for cgroup resource control (`-p CPUQuota=…`,
+ * `--scope`). The lockout denied both with one hardcoded message telling you to
+ * "declare your wake via pot:declare-wake" — a non-sequitur when what you were
+ * actually doing was capping CPU on a heavy test run, and one that costs a real
+ * detour before you work out the suggested tool cannot do the thing you wanted.
+ *
+ * The DENY is right either way (agent sessions cannot create transient units).
+ * Only the REASON branches. These are recurrence guards: they fail against the
+ * old single hardcoded message.
+ */
+function denyReason(out: { stdout: string; status: number | null }): string {
+  expect(out.status).toBe(0);
+  const decision = JSON.parse(out.stdout);
+  expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+  return decision.hookSpecificOutput.permissionDecisionReason as string;
+}
+
+describe('native-scheduler lockout: the refusal answers the INTENT (EI-10940)', () => {
+  it.each([
+    ['-p CPUQuota', 'systemd-run -p CPUQuota=200% node_modules/.bin/vitest run'],
+    ['--property=CPUQuota', 'systemd-run --property=CPUQuota=800% npm run build'],
+    ['-p MemoryMax', 'systemd-run -p MemoryMax=4G ./heavy.sh'],
+    ['--scope (transient cgroup, no props)', 'systemd-run --scope ./heavy.sh'],
+    ['-p AllowedCPUs (cpuset)', 'systemd-run -p AllowedCPUs=0-7 ./heavy.sh'],
+    ['sudo form', 'sudo systemd-run -p CPUWeight=50 ./heavy.sh'],
+  ])('a RESOURCE-LIMIT systemd-run (%s) is refused with the resource answer, not the wake answer', (_l, command) => {
+    const reason = denyReason(runGate(bashCmd(command), AGENT));
+    // Points at the tools that actually do this here…
+    expect(reason).toMatch(/taskset/);
+    expect(reason).toMatch(/pc-heavy\.sh/);
+    // …says WHY systemd-run can't work in an agent session…
+    expect(reason).toMatch(/cannot create transient systemd units/);
+    // …and never asserts the false premise that you were scheduling something.
+    expect(reason).not.toMatch(/must not create OS schedules/);
+  });
+
+  it.each([
+    ['--on-calendar', 'systemd-run --on-calendar=daily echo hi'],
+    ['--on-active', 'systemd-run --on-active=30m ./wake.sh'],
+    ['crontab', 'crontab -e'],
+    ['at', 'echo done | at midnight'],
+    ['batch', 'batch < jobs.txt'],
+    ['bare systemd-run (no props, no timer)', 'systemd-run ./thing.sh'],
+  ])('a genuine SCHEDULE (%s) still gets the wake answer', (_l, command) => {
+    const reason = denyReason(runGate(bashCmd(command), AGENT));
+    expect(reason).toMatch(/must not create OS schedules/);
+    expect(reason).toMatch(/pot:declare-wake/);
+    expect(reason).not.toMatch(/taskset/);
+  });
+
+  it('a HYBRID (timer flag + resource prop) is a schedule — scheduling advice wins', () => {
+    // `systemd-run --on-calendar=daily -p CPUQuota=50% x` really is creating a
+    // timer; the resource prop is incidental. Misreading it as resource-only
+    // would hand back advice (taskset) that ignores the persistent-unit problem
+    // the lockout exists to prevent.
+    const reason = denyReason(
+      runGate(bashCmd('systemd-run --on-calendar=daily -p CPUQuota=50% /usr/bin/backup'), AGENT),
+    );
+    expect(reason).toMatch(/must not create OS schedules/);
+    expect(reason).not.toMatch(/taskset/);
+  });
+
+  it('the resource branch does not weaken the deny — it is still a deny', () => {
+    const out = runGate(bashCmd('systemd-run -p CPUQuota=200% ./heavy.sh'), AGENT);
+    const decision = JSON.parse(out.stdout);
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
+  it('quoted prose naming CPUQuota is not a systemd-run at all (no false deny)', () => {
+    expectAllow(runGate(bashCmd('echo "we could use -p CPUQuota=200% here"'), AGENT));
+  });
+});
+
 describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, agent sessions) — EI-2376 recurrence guard', () => {
   it.each([
     ['bare reset --hard', 'git reset --hard'],

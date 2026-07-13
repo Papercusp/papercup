@@ -137,6 +137,15 @@ beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.pot_members`;
 });
 
+/** Seed a feature carrying an `author_pubkey` (the substrate-log device key) — for the
+ *  own-node leg. `pubkey` may be '' to reproduce the blank-authored back-compat row. */
+function insAuthored(fid: string, origin: string, verdict: string | null, ts: number, pubkey: string | null) {
+  return h.sql`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, audit_verdict, author_pubkey, created_ts, updated_ts)
+    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'todo', 'feature', ${origin}, ${verdict}, ${pubkey}, ${ts}, ${ts})`;
+}
+
 /** Seed a feature with a VERIFIED author id (what P-008 stamps) — for the trust-leg cases. */
 function insVerified(fid: string, origin: string, verdict: string | null, ts: number, verifiedAuthorId: number | null) {
   return h.sql`
@@ -271,6 +280,78 @@ describe('G2 admission gate — every claim path (real PG)', () => {
     expect(items.map((i) => i.id).sort()).toEqual(['F-PENDING', 'F-REJECTED']);
     // ...yet neither is claimable.
     expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'cup' })).toBeNull();
+  });
+});
+
+/**
+ * The OWN-NODE leg, against real Postgres — the leg that actually gates placement.
+ * [owner:Avi 2026-07-13] "trust our own nodes ... that should be the default. all new
+ * papercusp installs should have that behavior without needing to do anything".
+ *
+ * These MUST be real-PG: the unit tests hand the JS form a Set and never exercise SQL's
+ * three-valued logic, where an unaudited row's `audit_verdict = 'admit'` is NULL rather
+ * than FALSE. That distinction is exactly what silently broke the sibling starvation
+ * counter, with every fixture-driven test still green.
+ */
+describe('G2 own-node leg — a workspace trusts its own substrate keys (real PG)', () => {
+  const OURS = 'b5ab1807fbc9d091f7b6c76d9918549c1631e91dcb998298202f64797d4697ac';
+  const STRANGER = '9999999999999999999999999999999999999999999999999999999999999999';
+
+  it('THE DEADLOCK: a remote, NEVER-audited item authored by our own key is claimable', async () => {
+    // The key is "ours" purely because it authored a LOCAL row here — no registry, no setup.
+    await insAuthored('F-OURS-LOCAL', 'local', null, 1, OURS);
+    // ...and this is the same key's work coming back through federation as origin='remote'.
+    await insAuthored('F-OURS-REMOTE', 'remote', null, 2, OURS);
+
+    const wi = await claimWorkItem('F-OURS-REMOTE', 'cup', { harness: HARNESS });
+    expect(wi).not.toBeNull();
+  });
+
+  it("SECURITY: a stranger's key is still quarantined — this widens trust to US, not to everyone", async () => {
+    await insAuthored('F-OURS-LOCAL', 'local', null, 1, OURS);
+    await insAuthored('F-STRANGER', 'remote', null, 2, STRANGER);
+
+    expect(await claimWorkItem('F-STRANGER', 'cup', { harness: HARNESS })).toBeNull();
+  });
+
+  it('SECURITY: a BLANK author_pubkey never enters the own-key set (or it would admit every blank-authored remote row)', async () => {
+    // Blank-authored LOCAL rows genuinely exist (pre-federation back-compat).
+    await insAuthored('F-BLANK-LOCAL', 'local', null, 1, '');
+    await insAuthored('F-BLANK-REMOTE', 'remote', null, 2, '');
+    await insAuthored('F-NULL-REMOTE', 'remote', null, 3, null);
+
+    expect(await claimWorkItem('F-BLANK-REMOTE', 'cup', { harness: HARNESS })).toBeNull();
+    expect(await claimWorkItem('F-NULL-REMOTE', 'cup', { harness: HARNESS })).toBeNull();
+  });
+
+  it('SECURITY (D-004): own-node trust does NOT leak across workspaces', async () => {
+    // The key is local — and therefore "ours" — only in ANOTHER workspace.
+    await h.sql`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, audit_verdict, author_pubkey, created_ts, updated_ts)
+      VALUES ('other-ws', ${HARNESS}, 'F-OTHER-LOCAL', 'F-OTHER-LOCAL', 'todo', 'feature', 'local', NULL, ${OURS}, 1, 1)`;
+    await insAuthored('F-REMOTE-HERE', 'remote', null, 2, OURS);
+
+    expect(await claimWorkItem('F-REMOTE-HERE', 'cup', { harness: HARNESS })).toBeNull();
+  });
+
+  it('a fresh install with no local history yet admits nothing remote (fail-safe, empty own-key set)', async () => {
+    await insAuthored('F-REMOTE-ONLY', 'remote', null, 1, OURS);
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'cup' })).toBeNull();
+  });
+
+  it('claim_next self-selection picks up our own federated work alongside local work', async () => {
+    await insAuthored('F-OURS-LOCAL', 'local', null, 1, OURS);
+    await insAuthored('F-OURS-REMOTE', 'remote', null, 2, OURS);
+    await insAuthored('F-STRANGER', 'remote', null, 3, STRANGER);
+
+    const got: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const wi = await claimNextWorkItem({ harness: HARNESS, assignee: `bee-${i}` });
+      if (wi) got.push(wi.id);
+    }
+    expect(got.sort()).toEqual(['F-OURS-LOCAL', 'F-OURS-REMOTE']);
+    expect(got).not.toContain('F-STRANGER');
   });
 });
 
