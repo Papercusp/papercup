@@ -8,11 +8,20 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const fleetAdmission = vi.hoisted(() => ({
+  decision: { allowed: true, scoped: false } as any,
+  notify: vi.fn(),
+}));
+
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'me' }),
   resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
 }));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
+vi.mock('../../scheduler/fleet-scope-admission', () => ({
+  admitSubjectForFleetTarget: vi.fn(async () => fleetAdmission.decision),
+  notifyFleetScopeRefusal: fleetAdmission.notify,
+}));
 // Create-time dedup port (P-009) — mock so this handler test stays hermetic
 // (the memory-pools leg is pinned in memory/claim-port.test.ts).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
@@ -29,6 +38,7 @@ const body = async (args: unknown) => (((await tool.handler(parse(args) as never
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fleetAdmission.decision = { allowed: true, scoped: false };
   createM.mockImplementation(async (spec: { title: string }) => ({ ok: true, workItem: { id: `WI-${spec.title}`, kind: 'bug', title: spec.title } }) as never);
 });
 
@@ -93,6 +103,20 @@ describe('work_items:create handler (keyed-array)', () => {
   it('a concrete assign_to ownerId is passed through unchanged (not confused with "self")', async () => {
     await body({ kind: 'bug', title: 'a', assign_to: 'someone-else' });
     expect(createM).toHaveBeenCalledWith(expect.objectContaining({ title: 'a', assign_to: 'someone-else' }), expect.anything());
+  });
+
+  it('P-016 refuses an out-of-scope create+assign before the item exists', async () => {
+    fleetAdmission.decision = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: 'new item is outside fixed cohort',
+      scope: { fleetSlug: 'fixed-wave', ownerId: 'bee-7', fleetRole: 'member', record: { spec: { specId: 'fixed', revision: 7 } } },
+    };
+    const b = await body({ kind: 'bug', title: 'outside', assign_to: 'bee-7' });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'fleet_scope_violation' });
+    expect(createM).not.toHaveBeenCalled();
+    expect(fleetAdmission.notify).toHaveBeenCalledOnce();
   });
 
   it('batch-level harness is the default for items that omit one', async () => {

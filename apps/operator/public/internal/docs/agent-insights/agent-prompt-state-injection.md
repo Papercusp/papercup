@@ -1,7 +1,7 @@
 # Injecting precomputed state into an agent's prompt (the wake-brief pattern)
 URL: /internal/docs/agent-insights/agent-prompt-state-injection
 
-Five load-bearing rules for handing an agent a precomputed state snapshot in its prompt instead of making it gather state via tools — tail-not-prefix (cache), strip the framing delimiter (breakout), only-tell-it-to-skip-reads-actually-in-the-brief (blindness), fresh-per-wake makes a stateless digest safe, and fail-soft to tools. Generalized from the Mug wake-brief.
+Six load-bearing rules for prompt-state injection — tail-not-prefix, delimiter stripping, skip-set parity, when stateless digests need no watermark, generation plus full resync for warm sessions, and fail-soft fallback.
 
 ## What
 
@@ -9,7 +9,7 @@ When you precompute state and hand it to an agent **in its prompt** (so its
 first turn is a decision, not 5 survey tool calls), you are doing *prompt-state
 injection*. The Mug wake-brief (\[\[mug-brief-cache-assembly-2026-06-13]]) is
 the reference implementation. The pattern is reusable for any agent — but it has
-five non-obvious traps. All five were live bugs or near-bugs in that build.
+six non-obvious traps. All six were live bugs or near-bugs in production paths.
 
 ## The five rules
 
@@ -52,7 +52,19 @@ five non-obvious traps. All five were live bugs or near-bugs in that build.
    call. Skip the watermark; just cap a recent window. (If the agent were a
    long-lived session, you'd need the watermark.)
 
-5. **Fail-soft to the tools, and teach the whole-brief-absent fallback.** The
+5. **A warm-session delta needs a generation and an explicit full resync.** A
+   long-lived agent already holds a base, so a delayed wake or two mutations
+   before its next turn can make the newest delta impossible to apply safely.
+   Stamp every transition with `previousGeneration` + `generation`, and track
+   the last delivered generation at the server. Apply only when
+   `previousGeneration === deliveredGeneration`; otherwise reject the pending
+   payload and inject a bounded full replacement from the current authoritative
+   state. Schema mismatch and missing base take the same resync path. The P-014
+   CTRL anchor is the reference: the turn-start hook atomically consumes one
+   generation, stale transitions never merge, and
+   `coord:orient { afterCompaction: true }` is the named recovery verb.
+
+6. **Fail-soft to the tools, and teach the whole-brief-absent fallback.** The
    precompute must degrade to `null`/empty on any error so the launch still fires
    and the agent falls back to gathering state itself. Each sub-gather should fail
    independently (one flaky read drops its section, not the brief). And the
@@ -61,12 +73,14 @@ five non-obvious traps. All five were live bugs or near-bugs in that build.
 
 ## Why it matters
 
-Rules 2 and 3 are silent correctness bugs (breakout / blindness) that pass every
+Rules 2, 3, and 5 are silent correctness bugs (breakout / blindness / stale
+overwrite) that pass every
 happy-path test — the kind a "marked done" feature hides. Rule 1 is the entire
 point of the feature (a leak into the prefix destroys the cache it exists to
 build). Rule 4 is the difference between "this is a hard deferred design task"
-and "this is a 20-line read-only digest." When you build (or review) any
-prompt-state-injection feature, walk these five explicitly.
+and "this is a 20-line read-only digest." Rule 5 prevents a generation-behind
+wake from undoing newer control state. When you build (or review) any
+prompt-state-injection feature, walk these six explicitly.
 
 ## See also
 

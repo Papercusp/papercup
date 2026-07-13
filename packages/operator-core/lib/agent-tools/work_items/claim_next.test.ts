@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const identity = vi.hoisted(() => ({ ownerId: 'su-me', workspaceId: 'ws-1' }));
 const flag = vi.hoisted(() => ({ schedulerSpecClaim: true }));
+const fleet = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[] }));
 
 vi.mock('@papercusp/flags', () => ({
   FLAGS: { SCHEDULER_SPEC_CLAIM: 'scheduler.spec.claim' },
@@ -46,6 +47,17 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   resolveClaimSpecWorkspace: vi.fn((ws: string | null | undefined) => ws ?? undefined),
 }));
 
+vi.mock('../../scheduler/fleet-scope-admission', () => ({
+  reconcileFleetScopeClaims: vi.fn(async () => ({ scope: fleet.scope, quarantinedIds: fleet.quarantinedIds })),
+  fleetScopedMiss: (scope: any, quarantinedIds: string[]) => ({
+    ok: false,
+    error: 'scoped miss',
+    fleetScope: { fleet: scope.fleetSlug, specId: scope.record.spec.specId, revision: scope.record.spec.revision },
+    quarantinedIds,
+    windDown: true,
+  }),
+}));
+
 vi.mock('../../work-items', () => ({
   CLAIM_STATES_ALLOWLIST: ['todo', 'open', 'failing'],
   claimNextWorkItem: vi.fn(),
@@ -74,6 +86,8 @@ beforeEach(() => {
   identity.ownerId = 'su-me';
   identity.workspaceId = 'ws-1';
   flag.schedulerSpecClaim = true;
+  fleet.scope = null;
+  fleet.quarantinedIds = [];
   getNextForBeeM.mockResolvedValue({
     workItem: { id: 'WI-lane', assignee: 'su-me' } as never,
     claimedUnder: { specId: 'fleet-bugs', revision: 3 },
@@ -150,5 +164,22 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
       rigAvailable: undefined,
     });
     expect(getNextForBeeM).not.toHaveBeenCalled();
+  });
+
+  it('P-016 keeps a fleet member on its spec when the scheduler flag is off and winds down on a scoped miss', async () => {
+    flag.schedulerSpecClaim = false;
+    fleet.scope = {
+      ownerId: 'su-me',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
+    };
+    fleet.quarantinedIds = ['WI-out'];
+    getNextForBeeM.mockResolvedValue(null);
+
+    const b = await body({ harness: 'papercusp' });
+    expect(b).toMatchObject({ ok: false, windDown: true, quarantinedIds: ['WI-out'] });
+    expect(getNextForBeeM).toHaveBeenCalledOnce();
+    expect(claimNextM).not.toHaveBeenCalled();
   });
 });

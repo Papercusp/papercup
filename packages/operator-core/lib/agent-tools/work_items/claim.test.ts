@@ -7,12 +7,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const identity = vi.hoisted(() => ({ ownerId: 'me' }));
+const fleetAdmission = vi.hoisted(() => ({
+  decision: { allowed: true, scoped: false } as any,
+  notify: vi.fn(),
+}));
 vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
 }));
 vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn(), classifyClaimFailure: vi.fn(), getWorkItem: vi.fn() }));
+vi.mock('../../scheduler/fleet-scope-admission', () => ({
+  admitWorkItemForFleetTarget: vi.fn(async () => fleetAdmission.decision),
+  notifyFleetScopeRefusal: fleetAdmission.notify,
+}));
 // Claim-time recall port (P-008) is exercised in its own memory/claim-port.test.ts;
 // mock it here so the handler test stays a hermetic unit (no real memory backend).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
@@ -29,6 +37,7 @@ const body = async (args: unknown) => (((await tool.handler(args as never, {} as
 beforeEach(() => {
   vi.clearAllMocks();
   identity.ownerId = 'me';
+  fleetAdmission.decision = { allowed: true, scoped: false };
   claimM.mockImplementation(async (id: string) => ({ id, assignee: 'me' }) as never);
 });
 
@@ -44,6 +53,20 @@ describe('work_items:claim handler (keyed-array)', () => {
     const b = await body({ ids: ['WI-1', 'WI-2'], assignee: 'bee-7' });
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(claimM).toHaveBeenCalledWith('WI-2', 'bee-7', { harness: undefined });
+  });
+
+  it('P-016 refuses an out-of-scope named claim before mutation and alerts the leader', async () => {
+    fleetAdmission.decision = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: 'WI-out is outside fleet-bugs@4',
+      scope: { fleetSlug: 'bugs', ownerId: 'bee-7', fleetRole: 'member', record: { spec: { specId: 'fleet-bugs', revision: 4 } } },
+    };
+    const b = await body({ id: 'WI-out', assignee: 'bee-7' });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-out', error: 'fleet_scope_violation' });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(fleetAdmission.notify).toHaveBeenCalledOnce();
   });
 
   it('refuses implicit claims as the shared su-loopback fallback', async () => {
