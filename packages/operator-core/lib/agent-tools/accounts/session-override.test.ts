@@ -29,8 +29,8 @@ const mod = await import('./session-override');
 const setTool = mod.accountsSetSessionOverrideTool;
 const getTool = mod.accountsGetSessionOverrideTool;
 
-type Out = { content: { text: string }[] };
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+type Out = { data: unknown };
+const body = (o: Out) => o.data as any;
 
 beforeEach(() => {
   vi.clearAllMocks();

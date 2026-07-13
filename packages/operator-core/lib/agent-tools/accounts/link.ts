@@ -11,7 +11,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { startCliLink, completeCliLink, getCliLinkStatus } from '../../deployment/account-link-cli';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export const accountsLinkStartTool = defineTool({
   name: 'accounts:link-start',

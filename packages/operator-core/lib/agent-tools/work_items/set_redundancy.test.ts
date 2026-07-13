@@ -24,10 +24,10 @@ import { setItemRedundancy } from '../../work-item-redundancy';
 const setRed = vi.mocked(setItemRedundancy);
 const tool = (await import('./set_redundancy')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: unknown };
 const call = (redundancy: number, id = 'F-1', harness?: string) =>
   tool.handler({ id, redundancy, harness } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => o.data as any;
 
 let savedEnv: string | undefined;
 beforeEach(() => {

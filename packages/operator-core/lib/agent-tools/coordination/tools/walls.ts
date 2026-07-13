@@ -111,7 +111,13 @@ export default defineTool({
     limit: z.number().int().min(1).max(200).optional().describe('Default 50.'),
   }),
   async handler(args, ctx) {
-    const sql = await getOrgPg();
+    // getOrgPg() is SYNC and returns a client WRAPPER — the tagged-template fn is
+    // `.sql` on it (the idiom every other caller uses, e.g. compaction-staleness.ts:
+    // `getOrgPg().sql`). `await getOrgPg()` awaits a non-promise and binds the wrapper
+    // itself, so every `sql\`…\`` below was calling a plain object as a function:
+    // 3× TS2349 "not callable" at build, and a hard `sql is not a function` TypeError
+    // on EVERY coord:walls invocation at runtime.
+    const sql = getOrgPg().sql;
     const ws = ctx.workspaceId ?? 'default';
     const now = Date.now();
     const limit = args.limit ?? 50;
@@ -209,26 +215,24 @@ export default defineTool({
     const stranded = filtered.filter((w) => w.status === 'stranded').length;
     const oldestWaitHours = filtered.length > 0 ? (filtered[0]!.waitingHours ?? null) : null;
 
+    // Return a { data } envelope (NOT hand-rolled inline JSON): the framework then
+    // compact-encodes the walls array for the agent transport for free, and the
+    // tool-data-shape ratchet holds. A new tool has no legacy byte-contract to keep.
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: true,
-          count: filtered.length,
-          waiting,
-          stranded,
-          oldestWaitHours,
-          ...(filtered.length === 0
-            ? { note: 'Nothing is blocked on the owner.' }
-            : {
-                note:
-                  `${filtered.length} owner-gated blocker(s): ${waiting} agent(s) alive and parked on an answer, ` +
-                  `${stranded} STRANDED (session died — answering alone will not resume them; respawn as well). ` +
-                  'Answer via coord:send to the ownerId; the agent clears its wall with loop:checkpoint { walls }.',
-              }),
-          walls: filtered,
-        }),
-      }],
+      data: {
+        ok: true,
+        count: filtered.length,
+        waiting,
+        stranded,
+        oldestWaitHours,
+        note:
+          filtered.length === 0
+            ? 'Nothing is blocked on the owner.'
+            : `${filtered.length} owner-gated blocker(s): ${waiting} agent(s) alive and parked on an answer, ` +
+              `${stranded} STRANDED (session died — answering alone will not resume them; respawn as well). ` +
+              'Answer via coord:send to the ownerId; the agent clears its wall with loop:checkpoint { walls }.',
+        walls: filtered,
+      },
     };
   },
 });

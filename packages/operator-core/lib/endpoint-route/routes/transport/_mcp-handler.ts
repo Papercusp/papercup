@@ -76,6 +76,10 @@ import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
 import { unknownToolReferral } from '../../../agent-tools/tools/unknown-tool-referral';
 import { maybeBatchNudge, maybeOrientDedupNudge, canRoleActOnCodeRun } from '../../../code-run-batch-nudge';
+// EI-10892: detect the ok:true-but-every-field-blank code:run result — a mis-mapped
+// response shape, which is the dominant tool-waste mode and invisible to the
+// hard-failure-only efficiency telemetry.
+import { maybeEmptyMappingHint } from '../../../empty-mapping-hint';
 import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
@@ -1952,6 +1956,37 @@ const handler = createMcpHandler(
                   }
                 } catch {
                   // nudge is purely advisory; a failure must never change the tool outcome.
+                }
+                // shape-hint (EI-10892): the `ok:true`-but-every-field-blank result — the
+                // DOMINANT waste mode, and the one nothing else measures. A code:run script
+                // that maps the wrong response keys returns perfectly-formed rows with every
+                // field empty; it looks like a true negative, so the agent burns further calls
+                // (and an extra call just to JSON.stringify a raw result and learn the shape).
+                // The efficiency panel cannot see any of it — it grades hard failures only.
+                // Scoped to code:run because that is the one place an AGENT'S OWN field mapping
+                // is applied; and deliberately conservative (rows must EXIST and be almost all
+                // fully-blank), because falsely accusing a genuine empty result would teach
+                // agents to distrust true negatives. Advisory: never changes the outcome.
+                if (toolName === 'code:run' && canAttachAdvisory) {
+                  try {
+                    const first = result.content?.[0] as { type?: string; text?: string } | undefined;
+                    if (first?.type === 'text' && typeof first.text === 'string') {
+                      const parsed: unknown = JSON.parse(first.text);
+                      const body =
+                        parsed && typeof parsed === 'object' && 'summary' in (parsed as Record<string, unknown>)
+                          ? (parsed as Record<string, unknown>).summary
+                          : parsed;
+                      const shapeHint = maybeEmptyMappingHint(body, []);
+                      if (shapeHint) {
+                        result.content = [
+                          ...result.content,
+                          { type: 'text' as const, text: `\n[shape-hint] ${shapeHint.text}` },
+                        ];
+                      }
+                    }
+                  } catch {
+                    // Non-JSON body, or any parse failure — nothing to judge. Advisory only.
+                  }
                 }
                 // orient-dedup nudge (agent-tooling-token-efficiency P-009): catch a
                 // coord:plan-events / coord:inbox / memory:search / coord:declare-intent fired right

@@ -17,7 +17,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getBeaconPublishConsent, setBeaconPublishConsent } from '../../beacon-consent';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export default defineTool({
   name: 'pot:beacon_consent',

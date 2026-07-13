@@ -19,7 +19,7 @@ const allocateMock = vi.fn();
 const releaseMock = vi.fn();
 const listMock = vi.fn();
 const healthcheckMock = vi.fn();
-const createEgressProviderMock = vi.fn(() => ({
+const createEgressProviderMock = vi.fn((_provider?: unknown, _config?: unknown) => ({
   name: 'static',
   allocate: allocateMock,
   release: releaseMock,
@@ -27,7 +27,7 @@ const createEgressProviderMock = vi.fn(() => ({
   healthcheck: healthcheckMock,
 }));
 vi.mock('../../inference-gateway/egress-providers', () => ({
-  createEgressProvider: (...args: unknown[]) => createEgressProviderMock(...args),
+  createEgressProvider: createEgressProviderMock,
 }));
 
 import { loadAccountPool, saveAccountPool } from '../../deployment/account-pool-store';

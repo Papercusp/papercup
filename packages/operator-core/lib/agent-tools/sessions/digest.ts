@@ -204,29 +204,28 @@ export default defineTool({
     const wedged = digests.filter((d) => d.wedged).length;
     const hasMore = total > rows.length;
 
+    // { data } envelope (NOT hand-rolled inline JSON): the framework compact-encodes
+    // the digests array for the agent transport, and the tool-data-shape ratchet holds.
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: true,
-          count: digests.length,
-          total,
-          hasMore,
-          wedged,
-          ...(wedged > 0
-            ? {
-                alert:
-                  `${wedged} session(s) are WEDGED (auth_wall / model_error / context_limit) — they are not doing anything ` +
-                  'and will not recover on their own. See endedReason + endedEvidence on each.',
-              }
-            : {}),
-          note:
-            'kickoff = the session\'s OPENING turn (what it was launched to do) — present even when the session crashed before ' +
-            'writing a summary. closing = its last assistant turn. endedReason is classified from the closing turn and always ' +
-            'carries endedEvidence so you can verify it rather than trust the label.',
-          digests,
-        }),
-      }],
+      data: {
+        ok: true,
+        count: digests.length,
+        total,
+        hasMore,
+        wedged,
+        ...(wedged > 0
+          ? {
+              alert:
+                `${wedged} session(s) are WEDGED (auth_wall / model_error / context_limit) — they are not doing anything ` +
+                'and will not recover on their own. See endedReason + endedEvidence on each.',
+            }
+          : {}),
+        note:
+          "kickoff = the session's OPENING turn (what it was launched to do) — present even when the session crashed before " +
+          'writing a summary. closing = its last assistant turn. endedReason is classified from the closing turn and always ' +
+          'carries endedEvidence so you can verify it rather than trust the label.',
+        digests,
+      },
     };
   },
 });

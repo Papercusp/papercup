@@ -22,7 +22,7 @@ import { requestUrgentPotWake } from '../../pot/urgent-wake';
 import { setOwnerSteering, type OwnerSteeringPatch } from '../../owner-steering';
 import { LIMITS } from '../limits';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export default defineTool({
   name: 'pot:set-steering',

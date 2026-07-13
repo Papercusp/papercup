@@ -37,7 +37,7 @@ const configArg = z
           id: z.string().min(1).describe('Stable id for this inventory entry (the allocation id).'),
           proxyUrl: z.string().min(1).optional().describe('http(s)/socks proxy URL for this entry'),
           localAddress: z.string().min(1).optional().describe('local source IP to bind for this entry'),
-          meta: z.record(z.unknown()).optional(),
+          meta: z.record(z.string(), z.unknown()).optional(),
         }),
       )
       .optional()

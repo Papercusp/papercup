@@ -128,7 +128,26 @@ for (const file of TOOL_FILES) {
 // count is baked into the already-committed tree). Bumps by 7 (real headroom,
 // not +1) per this file's own established convention. Durable-fix note
 // unchanged: migrate a few mature tools to { data } and lower this.
-const BASELINE = 452;
+//
+// 2026-07-13 (WI-4550, su-eb9b7): 452 → 445 — the FIRST time this ceiling has gone
+// DOWN. It reds at 453, and every prior entry above answered that by bumping the
+// ceiling while promising the same durable fix ("migrate a few mature tools to
+// { data } and lower this") — five bumps, 430 → 452, and the promise never came
+// due. Bumping is a mitigation, not a fix: it re-arms the trap for the next agent,
+// who then has to pay the same interruption. So this time the red was paid off in
+// the intended currency instead. 15 tools sharing ONE identical legacy helper
+//   const json = (o: unknown) => ({ content: [{ type:'text', text: JSON.stringify(o) }] });
+// were migrated to the canonical `({ data: o })` (accounts/{link,session-override},
+// pot/{ask,asks,beacon_consent,cross_grant,get_steering,request_work,set_steering},
+// work_items/{claim_replica,co_locate,judge_redundancy,record_replica_result,
+// set_live_verified,set_redundancy}) — call sites unchanged, agent-facing output
+// identical (P-002 re-encodes both shapes to TOON), 9 test helpers repointed from
+// content[0].text to .data. Real count 453 → 439, so this LOWERS the ceiling to 445
+// and still leaves 6 slots of churn headroom.
+//
+// The remaining ~439 are the same mechanical shape. If you are here because the gate
+// is red again: migrate a batch and lower this further — do NOT bump it a sixth time.
+const BASELINE = 445;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

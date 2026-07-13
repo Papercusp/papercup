@@ -22,7 +22,7 @@ import { localSwarmId } from '../../fleet/swarm-identity';
 import { decideCoLocation, type SwarmSlot } from '../../fleet/co-location';
 import { setWorkItemSwarmAffinity, getWorkItemSwarmAffinity } from '../../work-items';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export default defineTool({
   name: 'work_items:co_locate',

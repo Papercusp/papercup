@@ -24,7 +24,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { resolveOwnedTtyPath, shouldSilenceClaudeTitle } from '../scripts/psu-launcher.mjs';
+import { claimTtyOwnership, resolveOwnedTtyPath, shouldSilenceClaudeTitle } from '../scripts/psu-launcher.mjs';
 
 const STATUSLINE = resolve(__dirname, '../scripts/hooks/cc/statusline-fleet.sh');
 const OBJ_TITLE = resolve(__dirname, '../scripts/hooks/cc/posttooluse-objective-title.sh');
@@ -107,6 +107,72 @@ describe.runIf(hasSetsid)('WI-3665 — the title lands from a hook with NO contr
     });
   }
 });
+
+describe('claimTtyOwnership — psu stamps a claim on every terminal it resolves (EI-10377)', () => {
+  it('writes the sid to a filename derived from the full device path', () => {
+    const claimsDir = join(dir, `claims-${Math.random().toString(36).slice(2)}`);
+    claimTtyOwnership('/dev/pts/24', 'su-abc', { dir: claimsDir });
+    const files = execFileSync('ls', [claimsDir], { encoding: 'utf8' }).trim().split('\n');
+    expect(files).toHaveLength(1);
+    expect(readFileSync(join(claimsDir, files[0]), 'utf8')).toBe('su-abc');
+  });
+
+  it('a later claim on the SAME path overwrites the earlier one — no accumulation', () => {
+    const claimsDir = join(dir, `claims-${Math.random().toString(36).slice(2)}`);
+    claimTtyOwnership('/dev/pts/24', 'su-old', { dir: claimsDir });
+    claimTtyOwnership('/dev/pts/24', 'su-new', { dir: claimsDir });
+    const files = execFileSync('ls', [claimsDir], { encoding: 'utf8' }).trim().split('\n');
+    expect(files).toHaveLength(1); // same path ⇒ same filename ⇒ overwrite, not a second file
+    expect(readFileSync(join(claimsDir, files[0]), 'utf8')).toBe('su-new');
+  });
+
+  it('is a no-op (never throws, never creates the dir) with no path or no sid', () => {
+    const claimsDir = join(dir, `claims-${Math.random().toString(36).slice(2)}`);
+    expect(() => claimTtyOwnership('', 'su-abc', { dir: claimsDir })).not.toThrow();
+    expect(() => claimTtyOwnership('/dev/pts/24', '', { dir: claimsDir })).not.toThrow();
+    expect(existsSync(claimsDir)).toBe(false);
+  });
+});
+
+describe.runIf(hasSetsid)(
+  'EI-10377 — a stale claim blocks the write even under setsid (both CLI hooks, live on-camera repro)',
+  () => {
+    for (const [name, hook] of [
+      ['claude statusline', STATUSLINE],
+      ['codex objective-title', OBJ_TITLE],
+    ] as const) {
+      it(`${name}: a claim naming a DIFFERENT session blocks the PAPERCUSP_TTY write`, () => {
+        // Reproduces the bug exactly: su-9859e's PAPERCUSP_TTY still spells a path that has
+        // since been claimed by a different session (the recycled-pty case) — the write must
+        // not land, same as a closed terminal.
+        const ttyFile = join(dir, `${Math.random().toString(36).slice(2)}.tty`);
+        writeFileSync(ttyFile, '');
+        const claimsDir = join(dir, `claims-${Math.random().toString(36).slice(2)}`);
+        claimTtyOwnership(ttyFile, 'su-someone-else', { dir: claimsDir });
+        const wrote = runSetsid(hook, { PAPERCUSP_TTY: ttyFile, PAPERCUSP_TTY_CLAIMS_DIR: claimsDir });
+        // setsid ⇒ /dev/tty is unopenable too, so a correctly-blocked claim means total silence.
+        expect(wrote).toBe('');
+      });
+
+      it(`${name}: a claim naming OUR OWN session still lands the write`, () => {
+        const ttyFile = join(dir, `${Math.random().toString(36).slice(2)}.tty`);
+        writeFileSync(ttyFile, '');
+        const claimsDir = join(dir, `claims-${Math.random().toString(36).slice(2)}`);
+        claimTtyOwnership(ttyFile, SID, { dir: claimsDir }); // SID matches runSetsid's default PAPERCUSP_SID
+        const wrote = runSetsid(hook, { PAPERCUSP_TTY: ttyFile, PAPERCUSP_TTY_CLAIMS_DIR: claimsDir });
+        expect(wrote).toBe(`\x1b]0;${glance.display.title}\x07`);
+      });
+
+      it(`${name}: no claim on record fails OPEN — a session that predates the registry keeps working`, () => {
+        const ttyFile = join(dir, `${Math.random().toString(36).slice(2)}.tty`);
+        writeFileSync(ttyFile, '');
+        const claimsDir = join(dir, `claims-${Math.random().toString(36).slice(2)}`); // never populated
+        const wrote = runSetsid(hook, { PAPERCUSP_TTY: ttyFile, PAPERCUSP_TTY_CLAIMS_DIR: claimsDir });
+        expect(wrote).toBe(`\x1b]0;${glance.display.title}\x07`);
+      });
+    }
+  },
+);
 
 describe('resolveOwnedTtyPath — psu names the terminal it owns, or nothing', () => {
   const notTty = { isTTY: false } as NodeJS.WriteStream;

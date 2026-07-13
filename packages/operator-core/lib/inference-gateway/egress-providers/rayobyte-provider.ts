@@ -68,6 +68,20 @@ function extractList(body: unknown): RayobyteProxyRecord[] {
   return obj?.proxies ?? [];
 }
 
+/** Pull the first proxy record out of an order response, whichever of the two shapes the API used —
+ *  `{ proxies: [...] }` or a single bare record. Plain field checks (not a `'proxies' in x` narrow)
+ *  because `RayobyteProxyRecord`'s index signature would otherwise let a bare record structurally
+ *  match the `{ proxies?: [...] }` shape too and defeat the narrow. */
+function firstOrderedRecord(body: unknown): RayobyteProxyRecord | null {
+  if (!body || typeof body !== 'object') return null;
+  const obj = body as { proxies?: unknown; id?: unknown };
+  if (Array.isArray(obj.proxies)) {
+    const first = obj.proxies[0];
+    return first && typeof first === 'object' ? (first as RayobyteProxyRecord) : null;
+  }
+  return typeof obj.id === 'string' ? (obj as RayobyteProxyRecord) : null;
+}
+
 export function createRayobyteProvider(config: RayobyteProviderConfig = {}): EgressProvider {
   const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const apiKeyRef = config.apiKeyRef ?? DEFAULT_API_KEY_REF;
@@ -116,11 +130,8 @@ export function createRayobyteProvider(config: RayobyteProviderConfig = {}): Egr
         method: 'POST',
         body: JSON.stringify({ quantity: 1, label: accountId }),
       });
-      const ordered = (await orderRes.json().catch(() => null)) as
-        | RayobyteProxyRecord
-        | { proxies?: RayobyteProxyRecord[] }
-        | null;
-      const rec = ordered && 'proxies' in ordered ? ordered.proxies?.[0] : (ordered as RayobyteProxyRecord | null);
+      const ordered = await orderRes.json().catch(() => null);
+      const rec = firstOrderedRecord(ordered);
       if (!rec) throw new Error('egress: rayobyte order returned no proxy record');
       return toAllocation({ ...rec, label: rec.label ?? accountId });
     },

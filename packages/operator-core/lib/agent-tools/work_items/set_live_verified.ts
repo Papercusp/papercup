@@ -17,7 +17,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemLiveVerified, type WorkItemLiveVerified } from '../../work-items';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export default defineTool({
   name: 'work_items:set_live_verified',

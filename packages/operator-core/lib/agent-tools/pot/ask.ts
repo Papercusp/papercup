@@ -19,7 +19,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { sendCrossHiveAsk } from '../../cross-hive-ask-send';
 import { productionSendCrossPotAskDeps } from './_cross-pot-ask-deps';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export default defineTool({
   name: 'pot:ask',

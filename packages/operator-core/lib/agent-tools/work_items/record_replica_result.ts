@@ -13,7 +13,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { recordReplicaResult, resolveReplicaHiveSlug } from '../../work-item-redundancy';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export default defineTool({
   name: 'work_items:record_replica_result',

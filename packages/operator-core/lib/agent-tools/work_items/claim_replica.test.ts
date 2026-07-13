@@ -27,9 +27,9 @@ import { claimReplicaSlot } from '../../work-item-redundancy';
 const claimM = vi.mocked(claimReplicaSlot);
 const tool = (await import('./claim_replica')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: unknown };
 const call = () => tool.handler({ id: 'F-1', harness: 'web' } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => o.data as any;
 
 beforeEach(() => vi.clearAllMocks());
 

@@ -19,11 +19,10 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active
 import beaconConsentTool from './beacon_consent';
 
 type Tool = {
-  handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
+  handler: (a: unknown, c: unknown) => Promise<{ data: unknown }>;
 };
 const tool = beaconConsentTool as unknown as Tool;
-const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> =>
-  JSON.parse(r.content[0].text);
+const parse = (r: { data: unknown }): Record<string, unknown> => r.data as Record<string, unknown>;
 const ctx = (): never => ({}) as never;
 
 beforeEach(() => {

@@ -29,10 +29,10 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: (...a: unknown[]) => no
 import setSteeringTool from './set_steering';
 import getSteeringTool from './get_steering';
 
-type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> };
+type Tool = { handler: (a: unknown, c: unknown) => Promise<{ data: unknown }> };
 const setTool = setSteeringTool as unknown as Tool;
 const getTool = getSteeringTool as unknown as Tool;
-const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> => JSON.parse(r.content[0].text);
+const parse = (r: { data: unknown }): Record<string, unknown> => r.data as Record<string, unknown>;
 const ctx = (): never => ({}) as never;
 
 beforeEach(() => {

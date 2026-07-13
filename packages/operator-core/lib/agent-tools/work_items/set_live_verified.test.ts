@@ -20,9 +20,9 @@ import { setWorkItemLiveVerified } from '../../work-items';
 const setLV = vi.mocked(setWorkItemLiveVerified);
 const tool = (await import('./set_live_verified')).default;
 
-type Out = { content: { text: string }[] };
+type Out = { data: unknown };
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => o.data as any;
 
 beforeEach(() => setLV.mockReset());
 

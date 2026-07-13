@@ -11,7 +11,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { setItemRedundancy, workItemRedundancyEnabled, MIN_REDUNDANCY } from '../../work-item-redundancy';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export default defineTool({
   name: 'work_items:set_redundancy',

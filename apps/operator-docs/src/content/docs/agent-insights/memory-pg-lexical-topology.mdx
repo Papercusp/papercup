@@ -68,6 +68,25 @@ claude topic files + PG) but would double-write when both legs share
   was still mangling long queries (see the cap trap below) — they are superseded,
   and the speed claim did not survive.
 
+## Known cost: the lexical leg SEQ-SCANS (EI-10931)
+
+Every lexical predicate is a leading-wildcard `ILIKE`, which **cannot use a
+btree** — and all 10 indexes on `memory_canonical` are btree. So each lexical
+search is a full sequential scan evaluating up to `tokens × 3` (≤96) ILIKEs per
+row: **O(rows × tokens)**, measured at **p50 455ms over 13,594 active rows**, and
+growing linearly as the store grows (every agent writes to it).
+
+⚠ **If you go to fix this, do NOT reach for a weighted `tsvector`.** It looks
+like the perfect fit (`setweight` A/B/D maps straight onto the 3/2/1 field
+weights) — but `to_tsvector('english', …)` stems and drops stop-words, which
+**mangles identifiers** (`PAPERCUSP_MEMORY_TIMEOUT`, `WI-4522`, camelCase tool
+names). Exact-identifier recall is *the entire reason this leg exists* (MRR 1.00
+vs cosine's 0.87), so a naive tsvector migration would silently destroy the leg's
+whole purpose while looking like a clean optimization — the same shape as the
+token-cap trap below. Use a **`pg_trgm` GIN** index instead: it accelerates
+`ILIKE '%x%'` with *identical* semantics (no stemming, no tokenization change,
+no recall risk).
+
 ## ~/.claude topic files are NOT load-bearing anymore
 
 - All pre-existing topic-file memories were imported into the canonical store

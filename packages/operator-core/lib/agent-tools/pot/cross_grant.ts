@@ -22,7 +22,7 @@ import {
   revokeCrossHiveGrant as revokeCrossPotGrant,
 } from '../../cross-hive-grants';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 export default defineTool({
   name: 'pot:cross_grant',

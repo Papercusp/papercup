@@ -21159,7 +21159,7 @@
           "POST"
         ]
       },
-      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the best-matching tool names with their description, ARG schema, and (EI-10882) their declared RESPONSE shape (`returns`) — so you can write a code:run batch over a tool without first calling it once just to learn its field names. Use when you need a capability that is not in your core toolset — e.g. tools:find(\"feature flag\") or tools:find(\"spawn a worker\"). ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list (`activated:true`) and you can call them directly; on a full-catalog session there is nothing to expand (`activated:false`) and you must call them via tools:invoke. ALWAYS read the `activated` flag + `howToCall` in the result rather than assuming a direct call will resolve.",
+      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the best-matching tool names with their description, ARG schema, and declared RESPONSE shape (`returns`) — so you can write a code:run batch over a tool without calling it once just to learn its field names. e.g. tools:find(\"feature flag\"), tools:find(\"spawn a worker\"). ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list (activated:true) and are directly callable; on a full-catalog session there is nothing to expand (activated:false) — call them via tools:invoke. Always read `activated` + `howToCall` rather than assuming a direct call resolves.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -21220,9 +21220,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO (\"set a feature flag\", \"list open plans\", \"spawn a worker bee\"). The intent-aware replacement for guessing names. Also the cheapest way to learn a tool's RESPONSE shape before batching over it (`returns` on each hit).",
-        "notWhen": "When the tool is already in your core set or you know its exact name — just call it (in omp, if a direct call reports not-found, tools:invoke {name, args} runs it server-side). For a full permission-annotated dump use agent_tools:list.",
-        "chaining": "tools:find(\"<intent>\") → READ `activated`. activated:true ⇒ call the top tool directly. activated:false ⇒ the tools are NOT on your surface; call tools:invoke {name:\"<colon-form name>\", args:{...}} — a direct call will fail with not-found, and ToolSearch cannot resolve the colon-form name either (it only matches the client-mangled id). tools:invoke runs any catalog tool server-side, on every client, with no load step."
+        "when": "You need a tool that is not in your loaded/core set and do not know its exact name — search by what you want to DO (\"set a feature flag\", \"spawn a worker bee\"). Also the cheapest way to learn a tool's RESPONSE shape before batching over it.",
+        "notWhen": "The tool is already in your core set or you know its exact name — just call it. For a full permission-annotated dump use agent_tools:list.",
+        "chaining": "tools:find(\"<intent>\") → READ `activated`. true ⇒ call the top tool directly. false ⇒ call tools:invoke { name:\"<colon-form name>\", args } — a direct call fails not-found, and ToolSearch cannot resolve a colon-form name (it only matches the client-mangled id)."
       }
     },
     {
@@ -22431,7 +22431,7 @@
           "POST"
         ]
       },
-      "description": "Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect } | { ok:false, id, error, completion }], counts }. PER-ITEM `ok` REFLECTS THE STATE TRANSITION (WI-4529): if you passed `state` and the item did NOT reach a terminal state (held open by a peer, integrity gate, or a non-terminal alias), that item comes back ok:false with the reason in `error` — the completion record is still written and broadcast, but the item did NOT close and is still claimable. Do not treat ok:false as 'the completion was lost'. `completion.verifiedHow` is a CLOSED ENUM: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' (prose goes in `testsRun`/`testResult`).",
+      "description": "Finish one OR many work-items with a STRUCTURED completion record (whatLanded / migrations / tests / deferred) — the system renders + broadcasts it from the fields, so you never narrate in prose. Optionally transitions each item to a terminal `state`. PER-ITEM `ok` REFLECTS THE STATE TRANSITION (WI-4529): ok:false = the item did NOT close (reason in `error`, e.g. held open by a peer) — the completion record IS still written and broadcast, so fix the cause and re-call; never re-write the record.",
       "capabilities": [
         "work_items:write"
       ],
@@ -22454,9 +22454,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). CHECK PER-ITEM `ok` (WI-4529): ok:false means the item did NOT close (the `error` says why — e.g. HELD OPEN by a peer); the completion record still landed, so fix the cause and re-call rather than re-writing the record. `completion.verifiedHow` must be one of 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' — it is NOT free text. Duplicate? Set `completion.duplicateOf` to the surviving id — auto-links + notifies the prior assignee (EI-8993).",
-        "notWhen": "For a contextual aside (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.",
-        "chaining": "work_items:claim → … → work_items:complete { id, completion }. Auto-emits to coord:inbox (no coord:send needed). Read the returned `reflect` step (self-learning loop): file a friction marker via improvements:capture if one bit you, else nothing."
+        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured fields and do NOT also coord:send a prose summary — this emits it. To CLOSE an item you MUST pass a terminal top-level `state` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed'); `completion.status` alone records the completion WITHOUT changing state, leaving the item claimable (you get a `stateWarning`). `completion.verifiedHow` is a CLOSED ENUM — 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' — not free text; prose goes in testsRun/testResult. Duplicate? Set `completion.duplicateOf` to the surviving id (auto-links + notifies the prior assignee).",
+        "notWhen": "For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.",
+        "chaining": "work_items:claim → … → work_items:complete { id, completion }. Auto-emits to coord:inbox (no coord:send needed). Read the returned `reflect` step and file an improvements:capture if friction bit you."
       }
     },
     {

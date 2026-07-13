@@ -11,7 +11,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../../test/_work-items-schema';
-import { fetchFrontierRows } from './survey';
+import {
+  countPlaceableFrontier,
+  countQuarantinedFrontier,
+  fetchFrontierRows,
+  isAdmissionStarved,
+} from './survey';
 
 const readMigration = (f: string) =>
   readFileSync(join(__dirname, '../../../../libs/papercusp/libs/db/sql', f), 'utf8')
@@ -216,5 +221,50 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     await seed(MEMBER_A, 'WI-UNTRUSTED-REMOTE', { createdTs: 2, origin: 'remote', auditVerdict: null });
     const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
     expect(rows.map((r) => r.feature_id)).toEqual(['WI-TRUSTED-REMOTE']);
+  });
+
+  it('COUNTS the quarantined frontier — a remote UNAUDITED item (audit_verdict NULL) must not vanish into SQL NULL', async () => {
+    // The silent-starvation detector, pinned against real Postgres — and this test can
+    // ONLY be written here, because the bug it guards is three-valued logic that no
+    // fixture-driven unit test can reach.
+    //
+    // For exactly the rows this counter exists to find (remote, NEVER audited),
+    // `audit_verdict = 'admit'` is NULL — not FALSE. So the admission expression is
+    // NULL, and `NOT NULL` is NULL, which a WHERE treats as no-match. A bare
+    // `NOT (autoPickableWhereSql)` therefore counts ZERO quarantined items while the
+    // pot sits deadlocked behind them, which is precisely the blindness the counter
+    // was added to remove. countQuarantinedFrontier pins NULL to FALSE with COALESCE;
+    // if someone "simplifies" that away, this test fails and the next one does not
+    // have to rediscover it against a live database at 02:40.
+    await seed(MEMBER_A, 'WI-Q-LOCAL', { createdTs: 1, origin: 'local' });
+    await seed(MEMBER_A, 'WI-Q-ADMITTED', { createdTs: 2, origin: 'remote', auditVerdict: 'admit' });
+    await seed(MEMBER_A, 'WI-Q-REMOTE-1', { createdTs: 3, origin: 'remote', auditVerdict: null });
+    await seed(MEMBER_A, 'WI-Q-REMOTE-2', { createdTs: 4, origin: 'remote', auditVerdict: null });
+
+    const placeable = await countPlaceableFrontier(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    const quarantined = await countQuarantinedFrontier(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+
+    // The two must PARTITION the same row set — every candidate lands in exactly one.
+    expect(placeable).toBe(2); // local + admitted
+    expect(quarantined).toBe(2); // the two remote-unaudited rows (0 under the NULL bug)
+    expect(isAdmissionStarved({ placeable, quarantined })).toBe(false); // work IS placeable ⇒ not starved
+  });
+
+  it('flags the DEADLOCK: everything placeable is quarantined ⇒ the pot has work it may never touch', async () => {
+    // The 2026-07-13 production state exactly: the pot's whole placeable pool is
+    // federated remote items, none audited, no trusted author — so the Mug surveys a
+    // frontier of zero, correctly places nothing, and reports success, forever.
+    await seed(MEMBER_A, 'WI-D-1', { createdTs: 1, origin: 'remote', auditVerdict: null });
+    await seed(MEMBER_A, 'WI-D-2', { createdTs: 2, origin: 'remote', auditVerdict: null });
+
+    const placeable = await countPlaceableFrontier(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    const quarantined = await countQuarantinedFrontier(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+
+    expect(placeable).toBe(0);
+    expect(quarantined).toBe(2);
+    // An empty frontier ALONE is just an idle pot; it is a deadlock only because work
+    // is being withheld. That distinction is the whole point of the signal.
+    expect(isAdmissionStarved({ placeable, quarantined })).toBe(true);
+    expect(isAdmissionStarved({ placeable: 0, quarantined: 0 })).toBe(false);
   });
 });

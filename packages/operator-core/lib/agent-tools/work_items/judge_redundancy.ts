@@ -15,7 +15,7 @@ import { judgeRedundancyGroup, resolveReplicaHiveSlug } from '../../work-item-re
 import { activeWorkspaceId } from '../../workspace-registry';
 import type { JudgeLlmCall } from '../../gym/primitives';
 
-const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+const json = (o: unknown) => ({ data: o });
 
 const rubricArg = z
   .object({
