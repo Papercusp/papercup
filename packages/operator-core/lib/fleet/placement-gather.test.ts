@@ -122,6 +122,48 @@ describe('isNonPlaceableWorkItemState — EI-8438: the blocked-state placement f
   });
 });
 
+describe('isObservationLaneItem — EI-10692: observation-lane rows are never placement candidates (D-005)', () => {
+  it('excludes a payload.lane==="observation" row (the reported EI-10689 leak)', () => {
+    expect(isObservationLaneItem({ lane: 'observation' })).toBe(true);
+  });
+
+  it('excludes an observation row that carries other payload keys too', () => {
+    expect(isObservationLaneItem({ lane: 'observation', filedByRole: 'su', topics: ['papercusp-observation'] })).toBe(true);
+  });
+
+  it('does NOT exclude a real improvement lane (the actionable-work case)', () => {
+    expect(isObservationLaneItem({ lane: 'improvement' })).toBe(false);
+  });
+
+  it('treats a missing/empty payload as placeable (never a false exclusion)', () => {
+    expect(isObservationLaneItem(null)).toBe(false);
+    expect(isObservationLaneItem(undefined)).toBe(false);
+    expect(isObservationLaneItem({})).toBe(false);
+    expect(isObservationLaneItem('not-an-object')).toBe(false);
+  });
+});
+
+describe('isClaimHoldParked — EI-10692: claimHold-parked rows are never placement candidates (WI-2797)', () => {
+  it('excludes a payload._claimHold===true row (how setWorkItemClaimHold writes it)', () => {
+    expect(isClaimHoldParked({ _claimHold: true })).toBe(true);
+  });
+
+  it('excludes a legacy string "true" claimHold tag (mirrors the SQL ->> text compare)', () => {
+    expect(isClaimHoldParked({ _claimHold: 'true' })).toBe(true);
+  });
+
+  it('excludes a held-open item carrying the sibling holder tags', () => {
+    expect(isClaimHoldParked({ _claimHold: true, held_open_by: 'su-abc', held_open_reason: 'blocked' })).toBe(true);
+  });
+
+  it('does NOT exclude a row with a cleared / false / absent claimHold', () => {
+    expect(isClaimHoldParked({ _claimHold: false })).toBe(false);
+    expect(isClaimHoldParked({})).toBe(false);
+    expect(isClaimHoldParked(null)).toBe(false);
+    expect(isClaimHoldParked(undefined)).toBe(false);
+  });
+});
+
 describe('deriveBeeAliveFromPresence — EI-3067 no-presence nursery rows do not stay alive forever', () => {
   const NOW = Date.parse('2026-07-03T12:00:00.000Z');
 
