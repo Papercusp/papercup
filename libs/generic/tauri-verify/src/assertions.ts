@@ -1,143 +1,115 @@
-/**
- * Verification assertions for Tauri app.
- * Provides stable, composable assertions for app-ready, route, and scope.
- */
+/** Stable, target-explicit assertions over the authenticated Tauri dev bridge. */
+import type {
+  AppReady,
+  AssertionResult,
+  BridgeStatus,
+  RouteInfo,
+  ScopeInfo,
+  VerifyConfig,
+  VerifyResult,
+} from './types.js';
+import { bridgeEval, resolveBridge } from './bridge-client.js';
 
-import type { AssertionResult, RouteInfo, ScopeInfo, AppReady, VerifyResult, BridgeStatus } from './types.js';
-
-/**
- * Assert that the Tauri bridge is connected.
- */
-export async function assertBridgeConnected(bridgePort: number): Promise<VerifyResult<BridgeStatus>> {
+function parseJsonResult<T>(result: unknown, label: string): VerifyResult<T> {
+  if (typeof result !== 'string') {
+    return { ok: false, code: 'invalid_eval_result', error: `${label} did not return JSON text.` };
+  }
   try {
-    const url = `http://127.0.0.1:${bridgePort}/health`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: `Bridge health check failed: ${response.status} ${response.statusText}`,
-      };
-    }
-
-    const data = (await response.json()) as Record<string, unknown>;
-
-    return {
-      ok: true,
-      value: {
-        bridgeAlive: true,
-        bridgeVersion: (data.version as string) || 'unknown',
-        tauriPID: (data.pid as number) || 0,
-        port: bridgePort,
-        webviewURL: (data.webviewUrl as string) || '',
-        pageTitle: (data.pageTitle as string) || '',
-      },
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      error: `Bridge connection failed: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    return { ok: true, value: JSON.parse(result) as T };
+  } catch {
+    return { ok: false, code: 'invalid_eval_json', error: `Failed to parse ${label}.` };
   }
 }
 
-/**
- * Assert that the app is ready for testing.
- * Checks: bridge connected, webview loaded, API healthy, router available.
- */
-export async function assertAppReady(
-  bridgePort: number,
-  apiBaseUrl: string = 'http://127.0.0.1:3270',
-): Promise<VerifyResult<AppReady>> {
-  // Check bridge
-  const bridgeResult = await assertBridgeConnected(bridgePort);
-  if (!bridgeResult.ok) {
-    return { ok: false, error: `Bridge not ready: ${bridgeResult.error}` };
-  }
+export async function readRoute(config: VerifyConfig): Promise<VerifyResult<RouteInfo>> {
+  const result = await bridgeEval<string>(
+    config,
+    'JSON.stringify({ href: location.href, pathname: location.pathname, search: location.search, hash: location.hash })',
+  );
+  return result.ok ? parseJsonResult<RouteInfo>(result.value, 'route info') : result;
+}
 
-  // Check webview loaded (via DOM check)
-  try {
-    const evalUrl = `http://127.0.0.1:${bridgePort}/eval`;
-    const webviewCheck = await fetch(evalUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        script: 'document.readyState',
-      }),
-    });
+export async function assertBridgeConnected(config: VerifyConfig): Promise<VerifyResult<BridgeStatus>> {
+  const bridge = await resolveBridge(config);
+  if (!bridge.ok) return bridge;
+  const result = await bridgeEval<string>(
+    config,
+    'JSON.stringify({ href: location.href, title: document.title, readyState: document.readyState })',
+  );
+  if (!result.ok) return result;
+  const page = parseJsonResult<{ href: string; title: string; readyState: string }>(result.value, 'bridge page state');
+  if (!page.ok) return page;
+  return {
+    ok: true,
+    value: {
+      bridgeAlive: true,
+      bridgeVersion: 'authenticated-eval',
+      tauriPID: bridge.value.pid ?? 0,
+      port: bridge.value.port,
+      webviewURL: page.value.href,
+      pageTitle: page.value.title,
+    },
+  };
+}
 
-    if (!webviewCheck.ok) {
-      return {
-        ok: false,
-        error: 'Webview check failed',
-      };
-    }
+export async function assertAppReady(config: VerifyConfig): Promise<VerifyResult<AppReady>> {
+  const bridge = await assertBridgeConnected(config);
+  if (!bridge.ok) return { ...bridge, error: `Bridge not ready: ${bridge.error}` };
 
-    const webviewData = (await webviewCheck.json()) as Record<string, unknown>;
-    const readyState = webviewData.result as string;
+  const stateResult = await bridgeEval<string>(
+    config,
+    `JSON.stringify({
+      readyState: document.readyState,
+      rootMounted: (document.querySelector('#root')?.childElementCount ?? 0) > 0,
+      href: location.href,
+      pathname: location.pathname,
+      search: location.search,
+      hash: location.hash,
+      origin: location.origin
+    })`,
+  );
+  if (!stateResult.ok) return stateResult;
+  const state = parseJsonResult<{
+    readyState: string;
+    rootMounted: boolean;
+    href: string;
+    pathname: string;
+    search: string;
+    hash: string;
+    origin: string;
+  }>(stateResult.value, 'app readiness state');
+  if (!state.ok) return state;
 
-    if (!['interactive', 'complete'].includes(readyState)) {
-      return {
-        ok: false,
-        error: `Webview not ready: readyState=${readyState}`,
-      };
-    }
-  } catch (err) {
+  const webviewLoaded = ['interactive', 'complete'].includes(state.value.readyState);
+  const routerReady = state.value.rootMounted && state.value.pathname.startsWith('/');
+  if (!webviewLoaded || !routerReady) {
     return {
       ok: false,
-      error: `Webview check error: ${err instanceof Error ? err.message : String(err)}`,
+      code: 'webview_not_ready',
+      error: `Webview not ready: readyState=${state.value.readyState}, rootMounted=${state.value.rootMounted}`,
+      evidence: state.value,
     };
   }
 
-  // Check API health
+  const apiBaseUrl = config.apiBaseUrl ?? state.value.origin;
   try {
-    const apiHealthUrl = `${apiBaseUrl}/api/health`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    try {
-      const apiHealth = await fetch(apiHealthUrl, { signal: controller.signal });
-      if (!apiHealth.ok) {
-        return {
-          ok: false,
-          error: `API health check failed: ${apiHealth.status}`,
-        };
-      }
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch (err) {
-    // API health check is optional - app can still be testable
-    console.warn('API health check warning:', err);
-  }
-
-  // Check router availability
-  try {
-    const evalUrl = `http://127.0.0.1:${bridgePort}/eval`;
-    const routerCheck = await fetch(evalUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        script: 'typeof window.__TSR_ROUTER__ !== "undefined"',
-      }),
+    const response = await fetch(new URL('/api/health', apiBaseUrl), {
+      signal: AbortSignal.timeout(config.timeout ?? 10_000),
     });
-
-    if (!routerCheck.ok) {
+    if (!response.ok) {
       return {
         ok: false,
-        error: 'Router availability check failed',
+        code: 'api_unhealthy',
+        error: `Target webview API is unhealthy: ${response.status} ${response.statusText}`,
+        evidence: { apiBaseUrl, webviewURL: state.value.href },
       };
     }
-
-    const routerData = (await routerCheck.json()) as Record<string, unknown>;
-    if (!routerData.result) {
-      return {
-        ok: false,
-        error: 'Router not available in window',
-      };
-    }
-  } catch (err) {
+  } catch (error) {
     return {
       ok: false,
-      error: `Router check error: ${err instanceof Error ? err.message : String(err)}`,
+      code: 'api_unreachable',
+      error: `Target webview API is unreachable: ${error instanceof Error ? error.message : String(error)}`,
+      evidence: { apiBaseUrl, webviewURL: state.value.href },
     };
   }
 
@@ -148,145 +120,72 @@ export async function assertAppReady(
       webviewLoaded: true,
       apiHealthy: true,
       routerReady: true,
+      route: {
+        href: state.value.href,
+        pathname: state.value.pathname,
+        search: state.value.search,
+        hash: state.value.hash,
+      },
     },
   };
 }
 
-/**
- * Assert that the current route matches expected.
- */
+export function routeMatches(route: RouteInfo, expected: string | RegExp): boolean {
+  if (typeof expected === 'string') return route.pathname === expected;
+  expected.lastIndex = 0;
+  return expected.test(route.pathname);
+}
+
 export async function assertRoute(
-  bridgePort: number,
+  config: VerifyConfig,
   expectedRoute: string | RegExp,
 ): Promise<VerifyResult<RouteInfo>> {
-  try {
-    const evalUrl = `http://127.0.0.1:${bridgePort}/eval`;
-    const evalResponse = await fetch(evalUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        script: 'JSON.stringify({ href: location.href, pathname: location.pathname, search: location.search, hash: location.hash })',
-      }),
-    });
-
-    if (!evalResponse.ok) {
-      return {
-        ok: false,
-        error: 'Failed to read current route',
-      };
-    }
-
-    const evalData = (await evalResponse.json()) as Record<string, unknown>;
-    let routeInfo: RouteInfo;
-
-    if (typeof evalData.result === 'string') {
-      try {
-        routeInfo = JSON.parse(evalData.result) as RouteInfo;
-      } catch {
-        return {
-          ok: false,
-          error: 'Failed to parse route info',
-        };
-      }
-    } else {
-      return {
-        ok: false,
-        error: 'Unexpected route info format',
-      };
-    }
-
-    // Check if route matches expected
-    const matches =
-      typeof expectedRoute === 'string' ? routeInfo.pathname === expectedRoute : expectedRoute.test(routeInfo.pathname);
-
-    if (!matches) {
-      return {
-        ok: false,
-        error: `Route mismatch: expected ${String(expectedRoute)}, got ${routeInfo.pathname}`,
-      };
-    }
-
-    return { ok: true, value: routeInfo };
-  } catch (err) {
+  const route = await readRoute(config);
+  if (!route.ok) return route;
+  if (!routeMatches(route.value, expectedRoute)) {
     return {
       ok: false,
-      error: `Route assertion error: ${err instanceof Error ? err.message : String(err)}`,
+      code: 'route_mismatch',
+      error: `Route mismatch: expected ${String(expectedRoute)}, got ${route.value.pathname}${route.value.search}`,
+      evidence: route.value,
     };
   }
+  return route;
 }
 
-/**
- * Assert current harness/workspace scope.
- */
 export async function assertScope(
-  bridgePort: number,
+  config: VerifyConfig,
   expectedScope: Partial<ScopeInfo>,
 ): Promise<VerifyResult<ScopeInfo>> {
-  try {
-    const evalUrl = `http://127.0.0.1:${bridgePort}/eval`;
-    const evalResponse = await fetch(evalUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        script: 'JSON.stringify({ harnessSlug: new URL(location.href).searchParams.get("slug"), workspaceId: window.__WORKSPACE_ID__, userId: window.__USER_ID__, role: window.__USER_ROLE__ })',
-      }),
-    });
+  const result = await bridgeEval<string>(
+    config,
+    `(() => {
+      const url = new URL(location.href);
+      const pathHarness = location.pathname.match(/^\\/harness\\/([^/]+)/)?.[1];
+      return JSON.stringify({
+        harnessSlug: url.searchParams.get('slug') || url.searchParams.get('harness') || pathHarness || undefined,
+        workspaceId: window.__PAPERCUSP_WS__ || url.searchParams.get('ws') || 'default'
+      });
+    })()`,
+  );
+  if (!result.ok) return result;
+  const scope = parseJsonResult<ScopeInfo>(result.value, 'scope info');
+  if (!scope.ok) return scope;
 
-    if (!evalResponse.ok) {
+  for (const [key, expectedValue] of Object.entries(expectedScope)) {
+    if (expectedValue !== undefined && scope.value[key as keyof ScopeInfo] !== expectedValue) {
       return {
         ok: false,
-        error: 'Failed to read scope info',
+        code: 'scope_mismatch',
+        error: `Scope mismatch: expected ${key}=${String(expectedValue)}, got ${String(scope.value[key as keyof ScopeInfo])}`,
+        evidence: scope.value,
       };
     }
-
-    const evalData = (await evalResponse.json()) as Record<string, unknown>;
-    let scopeInfo: ScopeInfo;
-
-    if (typeof evalData.result === 'string') {
-      try {
-        scopeInfo = JSON.parse(evalData.result) as ScopeInfo;
-      } catch {
-        return {
-          ok: false,
-          error: 'Failed to parse scope info',
-        };
-      }
-    } else {
-      return {
-        ok: false,
-        error: 'Unexpected scope info format',
-      };
-    }
-
-    // Check if scope matches expected
-    for (const [key, expectedValue] of Object.entries(expectedScope)) {
-      if (expectedValue !== undefined && scopeInfo[key as keyof ScopeInfo] !== expectedValue) {
-        return {
-          ok: false,
-          error: `Scope mismatch: expected ${key}=${String(expectedValue)}, got ${String(scopeInfo[key as keyof ScopeInfo])}`,
-        };
-      }
-    }
-
-    return { ok: true, value: scopeInfo };
-  } catch (err) {
-    return {
-      ok: false,
-      error: `Scope assertion error: ${err instanceof Error ? err.message : String(err)}`,
-    };
   }
+  return scope;
 }
 
-/**
- * Format assertion result as a human-readable message.
- */
 export function formatAssertionResult(result: AssertionResult): string {
   const status = result.passed ? '✓' : '✗';
-  let msg = `${status} ${result.message}`;
-
-  if (result.details && Object.keys(result.details).length > 0) {
-    msg += ` | ${JSON.stringify(result.details)}`;
-  }
-
-  return msg;
+  return `${status} ${result.message}${result.details ? ` | ${JSON.stringify(result.details)}` : ''}`;
 }

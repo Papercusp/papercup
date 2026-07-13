@@ -264,8 +264,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const bigHits = (n: number) => ({
       ok: true,
       // Each hit's text caps at MEMORY_TEXT_CAP (200) BEFORE the budget, so each
-      // admitted hit costs ~200 + id + 24 overhead ≈ 226 chars.
-      results: Array.from({ length: n }, (_, i) => ({ id: `m${i}`, memory: 'x'.repeat(5000), score: 0.9 - i * 0.01 })),
+      // admitted hit costs ~200 + id + 24 overhead ≈ 226 chars. Distinct per-hit prefix so
+      // the P-008 near-duplicate collapse doesn't fold these (identical text would be — and
+      // should be — collapsed); the budget behavior under test is unchanged.
+      results: Array.from({ length: n }, (_, i) => ({ id: `m${i}`, memory: `m${i} ` + 'x'.repeat(5000), score: 0.9 - i * 0.01 })),
     });
 
     it('admits hits in relevance order under the budget and reports withheldBudget loudly', async () => {

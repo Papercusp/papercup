@@ -99,3 +99,116 @@ describe('admitRecallHits', () => {
     expect(MEMORY_TEXT_CAP).toBe(200);
   });
 });
+
+// ── P-008 / WI-4538: near-duplicate collapse ────────────────────────────────────────────────
+// A limited recall budget was being spent on the SAME fact under multiple ids (coord:orient
+// returned one owner directive 3× under 3 ids), crowding distinct facts out and then reporting
+// "the memory budget is full". These tests pin the collapse AND its safety boundary: it must
+// never fold two genuinely-distinct memories that merely share boilerplate.
+describe('near-duplicate collapse — pure helpers', () => {
+  it('normalizeForDedup lowercases, collapses whitespace, trims', () => {
+    expect(normalizeForDedup('  The   QUICK\n brown ')).toBe('the quick brown');
+  });
+
+  it('jaccardSimilarity is a token-overlap ratio; two empty sets are identical', () => {
+    expect(jaccardSimilarity(new Set(['a', 'b']), new Set(['a', 'b']))).toBe(1);
+    expect(jaccardSimilarity(new Set(['a', 'b', 'c', 'd']), new Set(['a', 'b', 'c', 'e']))).toBeCloseTo(3 / 5);
+    expect(jaccardSimilarity(new Set(), new Set())).toBe(1);
+    expect(jaccardSimilarity(new Set(['a']), new Set(['b']))).toBe(0);
+  });
+
+  it('isNearDuplicateText: exact-normalized-equal OR high token overlap; distinct stays distinct', () => {
+    expect(isNearDuplicateText('Put yourself on AUTO mode', 'put yourself on auto mode')).toBe(true); // norm-equal
+    expect(
+      isNearDuplicateText(
+        'the vitest 4 mock paradox note about hoisting and factory scope',
+        'the vitest 4 mock paradox note about hoisting and the factory scope',
+      ),
+    ).toBe(true); // one-word paraphrase
+    expect(
+      isNearDuplicateText(
+        '[owner:Avi verbatim] save the age benchmark for the next release',
+        '[owner:Avi verbatim] flip the memory backend to hybrid-pg after review',
+      ),
+    ).toBe(false); // shared boilerplate, DIFFERENT directive → must not collapse
+  });
+
+  it('collapseNearDuplicates keeps the FIRST of each cluster and never folds empty-text items', () => {
+    const { kept, droppedIndices } = collapseNearDuplicates(
+      [
+        { id: '1', t: 'alpha fact one two three' },
+        { id: '2', t: 'ALPHA fact one two three' }, // dup of 1
+        { id: '3', t: 'beta a different fact entirely here' },
+        { id: '4', t: '' }, // empty — never collapsed
+        { id: '5', t: '' }, // empty — never collapsed even against id4
+      ],
+      (x) => x.t,
+    );
+    expect(kept.map((x) => x.id)).toEqual(['1', '3', '4', '5']);
+    expect(droppedIndices).toEqual([1]);
+  });
+});
+
+describe('admitRecallHits — near-duplicate collapse gate', () => {
+  const memHit = (id: string, memory: string, score = 0.9) => ({ id, memory, score });
+
+  it('collapses exact-duplicate memories under different ids, keeping the highest-ranked', () => {
+    const r = admitRecallHits([
+      memHit('id1', 'put yourself on auto mode and continue the plan', 0.9),
+      memHit('id2', 'put yourself on auto mode and continue the plan', 0.8), // same text, diff id
+      memHit('id3', 'a completely different distinct fact about migrations', 0.7),
+    ]);
+    expect(r.admitted.map((h) => h.id)).toEqual(['id1', 'id3']);
+    expect(r.collapsedDuplicates).toBe(1);
+  });
+
+  it('collapses near-paraphrases above the Jaccard threshold', () => {
+    const r = admitRecallHits([
+      memHit('id1', 'the vitest 4 mock paradox note about hoisting and factory scope', 0.9),
+      memHit('id2', 'the vitest 4 mock paradox note about hoisting and the factory scope', 0.8),
+    ]);
+    expect(r.admitted.map((h) => h.id)).toEqual(['id1']);
+    expect(r.collapsedDuplicates).toBe(1);
+  });
+
+  it('keeps genuinely distinct memories that merely share boilerplate framing', () => {
+    const r = admitRecallHits([
+      memHit('id1', '[owner:Avi 2026-07-11, verbatim] save the age benchmark for the next release', 0.9),
+      memHit('id2', '[owner:Avi 2026-07-11, verbatim] flip the memory backend to hybrid-pg after review', 0.8),
+    ]);
+    expect(r.admitted.map((h) => h.id)).toEqual(['id1', 'id2']);
+    expect(r.collapsedDuplicates).toBe(0);
+  });
+
+  it('collapses BEFORE the budget — the dupe must not crowd out a distinct fact', () => {
+    const dup = 'the same owner directive repeated verbatim across three memory ids';
+    const distinct = 'a genuinely distinct second fact worth keeping in budget';
+    // Budget fits exactly two hits. If dedup ran AFTER the budget, slot 2 would go to the dupe
+    // and the distinct fact would be crowded out (admitted would be ['a']); running it BEFORE
+    // admits the distinct fact.
+    const budgetChars = 2 * (dup.length + 25);
+    const r = admitRecallHits(
+      [
+        memHit('a', dup, 0.9),
+        memHit('b', dup, 0.85), // dupe of a
+        memHit('c', distinct, 0.8),
+      ],
+      { budgetChars },
+    );
+    expect(r.admitted.map((h) => h.id)).toEqual(['a', 'c']);
+    expect(r.collapsedDuplicates).toBe(1);
+    expect(r.withheldBudget).toBe(0);
+  });
+
+  it('a threshold >= 1 disables the fuzzy match (exact-equality still collapses)', () => {
+    const r = admitRecallHits(
+      [
+        memHit('id1', 'nearly the same sentence about caching behavior here', 0.9),
+        memHit('id2', 'nearly the same sentence about caching behavior now', 0.8), // 1 word diff
+      ],
+      { dedupeThreshold: 1.01 },
+    );
+    expect(r.admitted).toHaveLength(2); // fuzzy off → the paraphrase is kept
+    expect(r.collapsedDuplicates).toBe(0);
+  });
+});

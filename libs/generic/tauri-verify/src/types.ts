@@ -12,7 +12,9 @@
  * Result of a verification operation.
  * Either a successful value or an error message.
  */
-export type VerifyResult<T> = { ok: true; value: T } | { ok: false; error: string };
+export type VerifyResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; code?: string; evidence?: Record<string, unknown> };
 
 /**
  * Bridge connection status.
@@ -34,6 +36,7 @@ export interface AppReady {
   webviewLoaded: boolean;
   apiHealthy: boolean;
   routerReady: boolean;
+  route: RouteInfo;
 }
 
 /**
@@ -63,17 +66,27 @@ export interface ScopeInfo {
 export interface Screen {
   id: string;
   name: string;
-  route: string | RegExp;
-  requiredElements?: string[]; // CSS selectors that must be present
+  /** Stable destination used by navigateToScreen. */
+  href: string;
+  route: {
+    pathname: string | RegExp;
+    query?: Record<string, string | RegExp>;
+  };
+  requiredElements?: string[];
 }
 
 /**
  * Configuration for verification environment.
  */
 export interface VerifyConfig {
-  bridgePort?: number;
+  /** Preferred target: the exact Tauri process to drive. */
   tauriPID?: number;
+  /** Explicit bridge target alternative; both port and token are required. */
+  bridgePort?: number;
+  bridgeToken?: string;
+  windowLabel?: string;
   timeout?: number; // milliseconds
+  /** Optional override; defaults to the origin the target webview is actually using. */
   apiBaseUrl?: string;
 }
 

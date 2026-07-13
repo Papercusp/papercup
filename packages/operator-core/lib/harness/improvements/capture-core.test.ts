@@ -266,7 +266,7 @@ describe('captureImprovement — P-010 source-tag and per-Hive scope', () => {
     const d = deps();
     const res = await captureImprovement({ title: 'broken thing', kind: 'bug' }, d);
     expect(res.created).toBe(true);
-    expect(d.created[0].payload?.sourceRole).toBeUndefined();
+    expect((d.created[0].payload as Record<string, unknown> | undefined)?.sourceRole).toBeUndefined();
   });
 
   it('adds improvement-source topic tag when sourceRole is Queen or cup (P-010)', async () => {
@@ -289,7 +289,7 @@ describe('captureImprovement — P-010 source-tag and per-Hive scope', () => {
     }, d);
     expect(res.created).toBe(true);
     expect(d.created[0].scope).toBe('harness:sheets');
-    expect(d.created[0].payload?.sourceRole).toBe('cup');
+    expect((d.created[0].payload as Record<string, unknown> | undefined)?.sourceRole).toBe('cup');
   });
 });
 
