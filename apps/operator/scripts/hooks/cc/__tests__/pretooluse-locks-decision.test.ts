@@ -134,13 +134,18 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     const configFile = join(home, '.config', 'mimeapps.list');
     fs.mkdirSync(join(home, '.config'), { recursive: true });
     fs.writeFileSync(configFile, '[Default Applications]\n');
-    const r = await run({
-      tool_name: 'Edit',
-      tool_input: { file_path: configFile },
-      tool_use_id: 'tu-home-config',
-      session_id: 'codex-session-owner',
-      cwd: home,
-    });
+    const r = await run(
+      {
+        tool_name: 'Edit',
+        tool_input: { file_path: configFile },
+        tool_use_id: 'tu-home-config',
+        session_id: 'codex-session-owner',
+        cwd: home,
+      },
+      // Mirrors the generated Codex hook command: the per-session owner is
+      // baked because the inherited Codex hook environment can be stale.
+      { PAPERCUSP_SID: 'codex-session-owner' },
+    );
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
     expect(lastRequest?.body.params.arguments.paths).toEqual(['@external/home/.config/mimeapps.list']);
