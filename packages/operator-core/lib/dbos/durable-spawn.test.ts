@@ -592,7 +592,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(h.recordSpawn).not.toHaveBeenCalled();
     expect(h.loopbackFetch).not.toHaveBeenCalled();
     expect(h.finishSpawn).not.toHaveBeenCalled();
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('skipped duplicate Queen launch'));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('skipped duplicate Mug launch'));
   });
 
   it('retires DBOS-terminal Mug rows before checking the Queen singleton', async () => {

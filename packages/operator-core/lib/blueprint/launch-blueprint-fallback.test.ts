@@ -160,7 +160,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     expect(recordSpawn).not.toHaveBeenCalled();
     expect(loopbackFetch).not.toHaveBeenCalled();
     expect(finishSpawn).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipped duplicate Queen launch'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipped duplicate Mug launch'));
     warn.mockRestore();
   });
 

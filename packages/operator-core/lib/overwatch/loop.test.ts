@@ -275,7 +275,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
       expect(recordFire).toHaveBeenCalledWith(
         SLUG,
         'kettle',
-        expect.stringContaining('invoke produced no Overwatch turn'),
+        expect.stringContaining('invoke produced no Kettle turn'),
         'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     });
@@ -315,7 +315,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
       expect(recordFire).toHaveBeenCalledWith(
         SLUG,
         'kettle',
-        expect.stringContaining('produced no Overwatch turn'),
+        expect.stringContaining('produced no Kettle turn'),
         'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     });
