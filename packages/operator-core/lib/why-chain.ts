@@ -73,16 +73,15 @@ export interface WhyChainResult extends RuntimeDiagnostic<
   recentFailingFiles: string[];
 }
 
+/**
+ * WI-4577: ONE source of truth for "the decisive next tool" — each stage function above already
+ * names its own `nextVerb` at the exact branch that knows WHY it is non-ok (e.g. a stale verdict
+ * needs a fresh checkpoint run, not the tests it names; a wedged routine needs the same). Reading
+ * it back off `rootCause` here (rather than re-deriving it from `reason` text) means the top-level
+ * `WhyChainResult.nextVerb` and `rootCause.nextVerb` can never disagree — they are the same field.
+ */
 function nextVerbForRoot(rootCause: WhyChainStage | null): string | null {
-  if (!rootCause) return null;
-  if (rootCause.stage === 'gate') {
-    return rootCause.reason.includes('STALE') || rootCause.reason.includes('WEDGED')
-      ? 'release:checkpoint-run'
-      : 'testing:flakiness';
-  }
-  if (rootCause.stage === 'deploy') return 'release:deploy';
-  if (rootCause.stage === 'admission') return 'gateway:status';
-  return 'accounts:status';
+  return rootCause?.nextVerb ?? null;
 }
 
 export interface WhyChainDeps {
@@ -191,7 +190,8 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
       stage: 'gate',
       status: 'blocked',
       reason: `green-checkpoint gate is WEDGED — not firing (${g.fireStaleReason ?? 'stale'})`,
-      nextVerb: 'dev:pipeline_position',
+      // A non-firing routine needs a fresh run, not a position read (matches nextVerbForRoot).
+      nextVerb: 'release:checkpoint-run',
     };
   }
   // WI-4533: a STALE red is not a red — it is an UNKNOWN, and it must never be rendered as the
