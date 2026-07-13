@@ -13,7 +13,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { installPapercuspFiles, resolveInstallPaths, renderSuPlaybook } from '../papercusp-files';
+
+const execFileAsync = promisify(execFile);
 
 let tmpHome: string;
 let tmpAppRoot: string;
@@ -117,9 +121,11 @@ describe('installPapercuspFiles', () => {
     expect(result.psuPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'psu'));
     const psu = await fs.readFile(result.psuPath, 'utf8');
     expect(psu).toMatch(/^#!\/usr\/bin\/env bash\n/);
-    expect(psu).toContain(
-      `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(result.psuLauncherSource)} "$@"`,
-    );
+    expect(psu).toContain('PAPERCUSP_PSU_LAUNCHER');
+    expect(psu).toContain('PAPERCUSP_INTEGRATION_ROOT');
+    expect(psu).toContain('PAPERCUSP_RELEASE_ROOT');
+    expect(psu).toContain(`exec ${JSON.stringify(process.execPath)} "$launcher" "$@"`);
+    expect(psu).toContain(JSON.stringify(result.psuLauncherSource));
     // WI-2149: the shim prepends ~/.local/bin so the launcher's pty.spawn('claude')
     // resolves the agent installed by claude.ai/install.sh — the WSL2 distro's login
     // PATH omits ~/.local/bin, which otherwise made a console-launched psu fail with
@@ -127,6 +133,61 @@ describe('installPapercuspFiles', () => {
     expect(psu).toContain('export PATH="$HOME/.local/bin:$PATH"');
     expect((await fs.stat(result.psuPath)).mode & 0o777).toBe(0o755);
     expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
+  });
+
+  it('resolves the integration launcher at runtime and falls back to the release launcher', async () => {
+    const integrationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-install-integration-'));
+    const releaseRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-install-release-'));
+    const integrationLauncher = path.join(
+      integrationRoot,
+      'apps',
+      'operator',
+      'scripts',
+      'psu-launcher.mjs',
+    );
+    const releaseLauncher = path.join(
+      releaseRoot,
+      'apps',
+      'operator',
+      'scripts',
+      'psu-launcher.mjs',
+    );
+    await fs.mkdir(path.dirname(integrationLauncher), { recursive: true });
+    await fs.mkdir(path.dirname(releaseLauncher), { recursive: true });
+    await fs.writeFile(integrationLauncher, 'console.log("integration");\n');
+    await fs.writeFile(releaseLauncher, 'console.log("release");\n');
+
+    const priorIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    const priorReleaseRoot = process.env.PAPERCUSP_RELEASE_ROOT;
+    process.env.PAPERCUSP_RELEASE_ROOT = releaseRoot;
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    try {
+      const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+      const baseEnv = { ...process.env, PAPERCUSP_RELEASE_ROOT: releaseRoot };
+
+      const integration = await execFileAsync(result.psuPath, [], {
+        env: { ...baseEnv, PAPERCUSP_INTEGRATION_ROOT: integrationRoot },
+      });
+      expect(integration.stdout.trim()).toBe('integration');
+      expect(integration.stderr).toContain(integrationLauncher);
+
+      const releaseFallback = await execFileAsync(result.psuPath, [], {
+        env: {
+          ...baseEnv,
+          PAPERCUSP_INTEGRATION_ROOT: '',
+          PAPERCUSP_RELEASE_ROOT: '',
+        },
+      });
+      expect(releaseFallback.stdout.trim()).toBe('release');
+      expect(releaseFallback.stderr).toContain(releaseLauncher);
+    } finally {
+      if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorIntegrationRoot;
+      if (priorReleaseRoot === undefined) delete process.env.PAPERCUSP_RELEASE_ROOT;
+      else process.env.PAPERCUSP_RELEASE_ROOT = priorReleaseRoot;
+      await fs.rm(integrationRoot, { recursive: true, force: true });
+      await fs.rm(releaseRoot, { recursive: true, force: true });
+    }
   });
 
   it('writes an executable psu-sentinel shim that execs the resolved psu shim (WI-4244)', async () => {

@@ -1604,9 +1604,21 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // profile psu launches with are gated separately (FLAGS.PSU_END_USER + the
   // scoped `user` profile, C1/C2).
   await fs.mkdir(paths.binDir, { recursive: true, mode: 0o700 });
-  const psuShimWritten = psuLauncherSource ? await writeShim(paths.psuPath, psuLauncherSource, 'superuser launcher (psu)') : false;
+  const psuShimWritten = psuLauncherSource
+    ? await writeShim(
+        paths.psuPath,
+        psuLauncherSource,
+        'superuser launcher (psu)',
+        shimRuntimeOptions(psuLauncherSource, 'PAPERCUSP_PSU_LAUNCHER'),
+      )
+    : false;
   const ptoolShimWritten = ptoolLauncherSource
-    ? await writeShim(paths.ptoolPath, ptoolLauncherSource, 'defineTool CLI (ptool)')
+    ? await writeShim(
+        paths.ptoolPath,
+        ptoolLauncherSource,
+        'defineTool CLI (ptool)',
+        shimRuntimeOptions(ptoolLauncherSource, 'PAPERCUSP_PTOOL_LAUNCHER'),
+      )
     : false;
   const papercuspCliWritten = onboardLauncherSource
     ? await writeDispatcherShim(paths.papercuspCliPath, onboardLauncherSource)
