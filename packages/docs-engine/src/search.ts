@@ -112,10 +112,36 @@ function slugMatchBonus(query: string, page: { slug: string; slugs: string[] }):
 const BM25_K1 = 1.2;
 const BM25_B = 0.75;
 
-function bm25BodyScore(count: number, bodyLen: number, avgBodyLen: number): number {
+/**
+ * Inverse document frequency — the half of BM25 that actually kills the
+ * aggregate-dump black hole, and the one it is easy to forget.
+ *
+ * Length normalization alone is NOT enough. A query like
+ * `nuqs throttled url flush race` mixes one RARE, discriminating token (`nuqs`,
+ * in ~1 doc) with several COMMON ones (`url`, `race`, `flush`, in hundreds). A
+ * 304KB page that carries the vocabulary of all 491 docs racks up a large score
+ * on the COMMON tokens and wins — even though the rare token is the one that
+ * identifies the true answer. IDF prices that in: a token appearing in most
+ * documents is worth ~nothing, a token appearing in one document is worth a lot.
+ * Breadth of vocabulary stops being a ranking advantage, which is precisely the
+ * property an index/catalog page was exploiting.
+ */
+function idf(docFreq: number, totalDocs: number): number {
+  // Standard BM25 IDF with the +1 shift, so it is always >= 0 (a token present in
+  // every document contributes ~0 rather than going negative).
+  return Math.log(1 + (totalDocs - docFreq + 0.5) / (docFreq + 0.5));
+}
+
+function bm25BodyScore(
+  count: number,
+  bodyLen: number,
+  avgBodyLen: number,
+  tokenIdf: number,
+): number {
   if (count === 0) return 0;
   const norm = 1 - BM25_B + BM25_B * (bodyLen / (avgBodyLen || 1));
-  return (count * (BM25_K1 + 1)) / (count + BM25_K1 * norm);
+  const tf = (count * (BM25_K1 + 1)) / (count + BM25_K1 * norm);
+  return tokenIdf * tf;
 }
 
 function makeExcerpt(body: string, tokens: string[], window = 120): string {
@@ -174,17 +200,37 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
     ? rendered.reduce((sum, r) => sum + r.body.length, 0) / rendered.length
     : 1;
 
+  // Document frequency per query token, over the searched corpus — the input to
+  // IDF. Computed once per query, not per page.
+  const totalDocs = rendered.length;
+  const tokenIdf = new Map<string, number>();
+  for (const t of tokens) {
+    let df = 0;
+    for (const { page, body } of rendered) {
+      const hay = `${page.title ?? ''} ${page.description ?? ''} ${body}`;
+      if (hay.toLowerCase().includes(t)) df += 1;
+    }
+    tokenIdf.set(t, idf(df, totalDocs));
+  }
+
   const scored: SearchHit[] = [];
   for (const { page, body } of rendered) {
     const title = page.title ?? '';
     const description = page.description ?? '';
     let score = 0;
     for (const t of tokens) {
-      // Title/description are short, bounded metadata fields — a raw weighted
-      // count is right there. Only the unbounded body needs normalizing.
+      // Title/description are short, curated, bounded fields — a raw weighted
+      // count is the right signal there, and keeping them un-IDF'd preserves the
+      // "a title match is a strong signal" contract. Only the unbounded body,
+      // where the black hole lives, gets full BM25 (IDF × length-normalized TF).
       score += countOccurrences(title, t) * 4;
       score += countOccurrences(description, t) * 2;
-      score += bm25BodyScore(countOccurrences(body, t), body.length, avgBodyLen);
+      score += bm25BodyScore(
+        countOccurrences(body, t),
+        body.length,
+        avgBodyLen,
+        tokenIdf.get(t) ?? 1,
+      );
     }
     score += slugMatchBonus(args.query, page);
     if (score === 0) continue;

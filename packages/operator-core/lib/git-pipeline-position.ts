@@ -55,6 +55,124 @@ export interface PipelinePositionInput {
   sha?: string;
 }
 
+/* ------------------------------------------------------------------------- *
+ * EI-10895 — the RUNTIME-OWNER map.
+ *
+ * The pipeline this tool tracks (commit → origin/staging → green main → :3070)
+ * is the activation path for exactly ONE process: the release operator. But the
+ * box runs several other long-lived hosts, and every one of them executes
+ * `npx tsx` STRAIGHT FROM THE STAGING WORKING TREE — no build, no dist/, no
+ * release checkout:
+ *
+ *   inference gateway (:8788)  WorkingDirectory=<staging>   tsx packages/operator-core/lib/inference-gateway/bin.ts
+ *   bg-host (routines/DBOS)    WorkingDirectory=<staging>   tsx bin/hono-host.ts (BACKGROUND_WORKERS=1)
+ *   embed-sidecar (:3384)      WorkingDirectory=<staging>   esbuild-bundles on ExecStartPre, then runs it
+ *
+ * For code owned by those hosts the file ON DISK IS ALREADY WHAT RUNS on the
+ * next start — so the ONLY thing between your edit and it being live is a
+ * RESTART. Reporting `deployed ✗` and advising "sleep on the deploy
+ * (deploy:await)" for such a path is not just unhelpful, it is WRONG: the
+ * deploy will happily land and the behavior will not change, because the
+ * process that runs that code never reads the release checkout. (This cost me
+ * an hour on WI-4541 — a gateway admission fix, waiting on a deploy that could
+ * never have activated it.)
+ * ------------------------------------------------------------------------- */
+
+/** The long-lived process that actually EXECUTES a given source path. */
+export type RuntimeHost = 'operator-release' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'tauri-desktop';
+
+/** A `dev:restart { target }` value. */
+export type RestartTargetName = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar';
+
+export interface RuntimeOwnership {
+  host: RuntimeHost;
+  /**
+   * Does the release pipeline (git-sync → green main → :3070 deploy) actually
+   * carry this code into the process that runs it? FALSE for every staging-tree
+   * tsx host — for those, a deploy is a no-op and a restart is the activation.
+   */
+  releasePipelineApplies: boolean;
+  /** The `dev:restart` target that loads the edit, when a restart is the activation. */
+  restartTarget: RestartTargetName | null;
+  /** One line: how THIS edit becomes live. */
+  activation: string;
+}
+
+const RUNTIME_OWNERS: { match: RegExp; own: RuntimeOwnership }[] = [
+  {
+    match: /^packages\/operator-core\/lib\/inference-gateway\//,
+    own: {
+      host: 'gateway',
+      releasePipelineApplies: false,
+      restartTarget: 'gateway',
+      activation:
+        'The inference gateway (:8788) runs `npx tsx packages/operator-core/lib/inference-gateway/bin.ts` STRAIGHT FROM THIS TREE — no build, no deploy. Your edit is already on its disk; it loads on RESTART: dev:restart { target: "gateway", confirm: true }. Do NOT wait on a deploy — it cannot activate this code.',
+    },
+  },
+  {
+    match: /(^|\/)embed-sidecar/,
+    own: {
+      host: 'embed-sidecar',
+      releasePipelineApplies: false,
+      restartTarget: 'embed-sidecar',
+      activation:
+        'The embedding sidecar (:3384) esbuild-bundles its source from THIS TREE on every start (ExecStartPre) — no deploy involved. It loads on RESTART: dev:restart { target: "embed-sidecar", confirm: true }.',
+    },
+  },
+  {
+    match: /^packages\/operator-core\/lib\/dbos\//,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'DBOS workflows / routines EXECUTE in bg-host, which runs `npx tsx bin/hono-host.ts` from THIS TREE (PAPERCUSP_BACKGROUND_WORKERS=1) — not from the release checkout. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. The :3070 deploy does not carry it.',
+    },
+  },
+  {
+    match: /^papercusp-desktop\/src-tauri\//,
+    own: {
+      host: 'tauri-desktop',
+      releasePipelineApplies: false,
+      restartTarget: null,
+      activation:
+        'Rust/Tauri shell code — it is COMPILED into the desktop binary, not served by any host. Neither a deploy nor a `dev:restart` activates it: rebuild the shell (`cd papercusp-desktop && npm run dev`).',
+    },
+  },
+];
+
+/**
+ * Which process runs this path — and therefore whether the release pipeline is
+ * the activation path for it at all. `null` when we cannot tell (a sha-only
+ * probe), which conservatively keeps the default release-pipeline reading.
+ */
+export function classifyRuntimeOwner(relPath: string | null | undefined): RuntimeOwnership | null {
+  if (!relPath) return null;
+  const p = relPath.replace(/^\.?\//, '');
+  const hit = RUNTIME_OWNERS.find((r) => r.match.test(p));
+  if (hit) return hit.own;
+  return {
+    host: 'operator-release',
+    releasePipelineApplies: true,
+    restartTarget: 'staging',
+    activation:
+      'Served by the operator. The green pipeline carries it to the live :3070 operator (release checkout) — or restart the staging host to exercise it NOW on :3170: dev:restart { target: "staging", confirm: true }.',
+  };
+}
+
+/**
+ * Shared code (operator-core / libs) is ALSO loaded by the staging-tree hosts,
+ * so a deploy is not necessarily what makes YOUR behavior change. Surfaced as a
+ * note rather than a reclassification: we cannot know from the path alone which
+ * host the caller cares about.
+ */
+function sharedHostCaveat(relPath: string | null): string | null {
+  if (!relPath) return null;
+  const p = relPath.replace(/^\.?\//, '');
+  if (!/^(packages\/operator-core\/lib|libs)\//.test(p)) return null;
+  return 'Shared code: this path is ALSO loaded by the staging-tree hosts (gateway :8788, bg-host routines, :3170) which run tsx from this tree — not from the release checkout. If the behavior you are testing runs in one of THOSE, a deploy will not change it; restart that host (dev:restart { target }).';
+}
+
 export interface PipelinePosition {
   input: { path: string | null; sha: string | null };
   repoRoot: string;
@@ -115,6 +233,12 @@ export interface PipelinePosition {
     deployOrigin: 'gate-green' | 'stale-behind-gate' | 'ahead-of-gate' | 'unknown';
   };
   gitSyncLastStatus: string | null;
+  /**
+   * EI-10895: which process actually RUNS this path, and therefore whether the
+   * staging→main→:3070 pipeline is its activation path at all. `null` for a
+   * sha-only probe (no path to classify).
+   */
+  runtime: RuntimeOwnership | null;
   /** One human-readable line. */
   summary: string;
   notes: string[];
@@ -145,6 +269,20 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
   }
   const subj = p.targetSubject ? ` "${p.targetSubject.slice(0, 60)}"` : '';
   const dirty = p.dirtyUncommitted ? ' ⚠ +uncommitted edits' : '';
+
+  // EI-10895: for a path the release pipeline does NOT carry, the deploy ticks are
+  // not just noise — a `deployed ✗` reads as "still stuck in the pipeline" and sends
+  // the agent off to wait for a deploy that can never activate the code. Lead with
+  // the ACTIVATION instead, and demote the git ticks to what they actually mean here
+  // (durability + peer visibility, not liveness).
+  if (p.runtime && !p.runtime.releasePipelineApplies) {
+    return `${label} @${p.targetShortSha}${subj}: runs in ${p.runtime.host} — NOT carried by the staging→main→:3070 deploy. ${
+      p.runtime.activation
+    } (git position: committed ${tick(p.positions.committedLocal)} · staging ${tick(
+      p.positions.onStaging,
+    )}${dirty} — durability/peer-visibility only; the running host reads THIS TREE, so even an uncommitted edit is what it loads on restart.)`;
+  }
+
   if (p.submodule) {
     return `${label} @${p.targetShortSha}${subj} [submodule ${p.submodule}]: committed ${tick(
       p.positions.committedLocal,
