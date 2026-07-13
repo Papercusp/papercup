@@ -38,6 +38,7 @@ import { rankPlacements, type PlacementCandidate } from './placement-ranker';
 import type { Ranked } from '../queue-ranker';
 import { defaultBlockingStore } from '../work-item-blocking';
 import { selectReady, type ReadinessNode } from '../dbos/frontier-readiness';
+import { activeExternalBlockers } from '../external-blockers';
 import { placementConfig } from './placement-watchdog';
 
 const MS_PER_DAY = 86_400_000;
@@ -262,6 +263,9 @@ export interface FrontierRow {
    *  by the owner's `eligiblePlans` (mug-steering-panel P-008). Optional so callers
    *  that build a FrontierRow without provenance (e.g. placement-gather) still compile. */
   plan_slug?: string | null;
+  /** Feature payload (including external blockers). Optional so callers that build
+   *  a FrontierRow without payload still compile. */
+  payload?: unknown;
 }
 
 /** An unplaced work-item row → a placement candidate (FRONTIER view). */
@@ -320,21 +324,29 @@ export function filterReadyFrontier(
   let blockedCount = 0;
   for (const [harness, hRows] of byHarness) {
     const graph = graphByHarness.get(harness);
-    if (!graph || graph.blockers.size === 0) {
+    const needsExternalBlockerCheck = hRows.some((r) => r.payload && activeExternalBlockers(r.payload).length > 0);
+    if ((!graph || graph.blockers.size === 0) && !needsExternalBlockerCheck) {
       ready.push(...hRows); // nothing blocked in this harness
       continue;
     }
     // Build the node set selectReady scores: each candidate (a `todo` lane) plus
     // its referenced blockers (carrying their real status so terminal blockers
     // satisfy). A blocker with no resolved status is simply absent ⇒ satisfied.
+    // Also include active external blockers (events, gates, runtime, human dependencies).
     const nodes = new Map<string, ReadinessNode>();
     for (const r of hRows) {
-      nodes.set(r.feature_id, { id: r.feature_id, status: 'todo', blockedBy: graph.blockers.get(r.feature_id) ?? [] });
+      const extBlockers = activeExternalBlockers(r.payload).map((b) => `${b.kind}:${b.ref}`);
+      nodes.set(r.feature_id, { 
+        id: r.feature_id, 
+        status: 'todo', 
+        blockedBy: graph?.blockers.get(r.feature_id) ?? [],
+        ...(extBlockers.length > 0 ? { externalBlockers: extBlockers } : {}),
+      });
     }
     for (const r of hRows) {
-      for (const blocker of graph.blockers.get(r.feature_id) ?? []) {
+      for (const blocker of graph?.blockers.get(r.feature_id) ?? []) {
         if (nodes.has(blocker)) continue; // already a candidate node
-        const status = graph.statuses.get(blocker);
+        const status = graph?.statuses.get(blocker);
         if (status != null) nodes.set(blocker, { id: blocker, status, blockedBy: [] });
       }
     }
@@ -404,7 +416,7 @@ export async function fetchFrontierRows(
   const breakerThreshold = placementConfig().breakerThreshold;
   const rows = await sql<FrontierRow[]>`
     SELECT feature_id, harness_slug, title, item_kind, created_ts, feature_order,
-           source_plan_slug AS plan_slug
+           source_plan_slug AS plan_slug, payload
       FROM harness_shared.harness_features_consolidated f
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}

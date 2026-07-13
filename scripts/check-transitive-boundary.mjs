@@ -40,8 +40,8 @@ const FORBIDDEN_PATTERNS = [
   /^pg($|\/)/,
   /^drizzle-orm($|\/)/,
   /^@electric-sql\/pglite($|\/)/,
-  // Server-only coordination/event-log backends
-  /^@papercusp\/coordination\/event-log($|\/)/,
+  // Server-only coordination backends (event-log FS/Postgres backends)
+  /^@papercusp\/coordination($|\/)/,
   // Code execution and compile-time tools
   /^typescript($|\/)/,
   /^@typescript-eslint($|\/)/,

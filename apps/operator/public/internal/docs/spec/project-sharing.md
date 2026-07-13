@@ -38,7 +38,9 @@ indexes its member repos (`hive_pubkey` rows), and joiners join the pot
 (`shared-pot-federation-2026-06-08`, `pot-from-github-url-2026-06-11`).
 `kind='harness'` Cupboard rows remain as the repo→Pot lookup index only;
 the live Cupboard `LISTING_KINDS` are `['harness', 'blueprint', 'plugin',
-'tool-pack', 'knowledge-pack']` — there is no `snapshot` kind (the D1
+'pack', 'knowledge-pack', 'template']` (the `tool-pack` and `learning-pack`
+values still parse as normalized aliases for `pack` / `knowledge-pack`) —
+there is no `snapshot` kind (the D1
 `tarball_*` columns from migration 005 remain only as vestigial/nullable
 columns). Successor product work: `comb-pot-native-sharing-2026-06-11`.
 

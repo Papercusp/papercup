@@ -30,6 +30,8 @@ export interface ReadinessNode {
   status: string;
   /** Resolved canonical blocker ids (coord_links rel='blocks'). Empty when unblocked. */
   blockedBy: readonly string[];
+  /** Active external blockers (events, gates, runtime, human dependencies). Empty when none. */
+  externalBlockers?: readonly string[];
 }
 
 /**
@@ -55,6 +57,10 @@ export function blockerSatisfied(
  * `readiness` = the dispatchable-status set (the orchestrator's blueprint policy,
  * defaulting to its legacy NEEDS_WORK; the survey passes its own `todo`-only set).
  * `terminalStatuses` defaults to passed/deprecated.
+ * 
+ * External blockers (typed non-work-item dependencies: events, gates, runtime, human)
+ * also block readiness — a node with active external blockers is never ready, regardless
+ * of whether its work-item blockers are satisfied.
  */
 export function selectReady<T extends ReadinessNode>(
   nodes: readonly T[],
@@ -68,8 +74,11 @@ export function selectReady<T extends ReadinessNode>(
   const blocked: T[] = [];
   for (const n of nodes) {
     if (!readiness.has(n.status) || owned.has(n.id)) continue;
-    if (n.blockedBy.every((b) => blockerSatisfied(b, present, terminal))) ready.push(n);
-    else blocked.push(n);
+    // Item is blocked if it has active external blockers OR any unsatisfied work-item blockers
+    const hasExternalBlockers = (n.externalBlockers?.length ?? 0) > 0;
+    const allWorkItemBlockersSatisfied = n.blockedBy.every((b) => blockerSatisfied(b, present, terminal));
+    if (hasExternalBlockers || !allWorkItemBlockersSatisfied) blocked.push(n);
+    else ready.push(n);
   }
   return { ready, blocked };
 }

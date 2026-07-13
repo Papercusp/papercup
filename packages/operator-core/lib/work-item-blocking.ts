@@ -37,6 +37,8 @@ export const ALL_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
 export interface BlockingNode {
   id: string;
   status: string;
+  /** Active external blockers (events, gates, runtime, human dependencies). Empty when none. */
+  externalBlockers?: readonly string[];
 }
 
 /**

@@ -116,13 +116,15 @@ two deliberate human acts. Surfaced in the Learnings view and via the
 
 ## Comb distribution + the approval gate (D-007)
 
-Listing kinds gained `knowledge-pack` (and `pack` was renamed `tool-pack`;
-the old wire value still parses). **Instruction-carrying kinds —
-`knowledge-pack` and `blueprint` — publish PENDING** and are publicly
-invisible until an allowlisted operator approves them at
-`/admin/cupboard-moderation` (worker routes `/admin/pending` +
+Listing kinds gained `knowledge-pack` (migration 008 added it as
+`learning-pack`, renamed to `knowledge-pack` by migration 011; the runtime-less
+code-tool pack, briefly named `tool-pack` by migration 008, was renamed back to
+`pack` in the same release — both old wire values still parse as aliases).
+**Instruction-carrying kinds — `knowledge-pack` and `blueprint` — publish
+PENDING** and are publicly invisible until an allowlisted operator approves them
+at `/admin/cupboard-moderation` (worker routes `/admin/pending` +
 `/admin/listings/:id/review`). Submitters see their own pending listing and
-any rejection reason. Code kinds (plugin/tool-pack) keep install-time
+any rejection reason. Code kinds (plugin/pack) keep install-time
 capability consent + reactive moderation.
 
 Install-from-Comb only **stages** a pack locally (clone → validate through

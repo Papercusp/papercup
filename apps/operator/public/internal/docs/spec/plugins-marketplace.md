@@ -11,12 +11,14 @@ The plugin **distribution** model it proposes (a `kind` discriminator on
 `actions` primitive, lockfiles) has shipped — but the storefront is now the
 **in-app Cupboard** (`apps/operator-public` = `@papercusp/cupboard-worker`, a
 Cloudflare Worker + D1, live at `cupboard.papercusp.com`), not a
-`papercuspai.com/marketplace/` site. The Cupboard is a single catalog with five
+`papercuspai.com/marketplace/` site. The Cupboard is a single catalog with six
 listing **kinds** — `harness` (join), `blueprint` (fork), `plugin` (install),
-`tool-pack` (install), and `knowledge-pack` (install) — exposed over HTTP at the
+`pack` (install), `knowledge-pack` (install), and `template` (install) — exposed over HTTP at the
 worker root: `/listings` (kind-aware) and `/harnesses` (the `kind='harness'`
-view), with no `cupboard:*` MCP verbs. (The original proposal's `snapshot` kind
-was **retired** — `retire-snapshots-instance-spec-2026-06-09` D-005.) Plugins
+view), with no `cupboard:*` MCP verbs. (The runtime-less code-tool pack is
+`pack`; its interim `tool-pack` value still parses as an alias. The original
+proposal's `snapshot` kind was **retired** —
+`retire-snapshots-instance-spec-2026-06-09` D-005.) Plugins
 install to `~/.papercusp/global-plugins/<slug>/`
 and mount under `/api/plugins/<name>/`. Treat the URLs, package names
 (`papercusp-marketplace`, `papercusp-plugin-sdk`), and `~/.papercusp/installed/`
@@ -116,7 +118,7 @@ only, no `ui`/`roles`/`routines`/`actions`, and the runtime must stay `js`. The
 loader specially constrains it, rejecting any of those contributions on a pack
 (`tool-distribution-granularity-2026-06-05` D-001/D-004). `'snapshot'`,
 `'service'`, `'theme'`, and `'harness'` are reserved/dormant — the loader treats
-every non-`'pack'` value as a default plugin. The Cupboard's `tool-pack` listing
+every non-`'pack'` value as a default plugin. The Cupboard's `pack` listing
 kind is how these packs surface in the storefront (and `knowledge-pack` is its
 sibling install kind for curated pot learnings).
 
