@@ -124,6 +124,60 @@ file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are 
   fi
 }
 
+# ── SELF-TEST: prove the alarm DISCRIMINATES (EI-10746) ────────────────────
+# The comment on mark_red() used to cite "the discrimination test below". There was no
+# test. Both bugs it would have caught were live. So: this is that test, and it asserts
+# the two independent failure modes plus the two ways the fix could over-correct.
+#
+# The observable is the RED MARKER, because the marker IS the alarm's memory: writing it
+# on a run that filed nothing is what silently disarms the next real red for 12h.
+# No real EI is ever filed here — the force case points OPERATOR_MCP_URL at a dead port,
+# so the filing PATH runs (and marks) while the filing itself harmlessly fails.
+#
+# Run:  apps/operator/scripts/papercup-backup-health-check.sh --self-test
+if [ "${1:-}" = "--self-test" ]; then
+  t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
+  mkdir -p "$t/dump" "$t/state"
+  self="${BASH_SOURCE[0]}"
+  p=0; f=0
+  # <name> <stale:yes|no> <want-marker:yes|no> [ENV=VAL ...]
+  check() {
+    local name="$1" stale="$2" want_marker="$3"; shift 3
+    rm -rf "${t:?}/state"; mkdir -p "$t/state"
+    : > "$t/dump/pg-5432.sql.gz"
+    if [ "$stale" = yes ]; then touch -d '10 hours ago' "$t/dump/pg-5432.sql.gz"; fi
+    env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_HOOK_LOG="$t/no-such-hook.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        "$@" bash "$self" >/dev/null 2>&1
+    local got_marker=no
+    # shellcheck disable=SC2144
+    [ -f "$t"/state/stale-* ] && got_marker=yes
+    if [ "$got_marker" = "$want_marker" ]; then
+      printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted marker=%s, got marker=%s\n' "$name" "$want_marker" "$got_marker"; f=$((f+1))
+    fi
+  }
+  echo "papercup-backup-health-check.sh --self-test — EI-10746 alarm discrimination"
+  # 1. THE DEAD-GUARD BUG: a dry-run files no EI, so it must not write the marker either.
+  #    Before the fix it DID — silently disarming the next real red for BACKUP_RED_REFILE_H.
+  check "dry-run on a RED does NOT write the marker (cannot disarm the real alarm)" \
+        yes no  BACKUP_NO_FILE=1
+  # 2. THE FALSE-ALARM BUG: overriding a threshold is a TEST — it must not file or mark.
+  check "threshold override on a RED auto-suppresses (no file, no marker)" \
+        yes no  BACKUP_MAX_AGE_H=1
+  # 3. NOT A MUTE BUTTON: the alarm must still be able to fire when forced.
+  check "threshold override + BACKUP_ALERT_FORCE=1 DOES take the filing path" \
+        yes yes BACKUP_MAX_AGE_H=1 BACKUP_ALERT_FORCE=1
+  # 4. NOT A HAIR-TRIGGER: a fresh artifact on production defaults is green and silent.
+  check "fresh artifact, production defaults: green, no marker" \
+        no  no
+  printf '  ---- %d passed, %d failed\n' "$p" "$f"
+  [ "$f" -eq 0 ] || exit 1
+  exit 0
+fi
+
 # ── (a) FRESHNESS — judge the ARTIFACT, not the log ────────────────────────
 # Deliberately artifact-based: a rotated/truncated hook.log must never make a dead
 # backup look healthy. An artifact that stopped advancing IS the failure, whatever
