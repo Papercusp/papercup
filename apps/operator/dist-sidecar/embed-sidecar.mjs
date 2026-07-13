@@ -5196,6 +5196,9 @@ var dynamicImport = new Function(
 );
 var _clientTtlMs = 60 * 60 * 1e3;
 
+// ../../libs/generic/memory/src/vec-write.ts
+init_config();
+
 // ../../libs/generic/memory/src/backend-registry.ts
 init_config();
 var REGISTRY_KEY = Symbol.for("@papercusp/memory:backend-registry");
@@ -5205,6 +5208,9 @@ var INSTANCES_KEY = Symbol.for("@papercusp/memory:backend-instances");
 init_mem0_connection();
 
 // ../../libs/generic/memory/src/reembed.ts
+init_config();
+
+// ../../libs/generic/memory/src/relink-entities.ts
 init_config();
 
 // ../../libs/generic/memory/src/local-embedder-worker.ts
