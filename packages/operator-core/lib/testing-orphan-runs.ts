@@ -79,6 +79,14 @@ function classifyPhantomPath(filePath: string): OrphanRunReason | null {
   ) {
     return 'scratch_path';
   }
+  // `*.flakeproof.test.{ts,tsx}` — reserved, gitignored flake-soak self-test
+  // fixtures (scripts/flake-soak.sh). Their runs are intended REDs and the file
+  // is never committed, so any test_runs row for one is a phantom regardless of
+  // whether a scratch copy currently exists on disk (EI-10761). Classified as
+  // non-signal so these rows (including null-harness ones) can be pruned.
+  if (filePath.includes('.flakeproof.test.')) {
+    return 'flakeproof_path';
+  }
   if (WRONG_TREE_PREFIXES.some((prefix) => filePath.startsWith(prefix))) {
     return 'wrong_tree_path';
   }
