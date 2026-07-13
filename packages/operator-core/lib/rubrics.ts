@@ -181,10 +181,14 @@ export function rubricStatusToPlanStatus(status: RubricStatus): string {
  * Returns null when `template_data` is absent or fails the rubric schema (degrade,
  * never throw), so a half-authored rubric plan is skipped rather than surfaced broken.
  *
- * Identity: a plan has ONE `owner`, so createdBy / proposedBy / ratifiedBy all derive
- * from it (ratifiedBy only once active). The proposer↔ratifier distinction the v1 table
- * tracked separately is intentionally collapsed (D-002: the plan is the substrate; no
- * consumer reads the distinction — its history lives in the plan's revision spine).
+ * Identity (EI-10751): the old "collapse everything onto the plan owner" projection
+ * fabricated provenance — the owner column is the ORIGINAL plan creator, so a re-propose
+ * by a reviewer still projected the creator as proposer, and ratification projected the
+ * creator as ratifier (a false self-ratification record, exactly what D-012's
+ * author ≠ ratifier exists to prevent — a reviewer rightly REFUSED to ratify through it).
+ * proposedBy/ratifiedBy now persist in template_data (written by proposeRubric /
+ * ratifyRubric) and project from there; the owner column stays the createdBy + the
+ * legacy fallback for rows written before the fix.
  */
 export function planRowToRubric(row: RubricPlanRow): Rubric | null {
   const parsed = rubricTemplateDataSchema.safeParse(row.template_data);
@@ -211,8 +215,8 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     methodRef: d.methodRef ?? null,
     status,
     createdBy: row.owner ?? null,
-    proposedBy: row.owner ?? null,
-    ratifiedBy: status === 'active' ? (row.owner ?? null) : null,
+    proposedBy: d.proposedBy ?? row.owner ?? null,
+    ratifiedBy: status === 'active' ? (d.ratifiedBy ?? row.owner ?? null) : null,
     createdAt: row.created ?? updatedAt,
     updatedAt,
   };
@@ -431,6 +435,13 @@ export interface ProposeRubricInput {
   allowMethodShrink?: boolean;
   /** Why the procedure shrink is intentional (required with allowMethodShrink). */
   shrinkReason?: string;
+  /**
+   * EI-10751: carry an EXISTING ratification through a whole-document replace. Only the
+   * amendRubric path sets this (a small amendment to an already-active rubric keeps its
+   * ratifier of record); a plain propose/re-propose leaves it unset, which DROPS the
+   * stored ratifiedBy — a fresh revision needs a fresh ratification.
+   */
+  ratifiedBy?: string;
 }
 
 // ─── WI-4287: loss-guards + completeness — never silently drop a testing procedure ────
@@ -594,6 +605,13 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     ratingScale: input.ratingScale ?? [...DEFAULT_RATING_SCALE],
     ...(input.methodRef ? { methodRef: input.methodRef } : {}),
     ...(input.description !== undefined ? { description: input.description } : {}),
+    // EI-10751 provenance: the proposer of record is whoever authored THIS revision —
+    // the plan owner column stays the original creator and never tracks a re-propose.
+    ...(input.by ? { proposedBy: input.by } : {}),
+    // A propose is a whole-document replace, so ratifiedBy is deliberately DROPPED
+    // unless explicitly carried (amendRubric threads it through for an already-active
+    // rubric): a fresh revision needs a fresh ratification.
+    ...(input.ratifiedBy ? { ratifiedBy: input.ratifiedBy } : {}),
   };
   const parsed = rubricTemplateDataSchema.safeParse(data);
   if (!parsed.success) {
@@ -800,6 +818,11 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     ...(input.methodRef ?? stored.methodRef ? { methodRef: (input.methodRef ?? stored.methodRef)! } : {}),
     ...(input.by ?? stored.createdBy ? { by: (input.by ?? stored.createdBy)! } : {}),
     status: stored.status,
+    // EI-10751: an amendment preserves the rubric's status, so it must also preserve the
+    // ratifier of record — otherwise amending an active rubric leaves it active with the
+    // stored ratifiedBy dropped, and the projection falls back to the plan owner (the
+    // exact false-provenance record this fix removes).
+    ...(stored.status === 'active' && stored.ratifiedBy ? { ratifiedBy: stored.ratifiedBy } : {}),
     ...(input.allowMethodShrink !== undefined ? { allowMethodShrink: input.allowMethodShrink } : {}),
     ...(input.shrinkReason !== undefined ? { shrinkReason: input.shrinkReason } : {}),
   };
@@ -820,25 +843,63 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   return proposeRubric(applyRubricAmendment(stored, input));
 }
 
+/** Raw template_data for one rubric plan (the un-projected jsonb) — the merge base for
+ *  ratifyRubric's provenance patch. Reads by the same predicates as queryRubricPlans. */
+async function readRawRubricTemplateData(rubricId: string): Promise<Record<string, unknown> | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ template_data: unknown }[]>`
+    SELECT template_data
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${rubricsScopeWorkspace()}
+       AND template = ${RUBRIC_TEMPLATE_NAME}
+       AND template_slug IS NULL
+       AND plan_slug = ${rubricId}
+     LIMIT 1`;
+  const d = rows[0]?.template_data;
+  return d && typeof d === 'object' ? (d as Record<string, unknown>) : null;
+}
+
 /**
  * Ratify a proposed rubric → active (D-001: the Queen/owner gate) by promoting its plan
  * (status → active). Returns the activated rubric, or null if no rubric-template plan
- * with that id exists. `by` is informational (the plan owner is the recorded identity;
- * the ratifying authority lands in the plan's revision history).
+ * with that id exists.
+ *
+ * EI-10751: `by` (the ratifying identity) is PERSISTED into template_data.ratifiedBy in
+ * the SAME locked write that flips the status — it used to be discarded, and the read
+ * projection then rendered the plan OWNER (the author) as ratifier: a fabricated
+ * self-ratification record that made honest D-012 governance impossible (the reviewer
+ * who found this rightly refused to ratify through it). D-012 is also ENFORCED here for
+ * rubrics whose proposer is persisted: the recorded proposer cannot ratify their own
+ * proposal. (Legacy rows without a persisted proposedBy can't be judged — the owner
+ * fallback misattributes re-proposals — so the guard only fires on honest data.)
  */
-export async function ratifyRubric(rubricId: string, _by?: string): Promise<Rubric | null> {
+export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubric | null> {
   const existing = await getRubric(rubricId);
   if (!existing) return null;
   const scope = await resolveRubricWriteScope(rubricId);
+  // Merge base read just before the locked write; plan writes serialize on the advisory
+  // lock, so the window is a propose racing this exact ratify — a governance conflict
+  // that re-proposing resolves regardless (a re-propose resets status to proposed).
+  const rawData = await readRawRubricTemplateData(rubricId);
+  const persistedProposer =
+    rawData && typeof rawData.proposedBy === 'string' ? rawData.proposedBy : null;
+  if (by && persistedProposer && persistedProposer === by) {
+    throw new Error(
+      `ratifyRubric: '${rubricId}' was proposed by ${by} — the proposer cannot ratify their own proposal (D-012 author ≠ ratifier); a different reviewer must ratify it`,
+    );
+  }
   const result = await withPlanLock<boolean>(
     null,
     { slug: rubricId, intent: `rubrics:ratify ${rubricId}`, ...scope },
     async (current) => {
       if (current === null) return { newBody: null, value: false };
       const flipped = setPlanFrontmatterStatus(current, 'active');
-      return flipped === null
-        ? { newBody: null, value: false }
-        : { newBody: bumpUpdatedDate(flipped), value: true };
+      if (flipped === null) return { newBody: null, value: false };
+      return {
+        newBody: bumpUpdatedDate(flipped),
+        value: true,
+        ...(by && rawData ? { templateData: { data: { ...rawData, ratifiedBy: by } } } : {}),
+      };
     },
   );
   if (result.kind === 'busy') {
