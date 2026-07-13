@@ -547,10 +547,32 @@ export async function composeOrient(
   // non-fleet caller or any failure.
   if (monitor && fleetMembership?.fleetRole === 'leader' && fleetMembership.fleetSlug) {
     try {
-      result.leaderBrief = await call('fleet:leader-brief', {
+      const brief = await call('fleet:leader-brief', {
         fleet: fleetMembership.fleetSlug,
         ...(args.harness ? { harness: args.harness } : {}),
       });
+      // P-015: hydrate the EXISTING leader brief instead of introducing a parallel
+      // monitor surface. These are authoritative reads a leader otherwise re-calls
+      // immediately after orient; each remains independently fail-soft.
+      const hydrated =
+        brief && typeof brief === 'object' && !Array.isArray(brief)
+          ? { ...(brief as Record<string, unknown>) }
+          : { fleetHealth: brief };
+      try {
+        hydrated.claimSpec = await call('scheduler:get_claim_spec', {
+          fleet: fleetMembership.fleetSlug,
+        });
+      } catch {
+        hydrated.claimSpec = null;
+      }
+      try {
+        hydrated.walls = await call('coord:walls', {
+          ...(args.harness ? { harness: args.harness } : {}),
+        });
+      } catch {
+        hydrated.walls = null;
+      }
+      result.leaderBrief = hydrated;
     } catch {
       result.leaderBrief = null;
     }
@@ -934,6 +956,16 @@ export async function composeOrient(
       label: 'orient:pipeline',
     });
     if (p.value) result.pipeline = p.value;
+  }
+
+  // P-015: gate + release snapshots ride the same hydrated leader brief as
+  // member health/claim spec/walls. Keep the established top-level fields too
+  // for compatibility: one authoritative read, two projections, no new API.
+  if (monitor && result.leaderBrief && typeof result.leaderBrief === 'object') {
+    Object.assign(result.leaderBrief as Record<string, unknown>, {
+      announcedGates: result.announcedGates ?? [],
+      release: result.pipeline ?? null,
+    });
   }
 
   // ── coord:declare-intent — only when an intent is given (a WRITE; independently

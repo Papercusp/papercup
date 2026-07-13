@@ -569,6 +569,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       const { call, calls } = fakeCall({
         ...CORE,
         'fleet:leader-brief': () => LEADER_BRIEF_RESULT,
+        'scheduler:get_claim_spec': () => ({ source: 'fleet', revision: 4, spec: { specId: 'rev4' } }),
+        'coord:walls': () => ({ ok: true, count: 0, walls: [] }),
       });
       const r = await composeOrient(
         { mode: 'monitor' },
@@ -581,9 +583,17 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         undefined,
         { fleetSlug: 'p2p-git', fleetRole: 'leader' },
       );
-      expect(r.leaderBrief).toEqual(LEADER_BRIEF_RESULT);
+      expect(r.leaderBrief).toEqual({
+        ...LEADER_BRIEF_RESULT,
+        claimSpec: { source: 'fleet', revision: 4, spec: { specId: 'rev4' } },
+        walls: { ok: true, count: 0, walls: [] },
+        announcedGates: [],
+        release: null,
+      });
       const briefCall = calls.find((c) => c.name === 'fleet:leader-brief');
       expect(briefCall?.args).toMatchObject({ fleet: 'p2p-git' });
+      expect(calls.find((c) => c.name === 'scheduler:get_claim_spec')?.args).toEqual({ fleet: 'p2p-git' });
+      expect(calls.find((c) => c.name === 'coord:walls')?.args).toEqual({});
     });
 
     it('a non-leader fleet MEMBER never triggers the fold (no round-trip)', async () => {
