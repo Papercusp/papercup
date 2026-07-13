@@ -576,6 +576,19 @@ export interface ScorecardTrendFilter {
 }
 
 /**
+ * Parse a criterion's instrument binding from a trailing `[instrumentKey: <key>|none]`
+ * token on its `model` prose (WI-4607). The token is greppable text, not a schema
+ * field. Returns the key (or the literal `'none'` when explicitly un-instrumented),
+ * or `null` when the model carries no such trailing token. Only a TRAILING token
+ * binds — a mention mid-prose is not a binding, so a criterion that merely discusses
+ * instrument keys does not accidentally acquire one.
+ */
+export function parseCriterionInstrumentKey(model: string | null | undefined): string | null {
+  const m = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(model ?? '');
+  return m ? m[1] : null;
+}
+
+/**
  * Aggregate a rubric's scorecards into a per-criterion rating time-series + a
  * trend direction (P-010). Reads {@link listScorecards} (P-013) — the trend is a
  * pure roll-up of the scorecard read, so it inherits the same workspace scope +
@@ -595,13 +608,12 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   const trendRubric = await getRubric(filter.rubricRef);
   const scoreOverrides = scoreOverridesForScale(trendRubric?.ratingScale);
 
-  // WI-4607: the criterion's instrument binding is a trailing token on its `model`
-  // prose (no schema field) — parse it once per criterion key so the trend view can
-  // show which instrument grades each criterion. 'none' = explicitly un-instrumented.
+  // WI-4607: parse each criterion's instrument binding once per key so the trend
+  // view can show which instrument grades each criterion.
   const instrumentKeyByCriterion = new Map<string, string>();
   for (const c of trendRubric?.criteria ?? []) {
-    const m = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(c.model ?? '');
-    if (m) instrumentKeyByCriterion.set(c.key, m[1]);
+    const key = parseCriterionInstrumentKey(c.model);
+    if (key) instrumentKeyByCriterion.set(c.key, key);
   }
 
   const byCriterion = new Map<string, { at: string; rating: string; idle: boolean }[]>();

@@ -62,7 +62,7 @@ describe('countByFile', () => {
 // per-file replacement: a file above ITS baseline is a named regression; a flap in file A never
 // reds an agent editing file B; --mine scopes the failure to the caller's changed files.
 describe('decidePerFile — per-file attribution + --update-only ratchet + syntax hard-fail', () => {
-  const brokenFree = [];
+  const brokenFree: string[] = [];
 
   it('syntax-broken files hard-fail regardless of counts', () => {
     const r = decidePerFile({
@@ -89,7 +89,7 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
   it('a NEW file with errors (absent from baseline ⇒ implicit 0) is a regression', () => {
     const r = decidePerFile({ currentByFile: { 'a.ts': 2, 'new.ts': 1 }, baselineByFile: { 'a.ts': 2 }, brokenFiles: brokenFree });
     expect(r.verdict).toBe('fail-regressed');
-    expect(r.regressions.map((x) => x.file)).toEqual(['new.ts']);
+    expect(r.regressions.map((x: { file: string }) => x.file)).toEqual(['new.ts']);
   });
 
   it('does NOT red an agent editing file B when only file A flapped up (attribution isolates the cause)', () => {
@@ -101,7 +101,7 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
       changedFiles: new Set(['b.ts']),
     });
     expect(r.verdict).toBe('ok-peer-drift');
-    expect(r.peerDrift.map((x) => x.file)).toEqual(['a.ts']);
+    expect(r.peerDrift.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
     expect(r.attributed).toEqual([]);
   });
 
@@ -113,7 +113,7 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
       changedFiles: new Set(['a.ts']),
     });
     expect(r.verdict).toBe('fail-attributed');
-    expect(r.attributed.map((x) => x.file)).toEqual(['a.ts']);
+    expect(r.attributed.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
   });
 
   it('a bare run (no --mine) gates ANY regression — CI stays strict', () => {
