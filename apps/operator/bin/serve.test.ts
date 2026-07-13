@@ -662,3 +662,48 @@ describe('exportResolvedPortEnv (stale launcher-hint env class fix, WI-3385)', (
     expect(env.PAPERCUSP_OPERATOR_BASE).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 });
+
+// EI-11342 recurrence guard: a packaged env-sidecar (a rig / env-switcher
+// sibling, PAPERCUSP_ENV_OPERATOR_ID set) whose per-instance port override
+// never reached it fell back to the baked default 3070 — the PRODUCTION
+// operator's port on the same box — won a bind race against a mid-restart
+// papercup-dev-api, and crash-looped prod + blacked out fleet-wide MCP for
+// ~7 min. resolveHonoPortHint() must FAIL LOUDLY for a portless env-sidecar
+// instead of ever returning 3070, while leaving the primary operator's
+// default-3070 behavior byte-for-byte unchanged.
+describe('resolveHonoPortHint env-sidecar prod-port-squat guard (EI-11342)', () => {
+  it('THROWS for an env-sidecar with no explicit port (never falls back to 3070)', () => {
+    expect(() => serve.resolveHonoPortHint({}, 'lane-a-fed')).toThrow(/EI-11342/);
+    // must not leak the prod default in any form
+    expect(() => serve.resolveHonoPortHint({}, 'lane-a-fed')).toThrow(/3070/);
+  });
+
+  it('THROWS for an env-sidecar with an invalid/blank port override', () => {
+    expect(() => serve.resolveHonoPortHint({ PAPERCUSP_HONO_PORT: '' }, 'dev')).toThrow(
+      /requires an explicit/,
+    );
+    expect(() => serve.resolveHonoPortHint({ PORT: 'not-a-port' }, 'dev')).toThrow(
+      /requires an explicit/,
+    );
+    expect(() => serve.resolveHonoPortHint({ PAPERCUSP_HONO_PORT: '0' }, 'dev')).toThrow();
+    expect(() => serve.resolveHonoPortHint({ PAPERCUSP_HONO_PORT: '70000' }, 'dev')).toThrow();
+  });
+
+  it('accepts an env-sidecar with its fixed per-instance port (the legit launcher path)', () => {
+    // env-operator-launcher.ts always sets PAPERCUSP_HONO_PORT alongside
+    // PAPERCUSP_ENV_OPERATOR_ID — that path must keep working.
+    expect(serve.resolveHonoPortHint({ PAPERCUSP_HONO_PORT: '18071' }, 'lane-a-fed')).toBe(18071);
+    expect(serve.resolveHonoPortHint({ PORT: '3170' }, 'staging')).toBe(3170);
+  });
+
+  it('leaves the PRIMARY operator path unchanged (defaults to 3070 when unset)', () => {
+    expect(serve.resolveHonoPortHint({}, null)).toBe(3070);
+    expect(serve.resolveHonoPortHint({ PAPERCUSP_HONO_PORT: '17999' }, null)).toBe(17999);
+    expect(serve.resolveHonoPortHint({ PORT: '17999' }, null)).toBe(17999);
+  });
+
+  it('is wired into main() (the resolved hint feeds the ENV_OPERATOR_ID port branch)', () => {
+    const src = readFileSync(new URL('./serve.ts', import.meta.url), 'utf8');
+    expect(src).toContain('resolveHonoPortHint(process.env, ENV_OPERATOR_ID)');
+  });
+});

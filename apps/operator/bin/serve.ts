@@ -368,6 +368,44 @@ export async function resolveStickyPort(
 }
 
 /**
+ * Resolve the HTTP port HINT from the environment, with a hard guardrail for
+ * env-sidecar siblings (EI-11342).
+ *
+ * PRIMARY operator (`envOperatorId == null`): default to the well-known 3070
+ * when no explicit PAPERCUSP_HONO_PORT/PORT is set — unchanged behavior.
+ *
+ * ENV-SIDECAR (`envOperatorId` set — a rig / env-switcher sibling): an explicit,
+ * valid port is MANDATORY. These siblings are launched with a FIXED per-instance
+ * port (env-operator-launcher.ts always sets PAPERCUSP_HONO_PORT alongside
+ * PAPERCUSP_ENV_OPERATOR_ID) and run on the SAME box as the primary operator, so
+ * silently falling back to the baked 3070 default means squatting the production
+ * operator's port. That is exactly EI-11342: a packaged live-federation-gate
+ * sidecar whose port override never reached it fell back to 3070, won a bind
+ * race against a mid-restart papercup-dev-api, and crash-looped prod + blacked
+ * out fleet-wide MCP for ~7 min. When the injected override is missing or
+ * invalid we FAIL LOUDLY here instead of binding a wrong (possibly prod) port.
+ */
+export function resolveHonoPortHint(
+  env: NodeJS.ProcessEnv,
+  envOperatorId: string | null,
+): number {
+  const rawExplicit = env.PAPERCUSP_HONO_PORT ?? env.PORT ?? null;
+  if (envOperatorId) {
+    const port = rawExplicit == null ? NaN : Number(rawExplicit);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      throw new Error(
+        `env-sidecar ${JSON.stringify(envOperatorId)} requires an explicit ` +
+          `PAPERCUSP_HONO_PORT/PORT (got ${JSON.stringify(rawExplicit)}); refusing to ` +
+          `fall back to the baked default 3070, which would squat the production ` +
+          `operator's port on this box (EI-11342).`,
+      );
+    }
+    return port;
+  }
+  return Number(rawExplicit ?? 3070);
+}
+
+/**
  * Re-export the RESOLVED operator port into every env var that names it, so
  * in-process consumers never see the launcher's stale cold-start hint.
  *
@@ -862,7 +900,9 @@ async function main(): Promise<void> {
 
   const hostname =
     process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
-  const honoPortHint = Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070);
+  // EI-11342: an env-sidecar (ENV_OPERATOR_ID set) must never fall back to the
+  // baked 3070 default — it would squat the prod operator's port on this box.
+  const honoPortHint = resolveHonoPortHint(process.env, ENV_OPERATOR_ID);
 
   // --ensure: reuse a healthy running operator and exit 0 — UNLESS it's a
   // DIFFERENT build (EI-9002). Before this check, an install-then-relaunch

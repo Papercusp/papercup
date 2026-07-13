@@ -37,6 +37,15 @@ export interface SavedPrompt {
   argHint: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Organizer columns (migration 598, quick-panel-saved-prompts-2026-07-13). */
+  parentId: string | null;
+  position: string | null;
+  title: string | null;
+  collapsed: boolean;
+  pinned: boolean;
+  usageCount: number;
+  lastUsedAt: string | null;
+  archivedAt: string | null;
 }
 
 export interface SavePromptInput {
@@ -78,4 +87,85 @@ export async function deleteSavedPrompt(name: string, harness?: string | null): 
     body: JSON.stringify({ name, harness: harness ?? null }),
   });
   if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+}
+
+// ---------------------------------------------------------------------------
+// Outline-node helpers (quick-panel-saved-prompts-2026-07-13). Same CORS-simple
+// POST discipline as above; all id-based.
+// ---------------------------------------------------------------------------
+
+export interface CreatePromptNodeClientInput {
+  harness?: string | null;
+  title: string;
+  /** '' (default) marks a pure folder node. */
+  body?: string;
+  parentId?: string | null;
+  position?: string | null;
+  description?: string | null;
+  argHint?: string | null;
+}
+
+export interface PromptNodeClientPatch {
+  title?: string;
+  body?: string;
+  description?: string | null;
+  argHint?: string | null;
+  collapsed?: boolean;
+  pinned?: boolean;
+}
+
+export interface PromptMoveAssignment {
+  id: string;
+  parentId: string | null;
+  position: string;
+}
+
+async function simplePost<T>(path: string, payload: unknown): Promise<T> {
+  const res = await fetch(crossOriginUrl(`${BASE}${path}`), {
+    method: 'POST',
+    headers: SIMPLE_POST,
+    body: JSON.stringify(payload),
+  });
+  const json = (await res.json().catch(() => ({}))) as T & { error?: string; detail?: string };
+  if (!res.ok) {
+    throw new Error(json.detail || json.error || `Request failed (${res.status})`);
+  }
+  return json;
+}
+
+export async function createPromptNode(input: CreatePromptNodeClientInput): Promise<SavedPrompt> {
+  const json = await simplePost<{ prompt: SavedPrompt }>('/node', input);
+  return json.prompt;
+}
+
+export async function updatePromptNode(
+  id: string,
+  patch: PromptNodeClientPatch,
+  harness?: string | null,
+): Promise<SavedPrompt> {
+  const json = await simplePost<{ prompt: SavedPrompt }>('/node/update', {
+    id,
+    patch,
+    harness: harness ?? null,
+  });
+  return json.prompt;
+}
+
+export async function movePromptNodes(
+  assignments: PromptMoveAssignment[],
+  harness?: string | null,
+): Promise<number> {
+  const json = await simplePost<{ moved: number }>('/node/move', {
+    assignments,
+    harness: harness ?? null,
+  });
+  return json.moved;
+}
+
+export async function deletePromptNode(id: string, harness?: string | null): Promise<void> {
+  await simplePost<{ removed: boolean }>('/node/remove', { id, harness: harness ?? null });
+}
+
+export async function recordPromptUse(id: string, harness?: string | null): Promise<void> {
+  await simplePost<{ ok: boolean }>('/node/use', { id, harness: harness ?? null });
 }

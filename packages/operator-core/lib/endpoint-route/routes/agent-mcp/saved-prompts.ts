@@ -34,13 +34,21 @@ import {
   listSavedPrompts,
   upsertSavedPrompt,
   removeSavedPrompt,
+  createPromptNode,
+  updatePromptNodeById,
+  movePromptNodes,
+  removePromptNodeById,
+  recordPromptUse,
+  type MovePromptNodeAssignment,
   type PromptScope,
+  type UpdatePromptNodePatch,
 } from '../../../saved-prompts-store';
 import {
   materializeWorkspacePrompts,
   materializeHarnessPrompts,
 } from '../../../saved-prompts-materialize';
 import { validatePromptName } from '../../../saved-prompts-projection';
+import { notifySyncInvalidate } from '../../../sync-sse';
 
 function scopeFromHarness(harness: string | null): PromptScope {
   return harness ? { kind: 'harness', slug: harness } : { kind: 'workspace' };
@@ -50,6 +58,12 @@ function scopeFromHarness(harness: string | null): PromptScope {
 async function rematerialize(workspaceId: string, scope: PromptScope): Promise<void> {
   if (scope.kind === 'harness') await materializeHarnessPrompts(workspaceId, scope.slug);
   else await materializeWorkspacePrompts(workspaceId);
+}
+
+/** Push the scope's savedPrompts.byScope subscribers a refetch (Quick Panel). */
+async function invalidateScope(scope: PromptScope): Promise<void> {
+  const args = scope.kind === 'harness' ? { harness: scope.slug } : {};
+  await notifySyncInvalidate('savedPrompts.byScope', args).catch(() => {});
 }
 
 const get = defineTool({
@@ -97,6 +111,7 @@ const upsert = defineTool({
       argHint: body.argHint ?? null,
     });
     await rematerialize(ws, scope);
+    await invalidateScope(scope);
     return Response.json({ prompt });
   },
 });
@@ -116,8 +131,134 @@ const remove = defineTool({
     const scope = scopeFromHarness(body.harness?.trim() || null);
     const removed = await removeSavedPrompt(getOrgPg().sql, ws, scope, name);
     await rematerialize(ws, scope);
+    await invalidateScope(scope);
     return Response.json({ removed });
   },
 });
 
-export default [get, upsert, remove];
+// ---------------------------------------------------------------------------
+// Outline-node verbs (quick-panel-saved-prompts-2026-07-13 P-004). Id-based —
+// the Quick Panel organizer renames titles and moves nodes; `name` stays the
+// stable slash-command key. Same D-010 shape as the verbs above: POST +
+// text/plain "simple" requests, auth loopback.
+// ---------------------------------------------------------------------------
+
+const nodeCreate = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/saved-prompts/node',
+  auth: 'loopback',
+  async handler(req) {
+    const body = (await req.json().catch(() => ({}))) as {
+      harness?: string | null;
+      title?: string;
+      body?: string;
+      parentId?: string | null;
+      position?: string | null;
+      description?: string | null;
+      argHint?: string | null;
+    };
+    const title = (body.title ?? '').trim();
+    if (!title) return Response.json({ error: 'missing_title' }, { status: 400 });
+    const ws = activeWorkspaceId();
+    const scope = scopeFromHarness(body.harness?.trim() || null);
+    const prompt = await createPromptNode(getOrgPg().sql, {
+      workspaceId: ws,
+      scope,
+      title,
+      body: typeof body.body === 'string' ? body.body : '',
+      parentId: body.parentId ?? null,
+      position: body.position ?? null,
+      description: body.description ?? null,
+      argHint: body.argHint ?? null,
+    });
+    await rematerialize(ws, scope);
+    await invalidateScope(scope);
+    return Response.json({ prompt });
+  },
+});
+
+const nodeUpdate = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/saved-prompts/node/update',
+  auth: 'loopback',
+  async handler(req) {
+    const body = (await req.json().catch(() => ({}))) as {
+      harness?: string | null;
+      id?: string;
+      patch?: UpdatePromptNodePatch;
+    };
+    const id = (body.id ?? '').trim();
+    if (!id) return Response.json({ error: 'missing_id' }, { status: 400 });
+    const patch = body.patch ?? {};
+    const ws = activeWorkspaceId();
+    const scope = scopeFromHarness(body.harness?.trim() || null);
+    const prompt = await updatePromptNodeById(getOrgPg().sql, ws, id, patch);
+    if (!prompt) return Response.json({ error: 'not_found' }, { status: 404 });
+    // Only content edits change the on-disk projection; collapse/pin don't.
+    if (patch.title !== undefined || patch.body !== undefined || patch.description !== undefined || patch.argHint !== undefined) {
+      await rematerialize(ws, scope);
+    }
+    await invalidateScope(scope);
+    return Response.json({ prompt });
+  },
+});
+
+const nodeMove = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/saved-prompts/node/move',
+  auth: 'loopback',
+  async handler(req) {
+    const body = (await req.json().catch(() => ({}))) as {
+      harness?: string | null;
+      assignments?: MovePromptNodeAssignment[];
+    };
+    const assignments = Array.isArray(body.assignments) ? body.assignments : [];
+    if (assignments.length === 0 || assignments.some((a) => !a || typeof a.id !== 'string' || typeof a.position !== 'string')) {
+      return Response.json({ error: 'missing_assignments' }, { status: 400 });
+    }
+    const ws = activeWorkspaceId();
+    const scope = scopeFromHarness(body.harness?.trim() || null);
+    const moved = await movePromptNodes(getOrgPg().sql, ws, assignments.map((a) => ({
+      id: a.id,
+      parentId: a.parentId ?? null,
+      position: a.position,
+    })));
+    await invalidateScope(scope);
+    return Response.json({ moved });
+  },
+});
+
+const nodeRemove = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/saved-prompts/node/remove',
+  auth: 'loopback',
+  async handler(req) {
+    const body = (await req.json().catch(() => ({}))) as { harness?: string | null; id?: string };
+    const id = (body.id ?? '').trim();
+    if (!id) return Response.json({ error: 'missing_id' }, { status: 400 });
+    const ws = activeWorkspaceId();
+    const scope = scopeFromHarness(body.harness?.trim() || null);
+    const removed = await removePromptNodeById(getOrgPg().sql, ws, id);
+    await rematerialize(ws, scope);
+    await invalidateScope(scope);
+    return Response.json({ removed });
+  },
+});
+
+const nodeUse = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/saved-prompts/node/use',
+  auth: 'loopback',
+  async handler(req) {
+    const body = (await req.json().catch(() => ({}))) as { harness?: string | null; id?: string };
+    const id = (body.id ?? '').trim();
+    if (!id) return Response.json({ error: 'missing_id' }, { status: 400 });
+    const ws = activeWorkspaceId();
+    const scope = scopeFromHarness(body.harness?.trim() || null);
+    await recordPromptUse(getOrgPg().sql, ws, id);
+    await invalidateScope(scope);
+    return Response.json({ ok: true });
+  },
+});
+
+export default [get, upsert, remove, nodeCreate, nodeUpdate, nodeMove, nodeRemove, nodeUse];

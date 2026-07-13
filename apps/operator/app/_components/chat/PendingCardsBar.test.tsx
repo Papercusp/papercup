@@ -54,6 +54,7 @@ describe('PendingCardsBar', () => {
     vi.mocked(useStateSnapshots).mockReturnValue({
       cards: [makeCard()],
       connected: true,
+      byRun: new Map(),
     });
     const { container } = render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
     fireEvent.click(screen.getByRole('button', { name: /^Option A$/i }));
@@ -68,6 +69,7 @@ describe('PendingCardsBar', () => {
     vi.mocked(useStateSnapshots).mockReturnValue({
       cards: [makeCard()],
       connected: false,
+      byRun: new Map(),
     });
     render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
     expect(screen.getByText(/Live updates disconnected/)).toBeTruthy();

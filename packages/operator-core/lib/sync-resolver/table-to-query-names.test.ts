@@ -280,6 +280,19 @@ describe('pot_settings harness_slug natural-key scoping (WI-4137)', () => {
   });
 });
 
+describe('saved_prompts bridge (quick-panel-saved-prompts-2026-07-13 P-003)', () => {
+  it('full-busts savedPrompts.byScope on a saved_prompts change', () => {
+    expect(
+      queryNamesForTriggerEvent('harness_shared.saved_prompts.changed', {
+        workspace_id: 'w1',
+        op: 'UPDATE',
+        id: 'row-1',
+        harness_slug: null,
+      }),
+    ).toContain('savedPrompts.byScope');
+  });
+});
+
 describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
   /**
    * Forward-defined names — mapped in the bridge BEFORE the

@@ -30,7 +30,12 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }));
 
-import { ChatConversation, lastUserMessageText, type ChatMessage } from './ChatConversation';
+import {
+  ChatConversation,
+  lastUserMessageText,
+  type ChatConversationProps,
+  type ChatMessage,
+} from './ChatConversation';
 
 const Icon = (p: Record<string, unknown>) => <svg data-testid="empty-icon" {...p} />;
 
@@ -55,7 +60,7 @@ function renderChat(over: Record<string, unknown> = {}) {
     inputValue: '', onInputChange, onSubmit,
     ...over,
   };
-  render(<ChatConversation {...(props as never)} />);
+  render(<ChatConversation {...(props as unknown as ChatConversationProps)} />);
   return { onInputChange, onSubmit };
 }
 
