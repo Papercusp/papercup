@@ -7,8 +7,8 @@
  * OWN escalations embed the phrase ("... died on \"Prompt is too long\" ..."), so
  * each read flagged them "dead" and filed a new escalation carrying the phrase: a
  * self-amplifying false-death loop, even though those turns peaked at ~3k tokens on
- * a 1M window. `tailCarriesContextDeath` keys on the phrase being the value-START of
- * an UNESCAPED JSON string (claude-code's real error entry) instead.
+ * a 1M window. `tailCarriesContextDeath` requires the structural assistant error
+ * record: top-level `error:"invalid_request"` plus an exact marker text block.
  *
  * The fixtures below are the EXACT shapes captured from live transcripts (2026-07-13):
  * the real death from doc-steward runs, the false positives from kettle/cup runs.
@@ -60,6 +60,19 @@ describe('tailCarriesContextDeath — real overflow vs. phrase-as-data (WI-4608)
     const tail =
       '{"type":"assistant","message":{"content":[{"type":"text",' +
       '"text":"Prompt is too long — this is the phrase from the escalation I am explaining"}]}}\n';
+    expect(tailCarriesContextDeath(tail)).toBe(false);
+  });
+
+  it('FALSE: an assistant text block that is exactly the marker but is ordinary prose', () => {
+    const tail =
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Prompt is too long"}]}}\n';
+    expect(tailCarriesContextDeath(tail)).toBe(false);
+  });
+
+  it('FALSE: an assistant marker with the wrong error discriminator', () => {
+    const tail =
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Prompt is too long"}]},' +
+      '"error":"tool_error"}\n';
     expect(tailCarriesContextDeath(tail)).toBe(false);
   });
 

@@ -34,7 +34,16 @@
  */
 
 import { spawn as childSpawn } from 'node:child_process';
-import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  readdirSync,
+  statSync,
+  type Dirent,
+} from 'node:fs';
 import { join } from 'node:path';
 import {
   sessionClaudeConfigDir,
@@ -150,6 +159,50 @@ export function defaultSpawnDetached(
 /** A codex rollout filename ends `…-<uuid>.jsonl`; the trailing UUID is the
  *  conversation id `codex exec resume <uuid>` wants. */
 const CODEX_ROLLOUT_UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+const CODEX_SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODEX_HISTORY_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * Codex 0.144+ may persist the live thread in state_5.sqlite and remove the
+ * rollout JSONL while keeping a bounded prompt history. Each history row is
+ * stamped with the native `session_id`, which is exactly the id accepted by
+ * `codex exec resume`. Read only the tail so a long-running session never puts
+ * its whole history on the wake hot path.
+ */
+function findCodexHistorySessionId(codexHome: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(join(codexHome, 'history.jsonl'), 'r');
+    const total = fstatSync(fd).size;
+    const size = Math.min(total, CODEX_HISTORY_TAIL_BYTES);
+    if (size <= 0) return null;
+    const buf = Buffer.alloc(size);
+    readSync(fd, buf, 0, size, total - size);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (!lines[i]?.trim()) continue;
+      try {
+        const row = JSON.parse(lines[i]) as { session_id?: unknown };
+        if (typeof row.session_id === 'string' && CODEX_SESSION_UUID_RE.test(row.session_id)) {
+          return row.session_id;
+        }
+      } catch {
+        // The bounded tail may begin in the middle of a JSON line.
+      }
+    }
+  } catch {
+    // Absent/raced history is the normal pre-0.144 or not-yet-started case.
+  } finally {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Best-effort close on a read-only diagnostic path.
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Recover a codex session's conversation UUID from its per-session CODEX_HOME —
@@ -187,7 +240,7 @@ export function findCodexRolloutSessionId(codexHome: string): string | null {
     }
   };
   walk(join(codexHome, 'sessions'));
-  return (best as RolloutMatch | null)?.id ?? null;
+  return (best as RolloutMatch | null)?.id ?? findCodexHistorySessionId(codexHome);
 }
 
 /** The per-session CODEX_HOME bootstrap-su/psu minted for a tracked codex

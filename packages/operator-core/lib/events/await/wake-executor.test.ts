@@ -984,6 +984,23 @@ describe('codex home + rollout recovery (P-009/P-010)', () => {
     expect(findCodexRolloutSessionId(join(CODEX_HOMES_DIR, 'session-42'))).toBe(ROLLOUT_UUID);
     expect(findCodexRolloutSessionId(join(CODEX_HOMES_DIR, 'session-nope'))).toBeNull();
   });
+
+  it('falls back to history.jsonl when Codex 0.144+ removed the rollout file', () => {
+    const home = join(CODEX_HOMES_DIR, 'session-43');
+    mkdirSync(home, { recursive: true });
+    const historyId = '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
+    writeFileSync(
+      join(home, 'history.jsonl'),
+      [
+        JSON.stringify({ session_id: '00000000-0000-0000-0000-000000000000', text: 'old' }),
+        '{bounded-tail-can-start-mid-line',
+        JSON.stringify({ session_id: historyId, text: 'current' }),
+        '',
+      ].join('\n'),
+    );
+
+    expect(findCodexRolloutSessionId(home)).toBe(historyId);
+  });
 });
 
 describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agent-2026-07-11 P-002)', () => {

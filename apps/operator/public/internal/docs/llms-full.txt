@@ -2505,6 +2505,115 @@ Placements went `cursed` with `failCount: 0` (the infra-victim signature — kil
 * Probe liveness by a **positive heartbeat the monitored thing actively writes**, never by the **absence of logs** (absence is indistinguishable between “frozen” and “the log pipe broke”).
 * An automated remediation (restart) on a noisy/shared-failure signal is **self-amplifying** — pair it with a confirm-by-second-independent-signal gate before it’s allowed to act destructively. See also `auto-fix-lane-watchdog-self-amplifying-noise`.
 
+# Grading Blender public-release readiness
+
+> Deterministic runbook for the blender-release-readiness rubric: live watch metrics, DBOS grading-watchdog liveness, tenant-scoped grade flow, drill freshness, ledger reconciliation, red-path integrity, and complete scorecard filing.
+
+# Grading Blender public-release readiness
+
+[Section titled “Grading Blender public-release readiness”](#grading-blender-public-release-readiness)
+
+This is the rubric-level `methodRef` for `blender-release-readiness`. The active rubric owns the exact model, bar, drift markers, and replication procedure for each criterion; this page owns the shared grading sequence and the evidence rules that keep six individually-correct checks from becoming a misleading release verdict.
+
+Release is **GO only when one complete, fresh scorecard rates all six criteria `pass`**. `at-risk`, `fail`, or `unknown` is NO-GO. An empty window never certifies health, and old evidence does not substitute for an on-demand drill.
+
+## One grading pass
+
+[Section titled “One grading pass”](#one-grading-pass)
+
+1. Read `rubrics:get { rubricId: 'blender-release-readiness' }`. Never grade a remembered revision; this rubric is deliberately improved as live defects teach us better probes.
+2. Run `blender:success-metrics { harnessSlug: 'papercusp' }`, then run the saved hourly-watch recipe for the post-fix timeout window, signal-lane activation, and grading-watchdog fires. The success-metrics window and the post-fix watch answer different questions; record both.
+3. Gather the criterion-specific evidence below. Scope every raw ledger query to `workspace_id='papercusp-workspace'` and its real `harness_slug`. A workspace-wide count silently mixes `@singleton`, `papercusp`, and other Pots and is not admissible release evidence.
+4. File one complete rubric observation, then read `rubrics:trend`. Worsening is surfaced immediately; it is not deferred to the next hourly wake.
+5. Act on an actionable failure. Passive waiting is valid only while the criterion’s own eligibility window is genuinely empty.
+
+## Deterministic evidence bundle
+
+[Section titled “Deterministic evidence bundle”](#deterministic-evidence-bundle)
+
+### Cycle error rate
+
+[Section titled “Cycle error rate”](#cycle-error-rate)
+
+Use the post-fix watermark from WI-4475’s current checkpoint. Split cycles into timeout-class, explicit no-capacity, and clean. Capacity stays outside the genuine-error numerator; timeout-class stays inside it. Do not use a newest-N window when the active rubric requires 48 hours or a post-fix watermark.
+
+The WI-4475 soak bar (roughly ten clean RAN cycles) is stricter than the criterion’s arithmetic bar and remains the completion guard for that incident. A background-host restart invalidates its old watermark; reset the window to the observed restart timestamp rather than combining generations.
+
+### Multi-lens routing
+
+[Section titled “Multi-lens routing”](#multi-lens-routing)
+
+Read the newest 20 `origin='scout'` routed rows, not lifetime history. Require at least two distinct lenses and check recent tick reasons for a consecutive `budget-exhausted + 0 routed` streak. Judge the configured roster’s outcome; do not turn an owner cost choice into a hardcoded roster-size requirement.
+
+### Grading-loop closure
+
+[Section titled “Grading-loop closure”](#grading-loop-closure)
+
+The ungraded-filings sweep is **not** a `harness_shared.routines` row. It is the DBOS step `su-ideate-ungraded-sweep` inside the scheduled `routinesTick` workflow. Absence from `routines:list` therefore proves nothing.
+
+Prove the real execution path:
+
+```sql
+SELECT count(*) AS executions,
+       max(o.completed_at_epoch_ms) AS latest_completed_ms,
+       count(*) FILTER (WHERE o.error IS NOT NULL) AS errors
+FROM dbos.operation_outputs o
+JOIN dbos.workflow_status w ON w.workflow_uuid = o.workflow_uuid
+WHERE w.name = 'routinesTick'
+  AND o.function_name = 'su-ideate-ungraded-sweep'
+  AND o.started_at_epoch_ms >
+      extract(epoch FROM now() - interval '15 minutes') * 1000;
+```
+
+Then scope the teaching signal:
+
+```sql
+SELECT origin,
+       count(*) FILTER (WHERE human_grade IS NOT NULL) AS graded,
+       count(*) AS total
+FROM harness_shared.scout_routed_ideas
+WHERE workspace_id = 'papercusp-workspace'
+  AND harness_slug = 'papercusp'
+GROUP BY origin;
+```
+
+Count eligible rows using the **live** `suIdeateUngradedStaleSec` value (default seven days; a deployed environment override wins), the enablement epoch `2026-07-11T00:00:00Z`, `origin='su-ideate'`, `human_grade IS NULL`, and a pending/null outcome. Zero watchdog fires is healthy only when the DBOS step is executing without errors and eligible rows are zero. Once eligible rows exist, require a fire, grades landing afterward, priming/win-rate refresh, and one observed low-grade-with-feedback revision wake.
+
+### On-demand drill
+
+[Section titled “On-demand drill”](#on-demand-drill)
+
+The repeatable P-013/WI-4457 integration drill proves the code path, but public release also requires the deployed generation to run it. Confirm an `origin='drill'` signal flows through digest, rubric-seeded ideation, routing, and the grading surface, while organic metrics remain unchanged. No live drill row after the release-candidate generation is `fail`, not “previously tested.”
+
+### Ledger reconciliation
+
+[Section titled “Ledger reconciliation”](#ledger-reconciliation)
+
+For each recent routed Scout cycle, compare the tick’s claimed routed count to `scout_routed_ideas` grouped by `cycle_id` (not `cycle`). Exclude rows with `cycle_id IS NULL`; su-ideate rows legitimately have no Scout cycle. Any mismatch fails. If no post-fix cycle routed anything, rate `unknown` instead of reusing an older pass.
+
+### Instrument integrity
+
+[Section titled “Instrument integrity”](#instrument-integrity)
+
+Every bar needs a demonstrated red path. Point to a failing fixture or a live `origin='drill'` break for each criterion, then show it returns green after the break is removed. A declared guard with no call site, a cited test that does not exist, a lifetime window masking current collapse, or a zero-row query that cannot distinguish healthy from dead all fail this criterion.
+
+## Filing the scorecard
+
+[Section titled “Filing the scorecard”](#filing-the-scorecard)
+
+Use `improvements:capture` with `lane:'observation'` and:
+
+```text
+observation: {
+  kind: 'reinforce',
+  rubricRef: 'blender-release-readiness',
+  ratings: { <all six criterion keys>: { rating, evidence } },
+  linkTo: ['WI-4458']
+}
+```
+
+Every criterion is mandatory and every rating needs concrete evidence. Use `unknown` when there was no activity to measure. After the write, read `scorecards:list` and require `missingKeys: []`, then read `rubrics:trend` for direction. The scorecard is the release record; a prose status report is not.
+
 # Blueprint op/role liveness is only validated if the operator passes the registries
 
 > validateBlueprint's `unknown-op` check is gated behind `opts.knownOps` and was DEAD — no caller passed it, so a program blueprint naming a typo'd/unregistered op validated clean then threw `requireCoordOp` deep in the durable pipeline. The fix is to pass `blueprintRegistrySets()` at the three blueprint admission chokepoints (authoring / install / PG-projection).
@@ -3665,7 +3774,9 @@ The hot path stays a ring push; `getFlag` is consulted only when a hint actually
 
 [Section titled “The adoption metric”](#the-adoption-metric)
 
-`code-run-adoption.ts` makes “are agents batching?” a first-class read. A spawn is a **batchable opportunity** when it fired one tool ≥2× *or* touched ≥3 distinct tools (batch tools excluded) — the **same thresholds the nudge uses, imported**, so metric and nudge can never drift. **adoptionRate** (per role/day) = opportunity-spawns-that-also-used-`code:run` ÷ opportunity-spawns: *of the spawns that could have batched, how many did.*
+`code-run-adoption.ts` makes “are agents batching?” a first-class read. A spawn is a **batchable opportunity** when it fired one tool from ≥2 *separate inference turns*, or touched ≥3 distinct tools spanning ≥3 separate turns (batch tools excluded) — the **same thresholds the nudge uses, imported**, so metric and nudge can never drift. **adoptionRate** (per role/day) = opportunity-spawns-that-also-used-`code:run` ÷ opportunity-spawns: *of the spawns that could have batched, how many did.*
+
+**Turns, not raw calls (2026-07-13, P-012, agent-operability-clarity-full-audit-2026-07-13).** Before P-012 the opportunity test used raw call counts (`maxSameTool`/`distinctTools` straight off `tool_invocations`), the same flaw the live nudge had: several tool calls dispatched from ONE inference turn (parallel `tool_use` — the harness’s own “make independent calls in the same response block” guidance) cost a single round-trip, but were counted as N separate “opportunities to batch”. That inflated the denominator with spawns that were *already optimal* and, symmetrically, could make the nudge’s own live telemetry look like it was firing on already-correct behavior. `spawnRowsFromCalls` now clusters each spawn’s non-batch calls into inferred turns via the SAME timing-gap heuristic the nudge uses (`clusterTurns`/`TURN_GAP_MS` in `code-run-batch-nudge.ts` — there is no client-supplied turn id on this path, so turns are inferred from how close together two calls were invoked: within `TURN_GAP_MS` ⇒ same turn, a real LLM inference round-trip is far larger). `maxSameToolTurns`/`distinctTurns` are the fields that now drive `isBatchableSpawn`; `workCalls`/`distinctTools` (raw, non-turn-aware) are kept only for informational/debugging display.
 
 **Metric hygiene (2026-07-03, P-006)** — three denominator poisons fixed in `CODE_RUN_ADOPTION_SQL` + `spawnRowsFromCalls`:
 
@@ -3683,20 +3794,20 @@ The hot path stays a ring push; `getFlag` is consulted only when a hint actually
 
 [Section titled “Run it live (dev:pg\_query)”](#run-it-live-devpg_query)
 
-`CODE_RUN_ADOPTION_SQL` pre-aggregates per spawn and is runnable as-is (param `$1` = days). To eyeball adoption per role over the last 7 days:
+`CODE_RUN_ADOPTION_SQL` pre-aggregates per spawn (with the turn-clustering CTEs) and is runnable as-is (param `$1` = days). To eyeball adoption per role over the last 7 days, using the TURN-based columns (`max_same_tool_turns`/`distinct_turns`), not the raw `max_same_tool`/`distinct_tools` columns kept alongside for display only:
 
 ```sql
 WITH s AS ( /* CODE_RUN_ADOPTION_SQL body, $1 = 7 */ )
 SELECT role,
-       count(*)                                              AS spawns,
-       count(*) FILTER (WHERE max_same_tool >= 2 OR distinct_tools >= 3)               AS opportunities,
-       count(*) FILTER (WHERE (max_same_tool >= 2 OR distinct_tools >= 3) AND used_code_run) AS adopted,
-       round(100.0 * count(*) FILTER (WHERE (max_same_tool >= 2 OR distinct_tools >= 3) AND used_code_run)
-             / NULLIF(count(*) FILTER (WHERE max_same_tool >= 2 OR distinct_tools >= 3), 0), 1) AS adoption_pct
+       count(*)                                                                  AS spawns,
+       count(*) FILTER (WHERE max_same_tool_turns >= 2 OR distinct_turns >= 3)               AS opportunities,
+       count(*) FILTER (WHERE (max_same_tool_turns >= 2 OR distinct_turns >= 3) AND used_code_run) AS adopted,
+       round(100.0 * count(*) FILTER (WHERE (max_same_tool_turns >= 2 OR distinct_turns >= 3) AND used_code_run)
+             / NULLIF(count(*) FILTER (WHERE max_same_tool_turns >= 2 OR distinct_turns >= 3), 0), 1) AS adoption_pct
 FROM s GROUP BY role ORDER BY opportunities DESC;
 ```
 
-(These literals track `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` in `code-run-batch-nudge.ts` as of this writing — see the Gotcha below before trusting them blindly.)
+(These literals track `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` in `code-run-batch-nudge.ts` as of this writing — see the Gotcha below before trusting them blindly. The fan-out leg here omits the `distinct_tools >= 3` AND-condition `isBatchableSpawn` applies for brevity; a strict reproduction should AND it in too.)
 
 (Prefer `readCodeRunAdoption` in code — it owns the canonical query and the reducer.)
 
@@ -3710,7 +3821,7 @@ The `PROMPT_ABLATION` rail ablates SU-playbook **prose** rules — it does **not
 
 [Section titled “Gotcha — keep the metric and the nudge in lockstep”](#gotcha--keep-the-metric-and-the-nudge-in-lockstep)
 
-The opportunity definition lives **once**: `isBatchableSpawn` imports `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` from the nudge module, and `CODE_RUN_ADOPTION_SQL` mirrors the same `normalize()` + excluded-batch-tool set inline. If you change a threshold, the excluded-batch-tool set, or the poller-exclusion set (`POLLER_TOOL_NORMS`) in the TS, update the SQL’s literal `IN (...)` lists to match (the unit test pins the at-threshold boundary, but the SQL’s literal lists are not type-checked against the TS sets). The SQL also carries the `transport='mcp' AND spawn_id IS NOT NULL` filters — keep them if you fork the query, or the denominator re-poisons.
+The opportunity definition lives **once**: `isBatchableSpawn` imports `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` from the nudge module, and `CODE_RUN_ADOPTION_SQL` mirrors the same `normalize()` + excluded-batch-tool set inline. If you change a threshold, the excluded-batch-tool set, or the poller-exclusion set (`POLLER_TOOL_NORMS`) in the TS, update the SQL’s literal `IN (...)` lists to match (the unit test pins the at-threshold boundary, but the SQL’s literal lists are not type-checked against the TS sets). The SQL also inlines `TURN_GAP_MS` (P-012) as a literal in the `turned` CTE’s `CASE` — the same duplication risk: if you retune `TURN_GAP_MS` in `code-run-batch-nudge.ts`, update `adoptionQueryBody`’s inlined literal too (there is no way to import a TS constant into raw SQL). The SQL also carries the `transport='mcp' AND spawn_id IS NOT NULL` filters — keep them if you fork the query, or the denominator re-poisons.
 
 # code:run — when to reach for it, worked exemplars, and the measured payoff
 
@@ -19094,22 +19205,26 @@ During the coord FS→PG cutover, a real `coord:send` kept writing `coord/messag
 
 See also the user-level memory note `verify-server-pid-before-measuring` and the engineer playbook’s CLAUDE.md pointer.
 
-# operator-core `lint:tsc` is a COUNT gate — vitest-green != tsc-clean
+# operator-core `lint:tsc` is a PER-FILE gate — vitest-green != tsc-clean
 
-> npm run lint:tsc gates packages/operator-core on a TOTAL tsc-error count vs .tsc-baseline.json, hard-fails TS1xxx syntax errors, and hard-blocks green-checkpoint when it rises. vitest (esbuild) does NOT typecheck, so a vitest-green test edit can add tsc errors that tip the count over baseline. Run lint:tsc after operator-core edits — not just test:affected.
+> npm run lint:tsc gates packages/operator-core against a PER-FILE tsc-error baseline in .tsc-baseline.json — a file above ITS baseline is a NEW, ATTRIBUTED regression (the gate NAMES it), hard-fails TS1xxx syntax errors, and blocks green-checkpoint when a file rises. vitest (esbuild) does NOT typecheck, so a vitest-green test edit can add tsc errors. Run lint:tsc (or lint:tsc -- --mine) after operator-core edits — not just test:affected.
 
 ## What
 
 [Section titled “What”](#what)
 
-`npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs `tsc -p packages/operator-core/tsconfig.json --noEmit` and compares the **total parsed error count** against `packages/operator-core/.tsc-baseline.json` (a single number, `operatorCoreErrorCount`). Don’t trust any literal value cited here as current — run `npm run lint:tsc` for the live count vs baseline. As of this writing (2026-07-03) the baseline is **PINNED at `224`** (deliberately the *higher* of a known `223`/`224` flap — see below), ratcheted down repeatedly since the `262` figure this doc originally cited — but the baseline file’s own change history shows the true count **flapping between `223` and `224` within the same day** under unrelated concurrent-edit noise (a pre-existing deep-instantiation/test- fixture ripple, e.g. `inference-gateway/observability.test.ts`’s `GatewayStats`), not a real regression each time. Pinning the higher value makes the gate pass at both 223 and 224 instead of false-redding the fleet every time it shuffles back up. If you see a lone ±1 shift with no attributable new error, that’s the known flap — verify across a few clean runs on a quiet tree before treating it as either a real improvement or a real regression, and **don’t** bare-run-ratchet a transient dip (that happened twice on 2026-07-03 and had to be manually re-restored to 224 — see the baseline file’s own `note` field). The gate:
+`npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs `tsc -p packages/operator-core/tsconfig.json --noEmit --incremental false` and compares each file’s error count against a **PER-FILE baseline** in `packages/operator-core/.tsc-baseline.json` (the `files` map: `{ "packages/operator-core/lib/x.ts": 2, … }`; `operatorCoreErrorCount` is a derived total, kept for humans). Don’t trust any literal value cited here as current — run `npm run lint:tsc` for the live picture. The gate:
 
-* **count > baseline ⇒ HARD FAIL** — and it runs in green-checkpoint, so a single net-new error **blocks the whole fleet’s deploy**, not just yours.
-* **count < baseline ⇒ ratchets down, but ONLY on an explicit `npm run lint:tsc -- --update`** (audit P-073 / EI-104, fixed 2026-07-03 — this reverses the prior “auto-ratchet on every bare run” behavior). A **bare** run (CI, or a peer’s plain `npm run lint:tsc`) never rewrites the baseline file — it only checks and hard-fails above baseline; auto-ratcheting on every bare run turned out to lock in transient dips in this shared, concurrently-edited tree and then false-red the gate for the whole fleet the next time the count shuffled back up. `--update` still only ever *lowers* the baseline (or no-ops at parity) — raising it remains a deliberate human JSON edit, never automatic. This `--update`-only policy now lives in the **pure `decide()`** function (a bare run below baseline returns `ok-below` and `main()` never writes; only `--update` yields `ok-ratchet`) and is locked by `lint-tsc.test.ts` — so a `main()` refactor can’t silently reintroduce the auto-ratchet flap. (EI-104 shipped in `main()` first but left the invariant in untested imperative code while `decide()` + its test still encoded the old auto-ratchet; WI-1822 folded the policy into `decide()` and added the guard.)
-* **any TS1xxx parse error ⇒ HARD FAIL** — syntax-broken files fail regardless of the total count because `tsc` under-reports the errors behind a parse failure.
-* It is **position-independent**: only the count matters. Adding lines above a pre-existing baselined error doesn’t “create” it, but any *net-new* error (yours, or one a refactor newly exposes) tips the total over.
+* **any file above ITS baseline ⇒ HARD FAIL, and the gate NAMES it** (`lib/x.ts: 2 → 4 (+2)`). It runs in green-checkpoint, so a net-new error blocks the whole fleet’s deploy — but now you see exactly which file caused it. A file absent from the baseline has an implicit baseline of `0`, so any error in a brand-new file is a named regression.
+* **`--mine` scopes the FAILURE to files you changed** (`git status`): a regression in a file you didn’t touch is reported as *peer drift* and does NOT fail your run, so you can verify “my change is tsc-clean” even while the shared tree carries unrelated concurrent-edit noise. `--mine` is opt-in and never the CI default (CI runs bare = strict, gating any file’s regression).
+* **a file below its baseline ⇒ ratchets down, but ONLY on an explicit `npm run lint:tsc -- --update`** (audit P-073 / EI-104). A **bare** run (CI, or a peer’s plain `npm run lint:tsc`) never rewrites the baseline — it only checks. Regressions always win over improvements, so `--update` can never *raise* a file; raising a file’s baseline is a deliberate hand-edit of the JSON with a justification. This policy lives in the pure `decidePerFile()` and is locked by `lint-tsc.test.ts`, so a `main()` refactor can’t silently reintroduce an auto-ratchet.
+* **any TS1xxx parse error ⇒ HARD FAIL** — syntax-broken files fail regardless of counts, because `tsc` under-reports the errors behind a parse failure.
 
-This is a different mechanism from the apps/operator “scope to touched files” baseline (\[\[tsc-baseline-vs-next-build]]) — there the move is per-file; here it’s a hard count gate on one package.
+### Why per-file (migrated 2026-07-13, P-010 / WI-4535)
+
+[Section titled “Why per-file (migrated 2026-07-13, P-010 / WI-4535)”](#why-per-file-migrated-2026-07-13-p-010--wi-4535)
+
+This gate used to compare ONE integer — the total error count — against a single pin (last `224`). On this heavily-parallel shared tree that number **could not attribute a regression and inherently flapped ±N** as peers edited the type-graph concurrently: a run reading “231 vs 224” told you seven errors appeared but not which files, not whether *you* caused them, and not whether it was the same deep-instantiation ripple (e.g. `inference-gateway/observability.test.ts`’s `GatewayStats`) shuffling again. That drove repeated false-reds and baseline-pinning wars (EI-379, EI-1984, and the old baseline `note`’s 223↔224 saga). The per-file map localizes flapping (a flap in file A never reds an agent editing file B) and makes every regression attributable to a file — and via `git blame`, its author. This is the same “scope to touched files” philosophy as apps/operator’s \[\[tsc-baseline-vs-next-build]], now applied to operator-core too.
 
 ## The trap: vitest is green, lint:tsc is red
 
@@ -19128,12 +19243,14 @@ Concrete (B-10, 2026-06-13): a new describe block in `ask_choice.test.ts` was 15
 After **any** edit under `packages/operator-core` (source *or* test):
 
 ```bash
-npm run lint:tsc        # the authoritative gate — count vs baseline
+npm run lint:tsc -- --mine   # gate ONLY the files you changed — the fast self-check
+npm run lint:tsc             # the authoritative CI gate — every file vs its baseline
 ```
 
-* If it prints `> baseline`, your touched files added tsc errors — fix them. **Do not** raise the baseline to absorb your own new errors (the script only ratchets *down*; raising is a reviewed human act with a justification).
-* If it reports TS1xxx syntax-broken files, fix those files first. The count is intentionally ignored for this verdict.
-* To see *which* of your files contribute, grep the tsc output: `npx tsc -p packages/operator-core/tsconfig.json --noEmit 2>&1 | grep '<your-file>'` — a clean file is **zero** lines there.
+* On a regression the gate **NAMES the file** (`lib/x.ts: 2 → 4 (+2)`) — no grep needed; the attribution is built in. Fix the named file. **Do not** raise its baseline to absorb your own new errors (the script only ratchets *down*; raising is a reviewed human act with a justification).
+* `--mine` fails only on regressions in files *you* changed; a regression in a file you didn’t touch is reported as peer drift and won’t red your run. A bare `npm run lint:tsc` (what CI runs) gates every file.
+* If it reports TS1xxx syntax-broken files, fix those first — counts are ignored for that verdict.
+* To lock in a genuine improvement (a file you drove below its baseline), run `npm run lint:tsc -- --update` on a quiet tree — it lowers only the improved files, never raises.
 * `test:affected` (vitest) is necessary but **not sufficient** — it proves behavior, not types. Run both.
 
 # Unit-testing operator-core route handlers — partial-mock db-org, direct-handler pattern
@@ -21606,6 +21723,53 @@ If `spawned:N` but `fleet:assignments` shows no live agents, suspect wake-mode f
 * `packages/operator-core/lib/agent-tools/coordination/wake-mode.ts` — `getDefaultWakeMode` / `setDefaultWakeMode`.
 * EI-590 (this surfacing), EI-524 (the read-only confinement).
 
+# A plan's body + template_data must be ONE atomic withPlanLock write — two sequential lock transactions leave a half-state (EI-11070)
+
+> proposeRubric wrote the plan body in one withPlanLock transaction and the validated template_data jsonb in a SECOND — non-atomic: a crash or busy advisory lock on the second write (heavily-parallel fleet) after the first committed left a fresh body/status with STALE template_data, while the caller still reported ok. withPlanLock already supports the combined form (newBody + templateData in one mutator return, as ratifyRubric uses). Also: the confidently-filed root cause (a null first-arg 'store') was WRONG — that arg is intentionally unused.
+
+## What
+
+[Section titled “What”](#what)
+
+A `template: rubric` plan carries its narrative in the **body** (`content` column, frontmatter → title/status/template) and its structured fields (criteria, ratingScale, methodRef, description, proposedBy/ratifiedBy) in the **`template_data`** jsonb column. `proposeRubric` used to persist these in **two separate `withPlanLock` transactions**:
+
+1. Write 1 — upsert the body (mutator ignores `current`, always returns `newBody`).
+2. Write 2 — a structured-only `template_data` write (`newBody: null`), whose mutator **gated on `current === null`** and, on that branch, returned `{ newBody: null, value: false }`.
+
+Reported symptom (EI-11070): `rubrics:propose` returned `ok: true` and echoed the full new rubric, but the DB row kept its **stale** criteria / rating-scale / description while `status` + `updated_at` **did** change. i.e. Write 1 landed, Write 2 didn’t.
+
+## Why it’s a bug
+
+[Section titled “Why it’s a bug”](#why-its-a-bug)
+
+The two-write split is **non-atomic**. Write 1 commits its own transaction *before* Write 2 begins. On this heavily-parallel fleet, Write 2 can hit a **busy advisory lock** (another writer on the same plan) and throw — *after* the body already committed — leaving a fresh body/status with **stale template\_data**. That is exactly the reported half-state. Write 2’s `current === null` branch was additionally a **silent no-op**: it returned `value: false`, which `proposeRubric` ignored, so a “wrote nothing” outcome was reported as success — the same silent-persist-failure class as the memory/telemetry bugs found the same week.
+
+**The confidently-filed root cause was WRONG — reproduce before trusting it.** The original EI-11070 hypothesis blamed `proposeRubric` passing `null` as `withPlanLock`’s first argument (the “store/ctx”). That argument is **intentionally unused** (`_ctx` in `with-plan-lock.ts` — the PG advisory lock needs no identity), so `null` vs a real `ctx` changes nothing. And on a re-propose the row already exists, so Write 2’s `current` is non-null and the skip branch **cannot fire**. The symptom did not reproduce in a fresh testcontainer *or* live on `:3070`. Don’t carry a plausible-but-unverified root cause into a fix — reproduce, or say plainly you couldn’t.
+
+## The fix / the rule
+
+[Section titled “The fix / the rule”](#the-fix--the-rule)
+
+**A logical write that spans the body AND `template_data` must be ONE atomic `withPlanLock` call.** `withPlanLock` already supports the combined form: return `{ newBody, templateData: { data }, value }` from a single mutator and it writes both in the same locked transaction with **one** version bump (see the `writesTemplateData && (cur || newBody !== null)` path). `ratifyRubric` already does this (flips frontmatter status AND stamps `ratifiedBy` atomically). `proposeRubric` now does too:
+
+```ts
+const result = await withPlanLock<true>(
+  null,
+  { slug: input.rubricId, intent: `rubrics:propose ${input.rubricId}`, ...scope },
+  async () => ({ newBody: body, templateData: { data: templateData }, value: true }),
+);
+```
+
+With `newBody` non-null the `template_data` guard passes unconditionally, so it can never lag the body, and there is no `current === null` skip branch to silently no-op through.
+
+**Regression signature = the version bump count.** A fresh propose is now a **single** bump (version `1`); a re-propose bumps by exactly `1` (→ `2`). The old two-write split bumped by **2** each time (body, then a separate template\_data write → `2` and `4`). The regression test `re-propose PERSISTS changed template_data (EI-11070 regression)` asserts both the raw `template_data` jsonb changed *and* the single-bump count, so a regression back to the split form fails loudly.
+
+## Generalize
+
+[Section titled “Generalize”](#generalize)
+
+Any time a durable record has two facets that must move together (a body column + a jsonb sidecar, two columns with an invariant between them), write them in **one** locked transaction — never “write A, then write B” across two lock acquisitions. Two acquisitions = two commit points = a window where a throw/busy leaves the record half-updated. If your lock/upsert helper offers a combined form, use it; if it doesn’t, that’s the feature to add, not a second transaction.
+
 # plans:list/attention egress is poll-FREQUENCY, not payload — and deltas cut bytes, not call count
 
 > plans:list + plans:attention are the dominant read-byte tools (~340GB/7d, the EI-2661 headline). MEASURED: that traffic is ~100% desktop-UI HTTP polling (transport='http': ~560K calls each / 3d; agents via mcp: <100), at ~4 calls/sec EACH, the two fired in lockstep from the same poll cycle. But the underlying plan tables are written only ~10-30×/HOUR — a ~500-2000:1 read:write ratio, so ~99.9% of those reads return byte-identical data. Two INDEPENDENT levers follow, and conflating them is the trap: (1) the rows-delta protocol (SYNC_RESOURCE_DELTA, default-ON 2026-06-23; resource-delta-config lists plans.list + plans.attention) collapses the ~99.9% unchanged reads into tiny `not_modified` bodies — the right fix for BYTES, and it's why tool_invocations.output_size will NOT show the win (it records the full pre-delta result). (2) The call COUNT itself (~4/sec, decoupled from data) stays pure waste even with deltas — each is still a full server-side tool invocation + round-trip. cachedRead (caching-an-expensive-tool-read) makes each cheap on the server but does not remove the call. The count lever is to make these reads invalidation-driven (SSE push on the rare write + a LONG drift-repair poll), not a tight fixed poll. Do NOT declare egress 'solved' when the delta lands — the byte win is real, the count waste is not touched.
@@ -23100,6 +23264,35 @@ Because a seeded install stops exercising the full cold join on every boot, the 
 | `PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC=<n>` | opt into the cold-join canary (default 0 = off)                                                                                                                                                                                                                       |
 | `cut-seed-cli --sparse`                       | P-004: ship only the head-snapshot suffix of each corestore (needs `FLAGS.SUBSTRATE_LOG_SNAPSHOT_READER` ON to restore — default ON since the WI-3370 2026-07-10 split; the sibling `FLAGS.SUBSTRATE_LOG_SNAPSHOT` producer flag stays dark but doesn’t gate restore) |
 | `cut-seed-cli --emit-epoch-key`               | WI-3232/3288: bundle the pot epoch key readable (`epoch-keys.json`) so an offline box that never joins can still decrypt + admit the seed’s content (alpha-only trust relaxation)                                                                                     |
+
+# pot:survey returning empty frontier/plans is NOT a read-path bug — it is admission-starvation, and its counts are DIFFERENT from OverwatchBrief's (WI-4563)
+
+> pot:survey's `frontier`/`plans` are the Mug's PLACEABLE views (admissible+ready feature-family items; operationally-STARTED plans). They intentionally do NOT match OverwatchBrief's work-feed `autoEligibleStuck` (a different subsystem's auto-implement queue) or its active-plan count (frontmatter lifecycle, not op_status). An empty frontier while a backlog exists is almost always admission-starvation (G2 quarantine of remote+un-admitted items), now surfaced as `admissionStarved`/`frontierQuarantined` — not a broken query.
+
+## What
+
+[Section titled “What”](#what)
+
+`pot:survey { harness }` returned `frontier: []`, `plans: []` for **14+ consecutive Mug wakes** while OverwatchBrief showed a large, growing work-feed backlog (48→68) and 137+ “active” plans in the same harness. This looked like a structural read-path / member-scope bug. It was **not**. The survey query is correct; the two surfaces just **count different things**, and an empty *placeable* frontier is a legitimate — but previously indistinguishable — outcome:
+
+* **`pot:survey.frontier`** = the Mug’s **placeable** work-items: feature-family, `todo`, unassigned, not cursed, in-scope, AND admissible through the **G2 trust gate** (`autoPickableWhereSql`). A remote, un-audited item is **quarantined** (never auto-placed). On 2026-07-13 papercusp’s whole placeable pool was 10 federated remote items, all quarantined → `frontier: []` was **admission-starvation** (EI-8498), not “no work”.
+* **`pot:survey.plans`** = **operationally-STARTED** plans only (`op_status='started'` AND a non-terminal frontmatter `status`; `reconcileStartStatus` demotes a `shipped`/`superseded` plan to `done`). papercusp had 3 `op_status='started'` rows — all frontmatter-terminal — so `plans: 0` is **correct**. The 1376 other plans are `op_status=NULL` (never `plans:start`-ed).
+* **OverwatchBrief work-feed `autoEligibleStuck`** (the “68”) = the **auto-IMPLEMENT dispatcher’s** drain lane (code-bug improvements a *different* subsystem drains), explicitly NOT the Queen/Mug-placeable frontier (`compute-brief.ts` \~L229). The “137 active plans” is a **frontmatter lifecycle** count, not `op_status='started'`. Neither is meant to reconcile 1:1 with placement.
+
+## Why it matters
+
+[Section titled “Why it matters”](#why-it-matters)
+
+An empty *placeable* frontier caused by quarantine is **byte-identical** to “no work to do” unless something counts the withheld rows. So the Mug woke, surveyed zero, correctly placed nothing, reported a successful turn — for hours, every health signal green — while the pot sat **deadlocked** behind the admission gate (no production admit path clears it on its own). 14 wakes + a Kettle escalation (mriuek9p) chased a “read-path bug” that did not exist.
+
+## How to apply
+
+[Section titled “How to apply”](#how-to-apply)
+
+* **Read the survey’s `admissionStarved`/`counts.frontierQuarantined` first.** `frontier.length === 0 && frontierQuarantined > 0` is a **deadlock**, not an idle pot — the tool now returns `admissionStarved: true` + an explanatory `note`, and the Mug launch brief (`mug-brief.ts`) prints a loud `⚠ ADMISSION-STARVED` line. The fix is to **admit/trust the authoring node**, not to keep re-surveying.
+* **Do NOT reconcile `pot:survey` counts against OverwatchBrief’s work-feed.** They are different queues by design (placeable frontier vs. auto-implement backlog; started plans vs. active-lifecycle plans). A mismatch is expected, not a bug.
+* **`members: ['hive-canary']` for the `papercusp` home is benign** — hive-canary has 0 todo items; the home slug (`papercusp`) is still in `surveySlugs` and its own items are surveyed. Member resolution is not the culprit.
+* Regression coverage: `survey.integration.test.ts` pins the `countPlaceableFrontier` / `countQuarantinedFrontier` partition against real Postgres (incl. the load-bearing `COALESCE(admission, FALSE)` — a bare `NOT` counts 0 quarantined for exactly the NULL-verdict rows that define the deadlock).
 
 # Pot vs coding blueprint — don't conflate them
 

@@ -100,10 +100,27 @@ nudged session actually converted.
 ## The adoption metric
 
 `code-run-adoption.ts` makes "are agents batching?" a first-class read. A spawn is a
-**batchable opportunity** when it fired one tool ≥2× *or* touched ≥3 distinct tools
-(batch tools excluded) — the **same thresholds the nudge uses, imported**, so metric and
-nudge can never drift. **adoptionRate** (per role/day) = opportunity-spawns-that-also-used-`code:run`
+**batchable opportunity** when it fired one tool from ≥2 *separate inference turns*, or
+touched ≥3 distinct tools spanning ≥3 separate turns (batch tools excluded) — the **same
+thresholds the nudge uses, imported**, so metric and nudge can never drift.
+**adoptionRate** (per role/day) = opportunity-spawns-that-also-used-`code:run`
 ÷ opportunity-spawns: *of the spawns that could have batched, how many did.*
+
+**Turns, not raw calls (2026-07-13, P-012, agent-operability-clarity-full-audit-2026-07-13).**
+Before P-012 the opportunity test used raw call counts (`maxSameTool`/`distinctTools`
+straight off `tool_invocations`), the same flaw the live nudge had: several tool calls
+dispatched from ONE inference turn (parallel `tool_use` — the harness's own "make
+independent calls in the same response block" guidance) cost a single round-trip, but
+were counted as N separate "opportunities to batch". That inflated the denominator with
+spawns that were *already optimal* and, symmetrically, could make the nudge's own live
+telemetry look like it was firing on already-correct behavior. `spawnRowsFromCalls` now
+clusters each spawn's non-batch calls into inferred turns via the SAME timing-gap
+heuristic the nudge uses (`clusterTurns`/`TURN_GAP_MS` in `code-run-batch-nudge.ts` —
+there is no client-supplied turn id on this path, so turns are inferred from how close
+together two calls were invoked: within `TURN_GAP_MS` ⇒ same turn, a real LLM inference
+round-trip is far larger). `maxSameToolTurns`/`distinctTurns` are the fields that now
+drive `isBatchableSpawn`; `workCalls`/`distinctTools` (raw, non-turn-aware) are kept only
+for informational/debugging display.
 
 **Metric hygiene (2026-07-03, P-006)** — three denominator poisons fixed in
 `CODE_RUN_ADOPTION_SQL` + `spawnRowsFromCalls`:
@@ -125,23 +142,26 @@ nudge can never drift. **adoptionRate** (per role/day) = opportunity-spawns-that
 
 ### Run it live (dev:pg\_query)
 
-`CODE_RUN_ADOPTION_SQL` pre-aggregates per spawn and is runnable as-is (param `$1` =
-days). To eyeball adoption per role over the last 7 days:
+`CODE_RUN_ADOPTION_SQL` pre-aggregates per spawn (with the turn-clustering CTEs) and is
+runnable as-is (param `$1` = days). To eyeball adoption per role over the last 7 days,
+using the TURN-based columns (`max_same_tool_turns`/`distinct_turns`), not the raw
+`max_same_tool`/`distinct_tools` columns kept alongside for display only:
 
 ```sql
 WITH s AS ( /* CODE_RUN_ADOPTION_SQL body, $1 = 7 */ )
 SELECT role,
-       count(*)                                              AS spawns,
-       count(*) FILTER (WHERE max_same_tool >= 2 OR distinct_tools >= 3)               AS opportunities,
-       count(*) FILTER (WHERE (max_same_tool >= 2 OR distinct_tools >= 3) AND used_code_run) AS adopted,
-       round(100.0 * count(*) FILTER (WHERE (max_same_tool >= 2 OR distinct_tools >= 3) AND used_code_run)
-             / NULLIF(count(*) FILTER (WHERE max_same_tool >= 2 OR distinct_tools >= 3), 0), 1) AS adoption_pct
+       count(*)                                                                  AS spawns,
+       count(*) FILTER (WHERE max_same_tool_turns >= 2 OR distinct_turns >= 3)               AS opportunities,
+       count(*) FILTER (WHERE (max_same_tool_turns >= 2 OR distinct_turns >= 3) AND used_code_run) AS adopted,
+       round(100.0 * count(*) FILTER (WHERE (max_same_tool_turns >= 2 OR distinct_turns >= 3) AND used_code_run)
+             / NULLIF(count(*) FILTER (WHERE max_same_tool_turns >= 2 OR distinct_turns >= 3), 0), 1) AS adoption_pct
 FROM s GROUP BY role ORDER BY opportunities DESC;
 ```
 
 (These literals track `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` in
 `code-run-batch-nudge.ts` as of this writing — see the Gotcha below before trusting them
-blindly.)
+blindly. The fan-out leg here omits the `distinct_tools >= 3` AND-condition `isBatchableSpawn`
+applies for brevity; a strict reproduction should AND it in too.)
 
 (Prefer `readCodeRunAdoption` in code — it owns the canonical query and the reducer.)
 
@@ -161,6 +181,10 @@ The opportunity definition lives **once**: `isBatchableSpawn` imports
 If you change a threshold, the excluded-batch-tool set, or the poller-exclusion set
 (`POLLER_TOOL_NORMS`) in the TS, update the SQL's literal `IN (...)` lists to match
 (the unit test pins the at-threshold boundary, but the SQL's literal lists are not
-type-checked against the TS sets). The SQL also carries the `transport='mcp' AND
+type-checked against the TS sets). The SQL also inlines `TURN_GAP_MS` (P-012) as a
+literal in the `turned` CTE's `CASE` — the same duplication risk: if you retune
+`TURN_GAP_MS` in `code-run-batch-nudge.ts`, update `adoptionQueryBody`'s inlined
+literal too (there is no way to import a TS constant into raw SQL). The SQL also
+carries the `transport='mcp' AND
 spawn_id IS NOT NULL` filters — keep them if you fork the query, or the denominator
 re-poisons.

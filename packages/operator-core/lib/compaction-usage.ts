@@ -416,13 +416,32 @@ export const CONTEXT_DEATH_MARKER = 'Prompt is too long';
  *   - a code comment a cup/worker Read (e.g. this file's own comments);
  *   - the OverwatchBrief, which lists these deaths verbatim.
  * A session can also write a meta-commentary text block that STARTS with the
- * marker and continues (`"text":"Prompt is too long — ..."`). That is not the
- * API error either, so the matcher requires the whole JSON `text` value to be
- * exactly the marker. All of the data-read shapes are additionally behind an
- * escaped quote, so the lookbehind excludes them while still catching the
- * genuine error entry.
+ * marker and continues (`"text":"Prompt is too long — ..."`), or even emit a
+ * standalone text block containing the marker while explaining the incident.
+ * Neither is the API error. The genuine record has a structural discriminator
+ * that prose does not: it is an assistant JSONL record with top-level
+ * `error:"invalid_request"` and a content text block whose value is exactly the
+ * marker. Parse complete JSONL lines below instead of matching a phrase over
+ * the raw tail, so nested tool results and assistant prose cannot satisfy the
+ * detector.
  */
-const CONTEXT_DEATH_RE = /(?<!\\)"text"\s*:\s*"Prompt is too long"\s*(?=[,}])/;
+function isContextDeathRecord(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as {
+    type?: unknown;
+    error?: unknown;
+    message?: { content?: unknown };
+  };
+  if (record.type !== 'assistant' || record.error !== 'invalid_request') return false;
+  if (!record.message || !Array.isArray(record.message.content)) return false;
+  return record.message.content.some(
+    (block) =>
+      !!block &&
+      typeof block === 'object' &&
+      (block as { type?: unknown; text?: unknown }).type === 'text' &&
+      (block as { type?: unknown; text?: unknown }).text === CONTEXT_DEATH_MARKER,
+  );
+}
 
 /**
  * Pure (WI-4608): does this transcript-TAIL text carry claude-code's ACTUAL
@@ -432,7 +451,16 @@ const CONTEXT_DEATH_RE = /(?<!\\)"text"\s*:\s*"Prompt is too long"\s*(?=[,}])/;
  * the real-vs-data discriminator.
  */
 export function tailCarriesContextDeath(tail: string): boolean {
-  return CONTEXT_DEATH_RE.test(tail);
+  for (const line of tail.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      if (isContextDeathRecord(JSON.parse(line))) return true;
+    } catch {
+      // The tail can begin in the middle of a JSONL record; incomplete lines
+      // are not sufficient evidence of a real context death.
+    }
+  }
+  return false;
 }
 
 /** How much transcript tail to scan for the death marker. The error lands as

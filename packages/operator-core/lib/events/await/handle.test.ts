@@ -115,6 +115,22 @@ describe('captureWakeHandleForOwner', () => {
     expect(r.note).toContain('injectable/resumable');
   });
 
+  it('codex 0.144+ without a rollout file recovers its native id from history.jsonl', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-handle-codex-history-'));
+    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+    const historyId = '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
+    const home = join(root, 'session-16');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'history.jsonl'), `${JSON.stringify({ session_id: historyId, text: 'wake me' })}\n`);
+    h.latestAdvSessionByCoordOwner.mockResolvedValueOnce(
+      advRow({ id: 16, agent: 'codex', sessionId: null, ompThreadId: null }),
+    );
+
+    const r = await captureWakeHandleForOwner('su-codex');
+    expect(r.handle).toMatchObject({ kind: 'adv-session', advSessionId: 16, agent: 'codex', sessionId: historyId });
+    expect(r.note).toContain('injectable/resumable');
+  });
+
   it('omp + a thread id → resumable', async () => {
     h.latestAdvSessionByCoordOwner.mockResolvedValueOnce(
       advRow({ id: 13, agent: 'omp', sessionId: null, ompThreadId: 'th-9' }),
