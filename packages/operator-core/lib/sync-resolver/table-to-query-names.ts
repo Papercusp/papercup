@@ -91,6 +91,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.pr_reviewer_settings': ['prReviewerSettings.byHarness'],
   'harness_shared.trusted_authors': ['prReviewerSettings.byHarness'],
   'harness_shared.adv_sessions': ['advSessions.list', 'advRoster.list'],
+  // saved_prompts backs the Quick Panel prompts outline (savedPrompts.byScope).
+  // Trigger attached in migration 598 (quick-panel-saved-prompts-2026-07-13):
+  // full-bust — the query is keyed by scope (harness), not the row PK.
+  'harness_shared.saved_prompts': ['savedPrompts.byScope'],
   // ── Per-harness HYPERBEE-bucket tables ────────────────────────────
   'harness_shared.harness_text_artifacts': ['harnessTextArtifact.byHarness'],
   // harness_design_artifacts backs the Design tab's sketch pane (designSketches.byFeature).

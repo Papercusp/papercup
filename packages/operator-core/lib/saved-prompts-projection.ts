@@ -143,6 +143,14 @@ function writeCommands(
       skipped++;
       continue;
     }
+    // Pure FOLDER nodes (empty body — Quick Panel outline organizer rows,
+    // migration 598) never materialize as slash commands. Deliberately NOT
+    // added to the keep-set: a prompt emptied into a folder gets its stale
+    // managed file pruned.
+    if (p.body.trim().length === 0) {
+      skipped++;
+      continue;
+    }
     keep.add(p.name);
     const res = writeManagedCommandFile(dir, `${p.name}.md`, render(p));
     if (res.written) written++;

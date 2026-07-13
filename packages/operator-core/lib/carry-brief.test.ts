@@ -52,7 +52,26 @@ function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBrief
       { eventKey: 'deploy:done:release-77', note: 'waiting on the green deploy' },
     ],
     getFleetFn: async () => ({ slug: 'bug-drain', role: 'leader' }),
+    listOpenDirectivesFn: async () => ({ rows: [], totalOpen: 0 }),
     ...overrides,
+  };
+}
+
+/** An open owner-directive row (EI-11484) for the render tests. */
+function directive(id: number, text: string) {
+  return {
+    id,
+    workspaceId: 'ws-test',
+    ownerId: 'owner',
+    sessionRef: null,
+    sourceTurnRef: null,
+    verbatimText: text,
+    recordedBy: 'su-abc',
+    createdAtMs: Date.now() - 60_000,
+    dispositionedAtMs: null,
+    dispositionStatus: null,
+    dispositionNote: null,
+    dispositionedBy: null,
   };
 }
 
@@ -110,12 +129,17 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
         getFleetFn: async () => {
           throw new Error('pg down');
         },
+        listOpenDirectivesFn: async () => {
+          throw new Error('pg down');
+        },
       }),
     );
     expect(brief).toEqual({
       ownerId: 'su-abc',
       loop: null,
       heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
       walls: [],
       facts: [],
       awaits: [],
@@ -182,6 +206,8 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
       ownerId: 'x',
       loop: null,
       heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
       walls: [],
       facts: [],
       awaits: [],
@@ -198,6 +224,8 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
       ownerId: 'x',
       loop: null,
       heldItems: [{ id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: null }],
+      directives: [],
+      directivesTotalOpen: 0,
       walls: [{ claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: 1 }],
       facts: [],
       awaits: [],
@@ -251,6 +279,8 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       ownerId: 'x',
       loop: { harness: 'h', active: true, intervalSec: 60, carryNote: 'n', carryNoteUpdatedAtMs: 1 },
       heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
       walls: [],
       facts: [],
       awaits: [],
@@ -264,6 +294,8 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       ownerId: 'x',
       loop: null,
       heldItems: [{ id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: null }],
+      directives: [],
+      directivesTotalOpen: 0,
       walls: [
         { claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: 1 },
         { claim: 'capital arming pending owner', sinceMs: 2 },
@@ -287,6 +319,8 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
         { id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: 'y'.repeat(2000) },
         { id: 'WI-2', title: null, body: null, harness: 'h', checkpoint: null },
       ],
+      directives: [],
+      directivesTotalOpen: 0,
       walls: [],
       facts: [],
       awaits: [],
@@ -318,6 +352,61 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
       ),
     );
     expect(out).toContain('No carry-note written.');
+  });
+});
+
+describe('owner directives in the brief (EI-11484)', () => {
+  it('builds the directives section from the injected reader', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        listOpenDirectivesFn: async () => ({ rows: [directive(9, 'resume all the sessions')], totalOpen: 1 }),
+      }),
+    );
+    expect(brief.directives.map((d) => d.id)).toEqual([9]);
+    expect(brief.directivesTotalOpen).toBe(1);
+  });
+
+  it('renderCarryBriefText renders open directives FIRST — above the loop contract — and never twice', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        listOpenDirectivesFn: async () => ({
+          rows: [directive(9, 'resume all the sessions active in the last half hour')],
+          totalOpen: 1,
+        }),
+      }),
+    );
+    const out = renderCarryBriefText(brief);
+    expect(out).toContain('OPEN OWNER DIRECTIVES');
+    expect(out.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(out.indexOf('Armed loop'));
+    expect(out).toContain('"resume all the sessions active in the last half hour"');
+    // rendered once, not re-rendered by the extras leg
+    expect(out.match(/OPEN OWNER DIRECTIVES/g)!.length).toBe(1);
+  });
+
+  it('renderCarryBriefColdExtras renders directives ahead of walls and held items', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        listOpenDirectivesFn: async () => ({ rows: [directive(4, 'ship it now')], totalOpen: 1 }),
+      }),
+    );
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(out.indexOf('You still HOLD'));
+  });
+
+  it('the focus line carries directive IDS as pointers, ahead of walls', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        listOpenDirectivesFn: async () => ({ rows: [directive(4, 'ship it now')], totalOpen: 1 }),
+      }),
+    );
+    const focus = renderCarryBriefFocus(brief);
+    expect(focus).toContain('OPEN OWNER DIRECTIVES #4');
+    expect(focus.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(focus.indexOf('zombie-pids-wall'));
+    expect(focus).not.toContain('ship it now'); // pointers, not copies
   });
 });
 

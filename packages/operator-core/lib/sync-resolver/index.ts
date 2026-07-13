@@ -485,6 +485,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // savedPrompts.byScope — the Quick Panel prompts outline
+  // (quick-panel-saved-prompts-2026-07-13 P-003). One flat row array per scope
+  // (workspace-global when `harness` is absent); the client builds the
+  // Workflowy tree via saved-prompts-tree.ts. Writes land through the
+  // /agent-mcp/saved-prompts routes, which fire notifySyncInvalidate — and the
+  // migration-598 change-notify trigger full-busts via the table bridge as a
+  // backstop for direct-PG writers.
+  'savedPrompts.byScope': {
+    argsSchema: z.object({ harness: z.string().trim().min(1).max(120).optional() }),
+    resolve: async (rawArgs) => {
+      const args = rawArgs as { harness?: string };
+      const [{ activeWorkspaceId }, { listSavedPrompts }, { getOrgPg }] = await Promise.all([
+        import('../workspace-registry'),
+        import('../saved-prompts-store'),
+        import('@papercusp/db-org'),
+      ]);
+      const scope = args.harness
+        ? ({ kind: 'harness', slug: args.harness } as const)
+        : ({ kind: 'workspace' } as const);
+      const rows = await listSavedPrompts(getOrgPg().sql, activeWorkspaceId(), scope);
+      return rows as unknown as Record<string, unknown>[];
+    },
+  },
+
   // weather.current — local weather for the operator dashboard
   // (platform-ops-batch-2026-07-09 P-003). Live third-party fetch (not a DB
   // read), keyed by WEATHER_API_KEY (apps/operator/.env.local, gitignored —

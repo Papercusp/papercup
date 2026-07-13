@@ -15,6 +15,7 @@ import {
   type OwnerDirectiveRow,
 } from './owner-directives';
 import { buildOpenDirectivesGuard } from './agent-tools/orders/open-directives-guard';
+import { renderLoopWakeText } from './harness/routines/loop-fire';
 
 const NOW = Date.UTC(2026, 6, 13, 20, 0, 0);
 
@@ -86,6 +87,49 @@ describe('renderOwnerDirectivesBlock', () => {
   it('adds the "+N more" line when totalOpen exceeds the fetched rows even under the cap', () => {
     const out = renderOwnerDirectivesBlock([row({ id: 3 })], { nowMs: NOW, totalOpen: 9 })!;
     expect(out).toContain('+8 more open — orders:list');
+  });
+});
+
+describe('loop wake render (EI-11484) — directives ABOVE the loop contract', () => {
+  const KICKOFF = '🔁 loop goal: drain the bug queue\nfull contract body here';
+  const block = renderOwnerDirectivesBlock([row({ id: 5 })], { nowMs: NOW })!;
+
+  it('FULL form: the directives block renders above the walls and the checkpoint', () => {
+    const out = renderLoopWakeText({
+      kickoff: KICKOFF,
+      fireNumber: 1,
+      checkpoint: '## Next action\ndo the thing',
+      walls: [{ claim: 'a wall', sinceMs: NOW - 1000 }],
+      ownerDirectivesBlock: block,
+      nowMs: NOW,
+    });
+    expect(out).toContain('OPEN OWNER DIRECTIVES');
+    expect(out.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(out.indexOf('OPEN WALLS'));
+    expect(out.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(out.indexOf('do the thing'));
+  });
+
+  it('SHORT form: the directives block still renders, above the checkpoint', () => {
+    const out = renderLoopWakeText({
+      kickoff: KICKOFF,
+      fireNumber: 3,
+      checkpoint: '## Next action\ndo the thing',
+      ownerDirectivesBlock: block,
+      nowMs: NOW,
+    });
+    expect(out).toContain('short form');
+    expect(out).toContain('OPEN OWNER DIRECTIVES');
+    expect(out.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(out.indexOf('do the thing'));
+  });
+
+  it('no open directives ⇒ no block in either form', () => {
+    const out = renderLoopWakeText({
+      kickoff: KICKOFF,
+      fireNumber: 3,
+      checkpoint: 'c',
+      ownerDirectivesBlock: null,
+      nowMs: NOW,
+    });
+    expect(out).not.toContain('OPEN OWNER DIRECTIVES');
   });
 });
 

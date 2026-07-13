@@ -909,6 +909,12 @@ updated: 2026-05-24
   });
 });
 
+describe('savedPrompts.byScope (quick-panel-saved-prompts-2026-07-13 P-003)', () => {
+  it('is registered in knownQueryNamesV2', () => {
+    expect(knownQueryNamesV2()).toContain('savedPrompts.byScope');
+  });
+});
+
 describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15 B-01 / CONTRACT C-1)', () => {
   beforeEach(() => {
     vi.resetModules();

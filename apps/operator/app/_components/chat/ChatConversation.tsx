@@ -29,56 +29,15 @@
 import { useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import type { ChatMessage, ChatToolCall } from './chat-types';
 
-export interface ChatToolCall {
-  /** Display name of the tool the model called. */
-  name: string;
-  /** Tool input — rendered as a short chip via `renderToolChip` if provided. */
-  input?: unknown;
-  /**
-   * For interactive tools (e.g. chat:ask_choice), the user's response.
-   * When set, `renderToolCard` should render the answered state.
-   * Persisted into operator_turns.tools jsonb (migration 015).
-   *
-   * Always an array of picks (length 1 for single-select cards,
-   * length ≥1 for multi-select). Pre-alpha unified shape — no
-   * legacy {option_id, label} variant.
-   */
-  answered?: {
-    picks: Array<{ option_id: string; label: string }>;
-    at: number;
-  };
-}
-
-export interface ChatMessage {
-  /** Role for styling (.oracle-msg-user / .oracle-msg-assistant / .oracle-msg-system). */
-  role: 'user' | 'assistant' | 'system';
-  /** Visible message text. May be empty while the assistant turn is still streaming. */
-  content: string;
-  /** Optional tool calls to render above the content. Oracle uses; operator does too as of 2026-05-11 (chat:ask_choice). */
-  tools?: ChatToolCall[];
-  // NOTE: there is deliberately NO structured-report field here. The chat
-  // stream is conversation only — the operator's `<report>` payload routes
-  // to the tiered Inbox as an attention item and renders there via
-  // ReportBlockCard (report-cards-inbox-reconciliation-2026-06-05 D-002).
-  /**
-   * Stable id for optimistic-write dedup. Set client-side to a uuid
-   * when an optimistic local turn is dispatched; once the POST returns,
-   * the row's PG id replaces it. The live-tail Zero reconciler skips
-   * any incoming row whose id matches an already-loaded message —
-   * defeats the race where a Zero push arrives before the POST response
-   * (would otherwise double-render the user's own message). G19 of
-   * the active-mode audit.
-   */
-  id?: string;
-  /**
-   * Operator-side: the per-conversation sequence number from
-   * operator_turns.seq. Needed by chat:ask_choice when the user picks
-   * an option — the turn-answer endpoint addresses turns by seq. Not
-   * set for optimistic local messages before they're persisted.
-   */
-  seq?: number;
-}
+// ChatMessage / ChatToolCall were lifted to ./chat-types.ts while this
+// component was retired (design-simplification-2026-07-09 P-010) —
+// OperatorConversationProvider kept storing turns in that shape. On revival
+// (operator-chat-sidebar-revival-2026-07-13 P-001) the canonical declarations
+// STAY in chat-types.ts; this re-export preserves the historical import
+// surface (`from './chat/ChatConversation'`) without re-declaring the types.
+export type { ChatMessage, ChatToolCall } from './chat-types';
 
 export type ChatIconComponent = ComponentType<{
   className?: string;
