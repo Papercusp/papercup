@@ -63,6 +63,21 @@ export const CompletionVerificationEvidenceSchema = z.object({
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 
 /**
+ * EI-10867 — the ONE key under which a terminal row's structured verification evidence
+ * is stored, for BOTH work-item families (`harness_features_consolidated.payload` and
+ * `engineer_issues.payload`, each jsonb).
+ *
+ * This constant used to be declared PRIVATELY and IDENTICALLY in work-items.ts and
+ * issues-engineer.ts. That duplication is precisely how the write path and the audit
+ * path drifted: the writers agreed on `_completionEvidence`, while the
+ * `audit:'no-evidence'` reader keyed on `terminal_completion_ref` — a column the
+ * completion gate FORCES to be non-null — so the audit could never return a row it was
+ * named for (4,119 unverified terminal rows read as clean). Both families now import
+ * this single key, so a write and an audit cannot disagree about where evidence lives.
+ */
+export const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
+
+/**
  * COMPLETION (D-004) — the single biggest token + signal win. A work_item
  * transitioning to done emits this instead of the agent hand-writing a
  * "DONE + tested, migration 137…" prose dump. Every field maps to a phrase

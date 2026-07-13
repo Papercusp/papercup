@@ -471,3 +471,134 @@ describe('Cupboard /listings — repo→Hive binding fields (migration 007 / D-0
     expect(j.listing.hive_pubkey).toBe(HIVE_PUBKEY);
   });
 });
+
+/* ───────────────────────────────────────────────────────────────────────
+ * provides_events (migration 012 / D-003 / P-007) — the EVENT half of the
+ * dependency axis. Mirrors the provides_tools block above; the extra weight is
+ * on STRUCTURAL validation, because a malformed family declaration is not
+ * inert: the operator resolves an awaiter's key template by family id, so a
+ * family with no keyTemplate (or a duplicated family) would resolve to a key
+ * nothing emits and park the awaiting agent forever. Publish is the cheap place
+ * to catch that.
+ * ─────────────────────────────────────────────────────────────────────── */
+describe('Cupboard /listings — provides_events (migration 012)', () => {
+  let api: ReturnType<typeof buildApi>;
+  beforeEach(() => {
+    api = buildApi();
+  });
+
+  const PACK_BASE = {
+    github_owner: 'papercupai',
+    github_name: 'event-packs',
+    github_url: 'https://github.com/papercupai/event-packs',
+    project_ref: 'papercupai/event-packs',
+  };
+
+  const CANARY = { family: 'canary:flipped', keyTemplate: 'canary:flipped:<flag>', describe: 'a canary flag flipped' };
+
+  it('POST /listings pack publishes with provides_events; GET returns the JSON passthrough', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 60, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 60, listing_kind: 'pack',
+      listing_ref: 'canary-pack', title: 'Canary pack',
+      provides_events: [CANARY],
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { ok: boolean; id: string; listing: Record<string, unknown> };
+    expect(j.ok).toBe(true);
+    expect(j.listing.provides_events).toBe(JSON.stringify([CANARY]));
+
+    const got = await api.request(`/listings/${j.id}`, {}, env);
+    expect(got.status).toBe(200);
+    expect((await got.json() as { provides_events: string }).provides_events).toBe(JSON.stringify([CANARY]));
+  });
+
+  it('a plugin can declare BOTH provides_tools and provides_events (the two axes coexist)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 61, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 61, listing_kind: 'plugin', listing_ref: 'watcher',
+      provides_tools: ['watcher.scan'],
+      provides_events: [{ family: 'watcher:settled', keyTemplate: 'watcher:settled:<env>' }],
+    });
+    expect(res.status).toBe(200);
+    const listing = (await res.json() as { listing: Record<string, unknown> }).listing;
+    // The positional-bind trap: if db.ts's INSERT column order and the bind array
+    // ever drift, one of these lands in the other's column. Assert BOTH.
+    expect(listing.provides_tools).toBe(JSON.stringify(['watcher.scan']));
+    expect(listing.provides_events).toBe(JSON.stringify([{ family: 'watcher:settled', keyTemplate: 'watcher:settled:<env>' }]));
+  });
+
+  it('omitting provides_events stores NULL (every pre-012 listing reads as "declares no events")', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 62, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 62, listing_kind: 'pack', listing_ref: 'plain-pack',
+      provides_tools: ['plain.run'],
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { listing: { provides_events: unknown } }).listing.provides_events).toBeNull();
+  });
+
+  it('provides_events is rejected on non-installable kinds', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 63, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 63, listing_kind: 'blueprint', listing_ref: 'bp',
+      provides_events: [CANARY],
+    });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { field: string; reason: string };
+    expect(j.field).toBe('provides_events');
+    expect(j.reason).toBe('plugin_or_pack_kind_only');
+  });
+
+  it('rejects a family with NO keyTemplate — the exact shape that would strand an awaiter', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 64, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 64, listing_kind: 'pack', listing_ref: 'bad-1',
+      provides_events: [{ family: 'x:done' }],
+    });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { field: string; reason: string };
+    expect(j.field).toBe('provides_events');
+    expect(j.reason).toBe('key_template_non_empty_string_max_256');
+  });
+
+  it('rejects a DUPLICATE family within one unit (ambiguous "who provides X?")', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: 65, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 65, listing_kind: 'pack', listing_ref: 'bad-2',
+      provides_events: [CANARY, { family: 'canary:flipped', keyTemplate: 'other:<x>' }],
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { reason: string }).reason).toBe('duplicate_family');
+  });
+
+  it('rejects bad shapes: non-array, empty array, non-object entries, empty family', async () => {
+    const { env } = makeEnv();
+    const cases: Array<[unknown, string]> = [
+      ['not-an-array', 'array_1_to_200'],
+      [[], 'array_1_to_200'],
+      [['just-a-string'], 'entries_must_be_objects'],
+      [[{ family: '', keyTemplate: 'k' }], 'family_non_empty_string_max_128'],
+      [[{ family: 'a'.repeat(129), keyTemplate: 'k' }], 'family_non_empty_string_max_128'],
+    ];
+    let repoId = 70;
+    for (const [value, reason] of cases) {
+      stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: repoId, private: false } });
+      const res = await publish(api, env, {
+        ...PACK_BASE, github_repository_id: repoId, listing_kind: 'pack',
+        listing_ref: `bad-${repoId}`, provides_events: value,
+      });
+      expect(res.status, `value=${JSON.stringify(value)}`).toBe(400);
+      const j = await res.json() as { field: string; reason: string };
+      expect(j.field).toBe('provides_events');
+      expect(j.reason, `value=${JSON.stringify(value)}`).toBe(reason);
+      repoId++;
+    }
+  });
+});

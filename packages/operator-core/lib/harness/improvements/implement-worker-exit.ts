@@ -106,6 +106,24 @@ const ENV_FAILURE_PATTERNS: readonly RegExp[] = [
   // self-amplifying noise loop the EI-6876/EI-6890 additions closed for the transient-5xx shapes.
   /usage credits/i, // "Usage credits required …" + "turn on usage credits at claude.ai/settings/usage"
   /credits?\s+required/i, // the billing-exhaustion phrasing even if "usage" is absent in a variant
+  // EI-10568 (2026-07-13) — a bare Node MODULE_NOT_FOUND crash at process bootstrap
+  // ("Module.executeUserEntryPoint [as runMain]" / "run_main_module", empty
+  // requireStack): the spawned worker's OWN entry script/module failed to resolve, so
+  // it dies in <1s before ever reading its kickoff prompt — an about-the-CHECKOUT
+  // failure (a transient race with a concurrent `npm install` / git-sync commit on
+  // this heavily-parallel shared tree momentarily leaving node_modules or a compiled
+  // entry file absent — see boot-integrity-preflight.ts, the SAME failure class for
+  // the operator host's own boot), not evidence the ITEM is hard. Live:
+  // EI-10533/EI-10606/EI-10584/EI-3475 all died "exit 1 after 0s" with this exact
+  // stack, and — because this pattern was previously unmatched — fell through to the
+  // generic `worker-exit-backedge` bucket, CHARGED the item's attempt, and fed the
+  // orphaned-dispatch "the implement lane is broken" false-alarm signal (the same
+  // self-amplifying noise loop EI-6876/EI-6890/EI-7591/EI-9127 closed for their own
+  // signatures). Deliberately the RAW Node error code, not a full phrase — unambiguous
+  // (never legitimate agent output) and independent of which module/file was missing.
+  /\bMODULE_NOT_FOUND\b/,
+  /\bERR_MODULE_NOT_FOUND\b/,
+  /\bcannot find module\b/i,
 ];
 
 /**

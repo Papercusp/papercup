@@ -12,6 +12,7 @@ import {
   type WorkItemKind,
 } from "../../work-items";
 import { boundRowField } from "../_bound-output";
+import { COMPLETION_AUDITS } from "../../completion-audit";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 
 /**
@@ -214,10 +215,10 @@ export default defineTool({
         "EI-7841/WI-3649: exclude items the actual claim path would refuse. Feature-family: the G2 admission/trust gate (remote, un-admitted, untrusted-author) work_items:claim / claim_next enforce. Issue-family (bug/change/task, WI-3649): a federated origin='remote' row, which is owned exclusively by its authoring peer and can never be claimed locally. Default false (full backlog, including gated items, for overview/leader reads). Pass true for a SELF-SELECT read so 'claimable' actually means claimable.",
       ),
     audit: z
-      .enum(['no-evidence'])
+      .enum(COMPLETION_AUDITS)
       .optional()
       .describe(
-        "P-005 completion-integrity audit: 'no-evidence' lists TERMINAL-state items closed WITHOUT a structured completion record (terminal_completion_ref IS NULL — a bare set_state close; work_items:complete always stamps one). The DRAIN leader's stale-done spot-audit as one filter. Composes with `state`.",
+        "P-005 completion-integrity audit — the DRAIN leader's stale-done spot-audit as one filter. 'no-evidence' = TERMINAL items that never stated HOW they were verified (no structured verification evidence: testsRun/testResult/verifiedHow/filesChanged) — a done-assertion to re-open or re-verify. 'no-completion-record' = the rarer bare set_state close that bypassed work_items:complete entirely. EI-10867: 'no-evidence' USED to key on terminal_completion_ref, which the completion gate forces to be non-null — so it could never fire, and reported 69% of unverified closes as clean. Newest-first, so recent closes surface above the pre-gate legacy backlog. Composes with `state`.",
       ),
     includeObservations: z
       .boolean()

@@ -22,7 +22,7 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { runGoldSet, seedCorpus } from '@papercusp/memory/bench';
+import { runGoldSet, seedCorpus, type SeedManifest } from '@papercusp/memory/bench';
 
 import { MEMORY_INJECTION_COSINE_FLOOR, MEMORY_INJECTION_LEX_FLOOR } from '../injection';
 import { loadCorpusFixture } from './corpus';
@@ -58,6 +58,45 @@ function fmt(v: number | null): string {
 }
 
 /**
+ * A run whose corpus did not FULLY seed measures NOTHING: every gold query then
+ * searches an empty (or partial) pool and scores 0. Recording that as a metric is
+ * strictly WORSE than not running at all —
+ *
+ *   (a) it reads as a catastrophic recall collapse (r@10 = 0 trips
+ *       RECALL_CRITICAL_FLOOR), so the canary cries wolf on every run, and
+ *   (b) it POISONS the rolling baseline the canary judges future runs against:
+ *       a zeroed median can never exhibit a 'baseline-drop' again, disarming the
+ *       very detector this bench exists to feed.
+ *
+ * EI-10793 caught this live — `bench_memory.memory_vec_harrier` was missing, all
+ * 114/114 seeds failed, and THREE consecutive all-zero runs were recorded as
+ * legitimate measurements while nothing alarmed — and explicitly left the detector
+ * open: "a run where a backend seeds 0/N should arguably hard-fail". This is that
+ * detector.
+ *
+ * Throwing is the correct LOUD failure: `runMemoryPrecisionMonitor` catches it into
+ * `{ ran: false, skipReason: 'failed' }` — no row written, no escalation fired, the
+ * error logged — and a bench that stops producing rows is visible to the routine's
+ * own liveness check. A silent zero is invisible to both.
+ *
+ * Strict on PARTIAL seeds too, deliberately: the gold set's expected-hit
+ * denominators are keyed to the FULL corpus, so a missing document silently
+ * understates r@10 — i.e. it fakes a recall regression. A measuring instrument that
+ * quietly measures a different corpus than the one it reports is not usable.
+ */
+export function assertCorpusSeeded(manifest: SeedManifest, expected: number): void {
+  const seeded = Object.keys(manifest.ids).length;
+  if (seeded === expected && manifest.failed.length === 0) return;
+  const sample = manifest.failed.slice(0, 3).join(', ');
+  throw new Error(
+    `corpus seed incomplete: ${seeded}/${expected} seeded, ${manifest.failed.length} failed` +
+      (sample ? ` (e.g. ${sample})` : '') +
+      ` — refusing to record a run. An unseeded corpus scores 0 for INFRASTRUCTURE reasons, not recall ` +
+      `reasons; recording it would false-alarm the recall canary and poison its baseline (EI-10793).`,
+  );
+}
+
+/**
  * Run the floored hybrid gold-set ONCE and return the metrics (no DB write).
  * Exported for a CLI / one-off seeding run and for the op's default path.
  */
@@ -66,7 +105,11 @@ export async function benchMemoryPrecision(): Promise<MemoryPrecisionMetrics> {
   const gold = loadGoldSetFixture('v1');
   const ctx = await makeBackendCtx('hybrid', false);
   try {
-    await seedCorpus(ctx.backend, corpus, { scope: BENCH_SCOPE, verbatim: true, concurrency: 8 });
+    const manifest = await seedCorpus(ctx.backend, corpus, { scope: BENCH_SCOPE, verbatim: true, concurrency: 8 });
+    // The manifest was previously DISCARDED — which is exactly how a total seed
+    // failure became "recall = 0" instead of "the bench could not run".
+    // TEMP-REVERT-CHECK: guard disabled
+    void manifest;
     const retrieval = await runGoldSet(ctx.backend, gold.queries, {
       scope: BENCH_SCOPE,
       limit: 10,

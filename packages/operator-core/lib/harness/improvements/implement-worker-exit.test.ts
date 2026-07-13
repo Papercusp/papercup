@@ -247,6 +247,56 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     });
     expect(v.env).toBe(false);
   });
+
+  describe('EI-10568: MODULE_NOT_FOUND worker-bootstrap crashes are env failures', () => {
+    const LIVE_STACK =
+      "node:internal/modules/cjs/loader:1261\n  throw err;\n  ^\n\nError: Cannot find module '/some/entry.js'\n" +
+      '    at Module._resolveFilename (node:internal/modules/cjs/loader:1258:15)\n' +
+      '    at Module._load (node:internal/modules/cjs/loader:1084:27)\n' +
+      '    at TracingChannel.traceSync (node:diagnostics_channel:344:14)\n' +
+      '    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)\n' +
+      '    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)\n' +
+      "    at node:internal/main/run_main_module:33:47 {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\n" +
+      'Node.js v25.9.0';
+
+    it('the live EI-10533 shape (exit 1, 0s, MODULE_NOT_FOUND stack on stderr) is an env failure, not charged', () => {
+      const v = isEnvFailureExit({ exitCode: 1, runtimeMs: 0, stderr: LIVE_STACK });
+      expect(v.env).toBe(true);
+      expect(v.reason).toMatch(/MODULE_NOT_FOUND/);
+      // No context-overflow/timeout class — the generic env-failure rollback applies.
+      expect(v.class).toBeUndefined();
+    });
+
+    it('classifies even when the stack trace text is long (well over the 200-char DOA-floor bound) — the pattern match short-circuits before the DOA fallback', () => {
+      const v = isEnvFailureExit({ exitCode: 1, runtimeMs: 5_000, stderr: LIVE_STACK });
+      expect(LIVE_STACK.length).toBeGreaterThan(200);
+      expect(v.env).toBe(true);
+    });
+
+    it('ERR_MODULE_NOT_FOUND (the ESM-loader variant) is also an env failure', () => {
+      const v = isEnvFailureExit({
+        exitCode: 1,
+        runtimeMs: 0,
+        stderr: "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@papercusp/foo' imported from /x/y.mjs",
+      });
+      expect(v.env).toBe(true);
+      expect(v.reason).toMatch(/MODULE_NOT_FOUND/);
+    });
+
+    it('a plain "Cannot find module" message (no error code) is also caught', () => {
+      const v = isEnvFailureExit({ exitCode: 1, runtimeMs: 0, stderr: "Cannot find module './missing-file'" });
+      expect(v.env).toBe(true);
+    });
+
+    it('a genuine worker crash mentioning an unrelated "module" word is NOT misclassified (regression guard)', () => {
+      const v = isEnvFailureExit({
+        exitCode: 1,
+        runtimeMs: ENV_FAILURE_RUNTIME_FLOOR_MS + 600_000,
+        stdout: 'Refactored the auth module and updated its tests, but one assertion still fails on the edge case. '.repeat(4),
+      });
+      expect(v.env).toBe(false);
+    });
+  });
 });
 
 function fakeDeps(overrides: Partial<ImplementWorkerExitDeps> = {}): {

@@ -45,6 +45,8 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
+import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
+import { auditPredicateSql, auditPredicateSqlFor, type CompletionAudit } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
@@ -314,7 +316,6 @@ const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
   terminal_completion_ref, feature_order, created_at, updated_at`;
 
-const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
 function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
   return evidence && Object.keys(evidence).length > 0
     ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence })
@@ -473,11 +474,14 @@ export interface ListIssuesFilter {
    */
   admissibleOnly?: boolean;
   /**
-   * fleet-leader-frictions P-005 (the issue-family leg of listWorkItems' audit):
-   * 'no-evidence' restricts to TERMINAL-state rows with no structured completion
-   * record (`terminal_completion_ref IS NULL`). Composes with an explicit `state`.
+   * fleet-leader-frictions P-005 (the issue-family leg of listWorkItems' audit).
+   * EI-10867: the predicate now lives in ONE place ({@link auditPredicateSql}) that
+   * both families import, so the audit and the write path cannot key on different
+   * fields again — 'no-evidence' means "no structured verification evidence", NOT
+   * "no completion ref" (a column the completion gate forces to be non-null, which is
+   * why the old audit could never fire). Composes with an explicit `state`.
    */
-  audit?: 'no-evidence';
+  audit?: CompletionAudit;
   /**
    * EI-10422: exclude a `payload.lane === 'observation'` row — a turn-end reflection /
    * rubric scorecard filed via `improvements:capture { lane:'observation' }` that, by
@@ -594,8 +598,8 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${idsFromTopic ? sql`issue_id = ANY(${idsFromTopic})` : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
-         filter.audit === 'no-evidence'
-           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
+         filter.audit
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
            : sql`TRUE`
        }
        -- EI-10422: mirrors observationLaneExclusionSql (work-items.ts) — the self-select
@@ -639,8 +643,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
-           filter.audit === 'no-evidence'
-             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ei.terminal_completion_ref IS NULL)`
+           filter.audit
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
              : sql`TRUE`
          }
          AND ${filter.excludeObservationLane ? sql`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
@@ -659,8 +663,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
-         filter.audit === 'no-evidence'
-           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
+         filter.audit
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
            : sql`TRUE`
        }
        AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
@@ -697,8 +701,8 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
-           filter.audit === 'no-evidence'
-             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ei.terminal_completion_ref IS NULL)`
+           filter.audit
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
              : sql`TRUE`
          }
       GROUP BY kind`;
@@ -722,8 +726,8 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
-         filter.audit === 'no-evidence'
-           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
+         filter.audit
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
            : sql`TRUE`
        }
     GROUP BY kind`;

@@ -22,11 +22,33 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../../agent-tools/blueprint/_resolve';
 import { derivePackCatalog } from '../../cupboard/pack-catalog';
-import { resolveAndInstallDeps, type DepSet } from '../../cupboard/resolve-and-install';
+import { resolveAndInstallDeps, type DepSet, type EventDep } from '../../cupboard/resolve-and-install';
 import { installCupboardUnitFromListing } from '../../cupboard/install-io';
 
 const asStrArray = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
+
+/**
+ * Wire → `EventDep[]` (D-003 / P-007). Accepts `[{ family, optional? }]`, and
+ * also a bare `["family"]` string form as sugar for a REQUIRED dep — required
+ * is the safe reading of an under-specified declaration: it fails the install
+ * loudly instead of installing a unit whose reactions silently never fire.
+ */
+const asEventDeps = (v: unknown): EventDep[] => {
+  if (!Array.isArray(v)) return [];
+  const out: EventDep[] = [];
+  for (const e of v) {
+    if (typeof e === 'string' && e.length > 0) {
+      out.push({ family: e });
+      continue;
+    }
+    if (e == null || typeof e !== 'object') continue;
+    const { family, optional } = e as Record<string, unknown>;
+    if (typeof family !== 'string' || family.length === 0) continue;
+    out.push({ family, optional: optional === true });
+  }
+  return out;
+};
 
 export default defineTool({
   method: 'POST',
@@ -78,7 +100,11 @@ export default defineTool({
         return Response.json({ ok: false, error: `unknown blueprint "${body.blueprintId}"` }, { status: 404 });
       }
       const d = validation.blueprint!.dependencies;
-      declared = { tools: d?.tools ?? [], packs: d?.packs ?? [], plugins: d?.plugins ?? [] };
+      // No `events` here on purpose: the event axis (D-003 / P-005) is declared
+      // at the UNIT level (a plugin/pack manifest's `dependencies.events`), not
+      // on a blueprint. A blueprint reaches events transitively — through the
+      // units it depends on, whose own manifests the install loop folds in.
+      declared = { tools: d?.tools ?? [], packs: d?.packs ?? [], plugins: d?.plugins ?? [], events: [] };
     }
     if (!declared) {
       return Response.json({ ok: false, error: 'pass `deps`, `blueprintId`, or `blueprint`' }, { status: 400 });

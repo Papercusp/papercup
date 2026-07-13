@@ -65,6 +65,8 @@ import {
 } from './work-item-dispatch-states';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
+import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
+import { auditPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
   ISSUE_KIND,
@@ -269,7 +271,6 @@ function tsIso(v: unknown): string {
   return String(v ?? '');
 }
 
-const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
 
 function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
   let obj = payload;
@@ -461,15 +462,37 @@ export interface ListWorkItemsFilter {
    */
   admissibleOnly?: boolean;
   /**
-   * fleet-leader-frictions P-005: completion-integrity audit filters. 'no-evidence'
-   * restricts the list to TERMINAL-state rows closed WITHOUT a structured completion
-   * record (`terminal_completion_ref IS NULL`) — the "stale-done close" a DRAIN leader
-   * spot-audits by hand today (a bare set_state-to-done stamps no completion ref;
-   * work_items:complete always does). Composes with `state` (an explicit terminal
-   * state narrows the audit to it); without `state` it spans the whole cross-family
-   * terminal set. Non-terminal rows never match (an open item owes no evidence yet).
+   * fleet-leader-frictions P-005: completion-integrity audit filters.
+   *
+   * EI-10867 — 'no-evidence' USED TO KEY ON `terminal_completion_ref IS NULL`, which
+   * made it STRUCTURALLY INCAPABLE of catching what it is named for. The completion
+   * gate in setWorkItemState/setIssueState REJECTS any terminal transition without a
+   * completionRef, and work_items:complete auto-fills it from `completion.summary` —
+   * so for every item closed through the sanctioned path the column is non-null BY
+   * CONSTRUCTION, whether or not the agent ever said how it verified anything. It was
+   * auditing "did a completion record exist", not "was this actually verified".
+   *
+   * Measured on the live store when this was found: of 5,979 terminal rows carrying a
+   * completion ref, 4,119 (69%) had NO structured verification evidence at all — and
+   * the audit reported every one of them as clean. A leader running the stale-done
+   * spot-audit got an empty list and concluded the fleet's completions were sound.
+   *
+   *  - 'no-evidence'         → terminal AND no structured verification evidence
+   *                            (`payload->'_completionEvidence'` absent): the unit
+   *                            asserted done without ever stating HOW it was verified.
+   *                            This is the stale-done close the audit exists to catch.
+   *  - 'no-completion-record' → terminal AND `terminal_completion_ref IS NULL`: a bare
+   *                            set_state close that bypassed the completion path
+   *                            entirely (the OLD 'no-evidence' predicate, kept because
+   *                            it is a real and distinct defect — just a rarer one).
+   *
+   * Composes with `state` (an explicit terminal state narrows the audit to it); without
+   * `state` it spans the whole cross-family terminal set. Non-terminal rows never match
+   * (an open item owes no evidence yet). Results are ordered newest-first, so a DRAIN
+   * leader's spot-audit surfaces the RECENT unverified closes first even though the
+   * pre-gate legacy backlog also (correctly) matches.
    */
-  audit?: 'no-evidence';
+  audit?: CompletionAudit;
   /**
    * EI-10422/WI-4405: when true, INCLUDE `payload.lane === 'observation'` rows (default
    * false ⇒ EXCLUDED). Threaded to {@link listIssues}'s `excludeObservationLane`
@@ -578,8 +601,8 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
          }
          AND ${filter.admissibleOnly ? autoPickableWhereSql(sql, ws) : sql`TRUE`}
          AND ${
-           filter.audit === 'no-evidence'
-             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
+           filter.audit
+             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
              : sql`TRUE`
          }
        ORDER BY ${filter.orderByRank ? sql`assignee_rank ASC NULLS LAST, updated_ts DESC` : sql`updated_ts DESC NULLS LAST`}
