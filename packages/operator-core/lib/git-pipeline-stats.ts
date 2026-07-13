@@ -27,6 +27,7 @@ import {
   type PipelineEventRow,
 } from './harness/git-sync/pipeline-events';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
+import { evaluateGateVerdictFreshness } from './release/gate-verdict-freshness';
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -89,6 +90,14 @@ export interface GitPipelineSnapshot {
     lastFiredAtMs: number | null;
     fireStale: boolean;
     fireStaleReason: string | null;
+    /** WI-4489: when the last REAL verdict was observed, and whether the recorded RED can still be
+     *  trusted. `fireStale` asks "is the routine FIRING?"; this asks "is its VERDICT current?" —
+     *  a `skipped-locked` fire refreshes `last_fired_at` while writing no verdict, so the routine
+     *  can look perfectly healthy while `consecutiveReds` is hours stale. A stale red must never be
+     *  reported as the gate's colour, nor dispatch anyone at the tests it names. */
+    verdictObservedAtMs: number | null;
+    verdictStale: boolean;
+    verdictStaleReason: string | null;
     lastFixerStatus: string | null;
     lastFixerAtMs: number | null;
     lastFixerCandidate: string | null;
@@ -252,6 +261,18 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
     devDeployState(),
   ]);
 
+  // WI-4489: is the recorded RED still trustworthy? The green pin is the ground truth (it only
+  // advances on a green checkpoint); `gate_health` is a cache of it that a starved writer can
+  // freeze indefinitely. Needs `deploy.greenPinSha`, so it is derived here rather than above.
+  const verdictObservedAtMs = num(gateHealth.observedAt);
+  const { stale: gcVerdictStale, reason: gcVerdictStaleReason } = evaluateGateVerdictFreshness({
+    consecutiveReds: num(gateHealth.consecutiveReds) ?? 0,
+    observedAtMs: verdictObservedAtMs,
+    observedFromPin: typeof gateHealth.lastFrom === 'string' ? gateHealth.lastFrom : null,
+    currentGreenPinSha: deploy.greenPinSha,
+    lastFiredAtMs: gcLastFiredMs,
+  });
+
   return {
     slug,
     generatedAtMs: Date.now(),
@@ -287,6 +308,9 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
       lastFiredAtMs: gcLastFiredMs,
       fireStale: gcFireStale,
       fireStaleReason: gcFireStaleReason,
+      verdictObservedAtMs,
+      verdictStale: gcVerdictStale,
+      verdictStaleReason: gcVerdictStaleReason,
       lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
       lastFixerAtMs: num(lastFixer?.at),
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,

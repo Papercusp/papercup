@@ -52,10 +52,28 @@ export function needsWordBoundary(value: string): boolean {
   return value.length < 6 && /^[a-zA-Z0-9]+$/.test(value);
 }
 
+/**
+ * Always CASE-INSENSITIVE — and this is a deliberate divergence from the Python
+ * bundle gate, which matches a short name case-SENSITIVELY.
+ *
+ * That gate is scanning vendored source, where a case-insensitive 3-letter name
+ * collides with real things (`video.avi`, an `AVI` codec constant), and a gate
+ * that cries wolf on node_modules gets switched off. This scrub runs on a PAGE WE
+ * HAND TO BETA TESTERS, where the trade-off inverts: the cost of a false positive
+ * is one over-redacted word that nobody misses; the cost of a false negative is
+ * the owner's name in front of strangers.
+ *
+ * The real page proved it. Case-sensitive matching sailed past BOTH of these:
+ *     "…verbatim in assembly/<NAME>-NOTES-DRAFT-3-REVIEW.md"   ← upper-cased
+ *     "host <name>-dev pid 33417"                              ← lower-cased, hyphenated
+ * Same name, different case, still him. The word boundary keeps it honest (it will
+ * not fire inside a longer word), and the hyphen in `<name>-dev` IS a boundary, so
+ * that one now redacts too.
+ */
 export function literalPattern(value: string): RegExp {
   const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return needsWordBoundary(value)
-    ? new RegExp(`\\b${escaped}\\b`, 'g')
+    ? new RegExp(`\\b${escaped}\\b`, 'gi')
     : new RegExp(escaped, 'gi');
 }
 
@@ -95,12 +113,19 @@ export function identityLiterals(): IdentityLiteral[] {
   return lits;
 }
 
+/**
+ * ⚠ NO ANGLE BRACKETS. The scrub runs on FINISHED HTML (see release-history-page's
+ * `shell`), which is the right place — but it means a `<owner>`-shaped placeholder
+ * would be injected as a raw, unescaped tag. A browser parses `<owner>` as an
+ * unknown element and renders NOTHING: the redacted text would silently vanish
+ * from the page instead of showing that something was withheld. Brackets, not tags.
+ */
 const PLACEHOLDER: Record<IdentityLiteral['kind'], string> = {
-  user: '<user>',
+  user: '[user]',
   home: '~',
-  hostname: '<host>',
-  'git-name': '<owner>',
-  'git-email': '<email>',
+  hostname: '[host]',
+  'git-name': '[owner]',
+  'git-email': '[email]',
 };
 
 /**

@@ -29,7 +29,7 @@ describe('scrubIdentity', () => {
 
   it("redacts the owner's first name out of a plan's decision log — the other real leak", () => {
     const decision = 'D-001 [owner:Jane 2026-07-11] Adopt all layers now.';
-    expect(scrubIdentity(decision, LITS)).toBe('D-001 [owner:<owner> 2026-07-11] Adopt all layers now.');
+    expect(scrubIdentity(decision, LITS)).toBe('D-001 [owner:[owner] 2026-07-11] Adopt all layers now.');
   });
 
   it('redacts the LONGEST literal first, so the home path never survives as /home/<user>', () => {
@@ -54,7 +54,16 @@ describe('scrubIdentity', () => {
     // "Jane" must not fire inside "Janeway"...
     expect(scrubIdentity('Janeway plotted a course', LITS)).toBe('Janeway plotted a course');
     // ...but must fire when it stands alone.
-    expect(scrubIdentity('asked Jane about it', LITS)).toBe('asked <owner> about it');
+    expect(scrubIdentity('asked Jane about it', LITS)).toBe('asked [owner] about it');
+  });
+
+  it('catches the name in ANY case — both real misses from the first generated page', () => {
+    // Case-sensitive matching (what the bundle gate does) let both of these through
+    // onto a page meant for beta testers. Same name, different case, still him.
+    expect(scrubIdentity('see assembly/JANE-NOTES-DRAFT-3.md', LITS)).toBe(
+      'see assembly/[owner]-NOTES-DRAFT-3.md',
+    );
+    expect(scrubIdentity('host jane-dev pid 33417', LITS)).toBe('host [owner]-dev pid 33417');
   });
 });
 
@@ -127,6 +136,8 @@ describe('every generated page is scrubbed on the way out', () => {
     const html = renderPlanPageHtml(plan, { ...opts, version: '0.0.9' });
     expect(findIdentityLeaks(html, LITS)).toEqual([]);
     expect(html).toContain('~/script.sh');
-    expect(html).toContain('&lt;owner&gt;'); // escaped, then redacted — still redacted
+    // The placeholder must be VISIBLE text, not a tag a browser would swallow.
+    expect(html).toContain('[owner]');
+    expect(html).not.toContain('<owner>');
   });
 });

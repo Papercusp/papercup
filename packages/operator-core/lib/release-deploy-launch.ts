@@ -54,6 +54,7 @@ export type DeployStateKind =
   | 'up-to-date' // live :3070 is at the green pin; nothing to deploy
   | 'green-deployable' // green code is ahead + deployable but not yet live (the trigger case)
   | 'gate-red' // the gate is RED — the green pin can't advance until the reds are fixed
+  | 'gate-verdict-stale' // WI-4489: the blob says red, but the verdict is superseded/unverified — colour UNKNOWN, not red
   | 'gate-wedged' // the green-checkpoint isn't firing (0 reds but stale) — surface to an operator
   | 'staging-buffered' // staging has commits awaiting the next (green) checkpoint — normal, just wait
   | 'unknown';
@@ -66,6 +67,11 @@ export interface DeployStatus {
     fireStale: boolean;
     fireStaleReason: string | null;
     lastGreenAtMs: number | null;
+    /** WI-4489: the recorded RED is not trustworthy (superseded by a pin advance, or never
+     *  verified because the routine's runs are being skipped). A stale red must NOT be reported as
+     *  the gate's colour, and must NOT send anyone to fix the tests it names. */
+    verdictStale: boolean;
+    verdictStaleReason: string | null;
     lastFixerStatus: string | null;
     lastFixerCandidate: string | null;
     flakyWorkspaces: string[];
@@ -117,6 +123,14 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
   // tells you to run it (deploy-trigger-and-gate-unblock-2026-06-21 follow-up).
   const canTriggerGreen = hasGreenAhead;
 
+  // WI-4489: a RED is only authoritative if its verdict is CURRENT. `gate_health` is a cache that a
+  // starved writer freezes: a `skipped-locked` fire is a no-op that leaves the blob untouched while
+  // still refreshing `last_fired_at`, so `fireStale` reads FRESH over an hours-old red. Reporting
+  // that as `gate-red` sends responders to fix tests that already pass — and (observed 2026-07-12)
+  // the fixer's manual suite runs then HOLD the lock that keeps the routine skipping, so the stale
+  // red sustains itself. Treat an unverified red as "colour unknown", never as red.
+  const redAuthoritative = g.consecutiveReds > 0 && !g.verdictStale;
+
   let state: DeployStateKind;
   let recommendation: string;
   if (hasGreenAhead) {
@@ -125,12 +139,20 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
     recommendation =
       `${deployedBehindReady} green commit(s) are deployable but not yet live on :3070. ` +
       `The auto-serve ships these each cycle; to expedite now run release:deploy { op: 'trigger', confirm: true } — it can only ship the green pin (safe even while the gate is currently red).`;
-  } else if (g.consecutiveReds > 0) {
+  } else if (redAuthoritative) {
     state = 'gate-red';
     recommendation =
       `The green gate is RED (${g.consecutiveReds} consecutive red${g.consecutiveReds === 1 ? '' : 's'})` +
       `${g.lastFixerStatus ? `, release-fixer: ${g.lastFixerStatus}` : ''}. Your change can't reach the green pin until the reds are fixed. ` +
       `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`;
+  } else if (g.consecutiveReds > 0 && g.verdictStale) {
+    // The blob says red, but that red is provably superseded or simply unverified. Do NOT dress it
+    // up as green either — the honest state is "we don't know", with the one action that resolves it.
+    state = 'gate-verdict-stale';
+    recommendation =
+      `The gate's health blob reports ${g.consecutiveReds} red(s), but that verdict is STALE — ${g.verdictStaleReason ?? 'it has been superseded'}. ` +
+      `Do NOT chase the failing tests it names; they may already be green (verify by running them before you touch anything). ` +
+      `Run release:checkpoint-run for a FRESH verdict. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`;
   } else if (g.fireStale) {
     state = 'gate-wedged';
     recommendation =
@@ -157,6 +179,8 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
       fireStale: g.fireStale,
       fireStaleReason: g.fireStaleReason,
       lastGreenAtMs: g.lastGreenAtMs,
+      verdictStale: g.verdictStale,
+      verdictStaleReason: g.verdictStaleReason,
       lastFixerStatus: g.lastFixerStatus,
       lastFixerCandidate: g.lastFixerCandidate,
       flakyWorkspaces: g.flakyWorkspaces,

@@ -11,6 +11,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/capability/launch-agent.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SpawnConsoleResult } from '../../console-spawn';
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -28,25 +29,32 @@ vi.mock('../../console-launcher', () => ({
   })),
 }));
 
-const spawnConsoleMock = vi.fn(async () => ({
-  status: 'ok' as const,
-  pid: 4242,
-  terminal: 'xterm',
-  child: {} as never,
-  display: ':1',
-  desktopEnvResolvedVia: 'active-seat' as const,
-}));
-const spawnHeadlessMock = vi.fn(async () => ({
-  status: 'ok' as const,
-  pid: 777,
-  terminal: 'headless',
-  child: {} as never,
-  display: null,
-  desktopEnvResolvedVia: null,
-}));
+// Typed against the REAL SpawnConsoleResult (type-only import — not mocked away)
+// so the mocks cannot silently drift from the spawn contract again (WI-4488: the
+// EI-8289 display/desktopEnvResolvedVia refactor left inferred-shape mocks stale).
+const spawnConsoleMock = vi.fn(
+  async (_opts: unknown): Promise<SpawnConsoleResult> => ({
+    status: 'ok',
+    pid: 4242,
+    terminal: 'xterm',
+    child: {} as never,
+    display: ':1',
+    desktopEnvResolvedVia: 'active-seat',
+  }),
+);
+const spawnHeadlessMock = vi.fn(
+  async (_opts: unknown): Promise<SpawnConsoleResult> => ({
+    status: 'ok',
+    pid: 777,
+    terminal: 'headless',
+    child: {} as never,
+    display: null,
+    desktopEnvResolvedVia: null,
+  }),
+);
 vi.mock('../../console-spawn', () => ({
-  spawnConsole: (o: unknown) => spawnConsoleMock(o as never),
-  spawnHeadless: (o: unknown) => spawnHeadlessMock(o as never),
+  spawnConsole: (o: unknown) => spawnConsoleMock(o),
+  spawnHeadless: (o: unknown) => spawnHeadlessMock(o),
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
@@ -75,18 +83,22 @@ vi.mock('../coordination/identity', () => ({
 // The shared core: the resolver + idempotency ledger hit PG, so they are stubbed;
 // the pure command builders/injectors run FOR REAL (they are what we're pinning).
 const resolveResumeTargetMock = vi.fn();
-const claimAgentLaunchMock = vi.fn(async () => ({
-  won: true,
-  priorSummary: null,
-  priorLaunchedAt: null,
-  priorLaunchedBy: null,
-}));
-const recordAgentLaunchResultMock = vi.fn(async () => {});
+const claimAgentLaunchMock = vi.fn(
+  async (
+    _opts: unknown,
+  ): Promise<{
+    won: boolean;
+    priorSummary: Record<string, unknown> | null;
+    priorLaunchedAt: number | null;
+    priorLaunchedBy: string | null;
+  }> => ({ won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null }),
+);
+const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => {});
 vi.mock('../../agent-launch-core', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   resolveResumeTarget: (ref: unknown) => resolveResumeTargetMock(ref as never),
-  claimAgentLaunch: (o: unknown) => claimAgentLaunchMock(o as never),
-  recordAgentLaunchResult: (o: unknown) => recordAgentLaunchResultMock(o as never),
+  claimAgentLaunch: (o: unknown) => claimAgentLaunchMock(o),
+  recordAgentLaunchResult: (o: unknown) => recordAgentLaunchResultMock(o),
 }));
 
 const launchAgent = (await import('./launch-agent')).default;
@@ -294,7 +306,7 @@ describe('failure reporting', () => {
       status: 'error',
       code: 501,
       error: 'no desktop session',
-    } as never);
+    });
     const res = await launchAgent.handler({ brief: 'x' }, ctx);
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('launch failed (501): no desktop session');

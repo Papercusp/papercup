@@ -63,7 +63,16 @@ async function recordDeployAudit(op: string, actor: string, details: Record<stri
 function statusBrief(s: DeployStatus) {
   return {
     state: s.state,
-    gate: { green: s.gate.green, consecutiveReds: s.gate.consecutiveReds, fireStale: s.gate.fireStale },
+    // WI-4489: `verdictStale` rides alongside the red count on purpose — a bare `consecutiveReds: 4`
+    // reads as "the gate is red NOW", which is exactly the misread that sends agents to fix already-
+    // green tests. When it is stale, say so where the count is shown.
+    gate: {
+      green: s.gate.green,
+      consecutiveReds: s.gate.consecutiveReds,
+      fireStale: s.gate.fireStale,
+      verdictStale: s.gate.verdictStale,
+      ...(s.gate.verdictStale ? { verdictStaleReason: s.gate.verdictStaleReason } : {}),
+    },
     deployedBehindGreenPin: s.deploy.deployedBehindReady,
     canTriggerGreen: s.canTriggerGreen,
     recommendation: s.recommendation,

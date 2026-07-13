@@ -499,7 +499,11 @@ export async function trackGateStall(
     // matching the watchdog's own recovery-clear (green-stall-watchdog.ts).
     // EI-7505: clear the failing-test list on recovery — a stale list from the
     // last red streak must not linger in gate_health once the gate is green again.
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [] };
+    // WI-4489: stamp WHEN this verdict was observed and WHAT it judged. Without it the blob is a
+    // value with no provenance, and a consumer cannot tell a live verdict from one frozen hours ago
+    // by a starved writer (a `skipped-locked` no-op leaves gate_health untouched while still
+    // refreshing `last_fired_at`, so `fireStale` reads FRESH). See release/gate-verdict-freshness.ts.
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -591,6 +595,9 @@ export async function trackGateStall(
     // run). Persisting it lets the green-stall-watchdog alarm body name the
     // failing test(s) directly, and makes it queryable via
     // `metadata->'gate_health'->'failingTests'` without any log-spelunking.
+    // WI-4489: `observedAt`/`observedCandidate` — see the reset path above. This is the branch that
+    // MATTERS: a RED is what misdirects (it dispatches the release-fixer at the tests it names), so
+    // a red MUST carry the provenance that lets a reader judge whether it is still true.
     next = {
       consecutiveReds,
       lastGreenAt,
@@ -599,6 +606,8 @@ export async function trackGateStall(
       lastFrom: fromPin ?? gh.lastFrom ?? null,
       watchdogAlerted: gh.watchdogAlerted ?? false,
       failingTests: (failingTests ?? []).slice(0, 20),
+      observedAt: Date.now(),
+      observedCandidate: candidate?.slice(0, 12) ?? null,
     };
   }
   await sql.unsafe(

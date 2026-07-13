@@ -11,6 +11,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/capability/terminal.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SpawnConsoleResult } from '../../console-spawn';
 
 // ── mocks (all vi.mock calls must be at module scope, before imports) ──────────
 
@@ -29,8 +30,20 @@ vi.mock('../../console-launcher', () => ({
   })),
 }));
 
-// Stub the spawner — capture what scheme it was called with.
-const spawnMock = vi.fn(() => ({ status: 'ok' as const, pid: 1234, terminal: 'xterm', child: {} as any }));
+// Stub the spawner — capture what scheme it was called with. Typed against the
+// REAL SpawnConsoleResult (type-only import — not mocked away) so the mock cannot
+// drift from the spawn contract (WI-4488: the EI-8289 display/desktopEnvResolvedVia
+// fields were added to the contract and inferred-shape mocks went stale).
+const spawnMock = vi.fn(
+  (_opts: unknown): SpawnConsoleResult => ({
+    status: 'ok',
+    pid: 1234,
+    terminal: 'xterm',
+    child: {} as any,
+    display: null,
+    desktopEnvResolvedVia: null,
+  }),
+);
 vi.mock('../../console-spawn', () => ({ spawnConsole: spawnMock }));
 
 // Stub agent-fleets-store — control scheme lookup results.
@@ -70,7 +83,14 @@ const baseCtx = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  spawnMock.mockReturnValue({ status: 'ok', pid: 1234, terminal: 'xterm', child: {} as any });
+  spawnMock.mockReturnValue({
+    status: 'ok',
+    pid: 1234,
+    terminal: 'xterm',
+    child: {} as any,
+    display: null,
+    desktopEnvResolvedVia: null,
+  });
   fetchPresenceFleetMock.mockResolvedValue(new Map());
   getFleetSchemeMock.mockImplementation(async (_ws: string, slug: string) =>
     slug === 'alpha-fleet'

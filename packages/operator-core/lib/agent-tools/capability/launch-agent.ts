@@ -371,8 +371,9 @@ export default defineTool({
       }
     }
     for (const n of notes) lines.push(n);
+    // `failed` is already narrowed to the error arm by the filter's inferred
+    // type predicate (TS 5.5+), so no re-guard — one would be dead code (TS2367).
     for (const f of failed) {
-      if (f.status === 'ok') continue;
       lines.push(`✗ launch failed (${f.code}): ${f.error}`);
     }
 
