@@ -79,6 +79,15 @@ export default defineTool({
       .max(30 * 24 * 60 * 60)
       .optional()
       .describe('announce only: seconds until the DECLARATION lapses if never fired (visible in events:status; not a latch). Omit = standing until fired/cancelled.'),
+    expected_sha: z
+      .string()
+      .regex(/^[0-9a-f]{7,64}$/i)
+      .optional()
+      .describe('announce only: the commit/deploy SHA this gate is expected to prove. Mutually exclusive with expected_predicate.'),
+    expected_predicate: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('announce only: a @papercusp/rules DataCondition expected to match the eventual emit payload. Mutually exclusive with expected_sha.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -87,6 +96,9 @@ export default defineTool({
     if (args.announce) {
       if (args.to && args.to.length > 0) {
         throw new Error("events:emit — `announce` declares a gate; it wakes/notifies no one, so `to` is not allowed. Fire the returned key later to deliver.");
+      }
+      if (args.expected_sha && args.expected_predicate) {
+        throw new Error('events:emit — announce accepts only one expected condition: expected_sha OR expected_predicate.');
       }
       // Default scope = the announcer's narrowest context (fleet → plan → global).
       let kind = args.announceScope as AnnounceScopeKind | undefined;
@@ -117,6 +129,11 @@ export default defineTool({
         note: clampText(args.summary, LIMITS.ANNOTATION) ?? null,
         scopeKind: kind!,
         scopeRef: kind === 'global' ? null : ref,
+        expectedCondition: args.expected_sha
+          ? { kind: 'sha', sha: args.expected_sha.toLowerCase() }
+          : args.expected_predicate
+            ? { kind: 'predicate', predicate: args.expected_predicate }
+            : null,
         expiresSec: args.expiresSec ?? null,
       });
       // Best-effort "who is already armed on this key" — the leader's readiness read.
@@ -132,10 +149,12 @@ export default defineTool({
               ok: true,
               announced: true,
               event: key,
+              generation: row.causalGeneration,
               scope: { kind, ref: kind === 'global' ? null : ref },
+              ...(row.expectedCondition != null ? { expected: row.expectedCondition } : {}),
               expires_ts: row.expiresTs,
               ...(liveAwaiters !== undefined ? { live_awaiters: liveAwaiters } : {}),
-              advice: `Gate DECLARED (not fired). Members discover it via events:catalog / coord:orient and events:await "${key}". Fire it later with events:emit { event: "${key}" } — the fire also LATCHES the announcement, so agents registering after the fire are told immediately.`,
+              advice: `Gate DECLARED as generation ${row.causalGeneration ?? '?'} (not fired). Members discover it via events:catalog / coord:orient and events:await "${key}". Fire it later with events:emit { event: "${key}" } — the fire also LATCHES this generation, so agents registering after the fire are told immediately. Inspect or resync with events:status { event: "${key}"${row.causalGeneration != null ? `, after_generation: ${row.causalGeneration}` : ''} }.`,
             }),
           },
         ],

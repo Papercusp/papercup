@@ -22,7 +22,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -232,15 +232,30 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
 describe('WI-1416 git subprocess hang guard', () => {
   it('kills a wedged git subprocess at the ceiling and reports a recorded timeout error (fail fast, not a silent reap)', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'gitsync-hang-'));
+    const oldPath = process.env.PATH;
+    const oldSidecar = process.env.PAPERCUSP_SPAWNER_SIDECAR;
     try {
-      // `git credential fill` blocks reading stdin (which stays open) — a reliable
-      // stand-in for a wedged network push/fetch.
+      // Do not depend on `git credential fill` blocking: newer Git builds reject an
+      // empty credential request immediately with 128. A PATH-local fake is the
+      // deterministic equivalent of a git child wedged before producing output.
+      const bin = join(cwd, 'bin');
+      mkdirSync(bin);
+      const fakeGit = join(bin, 'git');
+      writeFileSync(fakeGit, '#!/bin/sh\nexec sleep 60\n');
+      chmodSync(fakeGit, 0o755);
+      process.env.PATH = `${bin}:${oldPath ?? ''}`;
+      process.env.PAPERCUSP_SPAWNER_SIDECAR = '0';
+
       const started = Date.now();
-      const r = await runGitBounded(['credential', 'fill'], cwd, 300);
+      const r = await runGitBounded(['status', '--porcelain'], cwd, 300);
       expect(Date.now() - started).toBeLessThan(5_000);
       expect(r.code).toBe(-1);
       expect(r.stderr).toMatch(/timed out after 300ms — killed by the git-sync hang guard/);
     } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldSidecar === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR;
+      else process.env.PAPERCUSP_SPAWNER_SIDECAR = oldSidecar;
       rmSync(cwd, { recursive: true, force: true });
     }
   });

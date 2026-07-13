@@ -35,6 +35,7 @@ import {
   type WallEntry,
 } from './carry-note';
 import { harnessOfScope } from './work-item-scope';
+import { renderOwnerDirectivesBlock, type OwnerDirectiveRow } from './owner-directives';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -66,6 +67,12 @@ export interface CarryBrief {
   } | null;
   /** Held (assigned, non-terminal) work-items + their checkpoints. */
   heldItems: CarryBriefHeldItem[];
+  /** Open OWNER DIRECTIVES (EI-11484): explicit owner orders recorded verbatim
+   *  (orders:record), still awaiting disposition — the workspace's highest-priority
+   *  carry class, rendered ABOVE everything else. */
+  directives: OwnerDirectiveRow[];
+  /** Total open directives (may exceed directives.length — the fetch is bounded). */
+  directivesTotalOpen: number;
   /** Open WALLS (P-006): owner-gated commitments as structured rows, parsed out of
    *  the loop carry-note's `## Walls` section. The brief carries them VERBATIM —
    *  they are open commitments, and prose dissolves them. */
@@ -204,6 +211,9 @@ export interface BuildCarryBriefOpts {
     ownerId: string,
   ) => Promise<Array<{ eventKey: string; note: string | null }>>;
   getFleetFn?: (ownerId: string) => Promise<{ slug: string; role: string | null } | null>;
+  listOpenDirectivesFn?: (
+    workspaceId: string,
+  ) => Promise<{ rows: OwnerDirectiveRow[]; totalOpen: number }>;
 }
 
 /** Awaits the engine arms for itself (the always-on inbox wake) — infrastructure,
@@ -222,7 +232,40 @@ export async function buildCarryBrief(
   opts: BuildCarryBriefOpts = {},
 ): Promise<CarryBrief> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId() ?? 'default';
-  const brief: CarryBrief = { ownerId, loop: null, heldItems: [], walls: [], facts: [], awaits: [], fleet: null };
+  const brief: CarryBrief = {
+    ownerId,
+    loop: null,
+    heldItems: [],
+    directives: [],
+    directivesTotalOpen: 0,
+    walls: [],
+    facts: [],
+    awaits: [],
+    fleet: null,
+  };
+
+  try {
+    // EI-11484: open owner directives — the highest-priority carry class. The
+    // read is workspace-scoped (NOT loop/session-scoped) on purpose: a
+    // directive must survive the recording session's death.
+    const listDirectives =
+      opts.listOpenDirectivesFn ??
+      (async (ws: string) => {
+        const { listOpenOwnerDirectives, countOpenOwnerDirectives, OWNER_DIRECTIVES_RENDER_MAX_ROWS } =
+          await import('./owner-directives');
+        const rows = await listOpenOwnerDirectives(ws, OWNER_DIRECTIVES_RENDER_MAX_ROWS, opts.sql);
+        const totalOpen =
+          rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
+            ? await countOpenOwnerDirectives(ws, opts.sql).catch(() => rows.length)
+            : rows.length;
+        return { rows, totalOpen };
+      });
+    const d = await listDirectives(workspaceId);
+    brief.directives = d.rows;
+    brief.directivesTotalOpen = d.totalOpen;
+  } catch {
+    /* section stays empty */
+  }
 
   try {
     const getStatus =
@@ -337,6 +380,13 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   const parts: string[] = [
     'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls',
   ];
+  if (brief.directives.length > 0) {
+    // EI-11484: open owner directives outrank even walls — ids only (the
+    // store re-renders them mechanically on every wake; copying wastes focus).
+    parts.push(
+      `OPEN OWNER DIRECTIVES ${brief.directives.map((d) => `#${d.id}`).join(', ')} — re-rendered every wake, keep the ids`,
+    );
+  }
   if (brief.walls.length > 0) {
     // P-006: open walls outrank everything else — they are open COMMITMENTS, kept
     // VERBATIM (per-claim capped only to survive the hard focus cap).
@@ -376,6 +426,13 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
  */
 export function renderCarryBriefColdExtras(brief: CarryBrief): string {
   const sections: string[] = [];
+  if (brief.directives.length > 0) {
+    // EI-11484: open owner directives render FIRST — above walls, above the
+    // agenda. Budgeted by the shared renderer (whole ≤300 chars, else substr
+    // + orders:get pointer, block cap + "+N more").
+    const block = renderOwnerDirectivesBlock(brief.directives, { totalOpen: brief.directivesTotalOpen });
+    if (block) sections.push(block);
+  }
   if (brief.walls.length > 0) {
     // P-006: walls FIRST, as rows, VERBATIM — the redundancy with the note's own
     // `## Walls` section is deliberate; commitments are the one carry class where

@@ -192,7 +192,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // EI-9270: latch any ANNOUNCED gate on this key (fired_at stamped, row kept) so a
   // late registrant is told the gate already opened. Fail-soft — never break the emit.
   try {
-    await stampAnnouncementsFired(opts.key);
+    await stampAnnouncementsFired(opts.key, { firedBy: opts.source ?? null, payload: opts.payload });
   } catch (e) {
     log(`announce latch stamp failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
   }

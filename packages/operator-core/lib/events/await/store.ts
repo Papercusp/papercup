@@ -93,6 +93,11 @@ function mapAwait(r: any): AwaitRow {
     payloadFilter: parseJsonb(r.payload_filter),
     scopeKind: r.scope_kind ?? null,
     scopeRef: r.scope_ref ?? null,
+    causalGeneration: r.causal_generation != null ? Number(r.causal_generation) : null,
+    expectedCondition: parseJsonb(r.expected_condition),
+    supersededAt: r.superseded_at ? new Date(r.superseded_at).toISOString() : null,
+    firedBy: r.fired_by ?? null,
+    firedPayload: parseJsonb(r.fired_payload),
     // composable-event-awaits-2026-07-11 (migration 572). A `SELECT *` on a DB predating the
     // migration returns these as undefined ⇒ null — so mapAwait is safe against the older
     // hand-rolled test DDLs, and the composed fire path (engine.ts) is inert until a row
@@ -881,38 +886,44 @@ export async function registerAnnouncement(input: {
   note?: string | null;
   scopeKind: 'fleet' | 'plan' | 'harness' | 'global';
   scopeRef?: string | null;
+  /** Optional declared completion condition, normalized by events:emit. */
+  expectedCondition?: unknown | null;
   /** Seconds until the DECLARATION lapses (sweeper marks it fired_reason='expired'); null = standing. */
   expiresSec?: number | null;
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const expiresTs = input.expiresSec != null ? new Date(Date.now() + input.expiresSec * 1000).toISOString() : null;
-  const existing = await sql`
-    SELECT id FROM harness_shared.event_awaits
-     WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
-       AND cancelled_at IS NULL AND fired_at IS NULL
-     ORDER BY created_at DESC LIMIT 1
-  `;
-  if (existing.length > 0) {
-    const rows = await sql`
+  // P-018: every declaration is a durable causal generation.  The advisory
+  // transaction lock closes max(generation) -> insert races for the same key;
+  // older rows are marked superseded instead of mutated/erased.
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + input.eventKey}, 0))`;
+    const generationRows = await tx`
+      SELECT COALESCE(MAX(causal_generation), 0)::bigint + 1 AS next_generation
+        FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
+    `;
+    const generation = Number(generationRows[0]?.next_generation ?? 1);
+    await tx`
       UPDATE harness_shared.event_awaits
-         SET note = ${input.note ?? null}, scope_kind = ${input.scopeKind}, scope_ref = ${input.scopeRef ?? null},
-             expires_ts = ${expiresTs}, subscriber_id = ${input.subscriberId}
-       WHERE id = ${Number(existing[0].id)}
+         SET superseded_at = COALESCE(superseded_at, now())
+       WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
+         AND superseded_at IS NULL
+    `;
+    const rows = await tx`
+      INSERT INTO harness_shared.event_awaits
+        (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts,
+         once, min_sleep_sec, urgency, payload_filter, scope_kind, scope_ref, causal_generation,
+         expected_condition)
+      VALUES
+        (${ws}, ${input.subscriberId}, ${input.eventKey}, 'announce', ${input.note ?? null}, NULL,
+         'expire', ${expiresTs}, false, NULL, false, NULL, ${input.scopeKind}, ${input.scopeRef ?? null},
+         ${generation}, ${input.expectedCondition != null ? JSON.stringify(input.expectedCondition) : null}::text::jsonb)
       RETURNING *
     `;
     return mapAwait(rows[0]);
-  }
-  const rows = await sql`
-    INSERT INTO harness_shared.event_awaits
-      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts,
-       once, min_sleep_sec, urgency, payload_filter, scope_kind, scope_ref)
-    VALUES
-      (${ws}, ${input.subscriberId}, ${input.eventKey}, 'announce', ${input.note ?? null}, NULL,
-       'expire', ${expiresTs}, false, NULL, false, NULL, ${input.scopeKind}, ${input.scopeRef ?? null})
-    RETURNING *
-  `;
-  return mapAwait(rows[0]);
+  }) as Promise<AwaitRow>;
 }
 
 /** Announcements (any state except cancelled) for one exact key — the events:await
@@ -924,9 +935,9 @@ export async function findAnnouncementsForKey(eventKey: string): Promise<AwaitRo
   const rows = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
-       AND cancelled_at IS NULL
-     ORDER BY created_at DESC
-     LIMIT 5
+       AND cancelled_at IS NULL AND superseded_at IS NULL
+     ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+     LIMIT 1
   `;
   return rows.map(mapAwait);
 }
@@ -985,14 +996,18 @@ export async function findNearMissKeys(
 
 /** Emit-time latch: stamp fired_at on the key's unfired announcement rows (kept,
  *  never consumed/delivered). Returns how many were latched. */
-export async function stampAnnouncementsFired(eventKey: string): Promise<number> {
+export async function stampAnnouncementsFired(
+  eventKey: string,
+  meta: { firedBy?: string | null; payload?: unknown } = {},
+): Promise<number> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET fired_at = now(), fired_reason = 'event'
+       SET fired_at = now(), fired_reason = 'event', fired_by = ${meta.firedBy ?? null},
+           fired_payload = ${meta.payload !== undefined ? JSON.stringify(meta.payload) : null}::text::jsonb
      WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
-       AND fired_at IS NULL AND cancelled_at IS NULL
+       AND fired_at IS NULL AND cancelled_at IS NULL AND superseded_at IS NULL
     RETURNING id
   `;
   return rows.length;
@@ -1012,11 +1027,50 @@ export async function listActiveAnnouncements(input: {
   const rows = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND policy = 'announce'
-       AND cancelled_at IS NULL
+       AND cancelled_at IS NULL AND superseded_at IS NULL
        AND (expires_ts IS NULL OR expires_ts > now())
        AND (${!unfiredOnly} OR fired_at IS NULL)
      ORDER BY created_at DESC
      LIMIT ${Math.min(input.limit ?? 100, 200)}
   `;
   return rows.map(mapAwait);
+}
+
+/** Exact-key event history for events:status.  One call returns declarations,
+ * waiter registrations, and wake outcomes so an agent does not have to stitch
+ * three partially ordered surfaces together by hand. */
+export async function inspectEventKey(eventKey: string): Promise<{
+  announcements: AwaitRow[];
+  waiters: AwaitRow[];
+  deliveries: DeliveryRow[];
+}> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  return sql.begin(async (tx) => {
+    const [announcementRows, waiterRows, deliveryRows] = await Promise.all([
+      tx`
+        SELECT * FROM harness_shared.event_awaits
+         WHERE workspace_id = ${ws} AND event_key = ${eventKey} AND policy = 'announce'
+         ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+         LIMIT 50
+      `,
+      tx`
+        SELECT * FROM harness_shared.event_awaits
+         WHERE workspace_id = ${ws} AND event_key = ${eventKey} AND policy <> 'announce'
+         ORDER BY created_at DESC
+         LIMIT 200
+      `,
+      tx`
+        SELECT * FROM harness_shared.event_wake_deliveries
+         WHERE workspace_id = ${ws} AND event_key = ${eventKey}
+         ORDER BY created_at DESC
+         LIMIT 200
+      `,
+    ]);
+    return {
+      announcements: announcementRows.map(mapAwait),
+      waiters: waiterRows.map(mapAwait),
+      deliveries: deliveryRows.map(mapDelivery),
+    };
+  }) as Promise<{ announcements: AwaitRow[]; waiters: AwaitRow[]; deliveries: DeliveryRow[] }>;
 }

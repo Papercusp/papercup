@@ -46,6 +46,7 @@
     "@papercusp/seed-bundle": "*",
     "@papercusp/step-program": "*",
     "@papercusp/structured-concurrency": "*",
+    "fractional-indexing": "^3.2.0",
     "phonemizer": "^1.2.1",
     "rrule": "^2.8.1"
   },

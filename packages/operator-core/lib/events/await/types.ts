@@ -99,6 +99,17 @@ export interface AwaitRow {
   scopeKind: string | null;
   /** The fleet/plan/harness slug for scopeKind; null for 'global' / ordinary rows. */
   scopeRef: string | null;
+  /** P-018: monotonic generation of an announced event key. Null on ordinary
+   *  waiter rows; generation N is superseded when N+1 is declared. */
+  causalGeneration?: number | null;
+  /** Optional completion condition declared by the gate emitter. */
+  expectedCondition?: unknown | null;
+  /** A newer announcement generation replaced this row. */
+  supersededAt?: string | null;
+  /** Source/owner that fired this announced generation, when known. */
+  firedBy?: string | null;
+  /** Emit payload captured on the announcement latch for expectation checks. */
+  firedPayload?: unknown | null;
   /** composable-event-awaits-2026-07-11 (migration 572): a composed-await LEAF carries the
    *  parent threshold NODE it propagates its claim to (event_await_nodes.id) instead of waking.
    *  null on an ordinary await AND on a tree's root-anchor row (which has root_id but no node_id).
