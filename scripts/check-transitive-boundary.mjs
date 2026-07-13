@@ -272,19 +272,26 @@ function main() {
   const verbose = process.argv.includes('--verbose');
 
   // Allow custom entry point (for testing)
-  let entryFile;
-  const customEntry = process.argv.find((arg) => !arg.startsWith('-'));
-  if (customEntry && customEntry !== process.argv[1]) {
-    entryFile = findFile(resolve(customEntry));
+  let entryFile = null;
+  const customEntryArg = process.argv.slice(2).find((arg) => !arg.startsWith('-'));
+
+  if (customEntryArg) {
+    // Custom entry point provided
+    const customPath = resolve(customEntryArg);
+    // Try exact path first, then with extensions
+    if (statSync(customPath, { throwIfNoEntry: false })?.isFile()) {
+      entryFile = customPath;
+    } else {
+      entryFile = findFile(customPath);
+    }
   } else {
     // Default to operator-vite
     entryFile = findFile(resolve(APP_DIR, 'src/main'));
   }
 
   if (!entryFile) {
-    console.error(
-      `❌ Entry point not found (tried ${customEntry || resolve(APP_DIR, 'src/main')}.*)`
-    );
+    const tried = customEntryArg ? resolve(customEntryArg) : resolve(APP_DIR, 'src/main');
+    console.error(`❌ Entry point not found (tried ${tried}.*)`);
     process.exit(1);
   }
 

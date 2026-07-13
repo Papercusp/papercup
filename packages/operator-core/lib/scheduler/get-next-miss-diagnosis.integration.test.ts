@@ -92,6 +92,18 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     await seedIssue('WI-9003', { plan_item: { plan_slug: 'live-plan', item_id: 'P-001' } });
     await seedIssue('WI-9004', { _claimHold: true, held_open_by: 'su-other', held_open_reason: 'blocked' });
     await seedIssue('WI-9005', { needsHuman: true });
+    await seedIssue('WI-9008', {
+      externalBlockers: [
+        {
+          kind: 'event',
+          ref: 'deploy:green',
+          status: 'active',
+          summary: 'Waiting for the green deploy event',
+          createdAt: '2026-07-13T00:00:00.000Z',
+          updatedAt: '2026-07-13T00:00:00.000Z',
+        },
+      ],
+    });
     // A terminal row named in a STALE tranche — the other everyday way a leader's spec goes empty.
     await seedIssue('WI-9006', null, 'resolved');
     // Stamped with a plan_item, but the plan is NOT active ⇒ NOT reserved. The floor is
@@ -107,6 +119,7 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
       'WI-9005',
       'WI-9006',
       'WI-9007',
+      'WI-9008',
       'WI-9999', // never inserted — a leader typo
     ]);
     const by = new Map(out.map((o) => [o.id, o]));
@@ -118,6 +131,7 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     expect(by.get('WI-9005')).toMatchObject({ admissible: false, refusedBy: 'needs-human' });
     expect(by.get('WI-9006')).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
     expect(by.get('WI-9007')).toMatchObject({ admissible: true, refusedBy: null });
+    expect(by.get('WI-9008')).toMatchObject({ admissible: false, refusedBy: 'external-blocker' });
     // A typo'd id is the single most likely way to author a dead tranche, and the old static
     // message said nothing about it whatsoever.
     expect(by.get('WI-9999')).toMatchObject({ admissible: false, refusedBy: 'not-found' });

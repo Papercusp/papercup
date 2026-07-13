@@ -91,12 +91,18 @@ export async function assertAppReady(
   // Check API health
   try {
     const apiHealthUrl = `${apiBaseUrl}/api/health`;
-    const apiHealth = await fetch(apiHealthUrl, { timeout: 5000 });
-    if (!apiHealth.ok) {
-      return {
-        ok: false,
-        error: `API health check failed: ${apiHealth.status}`,
-      };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const apiHealth = await fetch(apiHealthUrl, { signal: controller.signal });
+      if (!apiHealth.ok) {
+        return {
+          ok: false,
+          error: `API health check failed: ${apiHealth.status}`,
+        };
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   } catch (err) {
     // API health check is optional - app can still be testable
