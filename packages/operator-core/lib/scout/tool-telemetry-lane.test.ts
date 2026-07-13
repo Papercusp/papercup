@@ -68,7 +68,8 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
       }),
     );
     const refs = out.filter((p) => p.ref.startsWith('tool:limit-failure:')).map((p) => p.ref);
-    expect(refs).toEqual(['tool:limit-failure:work_items-complete', 'tool:limit-failure:plans-set-content']);
+    // slug lowercases and maps every non-[a-z0-9] run to '-' (so ':' and '_' both become '-').
+    expect(refs).toEqual(['tool:limit-failure:work-items-complete', 'tool:limit-failure:plans-set-content']);
     expect(refs).not.toContain('tool:limit-failure:coord-send');
   });
 
@@ -81,7 +82,7 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
         ],
       }),
     );
-    const retry = out.find((p) => p.ref === 'tool:retry-loop:work_items-get');
+    const retry = out.find((p) => p.ref === 'tool:retry-loop:work-items-get');
     expect(retry).toBeTruthy();
     expect(retry!.detail).toContain('code:run');
     expect(out.some((p) => p.ref === 'tool:retry-loop:calm-tool')).toBe(false);

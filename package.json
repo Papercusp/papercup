@@ -155,6 +155,7 @@
     "lint:no-owner-name-tags": "node scripts/check-no-owner-name-tags.mjs",
     "lint:no-conflict-markers": "node scripts/check-conflict-markers.mjs",
     "lint:no-self-referential-export": "node scripts/check-no-self-referential-export.mjs",
+    "lint:vitest-mock-paths": "node apps/operator/scripts/check-vitest-mock-paths.mjs",
     "lint:host-bundle-builds": "node scripts/check-host-bundle-builds.mjs",
     "lint:rubric-method-ref-parity": "node scripts/check-rubric-method-ref-parity.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
