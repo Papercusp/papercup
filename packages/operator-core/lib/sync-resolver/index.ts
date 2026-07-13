@@ -2840,6 +2840,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.releaseReadiness — the Verify stage's GO/NO-GO strip ──
+  //
+  // (learning-tab-alignment-2026-07-13 P-001, D-001). blender:success-metrics'
+  // six bars + the blender-release-readiness rubric's governance state, surfaced
+  // where the Verify stage renders — the gate previously had NO UI at all.
+  // D-001: the read module reuses the EXACT readers the MCP tools serve
+  // (buildProgramSuccessReport / getRubric / listScorecards) — never a parallel
+  // UI-side reimplementation. NOT table-backed — refreshes on mount + staleTime
+  // (the learning.gym / learning.apiary posture). Always a 1-element array.
+  'learning.releaseReadiness': {
+    resolve: async () => {
+      const { readReleaseReadiness } = await import('./learning-release-readiness-read');
+      return [await readReleaseReadiness()];
+    },
+  },
+
   // ── health.snapshot — the whole-system Health tab snapshot ──
   //
   // (system-health-tab-2026-06-15 P-003, D-001). ONE `SystemHealth` snapshot —

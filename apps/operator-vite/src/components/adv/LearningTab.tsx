@@ -50,6 +50,7 @@ import type {
 import type { HiveLearningsSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-read";
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
 import type { PotSoakReportSnapshot } from "@papercusp/operator-core/lib/pot/soak-report";
+import type { ReleaseReadinessSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-release-readiness-read";
 import { BenchmarkTrend, type BenchmarkTrendInstance } from "./BenchmarkTrend";
 import type { BakeoffTrendRow } from "@papercusp/operator-core/lib/pot-eval/bakeoff-trend";
 import { EkgPanel } from "./EkgPanel";
@@ -424,6 +425,8 @@ export default function LearningTab() {
         ) : null}
       </div>
 
+      {stageForView(view) === "verify" ? <ReleaseReadinessStrip /> : null}
+
       <div className="pc-learning__body">
         {LVIEWS.filter((candidate) => mountedViews.includes(candidate)).map(
           (mountedView) => (
@@ -526,6 +529,93 @@ function LearningViewContent({
     return <ThroughputView onStatus={reportViewStatus} />;
   }
   return <LearningsView hive={hive} onStatus={reportViewStatus} />;
+}
+
+// ─── Release-readiness strip (learning-tab-alignment-2026-07-13 P-001) ───────
+//
+// The Verify stage's GO/NO-GO gate: blender:success-metrics' bars + the
+// blender-release-readiness rubric's governance state. D-001: everything here
+// renders the server read (learning.releaseReadiness), which reuses the SAME
+// readers the MCP tools serve — no UI-side re-derivation.
+
+function ReleaseReadinessStrip() {
+  const sync = useSyncQuery<ReleaseReadinessSnapshot>({
+    queryName: "learning.releaseReadiness",
+    staleTime: 30_000,
+  });
+  const snap = sync.data?.[0];
+  if (!snap) return null; // loading / unreadable — the strip appears once the read lands
+  const report = snap.report;
+  const rubric = snap.rubric;
+  const verdict = report?.verdict ?? null;
+
+  return (
+    <div
+      className="pc-learning__readiness"
+      role="status"
+      aria-label="Release readiness"
+    >
+      <Tooltip
+        label={
+          report
+            ? `The learning program's done-check over the live ledgers (window: ${report.window.ticks} ticks, ${report.window.routedIdeas} routed ideas). 'pass' only when every bar passes; 'incomplete' = a bar lacks evidence.`
+            : (snap.errors?.join(" · ") ?? "success-metrics unreadable")
+        }
+      >
+        <span
+          className={`pc-learning__readiness-verdict pc-learning__readiness-verdict--${verdict ?? "unknown"}`}
+        >
+          <ShieldCheck size={12} aria-hidden />
+          release gate: {verdict ?? "unreadable"}
+          {report ? (
+            <em>
+              {report.passed}/{report.criteria.length}
+            </em>
+          ) : null}
+        </span>
+      </Tooltip>
+
+      {(report?.criteria ?? []).map((c) => (
+        <Tooltip key={c.key} label={`${c.bar} — ${c.observed}`}>
+          <span
+            className={`pc-learning__readiness-bar pc-learning__readiness-bar--${c.status}`}
+          >
+            {c.status === "pass" ? (
+              <CheckCircle2 size={11} aria-hidden />
+            ) : c.status === "fail" ? (
+              <XCircle size={11} aria-hidden />
+            ) : (
+              <HelpCircle size={11} aria-hidden />
+            )}
+            {c.key}
+          </span>
+        </Tooltip>
+      ))}
+
+      <Tooltip
+        label={
+          rubric
+            ? rubric.status === "active"
+              ? `Ratified gate rubric (${rubric.criteriaCount} criteria)${rubric.ratifiedBy ? ` — ratified by ${rubric.ratifiedBy}` : ""}${rubric.proposedBy ? `, proposed by ${rubric.proposedBy}` : ""}.`
+              : `The gate rubric is ${rubric.status} — not yet ratified (author ≠ ratifier governance). ${rubric.criteriaCount} criteria${rubric.proposedBy ? `, proposed by ${rubric.proposedBy}` : ""}.`
+            : "No blender-release-readiness rubric proposed yet — the gate has no ratified spec."
+        }
+      >
+        <span
+          className={`pc-learning__readiness-rubric pc-learning__readiness-rubric--${rubric?.status ?? "missing"}`}
+        >
+          <Gauge size={11} aria-hidden />
+          {rubric
+            ? `rubric: ${rubric.status}${
+                rubric.scorecardCount > 0
+                  ? ` · ${rubric.scorecardCount} scorecard${rubric.scorecardCount === 1 ? "" : "s"}${rubric.latestScore10 != null ? ` · latest ${rubric.latestScore10}/10` : ""}`
+                  : " · no scorecards yet"
+              }`
+            : "rubric: none proposed"}
+        </span>
+      </Tooltip>
+    </div>
+  );
 }
 
 // ─── Improvements view ───────────────────────────────────────────────────────

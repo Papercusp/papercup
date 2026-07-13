@@ -21,10 +21,16 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { updateWorkItem } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
+import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 
 const FIELDS = {
   title: hardText(LIMITS.SHORT_TITLE).optional(),
   body: hardText(8000).optional(),
+  // WI-4492: `summary` is an ACCEPTED ALIAS for `body` — the SAME column. work_items:get
+  // and work_items:create both name this field `summary`, so a get→edit→update (or a
+  // create-then-update) round-trip used to write the text under a name update silently
+  // dropped. Accept either; `rejectBodySummaryConflict` rejects both-with-different-values.
+  summary: hardText(8000).optional().describe('alias for `body` — the item’s main text (work_items:get/create name it `summary`). Pass either; both-with-different-values is rejected (WI-4492).'),
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
   kind: z
     .enum(['bug', 'change'])
@@ -77,7 +83,15 @@ const itemSpec = z
     ...FIELDS,
     ...STATE_FOOTGUN_FIELDS,
   })
-  .superRefine(rejectStateFootguns);
+  // WI-4492: strict so an unknown field name is a LOUD error naming it, never a silent
+  // drop. STATE_FOOTGUN_FIELDS are DECLARED (as z.unknown) so strict lets them through to
+  // the superRefine, which rejects them with a pointer to set_state (better than a generic
+  // "unrecognized key"). Same for the body/summary alias.
+  .strict()
+  .superRefine((it, ctx) => {
+    rejectStateFootguns(it, ctx);
+    rejectBodySummaryConflict(it, ctx);
+  });
 
 export default defineTool({
   name: 'work_items:update',
@@ -107,6 +121,7 @@ export default defineTool({
         ),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
     })
+    .strict()
     .superRefine((a, ctx) => {
       if (!((a.items?.length ?? 0) > 0 || Boolean(a.id))) {
         ctx.addIssue({
@@ -115,6 +130,7 @@ export default defineTool({
         });
       }
       rejectStateFootguns(a, ctx);
+      rejectBodySummaryConflict(a, ctx);
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -131,7 +147,8 @@ export default defineTool({
       ? args.items.map((it) => ({
           id: it.id,
           title: it.title ?? args.title,
-          body: it.body ?? args.body,
+          // WI-4492: resolve body from either alias (per-item), then the top-level default.
+          body: resolveBodyAlias(it) ?? resolveBodyAlias(args),
           severity: it.severity ?? args.severity,
           kind: it.kind ?? args.kind,
           foundDuring: it.foundDuring !== undefined ? it.foundDuring : args.foundDuring,
@@ -143,7 +160,7 @@ export default defineTool({
           {
             id: args.id as string,
             title: args.title,
-            body: args.body,
+            body: resolveBodyAlias(args), // WI-4492: `summary` is an accepted alias for `body`
             severity: args.severity,
             kind: args.kind,
             foundDuring: args.foundDuring,

@@ -31,6 +31,7 @@ import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
 import { LINK_RELS } from './link';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
+import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -75,6 +76,9 @@ const itemSpec = z.object({
   kind: z.string().min(1).max(80).describe('built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
   title: hardText(LIMITS.SHORT_TITLE),
   summary: hardText(8000).optional().describe('body / summary text'),
+  // WI-4492: `body` is an ACCEPTED ALIAS for `summary` (the SAME field). work_items:update
+  // names it `body`, so a caller who learned that name used to have it silently dropped here.
+  body: hardText(8000).optional().describe('alias for `summary` — the item body text (work_items:update names it `body`). Pass either; both-with-different-values is rejected (WI-4492).'),
   harness: z.string().max(80).optional().describe('harness slug — required for feature/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
   pot: hiveArg,
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
@@ -89,7 +93,11 @@ const itemSpec = z.object({
     .optional()
     .describe('Plan item this work-item ADDRESSES (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked.'),
   links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
-});
+})
+  // WI-4492: strict — an unknown field name is a LOUD error naming it, never a silent drop
+  // (the defect that filed WI-4491/WI-4492 as empty shells: a `body` arg was stripped).
+  .strict()
+  .superRefine(rejectBodySummaryConflict);
 
 export default defineTool({
   name: 'work_items:create',
@@ -144,6 +152,7 @@ export default defineTool({
       kind: z.string().min(1).max(80).optional().describe('built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
       title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: hardText(8000).optional().describe('body / summary text'),
+      body: hardText(8000).optional().describe('alias for `summary` — the item body text (work_items:update names it `body`). Pass either; both-with-different-values is rejected (WI-4492).'),
       harness: z.string().max(80).optional().describe('harness slug — required for feature/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
       pot: hiveArg,
       severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
@@ -164,9 +173,12 @@ export default defineTool({
       // batch-level routing default for all items
       workspace: z.string().max(120).optional().describe('target workspace id — defaults to the request workspace (MCP ?workspace=). EI-728 routing for the inline create / every item.'),
     })
+    // WI-4492: strict so an unknown field name (e.g. a stripped `body`) is a LOUD error.
+    .strict()
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.kind) && Boolean(a.title)), {
       message: 'pass { kind, title } for one, or items:[{ kind, title }] for many',
-    }),
+    })
+    .superRefine(rejectBodySummaryConflict),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };
