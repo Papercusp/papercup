@@ -46,7 +46,10 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/flags/server')>();
   return {
     ...actual,
-    getFlag: async (flag: string, distinct: string) =>
+    getFlag: async (
+      flag: Parameters<typeof actual.getFlag>[0],
+      distinct: Parameters<typeof actual.getFlag>[1],
+    ) =>
       flag === 'papercusp-scout-experiment-rail' || flag === 'papercusp-scout-rubric-rail'
         ? false
         : actual.getFlag(flag, distinct),
@@ -239,7 +242,7 @@ describe('rubric-seeding drill — a vaccination-planted broken criterion seeds 
 
   it('DRILL SURFACES: the drill-mode digest carries the planted broken criterion as a rubric measurement', () => {
     // result.digest was synthesized with the drill-mode readers.
-    const pat = result.digest.rubricRatings.find((p) => p.ref === DRILL_PATTERN_REF);
+    const pat = (result.digest.rubricRatings ?? []).find((p) => p.ref === DRILL_PATTERN_REF);
     expect(pat).toBeDefined();
     expect(pat!.category).toBe('rubric-rating');
     expect(pat!.summary).toContain('broken');

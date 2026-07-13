@@ -606,6 +606,40 @@ interface ShimRuntimeOptions {
   fallbackLaunchers: string[];
 }
 
+function launcherNameVariants(launcherPath: string): string[] {
+  const names = [path.basename(launcherPath)];
+  if (names[0] === 'psu-launcher.mjs') names.push('psu.mjs');
+  if (names[0] === 'psu.mjs') names.push('psu-launcher.mjs');
+  if (names[0] === 'ptool.mjs') names.push('ptool-launcher.mjs');
+  if (names[0] === 'ptool-launcher.mjs') names.push('ptool.mjs');
+  return [...new Set(names)];
+}
+
+function launcherRelativePaths(launcherPath: string): string[] {
+  return [...new Set(
+    launcherNameVariants(launcherPath).flatMap((name) => [
+      `apps/operator/scripts/${name}`,
+      `scripts/${name}`,
+    ]),
+  )];
+}
+
+/**
+ * Keep the release tree as the install-time fallback. The active integration
+ * tree is selected at shim invocation time from PAPERCUSP_INTEGRATION_ROOT;
+ * embedding it here would recreate the boot-order race this shim fixes.
+ */
+function shimRuntimeOptions(launcherPath: string, explicitLauncherEnv: string): ShimRuntimeOptions {
+  const releaseRoot = process.env.PAPERCUSP_RELEASE_ROOT?.trim();
+  const releaseFallbacks = releaseRoot
+    ? launcherRelativePaths(launcherPath).map((relative) => path.join(releaseRoot, relative))
+    : [];
+  return {
+    explicitLauncherEnv,
+    fallbackLaunchers: [...new Set([...releaseFallbacks, launcherPath])],
+  };
+}
+
 /**
  * Write an executable bash shim that resolves its launcher at RUN time.
  *
@@ -623,17 +657,7 @@ async function writeShim(
   runtime: ShimRuntimeOptions,
 ): Promise<boolean> {
   const nodeCmd = await resolveShimNode(launcherPath);
-  const launcherNames = [path.basename(launcherPath)];
-  if (launcherNames[0] === 'psu-launcher.mjs') launcherNames.push('psu.mjs');
-  if (launcherNames[0] === 'psu.mjs') launcherNames.push('psu-launcher.mjs');
-  if (launcherNames[0] === 'ptool.mjs') launcherNames.push('ptool-launcher.mjs');
-  if (launcherNames[0] === 'ptool-launcher.mjs') launcherNames.push('ptool.mjs');
-  const relativeLauncherPaths = [...new Set(
-    launcherNames.flatMap((name) => [
-      `apps/operator/scripts/${name}`,
-      `scripts/${name}`,
-    ]),
-  )];
+  const relativeLauncherPaths = launcherRelativePaths(launcherPath);
   const shellLiteral = (value: string): string => JSON.stringify(value);
   const fallbackLiterals = runtime.fallbackLaunchers.map(shellLiteral);
   const relativeLiterals = relativeLauncherPaths.map(shellLiteral);
