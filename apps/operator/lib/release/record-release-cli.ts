@@ -42,6 +42,7 @@ import {
   type ReleaseRow,
   type Scope,
 } from './release-registry';
+import { generateChangelog } from './changelog-generate';
 import {
   planPagePath,
   renderHistoryJson,
@@ -67,6 +68,11 @@ export interface RecordOpts {
   scope: Scope;
   cutBy: string | null;
   dryRun: boolean;
+  /** Generate a changelog DRAFT for the window and stop — do not record. The draft
+   *  is reviewed, then recorded via `--changelog-file`. (owner ask #4.) */
+  genChangelog: boolean;
+  /** Re-roll the draft even if one already exists on disk. */
+  forceChangelog: boolean;
 }
 
 /**
@@ -195,6 +201,46 @@ export async function run(opts: RecordOpts): Promise<number> {
     }
 
     const snap = await snapshotWindow(sql, opts.scope, from.getTime(), opts.cutAt.getTime());
+
+    // ── Changelog draft (owner ask #4) — generate, then STOP. ────────────────
+    // Generation and recording are separate decisions on purpose: the draft is a
+    // model's paraphrase of work-item titles, and a model handed "the work is done"
+    // will happily write "it works now" for something that was never verified on the
+    // user's platform (exactly the lie 0.0.9 nearly shipped for Windows auto-update).
+    // So we write a DRAFT a human/agent reviews, then record THAT file via
+    // --changelog-file. See changelog-generate.ts's header.
+    if (opts.genChangelog) {
+      const prevRows = await listReleases(sql, opts.scope.workspaceId, opts.channel);
+      const previousVersion =
+        prevRows.find((r) => r.cutAt < opts.cutAt)?.version ?? null;
+      const draftPath = path.join(
+        path.dirname(opts.outDir),
+        `changelog-draft-${opts.version}-${opts.channel}.md`,
+      );
+      const res = await generateChangelog(
+        {
+          version: opts.version,
+          channel: opts.channel,
+          previousVersion,
+          items: snap.items,
+          plans: snap.plans,
+          internalCount: snap.internalIds.length,
+        },
+        draftPath,
+        { force: opts.forceChangelog },
+      );
+      console.log(`[record-release] changelog draft (${res.source}) → ${res.draftPath}`);
+      console.log('  Review + edit the claims it cannot stand behind, then record with:');
+      console.log(
+        `    tsx apps/operator/lib/release/record-release-cli.ts --version ${opts.version} ` +
+          `--channel ${opts.channel} --git-sha <sha> --changelog-file ${res.draftPath}`,
+      );
+      console.log('\n──────── draft ────────');
+      console.log(res.md);
+      console.log('───────────────────────');
+      return 0;
+    }
+
     const artifacts = scanArtifacts(opts.bundleDir, opts.version, tag);
 
     const row: ReleaseRow = {
@@ -272,6 +318,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('usage: record-release-cli --version <x.y.z> [--channel alpha] [--git-sha <sha>]');
     console.error('       [--changelog-file <path>] [--cut-at <iso>] [--since <iso>]');
     console.error('       [--bundle <dir>] [--out <dir>] [--dry-run]');
+    console.error('   changelog: record-release-cli --version <x.y.z> --generate-changelog [--force-changelog]');
+    console.error('              # writes a reviewable draft from the window and STOPS (records nothing)');
     console.error('   or: record-release-cli --regenerate [--out <dir>]   # re-render pages only');
     return 2;
   }
@@ -304,6 +352,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     scope,
     cutBy: arg(argv, '--cut-by') ?? process.env.PAPERCUSP_SESSION_ID ?? null,
     dryRun: argv.includes('--dry-run'),
+    genChangelog: argv.includes('--generate-changelog'),
+    forceChangelog: argv.includes('--force-changelog'),
   });
 }
 

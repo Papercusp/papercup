@@ -271,6 +271,14 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // ESCALATIONS was RATIFIED ON instead — finished additive work, zero leaks in 2 weeks —
   // so it is NOT in this set.)
   'papercusp-workspace-coordination',
+  // 2026-07-12 (WI-4240) — papercusp-authority-rpc-protomux + papercusp-authority-eviction-
+  // probe: BUG-FIX correction, 11th + 12th instances of the EI-7230 class. Both comments
+  // always said DEFAULT OFF / dark (real-hardware-UNVERIFIED cross-machine cutovers gated on
+  // a two-machine proof), never actually added, so P-011 derived both live-ON. Byte-identical
+  // on a single box (both no-op without a multi-machine transport) and consistent with the
+  // sibling cross-machine flags already dark. Watermark raised 27→29. Count 27 → 29.
+  'papercusp-authority-rpc-protomux',
+  'papercusp-authority-eviction-probe',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -446,7 +454,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // genuine dark case among the WI-4240 residue (an unverified cutover held OFF in prod only
     // by a hand-placed override row); its sibling INBOX_DURABLE_ESCALATIONS was ratified ON
     // instead (finished additive work). Watermark raised 26→27. Count 26 → 27.
-    expect(offCount).toBe(27);
+    // 2026-07-12 (WI-4240) — papercusp-authority-rpc-protomux + papercusp-authority-eviction-
+    // probe: BUG-FIX correction, 11th + 12th instances of the EI-7230 class (both comments said
+    // dark, never added; real-hardware-unverified cross-machine cutovers, no-op on a single
+    // box). Watermark raised 27→29. Count 27 → 29.
+    expect(offCount).toBe(29);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

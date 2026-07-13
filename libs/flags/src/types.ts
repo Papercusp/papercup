@@ -179,6 +179,10 @@ export const FLAGS = {
   // (D-004) when no channel/address exists. DEFAULT OFF: the cross-machine path
   // is real-hardware-unverified (P-003) — flipping it on is gated on the
   // two-machine serialization proof. OFF = byte-identical to today (HTTP-only).
+  // NOW ACTUALLY IN DARK_FLAGS (added 2026-07-12, WI-4240, su-00a91) — the comment always
+  // said DEFAULT OFF and was right, but the flag was never added, so P-011 derived it live-ON.
+  // Byte-identical to fix here: wireAuthorityRpcSwarmTransport returns early without a signer/
+  // swarm, so ON is a no-op on a single box regardless.
   AUTHORITY_RPC_PROTOMUX: "papercusp-authority-rpc-protomux",
   // shared-hive-hardening-2026-06-13 P-016: wire the φ-accrual + SWIM failure
   // detector into authority selection so a CRASHED authority is evicted promptly
@@ -189,7 +193,11 @@ export const FLAGS = {
   // OFF (dark): the live cross-machine eviction path is real-hardware-unverified
   // (D-003, like the sibling AUTHORITY_RPC_PROTOMUX it rides) — the flip is gated
   // on the two-machine proof. OFF = staleness-only selection, byte-identical to
-  // pre-P-016. Listed in KNOWN_DARK_FLAGS.
+  // pre-P-016.
+  // NOW ACTUALLY IN DARK_FLAGS (added 2026-07-12, WI-4240, su-00a91) — the comment always
+  // said "DEFAULT OFF (dark)... KNOWN_DARK_FLAGS" and was right, but the flag was never added,
+  // so P-011 derived it live-ON. Byte-identical to fix here: wirePeerEviction returns without
+  // installing the monitor when the flag is off, and single-box/no-transport is a no-op anyway.
   AUTHORITY_EVICTION_PROBE: "papercusp-authority-eviction-probe",
   // substrate-peer-log-compaction-2026-06-13 (design A, D-005). WI-3370
   // (2026-07-10): this flag used to gate BOTH the reader (seedCursorFromSnapshots)
@@ -1816,6 +1824,17 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // (see the constant's note); actioned under the owner's standing AUTO-mode grant and
     // disclosed rather than left silently live, and it is unambiguously the SAFE direction —
     // it turns OFF an already-live, never-ratified behavior and newly enables nothing.
+    // WI-4240 (2026-07-12, su-00a91): the two cross-machine authority cutovers — 11th + 12th
+    // instances of the EI-7230 class. Both comments always said DEFAULT OFF / dark (they are
+    // real-hardware-UNVERIFIED cross-machine paths gated on a two-machine proof), but neither
+    // was ever added here, so P-011 derived both live-ON. An unverified cross-machine cutover's
+    // correct DEFAULT is unambiguously OFF regardless of the missing rig — the rig gates
+    // turning them ON, not the default. Byte-identical on this single box (both no-op without a
+    // multi-machine transport, confirmed in their wiring), and consistent with every sibling
+    // cross-machine flag already dark (PLAN_PART_FEDERATION / PRESENCE_GOSSIP /
+    // HRW_RENDEZVOUS_AUTHORITY). Watermark 27→29.
+    [FLAGS.AUTHORITY_RPC_PROTOMUX, { case: 'cutover', reason: 'shared-hive-hardening-2026-06-13 P-001/D-005: routes remote lock-authority RPCs over the per-harness Hyperswarm protomux channel so NAT\'d peers are served. Real-hardware-UNVERIFIED (P-003) — the flip is gated on the two-machine serialization proof. Comment always said "DEFAULT OFF" but was never added here, so P-011 derived it live-ON. wireAuthorityRpcSwarmTransport returns early without a device signer/swarm, so ON is a no-op on a single box; OFF = HTTP-only, byte-identical. Owner/leader flips ON after the two-machine proof.' }],
+    [FLAGS.AUTHORITY_EVICTION_PROBE, { case: 'cutover', reason: 'shared-hive-hardening-2026-06-13 P-016: wires the φ-accrual + SWIM failure detector into authority selection so a crashed authority is evicted promptly instead of waiting out the 90s staleness window. Rides the same unverified cross-machine RPC seam as AUTHORITY_RPC_PROTOMUX; real-hardware-UNVERIFIED (D-003). Comment always said "DEFAULT OFF (dark)... KNOWN_DARK_FLAGS" but was never added here, so P-011 derived it live-ON. wirePeerEviction installs no monitor when off and single-box/no-transport is a no-op anyway; OFF = staleness-only selection, byte-identical to pre-P-016. Owner/leader flips ON after the two-machine proof.' }],
     // WI-4240 (2026-07-12, su-00a91): the genuine EI-7230 bug among the WI-4240 residue — the
     // comment always said "DEFAULT OFF (dark) / KNOWN_DARK_FLAGS" and was CORRECT (the workspace
     // brain re-key is an UNVERIFIED cutover), but the flag was never added here, so P-011 derived
@@ -1903,7 +1922,7 @@ export const DARK_FLAGS_REVIEW_BY = '2026-07-24';
 // Filed as WI-4495 (make the ceiling per-case: a TIGHT budget on parked+incomplete — the
 // actual abuse — and review-by-date governance, not a size cap, on the safety cases).
 // Until then this stays one number and each raise must justify itself in-line, as above.
-export const DARK_FLAGS_HIGH_WATERMARK = 27; // +papercusp-workspace-coordination 2026-07-12 (WI-4240)
+export const DARK_FLAGS_HIGH_WATERMARK = 29; // +authority-rpc-protomux +authority-eviction-probe 2026-07-12 (WI-4240)
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /

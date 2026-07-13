@@ -181,58 +181,41 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
    * itself. REMOVING an entry (because it graduated, or was added to DARK_FLAGS, or
    * its comment was fixed) is always welcome — this list should only shrink.
    */
-  const PENDING_MISMATCHES: ReadonlyArray<{ key: string; reason: string }> = [
-    // The auth/security/partition "SPECIAL CARE" subset from WI-3855 (leader ruling
-    // 2026-07-11: "Do NOT change behavior on these. Document only.") — each flag's
-    // comment says DEFAULT OFF, none are in DARK_FLAGS, and WI-3855 deliberately left
-    // their runtime behavior untouched pending owner ratification rather than
-    // guessing on an auth-enforcement/data-partition surface.
-    // ── RESOLVED 2026-07-12 (WI-4238/WI-4239, su-00a91) — six entries REMOVED from this
-    // list, and the removal is the whole point of the finding, so it is recorded here:
-    //
-    // SCOPED_SUPERUSER_CLAMP · UI_WORKSPACE_GUARD · COORD_PER_WORKSPACE ·
-    // ISSUES_PER_WORKSPACE · ROUTINES_PER_WORKSPACE  → the COMMENT was the stale side, not
-    // DARK_FLAGS. All five default-ON to a SAFER/NARROWER behavior (two completed partition
-    // cutovers + three workspace/auth guard rails), so the "restore the documented dark
-    // baseline" fix this list assumed for them was a REGRESSION, not a safety measure:
-    // COORD_/ISSUES_PER_WORKSPACE would have stranded ~79k live rows (67,468 coord events +
-    // 11,730 issues, measured in PG), and SCOPED_SUPERUSER_CLAMP/UI_WORKSPACE_GUARD would
-    // have RELAXED auth enforcement. Comments corrected in types.ts; no DARK_FLAGS change.
-    //
-    // MUG_FULL_AUTONOMY → the one TRUE mis-default (ON removes a human check rather than
-    // adding one). Added to DARK_FLAGS; watermark raised 25→26.
-    //
-    // ⚠ THE TRAP THIS LIST WALKED INTO, so the next reader doesn't: the lint reports that a
-    // comment and DARK_FLAGS DISAGREE — it cannot say WHICH SIDE IS WRONG. The first eight
-    // instances of this class were all "comment right, code wrong" (the EI-7230 bug), so
-    // every later reader generalised that the comment is always the truth and the code is
-    // always the bug. For five of the ten that was backwards. A mismatch is a QUESTION, not
-    // a verdict: go read what the flag's ON and OFF branches actually DO, and check the data
-    // written under each, before you "restore" anything. (WI-4496 tracks teaching the lint to
-    // carry that evidence itself instead of making each reader re-derive it.)
-    { key: 'AUTHORITY_RPC_PROTOMUX', reason: 'WI-3855 SPECIAL CARE — cross-machine lock-authority RPC transport; real-hardware-unverified (P-003); bundled into WI-4240; owner-ratification pending. NOT re-derived in the 2026-07-12 pass (needs a two-machine rig, not a code read) — its direction-of-safety is still unestablished.' },
-    { key: 'AUTHORITY_EVICTION_PROBE', reason: 'WI-3855 SPECIAL CARE — cross-machine failure-detector eviction; rides the same unverified cross-machine proof as AUTHORITY_RPC_PROTOMUX; bundled into WI-4240. NOT re-derived in the 2026-07-12 pass (same two-machine rig gap).' },
-    // WORKSPACE_COORDINATION — RESOLVED 2026-07-12 (WI-4240, su-00a91): added to DARK_FLAGS
-    // (case 'cutover'), watermark 26→27. The genuine dark case (comment right, code wrong):
-    // an unverified workspace-brain re-key cutover that production held OFF only via a
-    // hand-placed operator_flag_overrides row. Adding it to DARK_FLAGS makes the code default
-    // match that override, so the row is now redundant rather than load-bearing.
-    // MUG_FULL_AUTONOMY — RESOLVED 2026-07-12 (WI-4238, su-00a91): added to DARK_FLAGS,
-    // watermark raised 25→26. It was parked here on the reasoning that "DARK_FLAGS is
-    // already AT its watermark (25/25), so fixing it needs a graduation or an explicit
-    // watermark raise — an owner-authority call, not this lint's to make." That reasoning
-    // is what kept a live, never-ratified recursive-self-improvement grant switched ON: the
-    // watermark is a BOOKKEEPING ceiling, and letting it outrank a safety default gets the
-    // priority exactly backwards. It was raised, in the safe direction, and disclosed.
-    // INBOX_DURABLE_ESCALATIONS — RESOLVED 2026-07-12 (WI-4240, su-00a91): RATIFIED DEFAULT ON
-    // (comment corrected in types.ts), NOT darkened. It was parked here for lacking "in-file
-    // graduation evidence", but the evidence is in the CODE and the DATA, not a comment: the
-    // mirror write + resolve are best-effort throughout and the durable record resolves
-    // idempotently on every card-exit path (live / inbox / timeout — ask_choice.ts ~L300), and
-    // it has been default-ON ~2 weeks with ZERO leaked escalations from this path (0 rows
-    // carrying a cardCorrelationId in coord_open_escalations, all workspaces). Finished
-    // additive work ships ON per repo policy; no DARK_FLAGS change, no watermark cost.
-  ];
+  // ════════════════════════════════════════════════════════════════════════════════════
+  // PENDING_MISMATCHES — EMPTY as of 2026-07-12 (WI-4238/WI-4239/WI-4240, su-00a91).
+  //
+  // The entire flag-comment/DARK_FLAGS mismatch backlog is CLEARED: every flag whose comment
+  // and DARK_FLAGS membership disagreed has been resolved in the RIGHT direction (verified per
+  // flag against the code and the live data — not blanket-"restored"). If this list is empty,
+  // the guard below asserts the real tree has ZERO mismatches; a NEW one fails the build.
+  //
+  // HOW THE TEN WERE RESOLVED — and why the split matters (the whole finding):
+  //  · COMMENT WAS STALE, code was right → comment corrected, NO DARK_FLAGS change (5):
+  //      COORD_PER_WORKSPACE, ISSUES_PER_WORKSPACE (completed partition cutovers — 67,468
+  //      coord + 11,730 issue rows live in the workspace partition; "restoring the dark
+  //      baseline" would have stranded ~79k rows), SCOPED_SUPERUSER_CLAMP, UI_WORKSPACE_GUARD,
+  //      ROUTINES_PER_WORKSPACE (guard rails where OFF is the WIDER/less-safe state).
+  //  · CODE WAS WRONG, comment was right → added to DARK_FLAGS (4):
+  //      MUG_FULL_AUTONOMY (recursive-self-improvement grant; watermark 25→26),
+  //      WORKSPACE_COORDINATION (unverified brain re-key held OFF only by a fragile override
+  //      row; 26→27), AUTHORITY_RPC_PROTOMUX + AUTHORITY_EVICTION_PROBE (real-hardware-
+  //      unverified cross-machine cutovers, no-op on a single box; 27→29).
+  //  · FINISHED ADDITIVE WORK → ratified DEFAULT ON, comment corrected (1):
+  //      INBOX_DURABLE_ESCALATIONS (resolve wired on every card-exit path; 0 leaks in 2 weeks).
+  //
+  // ⚠ THE TRAP, recorded so the next reader does not repeat it: this lint reports that a
+  // comment and DARK_FLAGS DISAGREE — it CANNOT say WHICH SIDE IS WRONG. The first eight
+  // instances were all "comment right, code wrong" (the EI-7230 bug), so every later reader
+  // generalised "the comment is always the truth, restore the dark baseline". For FIVE of the
+  // ten that was backwards, and following it would have hidden ~79k live rows and relaxed auth
+  // enforcement. A mismatch is a QUESTION, not a verdict: read what the flag's ON and OFF
+  // branches actually DO, and check the data written under each, before you "restore" anything.
+  // WI-4496 tracks teaching the lint to carry that evidence itself; WI-4495 tracks making the
+  // watermark stop penalising genuine safety flags. Full write-up:
+  // /internal/docs/agent-insights/a-flag-mismatch-is-a-question-not-a-verdict
+  //
+  // To re-open: add { key, reason: '<why it needs a ruling before it can be resolved> + <ref>' }.
+  const PENDING_MISMATCHES: ReadonlyArray<{ key: string; reason: string }> = [];
 
   it('the pending-allowlist itself stays honest: every listed key is a REAL current mismatch (never a stale/unnecessary entry)', () => {
     const staleAllowlistEntries = PENDING_MISMATCHES.filter((p) => !realMismatchKeys.has(p.key));

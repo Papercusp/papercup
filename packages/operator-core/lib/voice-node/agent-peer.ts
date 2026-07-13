@@ -49,6 +49,19 @@ const segs = new Map<string, PeerSeg>();
 const transcriptCbs = new Set<(t: VoiceTranscript) => void>();
 let inflightStt = 0;
 
+// Half-duplex echo gate (WI-4501, owner report "it keeps saying omid"): while THIS node's
+// agent is speaking, inbound peer frames are overwhelmingly the agent's OWN TTS bleeding
+// from a listener's speakers back into their mic — the webview's echoCancellation has no
+// reference for natively-played audio (Linux Chromium especially), so it cancels nothing.
+// whisper-base then transcribes the bleed (hallucinating names on noisy fragments) and the
+// brain replies to itself in a loop. agentSpeaking was TRACKED (manager P-011) and displayed
+// but gated nothing — this is the missing consumer. Speech heard during playback plus a
+// short tail (speaker/jitter/segmenter latency) is dropped and open segments discarded.
+// Deliberate cost: no barge-in — interrupting the agent mid-sentence goes unheard until an
+// AEC-grade reference signal exists.
+const ECHO_TAIL_MS = 750;
+let echoGuardUntil = 0;
+
 export function onTranscript(cb: (t: VoiceTranscript) => void): () => void {
   transcriptCbs.add(cb);
   return () => transcriptCbs.delete(cb);
@@ -75,6 +88,12 @@ export function enableVoiceAgent(on: boolean): void {
 }
 
 function handleFrame(peerId: string, frame: Int16Array): void {
+  if (voiceStatus().agentSpeaking) {
+    echoGuardUntil = Date.now() + ECHO_TAIL_MS;
+    if (segs.size > 0) segs.clear(); // a segment opened by our own voice must never reach STT
+    return;
+  }
+  if (Date.now() < echoGuardUntil) return;
   let seg = segs.get(peerId);
   if (!seg) {
     seg = { frames: [], speechFrames: 0, silenceRun: 0, open: false };
