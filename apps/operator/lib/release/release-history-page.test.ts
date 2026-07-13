@@ -123,7 +123,10 @@ describe('links never carry the secret', () => {
   });
 
   it('refuses to let a plan slug escape the plans/ directory', () => {
-    expect(planPagePath('../../etc/passwd')).toBe('plans/------etc-passwd.html');
+    // The slashes are what would traverse; stripping them leaves an inert
+    // filename, dots and all.
+    expect(planPagePath('../../etc/passwd')).toBe('plans/..-..-etc-passwd.html');
+    expect(planPagePath('../../etc/passwd')).not.toContain('/etc/');
     expect(planPagePath('ok-slug_1.2')).toBe('plans/ok-slug_1.2.html');
   });
 });

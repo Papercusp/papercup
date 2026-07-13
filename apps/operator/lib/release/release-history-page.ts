@@ -127,9 +127,11 @@ function beaconScript(a: Analytics, page: string, version: string | null): strin
     props.referrer = document.referrer || '(direct)';
     props.screen = screen.width + 'x' + screen.height;
     props.lang = navigator.language;
-    // NOTE: no $current_url, and no path of any kind. The URL is the shared
-    // secret — sending it here would copy it into the analytics store. See the
-    // module header (point 3).
+    // NOTE: we deliberately send NO url and NO path of any kind — not the page
+    // location, not the analytics library's usual current-url property, nothing.
+    // The URL is the shared secret; sending it would copy that secret into the
+    // analytics store. See the module header (point 3). A test greps this file
+    // for the forbidden tokens, so do not reintroduce one even in a comment.
     fetch(${JSON.stringify(a.host)} + '/e/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
