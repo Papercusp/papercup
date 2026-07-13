@@ -84,6 +84,13 @@ const SKIP = [
 
 const HOME_PATH = /\/(home|Users)\/([A-Za-z0-9._-]+)(?=[/'"`\s\\)\]:,;]|$)/g;
 
+/** A home path ending a SENTENCE swallows the full stop: `/home/jdoe.` captures the
+ *  user as "jdoe." — which then matches no placeholder and no real user, and reports a
+ *  fake identity as a real leak. A `.` is legal INSIDE a username (`john.doe`) but a
+ *  home directory never ENDS in one, so a trailing dot is always punctuation. Strip it
+ *  before classifying (the lookahead can't: it must still allow the dot mid-name). */
+const stripTrailingDots = (user) => user.replace(/\.+$/, '');
+
 /** The SAME home dir with its slashes munged to dashes — the form Claude uses to
  *  name a session/project directory (`/home/dev/x` → `-home-dev-x`). This lint
  *  passed a clean 0 while `apps/tui/src/transcript.rs` sat there holding the
@@ -112,7 +119,7 @@ for (const f of files) {
   if (!/[/-](home|Users)[/-]/.test(src)) continue;
   src.split('\n').forEach((line, i) => {
     for (const m of line.matchAll(HOME_PATH)) {
-      const user = m[2];
+      const user = stripTrailingDots(m[2]);
       if (GENERIC_USERS.has(user) || isRedacted(user) || isFileInHome(user)) continue;
       findings.push({ file: f, line: i + 1, user, text: line.trim().slice(0, 110) });
     }

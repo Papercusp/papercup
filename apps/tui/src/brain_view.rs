@@ -138,6 +138,27 @@ impl BrainViewState {
         if uuid == self.current_uuid {
             return;
         }
+        // BETWEEN WAKES, keep the last wake's turns on screen.
+        //
+        // A wake's transcript is ingested, archived and then DELETED from disk ~15s
+        // after the session ends (session-archive-hook.ts, plan
+        // session-db-archive-retire-dirs-2026-07-10), which retired this module's
+        // founding assumption that it "keeps showing the last wake's transcript,
+        // which persists on disk after the process exits". It does not persist any
+        // more: the resolve goes empty the moment the archive lands, and wiping to a
+        // bare "waiting…" pane meant the Mug/Kettle panes sat EMPTY for the ~18 of
+        // every ~20 minutes they are not mid-wake (the Kettle pane the owner
+        // screenshotted on 2026-07-13 was in exactly this state).
+        //
+        // So an empty resolve means "between wakes", NOT "nothing to show" — hold
+        // the turns and just drop the attachment. The next wake re-attaches below.
+        if uuid.is_none() && !self.messages.is_empty() {
+            self.current_uuid = None;
+            self.offset = 0;
+            self.path = None;
+            self.status = AttachState::Waiting;
+            return;
+        }
         self.current_uuid = uuid;
         self.offset = 0;
         self.path = resolved.map(|(_, p)| p);
@@ -654,6 +675,58 @@ mod tests {
         assert_eq!(state.offset, 0);
         assert!(state.messages.is_empty());
         assert_eq!(state.path, Some(PathBuf::from("/tmp/q.jsonl")));
+    }
+
+    #[test]
+    fn between_wakes_the_pane_holds_the_last_wake_instead_of_blanking() {
+        // The wake's transcript is archived + DELETED ~15s after the session ends
+        // (session-archive-hook.ts), so the resolve goes empty between wakes. That
+        // must NOT wipe the pane: a mug/kettle wake runs ~2 of every ~20 minutes, so
+        // clearing on an empty resolve left the pane blank almost all the time.
+        let mut state = BrainViewState::new(Scope::Overwatch);
+        state.set_resolved(Some((
+            "90408e54-7492-4f22-8df9-fed630425eeb".into(),
+            PathBuf::from("/tmp/k.jsonl"),
+        )));
+        state.offset = 4096;
+        state.push_messages(vec![ChatMessage::assistant("kettle wake N")]);
+
+        // The wake ends and its transcript is archived away → resolve returns None.
+        state.set_resolved(None);
+
+        // Detached (nothing left to tail) but the turns STAY on screen.
+        assert_eq!(state.status, AttachState::Waiting);
+        assert_eq!(state.path, None);
+        assert_eq!(state.offset, 0);
+        assert_eq!(state.messages.len(), 1, "last wake's turns must be retained");
+        assert_eq!(state.messages[0].content, "kettle wake N");
+        // Still-empty resolves are idle — no churn, no re-clear.
+        state.set_resolved(None);
+        assert_eq!(state.messages.len(), 1);
+
+        // The NEXT wake attaches and takes over the pane (fresh session, fresh tail).
+        state.set_resolved(Some((
+            "aaaaaaaa-1111-2222-3333-444444444444".into(),
+            PathBuf::from("/tmp/k2.jsonl"),
+        )));
+        assert_eq!(
+            state.status,
+            AttachState::Attached {
+                short: "aaaaaaaa".into()
+            }
+        );
+        assert!(state.messages.is_empty());
+    }
+
+    #[test]
+    fn a_first_resolve_that_finds_nothing_still_reports_waiting() {
+        // The retain path must not mask the cold-start case: no wake seen yet ⇒ the
+        // pane legitimately has nothing to show and says so.
+        let mut state = BrainViewState::new(Scope::Queen);
+        state.set_resolved(None);
+        assert_eq!(state.status, AttachState::Waiting);
+        assert!(state.messages.is_empty());
+        assert_eq!(state.path, None);
     }
 
     #[test]
