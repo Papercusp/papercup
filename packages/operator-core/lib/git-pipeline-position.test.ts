@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   gitPipelinePosition,
   summarizePosition,
+  classifyRuntimeOwner,
   type GitRunner,
   type PipelinePosition,
 } from './git-pipeline-position';
@@ -270,9 +271,113 @@ describe('gitPipelinePosition (P-002)', () => {
         deployOrigin: 'stale-behind-gate',
       },
       gitSyncLastStatus: 'synced',
+      runtime: classifyRuntimeOwner('a.ts'),
       notes: [],
     };
     expect(summarizePosition(base)).toContain('deployed ✗');
     expect(summarizePosition(base)).not.toContain('(live)');
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * EI-10895 — the RUNTIME-OWNER map.
+ *
+ * The bug being fixed: this tool reported `deployed ✗` + "sleep on the deploy:
+ * deploy:await" for code that the release pipeline DOES NOT CARRY. The gateway,
+ * bg-host and embed-sidecar all execute tsx straight from the staging tree, so a
+ * deploy is a no-op for them and a RESTART is the only activation. An agent that
+ * follows the old advice waits forever for an event that lands and changes
+ * nothing (this cost an hour on WI-4541, a gateway admission fix).
+ * ------------------------------------------------------------------------- */
+describe('runtime-owner map (EI-10895)', () => {
+  const gatewayPath = 'packages/operator-core/lib/inference-gateway/gateway-priority-tiers.ts';
+
+  it.each([
+    [gatewayPath, 'gateway', 'gateway'],
+    ['apps/operator/bin/embed-sidecar.ts', 'embed-sidecar', 'embed-sidecar'],
+    ['packages/operator-core/lib/dbos/routines-tick.ts', 'bg-host', 'bg-host'],
+  ])('%s → runs in %s, and a DEPLOY is not its activation path', (p, host, restartTarget) => {
+    const own = classifyRuntimeOwner(p)!;
+    expect(own.host).toBe(host);
+    expect(own.releasePipelineApplies).toBe(false);
+    expect(own.restartTarget).toBe(restartTarget);
+    expect(own.activation).toMatch(/dev:restart/);
+  });
+
+  it('the Tauri shell is carried by NEITHER a deploy nor a dev:restart — it is compiled', () => {
+    const own = classifyRuntimeOwner('papercusp-desktop/src-tauri/src/main.rs')!;
+    expect(own.host).toBe('tauri-desktop');
+    expect(own.releasePipelineApplies).toBe(false);
+    expect(own.restartTarget).toBeNull();
+  });
+
+  it('ordinary operator code still reads as release-pipeline-carried (no false positives)', () => {
+    for (const p of ['apps/operator/app/page.tsx', 'packages/operator-core/lib/agent-tools/dev/why.ts']) {
+      const own = classifyRuntimeOwner(p)!;
+      expect(own.host).toBe('operator-release');
+      expect(own.releasePipelineApplies).toBe(true);
+    }
+  });
+
+  it('a sha-only probe cannot be classified (returns null, keeping the default reading)', () => {
+    expect(classifyRuntimeOwner(null)).toBeNull();
+    expect(classifyRuntimeOwner(undefined)).toBeNull();
+  });
+
+  it('WI-4541 repro — a gateway path summary leads with the RESTART, never "deployed ✗"', async () => {
+    const git = fakeGit({
+      pathCommit: 'gate123456',
+      subject: 'work-conserving tier admission',
+      // Fully committed + on staging, but NOT in main and NOT deployed — the exact
+      // state that made the old tool say "not live yet, sleep on the deploy".
+      contains: { HEAD: ['gate123456'], 'origin/staging': ['gate123456'] },
+    });
+    const res = await gitPipelinePosition(
+      { path: gatewayPath },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+
+    expect(res.positions.deployed).toBe(false); // the raw fact is unchanged…
+    expect(res.runtime?.host).toBe('gateway'); // …but it is no longer the HEADLINE.
+    expect(res.runtime?.releasePipelineApplies).toBe(false);
+
+    // FALSIFICATION: on the old code this summary was
+    //   "… committed ✓ · staging ✓ · main ✗ · deployed ✗."
+    // and the tool attached { awaitable: deploy:await }. Both were wrong.
+    expect(res.summary).toContain('dev:restart');
+    expect(res.summary).toContain('gateway');
+    expect(res.summary).not.toContain('deployed ✗');
+    expect(res.summary).not.toContain('main ✗');
+  });
+
+  it('an uncommitted gateway edit is ALREADY what the host will load — the summary says so', async () => {
+    const git = fakeGit({ dirty: true, pathCommit: 'gate123456', contains: { HEAD: ['gate123456'] } });
+    const res = await gitPipelinePosition(
+      { path: gatewayPath },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(res.dirtyUncommitted).toBe(true);
+    expect(res.summary).toMatch(/uncommitted edit is what it loads on restart/i);
+  });
+
+  it('shared operator-core/libs code carries the staging-host caveat (a deploy may not be your lever)', async () => {
+    const git = fakeGit({ pathCommit: 'aaa1111111', contains: { HEAD: ['aaa1111111'] } });
+    const res = await gitPipelinePosition(
+      { path: 'libs/papercusp-shared/src/resilience/priority-admission.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    // Still release-carried (the operator loads it too) — so we do NOT reclassify…
+    expect(res.runtime?.releasePipelineApplies).toBe(true);
+    // …but the agent is told the gateway/bg-host also run it from THIS tree.
+    expect(res.notes.some((n) => /gateway|bg-host/.test(n) && /dev:restart/.test(n))).toBe(true);
+  });
+
+  it('an app path gets NO staging-host caveat (it is operator-only — keep the note honest)', async () => {
+    const git = fakeGit({ pathCommit: 'bbb2222222', contains: { HEAD: ['bbb2222222'] } });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.tsx' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(res.notes.some((n) => /dev:restart/.test(n))).toBe(false);
   });
 });

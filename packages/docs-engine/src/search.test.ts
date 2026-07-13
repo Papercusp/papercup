@@ -120,21 +120,33 @@ describe('searchDocs', () => {
     // per-token contribution is capped near (k1+1)=2.2 no matter how many times
     // the token is repeated. Body stuffing can therefore no longer overtake a
     // genuine title match — which is the ranking inversion EI-10937 was about.
+    // Assertions are RELATIVE, deliberately. The previous version of this test
+    // pinned exact integers (`[4, 4, 3]`), which asserted the raw-count
+    // implementation rather than the intended contract — and absolute score
+    // assertions are precisely what made the EI-10937 scoring fix look risky.
+    // Score magnitudes are now informativeness-weighted and carry no fixed scale;
+    // what must hold is the ORDERING.
     const source = makeSource([
       { slug: 'body3', title: 'nope', body: 'foo foo foo' },
       { slug: 'm-title', title: 'foo', body: 'nope' },
       { slug: 'a-body4', title: 'nope', body: 'foo foo foo foo' },
+      // Body stuffing taken to an absurd degree must STILL not beat a title hit —
+      // that is the saturation property, and it is what stops a long page from
+      // buying rank with repetition.
+      { slug: 'z-stuffed', title: 'nope', body: 'foo '.repeat(500) },
     ]);
     const res = await searchDocs(source, { query: 'foo' });
 
-    // The title hit wins outright now; the two body-only pages trail it.
     expect(res.hits[0]?.slug).toBe('m-title');
-    expect(res.hits[0]?.score).toBe(4); // title ×4, body contributes 0
-    // Body-only pages score strictly below the title hit, and are BM25-capped.
+    const titleScore = res.hits[0]!.score;
     for (const h of res.hits.slice(1)) {
-      expect(h.score).toBeLessThan(4);
-      expect(h.score).toBeLessThanOrEqual(2.2 + 1e-9); // (k1 + 1) ceiling per token
+      expect(h.score).toBeLessThan(titleScore);
     }
+    // And the 500× stuffed page does not outrank the modest 4× one by anything
+    // like 125× — TF is saturated, not linear.
+    const stuffed = res.hits.find((h) => h.slug === 'z-stuffed')!;
+    const modest = res.hits.find((h) => h.slug === 'a-body4')!;
+    expect(stuffed.score / modest.score).toBeLessThan(2);
   });
 
   it('EXCLUDES pages marked `searchable: false` from results entirely (EI-10937 guard 1)', async () => {
@@ -162,23 +174,44 @@ describe('searchDocs', () => {
     // Note this aggregate deliberately does NOT set `searchable:false`: guard 1
     // would trivially satisfy this test. This asserts the SCORER itself is sound,
     // so the next unflagged 100KB page cannot become the new black hole.
-    const filler = 'lorem ipsum coordination plan release gate agent fleet memory '.repeat(400);
-    const aggregate =
-      'nuqs throttled url flush race '.repeat(20) + filler; // mentions the terms a LOT, but is mostly noise
+    //
+    // The corpus is modelled on the real one: many ordinary docs, whose combined
+    // vocabulary the aggregate carries. That is what makes COMMON query tokens
+    // ('url', 'race', 'flush') worthless and the RARE one ('nuqs') decisive — the
+    // IDF half of BM25. A 2-page fixture cannot express this, which is exactly why
+    // the first version of this fix looked correct and was not.
+    const fillers: PageSpec[] = Array.from({ length: 20 }, (_, i) => ({
+      slug: `guide/topic-${i}`,
+      title: `Topic ${i}: race conditions, url routing and flush semantics`,
+      body: `A guide about url handling, race conditions and flush behaviour in subsystem ${i}. `.repeat(12),
+    }));
+
+    // The aggregate: one index ROW per doc (title + description), like the real
+    // generated index — so it inherits the whole corpus's vocabulary, and mentions
+    // the target's rare term exactly once, as its row.
+    const aggregateBody =
+      fillers.map((f) => `| ${f.title} | a guide about url race flush routing |`).join('\n') +
+      '\n| load-sensitive test flakes and the soak lane | nuqs throttled url flush race |';
+
     const source = makeSource([
-      { slug: 'reference/big-aggregate', title: 'Everything index', body: aggregate },
+      ...fillers,
+      { slug: 'reference/big-aggregate', title: 'Everything index', body: aggregateBody },
       {
         slug: 'agent-insights/load-sensitive-test-flakes',
         title: 'load-sensitive test flakes and the soak lane',
-        body: 'The reset path races: nuqs applies a set optimistically but commits the url write on a throttle, so a remount inside that window re-reads a url that never heard about the flush.',
+        body:
+          'The reset path races: nuqs applies a set optimistically but commits the url write on a throttle. ' +
+          'A remount inside that nuqs throttled window re-reads a url that never heard about the flush, so the race resolves the losing way. ' +
+          'Reproducing the nuqs flush race needs cpu starvation.',
       },
     ]);
     const res = await searchDocs(source, { query: 'nuqs throttled url flush race' }, {});
 
+    const focused = res.hits.find((h) => h.slug === 'agent-insights/load-sensitive-test-flakes');
+    const aggregate = res.hits.find((h) => h.slug === 'reference/big-aggregate');
+
     expect(res.hits[0]?.slug).toBe('agent-insights/load-sensitive-test-flakes');
-    expect(res.hits[0]!.score).toBeGreaterThan(
-      res.hits.find((h) => h.slug === 'reference/big-aggregate')!.score,
-    );
+    expect(focused!.score).toBeGreaterThan(aggregate!.score);
   });
 
   it('an exact-slug query hard-hits that doc first even when generic tokens favor other pages (EI-10097)', async () => {

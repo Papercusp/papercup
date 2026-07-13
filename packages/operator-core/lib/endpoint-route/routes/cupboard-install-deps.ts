@@ -58,6 +58,11 @@ export default defineTool({
         tools: asStrArray(body.deps.tools),
         packs: asStrArray(body.deps.packs),
         plugins: asStrArray(body.deps.plugins),
+        // Event deps (D-003 / P-007) — `[{ family, optional? }]`. Malformed
+        // entries are dropped rather than 400'd, matching asStrArray's posture
+        // on the other three axes (the resolver is the authority on what a
+        // declared dep means; this layer only shapes the wire payload).
+        events: asEventDeps(body.deps.events),
       };
     } else if (body.blueprintId || body.blueprint) {
       const resolver = operatorResolveExtends({});

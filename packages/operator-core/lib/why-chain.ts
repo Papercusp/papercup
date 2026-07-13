@@ -130,9 +130,24 @@ export function gateLabel(snap: GitPipelineSnapshot): GateLabel {
   return 'green';
 }
 
+/**
+ * WHAT IS ACTUALLY RED — the gate's own verdict first, the time-window proxy second (WI-4533).
+ *
+ * `gate_health.failingTests` is the checkpoint naming the tests that redded IT. `recentFailingFiles`
+ * is a 2h scan of `test_runs` — a proxy that answers a *different* question ("what failed lately,
+ * anywhere") and can easily be empty for a genuinely red gate. Measured live on a red gate
+ * (2026-07-13): the proxy returned NOTHING while the gate's own record held all four culprits, so
+ * the chain reported "gate red" and named nobody. Prefer first-hand evidence; keep the proxy as the
+ * fallback for an older blob that never recorded any.
+ */
+export function namedFailures(snap: GitPipelineSnapshot, recentFiles: string[]): string[] {
+  return snap.gate.failingTests?.length ? snap.gate.failingTests : recentFiles;
+}
+
 function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainStage {
   const g = snap.gate;
-  const filesNote = failingFiles.length ? ` — recent failing file(s): ${failingFiles.join(', ')}` : '';
+  const named = namedFailures(snap, failingFiles);
+  const filesNote = named.length ? ` — failing: ${named.slice(0, 6).join(', ')}` : '';
   if (snap.openConflict) {
     return {
       stage: 'gate',
@@ -395,11 +410,18 @@ export async function computePipelineHealth(
     };
   }
 
-  // The failing-files read is the only extra query, and a GREEN gate never pays for it.
+  // The failing-files query is the only extra IO, and it is skipped TWICE over: a GREEN gate never
+  // pays for it, and neither does a red gate that already NAMED its own failures (the common case
+  // — see namedFailures). The proxy scan is the last resort, not the first read.
   const provisional = gateStage(snap, []);
-  const failingFiles = provisional.status === 'ok' ? [] : await recentFailingFiles(deps);
-  const gate = failingFiles.length ? gateStage(snap, failingFiles) : provisional;
+  // `?? []` (not `?.length === 0`): a blob written before failingTests existed has the field
+  // UNDEFINED, and `undefined === 0` is false — which would have silently skipped the fallback
+  // scan for exactly the old gates that most need it.
+  const needsProxy = provisional.status !== 'ok' && (snap.gate.failingTests ?? []).length === 0;
+  const proxyFiles = needsProxy ? await recentFailingFiles(deps) : [];
+  const gate = proxyFiles.length ? gateStage(snap, proxyFiles) : provisional;
   const deploy = deployStage(snap);
+  const failingFiles = namedFailures(snap, proxyFiles);
 
   return {
     generatedAtMs: now,

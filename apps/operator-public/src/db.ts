@@ -89,6 +89,13 @@ export interface HarnessRow {
   // only; NULL elsewhere and for pre-006 listings. The operator's tool→provider
   // resolver reads it to answer "which Cupboard unit provides tool X?".
   provides_tools: string | null;
+  // Event axis (migration 012 / D-003): JSON-encoded array of the awaitable
+  // event-key FAMILIES the unit registers when installed, each
+  // { family, keyTemplate, describe? }. Kinds plugin|pack only; NULL elsewhere
+  // and for every pre-012 listing. The operator's event→provider resolver
+  // (`resolveEventProvider`) reads it to answer "which Cupboard unit provides
+  // event family X?" — the `installable` rung of the event ladder.
+  provides_events: string | null;
   // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
   // the owning Hive's raw-32-byte-base64 Ed25519 pubkey (same encoding as the
   // hive directory announce) + a denormalized display title. One row per
@@ -153,6 +160,8 @@ export interface NewHarnessInput {
   publisher_attestation_gist_id?: string | null;
   /** Pack model (migration 006): JSON string[] of provided tool names; plugin|pack only. */
   provides_tools?: string | null;
+  /** Event axis (migration 012 / D-003): JSON array of provided event families; plugin|pack only. */
+  provides_events?: string | null;
   /** Repo→Hive binding (migration 007): owning Hive's raw-32-byte-base64 Ed25519 pubkey. */
   hive_pubkey?: string | null;
   /** Denormalized Hive display title (directory announce stays authoritative). */
@@ -174,12 +183,12 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           title, description, topic_hex,
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
-          provides_tools,
+          provides_tools, provides_events,
           hive_pubkey, hive_title, blueprint_kind,
           review_status,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -199,6 +208,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.publisher_device_pubkey ?? null,
       h.publisher_attestation_gist_id ?? null,
       h.provides_tools ?? null,
+      h.provides_events ?? null,
       h.hive_pubkey ?? null,
       h.hive_title ?? null,
       h.blueprint_kind ?? null,

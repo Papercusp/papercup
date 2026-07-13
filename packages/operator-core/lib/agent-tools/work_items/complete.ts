@@ -104,6 +104,31 @@ const itemSpec = z.object({
 
 type CompleteItem = z.infer<typeof itemSpec>;
 
+/**
+ * EI-10949 — does this completion prose name ANOTHER WORK-ITEM as a duplicate?
+ *
+ * The nudge exists for the WI-3646 failure: an item dup-closed 3× with the survivor named
+ * only in prose ("dup of WI-3543"), so no scanner could follow the link. But the old test
+ * was `/dup(licate)? of/` alone, which fires on any English sentence containing the phrase.
+ * It fired on a completion that said a duplicated *type interface* had been removed — the
+ * word "duplicate" was about CODE, not a work-item, and there was no duplicate item to link.
+ *
+ * A false positive here is not free, which is the assumption the old comment got wrong: this
+ * warning shares a channel with real ones, and a heuristic that misfires on ordinary prose
+ * teaches agents to skim past the channel entirely — including the time it is right. (Same
+ * class as EI-10951: a derived claim asserted with more confidence than its evidence carries.)
+ *
+ * So require what the WI-3646 case actually had and ordinary prose does not: a work-item ID
+ * near the phrase. "dup of WI-3543" still warns; "removed a duplicate of the SelectEntry
+ * interface" no longer does.
+ *
+ * PURE — unit-tested without PG.
+ */
+export function mentionsWorkItemDuplicate(text: string): boolean {
+  // "dup/dupe/duplicate(s) of" … then a work-item id within a short window (same clause).
+  return /\b(?:is\s+a\s+)?dup(?:e|licate)?s?\s+of\b[^.\n;]{0,40}?\b(?:WI|EI|F)-\d+\b/i.test(text);
+}
+
 function completionEvidenceFromRecord(
   rec: Omit<CompletionRecord, 'workItem'> & { workItem?: string },
 ): CompletionVerificationEvidence | undefined {
@@ -310,12 +335,11 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
         if ('error' in linkRes) duplicateOfWarning = `failed to record the \`duplicates\` link to '${duplicateOf}': ${linkRes.error}`;
       }
     }
-  } else if (/\b(?:is\s+a\s+)?dup(?:e|licate)?s?\s+of\b/i.test(`${it.completion.summary} ${it.completion.status ?? ''}`)) {
+  } else if (mentionsWorkItemDuplicate(`${it.completion.summary} ${it.completion.status ?? ''}`)) {
     // The exact free-text pattern that let WI-3646 get dup-closed 3× with no structured
     // trace ("dup of WI-3543" in prose, nothing a scanner could follow). Nudge toward the
-    // structured field without blocking — this completion's prose may be about something
-    // else entirely (a false positive costs nothing; a silent miss is the WI-3646 failure).
-    duplicateOfWarning = `this completion's summary/status mentions a duplicate but \`completion.duplicateOf\` was not set — pass the SURVIVING item's id there so a \`duplicates\` link + assignee notification are recorded, not just free text.`;
+    // structured field without blocking.
+    duplicateOfWarning = `this completion's summary/status names another work-item as a duplicate but \`completion.duplicateOf\` was not set — pass the SURVIVING item's id there so a \`duplicates\` link + assignee notification are recorded, not just free text.`;
   }
   if (duplicateOf && duplicateOf !== it.id && existing.assignee && existing.assignee !== ident.ownerId) {
     await subscribeWorkItem(existing.assignee, it.id, 'full', { harness: it.harness }).catch(() => {});

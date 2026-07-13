@@ -395,3 +395,62 @@ describe('WI-4533 — computePipelineHealth (the coord:orient fold)', () => {
     expect(res.verdictStale).toBe(true);
   });
 });
+
+/**
+ * WI-4533 — WHAT is red. The gate records the tests that redded it (`gate_health.failingTests`);
+ * nothing surfaced them, so every consumer fell back to a 2h `test_runs` scan that answers a
+ * DIFFERENT question. Live on a red gate the scan returned nothing while the gate's own record held
+ * all four culprits: the chain said "gate red" and named no one.
+ */
+describe('WI-4533 — namedFailures: the gate\'s own verdict beats the time-window proxy', () => {
+  const redNaming = (tests: string[]) =>
+    withRoutines(snap({ gate: { consecutiveReds: 1, failingTests: tests } as Partial<GitPipelineSnapshot['gate']> }));
+
+  it('names the tests the GATE named, and does not even run the proxy scan', async () => {
+    let scanned = 0;
+    const res = await computePipelineHealth(
+      deps({
+        snap: redNaming(['lib/a.test.ts', 'lib/b.test.ts']),
+        sql: (async () => {
+          scanned++;
+          return [];
+        }) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.recentFailingFiles).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+    expect(res.gate.reason).toContain('lib/a.test.ts');
+    expect(scanned).toBe(0); // first-hand evidence in hand ⇒ no proxy query at all
+  });
+
+  it('falls back to the proxy scan for an OLD blob that never recorded failingTests', async () => {
+    // `undefined`, not `[]` — the pre-WI-4533 shape. This is the case a `?.length === 0` guard
+    // would have silently skipped, leaving exactly the oldest gates with no names at all.
+    const old = withRoutines(snap({ gate: { consecutiveReds: 1 } }));
+    delete (old.gate as { failingTests?: unknown }).failingTests;
+    const res = await computePipelineHealth(
+      deps({
+        snap: old,
+        sql: (async () => [{ file_path: 'lib/proxy.test.ts', finished_at: new Date().toISOString() }]) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.recentFailingFiles).toEqual(['lib/proxy.test.ts']);
+  });
+
+  it('a STALE verdict still names NOBODY, even though it has failingTests recorded', async () => {
+    // The strongest case for the stale rule: the blob is FULL of names, and they are exactly the
+    // names a phantom dispatch would chase (WI-4489). The gate's colour is unknown ⇒ say nothing.
+    const s = withRoutines(
+      snap({
+        gate: {
+          consecutiveReds: 4,
+          verdictStale: true,
+          verdictStaleReason: 'the release pin advanced past this red',
+          failingTests: ['lib/innocent.test.ts', 'lib/also-innocent.test.ts'],
+        } as Partial<GitPipelineSnapshot['gate']>,
+      }),
+    );
+    const res = await computeWhyChain(deps({ snap: s }));
+    expect(res.stages[0].reason).toContain('STALE');
+    expect(res.stages[0].reason).not.toContain('innocent');
+  });
+});

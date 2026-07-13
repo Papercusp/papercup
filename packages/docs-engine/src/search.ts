@@ -219,18 +219,17 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
     const description = page.description ?? '';
     let score = 0;
     for (const t of tokens) {
-      // Title/description are short, curated, bounded fields — a raw weighted
-      // count is the right signal there, and keeping them un-IDF'd preserves the
-      // "a title match is a strong signal" contract. Only the unbounded body,
-      // where the black hole lives, gets full BM25 (IDF × length-normalized TF).
-      score += countOccurrences(title, t) * 4;
-      score += countOccurrences(description, t) * 2;
-      score += bm25BodyScore(
-        countOccurrences(body, t),
-        body.length,
-        avgBodyLen,
-        tokenIdf.get(t) ?? 1,
-      );
+      const w = tokenIdf.get(t) ?? 1;
+      // IDF applies to EVERY field, not just the body. Weighting only the body by
+      // informativeness leaves the same hole one level up: a page whose TITLE is
+      // full of common query words ('...race conditions, url routing and flush
+      // semantics') would out-rank the page that actually answers the rare part of
+      // the query. Field weights (title ×4, description ×2) survive as multipliers
+      // ON the informativeness-weighted score, so a title hit is still a strong
+      // signal — just not a strong signal for a word that means nothing.
+      score += countOccurrences(title, t) * 4 * w;
+      score += countOccurrences(description, t) * 2 * w;
+      score += bm25BodyScore(countOccurrences(body, t), body.length, avgBodyLen, w);
     }
     score += slugMatchBonus(args.query, page);
     if (score === 0) continue;

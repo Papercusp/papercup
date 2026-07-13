@@ -104,6 +104,15 @@ export interface GitPipelineSnapshot {
     /** P-009: workspaces that have flaked ≥3× in the gate (failed-then-passed-on-
      *  retry) — chronically flaky, quarantine candidates. */
     flakyWorkspaces: string[];
+    /** WI-4533: the tests the gate ITSELF named in its last verdict (`gate_health.failingTests`)
+     *  — the workspace(s) + file path(s) that actually redded it. The blob has carried these all
+     *  along and NO read surfaced them, so every consumer asking "what is red?" fell back to
+     *  why-chain's 2h `test_runs` heuristic — which, measured live on a red gate (2026-07-13),
+     *  returned NOTHING while this field held all four culprits. First-hand evidence beats a
+     *  time-windowed proxy: this is the gate's own answer to "which tests are failing".
+     *  Empty on a green gate — and NEVER to be trusted when `verdictStale` (WI-4489: those names
+     *  are what a phantom dispatch chases). */
+    failingTests: string[];
   };
 
   /** A currently-OPEN merge conflict (resolver still working / unresolved), or null. */
@@ -315,6 +324,8 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
       lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
       lastFixerAtMs: num(lastFixer?.at),
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,
+      // WI-4533: the gate's OWN verdict about what is failing (see the type's note).
+      failingTests: strArr(gateHealth.failingTests),
       flakyWorkspaces: Object.entries(flakeHistory)
         .filter(([, v]) => (v?.flakes ?? 0) >= 3)
         .map(([ws]) => ws),

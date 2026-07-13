@@ -72,6 +72,10 @@ interface PublishBody {
   // installed; kinds plugin|pack only. Stored as a JSON TEXT column and
   // returned verbatim on GET (the operator's resolver parses it).
   provides_tools?: unknown;          // expected: string[]
+  // Event axis (migration 012 / D-003 / P-007). The awaitable event-key FAMILIES
+  // the unit registers when installed; kinds plugin|pack only. Stored as a JSON
+  // TEXT column and returned verbatim on GET (the operator's resolver parses it).
+  provides_events?: unknown;         // expected: Array<{ family, keyTemplate, describe? }>
   // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
   // owning Hive's raw-32-byte-base64 Ed25519 pubkey + denormalized title.
   hive_pubkey?: unknown;             // expected: 44-char base64 (32 bytes)
@@ -81,6 +85,12 @@ interface PublishBody {
 /** provides_tools caps (migration 006): bounded so a listing can't smuggle a payload. */
 const PROVIDES_TOOLS_MAX_ENTRIES = 200;
 const PROVIDES_TOOLS_MAX_NAME_LEN = 128;
+
+/** provides_events caps (migration 012): same posture — a declaration, not a payload. */
+const PROVIDES_EVENTS_MAX_ENTRIES = 200;
+const PROVIDES_EVENTS_MAX_FAMILY_LEN = 128;
+const PROVIDES_EVENTS_MAX_TEMPLATE_LEN = 256;
+const PROVIDES_EVENTS_MAX_DESCRIBE_LEN = 300;
 
 const TOPIC_HEX_RE = /^[0-9a-f]{64}$/;
 // Standard base64 of exactly 32 raw bytes (an Ed25519 pubkey): 43 chars + '='.
@@ -308,6 +318,53 @@ function registerListingEndpoints(
         return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'non_empty_strings_max_128' }, 400);
       }
       providesToolsJson = JSON.stringify(pt);
+    }
+
+    // provides_events (migration 012 / D-003) — the event half of the pack
+    // model's dependency axis. Same posture as provides_tools: installable
+    // kinds only, bounded, stored as JSON TEXT.
+    //
+    // Validated STRUCTURALLY, not just as strings, because a malformed family
+    // here is not inert: the operator resolves an awaiter's key template BY
+    // FAMILY ID, so a declaration missing its keyTemplate (or carrying a
+    // duplicate family) would resolve to a key nothing emits and park the
+    // awaiting agent forever. Rejecting it at publish is the cheap place to
+    // catch that — the alternative is an agent hanging in silence, days later,
+    // on someone else's host.
+    let providesEventsJson: string | null = null;
+    if (body.provides_events != null) {
+      const bad = (reason: string) =>
+        c.json({ error: 'invalid_field', field: 'provides_events', reason }, 400);
+      if (kind !== 'plugin' && kind !== 'pack') return bad('plugin_or_pack_kind_only');
+      const pe = body.provides_events;
+      if (!Array.isArray(pe) || pe.length === 0 || pe.length > PROVIDES_EVENTS_MAX_ENTRIES) {
+        return bad('array_1_to_200');
+      }
+      const families = new Set<string>();
+      const clean: Array<{ family: string; keyTemplate: string; describe?: string }> = [];
+      for (const raw of pe) {
+        if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return bad('entries_must_be_objects');
+        const { family, keyTemplate, describe } = raw as Record<string, unknown>;
+        if (typeof family !== 'string' || family.trim().length === 0 || family.length > PROVIDES_EVENTS_MAX_FAMILY_LEN) {
+          return bad('family_non_empty_string_max_128');
+        }
+        if (
+          typeof keyTemplate !== 'string' ||
+          keyTemplate.trim().length === 0 ||
+          keyTemplate.length > PROVIDES_EVENTS_MAX_TEMPLATE_LEN
+        ) {
+          return bad('key_template_non_empty_string_max_256');
+        }
+        // A duplicate family id makes "who provides X?" ambiguous within a single
+        // unit — reject rather than silently picking one.
+        if (families.has(family)) return bad('duplicate_family');
+        families.add(family);
+        if (describe != null && (typeof describe !== 'string' || describe.length > PROVIDES_EVENTS_MAX_DESCRIBE_LEN)) {
+          return bad('describe_string_max_300');
+        }
+        clean.push({ family, keyTemplate, ...(typeof describe === 'string' ? { describe } : {}) });
+      }
+      providesEventsJson = JSON.stringify(clean);
     }
 
     // Repo→Hive binding fields (migration 007 / hive-from-github-url D-004

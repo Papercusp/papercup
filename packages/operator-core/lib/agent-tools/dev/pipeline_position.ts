@@ -17,13 +17,14 @@ export default defineTool({
   name: 'dev:pipeline_position',
   profile: 'engineer',
   description:
-    'Read-only: where a change sits along the git-sync → green-checkpoint → release pipeline. Pass a repo-relative `path` (its latest commit) OR a `sha`; returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary. Answers "did my edit land + is it live on :3070?" without forensic git/PG/curl.',
+    '"Is my edit live YET — and what actually makes it live?" Read-only. Pass a repo-relative `path` (preferred) or a `sha`: returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary — AND, from the path, WHICH PROCESS RUNS THAT CODE. That second half matters: the gateway (:8788), bg-host (routines/DBOS) and embed-sidecar all run tsx STRAIGHT FROM THE STAGING TREE, so a deploy NEVER carries their code — the edit is already on their disk and a `dev:restart { target }` is what loads it. For those paths this returns an `activation` block (the exact restart call) and deliberately does NOT tell you to wait on the deploy.',
   capability: 'intel:read',
   guidance: {
-    when: 'After leaving an edit in the tree (git-sync owns commit/push), to confirm it reached origin/staging, passed the green gate into main, and deployed to the live :3070 operator — or to see WHY it is stuck (gate red/stalled).',
+    when: 'After leaving an edit in the tree (git-sync owns commit/push): to confirm it reached staging/main/:3070, to see WHY it is stuck (gate red/stalled) — or, whenever the code you touched might not be operator code, to find out whether a deploy or a RESTART is what activates it. Pass `path`, not `sha`: the sha cannot tell you which host runs the code.',
     notWhen: 'To PAUSE sync (use locks:acquire_resource on git-sync:<slug>). For the whole-pipeline dashboard use the /admin Git tab; this is the targeted per-path/sha probe.',
-    chaining: 'Edit a file → (git-sync commits within minutes) → dev:pipeline_position{path} to confirm it reached staging/main/:3070.',
+    chaining: 'Edit → dev:pipeline_position{path} → if `activation` is present, dev:restart{target} (a deploy would be a no-op); else deploy:await / release:deploy.',
     seeAlso: [
+      'dev:restart (loads an edit into gateway / bg-host / embed-sidecar / :3170 — what `activation` points at)',
       'dev:build_status (deploy / build status)',
       'release:deploy (force or inspect the deploy)',
     ],
@@ -46,12 +47,36 @@ export default defineTool({
       return { data: { error: 'Provide a path or a sha.' } };
     }
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha });
+
+    // EI-10895: the `awaitable` below is only TRUE ADVICE for code the release
+    // pipeline actually carries. For a staging-tree tsx host (gateway / bg-host /
+    // embed-sidecar) or the Tauri shell, a deploy is a NO-OP — telling the agent to
+    // sleep on `deploy:await` sends it to wait forever for an event that will land
+    // and change nothing. Emit the real activation lever instead.
+    const runtime = result.runtime;
+    if (runtime && !runtime.releasePipelineApplies) {
+      return {
+        data: {
+          ...result,
+          activation: {
+            hint: runtime.activation,
+            host: runtime.host,
+            releasePipelineApplies: false,
+            ...(runtime.restartTarget
+              ? { tool: 'dev:restart', args: { target: runtime.restartTarget, confirm: true } }
+              : {}),
+            note: 'Do NOT deploy:await this path — the process that runs it never reads the release checkout. The `positions.deployed` flag below is about the operator, not about this code being live.',
+          },
+        },
+      };
+    }
+
     // event-await-discoverability P-001: this is the #1 poll site the leader hit
     // repeatedly this session while `release:deployed` already fired. Advertise the
     // awaitable so the answer to "is it live yet?" is a sleep, not a re-poll. Point
     // at the GLOBAL key (fires on every deploy, always live) — deploy:await refines
     // it to the per-sha key. Only when the change isn't deployed yet is a wait useful.
-    const deployed = (result as { positions?: { deployed?: boolean } }).positions?.deployed === true;
+    const deployed = result.positions?.deployed === true;
     const awaitable = deployed
       ? undefined
       : {

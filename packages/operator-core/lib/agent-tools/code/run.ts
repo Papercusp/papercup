@@ -396,6 +396,77 @@ function sanitizeCodeRunLogLine(raw: string): string {
  * while it is still bounded, then swaps to a summarized dry-run preview with per-tool counts and a
  * representative sample.
  */
+/**
+ * EI-10951 — the honest failure warning.
+ *
+ * `plannedMutations` is recorded at DISPATCH time, so it includes calls that then threw.
+ * The old warning counted all of them as "already executed", which made the most common
+ * failure mode in practice — a script whose last call had a bad argument — report:
+ *
+ *     "1 write-effect call(s) already executed before this failure … do NOT blindly
+ *      re-run; check what actually landed, to avoid a double-write."
+ *
+ * Nothing had landed. The agent then burned a round-trip verifying a write that never
+ * happened (observed twice in one session, 2026-07-13). Worse, a warning that is wrong
+ * on the common case trains agents to skip it on the rare case it is RIGHT — a real
+ * partially-applied batch, which is precisely what it exists to catch.
+ *
+ * So classify honestly, and say only what is true:
+ *   landed    — dispatched and returned without throwing. These DID take effect.
+ *   rejected  — the dispatcher refused them before the handler ran (bad args, denied
+ *               gate). These provably wrote NOTHING; re-running is safe.
+ *   uncertain — threw for any other reason (handler error, timeout mid-flight). These
+ *               MAY have landed, and are the ONLY set that still earns the loud warning.
+ *
+ * PURE — unit-tested without PG or a live dispatcher.
+ */
+export function buildFailureWarning(
+  planned: readonly { tool: string }[],
+  rejected: readonly { tool: string }[],
+  uncertain: readonly { tool: string }[],
+): Record<string, string> {
+  const threw = rejected.length + uncertain.length;
+  const landedCount = Math.max(planned.length - threw, 0);
+  const tally = (ms: readonly { tool: string }[]): string => {
+    const by: Record<string, number> = {};
+    for (const m of ms) by[m.tool] = (by[m.tool] ?? 0) + 1;
+    return Object.entries(by)
+      .map(([t, n]) => `${t}×${n}`)
+      .join(', ');
+  };
+
+  // Nothing took effect and nothing is in doubt: say so plainly. This is the case the old
+  // warning got backwards, and the case an agent hits most.
+  if (landedCount === 0 && uncertain.length === 0) {
+    if (rejected.length === 0) return {};
+    return {
+      warning:
+        `${rejected.length} write-effect call(s) were REJECTED before execution (${tally(rejected)}) — ` +
+        'the dispatcher refused them (bad args / denied gate), so NOTHING was written. ' +
+        'No double-write risk: fix the call and re-run the script.',
+    };
+  }
+
+  const parts: string[] = [];
+  if (landedCount > 0) {
+    parts.push(`${landedCount} write-effect call(s) ALREADY EXECUTED before this failure`);
+  }
+  if (uncertain.length > 0) {
+    parts.push(
+      `${uncertain.length} threw mid-flight and MAY have landed (${tally(uncertain)})`,
+    );
+  }
+  const suffix =
+    rejected.length > 0
+      ? ` (${rejected.length} further call(s) were rejected before execution and wrote nothing.)`
+      : '';
+  return {
+    warning:
+      `${parts.join('; ')} — do NOT blindly re-run the whole script; check what actually ` +
+      `landed before retrying, to avoid a double-write.${suffix}`,
+  };
+}
+
 export function shapeMutationEcho(
   result: OrchestrationRunResult,
 ): OrchestrationRunResult | Record<string, unknown> {
@@ -431,16 +502,28 @@ export function shapeMutationEcho(
     };
   }
 
-  const { plannedMutations, okFalseMutations, ...rest } = result;
+  const { plannedMutations, okFalseMutations, rejectedMutations, uncertainMutations, ...rest } = result;
   // Defensive: fixture results built by hand (tests predating this field) omit it entirely.
   const okFalseMutationsList = okFalseMutations ?? [];
-  const byTool: Record<string, number> = {};
-  for (const m of plannedMutations) byTool[m.tool] = (byTool[m.tool] ?? 0) + 1;
+  const rejected = rejectedMutations ?? [];
+  const uncertain = uncertainMutations ?? [];
+  // EI-10951: `mutations.count` must count what LANDED, not what was dispatched — a
+  // rejected call wrote nothing and reporting it as a mutation is the same lie as the
+  // warning below. (A throw mid-flight stays counted: it may well have landed.)
+  const landedByTool: Record<string, number> = {};
+  for (const m of plannedMutations) landedByTool[m.tool] = (landedByTool[m.tool] ?? 0) + 1;
+  for (const m of rejected) {
+    const n = (landedByTool[m.tool] ?? 0) - 1;
+    if (n > 0) landedByTool[m.tool] = n;
+    else delete landedByTool[m.tool];
+  }
+  const landedCount = Math.max(plannedMutations.length - rejected.length, 0);
   return {
     ...rest,
     mutations: {
-      count: plannedMutations.length,
-      byTool,
+      count: landedCount,
+      byTool: landedByTool,
+      ...(rejected.length > 0 ? { rejectedCount: rejected.length, rejected } : {}),
       note: 'effect:write calls executed; per-call args omitted to keep the result bounded — re-run with dryRun:true to preview them',
     },
     // EI-7174: a script_timeout (or any other ok:false — a thrown error, a worker crash) does
@@ -449,14 +532,16 @@ export function shapeMutationEcho(
     // that only reads `error` and retries the whole script on a `ok:false` risks a double-write
     // (double-claim, double-post, …) for every mutation that already landed. Surface it at the
     // SAME top level as `error` — not just buried in `mutations.note` — so it can't be missed.
-    ...(!result.ok
-      ? {
-          warning:
-            `${plannedMutations.length} write-effect call(s) already executed before this failure ` +
-            `(${Object.entries(byTool).map(([t, n]) => `${t}×${n}`).join(', ')}) — do NOT blindly ` +
-            're-run the whole script; check what actually landed before retrying, to avoid a double-write.',
-        }
-      : {}),
+    //
+    // EI-10951: but say something TRUE. This used to count every DISPATCHED write as
+    // "already executed", including the one the dispatcher rejected on its args — so the
+    // single most common failure (a typo'd argument) produced a false "1 write already
+    // landed, do NOT re-run" and sent the agent to verify a write that never happened.
+    // A safety warning that cries wolf on the common case gets ignored in the rare case it
+    // is right. Now: `landed` = dispatched and did not throw; `rejected` = provably wrote
+    // nothing (safe to re-run); `uncertain` = threw mid-flight and MAY have landed — the
+    // only set that still earns the loud double-write warning.
+    ...(!result.ok ? buildFailureWarning(plannedMutations, rejected, uncertain) : {}),
     // EI-7669: a write-effect call can dispatch fine (no throw) yet report its OWN semantic
     // rejection (ok: false in its result body — e.g. work_items:set_state's completion-integrity
     // check). Nothing in `result.ok` / `error` reflects this — the SCRIPT still ran to a normal

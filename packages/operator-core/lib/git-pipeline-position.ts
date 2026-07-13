@@ -405,6 +405,13 @@ export async function gitPipelinePosition(
     deployOrigin,
   };
 
+  // EI-10895: classify against the SUPERPROJECT-relative path (a submodule path is
+  // resolved inside its own repo above, but the runtime map keys on the repo-relative
+  // path the caller passed).
+  const runtime = classifyRuntimeOwner(inp.path ?? null);
+  const caveat = runtime?.releasePipelineApplies ? sharedHostCaveat(inp.path ?? null) : null;
+  if (caveat) notes.push(caveat);
+
   const base: Omit<PipelinePosition, 'summary'> = {
     input: { path: inp.path ?? null, sha: inp.sha ?? null },
     repoRoot: root,
@@ -418,6 +425,7 @@ export async function gitPipelinePosition(
     deployedSha,
     gate,
     gitSyncLastStatus: snap.gitSync.lastStatus,
+    runtime,
     notes,
   };
   return { ...base, summary: summarizePosition(base) };
