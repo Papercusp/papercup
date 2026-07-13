@@ -107,6 +107,7 @@ describe('previewClaimSpecAdmission — WI-4429 write-time dead-cohort preventio
       harness: 'papercusp',
       assignee: 'su-leader',
       explain,
+      resolveFamily: async () => 'issue',
     });
     expect(result.errors[0]).toContain('0 are claim-path admissible');
     expect(result.preview).toMatchObject({
@@ -127,11 +128,36 @@ describe('previewClaimSpecAdmission — WI-4429 write-time dead-cohort preventio
         { id: 'WI-good', admissible: true, refusedBy: null, detail: null },
         { id: 'WI-held', admissible: false, refusedBy: 'claim-hold', detail: 'held' },
       ],
+      resolveFamily: async () => 'issue',
     });
     expect(result.errors).toEqual([]);
     expect(result.warning).toContain('1/2');
     expect(result.warning).toContain('WI-held:claim-hold');
     expect(result.preview.admissibleIds).toEqual(['WI-good']);
+  });
+
+  it('does not misclassify a WI-prefixed feature as an issue-family not-found and false-reject it', async () => {
+    const explained: string[][] = [];
+    const result = await previewClaimSpecAdmission({
+      spec: fixedSpec(['WI-feature', 'WI-issue'], ['open']),
+      harness: 'papercusp',
+      assignee: 'su-leader',
+      resolveFamily: async (id) => (id === 'WI-feature' ? 'feature' : 'issue'),
+      explain: async (_harness, ids) => {
+        explained.push([...ids]);
+        return [{ id: 'WI-issue', admissible: false, refusedBy: 'claim-hold', detail: 'held' }];
+      },
+    });
+    expect(explained).toEqual([['WI-issue']]);
+    expect(result.errors).toEqual([]);
+    expect(result.preview).toMatchObject({
+      checked: false,
+      checkedIssueIds: ['WI-issue'],
+      uncheckedFeatureIds: ['WI-feature'],
+      unknownIds: [],
+    });
+    expect(result.warning).toContain('WI-feature');
+    expect(result.warning).toContain('pull time');
   });
 
   it('refuses to skip a named issue preview when no harness can be resolved', async () => {

@@ -100,6 +100,8 @@ export interface ClaimSpecAdmissionPreview {
   checked: boolean;
   cohortIds?: string[];
   checkedIssueIds?: string[];
+  uncheckedFeatureIds?: string[];
+  unknownIds?: string[];
   admissibleIds?: string[];
   floored?: ClaimFloorAttribution[];
   effectiveStates?: readonly string[];
@@ -112,6 +114,11 @@ type ExplainIssueFloors = (
   opts?: { assignee?: string; rigAvailable?: boolean; states?: readonly string[] },
 ) => Promise<ClaimFloorAttribution[]>;
 
+type ResolveWorkItemFamily = (
+  id: string,
+  harness: string,
+) => Promise<'issue' | 'feature' | null>;
+
 /**
  * WI-4429: reject a fixed issue cohort that is already 0-admissible BEFORE the
  * spec is stored. Reuses explainIssueClaimFloors (the claim path's own SQL floor
@@ -122,6 +129,7 @@ export async function previewClaimSpecAdmission(args: {
   harness?: string;
   assignee: string;
   explain?: ExplainIssueFloors;
+  resolveFamily?: ResolveWorkItemFamily;
 }): Promise<{ preview: ClaimSpecAdmissionPreview; errors: string[]; warning?: string }> {
   const cohortIds = positiveIdCohortIds(args.spec.view.filter);
   if (cohortIds === null) {
@@ -136,15 +144,20 @@ export async function previewClaimSpecAdmission(args: {
     };
   }
 
-  const issueIds = cohortIds.filter((id) => /^(?:WI|EI)-/i.test(id));
-  if (issueIds.length === 0) {
+  // `WI-*` is NOT a family discriminator: plan-promoted feature-family work-items
+  // also receive WI ids. Resolve every ambiguous id through the unified work-item
+  // reader before applying issue-only floors, otherwise a valid WI feature reads as
+  // `not-found` in engineer_issues and a 0/N preview falsely rejects the spec.
+  const ambiguousIds = cohortIds.filter((id) => /^(?:WI|EI)-/i.test(id));
+  if (ambiguousIds.length === 0) {
     return {
       preview: {
         mode: 'fixed-cohort',
         checked: false,
         cohortIds,
         checkedIssueIds: [],
-        reason: 'cohort contains no WI-/EI- issue-family ids; feature-family floors remain enforced at pull time',
+        uncheckedFeatureIds: cohortIds,
+        reason: 'cohort contains no WI-/EI- ids; feature-family floors remain enforced at pull time',
       },
       errors: [],
     };
@@ -155,8 +168,8 @@ export async function previewClaimSpecAdmission(args: {
         mode: 'fixed-cohort',
         checked: false,
         cohortIds,
-        checkedIssueIds: issueIds,
-        reason: 'a concrete harness is required to evaluate issue-family claim floors',
+        checkedIssueIds: [],
+        reason: 'a concrete harness is required to resolve WI-/EI- work-item families and evaluate issue claim floors',
       },
       errors: [
         'harness is required when a claim spec names WI-/EI- ids — the write-time floor preview cannot safely infer their scope',
@@ -164,43 +177,79 @@ export async function previewClaimSpecAdmission(args: {
     };
   }
 
+  const resolveFamily =
+    args.resolveFamily ??
+    (async (id: string, harness: string) => {
+      const { getWorkItem } = await import('../../work-items');
+      return (await getWorkItem(id, harness))?.family ?? null;
+    });
+  const resolved = await Promise.all(
+    ambiguousIds.map(async (id) => ({ id, family: await resolveFamily(id, args.harness as string) })),
+  );
+  const issueIds = resolved.filter((row) => row.family === 'issue').map((row) => row.id);
+  const featureIds = [
+    ...cohortIds.filter((id) => !/^(?:WI|EI)-/i.test(id)),
+    ...resolved.filter((row) => row.family === 'feature').map((row) => row.id),
+  ];
+  const unknownIds = resolved.filter((row) => row.family === null).map((row) => row.id);
+
   const effectiveStates = args.spec.states ?? ['todo'];
   const explain = args.explain ?? (await import('../../work-items')).explainIssueClaimFloors;
-  const rows = await explain(args.harness, issueIds, {
-    assignee: args.assignee,
-    states: effectiveStates,
-  });
+  const rows =
+    issueIds.length > 0
+      ? await explain(args.harness, issueIds, {
+          assignee: args.assignee,
+          states: effectiveStates,
+        })
+      : [];
+  const unknownRows: ClaimFloorAttribution[] = unknownIds.map((id) => ({
+    id,
+    admissible: false,
+    refusedBy: 'not-found',
+    detail: 'no such work-item in either family for this harness/workspace',
+  }));
   const admissibleIds = rows.filter((row) => row.admissible).map((row) => row.id);
-  const floored = rows.filter((row) => !row.admissible);
+  const floored = [...rows.filter((row) => !row.admissible), ...unknownRows];
   const preview: ClaimSpecAdmissionPreview = {
     mode: 'fixed-cohort',
-    checked: true,
+    checked: featureIds.length === 0,
     cohortIds,
     checkedIssueIds: issueIds,
+    uncheckedFeatureIds: featureIds,
+    unknownIds,
     admissibleIds,
     floored,
     effectiveStates,
+    ...(featureIds.length > 0
+      ? { reason: 'feature-family claim floors remain enforced at pull time' }
+      : {}),
   };
   const floorSummary = floored.map((row) => `${row.id}:${row.refusedBy ?? 'unknown'}`).join(', ');
-  const allNamedIdsAreIssues = issueIds.length === cohortIds.length;
-  if (allNamedIdsAreIssues && admissibleIds.length === 0) {
+  const noUncheckedFeatureCandidate = featureIds.length === 0;
+  if (noUncheckedFeatureCandidate && admissibleIds.length === 0) {
     return {
       preview,
       errors: [
-        `claim spec names ${issueIds.length} issue-family id(s); 0 are claim-path admissible under states=[${effectiveStates.join(',')}]: ${floorSummary}`,
+        `claim spec names ${cohortIds.length} id(s); 0 are claim-path admissible under states=[${effectiveStates.join(',')}]: ${floorSummary}`,
       ],
     };
+  }
+  const warningParts: string[] = [];
+  if (floored.length > 0) {
+    warningParts.push(
+      `${floored.length}/${issueIds.length + unknownIds.length} checked issue/unknown id(s) are currently floored ` +
+        `under states=[${effectiveStates.join(',')}]: ${floorSummary}`,
+    );
+  }
+  if (featureIds.length > 0) {
+    warningParts.push(
+      `${featureIds.length} feature-family id(s) were not rejected at write time; their shared floors remain authoritative at pull time: ${featureIds.join(',')}`,
+    );
   }
   return {
     preview,
     errors: [],
-    ...(floored.length > 0
-      ? {
-          warning:
-            `${floored.length}/${issueIds.length} named issue-family id(s) are currently floored ` +
-            `under states=[${effectiveStates.join(',')}]: ${floorSummary}`,
-        }
-      : {}),
+    ...(warningParts.length > 0 ? { warning: warningParts.join('\n') } : {}),
   };
 }
 
