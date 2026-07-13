@@ -329,13 +329,13 @@ export interface WatchdogHealth {
 export interface DeployHealth {
   deployedShortSha: string | null;
   /** Commits the integration branch (staging) has that the live :3070 doesn't. */
-  deployedBehindMain: number | null;
+  deployedBehindStaging: number | null;
   /** Commits staging has that the green pin (main) doesn't — not-yet-green buffer. */
-  readyBehindMain: number | null;
+  greenPinBehindStaging: number | null;
   /** Green & deployable but not yet deployed. */
-  deployedBehindReady: number | null;
+  deployedBehindGreenPin: number | null;
   /** The green pin is exactly at the staging tip (fully caught up). */
-  readyAtMainHead: boolean | null;
+  greenPinAtStagingHead: boolean | null;
   deployedAtMs: number | null;
   /** Integration-branch HEAD commit time — a git-sync lag proxy. */
   lastCommitAtMs: number | null;

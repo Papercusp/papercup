@@ -220,7 +220,7 @@ export interface PipelinePosition {
     mainFastForwarded: boolean | null;
     /** Commits `ready` has that the deployed ref doesn't (0 once the live host has
      *  caught up to the latest green verdict). */
-    deployedBehindReady: number | null;
+    deployedBehindGreenPin: number | null;
     /**
      * 'gate-green': the deployed sha IS the last green pin (normal auto-deploy path).
      * 'stale-behind-gate': deployed is an ancestor of `ready` — safe lag, will catch
@@ -382,7 +382,7 @@ export async function gitPipelinePosition(
   };
 
   // EI-7846: verdict provenance, derived from the snapshot's already-loaded deploy
-  // state (ready = the green pin; readyAtMainHead / deployedBehindReady are already
+  // state (ready = the green pin; greenPinAtStagingHead / deployedBehindGreenPin are already
   // computed there) — no new I/O except the one ancestor check for deployOrigin.
   const ready = snap.deploy?.ready ?? null;
   let deployOrigin: PipelinePosition['verdictProvenance']['deployOrigin'] = 'unknown';
@@ -400,8 +400,8 @@ export async function gitPipelinePosition(
     lastGreenSha: ready?.sha ?? null,
     lastGreenShortSha: ready?.shortSha ?? null,
     lastGreenAgeMs: ready ? Date.now() - ready.committedAtMs : null,
-    mainFastForwarded: snap.deploy?.readyAtMainHead ?? null,
-    deployedBehindReady: snap.deploy?.deployedBehindReady ?? null,
+    mainFastForwarded: snap.deploy?.greenPinAtStagingHead ?? null,
+    deployedBehindGreenPin: snap.deploy?.deployedBehindGreenPin ?? null,
     deployOrigin,
   };
 

@@ -41,33 +41,64 @@ export interface CommitRef {
   subject: string;
 }
 
+/**
+ * ⚠ NAMING (EI-11012 — read before you add a field here).
+ *
+ * The staging→main migration (staging-branch-pipeline-2026-06-06) made the GREEN PIN the
+ * `main` BRANCH and the churning integration branch `staging` — see release-config.ts:126-129
+ * ("the green pin is the `main` BRANCH (FF-advanced from green `staging`), not a separate
+ * `ready` ref"). This module's fields were NOT renamed with it, so for ~5 weeks every field
+ * here SAID "main"/"ready" and MEANT something else:
+ *
+ *     OLD (lying)          ACTUALLY MEASURED                       NOW
+ *     mainHead             staging HEAD                            stagingHead
+ *     ready                main HEAD (the green pin)               greenPin
+ *     deployedBehindMain   deployed vs STAGING                     deployedBehindStaging
+ *     readyBehindMain      main vs STAGING  ← the staging buffer   greenPinBehindStaging
+ *     deployedBehindReady  deployed vs MAIN ← the real deploy gap  deployedBehindGreenPin
+ *
+ * That naming had a live cost: why-chain's deploy stage degraded on `readyBehindMain > 0`,
+ * believing it meant "the tip hasn't been promoted". It actually means "staging is ahead of
+ * main" — the NORMAL steady state of this fleet (git-sync commits staging continuously; the
+ * green-checkpoint FFs main only hourly, only when green). So the deploy stage reported
+ * `degraded` essentially ALWAYS, and because the why-chain stops at the first degraded stage,
+ * it SHADOWED every real downstream cause. Keep these names honest.
+ */
 export interface DevDeployState {
-  /** The churning integration tree git-sync commits to (resolves `main`/`ready`). */
+  /** The churning integration tree git-sync commits to (resolves `staging` + `main`). */
   integrationRoot: string;
   /** The separate checkout the live `:3070` operator actually runs from. */
   releaseRoot: string;
-  /** The green pin ref name (`ready`). */
+  /** The green-pin ref name — the `main` BRANCH (`releaseRef`). */
   releaseRef: string;
-  /** The integration branch name (`main`). */
+  /** The integration branch name — `staging`, the agent firehose. */
   integrationBranch: string;
 
-  /** Integration-branch HEAD (`main`). */
-  mainHead: CommitRef | null;
-  /** The green pin (`ready`) — what a deploy WOULD ship. null if unset. */
-  ready: CommitRef | null;
+  /** `staging` HEAD — the churning integration branch (NOT main). */
+  stagingHead: CommitRef | null;
+  /** The green pin = `main` HEAD — the last commit the full-suite gate passed, i.e. what a
+   *  deploy WOULD ship. null if unset. */
+  greenPin: CommitRef | null;
   /** What the release checkout (the live `:3070`) is ACTUALLY running. */
   deployed: CommitRef | null;
   /** Best-effort wall-clock of the last deploy (release worktree HEAD mtime). */
   deployedAtMs: number | null;
 
-  /** Commits `main` has that the DEPLOYED ref doesn't (how stale the live host is). */
-  deployedBehindMain: number | null;
-  /** Commits `main` has that `ready` doesn't (the staging buffer — main tip not yet green-checkpointed). */
-  readyBehindMain: number | null;
-  /** Commits `ready` has that the deployed ref doesn't (green & deployable but not yet deployed). */
-  deployedBehindReady: number | null;
-  /** True iff `ready` is exactly at `main` HEAD (main tip is green, fully caught up). */
-  readyAtMainHead: boolean | null;
+  /** Commits `staging` has that the DEPLOYED ref doesn't (staging→live distance; spans the
+   *  un-green-checkpointed buffer, so it is NOT by itself a deploy fault). */
+  deployedBehindStaging: number | null;
+  /** THE STAGING BUFFER: commits `staging` has that the green pin (`main`) doesn't — i.e. work
+   *  committed but not yet green-checkpointed. NORMAL and almost always > 0 on this fleet.
+   *  ⚠ NOT a deploy fault. Do NOT degrade the deploy stage on it (EI-11012). A buffer that stays
+   *  large for a long time is a GATE/promotion concern (is the gate still advancing main?), and
+   *  belongs to a time-thresholded gate signal — not to a `> 0` boolean here. */
+  greenPinBehindStaging: number | null;
+  /** THE REAL DEPLOY GAP: commits the green pin (`main`) has that the deployed ref doesn't —
+   *  green, shippable, and NOT YET LIVE on :3070. This is the one field a deploy-stage health
+   *  check should fire on. */
+  deployedBehindGreenPin: number | null;
+  /** True iff the green pin (`main`) is exactly at `staging` HEAD — the whole buffer is green. */
+  greenPinAtStagingHead: boolean | null;
 
   /** Non-fatal problems gathering the snapshot (a ref didn't resolve, etc.). */
   errors: string[];
@@ -109,7 +140,7 @@ function resolveConfig(): Pick<
   const releaseRoot = process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release');
   // staging→main model (staging-branch-pipeline-2026-06-06): the integration
   // branch (agent firehose) is `staging`; the green pin is the `main` BRANCH.
-  // Field names below predate the rename and read generically: `mainHead` = the
+  // Field names below predate the rename and read generically: `stagingHead` = the
   // integration branch (staging) HEAD; `ready` = the green pin (main); the
   // behind-counts are measured against those. Mirrors release-config.ts.
   return {
@@ -235,34 +266,40 @@ async function computeDevDeployState(): Promise<DevDeployState> {
   const cfg = resolveConfig();
   const errors: string[] = [];
 
-  const [mainHead, ready, deployed] = await Promise.all([
+  // cfg.integrationBranch === 'staging' (the churning firehose); cfg.releaseRef === 'main'
+  // (the green pin). The bindings are named for what they HOLD — see the naming note above.
+  const [stagingHead, greenPin, deployed] = await Promise.all([
     commitRef(cfg.integrationRoot, cfg.integrationBranch),
     commitRef(cfg.integrationRoot, cfg.releaseRef),
     commitRef(cfg.releaseRoot, 'HEAD'),
   ]);
 
-  if (!mainHead) errors.push('could not resolve ' + cfg.integrationBranch + ' in ' + cfg.integrationRoot);
-  if (!ready) errors.push('ref ' + cfg.releaseRef + ' not found in ' + cfg.integrationRoot);
+  if (!stagingHead) errors.push('could not resolve ' + cfg.integrationBranch + ' in ' + cfg.integrationRoot);
+  if (!greenPin) errors.push('ref ' + cfg.releaseRef + ' not found in ' + cfg.integrationRoot);
   if (!deployed) errors.push('could not resolve HEAD of release checkout ' + cfg.releaseRoot);
 
   // All counts are measured in the integration tree (it has every object — the
   // release worktree shares its object store). deployed must be reachable there.
-  const [deployedBehindMain, readyBehindMain, deployedBehindReady] = await Promise.all([
-    deployed && mainHead ? aheadCount(cfg.integrationRoot, deployed.sha, mainHead.sha) : Promise.resolve(null),
-    ready && mainHead ? aheadCount(cfg.integrationRoot, ready.sha, mainHead.sha) : Promise.resolve(null),
-    deployed && ready ? aheadCount(cfg.integrationRoot, deployed.sha, ready.sha) : Promise.resolve(null),
+  // aheadCount(from, to) = `rev-list --count from..to` = commits `to` has that `from` lacks.
+  const [deployedBehindStaging, greenPinBehindStaging, deployedBehindGreenPin] = await Promise.all([
+    // live :3070 → staging tip (spans the un-checkpointed buffer; not a fault on its own)
+    deployed && stagingHead ? aheadCount(cfg.integrationRoot, deployed.sha, stagingHead.sha) : Promise.resolve(null),
+    // green pin (main) → staging tip = THE STAGING BUFFER (normal; not a deploy fault)
+    greenPin && stagingHead ? aheadCount(cfg.integrationRoot, greenPin.sha, stagingHead.sha) : Promise.resolve(null),
+    // live :3070 → green pin (main) = THE REAL DEPLOY GAP (green but not shipped)
+    deployed && greenPin ? aheadCount(cfg.integrationRoot, deployed.sha, greenPin.sha) : Promise.resolve(null),
   ]);
 
   return {
     ...cfg,
-    mainHead,
-    ready,
+    stagingHead,
+    greenPin,
     deployed,
     deployedAtMs: lastDeployMtime(cfg.releaseRoot),
-    deployedBehindMain,
-    readyBehindMain,
-    deployedBehindReady,
-    readyAtMainHead: readyBehindMain == null ? null : readyBehindMain === 0,
+    deployedBehindStaging,
+    greenPinBehindStaging,
+    deployedBehindGreenPin,
+    greenPinAtStagingHead: greenPinBehindStaging == null ? null : greenPinBehindStaging === 0,
     errors,
   };
 }

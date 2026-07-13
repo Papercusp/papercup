@@ -55,6 +55,11 @@
  */
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { ROLE_ENVELOPES, matchesAny } from './capability-envelope/policy';
+// Reused verbatim (EI-10894): "find the row arrays in a tool payload" is the SAME job the
+// empty-mapping detector already does — including the one-hop descent into nested row arrays
+// (`{ results: [...] }`, `{ items: [...] }`), which is where most list verbs actually put their
+// rows. Re-implementing it here would have forked that traversal and let the two drift.
+import { collectCandidateArrays } from './empty-mapping-hint';
 
 /** Same tool this many times inside the window → the same-tool nudge is a candidate. Lowered 3→2
  *  (code-run-adoption directive 2026-06-29): the 2nd identical round-trip already IS the loop — by
@@ -198,6 +203,13 @@ interface SessionState {
   lastOrientAt?: number;
   /** subsumed tools already orient-dedup-nudged this session (one-shot guard, P-009). */
   orientDedupNudged: Set<string>;
+  /** ms timestamp of the last code:run / recipes:run this session — the caller is ALREADY
+   *  batching, so the PREDICTIVE hint stays quiet for a while (EI-10894). */
+  lastCodeRunAt?: number;
+  /** list-shaped tools already preempt-nudged this session (one-shot per tool, EI-10894). */
+  preemptNudged: Set<string>;
+  /** how many predictive hints have fired this session (hard per-session cap, EI-10894). */
+  preemptCount: number;
 }
 
 const sessions = new Map<string, SessionState>();
@@ -211,7 +223,15 @@ function getOrCreateSession(sessionKey: string): SessionState {
       const oldest = sessions.keys().next().value;
       if (oldest !== undefined) sessions.delete(oldest);
     }
-    st = { recent: [], nudgeCount: 0, callsSinceNudge: 0, everNudged: false, orientDedupNudged: new Set() };
+    st = {
+      recent: [],
+      nudgeCount: 0,
+      callsSinceNudge: 0,
+      everNudged: false,
+      orientDedupNudged: new Set(),
+      preemptNudged: new Set(),
+      preemptCount: 0,
+    };
     sessions.set(sessionKey, st);
   }
   return st;
@@ -422,7 +442,7 @@ function escalationPrefix(n: number): string {
   );
 }
 
-export type BatchNudgeKind = 'same-tool' | 'fanout' | 'pipeline';
+export type BatchNudgeKind = 'same-tool' | 'fanout' | 'pipeline' | 'preempt';
 
 export interface BatchNudgeResult {
   /** The hint text to attach to the tool result (no `[batch-hint]` prefix — the call site adds it). */
@@ -625,6 +645,225 @@ export function maybeOrientDedupNudge(input: OrientDedupInput): string | null {
     `Call "${toolName}" again only for a detail orient deliberately bounds (e.g. full bodies, or a ` +
     `different query/scope).`
   );
+}
+
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * PREDICTIVE fan-out hint (EI-10894) — fire BEFORE the round-trips are paid, not after.
+ *
+ * Every trigger above is REACTIVE by construction: each keys on a burst of calls ALREADY MADE
+ * (≥2 same-tool, ≥3 distinct tools, inside a 90s window). By the time the cheapest of them can
+ * possibly fire, the agent has already paid two round-trips — and the nudge's own escalation
+ * ladder ("2nd reminder… 3rd reminder…") is an admission that we are billing the agent for the
+ * lesson. The waste is charged in full and THEN explained.
+ *
+ * But the waste is VISIBLE ONE CALL EARLIER, in a place we already hold: the list verb's own
+ * result. `work_items:list` returning 12 rows, `sessions:search` returning 20 hits — that result
+ * IS the fan-out about to happen. The per-row calls are the agent's obvious next move, and we can
+ * see the whole set before a single one is fired. So say it THERE, attached to the list result,
+ * with the ids already extracted: at that moment the cost of batching is zero (the agent has not
+ * written the first solo call yet), whereas the reactive nudge asks it to abandon a loop it has
+ * already started.
+ *
+ * The bar for firing is deliberately higher than the reactive triggers', because this hint is a
+ * PREDICTION and can therefore be WRONG in a way they cannot: an agent that lists 12 rows and
+ * simply reads them owes nothing. A false accusation is not free — it is exactly how a nudge
+ * teaches agents to tune nudges out (the live 2026-07-12 fires that were pure hook traffic are
+ * the cautionary case). So:
+ *
+ *   - LIST-SHAPED verbs only, by name (list / search / find / items / feed / catalog) — not "any
+ *     result that happens to contain an array". coord:orient's payload holds several id-bearing
+ *     arrays and is nobody's fan-out.
+ *   - The rows must look ADDRESSABLE: ≥ LIST_FANOUT_MIN_ROWS object rows, and ≥80% of them
+ *     carrying the same identifier key (id / slug / …). A row set you cannot address per-row
+ *     cannot become a per-row fan-out.
+ *   - QUIET when the caller is already batching: a code:run in the last 10 minutes suppresses it
+ *     entirely. An agent that reaches for code:run does not need to be told about code:run.
+ *   - ONE-SHOT per (session, tool), and a hard per-session cap. The reactive nudges escalate
+ *     because they fire on proof; this one fires on a guess, so it never escalates and never nags.
+ *   - The text OWNS its own conditionality — "if you were only reading the list, ignore this" —
+ *     so a wrong fire costs the agent one line, not its trust in the hint.
+ * ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** Rows in a list result before the predictive hint is a candidate. ">5 rows" (EI-10894): at 5 or
+ *  fewer, a hand-loop is a defensible choice; past that it is strictly round-trips burned. */
+export const LIST_FANOUT_MIN_ROWS = 6;
+
+/** Fraction of rows that must carry the SAME identifier key before the set counts as addressable. */
+export const LIST_FANOUT_ID_RATIO = 0.8;
+
+/** A code:run inside this window ⇒ the caller is already batching; the predictive hint stays quiet. */
+export const CODE_RUN_RECENT_MS = 600_000;
+
+/** Hard per-session cap on predictive hints. It fires on a PREDICTION, so it must never nag. */
+export const MAX_PREEMPT_PER_SESSION = 3;
+
+/** How many ids the skeleton lists inline before eliding the rest. */
+const MAX_PREEMPT_IDS = 12;
+
+/** Normalized names of the batch tools whose USE means "this caller is already batching". */
+const BATCHING_NORMALIZED: ReadonlySet<string> = new Set<string>(['coderun', 'recipesrun']);
+
+/** Verb suffixes that mark a LIST-SHAPED read — one whose rows are the natural unit of a
+ *  follow-up call. Matched against the normalized (punctuation-stripped) tool name, so both
+ *  `work_items:list` and `work_items_list` land on `workitemslist`. */
+const LIST_SHAPED_SUFFIXES: readonly string[] = ['list', 'search', 'find', 'items', 'feed', 'catalog'];
+
+/** List-shaped by NAME but never a per-row fan-out in practice — the hits are read inline, not
+ *  re-fetched one by one. Excluded so the hint spends its (capped) fires where they can land. */
+const NEVER_PREEMPT_NORMALIZED: ReadonlySet<string> = new Set<string>([
+  'memorysearch', // recall hits ARE the answer; nobody calls a verb per hit
+  'toolsfind', // returns schemas — the payload is the point
+]);
+
+/** Identifier-ish keys, in preference order: the thing a per-row follow-up call would key on. */
+const ID_KEYS: readonly string[] = ['id', 'slug', 'session_id', 'sessionId', 'key', 'ref', 'path', 'name'];
+
+function isListShaped(normalized: string): boolean {
+  if (NEVER_PREEMPT_NORMALIZED.has(normalized)) return false;
+  return LIST_SHAPED_SUFFIXES.some((s) => normalized.endsWith(s));
+}
+
+/** A usable identifier value: a non-blank scalar short enough to be an id/slug, not a prose blob. */
+function idValue(v: unknown): string | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (s.length < 2 || s.length > 120) return null;
+  return s;
+}
+
+/** The best (key, values) the rows can be addressed by, or null when they cannot. Requires the
+ *  SAME key present on ≥ LIST_FANOUT_ID_RATIO of the object rows — a set where only a third of
+ *  rows carry an id is not a fan-out target, it is a heterogeneous blob. */
+function addressableBy(rows: unknown[]): { key: string; values: string[]; rowCount: number } | null {
+  const objectRows = rows.filter((r) => r && typeof r === 'object' && !Array.isArray(r)) as Record<
+    string,
+    unknown
+  >[];
+  if (objectRows.length < LIST_FANOUT_MIN_ROWS) return null;
+
+  for (const key of ID_KEYS) {
+    const values: string[] = [];
+    for (const row of objectRows) {
+      const v = idValue(row[key]);
+      if (v !== null) values.push(v);
+    }
+    if (values.length / objectRows.length >= LIST_FANOUT_ID_RATIO) {
+      return { key, values, rowCount: objectRows.length };
+    }
+  }
+  return null;
+}
+
+/** The predictive skeleton: the ids ALREADY EXTRACTED from the result the agent is holding, so
+ *  acting on the hint is filling in one verb name — not transcribing twelve ids by hand. The
+ *  per-row verb is a placeholder ON PURPOSE: we know the row set, we do NOT know what the agent
+ *  means to do with it, and guessing a verb it did not want is how a helpful skeleton becomes a
+ *  wrong one. Naming what we cannot know beats confidently inventing it. */
+function preemptSkeleton(key: string, values: string[]): string {
+  const shown = values.slice(0, MAX_PREEMPT_IDS);
+  const elided = values.length > shown.length ? `,\n    /* …and ${values.length - shown.length} more */` : '';
+  const plural = `${key}s`;
+  return (
+    'code:run { script: `\n' +
+    `  const ${plural} = [\n    ${shown.map((v) => JSON.stringify(v)).join(', ')}${elided}\n  ];\n` +
+    `  const out = await Promise.all(${plural}.map((${key}) => tools.call('<the per-row verb>', { ${key} })));\n` +
+    '  return out; // only what you return re-enters context — project it down to what you need\n' +
+    '` }'
+  );
+}
+
+export interface ListFanoutPreemptInput {
+  /** Stable per-session key — the handler's replayOwnerKey (uiClientId ?? spawnId). */
+  sessionKey: string;
+  /** The tool that just returned (MCP or verb form). */
+  toolName: string;
+  /** The call's raw arguments — used ONLY to unwrap a tools:invoke-routed call to its inner tool
+   *  (P-001), so `tools:invoke { name:'work_items:list' }` is judged as the list verb it really is
+   *  and a wrapper-routed code:run still registers as "this caller is batching". */
+  args?: unknown;
+  /**
+   * The tool's parsed result payload — the rows we predict a fan-out over — supplied LAZILY.
+   *
+   * A thunk, not a value, because the caller sits on the MCP hot path and materializing the
+   * payload means JSON.parse-ing the whole tool result. Every cheap gate (batching-recently,
+   * list-shaped, one-shot, cap) is checked FIRST and the vast majority of calls return before this
+   * is ever invoked, so the common path stays a couple of set lookups. A throwing thunk (a
+   * non-JSON body) is treated as "nothing to judge", never as an error.
+   */
+  payload: () => unknown;
+  /** Whether the caller can actually run code:run (canRoleActOnCodeRun(role) OR superuser). */
+  canCodeRun: boolean;
+  /** Whether code:run is in the session's live advertised surface (P-004); default true. */
+  codeRunInSurface?: boolean;
+  /** Injectable clock for tests; defaults to Date.now(). */
+  now?: number;
+}
+
+/**
+ * The PREDICTIVE trigger. Call on EVERY successful tool result (it self-selects): it records
+ * code:run usage, ignores everything that is not a list-shaped read, and returns a hint only when
+ * a list verb has just handed back an addressable row set big enough that a per-row loop would be
+ * strictly wasteful. Pure w.r.t. the tool outcome; never throws.
+ */
+export function maybeListFanoutPreempt(input: ListFanoutPreemptInput): BatchNudgeResult | null {
+  const { sessionKey, canCodeRun } = input;
+  if (!sessionKey || !input.toolName) return null;
+  const now = input.now ?? Date.now();
+  const { tool: toolName } = effectiveCall(input.toolName, input.args);
+  const normalized = normalize(toolName);
+
+  // Record the batching itself FIRST — before any exclusion can short-circuit — so "this caller
+  // already uses code:run" is observed even though code:run is (rightly) excluded everywhere else.
+  if (BATCHING_NORMALIZED.has(normalized)) {
+    getOrCreateSession(sessionKey).lastCodeRunAt = now;
+    return null;
+  }
+  if (!canCodeRun) return null;
+  if (!isListShaped(normalized)) return null;
+  if (
+    EXCLUDED_NORMALIZED.has(normalized) ||
+    AMBIENT_NORMALIZED.has(normalized) ||
+    LOCK_LIFECYCLE_NORMALIZED.has(normalized)
+  )
+    return null;
+
+  const st = sessions.get(sessionKey);
+  // Already batching ⇒ say nothing. The agent has demonstrated the behavior the hint teaches.
+  if (st?.lastCodeRunAt !== undefined && now - st.lastCodeRunAt < CODE_RUN_RECENT_MS) return null;
+  if (st?.preemptNudged.has(normalized)) return null; // one-shot per (session, tool)
+  if (st !== undefined && st.preemptCount >= MAX_PREEMPT_PER_SESSION) return null;
+
+  // Judge the payload: the biggest addressable row set anywhere in it (one hop, via the shared
+  // collector — `{ results: [...] }` / `{ items: [...] }` is the common list shape). Only NOW is
+  // the payload materialized — every gate above ran without parsing anything.
+  let payload: unknown;
+  try {
+    payload = input.payload();
+  } catch {
+    return null; // non-JSON / unparseable body ⇒ nothing to judge. Advisory only.
+  }
+  let best: { key: string; values: string[]; rowCount: number } | null = null;
+  for (const candidate of collectCandidateArrays(payload)) {
+    const verdict = addressableBy(candidate);
+    if (verdict && (!best || verdict.rowCount > best.rowCount)) best = verdict;
+  }
+  if (!best) return null;
+
+  // Only NOW take the session slot — a call that produced no hint must not burn the cap.
+  const state = getOrCreateSession(sessionKey);
+  state.preemptNudged.add(normalized);
+  state.preemptCount += 1;
+
+  const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
+  const text =
+    `"${toolName}" just returned ${best.rowCount} rows. If your next move is a call PER ROW, that is ` +
+    `${best.rowCount} more round-trips — each one re-reading your whole context — and you have not paid ` +
+    `any of them yet. Fan them out inside ONE code:run instead; the \`${best.key}\` values are already ` +
+    `extracted from this result, so this is a paste, not a transcription:\n` +
+    `${preemptSkeleton(best.key, best.values)}\n` +
+    `If you were only reading the list, ignore this. ${TRAILER}${activate}`;
+  return { text, kind: 'preempt', tool: toolName };
 }
 
 /** Test-only: clear the in-process session tracking between cases. */

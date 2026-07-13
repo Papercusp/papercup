@@ -96,6 +96,13 @@ export interface HarnessRow {
   // (`resolveEventProvider`) reads it to answer "which Cupboard unit provides
   // event family X?" — the `installable` rung of the event ladder.
   provides_events: string | null;
+  // Event axis, consumer half (migration 013 / D-003): JSON-encoded array of the
+  // event-key FAMILIES this unit REQUIRES, each { family, optional? }. Kinds
+  // plugin|pack only; NULL elsewhere and for every pre-013 listing. Published so
+  // a requirement travels WITH the listing — the P-007 install gate HARD-FAILS a
+  // required family nothing provides, so the detail page must be able to show it
+  // before the user clicks Install rather than after.
+  requires_events: string | null;
   // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
   // the owning Hive's raw-32-byte-base64 Ed25519 pubkey (same encoding as the
   // hive directory announce) + a denormalized display title. One row per
@@ -162,6 +169,8 @@ export interface NewHarnessInput {
   provides_tools?: string | null;
   /** Event axis (migration 012 / D-003): JSON array of provided event families; plugin|pack only. */
   provides_events?: string | null;
+  /** Event axis (migration 013 / D-003): JSON array of REQUIRED event families; plugin|pack only. */
+  requires_events?: string | null;
   /** Repo→Hive binding (migration 007): owning Hive's raw-32-byte-base64 Ed25519 pubkey. */
   hive_pubkey?: string | null;
   /** Denormalized Hive display title (directory announce stays authoritative). */

@@ -84,7 +84,7 @@ export function toOrientPipeline(health: PipelineHealth, nowMs: number = Date.no
 
   const gate = health.gateLabel;
   const deployBehind =
-    (health.readyBehindMain ?? 0) > 0 || (health.deployedBehindReady ?? 0) > 0;
+    (health.greenPinBehindStaging ?? 0) > 0 || (health.deployedBehindGreenPin ?? 0) > 0;
   const gateOk = gate === 'green';
 
   const out: OrientPipeline = {

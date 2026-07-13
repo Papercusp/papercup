@@ -689,12 +689,12 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
     } catch { /* routine metadata unreadable — leave git-sync delivery fields at defaults */ }
     const data: DeployHealth = {
       deployedShortSha: s.deployed?.shortSha ?? null,
-      deployedBehindMain: s.deployedBehindMain,
-      readyBehindMain: s.readyBehindMain,
-      deployedBehindReady: s.deployedBehindReady,
-      readyAtMainHead: s.readyAtMainHead,
+      deployedBehindStaging: s.deployedBehindStaging,
+      greenPinBehindStaging: s.greenPinBehindStaging,
+      deployedBehindGreenPin: s.deployedBehindGreenPin,
+      greenPinAtStagingHead: s.greenPinAtStagingHead,
       deployedAtMs: s.deployedAtMs,
-      lastCommitAtMs: s.mainHead?.committedAtMs ?? null,
+      lastCommitAtMs: s.stagingHead?.committedAtMs ?? null,
       errors: s.errors,
       gitSyncStatus,
       gitSyncConsecutiveErrorTicks,
@@ -710,14 +710,14 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
         ? `git-sync PUSH FAILING ${data.gitSyncConsecutiveErrorTicks} ticks — commits NOT reaching origin`
         : status === 'unknown'
         ? 'release refs unreadable on this host'
-        : `live ${data.deployedShortSha ?? '?'}, ${data.deployedBehindMain ?? '?'} behind staging, sync ${agoMin(data.lastCommitAtMs, ctx.now)}`,
+        : `live ${data.deployedShortSha ?? '?'}, ${data.deployedBehindStaging ?? '?'} behind staging, sync ${agoMin(data.lastCommitAtMs, ctx.now)}`,
       data,
       link: { label: '/admin/git', href: '/admin/git' },
       metrics: [
-        m('behind live', data.deployedBehindMain ?? '?', (data.deployedBehindMain ?? 0) > 80 ? 'warn' : undefined),
-        m('not-green', data.readyBehindMain ?? '?'),
+        m('behind live', data.deployedBehindStaging ?? '?', (data.deployedBehindStaging ?? 0) > 80 ? 'warn' : undefined),
+        m('not-green', data.greenPinBehindStaging ?? '?'),
         m('last sync', agoMin(data.lastCommitAtMs, ctx.now)),
-        m('green tip', data.readyAtMainHead === null ? '?' : data.readyAtMainHead ? 'yes' : 'no'),
+        m('green tip', data.greenPinAtStagingHead === null ? '?' : data.greenPinAtStagingHead ? 'yes' : 'no'),
         m('git-sync push', pushFailing ? `FAILING ${data.gitSyncConsecutiveErrorTicks}t` : data.gitSyncPushBacklog === 0 ? 'caught up' : (data.gitSyncStatus ?? 'n/a'), pushFailing ? 'crit' : (data.gitSyncOversizedCount > 0 ? 'warn' : undefined)),
       ],
     };

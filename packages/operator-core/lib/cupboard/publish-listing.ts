@@ -14,6 +14,7 @@ import { getGhAuthToken } from '../identity/gh-token';
 import { resolveCupboardBaseUrl } from './base-url';
 import { resolvePublisherAttestation } from './publisher-attestation';
 import type { ListingKind } from './types';
+import type { ProvidedEventFamily, RequiredEventFamily } from '@papercusp/blueprint-distribution';
 
 /** A validated listing-publish payload (mirrors the Cupboard `/listings` body). */
 export interface CupboardListingInput {
@@ -49,6 +50,32 @@ export interface CupboardListingInput {
    * worker 400s it elsewhere. Powers the Cupboard's tool→provider discovery.
    */
   provides_tools?: string[];
+  /**
+   * The EVENT half of the same pack model (worker migration 012 / D-003, P-007):
+   * the awaitable event-key families this unit provides when installed. Kinds
+   * plugin|pack only — the worker 400s it elsewhere.
+   *
+   * ⚠ This field is why the event axis WORKS AT ALL in production. P-007 landed
+   * the column, the worker's accept+validate, the catalog read, the resolver and
+   * the install gate — but nothing ever SENT it, so `cupboardEventIndex` was
+   * permanently empty, `resolveEventProvider` could never return 'installable',
+   * and an event dep could never pull its providing unit in. The whole
+   * installable rung was inert. Every publish path that lists a plugin/pack must
+   * populate this from the manifest's `provides.events`, or its listing is
+   * invisible to event resolution.
+   */
+  provides_events?: ProvidedEventFamily[];
+  /**
+   * The event families this unit REQUIRES (worker migration 013 / D-003, P-008),
+   * from the manifest's `dependencies.events`. Kinds plugin|pack only.
+   *
+   * Published so a user can see a unit's requirements BEFORE installing: the
+   * P-007 install gate HARD-FAILS an install whose required family nothing
+   * provides, so without this the refusal arrives as a surprise toast after the
+   * click. It is a DECLARATION, never a resolution — whether family X is
+   * actually available is the resolver's answer, against the local catalog.
+   */
+  requires_events?: RequiredEventFamily[];
 }
 
 export type CupboardPublishResult =

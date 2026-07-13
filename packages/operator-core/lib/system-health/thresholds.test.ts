@@ -268,8 +268,8 @@ describe('watchdogStatus', () => {
 describe('deployStatus', () => {
   const now = 1_000_000_000_000;
   const dp = (o: Partial<DeployHealth> = {}): DeployHealth => ({
-    deployedShortSha: 'abcd1234', deployedBehindMain: 2, readyBehindMain: 0,
-    deployedBehindReady: 2, readyAtMainHead: true, deployedAtMs: now - 1000,
+    deployedShortSha: 'abcd1234', deployedBehindStaging: 2, greenPinBehindStaging: 0,
+    deployedBehindGreenPin: 2, greenPinAtStagingHead: true, deployedAtMs: now - 1000,
     lastCommitAtMs: now - 60_000, errors: [],
     gitSyncStatus: 'synced', gitSyncConsecutiveErrorTicks: 0,
     gitSyncPushBacklog: null, gitSyncLastSyncedAtMs: now - 60_000, gitSyncOversizedCount: 0, ...o,
@@ -281,7 +281,7 @@ describe('deployStatus', () => {
     expect(deployStatus(dp({ lastCommitAtMs: now - SYNC_LAG_WARN_MS - 1 }), now)).toBe('warn');
   });
   it('warn when the live host is far behind staging', () => {
-    expect(deployStatus(dp({ deployedBehindMain: DEPLOY_BEHIND_WARN + 1 }), now)).toBe('warn');
+    expect(deployStatus(dp({ deployedBehindStaging: DEPLOY_BEHIND_WARN + 1 }), now)).toBe('warn');
   });
   it('ok when fresh + caught up', () => {
     expect(deployStatus(dp(), now)).toBe('ok');

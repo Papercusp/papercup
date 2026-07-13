@@ -31,8 +31,8 @@ const health = (over: Partial<PipelineHealth> = {}): PipelineHealth => ({
   consecutiveReds: 0,
   lastGreenAtMs: NOW - 60_000,
   verdictStale: false,
-  readyBehindMain: 0,
-  deployedBehindReady: 0,
+  greenPinBehindStaging: 0,
+  deployedBehindGreenPin: 0,
   recentFailingFiles: [],
   rootCause: null,
   ...over,
@@ -100,7 +100,7 @@ describe('toOrientPipeline — what a waking agent is told', () => {
   it('a GREEN gate with an unpromoted tip is still "not shipped" — and says so without crying red', () => {
     const out = toOrientPipeline(
       health({
-        readyBehindMain: 49,
+        greenPinBehindStaging: 49,
         deploy: { stage: 'deploy', status: 'degraded', reason: 'main is 49 commit(s) ahead of the green pin' },
         rootCause: { stage: 'deploy', status: 'degraded', reason: 'main is 49 commit(s) ahead of the green pin' },
       }),

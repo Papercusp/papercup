@@ -627,8 +627,8 @@ export interface ReleaseTriggerFreezeSnapshot {
    *  inactive" without a dedicated column. null if unresolvable. */
   updatedAtMs: number | null;
   /** green commits deployable but not live right now
-   *  (`release-deploy-launch`'s `computeDeployStatus().deploy.deployedBehindReady`). */
-  deployedBehindReady: number | null;
+   *  (`release-deploy-launch`'s `computeDeployStatus().deploy.deployedBehindGreenPin`). */
+  deployedBehindGreenPin: number | null;
 }
 
 export interface ReleaseTriggerFreezeVerdict {
@@ -682,7 +682,7 @@ export function evaluateReleaseTriggerFreeze(
   const thresholdMs = opts.thresholdMs ?? DEFAULT_RELEASE_TRIGGER_FREEZE_MS;
   if (thresholdMs <= 0) return { frozen: false, reason: null };
   if (s.active !== false) return { frozen: false, reason: null }; // no row, or actively running
-  if (s.deployedBehindReady == null || s.deployedBehindReady <= 0) {
+  if (s.deployedBehindGreenPin == null || s.deployedBehindGreenPin <= 0) {
     return { frozen: false, reason: null }; // nothing green is waiting — a paused trigger is harmless
   }
   // An unresolvable `updated_at` is treated as maximally stale (never assumed
@@ -695,7 +695,7 @@ export function evaluateReleaseTriggerFreeze(
     frozen: true,
     reason:
       `release-trigger has been PAUSED (active:false)${mins != null ? ` for ~${mins}m` : ' — pause duration unknown'} ` +
-      `while ${s.deployedBehindReady} green commit(s) are deployable but not live: a SILENT fleet-wide deploy ` +
+      `while ${s.deployedBehindGreenPin} green commit(s) are deployable but not live: a SILENT fleet-wide deploy ` +
       `freeze — this exact signature has recurred twice (2026-06-18, 2026-07-12) with no auto-recovery. It will ` +
       `NEVER self-clear (a paused routine has no cadence to catch up on). Resume it: routines:set { name: ` +
       `'release-trigger', active: true }; then expedite with release:deploy { op: 'trigger', confirm: true } if ` +
@@ -741,7 +741,7 @@ export async function checkReleaseTriggerFreeze(
       {
         active: rows[0].active,
         updatedAtMs: rows[0].updated_at_ms != null ? Number(rows[0].updated_at_ms) : null,
-        deployedBehindReady: status.deploy.deployedBehindReady,
+        deployedBehindGreenPin: status.deploy.deployedBehindGreenPin,
       },
       now,
       opts,
@@ -771,13 +771,13 @@ export async function checkReleaseTriggerFreeze(
           body: reasonWithOwner,
           importance: 'urgent',
           workspaceId,
-          data: { deployedBehindReady: status.deploy.deployedBehindReady, pausedBy: pausedBy?.ownerId ?? null },
+          data: { deployedBehindGreenPin: status.deploy.deployedBehindGreenPin, pausedBy: pausedBy?.ownerId ?? null },
         });
       } catch (e) {
         console.warn(`[release-trigger-freeze-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
       }
       await broadcastSevereEvent({
-        summary: `release-trigger is PAUSED on ${installSlug} with ${status.deploy.deployedBehindReady} green commit(s) stranded — silent fleet-wide deploy freeze.`,
+        summary: `release-trigger is PAUSED on ${installSlug} with ${status.deploy.deployedBehindGreenPin} green commit(s) stranded — silent fleet-wide deploy freeze.`,
         body: reasonWithOwner,
         category: 'severe-event',
         conditionKey: `release-trigger-freeze:${installSlug}`,
@@ -788,7 +788,7 @@ export async function checkReleaseTriggerFreeze(
           VALUES (${installSlug}, ${RELEASE_TRIGGER_FREEZE_PHASE}, ${JSON.stringify({
             kind: RELEASE_TRIGGER_FREEZE_PHASE,
             harness_slug: installSlug,
-            deployedBehindReady: status.deploy.deployedBehindReady,
+            deployedBehindGreenPin: status.deploy.deployedBehindGreenPin,
             detail: reasonWithOwner,
             pausedBy: pausedBy?.ownerId ?? null,
             pausedAtMs: pausedBy?.invokedAtMs ?? null,

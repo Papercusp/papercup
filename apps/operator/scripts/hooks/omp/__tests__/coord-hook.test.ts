@@ -109,6 +109,8 @@ import {
   onTurnStart,
   OS_SCHEDULER_CMD_RE,
   isOsSchedulerCommand,
+  isResourceLimitInvocation,
+  osSchedulerDenyReason,
   stripShellQuotes,
   pollInboxDelta,
   summarisePlanEvents,
@@ -204,6 +206,80 @@ describe('isOsSchedulerCommand — quote-aware matcher (EI-9937)', () => {
       'echo "done; ok" && crontab -e',
       "grep -E 'a|b' f.txt | crontab -",
     ]) {
+      expect(isOsSchedulerCommand(cmd)).toBe(true);
+    }
+  });
+});
+
+describe('the lockout refusal answers the INTENT, not the token (EI-10940)', () => {
+  // `systemd-run` is overloaded: the OS scheduler (`--on-calendar=…`) AND the only
+  // stock way to ask for cgroup resource control (`-p CPUQuota=…`, `--scope`). The
+  // lockout answered both with one message — "declare your wake via pot:declare-wake"
+  // — which is a non-sequitur when what you were doing was capping CPU on a heavy
+  // test run, and costs a real detour before you discover the suggested tool cannot
+  // do the thing you wanted. The DENY is right either way (agent sessions cannot
+  // create transient units); only the REASON branches.
+  //
+  // MIRROR: the same branching lives in the Claude/Codex shell hook
+  // (scripts/hooks/cc/pretooluse-bash-resource-gate.sh). Fix one, fix both.
+  const RESOURCE_LIMITS = [
+    'systemd-run -p CPUQuota=200% node_modules/.bin/vitest run',
+    'systemd-run --property=CPUQuota=800% npm run build',
+    'systemd-run -p MemoryMax=4G ./heavy.sh',
+    'systemd-run -p AllowedCPUs=0-7 ./heavy.sh',
+    'systemd-run --scope ./heavy.sh',
+    'sudo systemd-run -p CPUWeight=50 ./heavy.sh',
+  ];
+  const SCHEDULES = [
+    'crontab -e',
+    'batch < jobs.txt',
+    'echo done | at midnight',
+    'systemd-run --on-calendar=daily echo hi',
+    'systemd-run --on-active=30m ./wake.sh',
+    'systemd-run ./thing.sh', // bare: no resource props → not a resource ask
+  ];
+
+  it('classifies a resource-control systemd-run as a RESOURCE ask', () => {
+    for (const cmd of RESOURCE_LIMITS) expect(isResourceLimitInvocation(cmd)).toBe(true);
+  });
+
+  it('classifies every genuine schedule as NOT a resource ask', () => {
+    for (const cmd of SCHEDULES) expect(isResourceLimitInvocation(cmd)).toBe(false);
+  });
+
+  it('a HYBRID (timer flag + resource prop) is a SCHEDULE — the timer wins', () => {
+    // This really does create a persistent timer; the resource prop is incidental.
+    // Reading it as resource-only would hand back taskset advice that ignores the
+    // persistent-unit problem the lockout exists to prevent.
+    expect(
+      isResourceLimitInvocation('systemd-run --on-calendar=daily -p CPUQuota=50% /usr/bin/backup'),
+    ).toBe(false);
+  });
+
+  it('a quoted mention of CPUQuota is not a systemd-run invocation', () => {
+    expect(isResourceLimitInvocation('echo "we could use -p CPUQuota=200% here"')).toBe(false);
+  });
+
+  it('the RESOURCE refusal names the tools that actually work here, and drops the false premise', () => {
+    const reason = osSchedulerDenyReason('systemd-run -p CPUQuota=200% ./heavy.sh');
+    expect(reason).toMatch(/taskset/);
+    expect(reason).toMatch(/pc-heavy\.sh/);
+    expect(reason).toMatch(/cannot create transient systemd units/);
+    // never asserts you were scheduling something when you weren't
+    expect(reason).not.toMatch(/must not create OS schedules/);
+  });
+
+  it('the SCHEDULE refusal still points at pot:declare-wake', () => {
+    for (const cmd of SCHEDULES) {
+      const reason = osSchedulerDenyReason(cmd);
+      expect(reason).toMatch(/must not create OS schedules/);
+      expect(reason).toMatch(/pot:declare-wake/);
+      expect(reason).not.toMatch(/taskset/);
+    }
+  });
+
+  it('branching the reason never weakens the deny — both classes are still blocked', () => {
+    for (const cmd of [...RESOURCE_LIMITS, ...SCHEDULES]) {
       expect(isOsSchedulerCommand(cmd)).toBe(true);
     }
   });

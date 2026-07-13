@@ -16,14 +16,14 @@ const deploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
     releaseRoot: '/release',
     releaseRef: 'ready',
     integrationBranch: 'main',
-    mainHead: null,
+    stagingHead: null,
     ready: null,
     deployed: null,
     deployedAtMs: null,
-    deployedBehindMain: 0,
-    readyBehindMain: 0,
-    deployedBehindReady: 0,
-    readyAtMainHead: true,
+    deployedBehindStaging: 0,
+    greenPinBehindStaging: 0,
+    deployedBehindGreenPin: 0,
+    greenPinAtStagingHead: true,
     errors: [],
     ...over,
   }) as DevDeployState;
@@ -138,7 +138,7 @@ describe('computeWhyChain (EI-7349)', () => {
   });
 
   it('gate green but main ahead of ready: deploy stage degraded, gate stays ok', async () => {
-    const res = await computeWhyChain(deps({ snap: snap({ deploy: { readyBehindMain: 4 } }) }));
+    const res = await computeWhyChain(deps({ snap: snap({ deploy: { greenPinBehindStaging: 4 } }) }));
     expect(res.stages[0].status).toBe('ok');
     expect(res.stages[1].status).toBe('degraded');
     expect(res.stages[1].reason).toContain('4 commit');
@@ -146,7 +146,7 @@ describe('computeWhyChain (EI-7349)', () => {
   });
 
   it('ready green + ahead of deployed: deploy stage degraded (not yet promoted)', async () => {
-    const res = await computeWhyChain(deps({ snap: snap({ deploy: { deployedBehindReady: 2 } }) }));
+    const res = await computeWhyChain(deps({ snap: snap({ deploy: { deployedBehindGreenPin: 2 } }) }));
     expect(res.stages[1].status).toBe('degraded');
     expect(res.stages[1].reason).toContain('not yet promoted');
   });
@@ -169,7 +169,7 @@ describe('computeWhyChain (EI-7349)', () => {
   it('multiple non-ok stages: rootCause is the upstream-most (gate before deploy before pool)', async () => {
     const res = await computeWhyChain(
       deps({
-        snap: snap({ gate: { consecutiveReds: 2 }, deploy: { readyBehindMain: 1 } }),
+        snap: snap({ gate: { consecutiveReds: 2 }, deploy: { greenPinBehindStaging: 1 } }),
         accounts: accounts([{ available: false }]),
       }),
     );
@@ -382,10 +382,10 @@ describe('WI-4533 — computePipelineHealth (the coord:orient fold)', () => {
 
   it('carries the DEPLOY position — a green gate whose tip is not live is still not-shipped', async () => {
     const res = await computePipelineHealth(
-      deps({ snap: withRoutines(snap({ deploy: { readyBehindMain: 49 } })) }),
+      deps({ snap: withRoutines(snap({ deploy: { greenPinBehindStaging: 49 } })) }),
     );
     expect(res.gateLabel).toBe('green');
-    expect(res.readyBehindMain).toBe(49);
+    expect(res.greenPinBehindStaging).toBe(49);
     expect(res.rootCause?.stage).toBe('deploy'); // the gate is fine; the promotion is not
   });
 

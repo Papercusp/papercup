@@ -265,7 +265,7 @@ export function deployStatus(d: DeployHealth, now: number): PanelStatus {
   if (d.deployedShortSha === null && d.lastCommitAtMs === null) return 'unknown';
   if (d.gitSyncStatus === 'error' || d.gitSyncOversizedCount > 0) return 'warn';
   if (d.lastCommitAtMs !== null && now - d.lastCommitAtMs > SYNC_LAG_WARN_MS) return 'warn';
-  if (d.deployedBehindMain !== null && d.deployedBehindMain > DEPLOY_BEHIND_WARN) return 'warn';
+  if (d.deployedBehindStaging !== null && d.deployedBehindStaging > DEPLOY_BEHIND_WARN) return 'warn';
   return 'ok';
 }
 

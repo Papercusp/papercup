@@ -41,14 +41,14 @@ const deploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
 
 /** Default snapshot-level deploy state (distinct from the `deploy()` fixture above,
  *  which is the `loadDeploy` dep — this is `GitPipelineSnapshot.deploy`, the source
- *  for verdictProvenance's ready/readyAtMainHead/deployedBehindReady). */
+ *  for verdictProvenance's ready/greenPinAtStagingHead/deployedBehindGreenPin). */
 const snapDeploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
   ({
     integrationRoot: '/repo',
     ready: { sha: 'readysha0', shortSha: 'readysha', committedAtMs: 1000, subject: 'ready' } as DevDeployState['ready'],
     deployed: { sha: 'deployedsha0' } as DevDeployState['deployed'],
-    readyAtMainHead: true,
-    deployedBehindReady: 0,
+    greenPinAtStagingHead: true,
+    deployedBehindGreenPin: 0,
     ...over,
   } as DevDeployState);
 
@@ -179,14 +179,14 @@ describe('gitPipelinePosition (P-002)', () => {
       {
         git,
         loadDeploy: async () => deploy({ deployed: { sha: 'readysha0' } as DevDeployState['deployed'] }),
-        loadSnapshot: async () => snap({}, 'synced', { readyAtMainHead: true, deployedBehindReady: 0 }),
+        loadSnapshot: async () => snap({}, 'synced', { greenPinAtStagingHead: true, deployedBehindGreenPin: 0 }),
       },
     );
     expect(res.verdictProvenance.lastGreenSha).toBe('readysha0');
     expect(res.verdictProvenance.lastGreenShortSha).toBe('readysha');
     expect(res.verdictProvenance.lastGreenAgeMs).toBeGreaterThanOrEqual(0);
     expect(res.verdictProvenance.mainFastForwarded).toBe(true);
-    expect(res.verdictProvenance.deployedBehindReady).toBe(0);
+    expect(res.verdictProvenance.deployedBehindGreenPin).toBe(0);
     expect(res.verdictProvenance.deployOrigin).toBe('gate-green');
   });
 
@@ -205,11 +205,11 @@ describe('gitPipelinePosition (P-002)', () => {
       {
         git,
         loadDeploy: async () => deploy(), // deployed.sha = 'deployedsha0' (fixture default)
-        loadSnapshot: async () => snap({}, 'synced', { readyAtMainHead: true, deployedBehindReady: 2 }),
+        loadSnapshot: async () => snap({}, 'synced', { greenPinAtStagingHead: true, deployedBehindGreenPin: 2 }),
       },
     );
     expect(res.verdictProvenance.deployOrigin).toBe('stale-behind-gate');
-    expect(res.verdictProvenance.deployedBehindReady).toBe(2);
+    expect(res.verdictProvenance.deployedBehindGreenPin).toBe(2);
   });
 
   it('EI-7846: a deployed sha NOT reachable from ready reports ahead-of-gate (force-deployed past the gate)', async () => {
@@ -228,7 +228,7 @@ describe('gitPipelinePosition (P-002)', () => {
       {
         git,
         loadDeploy: async () => deploy(),
-        loadSnapshot: async () => snap({}, 'synced', { readyAtMainHead: false }),
+        loadSnapshot: async () => snap({}, 'synced', { greenPinAtStagingHead: false }),
       },
     );
     expect(res.verdictProvenance.deployOrigin).toBe('ahead-of-gate');
@@ -267,7 +267,7 @@ describe('gitPipelinePosition (P-002)', () => {
         lastGreenShortSha: 'readysha',
         lastGreenAgeMs: 1000,
         mainFastForwarded: true,
-        deployedBehindReady: 0,
+        deployedBehindGreenPin: 0,
         deployOrigin: 'stale-behind-gate',
       },
       gitSyncLastStatus: 'synced',

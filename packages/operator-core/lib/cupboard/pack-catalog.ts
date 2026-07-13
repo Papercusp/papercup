@@ -30,6 +30,7 @@ import {
   type PackCatalogView,
   type PackDescriptor,
   type ProvidedEventFamily,
+  type RequiredEventFamily,
 } from '@papercusp/blueprint-distribution';
 import { EVENT_CATALOG } from '../events/await/catalog';
 import { availableBlueprintIds } from '../blueprint/installed-blueprints';
@@ -72,6 +73,8 @@ export interface InstalledUnitInput {
   tools?: Array<{ name?: unknown; expose?: { mcp?: { name?: unknown } } } | null>;
   /** Unit-level provisions (D-003, P-005): the event families this unit provides. */
   provides?: { events?: unknown } | null;
+  /** Unit-level dependencies (D-003, P-005): the event families this unit REQUIRES. */
+  dependencies?: { events?: unknown } | null;
 }
 
 /**
@@ -102,6 +105,53 @@ export function parseProvidedEvents(raw: unknown): ProvidedEventFamily[] {
     out.push({ family, keyTemplate, describe: typeof describe === 'string' ? describe : null });
   }
   return out;
+}
+
+/**
+ * Coerce a unit's declared event DEPENDENCIES (manifest `dependencies.events`
+ * or a listing's `requires_events` JSON) into the pure model's shape. Fail-soft
+ * for the same reason as `parseProvidedEvents`.
+ *
+ * Two deliberate rules, both mirroring `uniqEvents` in resolve-and-install so a
+ * declaration reads identically wherever it is parsed:
+ *  - a bare STRING entry reads as REQUIRED (`{ family, optional: false }`) — the
+ *    safe reading of an under-specified declaration: fail loudly rather than
+ *    install a unit whose reactions silently never fire.
+ *  - on a duplicate family, REQUIRED WINS. A soft re-declaration must never be
+ *    able to downgrade a hard dependency into a no-op.
+ */
+export function parseRequiredEvents(raw: unknown): RequiredEventFamily[] {
+  let value = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  const byFamily = new Map<string, RequiredEventFamily>();
+  for (const e of value) {
+    let family: string | undefined;
+    let optional = false;
+    if (typeof e === 'string') {
+      family = e;
+    } else if (e != null && typeof e === 'object') {
+      const rec = e as Record<string, unknown>;
+      if (typeof rec.family === 'string') family = rec.family;
+      optional = rec.optional === true;
+    }
+    if (!family) continue;
+    const prev = byFamily.get(family);
+    // REQUIRED WINS: once any declaration says required, an optional one cannot
+    // relax it back.
+    if (prev) {
+      if (prev.optional && !optional) byFamily.set(family, { family, optional: false });
+      continue;
+    }
+    byFamily.set(family, { family, optional });
+  }
+  return [...byFamily.values()];
 }
 
 /**

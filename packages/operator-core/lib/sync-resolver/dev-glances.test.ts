@@ -45,7 +45,7 @@ describe('dev.* glance resolvers', () => {
     });
 
     it('dev.deployState wraps devDeployState() as a 1-element snapshot', async () => {
-      const snap = { mainHead: { sha: 'abc' }, deployedBehindMain: 7, errors: [] };
+      const snap = { stagingHead: { sha: 'abc' }, deployedBehindStaging: 7, errors: [] };
       vi.doMock('../dev-deploy-state', () => ({ devDeployState: vi.fn(async () => snap) }));
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('dev.deployState', {})) as unknown[];

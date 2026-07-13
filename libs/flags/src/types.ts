@@ -1487,6 +1487,15 @@ export const FLAGS = {
   // independent A/B knob: flip OFF and measure the adoption delta via the code-run-adoption metric.
   // Additive + reversible; DEFAULT ON; OFF ⇒ only the same-tool trigger fires.
   CODE_RUN_FANOUT_NUDGE: "papercusp-code-run-fanout-nudge",
+  // EI-10894 — the PREDICTIVE trigger: every nudge above is reactive (it keys on round-trips
+  // ALREADY spent, so the waste is billed in full and then explained). But a list verb returning
+  // >5 addressable rows IS the fan-out, one call before it happens — so attach the code:run
+  // skeleton to THAT result, ids already extracted, while batching still costs the agent nothing.
+  // Fires on a PREDICTION, so it is held to a higher bar than its reactive siblings: list-shaped
+  // verbs only, addressable rows only, silent when the caller already used code:run, one-shot per
+  // (session, tool), hard per-session cap, and it never escalates. Its OWN flag so the predictive
+  // family is an independent A/B knob against the reactive ones. DEFAULT ON; OFF ⇒ no hint.
+  CODE_RUN_FANOUT_PREEMPT: "papercusp-code-run-fanout-preempt",
   // agent-tooling-token-efficiency P-009 (2026-06-25): the SOFT orient-dedup nudge — when an agent
   // calls coord:plan-events / coord:inbox / memory:search / coord:declare-intent shortly after a
   // successful coord:orient (which already returned + declared exactly those), attach a one-shot

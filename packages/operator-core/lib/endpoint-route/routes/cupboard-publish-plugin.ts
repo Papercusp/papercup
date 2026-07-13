@@ -14,6 +14,12 @@
  * value, else derived from the manifest's `tools[]`) so the Cupboard's
  * tool→provider discovery can resolve each tool to this listing.
  *
+ * The EVENT axis rides the same publish (D-003; P-007 resolver, P-008 wire):
+ * `provides_events` (manifest `provides.events`) and `requires_events` (manifest
+ * `dependencies.events`) are derived from the installed manifest and sent with
+ * the listing. Unlike provides_tools these are NOT body-overridable — see the
+ * comment at the derivation site.
+ *
  * Body: { slug, github_url?, project_ref?, listing_ref?, title?, description?,
  *         provides_tools? }
  *   - slug            the installed unit's manifest name (used as listing_ref unless overridden)
@@ -23,8 +29,9 @@
  * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { validateManifestEventDeclarations } from '@papercusp/plugin-sdk';
 import { findInstalledPlugin } from '../../cupboard/plugin-listings';
-import { manifestToolNames } from '../../cupboard/pack-catalog';
+import { manifestToolNames, parseProvidedEvents, parseRequiredEvents } from '../../cupboard/pack-catalog';
 import { publishListingToCupboard } from '../../cupboard/publish-listing';
 import {
   resolveRepoCoordsFromDir,
@@ -122,6 +129,36 @@ export default defineTool({
     const listingRef =
       typeof body.listing_ref === 'string' && body.listing_ref.trim() ? body.listing_ref.trim() : slug;
 
+    // The EVENT axis (D-003; P-007 resolver + P-008 wire). Derived from the
+    // installed manifest — NOT body-overridable like provides_tools, because a
+    // provided family carries a keyTemplate that must match what the unit
+    // actually emits at runtime; letting a publisher hand-type it invites a
+    // listing that promises `deploy:<env>` while the code fires something else,
+    // and every awaiter of the advertised key hangs forever on a key nothing
+    // emits. The manifest is the only declaration the runtime is held to.
+    //
+    // WITHOUT THIS THE WHOLE INSTALLABLE RUNG IS INERT: nothing else in the
+    // system writes provides_events, so an unpublished family means
+    // cupboardEventIndex is empty, resolveEventProvider can never answer
+    // 'installable', and an event dep can never pull its provider in.
+    const providesEvents = installed ? parseProvidedEvents(installed.provides?.events) : [];
+    const requiresEvents = installed ? parseRequiredEvents(installed.dependencies?.events) : [];
+
+    // A malformed event declaration is LOUD at publish time — the opposite of the
+    // catalog's fail-soft parse. Fail-soft is right when reading a THIRD PARTY's
+    // manifest (one bad unit must not break catalog derivation for everyone);
+    // it is wrong when publishing YOUR OWN, where silently dropping a family the
+    // author believes they declared ships a listing that lies about itself.
+    if (installed) {
+      const issues = validateManifestEventDeclarations(installed);
+      if (issues.length > 0) {
+        return Response.json(
+          { ok: false, error: 'invalid manifest event declarations', detail: issues },
+          { status: 422 },
+        );
+      }
+    }
+
     // Publish-time installability gate (EI-387 / P-005): a kind=plugin listing
     // must point at a repo the STANDARD install path can resolve — one carrying a
     // papercusp.json with {name, version} where the installer looks (the
@@ -155,6 +192,8 @@ export default defineTool({
             ? installed.description
             : undefined,
       ...(providesTools.length > 0 ? { provides_tools: providesTools } : {}),
+      ...(providesEvents.length > 0 ? { provides_events: providesEvents } : {}),
+      ...(requiresEvents.length > 0 ? { requires_events: requiresEvents } : {}),
     });
 
     if (!result.ok) {

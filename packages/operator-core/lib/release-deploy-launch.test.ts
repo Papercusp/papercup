@@ -44,14 +44,14 @@ function mkSnap(
       releaseRoot: '/x-release',
       releaseRef: 'main',
       integrationBranch: 'staging',
-      mainHead: { sha: 'staging00head', shortSha: 'staging0', committedAtMs: 0, subject: 's' },
+      stagingHead: { sha: 'staging00head', shortSha: 'staging0', committedAtMs: 0, subject: 's' },
       ready: { sha: 'greenpin0sha', shortSha: 'greenpin', committedAtMs: 0, subject: 'g' },
       deployed: { sha: 'deployed0sha', shortSha: 'deployed', committedAtMs: 0, subject: 'd' },
       deployedAtMs: 1,
-      deployedBehindMain: 0,
-      readyBehindMain: 0,
-      deployedBehindReady: 0,
-      readyAtMainHead: true,
+      deployedBehindStaging: 0,
+      greenPinBehindStaging: 0,
+      deployedBehindGreenPin: 0,
+      greenPinAtStagingHead: true,
       errors: [],
       ...deploy,
     },
@@ -60,7 +60,7 @@ function mkSnap(
 
 describe('computeDeployStatus — decision tree', () => {
   it('green-deployable: green gate + green code ahead of the live deploy → canTriggerGreen', () => {
-    const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false }, { deployedBehindReady: 2 }));
+    const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false }, { deployedBehindGreenPin: 2 }));
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true);
     expect(s.recommendation).toMatch(/trigger/i);
@@ -68,7 +68,7 @@ describe('computeDeployStatus — decision tree', () => {
 
   it('gate-red: reds present → NOT triggerable, recommendation says fix the reds', () => {
     const s = computeDeployStatus(
-      mkSnap({ consecutiveReds: 2, lastFixerStatus: 'spawned' }, { deployedBehindReady: 0 }),
+      mkSnap({ consecutiveReds: 2, lastFixerStatus: 'spawned' }, { deployedBehindGreenPin: 0 }),
     );
     expect(s.state).toBe('gate-red');
     expect(s.canTriggerGreen).toBe(false);
@@ -77,7 +77,7 @@ describe('computeDeployStatus — decision tree', () => {
   });
 
   it('a green PIN ahead is triggerable even when the gate is currently RED (the pin is green by construction)', () => {
-    const s = computeDeployStatus(mkSnap({ consecutiveReds: 1 }, { deployedBehindReady: 3 }));
+    const s = computeDeployStatus(mkSnap({ consecutiveReds: 1 }, { deployedBehindGreenPin: 3 }));
     // A later red must NOT strand an already-green pin: hasGreenAhead → green-deployable AND
     // canTriggerGreen, decoupled from the current gate color (auto-serve ships "green main ahead"
     // regardless). Previously canTriggerGreen also required gateGreen, which wedged op:trigger in
@@ -90,7 +90,7 @@ describe('computeDeployStatus — decision tree', () => {
 
   it('gate-wedged: 0 reds but the checkpoint is not firing → surface to an operator', () => {
     const s = computeDeployStatus(
-      mkSnap({ consecutiveReds: 0, fireStale: true, fireStaleReason: 'no fire in 9h' }, { deployedBehindReady: 0 }),
+      mkSnap({ consecutiveReds: 0, fireStale: true, fireStaleReason: 'no fire in 9h' }, { deployedBehindGreenPin: 0 }),
     );
     expect(s.state).toBe('gate-wedged');
     expect(s.canTriggerGreen).toBe(false);
@@ -98,13 +98,13 @@ describe('computeDeployStatus — decision tree', () => {
   });
 
   it('staging-buffered: green gate, nothing deployable yet, staging awaiting the next checkpoint', () => {
-    const s = computeDeployStatus(mkSnap({}, { deployedBehindReady: 0, readyBehindMain: 4 }));
+    const s = computeDeployStatus(mkSnap({}, { deployedBehindGreenPin: 0, greenPinBehindStaging: 4 }));
     expect(s.state).toBe('staging-buffered');
     expect(s.canTriggerGreen).toBe(false);
   });
 
   it('up-to-date: live :3070 is at the green pin', () => {
-    const s = computeDeployStatus(mkSnap({}, { deployedBehindReady: 0, readyBehindMain: 0 }));
+    const s = computeDeployStatus(mkSnap({}, { deployedBehindGreenPin: 0, greenPinBehindStaging: 0 }));
     expect(s.state).toBe('up-to-date');
     expect(s.nothingToDeploy).toBe(true);
   });
@@ -200,7 +200,7 @@ describe('WI-4489: gate verdict staleness', () => {
     const s = computeDeployStatus(
       mkSnap(
         { consecutiveReds: 4, verdictStale: true, verdictStaleReason: 'the release pin has advanced' },
-        { deployedBehindReady: 0 },
+        { deployedBehindGreenPin: 0 },
       ),
     );
     expect(s.state).toBe('gate-verdict-stale');
@@ -215,7 +215,7 @@ describe('WI-4489: gate verdict staleness', () => {
 
   it('⭐ a LIVE red still reports gate-red — the fix must not blind the gate (the EI-10609 lesson)', () => {
     const s = computeDeployStatus(
-      mkSnap({ consecutiveReds: 4, verdictStale: false }, { deployedBehindReady: 0 }),
+      mkSnap({ consecutiveReds: 4, verdictStale: false }, { deployedBehindGreenPin: 0 }),
     );
     expect(s.state).toBe('gate-red');
     expect(s.recommendation).toMatch(/FIX the reds/);
@@ -223,7 +223,7 @@ describe('WI-4489: gate verdict staleness', () => {
 
   it('a stale red never strands a deployable green pin — green-deployable still wins', () => {
     const s = computeDeployStatus(
-      mkSnap({ consecutiveReds: 4, verdictStale: true }, { deployedBehindReady: 146 }),
+      mkSnap({ consecutiveReds: 4, verdictStale: true }, { deployedBehindGreenPin: 146 }),
     );
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true); // decoupled from gate colour by design (line ~118)

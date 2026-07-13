@@ -71,10 +71,10 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
       deployedSha: 'deployed0',
       stagingHeadSha: 'staging0head',
       greenPinSha: 'greenpin0',
-      deployedBehindMain: 0,
-      readyBehindMain: 0,
-      deployedBehindReady: 0,
-      readyAtMainHead: true,
+      deployedBehindStaging: 0,
+      greenPinBehindStaging: 0,
+      deployedBehindGreenPin: 0,
+      greenPinAtStagingHead: true,
       deployedAtMs: 1,
     },
     canTriggerGreen: false,
@@ -112,7 +112,7 @@ describe('release:deploy — trigger', () => {
 
   it('dry-run (no confirm) previews but does NOT launch even when green-deployable', async () => {
     statusM.mockResolvedValue(
-      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false, deploy: { ...mkStatus().deploy, deployedBehindReady: 2, greenPinSha: 'gp' } }),
+      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false, deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2, greenPinSha: 'gp' } }),
     );
     const b = body(await tool.handler({ op: 'trigger' } as never, { role: 'operator' } as never));
     expect(b.dry_run).toBe(true);
@@ -121,7 +121,7 @@ describe('release:deploy — trigger', () => {
 
   it('confirm:true fires a detached GREEN deploy (no force flags)', async () => {
     statusM.mockResolvedValue(
-      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false, deploy: { ...mkStatus().deploy, deployedBehindReady: 2 } }),
+      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false, deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2 } }),
     );
     const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, launched: true });

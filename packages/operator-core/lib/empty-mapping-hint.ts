@@ -84,7 +84,7 @@ function isFullyBlankRow(row: unknown): boolean {
  * result healthy: precisely the false negative it exists to prevent. Depth is capped
  * at this one hop — deeper nesting is rare and the cost of scanning is not worth it.
  */
-function collectCandidateArrays(payload: unknown): unknown[][] {
+export function collectCandidateArrays(payload: unknown): unknown[][] {
   const out: unknown[][] = [];
   const pushArraysOf = (obj: unknown): void => {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;

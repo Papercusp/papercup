@@ -202,26 +202,46 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
   return { stage: 'gate', status: 'ok', reason: 'green-checkpoint gate is green' };
 }
 
+/**
+ * The DEPLOY stage asks exactly one question: is code that ALREADY PASSED the gate sitting
+ * un-shipped? That is `deployedBehindGreenPin` — the green pin (`main`) is ahead of what runs
+ * on :3070.
+ *
+ * ⚠ EI-11012 — it deliberately does NOT fire on `greenPinBehindStaging` (the STAGING BUFFER:
+ * staging ahead of the green pin). This stage used to, believing that field meant "the tip
+ * hasn't been promoted". It doesn't — it is the normal steady state of this fleet: git-sync
+ * commits `staging` continuously while the green-checkpoint FFs `main` only hourly and only
+ * when green, so the buffer is essentially ALWAYS > 0. Firing on it made the deploy stage
+ * report `degraded` permanently, which is worse than noise on TWO counts:
+ *   1. computeWhyChain() reports the FIRST non-ok stage as the rootCause, so a permanently
+ *      degraded deploy stage SHADOWED every real downstream cause (admission, pool, ...);
+ *   2. it told agents their code wasn't live when it was — inviting a pointless force-deploy
+ *      (a real :3070 restart) or a phantom chase.
+ * A buffer that stays large for a long time IS worth knowing about, but that is a GATE/promotion
+ * question ("is the gate still advancing main?"), time-thresholded — not a `> 0` boolean here.
+ * The gate stage above already owns it (consecutiveReds / stall detection).
+ */
 function deployStage(snap: GitPipelineSnapshot): WhyChainStage {
   const d = snap.deploy;
-  if (d.readyBehindMain != null && d.readyBehindMain > 0) {
+  if (d.deployedBehindGreenPin != null && d.deployedBehindGreenPin > 0) {
     return {
       stage: 'deploy',
       status: 'degraded',
-      reason: `main is ${d.readyBehindMain} commit(s) ahead of the green pin (\`ready\`) — the tip hasn't been promoted (downstream of the gate above)`,
-    };
-  }
-  if (d.deployedBehindReady != null && d.deployedBehindReady > 0) {
-    return {
-      stage: 'deploy',
-      status: 'degraded',
-      reason: `\`ready\` is green and ${d.deployedBehindReady} commit(s) ahead of what's live on :3070 — deployed but not yet promoted/restarted`,
+      reason: `the green pin (\`main\`) is green and ${d.deployedBehindGreenPin} commit(s) ahead of what's live on :3070 — gated but not yet deployed/restarted`,
     };
   }
   if (d.errors.length) {
     return { stage: 'deploy', status: 'degraded', reason: `deploy snapshot incomplete: ${d.errors.join('; ')}` };
   }
-  return { stage: 'deploy', status: 'ok', reason: 'deployed :3070 matches the green pin matches main HEAD — fully caught up' };
+  const buffer =
+    d.greenPinBehindStaging != null && d.greenPinBehindStaging > 0
+      ? ` (${d.greenPinBehindStaging} commit(s) of staging buffer await the next gate run — normal)`
+      : '';
+  return {
+    stage: 'deploy',
+    status: 'ok',
+    reason: `deployed :3070 matches the green pin (\`main\`) — everything that passed the gate is live${buffer}`,
+  };
 }
 
 /**
@@ -374,9 +394,9 @@ export interface PipelineHealth {
   /** WI-4489: the recorded red is superseded/unverified — its colour is UNKNOWN, not red. */
   verdictStale: boolean;
   /** Commits on `main` not yet promoted to the green pin (`ready`). */
-  readyBehindMain: number | null;
+  greenPinBehindStaging: number | null;
   /** Commits on the green pin not yet live on :3070. */
-  deployedBehindReady: number | null;
+  deployedBehindGreenPin: number | null;
   recentFailingFiles: string[];
   /** The upstream-most non-ok leg of THIS chain (gate, then deploy) — null when both are ok. */
   rootCause: WhyChainStage | null;
@@ -403,8 +423,8 @@ export async function computePipelineHealth(
       consecutiveReds: 0,
       lastGreenAtMs: null,
       verdictStale: false,
-      readyBehindMain: null,
-      deployedBehindReady: null,
+      greenPinBehindStaging: null,
+      deployedBehindGreenPin: null,
       recentFailingFiles: [],
       rootCause: null,
     };
@@ -432,8 +452,8 @@ export async function computePipelineHealth(
     consecutiveReds: snap.gate.consecutiveReds,
     lastGreenAtMs: snap.gate.lastGreenAtMs,
     verdictStale: snap.gate.verdictStale,
-    readyBehindMain: snap.deploy.readyBehindMain ?? null,
-    deployedBehindReady: snap.deploy.deployedBehindReady ?? null,
+    greenPinBehindStaging: snap.deploy.greenPinBehindStaging ?? null,
+    deployedBehindGreenPin: snap.deploy.deployedBehindGreenPin ?? null,
     recentFailingFiles: failingFiles,
     rootCause: [gate, deploy].find((s) => s.status !== 'ok') ?? null,
   };

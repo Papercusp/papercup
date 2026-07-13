@@ -80,10 +80,10 @@ export interface DeployStatus {
     deployedSha: string | null;
     stagingHeadSha: string | null;
     greenPinSha: string | null;
-    deployedBehindMain: number | null;
-    readyBehindMain: number | null;
-    deployedBehindReady: number | null;
-    readyAtMainHead: boolean | null;
+    deployedBehindStaging: number | null;
+    greenPinBehindStaging: number | null;
+    deployedBehindGreenPin: number | null;
+    greenPinAtStagingHead: boolean | null;
     deployedAtMs: number | null;
   };
   /** True iff `trigger` would do something safe + useful: there is green code ahead of the
@@ -108,12 +108,12 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
   const g = snap.gate;
   const d = snap.deploy;
   const gateGreen = g.consecutiveReds === 0 && !g.fireStale;
-  const deployedBehindReady = d.deployedBehindReady;
-  const readyBehindMain = d.readyBehindMain;
+  const deployedBehindGreenPin = d.deployedBehindGreenPin;
+  const greenPinBehindStaging = d.greenPinBehindStaging;
 
   // Green code ahead of the live deploy that we could ship right now.
-  const hasGreenAhead = typeof deployedBehindReady === 'number' && deployedBehindReady > 0;
-  const nothingToDeploy = deployedBehindReady === 0;
+  const hasGreenAhead = typeof deployedBehindGreenPin === 'number' && deployedBehindGreenPin > 0;
+  const nothingToDeploy = deployedBehindGreenPin === 0;
   // The green pin ("ready") is green BY CONSTRUCTION — it is the last commit that PASSED the
   // green checkpoint. Expediting its deploy therefore only requires that the pin is AHEAD of the
   // live deploy; it must NOT also demand the gate be *currently* green. A later red (or a wedged
@@ -137,7 +137,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
     // There IS green, deployable code that hasn't reached :3070 — the expedite case.
     state = 'green-deployable';
     recommendation =
-      `${deployedBehindReady} green commit(s) are deployable but not yet live on :3070. ` +
+      `${deployedBehindGreenPin} green commit(s) are deployable but not yet live on :3070. ` +
       `The auto-serve ships these each cycle; to expedite now run release:deploy { op: 'trigger', confirm: true } — it can only ship the green pin (safe even while the gate is currently red).`;
   } else if (redAuthoritative) {
     state = 'gate-red';
@@ -157,10 +157,10 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
     state = 'gate-wedged';
     recommendation =
       `The green-checkpoint is WEDGED — not firing (${g.fireStaleReason ?? 'stale'}). It produces 0 reds because it never ran, so the gate can't advance. Surface this to an operator; the pipeline can't self-heal a non-firing checkpoint.`;
-  } else if (typeof readyBehindMain === 'number' && readyBehindMain > 0) {
+  } else if (typeof greenPinBehindStaging === 'number' && greenPinBehindStaging > 0) {
     state = 'staging-buffered';
     recommendation =
-      `${readyBehindMain} staging commit(s) are awaiting the next green-checkpoint (gate is green, it just hasn't promoted them to the pin yet). Wait one checkpoint cycle, then re-check; nothing to do.`;
+      `${greenPinBehindStaging} staging commit(s) are awaiting the next green-checkpoint (gate is green, it just hasn't promoted them to the pin yet). Wait one checkpoint cycle, then re-check; nothing to do.`;
   } else if (nothingToDeploy) {
     state = 'up-to-date';
     recommendation = 'The live :3070 operator is at the green pin — nothing to deploy.';
@@ -187,12 +187,12 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
     },
     deploy: {
       deployedSha: d.deployed?.sha ?? null,
-      stagingHeadSha: d.mainHead?.sha ?? null, // field name predates staging→main rename: mainHead = integration (staging) HEAD
+      stagingHeadSha: d.stagingHead?.sha ?? null, // field name predates staging→main rename: stagingHead = integration (staging) HEAD
       greenPinSha: d.ready?.sha ?? null,
-      deployedBehindMain: d.deployedBehindMain,
-      readyBehindMain: d.readyBehindMain,
-      deployedBehindReady: d.deployedBehindReady,
-      readyAtMainHead: d.readyAtMainHead,
+      deployedBehindStaging: d.deployedBehindStaging,
+      greenPinBehindStaging: d.greenPinBehindStaging,
+      deployedBehindGreenPin: d.deployedBehindGreenPin,
+      greenPinAtStagingHead: d.greenPinAtStagingHead,
       deployedAtMs: d.deployedAtMs,
     },
     canTriggerGreen,

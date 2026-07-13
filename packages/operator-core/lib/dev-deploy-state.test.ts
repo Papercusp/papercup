@@ -102,7 +102,7 @@ describe('devDeployState', () => {
     expect(st.errors).toEqual([]);
     expect(st.integrationBranch).toBe('main');
     expect(st.releaseRef).toBe('ready');
-    expect(st.mainHead?.sha).toBe(shaC);
+    expect(st.stagingHead?.sha).toBe(shaC);
     expect(st.ready?.sha).toBe(shaB);
     expect(st.deployed?.sha).toBe(shaA);
   });
@@ -110,29 +110,29 @@ describe('devDeployState', () => {
   it('computes the "behind" distances correctly', async () => {
     const st = await devDeployState();
     // main = A→B→C. deployed=A → 2 behind main (B, C). ready=B → 1 behind main (C).
-    expect(st.deployedBehindMain).toBe(2);
-    expect(st.readyBehindMain).toBe(1);
+    expect(st.deployedBehindStaging).toBe(2);
+    expect(st.greenPinBehindStaging).toBe(1);
     // deployed=A is 1 behind ready=B → there's a green commit deployable but undeployed.
-    expect(st.deployedBehindReady).toBe(1);
+    expect(st.deployedBehindGreenPin).toBe(1);
     // ready (B) is NOT at main HEAD (C) → there's a staging buffer.
-    expect(st.readyAtMainHead).toBe(false);
+    expect(st.greenPinAtStagingHead).toBe(false);
   });
 
   it('carries commit subjects + a short sha for display', async () => {
     const st = await devDeployState();
-    expect(st.mainHead?.subject).toBe('C');
+    expect(st.stagingHead?.subject).toBe('C');
     expect(st.deployed?.subject).toBe('A');
     expect(st.deployed?.shortSha).toBe(shaA.slice(0, 8));
     expect(typeof st.deployed?.committedAtMs).toBe('number');
   });
 
-  it('reports readyAtMainHead=true once ready fast-forwards to main HEAD', async () => {
+  it('reports greenPinAtStagingHead=true once ready fast-forwards to main HEAD', async () => {
     git(integration, ['branch', '-f', 'ready', shaC]);
     try {
       const st = await devDeployState();
       expect(st.ready?.sha).toBe(shaC);
-      expect(st.readyBehindMain).toBe(0);
-      expect(st.readyAtMainHead).toBe(true);
+      expect(st.greenPinBehindStaging).toBe(0);
+      expect(st.greenPinAtStagingHead).toBe(true);
     } finally {
       git(integration, ['branch', '-f', 'ready', shaB]); // restore for other tests
     }
@@ -177,7 +177,7 @@ describe('devDeployState', () => {
       expect(st.ready).toBeNull();
       expect(st.errors.some((e) => e.includes('no-such-ref'))).toBe(true);
       // main + deployed still resolve — the snapshot is partial, not absent.
-      expect(st.mainHead?.sha).toBe(shaC);
+      expect(st.stagingHead?.sha).toBe(shaC);
     } finally {
       process.env.PAPERCUSP_RELEASE_REF = prev;
     }
@@ -197,7 +197,7 @@ describe('devDeployState caching (P-015 — collapse the git fan-out under the p
     // Same in-flight promise → identical object: only ONE git fan-out ran.
     expect(a).toBe(b);
     expect(b).toBe(c);
-    expect(a.mainHead?.sha).toBe(shaC);
+    expect(a.stagingHead?.sha).toBe(shaC);
   });
 
   it('serves repeat reads from cache within the TTL, then recomputes after reset', async () => {
@@ -210,7 +210,7 @@ describe('devDeployState caching (P-015 — collapse the git fan-out under the p
     resetDevDeployStateCache();
     const fresh = await devDeployState();
     expect(fresh).not.toBe(first); // new compute → new object
-    expect(fresh.mainHead?.sha).toBe(first.mainHead?.sha); // same underlying data
+    expect(fresh.stagingHead?.sha).toBe(first.stagingHead?.sha); // same underlying data
   });
 
   it('TTL=0 disables the cache (every call recomputes)', async () => {
@@ -233,6 +233,6 @@ describe('devDeployState caching (P-015 — collapse the git fan-out under the p
     const first = await devDeployState();
     const cached = await devDeployState();
     expect(cached).toBe(first); // same object → default TTL window served it from cache
-    expect(first.mainHead?.sha).toBe(shaC);
+    expect(first.stagingHead?.sha).toBe(shaC);
   });
 });

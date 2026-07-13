@@ -73,7 +73,7 @@ function statusBrief(s: DeployStatus) {
       verdictStale: s.gate.verdictStale,
       ...(s.gate.verdictStale ? { verdictStaleReason: s.gate.verdictStaleReason } : {}),
     },
-    deployedBehindGreenPin: s.deploy.deployedBehindReady,
+    deployedBehindGreenPin: s.deploy.deployedBehindGreenPin,
     canTriggerGreen: s.canTriggerGreen,
     recommendation: s.recommendation,
   };
@@ -172,7 +172,7 @@ export default defineTool({
           ok: true,
           op: 'trigger',
           dry_run: true,
-          would_deploy: { greenPinSha: status.deploy.greenPinSha, commitsAhead: status.deploy.deployedBehindReady },
+          would_deploy: { greenPinSha: status.deploy.greenPinSha, commitsAhead: status.deploy.deployedBehindGreenPin },
           note: 'Pass confirm:true to fire the detached green deploy (restarts :3070; only ships the green pin). The deploy reports its own outcome (broadcast + pipeline event + release:deployed/deploy-failed events).',
           status: statusBrief(status),
         });
@@ -181,7 +181,7 @@ export default defineTool({
       await recordDeployAudit('trigger', actor, {
         mode: 'trigger',
         greenPinSha: status.deploy.greenPinSha,
-        commitsAhead: status.deploy.deployedBehindReady,
+        commitsAhead: status.deploy.deployedBehindGreenPin,
         launched: launch.launched,
         unit: launch.unit,
         reason: launch.reason,
