@@ -14,7 +14,6 @@ import {
   GraduationCap,
   HeartPulse,
   LayoutDashboard,
-  Lightbulb,
   ListChecks,
   MessageCircle,
   MonitorPlay,

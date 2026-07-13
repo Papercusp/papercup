@@ -8,11 +8,14 @@
  *   - Mod+I        → /adv?tab=conversations (Discord: inbox)
  *   - Mod+Shift+N  → /adv?create=true       (Discord: create/join server →
  *                                            our create-harness wizard)
- *   - g then b     → /adv?tab=brainstorm    (Linear-style 2-stroke tab jump)
- *   - g then i     → /adv?tab=insights
+ *   - g then i     → /adv?tab=insights      (Linear-style 2-stroke tab jump)
+ *
+ * (g>b / goto.brainstorm removed 2026-07-13 with the /adv Brainstorm tab —
+ * the surface lives in the Quick Panel popup now; quick-panel-saved-prompts
+ * P-010.)
  *
  * These are the ROOT fallbacks: AdvShell registers its own handlers for
- * `goto.inbox` / `harness.create` / `goto.brainstorm` / `goto.insights`
+ * `goto.inbox` / `harness.create` / `goto.insights`
  * (flipping its nuqs state in place), and the shortcut bus runs the
  * most-recently-registered action — so when /adv is mounted its in-place
  * handler wins, and from any other route these navigate there. Renders
@@ -36,13 +39,10 @@ export default function GlobalAppShortcuts() {
     router.push('/adv?create=true');
   });
 
-  // Both tabs are per-pot, so landing here from another route shows AdvShell's
-  // pick-a-pot empty-state until a pot is selected — same as any deep link to a
-  // per-pot tab. These ids had no handler at all before settings-audit 2026-07-09.
-  useShortcutAction('goto.brainstorm', () => {
-    router.push('/adv?tab=brainstorm');
-  });
-
+  // Per-pot tab, so landing here from another route shows AdvShell's
+  // pick-a-pot empty-state until a pot is selected — same as any deep link to
+  // a per-pot tab. This id had no handler at all before settings-audit
+  // 2026-07-09.
   useShortcutAction('goto.insights', () => {
     router.push('/adv?tab=insights');
   });

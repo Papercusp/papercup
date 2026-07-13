@@ -84,7 +84,7 @@ function renderAdvTab(tab: AdvTabId) {
       // Calendar — the schedulable time-surface: FullCalendar over the
       // backend-computed scheduled-plan occurrences (scheduled-recurring-plans P-018/P-019).
       return <ScheduledCalendarTab />;
-    case 'brainstorm':
+    // ('brainstorm' removed — the surface lives in the Quick Panel popup now; P-010.)
     case 'prs':
     case 'insights':
     case 'settings':

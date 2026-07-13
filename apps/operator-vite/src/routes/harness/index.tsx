@@ -18,7 +18,9 @@ import { createFileRoute, redirect } from '@tanstack/react-router';
  */
 const PANEL_TO_TAB: Record<string, string> = {
   dashboard: 'harnesses',
-  brainstorm: 'brainstorm',
+  // The Brainstorm tab left /adv for the Quick Panel popup (P-010); legacy
+  // brainstorm deep links land on overview.
+  brainstorm: 'overview',
   prs: 'prs',
   insights: 'insights',
   // The Config tab was retired (config-tab-cleanup-2026-06-08); its plugin

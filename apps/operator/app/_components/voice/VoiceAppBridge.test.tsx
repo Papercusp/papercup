@@ -128,11 +128,136 @@ afterEach(() => {
   cleanup();
 });
 
-// Pane-primary routing (P-019): the dock's Papercup pane is the PRIMARY voice
-// brain — every unconsumed utterance goes there first; the converse-fallback
-// suite below covers the pane-unavailable degrade.
-describe('VoiceAppBridge — pane-primary routing', () => {
-  it('routes the utterance to the Papercup pane when no consumer is registered', async () => {
+// Converse-primary routing (operator-chat-sidebar-revival P-007/D-001): the
+// operator chat sidebar's converse thread is the PRIMARY voice brain in the
+// shipped config (FLAGS.TESTING off — the dock doesn't exist). The pane is
+// the TESTING dev path (suite below).
+describe('VoiceAppBridge — converse-primary routing (shipped config)', () => {
+  it('submits the utterance to the converse brain when no consumer is registered', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('what is happening');
+    expect(converse).toHaveBeenCalledWith('what is happening', { spoken: true });
+  });
+
+  it('never touches the Sentinel pane while the TESTING dev path is off', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('what is happening');
+    expect(sentinelCalled()).toBe(false);
+  });
+
+  it('speaks no local ack on the converse path (the provider speaks the real reply)', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('what is happening');
+    expect(h.speak).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when voice mode is off', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount(); // no setMode → stays 'off'
+    await utter('ignored while off');
+    expect(converse).not.toHaveBeenCalled();
+    expect(sentinelCalled()).toBe(false);
+  });
+
+  it('ignores too-short utterances', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('a');
+    expect(converse).not.toHaveBeenCalled();
+  });
+
+  it('does NOT dispatch to converse when a full-agent engine owns the session', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    h.fullAgentEngine = 'elevenlabs-conv';
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('the full agent is in charge');
+    expect(converse).not.toHaveBeenCalled();
+    expect(sentinelCalled()).toBe(false);
+  });
+
+  it('drops the turn silently when no provider is registered (no pane attempt, no false ack)', async () => {
+    // No setVoiceConverseHandler — submitVoiceTurn returns false.
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('anyone there');
+    expect(sentinelCalled()).toBe(false); // dev path off — pane never tried
+    expect(h.speak).not.toHaveBeenCalled(); // no false ack
+  });
+});
+
+describe('VoiceAppBridge — consumer priority', () => {
+  it('suppresses converse routing when the Operator panel (panel-open) is registered', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount();
+    setMode(ALWAYS_ON);
+    deregs.push(registerVoiceConsumer('operator-panel', 'panel-open'));
+    await utter('open something');
+    expect(converse).not.toHaveBeenCalled(); // panel consumes (suppresses) the turn
+    expect(sentinelCalled()).toBe(false);
+  });
+
+  it('hands the utterance to a background-toast consumer’s handler', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    const handler = vi.fn();
+    deregs.push(registerVoiceConsumer('undo-toast', 'background-toast', handler));
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('cancel');
+    expect(handler).toHaveBeenCalledWith('cancel');
+    expect(converse).not.toHaveBeenCalled();
+  });
+
+  it('panel-open outranks background-toast (higher priority wins, suppresses both toast handler and brain routing)', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    const toastHandler = vi.fn();
+    deregs.push(registerVoiceConsumer('undo-toast', 'background-toast', toastHandler));
+    deregs.push(registerVoiceConsumer('operator-panel', 'panel-open'));
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('something');
+    expect(toastHandler).not.toHaveBeenCalled(); // panel-open won
+    expect(converse).not.toHaveBeenCalled();
+  });
+
+  it('deregistering the panel consumer restores converse routing', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    const dereg = registerVoiceConsumer('operator-panel', 'panel-open');
+    mount();
+    setMode(ALWAYS_ON);
+    dereg(); // panel closed
+    await utter('now route me');
+    expect(converse).toHaveBeenCalledWith('now route me', { spoken: true });
+  });
+});
+
+// Dev pane path (FLAGS.TESTING on — the dock exists): the dock's Papercup
+// pane keeps priority over converse (the pre-revival P-019 behavior), with a
+// spoken instant ack on success and a converse degrade on a failed pane
+// write. P-007/D-001 gates this whole path behind the TESTING flag.
+describe('VoiceAppBridge — dev pane path (FLAGS.TESTING on)', () => {
+  beforeEach(() => {
+    h.testingFlag = true;
+  });
+
+  it('routes the utterance to the Papercup pane first', async () => {
     mount();
     setMode(ALWAYS_ON);
     await utter('what is happening');
@@ -157,78 +282,8 @@ describe('VoiceAppBridge — pane-primary routing', () => {
     expect(converse).not.toHaveBeenCalled(); // one brain per turn — no double-dispatch
   });
 
-  it('does nothing when voice mode is off', async () => {
-    mount(); // no setMode → stays 'off'
-    await utter('ignored while off');
-    expect(sentinelCalled()).toBe(false);
-  });
-
-  it('ignores too-short utterances', async () => {
-    mount();
-    setMode(ALWAYS_ON);
-    await utter('a');
-    expect(sentinelCalled()).toBe(false);
-  });
-
-  it('does NOT route into the Sentinel pane when a full-agent engine owns the session', async () => {
-    h.fullAgentEngine = 'elevenlabs-conv';
-    mount();
-    setMode(ALWAYS_ON);
-    await utter('the full agent is in charge');
-    expect(sentinelCalled()).toBe(false);
-  });
-});
-
-describe('VoiceAppBridge — consumer priority', () => {
-  it('suppresses Sentinel routing when the Operator panel (panel-open) is registered', async () => {
-    mount();
-    setMode(ALWAYS_ON);
-    deregs.push(registerVoiceConsumer('operator-panel', 'panel-open'));
-    await utter('open something');
-    expect(sentinelCalled()).toBe(false); // panel consumes (suppresses) the turn
-  });
-
-  it('hands the utterance to a background-toast consumer’s handler', async () => {
-    const handler = vi.fn();
-    deregs.push(registerVoiceConsumer('undo-toast', 'background-toast', handler));
-    mount();
-    setMode(ALWAYS_ON);
-    await utter('cancel');
-    expect(handler).toHaveBeenCalledWith('cancel');
-    expect(sentinelCalled()).toBe(false);
-  });
-
-  it('panel-open outranks background-toast (higher priority wins, suppresses both toast handler and Sentinel routing)', async () => {
-    const toastHandler = vi.fn();
-    deregs.push(registerVoiceConsumer('undo-toast', 'background-toast', toastHandler));
-    deregs.push(registerVoiceConsumer('operator-panel', 'panel-open'));
-    mount();
-    setMode(ALWAYS_ON);
-    await utter('something');
-    expect(toastHandler).not.toHaveBeenCalled(); // panel-open won
-    expect(sentinelCalled()).toBe(false);
-  });
-
-  it('deregistering the panel consumer restores dock-fallback routing', async () => {
-    const dereg = registerVoiceConsumer('operator-panel', 'panel-open');
-    mount();
-    setMode(ALWAYS_ON);
-    dereg(); // panel closed
-    await utter('now route me');
-    expect(sentinelCalled()).toBe(true);
-  });
-});
-
-// Converse FALLBACK (P-019): when the pane route is unavailable (no dock, no
-// registered pane, pane exited — routeVoiceToSentinelPane resolves false), the
-// bridge degrades to the in-process Papercup converse brain via the
-// provider-registered sendUserMessage. Same one user-facing identity (D-001).
-describe('VoiceAppBridge — converse fallback (pane unavailable)', () => {
-  beforeEach(() => {
+  it('degrades to the converse brain when the pane write fails', async () => {
     h.routeToSentinel.mockReturnValue(Promise.resolve(false)); // pane route down
-  });
-
-  it('submits the spoken turn to the registered converse brain when the pane write fails', async () => {
     const converse = vi.fn();
     setVoiceConverseHandler(converse);
     mount();
@@ -238,17 +293,6 @@ describe('VoiceAppBridge — converse fallback (pane unavailable)', () => {
     expect(converse).toHaveBeenCalledWith('what is happening', { spoken: true });
     // No instant ack on the converse path — the provider speaks the real reply.
     expect(h.speak).not.toHaveBeenCalled();
-  });
-
-  it('a panel-open consumer still suppresses converse routing', async () => {
-    const converse = vi.fn();
-    setVoiceConverseHandler(converse);
-    mount();
-    setMode(ALWAYS_ON);
-    deregs.push(registerVoiceConsumer('operator-panel', 'panel-open'));
-    await utter('open something');
-    expect(converse).not.toHaveBeenCalled();
-    expect(sentinelCalled()).toBe(false);
   });
 
   it('a full-agent engine still owns its own brain (no pane write, no converse dispatch)', async () => {
@@ -263,6 +307,7 @@ describe('VoiceAppBridge — converse fallback (pane unavailable)', () => {
   });
 
   it('drops the turn silently when neither the pane nor a provider is available', async () => {
+    h.routeToSentinel.mockReturnValue(Promise.resolve(false)); // pane route down
     // No setVoiceConverseHandler — submitVoiceTurn returns false.
     mount();
     setMode(ALWAYS_ON);

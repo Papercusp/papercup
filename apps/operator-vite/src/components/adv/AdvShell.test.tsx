@@ -470,7 +470,9 @@ describe('AdvShell — Discord-parity shortcuts', () => {
   it('goto.nextTab / goto.prevTab cycle the visible strip with wrap-around', async () => {
     await renderShell();
     act(() => shortcutHandlers.get('goto.nextTab')!());
-    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('brainstorm'));
+    // next tab after overview is 'plans' since the Brainstorm tab moved to the
+    // Quick Panel popup (P-010).
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('plans'));
     act(() => shortcutHandlers.get('goto.prevTab')!());
     // from overview (idx 0) backwards wraps to the last tab
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('settings'));
@@ -491,15 +493,15 @@ describe('AdvShell — Discord-parity shortcuts', () => {
     await waitFor(() => expect(nuqsSetters.create).toHaveBeenCalledWith(true));
   });
 
-  // settings-audit 2026-07-09: `g b` / `g i` were listed in the shortcut registry
+  // settings-audit 2026-07-09: `g i` was listed in the shortcut registry
   // (and rebindable on /settings/shortcuts) but NO component ever registered a
-  // handler, so pressing them did nothing. Regression guard for the wire-up.
-  it('goto.brainstorm and goto.insights jump to their per-pot tabs', async () => {
+  // handler, so pressing it did nothing. Regression guard for the wire-up.
+  // (goto.brainstorm removed 2026-07-13 with the /adv Brainstorm tab; P-010.)
+  it('goto.insights jumps to its per-pot tab', async () => {
     await renderShell();
-    act(() => shortcutHandlers.get('goto.brainstorm')!());
-    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('brainstorm'));
     act(() => shortcutHandlers.get('goto.insights')!());
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('insights'));
+    expect(shortcutHandlers.has('goto.brainstorm')).toBe(false);
   });
 });
 

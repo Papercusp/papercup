@@ -28,7 +28,7 @@ vi.mock('../../components/adv/AdvShell', () => ({
   // module-scope declarations, so referencing an outer `const` throws.
   ADV_TABS: [
     'overview', 'conversations', 'learning', 'harnesses', 'health', 'frames',
-    'evals', 'calendar', 'plans', 'brainstorm', 'prs', 'insights', 'settings',
+    'evals', 'calendar', 'plans', 'prs', 'insights', 'settings',
     'docs', 'git', 'testing',
   ].map((id) => ({ id })),
 }));
@@ -42,7 +42,7 @@ vi.mock('../../components/adv/HealthTab', () => ({ default: () => <div data-test
 vi.mock('../../components/adv/AdvHarnessPanelPage', () => ({
   default: ({ panel }: { panel: string }) => <div data-testid="harness-panel" data-panel={panel} />,
   ADV_HARNESS_PANEL_LABELS: {
-    brainstorm: 'Brainstorm', prs: 'PRs', insights: 'Insights',
+    prs: 'PRs', insights: 'Insights',
     settings: 'Settings', docs: 'Docs', git: 'Git', testing: 'Testing',
   },
 }));
@@ -79,8 +79,8 @@ describe('/adv tab router', () => {
     expect(screen.getByTestId(child)).toBeTruthy();
   });
 
+  // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
   const PANELS = [
-    { tab: 'brainstorm', t: 'Brainstorm' },
     { tab: 'prs', t: 'PRs' },
     { tab: 'insights', t: 'Insights' },
     { tab: 'git', t: 'Git' },

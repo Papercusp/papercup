@@ -53,7 +53,7 @@ describe('ADV_TABS', () => {
   });
 
   it('all-mode strip = workspace-level subset; single-pot strip = every tab', () => {
-    // Under "All Pots" the per-pot tabs (Brainstorm/Git/Tests/Docs/Insights/
+    // Under "All Pots" the per-pot tabs (Git/Tests/Docs/Insights/
     // Config/Settings) are hidden from the strip — only the workspace-level
     // views remain (owner directive 2026-06-05; AdvShell snaps the active tab
     // back to Overview when it goes invisible). This supersedes the earlier
@@ -70,7 +70,8 @@ describe('ADV_TABS', () => {
     // P-019); Conversations sits with the browse surfaces (Brief 25).
     expect(visibleAdvTabs(false)).toEqual([...ADV_TABS]);
     expect(ADV_TABS.map((t) => t.id)).toEqual([
-      'overview', 'brainstorm', 'plans', 'calendar', 'harnesses', 'health', 'frames', 'git', 'testing', 'docs', 'insights',
+      // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
+      'overview', 'plans', 'calendar', 'harnesses', 'health', 'frames', 'git', 'testing', 'docs', 'insights',
       'conversations', 'learning', 'evals', 'settings',
     ]);
   });
@@ -190,7 +191,8 @@ describe('harness route panel → tab mapping contract', () => {
   // Mirror of the private PANEL_TO_TAB in harness/index.tsx.
   const EXPECTED_MAPPING: Record<string, AdvTabId> = {
     dashboard:  'harnesses',
-    brainstorm: 'brainstorm',
+    // Brainstorm tab removed (P-010) — legacy brainstorm deep links land on overview.
+    brainstorm: 'overview',
     prs:        'prs',
     insights:   'insights',
     // Config tab retired (config-tab-cleanup-2026-06-08) → legacy panel lands on Settings.
@@ -220,7 +222,8 @@ describe('harness route panel → tab mapping contract', () => {
   });
 
   it('named panels map to their own tabs', () => {
-    expect(EXPECTED_MAPPING.brainstorm).toBe('brainstorm');
+    // brainstorm's tab left /adv for the Quick Panel popup (P-010) → overview.
+    expect(EXPECTED_MAPPING.brainstorm).toBe('overview');
     expect(EXPECTED_MAPPING.insights).toBe('insights');
     // Config tab retired → its legacy panel now lands on Settings.
     expect(EXPECTED_MAPPING.config).toBe('settings');
