@@ -33,11 +33,34 @@
  *   - the ideator's transport-death wrapper carrying either — "scout: all N ideator LLM call(s)
  *     failed — transport death (0 ideas, $0 spent): rate-limit pause exceeds maxWait"
  *
- * Deliberately NARROW. A TIMEOUT is NOT treated as capacity even though it is plausibly
- * capacity-induced (a call queued behind an exhausted account's backoff until it times out):
- * that link is unproven, and mis-classifying a real hang as "pool busy" would hide a genuine
- * defect — the exact failure this classification exists to prevent, pointed the other way.
- * Keep timeouts as errors until the correlation is actually demonstrated.
+ * Deliberately NARROW: a TIMEOUT is NOT capacity. The REASON changed on 2026-07-13 (WI-4475) —
+ * read this before you "fix" the classifier, because the obvious change is the wrong one.
+ *
+ * The ORIGINAL reason was "the timeout<->capacity link is unproven". That reason was WRONG, and
+ * it was wrong in an instructive way: the correlation test behind it compared two error classes
+ * the classifier CANNOT CO-EMIT (a tick records a timeout OR a maxWait bail, never both), so it
+ * was structurally incapable of finding a link. Its null result was an ARTIFACT, not a finding.
+ * WI-4475 then root-caused the timeout class outright: those calls were blocked in
+ * governor.acquire() waiting out a shared rate-limit pause, having never sent a byte. The link is
+ * PROVEN. Timeouts were capacity-induced all along.
+ *
+ * And yet they still do NOT belong in the capacity bucket. "We failed to get admitted" is not the
+ * same proposition as "the pool was at its ceiling", and the message alone cannot tell them apart:
+ *   - pool genuinely walled  => capacity (correctly excluded from the error rate)
+ *   - the ADMISSION PATH is broken => a code defect that merely LOOKS like capacity
+ * The second is not hypothetical — WI-4541 (same day) found the inference gateway serializing the
+ * whole fleet through ONE admission slot with 9-10 of 12 idle. Under a "never admitted => capacity"
+ * rule that defect would have been silently excluded from the very metric that should have caught
+ * it: the classifier's own inversion, pointed the other way.
+ *
+ * So the tiebreak is ASYMMETRY OF HARM, not correlation: counting a capacity event as an error
+ * OVER-reports breakage (visible, annoying, self-correcting); classifying an admission-path bug as
+ * capacity UNDER-reports it (silent, hides defects). Prefer the loud failure. Timeouts stay errors.
+ *
+ * The real fix is to stop inferring intent from prose: the governor knows WHY it withheld a permit
+ * (every account paused/walled = capacity; no free slot while accounts sit idle = defect) and
+ * should carry that as a TYPED reason instead of making this module guess from a string. Until
+ * that carrier exists, do not widen the match below to admission failures.
  */
 export function isCapacityError(message: string): boolean {
   const m = message.toLowerCase();
