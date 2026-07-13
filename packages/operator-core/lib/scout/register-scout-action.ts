@@ -235,7 +235,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // (LLM_TEST_BACKEND is unset on bg-host, so backendForLlmCall is model-derived — pinning
   // the model is sufficient.)
   const llmCall: typeof rawLlmCall = (o) => {
-    const model = resolveScoutModel(o.model, providerCapacity, backendForLlmCall, SCOUT_IDEATOR_MODEL);
+    const model = resolveScoutModel(o.model, providerCapacity, backendForLlmCall, SCOUT_IDEATOR_MODEL) ?? SCOUT_IDEATOR_MODEL;
     return rawLlmCall({ ...o, model, signal: combineAbortSignals(signal, o.signal), priority: 'scout' });
   };
 
