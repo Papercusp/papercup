@@ -651,6 +651,21 @@ registerMemoryBackend(CLAUDE_FILE_BACKEND_NAME, makeClaudeFileBackend);
 // canonical PG store — so the hybrid is cross-backend by construction (D-002).
 registerMemoryBackend('hybrid', () => new HybridBackend(makeClaudeFileBackend(), new Mem0Backend()));
 
+// hybrid-pg (memory-pg-lexical-own-injection-2026-07-13 P-003): the
+// SELF-OWNED hybrid — BOTH legs over the one canonical PG store, no
+// ~/.claude dependency. The lexical leg is canonical-store lexicalSearch
+// (field-weighted token match, P-002 parity with the claude-file scoring
+// that benched best on exact-identifier recall) presented as a backend via
+// LexicalLegBackend; the cosine leg is the same SHARED Mem0Backend. The
+// adapter's remember() is a no-op, so the hybrid write-through cannot
+// double-write the shared table; fusion dedupes on the shared canonical
+// ids. Select with PAPERCUSP_MEMORY_BACKEND=hybrid-pg or the live settings
+// flip (the P-007 cutover is exactly that persisted switch).
+registerMemoryBackend('hybrid-pg', () => {
+  const mem0 = new Mem0Backend();
+  return new HybridBackend(new LexicalLegBackend(mem0), mem0);
+});
+
 configureMemory({
   getAdminUrl: getHarnessAdminUrl,
   // The operator's memory tables live in the harness_shared schema

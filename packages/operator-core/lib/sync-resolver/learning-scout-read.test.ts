@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Sql } from 'postgres';
-import { readScoutSnapshot, normalizeScoutTick, isUndefinedTable } from './learning-scout-read';
+import {
+  readScoutSnapshot,
+  normalizeScoutTick,
+  isUndefinedTable,
+  evaluateIdeasDriftMarkers,
+  type ScoutTickEconomics,
+  type ScoutRoutedItem,
+} from './learning-scout-read';
 
 /**
  * learning-scout-read — the Learning tab Scout reader (learning-system-audit
@@ -21,6 +28,8 @@ function fakeSql(opts: {
   weights?: Handler;
   /** The P-002 per-cycle lens join (GROUP BY cycle_id over scout_routed_ideas). */
   lensJoin?: Handler;
+  /** The P-003 newest-N origin='scout' lens sample (query tagged newest-lens-sample). */
+  lensSample?: Handler;
 }): Sql {
   const fn = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
     const text = strings.join(' ');
@@ -34,6 +43,7 @@ function fakeSql(opts: {
     // fragment, never awaited).
     if (text.includes('GROUP BY rail')) return (opts.rails ?? (async () => []))();
     if (text.includes('GROUP BY cycle_id')) return (opts.lensJoin ?? (async () => []))();
+    if (text.includes('newest-lens-sample')) return (opts.lensSample ?? (async () => []))();
     if (text.includes('scout_lens_weights')) return (opts.weights ?? (async () => []))();
     if (text.includes('idea_id')) return (opts.items ?? (async () => []))();
     if (text.includes('scout_ticks')) return (opts.ticks ?? (async () => []))();
@@ -137,7 +147,15 @@ describe('readScoutSnapshot', () => {
       },
     });
     const snap = await readScoutSnapshot(sql, 'ws-1');
-    expect(snap).toEqual({ totalRouted: 0, railCounts: [], recent: [], lastTick: null, ticks: [], lensWeights: null });
+    expect(snap).toEqual({
+      totalRouted: 0,
+      railCounts: [],
+      recent: [],
+      lastTick: null,
+      ticks: [],
+      health: { status: 'neutral', markers: [] },
+      lensWeights: null,
+    });
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -326,6 +344,129 @@ describe('tick economics (learning-tab-alignment P-002)', () => {
     expect(snap.ticks).toEqual([]);
     expect(snap.totalRouted).toBe(2);
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+// ── P-003: the drift-marker evaluator (the rubric's driftMarkers as code) ──────
+
+const mkTick = (over: Partial<ScoutTickEconomics>): ScoutTickEconomics => ({
+  at: '2026-07-13T04:00:00.000Z',
+  status: 'ran',
+  stop: 'completed',
+  generated: 8,
+  routed: 3,
+  deduped: 2,
+  spendUsd: 1.5,
+  cycleId: 'scout-1',
+  lenses: {},
+  ...over,
+});
+
+const mkIdea = (over: Partial<ScoutRoutedItem>): ScoutRoutedItem => ({
+  ideaId: 'i-1',
+  lens: 'analogical',
+  rail: 'improvement',
+  routedRef: 'wi:EI-1',
+  title: null,
+  routedAt: null,
+  outcome: null,
+  humanGrade: null,
+  humanFeedback: null,
+  gradedBy: null,
+  ...over,
+});
+
+describe('evaluateIdeasDriftMarkers (P-003 — the rubric driftMarkers as the health spec)', () => {
+  it('fires single-lens-collapse at >=90% dominance (warn) and 100% (bad) — multi-lens-routing criterion', () => {
+    const warn90 = evaluateIdeasDriftMarkers({
+      ticks: [],
+      recent: [],
+      scoutLensSample: [...Array(19).fill('analogical'), 'first-principles'],
+    });
+    expect(warn90.markers).toEqual([
+      expect.objectContaining({ key: 'single-lens-collapse', severity: 'warn', rubricCriterion: 'multi-lens-routing' }),
+    ]);
+    expect(warn90.status).toBe('warn');
+
+    const bad100 = evaluateIdeasDriftMarkers({
+      ticks: [],
+      recent: [],
+      scoutLensSample: Array(20).fill('analogical'),
+    });
+    expect(bad100.markers[0]).toMatchObject({ key: 'single-lens-collapse', severity: 'bad' });
+    expect(bad100.status).toBe('bad');
+  });
+
+  it('does NOT fire collapse on a healthy mix or a tiny sample', () => {
+    const healthy = evaluateIdeasDriftMarkers({
+      ticks: [],
+      recent: [],
+      scoutLensSample: [...Array(15).fill('analogical'), ...Array(5).fill('first-principles')],
+    });
+    expect(healthy.markers).toEqual([]);
+    // 3 rows of one lens is a fresh install, not a collapse (LENS_SAMPLE_MIN).
+    const tiny = evaluateIdeasDriftMarkers({ ticks: [], recent: [], scoutLensSample: Array(3).fill('analogical') });
+    expect(tiny.markers).toEqual([]);
+  });
+
+  it('fires budget-exhausted-streak on 2+ leading spend-no-yield ran-ticks (bad at 4+), gated ticks not breaking the streak', () => {
+    const starved = (n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        mkTick({ stop: 'budget-exhausted', routed: 0, generated: 30, cycleId: `scout-${i}` }),
+      );
+    const two = evaluateIdeasDriftMarkers({
+      ticks: [starved(1)[0], mkTick({ status: 'gated', stop: 'min-interval', generated: 0, routed: 0, cycleId: null }), starved(1)[0], mkTick({})],
+      recent: [],
+      scoutLensSample: [],
+    });
+    expect(two.markers).toEqual([
+      expect.objectContaining({ key: 'budget-exhausted-streak', severity: 'warn', rubricCriterion: 'multi-lens-routing' }),
+    ]);
+
+    const four = evaluateIdeasDriftMarkers({ ticks: starved(4), recent: [], scoutLensSample: [] });
+    expect(four.markers[0]).toMatchObject({ key: 'budget-exhausted-streak', severity: 'bad' });
+  });
+
+  it('does NOT fire the streak when the newest ran-tick routed something', () => {
+    const h = evaluateIdeasDriftMarkers({
+      ticks: [mkTick({}), mkTick({ stop: 'budget-exhausted', routed: 0 }), mkTick({ stop: 'budget-exhausted', routed: 0 })],
+      recent: [],
+      scoutLensSample: [],
+    });
+    expect(h.markers).toEqual([]);
+    expect(h.status).toBe('good');
+  });
+
+  it('fires grading-starvation when 10+ filings sit fully ungraded — grading-loop-closure criterion', () => {
+    const starving = evaluateIdeasDriftMarkers({
+      ticks: [],
+      recent: Array.from({ length: 12 }, (_, i) => mkIdea({ ideaId: `i-${i}` })),
+      scoutLensSample: [],
+    });
+    expect(starving.markers).toEqual([
+      expect.objectContaining({ key: 'grading-starvation', severity: 'warn', rubricCriterion: 'grading-loop-closure' }),
+    ]);
+
+    const oneGraded = evaluateIdeasDriftMarkers({
+      ticks: [],
+      recent: [mkIdea({ humanGrade: 4 }), ...Array.from({ length: 11 }, (_, i) => mkIdea({ ideaId: `i-${i}` }))],
+      scoutLensSample: [],
+    });
+    expect(oneGraded.markers).toEqual([]);
+  });
+
+  it('status: neutral with no data at all; good with data and no fired markers', () => {
+    expect(evaluateIdeasDriftMarkers({ ticks: [], recent: [], scoutLensSample: [] }).status).toBe('neutral');
+    expect(evaluateIdeasDriftMarkers({ ticks: [mkTick({})], recent: [], scoutLensSample: [] }).status).toBe('good');
+  });
+
+  it('readScoutSnapshot wires the sample through: a fully-collapsed newest-20 yields health bad', async () => {
+    const sql = fakeSql({
+      lensSample: async () => Array.from({ length: 20 }, () => ({ lens: 'analogical' })),
+    });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.health.status).toBe('bad');
+    expect(snap.health.markers[0]).toMatchObject({ key: 'single-lens-collapse' });
   });
 });
 

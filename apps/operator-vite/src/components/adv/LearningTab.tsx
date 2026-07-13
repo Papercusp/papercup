@@ -8,6 +8,7 @@ import { useQueryState, parseAsStringEnum, parseAsString } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
+  AlertTriangle,
   RefreshCw,
   ShieldCheck,
   UserRound,
@@ -2521,6 +2522,11 @@ export function ScoutView({
   // P-002: tick-economics rows (newest first). Older server snapshots (pre-P-002
   // deploy) lack the field — degrade to the empty strip, never a crash.
   const econTicks = snap?.ticks ?? [];
+  // P-003: the server-evaluated drift markers (the blender-release-readiness
+  // rubric's driftMarkers ARE the health spec — evaluated in
+  // learning-scout-read.ts, never re-derived here). Pre-P-003 snapshots lack
+  // the field — degrade to neutral.
+  const health = snap?.health ?? { status: "neutral" as const, markers: [] };
 
   // Grading (P-006): the note popover's open-state is URL state (`?grade=<ideaId>`)
   // so agents can drive it; in-flight optimistic grades + errors are transient
@@ -2541,11 +2547,11 @@ export function ScoutView({
     [railFilter, recent],
   );
   useEffect(() => setShowEarlier(false), [railFilter]);
+  // P-003: the view badge evaluates the rubric's drift markers (server-derived
+  // health), NOT data-presence — "there are rows" is not "the loop is healthy".
   useEffect(() => {
-    onStatus?.(
-      sync.error ? "bad" : snap && snap.totalRouted > 0 ? "good" : "neutral",
-    );
-  }, [onStatus, snap, sync.error]);
+    onStatus?.(sync.error ? "bad" : health.status);
+  }, [health.status, onStatus, sync.error]);
 
   const effectiveGrade = (item: ScoutRoutedItem): EffectiveGrade | null => {
     const opt = optimistic[item.ideaId];
@@ -2764,7 +2770,7 @@ export function ScoutView({
         icon={Lightbulb}
         title="Ideas"
         signal={snap ? `${snap.totalRouted} routed` : undefined}
-        tone={snap && snap.totalRouted > 0 ? "good" : "neutral"}
+        tone={health.status}
         action={
           <button
             type="button"

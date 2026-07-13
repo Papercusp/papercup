@@ -2919,15 +2919,19 @@ impl App {
             if !claude_transcript_on_disk(r) {
                 continue;
             }
+            // Owner ask 2026-07-13: the left side is the ROLE (mug/kettle/…) when
+            // the roster carries one — "claude · s-17839…" identifies nothing;
+            // the agent name is only a fallback for role-less rows.
             let title = r
-                .agent
+                .role
                 .clone()
-                .filter(|a| !a.is_empty())
-                .map(|a| {
+                .filter(|x| !x.is_empty())
+                .or_else(|| r.agent.clone().filter(|a| !a.is_empty()))
+                .map(|left| {
                     // P-012: the right side is the bee's current work (declared
                     // intent / feature) so the title bar summarises what it's doing.
                     let right = r.work_summary().unwrap_or_else(|| short_owner(&r.owner_id));
-                    format!("{a} · {right}")
+                    format!("{left} · {right}")
                 })
                 .unwrap_or_else(|| r.label.clone());
             let kind = crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind);
@@ -6727,6 +6731,32 @@ mod tests {
         assert!(
             a.bee_panes_to_open().is_empty(),
             "second refresh must dedup"
+        );
+    }
+
+    #[test]
+    fn bee_pane_title_prefers_role_over_agent() {
+        let mut a = App::new();
+        a.hive_agent_tabs = true;
+        a.dock_agent_panes = true;
+        let mut mug = fleet_bee("s-123-abc", "mug");
+        mug.role = Some("mug".into());
+        a.set_roster(vec![mug, fleet_bee("b-1", "bee")]);
+        let titles: Vec<String> = a
+            .bee_panes_to_open()
+            .iter()
+            .map(|s| s.title.clone().unwrap_or_default())
+            .collect();
+        // A role-carrying row (a mug/kettle turn) titles with the ROLE — the
+        // agent name ("claude") identifies nothing; role-less rows keep the
+        // agent fallback.
+        assert!(
+            titles.iter().any(|t| t.contains("mug · ")),
+            "{titles:?}"
+        );
+        assert!(
+            titles.iter().any(|t| t.contains("claude · ")),
+            "{titles:?}"
         );
     }
 

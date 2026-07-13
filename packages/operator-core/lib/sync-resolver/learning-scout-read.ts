@@ -100,6 +100,29 @@ export interface ScoutRoutedItem {
   gradedBy: string | null;
 }
 
+/**
+ * One fired drift marker for the Ideas view's health badge (learning-tab-alignment
+ * P-003). Each marker instruments a named criterion of the blender-release-readiness
+ * rubric — the rubric's driftMarkers ARE the health spec; this is their evaluator,
+ * not a parallel heuristic. (`rubricCriterion` is the criterion key the marker
+ * instruments; once the rubric carries machine-readable instrumentKeys the binding
+ * becomes data — today it is pinned here + unit-tested.)
+ */
+export interface IdeasDriftMarker {
+  key: 'single-lens-collapse' | 'budget-exhausted-streak' | 'grading-starvation';
+  severity: 'warn' | 'bad';
+  /** blender-release-readiness criterion key this marker instruments. */
+  rubricCriterion: string;
+  /** One-line human summary with the observed numbers. */
+  summary: string;
+}
+
+/** The Ideas view's health verdict: worst fired marker wins; no data = neutral. */
+export interface IdeasHealth {
+  status: 'good' | 'warn' | 'bad' | 'neutral';
+  markers: IdeasDriftMarker[];
+}
+
 export interface ScoutSnapshot {
   totalRouted: number;
   railCounts: ScoutRailCount[];
@@ -113,6 +136,12 @@ export interface ScoutSnapshot {
    * Empty when the ledger is missing or empty — best-effort like `lastTick`.
    */
   ticks: ScoutTickEconomics[];
+  /**
+   * Ideas-view health verdict (learning-tab-alignment P-003): the
+   * blender-release-readiness rubric's driftMarkers, evaluated over this same
+   * snapshot's rows ({@link evaluateIdeasDriftMarkers}).
+   */
+  health: IdeasHealth;
   /**
    * Current persisted per-lens sampling weights (`scout_lens_weights`, written
    * by refreshScoutOutcomes) — the steering the grades feed (C-1c / P-007).
@@ -203,6 +232,97 @@ export function normalizeTickEconomics(row: Record<string, unknown>): ScoutTickE
   };
 }
 
+/** One lens must hold at least this share of the sample to count as a collapse
+    (the rubric's driftMarker: "One lens >=90% of newest-20"). */
+const SINGLE_LENS_DOMINANCE = 0.9;
+/** Don't judge lens collapse on a tiny sample (a fresh install with 2 rows is not a collapse). */
+const LENS_SAMPLE_MIN = 5;
+/** Grading starvation needs this many ungraded filings before it fires. */
+const GRADING_STARVATION_MIN = 10;
+
+/**
+ * Evaluate the Ideas view's health markers (learning-tab-alignment P-003). The
+ * blender-release-readiness rubric's driftMarkers ARE the health spec — each
+ * marker here implements one of them over the SAME rows the snapshot already
+ * carries (D-001: no parallel heuristic):
+ *
+ *   - single-lens-collapse    ← multi-lens-routing: "One lens >=90% of newest-20"
+ *     (over `scoutLensSample`, the newest origin='scout' routed rows — the
+ *     rubric's own replication drill).
+ *   - budget-exhausted-streak ← multi-lens-routing: "consecutive budget-exhausted
+ *     +0-routed ticks" (over the P-002 economics ticks, ran ticks only — the
+ *     WI-4482 knock-on where the knobs can't fund the roster).
+ *   - grading-starvation      ← grading-loop-closure: "graded fraction flat at 0
+ *     while filings accumulate" (over the newest routed rows' grade columns).
+ *
+ * Pure — unit-testable with no PG. Worst fired marker wins the status; no data
+ * at all reads neutral, data with no fired marker reads good.
+ */
+export function evaluateIdeasDriftMarkers(input: {
+  ticks: ScoutTickEconomics[];
+  recent: ScoutRoutedItem[];
+  scoutLensSample: string[];
+}): IdeasHealth {
+  const markers: IdeasDriftMarker[] = [];
+
+  // single-lens-collapse — newest-N origin='scout' rows, never lifetime (stale
+  // multi-lens rows from a prior month must not mask a live collapse).
+  const sample = input.scoutLensSample.filter((l) => typeof l === 'string' && l.length > 0);
+  if (sample.length >= LENS_SAMPLE_MIN) {
+    const counts = new Map<string, number>();
+    for (const l of sample) counts.set(l, (counts.get(l) ?? 0) + 1);
+    const [topLens, topCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (topCount / sample.length >= SINGLE_LENS_DOMINANCE) {
+      markers.push({
+        key: 'single-lens-collapse',
+        severity: topCount === sample.length ? 'bad' : 'warn',
+        rubricCriterion: 'multi-lens-routing',
+        summary: `${topCount} of the newest ${sample.length} scout-routed ideas are '${topLens}' — the per-lens learning subsystem has a dimension that never varies (the 17-day WI-4482 shape).`,
+      });
+    }
+  }
+
+  // budget-exhausted-streak — leading consecutive ran-ticks that spent the
+  // budget and routed nothing (newest-first; gated ticks don't break a streak,
+  // they just don't run).
+  let streak = 0;
+  for (const tk of input.ticks) {
+    if (tk.status !== 'ran') continue;
+    if (tk.stop === 'budget-exhausted' && tk.routed === 0) streak += 1;
+    else break;
+  }
+  if (streak >= 2) {
+    markers.push({
+      key: 'budget-exhausted-streak',
+      severity: streak >= 4 ? 'bad' : 'warn',
+      rubricCriterion: 'multi-lens-routing',
+      summary: `${streak} consecutive cycles exhausted their budget with 0 ideas routed — spend with no yield; the knobs are likely sized for a smaller roster.`,
+    });
+  }
+
+  // grading-starvation — the grading surface this view IS: filings accumulate,
+  // nothing graded.
+  const total = input.recent.length;
+  const graded = input.recent.filter((r) => r.humanGrade != null).length;
+  if (total >= GRADING_STARVATION_MIN && graded === 0) {
+    markers.push({
+      key: 'grading-starvation',
+      severity: 'warn',
+      rubricCriterion: 'grading-loop-closure',
+      summary: `0 of the newest ${total} routed ideas are graded — the grade→learn half of the loop is starving.`,
+    });
+  }
+
+  const status: IdeasHealth['status'] = markers.some((m) => m.severity === 'bad')
+    ? 'bad'
+    : markers.length > 0
+      ? 'warn'
+      : input.ticks.length === 0 && input.recent.length === 0
+        ? 'neutral'
+        : 'good';
+  return { status, markers };
+}
+
 /** Routed-ideas-by-rail + last tick for one workspace. */
 export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<ScoutSnapshot> {
   const rails = (await sql`
@@ -288,6 +408,30 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
+  // P-003: the newest-N origin='scout' lens sample — the multi-lens-routing
+  // criterion's own replication drill (newest-N, never lifetime). The sample
+  // size is shared with the MCP instrument (success-metrics'
+  // LENS_DIVERSITY_SAMPLE) via the same deferred-import pattern as the
+  // lens-weight leg, so the UI badge and blender:success-metrics can never
+  // drift on how much "recent" is.
+  let scoutLensSample: string[] = [];
+  try {
+    const { LENS_DIVERSITY_SAMPLE } = await import('../scout/success-metrics');
+    const lensSampleRows = (await sql`
+      SELECT lens /* newest-lens-sample */
+        FROM harness_shared.scout_routed_ideas
+       WHERE workspace_id = ${workspaceId}
+         AND origin = 'scout'
+       ORDER BY routed_at DESC
+       LIMIT ${LENS_DIVERSITY_SAMPLE}
+    `) as Array<Record<string, unknown>>;
+    scoutLensSample = lensSampleRows.map((r) => String(r.lens ?? '')).filter(Boolean);
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.scout] lens-sample read failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
   // Lens-weight half (C-1c): reuse routed-ledger's reader over THIS injected,
   // workspace-routed sql (it filters to known lenses). Best-effort like the
   // tick half — a missing table / failed read degrades to null, never a 500.
@@ -302,5 +446,6 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
-  return { totalRouted, railCounts, recent, lastTick, ticks, lensWeights };
+  const health = evaluateIdeasDriftMarkers({ ticks, recent, scoutLensSample });
+  return { totalRouted, railCounts, recent, lastTick, ticks, health, lensWeights };
 }
