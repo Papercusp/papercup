@@ -112,7 +112,11 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
     ],
     recent: [],
     lastTick: { at: '2026-06-09T08:00:00.000Z', outcome: 'skipped', detail: 'budget gate closed' },
+    ticks: [],
+    health: { status: 'good', markers: [] },
     lensWeights: { analogical: 0.4, reframing: 0.6 },
+    // P-004 (pipeline trace): titles for the OPAQUE `wi:` grounding refs, keyed by the FULL ref.
+    groundingTitles: { 'wi:EI-100': 'coord invariant: wake-queue depth growth' },
   };
 
   it('returns the reader snapshot as a 1-element array, scoped to the active workspace', async () => {
@@ -126,7 +130,21 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
   it('degrades to the empty snapshot when the read fails (no 500 for the tab)', async () => {
     readScoutSnapshot.mockRejectedValue(new Error('pg down'));
     const rows = (await resolveNamedQueryV2('learning.scout', {})) as ScoutSnapshot[];
-    expect(rows).toEqual([{ totalRouted: 0, railCounts: [], recent: [], lastTick: null, lensWeights: null }]);
+    // The degraded fallback must be a COMPLETE ScoutSnapshot — the tab renders straight off it,
+    // so a partial object here is a crash/misrender on the one path that is already failing.
+    // Every field the type gained (ticks/health/groundingTitles) must be present and empty.
+    expect(rows).toEqual([
+      {
+        totalRouted: 0,
+        railCounts: [],
+        recent: [],
+        lastTick: null,
+        ticks: [],
+        health: { status: 'neutral', markers: [] },
+        lensWeights: null,
+        groundingTitles: {},
+      },
+    ]);
     expect(warn).toHaveBeenCalled();
   });
 });

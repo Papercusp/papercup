@@ -341,7 +341,12 @@ async function readBgHostJournal(windowHours: number): Promise<BgHostJournalMetr
           '-u',
           'papercup-bg-host.service',
           '--grep',
-          [BG_HOST_RESTART_PATTERN, BG_HOST_OOM_PATTERN, BG_HOST_MEMORY_PEAK_PATTERN].join('|'),
+          [
+            BG_HOST_RESTART_PATTERN,
+            BG_HOST_OOM_PATTERN,
+            BG_HOST_MEMORY_PEAK_PATTERN,
+            BG_HOST_FAILURE_PATTERN,
+          ].join('|'),
         ],
         { maxBuffer },
       ),
@@ -358,12 +363,20 @@ async function readBgHostJournal(windowHours: number): Promise<BgHostJournalMetr
     // maxBuffer) leaves the counts UNKNOWN, and journalError makes the gate say so.
     const e = err as { code?: unknown; stdout?: unknown; stderr?: unknown };
     if (e.code === 1 && !String(e.stderr ?? '').trim()) {
-      return { oomKillCount: 0, restartCount: 0, peakMemoryMb: null, highMemoryPeakCount: 0, journalError: null };
+      return {
+        oomKillCount: 0,
+        restartCount: 0,
+        failureCount: 0,
+        peakMemoryMb: null,
+        highMemoryPeakCount: 0,
+        journalError: null,
+      };
     }
     const why = String(e.stderr ?? '').trim() || (err as Error)?.message || 'journalctl read failed';
     return {
       oomKillCount: 0,
       restartCount: 0,
+      failureCount: 0,
       peakMemoryMb: null,
       highMemoryPeakCount: 0,
       journalError: why.slice(0, 200),

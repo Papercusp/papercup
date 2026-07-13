@@ -104,7 +104,7 @@ async function withArchiveResolveTimeout<T>(promise: Promise<T>, timeoutMs: numb
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, queenFeedback, signal, onPhase }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, queenFeedback, signal, deadlineMs, onPhase }) => {
   onPhase?.('runner-bootstrap');
   // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
   // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and

@@ -169,6 +169,82 @@ describe('work_items:complete (keyed-array)', () => {
     expect(r.appliedState).toBe('open');
   });
 
+  // ── WI-4529: `ok` must reflect the STATE TRANSITION, not just "the record got written" ──
+  // The silent-success class: a close that did NOT happen used to come back ok:true with the
+  // failure buried in a sibling string, so every caller (they all check `ok`) walked away
+  // believing the item closed while it stayed open and re-claimable.
+  describe('WI-4529 — ok reflects whether the item actually CLOSED', () => {
+    const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+
+    it('a state write that THROWS (peer HOLD-OPEN) returns ok:false — but still records + carries the completion (EI-24)', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(
+        new Error("work_item 'WI-1' is HELD OPEN by su-peer (\"blocked\") — closing it into 'resolved' requires the holder."),
+      );
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
+
+      expect(r.ok).toBe(false); // ← the whole point: the item did NOT close
+      expect(r.error).toMatch(/DID NOT CLOSE/);
+      expect(r.error).toMatch(/HELD OPEN by su-peer/); // the real cause is surfaced, not buried
+      // EI-24 preserved: the completion record is NOT lost, and still rides the result so the
+      // `emits` rule (which keys on result.completion) still broadcasts it.
+      expect(r.completion).toMatchObject({ summary: 'fixed it' });
+      expect(r.stateError).toMatch(/HELD OPEN/);
+    });
+
+    it('the alias trap: a CLOSE-INTENT state that silently lands non-terminal (issue `done` -> `open`) returns ok:false', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => ({
+        workItem: { ...issue, state: 'open' }, // issue-family stores only open|resolved|closed
+        aliased: true,
+        requestedState: state,
+        appliedState: 'open',
+        aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+      }));
+      const r = await one({ id: 'WI-1', state: 'done', completion: { summary: 'thought I closed it', tests: 'n/a' } });
+
+      expect(r.ok).toBe(false); // said "done", item is still 'open' and claimable
+      expect(r.error).toMatch(/DID NOT CLOSE/);
+      expect(r.error).toMatch(/NOT terminal/);
+      expect(r.completion).toMatchObject({ summary: 'thought I closed it' }); // record still kept
+    });
+
+    it('a DELIBERATE non-terminal park (needs_human) is NOT a failure — stays ok:true', async () => {
+      // The guard against over-correcting: `complete` with a non-close state is a legitimate
+      // "I did the work, it now needs a human" call. It must not be reported as a failed close.
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => ({
+        workItem: { ...issue, state: 'open' },
+        aliased: true,
+        requestedState: state,
+        appliedState: 'open',
+        aliasNote: `requested state '${state}' aliased to 'open'.`,
+      }));
+      const r = await one({ id: 'WI-1', state: 'needs_human', completion: { summary: 'needs an owner decision', tests: 'n/a' } });
+
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(r.stateWarning).toMatch(/still 'open'/); // still loudly warned, just not a failure
+    });
+
+    it('a bare completion with NO state stays ok:true (record-only is a legitimate call)', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const r = await one({ id: 'WI-1', completion: { summary: 'progress note', tests: 'n/a' } });
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('a successful terminal close is ok:true with no error', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'done', tests: '5 green' } });
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(r.workItem.state).toBe('resolved');
+    });
+  });
+
   it('passes structured verification evidence to the terminal state writer', async () => {
     getWorkItem.mockResolvedValue(item);
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
@@ -236,14 +312,20 @@ describe('work_items:complete (keyed-array)', () => {
     expect(r.reflect).not.toMatch(/validator|reviewer/i);
   });
 
-  it('a FAILED state write never loses the completion (EI-24): ok + completion + stateError', async () => {
+  // EI-24 (never LOSE the completion) + WI-4529 (never LIE about whether it closed) — both hold
+  // at once, and they are independent. This test previously asserted `ok:true` alongside the
+  // EI-24 contract, which baked the silent-success in: the state write FAILED, the item never
+  // moved, and the caller was told ok. EI-24 is about not DROPPING the record (completion +
+  // stateError are still returned + emitted below) — it never required lying about the outcome.
+  it('a FAILED state write never loses the completion (EI-24) AND reports ok:false (WI-4529)', async () => {
     getWorkItem.mockResolvedValue({ ...item, id: 'WI-8', kind: 'task', family: 'issue' });
     setWorkItemStateWithAliasInfo.mockRejectedValue(
       new Error("work_item 'WI-8' (kind=task) cannot take state 'bogus' — valid: open, resolved, closed, done, dropped, todo"),
     );
     const r = await one({ id: 'WI-8', state: 'bogus', completion: { summary: 'work landed; state vocab wrong' } });
-    expect(r.ok).toBe(true);
-    expect(r.completion.summary).toBe('work landed; state vocab wrong');
+    expect(r.ok).toBe(false); // WI-4529: the requested transition did NOT happen
+    expect(r.error).toMatch(/DID NOT CLOSE/);
+    expect(r.completion.summary).toBe('work landed; state vocab wrong'); // EI-24: record intact
     expect(r.stateError).toMatch(/valid: open, resolved, closed/);
     expect(r.workItem.id).toBe('WI-8'); // falls back to the pre-transition item
     expect(r.aliased).toBeUndefined(); // a failed write has nothing to compare — see EI-7712 block below

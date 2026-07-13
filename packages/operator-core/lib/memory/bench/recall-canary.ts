@@ -214,7 +214,10 @@ export async function measureCanaryPairs(
 export interface RecallCanaryDeps {
   flag?: (installSlug: string) => Promise<boolean>;
   sql?: Sql;
-  backend?: Pick<MemoryBackend, 'name' | 'search'>;
+  // 'searchLexical' is OPTIONAL on MemoryBackend and stays optional here — the
+  // P-010 lexical-leg probe feature-tests it (`backend.searchLexical?.`), so a
+  // backend without a lexical leg is still a valid canary backend.
+  backend?: Pick<MemoryBackend, 'name' | 'search' | 'searchLexical'>;
   sample?: (sql: Sql) => Promise<CanaryCandidate[]>;
   /** Override the still-exists check (returns the ids that remain active). */
   verifyTargets?: (sql: Sql, ids: string[]) => Promise<Set<string>>;
@@ -301,7 +304,7 @@ function fmt(v: number | null): string {
  */
 export async function seedRecallCanarySet(
   sql: Sql,
-  backend: Pick<MemoryBackend, 'name' | 'search'>,
+  backend: Pick<MemoryBackend, 'name' | 'search' | 'searchLexical'>,
   workspaceId: string,
   deps: Pick<RecallCanaryDeps, 'sample' | 'saveSet'> = {},
   degraded = false,

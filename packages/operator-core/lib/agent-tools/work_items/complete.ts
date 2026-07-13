@@ -70,6 +70,19 @@ const completionSpec = z.preprocess(
  */
 const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'deprecated', 'resolved', 'closed']);
 
+/**
+ * WI-4529: states a caller passes MEANING "close this" — the true terminals PLUS the common
+ * close-synonyms the alias layer silently downgrades for the issue family (which stores only
+ * open|resolved|closed, so a `state:'done'` lands as 'open' — the caller said "done" and the
+ * item stayed claimable).
+ *
+ * This set is what separates a FAILED CLOSE from an INTENTIONAL non-terminal park: passing
+ * `needs_human` / `blocked` / `wip` and landing on 'open' is correct and stays ok:true (the
+ * caller recorded a completion and deliberately left the item open). Passing a close-intent
+ * state and NOT landing terminal is a failed close, and must report ok:false.
+ */
+const CLOSE_INTENT_STATES = new Set([...TERMINAL_WORK_ITEM_STATES, 'done', 'complete', 'completed', 'dropped']);
+
 const itemSpec = z.object({
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
@@ -337,13 +350,20 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
   // index signature). A failed state write still never loses the completion. We only stop lying
   // about whether the item actually closed.
   //
-  // Scoped deliberately: this ONLY fires when the caller passed `state` (i.e. asked to close).
-  // A bare completion with no `state` is a legitimate record-only call and stays ok:true with the
-  // existing loud `stateWarning`.
-  const closeRequested = Boolean(it.state);
-  const closeLanded = TERMINAL_WORK_ITEM_STATES.has(finalState);
-  const stateNotApplied = closeRequested && !closeLanded;
+  // Scoped deliberately, in TWO cases — and NOT a blanket "state didn't land terminal":
+  //   (1) the state write THREW (stateError) — the caller asked for a transition and got none.
+  //       This is the reported bug (a peer's HOLD-OPEN refusal came back ok:true, item still open).
+  //   (2) the caller used a CLOSE-INTENT state but the item did not land terminal — the
+  //       issue-family alias trap (`state:'done'` silently lands as 'open').
+  // A bare completion with NO `state`, or a deliberate non-terminal park (`needs_human`,
+  // `blocked`), is a legitimate record-only call and stays ok:true with the existing loud
+  // `stateWarning` / `aliasNote`. Those callers did not ask to close, so we must not fail them.
   const landedState = workItem?.state ?? existing.state;
+  const closeLanded = TERMINAL_WORK_ITEM_STATES.has(finalState);
+  const closeIntended = Boolean(it.state) && CLOSE_INTENT_STATES.has(String(it.state).trim().toLowerCase());
+  const stateWriteFailed = Boolean(it.state) && Boolean(stateError);
+  const closeFailed = closeIntended && !closeLanded && !stateError;
+  const stateNotApplied = stateWriteFailed || closeFailed;
   const stateFailure = !stateNotApplied
     ? undefined
     : stateError
