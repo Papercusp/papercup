@@ -137,6 +137,18 @@ export interface CheckpointDeps {
   flakeLookup?(
     files: string[],
   ): Promise<Record<string, { fails: number; passes: number; bothStatusShas: number; isSuspect: boolean }>>;
+  /** EI-10800: emit an awaitable gate-verdict event (release:green / green-checkpoint:red,
+   *  each global + pipeline-scoped). AWAITED at every call site so the fire completes before
+   *  runGreenCheckpoint returns. Historically each verdict was a fire-and-forget
+   *  `void import('.../events/await/engine').then(emit)` — on the GREEN full-advance path the
+   *  function returns IMMEDIATELY after kicking it off, so the short-lived checkpoint process
+   *  tore down before the detached dynamic import resolved and `release:green:<pipeline>` fired
+   *  via `event` ZERO times in its whole history (87 timeouts / 0 events) while the RED path —
+   *  saved only incidentally by a trailing `await deps.escalate` — fired normally. Optional +
+   *  injected like the other effects here (existing stubs need not provide it) AND — the point —
+   *  the emit is finally UNIT-TESTABLE; the hard dynamic import is exactly what hid this for 8
+   *  days. realCheckpointDeps wires it to emitAwaitedEvent(source:'green-checkpoint'). */
+  emitEvent?(input: { key: string; summary: string; payload: unknown }): Promise<void>;
   log(s: string): void;
 }
 
@@ -1333,16 +1345,16 @@ async function tryLongestGreenPrefix(
     )
     .catch(() => {});
   // The prefix is a real green advance — wake any agent awaiting "the next green".
-  void import('@papercusp/operator-core/lib/events/await/engine')
-    .then(({ emitAwaitedEvent }) =>
-      emitAwaitedEvent({
-        key: 'release:green',
-        summary: `${cfg.releaseRef} advanced to ${prefixTip!.slice(0, 8)} (longest green prefix; tip ${candidate.slice(0, 8)} held red)`,
-        payload: { sha: prefixTip, from: adv.from, partial: true, redTip: candidate },
-        source: 'green-checkpoint',
-      }),
-    )
-    .catch(() => {});
+  // EI-10800: AWAITED through the deps.emitEvent seam (was a fire-and-forget `void import`).
+  {
+    const prefixSummary = `${cfg.releaseRef} advanced to ${prefixTip!.slice(0, 8)} (longest green prefix; tip ${candidate.slice(0, 8)} held red)`;
+    const payload = { sha: prefixTip, from: adv.from, partial: true, redTip: candidate };
+    try {
+      await deps.emitEvent?.({ key: 'release:green', summary: prefixSummary, payload });
+    } catch (e) {
+      deps.log(`warn: release:green (partial) emit failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
   return {
     advanced: true,
     candidate, // the RED tip — keeps failingTests + the release-fixer targeting the real failure
@@ -1498,23 +1510,25 @@ export async function runGreenCheckpoint(
         summary + alreadyFixedNote + historicalFlakeNote,
       )
       .catch(() => {});
-    // release-pipeline-resilience-2026-06-09 P-005: emit a reaction event on the
-    // RED path, symmetric with the `release:green` emit below. A `release-fixer`
-    // launch-blueprint (P-006) reacts to this to auto-diagnose the failing test;
-    // it also unblocks any agent that `events:await`s the gate verdict. The
-    // `summary` is the de-noised failing-test tail already captured above.
-    void import('@papercusp/operator-core/lib/events/await/engine')
-      .then(async ({ emitAwaitedEvent }) => {
-        const redSummary = `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
-        const pipeline = pipelineName(cfg.integrationRoot);
-        const payload = { sha: candidate, from: lastReady ?? null, pipeline, summary: summary + alreadyFixedNote + historicalFlakeNote };
-        // Global key (back-compat) + pipeline-scoped key (EI-7646: a waiter on ONE
-        // pipeline's gate must not wake on every OTHER pipeline's verdict) — the
-        // release:deployed:<sha> dual-emit precedent (P-102).
-        await emitAwaitedEvent({ key: 'green-checkpoint:red', summary: redSummary, payload, source: 'green-checkpoint' });
-        await emitAwaitedEvent({ key: `green-checkpoint:red:${pipeline}`, summary: redSummary, payload, source: 'green-checkpoint' });
-      })
-      .catch(() => {});
+    // release-pipeline-resilience-2026-06-09 P-005: emit a reaction event on the RED path,
+    // symmetric with the `release:green` emit below. A `release-fixer` launch-blueprint (P-006)
+    // reacts to this to auto-diagnose the failing test; it also unblocks any agent that
+    // `events:await`s the gate verdict. The `summary` is the de-noised failing-test tail above.
+    // EI-10800: AWAITED through the deps.emitEvent seam (was fire-and-forget `void import` — it
+    // fired reliably ONLY because the trailing `await deps.escalate` kept the process alive; make
+    // that guarantee explicit, not incidental). Global + pipeline-scoped key (EI-7646: a waiter on
+    // ONE pipeline's gate must not wake on every OTHER pipeline's verdict).
+    {
+      const redSummary = `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
+      const pipeline = pipelineName(cfg.integrationRoot);
+      const payload = { sha: candidate, from: lastReady ?? null, pipeline, summary: summary + alreadyFixedNote + historicalFlakeNote };
+      try {
+        await deps.emitEvent?.({ key: 'green-checkpoint:red', summary: redSummary, payload });
+        await deps.emitEvent?.({ key: `green-checkpoint:red:${pipeline}`, summary: redSummary, payload });
+      } catch (e) {
+        deps.log(`warn: green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
     // P-002: durable human-facing escalation (transition-only, cleared on green).
     await deps.escalate?.(
       `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
@@ -1701,19 +1715,23 @@ export async function runGreenCheckpoint(
     .catch(() => {});
   // P-002: the gate recovered — resolve any open `release-not-green` escalation.
   await deps.clearEscalation?.().catch(() => {});
-  // await-event-primitive-2026-06-05 P-015: `release:green` is awaitable —
-  // an agent blocked on "the next green ready" sleeps on it (events:await)
-  // instead of polling the checkpoint. Fire-and-forget.
-  void import('@papercusp/operator-core/lib/events/await/engine')
-    .then(async ({ emitAwaitedEvent }) => {
-      const greenSummary = `${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
-      const pipeline = pipelineName(cfg.integrationRoot);
-      const payload = { sha: candidate, from: adv.from, pipeline };
-      // Global key (back-compat) + pipeline-scoped key (EI-7646) — see the red emit.
-      await emitAwaitedEvent({ key: 'release:green', summary: greenSummary, payload, source: 'green-checkpoint' });
-      await emitAwaitedEvent({ key: `release:green:${pipeline}`, summary: greenSummary, payload, source: 'green-checkpoint' });
-    })
-    .catch(() => {});
+  // await-event-primitive-2026-06-05 P-015: `release:green` is awaitable — an agent blocked
+  // on "the next green ready" sleeps on it (events:await) instead of polling the checkpoint.
+  // EI-10800: AWAIT it (was a fire-and-forget `void import(...)` that raced this function's
+  // immediate return → process teardown, so `release:green:<pipeline>` never once woke an
+  // awaiter: 87 timeouts / 0 events across its whole history). Global key (back-compat) +
+  // pipeline-scoped (EI-7646). Fail-soft but LOUD — a broken emit is logged, never swallowed.
+  {
+    const greenSummary = `${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
+    const pipeline = pipelineName(cfg.integrationRoot);
+    const payload = { sha: candidate, from: adv.from, pipeline };
+    try {
+      await deps.emitEvent?.({ key: 'release:green', summary: greenSummary, payload });
+      await deps.emitEvent?.({ key: `release:green:${pipeline}`, summary: greenSummary, payload });
+    } catch (e) {
+      deps.log(`warn: release:green emit failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
   return {
     advanced: adv.advanced,
     candidate,
@@ -1832,6 +1850,15 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
   return {
     isolationRun,
     workspaceRerun,
+    // EI-10800: the single AWAITED emit seam every gate-verdict now flows through. Was a
+    // fire-and-forget `void import(...).then(emit)` inlined at each call site — the green
+    // full-advance one raced the process teardown and never woke a `release:green:<pipeline>`
+    // awaiter. Awaiting couples the emit's fireAwaitsForKey/insertDeliveries to the caller's
+    // lifetime (the caller stays alive to record the pipeline_event, so the fire is durable).
+    async emitEvent({ key, summary, payload }) {
+      const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
+      await emitAwaitedEvent({ key, summary, payload, source: 'green-checkpoint' });
+    },
     async setupTree(ref) {
       // P-019: the SCRIPT lives in the TOOLING tree (papercusp), not cfg.integrationRoot
       // (the SUBJECT — a per-hive repo has no release scripts). --integration stays the subject.

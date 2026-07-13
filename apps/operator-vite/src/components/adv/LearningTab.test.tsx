@@ -460,6 +460,7 @@ beforeEach(() => {
   nuqsState.tab = null;
   nuqsState.grade = null;
   nuqsState.irail = null;
+  nuqsState.itrace = null;
   nuqsState.rrubric = null;
   nuqsState.lretain = null;
   nuqsState.lhive = "";
@@ -1028,15 +1029,19 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     ).toContain("none yet");
   });
 
-  it("expands an idea into its pipeline trace — grounding → lens → route → grade → outcome (P-004)", () => {
+  it("row click drives the pipeline trace's ?itrace URL param — closed by default (P-004)", () => {
     render(<ScoutView />);
-    // Closed by default: the trace (and its 'pending' outcome cell) is absent.
-    expect(
-      screen.queryByLabelText("Pipeline trace for Cache-warmup plan draft"),
-    ).toBeNull();
+    // Closed by default: no trace panel rendered.
+    expect(screen.queryByLabelText(/Pipeline trace for/)).toBeNull();
     fireEvent.click(
       screen.getByRole("button", { name: /Cache-warmup plan draft/ }),
     );
+    expect(nuqsSetters.itrace).toHaveBeenCalledWith("idea-1");
+  });
+
+  it("expands an idea into its pipeline trace — grounding → lens → route → grade → outcome (P-004)", () => {
+    nuqsState.itrace = "idea-1"; // ?itrace=<ideaId> — agent-drivable URL state
+    render(<ScoutView />);
     const trace = screen.getByLabelText(
       "Pipeline trace for Cache-warmup plan draft",
     );
@@ -1052,26 +1057,22 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     expect(trace.textContent).toContain("plan:scout-cache-warmup");
     expect(trace.textContent).toContain("ungraded"); // the gap IS the signal
     expect(trace.textContent).toContain("pending");
-    // Toggle closed again.
+    // Clicking the open row asks nuqs to close the trace.
     fireEvent.click(
       screen.getByRole("button", { name: /Cache-warmup plan draft/ }),
     );
-    expect(
-      screen.queryByLabelText("Pipeline trace for Cache-warmup plan draft"),
-    ).toBeNull();
+    expect(nuqsSetters.itrace).toHaveBeenCalledWith(null);
   });
 
   it("renders the trace's grounding gap dimmed when no refs were recorded (P-004)", () => {
+    nuqsState.itrace = "idea-2";
     render(<ScoutView />);
     fireEvent.click(screen.getByRole("button", { name: /Reviewed ideas/ }));
-    fireEvent.click(
-      screen.getByRole("button", { name: /Tighter scoper prompt/ }),
-    );
     const trace = screen.getByLabelText(
       "Pipeline trace for Tighter scoper prompt",
     );
     expect(trace.textContent).toContain("none recorded");
-    expect(trace.textContent).toContain("★4 · Queen"); // graded stage filled
+    expect(trace.textContent).toContain("★4 · brain"); // graded stage filled (t('brain') echoes)
     expect(trace.textContent).toContain("won");
   });
 
