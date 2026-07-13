@@ -99,6 +99,12 @@ export interface LoopFireDeps {
   findWakeRecipe?: typeof defaultFindTopRecipeForWake;
   /** P-006: read-and-clear the pending turn-settle wall nag (fail-soft). */
   takeWallNag?: typeof defaultTakeLoopWallNag;
+  /** EI-11484: fetch + render the OPEN OWNER DIRECTIVES block for the wake's
+   *  workspace (defaults to renderOpenOwnerDirectivesBlock). Best-effort. */
+  renderOwnerDirectives?: (
+    workspaceId: string | null | undefined,
+    opts?: { sql?: Sql },
+  ) => Promise<string | null>;
   deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
 }
 
@@ -276,6 +282,11 @@ export function renderLoopWakeText(opts: {
   /** P-006: the pre-rendered turn-settle nag line (renderWallNagLine), when the
    *  previous turn ended on a row-less owner-ask. */
   wallNagLine?: string | null;
+  /** EI-11484: the pre-rendered OPEN OWNER DIRECTIVES block
+   *  (renderOwnerDirectivesBlock) — rendered FIRST in the priority stack,
+   *  ABOVE the wall nag, the walls, and the loop contract, in EVERY form:
+   *  an owner order outranks the loop's re-injected standing agenda. */
+  ownerDirectivesBlock?: string | null;
 }): string {
   const block = renderLoopCheckpointBlock(opts.checkpoint, {
     updatedAtMs: opts.checkpointUpdatedAtMs,
@@ -283,7 +294,9 @@ export function renderLoopWakeText(opts: {
     intervalSec: opts.intervalSec,
   });
   const wallsBlock = renderLoopWallsBlock(opts.walls ?? [], opts.nowMs);
-  const priority = [opts.wallNagLine || null, wallsBlock].filter((s): s is string => Boolean(s));
+  const priority = [opts.ownerDirectivesBlock || null, opts.wallNagLine || null, wallsBlock].filter(
+    (s): s is string => Boolean(s),
+  );
   if (isLoopWakeFullForm(opts.fireNumber, block != null)) {
     return [opts.kickoff, ...priority, ...(block ? [block] : [])].join('\n\n');
   }
@@ -429,6 +442,17 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     }).catch(() => null);
     if (hit) recipeLine = renderWakeRecipeLine(hit);
   }
+  // EI-11484: open owner directives render ABOVE the loop contract in EVERY
+  // wake until dispositioned — the re-injection surface the loop agenda always
+  // had and fresh owner orders lacked. Fail-soft: a read miss renders nothing,
+  // never delays the fire.
+  const renderDirectives =
+    deps.renderOwnerDirectives ??
+    (async (ws: string | null | undefined, o?: { sql?: Sql }) => {
+      const { renderOpenOwnerDirectivesBlock } = await import('../../owner-directives');
+      return renderOpenOwnerDirectivesBlock(ws, o);
+    });
+  const ownerDirectivesBlock = await renderDirectives(input.workspaceId, { sql: input.sql }).catch(() => null);
   const kickoff = renderLoopWakeText({
     kickoff: armTimeKickoff,
     fireNumber,
@@ -438,6 +462,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     recipeLine,
     walls,
     wallNagLine: nag ? renderWallNagLine(nag) : null,
+    ownerDirectivesBlock,
   });
 
   // su-cold-auto P-003: a COLD loop stamps a marker on the wake DELIVERY so the wake-executor

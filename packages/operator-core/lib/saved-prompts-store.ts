@@ -26,6 +26,15 @@ export interface SavedPromptRow {
   argHint: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Organizer columns (migration 598, quick-panel-saved-prompts-2026-07-13). */
+  parentId: string | null;
+  position: string | null;
+  title: string | null;
+  collapsed: boolean;
+  pinned: boolean;
+  usageCount: number;
+  lastUsedAt: string | null;
+  archivedAt: string | null;
 }
 
 export interface UpsertSavedPromptInput {
@@ -47,9 +56,18 @@ type DbRow = {
   arg_hint: string | null;
   created_at: Date | string;
   updated_at: Date | string;
+  parent_id: string | null;
+  position: string | null;
+  title: string | null;
+  collapsed: boolean;
+  pinned: boolean;
+  usage_count: number;
+  last_used_at: Date | string | null;
+  archived_at: Date | string | null;
 };
 
 const asIso = (v: Date | string): string => (typeof v === 'string' ? v : v.toISOString());
+const asIsoOrNull = (v: Date | string | null): string | null => (v === null ? null : asIso(v));
 
 function mapRow(r: DbRow): SavedPromptRow {
   return {
@@ -62,6 +80,14 @@ function mapRow(r: DbRow): SavedPromptRow {
     argHint: r.arg_hint,
     createdAt: asIso(r.created_at),
     updatedAt: asIso(r.updated_at),
+    parentId: r.parent_id,
+    position: r.position,
+    title: r.title,
+    collapsed: r.collapsed,
+    pinned: r.pinned,
+    usageCount: r.usage_count,
+    lastUsedAt: asIsoOrNull(r.last_used_at),
+    archivedAt: asIsoOrNull(r.archived_at),
   };
 }
 
@@ -104,6 +130,151 @@ export async function upsertSavedPrompt(
                   updated_at = now()
     RETURNING *`;
   return mapRow(rows[0]);
+}
+
+// ---------------------------------------------------------------------------
+// Outline-node CRUD (quick-panel-saved-prompts-2026-07-13). Id-based, because
+// the organizer renames titles and moves nodes — `name` stays the stable
+// slash-command key, auto-derived from the title on create.
+// ---------------------------------------------------------------------------
+
+/** Derive a valid kebab `name` from a free-text title ('' → 'prompt'). */
+export function slugifyPromptName(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-');
+  return slug.length > 0 ? slug : 'prompt';
+}
+
+export interface CreatePromptNodeInput {
+  workspaceId: string;
+  scope: PromptScope;
+  title: string;
+  /** '' marks a pure folder node (skipped by the slash-command projector). */
+  body: string;
+  parentId?: string | null;
+  position?: string | null;
+  description?: string | null;
+  argHint?: string | null;
+}
+
+/**
+ * Insert an outline node. `name` is derived from the title and suffixed
+ * (-2, -3, …) until unique within the scope, so free-text titles never
+ * collide with the slash-command key's uniqueness.
+ */
+export async function createPromptNode(
+  sql: postgres.Sql,
+  input: CreatePromptNodeInput,
+): Promise<SavedPromptRow> {
+  const slug = input.scope.kind === 'harness' ? input.scope.slug : null;
+  const base = slugifyPromptName(input.title);
+  for (let attempt = 0; ; attempt += 1) {
+    const name =
+      attempt === 0
+        ? base
+        : attempt < 50
+          ? `${base}-${attempt + 1}`
+          : `${base}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const rows = await sql<DbRow[]>`
+        INSERT INTO harness_shared.saved_prompts
+          (workspace_id, harness_slug, name, title, body, description, arg_hint,
+           parent_id, position, updated_at)
+        VALUES (
+          ${input.workspaceId}, ${slug}, ${name}, ${input.title || null}, ${input.body},
+          ${input.description ?? null}, ${input.argHint ?? null},
+          ${input.parentId ?? null}, ${input.position ?? null}, now()
+        )
+        RETURNING *`;
+      return mapRow(rows[0]);
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code !== '23505') throw err; // not a unique violation
+    }
+  }
+}
+
+export interface UpdatePromptNodePatch {
+  title?: string;
+  body?: string;
+  description?: string | null;
+  argHint?: string | null;
+  collapsed?: boolean;
+  pinned?: boolean;
+}
+
+/** Patch a node's editable fields by id (scoped to the workspace). Null when unknown. */
+export async function updatePromptNodeById(
+  sql: postgres.Sql,
+  workspaceId: string,
+  id: string,
+  patch: UpdatePromptNodePatch,
+): Promise<SavedPromptRow | null> {
+  const rows = await sql<DbRow[]>`
+    UPDATE harness_shared.saved_prompts SET
+      title       = COALESCE(${patch.title ?? null}, title),
+      body        = COALESCE(${patch.body ?? null}, body),
+      description = ${patch.description !== undefined ? patch.description : sql`description`},
+      arg_hint    = ${patch.argHint !== undefined ? patch.argHint : sql`arg_hint`},
+      collapsed   = COALESCE(${patch.collapsed ?? null}, collapsed),
+      pinned      = COALESCE(${patch.pinned ?? null}, pinned),
+      updated_at  = now()
+    WHERE workspace_id = ${workspaceId} AND id = ${id}
+    RETURNING *`;
+  return rows.length ? mapRow(rows[0]) : null;
+}
+
+export interface MovePromptNodeAssignment {
+  id: string;
+  parentId: string | null;
+  position: string;
+}
+
+/** Apply a batch of move assignments (one logical outline move) atomically. */
+export async function movePromptNodes(
+  sql: postgres.Sql,
+  workspaceId: string,
+  assignments: MovePromptNodeAssignment[],
+): Promise<number> {
+  if (assignments.length === 0) return 0;
+  let updated = 0;
+  await sql.begin(async (tx) => {
+    for (const a of assignments) {
+      const res = await tx`
+        UPDATE harness_shared.saved_prompts
+           SET parent_id = ${a.parentId}, position = ${a.position}, updated_at = now()
+         WHERE workspace_id = ${workspaceId} AND id = ${a.id}`;
+      updated += res.count;
+    }
+  });
+  return updated;
+}
+
+/** Delete a node by id; the parent_id FK cascades to the whole subtree. */
+export async function removePromptNodeById(
+  sql: postgres.Sql,
+  workspaceId: string,
+  id: string,
+): Promise<boolean> {
+  const res = await sql`
+    DELETE FROM harness_shared.saved_prompts
+     WHERE workspace_id = ${workspaceId} AND id = ${id}`;
+  return res.count > 0;
+}
+
+/** Record a use (copy): bump usage_count, stamp last_used_at. */
+export async function recordPromptUse(
+  sql: postgres.Sql,
+  workspaceId: string,
+  id: string,
+): Promise<void> {
+  await sql`
+    UPDATE harness_shared.saved_prompts
+       SET usage_count = usage_count + 1, last_used_at = now()
+     WHERE workspace_id = ${workspaceId} AND id = ${id}`;
 }
 
 /** Delete one prompt by scope + name; returns true iff a row was removed. */

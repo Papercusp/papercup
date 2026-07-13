@@ -92,6 +92,10 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
 
+    if (!args.announce && (args.expected_sha || args.expected_predicate)) {
+      throw new Error('events:emit — expected_sha/expected_predicate describe a DECLARATION; pass announce:true or omit them.');
+    }
+
     // ── EI-9270: announce = DECLARE, don't fire ─────────────────────────────
     if (args.announce) {
       if (args.to && args.to.length > 0) {

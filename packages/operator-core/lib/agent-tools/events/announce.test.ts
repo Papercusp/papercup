@@ -35,7 +35,7 @@ vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: null, note: 'no-handle' })),
 }));
 vi.mock('../../events/await/store', () => ({
-  registerAnnouncement: vi.fn(async (input: { eventKey: string }) => ({
+  registerAnnouncement: vi.fn(async (input: { eventKey: string; expectedCondition?: unknown }) => ({
     id: 1,
     eventKey: input.eventKey,
     expiresTs: null,
@@ -43,6 +43,8 @@ vi.mock('../../events/await/store', () => ({
     firedReason: null,
     note: null,
     subscriberId: 'su-leader',
+    causalGeneration: 4,
+    expectedCondition: input.expectedCondition ?? null,
   })),
   countActiveAwaitsByPrefixes: vi.fn(async (prefixes: string[]) => new Map(prefixes.map((p) => [p, 3]))),
   registerAwait: vi.fn(async (input: { eventKey: string }) => ({
@@ -102,6 +104,7 @@ describe('events:emit { announce: true }', () => {
     expect(out.event).toBe('fleet:p2p-git:phase3-open'); // presence fleet default + auto-prefix
     expect(out.scope).toEqual({ kind: 'fleet', ref: 'p2p-git' });
     expect(out.live_awaiters).toBe(3);
+    expect(out.generation).toBe(4);
     expect(registerAnnouncement).toHaveBeenCalledWith(
       expect.objectContaining({ eventKey: 'fleet:p2p-git:phase3-open', scopeKind: 'fleet', scopeRef: 'p2p-git', note: 'opens on verified green' }),
     );
@@ -111,6 +114,26 @@ describe('events:emit { announce: true }', () => {
     const out = parse(await emitHandler({ event: 'migration-freeze-lifted', announce: true, announceScope: 'global' }, {}));
     expect(out.event).toBe('migration-freeze-lifted');
     expect(out.scope).toEqual({ kind: 'global', ref: null });
+  });
+  it('persists one expected SHA on the causal declaration generation', async () => {
+    const out = parse(await emitHandler({
+      event: 'deployed',
+      announce: true,
+      announceScope: 'global',
+      expected_sha: 'ABCDEF1',
+    }, {}));
+    expect(registerAnnouncement).toHaveBeenCalledWith(expect.objectContaining({
+      expectedCondition: { kind: 'sha', sha: 'abcdef1' },
+    }));
+    expect(out).toMatchObject({ generation: 4, expected: { kind: 'sha', sha: 'abcdef1' } });
+  });
+  it('rejects two expected-condition forms on one declaration', async () => {
+    await expect(emitHandler({
+      event: 'deployed',
+      announce: true,
+      expected_sha: 'abcdef1',
+      expected_predicate: { sha: { eq: 'abcdef1' } },
+    }, {})).rejects.toThrow(/only one expected condition/);
   });
   it('rejects announce + to (a declaration wakes no one)', async () => {
     await expect(emitHandler({ event: 'g', announce: true, to: ['su-x'] }, {})).rejects.toThrow(/`to` is not allowed/);
@@ -142,7 +165,12 @@ describe('events:await — the announced-gate latch', () => {
     ]);
     const out = parse(await awaitHandler({ event: 'fleet:p2p-git:phase3-open' }, {}));
     expect(out.await_id).toBe(9);
-    expect(out.announced_gate).toEqual({ note: 'opens on verified green', announcedBy: 'su-leader' });
+    expect(out.announced_gate).toEqual({
+      note: 'opens on verified green',
+      announcedBy: 'su-leader',
+      generation: null,
+      expected: null,
+    });
   });
   it('skips the latch read for pattern awaits', async () => {
     const out = parse(await awaitHandler({ event: 'work-item:done:*' }, {}));

@@ -29,8 +29,24 @@ export default defineTool({
       .max(500)
       .optional()
       .describe('Why the fleet is winding down — travels on the registry row + the member cue.'),
+    acknowledgeOpenDirectives: z
+      .boolean()
+      .optional()
+      .describe(
+        'EI-11484 guard: open owner directives soft-block wind-down (members loop:end on the cue, removing their wake render surface). Pass true to consciously proceed with them still open.',
+      ),
   }),
   async handler(args, ctx) {
+    // EI-11484 P4: winding down cues every member to loop:end — the same
+    // surface-loss moment as a direct loop:end. Warn while open owner
+    // directives remain; acknowledgeOpenDirectives:true proceeds. Fail-open.
+    const { checkOpenDirectivesGuard } = await import('../orders/open-directives-guard');
+    const guard = await checkOpenDirectivesGuard({
+      workspaceId: (ctx as { workspaceId?: string | null }).workspaceId ?? ctx.principal?.workspaceId,
+      acknowledged: args.acknowledgeOpenDirectives,
+      action: 'fleet:wind-down',
+    });
+    if (guard) return json(guard as unknown as Record<string, unknown>, true);
     const result = await applyFleetControl(ctx, args.fleet, 'wind-down', args.reason);
     return json(result as unknown as Record<string, unknown>, !result.ok);
   },

@@ -466,11 +466,14 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
  */
 describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () => {
   const KEY = 'PAPERCUSP_XBENCH_CUP_DIRECTIVE';
+  const LEGACY_KEY = 'PAPERCUSP_XBENCH_BEE_DIRECTIVE';
   const MODEL = 'PAPERCUSP_XBENCH_MODEL';
   let savedKey: string | undefined;
+  let savedLegacyKey: string | undefined;
   let savedModel: string | undefined;
   beforeEach(() => {
     savedKey = process.env[KEY];
+    savedLegacyKey = process.env[LEGACY_KEY];
     savedModel = process.env[MODEL];
     // Hermetic guard (EI-1459): the "does NOT pin" cases assert the Queen gets NO
     // model override, but the queen own-model path (launch-blueprint.ts ~490) reads
@@ -481,9 +484,11 @@ describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () =>
     // the queen-own-model tests above already use; the file-level afterEach
     // `vi.unstubAllEnvs()` restores it.
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    delete process.env[LEGACY_KEY];
   });
   afterEach(() => {
     if (savedKey === undefined) delete process.env[KEY]; else process.env[KEY] = savedKey;
+    if (savedLegacyKey === undefined) delete process.env[LEGACY_KEY]; else process.env[LEGACY_KEY] = savedLegacyKey;
     if (savedModel === undefined) delete process.env[MODEL]; else process.env[MODEL] = savedModel;
   });
 

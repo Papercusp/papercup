@@ -36,10 +36,34 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('End the loop for this owner id (default: yourself).'),
+    acknowledgeOpenDirectives: z
+      .boolean()
+      .optional()
+      .describe(
+        'EI-11484 guard: open owner directives soft-block loop:end (ending removes their wake render surface). Pass true to consciously proceed with them still open.',
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const ownerId = args.ownerId ?? identity.ownerId;
+    // EI-11484 P4: while OPEN owner directives exist, ending the loop silently
+    // removes the surface that re-renders them every wake — warn first;
+    // acknowledgeOpenDirectives:true proceeds. Fail-open on read errors (you
+    // must always be able to stop a loop you armed).
+    {
+      const { checkOpenDirectivesGuard } = await import('../orders/open-directives-guard');
+      const guard = await checkOpenDirectivesGuard({
+        workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId,
+        acknowledged: args.acknowledgeOpenDirectives,
+        action: 'loop:end',
+      });
+      if (guard) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(guard) }],
+          isError: true,
+        };
+      }
+    }
     const ended = await deactivateLoop(ownerId);
     return {
       content: [

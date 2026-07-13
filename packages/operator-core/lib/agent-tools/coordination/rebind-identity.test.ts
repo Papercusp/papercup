@@ -45,6 +45,7 @@ interface FakeOpts {
   heldWorkItems?: number;
   factsDrop?: number;
   factsMove?: number;
+  ownerDirectives?: number;
   pendingWakes?: number;
   cursorDrop?: number;
   cursorMove?: number;
@@ -127,6 +128,9 @@ function fakeSql(opts: FakeOpts = {}) {
     if (text.includes('UPDATE harness_shared.agent_facts')) {
       return Promise.resolve(rows(opts.factsMove, { key: 'k' }));
     }
+    if (text.includes('UPDATE harness_shared.owner_directives')) {
+      return Promise.resolve(rows(opts.ownerDirectives, { id: 7 }));
+    }
     if (text.includes('UPDATE harness_shared.pending_wakes')) {
       return Promise.resolve(rows(opts.pendingWakes, { id: 42 }));
     }
@@ -181,7 +185,7 @@ describe('argument + liveness guards', () => {
       const sql = fakeSql({ presenceBeatMsAgo: opts.presenceBeatMsAgo });
       const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, force: opts.force });
       expect(res.ok).toBe(true);
-      expect(res.surfaces).toHaveLength(15);
+      expect(res.surfaces).toHaveLength(16);
     }
   });
 
@@ -189,7 +193,7 @@ describe('argument + liveness guards', () => {
     const sql = fakeSql({ failOn: /SELECT heartbeat_at/ });
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
     expect(res.ok).toBe(true);
-    expect(res.surfaces).toHaveLength(15);
+    expect(res.surfaces).toHaveLength(16);
   });
 });
 
@@ -315,6 +319,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
       heldWorkItems: 5,
       factsDrop: 1,
       factsMove: 2,
+      ownerDirectives: 2,
       pendingWakes: 3,
       cursorDrop: 1,
       cursorMove: 1,
@@ -328,9 +333,10 @@ describe('remaining re-keys, totals, and error isolation', () => {
     expect(surfaceOf(res, 'held-items')).toMatchObject({ moved: 4 });
     expect(surfaceOf(res, 'held-work-items')).toMatchObject({ moved: 5 });
     expect(surfaceOf(res, 'owner-facts')).toMatchObject({ moved: 2, dropped: 1 });
+    expect(surfaceOf(res, 'owner-directives')).toMatchObject({ moved: 2 });
     expect(surfaceOf(res, 'pending-wakes')).toMatchObject({ moved: 3 });
     expect(surfaceOf(res, 'read-cursors')).toMatchObject({ moved: 1, dropped: 1 });
-    expect(res.totalMoved).toBe(26);
+    expect(res.totalMoved).toBe(28);
     expect(res.ok).toBe(true);
   });
 
@@ -349,6 +355,16 @@ describe('remaining re-keys, totals, and error isolation', () => {
     expect(surfaceOf(res, 'pending-wakes')).toMatchObject({ moved: 2 });
     const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.pending_wakes SET owner_id'));
     expect(upd).toBeTruthy();
+    expect(upd!.vals).toEqual([TO, FROM]);
+  });
+
+  it('owner-directives re-keys only OPEN binding instructions; dispositioned history stays attributed to its originating sid', async () => {
+    const sql = fakeSql({ ownerDirectives: 2 });
+    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    expect(surfaceOf(res, 'owner-directives')).toMatchObject({ moved: 2 });
+    const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.owner_directives SET owner_id'));
+    expect(upd).toBeTruthy();
+    expect(upd!.text).toContain('dispositioned_at IS NULL');
     expect(upd!.vals).toEqual([TO, FROM]);
   });
 
@@ -378,7 +394,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
     expect(res.ok).toBe(false);
     expect(surfaceOf(res, 'fleet-leadership').error).toContain('surface exploded');
-    expect(res.surfaces).toHaveLength(15);
+    expect(res.surfaces).toHaveLength(16);
     expect(surfaceOf(res, 'plan-claims')).toMatchObject({ moved: 1 });
   });
 });
@@ -387,7 +403,7 @@ describe('SU-locks file locks + waiters (EI-8999/P-002 — opt-in, separate side
   it('is entirely SKIPPED when the caller does not wire rebindLockOwner — no I/O attempted, surface count unchanged', async () => {
     const sql = fakeSql();
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
-    expect(res.surfaces).toHaveLength(15);
+    expect(res.surfaces).toHaveLength(16);
     expect(res.surfaces.find((s) => s.surface === 'file-locks')).toBeUndefined();
   });
 
@@ -395,7 +411,7 @@ describe('SU-locks file locks + waiters (EI-8999/P-002 — opt-in, separate side
     const sql = fakeSql();
     const rebindLockOwner = vi.fn().mockResolvedValue({ fileLocksMoved: 2, waitersMoved: 1 });
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, rebindLockOwner });
-    expect(res.surfaces).toHaveLength(16);
+    expect(res.surfaces).toHaveLength(17);
     expect(surfaceOf(res, 'file-locks')).toMatchObject({ moved: 3 });
     expect(rebindLockOwner).toHaveBeenCalledWith(FROM, TO);
     expect(res.totalMoved).toBeGreaterThanOrEqual(3);

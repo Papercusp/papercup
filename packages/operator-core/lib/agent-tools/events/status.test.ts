@@ -16,13 +16,18 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-status', ownerLabel: 's', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
 vi.mock('../../events/await/store', () => ({
+  inspectEventKey: vi.fn(),
   listActiveAwaits: vi.fn(),
   listRecentDeliveries: vi.fn(),
   wakeMeter: vi.fn(),
 }));
+vi.mock('../../events/await/compose-store', () => ({
+  listActiveComposedRoots: vi.fn(async () => []),
+  loadTreeLeaves: vi.fn(async () => []),
+}));
 
 import status from './status';
-import { listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
+import { inspectEventKey, listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof status.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -38,6 +43,7 @@ beforeEach(() => {
   vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW] as never);
   vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW] as never);
   vi.mocked(wakeMeter).mockResolvedValue({ total: 7 } as never);
+  vi.mocked(inspectEventKey).mockResolvedValue({ announcements: [], waiters: [], deliveries: [] } as never);
 });
 
 describe('events:status projection', () => {
@@ -87,5 +93,99 @@ describe('events:status projection', () => {
     expect(listActiveAwaits).toHaveBeenCalledWith('su-status');
     expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 10);
     expect(wakeMeter).toHaveBeenCalledTimes(1);
+  });
+
+  it('exact-key inspection returns causal generations, evidence, waiters, wakes, and a stale-watermark resync', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [
+        {
+          id: 2,
+          causalGeneration: 2,
+          subscriberId: 'su-emitter',
+          createdAt: '2026-07-13T12:00:00.000Z',
+          note: 'ship exact SHA',
+          expectedCondition: { kind: 'sha', sha: 'abcdef1' },
+          firedPayload: { deployed_sha: 'abcdef1' },
+          firedAt: '2026-07-13T12:05:00.000Z',
+          firedReason: 'event',
+          firedBy: 'release-host',
+          cancelledAt: null,
+          supersededAt: null,
+        },
+        {
+          id: 1,
+          causalGeneration: 1,
+          subscriberId: 'su-emitter',
+          createdAt: '2026-07-13T11:00:00.000Z',
+          note: 'old gate',
+          expectedCondition: null,
+          firedPayload: null,
+          firedAt: null,
+          firedReason: null,
+          firedBy: null,
+          cancelledAt: null,
+          supersededAt: '2026-07-13T12:00:00.000Z',
+        },
+      ],
+      waiters: [{
+        id: 31,
+        subscriberId: 'su-waiter',
+        policy: 'wake',
+        createdAt: '2026-07-13T12:01:00.000Z',
+        firedAt: '2026-07-13T12:05:00.000Z',
+        firedReason: 'event',
+        cancelledAt: null,
+        expiresTs: null,
+      }],
+      deliveries: [{
+        id: 41,
+        subscriberId: 'su-waiter',
+        status: 'delivered',
+        channel: 'pty-inject',
+        attempts: 1,
+        source: 'release-host',
+        lastError: null,
+        createdAt: '2026-07-13T12:05:00.000Z',
+        deliveredAt: '2026-07-13T12:05:01.000Z',
+      }],
+    } as never);
+
+    const out = await call({ event: 'deploy:abcdef1', after_generation: 1 });
+    expect(inspectEventKey).toHaveBeenCalledWith('deploy:abcdef1');
+    expect(out.event_inspection.current_generation).toBe(2);
+    expect(out.event_inspection.current_state).toBe('fired');
+    expect(out.event_inspection.declarations).toMatchObject([
+      { generation: 2, expected_verdict: 'matched', actual_sha: 'abcdef1', fired_by: 'release-host' },
+      { generation: 1, state: 'superseded' },
+    ]);
+    expect(out.event_inspection.waiters[0]).toMatchObject({ await_id: 31, state: 'fired' });
+    expect(out.event_inspection.wake_outcomes[0]).toMatchObject({ delivery_id: 41, status: 'delivered' });
+    expect(out.event_inspection.resync).toMatchObject({
+      required: true,
+      reason: 'consumer_behind',
+      consumer_generation: 1,
+      authoritative_generation: 2,
+    });
+  });
+
+  it('an exact current generation is in sync', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [{
+        id: 2,
+        causalGeneration: 2,
+        subscriberId: 'su-emitter',
+        createdAt: '2026-07-13T12:00:00.000Z',
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: null,
+        supersededAt: null,
+        expectedCondition: null,
+        firedPayload: null,
+      }],
+      waiters: [],
+      deliveries: [],
+    } as never);
+    const out = await call({ event: 'deploy:abcdef1', after_generation: 2 });
+    expect(out.event_inspection.resync).toMatchObject({ required: false, reason: 'in_sync' });
   });
 });

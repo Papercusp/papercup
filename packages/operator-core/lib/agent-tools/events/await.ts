@@ -241,7 +241,12 @@ export default defineTool({
     // ALREADY fired, say so NOW instead of registering a wait that can never fire
     // again (the await-after-emit race that stranded late joiners forever). A lapsed
     // declaration (fired_reason='expired') is NOT a latch. Best-effort read.
-    let announcedGate: { note: string | null; announcedBy: string } | null = null;
+    let announcedGate: {
+      note: string | null;
+      announcedBy: string;
+      generation: number | null;
+      expected: unknown | null;
+    } | null = null;
     let nearMiss: Array<{ key: string; kind: 'await' | 'announce'; holders: number }> | null = null;
     if (!patternAwait) {
       try {
@@ -257,6 +262,8 @@ export default defineTool({
                   already_fired: true,
                   event: eventKey,
                   fired_at: latched.firedAt,
+                  generation: latched.causalGeneration ?? null,
+                  ...(latched.expectedCondition != null ? { expected: latched.expectedCondition } : {}),
                   ...(latched.note ? { gate_note: latched.note } : {}),
                   advice: `The announced gate "${eventKey}" ALREADY FIRED at ${latched.firedAt} — do not wait. Proceed with the work this gate was blocking now.`,
                 }),
@@ -265,7 +272,14 @@ export default defineTool({
           };
         }
         const declared = anns.find((a) => !a.firedAt);
-        if (declared) announcedGate = { note: declared.note, announcedBy: declared.subscriberId };
+        if (declared) {
+          announcedGate = {
+            note: declared.note,
+            announcedBy: declared.subscriberId,
+            generation: declared.causalGeneration ?? null,
+            expected: declared.expectedCondition ?? null,
+          };
+        }
         // ── event-key-nearmiss-guard P-005: no announcement matches this key
         // exactly — advisory scan for a near-identical active key (another
         // agent's await, or a declared gate you almost-typed). Time-bounded +

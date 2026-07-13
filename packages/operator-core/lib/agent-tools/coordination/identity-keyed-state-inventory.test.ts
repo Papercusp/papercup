@@ -119,6 +119,13 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: "the session's own carry-brief snapshot, written by and read back by the SAME id at each of its own turns — a rebind moves the loop carry-note (a separate surface) which is what a cold successor actually reads.",
   },
+  'owner_directives.owner_id': {
+    status: 'covered',
+    surface: 'owner-directives',
+    // Open rows are binding control state rendered on every wake/orient until
+    // dispositioned, so they must follow a re-bound live session. Closed rows
+    // remain historical attribution and rebindIdentity deliberately leaves them.
+  },
   'tui_view_state.owner_id': {
     status: 'exempt',
     reason: 'per-agent UI preference (panel layout etc.) — a rebind losing it means the new sid sees default UI state, not a lost claim or a wrongly-freed resource.',

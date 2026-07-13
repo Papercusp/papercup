@@ -379,6 +379,21 @@ export async function rebindIdentity(
     r.moved = moved.length;
   });
 
+  // 12b. Open owner directives — these are CURRENT control instructions for
+  //      the session, not attribution history. They are rendered on every
+  //      wake/orient/compaction recovery until dispositioned, so leaving an
+  //      open row under the dead sid would silently drop the owner's binding
+  //      instruction after an identity rebind. Dispositioned rows stay on the
+  //      originating sid as immutable history; only live instructions follow.
+  await run('owner-directives', async (r) => {
+    const moved = await sql<Array<{ id: number }>>`
+      UPDATE harness_shared.owner_directives SET owner_id = ${t}
+       WHERE owner_id = ${f} AND dispositioned_at IS NULL
+       RETURNING id
+    `;
+    r.moved = moved.length;
+  });
+
   // 13b. Server-side read cursors (P-004 fleet-deltas-leader-primitives,
   //      migration 537) — PK (workspace_id, owner_id, surface), same shape and
   //      same non-monotonic-cursor-survival rationale as the 'watermarks' step

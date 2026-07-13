@@ -1047,26 +1047,24 @@ export async function inspectEventKey(eventKey: string): Promise<{
   const { sql } = getOrgPg();
   const ws = eventsWs();
   return sql.begin(async (tx) => {
-    const [announcementRows, waiterRows, deliveryRows] = await Promise.all([
-      tx`
-        SELECT * FROM harness_shared.event_awaits
-         WHERE workspace_id = ${ws} AND event_key = ${eventKey} AND policy = 'announce'
-         ORDER BY causal_generation DESC NULLS LAST, created_at DESC
-         LIMIT 50
-      `,
-      tx`
-        SELECT * FROM harness_shared.event_awaits
-         WHERE workspace_id = ${ws} AND event_key = ${eventKey} AND policy <> 'announce'
-         ORDER BY created_at DESC
-         LIMIT 200
-      `,
-      tx`
-        SELECT * FROM harness_shared.event_wake_deliveries
-         WHERE workspace_id = ${ws} AND event_key = ${eventKey}
-         ORDER BY created_at DESC
-         LIMIT 200
-      `,
-    ]);
+    const announcementRows = await tx`
+      SELECT * FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws} AND event_key = ${eventKey} AND policy = 'announce'
+       ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+       LIMIT 50
+    `;
+    const waiterRows = await tx`
+      SELECT * FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws} AND event_key = ${eventKey} AND policy <> 'announce'
+       ORDER BY created_at DESC
+       LIMIT 200
+    `;
+    const deliveryRows = await tx`
+      SELECT * FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${ws} AND event_key = ${eventKey}
+       ORDER BY created_at DESC
+       LIMIT 200
+    `;
     return {
       announcements: announcementRows.map(mapAwait),
       waiters: waiterRows.map(mapAwait),

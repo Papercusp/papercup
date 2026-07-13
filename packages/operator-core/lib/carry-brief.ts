@@ -483,6 +483,13 @@ export function renderCarryBriefColdExtras(brief: CarryBrief): string {
  */
 export function renderCarryBriefText(brief: CarryBrief, now: number = Date.now()): string {
   const sections: string[] = [];
+  // EI-11484: open owner directives render ABOVE the loop contract — the whole
+  // point of the store is that they outrank the re-injected standing agenda.
+  const directivesBlock =
+    brief.directives.length > 0
+      ? renderOwnerDirectivesBlock(brief.directives, { nowMs: now, totalOpen: brief.directivesTotalOpen })
+      : null;
+  if (directivesBlock) sections.push(directivesBlock);
   if (brief.loop) {
     const iv = brief.loop.intervalSec != null ? `, every ${brief.loop.intervalSec}s` : '';
     const head = `Armed loop @${brief.loop.harness} (${brief.loop.active ? 'active' : 'inactive'}${iv}).`;
@@ -496,7 +503,9 @@ export function renderCarryBriefText(brief: CarryBrief, now: number = Date.now()
       sections.push(`${head} No carry-note written.`);
     }
   }
-  const extras = renderCarryBriefColdExtras(brief);
+  // Directives already rendered at the top — strip them so the extras call
+  // (shared with the cold path, where they DO belong inside) can't double-render.
+  const extras = renderCarryBriefColdExtras(directivesBlock ? { ...brief, directives: [] } : brief);
   if (extras) sections.push(extras);
   return sections.join('\n\n');
 }

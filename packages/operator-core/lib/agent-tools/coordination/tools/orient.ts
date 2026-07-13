@@ -1407,7 +1407,17 @@ export default defineTool({
         }
       } catch { /* fail-soft — never break orientation over a config read/repair */ }
     }
-    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(configIntegrity ? { configIntegrity } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
+    // EI-11484: OPEN OWNER DIRECTIVES fold — every orient (full AND monitor;
+    // orient is the mandated bootstrap, so this is how a SUCCESSOR session in
+    // the workspace inherits an order whose recording session died). Rendered
+    // by the shared budgeted renderer; fail-soft, absent when none are open.
+    let ownerDirectives: string | undefined;
+    try {
+      const { renderOpenOwnerDirectivesBlock } = await import('../../../owner-directives');
+      const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+      ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws)) ?? undefined;
+    } catch { /* fail-soft */ }
+    const out = { ...(ownerDirectives ? { ownerDirectives } : {}), ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(configIntegrity ? { configIntegrity } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never
