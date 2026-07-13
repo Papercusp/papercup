@@ -105,6 +105,22 @@ export function stripFrontmatter(md: string): string {
   return m ? md.slice(m[0].length) : md;
 }
 
+/**
+ * A plan's body almost always opens with `# <the plan title>` — and the page already
+ * renders that title as its own `<h1>`. Left alone, every plan page states its title
+ * twice, in two different sizes, which reads as a rendering bug.
+ *
+ * Only an EXACT title match is removed. A first heading that says something else is
+ * real content and stays: silently eating the opening line of a plan body because it
+ * merely looked title-ish would be a worse bug than the duplication it fixes.
+ */
+export function stripDuplicateTitle(md: string, title: string): string {
+  const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+  const m = /^[ \t]*#[ \t]+(.+?)[ \t]*(\r?\n|$)/.exec(md);
+  if (!m || norm(m[1]) !== norm(title)) return md;
+  return md.slice(m[0].length).replace(/^\s*\r?\n/, '');
+}
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '—';
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
@@ -178,60 +194,139 @@ function beaconScript(a: Analytics, page: string, version: string | null): strin
 </script>`;
 }
 
+/**
+ * The papercusp.com palette, lifted from the live site so a beta tester who clicks
+ * through from the product lands somewhere that looks like the same company.
+ *
+ * ⚠ LIGHT-ONLY, on purpose. papercusp.com commits to one look — a glassy light-blue
+ * surface over a faint grid — and has no dark variant. The old stylesheet here had a
+ * `prefers-color-scheme: dark` block that inverted everything to near-black; keeping
+ * it would mean half our testers see a page that matches the marketing site and half
+ * see one that pointedly doesn't. Matching a single-theme site means adopting its
+ * single theme. If papercusp.com ever ships a dark mode, mirror it here — don't
+ * invent one.
+ */
 const STYLES = `
 :root {
-  --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --line: #e5e7eb;
-  --accent: #2563eb; --card: #f9fafb; --code: #f3f4f6;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1115; --fg: #e6e8eb; --muted: #9aa3af; --line: #262b33;
-    --accent: #6ea8fe; --card: #161a21; --code: #1c2129;
-  }
+  --bg: #e9f3fa; --bg-2: #f4fafe; --bg-3: #ffffff;
+  --surface: rgba(255, 255, 255, .72); --surface-2: rgba(255, 255, 255, .9);
+  --border: rgba(20, 90, 130, .16); --border-strong: rgba(20, 90, 130, .28);
+  --fg: #082033; --fg-dim: #1c3c52; --muted: #4d6c82;
+  --accent: #0284c7; --accent-2: #0d9488; --accent-deep: #0369a1;
+  --glow: rgba(2, 132, 199, .14); --grid: rgba(20, 90, 130, .05);
+  --shadow: 0 24px 60px -34px rgba(20, 60, 90, .4);
+  --radius: 8px;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+/* The background layers span the DOCUMENT, not the viewport — deliberately.
+   background-attachment:fixed is the obvious way to write this and it is wrong here:
+   on any page taller than the viewport the gradient stops dead at the fold and leaves
+   a hard horizontal seam across the release cards. These pages are long (a plan page
+   runs thousands of words), so the background has to grow with them. */
 body {
-  margin: 0; padding: 2rem 1.25rem 5rem; background: var(--bg); color: var(--fg);
-  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  position: relative;
+  margin: 0; padding: 3.5rem 1.25rem 6rem; min-height: 100vh;
+  color: var(--fg); font: 16px/1.65 var(--sans);
+  background:
+    radial-gradient(1100px 620px at 82% -10%, var(--glow), transparent 60%),
+    radial-gradient(900px 520px at 6% 2%, rgba(13, 148, 136, .10), transparent 62%),
+    linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 100%);
+  background-repeat: no-repeat;
 }
-main { max-width: 52rem; margin: 0 auto; }
-h1 { font-size: 1.75rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
-h2 { font-size: 1.3rem; margin: 0; letter-spacing: -.01em; }
-a { color: var(--accent); }
-.sub { color: var(--muted); font-size: .9rem; margin: 0 0 2.5rem; }
-.rel { border: 1px solid var(--line); border-radius: 10px; padding: 1.25rem 1.5rem; margin: 0 0 1.5rem; background: var(--card); }
-.rel-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; margin-bottom: .35rem; }
-.tag { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; padding: .12rem .45rem; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
-.tag.current { border-color: var(--accent); color: var(--accent); }
-.meta { color: var(--muted); font-size: .85rem; margin-bottom: 1rem; }
-.meta code { background: var(--code); padding: .1rem .35rem; border-radius: 4px; font-size: .85em; }
-.changelog { margin: 1rem 0; }
+/* the faint engineering grid papercusp.com sits on, faded out down the page */
+body::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 44px 44px;
+  /* fade in PIXELS, not %: a % fade would stretch the grid halfway down a
+     3,000-word plan page instead of keeping it a masthead texture. */
+  -webkit-mask-image: linear-gradient(180deg, #000 0, rgba(0, 0, 0, .55) 340px, transparent 760px);
+  mask-image: linear-gradient(180deg, #000 0, rgba(0, 0, 0, .55) 340px, transparent 760px);
+}
+main { position: relative; z-index: 1; max-width: 56rem; margin: 0 auto; }
+h1 {
+  font-size: clamp(2.1rem, 5vw, 3.25rem); line-height: 1.08; margin: 0 0 .5rem;
+  letter-spacing: -.03em; font-weight: 650;
+  background: linear-gradient(135deg, var(--fg) 0%, var(--accent-deep) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+h2 { font-size: 1.45rem; margin: 0; letter-spacing: -.02em; font-weight: 640; }
+a { color: var(--accent-deep); text-decoration-color: rgba(2, 132, 199, .35); text-underline-offset: 2px; }
+a:hover { color: var(--accent); }
+.sub { color: var(--muted); font-size: .95rem; margin: 0 0 3rem; max-width: 42rem; }
+.rel {
+  border: 1px solid var(--border); border-radius: 16px;
+  padding: 1.6rem 1.75rem; margin: 0 0 1.75rem;
+  background: var(--surface); box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+}
+.rel-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .4rem; }
+.tag {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  padding: .18rem .5rem; border-radius: 999px;
+  border: 1px solid var(--border-strong); color: var(--muted); background: var(--surface-2);
+}
+.tag.current { border-color: transparent; color: #fff; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%); }
+.meta { color: var(--muted); font-size: .85rem; margin-bottom: 1.25rem; }
+.meta code { font-family: var(--mono); background: var(--surface-2); border: 1px solid var(--border); padding: .1rem .4rem; border-radius: 5px; font-size: .85em; }
+.changelog { margin: 1.35rem 0 0; color: var(--fg-dim); }
 .changelog :first-child { margin-top: 0; }
-.changelog h1, .changelog h2, .changelog h3 { font-size: 1.05rem; margin: 1.2rem 0 .4rem; }
-table.dl { width: 100%; border-collapse: collapse; margin: .75rem 0 0; font-size: .9rem; }
-table.dl th { text-align: left; color: var(--muted); font-weight: 500; font-size: .8rem; padding: .35rem .5rem .35rem 0; border-bottom: 1px solid var(--line); }
-table.dl td { padding: .45rem .5rem .45rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-table.dl td.sha { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem; word-break: break-all; }
-details { margin-top: .85rem; border-top: 1px solid var(--line); padding-top: .75rem; }
-summary { cursor: pointer; font-weight: 500; font-size: .92rem; }
-summary::marker { color: var(--muted); }
+.changelog h1, .changelog h2, .changelog h3 {
+  font-size: 1.05rem; margin: 1.35rem 0 .45rem; color: var(--fg);
+  letter-spacing: -.01em; font-weight: 640;
+  background: none; -webkit-background-clip: border-box; background-clip: border-box;
+}
+table.dl { width: 100%; border-collapse: collapse; margin: 0; font-size: .9rem; }
+table.dl th {
+  text-align: left; color: var(--muted); font-weight: 600; font-size: .72rem;
+  text-transform: uppercase; letter-spacing: .06em;
+  padding: .4rem .75rem .4rem 0; border-bottom: 1px solid var(--border-strong);
+}
+table.dl td { padding: .6rem .75rem .6rem 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.dl tr:last-child td { border-bottom: 0; }
+table.dl td a { font-weight: 550; }
+table.dl td.sha { color: var(--muted); font-family: var(--mono); font-size: .7rem; word-break: break-all; }
+details {
+  margin-top: 1.35rem; border-top: 1px solid var(--border); padding-top: 1rem;
+}
+summary { cursor: pointer; font-weight: 600; font-size: .92rem; color: var(--accent-deep); }
+summary:hover { color: var(--accent); }
+summary::marker { color: var(--accent); }
 ul.items { list-style: none; padding: 0; margin: .6rem 0 0; }
-ul.items li { padding: .25rem 0; font-size: .89rem; border-bottom: 1px dotted var(--line); }
+ul.items li { padding: .35rem 0; font-size: .89rem; color: var(--fg-dim); border-bottom: 1px solid var(--grid); }
 ul.items li:last-child { border-bottom: 0; }
-.wid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; color: var(--muted); margin-right: .5rem; }
-.plan-group { margin: 1rem 0 0; }
-.plan-group > h4 { margin: 0 0 .1rem; font-size: .93rem; font-weight: 600; }
-.plan-group > .n { color: var(--muted); font-size: .8rem; margin: 0 0 .3rem; }
+.wid { font-family: var(--mono); font-size: .76rem; color: var(--accent-2); margin-right: .55rem; }
+.plan-group { margin: 1.25rem 0 0; }
+.plan-group > h4 { margin: 0 0 .1rem; font-size: .95rem; font-weight: 640; letter-spacing: -.01em; }
+.plan-group > .n { color: var(--muted); font-size: .78rem; margin: 0 0 .35rem; }
 .empty { color: var(--muted); font-style: italic; }
-.back { display: inline-block; margin-bottom: 1.5rem; font-size: .9rem; }
-.prose { margin-top: 1rem; }
-.prose pre { background: var(--code); padding: .85rem 1rem; border-radius: 8px; overflow-x: auto; }
-.prose code { background: var(--code); padding: .1rem .35rem; border-radius: 4px; font-size: .88em; }
-.prose pre code { background: none; padding: 0; }
-.prose table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
-.prose td, .prose th { border: 1px solid var(--line); padding: .35rem .6rem; }
-.prose img { max-width: 100%; }
-footer { color: var(--muted); font-size: .8rem; margin-top: 3rem; text-align: center; }
+.back { display: inline-block; margin-bottom: 1.75rem; font-size: .88rem; font-weight: 550; }
+.prose { margin-top: 1.5rem; color: var(--fg-dim); }
+.prose h1, .prose h2, .prose h3 {
+  color: var(--fg); letter-spacing: -.02em;
+  background: none; -webkit-background-clip: border-box; background-clip: border-box;
+}
+.prose h1 { font-size: 1.6rem; }
+.prose h2 { font-size: 1.3rem; margin-top: 2rem; }
+.prose pre {
+  background: var(--surface-2); border: 1px solid var(--border);
+  padding: .9rem 1.1rem; border-radius: var(--radius); overflow-x: auto;
+  font-family: var(--mono); font-size: .84rem;
+}
+.prose code { font-family: var(--mono); background: var(--surface-2); border: 1px solid var(--border); padding: .1rem .35rem; border-radius: 5px; font-size: .86em; }
+.prose pre code { background: none; border: 0; padding: 0; }
+.prose blockquote { margin: 1rem 0; padding: .1rem 0 .1rem 1rem; border-left: 3px solid var(--accent); color: var(--muted); }
+.prose table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; font-size: .88rem; }
+.prose td, .prose th { border: 1px solid var(--border); padding: .45rem .7rem; }
+.prose th { background: var(--surface-2); }
+.prose img { max-width: 100%; border-radius: var(--radius); }
+footer { color: var(--muted); font-size: .78rem; margin-top: 3.5rem; text-align: center; }
 `;
 
 /**

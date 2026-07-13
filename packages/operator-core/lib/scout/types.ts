@@ -222,6 +222,19 @@ export interface ScoutLlmCall {
     maxTokens?: number;
     /** Abort the host transport when the Scout cycle wall-clock timeout fires. */
     signal?: AbortSignal;
+    /**
+     * WI-4475 — cap (ms) on the ADMISSION wait (queueing behind the shared rate-limit
+     * governor, before the request is issued). Derived from the time left on the cycle
+     * deadline, so an inner wait can never outlive the cycle that owns it.
+     */
+    governorMaxWaitMs?: number;
+    /**
+     * WI-4475 — fired when the governor admits the call (per attempt), i.e. the instant the
+     * request is actually issued. Everything before it is queue-wait; everything after is
+     * generation. The per-call GENERATION timer starts/resets here — charging queue-wait
+     * against it is what turned a survivable capacity pause into a bogus "timeout".
+     */
+    onAdmitted?: () => void;
   }): Promise<{
     text: string;
     json?: unknown;

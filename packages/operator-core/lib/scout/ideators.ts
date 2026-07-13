@@ -27,8 +27,25 @@ import { DEFAULT_SCOUT_IDEATOR_MODEL } from './models';
 
 /** The default ideator model — a strong model matters for the creative leap. */
 export const SCOUT_IDEATOR_MODEL = DEFAULT_SCOUT_IDEATOR_MODEL;
-/** Bound one wedged ideator transport call so the whole Scout cycle can still make progress. */
+/**
+ * Bound one wedged ideator GENERATION so the whole Scout cycle can still make progress.
+ *
+ * WI-4475: this is a GENERATION cap, NOT a wall-clock cap on the whole call — its timer starts
+ * when the shared governor ADMITS the request, not when the call is enqueued. Sizing evidence
+ * (measured 2026-07-13 against the live gateway, at the ideator's exact params): opus-4-8 emits
+ * ~62 tok/s, so a FULL 4096-token response takes ~66s; 180s leaves ~2.7x headroom. A call that
+ * blows this budget is genuinely wedged mid-stream. Queue-wait is charged to the cycle deadline
+ * instead (see `RunIdeatorsOptions.cycleDeadlineMs`) — conflating the two is what made a routine
+ * rate-limit pause look like transport death.
+ */
 export const DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS = 180_000;
+
+/**
+ * Grace added to the admission backstop timer. The governor is supposed to bail on its own at
+ * `governorMaxWaitMs` with an honest capacity error; this backstop only exists for a transport
+ * that neither admits nor returns. The grace lets the governor's own error win that race.
+ */
+const ADMISSION_BACKSTOP_GRACE_MS = 5_000;
 
 /** One planned ideator: a lens, its within-lens index (drives domain rotation), and a global index. */
 export interface IdeatorSlot {
@@ -145,8 +162,24 @@ export interface RunIdeatorsOptions extends BuildRosterInput {
   thinkingBudgetTokens?: number;
   /** Abort all ideator calls when the parent Scout cycle is cancelled. */
   signal?: AbortSignal;
-  /** Per-ideator wall-clock cap (default {@link DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS}; <=0 disables). */
+  /**
+   * Per-ideator GENERATION cap (default {@link DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS}; <=0 disables).
+   *
+   * WI-4475: this bounds the model actually STREAMING — its timer starts when the governor
+   * ADMITS the call, not when the call is enqueued. It deliberately does NOT bound the
+   * admission wait (see {@link cycleDeadlineMs}); charging queue-wait against this cap is what
+   * turned a survivable rate-limit pause into a hard "transport timeout" with $0 spent.
+   */
   ideatorTimeoutMs?: number;
+  /**
+   * WI-4475 — absolute epoch-ms deadline of the OWNING Scout cycle. The ADMISSION wait
+   * (queueing behind the shared rate-limit governor) is bounded by the time actually left on
+   * it, so an inner call can never outlive — or eat — the cycle that owns it.
+   *
+   * Absent ⇒ no admission bound is imposed (the host's own default applies), which is the
+   * pre-WI-4475 behavior and keeps every existing caller/test byte-identical.
+   */
+  cycleDeadlineMs?: number;
   /**
    * Optional gym-QD stepping-stone priming (P-012 archive→Scout): appended to
    * every ideator's grounded substrate so generation builds on the gym's
@@ -388,22 +421,67 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
 
 type ScoutLlmCallInput = Parameters<ScoutLlmCall>[0];
 
+/**
+ * WI-4475 — two budgets, not one.
+ *
+ * The old shape started a single 180s wall-clock timer at CALL time and raced it against
+ * `llmCall`. But `llmCall` blocks (by design) in the shared rate-limit governor waiting for a
+ * permit BEFORE it issues the request — so that one timer was charging QUEUE-WAIT and
+ * GENERATION to the same budget. Measured 2026-07-13: opus-4-8 emits ~62 tok/s, so a FULL
+ * 4096-token ideation response takes ~66s — the 180s cap has ~2.7x headroom and the call
+ * CANNOT time out by generating. Every observed "Scout ideator <lens> timed out after
+ * 180000ms" ($0 spent, 0 ideas) was therefore a correctly-paced capacity wait being
+ * guillotined and misreported as transport death. Live governor pauses run 15s / 120s / 453s.
+ *
+ * So we split them:
+ *   - ADMISSION  — bounded by the time actually LEFT on the owning cycle's deadline. The
+ *     governor gets that as `governorMaxWaitMs` and bails with an HONEST capacity error
+ *     instead of being killed by our timer. A backstop timer covers a transport that never
+ *     admits and never returns.
+ *   - GENERATION — the existing per-ideator cap, whose timer starts on `onAdmitted` (the
+ *     instant the request is really issued) and RESETS on each retry attempt.
+ *
+ * Net effect: a pause shorter than the cycle's remaining budget now yields IDEAS (a bit
+ * later) instead of a hard cycle failure; a pause longer than it fails fast and honestly.
+ */
 async function callIdeatorLlm(
   opts: RunIdeatorsOptions,
   input: ScoutLlmCallInput,
   slot: IdeatorSlot,
 ): Promise<Awaited<ReturnType<ScoutLlmCall>>> {
-  const timeoutMs =
+  const generationTimeoutMs =
     opts.ideatorTimeoutMs === undefined
       ? DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS
       : opts.ideatorTimeoutMs;
-  if ((!Number.isFinite(timeoutMs) || timeoutMs <= 0) && !opts.signal) {
+  const hasGenerationCap = Number.isFinite(generationTimeoutMs) && generationTimeoutMs > 0;
+
+  // The admission budget: whatever the owning cycle has left, minus a reserve so generation
+  // still has room to run. No deadline ⇒ leave it to the host default (pre-WI-4475 behavior).
+  const admissionBudgetMs = (() => {
+    if (opts.cycleDeadlineMs === undefined || !Number.isFinite(opts.cycleDeadlineMs)) return undefined;
+    const remaining = opts.cycleDeadlineMs - Date.now();
+    const reserve = hasGenerationCap ? generationTimeoutMs : 0;
+    return Math.max(0, remaining - reserve);
+  })();
+
+  if (!hasGenerationCap && admissionBudgetMs === undefined && !opts.signal) {
     return opts.llmCall(input);
   }
 
   const ctrl = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let generationTimer: ReturnType<typeof setTimeout> | null = null;
+  let admissionTimer: ReturnType<typeof setTimeout> | null = null;
   let parentAbort: (() => void) | null = null;
+  // Assigned synchronously by the Promise executor below, before `llmCall` is ever invoked.
+  let onAdmitted: () => void = () => {};
+
+  const clearTimers = () => {
+    if (generationTimer) clearTimeout(generationTimer);
+    if (admissionTimer) clearTimeout(admissionTimer);
+    generationTimer = null;
+    admissionTimer = null;
+  };
+
   const rejectOnAbort = new Promise<never>((_, reject) => {
     const abort = (err: Error) => {
       if (!ctrl.signal.aborted) ctrl.abort(err);
@@ -417,19 +495,59 @@ async function callIdeatorLlm(
       parentAbort = () => abort(new Error(`Scout ideator ${slot.lens} aborted`));
       opts.signal.addEventListener('abort', parentAbort, { once: true });
     }
-    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-      timer = setTimeout(
-        () => abort(new Error(`Scout ideator ${slot.lens} timed out after ${Math.trunc(timeoutMs)}ms`)),
-        timeoutMs,
+
+    // Backstop: the governor should bail on its own at `governorMaxWaitMs`, but if a transport
+    // neither admits nor returns we must not hang until the cycle dies. The grace lets the
+    // governor's own honest capacity error win the race whenever it is working.
+    if (admissionBudgetMs !== undefined) {
+      admissionTimer = setTimeout(
+        () =>
+          abort(
+            new Error(
+              `Scout ideator ${slot.lens} was never admitted within ${Math.trunc(admissionBudgetMs)}ms ` +
+                `— no capacity within the cycle's remaining budget (not a transport timeout)`,
+            ),
+          ),
+        admissionBudgetMs + ADMISSION_BACKSTOP_GRACE_MS,
       );
-      if (typeof timer.unref === 'function') timer.unref();
+      if (typeof admissionTimer.unref === 'function') admissionTimer.unref();
     }
+
+    // The GENERATION cap starts only once the request is actually issued.
+    onAdmitted = () => {
+      if (admissionTimer) {
+        clearTimeout(admissionTimer);
+        admissionTimer = null;
+      }
+      if (!hasGenerationCap) return;
+      // Re-armed per attempt: a retry re-acquires a permit, so it gets a fresh budget.
+      if (generationTimer) clearTimeout(generationTimer);
+      generationTimer = setTimeout(
+        () =>
+          abort(
+            new Error(
+              `Scout ideator ${slot.lens} timed out after ${Math.trunc(generationTimeoutMs)}ms of GENERATION ` +
+                `(admitted — the model was streaming; this is not a capacity wait)`,
+            ),
+          ),
+        generationTimeoutMs,
+      );
+      if (typeof generationTimer.unref === 'function') generationTimer.unref();
+    };
   });
 
   try {
-    return await Promise.race([opts.llmCall({ ...input, signal: ctrl.signal }), rejectOnAbort]);
+    return await Promise.race([
+      opts.llmCall({
+        ...input,
+        signal: ctrl.signal,
+        ...(admissionBudgetMs !== undefined ? { governorMaxWaitMs: admissionBudgetMs } : {}),
+        onAdmitted: () => onAdmitted(),
+      }),
+      rejectOnAbort,
+    ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    clearTimers();
     if (parentAbort && opts.signal) opts.signal.removeEventListener('abort', parentAbort);
   }
 }

@@ -219,6 +219,13 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     // the pacing gateway tiers this caller (e.g. 'scout' → tier 1) instead of the
     // first-shed default band. No-op for the subprocess backends.
     priority: opts.priority,
+    // WI-4475: separate the ADMISSION budget from the GENERATION budget. `governorMaxWaitMs`
+    // bounds how long the shared governor may hold this call waiting for a permit;
+    // `onAdmitted` fires the moment it is granted (per attempt), so a caller with an outer
+    // deadline can start/reset its generation timer THERE instead of charging queue-wait
+    // against it. Both undefined => host defaults, i.e. unchanged for every existing caller.
+    governorMaxWaitMs: opts.governorMaxWaitMs,
+    onAdmitted: opts.onAdmitted,
     // Usage attribution: the priority label already names the caller ('gym',
     // 'scout'); reuse it so this client's header samples stop being anonymous.
     usageAttribution: { role: opts.priority ?? 'llm-client' },

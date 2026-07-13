@@ -13,7 +13,7 @@
  *                            body = the learning text
  *
  * Built-in packs live next to the blueprints they ship with
- * (`libs/papercusp/packages/harness/learnings/`); Comb-installed packs land
+ * (`libs/papercusp/packages/harness/knowledge-packs/`); Comb-installed packs land
  * under `~/.papercusp/knowledge-packs/` (see ./load-packs).
  *
  * Content doctrine (D-002): learnings carry invariant judgment as DISCOVERY

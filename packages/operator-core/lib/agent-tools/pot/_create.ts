@@ -410,18 +410,28 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
           const { DEFAULT_KNOWLEDGE_PACK_ID } = await import('../../knowledge-packs/pack-format');
           const { loadKnowledgePack } = await import('../../knowledge-packs/load-packs');
           const { seedPackIntoHive: seedPackIntoPot } = await import('../../knowledge-packs/seed');
-          // P-014: an explicit arg wins; else the blueprint's declared knowledge.pack
+          // P-014: an explicit arg wins; else the blueprint's declared seed pack
           // (a generic-pot can seed a different pack); else the global default.
           //
-          // `learning.pack` is the pre-rename key (cupboard-public-release P-001).
-          // Blueprint YAML is a true boundary (knowledge-packs-2026-07-11 D-001) —
-          // a blueprint authored before the rename, or one already installed in a
-          // user's tree, still declares it — so it stays readable as a fallback.
-          const packId =
-            opts.knowledgePack ??
-            validation.blueprint.knowledge?.pack ??
-            validation.blueprint.learning?.pack ??
-            DEFAULT_KNOWLEDGE_PACK_ID;
+          // resolveSeedPackKey reads BOTH the canonical `knowledge.pack` and the
+          // pre-rename `learning.pack` (blueprint YAML is a true boundary under
+          // knowledge-packs-2026-07-11 D-001 — we never rewrite a user's installed
+          // blueprint). It also arbitrates the case where an old blueprint extends
+          // a renamed first-party base, so an author's explicit legacy choice is
+          // never silently replaced by the base's inherited pack. See its header.
+          const { resolveSeedPackKey } = await import('../../knowledge-packs/seed-pack-key');
+          const seed = resolveSeedPackKey(validation.blueprint);
+          if (seed.deprecatedKey && seed.packId) {
+            console.warn(
+              `[pot:create] blueprint '${validation.blueprint.id}' declares the deprecated ` +
+                `\`learning.pack\` key — rename it to \`knowledge.pack\` ` +
+                (seed.conflict
+                  ? `(it is overriding the inherited \`knowledge.pack: ${seed.conflict.knowledge}\`, ` +
+                    `so '${seed.conflict.learning}' is being seeded)`
+                  : `(seeding '${seed.packId}')`),
+            );
+          }
+          const packId = opts.knowledgePack ?? seed.packId ?? DEFAULT_KNOWLEDGE_PACK_ID;
           const loaded = await loadKnowledgePack(packId);
           if (!loaded) {
             seededLearnings = { packId, error: 'pack_not_found' };
