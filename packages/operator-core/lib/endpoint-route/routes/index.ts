@@ -413,6 +413,7 @@ import deviceHarnesses from './device/harnesses';
 import deviceSync from './device/sync';
 import devicePush from './device/push';
 import deviceOperatorConverse from './device/operator-converse';
+import deviceVoiceTurn from './device/voice-turn';
 import devicePlans from './device/plans';
 import deviceAttention from './device/attention';
 import deviceMonitoring from './device/monitoring';
@@ -871,6 +872,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deviceSync as AnyRoute[]),
   ...flatten(devicePush as AnyRoute[]),
   ...flatten(deviceOperatorConverse as AnyRoute[]),
+  ...flatten(deviceVoiceTurn as AnyRoute[]),
   ...flatten(devicePlans as AnyRoute[]),
   ...flatten(deviceAttention as AnyRoute[]),
   ...flatten(deviceMonitoring as AnyRoute[]),

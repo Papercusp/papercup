@@ -730,6 +730,9 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
         // Subagent-launch (Task/Agent) DENIED BY DEFAULT (owner mandate 2026-07-02);
         // `--allow-subagents` opts THIS su launch back IN. See NO_SUBAGENTS_DENY_FLAG.
         ...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG]),
+        // Owner-desktop notify-send lockout (owner directive 2026-07-14) —
+        // unconditional, su sessions included (an su agent fired the popups).
+        OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       ],
     };
   }
@@ -899,7 +902,7 @@ export function resumeArgsFor(session, { coordExtPath, fork = false, forkSession
     // unless this resume explicitly opts in (`psu --resume … --allow-subagents`).
     // `--model`/`--effort` are top-level claude flags — a resume honors them like a
     // fresh launch (WI-3758: model select on resume).
-    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', ...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG]), ...forkFlag, ...addDirArgs('claude', addDir), ...modelArgsFor('claude', model)] };
+    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', ...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG]), OWNER_DESKTOP_NOTIFY_DENY_FLAG, ...forkFlag, ...addDirArgs('claude', addDir), ...modelArgsFor('claude', model)] };
   }
   if (session.agent === 'omp') {
     const args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
@@ -4129,6 +4132,7 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
   const { bin, args } = resumeArgsFor(session, { coordExtPath, fork, addDir, allowSubagents, model });
   if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
+  // notify-send lockout rides resumeArgsFor for claude already; nothing extra here.
   // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
   if (passthrough.length) args.push(...passthrough);
 
@@ -5323,6 +5327,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // The brain (Queen) is an AGENT riding the su launch machinery — it gets the
   // native-scheduler lockout the human su session deliberately keeps (D-003).
   if (brain && res.agent === 'claude') launchArgs.push(NATIVE_SCHEDULER_DENY_FLAG);
+  // notify-send lockout rides suLaunchArgs for claude already; nothing extra here.
   // A kickoff launch-context (server-generated) layers in as a SECOND system
   // prompt for claude/omp. Codex has no equivalent CLI flag, so bootstrap-su
   // folds the same file into CODEX_HOME/AGENTS.md before returning.

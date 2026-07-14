@@ -1,0 +1,377 @@
+/**
+ * Device desktop-local voice — on-desktop-direct-lan-voice-2026-07-14
+ * (P-001 turn, P-003 warmup). The EL-free mobile voice pipeline: the phone
+ * is a thin audio client and the DESKTOP does STT + brain + TTS, all local
+ * and free. ElevenLabs stays fully supported alongside this (D-010) — the
+ * phone picks its pipeline from /device/voice-session-init's `mode`.
+ *
+ *   POST /device/voice/turn     device JWT   (SSE)
+ *   POST /device/voice/warmup   device JWT
+ *
+ * Turn flow (one utterance → one spoken reply, streamed — D-005):
+ *   1. body `{audioBase64, format?, sessionId?}` (16kHz mono WAV preferred,
+ *      D-007; same 15MB cap as operator-stt)
+ *   2. STT via the local whisper service (voicemode/managed child — the
+ *      same upstream operator-stt proxies)            → SSE `transcript`
+ *   3. the SAME brain leg as /device/operator/converse: fast `papercup`
+ *      persona when the humanFacingRole pref says so, shared operator
+ *      conversation persistence (phone/desktop/TUI in lock-step, D-006)
+ *                                                     → SSE `delta`s
+ *   4. per-sentence kokoro TTS while the brain is STILL streaming
+ *      (voice-turn-sentences extractor; tags are never spoken)
+ *                                                     → SSE `audio` events
+ *   5. `done {costUsd, conversationId}`
+ *
+ * Playback starts on the FIRST audio event — perceived latency is
+ * time-to-first-sentence, not the sum of stages.
+ *
+ * auth: DEVICE_AUTH (a paired phone's JWT). The loopback-only
+ * operator-stt/operator-tts stay untouched; this is their composed,
+ * device-authed sibling. Flag-gated MOBILE_DESKTOP_VOICE (default ON).
+ */
+import { defineTool, dispatchProjectedToolStream, emitToSseSink, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { sseResponse } from '@papercusp/sse';
+import { FLAGS } from '@papercusp/flags';
+import '../../../agent-tools/index';
+import { DEVICE_AUTH, devicePrincipal } from './_shared';
+import { gateApiRoute } from '../../../require-flag';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import {
+  getOrCreateActiveConversation,
+  appendTurn,
+  listTurnsRecent,
+  type TurnRole,
+} from '../../../operator-conversations';
+import { parseOperatorTurn } from '../../../operator-converse-tags';
+import { notifySyncInvalidate } from '../../../sync-sse';
+import {
+  decodeAudioBase64,
+  normalizeAudioFormat,
+  resolveTtsEngine,
+  MAX_TEXT_CHARS,
+} from '../agent-mcp/operator-voice-proxy-helpers';
+import { synthesize } from '../agent-mcp/tts-synth';
+import { whisperSttBaseUrl, warmLocalWhisper } from '../../../voice-node/local-whisper-service';
+import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
+import { loadVoicePrefs } from '../../../voice-prefs';
+import { createSentenceExtractor } from '../../../voice-turn-sentences';
+
+/** How many recent turns feed the brain — same as the device text path. */
+const HISTORY_CONTEXT_TURNS = 24;
+
+interface TurnBody {
+  audioBase64?: unknown;
+  format?: unknown;
+  sessionId?: unknown;
+}
+
+/** One-shot whisper transcription — the operator-stt upstream, inlined. */
+async function transcribe(
+  audio: Buffer,
+  format: 'wav' | 'webm',
+): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  const fd = new FormData();
+  fd.append(
+    'file',
+    new Blob([new Uint8Array(audio)], { type: format === 'wav' ? 'audio/wav' : 'audio/webm' }),
+    `audio.${format}`,
+  );
+  fd.append('model', 'whisper-1');
+  let r: Response;
+  try {
+    r = await fetch(`${whisperSttBaseUrl()}/v1/audio/transcriptions`, {
+      method: 'POST',
+      body: fd,
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (e) {
+    return { ok: false, error: `whisper unreachable: ${(e as Error).message}` };
+  }
+  if (!r.ok) return { ok: false, error: `whisper ${r.status}` };
+  const out = (await r.json().catch(() => null)) as { text?: string } | null;
+  return { ok: true, text: (out?.text ?? '').trim() };
+}
+
+/** Resolve the converse brain the device text path uses (papercup-fast when prefs say so). */
+async function resolveBrain(): Promise<{
+  role: string;
+  toolName: string;
+  tool: ReturnType<typeof lookupByMcpName>;
+}> {
+  let role = 'operator';
+  try {
+    const prefs = await loadVoicePrefs();
+    if (prefs.humanFacingRole === 'papercup') role = 'papercup';
+  } catch {
+    /* best-effort; fall back to operator */
+  }
+  const toolName = role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
+  const tool = lookupByMcpName(toolName) ?? lookupByMcpName('operator:converse');
+  return { role, toolName, tool };
+}
+
+const voiceTurn = defineTool({
+  method: 'POST',
+  path: '/device/voice/turn',
+  auth: DEVICE_AUTH,
+  cors: true,
+  // SSE — one long-lived connection per turn; don't sample telemetry.
+  sampleRate: 0,
+  async handler(req, ctx) {
+    const gated = await gateApiRoute(req, FLAGS.MOBILE_DESKTOP_VOICE);
+    if (gated) return gated;
+    const principal = devicePrincipal(ctx);
+
+    let body: TurnBody = {};
+    try {
+      body = (await req.json()) as TurnBody;
+    } catch {
+      return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
+    }
+    const decoded = decodeAudioBase64(body.audioBase64);
+    if (!decoded.ok) {
+      return Response.json({ ok: false, error: decoded.error }, { status: decoded.status });
+    }
+    const audio = decoded.audio;
+    const format = normalizeAudioFormat(body.format);
+
+    const { role, toolName, tool } = await resolveBrain();
+    if (!tool) {
+      return Response.json({ ok: false, error: `${toolName} tool not registered` }, { status: 500 });
+    }
+
+    const prefs = await loadVoicePrefs();
+    // Engine resolution mirrors operator-tts: prefs default, 'browser'
+    // (meaningless off-browser) health-gated onto local kokoro.
+    const resolvedEngine = await resolveTtsEngine(undefined, prefs, () => kokoroTtsAvailable());
+
+    const workspaceId = activeWorkspaceId();
+    const conversation = await getOrCreateActiveConversation();
+
+    const sessionUser = principal.label
+      ? {
+          id: principal.slug,
+          username: principal.label,
+          display_name: principal.label,
+          has_password: false,
+        }
+      : null;
+
+    const ctrl = new AbortController();
+    return sseResponse({
+      signal: req.signal,
+      setup: async (sink) => {
+        sink.onClose(() => ctrl.abort());
+
+        // ── 1. STT ────────────────────────────────────────────────────
+        const stt = await transcribe(audio, format);
+        if (!stt.ok) {
+          sink.event('error', { stage: 'stt', message: stt.error });
+          sink.close();
+          return;
+        }
+        const transcript = stt.text;
+        sink.event('transcript', { text: transcript });
+        if (!transcript) {
+          // Silence / noise — never bother the brain with an empty turn.
+          sink.done({ emptyTranscript: true, conversationId: conversation.id });
+          return;
+        }
+        if (ctrl.signal.aborted) return;
+
+        // ── 2. context + persist the user turn (shared thread) ───────
+        const recent = await listTurnsRecent({
+          conversationId: conversation.id,
+          limit: HISTORY_CONTEXT_TURNS,
+        });
+        const messages = recent.turns
+          .filter((t) => t.text.trim().length > 0)
+          .map((t) => ({ role: t.role as TurnRole, content: t.text }));
+        try {
+          await appendTurn({
+            conversationId: conversation.id,
+            role: 'user',
+            text: transcript,
+            source: 'voice_stt',
+          });
+          messages.push({ role: 'user', content: transcript });
+          void notifySyncInvalidate('operatorTurns.byConversation', {
+            conversationId: conversation.id,
+          }).catch(() => {});
+        } catch (e) {
+          console.warn('[device/voice-turn] user turn persist failed:', (e as Error)?.message ?? e);
+        }
+
+        // ── 3+4. brain stream + per-sentence TTS pipeline ─────────────
+        const ttsOk = resolvedEngine.ok;
+        if (!ttsOk) {
+          // Text-only degradation: the phone still gets transcript+deltas.
+          sink.event('tts_state', { ok: false, error: resolvedEngine.error });
+        }
+        const extractor = createSentenceExtractor();
+        let ttsChain: Promise<void> = Promise.resolve();
+        let audioSeq = 0;
+        const speak = (sentence: string): void => {
+          if (!ttsOk || ctrl.signal.aborted) return;
+          const seq = audioSeq++;
+          ttsChain = ttsChain.then(async () => {
+            if (ctrl.signal.aborted) return;
+            const synth = await synthesize(
+              resolvedEngine.engine,
+              sentence.slice(0, MAX_TEXT_CHARS),
+              undefined,
+              prefs,
+              { container: 'wav' },
+            );
+            if (ctrl.signal.aborted) return;
+            if (synth.ok) {
+              sink.event('audio', {
+                seq,
+                text: sentence,
+                contentType: synth.contentType,
+                audioBase64: Buffer.from(synth.audio).toString('base64'),
+              });
+            } else {
+              sink.event('tts_state', { ok: false, seq, error: synth.error });
+            }
+          });
+        };
+
+        const ctxBase: UnifiedToolContext = {
+          log: (msg) => {
+            console.log(`[${toolName}][voice-turn] ${msg}`);
+          },
+          signal: ctrl.signal,
+          progress: () => {},
+          emit: () => {
+            /* installed by dispatchProjectedToolStream */
+          },
+          workspaceId,
+          role,
+          runId: globalThis.crypto.randomUUID(),
+          spawnId: globalThis.crypto.randomUUID(),
+          transport: 'in_process',
+          uiClientId: null,
+        };
+
+        let assembled = '';
+        let totalCost = 0;
+        try {
+          for await (const ev of dispatchProjectedToolStream(
+            tool,
+            toolName,
+            {
+              messages,
+              trigger: 'user_message',
+              modality: 'voice',
+              sessionUser,
+              role,
+              conversationId: conversation.id,
+            },
+            ctxBase,
+            {},
+          )) {
+            if (ctrl.signal.aborted) break;
+            if (ev.kind === 'event') {
+              emitToSseSink(sink, tool, ev.name, ev.data);
+              if (ev.name === 'delta') {
+                const text = (ev.data as { text?: unknown })?.text;
+                if (typeof text === 'string' && text) {
+                  for (const sentence of extractor.feed(text)) speak(sentence);
+                }
+              }
+            } else if (ev.kind === 'done') {
+              try {
+                const t = (ev.result.content[0] as { text?: string })?.text ?? '{}';
+                const out = JSON.parse(t) as { totalCost?: number; assembled?: string };
+                totalCost = out.totalCost ?? 0;
+                assembled = out.assembled ?? '';
+              } catch (e) {
+                console.warn('[device/voice-turn] tool result parse failed:', e);
+              }
+            } else if (ev.kind === 'error') {
+              if (!ctrl.signal.aborted) sink.event('error', { stage: 'brain', message: ev.error.message });
+              await ttsChain.catch(() => {});
+              sink.close();
+              return;
+            }
+          }
+
+          for (const sentence of extractor.flush()) speak(sentence);
+          await ttsChain.catch(() => {});
+
+          // ── persist the assistant turn (clean say, same as text path) ─
+          const parsed = parseOperatorTurn(assembled);
+          if (parsed.say || parsed.report) {
+            try {
+              await appendTurn({
+                conversationId: conversation.id,
+                role: 'assistant',
+                text: parsed.say ?? '',
+                source: 'voice_tts',
+                report: parsed.report,
+              });
+              void notifySyncInvalidate('operatorTurns.byConversation', {
+                conversationId: conversation.id,
+              }).catch(() => {});
+            } catch (e) {
+              console.warn(
+                '[device/voice-turn] assistant turn persist failed:',
+                (e as Error)?.message ?? e,
+              );
+            }
+          }
+
+          sink.done({ costUsd: totalCost, conversationId: conversation.id, audioChunks: audioSeq });
+        } catch (err) {
+          if (!ctrl.signal.aborted) {
+            sink.event('error', {
+              stage: 'brain',
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+          sink.close();
+        }
+      },
+    });
+  },
+});
+
+/**
+ * POST /device/voice/warmup — fired when the phone opens its voice screen.
+ * Pre-spawns the on-demand whisper child (the first utterance otherwise
+ * eats a multi-second cold start), checks kokoro + brain availability, and
+ * reports a capability snapshot the client can render (P-003).
+ */
+const voiceWarmup = defineTool({
+  method: 'POST',
+  path: '/device/voice/warmup',
+  auth: DEVICE_AUTH,
+  cors: true,
+  async handler(req, ctx) {
+    const gated = await gateApiRoute(req, FLAGS.MOBILE_DESKTOP_VOICE);
+    if (gated) return gated;
+    devicePrincipal(ctx); // auth assertion only
+
+    const [whisper, kokoro, brain] = await Promise.all([
+      warmLocalWhisper().catch((e) => ({
+        ok: false as const,
+        reason: 'warm-threw',
+        detail: (e as Error)?.message ?? String(e),
+      })),
+      kokoroTtsAvailable().catch(() => false),
+      resolveBrain(),
+    ]);
+
+    return Response.json({
+      ok: whisper.ok && !!brain.tool,
+      stt: whisper.ok
+        ? { ok: true, source: (whisper as { source?: string }).source ?? 'managed' }
+        : { ok: false, reason: (whisper as { reason?: string }).reason ?? 'unknown' },
+      tts: { ok: kokoro, engine: kokoro ? 'kokoro' : null },
+      brain: { ok: !!brain.tool, tool: brain.toolName },
+    });
+  },
+});
+
+export default [voiceTurn, voiceWarmup];

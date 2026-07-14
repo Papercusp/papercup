@@ -78,6 +78,14 @@ export const FLAGS = {
   // voice-unified-sentinel-pipeline-2026-07-01 P-011; flip OFF via
   // /admin/features to go dark.
   VOICE_CHANNELS: "papercusp-voice-channels",
+  // on-desktop-direct-lan-voice-2026-07-14 (P-004): the device-authed
+  // desktop-local mobile voice surface (POST /api/device/voice/turn +
+  // /warmup — phone audio → local whisper STT → papercup brain → kokoro
+  // TTS, streamed back as SSE). ADDITIVE alongside ElevenLabs (D-010): the
+  // phone picks its pipeline from voice-session-init's `mode`. Runtime
+  // default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS); flip OFF via
+  // /admin/features to go dark.
+  MOBILE_DESKTOP_VOICE: "papercusp-mobile-desktop-voice",
   // the-hive-lexicon-2026-06-06: selects the active brand pack for the
   // user-facing LEXICON layer. ON = the `the-hive` bee pack (Hive/Colony/Queen/
   // Bee/…); OFF = the `classic` Papercup POT pack. DEFAULT OFF as of
