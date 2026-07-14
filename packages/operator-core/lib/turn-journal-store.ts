@@ -145,14 +145,18 @@ export async function fileWritesSince(
 }
 
 /** P-015: rel_paths registered via artifacts:save in the window — the
- *  registrations the turn's deliverable writes are matched against. */
+ *  registrations the turn's deliverable writes are matched against.
+ *  NB: harness_text_artifacts.updated_at is BIGINT epoch-ms (artifacts:save
+ *  writes Date.now()), not timestamptz — compare numerically (found live on
+ *  :3170 fence 62: the ::timestamptz cast threw and the fail-soft sweep
+ *  silently returned clean). */
 export async function artifactRelPathsSince(since: Date | string, limit = 200): Promise<string[]> {
   const { sql } = getOrgPg();
-  const sinceIso = typeof since === 'string' ? since : since.toISOString();
+  const sinceMs = typeof since === 'string' ? new Date(since).getTime() : since.getTime();
   const rows = await sql<Array<{ rel_path: string }>>`
     SELECT rel_path
     FROM harness_shared.harness_text_artifacts
-    WHERE updated_at > ${sinceIso}::timestamptz
+    WHERE updated_at > ${Number.isFinite(sinceMs) ? sinceMs : 0}
     ORDER BY updated_at DESC
     LIMIT ${limit}
   `;
