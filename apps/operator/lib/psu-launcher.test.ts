@@ -21,6 +21,11 @@ import {
   readModelsYmlContextWindow,
   rewriteModelsYmlContextWindow,
   rewriteModelsJsonContextWindow,
+  readModelsYmlField,
+  rewriteModelsYmlField,
+  rewriteModelsJsonFields,
+  computeMaxTurnTokens,
+  computeOutputDoorTokens,
   OMP_CORE_MCP_TOOL_NAMES,
   SU_CONTEXT_CHOICES,
   SU_CONTEXT_DEFAULT,
@@ -4231,7 +4236,9 @@ describe('effectiveWindow derivation (deterministic-context-carry P-005 — live
     const read = (f: string) => readFileSync(join(home, '.papercusp', 'su-omp-homes', 'session-s1', 'agent', f), 'utf8');
 
     it('configured < backend → effective stays configured; models.json stale value is ALIGNED (three-way conflict eliminated)', () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
       const dir = writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 204800 }, home);
+      err.mockRestore();
       expect(dir).toBeTruthy();
       expect(readModelsYmlContextWindow(read('models.yml'), 'maxwell1500/ornith-35b:IQ3_M')).toBe(200000);
       const j = JSON.parse(read('models.json'));
@@ -4257,6 +4264,78 @@ describe('effectiveWindow derivation (deterministic-context-carry P-005 — live
       writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
       expect(read('models.yml')).toBe(ORNITH_YML);
       expect(read('models.json')).toBe(ORNITH_JSON);
+    });
+  });
+});
+
+describe('per-hop output door (deterministic-context-carry P-006 leg (a) — max_tokens via the session registry)', () => {
+  it('door mirror math matches the canonical operator-core formula (lockstep with context-doors.ts)', () => {
+    expect(computeMaxTurnTokens(204_800)).toBe(8_000); // Ornith → the floor
+    expect(computeMaxTurnTokens(1_000_000)).toBe(15_000); // the cap
+    expect(computeMaxTurnTokens(260_000)).toBe(10_000); // /26 between the knees
+    expect(computeMaxTurnTokens(0)).toBe(8_000); // degenerate → floor, never NaN
+    expect(computeOutputDoorTokens(204_800)).toBe(4_000);
+    expect(computeOutputDoorTokens(1_000_000)).toBe(7_500);
+  });
+
+  it('generalized field helpers: readModelsYmlField / rewriteModelsYmlField / rewriteModelsJsonFields', () => {
+    const yml = 'providers:\n  ollama-cc:\n    models:\n      - id: m1\n        contextWindow: 200000\n        maxTokens: 8192\n';
+    expect(readModelsYmlField(yml, 'm1', 'maxTokens')).toBe(8192);
+    const out = rewriteModelsYmlField(yml, 'm1', 'maxTokens', 4000);
+    expect(readModelsYmlField(out, 'm1', 'maxTokens')).toBe(4000);
+    expect(readModelsYmlField(out, 'm1', 'contextWindow')).toBe(200000);
+    const j = JSON.parse(rewriteModelsJsonFields(JSON.stringify({ models: [{ id: 'm1', contextWindow: 1, maxTokens: 9 }] }), 'm1', { contextWindow: 2, maxTokens: 3 }));
+    expect(j.models[0]).toEqual({ id: 'm1', contextWindow: 2, maxTokens: 3 });
+  });
+
+  describe('writeOmpSessionConfigDir applies the output door with the window clamp', () => {
+    let home: string;
+    const YML = [
+      'providers:',
+      '  ollama-cc:',
+      '    models:',
+      '      - id: ornith-x',
+      '        contextWindow: 200000',
+      '        maxTokens: 8192',
+      '      - id: tiny-model',
+      '        contextWindow: 200000',
+      '        maxTokens: 2048',
+      '',
+    ].join('\n');
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), 'psu-door-'));
+      mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+      writeFileSync(join(home, '.omp', 'agent', 'config.yml'), 'modelRoles:\n  default: ollama-cc/ornith-x\n');
+      writeFileSync(join(home, '.omp', 'agent', 'models.yml'), YML);
+      writeFileSync(join(home, '.omp', 'agent', 'models.json'), JSON.stringify({ models: [{ id: 'ornith-x', contextWindow: 57344, maxTokens: 8192 }] }));
+    });
+    afterEach(() => rmSync(home, { recursive: true, force: true }));
+    const read = (f: string) => readFileSync(join(home, '.papercusp', 'su-omp-homes', 'session-d1', 'agent', f), 'utf8');
+
+    it('Ornith-class window → max_tokens tightened to the 4K output door in BOTH registry copies', () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      writeOmpSessionConfigDir('d1', { model: 'ollama-cc/ornith-x', backendWindow: 204800 }, home);
+      const doorLine = err.mock.calls.map((c) => String(c[0])).find((l) => l.includes('per-hop doors'));
+      err.mockRestore();
+      expect(doorLine).toMatch(/maxTurn 8000 → output door \(max_tokens\) 4000/);
+      expect(readModelsYmlField(read('models.yml'), 'ornith-x', 'maxTokens')).toBe(4000);
+      expect(readModelsYmlField(read('models.yml'), 'ornith-x', 'contextWindow')).toBe(200000);
+      const j = JSON.parse(read('models.json'));
+      expect(j.models[0]).toEqual({ id: 'ornith-x', contextWindow: 200000, maxTokens: 4000 });
+    });
+
+    it('a registry maxTokens BELOW the door is kept (the door only tightens, never raises)', () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      writeOmpSessionConfigDir('d1', { model: 'ollama-cc/tiny-model', backendWindow: 204800 }, home);
+      err.mockRestore();
+      expect(readModelsYmlField(read('models.yml'), 'tiny-model', 'maxTokens')).toBe(2048);
+      // the sibling's entry was not touched
+      expect(readModelsYmlField(read('models.yml'), 'ornith-x', 'maxTokens')).toBe(8192);
+    });
+
+    it('no backendWindow → registry copied verbatim, no door applied (pre-P-006 behavior)', () => {
+      writeOmpSessionConfigDir('d1', { model: 'ollama-cc/ornith-x' }, home);
+      expect(read('models.yml')).toBe(YML);
     });
   });
 });
