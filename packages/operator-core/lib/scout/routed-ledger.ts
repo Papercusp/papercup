@@ -130,6 +130,13 @@ interface LedgerRow {
   created_by: string | null;
 }
 
+interface FeedbackRevisionRow {
+  original_ref: string;
+  revision_ref: string;
+  created_by: string | null;
+  revised_at: Date | string;
+}
+
 function epochMsToIso(v: string | number | null): string {
   const n = typeof v === 'number' ? v : Number(v ?? 0);
   return new Date(Number.isFinite(n) ? n : 0).toISOString();
@@ -396,12 +403,45 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}
      ORDER BY routed_at DESC
      LIMIT ${limit}`;
+  // WI-4769: reuse the generic typed-edge ledger for explicit feedback→revision
+  // lineage. The source is the NEW issue and the destination is the original
+  // routed work-item. Work-item ids are globally allocated, so this intentionally
+  // follows issueRef's shared coord scope instead of guessing the row workspace.
+  const originalIssueRefs = [...new Set(
+    rows
+      .map((r) => (r.routed_ref.startsWith('wi:') ? r.routed_ref.slice(3) : null))
+      .filter((ref): ref is string => Boolean(ref)),
+  )];
+  const revisionRows = originalIssueRefs.length === 0
+    ? []
+    : await sql<FeedbackRevisionRow[]>`
+        SELECT l.dst_ref AS original_ref,
+               l.src_ref AS revision_ref,
+               wi.created_by,
+               wi.created_at AS revised_at
+          FROM harness_shared.coord_links l
+          JOIN harness_shared.work_items wi
+            ON wi.feature_id = l.src_ref
+           AND wi.item_kind IN ('bug', 'change', 'task')
+         WHERE l.src_kind = 'issue'
+           AND l.dst_kind = 'issue'
+           AND l.rel = 'revises'
+           AND l.dst_ref = ANY(${originalIssueRefs})
+         ORDER BY wi.created_at ASC, l.id ASC`;
+  const revisionsByOriginal = new Map<string, FeedbackRevisionRow[]>();
+  for (const revision of revisionRows) {
+    const bucket = revisionsByOriginal.get(revision.original_ref);
+    if (bucket) bucket.push(revision);
+    else revisionsByOriginal.set(revision.original_ref, [revision]);
+  }
   return rows.map((r) => {
     // C-1 → C-1b: the grade fields are optional on the provenance — absent =
     // ungraded. graded_by is gated to the seam's vocabulary ('owner' | 'Queen',
     // the only values gradeRoutedIdea writes); an unknown attribution drops the
     // field but keeps the grade.
     const gradedAt = r.graded_at ? tsToIso(r.graded_at) : undefined;
+    const originalIssueRef = r.routed_ref.startsWith('wi:') ? r.routed_ref.slice(3) : null;
+    const feedbackRevisions = originalIssueRef ? revisionsByOriginal.get(originalIssueRef) ?? [] : [];
     return {
       ideaId: r.idea_id,
       lens: r.lens as CreativeLens,
@@ -429,6 +469,15 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
       ...(r.graded_by === 'owner' || r.graded_by === 'Queen' ? { gradedBy: r.graded_by } : {}),
       ...(gradedAt ? { gradedAt } : {}),
       ...(r.created_by ? { createdBy: r.created_by } : {}),
+      ...(feedbackRevisions.length > 0
+        ? {
+            feedbackRevisions: feedbackRevisions.map((revision) => ({
+              revisionRef: revision.revision_ref,
+              ...(revision.created_by ? { createdBy: revision.created_by } : {}),
+              revisedAt: tsToIso(revision.revised_at) ?? new Date(0).toISOString(),
+            })),
+          }
+        : {}),
     };
   });
 }

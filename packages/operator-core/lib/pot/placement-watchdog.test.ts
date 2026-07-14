@@ -5,8 +5,10 @@
  * P-023 (reconcile "steer, don't dispatch" WITH the completion mandate).
  */
 import { describe, it, expect, vi } from 'vitest';
-const wakeRecipients = vi.fn().mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [], fanoutCapped: [] });
-const sendMessage = vi.fn().mockResolvedValue(undefined);
+const { wakeRecipients, sendMessage } = vi.hoisted(() => ({
+  wakeRecipients: vi.fn().mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [], fanoutCapped: [] }),
+  sendMessage: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients }));
 vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspaceId: string, fn: () => unknown) => fn() }));

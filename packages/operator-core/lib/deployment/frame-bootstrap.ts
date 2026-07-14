@@ -263,7 +263,7 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     }
     if (credPath) {
       // The operator scp's the credentials to `credPath` BEFORE this runs; here we
-      // install them where both omp (via Meridian) + claude read.
+      // install them where both OMP's direct fallback + Claude read.
       lines.push(
         'mkdir -p "$HOME/.claude" && chmod 700 "$HOME/.claude"',
         `if [ -f ${shq(credPath)} ]; then`,

@@ -54,6 +54,17 @@ export type IdeaOutcome =
   /** Not yet terminal in the change feed — outcome still unknown. */
   | 'pending';
 
+/** A typed feedback-driven successor filing. `readRoutedIdeas` derives these from
+ * coord_links `revises` edges; release scoring still validates origin + chronology. */
+export interface FeedbackRevision {
+  /** Work-item id of the newly filed revision. */
+  revisionRef: string;
+  /** Originating agent stamped on the revision work-item. */
+  createdBy?: string;
+  /** ISO timestamp the revision work-item was created. */
+  revisedAt: string;
+}
+
 /**
  * Provenance of one Scout idea that P-007 routed into a rail — the record that
  * links a generated idea (and its lens) to the artifact whose fate determines
@@ -115,6 +126,8 @@ export interface RoutedIdeaProvenance {
    * feedback reads; the weight math ignores it.
    */
   createdBy?: string;
+  /** Typed successor filings pointing back to this routed idea via rel='revises'. */
+  feedbackRevisions?: FeedbackRevision[];
 }
 
 /**

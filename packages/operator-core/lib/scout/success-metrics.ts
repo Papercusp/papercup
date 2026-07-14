@@ -324,20 +324,28 @@ export function evaluateProgramSuccess(
           }),
   });
 
-  // ── 5. ≥1 routed idea has grade + feedback + grader attribution ──────────────
-  // This ledger can prove that feedback was RECORDED and ATTRIBUTED on a routed idea. It
-  // cannot prove the feedback was ADOPTED: routedRef is written when the idea is initially
-  // routed, before human_grade / human_feedback exist, so using routedRef as post-grade
-  // adoption evidence is structurally backwards (WI-4768). Keep this bar deliberately
-  // narrower and honest; feedback-driven revision/adoption is judged by the rubric's
-  // grade→revise drill until the ledger carries explicit revision lineage.
+  // ── 5. ≥1 graded idea has a causally valid typed revision ────────────────────
+  // WI-4768 removed the false-green that treated pre-grade routedRef as adoption.
+  // WI-4769 closes the missing evidence seam with an explicit `revises` edge. The
+  // edge is necessary but not sufficient: the successor must come from the SAME
+  // originator and be created AFTER the recorded grade. Wrong-agent and pre-grade
+  // links therefore cannot manufacture closure.
   const graded = ideas.filter((i) => i.humanGrade != null);
   const attributedFeedback = graded.filter(
     (i) => i.humanFeedback && i.humanFeedback.trim().length > 0 && i.gradedBy,
   );
+  const revisedFromFeedback = attributedFeedback.filter((idea) => {
+    if (!idea.createdBy || !idea.gradedAt) return false;
+    const gradedAtMs = Date.parse(idea.gradedAt);
+    if (!Number.isFinite(gradedAtMs)) return false;
+    return (idea.feedbackRevisions ?? []).some((revision) => {
+      const revisedAtMs = Date.parse(revision.revisedAt);
+      return revision.createdBy === idea.createdBy && Number.isFinite(revisedAtMs) && revisedAtMs > gradedAtMs;
+    });
+  });
   criteria.push({
-    key: 'grader-feedback-attributed',
-    bar: '>=1 routed idea carries an explicit grade, feedback, and grader attribution',
+    key: 'grader-feedback-revised',
+    bar: '>=1 routed idea has attributed feedback and a same-origin typed revision created after the grade',
     ...(graded.length === 0
       ? {
           status: 'unknown' as const,
@@ -345,8 +353,10 @@ export function evaluateProgramSuccess(
           unknownReason: 'no grades in the window — the grading channel has not produced input yet',
         }
       : {
-          status: (attributedFeedback.length > 0 ? 'pass' : 'fail') as SuccessStatus,
-          observed: `${attributedFeedback.length} routed idea(s) carry grade+feedback+grader attribution (of ${graded.length} graded / ${ideas.length} routed); this bar does not claim the feedback was adopted`,
+          status: (revisedFromFeedback.length > 0 ? 'pass' : 'fail') as SuccessStatus,
+          observed:
+            `${revisedFromFeedback.length} routed idea(s) have a causally valid typed feedback revision ` +
+            `(of ${attributedFeedback.length} with attributed feedback / ${graded.length} graded / ${ideas.length} routed)`,
         }),
   });
 

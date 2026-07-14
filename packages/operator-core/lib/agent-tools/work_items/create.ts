@@ -72,7 +72,7 @@ const stateOnCreate = z
   );
 
 const linkSpec = z.object({
-  rel: z.enum(LINK_RELS).describe('the relationship: blocks | relates | duplicates | fixes | investigates | about | caused-by'),
+  rel: z.enum(LINK_RELS).describe('the relationship: blocks | relates | duplicates | fixes | investigates | about | caused-by | revises'),
   target_id: z.string().max(120).optional().describe('a target work-item id'),
   target_kind: z.string().max(40).optional().describe('explicit coord ObjectRef kind (e.g. plan_item, event) — use with target_ref'),
   target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),

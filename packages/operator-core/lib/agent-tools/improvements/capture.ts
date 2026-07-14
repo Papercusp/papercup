@@ -139,13 +139,13 @@ export default defineTool({
           .array(
             z.object({
               targetId: z.string().min(1).max(120).describe('the work-item id (WI-/F-/EI-…) this scorecard relates to'),
-              rel: z.enum(['relates', 'blocks', 'duplicates', 'fixes']).optional().describe("default 'relates'"),
+              rel: z.enum(['relates', 'blocks', 'duplicates', 'fixes', 'revises']).optional().describe("default 'relates'; use 'revises' when this new filing incorporates feedback on the target"),
               targetHarness: z.string().max(80).optional().describe('harness for a feature targetId (disambiguation)'),
             }),
           )
           .max(5)
           .optional()
-          .describe('link this GRADE filing to one or more existing work-items at file time (e.g. the improvement this rating is about) — best-effort, never fails the capture'),
+          .describe("link this filing to one or more existing work-items at file time (e.g. a GRADE follow-up, or rel:'revises' for a feedback-driven revision) — best-effort, never fails the capture"),
       })
       // plan-templates-and-rubric-v2 P-012 (strict/fail-loud): reject UNKNOWN observation keys
       // LOUDLY instead of silently STRIPPING them. A silent strip dropped data live (su-2a0b4: an

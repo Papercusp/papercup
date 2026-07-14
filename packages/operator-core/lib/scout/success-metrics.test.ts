@@ -247,28 +247,44 @@ describe('evaluateProgramSuccess — ledger reconciliation', () => {
   });
 });
 
-describe('evaluateProgramSuccess — grader feedback attributed', () => {
-  it('PASSES when a routed idea carries a grade, feedback, and grader attribution', () => {
+describe('evaluateProgramSuccess — grader feedback revised', () => {
+  const gradedAt = '2026-07-13T12:00:00.000Z';
+
+  it('PASSES only with a same-origin typed revision created after the grade', () => {
     const r = evaluateProgramSuccess(
       inputs(
         [ranTick({ ideasRouted: 1 })],
-        [idea({ humanGrade: 4, humanFeedback: 'tighten the scope', gradedBy: 'owner', routedRef: null })],
+        [idea({
+          humanGrade: 3,
+          humanFeedback: 'tighten the scope',
+          gradedBy: 'owner',
+          gradedAt,
+          createdBy: 'su-originator',
+          feedbackRevisions: [{ revisionRef: 'EI-2', createdBy: 'su-originator', revisedAt: '2026-07-13T12:01:00.000Z' }],
+        })],
       ),
     );
-    const b = bar(r, 'grader-feedback-attributed');
+    const b = bar(r, 'grader-feedback-revised');
     expect(b.status).toBe('pass');
-    expect(b.observed).toContain('does not claim the feedback was adopted');
-    expect(b.bar).not.toContain('adopted');
+    expect(b.observed).toContain('1 routed idea(s) have a causally valid typed feedback revision');
   });
 
-  it('FAILS when grades exist but none carry attributed feedback', () => {
-    const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [idea({ humanGrade: 2 })]));
-    expect(bar(r, 'grader-feedback-attributed').status).toBe('fail');
+  it('FAILS closed on no edge, a pre-grade edge, and a wrong-origin edge', () => {
+    const base = { humanGrade: 2, humanFeedback: 'revise it', gradedBy: 'owner' as const, gradedAt, createdBy: 'su-originator' };
+    const cases: RoutedIdeaProvenance[] = [
+      idea(base),
+      idea({ ...base, ideaId: 'i2', feedbackRevisions: [{ revisionRef: 'EI-2', createdBy: 'su-originator', revisedAt: '2026-07-13T11:59:00.000Z' }] }),
+      idea({ ...base, ideaId: 'i3', feedbackRevisions: [{ revisionRef: 'EI-3', createdBy: 'somebody-else', revisedAt: '2026-07-13T12:01:00.000Z' }] }),
+    ];
+    for (const candidate of cases) {
+      const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [candidate]));
+      expect(bar(r, 'grader-feedback-revised').status).toBe('fail');
+    }
   });
 
   it('is UNKNOWN when nothing is graded yet — the channel has produced no input', () => {
     const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [idea()]));
-    expect(bar(r, 'grader-feedback-attributed').status).toBe('unknown');
+    expect(bar(r, 'grader-feedback-revised').status).toBe('unknown');
   });
 });
 

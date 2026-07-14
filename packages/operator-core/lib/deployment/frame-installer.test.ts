@@ -86,7 +86,7 @@ describe('installFrame desktop threading (hive-frame-desktops P-001/P-003)', () 
     );
     const bootstrap = exec.scripts.at(-1)!;
     expect(bootstrap).toContain("export AGENT_BACKEND='claude-code'"); // loop-level export (claude → claude-code vocabulary)
-    expect(bootstrap).not.toContain('@rynfar/meridian'); // claude frame never installs Meridian
+    expect(bootstrap).not.toContain('@rynfar/meridian'); // claude frame never installs OMP's retired router
     expect(bootstrap).toContain('backend is not omp');
   });
 

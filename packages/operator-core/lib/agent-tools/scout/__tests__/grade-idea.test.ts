@@ -259,7 +259,8 @@ describe('revision notice (su-ideate-learning-substrate-2026-07-10 P-005 / D-008
     expect(notice.workspaceId).toBe('ws-grade-test');
     expect(notice.body).toContain('too vague — quantify the win');
     expect(notice.body).toContain('wi:F-101');
-    expect(notice.body).toContain('Revise or defend — file the revision as an update or reply');
+    expect(notice.body).toContain("observation.linkTo: [{ targetId: 'F-101', rel: 'revises' }]");
+    expect(notice.body).toContain('otherwise coord:send a reply defending this one');
     expect(out.revisionWake).toEqual({ sent: true, woken: 1, fallback: false });
   });
 

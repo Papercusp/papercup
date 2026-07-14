@@ -262,8 +262,9 @@ export function buildRevisionNotice(
       to: [row.createdBy],
       summary: `Grade ${row.grade}/5 on your su-ideate filing ${ref} — revise or defend`,
       body:
-        `${head}\n\nRevise or defend — file the revision as an update or reply ` +
-        `(improvements:capture the revised idea, or coord:send a reply defending this one).`,
+        `${head}\n\nRevise or defend. To revise, file a new improvements:capture and include ` +
+        `observation.linkTo: [{ targetId: '${ref.replace(/^wi:/, '')}', rel: 'revises' }] so the feedback→revision lineage is recorded; ` +
+        `otherwise coord:send a reply defending this one.`,
       wake: true,
       workspaceId: row.workspaceId,
     };

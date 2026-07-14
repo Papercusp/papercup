@@ -9,7 +9,7 @@ import { vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 vi.mock('../pot/started', () => ({ listStartedHives: vi.fn() }));
-const wakeMug = vi.fn().mockResolvedValue(undefined);
+const { wakeMug } = vi.hoisted(() => ({ wakeMug: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner: vi.fn(), wakeMug }));
 vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
 

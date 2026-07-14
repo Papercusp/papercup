@@ -26,13 +26,14 @@ import { runBulk, bulkContent } from '../_bulk';
  * (blocks/relates/duplicates/fixes) it adds the investigation/causal rels the
  * linking audit called for: `investigates` (this item digs into a target bug/EI/
  * event), `about` (this item concerns a target — a topic, event key, or object),
- * and `caused-by` (this item was caused by the target). All are polymorphic: the
+ * `caused-by` (this item was caused by the target), and `revises` (this item is
+ * a new revision of the target). All are polymorphic: the
  * target is another work-item (target_id) OR any coord ObjectRef (target_kind +
  * target_ref, e.g. an event key or plan_item). Only `blocks` carries scheduler
  * semantics (the acyclicity guard below); the rest are descriptive edges surfaced
  * in work_items:get { detail:true }.
  */
-export const LINK_RELS = ['blocks', 'relates', 'duplicates', 'fixes', 'about', 'investigates', 'caused-by'] as const;
+export const LINK_RELS = ['blocks', 'relates', 'duplicates', 'fixes', 'about', 'investigates', 'caused-by', 'revises'] as const;
 export type LinkRel = (typeof LINK_RELS)[number];
 
 const itemSpec = z.object({
@@ -50,9 +51,9 @@ export default defineTool({
   name: 'work_items:link',
   profile: 'engineer',
   description:
-    "Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). Blocking works across kinds. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
+    "Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). Blocking works across kinds. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
   guidance: {
-    when: 'You discovered one or more dependencies/relationships. Picking the rel: `blocks` = src gates dst (the only rel with scheduler semantics; kept acyclic); `fixes` = src is the change that resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst (a bug, EI, or event); `about` = src concerns a target it neither fixes nor investigates (a topic, event key, or object); `caused-by` = src exists because of dst (the regression source); `relates` = worth a cross-reference but none of the above. Create several edges at once via items:[…].',
+    when: 'You discovered one or more dependencies/relationships. Picking the rel: `blocks` = src gates dst (the only rel with scheduler semantics; kept acyclic); `fixes` = src is the change that resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst (a bug, EI, or event); `about` = src concerns a target it neither fixes nor investigates (a topic, event key, or object); `caused-by` = src exists because of dst (the regression source); `revises` = src is a newly-filed revision of dst; `relates` = worth a cross-reference but none of the above. Create several edges at once via items:[…].',
     chaining: 'work_items:get both sides → work_items:link { rel:"blocks", target_id } (or items:[…]).',
     seeAlso: [
       'work_items:get (inspect both endpoints before linking)',
