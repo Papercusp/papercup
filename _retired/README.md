@@ -41,3 +41,11 @@ convention.
   (design-simplification-2026-07-09 P-008, owner decision D2). The design-system
   primitives + the dock ENGINE in `apps/operator/app/harness/` stay live — `/adv`
   and `/workbench` are built on them. Restore: `harness-dashboard/RESTORE.md`.
+- `mug-kettle-rail-tabs/` — the left-rail Mug (queen) steering tab + Kettle
+  (overwatch) supervisor tab and their private sub-components (MugHeartbeat,
+  ModelTiersOverride, ThrottleSection, AutonomySurfacing, HiveSteeringTree).
+  Retired 2026-07-14 (WI-4778, owner decision: Papercup is the ONE persona —
+  no Mug/Kettle surfaces; their decision INPUTS render in the chat sidebar's
+  full-height Pot Health view instead). `ModelOverride`/`useModelOverride`
+  stay live (PapercupTab), `resolveHomeHive` extracted to
+  `left-sidebar/resolve-home-hive.ts`. Restore: `mug-kettle-rail-tabs/RESTORE.md`.
