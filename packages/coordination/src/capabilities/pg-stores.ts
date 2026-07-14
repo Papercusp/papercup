@@ -82,6 +82,9 @@ export async function ensureCoordCapabilityTables(sql: Sql): Promise<void> {
       expires_ts    timestamptz,
       created_at    timestamptz NOT NULL DEFAULT now(),
       cancelled_at  timestamptz,
+      follow_blockers boolean NOT NULL DEFAULT FALSE,
+      derived_from_kind text,
+      derived_from_ref text,
       -- Mirror the migration-created constraint (123-coordination-substrate.sql +
       -- 429-coord-entity-subscriptions-allow-fleet-kind.sql +
       -- 568-coord-entity-subscriptions-allow-event-kind.sql). This bootstrap DDL is
@@ -92,6 +95,9 @@ export async function ensureCoordCapabilityTables(sql: Sql): Promise<void> {
       CONSTRAINT coord_entity_subscriptions_kind_check
         CHECK (target_kind = ANY (ARRAY['topic'::text, 'object'::text, 'fleet'::text, 'event'::text]))
     )`;
+  await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS follow_blockers boolean NOT NULL DEFAULT FALSE`;
+  await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS derived_from_kind text`;
+  await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS derived_from_ref text`;
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS coord_entity_subscriptions_active_uq
       ON harness_shared.coord_entity_subscriptions (workspace_id, subscriber_id, target_kind, target_ref)
@@ -274,6 +280,9 @@ interface SubRowDb {
   delivery_mode: string;
   created_at: unknown;
   expires_ts: unknown;
+  follow_blockers: boolean | null;
+  derived_from_kind: string | null;
+  derived_from_ref: string | null;
 }
 function toSubRow(r: SubRowDb): SubscriptionRow {
   return {
@@ -284,6 +293,10 @@ function toSubRow(r: SubRowDb): SubscriptionRow {
     delivery_mode: r.delivery_mode as DeliveryMode,
     created_ts: tsToIso(r.created_at),
     expires_ts: tsToIsoOrNull(r.expires_ts),
+    follow_blockers: r.follow_blockers ?? false,
+    derived_from: r.derived_from_kind && r.derived_from_ref
+      ? { kind: r.derived_from_kind, ref: r.derived_from_ref }
+      : null,
   };
 }
 
@@ -301,13 +314,75 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     const mode: DeliveryMode = input.delivery_mode ?? 'full';
     const rows = await sql<SubRowDb[]>`
       INSERT INTO harness_shared.coord_entity_subscriptions
-        (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, expires_ts, created_at)
+        (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, expires_ts, created_at,
+         follow_blockers, derived_from_kind, derived_from_ref)
       VALUES (${this.ws}, ${input.subscriber_id}, ${input.target_kind}, ${input.target_ref},
-              ${mode}, ${input.expires_ts ?? null}, ${input.created_ts})
+              ${mode}, ${input.expires_ts ?? null}, ${input.created_ts}, ${input.follow_blockers ?? false}, NULL, NULL)
       ON CONFLICT (workspace_id, subscriber_id, target_kind, target_ref) WHERE cancelled_at IS NULL
-      DO UPDATE SET delivery_mode = EXCLUDED.delivery_mode, expires_ts = EXCLUDED.expires_ts
-      RETURNING id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts`;
+      DO UPDATE SET delivery_mode = EXCLUDED.delivery_mode, expires_ts = EXCLUDED.expires_ts,
+                    follow_blockers = EXCLUDED.follow_blockers,
+                    derived_from_kind = NULL, derived_from_ref = NULL
+      RETURNING id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
+                follow_blockers, derived_from_kind, derived_from_ref`;
     return toSubRow(rows[0]);
+  }
+
+  /** Insert a generated blocker follow without overwriting a direct subscription. */
+  async subscribeDerived(input: {
+    subscriber_id: string;
+    target: ObjectRef;
+    derived_from: ObjectRef;
+    delivery_mode?: DeliveryMode;
+    created_ts: string;
+  }): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      INSERT INTO harness_shared.coord_entity_subscriptions
+        (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, created_at,
+         follow_blockers, derived_from_kind, derived_from_ref)
+      VALUES (${this.ws}, ${input.subscriber_id}, 'object', ${`${input.target.kind}:${input.target.ref}`},
+              ${input.delivery_mode ?? 'full'}, ${input.created_ts}, FALSE,
+              ${input.derived_from.kind}, ${input.derived_from.ref})
+      ON CONFLICT (workspace_id, subscriber_id, target_kind, target_ref) WHERE cancelled_at IS NULL
+      DO NOTHING`;
+  }
+
+  /** Remove generated follows created by one dependent→blocker edge. */
+  async unsubscribeDerivedForEdge(derivedFrom: ObjectRef, target: ObjectRef): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      UPDATE harness_shared.coord_entity_subscriptions
+         SET cancelled_at = now()
+       WHERE workspace_id = ${this.ws} AND target_kind = 'object'
+         AND target_ref = ${`${target.kind}:${target.ref}`}
+         AND derived_from_kind = ${derivedFrom.kind} AND derived_from_ref = ${derivedFrom.ref}
+         AND cancelled_at IS NULL`;
+  }
+
+  /** Remove every generated blocker follow owned by one direct subscription. */
+  async unsubscribeDerivedForDependent(subscriberId: string, derivedFrom: ObjectRef): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      UPDATE harness_shared.coord_entity_subscriptions
+         SET cancelled_at = now()
+       WHERE workspace_id = ${this.ws} AND subscriber_id = ${subscriberId}
+         AND derived_from_kind = ${derivedFrom.kind} AND derived_from_ref = ${derivedFrom.ref}
+         AND cancelled_at IS NULL`;
+  }
+
+  /** Remove every generated follow whose blocker just settled. */
+  async unsubscribeDerivedForTarget(target: ObjectRef): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      UPDATE harness_shared.coord_entity_subscriptions
+         SET cancelled_at = now()
+       WHERE workspace_id = ${this.ws} AND target_kind = 'object'
+         AND target_ref = ${`${target.kind}:${target.ref}`}
+         AND derived_from_kind IS NOT NULL AND cancelled_at IS NULL`;
   }
 
   async unsubscribe(subscriberId: string, targetKind: SubscriptionTargetKind, targetRef: string): Promise<void> {
@@ -325,7 +400,8 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const rows = await sql<SubRowDb[]>`
-      SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts
+      SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
+             follow_blockers, derived_from_kind, derived_from_ref
         FROM harness_shared.coord_entity_subscriptions
        WHERE workspace_id = ${this.ws} AND subscriber_id = ${subscriberId}
          AND cancelled_at IS NULL AND (expires_ts IS NULL OR expires_ts > now())
@@ -337,7 +413,8 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const rows = await sql<SubRowDb[]>`
-      SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts
+      SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
+             follow_blockers, derived_from_kind, derived_from_ref
         FROM harness_shared.coord_entity_subscriptions
        WHERE workspace_id = ${this.ws} AND target_kind = ${targetKind} AND target_ref = ${targetRef}
          AND cancelled_at IS NULL AND (expires_ts IS NULL OR expires_ts > now())

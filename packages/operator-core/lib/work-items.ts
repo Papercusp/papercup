@@ -95,7 +95,6 @@ import {
   unlinkIssue,
   tagIssue,
   untagIssue,
-  subscribeIssue,
   commentIssue,
   updateIssue,
   searchIssues,
@@ -1617,6 +1616,10 @@ export async function setWorkItemState(
   if (result && isSettledWorkItemState(result.state)) {
     const settled = result;
     void import('./work-items-events').then((m) => m.emitWorkItemSettledEvents(settled)).catch(() => {});
+    // WI-4119: generated blocker follows are no longer useful once this
+    // blocker settles. Keep cleanup on the lifecycle write path so it does not
+    // depend on a subscriber's next turn or on the event fan-out succeeding.
+    void removeDerivedBlockerSubscriptionsForSettledTarget(workItemObjectRef(settled)).catch(() => {});
     // sentinel-herald P-016: when a SETTLED item is a Sentinel handoff (carries
     // the `user-requested` topic), report its landing back to the operator via
     // the hindsight "[While you were away]" channel. Same fire-and-forget +
@@ -3754,6 +3757,45 @@ export async function reorderWorkItem(
 }
 
 /** Linkable.link — an edge from this work-item to a target ObjectRef (rel blocks|relates|duplicates|fixes|…). */
+/**
+ * WI-4119: materialize the one-hop blocker follows for every direct subscriber
+ * that opted in on `target`. The generated row points back to `target`, so an
+ * unlink or blocker settlement can cancel only the derived edge. A direct
+ * subscription already present on a blocker wins the unique-key race and is
+ * never rewritten as derived.
+ */
+async function syncDerivedBlockerSubscriptions(target: ObjectRef): Promise<void> {
+  const [blockers, subscribers] = await Promise.all([
+    links.listIn(target, { rel: 'blocks' }),
+    subs.listTargetSubscribers('object', `${target.kind}:${target.ref}`),
+  ]);
+  const optedIn = subscribers.filter((row) => row.follow_blockers && !row.derived_from);
+  if (!optedIn.length) return;
+  const created = nowIso();
+  for (const subscriber of optedIn) {
+    for (const edge of blockers) {
+      await subs.subscribeDerived({
+        subscriber_id: subscriber.subscriber_id,
+        target: edge.src,
+        derived_from: target,
+        delivery_mode: subscriber.delivery_mode,
+        created_ts: created,
+      });
+    }
+  }
+}
+
+/** WI-4119: clear generated rows when a direct follow is explicitly disabled. */
+async function removeDerivedBlockerSubscriptionsForDependent(target: ObjectRef, subscriberId: string): Promise<void> {
+  await subs.unsubscribeDerivedForDependent(subscriberId, target);
+}
+
+/** WI-4119: clear every generated row whose blocker has reached a terminal state. */
+export async function removeDerivedBlockerSubscriptionsForSettledTarget(target: ObjectRef): Promise<void> {
+  await subs.unsubscribeDerivedForTarget(target);
+}
+
+/** Linkable.link — an edge from this work-item to a target ObjectRef (rel blocks|relates|duplicates|fixes|…). */
 export async function linkWorkItem(
   id: string,
   dst: ObjectRef,
@@ -3770,6 +3812,7 @@ export async function linkWorkItem(
   } else {
     await links.link(workItemObjectRef(wi), dst, rel, { created_by: opts.by, created_ts: nowIso() });
   }
+  if (rel === 'blocks') await syncDerivedBlockerSubscriptions(dst);
   return { ok: true };
 }
 
@@ -3783,6 +3826,7 @@ export async function unlinkWorkItem(
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await unlinkIssue(id, dst, rel);
   else await links.unlink(workItemObjectRef(wi), dst, rel);
+  if (rel === 'blocks') await subs.unsubscribeDerivedForEdge(dst, workItemObjectRef(wi));
   // WI-4034 (the unlink gap): removing a `blocks` edge can be the dependent's
   // LAST live blocker clearing — the same condition emitWorkItemSettledEvents
   // fires `work-item:unblocked:<dst>` for when the blocker SETTLES. Before this,
@@ -3830,21 +3874,21 @@ export async function subscribeWorkItem(
   subscriberId: string,
   id: string,
   mode: DeliveryMode = 'full',
-  opts: { harness?: string } = {},
+  opts: { harness?: string; followBlockers?: boolean } = {},
 ): Promise<{ ok: true } | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
-  if (wi.family === 'issue') {
-    await subscribeIssue(subscriberId, id, mode);
-  } else {
-    await subs.subscribe({
-      subscriber_id: subscriberId,
-      target_kind: 'object',
-      target_ref: `${FEATURE_KIND}:${workItemObjectRef(wi).ref}`,
-      delivery_mode: mode,
-      created_ts: nowIso(),
-    });
-  }
+  const target = workItemObjectRef(wi);
+  await subs.subscribe({
+    subscriber_id: subscriberId,
+    target_kind: 'object',
+    target_ref: `${target.kind}:${target.ref}`,
+    delivery_mode: mode,
+    follow_blockers: opts.followBlockers ?? false,
+    created_ts: nowIso(),
+  });
+  if (opts.followBlockers) await syncDerivedBlockerSubscriptions(target);
+  else await removeDerivedBlockerSubscriptionsForDependent(target, subscriberId);
   return { ok: true };
 }
 

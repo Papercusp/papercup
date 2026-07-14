@@ -9,6 +9,8 @@
  *
  * Bulk by default (bulk-endpoint-standardization-2026-06-21): pass `id` for one or
  * `ids` for several (shared `mode`/`harness`) → { ok, results:[{ ok, id, error? }], counts }.
+ * `followBlockers:true` opts a direct work-item subscription into one blocker
+ * hop; generated follows remain inject-only and are removed on unlink/settle.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -21,7 +23,7 @@ export default defineTool({
   name: 'work_items:subscribe',
   profile: 'engineer',
   description:
-    'Follow one OR many work-items: their updates are INJECTED into your inbox at your next turn — inject-only, this never WAKES an idle session (to be re-invoked when a specific item settles, use events:await on its event key instead). mode tiers the injected volume: full = every update (default) | digest = coalesced summaries | mention = only @-mentions and resolution. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, error? }], counts }.',
+    'Follow one OR many work-items: their updates are INJECTED into your inbox at your next turn — inject-only, this never WAKES an idle session. mode tiers the injected volume: full = every update (default) | digest = coalesced summaries | mention = only @-mentions and resolution. followBlockers:true adds one-hop blocker follows, still inject-only, with auto-unsubscribe on unlink/settle. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, error? }], counts }.',
   guidance: {
     when: 'You want to SEE the progress of one or more work-items you do not own (e.g. ones that block yours). Subscribe to several at once via `ids`.',
     notWhen: 'You are BLOCKED until an item settles and need to be woken — that is events:await { event: "work-item:done:<id>" } (one-shot wake), not a subscription (inject-only, never wakes).',
@@ -43,6 +45,7 @@ export default defineTool({
         .enum(['full', 'digest', 'mention'])
         .optional()
         .describe('injected-notification volume: full = every update (default) | digest = coalesced summaries | mention = only @-mentions and resolution'),
+      followBlockers: z.boolean().optional().describe('also follow the subscribed item’s current blockers one hop; generated follows are inject-only and auto-removed on unlink/settle'),
       harness: z.string().max(80).optional(),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, { message: 'pass `id` (one) or `ids` (many)' }),
@@ -52,7 +55,10 @@ export default defineTool({
     const env = await runBulk(
       ids,
       async (id) => {
-        const res = await subscribeWorkItem(ident.ownerId, id, args.mode ?? 'full', { harness: args.harness });
+        const res = await subscribeWorkItem(ident.ownerId, id, args.mode ?? 'full', {
+          harness: args.harness,
+          followBlockers: args.followBlockers,
+        });
         return 'error' in res ? { ok: false as const, id, error: res.error } : { ok: true as const, id };
       },
       { keyOf: (id) => ({ id }) },

@@ -19,7 +19,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
-import { ensureCoordCapabilityTables, PgLinkStore } from '@papercusp/coordination/capabilities';
+import { ensureCoordCapabilityTables, PgEntitySubscriptionStore, PgLinkStore } from '@papercusp/coordination/capabilities';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -82,6 +82,7 @@ const wi = await import('./work-items');
 
 let db: FreshPgDb;
 let links: PgLinkStore;
+let subscriptions: PgEntitySubscriptionStore;
 
 beforeAll(async () => {
   db = await createFreshPgDb('work-items');
@@ -98,6 +99,7 @@ beforeAll(async () => {
   // are superseded — re-applying them now conflicts (CREATE VIEW work_items over the
   // base table; ALTER TABLE on a view).
   links = new PgLinkStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
+  subscriptions = new PgEntitySubscriptionStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
 }, 90_000);
 
 afterAll(async () => {
