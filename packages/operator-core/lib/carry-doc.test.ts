@@ -358,3 +358,91 @@ describe('buildCarryDoc continuation leg (P-010)', () => {
     expect(doc.continuation.deliberate).toBe(false);
   });
 });
+
+describe('constant budget B + slot audit (P-011)', () => {
+  it('budget is a constant fraction of the window, invariant in N (floored at one tail)', () => {
+    expect(CARRY_DOC_BUDGET_FRACTION).toBe(0.1);
+    // 10% of the window × 4 chars/token.
+    expect(carryDocBudgetChars(200_000)).toBe(80_000);
+    // Floor = one coherent verbatim tail (CARRY_DOC_MAX_TAIL_TURNS × 4000).
+    const floor = CARRY_DOC_MAX_TAIL_TURNS * 4000;
+    expect(carryDocBudgetChars(80_000)).toBe(floor); // exactly at the floor
+    expect(carryDocBudgetChars(10_000)).toBe(floor); // floor binds
+    expect(carryDocBudgetChars(0)).toBe(floor);
+    expect(carryDocBudgetChars(Number.NaN)).toBe(floor);
+    // Invariant in N: the budget is a pure function of the window — no turn/hop input.
+    expect(carryDocBudgetChars(200_000)).toBe(carryDocBudgetChars(200_000));
+  });
+
+  it('every carry slot maps to a bounded kind — none append-only-in-context', () => {
+    const admissible = new Set<CarryDocSlotKind>(['snapshot', 'sliding-window', 'top-k', 'derived']);
+    for (const s of CARRY_DOC_SLOTS) expect(admissible.has(s.kind)).toBe(true);
+    const slots = new Set(CARRY_DOC_SLOTS.map((s) => s.slot));
+    for (const req of ['identity', 'sessionMode', 'planItems', 'asks', 'tail', 'continuation', 'brief']) {
+      expect(slots.has(req)).toBe(true);
+    }
+    // The shed ladder sheds the re-injectable brief first, the blocking asks last.
+    expect([...CARRY_DOC_SHED_LADDER]).toEqual(['brief', 'tail', 'planState', 'asks']);
+  });
+});
+
+describe('aging ladder / budget fit (P-011)', () => {
+  const cont: CarryDocContinuation = { lastOwnerMessage: null, answered: true, deliberate: true };
+  function fitDoc(over: Partial<CarryDoc> = {}): CarryDoc {
+    return {
+      brief: brief(),
+      identity: { ownerId: 'su-1', ownerLabel: 'su · su-1', harness: 'papercusp', workspaceId: 'ws-1', fleet: null, account: 'default' },
+      sessionMode: { modes: [{ mode: 'auto', ownerDirected: true, reason: 'r' }], loopActive: true, loopIntervalSec: 60 },
+      planItems: [{ itemId: 'P-1', planSlug: 'plan-x', status: 'wip', disposition: 'claimed' }],
+      asks: [{ id: '1', question: 'which backend?', askedAtMs: NOW }],
+      tail: [{ speaker: 'assistant', text: 'recent work', ts: null }],
+      continuation: cont,
+      ...over,
+    };
+  }
+
+  it('no budget (or a budget above the full render) returns the full document unchanged', () => {
+    const doc = fitDoc();
+    const full = renderCarryDoc(doc, NOW);
+    expect(renderCarryDoc(doc, NOW, {})).toBe(full);
+    expect(renderCarryDoc(doc, NOW, { budgetChars: full.length })).toBe(full);
+    expect(renderCarryDoc(doc, NOW, { budgetChars: full.length + 5000 })).toBe(full);
+  });
+
+  it('over budget: the standing brief sheds FIRST to a pointer; always-keep sections survive; result fits B', () => {
+    // A huge verbatim carry-note makes the brief the largest sheddable slot.
+    const bigNote = '## Next\n' + 'X'.repeat(50_000);
+    const doc = fitDoc({ brief: brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, carryNote: bigNote, carryNoteUpdatedAtMs: NOW } }) });
+    const B = 40_000;
+    const out = renderCarryDoc(doc, NOW, { budgetChars: B });
+    expect(out.length).toBeLessThanOrEqual(B);
+    // brief dropped to its pointer (still headed), everything else survived.
+    expect(out).toContain('## Standing carry');
+    expect(out).toContain('dropped to fit the carry budget');
+    expect(out).not.toContain('X'.repeat(200));
+    expect(out).toContain('## Identity');
+    expect(out).toContain('## Session mode');
+    expect(out).toContain('## Continuation (last-turn handling)');
+    expect(out).toContain('## Self-recall');
+    expect(out).toContain('recent work'); // the small tail survived
+  });
+
+  it('the tail AGES oldest-turn-first when the budget is too tight for all of it', () => {
+    const turn = (n: number) => ({ speaker: 'assistant' as const, text: `T${n}:` + 'y'.repeat(3900), ts: null });
+    const doc = fitDoc({ tail: [turn(1), turn(2), turn(3), turn(4)] });
+    // Budget large enough for the always-keep + small slots + ~2 turns, not all 4.
+    const out = renderCarryDoc(doc, NOW, { budgetChars: 12_000 });
+    expect(out.length).toBeLessThanOrEqual(12_000);
+    expect(out).toContain('T4:'); // newest kept
+    expect(out).not.toContain('T1:'); // oldest aged out
+    expect(out).toContain('## Self-recall'); // always-keep survives
+  });
+
+  it('a tiny budget still emits the minimum viable orientation (never below the floor sections)', () => {
+    const out = renderCarryDoc(fitDoc(), NOW, { budgetChars: 1 });
+    expect(out).toContain('## Identity');
+    expect(out).toContain('## Session mode');
+    expect(out).toContain('## Self-recall');
+    expect(out).toContain('## Continuation (last-turn handling)');
+  });
+});
