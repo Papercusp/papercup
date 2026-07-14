@@ -3396,6 +3396,87 @@ function effectiveClaudeSettingsPath(env, home = homedir()) {
 }
 
 /**
+ * mcp-transport-resilience P-002 (2026-07-13): derive the re-exec-durable
+ * permissions this launch's composed claude argv expresses. A Claude Code
+ * self-relaunch (auto-update relaunch / TUI fullscreen switch) re-execs with
+ * REBUILT argv — every launch flag is dropped (the recovery-banner class):
+ * `--permission-mode` fell back to the default, and the `--disallowedTools`
+ * deny sets (native-scheduler lockout, no-subagents) degraded to
+ * honor-the-playbook. settings.json in the per-session CLAUDE_CONFIG_DIR is
+ * RE-READ by the re-exec'd process, so mirroring the flags there makes them
+ * survive mechanically. Handles both `--flag=value` and `--flag value` forms;
+ * `--dangerously-skip-permissions` maps to defaultMode 'bypassPermissions'
+ * (claude unions repeated --disallowedTools occurrences; so do we). Null when
+ * the argv expresses no permissions at all. Pure — exported for tests.
+ */
+export function reExecSafePermissionsFromArgs(args) {
+  const deny = [];
+  let defaultMode = null;
+  const list = Array.isArray(args) ? args : [];
+  for (let i = 0; i < list.length; i++) {
+    const a = String(list[i] ?? '');
+    if (a === '--dangerously-skip-permissions') defaultMode = 'bypassPermissions';
+    else if (a === '--permission-mode' && list[i + 1] != null) defaultMode = String(list[++i]);
+    else if (a.startsWith('--permission-mode=')) defaultMode = a.slice('--permission-mode='.length);
+    else if (a.startsWith('--disallowedTools=')) deny.push(...a.slice('--disallowedTools='.length).split(','));
+    else if (a === '--disallowedTools' && list[i + 1] != null) deny.push(...String(list[++i]).split(','));
+  }
+  const cleaned = [...new Set(deny.map((t) => t.trim()).filter(Boolean))];
+  if (!defaultMode && cleaned.length === 0) return null;
+  return { defaultMode, deny: cleaned };
+}
+
+/**
+ * Merge the argv-derived permissions (reExecSafePermissionsFromArgs) into the
+ * per-session settings.json — P-002's IO leg. ONLY writes when this launch has
+ * an isolated CLAUDE_CONFIG_DIR: deny rules must never bleed into the shared
+ * ~/.claude/settings.json (they'd outlive the session and constrain the owner's
+ * own launches). Read-modify-write preserving every other key; ATOMIC
+ * (tmp + rename) for the same partial-read reason as psu-pty-host's writeMeta.
+ * deny UNIONS with any existing deny (removing an entry is a human edit, never
+ * ours to undo); defaultMode is overwritten (this launch's mode is current).
+ * Fail-open: a write failure warns and the launch continues on argv flags
+ * alone — exactly the pre-P-002 behavior. Exported for tests.
+ */
+export function persistReExecSafePermissions({ env, args, log = (m) => process.stderr.write(m) }) {
+  try {
+    const dir = (env?.CLAUDE_CONFIG_DIR ?? '').trim();
+    if (!dir) return false;
+    const derived = reExecSafePermissionsFromArgs(args);
+    if (!derived) return false;
+    const path = join(dir, 'settings.json');
+    let current = {};
+    try {
+      current = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      current = {}; // absent/corrupt — start clean; the merge below re-creates it
+    }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) current = {};
+    const permissions =
+      current.permissions && typeof current.permissions === 'object' && !Array.isArray(current.permissions)
+        ? { ...current.permissions }
+        : {};
+    if (derived.defaultMode) permissions.defaultMode = derived.defaultMode;
+    if (derived.deny.length > 0) {
+      const existing = Array.isArray(permissions.deny) ? permissions.deny : [];
+      permissions.deny = [...new Set([...existing, ...derived.deny])];
+    }
+    const next = { ...current, permissions };
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(next, null, 2));
+    renameSync(tmp, path);
+    return true;
+  } catch (e) {
+    try {
+      log(`psu: could not persist re-exec-safe permissions (${e?.message ?? e}) — launch continues on argv flags alone.\n`);
+    } catch {
+      /* diagnostic only */
+    }
+    return false;
+  }
+}
+
+/**
  * Should THIS launch silence Claude Code's own terminal-title writer?
  *
  * WI-3665. Claude Code writes its current topic to the OS title (`✳ Claude Code`, then
@@ -3867,6 +3948,19 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null, p
   // GITHUB_PERSONAL_ACCESS_TOKEN; unset → "Authorization header is badly formatted" (HTTP 400) on
   // every claude/omp launch. Export the gh CLI token when unset (verified it authenticates the MCP).
   applyGithubTokenEnv(env);
+  // mcp-transport-resilience P-001 (2026-07-13): a mid-session Claude Code
+  // AUTO-UPDATE relaunch re-execs the process, which (a) severs the papercusp-su
+  // HTTP-MCP transport — tools vanish and the armed loop's events:await
+  // registration dies with it (the su-39f07 5h-dark incident) — and (b) rebuilds
+  // argv WITHOUT the launch flags (the recovery-banner class). Kill the trigger:
+  // no mid-session self-update; version freshness is a spawn-time concern. The
+  // env var is claude's; other backends ignore it. Opt back in per-box with
+  // PAPERCUSP_CC_AUTOUPDATE=1.
+  if (process.env.PAPERCUSP_CC_AUTOUPDATE !== '1') env.DISABLE_AUTOUPDATER = '1';
+  // mcp-transport-resilience P-002 (2026-07-13): mirror this launch's argv
+  // permission flags into the per-session settings.json so the SAME re-exec that
+  // drops argv re-applies them MECHANICALLY from disk (see the helper's doc).
+  persistReExecSafePermissions({ env, args });
   // P-002 (coord-delivery-residual-gaps): verify the claude coord-inbox hook is
   // enrolled BEFORE the spawn (Claude reads hooks at session birth) — self-repairs
   // via the operator's idempotent install route, loud-warns when it can't.

@@ -77,6 +77,8 @@ import {
   NATIVE_SCHEDULER_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
   BRAIN_TOMBSTONE_MESSAGE,
+  reExecSafePermissionsFromArgs,
+  persistReExecSafePermissions,
   fetchWithResilience,
   resolveFallbackOperatorTargets,
   resolveOperatorUrl,

@@ -106,7 +106,7 @@ export async function validateRecipeScriptAgainstCatalog(
     if (call.dynamicArgs || call.args == null) continue;
     const name = call.tool.includes(':') ? call.tool : [...byName.keys()].find((candidate) => candidate?.replace(':', '.') === call.tool);
     const tool = name ? byName.get(name) : undefined;
-    if (!tool) continue;
+    if (!name || !tool) continue;
     for (const message of validateValue(call.args, tool.inputSchema as JsonSchema, 'args')) {
       issues.push({ tool: name, path: 'args', message });
     }
