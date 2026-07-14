@@ -289,3 +289,147 @@ describe('CupboardDetailPage — the event axis (P-008)', () => {
     expect(rows[0].getAttribute('data-family')).toBe('ok:done');
   });
 });
+
+/**
+ * The standalone-app download handoff (cupboard-app-distribution-2026-07-14
+ * P-005). A standalone app is a separate downloadable product — the Cupboard
+ * never re-hosts it. The detail page fetches the app's `latest.json`, resolves
+ * the viewer-OS installer entry, and hands off the download link. It must fail
+ * SOFT: a since-broken release degrades to "view the releases on GitHub", never
+ * a dead-ended page.
+ */
+const LATEST_JSON_URL = 'https://github.com/acme/oddsmith/releases/latest/download/latest.json';
+const APP_MANIFEST = {
+  version: '1.4.0',
+  notes: 'Fixes the odds cache.',
+  pub_date: '2026-07-14T00:00:00Z',
+  platforms: {
+    'darwin-aarch64': { signature: 'sig-mac', url: 'https://gh/rel/mac.tar.gz' },
+    'linux-x86_64': { signature: 'sig-linux', url: 'https://gh/rel/linux.AppImage' },
+    'windows-x86_64': { signature: 'sig-win', url: 'https://gh/rel/win.msi' },
+  },
+};
+
+function appListing(overrides: Partial<HarnessListing> = {}): HarnessListing {
+  return listingBase({
+    slug: 'oddsmith',
+    title: 'Oddsmith',
+    description: 'a standalone desktop app',
+    listing_kind: 'app',
+    listing_ref: null,
+    github_repo: 'acme/oddsmith',
+    delivery_type: 'standalone',
+    latest_json_url: LATEST_JSON_URL,
+    release_repo: 'acme/oddsmith',
+    platforms: JSON.stringify(['darwin-aarch64', 'linux-x86_64', 'windows-x86_64']),
+    ...overrides,
+  });
+}
+
+/** Serve the listing + the app's latest.json (with a chosen status/body). */
+function mockAppFetch(listing: HarnessListing, manifest: { status: number; body: unknown }) {
+  const fetchMock = vi.fn(async (url: string | URL | Request) => {
+    const u = String(url);
+    if (u.includes('/api/cupboard/listings/')) {
+      return new Response(JSON.stringify({ listing }), { status: 200 });
+    }
+    if (u === LATEST_JSON_URL) {
+      return new Response(
+        typeof manifest.body === 'string' ? manifest.body : JSON.stringify(manifest.body),
+        { status: manifest.status },
+      );
+    }
+    return new Response('{}', { status: 404 });
+  });
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  return fetchMock;
+}
+
+/** Stub the viewer OS via navigator (viewerOsFamily reads userAgent + platform),
+ *  restoring the real descriptors after the callback (jsdom's default UA is
+ *  Linux, which would otherwise leak into "Get for Linux"). */
+async function withViewerOs(ua: string, platform: string, fn: () => Promise<void>) {
+  const origUa = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+  const origPlat = Object.getOwnPropertyDescriptor(window.navigator, 'platform');
+  Object.defineProperty(window.navigator, 'userAgent', { value: ua, configurable: true });
+  Object.defineProperty(window.navigator, 'platform', { value: platform, configurable: true });
+  try {
+    await fn();
+  } finally {
+    if (origUa) Object.defineProperty(window.navigator, 'userAgent', origUa);
+    if (origPlat) Object.defineProperty(window.navigator, 'platform', origPlat);
+  }
+}
+
+describe('CupboardDetailPage — standalone app download (P-005)', () => {
+  it('resolves the viewer-OS installer and hands off the direct download link (no generic install button)', async () => {
+    await withViewerOs('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 'MacIntel', async () => {
+      mockAppFetch(appListing(), { status: 200, body: APP_MANIFEST });
+      render(<CupboardDetailPage />);
+
+      const primary = await screen.findByTestId('cupboard-app-download-primary');
+      // The viewer is on macOS ⇒ the primary CTA resolves the mac installer.
+      expect(primary.getAttribute('data-platform-key')).toBe('darwin-aarch64');
+      expect(primary.getAttribute('href')).toBe('https://gh/rel/mac.tar.gz');
+      expect(primary.textContent).toContain('Get for macOS');
+      // Version is surfaced.
+      expect(screen.getByTestId('cupboard-app-version').textContent).toContain('1.4.0');
+      // The OTHER platforms are offered as options (not the viewer's own OS).
+      const options = screen.getAllByTestId('cupboard-app-download-option');
+      const keys = options.map((o) => o.getAttribute('data-platform-key')).sort();
+      expect(keys).toEqual(['linux-x86_64', 'windows-x86_64']);
+      // A standalone app has NO generic install/download button — the panel owns it.
+      expect(screen.queryByTestId('cupboard-detail-action')).toBeNull();
+    });
+  });
+
+  it('offers every platform (no single primary) when the viewer OS is undetectable', async () => {
+    await withViewerOs('UnknownAgent/1.0', 'UnknownOS', async () => {
+      mockAppFetch(appListing(), { status: 200, body: APP_MANIFEST });
+      render(<CupboardDetailPage />);
+
+      await screen.findByTestId('cupboard-app-download-no-primary');
+      expect(screen.queryByTestId('cupboard-app-download-primary')).toBeNull();
+      // All three platforms are equal options.
+      const options = screen.getAllByTestId('cupboard-app-download-option');
+      expect(options).toHaveLength(3);
+    });
+  });
+
+  it('fails SOFT to a GitHub releases link when the manifest is unreachable', async () => {
+    await withViewerOs('Mozilla/5.0 (Macintosh)', 'MacIntel', async () => {
+      mockAppFetch(appListing(), { status: 404, body: 'not found' });
+      render(<CupboardDetailPage />);
+
+      const fallback = await screen.findByTestId('cupboard-app-download-unavailable');
+      // The denormalized platform availability still tells the viewer what ships.
+      expect(fallback.textContent).toContain('macOS');
+      // …and there's a real escape hatch to the publisher's releases.
+      const gh = screen.getByTestId('cupboard-app-download-github');
+      expect(gh.getAttribute('href')).toBe('https://github.com/acme/oddsmith/releases');
+      // No crashed page, no primary download.
+      expect(screen.queryByTestId('cupboard-app-download-primary')).toBeNull();
+    });
+  });
+
+  it('fails SOFT on a malformed manifest (still-parseable JSON, wrong shape)', async () => {
+    await withViewerOs('Mozilla/5.0 (Macintosh)', 'MacIntel', async () => {
+      mockAppFetch(appListing(), { status: 200, body: { version: '1.0.0' /* no platforms */ } });
+      render(<CupboardDetailPage />);
+
+      await screen.findByTestId('cupboard-app-download-unavailable');
+      expect(screen.queryByTestId('cupboard-app-download-primary')).toBeNull();
+    });
+  });
+
+  it('is unavailable (no fetch) when the app carries no latest_json_url', async () => {
+    await withViewerOs('Mozilla/5.0 (Macintosh)', 'MacIntel', async () => {
+      const fetchMock = mockAppFetch(appListing({ latest_json_url: null }), { status: 200, body: APP_MANIFEST });
+      render(<CupboardDetailPage />);
+
+      await screen.findByTestId('cupboard-app-download-unavailable');
+      // We never reached out for a manifest we don't have a URL for.
+      expect(fetchMock.mock.calls.some((c) => String(c[0]) === LATEST_JSON_URL)).toBe(false);
+    });
+  });
+});

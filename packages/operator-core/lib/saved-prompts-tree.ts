@@ -32,6 +32,8 @@ export interface PromptNodeFields {
   usageCount: number;
   lastUsedAt: string | null;
   archivedAt: string | null;
+  /** Workflowy checkoff (migration 606). Optional so pre-606 row shapes remain valid. */
+  completedAt?: string | null;
 }
 
 export interface PromptTreeNode<R extends PromptNodeFields = PromptNodeFields> {
@@ -66,6 +68,11 @@ export function displayTitle(row: Pick<PromptNodeFields, 'name' | 'title'>): str
 /** A node with an empty body is a pure folder (never materialized as a command). */
 export function isFolder(row: Pick<PromptNodeFields, 'body'>): boolean {
   return row.body.trim().length === 0;
+}
+
+/** Checked off (Workflowy complete). */
+export function isCompleted(row: Pick<PromptNodeFields, 'completedAt'>): boolean {
+  return row.completedAt !== null && row.completedAt !== undefined;
 }
 
 function siblingCompare(a: PromptNodeFields, b: PromptNodeFields): number {
@@ -141,35 +148,90 @@ function nodeMatches(row: PromptNodeFields, q: string): boolean {
   );
 }
 
+export interface VisibleOpts {
+  /** Live text filter — matches title/name/body (so `#tag` filters too). */
+  filter?: string;
+  /**
+   * Zoom/hoist (WI-4840 D-002): render only this node's CHILDREN, at depth 0.
+   * The zoomed node itself is the page header, not a row, and its collapsed
+   * flag is ignored (Workflowy: zooming in always shows the children).
+   * Unknown/empty id ⇒ home (all roots).
+   */
+  zoomId?: string | null;
+  /** Hide completed nodes AND their whole subtrees (the Workflowy toggle). */
+  hideCompleted?: boolean;
+}
+
 /**
  * Flatten the tree to what the outline renders. Without a filter, children of
  * a collapsed node are hidden. With a filter, collapse is ignored and a node is
  * shown iff it (or a descendant) matches — ancestors of a match stay visible.
+ * Both modes respect `zoomId` (re-roots the walk) and `hideCompleted`.
  */
 export function visibleRows<R extends PromptNodeFields>(
   model: PromptTreeModel<R>,
-  filter?: string,
+  opts: VisibleOpts = {},
 ): VisibleRow<R>[] {
-  const q = filter?.trim().toLowerCase();
+  const q = opts.filter?.trim().toLowerCase();
+  const hide = opts.hideCompleted === true;
+  const zoomNode = opts.zoomId ? model.byId.get(opts.zoomId)?.node : undefined;
+  const roots = zoomNode ? zoomNode.children : model.roots;
   const out: VisibleRow<R>[] = [];
 
   if (!q) {
     const walk = (n: PromptTreeNode<R>, depth: number) => {
+      if (hide && isCompleted(n.row)) return;
       out.push({ node: n, depth });
       if (!n.row.collapsed) for (const c of n.children) walk(c, depth + 1);
     };
-    for (const r of model.roots) walk(r, 0);
+    for (const r of roots) walk(r, 0);
     return out;
   }
 
   const subtreeMatches = (n: PromptTreeNode<R>): boolean =>
     nodeMatches(n.row, q) || n.children.some(subtreeMatches);
   const walk = (n: PromptTreeNode<R>, depth: number) => {
+    if (hide && isCompleted(n.row)) return;
     if (!subtreeMatches(n)) return;
     out.push({ node: n, depth });
     for (const c of n.children) walk(c, depth + 1);
   };
-  for (const r of model.roots) walk(r, 0);
+  for (const r of roots) walk(r, 0);
+  return out;
+}
+
+/**
+ * Ancestor chain of a node, ROOT-FIRST and INCLUDING the node itself — the
+ * zoom breadcrumb. Empty for an unknown id.
+ */
+export function breadcrumbOf<R extends PromptNodeFields>(
+  model: PromptTreeModel<R>,
+  id: string,
+): R[] {
+  const entry = model.byId.get(id);
+  if (!entry) return [];
+  const chain: R[] = [entry.node.row];
+  let cur = entry.parent;
+  while (cur) {
+    chain.unshift(cur.row);
+    cur = model.byId.get(cur.row.id)?.parent ?? null;
+  }
+  return chain;
+}
+
+/** Every id in a node's subtree, INCLUDING the node itself. Empty for unknown ids. */
+export function subtreeIds<R extends PromptNodeFields>(
+  model: PromptTreeModel<R>,
+  id: string,
+): Set<string> {
+  const out = new Set<string>();
+  const start = model.byId.get(id)?.node;
+  if (!start) return out;
+  const walk = (n: PromptTreeNode<R>) => {
+    out.add(n.row.id);
+    for (const c of n.children) walk(c);
+  };
+  walk(start);
   return out;
 }
 
@@ -328,6 +390,143 @@ export function outdent<R extends PromptNodeFields>(
   const after = pi + 1 < positions.length ? positions[pi + 1] : null;
   const pos = generateKeyBetween(positions[pi], after);
   return mergeMoved(assignments, { id, parentId: grandId, position: pos });
+}
+
+// ---------------------------------------------------------------------------
+// Drag-and-drop projection (WI-4840 D-006) — the dnd-kit SortableTree pattern:
+// the UI renders the flattened visible rows, and while dragging it removes the
+// active node's DESCENDANTS from that list (the subtree travels with the drag).
+// All placement math lives here, pure; dnd-kit only supplies pointer mechanics.
+// ---------------------------------------------------------------------------
+
+export interface DropProjection {
+  /** Clamped rendered depth the drop lands at. */
+  depth: number;
+  /** Real parent id at that depth (the zoom root when depth 0 inside a zoom). */
+  parentId: string | null;
+  /** Move assignments realizing the drop (active's move + any resequencing). */
+  assignments: MoveAssignment[];
+}
+
+function arrayMoved<T>(list: T[], from: number, to: number): T[] {
+  const next = list.slice();
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+/**
+ * Project a drag of `activeId` over `overId` at `desiredDepth` (the pointer's
+ * horizontal offset translated to a rendered depth by the caller).
+ *
+ * `flat` is the RENDERED row list with active's descendants removed but active
+ * itself still present — exactly what the outline shows mid-drag. Depth is
+ * clamped between the row above (may become its child) and the row below
+ * (may not orphan it). Inside a zoom, depth-0 drops parent to `zoomRootId`.
+ * Null when the ids are unknown or the drop would not move anything.
+ */
+export function projectDrop<R extends PromptNodeFields>(
+  model: PromptTreeModel<R>,
+  flat: VisibleRow<R>[],
+  activeId: string,
+  overId: string,
+  desiredDepth: number,
+  zoomRootId: string | null = null,
+): DropProjection | null {
+  const activeIndex = flat.findIndex((v) => v.node.row.id === activeId);
+  const overIndex = flat.findIndex((v) => v.node.row.id === overId);
+  if (activeIndex === -1 || overIndex === -1) return null;
+  const active = model.byId.get(activeId);
+  if (!active) return null;
+
+  const next = arrayMoved(flat, activeIndex, overIndex);
+  const prev = overIndex > 0 ? next[overIndex - 1] : null;
+  const after = overIndex + 1 < next.length ? next[overIndex + 1] : null;
+
+  const maxDepth = prev ? prev.depth + 1 : 0;
+  const minDepth = after ? after.depth : 0;
+  const depth = Math.max(minDepth, Math.min(maxDepth, desiredDepth));
+
+  // Resolve the REAL parent id (rows carry absolute parentIds, so this is
+  // zoom-safe): same depth as prev ⇒ share its parent; one deeper ⇒ prev IS
+  // the parent; shallower ⇒ the nearest same-depth row above tells us.
+  let parentId: string | null;
+  if (depth === 0 || !prev) {
+    parentId = zoomRootId;
+  } else if (depth === prev.depth) {
+    parentId = prev.node.row.parentId;
+  } else if (depth > prev.depth) {
+    parentId = prev.node.row.id;
+  } else {
+    const anchor = next
+      .slice(0, overIndex)
+      .reverse()
+      .find((v) => v.depth === depth);
+    parentId = anchor ? anchor.node.row.parentId : zoomRootId;
+  }
+
+  // A node can never become its own descendant.
+  if (parentId !== null && subtreeIds(model, activeId).has(parentId)) return null;
+
+  // Order within the new sibling list: neighbors are the closest rows in the
+  // projected flat order that are DIRECT children of the chosen parent. Rows
+  // carry absolute parentIds (a zoom's depth-0 rows are real children of the
+  // zoom node), so plain comparison is zoom-safe.
+  const sibBefore =
+    next
+      .slice(0, overIndex)
+      .reverse()
+      .find((v) => v.node.row.id !== activeId && v.node.row.parentId === parentId) ?? null;
+  const sibAfter =
+    next.slice(overIndex + 1).find((v) => v.node.row.id !== activeId && v.node.row.parentId === parentId) ??
+    null;
+
+  const siblingList = (
+    parentId ? (model.byId.get(parentId)?.node.children ?? []) : model.roots
+  ).filter((s) => s.row.id !== activeId);
+  const { positions, assignments } = effectiveSequence(siblingList, parentId);
+  const posOf = (rid: string | null): string | null => {
+    if (!rid) return null;
+    const i = siblingList.findIndex((s) => s.row.id === rid);
+    return i === -1 ? null : positions[i];
+  };
+  const beforeKey = posOf(sibBefore?.node.row.id ?? null);
+  const afterKey = posOf(sibAfter?.node.row.id ?? null);
+  const position = generateKeyBetween(beforeKey, afterKey);
+
+  return {
+    depth,
+    parentId,
+    assignments: mergeMoved(
+      assignments.filter((a) => a.id !== activeId),
+      { id: activeId, parentId, position },
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tags (WI-4840 D-007) — Workflowy's #tag / @mention layer, parsed from text.
+// ---------------------------------------------------------------------------
+
+/** Global matcher for #tags / @mentions (letters/digits/_/-, must start alnum). */
+export const TAG_RE = /(^|[\s([{'"])([#@][A-Za-z0-9][\w-]*)/g;
+
+/**
+ * Extract `#tag` / `@mention` tokens from text, deduplicated case-insensitively
+ * (first casing wins), in first-appearance order.
+ */
+export function extractTags(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of text.matchAll(TAG_RE)) {
+    const tag = m[2];
+    const key = tag.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(tag);
+    }
+  }
+  return out;
 }
 
 /**
