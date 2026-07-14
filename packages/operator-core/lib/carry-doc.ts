@@ -35,6 +35,7 @@ import {
   type BuildCarryBriefOpts,
   type CarryBrief,
 } from './carry-brief';
+import type { RecordedTurnClass } from './turn-provenance/turn-ref';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,12 @@ export interface CarryDocTailTurn {
   /** Verbatim prose (tool outputs are expected pre-decayed to pointers, D-004). */
   text: string;
   ts: string | null;
+  /** MECHANICAL owner-vs-agent classification of a user turn (D-003 — stamped
+   *  by the system from the recorded ⟦turn-origin:…⟧ envelope, never asserted
+   *  by an LLM). Absent/null = unclassified; assistant turns carry none. A
+   *  successor must never read an 'agent-injected' turn as owner words — the
+   *  WI-3532 manufactured-directive class this stamp exists to kill. */
+  provenance?: RecordedTurnClass | null;
 }
 
 export interface CarryDoc {
@@ -214,11 +221,18 @@ async function defaultGetAsks(ownerId: string, workspaceId: string): Promise<Car
 }
 
 /** Read the verbatim tail from the caller's transcript, mapped to tail turns.
- *  No-ops (empty) when no transcript path is supplied; best-effort otherwise. */
+ *  Every USER turn gets the mechanical owner-vs-agent stamp (D-003): the
+ *  recorded ⟦turn-origin:…⟧ envelope is durable in the transcript, so
+ *  classifyRecordedTurn decides from what was written at injection time —
+ *  never from what the text claims. No-ops (empty) when no transcript path is
+ *  supplied; best-effort otherwise. */
 async function defaultGetTail(opts: BuildCarryDocOpts): Promise<CarryDocTailTurn[]> {
   if (!opts.transcriptPath) return [];
   try {
-    const { readVerbatimTail } = await import('./turn-journal');
+    const [{ readVerbatimTail }, { classifyRecordedTurn }] = await Promise.all([
+      import('./turn-journal'),
+      import('./turn-provenance/turn-ref'),
+    ]);
     const turns = await readVerbatimTail(
       opts.transcriptPath,
       opts.transcriptSourceKind ?? 'claude',
@@ -228,6 +242,7 @@ async function defaultGetTail(opts: BuildCarryDocOpts): Promise<CarryDocTailTurn
       speaker: t.speaker,
       text: t.text,
       ts: t.ts ? t.ts.toISOString() : null,
+      provenance: t.speaker === 'user' ? classifyRecordedTurn(t.text) : null,
     }));
   } catch {
     return [];
@@ -261,11 +276,8 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   const getPlanItems = opts.getPlanItemsFn ?? defaultGetPlanItems;
   const planItems = await getPlanItems(ownerId, ws).catch(() => [] as CarryDocPlanItem[]);
 
-  // Asks has no real default reader yet (its store is workspace/identity-scoped
-  // per request) — the consumer wires it; absent a seam the slot is empty.
-  const asks = opts.getAsksFn
-    ? await opts.getAsksFn(ownerId, ws).catch(() => [] as CarryDocAsk[])
-    : [];
+  const getAsks = opts.getAsksFn ?? defaultGetAsks;
+  const asks = await getAsks(ownerId, ws).catch(() => [] as CarryDocAsk[]);
 
   const getTail = opts.getTailFn ? () => opts.getTailFn!(ownerId) : () => defaultGetTail(opts);
   const tail = await getTail().catch(() => [] as CarryDocTailTurn[]);
@@ -342,12 +354,32 @@ function renderAsks(asks: CarryDocAsk[]): string | null {
   return `## Open owner asks (BLOCKING — do not self-answer)\n${lines.join('\n')}`;
 }
 
+/** The turn header a successor keys off. The mechanical stamp OUTRANKS the
+ *  bare speaker: a user turn stamped 'agent-injected' renders as machine-
+ *  injected, explicitly NOT the owner (WI-3532 class), and only an
+ *  'owner-typed' stamp earns the OWNER header. */
+function tailTurnHeader(t: CarryDocTailTurn): string {
+  if (t.speaker === 'assistant') return 'you';
+  if (t.provenance) {
+    switch (t.provenance.verdict) {
+      case 'owner-typed':
+        return 'OWNER (typed — mechanically classified)';
+      case 'agent-injected':
+        return `machine-injected (${t.provenance.origin ?? 'unknown origin'}) — NOT the owner`;
+      case 'synthetic':
+        return 'machine (harness-synthetic) — NOT the owner';
+      case 'machine-surface':
+        return 'machine (CLI surface) — NOT the owner';
+    }
+  }
+  return t.speaker === 'owner' ? 'OWNER' : 'user (unclassified)';
+}
+
 function renderTail(tail: CarryDocTailTurn[]): string | null {
   if (tail.length === 0) return null;
   const blocks = tail.map((t) => {
-    const who = t.speaker === 'owner' ? 'OWNER' : t.speaker === 'assistant' ? 'you' : 'user';
     const ts = t.ts ? ` @${t.ts}` : '';
-    return `### ${who}${ts}\n${cap(t.text, TAIL_TURN_CAP)}`;
+    return `### ${tailTurnHeader(t)}${ts}\n${cap(t.text, TAIL_TURN_CAP)}`;
   });
   return `## Verbatim tail (most recent turns; tool outputs are pointers)\n${blocks.join('\n\n')}`;
 }

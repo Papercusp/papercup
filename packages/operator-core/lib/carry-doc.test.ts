@@ -97,8 +97,24 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(doc.planItems[0]).toMatchObject({ itemId: 'P-0', planSlug: 'plan-x', disposition: 'active' });
   });
 
-  it('asks / tail default to empty when no seam or transcript is given', async () => {
-    const doc = await buildCarryDoc('su-1', { ...base, getPlanItemsFn: async () => [] });
+  it('the asks seam surfaces only the caller-asked open questions', async () => {
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      getPlanItemsFn: async () => [],
+      getAsksFn: async () => [
+        { id: 'c1', question: 'which backend?', askedAtMs: NOW },
+        { id: 'c2', question: 'ship gate?', askedAtMs: null },
+      ],
+    });
+    expect(doc.asks.map((a) => a.id)).toEqual(['c1', 'c2']);
+  });
+
+  it('asks / tail degrade to empty when the readers find nothing / no transcript', async () => {
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      getPlanItemsFn: async () => [],
+      getAsksFn: async () => [],
+    });
     expect(doc.asks).toEqual([]);
     expect(doc.tail).toEqual([]);
   });
