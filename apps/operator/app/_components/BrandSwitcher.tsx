@@ -37,7 +37,7 @@ import { Tooltip } from '../harness/Tooltip';
 type BrandId = 'classic' | 'the-hive';
 
 const BRANDS: ReadonlyArray<{ id: BrandId; label: string; hint: string; icon: typeof Hexagon }> = [
-  { id: 'classic', label: 'Papercup', hint: 'mission console', icon: FileText },
+  { id: 'classic', label: 'Papercusp', hint: 'mission console', icon: FileText },
   { id: 'the-hive', label: 'The Swarm', hint: 'Hive console · honeycomb theme', icon: Hexagon },
 ];
 

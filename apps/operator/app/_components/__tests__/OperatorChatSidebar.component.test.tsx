@@ -87,6 +87,7 @@ vi.mock('../OperatorWordmarkLockup', () => ({
 
 vi.mock('@/lib/useLexicon', () => ({
   useLexicon: () => (key: string) => (key === 'brain' ? 'Mug' : key === 'overwatch' ? 'Kettle' : 'Papercup'),
+  useLexiconPackId: () => 'classic',
 }));
 
 const voiceModeState = { muted: false };

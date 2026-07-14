@@ -2775,6 +2775,52 @@ describe('rehealResumeCredentials (WI-4727 — psu --resume re-login: heal the s
     expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('newer-fork-token');
   });
 
+  it('promotes the newest fork from a DIFFERENT concurrent session (fleet-wide sweep, not just this session vs global — WI-4727 durability follow-up)', () => {
+    // The gap the original pairwise (this-session-vs-global) reheal missed:
+    // resuming su-owner-1 while su-owner-2 — a DIFFERENT live session — holds
+    // the truly newest bundle (its own in-session refresh the background
+    // reconciler hasn't converged yet). su-owner-1's own fork is merely
+    // stale, not the oldest, so a narrow check would symlink it straight to
+    // the (also-stale) global and miss the fresher token entirely.
+    writeGlobal(1_000, 'stale-global-token');
+    writeFileSync(sessOf(), credBundle(2_000, 'this-session-token')); // newer than global, but NOT the newest
+    const otherSessionDir = join(home, '.papercusp', 'session-claude', 'su-owner-2');
+    mkdirSync(otherSessionDir, { recursive: true });
+    writeFileSync(join(otherSessionDir, '.credentials.json'), credBundle(9_000, 'other-session-newest-token'));
+
+    rehealResumeCredentials(configDir, { home });
+
+    // The global was promoted to the true fleet-wide newest (su-owner-2's fork)…
+    expect(JSON.parse(readFileSync(globalOf(), 'utf8')).claudeAiOauth.accessToken).toBe('other-session-newest-token');
+    expect(claudeCredExpiresAt(globalOf())).toBe(9_000);
+    // …and su-owner-1 (the one actually resuming) symlinks to that promoted global.
+    expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
+    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('other-session-newest-token');
+    // The other (non-resuming) session's fork is untouched — promotion reads it, never mutates it.
+    expect(lstatSync(join(otherSessionDir, '.credentials.json')).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(readFileSync(join(otherSessionDir, '.credentials.json'), 'utf8')).claudeAiOauth.accessToken).toBe(
+      'other-session-newest-token',
+    );
+  });
+
+  it('a SYMLINKED fork under the session root is skipped by the sweep (it already resolves to the global; nothing to promote from it)', () => {
+    writeGlobal(5_000, 'global-token');
+    writeFileSync(sessOf(), credBundle(1_000, 'stale-this-session'));
+    const otherSessionDir = join(home, '.papercusp', 'session-claude', 'su-owner-3');
+    mkdirSync(otherSessionDir, { recursive: true });
+    // su-owner-3 is already a healthy symlink → global: the sweep must not
+    // treat the file IT RESOLVES TO as if it were su-owner-3's own bundle.
+    symlinkSync(globalOf(), join(otherSessionDir, '.credentials.json'));
+
+    rehealResumeCredentials(configDir, { home });
+
+    // Global stays exactly what it was — no fork had a newer bundle to promote.
+    expect(JSON.parse(readFileSync(globalOf(), 'utf8')).claudeAiOauth.accessToken).toBe('global-token');
+    expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
+  });
+
   it('leaves a HEALTHY symlink (already resolving to the global) byte-identical', () => {
     writeGlobal(5_000, 'healthy-token');
     symlinkSync(globalOf(), sessOf());

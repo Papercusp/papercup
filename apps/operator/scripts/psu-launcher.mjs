@@ -2410,13 +2410,23 @@ export function claudeCredExpiresAt(path) {
  * launch re-heals every time, which is why only `--resume` regressed.)
  *
  * Re-establish the fresh-mirror invariant right before spawn: keep the global on
- * the newest bundle (promote a strictly-newer session fork — newest-expiresAt
- * wins, matching reconcileClaudeCredentials) and re-point the session credential
- * at it via symlink. Best-effort — a launch must NEVER fail on credential
- * reconciliation, and a healthy symlink is left byte-identical. Linux/Windows
- * file path; a gateway-pinned resume skips this (it authenticates via
- * `ANTHROPIC_BASE_URL`) and macOS inherits via the OAuth-token path
+ * the newest bundle (promote the strictly-newest real-file fork — newest-
+ * expiresAt wins, matching reconcileClaudeCredentials) and re-point the session
+ * credential at it via symlink. Best-effort — a launch must NEVER fail on
+ * credential reconciliation, and a healthy symlink is left byte-identical.
+ * Linux/Windows file path; a gateway-pinned resume skips this (it authenticates
+ * via `ANTHROPIC_BASE_URL`) and macOS inherits via the OAuth-token path
  * (`applyDefaultClaudeOAuthToken`). `home` injectable for tests.
+ *
+ * DURABILITY (WI-4727 follow-up, 2026-07-14): the promotion sweeps EVERY
+ * real-file fork under the session-claude root (`promoteNewestForkToGlobal`),
+ * not just this session's own — a pairwise this-session-vs-global check missed
+ * a fresher token sitting in a *different* concurrently-running session's
+ * fork, which the background reconciler's debounce/interval hadn't yet
+ * converged. This resume path now performs the same full-fleet
+ * newest-wins convergence a fresh launch gets from `reconcileClaudeCredentials`,
+ * just re-implemented locally (this script has no dependency on the
+ * operator-core TS package it lives in).
  */
 export function rehealResumeCredentials(configDir, { home = homedir() } = {}) {
   try {
@@ -2431,9 +2441,21 @@ export function rehealResumeCredentials(configDir, { home = homedir() } = {}) {
     } catch {
       /* missing, or a dangling symlink — fall through and (re)heal */
     }
-    // A real-file fork strictly NEWER than the global (an in-session refresh the
-    // background reconciler hasn't converged yet): promote it so the canonical
-    // global holds the newest bundle before we mirror.
+    // Sweep every OTHER real-file fork under the session-claude root for a
+    // bundle strictly newer than the global — a CONCURRENT session's
+    // in-session refresh the background reconciler (claude-credential-sync,
+    // debounced/interval-polled) hasn't converged yet. (WI-4727 durability
+    // follow-up: the original resume-time reheal only ever promoted THIS
+    // session's own fork, so a fresher token sitting in a *different* live
+    // session's fork was invisible to a resume landing on a merely-stale — not
+    // necessarily the oldest — fork; the symlink invariant "degrades in-session"
+    // faster than a narrow pairwise check can chase.)
+    promoteNewestForkToGlobal(home, globalPath);
+    // A real-file fork of THIS session strictly NEWER than the (possibly
+    // just-updated) global: promote it too. Kept in addition to the sweep
+    // above because `configDir` is not guaranteed to live under the default
+    // session-claude root (a relocated/custom config dir the sweep can't
+    // discover) — this direct check is location-independent.
     let sessIsSymlink = false;
     try {
       sessIsSymlink = lstatSync(sessPath).isSymbolicLink();
@@ -2453,6 +2475,51 @@ export function rehealResumeCredentials(configDir, { home = homedir() } = {}) {
     symlinkSync(globalPath, sessPath);
   } catch {
     /* a launch must NEVER fail on credential reconciliation */
+  }
+}
+
+/**
+ * Scan every real-file (non-symlink) `.credentials.json` fork under the
+ * session-claude root (`sessionClaudeRoot`) for a bundle strictly newer than
+ * `globalPath`'s CURRENT bundle, and promote the single newest one found into
+ * the global file. Mirrors `reconcileClaudeCredentials`'s (claude-credential-
+ * sync.ts) newest-expiresAt-wins key — duplicated here rather than imported,
+ * because `psu-launcher.mjs` runs as a plain node script outside the
+ * operator-core TS package/build (see the file-top note on this module's
+ * dependency surface). Best-effort: a missing session root, or a read/copy
+ * failure on any one fork, degrades to skipping that fork — never throws.
+ */
+function promoteNewestForkToGlobal(home, globalPath) {
+  const root = sessionClaudeRoot(home);
+  let dirs = [];
+  try {
+    dirs = readdirSync(root);
+  } catch {
+    return; // no session-claude root yet
+  }
+  let bestPath = null;
+  let bestExp = claudeCredExpiresAt(globalPath);
+  for (const dir of dirs) {
+    const p = join(root, dir, '.credentials.json');
+    let isSymlink = false;
+    try {
+      isSymlink = lstatSync(p).isSymbolicLink();
+    } catch {
+      continue; // missing — nothing to consider
+    }
+    if (isSymlink) continue; // resolves to the global; nothing to promote
+    const exp = claudeCredExpiresAt(p);
+    if (exp > bestExp) {
+      bestExp = exp;
+      bestPath = p;
+    }
+  }
+  if (bestPath) {
+    try {
+      copyFileSync(bestPath, globalPath);
+    } catch {
+      /* keep the global as-is on failure */
+    }
   }
 }
 

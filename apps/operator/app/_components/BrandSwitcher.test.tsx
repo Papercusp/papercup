@@ -73,7 +73,7 @@ const json = (ok: boolean, body: unknown) => ({ ok, json: async () => body });
 const trigger = () => screen.getByRole('button', { name: /switch branding/i });
 
 beforeEach(() => {
-  store.seed({ [FLAGS.THE_HIVE]: false }); // start in classic (Papercup)
+  store.seed({ [FLAGS.THE_HIVE]: false }); // start in classic (Papercusp)
 });
 afterEach(() => {
   cleanup();
@@ -82,9 +82,9 @@ afterEach(() => {
 });
 
 describe('<BrandSwitcher />', () => {
-  it('labels the trigger with the active brand (classic Papercup by default)', () => {
+  it('labels the trigger with the active brand (classic Papercusp by default)', () => {
     render(<BrandSwitcher />, { wrapper: withNuqsTestingAdapter({ searchParams: '' }) });
-    expect(trigger().textContent).toContain('Papercup');
+    expect(trigger().textContent).toContain('Papercusp');
   });
 
   it('flips the brand OPTIMISTICALLY before the POST resolves, then reconciles', async () => {
@@ -126,8 +126,8 @@ describe('<BrandSwitcher />', () => {
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: /Swarm/ }));
     expect(trigger().textContent).toContain('The Swarm'); // optimistic
 
-    // Failed write rolls the local flip back to Papercup.
-    await waitFor(() => expect(trigger().textContent).toContain('Papercup'));
+    // Failed write rolls the local flip back to Papercusp.
+    await waitFor(() => expect(trigger().textContent).toContain('Papercusp'));
     expect(toast.error).toHaveBeenCalled();
   });
 
@@ -138,7 +138,7 @@ describe('<BrandSwitcher />', () => {
     render(<BrandSwitcher />, { wrapper: withNuqsTestingAdapter({ searchParams: '?brandSwitch=true' }) });
     const menu = await screen.findByRole('menu');
 
-    fireEvent.click(within(menu).getByRole('menuitemradio', { name: /Papercup/ }));
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: /Papercusp/ }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

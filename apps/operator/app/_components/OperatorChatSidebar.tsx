@@ -105,6 +105,14 @@ function readStoredWidth(): number {
 }
 
 export function OperatorChatSidebar() {
+  // WI-4478 D-001: OperatorWordmarkLockup's classic-pack default now reads
+  // "Papercusp" (product identity, matching the Tauri window title). This
+  // toggle is the ASSISTANT identity ("Papercup chat" tooltip/aria-label,
+  // hardcoded below) — override the wordmark back to "Papercup" for the
+  // classic pack so the two stay in sync; the-hive pack keeps its own
+  // lexicon swap (no override) so Hive mode is unaffected.
+  const lexiconPackId = useLexiconPackId();
+  const chatWordmarkTitle = lexiconPackId === 'the-hive' ? undefined : 'Papercup';
   const [chatOpen, setChatOpen] = useQueryState(
     OPERATOR_CHAT_OPEN_QUERY_KEY,
     parseAsBoolean.withDefault(true),
@@ -300,7 +308,7 @@ export function OperatorChatSidebar() {
                   className="op-chat-wordmark"
                   titleClassName="op-chat-wordmark-title"
                   subtitleClassName="op-chat-wordmark-subtitle"
-                  title="Papercup"
+                  title={chatWordmarkTitle}
                   subtitle=""
                 />
               </button>

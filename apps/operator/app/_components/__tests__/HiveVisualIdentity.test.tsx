@@ -79,7 +79,7 @@ describe('Hive visual identity components', () => {
     );
 
     expect(container.querySelector('[data-hive-mark]')).toBeNull();
-    expect(screen.getByText('Papercup')).not.toBeNull();
+    expect(screen.getByText('Papercusp')).not.toBeNull();
     expect(screen.getByText('mission console')).not.toBeNull();
   });
 
