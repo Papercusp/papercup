@@ -737,6 +737,49 @@ export async function activeLoopOwners(): Promise<Set<string>> {
  * run concurrently. Also returns the view's orphaned-claim list (work held by
  * dead/stale agents) — the claim-keyed half a presence-primary roster can't see.
  */
+/**
+ * "In the middle of thinking" (roster indicator) resolution for a set of
+ * entries: a session whose transcript was appended within
+ * SESSION_THINKING_ACTIVE_MS reads as actively thinking. Resolved in PARALLEL
+ * (never a serial fs loop, per the perf docs) and best-effort — every backend's
+ * transcript path is cached, so this is one cheap stat/agent. Claude sessions
+ * key by sessionId (+owner fast path); codex by the adv row id (its CODEX_HOME
+ * key); omp by thread id.
+ *
+ * Extracted from mergeRosterWithAssignments (WI-4734) so a latency-critical
+ * caller can run the roster merge CONCURRENTLY with other work (thinking fully
+ * deferred via `thinkingFor: () => false`) and resolve thinking POST-HOC for
+ * just the entries it will actually surface — same safety condition as the
+ * WI-3924 `thinkingFor` gate: only ever skip entries the caller never exposes.
+ */
+export async function resolveThinkingForEntries(
+  entries: RosterEntry[],
+  opts: { nowMs?: number } = {},
+): Promise<void> {
+  if (entries.length === 0) return;
+  const { resolveSessionThinkingState, SESSION_THINKING_ACTIVE_MS } = await import('./claude-sessions');
+  const { isCodexSessionThinking, isOmpThreadThinking } = await import('./session-transcript-resolvers');
+  const nowMs = opts.nowMs ?? Date.now();
+  await Promise.all(
+    entries.map(async (e) => {
+      if (e.sessionId) {
+        // ONE resolve → both signals: `thinking` (transcript mtime recent) AND
+        // `thinkingResolvable` (a transcript exists to stream at all). A parked/ended
+        // claude session whose transcript is gone flips resolvable→false so the client
+        // shows the honest "Live thinking unavailable" note, not an empty pane (WI-2680).
+        const state = await resolveSessionThinkingState(e.sessionId, { owner: e.ownerId, nowMs })
+          .catch(() => ({ resolvable: false, thinking: false }));
+        e.thinking = state.thinking;
+        e.thinkingResolvable = state.resolvable;
+      } else if (e.agent === 'codex' && e.advSessionId != null) {
+        e.thinking = await isCodexSessionThinking(e.advSessionId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
+      } else if (e.ompThreadId) {
+        e.thinking = await isOmpThreadThinking(e.ompThreadId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
+      }
+    }),
+  );
+}
+
 export async function mergeRosterWithAssignments(
   opts: {
     workspaceId?: string | null;
@@ -843,27 +886,7 @@ export async function mergeRosterWithAssignments(
   // transcript-stat cost (see the opts.thinkingFor doc comment above for the
   // safety condition this relies on).
   const thinkingCandidates = opts.thinkingFor ? active.filter(opts.thinkingFor) : active;
-  const { resolveSessionThinkingState, SESSION_THINKING_ACTIVE_MS } = await import('./claude-sessions');
-  const { isCodexSessionThinking, isOmpThreadThinking } = await import('./session-transcript-resolvers');
-  const nowMs = Date.now();
-  await Promise.all(
-    thinkingCandidates.map(async (e) => {
-      if (e.sessionId) {
-        // ONE resolve → both signals: `thinking` (transcript mtime recent) AND
-        // `thinkingResolvable` (a transcript exists to stream at all). A parked/ended
-        // claude session whose transcript is gone flips resolvable→false so the client
-        // shows the honest "Live thinking unavailable" note, not an empty pane (WI-2680).
-        const state = await resolveSessionThinkingState(e.sessionId, { owner: e.ownerId, nowMs })
-          .catch(() => ({ resolvable: false, thinking: false }));
-        e.thinking = state.thinking;
-        e.thinkingResolvable = state.resolvable;
-      } else if (e.agent === 'codex' && e.advSessionId != null) {
-        e.thinking = await isCodexSessionThinking(e.advSessionId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
-      } else if (e.ompThreadId) {
-        e.thinking = await isOmpThreadThinking(e.ompThreadId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
-      }
-    }),
-  );
+  await resolveThinkingForEntries(thinkingCandidates);
   return {
     active,
     orphanedClaims: orphanedClaims(assignmentRows).map(summarizeOrphan),

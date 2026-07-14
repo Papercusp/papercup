@@ -134,6 +134,48 @@ export async function withAcquireBudget<T>(p: Promise<T | null>, budgetMs: numbe
   });
 }
 
+/** WI-4734: process-local QUERY-embed memo. The agents-pill search re-embeds
+ *  the SAME query on every facet/recency-window re-query (each is a fresh
+ *  server round-trip with an unchanged `q`), and repeat searches re-pay the
+ *  full embed too — 40–150ms warm, seconds cold. Key includes mode+dims so a
+ *  cascade flip (openai→local etc.) can never serve a foreign-space vector.
+ *  In-flight promise is cached (dedupes concurrent identical queries);
+ *  failures are evicted immediately so a transient embed error never sticks.
+ *  NOTE: derived-data perf cache, not durable state — the storage-policy
+ *  "no module-scoped TTL Maps" rule targets STATE; this is the same class as
+ *  the process-memoized ONNX pipeline it sits in front of. */
+const QUERY_EMBED_CACHE_MAX = 256;
+const QUERY_EMBED_CACHE_TTL_MS = 10 * 60_000;
+const queryEmbedCache = new Map<string, { at: number; p: Promise<number[]> }>();
+
+/** Test seam: reset the query-embed memo between cases. */
+export function _clearQueryEmbedCacheForTests(): void {
+  queryEmbedCache.clear();
+}
+
+function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder {
+  return (text: string) => {
+    const key = `${mode}:${dims}:${text}`;
+    const now = Date.now();
+    const hit = queryEmbedCache.get(key);
+    if (hit && now - hit.at < QUERY_EMBED_CACHE_TTL_MS) {
+      // LRU bump: re-insert so iteration order tracks recency.
+      queryEmbedCache.delete(key);
+      queryEmbedCache.set(key, hit);
+      return hit.p;
+    }
+    const p = embed(text);
+    queryEmbedCache.set(key, { at: now, p });
+    p.catch(() => queryEmbedCache.delete(key)); // never cache a failure
+    while (queryEmbedCache.size > QUERY_EMBED_CACHE_MAX) {
+      const oldest = queryEmbedCache.keys().next().value;
+      if (oldest === undefined) break;
+      queryEmbedCache.delete(oldest);
+    }
+    return p;
+  };
+}
+
 export async function buildQueryEmbedderResolved(
   opts?: QueryEmbedderAcquireOpts,
 ): Promise<ResolvedQueryEmbedder | null> {
@@ -161,7 +203,12 @@ export async function buildQueryEmbedderResolved(
     });
     const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0);
     if (resolved === null || resolved.mode === 'disabled') return null;
-    return { mode: resolved.mode, dims: resolved.dims, embed: resolved.embed };
+    return {
+      mode: resolved.mode,
+      dims: resolved.dims,
+      // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
+      embed: cachedQueryEmbed(resolved.mode, resolved.dims, resolved.embed),
+    };
   } catch {
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
     // model fetch failed, …) degrades to BM25-only rather than throwing.

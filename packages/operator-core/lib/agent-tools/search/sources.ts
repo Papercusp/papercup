@@ -441,6 +441,38 @@ const sessionTurn: SearchSource = {
       },
     }));
   },
+  /** WI-4734: batched ts_headline for the FINAL fused top-N only (the engine
+   *  calls this under deferHighlight after passing wantHighlight:false to the
+   *  rankers above). source_id shape: `<sourceKind>:<sessionId>:<turnIdx>` —
+   *  parsed first-colon/last-colon so a sessionId containing ':' survives
+   *  (same rule as sessions/_shared parseTurnRef). One unnest join, never
+   *  per-hit queries. */
+  async hydrateHighlights(p: SearchSourceParams, sourceIds: string[]): Promise<Map<string, string>> {
+    const kinds: string[] = [];
+    const sids: string[] = [];
+    const idxs: number[] = [];
+    for (const id of sourceIds) {
+      const first = id.indexOf(':');
+      const last = id.lastIndexOf(':');
+      if (first < 0 || last <= first) continue;
+      const turnIdx = Number(id.slice(last + 1));
+      if (!Number.isInteger(turnIdx)) continue;
+      kinds.push(id.slice(0, first));
+      sids.push(id.slice(first + 1, last));
+      idxs.push(turnIdx);
+    }
+    if (kinds.length === 0) return new Map();
+    const rows = (await p.sql`
+      SELECT st.source_kind, st.session_id, st.turn_idx,
+             ts_headline('english', left(st.text, 4000),
+               plainto_tsquery('english', ${p.query}),
+               ${HEADLINE_OPTS}) AS highlight
+        FROM harness_shared.session_turns st
+        JOIN unnest(${kinds}::text[], ${sids}::text[], ${idxs}::int[]) AS t(k, s, i)
+          ON st.source_kind = t.k AND st.session_id = t.s AND st.turn_idx = t.i
+    `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; highlight: string }>;
+    return new Map(rows.map((r) => [`${r.source_kind}:${r.session_id}:${r.turn_idx}`, r.highlight]));
+  },
 };
 
 /**

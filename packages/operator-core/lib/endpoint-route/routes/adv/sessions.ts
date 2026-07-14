@@ -29,6 +29,7 @@ import {
 } from '../../../adv-sessions';
 import {
   mergeRosterWithAssignments,
+  resolveThinkingForEntries,
   dedupeEndedAgainstActive,
   pendingLaunchesToRosterEntries,
 } from '../../../adv-roster';
@@ -596,27 +597,45 @@ const searchTranscripts = defineTool({
 
     const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
     const { sql } = getOrgPg();
+
+    // WI-4734: the roster merge's fan-out of presence/assignment/session reads
+    // depends on NOTHING the search produces, yet it used to run AFTER the
+    // search — a pure serialization tax (~160ms warm). Start it NOW, fully
+    // concurrent with embed+search; only the per-entry "thinking" resolution
+    // needs the hit set, and that runs post-hoc below for JUST the matched
+    // entries (same safety condition as the WI-3924 `thinkingFor` gate: an
+    // unmatched entry is never surfaced by this endpoint).
+    const rosterP = mergeRosterWithAssignments({ workspaceId: null, thinkingFor: () => false });
+    rosterP.catch(() => {}); // re-awaited below; never an unhandled rejection
     // Interactive-search embed budget — a HUMAN is typing in the desktop pill,
     // so a slow/cold query-embedder must not block the result. The budget covers
     // BOTH the embedder ACQUISITION (buildQueryEmbedder → the resolveEmbedder
     // cascade → a local-ONNX sidecar spawn / pipeline cold-start — where a query
     // hung 15–30s on 2026-07-10 with OpenAI embed quota exhausted, WI-3860) AND
-    // the embed CALL (bounded inside runHybridSearch via embedTimeoutMs). Either
-    // exceeding it degrades to BM25-only (~20ms, real keyword hits) instead of
-    // blocking to the 30s watchdog + 408. The orphaned acquisition keeps warming
-    // the process-memoized pipeline so a LATER query can get semantic once hot;
-    // a route-abort (signal) still outranks the budget and rejects (→ 408).
-    // Env-tunable.
+    // the embed CALL. Either exceeding it degrades to BM25-only (~20ms, real
+    // keyword hits) instead of blocking to the 30s watchdog + 408. The orphaned
+    // acquisition keeps warming the process-memoized pipeline so a LATER query
+    // can get semantic once hot; a route-abort (signal) still outranks the
+    // budget and rejects (→ 408). Env-tunable.
+    //
+    // WI-4734: the acquisition used to be AWAITED here, serially, before the
+    // engine was even called — putting up to the whole budget in front of the
+    // BM25 leg, which never needed the embedder at all. Now the embedder handed
+    // to the engine is LAZY (acquire-then-embed inside one function), so the
+    // entire acquire+embed pipeline runs inside the engine's concurrent embed
+    // window (bounded by embedTimeoutMs), overlapped with BM25. An acquisition
+    // that resolves null (no embedder available) rejects the lazy call — the
+    // engine's existing catch degrades to BM25-only, exactly as before.
     const embedBudgetMs = Number(process.env.PAPERCUSP_TRANSCRIPT_EMBED_BUDGET_MS) || 4000;
-    const embedDeadlineAt = Date.now() + embedBudgetMs;
-    // Bound the embedder CONSTRUCTION (the cold-start seam runHybridSearch's
-    // embedTimeoutMs can't reach — it happens BEFORE the engine is called).
-    const embedder = await acquireEmbedderWithin(buildQueryEmbedder, embedBudgetMs, signal);
-    mark('embedAcquire');
-    // Whatever's left of the budget bounds the embed CALL inside runHybridSearch.
-    // Floor at 250ms so an acquisition that finished near the deadline still lets
-    // a NOW-warm embedder return (~20ms) rather than being handed a 0ms budget.
-    const embedTimeoutMs = Math.max(250, embedDeadlineAt - Date.now());
+    const embedderReadyP = acquireEmbedderWithin(buildQueryEmbedder, embedBudgetMs, signal);
+    embedderReadyP.catch(() => {}); // consumed lazily below; never unhandled
+    const embedder = async (text: string): Promise<number[]> => {
+      const e = await embedderReadyP;
+      if (!e) throw new Error('query embedder unavailable (acquire timed out or no provider)');
+      return e(text);
+    };
+    mark('embedAcquire'); // retained stage label; now ~0 by construction
+    const embedTimeoutMs = embedBudgetMs;
     // The route watchdog's signal is threaded into the engine so a timed-out
     // search stops running instead of grinding all sources to completion
     // after the 408 already went out (2026-07-09 incident: 34–69s server
@@ -634,6 +653,10 @@ const searchTranscripts = defineTool({
       filters,
       recency,
       signal,
+      // WI-4734: highlights only for the final top-N (one batched ts_headline
+      // hydration) instead of inline for the whole limit*3 × 2-ranker
+      // candidate pool — ~6× fewer headline computations per search.
+      deferHighlight: true,
     });
     mark('hybridSearch');
 
@@ -686,20 +709,26 @@ const searchTranscripts = defineTool({
     mark('metadataHydration');
 
     const groups = groupHitsBySession(turnHits);
-    // WI-3924: only the entries a search hit could actually resolve to (via
-    // matchActiveEntry downstream) need the expensive per-agent "thinking"
-    // resolution — skip it for the rest of the (potentially dozens-large)
-    // live roster. buildActiveEntryMatchFilter mirrors matchActiveEntry's
-    // exact match rules, so this is a pure perf gate, not a behavior change.
-    const thinkingFor = buildActiveEntryMatchFilter(groups);
+    // Await the t0-started roster (usually already settled — it ran concurrent
+    // with the search) + the hit-dependent session-row hydration.
     const [{ active }, sessionRows] = await Promise.all([
-      mergeRosterWithAssignments({ workspaceId: null, thinkingFor }),
+      rosterP,
       advSessionsByTranscriptHandles({
         sessionIds: groups.filter((g) => g.sourceKind === 'claude').map((g) => g.sessionId),
         ompThreadIds: groups.filter((g) => g.sourceKind === 'omp').map((g) => g.sessionId),
       }),
     ]);
     mark('rosterAndSessionRows');
+    // WI-3924 (now post-hoc, WI-4734): only the entries a search hit could
+    // actually resolve to (via matchActiveEntry downstream) need the expensive
+    // per-agent "thinking" resolution — the roster merge above skipped ALL of
+    // it so it could start before the hit set existed. buildActiveEntryMatchFilter
+    // mirrors matchActiveEntry's exact match rules, so this is a pure perf
+    // gate, not a behavior change.
+    const thinkingFor = buildActiveEntryMatchFilter(groups);
+    signal.throwIfAborted();
+    await resolveThinkingForEntries(active.filter(thinkingFor));
+    mark('thinking');
     const sessions = classifySessionGroups(groups, active, sessionRows);
     mark('classify');
     return new Response(
