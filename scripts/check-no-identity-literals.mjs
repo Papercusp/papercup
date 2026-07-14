@@ -7,13 +7,14 @@
  * WHY A THIRD RULE
  * All 4 documented 0.0.9 leaks (QuickPanelHeaderControls.tsx,
  * mac-transport-death-self-diagnosis.mdx, mcp-transport-resilience-2026-07-13.md,
- * mcp-dark-watchdog.ts) were `[owner:Avi …]` provenance tags — already fully
- * closed by check-no-owner-name-tags.mjs (baseline 0 as of 2026-07-14). But
+ * mcp-dark-watchdog.ts) were named `[owner:<name> …]` provenance tags — already
+ * fully closed by check-no-owner-name-tags.mjs (baseline 0 as of 2026-07-14). But
  * WI-4419's release-cut gate (papercusp-desktop/bin/audit-release-bundle.py
  * :: identity_literals()) hunts a WIDER set than either sibling lint covers:
  * this box's git user.name / user.email and its hostname, matched as BARE
- * literals — "Avi asked us to…" with no `[owner:]` wrapper, or a hostname/
- * email pasted into a debug comment — neither of which is a `[owner:` tag nor
+ * literals — e.g. an owner's first name dropped into a comment with no
+ * `[owner:]` wrapper at all, or a hostname/email pasted into a debug note —
+ * neither of which is a `[owner:` tag nor
  * a `/home/<user>/` path, so neither existing lint would catch it. That gap is
  * real even though it has 0 historical instances yet: the class is "whatever
  * this box's identity is" and the two existing rules only close two of its
@@ -61,12 +62,19 @@ const GENERIC_ACCOUNTS = new Set([
 const isGenericHost = (h) => /^(runner|ci-|localhost)/i.test(h);
 
 /** Same shipped/not-shipped scope as the two sibling identity lints — the three
- *  rules MUST agree on what "shipped" means or a gap opens between them. */
+ *  rules MUST agree on what "shipped" means or a gap opens between them. Also
+ *  excludes `scratchpad/` (WI-4776): unlike its two siblings, this rule hunts
+ *  BARE literals with no structural anchor (no `[owner:` tag, no `/home/`
+ *  shape) — that widens its surface to catch things like a scratch investigation
+ *  artifact that RECORDS a past leak as data (e.g. a lexicon-audit dump), which
+ *  is not itself a leak. `scratchpad/` is not in stage-source-tree.sh's ship
+ *  allowlist either way, so excluding it costs nothing real. */
 const SKIP = [
   /(^|\/)node_modules\//, /(^|\/)\.git\//, /(^|\/)dist(-\w+)?\//, /(^|\/)build\//,
   /(^|\/)coverage\//, /(^|\/)_retired\//, /(^|\/)\.papercusp\//, /(^|\/)docs\.old\.\d+\//,
   /(^|\/)agent-briefs\//, /^docs\/plans\//, /(^|\/)public\/internal\/docs\//,
   /(^|\/)\.harness\//, /(^|\/)\.tmp(-[^/]*)?\//, /(^|\/)\.claude\//,
+  /^scratchpad\//, /^scratch\//,
   /(^|\/)__pycache__\//, /\.pyc$/,
   /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|zst|gz|tgz|zip|pdf|mp[34]|wav|lock)$/i,
   /(^|\/)package-lock\.json$/, /(^|\/)junit\.xml$/,
@@ -100,8 +108,10 @@ function resolveIdentityLiterals() {
 }
 
 /** needs_word_boundary() ported verbatim: a SHORT alnum literal must match as a
- *  whole word (case-sensitive) or it drowns in false positives (`Avi` inside
- *  `.avi`/`Avicenna`/a vendored POS lexicon entry). */
+ *  whole word (case-sensitive) or it drowns in false positives — a three-letter
+ *  first name also hits a matching file extension, a longer proper noun that
+ *  starts with it, and vendored POS-lexicon entries (same rationale as
+ *  check-no-owner-name-tags.mjs's OWNER_TAG matching). */
 const needsWordBoundary = (lit) => lit.length < 6 && /^[A-Za-z0-9]+$/.test(lit);
 
 /** is_vendor() ported verbatim: a low-entropy (short/common) literal is only
@@ -185,7 +195,7 @@ if (findings.length > limit) {
 }
 console.error(
   '\n  FIX: remove the literal, or use the sanctioned provenance form that keeps the meaning\n' +
-    '  without the name — `[owner:Avi 2026-07-13]` -> `[owner 2026-07-13]` (see\n' +
+    "  without the name — `[owner:<name> <date>]` -> `[owner <date>]` (see\n" +
     '  check-no-owner-name-tags.mjs) — never add an exception to make the build pass.\n',
 );
 process.exit(1);

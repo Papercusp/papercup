@@ -51,6 +51,10 @@ const GENERIC_USERS = new Set([
   // "no /home/<user>/ in source" fires on the one place a fake home path is the
   // entire point. These name no person; they are the John-Doe set.
   'jdoe', 'alice', 'bob', 'buildbot', 'otheruser', 'someuser',
+  // WI-4776: illustrative placeholder SEGMENTS used in docs to show the SHAPE of
+  // a path (e.g. `/absolute/home/path` in a tool-arg example) — the word after
+  // /home/ there is not a username at all, just prose continuing the sentence.
+  'path',
 ]);
 /** Anonymous by construction: a redaction (`/home/.../`, `/home/<user>/`) or a
  *  1–2 char stand-in a test/doc uses precisely because it names nobody. */
