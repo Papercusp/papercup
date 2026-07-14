@@ -1078,6 +1078,11 @@ import './cupboard/publish-template';
 // install-blueprint-io.ts / install-io.ts with the loopback install routes.
 import './cupboard/install-blueprint';
 import './cupboard/install-plugin';
+// cupboard-agent-tool-coverage-2026-07-14 P-007 — the agent-callable template
+// install (cupboard:install-template over install-template-io.ts, shared with the
+// loopback POST /cupboard/install-template route). Completes the install-leg
+// symmetry: plugin/pack · blueprint · template all install from the Cupboard by ask.
+import './cupboard/install-template';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).

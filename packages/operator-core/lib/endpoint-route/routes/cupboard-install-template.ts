@@ -16,15 +16,8 @@
  * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's
  * Host-header gate, like the sibling cupboard routes. The Cupboard ships UNGATED.
  */
-import { tmpdir } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
-import {
-  installTemplateFromCupboardCore,
-  InstallTemplateError,
-} from '../../cupboard/install-template-core';
-import { gitCloneShallow } from '../../cupboard/install-io';
-import { userTemplatesDir } from '../../cupboard/template-store';
-import { resolveTemplateListing } from '../../cupboard/templates';
+import { installTemplateFromCupboard } from '../../cupboard/install-template-io';
 
 export default defineTool({
   method: 'POST',
@@ -43,38 +36,21 @@ export default defineTool({
       return Response.json({ ok: false, error: 'invalid_json' }, { status: 400 });
     }
 
-    let githubUrl = typeof body.githubUrl === 'string' ? body.githubUrl.trim() : '';
-    let listingRef = typeof body.listingRef === 'string' ? body.listingRef.trim() : '';
-
-    if (!githubUrl && body.listingId) {
-      const resolved = await resolveTemplateListing(String(body.listingId));
-      if ('error' in resolved) {
-        return Response.json({ ok: false, error: resolved.error }, { status: resolved.status });
-      }
-      githubUrl = resolved.githubUrl;
-      if (!listingRef) listingRef = resolved.ref;
-    }
-    if (!githubUrl) {
-      return Response.json({ ok: false, error: 'githubUrl or listingId required' }, { status: 400 });
-    }
-    if (!listingRef) {
-      return Response.json({ ok: false, error: 'listingRef required (the template subdir)' }, { status: 400 });
-    }
-
-    try {
-      const result = await installTemplateFromCupboardCore(
-        { githubUrl, listingRef },
-        { cloneRepo: gitCloneShallow, userTemplatesDir, tmpDir: tmpdir },
-      );
-      return Response.json(result);
-    } catch (e) {
-      if (e instanceof InstallTemplateError) {
-        return Response.json({ ok: false, error: e.message }, { status: e.status });
-      }
+    // D-001 reuse-first: the SAME orchestrator the cupboard:install-template agent
+    // tool calls (install-template-io.ts) — listing resolution + real-dep wiring +
+    // structured result all live in one place. Map its result to the route's
+    // pre-existing response shape (on success: the raw core result).
+    const outcome = await installTemplateFromCupboard({
+      ...(body.githubUrl ? { githubUrl: body.githubUrl } : {}),
+      ...(body.listingRef ? { listingRef: body.listingRef } : {}),
+      ...(body.listingId ? { listingId: body.listingId } : {}),
+    });
+    if (!outcome.ok) {
       return Response.json(
-        { ok: false, error: 'install failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) },
-        { status: 500 },
+        { ok: false, error: outcome.error, ...(outcome.detail ? { detail: outcome.detail } : {}) },
+        { status: outcome.status },
       );
     }
+    return Response.json(outcome.result);
   },
 });

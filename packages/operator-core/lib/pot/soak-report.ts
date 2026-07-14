@@ -26,6 +26,7 @@ import {
   resolvePotMembership,
   type FrontierAdmission,
 } from './survey';
+import { DEFAULT_STALE_RECOVERING_MS, SUMMARY_INACTIVE_UNIT_STATES } from './placement-watchdog';
 
 const execFileAsync = promisify(execFile);
 
@@ -85,6 +86,8 @@ export interface InfraCurseMetrics {
   placementsSeen: number;
   infraCurses: number;
   rate: number | null;
+  recoveringOpen: number;
+  staleRecovering: number;
 }
 
 export interface DeployLatencyMetrics {
@@ -259,6 +262,11 @@ export function computeSoakReport(input: SoakReportInput): PotSoakReport {
   } else if (input.infraCurse.infraCurses > 0) {
     reasons.push(`infra-attributed curse rate non-zero (${Math.round(input.infraCurse.rate * 100)}%)`);
   }
+  if (input.infraCurse.staleRecovering > 0) {
+    reasons.push(
+      `stale placement recovery exceeds ${Math.round(DEFAULT_STALE_RECOVERING_MS / 3_600_000)}h (${input.infraCurse.staleRecovering})`,
+    );
+  }
   for (const role of input.roleSuccess) {
     if (role.successRate == null) {
       reasons.push(`no terminal ${role.role} turns in window`);
@@ -322,6 +330,8 @@ type SpawnAggRow = {
 type CurseAggRow = {
   placements_seen: number;
   infra_curses: number;
+  recovering_open: number;
+  stale_recovering: number;
 };
 
 type EscalationAggRow = {
@@ -488,16 +498,39 @@ export async function readPotSoakReport(
        GROUP BY 1
     `,
     sql<CurseAggRow[]>`
-      SELECT count(*)::int AS placements_seen,
+      WITH scoped AS (
+        SELECT p.*,
+               EXISTS (
+                 SELECT 1
+                   FROM harness_shared.harness_features_consolidated u
+                  WHERE u.workspace_id = p.workspace_id
+                    AND u.feature_id = p.work_item_id
+                    AND (p.harness_slug IS NULL OR u.harness_slug = p.harness_slug)
+                    AND u.status <> ALL(${sql.array(SUMMARY_INACTIVE_UNIT_STATES)})
+               ) AS unit_active
+          FROM harness_shared.pot_placements p
+         WHERE p.workspace_id = ${workspaceId}
+           AND p.install_slug = ${potSlug}
+      )
+      SELECT count(*) FILTER (
+               WHERE updated_at >= now() - make_interval(hours => ${windowHours})
+             )::int AS placements_seen,
              count(*) FILTER (
                WHERE status = 'cursed'
                  AND COALESCE(fail_count, 0) = 0
                  AND COALESCE(infra_loss_count, 0) > 0
-             )::int AS infra_curses
-        FROM harness_shared.pot_placements
-       WHERE workspace_id = ${workspaceId}
-         AND install_slug = ${potSlug}
-         AND updated_at >= now() - make_interval(hours => ${windowHours})
+                 AND updated_at >= now() - make_interval(hours => ${windowHours})
+             )::int AS infra_curses,
+             count(*) FILTER (
+               WHERE status = 'recovering' AND unit_active
+             )::int AS recovering_open,
+             count(*) FILTER (
+               WHERE status = 'recovering'
+                 AND unit_active
+                 AND COALESCE(recovery_started_at, last_recovery_at, updated_at, placed_at)
+                   <= now() - ${DEFAULT_STALE_RECOVERING_MS} * interval '1 millisecond'
+             )::int AS stale_recovering
+        FROM scoped
     `,
     sql<EscalationAggRow[]>`
       WITH scoped AS (
@@ -591,7 +624,7 @@ export async function readPotSoakReport(
     countQuarantinedFrontier(sql, workspaceId, surveySlugs),
   ]);
 
-  const curse = curseRows[0] ?? { placements_seen: 0, infra_curses: 0 };
+  const curse = curseRows[0] ?? { placements_seen: 0, infra_curses: 0, recovering_open: 0, stale_recovering: 0 };
   const escalation = escalationRows[0] ?? { open_now: 0, older_open_count: 0, newer_open_count: 0 };
   const pipeline = pipelineAggRows[0] ?? { green_total: 0, green_success: 0 };
   const deployLatency = computeDeployLatency(pipelineEventRows);
@@ -617,6 +650,8 @@ export async function readPotSoakReport(
       placementsSeen: Number(curse.placements_seen ?? 0),
       infraCurses: Number(curse.infra_curses ?? 0),
       rate: Number(curse.placements_seen ?? 0) > 0 ? Number(curse.infra_curses ?? 0) / Number(curse.placements_seen ?? 0) : null,
+      recoveringOpen: Number(curse.recovering_open ?? 0),
+      staleRecovering: Number(curse.stale_recovering ?? 0),
     },
     escalationBacklog: {
       openNow: Number(escalation.open_now ?? 0),

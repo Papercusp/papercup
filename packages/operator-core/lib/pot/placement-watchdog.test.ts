@@ -87,6 +87,7 @@ function obs(over: Partial<PlacementObservation>): PlacementObservation {
     infraLossCount: 0,
     placementStatus: null,
     lastRecoveryAtMs: null,
+    recoveryStartedAtMs: null,
     now: NOW,
     ...over,
   };
@@ -384,6 +385,37 @@ describe('evaluatePlacement — P-020 recovery debounce', () => {
     const d = evaluatePlacement(obs({ placementStatus: 'working', failCount: 1, lastRecoveryAtMs: NOW - 1000 }), CFG);
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') expect(d.nextFailCount).toBe(2);
+  });
+  it('a fresh cup-less recovery keeps re-place attempts flat', () => {
+    const d = evaluatePlacement(
+      obs({
+        placementStatus: 'recovering',
+        recoveryStartedAtMs: NOW - DEFAULT_STALE_RECOVERING_MS + 1,
+        lastRecoveryAtMs: NOW - CFG.recoveryDebounceMs - 1,
+        hasServingCup: false,
+        failCount: 1,
+      }),
+      CFG,
+    );
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.nextFailCount).toBe(1);
+  });
+  it('an overdue recovery halts before debounce can refresh it again', () => {
+    const d = evaluatePlacement(
+      obs({
+        placementStatus: 'recovering',
+        recoveryStartedAtMs: NOW - DEFAULT_STALE_RECOVERING_MS,
+        lastRecoveryAtMs: NOW - 1,
+        hasServingCup: false,
+      }),
+      CFG,
+    );
+    expect(d.kind).toBe('stale-recovery');
+  });
+  it('a stranded recovery stays latched until a live holder or terminal unit clears it', () => {
+    expect(evaluatePlacement(obs({ placementStatus: 'stranded' }), CFG).kind).toBe('latched');
+    expect(evaluatePlacement(obs({ placementStatus: 'stranded', hasLiveHolder: true }), CFG).kind).toBe('healthy');
+    expect(evaluatePlacement(obs({ placementStatus: 'stranded', unitTerminal: true }), CFG).kind).toBe('completed');
   });
 });
 

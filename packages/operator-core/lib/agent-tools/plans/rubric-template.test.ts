@@ -11,6 +11,9 @@ import { describe, it, expect } from 'vitest';
 import {
   rubricTemplateDataSchema,
   rubricCriterionSchema,
+  rubricCriterionWindowSchema,
+  resolveCriterionWindow,
+  DEFAULT_CRITERION_WINDOW_MS,
   RUBRIC_TEMPLATE,
   RUBRIC_TEMPLATE_NAME,
   type RubricTemplateData,
@@ -84,6 +87,89 @@ describe('rubric template schema', () => {
   });
 });
 
+describe('structured criterion grading-window (EI-12146)', () => {
+  it('accepts a rolling window on a criterion', () => {
+    const r = rubricCriterionSchema.safeParse({
+      ...minimalCriterion,
+      window: { kind: 'rolling', ms: 48 * 60 * 60 * 1000 },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts a post-watermark window on a criterion', () => {
+    const r = rubricTemplateDataSchema.safeParse({
+      ...minimalData,
+      criteria: [{ ...minimalCriterion, window: { kind: 'post-watermark', watermarkRef: 'bg-host-restart' } }],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects 'rolling' without ms — a rolling window with no length judges nothing definite", () => {
+    expect(rubricCriterionWindowSchema.safeParse({ kind: 'rolling' }).success).toBe(false);
+  });
+
+  it("rejects 'post-watermark' without watermarkRef", () => {
+    expect(rubricCriterionWindowSchema.safeParse({ kind: 'post-watermark' }).success).toBe(false);
+  });
+
+  it('rejects an unknown kind and unknown fields (strict, fail-loud)', () => {
+    expect(rubricCriterionWindowSchema.safeParse({ kind: 'lifetime' }).success).toBe(false);
+    expect(
+      rubricCriterionWindowSchema.safeParse({ kind: 'rolling', ms: 1000, days: 2 }).success,
+    ).toBe(false);
+  });
+});
+
+describe('resolveCriterionWindow (EI-12146) — one resolution, every consumer', () => {
+  const nowMs = Date.parse('2026-07-14T22:00:00Z');
+
+  it('no declared window → the default rolling box, tagged source:default', () => {
+    const r = resolveCriterionWindow(undefined, { nowMs });
+    expect(r).toEqual({
+      sinceMs: nowMs - DEFAULT_CRITERION_WINDOW_MS,
+      kind: 'rolling',
+      windowMs: DEFAULT_CRITERION_WINDOW_MS,
+      source: 'default',
+    });
+  });
+
+  it('a rolling window resolves now - ms', () => {
+    const r = resolveCriterionWindow({ kind: 'rolling', ms: 3_600_000 }, { nowMs });
+    expect(r.sinceMs).toBe(nowMs - 3_600_000);
+    expect(r.source).toBe('window');
+    expect(r.kind).toBe('rolling');
+  });
+
+  it('a post-watermark window resolves through the supplied watermark — the generation boundary, not a look-back', () => {
+    const restartMs = nowMs - 10 * 60 * 1000;
+    const r = resolveCriterionWindow(
+      { kind: 'post-watermark', watermarkRef: 'bg-host-restart' },
+      { nowMs, watermarks: { 'bg-host-restart': restartMs } },
+    );
+    expect(r).toEqual({ sinceMs: restartMs, kind: 'post-watermark', watermarkRef: 'bg-host-restart', source: 'window' });
+  });
+
+  it('an UNRESOLVED watermark degrades to the rolling default WITH provenance — never silently judges the wrong window', () => {
+    const r = resolveCriterionWindow(
+      { kind: 'post-watermark', watermarkRef: 'bg-host-restart' },
+      { nowMs, watermarks: {} },
+    );
+    expect(r.source).toBe('watermark-unresolved');
+    expect(r.kind).toBe('rolling');
+    expect(r.sinceMs).toBe(nowMs - DEFAULT_CRITERION_WINDOW_MS);
+    // The failed ref stays visible so a consumer can surface WHICH watermark was missing.
+    expect(r.watermarkRef).toBe('bg-host-restart');
+  });
+
+  it('honors a caller default (defaultMs) for both the no-window and fallback paths', () => {
+    const defaultMs = 7 * 24 * 60 * 60 * 1000;
+    expect(resolveCriterionWindow(undefined, { nowMs, defaultMs }).sinceMs).toBe(nowMs - defaultMs);
+    expect(
+      resolveCriterionWindow({ kind: 'post-watermark', watermarkRef: 'x' }, { nowMs, defaultMs }).sinceMs,
+    ).toBe(nowMs - defaultMs);
+  });
+});
+
 describe('self-registration', () => {
   it('importing the module registers the `rubric` template', () => {
     expect(isKnownPlanTemplate(RUBRIC_TEMPLATE_NAME)).toBe(true);
@@ -105,5 +191,14 @@ describe('shape parity with the v1 Rubric', () => {
     // If the schema's criterion shape ever drifts from RubricCriterion, this fails tsc.
     const criterion: RubricCriterion = data.criteria[0];
     expect(criterion.key).toBe('placement-health');
+  });
+
+  it('a parsed criterion WITH a window stays assignable (EI-12146 parity pin)', () => {
+    const data: RubricTemplateData = rubricTemplateDataSchema.parse({
+      ...minimalData,
+      criteria: [{ ...minimalCriterion, window: { kind: 'post-watermark', watermarkRef: 'bg-host-restart' } }],
+    });
+    const criterion: RubricCriterion = data.criteria[0];
+    expect(criterion.window?.kind).toBe('post-watermark');
   });
 });

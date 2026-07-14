@@ -268,6 +268,9 @@ export interface PlacementObservation {
   placementStatus: string | null;
   /** When the last recovery wake fired (debounce), ms epoch, or null. */
   lastRecoveryAtMs: number | null;
+  /** When this uninterrupted recovery episode began, ms epoch, or null. Unlike
+   *  lastRecoveryAtMs, this does not move when another recovery wake fires. */
+  recoveryStartedAtMs: number | null;
   /** WI-677 round 2 — is there a SERVING CUP at all (a holder or an anchor spawn in the
    *  cup window)? A recovering item the Mug has not re-placed yet has NONE — that is
    *  not a failed attempt, so the sweep must re-place-wake WITHOUT counting. Before
@@ -324,6 +327,7 @@ export type PlacementDecision =
   | { kind: 'parked'; reason: string }
   | { kind: 'recover'; nextFailCount: number; nextInfraLossCount: number; reason: string; infraAttributed?: boolean }
   | { kind: 'debounced' }
+  | { kind: 'stale-recovery'; reason: string }
   | { kind: 'breaker'; nextFailCount: number; nextInfraLossCount: number; reason: string; infraAttributed?: boolean }
   | { kind: 'latched' }
   | { kind: 'abandon'; reason: string };
@@ -388,7 +392,18 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
   // breaker only halts for real if a cursed unit short-circuits before the failed
   // path. (terminal / live-holder above already clear the curse the moment it's
   // genuinely resolved or re-placed-and-working.)
-  if (obs.placementStatus === 'cursed') return { kind: 'latched' };
+  if (obs.placementStatus === 'cursed' || obs.placementStatus === 'stranded') return { kind: 'latched' };
+
+  if (
+    obs.placementStatus === 'recovering' &&
+    obs.recoveryStartedAtMs != null &&
+    obs.now - obs.recoveryStartedAtMs >= DEFAULT_STALE_RECOVERING_MS
+  ) {
+    return {
+      kind: 'stale-recovery',
+      reason: `recovery made no progress for at least ${Math.round(DEFAULT_STALE_RECOVERING_MS / 3_600_000)}h`,
+    };
+  }
 
   // Non-terminal unit with no live holder → this placement failed.
   // Debounce repeated wakes only while we are ALREADY mid-recovery for it.
@@ -664,6 +679,7 @@ interface PlacementRow {
   /** F-FIX-041 — the bounded infra-loss counter (operator dormancy / zombie cups). */
   infra_loss_count: number;
   last_recovery_ms: number | null;
+  recovery_started_ms: number | null;
   /** WI-677 round 2 (mig 440) — the dead attempt (cup spawn id) whose loss was last
    *  COUNTED, so a sweep never recounts the same corpse (fail_count = attempts, not
    *  sweeps). */
@@ -810,15 +826,16 @@ async function upsertPlacement(
   // The org PG client (getOrgPg) rejects a raw JS Date bound to timestamptz —
   // it must receive an ISO string (cf. store-pg.ts; org-pg-client-rejects-raw-date).
   const recoveryAt = p.bumpRecovery ? new Date(p.now).toISOString() : null;
+  const recoveryStartedAt = p.status === 'recovering' ? new Date(p.now).toISOString() : null;
   await sql`
     INSERT INTO harness_shared.pot_placements
       (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
        cup_spawn_id, cup_owner_id, status, fail_count, infra_loss_count, last_loss_spawn_id, last_disposition,
-       escalation_msg_id, last_recovery_at, last_seen_at, updated_at)
+       escalation_msg_id, last_recovery_at, recovery_started_at, last_seen_at, updated_at)
     VALUES (
       ${p.workspaceId}, ${p.installSlug}, ${p.workItemId}, ${p.harnessSlug}, ${p.mugOwnerId},
       ${p.cupSpawnId}, ${p.cupOwnerId}, ${p.status}, ${p.failCount}, ${p.infraLossCount ?? 0}, ${p.lastLossSpawnId}, ${p.disposition},
-      ${p.escalationMsgId ?? null}, ${recoveryAt}, ${new Date(p.now).toISOString()}, ${new Date(p.now).toISOString()}
+      ${p.escalationMsgId ?? null}, ${recoveryAt}, ${recoveryStartedAt}, ${new Date(p.now).toISOString()}, ${new Date(p.now).toISOString()}
     )
     ON CONFLICT (workspace_id, install_slug, work_item_id) DO UPDATE SET
       harness_slug      = COALESCE(EXCLUDED.harness_slug, harness_shared.pot_placements.harness_slug),
@@ -832,6 +849,15 @@ async function upsertPlacement(
       last_disposition  = EXCLUDED.last_disposition,
       escalation_msg_id = COALESCE(EXCLUDED.escalation_msg_id, harness_shared.pot_placements.escalation_msg_id),
       last_recovery_at  = COALESCE(EXCLUDED.last_recovery_at, harness_shared.pot_placements.last_recovery_at),
+      recovery_started_at = CASE
+        WHEN EXCLUDED.status = 'recovering' THEN
+          CASE
+            WHEN harness_shared.pot_placements.status = 'recovering'
+              THEN COALESCE(harness_shared.pot_placements.recovery_started_at, EXCLUDED.recovery_started_at)
+            ELSE EXCLUDED.recovery_started_at
+          END
+        ELSE NULL
+      END,
       last_seen_at      = EXCLUDED.last_seen_at,
       updated_at        = EXCLUDED.updated_at`;
 }
@@ -1052,12 +1078,16 @@ export async function reconcileOnePot(
   const placeRows = await sql<PlacementRow[]>`
     SELECT work_item_id, status, fail_count, infra_loss_count,
            extract(epoch from last_recovery_at) * 1000 AS last_recovery_ms,
+           extract(epoch from recovery_started_at) * 1000 AS recovery_started_ms,
            last_loss_spawn_id,
            escalation_msg_id,
            extract(epoch from last_seen_at) * 1000 AS last_seen_ms
       FROM harness_shared.pot_placements
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}`;
   const placeById = new Map<string, PlacementRow>(placeRows.map((p) => [p.work_item_id, p]));
+  for (const p of placeRows) {
+    if (OPEN_PLACEMENT_STATES.has(p.status)) candidateIds.add(p.work_item_id);
+  }
 
   // F-FIX-041 — operator-dormancy detection (item-INDEPENDENT). The watchdog runs on the
   // 30s routinesTick; the most-recent last_seen_at over this pot's placements is its
@@ -1106,6 +1136,7 @@ export async function reconcileOnePot(
         infraLossCount: existing?.infra_loss_count ?? 0,
         placementStatus: existing?.status ?? null,
         lastRecoveryAtMs: existing?.last_recovery_ms ?? null,
+        recoveryStartedAtMs: existing?.recovery_started_ms ?? null,
         hasServingCup: servingCup != null, // WI-677 r2 — no cup ⇒ nothing to count
         servingCupSpawnId: servingCup?.spawnId ?? null,
         lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
@@ -1130,6 +1161,13 @@ export async function reconcileOnePot(
 
       switch (decision.kind) {
         case 'healthy':
+          if (existing?.status === 'stranded' && existing.escalation_msg_id) {
+            await resolvePlacementEscalation(
+              existing.escalation_msg_id,
+              unitId,
+              `auto-resolved: work-item ${unitId} has a live serving cup; recovery is making progress again`,
+            );
+          }
           await upsertPlacement(sql, {
             ...base,
             status: 'working',
@@ -1139,6 +1177,27 @@ export async function reconcileOnePot(
             disposition: 'working',
           });
           break;
+        case 'stale-recovery': {
+          const ageHours = Math.max(0, Math.floor((now - (obs.recoveryStartedAtMs ?? now)) / 3_600_000));
+          const msgId = await escalateStaleRecovery(unitId, base.harnessSlug, ageHours);
+          await upsertPlacement(sql, {
+            ...base,
+            status: 'stranded',
+            failCount: obs.failCount,
+            infraLossCount: obs.infraLossCount,
+            lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
+            disposition: 'recovery-timeout',
+            escalationMsgId: msgId,
+          });
+          out.push({
+            workspaceId,
+            installSlug,
+            workItemId: unitId,
+            decision: 'stale-recovery',
+            detail: decision.reason,
+          });
+          break;
+        }
         case 'completed':
           if (existing?.status !== 'completed') {
             // EI-972 — suppress any cursed-placement escalation for this item since
@@ -1259,18 +1318,18 @@ export async function reconcileOnePot(
           // NOT bump fail_count — the latch holds it steady at the breaker count.
           await upsertPlacement(sql, {
             ...base,
-            status: 'cursed',
+            status: obs.placementStatus === 'stranded' ? 'stranded' : 'cursed',
             failCount: obs.failCount,
             lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
             infraLossCount: obs.infraLossCount,
-            disposition: 'breaker',
+            disposition: obs.placementStatus === 'stranded' ? 'recovery-timeout' : 'breaker',
           });
           out.push({
             workspaceId,
             installSlug,
             workItemId: unitId,
             decision: 'latched',
-            detail: `cursed, halted (fail_count ${obs.failCount} frozen)`,
+            detail: `${obs.placementStatus}, halted (fail_count ${obs.failCount} frozen)`,
           });
           break;
         case 'debounced':
@@ -1406,6 +1465,23 @@ async function escalateCursedPlacement(unitId: string, harness: string | null, f
     return rec.msg_id;
   } catch (e) {
     console.warn(`[pot-placement-watchdog] cursed escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`);
+    return null;
+  }
+}
+
+async function escalateStaleRecovery(unitId: string, harness: string | null, ageHours: number): Promise<string | null> {
+  try {
+    const rec = await openEscalation(watchdogIdentity, {
+      severity: 'advisory',
+      summary: `Placement recovery stalled: ${unitId} made no progress for ${ageHours}h`,
+      body:
+        `Work-item ${unitId}${harness ? ` (${harness})` : ''} remained in placement recovery for ${ageHours} hours ` +
+        `without acquiring a live cup or reaching a terminal state. The watchdog has stopped automatic recovery ` +
+        `and marked the placement stranded. Verify the work, then re-place, split, deprecate, or resolve it.`,
+    });
+    return rec.msg_id;
+  } catch (e) {
+    console.warn(`[pot-placement-watchdog] stale-recovery escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`);
     return null;
   }
 }
@@ -1621,10 +1697,8 @@ async function reconcileStrandedWork(
   return out;
 }
 
-/** EI-8437 — how long a `recovering` placement can sit untouched (no reconcile
- *  activity — {@link summarizeOpenPlacements}'s `p.updated_at`, which only moves
- *  on an actual reconcile touch, not every 30s tick) before the brief stops just
- *  re-noting it as stale and starts telling the reader to VERIFY-and-close.
+/** EI-8437 / EI-12108 — maximum duration of one uninterrupted recovery episode
+ *  before the watchdog halts it as stranded and the soak gate fails loud.
  *  Observed live: WI-329 sat `recovering` from 2026-07-03 through 2026-07-07
  *  (5+ days) across 3 separate Mug triage sessions that each independently
  *  concluded "needs reconciliation" but never actually verified the underlying
@@ -1632,9 +1706,7 @@ async function reconcileStrandedWork(
  *  overdue instead of making every reader re-derive the staleness by hand.
  *  Env-overridable like the other watchdog tunables. */
 export const DEFAULT_STALE_RECOVERING_MS = (() => {
-  const v = Number(
-    process.env.PAPERCUSP_POT_PLACEMENT_STALE_MS ?? process.env.PAPERCUSP_POT_PLACEMENT_STALE_MS ?? 24 * 60 * 60_000,
-  );
+  const v = Number(process.env.PAPERCUSP_POT_PLACEMENT_STALE_MS ?? 24 * 60 * 60_000);
   return Number.isFinite(v) && v >= 0 ? v : 24 * 60 * 60_000;
 })();
 

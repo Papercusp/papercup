@@ -204,6 +204,30 @@ describe('programSuccessReadScopes — release window and singleton host', () =>
     expect(scopes.cadence.harnessSlug).toBe(SCOUT_TICK_INSTALL_SLUG);
     expect(scopes.suIdeate.harnessSlug).toBeUndefined();
   });
+
+  it('an ABSOLUTE sinceMs floors the tick window at the generation boundary (EI-12148)', () => {
+    // The motivating defect: a fix ships, the bg-host restarts, and the rolling 48h box
+    // keeps judging PRE-fix errors for up to 48h (reported 9.0% while the true post-restart
+    // rate was 0/8). sinceMs = the restart instant judges only the RUNNING generation.
+    const nowMs = Date.parse('2026-07-14T22:00:00Z');
+    const restartMs = Date.parse('2026-07-14T18:08:24Z');
+    const scopes = programSuccessReadScopes({ nowMs, sinceMs: restartMs });
+    expect(scopes.cadence.tickSinceMs).toBe(restartMs);
+    expect(scopes.tickSinceMs).toBe(restartMs);
+    // The derived window length is provenance, not a second knob.
+    expect(scopes.tickWindowMs).toBe(nowMs - restartMs);
+  });
+
+  it('sinceMs OVERRIDES cycleWindowMs; omitted, the rolling default is byte-identical (no behavior change)', () => {
+    const nowMs = Date.parse('2026-07-14T22:00:00Z');
+    const floor = nowMs - 60_000;
+    const withBoth = programSuccessReadScopes({ nowMs, sinceMs: floor, cycleWindowMs: 1_000_000 });
+    expect(withBoth.cadence.tickSinceMs).toBe(floor);
+    // Omitted args must reproduce the pre-EI-12148 read exactly — existing callers see zero diff.
+    const defaulted = programSuccessReadScopes({ nowMs });
+    expect(defaulted.tickWindowMs).toBe(CYCLE_ERROR_WINDOW_MS);
+    expect(defaulted.cadence.tickSinceMs).toBe(nowMs - CYCLE_ERROR_WINDOW_MS);
+  });
 });
 
 describe('evaluateProgramSuccess — ledger reconciliation', () => {

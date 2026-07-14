@@ -99,9 +99,9 @@ async function seedUnit(opts: {
 
 async function readPlacement(
   id: string,
-): Promise<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null } | null> {
-  const rows = await sql<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null }[]>`
-    SELECT status, fail_count, infra_loss_count, escalation_msg_id
+): Promise<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null; recovery_started_at: string | Date | null } | null> {
+  const rows = await sql<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null; recovery_started_at: string | Date | null }[]>`
+    SELECT status, fail_count, infra_loss_count, escalation_msg_id, recovery_started_at
       FROM harness_shared.pot_placements
      WHERE workspace_id = ${WS} AND install_slug = ${POT} AND work_item_id = ${id}`;
   return rows[0] ?? null;
@@ -159,9 +159,44 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     const p = await readPlacement('F-100');
     expect(p?.status).toBe('recovering');
     expect(p?.fail_count).toBe(1);
+    expect(p?.recovery_started_at).not.toBeNull();
     expect(out.find((r) => r.workItemId === 'F-100')?.decision).toBe('recover');
     expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1);
     expect(mocks.wakeRecipients.mock.calls[0]![0]).toEqual([MUG]);
+  });
+
+  it('EI-12108: a cup-less open placement is still reconciled and a parked unit converges to blocked', async () => {
+    await sql`
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         status, fail_count, last_recovery_at, recovery_started_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${POT}, 'F-ORPHAN-PARKED', ${POT}, ${MUG},
+              'recovering', 1, ${new Date(NOW - 60_000)}, ${new Date(NOW - 60 * 60_000)}, now(), now(), now())`;
+    await seedUnit({ id: 'F-ORPHAN-PARKED', status: 'blocked', takenBy: null });
+
+    await reconcileOnePot(sql, WS, POT, CFG, NOW);
+
+    expect((await readPlacement('F-ORPHAN-PARKED'))?.status).toBe('blocked');
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  it('EI-12108: an overdue cup-less recovery halts as stranded and escalates once', async () => {
+    await sql`
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         status, fail_count, last_recovery_at, recovery_started_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${POT}, 'F-RECOVERY-TIMEOUT', ${POT}, ${MUG},
+              'recovering', 1, ${new Date(NOW - 60_000)}, ${new Date(NOW - 25 * 60 * 60_000)}, now(), now(), now())`;
+    await seedUnit({ id: 'F-RECOVERY-TIMEOUT', status: 'in_progress', takenBy: null });
+
+    const first = await reconcileOnePot(sql, WS, POT, CFG, NOW);
+    const second = await reconcileOnePot(sql, WS, POT, CFG, NOW + 30_000);
+
+    expect((await readPlacement('F-RECOVERY-TIMEOUT'))?.status).toBe('stranded');
+    expect(first.find((r) => r.workItemId === 'F-RECOVERY-TIMEOUT')?.decision).toBe('stale-recovery');
+    expect(second.find((r) => r.workItemId === 'F-RECOVERY-TIMEOUT')?.decision).toBe('latched');
+    expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
   });
 
   // WI-3977 — the duplicate-placement false-positive this reconcile fixes: a cup
