@@ -30,6 +30,7 @@ import {
   type SnapshotResult,
   type SnapshotTriggerReason,
   type VerifyResult,
+  assertSafeBackupCadence,
   RETENTION_PRESETS,
 } from './types';
 import { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './policy';
@@ -420,6 +421,7 @@ export class WorkspaceBackup {
     const sql = backupHost().getSql();
     const current = await this.getSettings();
     const next: BackupSettings = { ...current, ...partial };
+    assertSafeBackupCadence(next.cadenceMode, next.cadenceMinutes);
     await sql`
       INSERT INTO harness_shared.workspace_backup_settings (
         workspace_id, enabled, cadence_mode, cadence_minutes,
@@ -843,6 +845,7 @@ export class WorkspaceBackup {
         `--keep-daily=${retention.keepDaily}`,
         `--keep-weekly=${retention.keepWeekly}`,
         `--keep-monthly=${retention.keepMonthly}`,
+        '--ignore-identical-snapshots=true',
         ...toRemove.map((p) => `--remove-ignore=${p}`),
         ...toAdd.map((p) => `--add-ignore=${p}`),
       ];

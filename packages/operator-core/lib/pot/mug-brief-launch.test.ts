@@ -360,3 +360,29 @@ test('computeMugWakeBrief — fail-soft: a survey error returns null (Mug falls 
     warn.mockRestore();
   }
 });
+
+// ── WI-4778: carryNoteHead — the floor view's carry-note projection ──────────
+
+test('carryNoteHead — newest non-blank entry, verbatim under the cap', async () => {
+  const { carryNoteHead } = await import('./mug-brief-launch');
+  const head = carryNoteHead([
+    { at: 300, note: '   ' }, // blank (a cleared note) is skipped
+    { at: 200, note: 'resume major-bug lane after canary' },
+    { at: 100, note: 'older entry' },
+  ]);
+  assert.deepEqual(head, { at: 200, note: 'resume major-bug lane after canary' });
+});
+
+test('carryNoteHead — empty / all-blank journal projects null (no empty card)', async () => {
+  const { carryNoteHead } = await import('./mug-brief-launch');
+  assert.equal(carryNoteHead([]), null);
+  assert.equal(carryNoteHead([{ at: 1, note: '' }, { at: 0, note: '  \n ' }]), null);
+});
+
+test('carryNoteHead — an over-cap note is truncated with an ellipsis', async () => {
+  const { carryNoteHead } = await import('./mug-brief-launch');
+  const head = carryNoteHead([{ at: 5, note: 'x'.repeat(500) }]);
+  assert.ok(head);
+  assert.equal(head!.note.length, 280);
+  assert.ok(head!.note.endsWith('…'));
+});

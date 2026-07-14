@@ -11,10 +11,26 @@ export interface RetentionPolicy {
 }
 
 export const RETENTION_PRESETS: Record<Exclude<RetentionPreset, 'custom'>, RetentionPolicy> = {
-  aggressive:   { keepLatest: 100, keepHourly: 24, keepDaily: 7,   keepWeekly: 4,  keepMonthly: 3  },
-  default:      { keepLatest: 200, keepHourly: 48, keepDaily: 30,  keepWeekly: 12, keepMonthly: 12 },
-  conservative: { keepLatest: 500, keepHourly: 96, keepDaily: 90,  keepWeekly: 26, keepMonthly: 36 },
+  aggressive:   { keepLatest: 10,  keepHourly: 24, keepDaily: 7,  keepWeekly: 4,  keepMonthly: 3  },
+  default:      { keepLatest: 24,  keepHourly: 48, keepDaily: 30, keepWeekly: 12, keepMonthly: 12 },
+  conservative: { keepLatest: 100, keepHourly: 96, keepDaily: 90, keepWeekly: 26, keepMonthly: 36 },
 };
+
+/**
+ * A workspace snapshot includes a database hook and repository maintenance;
+ * minute-scale interval schedules multiply that work across every workspace.
+ * Event-triggered snapshots remain immediate, while recurring sweeps keep a
+ * one-hour floor.
+ */
+export const MIN_INTERVAL_CADENCE_MINUTES = 60;
+
+export function assertSafeBackupCadence(mode: CadenceMode, minutes: number): void {
+  if (mode !== 'event' && minutes < MIN_INTERVAL_CADENCE_MINUTES) {
+    throw new Error(
+      `interval backup cadence must be at least ${MIN_INTERVAL_CADENCE_MINUTES} minutes; use event mode for immediate lifecycle snapshots`,
+    );
+  }
+}
 
 /**
  * Why a snapshot was taken.

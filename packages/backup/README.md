@@ -110,8 +110,8 @@ harness-admin database's `harness_shared` schema into
 `<workspaceRoot>/db-dumps/pg-embedded.sql.gz`, excluding DATA for multi-GB
 derived telemetry/audit streams while keeping their schema. Release-critical
 state (harness registry, plans, work items, backup metadata, settings, etc.) is
-included with data; plugin-private schemas are outside this 5-minute hot-state
-backup. Failures log to `hook.log` and never abort the snapshot.
+included with data; plugin-private schemas are outside this event-driven
+hot-state backup. Failures log to `hook.log` and never abort the snapshot.
 
 ## Threat model — what this protects against
 

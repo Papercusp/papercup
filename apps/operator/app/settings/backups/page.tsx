@@ -19,9 +19,9 @@ import type {
 } from '@papercusp/operator-core/lib/backup';
 
 const RETENTION_PRESETS: Record<Exclude<RetentionPreset, 'custom'>, RetentionPolicy> = {
-  aggressive:   { keepLatest: 100, keepHourly: 24, keepDaily: 7,   keepWeekly: 4,  keepMonthly: 3  },
-  default:      { keepLatest: 200, keepHourly: 48, keepDaily: 30,  keepWeekly: 12, keepMonthly: 12 },
-  conservative: { keepLatest: 500, keepHourly: 96, keepDaily: 90,  keepWeekly: 26, keepMonthly: 36 },
+  aggressive:   { keepLatest: 10,  keepHourly: 24, keepDaily: 7,  keepWeekly: 4,  keepMonthly: 3  },
+  default:      { keepLatest: 24,  keepHourly: 48, keepDaily: 30, keepWeekly: 12, keepMonthly: 12 },
+  conservative: { keepLatest: 100, keepHourly: 96, keepDaily: 90, keepWeekly: 26, keepMonthly: 36 },
 };
 
 // `post_run`'s label names the project-level unit, so it is resolved through
@@ -244,7 +244,7 @@ export default function BackupsSettingsPage() {
               className="pc-settings-choice"
               onClick={() => set('cadenceMode', m)}
             >
-              <span>{m === 'event' ? 'Event-driven only' : m === 'interval' ? 'Interval timer only' : 'Both (recommended)'}</span>
+              <span>{m === 'event' ? 'Event-driven (recommended)' : m === 'interval' ? 'Hourly timer only' : 'Events + hourly timer'}</span>
             </button>
           ))}
         </div>
@@ -256,11 +256,10 @@ export default function BackupsSettingsPage() {
               onChange={(v) => set('cadenceMinutes', Number(v))}
               ariaLabel="Snapshot cadence (minutes)"
               options={[
-                { value: '1', label: '1 minute' },
-                { value: '5', label: '5 minutes' },
-                { value: '15', label: '15 minutes' },
-                { value: '30', label: '30 minutes' },
-                { value: '60', label: '60 minutes' },
+                { value: '60', label: '1 hour' },
+                { value: '360', label: '6 hours' },
+                { value: '720', label: '12 hours' },
+                { value: '1440', label: '24 hours' },
               ]}
             />
           </label>

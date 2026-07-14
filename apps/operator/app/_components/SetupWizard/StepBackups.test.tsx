@@ -32,8 +32,8 @@ function installFetch() {
 function settings(over: Record<string, unknown> = {}) {
   return {
     enabled: true,
-    cadenceMode: 'both',
-    cadenceMinutes: 30,
+    cadenceMode: 'event',
+    cadenceMinutes: 60,
     retentionPreset: 'default',
     retentionCustom: null,
     eventTriggers: [],

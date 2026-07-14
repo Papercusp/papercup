@@ -411,11 +411,14 @@ export async function computeMugWakeBrief(
  *
  * A compact, CLIENT-SAFE view of the same floor the Mug is briefed with —
  * consumed by the `mugBrief.floorView` sync resolver → the operator chat
- * sidebar's pot-status panel. Reuses the SAME scope resolution + gather
+ * sidebar's pot-health view. Reuses the SAME scope resolution + gather
  * functions as `computeMugWakeBrief` (reuse-first, no parallel data path); a
- * lighter subset (no inbox / change-feed / capacity / carry-note — those stay
- * agent-internal per the P-016 owner selection). Every read is fail-soft so a
- * flaky source degrades one section, never the whole panel.
+ * lighter subset (no inbox / change-feed — those stay agent-internal per the
+ * P-016 owner selection). WI-4778 widened the original cut with `capacity` +
+ * `carryNote`: the full-height Pot Health view's mandate is "show what the Mug
+ * decides FROM", and the capacity digest + her carry-note are decision inputs
+ * the owner explicitly asked to see. Every read is fail-soft so a flaky source
+ * degrades one section, never the whole panel.
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /** One ranked ready-to-place frontier row, projected for the UI. */
@@ -450,10 +453,36 @@ export interface MugBriefFloorView {
     pausedUntil: number | null;
     eligiblePlans: string[];
   } | null;
+  /** Live inference-pool capacity digest she sizes batches to (WI-4778) —
+   *  null when the gateway is off/unreachable (fail-soft, never misleading). */
+  capacity: BriefCapacity | null;
+  /** Her newest carry-note (the self-authored "where I left off" her next wake
+   *  reads first) — null when she carried nothing (WI-4778). */
+  carryNote: { at: number; note: string } | null;
 }
 
 /** Frontier rows surfaced to the sidebar before the "+N more" footer. */
 const FLOOR_VIEW_FRONTIER_CAP = 8;
+
+/** Carry-note chars surfaced to the UI before truncation (the full note is
+ *  agent-internal; the view wants the head, not the journal). */
+const FLOOR_VIEW_CARRY_NOTE_CAP = 280;
+
+/**
+ * Project the newest carry-journal entry into the floor view's `carryNote`
+ * (WI-4778). Pure — unit-tested directly. Newest-first input (the
+ * `getPotCarryJournal` contract); blank notes are skipped so a cleared note
+ * doesn't render as an empty card.
+ */
+export function carryNoteHead(
+  journal: ReadonlyArray<{ at: number; note: string }>,
+  cap = FLOOR_VIEW_CARRY_NOTE_CAP,
+): { at: number; note: string } | null {
+  const head = journal.find((e) => e.note.trim().length > 0);
+  if (!head) return null;
+  const note = head.note.trim();
+  return { at: head.at, note: note.length > cap ? `${note.slice(0, cap - 1)}…` : note };
+}
 
 export async function computeMugBriefFloorView(
   workspaceId: string,
@@ -464,7 +493,7 @@ export async function computeMugBriefFloorView(
     installSlug,
   );
   const empty = { frontier: [], plans: [], frontierBlocked: 0, frontierQuarantined: 0 };
-  const [survey, cups, escalations, openPlacements] = await Promise.all([
+  const [survey, cups, escalations, openPlacements, capacity, carryJournal] = await Promise.all([
     surveyPot(workspaceId, installSlug, {
       ...(scopeFilter ? { scopeFilter } : {}),
       ...(placementSplit.started.length > 0 ? { extraSurveySlugs: placementSplit.started } : {}),
@@ -472,6 +501,11 @@ export async function computeMugBriefFloorView(
     gatherCups(workspaceId),
     gatherEscalations(),
     summarizeOpenPlacements(workspaceId, installSlug),
+    // WI-4778: the pot-health view renders her capacity + carry-note decision
+    // inputs. Both fail-soft to null — a dark gateway / journal read degrades
+    // one card, never the view.
+    gatherCapacity().catch(() => undefined),
+    getPotCarryJournal(workspaceId).catch(() => [] as Array<{ at: number; note: string }>),
   ]);
   return {
     potSlug: installSlug,
@@ -500,5 +534,7 @@ export async function computeMugBriefFloorView(
           eligiblePlans: ownerSteering.eligiblePlans,
         }
       : null,
+    capacity: capacity ?? null,
+    carryNote: carryNoteHead(carryJournal),
   };
 }

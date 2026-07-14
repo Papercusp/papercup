@@ -20,7 +20,7 @@ const RetentionSchema = z.object({
 const SettingsSchema = z.object({
   enabled: z.boolean(),
   cadenceMode: z.enum(['event', 'interval', 'both']),
-  cadenceMinutes: z.number().int().min(1).max(1440),
+  cadenceMinutes: z.number().int().min(60).max(1440),
   retentionPreset: z.enum(['aggressive', 'default', 'conservative', 'custom']),
   retentionCustom: RetentionSchema.nullable(),
   eventTriggers: z.array(z.enum([

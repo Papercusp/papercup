@@ -29,7 +29,7 @@ export default defineTool({
   args: z.object({
     enabled: z.boolean().optional(),
     cadenceMode: z.enum(['event', 'interval', 'both']).optional(),
-    cadenceMinutes: z.number().int().min(1).max(1440).optional(),
+    cadenceMinutes: z.number().int().min(60).max(1440).optional(),
     retentionPreset: z.enum(['aggressive', 'default', 'conservative', 'custom']).optional(),
     retentionCustom: RetentionSchema.nullable().optional(),
     eventTriggers: z.array(z.enum([

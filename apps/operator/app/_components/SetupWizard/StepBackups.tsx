@@ -121,7 +121,7 @@ export function StepBackups() {
       </div>
 
       <p className="pc-step__hint" style={{ marginTop: 12 }}>
-        Default retention keeps 200 latest + 48 hourly + 30 daily + 12 weekly + 12 monthly snapshots.
+        Default retention keeps 24 latest + 48 hourly + 30 daily + 12 weekly + 12 monthly snapshots.
         Tune cadence, retention, and destination at{' '}
         <RouteLink href="/settings/backups" style={{ color: 'var(--accent)' }}>
           Settings → Backups

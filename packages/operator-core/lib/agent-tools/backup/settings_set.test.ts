@@ -30,9 +30,9 @@ beforeEach(() => {
 
 describe('backup:settings_set handler', () => {
   it('patches the ACTIVE workspace and returns the merged settings', async () => {
-    const b = body(await call({ enabled: true, cadenceMinutes: 30 }));
+    const b = body(await call({ enabled: true, cadenceMinutes: 60 }));
     expect(forM).toHaveBeenCalledWith('ws-1'); // active workspace
-    expect(h.update).toHaveBeenCalledWith({ enabled: true, cadenceMinutes: 30 });
+    expect(h.update).toHaveBeenCalledWith({ enabled: true, cadenceMinutes: 60 });
     expect(b).toMatchObject({ settings: { enabled: true, cadenceMode: 'event' } });
   });
 });

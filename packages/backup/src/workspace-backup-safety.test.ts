@@ -32,6 +32,7 @@ import {
   type StepRunner,
 } from './index';
 import { parseKopiaSnapshotJson } from './workspace-backup';
+import { assertSafeBackupCadence } from './types';
 import type { Sql } from 'postgres';
 
 function fakeHost() {
@@ -46,6 +47,22 @@ function fakeHost() {
 
 let root: string;
 let wb: WorkspaceBackup;
+
+describe('backup cadence safety floor', () => {
+  it('allows immediate event-triggered snapshots without an interval', () => {
+    expect(() => assertSafeBackupCadence('event', 5)).not.toThrow();
+  });
+
+  it('rejects minute-scale interval and combined schedules', () => {
+    expect(() => assertSafeBackupCadence('interval', 59)).toThrow(/at least 60 minutes/);
+    expect(() => assertSafeBackupCadence('both', 5)).toThrow(/at least 60 minutes/);
+  });
+
+  it('allows hourly or slower recurring schedules', () => {
+    expect(() => assertSafeBackupCadence('interval', 60)).not.toThrow();
+    expect(() => assertSafeBackupCadence('both', 1440)).not.toThrow();
+  });
+});
 
 async function dirWith(p: string, marker: string): Promise<void> {
   await mkdir(p, { recursive: true });
