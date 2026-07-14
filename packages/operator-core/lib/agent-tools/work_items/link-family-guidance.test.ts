@@ -23,6 +23,7 @@ describe('work_items:link direction legend + rel guidance (P-002)', () => {
     expect(src).toMatch(/src INVESTIGATES dst/);
     expect(src).toMatch(/src is ABOUT dst/);
     expect(src).toMatch(/src was CAUSED-BY dst/);
+    expect(src).toMatch(/src REVISES dst/);
     expect(src).toMatch(/`relates` is symmetric/);
   });
 
@@ -30,6 +31,7 @@ describe('work_items:link direction legend + rel guidance (P-002)', () => {
     const src = read('./link.ts');
     expect(src).toMatch(/`investigates` = src is the digging/);
     expect(src).toMatch(/`about` = src concerns a target/);
+    expect(src).toMatch(/`revises` = src is a newly-filed revision/);
     expect(src).toMatch(/`relates` = worth a cross-reference/);
   });
 });

@@ -19,6 +19,7 @@ import {
   SuTarget,
   adaptDeltaToolResultForModel,
   buildSuSystemBlocks,
+  defaultToolResultForModel,
   filterCatalog,
   loadPlaybookBody,
   mergeConsecutiveRoles,
@@ -60,6 +61,26 @@ describe('su SUT system-prompt framing', () => {
     const blocks = buildSuSystemBlocks(CLAUDE_CODE_IDENTIFIER + '\nmore', true);
     expect(blocks[0].text).toBe(CLAUDE_CODE_IDENTIFIER);
     expect(blocks).toHaveLength(2);
+  });
+});
+
+describe('su SUT hermetic tool fallback grounding', () => {
+  it('makes empty read results explicit without leaking test-frame wording', () => {
+    const result = defaultToolResultForModel('docs:search');
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      ok: true,
+      results: [],
+      items: [],
+      hits: [],
+      rows: [],
+    });
+    expect(result.content[0].text).not.toMatch(/stub|test harness|llm-testing/i);
+  });
+
+  it('keeps mutation/unknown fallbacks as benign acknowledgements', () => {
+    expect(defaultToolResultForModel('coord:declare-intent')).toEqual({
+      content: [{ text: '{"ok":true}' }],
+    });
   });
 });
 

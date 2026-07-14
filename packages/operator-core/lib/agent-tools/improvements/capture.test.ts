@@ -140,6 +140,15 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(r.success).toBe(true);
   });
 
+  it("accepts a typed feedback revision link (rel='revises')", () => {
+    const r = argsSchema.safeParse({
+      title: 'revision incorporating grader feedback',
+      kind: 'feature',
+      observation: { linkTo: [{ targetId: 'EI-1', rel: 'revises' }] },
+    });
+    expect(r.success).toBe(true);
+  });
+
   it('accepts a rubric-graded observation (rubricRef + ratings with evidence)', () => {
     const r = argsSchema.safeParse({
       title: 'scorecard',

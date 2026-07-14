@@ -54,6 +54,10 @@ describe('work_items:link args schema (EI-7049)', () => {
   it('accepts a well-formed single-shorthand call (id + rel present, target checked later by the handler)', () => {
     expect(tool.args.safeParse({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T' }).success).toBe(true);
   });
+
+  it("accepts the feedback-lineage rel='revises'", () => {
+    expect(tool.args.safeParse({ id: 'EI-2', rel: 'revises', target_id: 'EI-1' }).success).toBe(true);
+  });
 });
 
 describe('work_items:link handler (bulk keyed-array)', () => {
@@ -62,6 +66,16 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', rel: 'blocks' });
     expect(linkM).toHaveBeenCalledWith('WI-1', { kind: 'work_item', ref: 'WI-T' }, 'blocks', { harness: undefined, by: 'me' });
+  });
+
+  it('persists a revision edge with source=new revision and target=original', async () => {
+    await body({ id: 'EI-2', rel: 'revises', target_id: 'EI-1' });
+    expect(linkM).toHaveBeenCalledWith(
+      'EI-2',
+      { kind: 'work_item', ref: 'WI-T' },
+      'revises',
+      { harness: undefined, by: 'me' },
+    );
   });
 
   it('fans out many edges (items:[…]); a missing target fails only that edge', async () => {

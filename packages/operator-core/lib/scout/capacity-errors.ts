@@ -1,7 +1,7 @@
 /**
  * capacity-errors.ts — the ONE pure classifier for "was this scout failure a
  * CAPACITY ceiling (the LLM pool had nothing to give) rather than a genuine cycle
- * failure?". A leaf module (zero deps) so BOTH consumers import the SAME notion:
+ * failure?". A small shared classifier so BOTH consumers import the SAME notion:
  *
  *   - scheduler.ts (the WRITE path) — reclassifies a live capacity failure from
  *     status:'error' to a 'no-capacity' gate at record time, so the pool's
@@ -44,11 +44,8 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
  * PURE: is this failure a CAPACITY ceiling (the pool had nothing to give) rather than a
  * genuine cycle failure? The governor/gateway's typed denial is the only authoritative input.
  *
- * The live signatures (measured over the recent 200-tick window, 2026-07-12):
- *   - "rate-limit pause exceeds maxWait"                    — the gateway governor's own wait bail
- *   - "429 ... rate_limit_error"                            — the raw provider ceiling
- *   - the ideator's transport-death wrapper carrying either — "scout: all N ideator LLM call(s)
- *     failed — transport death (0 ideas, $0 spent): rate-limit pause exceeds maxWait"
+ * The typed reasons are deliberately small: `all-accounts-paused` and `provider-429` are
+ * capacity signals; `no-free-slot` is an admission-path defect signal and stays loud.
  *
  * Deliberately NARROW: a TIMEOUT is NOT capacity. The REASON changed on 2026-07-13 (WI-4475) —
  * read this before you "fix" the classifier, because the obvious change is the wrong one.
@@ -74,10 +71,8 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
  * OVER-reports breakage (visible, annoying, self-correcting); classifying an admission-path bug as
  * capacity UNDER-reports it (silent, hides defects). Prefer the loud failure. Timeouts stay errors.
  *
- * The real fix is to stop inferring intent from prose: the governor knows WHY it withheld a permit
- * (every account paused/walled = capacity; no free slot while accounts sit idle = defect) and
- * should carry that as a TYPED reason instead of making this module guess from a string. Until
- * that carrier exists, do not widen the match below to admission failures.
+ * The governor now carries WHY it withheld a permit (every account paused/walled = capacity;
+ * no free slot while accounts sit idle = defect), so this module never infers intent from prose.
  */
 export function isCapacityError(input: unknown): boolean {
   const reason = admissionDenialFrom(input)?.reason;

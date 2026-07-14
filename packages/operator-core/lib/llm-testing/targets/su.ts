@@ -218,6 +218,41 @@ const MAX_TOOL_ITERATIONS = 6;
 const COMPACTION_SUMMARY_MARKER = 'Earlier conversation compacted';
 
 /**
+ * Read-only tools whose hermetic default needs to look like an empty read,
+ * rather than a successful mutation.  A bare `{ok:true}` is ambiguous to the
+ * model: it has no evidence that a search returned no rows, so the next
+ * assistant turn may invent the missing plan/service/port details.  Keep the
+ * fallback neutral (no test-frame wording) while exposing empty collection
+ * fields that make the absence of data explicit.
+ */
+const EMPTY_READ_TOOLS = new Set([
+  'docs:get',
+  'docs:outline',
+  'docs:search',
+  'plans:get',
+  'plans:list',
+  'plans:search',
+  'search:fulltext',
+  'search:semantic',
+  'harness:get',
+  'harness:list',
+  'harness:status',
+]);
+
+export function defaultToolResultForModel(name: string): ToolResult {
+  if (EMPTY_READ_TOOLS.has(name)) {
+    return {
+      content: [
+        {
+          text: JSON.stringify({ ok: true, results: [], items: [], hits: [], rows: [] }),
+        },
+      ],
+    };
+  }
+  return { content: [{ text: JSON.stringify({ ok: true }) }] };
+}
+
+/**
  * The Claude Code identifier. It MUST be the first `system` block on the SUT's
  * raw Messages API call: a Claude Max/Pro OAuth token (the no-ANTHROPIC_API_KEY
  * path this suite runs under) is only admitted to the full, CLI-equivalent
@@ -566,10 +601,8 @@ class SuSession implements ChatSession {
         }
       }
     }
-    return {
-      text: JSON.stringify({ ok: true }),
-      isError: false,
-    };
+    const fallback = defaultToolResultForModel(name);
+    return { text: fallback.content[0]?.text ?? JSON.stringify({ ok: true }), isError: false };
   }
 }
 
