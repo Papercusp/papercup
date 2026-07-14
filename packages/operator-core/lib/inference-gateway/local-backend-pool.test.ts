@@ -229,3 +229,94 @@ describe('createLocalBackendPool', () => {
     expect(pool.health().get('a')?.error).toMatch(/ECONNREFUSED/);
   });
 });
+
+describe('slot affinity (P-028)', () => {
+  const cand = (over: Partial<LocalBackendCandidate> & { backend: LocalBackend }): LocalBackendCandidate => ({
+    inFlight: 0,
+    healthy: true,
+    ...over,
+  });
+
+  it('pickWithAffinity prefers the sticky backend even when a sibling is less loaded', () => {
+    const a = backend({ id: 'a' });
+    const b = backend({ id: 'b' });
+    const r = pickWithAffinity([cand({ backend: a, inFlight: 3 }), cand({ backend: b, inFlight: 0 })], 'ornith-35b', 'a');
+    expect(r).toEqual({ backend: a, outcome: 'hit' });
+  });
+
+  it('pickWithAffinity falls over (never queues) when the sticky backend is saturated — a counted switch', () => {
+    const a = backend({ id: 'a', maxConcurrent: 1 });
+    const b = backend({ id: 'b' });
+    const r = pickWithAffinity([cand({ backend: a, inFlight: 1 }), cand({ backend: b })], 'ornith-35b', 'a');
+    expect(r).toEqual({ backend: b, outcome: 'switch' });
+  });
+
+  it('pickWithAffinity with no preference is plain least-loaded — a cold assignment', () => {
+    const a = backend({ id: 'a' });
+    const r = pickWithAffinity([cand({ backend: a })], 'ornith-35b', null);
+    expect(r).toEqual({ backend: a, outcome: 'cold' });
+  });
+
+  it('pickWithAffinity: nothing eligible → null pick, null outcome (no affinity event)', () => {
+    const a = backend({ id: 'a', maxConcurrent: 1 });
+    const r = pickWithAffinity([cand({ backend: a, inFlight: 1 })], 'ornith-35b', 'a');
+    expect(r).toEqual({ backend: null, outcome: null });
+  });
+
+  it('pool.select with ownerId sticks to the last backend across hops and counts hits/cold', () => {
+    const pool = createLocalBackendPool([backend({ id: 'a' }), backend({ id: 'b' })]);
+    const first = pool.select('ornith-35b', undefined, 'owner-1');
+    expect(first?.id).toBe('a'); // deterministic tie-break assigns 'a'
+    pool.recordStart('a');
+    pool.recordStart('a'); // 'a' now busier than 'b' — least-loaded would pick 'b'
+    expect(pool.select('ornith-35b', undefined, 'owner-1')?.id).toBe('a'); // sticky wins
+    expect(pool.affinityStats()).toMatchObject({ hits: 1, cold: 1, switches: 0, trackedOwners: 1 });
+  });
+
+  it('pool.select without ownerId stays pure least-loaded and records no affinity event', () => {
+    const pool = createLocalBackendPool([backend({ id: 'a' })]);
+    expect(pool.select('ornith-35b')?.id).toBe('a');
+    expect(pool.affinityStats()).toMatchObject({ hits: 0, cold: 0, switches: 0, trackedOwners: 0 });
+  });
+
+  it('a saturated sticky backend produces a switch and the NEW backend becomes sticky', () => {
+    const pool = createLocalBackendPool([backend({ id: 'a', maxConcurrent: 1 }), backend({ id: 'b' })]);
+    expect(pool.select('ornith-35b', undefined, 'owner-1')?.id).toBe('a');
+    pool.recordStart('a'); // 'a' at capacity
+    expect(pool.select('ornith-35b', undefined, 'owner-1')?.id).toBe('b'); // switch
+    pool.recordEnd('a'); // 'a' free again — but 'b' is sticky now
+    expect(pool.select('ornith-35b', undefined, 'owner-1')?.id).toBe('b');
+    expect(pool.affinityStats()).toMatchObject({ hits: 1, cold: 1, switches: 1 });
+  });
+
+  it('reload() drops affinity entries pointing at removed backends (next select is cold, not a phantom hit)', () => {
+    const pool = createLocalBackendPool([backend({ id: 'a' }), backend({ id: 'b' })]);
+    pool.select('ornith-35b', undefined, 'owner-1'); // sticky 'a'
+    pool.reload([backend({ id: 'b' })]);
+    expect(pool.select('ornith-35b', undefined, 'owner-1')?.id).toBe('b');
+    expect(pool.affinityStats()).toMatchObject({ cold: 2, hits: 0, switches: 0 });
+  });
+
+  it('the affinity map is bounded: beyond AFFINITY_MAX_OWNERS the oldest owner is evicted', () => {
+    const pool = createLocalBackendPool([backend({ id: 'a' })]);
+    for (let i = 0; i < AFFINITY_MAX_OWNERS + 1; i++) pool.select('ornith-35b', undefined, `owner-${i}`);
+    expect(pool.affinityStats().trackedOwners).toBe(AFFINITY_MAX_OWNERS);
+    // owner-0 was evicted → its next select is a cold assignment, not a hit
+    const before = pool.affinityStats().cold;
+    pool.select('ornith-35b', undefined, 'owner-0');
+    expect(pool.affinityStats().cold).toBe(before + 1);
+  });
+
+  it('a sticky entry older than AFFINITY_TTL_MS is treated as cold (the KV is long recycled)', () => {
+    vi.useFakeTimers();
+    try {
+      const pool = createLocalBackendPool([backend({ id: 'a' })]);
+      pool.select('ornith-35b', undefined, 'owner-1');
+      vi.advanceTimersByTime(AFFINITY_TTL_MS + 1);
+      pool.select('ornith-35b', undefined, 'owner-1');
+      expect(pool.affinityStats()).toMatchObject({ cold: 2, hits: 0, switches: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

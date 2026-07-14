@@ -2226,7 +2226,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const tried = new Set<string>();
       let lastError: string | null = null;
       for (let attempt = 0; attempt < LOCAL_BACKEND_MAX_ATTEMPTS; attempt++) {
-        const backend: LocalBackend | null = pool.select(model, tried);
+        // P-028 slot affinity: the owner's last backend is preferred while eligible, so the
+        // session's KV prefix survives across hops (a process switch = full re-prefill).
+        const backend: LocalBackend | null = pool.select(model, tried, ownerId || undefined);
         if (!backend) break;
         tried.add(backend.id);
         pool.recordStart(backend.id);
@@ -4354,6 +4356,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           health: health.get(b.id) ?? null,
         })),
         clients,
+        // P-028 slot-affinity visibility: switches/(hits+switches) is the eviction rate — how
+        // often a session's warm backend had to be abandoned (→ full KV re-prefill).
+        affinity: pool.affinityStats(),
       });
       return;
     }

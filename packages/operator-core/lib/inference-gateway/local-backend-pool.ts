@@ -14,6 +14,17 @@
  * it, so a backend that dies mid-traffic is skipped within 2 failed requests,
  * not just at the next probe tick (mirrors the proactive egress prober's
  * 2-consecutive-failure circuit in gateway.ts).
+ *
+ * SLOT AFFINITY (deterministic-context-carry P-028, context-is-rent): when the
+ * caller passes its owner id, selection PREFERS the backend that owner last
+ * used — the session's KV prefix lives in that llama-server process, and the
+ * server's own prompt-similarity slot matching then reuses the warm slot; a
+ * switch to a different process forces a full re-prefill (minutes of GPU for a
+ * long context). Sticky beats least-loaded as long as the sticky backend is
+ * eligible (enabled, healthy, serves the model, under maxConcurrent, not
+ * already tried this request); it is NEVER waited on — at capacity the request
+ * falls over to least-loaded (a counted `switch`, the eviction-rate numerator)
+ * rather than queueing, so throughput semantics are unchanged.
  */
 
 export type LocalBackendKind = 'llama-server' | 'vllm' | 'ollama';
@@ -95,6 +106,54 @@ export function isSaturatedFor(
   return serving.every((c) => c.inFlight >= c.backend.maxConcurrent);
 }
 
+/** Outcome kind of one affinity-aware selection (P-028): `hit` = the owner's sticky backend was
+ *  chosen (KV prefix survives); `switch` = the owner HAD a sticky backend but it was ineligible
+ *  (saturated/unhealthy/tried) so a different one was picked — the re-prefill event the dashboard's
+ *  eviction rate counts; `cold` = first assignment for this owner. */
+export type AffinityOutcome = 'hit' | 'switch' | 'cold';
+
+/**
+ * Pure affinity-aware selection: prefer `preferredId` when it is eligible for `model` (sticky KV
+ * reuse wins over load-balance), else fall back to `pickLeastLoaded`. Returns the pick plus the
+ * affinity outcome relative to whether a preference existed.
+ */
+export function pickWithAffinity(
+  candidates: readonly LocalBackendCandidate[],
+  model: string,
+  preferredId: string | null,
+  exclude?: ReadonlySet<string>,
+): { backend: LocalBackend | null; outcome: AffinityOutcome | null } {
+  if (preferredId && !exclude?.has(preferredId)) {
+    const preferred = candidates.find(
+      (c) =>
+        c.backend.id === preferredId &&
+        c.backend.enabled &&
+        c.healthy &&
+        c.backend.models.includes(model) &&
+        c.inFlight < c.backend.maxConcurrent,
+    );
+    if (preferred) return { backend: preferred.backend, outcome: 'hit' };
+  }
+  const backend = pickLeastLoaded(candidates, model, exclude);
+  if (!backend) return { backend: null, outcome: null }; // nothing assigned — no affinity event
+  return { backend, outcome: preferredId ? 'switch' : 'cold' };
+}
+
+/** Sticky owner→backend entries beyond this are pruned oldest-first (bounded memory for a
+ *  long-lived gateway serving many short-lived owners). */
+export const AFFINITY_MAX_OWNERS = 4096;
+/** A sticky entry older than this is treated as cold — the KV slot is long since recycled by
+ *  other traffic, so following it would pin for no benefit. */
+export const AFFINITY_TTL_MS = 60 * 60 * 1000;
+
+export interface AffinityStats {
+  hits: number;
+  /** Sticky backend existed but was ineligible → routed elsewhere (the eviction/re-prefill count). */
+  switches: number;
+  cold: number;
+  trackedOwners: number;
+}
+
 /** Pure health-state transition given one probe/request outcome (testable without a clock/network). */
 export function nextHealthState(
   prev: LocalBackendHealth | undefined,
@@ -124,8 +183,13 @@ export interface LocalBackendPool {
   reload(next: readonly LocalBackend[]): void;
   /** Least-loaded eligible backend for `model`, or null (no match / all saturated / all unhealthy).
    *  `exclude` skips ids already tried THIS request (single-attempt in-request failover — the caller
-   *  need not wait for HEALTH_FAIL_THRESHOLD failures before trying a sibling backend). */
-  select(model: string, exclude?: ReadonlySet<string>): LocalBackend | null;
+   *  need not wait for HEALTH_FAIL_THRESHOLD failures before trying a sibling backend).
+   *  `ownerId` (P-028) opts into slot affinity: the owner's last backend is preferred while
+   *  eligible, and the assignment is remembered for the next hop. */
+  select(model: string, exclude?: ReadonlySet<string>, ownerId?: string): LocalBackend | null;
+  /** Affinity hit/switch/cold counters since boot (P-028) — `switches` is the dashboard's
+   *  eviction-rate numerator (a sticky backend abandoned → KV re-prefill on the new one). */
+  affinityStats(): AffinityStats;
   /** True when `model` is served by ≥1 enabled+healthy backend but ALL are at `maxConcurrent` — i.e.
    *  select() returned null from SATURATION (retryable backpressure → 429), not from the model being
    *  unmatched / all-unhealthy (a genuine dead end → 502). `exclude` matches select()'s. */
@@ -146,6 +210,10 @@ export function createLocalBackendPool(initial: readonly LocalBackend[] = []): L
   let backends = new Map<string, LocalBackend>(initial.map((b) => [b.id, b]));
   const inFlightCounts = new Map<string, number>();
   const healthMap = new Map<string, LocalBackendHealth>();
+  // P-028: owner → last backend. Insertion-ordered Map doubles as the LRU — a re-assignment
+  // deletes + re-sets so the oldest entry is always first for pruning.
+  const affinity = new Map<string, { backendId: string; assignedAt: number }>();
+  const affinityCounters = { hits: 0, switches: 0, cold: 0 };
 
   function candidatesFor(): LocalBackendCandidate[] {
     return [...backends.values()].map((backend) => ({
@@ -165,10 +233,26 @@ export function createLocalBackendPool(initial: readonly LocalBackend[] = []): L
       backends = new Map(next.map((b) => [b.id, b]));
       for (const id of [...inFlightCounts.keys()]) if (!nextIds.has(id)) inFlightCounts.delete(id);
       for (const id of [...healthMap.keys()]) if (!nextIds.has(id)) healthMap.delete(id);
+      for (const [owner, a] of [...affinity.entries()]) if (!nextIds.has(a.backendId)) affinity.delete(owner);
     },
-    select(model, exclude) {
-      return pickLeastLoaded(candidatesFor(), model, exclude);
+    select(model, exclude, ownerId) {
+      if (!ownerId) return pickLeastLoaded(candidatesFor(), model, exclude);
+      const now = Date.now();
+      const sticky = affinity.get(ownerId);
+      const preferredId = sticky && now - sticky.assignedAt <= AFFINITY_TTL_MS ? sticky.backendId : null;
+      const { backend, outcome } = pickWithAffinity(candidatesFor(), model, preferredId, exclude);
+      if (!backend) return null;
+      if (outcome) affinityCounters[outcome === 'hit' ? 'hits' : outcome === 'switch' ? 'switches' : 'cold']++;
+      affinity.delete(ownerId); // re-set for insertion-order LRU
+      affinity.set(ownerId, { backendId: backend.id, assignedAt: now });
+      while (affinity.size > AFFINITY_MAX_OWNERS) {
+        const oldest = affinity.keys().next().value;
+        if (oldest === undefined) break;
+        affinity.delete(oldest);
+      }
+      return backend;
     },
+    affinityStats: () => ({ ...affinityCounters, trackedOwners: affinity.size }),
     saturatedFor(model, exclude) {
       return isSaturatedFor(candidatesFor(), model, exclude);
     },
