@@ -305,7 +305,11 @@ function startJanitor(): void {
  */
 export function injectIntoHost(
   sock: string,
-  msg: { mode: 'turn' | 'raw' | 'osc' | 'compact' | 'reset' | 'recycle'; data: string; focus?: string },
+  msg: {
+    mode: 'turn' | 'raw' | 'osc' | 'compact' | 'reset' | 'recycle' | 'mcp-reconnect';
+    data: string;
+    focus?: string;
+  },
   timeoutMs = 2000,
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -383,4 +387,31 @@ export async function recolorViaPty(
   const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
   if (!host) return false;
   return injectIntoHost(host.sock, { mode: 'osc', data: osc });
+}
+
+/**
+ * Ask a live psu-hosted INTERACTIVE session's host to drive its claude TUI's
+ * /mcp dialog and reconnect `serverName` IN PLACE (mcp-transport-resilience
+ * P-003/P-004, 2026-07-13) — the owner-mandated headed-session heal for a
+ * client-side severed MCP transport (kill+resume is reserved for headless).
+ * The host runs the whole closed-loop macro itself (it owns the pty and sees
+ * the TUI's output); this is just the envelope.
+ *
+ * `'no-host'` when the owner has NO live psu-pty host; `'no-cap'` when the
+ * host predates the macro (caps without 'mcp-reconnect') — both mean the
+ * caller (the mcp-dark watchdog heal ladder) falls back to notify-only.
+ * `'sent'` means the envelope landed; the actual heal outcome is judged by
+ * the caller off transport truth (the presence beat advancing), NEVER assumed
+ * from a clean socket write.
+ */
+export async function mcpReconnectViaPty(
+  ownerId: string,
+  serverName = 'papercusp-su',
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): Promise<'sent' | 'no-host' | 'no-cap' | 'send-failed'> {
+  const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  if (!host) return 'no-host';
+  if (!hostSupports(host, 'mcp-reconnect')) return 'no-cap';
+  const ok = await injectIntoHost(host.sock, { mode: 'mcp-reconnect', data: serverName });
+  return ok ? 'sent' : 'send-failed';
 }

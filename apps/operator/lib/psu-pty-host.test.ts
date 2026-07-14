@@ -42,6 +42,7 @@ import {
   stripAnsi,
   mcpServerRowStatus,
   mcpDialogRowSelected,
+  mcpConnectedVerdict,
   runMcpReconnectMacro,
 } from '../scripts/psu-pty-host.mjs';
 import * as nodeFs from 'node:fs';
@@ -1071,5 +1072,204 @@ describe('appendHostEvent / eventLogPathForOwner (EI-10412 — durable lifecycle
   });
   it('is fail-soft: an unwritable dir returns false, never throws', () => {
     expect(appendHostEvent('su-x', 'compact-submitted', {}, '/nonexistent-root-dir/nope')).toBe(false);
+  });
+});
+
+describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () => {
+  describe('stripAnsi', () => {
+    it('strips CSI/OSC/simple-ESC and normalizes carriage returns', () => {
+      const raw = '\x1b[2K\x1b[1G\x1b[36m❯ 1. papercusp-su\x1b[39m  \x1b]0;title\x07connected\r\n';
+      expect(stripAnsi(raw)).toBe('❯ 1. papercusp-su  connected\n');
+    });
+    it('drops other control chars but keeps newlines and tabs', () => {
+      expect(stripAnsi('a\x07b\tc\nd')).toBe('ab\tc\nd');
+    });
+  });
+
+  describe('mcpServerRowStatus', () => {
+    it('null when the row does not name the server', () => {
+      expect(mcpServerRowStatus('  2. playwright  connected', 'papercusp-su')).toBeNull();
+    });
+    it('connected on a healthy list row; "disconnected" never reads as connected', () => {
+      expect(mcpServerRowStatus('❯ 1. papercusp-su  ✔ connected', 'papercusp-su')).toBe('connected');
+      expect(mcpServerRowStatus('❯ 1. papercusp-su  ✘ disconnected', 'papercusp-su')).toBe('not-connected');
+      expect(mcpServerRowStatus('  1. papercusp-su  failed · needs authentication', 'papercusp-su')).toBe('not-connected');
+      expect(mcpServerRowStatus('  1. papercusp-su  connecting…', 'papercusp-su')).toBe('not-connected');
+    });
+    it('unknown when the row names the server without a status marker', () => {
+      expect(mcpServerRowStatus('papercusp-su', 'papercusp-su')).toBe('unknown');
+    });
+  });
+
+  describe('mcpDialogRowSelected', () => {
+    it('true only when the ❯ cursor precedes the matched content on the freshest row', () => {
+      const frame1 = '❯ 1. papercusp-su  failed\n  2. playwright  connected';
+      expect(mcpDialogRowSelected(frame1, (l: string) => l.includes('papercusp-su'))).toBe(true);
+      expect(mcpDialogRowSelected(frame1, (l: string) => l.includes('playwright'))).toBe(false);
+    });
+    it('the LAST matching line (freshest repaint) wins', () => {
+      const twoFrames =
+        '❯ 1. papercusp-su  failed\n  2. playwright  connected\n' +
+        '  1. papercusp-su  failed\n❯ 2. playwright  connected';
+      expect(mcpDialogRowSelected(twoFrames, (l: string) => l.includes('papercusp-su'))).toBe(false);
+    });
+  });
+
+  describe('mcpConnectedVerdict', () => {
+    it('list shape: decisive off the row naming the server', () => {
+      expect(mcpConnectedVerdict('❯ 1. papercusp-su  ✔ connected', 'papercusp-su')).toBe(true);
+      expect(mcpConnectedVerdict('❯ 1. papercusp-su  ✘ failed', 'papercusp-su')).toBe(false);
+    });
+    it('detail shape: a bare Status line is decisive (name on its own header line)', () => {
+      expect(mcpConnectedVerdict('papercusp-su\nStatus: ✔ connected', 'papercusp-su')).toBe(true);
+      expect(mcpConnectedVerdict('papercusp-su\nStatus: ✘ failed', 'papercusp-su')).toBe(false);
+      expect(mcpConnectedVerdict('papercusp-su\nStatus: connecting…', 'papercusp-su')).toBe(false);
+    });
+    it("another server's connected row is NOT a verdict for the target", () => {
+      expect(mcpConnectedVerdict('  2. playwright  ✔ connected', 'papercusp-su')).toBe(false);
+    });
+  });
+
+  describe('runMcpReconnectMacro against a scripted fake TUI', () => {
+    /** A minimal /mcp dialog state machine painting realistic frames (list rows =
+     *  name+status on ONE line; detail = name header + separate Status line). */
+    function makeFakeTui(servers: Array<{ name: string; status: string }>, opts: { reconnectWorks?: boolean } = {}) {
+      let out = '';
+      let pending = '';
+      let view: 'idle' | 'list' | 'detail' = 'idle';
+      let cursor = 0;
+      let detailCursor = 0;
+      let escapes = 0;
+      const paintList = () => {
+        out +=
+          '\nManage MCP servers\n' +
+          servers.map((s, i) => `${i === cursor ? '❯ ' : '  '}${i + 1}. ${s.name}  ${s.status}`).join('\n') +
+          '\n';
+      };
+      const paintDetail = () => {
+        const s = servers[cursor];
+        const rows = ['View tools', 'Reconnect', 'Back'];
+        out +=
+          `\n${s.name}\nStatus: ${s.status}\n` +
+          rows.map((r, i) => `${i === detailCursor ? '❯ ' : '  '}${r}`).join('\n') +
+          '\n';
+      };
+      const write = (b: string) => {
+        if (b === '\x1b') {
+          escapes += 1;
+          view = 'idle';
+          return;
+        }
+        if (b === '\x1b[B') {
+          if (view === 'list') {
+            cursor = Math.min(cursor + 1, servers.length - 1);
+            paintList();
+          } else if (view === 'detail') {
+            detailCursor = Math.min(detailCursor + 1, 2);
+            paintDetail();
+          }
+          return;
+        }
+        if (b === '\r') {
+          if (view === 'idle' && pending.trim() === '/mcp') {
+            pending = '';
+            view = 'list';
+            cursor = 0;
+            paintList();
+          } else if (view === 'list') {
+            view = 'detail';
+            detailCursor = 0;
+            paintDetail();
+          } else if (view === 'detail' && detailCursor === 1) {
+            if (opts.reconnectWorks !== false) servers[cursor].status = '✔ connected';
+            paintDetail();
+          }
+          return;
+        }
+        pending += b;
+      };
+      return { write, read: () => out, reset: () => { out = ''; }, escapes: () => escapes };
+    }
+
+    const fastSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Math.min(ms, 2)));
+
+    it('heals a failed server end-to-end (open → select → reconnect → connected)', async () => {
+      const tui = makeFakeTui([
+        { name: 'playwright', status: '✔ connected' },
+        { name: 'papercusp-su', status: '✘ failed' },
+      ]);
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp-su',
+        write: tui.write,
+        readTap: tui.read,
+        resetTap: tui.reset,
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 500,
+        reconnectBudgetMs: 500,
+      });
+      expect(result).toEqual({ ok: true, step: 'done', detail: 'connected verdict observed' });
+      expect(tui.escapes()).toBeGreaterThanOrEqual(2); // closed out
+    });
+
+    it('no-ops fast when the target is already connected (benign watchdog misfire)', async () => {
+      const tui = makeFakeTui([{ name: 'papercusp-su', status: '✔ connected' }]);
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp-su',
+        write: tui.write,
+        readTap: tui.read,
+        resetTap: tui.reset,
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 500,
+        reconnectBudgetMs: 500,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.step).toBe('already-connected');
+    });
+
+    it('fail-soft: dialog never paints → Esc out with step open-dialog', async () => {
+      const dead = { write: () => {}, read: () => '', reset: () => {} };
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp-su',
+        write: dead.write,
+        readTap: dead.read,
+        resetTap: dead.reset,
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 60,
+        reconnectBudgetMs: 60,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.step).toBe('open-dialog');
+    });
+
+    it('fail-soft: reconnect action does not heal → await-connected failure', async () => {
+      const tui = makeFakeTui(
+        [{ name: 'papercusp-su', status: '✘ failed' }],
+        { reconnectWorks: false },
+      );
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp-su',
+        write: tui.write,
+        readTap: tui.read,
+        resetTap: tui.reset,
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 500,
+        reconnectBudgetMs: 120,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.step).toBe('await-connected');
+    });
+
+    it('decodeControl accepts the new mode, gated like a turn', () => {
+      const decoded = decodeControl(encodeControl({ mode: 'mcp-reconnect', data: 'papercusp-su' }));
+      expect(decoded).toEqual({ mode: 'mcp-reconnect', data: 'papercusp-su', gated: true });
+    });
   });
 });
