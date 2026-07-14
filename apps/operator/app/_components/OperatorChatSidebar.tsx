@@ -28,7 +28,6 @@ import { ChevronLeft, ChevronRight, Volume2, VolumeX } from 'lucide-react';
 import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
 import { PotHealthPane } from './PotHealthPane';
-import { PotStatusStrip } from './PotStatusStrip';
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { useShortcutAction } from '@/lib/hotkeys';
@@ -330,21 +329,20 @@ export function OperatorChatSidebar() {
              strip that used to sit here is GONE — the 🫖 Pot Health toggle
              beside the Papercup name is the one entry to that information. */
           <OperatorChat
-              messages={conv.messages}
-              busy={conv.busy}
-              passive={conv.mode === 'passive'}
-              onSend={conv.sendUserMessage}
-              onGenerateIdeas={conv.generateIdeas}
-              banner={conv.bannerText ? <div className="op-chat-banner">{conv.bannerText}</div> : null}
-              error={conv.error}
-              onLoadEarlier={conv.loadEarlier}
-              hasMoreEarlier={conv.hasMoreEarlier}
-              loadingEarlier={conv.loadingEarlier}
-              onAnswerChoice={conv.answerChoice}
-              conversationId={conv.conversationId ?? undefined}
-              workspaceId={workspaceId}
-            />
-          </>
+            messages={conv.messages}
+            busy={conv.busy}
+            passive={conv.mode === 'passive'}
+            onSend={conv.sendUserMessage}
+            onGenerateIdeas={conv.generateIdeas}
+            banner={conv.bannerText ? <div className="op-chat-banner">{conv.bannerText}</div> : null}
+            error={conv.error}
+            onLoadEarlier={conv.loadEarlier}
+            hasMoreEarlier={conv.hasMoreEarlier}
+            loadingEarlier={conv.loadingEarlier}
+            onAnswerChoice={conv.answerChoice}
+            conversationId={conv.conversationId ?? undefined}
+            workspaceId={workspaceId}
+          />
         )}
         {/* M6: askUserLocal renderer host. Mounted once per sidebar so any
             client-side caller of askUserLocal has a slot to render into.
@@ -591,23 +589,44 @@ const OP_CHAT_SIDEBAR_CSS = `
   gap: 5px;
 }
 
-/* WI-4778: the 🫖 pot-health toggle — same control idiom as the TTS button;
-   lit accent while the pot view is on. Docked immediately AFTER the Papercup
-   orb + name (owner ask 2026-07-14), so chat ⇄ pot-health switching happens
-   in one spot beside the identity, not across the header. */
+/* WI-4778/WI-4789: the 🫖 pot-health toggle — flat control (design docs §
+   buttons: 1px border, tinted fill, no shadow/gradient/lift), lit accent
+   while the pot view is on. Docked immediately AFTER the Papercup orb + name
+   (owner ask 2026-07-14) and carrying its own "Pot Health" label so the
+   pane's two faces read as peers: [🥤 Papercup] [🫖 Pot Health]. */
 .op-chat-header-main .op-chat-pot-toggle {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   min-height: 26px;
-  padding: 0 6px;
+  padding: 0 8px 0 6px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%);
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg-1), transparent 4%);
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
+}
+
+/* The label besides the glyph — the wordmark-title treatment, one step
+   smaller so the Papercup identity stays the header's lead. Truncates before
+   the voice controls do at narrow widths. */
+.op-chat-header-main .op-chat-pot-toggle-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 640;
+  color: var(--fg-dim);
+}
+
+.op-chat-header-main .op-chat-pot-toggle:hover .op-chat-pot-toggle-label,
+.op-chat-header-main .op-chat-pot-toggle.is-on .op-chat-pot-toggle-label {
+  color: var(--fg);
 }
 
 .op-chat-header-main .op-chat-pot-toggle.is-on {
