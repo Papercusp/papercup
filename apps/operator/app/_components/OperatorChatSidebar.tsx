@@ -24,9 +24,10 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
-import { ChevronLeft, ChevronRight, Coffee, Thermometer, Volume2, VolumeX } from 'lucide-react';
-import { parseAsBoolean, parseAsString, useQueryState, useQueryStates } from 'nuqs';
+import { ChevronLeft, ChevronRight, Volume2, VolumeX } from 'lucide-react';
+import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
+import { PotHealthPane } from './PotHealthPane';
 import { PotStatusStrip } from './PotStatusStrip';
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
@@ -37,7 +38,6 @@ import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
 import { AudienceModeSelector } from './AudienceModeSelector';
-import { useLexicon } from '@/lib/useLexicon';
 import { isVoiceOutputMuted, setVoiceOutputMuted } from './voice/voice-mode';
 import {
   OPERATOR_CHAT_COLLAPSED_WIDTH,
@@ -48,24 +48,10 @@ import {
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
 
-/**
- * Reactive read of a body class. The LeftSidebar rail (operator-vite) reserves
- * layout space by stamping `has-left-sidebar` on <body> (removed on chromeless
- * routes / unmount) — this is the truth signal for "the rail is actually
- * docked", which the WI-4739 header identity below needs alongside the nuqs
- * `lsb`/`lst` params (the params alone can't tell a chromeless route apart).
- */
-function useBodyHasClass(cls: string): boolean {
-  const [has, setHas] = useState(false);
-  useEffect(() => {
-    const read = () => setHas(document.body.classList.contains(cls));
-    read();
-    const mo = new MutationObserver(read);
-    mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
-    return () => mo.disconnect();
-  }, [cls]);
-  return has;
-}
+/** The 🫖 header toggle's view values (WI-4778): the chat body ⇄ the
+ *  full-height Pot Health view, inside the same Papercup pane. URL state via
+ *  nuqs so agents (ui:get_state / ui:dispatch) can see + drive it. */
+const CHAT_VIEW_VALUES = ['chat', 'pot'] as const;
 
 /**
  * Speak-responses (TTS output) mute toggle — MOVED here from the left rail's
@@ -253,26 +239,15 @@ export function OperatorChatSidebar() {
     statusText = 'ready';
   }
 
-  // WI-4739: the header identity follows the ACTIVE rail pane. Switching the
-  // left rail to the Mug (queen) or Kettle (overwatch) tab is, in the owner's
-  // model, "switching to the mug/kettle chat" — so the top-left orb + name
-  // track it (Coffee/"Mug", Thermometer/"Kettle" — the LeftSidebar tab
-  // iconography + lexicon words). Any other tab, a collapsed rail, or a
-  // chromeless route (no docked rail) shows the Papercup identity as before.
-  // Read-only nuqs peek at the rail's own params (`lsb` open / `lst` tab).
-  const t = useLexicon();
-  const railDocked = useBodyHasClass('has-left-sidebar');
-  const [{ lsb: railOpen, lst: railTab }] = useQueryStates({
-    lsb: parseAsBoolean.withDefault(true),
-    lst: parseAsString.withDefault('queen'),
-  });
-  const headerMark = railDocked && railOpen
-    ? railTab === 'queen'
-      ? { Icon: Coffee, name: t('brain') }
-      : railTab === 'overwatch'
-        ? { Icon: Thermometer, name: t('overwatch') }
-        : null
-    : null;
+  // WI-4778 (reverts WI-4739): the header is ALWAYS the Papercup identity —
+  // there is no Mug/Kettle chat to switch to. The 🫖 toggle below swaps the
+  // BODY between the chat and the full-height Pot Health view (what the Mug +
+  // Kettle decide from), inside this same pane.
+  const [view, setView] = useQueryState(
+    'opcv',
+    parseAsStringEnum([...CHAT_VIEW_VALUES]).withDefault('chat'),
+  );
+  const potOpen = view === 'pot';
 
   return (
     <aside
@@ -304,18 +279,28 @@ export function OperatorChatSidebar() {
         <div className="op-chat-header">
           <div className="op-chat-header-main">
             <div className="op-chat-header-orb" aria-hidden="true">
-              {headerMark
-                ? <headerMark.Icon className="op-chat-header-logo op-chat-header-mark" strokeWidth={1.7} aria-hidden="true" />
-                : <OperatorLogoMark className="op-chat-header-logo" />}
+              <OperatorLogoMark className="op-chat-header-logo" />
             </div>
             <OperatorWordmarkLockup
               className="op-chat-wordmark"
               titleClassName="op-chat-wordmark-title"
               subtitleClassName="op-chat-wordmark-subtitle"
               subtitle=""
-              title={headerMark?.name}
             />
             <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
+              {/* WI-4778: the 🫖 toggle — chat ⇄ the full-height Pot Health
+                  view (the info the Mug + Kettle decide from), same pane. */}
+              <Tooltip label={potOpen ? 'Back to chat' : 'Pot health — see what the Mug and Kettle decide from'}>
+                <button
+                  type="button"
+                  className={`op-chat-pot-toggle${potOpen ? ' is-on' : ''}`}
+                  onClick={() => void setView(potOpen ? 'chat' : 'pot')}
+                  aria-pressed={potOpen}
+                  aria-label={potOpen ? 'Back to chat' : 'Show pot health'}
+                >
+                  <span aria-hidden="true">🫖</span>
+                </button>
+              </Tooltip>
               <AudienceModeSelector />
               <OperatorActiveToggle />
               <VoiceButton />
@@ -331,25 +316,33 @@ export function OperatorChatSidebar() {
             </button></Tooltip>
           </div>
         </div>
-        {/* P-018 (mockup variant A): the pot status strip — ambient Mug/Kettle
-            health under the header, folding out into the pot panel (attention /
-            cups / up-next / steering). The digest, not the dashboards. */}
-        <PotStatusStrip />
-        <OperatorChat
-          messages={conv.messages}
-          busy={conv.busy}
-          passive={conv.mode === 'passive'}
-          onSend={conv.sendUserMessage}
-          onGenerateIdeas={conv.generateIdeas}
-          banner={conv.bannerText ? <div className="op-chat-banner">{conv.bannerText}</div> : null}
-          error={conv.error}
-          onLoadEarlier={conv.loadEarlier}
-          hasMoreEarlier={conv.hasMoreEarlier}
-          loadingEarlier={conv.loadingEarlier}
-          onAnswerChoice={conv.answerChoice}
-          conversationId={conv.conversationId ?? undefined}
-          workspaceId={workspaceId}
-        />
+        {potOpen ? (
+          /* WI-4778: 🫖 on — the full-height Pot Health view replaces the
+             chat body (strip + messages + composer), same pane, one scroll. */
+          <PotHealthPane />
+        ) : (
+          <>
+            {/* P-018 (mockup variant A): the pot status strip — ambient
+                Mug/Kettle health under the header; clicking it opens the
+                full-height Pot Health view (WI-4778). */}
+            <PotStatusStrip />
+            <OperatorChat
+              messages={conv.messages}
+              busy={conv.busy}
+              passive={conv.mode === 'passive'}
+              onSend={conv.sendUserMessage}
+              onGenerateIdeas={conv.generateIdeas}
+              banner={conv.bannerText ? <div className="op-chat-banner">{conv.bannerText}</div> : null}
+              error={conv.error}
+              onLoadEarlier={conv.loadEarlier}
+              hasMoreEarlier={conv.hasMoreEarlier}
+              loadingEarlier={conv.loadingEarlier}
+              onAnswerChoice={conv.answerChoice}
+              conversationId={conv.conversationId ?? undefined}
+              workspaceId={workspaceId}
+            />
+          </>
+        )}
         {/* M6: askUserLocal renderer host. Mounted once per sidebar so any
             client-side caller of askUserLocal has a slot to render into.
             Cards render here when triggered by render-time UI affordances
@@ -521,13 +514,6 @@ const OP_CHAT_SIDEBAR_CSS = `
   text-overflow: ellipsis;
 }
 
-/* WI-4739: the rail-agent mark (Coffee/Thermometer) rendered inside the orb
-   when the Mug/Kettle pane is active — a stroked lucide glyph, not the filled
-   papercup logo, so give it the accent ink directly. */
-.op-chat-header-mark {
-  color: var(--accent-strong, var(--accent-soft));
-}
-
 .op-chat-toggle {
   width: 28px;
   height: 28px;
@@ -600,6 +586,38 @@ const OP_CHAT_SIDEBAR_CSS = `
   min-height: 26px;
   padding: 3px 7px 3px 6px;
   gap: 5px;
+}
+
+/* WI-4778: the 🫖 pot-health toggle — same control idiom as the TTS button;
+   lit accent while the pot view is on. */
+.op-chat-controls .op-chat-pot-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-1), transparent 4%);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.op-chat-controls .op-chat-pot-toggle.is-on {
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 30%);
+  background: color-mix(in srgb, var(--accent), transparent 82%);
+}
+
+.op-chat-controls .op-chat-pot-toggle:hover {
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+}
+
+.op-chat-controls .op-chat-pot-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-strong), transparent 18%);
+  outline-offset: 2px;
 }
 
 /* WI-4740: the speak-responses (TTS) mute — moved here from the retired
