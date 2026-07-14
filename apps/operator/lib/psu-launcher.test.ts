@@ -2576,6 +2576,111 @@ describe('claudeStoreHasSession (a tracked adv row alone does not prove resumabi
   });
 });
 
+describe('rehealResumeCredentials (WI-4727 — psu --resume re-login: heal the stale isolated .credentials.json fork)', () => {
+  // The regression: `psu --resume <id>` prompts a Claude LOGIN despite the owner
+  // being logged in on the default account. Root cause — each psu session runs
+  // claude in an ISOLATED CLAUDE_CONFIG_DIR; claude REPLACES .credentials.json on
+  // every OAuth refresh (temp+rename), swapping the symlink-to-global for a
+  // divergent real-file fork. Anthropic's single-use rotating refresh tokens then
+  // make that fork go stale the moment the global rotates. rehealResumeCredentials
+  // re-establishes the fresh-mirror invariant before a resume spawn: the isolated
+  // .credentials.json must end up a SYMLINK to the (reconciler-kept-newest) global.
+  let home = '';
+  let configDir = '';
+  const globalOf = () => join(home, '.claude', '.credentials.json');
+  const sessOf = () => join(configDir, '.credentials.json');
+  const credBundle = (expiresAt: number, accessToken = 'tok') =>
+    JSON.stringify({ claudeAiOauth: { accessToken, expiresAt } });
+  const writeGlobal = (expiresAt: number, accessToken = 'global-tok') => {
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(globalOf(), credBundle(expiresAt, accessToken));
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'psu-reheal-'));
+    configDir = join(home, '.papercusp', 'session-claude', 'su-owner-1');
+    mkdirSync(configDir, { recursive: true });
+  });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  it('a stale REAL-FILE session fork is replaced by a SYMLINK to the live global (the owner-reported regression)', () => {
+    writeGlobal(9_000, 'live-global-token');
+    // The divergent, stale real-file fork left behind by an in-session refresh.
+    writeFileSync(sessOf(), credBundle(1_000, 'stale-fork-token'));
+    expect(lstatSync(sessOf()).isSymbolicLink()).toBe(false); // precondition: real file
+
+    rehealResumeCredentials(configDir, { home });
+
+    // Post: the session credential is now a symlink resolving to the global CLI login…
+    expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
+    // …so claude follows it to the live token, never the stale fork.
+    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('live-global-token');
+    // The global's newer bundle is untouched (the fork was OLDER — not promoted).
+    expect(JSON.parse(readFileSync(globalOf(), 'utf8')).claudeAiOauth.accessToken).toBe('live-global-token');
+  });
+
+  it('promotes a strictly-NEWER real-file fork to the global, THEN symlinks the session at it', () => {
+    // An in-session refresh the background reconciler has not converged yet: the
+    // isolated fork holds a bundle newer than the global. Promote-then-mirror so the
+    // canonical global carries the newest bundle before we re-point the session.
+    writeGlobal(1_000, 'older-global-token');
+    writeFileSync(sessOf(), credBundle(9_000, 'newer-fork-token'));
+
+    rehealResumeCredentials(configDir, { home });
+
+    // The newer fork was promoted into the global…
+    expect(JSON.parse(readFileSync(globalOf(), 'utf8')).claudeAiOauth.accessToken).toBe('newer-fork-token');
+    expect(claudeCredExpiresAt(globalOf())).toBe(9_000);
+    // …and the session credential is a symlink resolving to that now-newest global.
+    expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
+    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('newer-fork-token');
+  });
+
+  it('leaves a HEALTHY symlink (already resolving to the global) byte-identical', () => {
+    writeGlobal(5_000, 'healthy-token');
+    symlinkSync(globalOf(), sessOf());
+    const before = lstatSync(sessOf());
+
+    rehealResumeCredentials(configDir, { home });
+
+    expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
+    // Untouched — same inode / mtime (not rm+re-symlinked).
+    expect(lstatSync(sessOf()).ino).toBe(before.ino);
+    expect(lstatSync(sessOf()).mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it('re-heals a DANGLING session symlink (points at a now-deleted path) into a live symlink', () => {
+    writeGlobal(5_000, 'live-token');
+    symlinkSync(join(home, '.claude', 'gone.json'), sessOf()); // dangling
+    expect(existsSync(sessOf())).toBe(false); // dangling target
+
+    rehealResumeCredentials(configDir, { home });
+
+    expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
+    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('live-token');
+  });
+
+  it('no global credential → no-op (API-key-only / fresh box: nothing to mirror)', () => {
+    // No global written. A pre-existing session fork must NOT be clobbered when
+    // there is no canonical login to mirror from.
+    writeFileSync(sessOf(), credBundle(1_000, 'only-fork'));
+    rehealResumeCredentials(configDir, { home });
+    expect(existsSync(globalOf())).toBe(false);
+    expect(lstatSync(sessOf()).isSymbolicLink()).toBe(false); // left as-is
+    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('only-fork');
+  });
+
+  it('never throws — a launch must survive credential reconciliation failure (empty configDir)', () => {
+    writeGlobal(5_000);
+    expect(() => rehealResumeCredentials('', { home })).not.toThrow();
+    expect(() => rehealResumeCredentials(undefined as unknown as string, { home })).not.toThrow();
+  });
+});
+
 describe('usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 3)', () => {
   const tty = { isTTY: true };
   const notTty = { isTTY: false };
