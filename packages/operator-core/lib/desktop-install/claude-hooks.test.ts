@@ -40,7 +40,11 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/lifecycle-report.sh`,
       `${DEST}/workitem-verify-nudge.sh`,
     ]);
-    expect(commandsFor(cfg, 'Stop')).toEqual([`${DEST}/workitem-verify-nudge.sh`]);
+    // Stop: the work-item nudge + the per-turn journal ping (deterministic-context-carry P-012).
+    expect(commandsFor(cfg, 'Stop')).toEqual([
+      `${DEST}/workitem-verify-nudge.sh`,
+      `${DEST}/stop-turn-journal.sh`,
+    ]);
 
     // UserPromptSubmit: turn-provenance classification (turn-provenance-owner-vs-agent P-003)
     // + turn-start memory delta (memory-delivery-unification-2026-07-12 P-003a).

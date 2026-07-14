@@ -27,6 +27,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
+import { isChromelessPath } from '../../lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
 import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
@@ -91,8 +92,8 @@ const MIN_WIDTH = 300;
 const DEFAULT_WIDTH = 384;
 const WIDTH_STORAGE_KEY = 'papercusp.leftSidebar.width';
 
-// Chromeless (iframe-target) routes render no global chrome — absent there.
-const CHROMELESS_PREFIXES = ['/pi', '/project-docs', '/el-min'];
+// Chromeless-route detection lives in lib/chromeless-routes (shared with __root
+// + DevAdminRail) so the list can't drift per-component.
 
 function widthCeiling(viewportWidth: number): number {
   return Math.max(MIN_WIDTH, Math.floor(viewportWidth * 0.5));
@@ -147,9 +148,7 @@ export default function LeftSidebar() {
   }, [overwatchOn, sentinelOn, tab, setRail]);
 
   const pathname = usePathname() ?? '';
-  const chromeless = CHROMELESS_PREFIXES.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
+  const chromeless = isChromelessPath(pathname);
 
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
   const [hydrated, setHydrated] = useState(false);

@@ -30,6 +30,7 @@ import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-re
 import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
+import { isChromelessPath } from '../../lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import {
   Flag,
@@ -77,10 +78,9 @@ const MIN_WIDTH = 300;
 const DEFAULT_WIDTH = 384;
 const WIDTH_STORAGE_KEY = 'papercusp.devRail.width';
 
-// Iframe-target routes render no global chrome (mirrors ChromeShell's
-// CHROMELESS_PATH_PREFIXES); the rail must be absent there too so it doesn't
-// reserve space inside an embedded route.
-const CHROMELESS_PREFIXES = ['/pi', '/project-docs', '/el-min'];
+// Iframe-target / popup routes render no global chrome; the rail must be absent
+// there too so it doesn't reserve space inside an embedded route. Shared list in
+// lib/chromeless-routes (also gates __root chrome + LeftSidebar).
 
 function widthCeiling(viewportWidth: number): number {
   return Math.max(MIN_WIDTH, Math.floor(viewportWidth * 0.6));
@@ -111,9 +111,7 @@ export default function DevAdminRail() {
   );
 
   const pathname = usePathname() ?? '';
-  const chromeless = CHROMELESS_PREFIXES.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
+  const chromeless = isChromelessPath(pathname);
 
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
   const [hydrated, setHydrated] = useState(false);

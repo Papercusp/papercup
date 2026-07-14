@@ -253,7 +253,7 @@ function RootComponent() {
                           mirroring the Next operator's layout.tsx.
                           (Deferred in A3 because it imports next/navigation;
                           the alias shim now resolves that.) */}
-                      <ChromeShell />
+                      {!chromeless && <ChromeShell />}
                       <main data-route-transition-page="true">
                         {/* Route-content error boundary: keeps ChromeShell
                             mounted on a route crash (so the user can navigate
