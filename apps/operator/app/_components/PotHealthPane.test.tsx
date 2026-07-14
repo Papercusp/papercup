@@ -147,12 +147,12 @@ describe('PotHealthPane (WI-4778)', () => {
     expect(screen.getByText('3 need you')).toBeTruthy();
   });
 
-  it('☕ Mug section renders her REAL floor: frontier, cups, placements & capacity, escalations & steering + carry-note', () => {
+  it('☕ Mug section (below the Kettle — owner order 2026-07-14) renders her REAL floor: frontier, cups, placements & capacity, escalations & steering + carry-note', () => {
     seedSnapshot();
     seedFloor();
     render(<PotHealthPane />);
     // Section rubric.
-    expect(screen.getByText('What the Mug decides from')).toBeTruthy();
+    expect(screen.getByText('What the Mug looks at')).toBeTruthy();
     // Frontier card: rows + honest counts.
     expect(screen.getByText('WI-4665')).toBeTruthy();
     expect(screen.getByText('3 ready · 2 blocked · 1 quarantined')).toBeTruthy();
@@ -183,7 +183,7 @@ describe('PotHealthPane (WI-4778)', () => {
     seedSnapshot();
     seedFloor();
     render(<PotHealthPane />);
-    expect(screen.getByText('What the Kettle decides from')).toBeTruthy();
+    expect(screen.getByText('What the Kettle looks at')).toBeTruthy();
     // Health panels (kv rows off the real brief fields).
     expect(screen.getByText(/on cadence · woke 2m ago · driving 2/)).toBeTruthy();
     expect(screen.getByText('3 running · 7 completed · 0 churning · 0 dead claims')).toBeTruthy();

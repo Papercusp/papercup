@@ -128,10 +128,109 @@ export function PotHealthPane() {
       </div>
 
       <div className="op-ph-body">
+        {/* ── 🌡 The Kettle — what it heals the system from ──────────────── */}
+        <h3 className="op-ph-sec ket">
+          <Thermometer size={12} strokeWidth={2} aria-hidden="true" />
+          What the Kettle looks at
+          <span className="op-ph-sec-d">system healing</span>
+        </h3>
+
+        {!snap && <div className="op-pot-empty">Loading the Kettle&apos;s brief…</div>}
+        {snap && (
+          <>
+            <section className="op-ph-card ket" aria-label="Health panels">
+              <h4 className="op-ph-card-h">Health panels</h4>
+              <div className="op-ph-kv">
+                <KvRow
+                  k="mug"
+                  v={`${snap.queen.stalled ? 'stalled' : snap.queen.cadenceOk ? 'on cadence' : 'off cadence'} · woke ${compactAge(snap.queen.lastWakeAt)} ago · driving ${snap.queen.workingTracked}`}
+                  tone={snap.queen.stalled ? 'bad' : snap.queen.cadenceOk ? 'ok' : 'warn'}
+                />
+                <KvRow
+                  k="cups"
+                  v={`${snap.bees.running} running · ${snap.bees.completed} completed · ${snap.bees.churning} churning · ${snap.bees.deadClaims} dead claims`}
+                  tone={snap.bees.churning > 0 || snap.bees.deadClaims > 0 ? 'warn' : 'ok'}
+                />
+                <KvRow
+                  k="work-feed"
+                  v={`${snap.workFeed.frontier} ready · ${snap.workFeed.autoEligibleStuck} stuck · ${snap.workFeed.deadRoutines} dead routines · ${snap.workFeed.blockedStranded} stranded`}
+                  tone={snap.workFeed.deadRoutines > 0 ? 'bad' : snap.workFeed.autoEligibleStuck > 0 ? 'warn' : 'ok'}
+                />
+                <KvRow
+                  k="tokens"
+                  v={`${snap.tokens.accountsAvailable} accounts up${pausedBuckets.length > 0 ? ` · paused: ${pausedBuckets.join(', ')}` : ''}${snap.tokens.gatewayWedged ? ' · gateway WEDGED' : snap.tokens.gatewaySustainedThrottle ? ' · gateway throttling' : ''}`}
+                  tone={snap.tokens.gatewayWedged ? 'bad' : pausedBuckets.length > 0 || snap.tokens.gatewaySustainedThrottle ? 'warn' : 'ok'}
+                />
+                <KvRow
+                  k="plans"
+                  v={`${snap.plans.active} active · ${snap.plans.stalledItems} stalled items · ${snap.plans.agingEscalations} aging escalations`}
+                  tone={snap.plans.agingEscalations > 0 ? 'warn' : 'ok'}
+                />
+              </div>
+            </section>
+
+            <section className="op-ph-card ket" aria-label="Anomalies and suggested actions">
+              <h4 className="op-ph-card-h">
+                Anomalies → suggested action
+                {anomalies.length > 0 && <span className="op-ph-card-n">{anomalies.length} open</span>}
+              </h4>
+              {anomalies.length === 0 ? (
+                <div className="op-pot-empty">none — system healthy</div>
+              ) : (
+                <ul className="op-pot-list">
+                  {anomalies.map((a) => (
+                    <li key={`${a.kind}:${a.subject}`} className={`op-pot-attn sev-${a.severity}`}>
+                      <span className="op-pot-attn-text">
+                        <b className="op-pot-attn-subj">{a.subject}</b>
+                        {' — '}
+                        {a.detail}
+                      </span>
+                      <span className={`op-pot-chip ${ACTION_TONE[a.suggestedAction.type] ?? 'obs'}`}>
+                        {ACTION_CHIP[a.suggestedAction.type] ?? 'OBSERVE'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="op-ph-card ket" aria-label="Cross monitor and wake">
+              <h4 className="op-ph-card-h">Cross-monitor &amp; wake</h4>
+              <div className="op-ph-kv">
+                <KvRow k="mug alive" v={snap.crossMonitor.queenAlive ? 'yes' : 'DARK'} tone={dot(snap.crossMonitor.queenAlive) as 'ok' | 'bad'} />
+                <KvRow k="kettle alive" v={kettleOk ? `yes · last run ${compactAge(live?.lastRunAt ?? null)} ago` : 'DARK'} tone={dot(kettleOk) as 'ok' | 'bad'} />
+                {snap.wokeBy != null && <KvRow k="woke by" v={snap.wokeBy} />}
+                <KvRow
+                  k="owner steering"
+                  v={snap.ownerSteering.pauseNewWork ? 'new work paused' : 'new work allowed'}
+                  tone={snap.ownerSteering.pauseNewWork ? 'warn' : 'ok'}
+                />
+              </div>
+            </section>
+
+            <section className="op-ph-card ket" aria-label="Observations">
+              <h4 className="op-ph-card-h">
+                Observations
+                <span className="op-ph-card-n">fed to ideation</span>
+              </h4>
+              {snap.observations.laneCount === 0 ? (
+                <div className="op-pot-empty">none recorded this window</div>
+              ) : (
+                <div className="op-ph-kv">
+                  <KvRow k="this window" v={`${snap.observations.laneCount} recorded`} />
+                  {observationsByRole.map(([role, n]) => (
+                    <KvRow key={role} k={role} v={`${n}`} />
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
         {/* ── ☕ The Mug — what she places work from ─────────────────────── */}
         <h3 className="op-ph-sec mug">
           <Coffee size={12} strokeWidth={2} aria-hidden="true" />
-          What the Mug decides from
+          What the Mug looks at
           <span className="op-ph-sec-d">work placement</span>
         </h3>
 
@@ -279,104 +378,6 @@ export function PotHealthPane() {
           </>
         )}
 
-        {/* ── 🌡 The Kettle — what it heals the system from ──────────────── */}
-        <h3 className="op-ph-sec ket">
-          <Thermometer size={12} strokeWidth={2} aria-hidden="true" />
-          What the Kettle decides from
-          <span className="op-ph-sec-d">system healing</span>
-        </h3>
-
-        {!snap && <div className="op-pot-empty">Loading the Kettle&apos;s brief…</div>}
-        {snap && (
-          <>
-            <section className="op-ph-card ket" aria-label="Health panels">
-              <h4 className="op-ph-card-h">Health panels</h4>
-              <div className="op-ph-kv">
-                <KvRow
-                  k="mug"
-                  v={`${snap.queen.stalled ? 'stalled' : snap.queen.cadenceOk ? 'on cadence' : 'off cadence'} · woke ${compactAge(snap.queen.lastWakeAt)} ago · driving ${snap.queen.workingTracked}`}
-                  tone={snap.queen.stalled ? 'bad' : snap.queen.cadenceOk ? 'ok' : 'warn'}
-                />
-                <KvRow
-                  k="cups"
-                  v={`${snap.bees.running} running · ${snap.bees.completed} completed · ${snap.bees.churning} churning · ${snap.bees.deadClaims} dead claims`}
-                  tone={snap.bees.churning > 0 || snap.bees.deadClaims > 0 ? 'warn' : 'ok'}
-                />
-                <KvRow
-                  k="work-feed"
-                  v={`${snap.workFeed.frontier} ready · ${snap.workFeed.autoEligibleStuck} stuck · ${snap.workFeed.deadRoutines} dead routines · ${snap.workFeed.blockedStranded} stranded`}
-                  tone={snap.workFeed.deadRoutines > 0 ? 'bad' : snap.workFeed.autoEligibleStuck > 0 ? 'warn' : 'ok'}
-                />
-                <KvRow
-                  k="tokens"
-                  v={`${snap.tokens.accountsAvailable} accounts up${pausedBuckets.length > 0 ? ` · paused: ${pausedBuckets.join(', ')}` : ''}${snap.tokens.gatewayWedged ? ' · gateway WEDGED' : snap.tokens.gatewaySustainedThrottle ? ' · gateway throttling' : ''}`}
-                  tone={snap.tokens.gatewayWedged ? 'bad' : pausedBuckets.length > 0 || snap.tokens.gatewaySustainedThrottle ? 'warn' : 'ok'}
-                />
-                <KvRow
-                  k="plans"
-                  v={`${snap.plans.active} active · ${snap.plans.stalledItems} stalled items · ${snap.plans.agingEscalations} aging escalations`}
-                  tone={snap.plans.agingEscalations > 0 ? 'warn' : 'ok'}
-                />
-              </div>
-            </section>
-
-            <section className="op-ph-card ket" aria-label="Anomalies and suggested actions">
-              <h4 className="op-ph-card-h">
-                Anomalies → suggested action
-                {anomalies.length > 0 && <span className="op-ph-card-n">{anomalies.length} open</span>}
-              </h4>
-              {anomalies.length === 0 ? (
-                <div className="op-pot-empty">none — system healthy</div>
-              ) : (
-                <ul className="op-pot-list">
-                  {anomalies.map((a) => (
-                    <li key={`${a.kind}:${a.subject}`} className={`op-pot-attn sev-${a.severity}`}>
-                      <span className="op-pot-attn-text">
-                        <b className="op-pot-attn-subj">{a.subject}</b>
-                        {' — '}
-                        {a.detail}
-                      </span>
-                      <span className={`op-pot-chip ${ACTION_TONE[a.suggestedAction.type] ?? 'obs'}`}>
-                        {ACTION_CHIP[a.suggestedAction.type] ?? 'OBSERVE'}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className="op-ph-card ket" aria-label="Cross monitor and wake">
-              <h4 className="op-ph-card-h">Cross-monitor &amp; wake</h4>
-              <div className="op-ph-kv">
-                <KvRow k="mug alive" v={snap.crossMonitor.queenAlive ? 'yes' : 'DARK'} tone={dot(snap.crossMonitor.queenAlive) as 'ok' | 'bad'} />
-                <KvRow k="kettle alive" v={kettleOk ? `yes · last run ${compactAge(live?.lastRunAt ?? null)} ago` : 'DARK'} tone={dot(kettleOk) as 'ok' | 'bad'} />
-                {snap.wokeBy != null && <KvRow k="woke by" v={snap.wokeBy} />}
-                <KvRow
-                  k="owner steering"
-                  v={snap.ownerSteering.pauseNewWork ? 'new work paused' : 'new work allowed'}
-                  tone={snap.ownerSteering.pauseNewWork ? 'warn' : 'ok'}
-                />
-              </div>
-            </section>
-
-            <section className="op-ph-card ket" aria-label="Observations">
-              <h4 className="op-ph-card-h">
-                Observations
-                <span className="op-ph-card-n">fed to ideation</span>
-              </h4>
-              {snap.observations.laneCount === 0 ? (
-                <div className="op-pot-empty">none recorded this window</div>
-              ) : (
-                <div className="op-ph-kv">
-                  <KvRow k="this window" v={`${snap.observations.laneCount} recorded`} />
-                  {observationsByRole.map(([role, n]) => (
-                    <KvRow key={role} k={role} v={`${n}`} />
-                  ))}
-                </div>
-              )}
-            </section>
-          </>
-        )}
       </div>
     </div>
   );

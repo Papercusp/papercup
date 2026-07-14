@@ -287,20 +287,23 @@ export function OperatorChatSidebar() {
               subtitleClassName="op-chat-wordmark-subtitle"
               subtitle=""
             />
+            {/* WI-4778: the 🫖 toggle — chat ⇄ the full-height Pot Health view
+                (the info the Mug + Kettle decide from), same pane. Sits RIGHT
+                BESIDE the Papercup identity (owner ask 2026-07-14): the user
+                switches chat ⇄ pot health constantly, so the two "faces" of
+                the pane live next to each other, not across the header. */}
+            <Tooltip label={potOpen ? 'Back to chat' : 'Pot health — see what the Kettle and Mug look at'}>
+              <button
+                type="button"
+                className={`op-chat-pot-toggle${potOpen ? ' is-on' : ''}`}
+                onClick={() => void setView(potOpen ? 'chat' : 'pot')}
+                aria-pressed={potOpen}
+                aria-label={potOpen ? 'Back to chat' : 'Show pot health'}
+              >
+                <span aria-hidden="true">🫖</span>
+              </button>
+            </Tooltip>
             <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
-              {/* WI-4778: the 🫖 toggle — chat ⇄ the full-height Pot Health
-                  view (the info the Mug + Kettle decide from), same pane. */}
-              <Tooltip label={potOpen ? 'Back to chat' : 'Pot health — see what the Mug and Kettle decide from'}>
-                <button
-                  type="button"
-                  className={`op-chat-pot-toggle${potOpen ? ' is-on' : ''}`}
-                  onClick={() => void setView(potOpen ? 'chat' : 'pot')}
-                  aria-pressed={potOpen}
-                  aria-label={potOpen ? 'Back to chat' : 'Show pot health'}
-                >
-                  <span aria-hidden="true">🫖</span>
-                </button>
-              </Tooltip>
               <AudienceModeSelector />
               <OperatorActiveToggle />
               <VoiceButton />
@@ -589,8 +592,10 @@ const OP_CHAT_SIDEBAR_CSS = `
 }
 
 /* WI-4778: the 🫖 pot-health toggle — same control idiom as the TTS button;
-   lit accent while the pot view is on. */
-.op-chat-controls .op-chat-pot-toggle {
+   lit accent while the pot view is on. Docked immediately AFTER the Papercup
+   orb + name (owner ask 2026-07-14), so chat ⇄ pot-health switching happens
+   in one spot beside the identity, not across the header. */
+.op-chat-header-main .op-chat-pot-toggle {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -605,17 +610,17 @@ const OP_CHAT_SIDEBAR_CSS = `
   cursor: pointer;
 }
 
-.op-chat-controls .op-chat-pot-toggle.is-on {
+.op-chat-header-main .op-chat-pot-toggle.is-on {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 30%);
   background: color-mix(in srgb, var(--accent), transparent 82%);
 }
 
-.op-chat-controls .op-chat-pot-toggle:hover {
+.op-chat-header-main .op-chat-pot-toggle:hover {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
   background: color-mix(in srgb, var(--accent), transparent 88%);
 }
 
-.op-chat-controls .op-chat-pot-toggle:focus-visible {
+.op-chat-header-main .op-chat-pot-toggle:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent-strong), transparent 18%);
   outline-offset: 2px;
 }
@@ -1068,7 +1073,7 @@ body.has-op-chat .pc-header {
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
 .op-chat-controls .pc-voice-settings-link,
-.op-chat-controls .op-chat-pot-toggle,
+.op-chat-header-main .op-chat-pot-toggle,
 .op-chat-controls .op-chat-tts {
   min-height: 27px !important;
   box-shadow: none !important;
@@ -1180,7 +1185,7 @@ body.has-op-chat .pc-header {
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
 .op-chat-controls .pc-voice-settings-link,
-.op-chat-controls .op-chat-pot-toggle,
+.op-chat-header-main .op-chat-pot-toggle,
 .op-chat-controls .op-chat-tts {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   background: color-mix(in srgb, var(--bg-1), transparent 4%) !important;
@@ -1195,7 +1200,7 @@ body.has-op-chat .pc-header {
 }
 
 /* Same carve-out for the lit 🫖 state (WI-4778). */
-.op-chat-controls .op-chat-pot-toggle.is-on {
+.op-chat-header-main .op-chat-pot-toggle.is-on {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 30%) !important;
   background: color-mix(in srgb, var(--accent), transparent 82%) !important;
 }
