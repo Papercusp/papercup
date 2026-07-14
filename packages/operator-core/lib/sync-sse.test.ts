@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let capturedListen: ((raw: string) => void) | null = null;
+let capturedOnListen: (() => void) | null = null;
 const notifySql = vi.fn(async (..._args: unknown[]) => [] as unknown[]); // called as a tagged template
 type BridgeTarget = string | { name: string; args: Record<string, unknown> };
 let bridgeReturn: (name: string, args?: Record<string, unknown>) => BridgeTarget[] = () => [];
@@ -25,12 +26,14 @@ const T0 = 1_700_000_000_000;
 beforeEach(() => {
   vi.resetModules();
   capturedListen = null;
+  capturedOnListen = null;
   notifySql.mockClear();
   bridgeReturn = () => [];
   emitSysEvt.mockClear();
   listenFailuresRemaining = 0;
   // The dedupe Map is pinned to globalThis → clear it so each test starts fresh.
   delete (globalThis as unknown as { __syncNotifyDedupe?: unknown }).__syncNotifyDedupe;
+  delete (globalThis as unknown as { __papercuspInvalidationListenHooks__?: unknown }).__papercuspInvalidationListenHooks__;
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.useFakeTimers();
@@ -51,12 +54,14 @@ afterEach(() => {
 async function load() {
   vi.doMock('postgres', () => ({
     default: () => ({
-      listen: (_ch: string, cb: (raw: string) => void) => {
+      listen: (_ch: string, cb: (raw: string) => void, onListen?: () => void) => {
         if (listenFailuresRemaining > 0) {
           listenFailuresRemaining--;
           return Promise.reject(new Error('simulated LISTEN failure (PG not up yet)'));
         }
         capturedListen = cb;
+        capturedOnListen = onListen ?? null;
+        onListen?.();
         return Promise.resolve();
       },
     }),
@@ -198,6 +203,22 @@ describe('ensureInvalidationListener (EI-6468 / WI-1547: cache-ECA must not be i
     const ok = await ensureInvalidationListener();
     expect(ok).toBe(true);
     expect(capturedListen).not.toBeNull();
+  });
+
+  it('runs process-local rebuild hooks on the initial LISTEN and every reconnect', async () => {
+    const { ensureInvalidationListener, registerInvalidationListenHook } = await load();
+    const rebuild = vi.fn();
+    const remove = registerInvalidationListenHook(rebuild);
+
+    await expect(ensureInvalidationListener()).resolves.toBe(true);
+    expect(rebuild).toHaveBeenCalledTimes(1);
+
+    capturedOnListen?.(); // postgres-js reconnects and re-establishes LISTEN
+    expect(rebuild).toHaveBeenCalledTimes(2);
+
+    remove();
+    capturedOnListen?.();
+    expect(rebuild).toHaveBeenCalledTimes(2);
   });
 
   it('retries with backoff past a transient failure and eventually succeeds', async () => {

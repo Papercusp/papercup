@@ -1232,7 +1232,7 @@ import './storage/prune';
 // `backgroundWorkspaceIds()` names (per-window-workspace-context P-020) —
 // under the shared-operator model a non-global workspace's pot must still
 // wake on its subscribed events.
-import { registerPotWakeRules } from '../pot/wake';
+import { ensurePotWakeRuleSync, registerPotWakeRules } from '../pot/wake';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 // EI-307: projecting the persisted hive-wake subscriptions into the in-memory
 // reaction matcher is REQUEST-SERVING work, not a background loop — it must run on
@@ -1245,6 +1245,11 @@ import { backgroundWorkspaceIds } from '../workspace-registry';
 import { backgroundWorkersEnabled, reactionMatcherShouldArm } from '../background-workers';
 try {
   if (reactionMatcherShouldArm()) {
+    // WI-4890: :3070 is a reuse-port cluster, but event-reaction rules are
+    // process-local. Subscribe every request worker AND the background primary
+    // to persisted Pot wake-rule invalidations; reconnect performs a full
+    // catch-up so a missed NOTIFY cannot leave one worker permanently stale.
+    void ensurePotWakeRuleSync().catch(() => {});
     for (const ws of backgroundWorkspaceIds()) {
       void registerPotWakeRules(ws).catch(() => {});
     }

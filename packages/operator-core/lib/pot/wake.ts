@@ -31,7 +31,7 @@ import { clampToFloor, withinFloor } from '@papercusp/debounce-coalesce';
 import { getOrgPg, upsertRoutine, setRoutineActive, deleteRoutine } from '@papercusp/db-org';
 import { computeNextFireAt } from '../harness/routines/cron';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
-import { activeWorkspaceId } from '../workspace-registry';
+import { activeWorkspaceId, backgroundWorkspaceIds } from '../workspace-registry';
 import { canonicalHarnessSlug } from '../harness/operator-home-harness';
 import { registerReactionRule, unregisterReactionRule, listReactionRules } from '../events/registry';
 import {
@@ -299,6 +299,25 @@ export async function getPotTimeWake(
 
 const RULE_PREFIX = 'pot-wake';
 const ruleId = (workspaceId: string, i: number): string => `${RULE_PREFIX}:${workspaceId}#${i}`;
+/** Cross-process invalidation carried over the existing sync_invalidate PG bus. */
+export const POT_WAKE_RULES_INVALIDATION = 'potWakeRules.byWorkspace';
+
+type PotWakeRuleSyncRuntime = {
+  start?: Promise<boolean>;
+  handle?: { close: () => void };
+  removeListenHook?: () => void;
+};
+const POT_WAKE_RULE_SYNC_RUNTIME_KEY = '__papercuspPotWakeRuleSyncRuntime__';
+
+function potWakeRuleSyncRuntime(): PotWakeRuleSyncRuntime {
+  const g = globalThis as Record<string, unknown>;
+  let runtime = g[POT_WAKE_RULE_SYNC_RUNTIME_KEY] as PotWakeRuleSyncRuntime | undefined;
+  if (!runtime) {
+    runtime = {};
+    g[POT_WAKE_RULE_SYNC_RUNTIME_KEY] = runtime;
+  }
+  return runtime;
+}
 
 /** Read the persisted pot wake state for a workspace. */
 export async function readPotWakeState(workspaceId?: string): Promise<PotWakeState> {
@@ -351,7 +370,74 @@ export async function setPotEventSubscriptions(
     subscriptions: subs,
     declaredAt: Date.now(),
   }), workspaceId);
-  return syncPotWakeRules(workspaceId, subs);
+  const rules = syncPotWakeRules(workspaceId, subs);
+  // The reaction registry is process-local while :3070 serves requests from a
+  // reuse-port cluster. Project immediately in the writer, then publish the
+  // durable state's workspace key so every sibling process re-reads + projects
+  // the same subscriptions. This must not use the bus's default 90s dedupe:
+  // two legitimate declarations inside that window can carry different rules.
+  const { notifySyncInvalidate } = await import('../sync-sse');
+  await notifySyncInvalidate(
+    POT_WAKE_RULES_INVALIDATION,
+    { workspaceId },
+    undefined,
+    { dedupeWindowMs: 0 },
+  );
+  return rules;
+}
+
+/** Re-project every workspace this operator process can serve. */
+export async function refreshAllPotWakeRules(): Promise<number> {
+  let total = 0;
+  for (const workspaceId of backgroundWorkspaceIds()) {
+    total += await registerPotWakeRules(workspaceId);
+  }
+  return total;
+}
+
+/**
+ * Keep the process-local Pot wake registry coherent across clustered request
+ * workers and the background primary. Runtime declarations push an invalidation
+ * over the existing PG bus; initial LISTEN and reconnect both re-read every
+ * persisted workspace so a notification missed during a connection gap heals.
+ */
+export async function ensurePotWakeRuleSync(): Promise<boolean> {
+  const runtime = potWakeRuleSyncRuntime();
+  if (runtime.handle) return true;
+  if (runtime.start) return runtime.start;
+
+  runtime.start = (async () => {
+    const { registerInvalidationListenHook, subscribe } = await import('../sync-sse');
+    runtime.removeListenHook = registerInvalidationListenHook(() => refreshAllPotWakeRules());
+    runtime.handle = await subscribe((event) => {
+      if (event.name !== POT_WAKE_RULES_INVALIDATION) return;
+      const workspaceId = event.args?.workspaceId;
+      if (typeof workspaceId !== 'string' || !workspaceId.trim()) return;
+      void registerPotWakeRules(workspaceId);
+    });
+    // If the shared listener was already up before this subscriber registered,
+    // its initial onListen hook has already fired. Explicit catch-up closes that
+    // race; the rebuild is idempotent when onListen also ran it.
+    await refreshAllPotWakeRules();
+    return true;
+  })().catch((e) => {
+    runtime.removeListenHook?.();
+    runtime.removeListenHook = undefined;
+    runtime.start = undefined;
+    console.warn(`[pot] cross-process wake-rule sync skipped: ${e instanceof Error ? e.message : e}`);
+    return false;
+  });
+
+  return runtime.start;
+}
+
+/** Test-only: tear down the process-global sync subscription + guard. */
+export function _resetPotWakeRuleSyncForTests(): void {
+  const g = globalThis as Record<string, unknown>;
+  const runtime = g[POT_WAKE_RULE_SYNC_RUNTIME_KEY] as PotWakeRuleSyncRuntime | undefined;
+  runtime?.handle?.close();
+  runtime?.removeListenHook?.();
+  delete g[POT_WAKE_RULE_SYNC_RUNTIME_KEY];
 }
 
 /**

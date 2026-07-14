@@ -38,6 +38,49 @@ export interface Subscriber {
 
 const CHANNEL = 'sync_invalidate';
 
+// Host-side consumers can keep process-local projections coherent across the
+// reuse-port cluster by rebuilding them whenever this process establishes (or
+// re-establishes) its LISTEN. A bare NOTIFY is not replayed after a disconnect;
+// the reconnect hook is therefore the durable catch-up half of the push rail.
+// Pin the set to globalThis so dev module re-evaluation cannot register the same
+// rebuild hook repeatedly.
+const INVALIDATION_LISTEN_HOOKS_KEY = '__papercuspInvalidationListenHooks__';
+type InvalidationListenHook = () => void | Promise<void>;
+
+function invalidationListenHooks(): Set<InvalidationListenHook> {
+  const g = globalThis as Record<string, unknown>;
+  let hooks = g[INVALIDATION_LISTEN_HOOKS_KEY] as Set<InvalidationListenHook> | undefined;
+  if (!hooks) {
+    hooks = new Set();
+    g[INVALIDATION_LISTEN_HOOKS_KEY] = hooks;
+  }
+  return hooks;
+}
+
+/**
+ * Register a process-local projection rebuild to run on the initial
+ * `sync_invalidate` LISTEN and every reconnect. The returned function removes
+ * the hook. Hook failures are isolated: one projection must never take down the
+ * shared invalidation bus or prevent the other rebuilds.
+ */
+export function registerInvalidationListenHook(hook: InvalidationListenHook): () => void {
+  const hooks = invalidationListenHooks();
+  hooks.add(hook);
+  return () => void hooks.delete(hook);
+}
+
+function runInvalidationListenHooks(): void {
+  for (const hook of invalidationListenHooks()) {
+    try {
+      void Promise.resolve(hook()).catch((e) => {
+        console.error('[sync-sse] invalidation LISTEN rebuild hook failed:', e);
+      });
+    } catch (e) {
+      console.error('[sync-sse] invalidation LISTEN rebuild hook failed:', e);
+    }
+  }
+}
+
 /**
  * Bridge a raw PG-trigger `<schema>.<table>.changed` event to the camelCase query names
  * existing useSyncQuery consumers subscribe to (P-006/P-067) — AND tap it into the in-process
@@ -75,7 +118,10 @@ const bus = createInvalidationBus({
     // before the gap could outlive an invalidation it missed. Clearing the entire L1
     // on reconnect makes every entry rebuild — the audit's cold-bust requirement. On
     // the very first connect the L1 is empty, so the clear is a harmless no-op.
-    onListen: () => getOperatorCache().clearL1(),
+    onListen: () => {
+      getOperatorCache().clearL1();
+      runInvalidationListenHooks();
+    },
   }),
   // pg_notify through the shared org pool — same connection budget every
   // other writer manages (opening a fresh client per notify exhausted
