@@ -98,6 +98,15 @@ describe('reconcileWakeability (EI-6077)', () => {
     expect(out.alive).toBe(true);
   });
 
+  it('WI-4400: stale wakeable holder gets confirmLiveness before takeover', async () => {
+    const agent = baseAgent({ alive: false });
+    const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    expect(out.sessionState).toBe('draining');
+    expect(out.confirmLiveness).toBe(true);
+    expect(out.alive).toBe(false);
+  });
+
   it('fleet-liveness-zombie-await-2026-07-07: wakeable but hour-cold heartbeat → ended, not parked', async () => {
     // The reboot-zombie shape on the fleet:assignments surface: a lingering
     // (never-cancelled) wake-await makes it wakeable, but the heartbeat has been
@@ -516,6 +525,25 @@ describe('shapeFleetAssignments carries contextPressure at every tier (P-007)', 
       agents: Array<Record<string, unknown>>;
     };
     expect(shaped.agents[0].contextPressure).toBe('critical');
+  });
+});
+
+describe('shapeFleetAssignments carries confirmLiveness at every tier (WI-4400)', () => {
+  const data = {
+    ok: true,
+    summary: { agents: 2 },
+    orphaned: [],
+    stalled: [],
+    agents: [
+      { agentId: 'a1', sessionState: 'suspect', confirmLiveness: true, claims: [], queued: [] },
+      { agentId: 'a2', sessionState: 'live', confirmLiveness: false, claims: [], queued: [] },
+    ],
+  };
+
+  it.each(['trimmed', 'standard'] as const)('%s keeps the takeover hint', (tier) => {
+    const shaped = shapeFleetAssignments(data, tier) as { agents: Array<Record<string, unknown>> };
+    expect(shaped.agents[0].confirmLiveness).toBe(true);
+    expect(shaped.agents[1].confirmLiveness).toBe(false);
   });
 });
 
