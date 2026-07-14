@@ -20,6 +20,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ALL_FLAG_KEYS,
   DARK_FLAGS,
+  DARK_FLAGS_PARKING_CASES,
+  DARK_FLAGS_PARKING_COUNT,
   DARK_FLAGS_HIGH_WATERMARK,
   DARK_FLAGS_REVIEW_BY,
   FLAGS,
@@ -351,12 +353,24 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // an existing dark flag first (net-zero), or get EXPLICIT owner sign-off to raise the watermark.
     // Growth must be a deliberate, owner-visible act, never a quiet append.
     // (DARK_FLAGS_HIGH_WATERMARK now lives in libs/flags/src/types.ts — imported above.)
+    const parkingCount = [...DARK_FLAGS.values()].filter((entry) => DARK_FLAGS_PARKING_CASES.has(entry.case)).length;
+    expect(parkingCount, 'the runtime parking count must match its exported source-of-truth count').toBe(
+      DARK_FLAGS_PARKING_COUNT,
+    );
     expect(
-      DARK_FLAGS.size <= DARK_FLAGS_HIGH_WATERMARK,
-      `The dark allowlist GREW to ${DARK_FLAGS.size} (high-watermark ${DARK_FLAGS_HIGH_WATERMARK}). ` +
+      parkingCount <= DARK_FLAGS_HIGH_WATERMARK,
+      `The parked/incomplete dark subset GREW to ${parkingCount} (parking watermark ${DARK_FLAGS_HIGH_WATERMARK}); ` +
         `Do NOT reconstruct the parking lot: ship finished work default-ON, or graduate an existing ` +
-        `dark flag to make room. Raising DARK_FLAGS_HIGH_WATERMARK needs explicit owner sign-off.`,
+        `parked/incomplete dark flag to make room. Raising DARK_FLAGS_HIGH_WATERMARK needs explicit owner sign-off.`,
     ).toBe(true);
+  });
+
+  it('does not ration owner-authority/cutover safety flags with the parking watermark', () => {
+    const parkingCount = [...DARK_FLAGS.values()].filter((entry) => DARK_FLAGS_PARKING_CASES.has(entry.case)).length;
+    const governedCount = DARK_FLAGS.size - parkingCount;
+    expect(governedCount).toBeGreaterThan(0);
+    expect(DARK_FLAGS.size).toBeGreaterThan(DARK_FLAGS_HIGH_WATERMARK);
+    expect(parkingCount).toBeLessThanOrEqual(DARK_FLAGS_HIGH_WATERMARK);
   });
 
   it('VALUE-PRESERVING: the derived FLAG_DEFAULTS matches the pre-inversion snapshot for EVERY flag', () => {

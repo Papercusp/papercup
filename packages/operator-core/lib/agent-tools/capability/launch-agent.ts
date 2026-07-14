@@ -99,6 +99,11 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('Plan slug to bind the agent to — it launches on the plan and auto-kicks-off against it (the fleet:launch-on-plan behavior, without needing a fleet).'),
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Harness slug to bootstrap for an operator-scope launch. Required when the caller context is wildcard/unset; otherwise the caller harness is used.'),
     resume: z
       .object({
         agentId: z
@@ -182,7 +187,10 @@ export default defineTool({
     }
 
     const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
-    const slug = ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null;
+    // Operator/HTTP bridge calls can arrive with a wildcard or unset harness context. An explicit
+    // harness keeps those launches on the su bootstrap path; without it, buildAgentLaunchCommand
+    // omits --harness and a fresh psu falls into plain-CLI onboarding before it can receive its brief.
+    const slug = args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null);
 
     let callerOwnerId: string | null = null;
     try {

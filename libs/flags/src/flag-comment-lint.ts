@@ -143,10 +143,67 @@ export function claimedDefault(entry: FlagCommentEntry): ClaimedDefault {
 
 export type MismatchKind = 'claims-dark-but-not-listed' | 'claims-light-but-listed-dark';
 
+export type BranchEffect = 'narrows' | 'widens' | 'unknown';
+
+/** Evidence carried with a mismatch so readers do not have to re-derive the risk direction. */
+export interface FlagMismatchEvidence {
+  /** What the comment says the ON branch does. */
+  onEffect: BranchEffect;
+  /** What the comment says the OFF branch does. */
+  offEffect: BranchEffect;
+  /** True when the comment says the flag changes the data partition being read/written. */
+  partitionSwing: boolean;
+  /** Short comment excerpts containing the directional claim. */
+  directionalExcerpts: string[];
+  /** Short comment excerpts naming partitions, counts, or write dates. */
+  partitionExcerpts: string[];
+}
+
 export interface FlagCommentMismatch {
   key: string;
   value: string;
   kind: MismatchKind;
+  evidence: FlagMismatchEvidence;
+}
+
+const ON_NARROWS_RE = /\bon\b[^.\n]{0,180}\b(?:narrows?|clamps?|restricts?|denies?|prevents?|guards?|scopes?|safer|fail[- ]closed)\b/i;
+const ON_WIDENS_RE = /\bon\b[^.\n]{0,180}\b(?:widens?|broadens?|allows?|relaxes?|unrestricted|removes?[^.\n]{0,60}(?:check|guard|clamp|limit))\b/i;
+const OFF_NARROWS_RE = /\boff\b[^.\n]{0,180}\b(?:narrows?|clamps?|restricts?|denies?|prevents?|guards?|scopes?|safer|fail[- ]closed)\b/i;
+const OFF_WIDENS_RE = /\boff\b[^.\n]{0,180}\b(?:widens?|broadens?|allows?|relaxes?|unrestricted|removes?[^.\n]{0,60}(?:check|guard|clamp|limit))\b/i;
+const PARTITION_RE = /\bpartition\b|\bworkspace\b[^.\n]{0,80}\b(?:rows?|corpus|writes?)\b|\blegacy\b[^.\n]{0,80}\b(?:default|partition|rows?)\b/i;
+
+function commentExcerpts(comment: string, predicate: (line: string) => boolean): string[] {
+  return comment
+    .split(/(?<=[.!?])\s+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && predicate(line))
+    .map((line) => (line.length > 240 ? `${line.slice(0, 237)}…` : line));
+}
+
+function effectFor(comment: string, on: boolean): BranchEffect {
+  // The declaration ("DEFAULT OFF") is not an OFF-branch description; remove it
+  // before looking for branch-local verbs so it cannot borrow a later ON/OFF phrase.
+  const branchComment = comment.replace(/\bDEFAULT[\s-]+(?:ON|OFF)\b/gi, ' ');
+  const re = on ? { narrow: ON_NARROWS_RE, wide: ON_WIDENS_RE } : { narrow: OFF_NARROWS_RE, wide: OFF_WIDENS_RE };
+  const excerpts = commentExcerpts(branchComment, (line) => re.narrow.test(line) || re.wide.test(line));
+  const narrows = excerpts.some((line) => re.narrow.test(line));
+  const widens = excerpts.some((line) => re.wide.test(line));
+  return narrows === widens ? 'unknown' : narrows ? 'narrows' : 'widens';
+}
+
+/** Derive the operational evidence already present in a flag's own comment. */
+export function deriveMismatchEvidence(comment: string): FlagMismatchEvidence {
+  const directionalExcerpts = commentExcerpts(comment, (line) =>
+    /\b(?:on|off)\b/i.test(line) && /\b(?:narrow|clamp|restrict|deny|prevent|guard|scope|safe|widen|broad|allow|relax|unrestricted|remove)/i.test(line),
+  );
+  const partitionExcerpts = commentExcerpts(comment, (line) => PARTITION_RE.test(line) && /\b(?:on|off|rows?|partition|default|legacy|live|write)/i.test(line));
+  return {
+    onEffect: effectFor(comment, true),
+    offEffect: effectFor(comment, false),
+    partitionSwing: partitionExcerpts.length > 0,
+    directionalExcerpts,
+    partitionExcerpts,
+  };
 }
 
 /**
@@ -163,9 +220,9 @@ export function findMismatches(entries: FlagCommentEntry[], darkKeys: ReadonlySe
     if (claim === null) continue;
     const inDark = darkKeys.has(entry.key);
     if (claim === 'off' && !inDark) {
-      out.push({ key: entry.key, value: entry.value, kind: 'claims-dark-but-not-listed' });
+      out.push({ key: entry.key, value: entry.value, kind: 'claims-dark-but-not-listed', evidence: deriveMismatchEvidence(entry.comment) });
     } else if (claim === 'on' && inDark) {
-      out.push({ key: entry.key, value: entry.value, kind: 'claims-light-but-listed-dark' });
+      out.push({ key: entry.key, value: entry.value, kind: 'claims-light-but-listed-dark', evidence: deriveMismatchEvidence(entry.comment) });
     }
   }
   return out;

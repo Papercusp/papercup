@@ -69,9 +69,11 @@ export default defineTool({
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
     }
     const offset = cursor.offset;
+    const snapshotUntil = args.until ?? cursor.bounds.until ?? new Date().toISOString();
+    const effectiveArgs = { ...args, until: snapshotUntil };
 
     const { filters, selfSession } = await resolveSearchFilters(
-      ctx.tx, args, resolveAgentIdentity(ctx).ownerId ?? '', { workspaceId },
+      ctx.tx, effectiveArgs, resolveAgentIdentity(ctx).ownerId ?? '', { workspaceId },
     );
     await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
 
@@ -150,7 +152,7 @@ export default defineTool({
     const hasMore = mode === 'verbatim' ? hits.length > limit : hits.length > offset + limit;
     const pageHits = mode === 'verbatim' ? hits.slice(0, limit) : hits.slice(offset, offset + limit);
     const nextCursor = hasMore
-      ? encodeSessionCursor('sessions:search', offset + pageHits.length, fingerprint)
+      ? encodeSessionCursor('sessions:search', offset + pageHits.length, fingerprint, { until: snapshotUntil })
       : undefined;
 
     // Hydrate ±context windows only for this page.
@@ -188,6 +190,7 @@ export default defineTool({
           mode,
           total_hits: out.length,
           hasMore,
+          window: { until: snapshotUntil },
           ...(nextCursor ? { nextCursor } : {}),
           ...(selfSession ? { self_session: { source_kind: selfSession.sourceKind, session_id: selfSession.sessionId } } : {}),
           ...(args.session === 'self' && !selfSession

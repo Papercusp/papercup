@@ -167,6 +167,13 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     await launchAgent.handler({ plan: 'my-plan' }, ctx);
     expect(spawnedCommand()).toContain('--harness=papercusp --plan=my-plan');
   });
+
+  it('allows an operator-scope caller to bind an explicit harness (WI-3329)', async () => {
+    const operatorCtx = { workspaceId: 'ws-test', harnessSlug: '*', role: 'su' } as never;
+    await launchAgent.handler({ brief: 'run the disposable harness check', harness: 'papercusp' }, operatorCtx);
+    expect(spawnedCommand()).toContain('--harness=papercusp');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toBe('run the disposable harness check');
+  });
 });
 
 describe('fleet composition (D-003: fleet is an ARG, not a separate tool)', () => {

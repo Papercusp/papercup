@@ -694,6 +694,73 @@ export async function resolveMugOwner(sql: Sql, workspaceId: string, installSlug
   return rows[0]?.coord_owner_id ?? null;
 }
 
+/** Stable logical address for the Mug's fresh-per-wake coordination identity. */
+export const MUG_COORD_SLOT = '@role:mug';
+
+export interface MugWakeOptions {
+  workspaceId: string;
+  /** The newest live concrete owner, retained for direct wake + audit. */
+  mugOwner: string | null;
+  summary: string;
+  source: string;
+  payload?: unknown;
+  body?: string;
+  harnessSlug?: string | null;
+}
+
+/**
+ * Deliver a Mug nudge through both halves of the fresh-per-wake contract:
+ * best-effort direct wake of the currently resolved owner, plus a durable
+ * stable-role slot message that the next Mug wake drains. The logical alias
+ * and concrete owner are recorded together so stale-owner wakes remain
+ * diagnosable without making the stale id the only delivery route.
+ */
+export async function wakeMug(opts: MugWakeOptions): Promise<void> {
+  const metadata = {
+    logicalAlias: MUG_COORD_SLOT,
+    concreteOwnerId: opts.mugOwner,
+    source: opts.source,
+  };
+  if (opts.mugOwner) {
+    try {
+      await wakeRecipients([opts.mugOwner], {
+        summary: opts.summary,
+        payload: { ...(typeof opts.payload === 'object' && opts.payload !== null ? opts.payload : {}), mugWake: metadata },
+        source: opts.source,
+        workspaceId: opts.workspaceId,
+      });
+    } catch (e) {
+      console.warn(`[mug-wake] direct wake failed for ${opts.mugOwner}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  try {
+    const [{ sendMessage }, { runWithWorkspace }] = await Promise.all([
+      import('../agent-tools/coordination/messages'),
+      import('../workspace-als'),
+    ]);
+    await runWithWorkspace(opts.workspaceId, () =>
+      sendMessage(
+        {
+          ownerId: opts.source,
+          ownerLabel: opts.source,
+          source: 'static-client',
+          workspaceId: opts.workspaceId,
+          userId: null,
+        },
+        {
+          to: [MUG_COORD_SLOT],
+          summary: opts.summary,
+          body: opts.body ?? opts.summary,
+          harnessSlug: opts.harnessSlug,
+          extra: { mugWake: metadata },
+        },
+      ),
+    );
+  } catch (e) {
+    console.warn(`[mug-wake] ${MUG_COORD_SLOT} park failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 /** ALL Mug coord-owners that have served this pot (newest first). The Mug is
  *  fresh-per-wake (interactive brain) / adaptive-re-woken, so a single pot accrues
  *  several `pot · <slug>/mug` adv_sessions over its life; cups carry whichever

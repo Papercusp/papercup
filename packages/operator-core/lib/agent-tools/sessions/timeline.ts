@@ -98,8 +98,6 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? '';
     const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : args.owner;
     const limit = args.limit ?? 100;
-    const since = args.since ?? new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const until = args.until ?? new Date().toISOString();
     const kinds = args.kinds?.length ? args.kinds : null;
     const includeAuto = args.include_auto ?? false;
     const fingerprintArgs = { ...args, cursor: undefined, limit: undefined };
@@ -108,6 +106,8 @@ export default defineTool({
     if (!cursor.ok) {
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
     }
+    const until = args.until ?? cursor.bounds.until ?? new Date().toISOString();
+    const since = args.since ?? cursor.bounds.since ?? new Date(Date.parse(until) - 24 * 3600 * 1000).toISOString();
     const offset = cursor.offset;
     const fetchLimit = offset + limit + 1;
     await refreshLiveSessionsBeforeRead(ctx.tx, [owner]);
@@ -166,7 +166,7 @@ export default defineTool({
     const pageRows = rows.slice(offset, offset + limit);
     const entries = args.group_repeated ? groupRepeatedTimelineEntries(pageRows) : pageRows;
     const nextCursor = hasMore
-      ? encodeSessionCursor('sessions:timeline', offset + pageRows.length, fingerprint)
+      ? encodeSessionCursor('sessions:timeline', offset + pageRows.length, fingerprint, { since, until })
       : undefined;
     const [auditRow = { total_tool_calls: 0, automatic_calls: 0, agent_calls: 0 }] = await ctx.tx<AutomaticCallAuditRow[]>`
       SELECT count(*)::int AS total_tool_calls,

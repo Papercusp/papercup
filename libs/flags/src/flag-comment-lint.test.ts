@@ -86,7 +86,9 @@ export const DARK_FLAGS = new Map([]);
     const entries = parseFlagEntries(src);
     const dark = extractDarkFlagKeys(src);
     const mismatches = findMismatches(entries, dark);
-    expect(mismatches).toEqual([{ key: 'RISKY', value: 'papercusp-risky', kind: 'claims-dark-but-not-listed' }]);
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]).toMatchObject({ key: 'RISKY', value: 'papercusp-risky', kind: 'claims-dark-but-not-listed' });
+    expect(mismatches[0].evidence.onEffect).toBe('unknown');
   });
 
   it('the inverse: a comment claiming DEFAULT ON for a flag that IS in DARK_FLAGS also fails', () => {
@@ -101,9 +103,9 @@ export const DARK_FLAGS = new Map([
 `;
     const entries = parseFlagEntries(src);
     const dark = extractDarkFlagKeys(src);
-    expect(findMismatches(entries, dark)).toEqual([
-      { key: 'GRADUATED', value: 'papercusp-graduated', kind: 'claims-light-but-listed-dark' },
-    ]);
+    const mismatches = findMismatches(entries, dark);
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]).toMatchObject({ key: 'GRADUATED', value: 'papercusp-graduated', kind: 'claims-light-but-listed-dark' });
   });
 
   it('does NOT false-positive on a corrected comment that QUOTES its own old, wrong claim (the established WI-3855 correction convention)', () => {
@@ -157,6 +159,27 @@ export const DARK_FLAGS = new Map([]);
   it('an entry with neither DEFAULT ON nor DEFAULT OFF wording is skipped, not asserted on', () => {
     const entry: FlagCommentEntry = { key: 'X', value: 'papercusp-x', comment: 'just a plain description, no claim.' };
     expect(claimedDefault(entry)).toBeNull();
+  });
+
+  it('carries branch direction and partition evidence with a mismatch', () => {
+    const src = `
+export const FLAGS = {
+  // DEFAULT OFF — ON narrows reads to the active workspace and guards cross-workspace access.
+  // OFF reads the legacy default partition. The workspace partition has 11,730 rows; default has 2,443 rows,
+  // with the legacy partition's last write on 2026-06-22.
+  PARTITION_GUARD: "papercusp-partition-guard",
+} as const;
+export const DARK_FLAGS = new Map([]);
+`;
+    const mismatch = findMismatches(parseFlagEntries(src), extractDarkFlagKeys(src))[0];
+    expect(mismatch.evidence).toMatchObject({
+      onEffect: 'narrows',
+      offEffect: 'unknown',
+      partitionSwing: true,
+    });
+    expect(mismatch.evidence.directionalExcerpts.join(' ')).toContain('ON narrows');
+    expect(mismatch.evidence.partitionExcerpts.join(' ')).toContain('11,730 rows');
+    expect(mismatch.evidence.partitionExcerpts.join(' ')).toContain('2026-06-22');
   });
 });
 

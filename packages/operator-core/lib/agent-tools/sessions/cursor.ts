@@ -2,14 +2,20 @@ import { createHash } from 'node:crypto';
 
 export type SessionCursorTool = 'sessions:list' | 'sessions:search' | 'sessions:timeline';
 
-const CURSOR_VERSION = 1;
+const CURSOR_VERSION = 2;
 const MAX_CURSOR_OFFSET = 500;
+
+export interface SessionCursorBounds {
+  since?: string;
+  until?: string;
+}
 
 interface SessionCursorPayload {
   v: number;
   tool: SessionCursorTool;
   offset: number;
   fingerprint: string;
+  bounds?: SessionCursorBounds;
 }
 
 const stableValue = (value: unknown): unknown => {
@@ -32,8 +38,15 @@ export function encodeSessionCursor(
   tool: SessionCursorTool,
   offset: number,
   fingerprint: string,
+  bounds?: SessionCursorBounds,
 ): string {
-  const payload: SessionCursorPayload = { v: CURSOR_VERSION, tool, offset, fingerprint };
+  const payload: SessionCursorPayload = {
+    v: CURSOR_VERSION,
+    tool,
+    offset,
+    fingerprint,
+    ...(bounds && Object.keys(bounds).length > 0 ? { bounds } : {}),
+  };
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
@@ -41,14 +54,24 @@ export function decodeSessionCursor(
   cursor: string | undefined,
   tool: SessionCursorTool,
   fingerprint: string,
-): { ok: true; offset: number } | { ok: false; error: 'invalid_cursor'; message: string } {
-  if (!cursor) return { ok: true, offset: 0 };
+): { ok: true; offset: number; bounds: SessionCursorBounds } | { ok: false; error: 'invalid_cursor'; message: string } {
+  if (!cursor) return { ok: true, offset: 0, bounds: {} };
   try {
     const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Partial<SessionCursorPayload>;
+    const bounds = payload.bounds ?? {};
+    const boundsValid =
+      bounds &&
+      typeof bounds === 'object' &&
+      !Array.isArray(bounds) &&
+      Object.keys(bounds).every((key) => key === 'since' || key === 'until') &&
+      [bounds.since, bounds.until].every((value) => value === undefined || (
+        typeof value === 'string' && Number.isFinite(Date.parse(value))
+      ));
     if (
       payload.v !== CURSOR_VERSION ||
       payload.tool !== tool ||
       payload.fingerprint !== fingerprint ||
+      !boundsValid ||
       !Number.isInteger(payload.offset) ||
       (payload.offset ?? -1) < 0 ||
       (payload.offset ?? 0) > MAX_CURSOR_OFFSET
@@ -59,7 +82,7 @@ export function decodeSessionCursor(
         message: 'Cursor is stale, belongs to another sessions tool/query, or exceeds the bounded pagination window.',
       };
     }
-    return { ok: true, offset: payload.offset as number };
+    return { ok: true, offset: payload.offset as number, bounds };
   } catch {
     return { ok: false, error: 'invalid_cursor', message: 'Cursor is malformed.' };
   }

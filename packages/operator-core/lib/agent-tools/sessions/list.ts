@@ -82,6 +82,10 @@ export default defineTool({
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
     }
     const offset = cursor.offset;
+    // Freeze the upper time boundary on page one and carry it in every cursor.
+    // Without this, a newly-ingested live turn shifts OFFSET and page two can
+    // repeat page one's session (the production recurrence that reopened P-009).
+    const snapshotUntil = cursor.bounds.until ?? new Date().toISOString();
 
     // Read-time freshness applies to every owner filter and to the bounded set
     // of open Codex sessions on an unfiltered read, not only owner:'self'.
@@ -116,6 +120,7 @@ export default defineTool({
                min(ts) AS first_ts_raw, max(ts) AS last_ts_raw
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+           AND COALESCE(ts, ingested_at) < ${snapshotUntil}::timestamptz
            AND (${owner}::text IS NULL OR owner = ${owner})
            AND (${args.source_kind ?? null}::text IS NULL OR source_kind = ${args.source_kind ?? null})
            AND (${args.cwd_contains ?? null}::text IS NULL OR cwd ILIKE '%' || ${args.cwd_contains ?? null} || '%')
@@ -169,7 +174,7 @@ export default defineTool({
     }));
     const hasMore = total > offset + sessions.length;
     const nextCursor = hasMore
-      ? encodeSessionCursor('sessions:list', offset + sessions.length, fingerprint)
+      ? encodeSessionCursor('sessions:list', offset + sessions.length, fingerprint, { until: snapshotUntil })
       : undefined;
 
     return {
@@ -180,6 +185,7 @@ export default defineTool({
           count: sessions.length,
           total,
           hasMore,
+          window: { until: snapshotUntil },
           ...(nextCursor ? { nextCursor } : {}),
           ...(hasMore
             ? {

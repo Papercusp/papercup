@@ -11,8 +11,13 @@ describe('sessions cursor contract', () => {
     expect(fingerprint).toBe(
       sessionCursorFingerprint({ filters: { kind: 'codex', since: '2026-07-13' }, owner: 'su-1' }),
     );
-    const cursor = encodeSessionCursor('sessions:list', 25, fingerprint);
-    expect(decodeSessionCursor(cursor, 'sessions:list', fingerprint)).toEqual({ ok: true, offset: 25 });
+    const bounds = { until: '2026-07-14T03:00:00.000Z' };
+    const cursor = encodeSessionCursor('sessions:list', 25, fingerprint, bounds);
+    expect(decodeSessionCursor(cursor, 'sessions:list', fingerprint)).toEqual({
+      ok: true,
+      offset: 25,
+      bounds,
+    });
   });
 
   it('fails closed across tools, changed filters, malformed values, and oversized offsets', () => {
@@ -26,5 +31,10 @@ describe('sessions cursor contract', () => {
       message: 'Cursor is malformed.',
     });
     expect(decodeSessionCursor(encodeSessionCursor('sessions:list', 501, fingerprint), 'sessions:list', fingerprint)).toMatchObject({ ok: false, error: 'invalid_cursor' });
+    expect(decodeSessionCursor(
+      encodeSessionCursor('sessions:list', 10, fingerprint, { until: 'not-a-date' }),
+      'sessions:list',
+      fingerprint,
+    )).toMatchObject({ ok: false, error: 'invalid_cursor' });
   });
 });

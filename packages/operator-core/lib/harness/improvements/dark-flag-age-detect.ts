@@ -2,9 +2,9 @@
  * Dark-flag-age watchdog (enforce-system-on-generic-work-2026-06-29 P-013).
  *
  * The DARK_FLAGS allowlist (libs/flags/src/types.ts) is the consciously-default-OFF
- * set. Two invariants keep it from silently rotting into a parking lot: it must be
- * RE-REVIEWED by DARK_FLAGS_REVIEW_BY, and it may only SHRINK below
- * DARK_FLAGS_HIGH_WATERMARK. production-defaults.test.ts already enforces both — but at
+ * set. Two invariants keep it from silently rotting into a parking lot: its
+ * parked/incomplete subset must stay below DARK_FLAGS_HIGH_WATERMARK, and the full set
+ * must be RE-REVIEWED by DARK_FLAGS_REVIEW_BY. production-defaults.test.ts already enforces both — but at
  * TEST time, so a breach only surfaces when someone runs the suite. This module is the
  * OPERATOR-scoped recurrence guard: on the watchdog cadence it surfaces the SAME two
  * concerns into the owner's improvement queue BEFORE the deadline lands / the ceiling
@@ -40,9 +40,9 @@ export const DEFAULT_DARK_FLAG_AGE_RESOLUTION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /** Inputs the pure detector reasons over (the collector reads them from @papercusp/flags). */
 export interface DarkFlagAgeInput {
-  /** DARK_FLAGS.size — the current count of consciously default-OFF flags. */
+  /** Count of parked/incomplete DARK_FLAGS entries subject to the parking budget. */
   darkCount: number;
-  /** DARK_FLAGS_HIGH_WATERMARK — the size ceiling the set may only shrink below. */
+  /** DARK_FLAGS_HIGH_WATERMARK — the size ceiling for parked/incomplete entries. */
   watermark: number;
   /** DARK_FLAGS_REVIEW_BY — the ISO date the allowlist must be re-reviewed by. */
   reviewBy: string;
@@ -106,7 +106,7 @@ export interface DarkFlagAgeFinding {
  *
  * Detection predicate — emit ONE finding when EITHER:
  *   (a) review-by is within `reviewWithinDays` (default 14) days OR already PAST, OR
- *   (b) the count is at/near the watermark: darkCount >= watermark - `nearWatermarkSlack`
+ *   (b) the parked/incomplete count is at/near the watermark: darkCount >= watermark - `nearWatermarkSlack`
  *       (default slack 2).
  * Severity is MAJOR when the situation is already BREACHED — past review-by OR at/over
  * the watermark (darkCount >= watermark) — and MINOR while merely APPROACHING either.
@@ -171,17 +171,17 @@ export function detectDarkFlagAge(input: DarkFlagAgeInput): DarkFlagAgeFinding[]
 }
 
 /**
- * The collector that feeds the pure detector (P-013). Reads the dark-set size,
- * watermark, and review-by from @papercusp/flags (the single source of truth) and the
+ * The collector that feeds the pure detector (P-013). Reads the parked/incomplete
+ * count, watermark, and review-by from @papercusp/flags (the single source of truth) and the
  * runtime clock for 'now'. WORKSPACE-GLOBAL: takes no workspaceId — DARK_FLAGS is one
  * global registry. No PG, no flag gate; trivially cheap for the per-tick watchdog.
  */
 export async function collectDarkFlagAgeSignals(
   now: number = Date.now(),
 ): Promise<{ signals: DarkFlagAgeFinding[]; note?: string }> {
-  const { DARK_FLAGS, DARK_FLAGS_HIGH_WATERMARK, DARK_FLAGS_REVIEW_BY } = await import('@papercusp/flags');
+  const { DARK_FLAGS_PARKING_COUNT, DARK_FLAGS_HIGH_WATERMARK, DARK_FLAGS_REVIEW_BY } = await import('@papercusp/flags');
   const signals = detectDarkFlagAge({
-    darkCount: DARK_FLAGS.size,
+    darkCount: DARK_FLAGS_PARKING_COUNT,
     watermark: DARK_FLAGS_HIGH_WATERMARK,
     reviewBy: DARK_FLAGS_REVIEW_BY,
     now,

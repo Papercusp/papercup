@@ -1870,19 +1870,27 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.MEM0_FEDERATION_EGRESS, { case: 'owner-authority', reason: 'mem0-cross-machine-federation-2026-07-10 (F1-1 mirror, D-006 privacy): gates the cross-machine federation of SHAREABLE memories (memory:remember with shareable=true). When ON, capture triggers enqueue shareable=true memories to the peer-log outbox, and receive-side projections apply remote memories to the local store (source-partitioned H6 pattern mirroring agent-facts). OWNER-AUTHORITY: memory federation affects what personal memory data leaves the machine — only the owner ratifies when/how/which memories federate. The privacy gates ride the SAME pot-visibility + member-admission guards as agent-facts (private pots never leak; only admitted members receive). OFF ⇒ shareable flag has no effect — capture stays quiet and egress never happens (byte-identical to today\'s personal-only behavior). Owner flips ON after reviewing privacy implications + confirming the privacy gates are in effect.' }],
   ]);
 
-// ── The dark allowlist's HYGIENE BOUNDS (re-review deadline + size ceiling) ────
+// Only these cases are subject to the anti-parking-lot size budget. Safety
+// kill-switches (owner-authority/cutover) remain governed by DARK_FLAGS_REVIEW_BY.
+export const DARK_FLAGS_PARKING_CASES: ReadonlySet<DarkCase> = new Set<DarkCase>(['parked', 'incomplete']);
+export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter((entry) =>
+  DARK_FLAGS_PARKING_CASES.has(entry.case),
+).length;
+
+// ── The dark allowlist's HYGIENE BOUNDS (re-review + parking budget) ──────────
 // Promoted here from production-defaults.test.ts (enforce-system-on-generic-work-
 // 2026-06-29 P-013) so SHIPPABLE code — the operator dark-flag-age watchdog — reads
 // the same source of truth the guard test asserts against. The test still owns the
-// ASSERTIONS (review-by not past, size <= watermark); it now IMPORTS these instead of
-// re-declaring them, so the watchdog and the CI guard reason over one set of numbers.
+// ASSERTIONS (review-by not past, parking cases <= watermark); it now IMPORTS these
+// instead of re-declaring them, so the watchdog and the CI guard reason over one set of numbers.
 //
 //   DARK_FLAGS_REVIEW_BY    — the date the allowlist must be RE-REVIEWED by. Past it,
 //                             walk every dark flag: flip what's ready (remove it from
 //                             DARK_FLAGS), THEN push this date out with a fresh look —
 //                             the bump is the LAST step, never the only one.
-//   DARK_FLAGS_HIGH_WATERMARK — the post-sweep size ceiling; the dark set may only
-//                             SHRINK below it. Raising it needs explicit owner sign-off.
+//   DARK_FLAGS_HIGH_WATERMARK — the post-sweep size ceiling for parked+incomplete
+//                             cases only. owner-authority/cutover cases are not
+//                             rationed; they are reviewed by DARK_FLAGS_REVIEW_BY.
 //
 // 2026-07-04 review (EI-7280, pushed the date out — the review is the point, not the
 // bump): walked every non-owner-authority dark flag against its stated graduation
@@ -1940,12 +1948,10 @@ export const DARK_FLAGS_REVIEW_BY = '2026-07-24';
 // SILENTLY ON rather than pay the watermark cost. That is precisely how ten flags ended up
 // mis-defaulted while this number sat pinned at its ceiling "protecting" us.
 //
-// The DarkCase discriminator ('incomplete' | 'owner-authority' | 'cutover' | 'parked')
-// already exists and is exactly the split the ceiling needs; it simply is not used here.
-// Filed as WI-4495 (make the ceiling per-case: a TIGHT budget on parked+incomplete — the
-// actual abuse — and review-by-date governance, not a size cap, on the safety cases).
-// Until then this stays one number and each raise must justify itself in-line, as above.
-export const DARK_FLAGS_HIGH_WATERMARK = 29; // +authority-rpc-protomux +authority-eviction-probe 2026-07-12 (WI-4240)
+// WI-4495: the previous aggregate ceiling counted 29 heterogeneous entries and
+// penalized adding legitimate safety kill-switches. The current parking/incomplete
+// subset is 12; safety cases remain outside this size budget.
+export const DARK_FLAGS_HIGH_WATERMARK = 12;
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /
