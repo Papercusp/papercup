@@ -22,8 +22,10 @@
  *   resultEach → per-tool-result cap with spill-to-disk behind a pointer;
  *   injections → the wake/coord injection path's per-delivery cap, same spill contract.
  *
- * These constants become adjustable DEFAULTS via the P-023 config surface — keep every
- * knob here, exported, so that item wires one module.
+ * These constants are adjustable DEFAULTS via the P-023 config surface
+ * (context-doors-config.ts → config:doors-get/-set/-set-session): every compute function
+ * takes an optional DoorConstants (default BAKED_DOOR_CONSTANTS, byte-identical when
+ * un-configured); keep every knob here, exported, so that module wires one place.
  */
 
 /** The output-door floor sum: below ~208K windows every model gets exactly this hop budget. */
@@ -79,14 +81,14 @@ export interface TurnDoors {
 /** The per-door caps for an effective window: the DOOR_SPLIT proportions applied to
  *  computeMaxTurn. Doors scale inside maxTurn in BOTH directions (D-007 amendment (a) —
  *  at the 8K floor this is exactly the default 4K/1.5K×2/1K split). */
-export function computeTurnDoors(effectiveWindow: number): TurnDoors {
-  const maxTurn = computeMaxTurn(effectiveWindow);
+export function computeTurnDoors(effectiveWindow: number, c: DoorConstants = BAKED_DOOR_CONSTANTS): TurnDoors {
+  const maxTurn = computeMaxTurn(effectiveWindow, c);
   return {
     maxTurn,
-    output: Math.floor(maxTurn * DOOR_SPLIT.output),
-    resultEach: Math.floor(maxTurn * DOOR_SPLIT.resultEach),
-    resultSlots: DOOR_SPLIT.resultSlots,
-    injections: Math.floor(maxTurn * DOOR_SPLIT.injections),
+    output: Math.floor(maxTurn * c.doorSplit.output),
+    resultEach: Math.floor(maxTurn * c.doorSplit.resultEach),
+    resultSlots: c.doorSplit.resultSlots,
+    injections: Math.floor(maxTurn * c.doorSplit.injections),
   };
 }
 
@@ -120,11 +122,11 @@ export interface CompactionThresholds {
 
 /** Two-tier compaction thresholds derived from the effective window + the decided maxTurn
  *  formula (P-007, D-001: limits + enforced constants only — never history/telemetry). */
-export function computeCompactionThresholds(effectiveWindow: number): CompactionThresholds {
+export function computeCompactionThresholds(effectiveWindow: number, c: DoorConstants = BAKED_DOOR_CONSTANTS): CompactionThresholds {
   const w = Number(effectiveWindow);
-  const maxTurn = computeMaxTurn(w);
+  const maxTurn = computeMaxTurn(w, c);
   const window = Number.isFinite(w) && w > 0 ? w : maxTurn * 4; // degenerate input: still return sane, low thresholds
-  const softTokens = Math.max(0, window - (2 * maxTurn + COMPACTION_OVERHEAD_TOKENS));
+  const softTokens = Math.max(0, window - (2 * maxTurn + c.compactionOverheadTokens));
   const hardTokens = Math.max(softTokens, window - maxTurn);
   return {
     softTokens,
