@@ -1,7 +1,7 @@
 /**
  * set-status.bulk.test.ts — the plans:set-status HANDLER bulk keyed-array contract
  * (bulk-endpoint-standardization-2026-06-21). Sibling to set-status.test.ts (which
- * pins the pure helpers). Pins: inline { slug, itemId, status } → one result; the
+ * pins the pure helpers). Pins: inline { slug, item, status } → one result; the
  * itemIds:[…] (one plan) + items:[…] (heterogeneous) fan-out keyed by { slug, itemId
  * }; and a partial failure (one item_not_found) that fails ONLY itself — top-level
  * ok:true, counts.failed===1.
@@ -63,9 +63,9 @@ function lockReturnsMutatorValue(knownItems: Set<string>) {
 }
 
 describe('plans:set-status handler (bulk keyed-array)', () => {
-  it('inline { slug, itemId, status } returns a single result', async () => {
+  it('inline { slug, item, status } returns a single result', async () => {
     lockReturnsMutatorValue(new Set(['P-001']));
-    const b = await body({ slug: 'plan-a', itemId: 'P-001', status: 'wip' });
+    const b = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({
       ok: true,
@@ -90,8 +90,8 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
       slug: 'plan-a',
       status: 'done',
       items: [
-        { slug: 'plan-a', itemId: 'P-001' },
-        { slug: 'plan-b', itemId: 'P-002', status: 'blocked' },
+        { slug: 'plan-a', item: 'P-001' },
+        { slug: 'plan-b', item: 'P-002', status: 'blocked' },
       ],
     });
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
@@ -110,7 +110,7 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
 
   it('a busy lock maps to that item\'s { ok:false, error:"busy" } without throwing', async () => {
     lockM.mockResolvedValue({ kind: 'busy', busy: [{ path: 'p', owner_label: 'o', intent: 'i', expires_ts: 1 }] } as never);
-    const b = await body({ slug: 'plan-a', itemId: 'P-001', status: 'wip' });
+    const b = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
     expect(b.ok).toBe(true);
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, slug: 'plan-a', itemId: 'P-001', error: 'busy' });
@@ -152,7 +152,7 @@ describe('plans:set-status →wip auto-claim refuses the mcp-call.mjs fallback i
 
     const freshTool = (await import('./set-status')).default;
     const out = (await freshTool.handler(
-      { slug: 'plan-a', itemId: 'P-001', status: 'wip' } as never,
+      { slug: 'plan-a', item: 'P-001', status: 'wip' } as never,
       {} as never,
     )) as { data: any };
     const b = out.data;

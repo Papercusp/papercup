@@ -1,6 +1,6 @@
 /**
  * get-item.test.ts — the plans:get-item HANDLER, bulk keyed-array contract
- * (bulk-endpoint-standardization-2026-06-21). Pins: the inline { slug, itemId }
+ * (bulk-endpoint-standardization-2026-06-21). Pins: the inline { slug, item }
  * single form → one result; itemIds:[…] (one plan) + items:[…] (cross-plan) fan-out;
  * a missing item / missing plan → that item's { ok:false } WITHOUT failing the batch;
  * and that the per-slug row fetch is memoized across the batch.
@@ -48,9 +48,9 @@ const rowOf = (slug: string, ids: string[]) =>
 beforeEach(() => vi.clearAllMocks());
 
 describe('plans:get-item handler (bulk keyed-array)', () => {
-  it('inline { slug, itemId } returns a single result', async () => {
+  it('inline { slug, item } returns a single result', async () => {
     getRowM.mockResolvedValue(rowOf('plan-a', ['P-001']));
-    const b = await body({ slug: 'plan-a', itemId: 'P-001' });
+    const b = await body({ slug: 'plan-a', item: 'P-001' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, slug: 'plan-a', itemId: 'P-001', item: { id: 'P-001' } });
   });
@@ -73,14 +73,14 @@ describe('plans:get-item handler (bulk keyed-array)', () => {
 
   it('a missing plan maps to not_found per item (batch survives)', async () => {
     getRowM.mockImplementation(async (slug: string) => (slug === 'gone' ? null : rowOf(slug, ['P-001'])));
-    const b = await body({ items: [{ slug: 'plan-a', itemId: 'P-001' }, { slug: 'gone', itemId: 'P-001' }] });
+    const b = await body({ items: [{ slug: 'plan-a', item: 'P-001' }, { slug: 'gone', item: 'P-001' }] });
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, slug: 'gone', itemId: 'P-001', error: 'not_found' });
   });
 
   it('items:[…] cross-plan keeps each result keyed by { slug, itemId }', async () => {
     getRowM.mockImplementation(async (slug: string) => rowOf(slug, ['P-001']));
-    const b = await body({ items: [{ slug: 'plan-a', itemId: 'P-001' }, { slug: 'plan-b', itemId: 'P-001' }] });
+    const b = await body({ items: [{ slug: 'plan-a', item: 'P-001' }, { slug: 'plan-b', item: 'P-001' }] });
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(b.results.map((r: { slug: string }) => r.slug)).toEqual(['plan-a', 'plan-b']);
     expect(getRowM).toHaveBeenCalledTimes(2); // distinct slugs → distinct fetches
@@ -88,7 +88,7 @@ describe('plans:get-item handler (bulk keyed-array)', () => {
 
   it('a legacy plan maps to legacy_plan per item', async () => {
     getRowM.mockResolvedValue({ planSlug: 'plan-a', isLegacy: true } as never);
-    const b = await body({ slug: 'plan-a', itemId: 'P-001' });
+    const b = await body({ slug: 'plan-a', item: 'P-001' });
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, error: 'legacy_plan' });
   });

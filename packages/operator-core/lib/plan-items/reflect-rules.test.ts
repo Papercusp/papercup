@@ -88,7 +88,7 @@ describe('plan-item-reflect:complete', () => {
     expect(renderArgs(rule, e)).toMatchObject({
       harness: 'papercup',
       slug: 'demo-plan',
-      itemId: 'P-007',
+      item: 'P-007',
       status: 'done',
     });
   });
@@ -109,11 +109,11 @@ describe('plan-item-reflect:complete', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
     const closed = evt('work_items:complete', stamped('closed', { completion: { summary: 's' } }));
     expect(fires(rule, closed)).toBe(true);
-    expect(renderArgs(rule, closed)).toMatchObject({ itemId: 'P-007', status: 'dropped' });
+    expect(renderArgs(rule, closed)).toMatchObject({ item: 'P-007', status: 'dropped' });
 
     const deprecated = evt('work_items:complete', stamped('deprecated', { completion: { summary: 's' } }));
     expect(fires(rule, deprecated)).toBe(true);
-    expect(renderArgs(rule, deprecated)).toMatchObject({ itemId: 'P-007', status: 'dropped' });
+    expect(renderArgs(rule, deprecated)).toMatchObject({ item: 'P-007', status: 'dropped' });
   });
 
   it('does NOT fire without a completion record, without a stamp, or when the resulting state is non-terminal', () => {
@@ -135,7 +135,7 @@ describe('plan-item-reflect:set-state', () => {
     const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
     const e = evt('work_items:set_state', stamped('resolved'));
     expect(fires(rule, e)).toBe(true);
-    expect(renderArgs(rule, e)).toMatchObject({ itemId: 'P-007', status: 'done' });
+    expect(renderArgs(rule, e)).toMatchObject({ item: 'P-007', status: 'done' });
 
     const drop = evt('work_items:set_state', stamped('deprecated'));
     expect(renderArgs(rule, drop)).toMatchObject({ status: 'dropped' });
@@ -192,7 +192,7 @@ describe('plan-item-reflect:release', () => {
     const rule = ruleById('work_items:release', 'plan-item-reflect:release');
     const e = evt('work_items:release', stamped('open'));
     expect(fires(rule, e)).toBe(true);
-    expect(renderArgs(rule, e)).toMatchObject({ itemId: 'P-007', status: 'todo' });
+    expect(renderArgs(rule, e)).toMatchObject({ item: 'P-007', status: 'todo' });
   });
 
   it('does NOT fire when the released item is already terminal (never resurrect a done item)', () => {

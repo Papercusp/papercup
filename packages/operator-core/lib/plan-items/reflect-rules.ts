@@ -86,7 +86,7 @@ function setStatusArgs(e: ToolInvocationEvent, status: string, why: string): Rec
   return {
     harness: stamp.harness_slug,
     slug: stamp.plan_slug,
-    itemId: stamp.item_id,
+    item: stamp.item_id,
     status,
     note: `← ${wi.id ?? 'work_item'} ${why}`,
   };

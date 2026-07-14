@@ -10,8 +10,8 @@
  * does, scoped to specific ids. Read-only.
  *
  * Bulk by default (the house keyed-array contract, bulk-endpoint-standardization-
- * 2026-06-21): single { slug, itemId }, many of one plan { slug, itemIds:[…] }, or
- * cross-plan items:[{ slug, itemId }] → { ok, results:[{ ok, slug, itemId, item? |
+ * 2026-06-21): single { slug, item }, many of one plan { slug, itemIds:[…] }, or
+ * cross-plan items:[{ slug, item }] → { ok, results:[{ ok, slug, itemId, item? |
  * error }], counts }. Correlate by { slug, itemId } not array position; one missing
  * item never fails the rest. The per-row work (getPlanRow + issue-block overlay) is
  * memoized per slug across the batch so N items of one plan parse it once.
@@ -28,15 +28,15 @@ import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 
 const itemSpec = z.object({
   slug: z.string().min(1).describe('Plan slug (filename stem).'),
-  itemId: z.string().regex(/^P-\d{3,}$/).describe('The plan item id, e.g. "P-003".'),
+  item: z.string().regex(/^P-\d{3,}$/).describe('The plan item id, e.g. "P-003".'),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
 });
 
 const argsSchema = z
   .object({
     harness: harnessArg,
-    slug: z.string().min(1).optional().describe('Plan slug (filename stem) — with `itemId` (one) or `itemIds` (many of one plan).'),
-    itemId: z
+    slug: z.string().min(1).optional().describe('Plan slug (filename stem) — with `item` (one) or `itemIds` (many of one plan).'),
+    item: z
       .string()
       .regex(/^P-\d{3,}$/)
       .optional()
@@ -52,13 +52,13 @@ const argsSchema = z
       .min(1)
       .max(200)
       .optional()
-      .describe('read many items across plans — each { slug, itemId, harness? }'),
+      .describe('read many items across plans — each { slug, item, harness? }'),
   })
   .refine(
     (a) =>
       (a.items?.length ?? 0) > 0 ||
-      (Boolean(a.slug) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.itemId))),
-    { message: 'pass { slug, itemId } for one, { slug, itemIds:[…] } for many of one plan, or items:[{ slug, itemId }] for cross-plan' },
+      (Boolean(a.slug) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.item))),
+    { message: 'pass { slug, item } for one, { slug, itemIds:[…] } for many of one plan, or items:[{ slug, item }] for cross-plan' },
   );
 
 interface ReadItem {
@@ -70,11 +70,11 @@ interface ReadItem {
 export default defineTool({
   name: 'plans:get-item',
   description:
-    'Read ONE or MANY plan items (P-NNN) — each one\'s text, storedStatus + resolved effectiveStatus, importance, phase, blockedBy, and any blocking engineer-issues — from the PG-canonical structured index, WITHOUT loading + parsing the whole plan. Single: { slug, itemId }. Many of one plan: { slug, itemIds:[…] }. Cross-plan: items:[{ slug, itemId, harness? }]. Returns { ok, results:[{ ok, slug, itemId, item? | error }], counts } — correlate by { slug, itemId }, not position; a missing item never fails the rest.',
+    'Read ONE or MANY plan items (P-NNN) — each one\'s text, storedStatus + resolved effectiveStatus, importance, phase, blockedBy, and any blocking engineer-issues — from the PG-canonical structured index, WITHOUT loading + parsing the whole plan. Single: { slug, item }. Many of one plan: { slug, itemIds:[…] }. Cross-plan: items:[{ slug, item, harness? }]. Returns { ok, results:[{ ok, slug, itemId, item? | error }], counts } — correlate by { slug, itemId }, not position; a missing item never fails the rest.',
   guidance: {
     when: 'Inspecting one or more specific P-NNN (their status / blockers / phase / importance) without pulling the whole plan. The targeted read between plans:items (many by status) and plans:get (the whole plan). Read several at once via itemIds:[…] (one plan) or items:[…] (cross-plan).',
     notWhen: 'You need the whole plan (Now / decisions / prose) — plans:get. Many items by status — plans:items.',
-    chaining: 'plans:get-item { slug, itemId } → plans:set-status / plans:set-item-blocked-by / plans:set-item-phase to act on it.',
+    chaining: 'plans:get-item { slug, item } → plans:set-status / plans:set-item-blocked-by / plans:set-item-phase to act on it.',
     seeAlso: [
       'plans:set-status (advance the item)',
       'plans:set-item-phase (move it to another phase)',
@@ -89,10 +89,10 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const list: ReadItem[] = args.items?.length
-      ? args.items.map((it) => ({ slug: it.slug, itemId: it.itemId, harness: it.harness ?? args.harness }))
+      ? args.items.map((it) => ({ slug: it.slug, itemId: it.item, harness: it.harness ?? args.harness }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({ slug: args.slug as string, itemId, harness: args.harness }))
-        : [{ slug: args.slug as string, itemId: args.itemId as string, harness: args.harness }];
+        : [{ slug: args.slug as string, itemId: args.item as string, harness: args.harness }];
 
     // The all-blocked overlay is workspace-wide, not per-slug — fetch it ONCE for
     // the whole batch (non-fatal; degrades to resolver-only on error).

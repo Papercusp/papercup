@@ -336,7 +336,7 @@ describe('plan-execution plan-item path — plans:set-status wip→done (ornith 
     const t = parseTranscript([
       modelChange('ollama-cc/maxwell1500/ornith-35b:IQ3_M'),
       userMsg('You are a fleet MEMBER. AUTO mode is ON. Advance the plan.'),
-      toolCall('tools_invoke', { name: 'plans:set-status', args: { slug: 'p', itemId: 'P-003', status: 'done', note: 'verified' } }),
+      toolCall('tools_invoke', { name: 'plans:set-status', args: { slug: 'p', item: 'P-003', status: 'done', note: 'verified' } }),
     ]);
     const c = byId(t, { ...ORNITH_CTX, autoFleetMember: true })['plan-execution'];
     expect(c.passed).toBe(true);

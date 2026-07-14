@@ -238,7 +238,7 @@ describe('device/plans', () => {
     expect(m.dispatchProjectedTool).toHaveBeenCalledWith(
       expect.anything(),
       'plans:set-status',
-      expect.objectContaining({ slug: 'p1', itemId: 'P-001', status: 'done' }),
+      expect.objectContaining({ slug: 'p1', item: 'P-001', status: 'done' }),
       expect.anything(),
       {},
     );

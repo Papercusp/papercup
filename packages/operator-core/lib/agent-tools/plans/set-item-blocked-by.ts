@@ -85,7 +85,7 @@ const BLOCKED_BY = z
 
 const itemSpec = z.object({
   slug: z.string().min(1).describe('Plan slug (filename stem).'),
-  itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
+  item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   blockedBy: BLOCKED_BY.optional().describe('per-item blocked-by list (else the batch `blockedBy`)'),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: softText(LIMITS.ANNOTATION).optional().describe('per-item revision rationale (else the batch `rationale`). Auto-truncated to 2000 chars if longer.'),
@@ -95,7 +95,7 @@ const argsSchema = z
   .object({
     harness: harnessArg,
     slug: z.string().min(1).optional().describe('Plan slug (filename stem).'),
-    itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
+    item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
     blockedBy: BLOCKED_BY.optional(),
     itemIds: z
       .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))
@@ -108,7 +108,7 @@ const argsSchema = z
       .min(1)
       .max(200)
       .optional()
-      .describe('set many items at once — each { slug, itemId, blockedBy, harness?, rationale? }'),
+      .describe('set many items at once — each { slug, item, blockedBy, harness?, rationale? }'),
     rationale: softText(LIMITS.ANNOTATION)
       .optional()
       .describe('Optional — why the blockers changed. Stored on the plan revision (D-009). Auto-truncated to 2000 chars if longer.'),
@@ -116,8 +116,8 @@ const argsSchema = z
   .refine(
     (a) =>
       (a.items?.length ?? 0) > 0 ||
-      (Boolean(a.slug) && a.blockedBy !== undefined && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.itemId))),
-    { message: 'pass { slug, itemId, blockedBy } for one, { slug, itemIds:[…], blockedBy } for many of one plan, or items:[{ slug, itemId, blockedBy }] for heterogeneous' },
+      (Boolean(a.slug) && a.blockedBy !== undefined && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.item))),
+    { message: 'pass { slug, item, blockedBy } for one, { slug, itemIds:[…], blockedBy } for many of one plan, or items:[{ slug, item, blockedBy }] for heterogeneous' },
   );
 
 interface BlockedByItem {
@@ -207,12 +207,12 @@ async function setBlockedByOne(it: BlockedByItem, ctx: UnifiedToolContext): Prom
 export default defineTool({
   name: 'plans:set-item-blocked-by',
   description:
-    "Set or clear one OR many items' `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. Single: { slug, itemId, blockedBy }. Many of one plan: { slug, itemIds:[…], blockedBy }. Heterogeneous: items:[{ slug, itemId, blockedBy }]. Returns { ok, results:[{ ok, slug, itemId, from, to | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
+    "Set or clear one OR many items' `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. Single: { slug, item, blockedBy }. Many of one plan: { slug, itemIds:[…], blockedBy }. Heterogeneous: items:[{ slug, item, blockedBy }]. Returns { ok, results:[{ ok, slug, itemId, from, to | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
   guidance: {
     when: "An item's dependencies change — a new prerequisite surfaced, or a blocker cleared (blockedBy:[] to un-block). The structured alternative to a plans:edit on the item line. Set several at once via itemIds:[…] (one plan) or items:[…].",
     notWhen:
       'Flipping lifecycle status (plans:set-status) or importance (plans:set-importance). Moving an item to another phase (plans:set-item-phase).',
-    chaining: 'plans:get-item { slug, itemId } to see current blockers → plans:set-item-blocked-by.',
+    chaining: 'plans:get-item { slug, item } to see current blockers → plans:set-item-blocked-by.',
     seeAlso: [
       'plans:get-item (see the current blockers first)',
       'plans:set-status (mark the item blocked)',
@@ -227,7 +227,7 @@ export default defineTool({
     const list: BlockedByItem[] = args.items?.length
       ? args.items.map((it) => ({
           slug: it.slug,
-          itemId: it.itemId,
+          itemId: it.item,
           blockedBy: it.blockedBy ?? (args.blockedBy as string[]),
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
@@ -243,7 +243,7 @@ export default defineTool({
         : [
             {
               slug: args.slug as string,
-              itemId: args.itemId as string,
+              itemId: args.item as string,
               blockedBy: args.blockedBy as string[],
               harness: args.harness,
               rationale: args.rationale,

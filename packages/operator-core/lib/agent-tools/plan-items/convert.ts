@@ -151,7 +151,7 @@ export default defineTool({
         return {
           harness: a.harness ?? 'all',
           slug: d.planItem!.plan,
-          itemId: d.planItem!.item,
+          item: d.planItem!.item,
           status: 'wip',
           note: `→ ${d.workItem!.id}`,
         };

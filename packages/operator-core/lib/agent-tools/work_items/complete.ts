@@ -230,7 +230,7 @@ export async function synchronizeFinishWork(
       args: {
         harness: stamp.harness_slug,
         slug: stamp.plan_slug,
-        itemId: stamp.item_id,
+        item: stamp.item_id,
         status: reflected,
         note: `← ${opts.id} completed (${state})`,
       },

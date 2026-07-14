@@ -170,7 +170,7 @@ const planItemSetStatus = defineTool({
       'plans:set-status',
       {
         slug: ctx.params.slug,
-        itemId: ctx.params.itemId,
+        item: ctx.params.itemId,
         status: ctx.input.status,
         ...(ctx.input.note ? { note: ctx.input.note } : {}),
         ...(ctx.input.harness ? { harness: ctx.input.harness } : {}),

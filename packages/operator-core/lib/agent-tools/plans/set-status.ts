@@ -55,7 +55,7 @@ const NOTE = softText(8000)
 
 const itemSpec = z.object({
   slug: z.string().min(1),
-  itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
+  item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   status: STATUS.optional().describe('per-item status (else the batch `status`)'),
   note: NOTE.optional(),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
@@ -66,7 +66,7 @@ const argsSchema = z
   .object({
     harness: harnessArg,
     slug: z.string().min(1).optional(),
-    itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
+    item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
     status: STATUS.optional(),
     note: NOTE.optional(),
     itemIds: z
@@ -80,7 +80,7 @@ const argsSchema = z
       .min(1)
       .max(200)
       .optional()
-      .describe('flip many items at once — each { slug, itemId, status, note?, harness?, rationale? }'),
+      .describe('flip many items at once — each { slug, item, status, note?, harness?, rationale? }'),
     rationale: z
       .string()
       .optional()
@@ -91,8 +91,8 @@ const argsSchema = z
   .refine(
     (a) =>
       (a.items?.length ?? 0) > 0 ||
-      (Boolean(a.slug) && Boolean(a.status) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.itemId))),
-    { message: 'pass { slug, itemId, status } for one, { slug, itemIds:[…], status } for many of one plan, or items:[{ slug, itemId, status }] for heterogeneous' },
+      (Boolean(a.slug) && Boolean(a.status) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.item))),
+    { message: 'pass { slug, item, status } for one, { slug, itemIds:[…], status } for many of one plan, or items:[{ slug, item, status }] for heterogeneous' },
   );
 
 interface StatusItem {
@@ -689,13 +689,13 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
 export default defineTool({
   name: 'plans:set-status',
   description:
-    "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you; flipping to done/dropped releases your claim AND clears the item's assignment. Both are rejected with a per-item claim_conflict if a LIVE peer holds the item (you cannot claim or close someone else's in-flight work — coordinate or let the holder close it). Single: { slug, itemId, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, itemId, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
+    "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you; flipping to done/dropped releases your claim AND clears the item's assignment. Both are rejected with a per-item claim_conflict if a LIVE peer holds the item (you cannot claim or close someone else's in-flight work — coordinate or let the holder close it). Single: { slug, item, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, item, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
   guidance: {
     when: "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked). Flip several at once via itemIds:[…] (one plan) or items:[…].",
     notWhen:
       'You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.',
     chaining:
-      'plans:items { actionable: true } → plans:set-status { itemId, status: "wip" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On a per-item claim_conflict: coord:send the holder or pick another item.',
+      'plans:items { actionable: true } → plans:set-status { item, status: "wip" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On a per-item claim_conflict: coord:send the holder or pick another item.',
     seeAlso: [
       'plans:set-now (narrate the state change for the human-facing Now)',
       'plans:add-item (add a brand-new item rather than flip an existing one)',
@@ -718,7 +718,7 @@ export default defineTool({
     const list: StatusItem[] = args.items?.length
       ? args.items.map((it) => ({
           slug: it.slug,
-          itemId: it.itemId,
+          itemId: it.item,
           status: (it.status ?? args.status) as string,
           note: it.note ?? args.note,
           harness: it.harness ?? args.harness,
@@ -736,7 +736,7 @@ export default defineTool({
         : [
             {
               slug: args.slug as string,
-              itemId: args.itemId as string,
+              itemId: args.item as string,
               status: args.status as string,
               note: args.note,
               harness: args.harness,

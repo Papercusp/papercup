@@ -87,7 +87,7 @@ export function moveItemToPhase(
 
 const itemSpec = z.object({
   slug: z.string().min(1).describe('Plan slug (filename stem).'),
-  itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
+  item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   phase: PHASE.optional().describe('per-item target phase (else the batch `phase`)'),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: softText(LIMITS.ANNOTATION).optional().describe('per-item revision rationale (else the batch `rationale`). Auto-truncated to 2000 chars if longer.'),
@@ -97,7 +97,7 @@ const argsSchema = z
   .object({
     harness: harnessArg,
     slug: z.string().min(1).optional().describe('Plan slug (filename stem).'),
-    itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
+    item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
     phase: PHASE.optional(),
     itemIds: z
       .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))
@@ -110,7 +110,7 @@ const argsSchema = z
       .min(1)
       .max(200)
       .optional()
-      .describe('move many items at once — each { slug, itemId, phase, harness?, rationale? }'),
+      .describe('move many items at once — each { slug, item, phase, harness?, rationale? }'),
     rationale: softText(LIMITS.ANNOTATION)
       .optional()
       .describe('Optional — why the item moved phase. Stored on the plan revision (D-009). Auto-truncated to 2000 chars if longer.'),
@@ -118,8 +118,8 @@ const argsSchema = z
   .refine(
     (a) =>
       (a.items?.length ?? 0) > 0 ||
-      (Boolean(a.slug) && Boolean(a.phase) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.itemId))),
-    { message: 'pass { slug, itemId, phase } for one, { slug, itemIds:[…], phase } for many of one plan, or items:[{ slug, itemId, phase }] for heterogeneous' },
+      (Boolean(a.slug) && Boolean(a.phase) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.item))),
+    { message: 'pass { slug, item, phase } for one, { slug, itemIds:[…], phase } for many of one plan, or items:[{ slug, item, phase }] for heterogeneous' },
   );
 
 interface PhaseItem {
@@ -217,12 +217,12 @@ async function setPhaseOne(it: PhaseItem, ctx: UnifiedToolContext): Promise<Bulk
 export default defineTool({
   name: 'plans:set-item-phase',
   description:
-    "Move one OR many items to a different phase — relocates the whole item line under the target `## Phase …` heading (an item's phase is positional, not an inline keyword), every token preserved. Creates the phase section if it doesn't exist. No-op when already there. Inside the plan lock, records a revision. Single: { slug, itemId, phase }. Many of one plan: { slug, itemIds:[…], phase }. Heterogeneous: items:[{ slug, itemId, phase }]. Returns { ok, results:[{ ok, slug, itemId, fromPhase, toPhase, moved, createdPhase | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
+    "Move one OR many items to a different phase — relocates the whole item line under the target `## Phase …` heading (an item's phase is positional, not an inline keyword), every token preserved. Creates the phase section if it doesn't exist. No-op when already there. Inside the plan lock, records a revision. Single: { slug, item, phase }. Many of one plan: { slug, itemIds:[…], phase }. Heterogeneous: items:[{ slug, item, phase }]. Returns { ok, results:[{ ok, slug, itemId, fromPhase, toPhase, moved, createdPhase | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
   guidance: {
     when: 'An item belongs under a different phase — re-sequencing work across phases, or correcting a mis-placed item. The structured alternative to manually cutting + pasting the line with plans:edit. Move several at once via itemIds:[…] (one plan) or items:[…].',
     notWhen:
       'Adding a NEW item (plans:add-item — it takes the phase directly). Changing status/importance/blockers (their dedicated setters). Renaming a phase heading itself (plans:edit / plans:set-content).',
-    chaining: 'plans:get-item { slug, itemId } to see the current phase → plans:set-item-phase.',
+    chaining: 'plans:get-item { slug, item } to see the current phase → plans:set-item-phase.',
     seeAlso: [
       'plans:get-item (see the current phase first)',
       'plans:add-item (add to a phase instead of moving an existing item)',
@@ -237,7 +237,7 @@ export default defineTool({
     const list: PhaseItem[] = args.items?.length
       ? args.items.map((it) => ({
           slug: it.slug,
-          itemId: it.itemId,
+          itemId: it.item,
           phase: (it.phase ?? args.phase) as string,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
@@ -253,7 +253,7 @@ export default defineTool({
         : [
             {
               slug: args.slug as string,
-              itemId: args.itemId as string,
+              itemId: args.item as string,
               phase: args.phase as string,
               harness: args.harness,
               rationale: args.rationale,

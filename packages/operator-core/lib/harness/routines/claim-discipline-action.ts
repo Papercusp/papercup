@@ -190,7 +190,7 @@ export function nudgeBody(planSlug: string): string {
     `You declared intent on plan "${planSlug}" but hold no claim on any of its items, so the Mug, the colony tab, and your peers cannot see which items are yours — work can be double-placed or look abandoned.`,
     '',
     'Claim your lane (either way works):',
-    `  - plans:set-status { slug: '${planSlug}', itemId: 'P-NNN', status: 'wip' } — the wip flip now AUTO-CLAIMS the item for you.`,
+    `  - plans:set-status { slug: '${planSlug}', item: 'P-NNN', status: 'wip' } — the wip flip now AUTO-CLAIMS the item for you.`,
     `  - coord:declare-intent { intent, current_plan_slug: '${planSlug}', items: ['P-NNN', …] } — claims the whole set and releases items you've moved off.`,
     '',
     'Flipping an item to done releases its claim automatically. If you are not actually working this plan anymore, re-declare your intent without it.',

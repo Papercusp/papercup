@@ -36,7 +36,7 @@ const IMPORTANCE = z
 
 const itemSpec = z.object({
   slug: z.string().min(1),
-  itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
+  item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   importance: IMPORTANCE.optional().describe('per-item importance (else the batch `importance`)'),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
@@ -46,7 +46,7 @@ const argsSchema = z
   .object({
     harness: harnessArg,
     slug: z.string().min(1).optional(),
-    itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
+    item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required').optional(),
     importance: IMPORTANCE.optional(),
     itemIds: z
       .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))
@@ -59,7 +59,7 @@ const argsSchema = z
       .min(1)
       .max(200)
       .optional()
-      .describe('set many items at once — each { slug, itemId, importance, harness?, rationale? }'),
+      .describe('set many items at once — each { slug, item, importance, harness?, rationale? }'),
     rationale: z
       .string()
       .optional()
@@ -68,8 +68,8 @@ const argsSchema = z
   .refine(
     (a) =>
       (a.items?.length ?? 0) > 0 ||
-      (Boolean(a.slug) && Boolean(a.importance) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.itemId))),
-    { message: 'pass { slug, itemId, importance } for one, { slug, itemIds:[…], importance } for many of one plan, or items:[{ slug, itemId, importance }] for heterogeneous' },
+      (Boolean(a.slug) && Boolean(a.importance) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.item))),
+    { message: 'pass { slug, item, importance } for one, { slug, itemIds:[…], importance } for many of one plan, or items:[{ slug, item, importance }] for heterogeneous' },
   );
 
 interface ImportanceItem {
@@ -190,7 +190,7 @@ async function setImportanceOne(it: ImportanceItem, ctx: UnifiedToolContext): Pr
 export default defineTool({
   name: 'plans:set-importance',
   description:
-    "Change one OR many items' importance (urgent|high|normal|low). Adds/replaces the trailing `importance:` keyword; setting `normal` removes it. Auto-bumps frontmatter updated:. Single: { slug, itemId, importance }. Many of one plan: { slug, itemIds:[…], importance }. Heterogeneous: items:[{ slug, itemId, importance }]. Returns { ok, results:[{ ok, slug, itemId, … | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
+    "Change one OR many items' importance (urgent|high|normal|low). Adds/replaces the trailing `importance:` keyword; setting `normal` removes it. Auto-bumps frontmatter updated:. Single: { slug, item, importance }. Many of one plan: { slug, itemIds:[…], importance }. Heterogeneous: items:[{ slug, item, importance }]. Returns { ok, results:[{ ok, slug, itemId, … | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
   guidance: {
     when: "An item's importance changes — escalating a stuck or aging item, or correcting a level set wrong at creation. Re-rank several at once via itemIds:[…] (one plan) or items:[…].",
     notWhen:
@@ -210,7 +210,7 @@ export default defineTool({
     const list: ImportanceItem[] = args.items?.length
       ? args.items.map((it) => ({
           slug: it.slug,
-          itemId: it.itemId,
+          itemId: it.item,
           importance: (it.importance ?? args.importance) as Importance,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
@@ -226,7 +226,7 @@ export default defineTool({
         : [
             {
               slug: args.slug as string,
-              itemId: args.itemId as string,
+              itemId: args.item as string,
               importance: args.importance as Importance,
               harness: args.harness,
               rationale: args.rationale,
