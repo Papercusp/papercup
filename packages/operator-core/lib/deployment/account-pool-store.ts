@@ -607,7 +607,7 @@ export function projectLiveEdgeThrottle(
   return {
     edgeThrottleKnown: known,
     edgeThrottled: signal?.edgeThrottled === true,
-    edgeThrottleResetAt: signal?.cooldownUntil,
+    edgeThrottleResetAt: signal && signal.cooldownUntil && signal.cooldownUntil > 0 ? signal.cooldownUntil : undefined,
     edgeThrottleCooledIps: signal?.cooledIpCount ?? 0,
     edgeThrottleBare429Streak: signal?.bare429Streak ?? 0,
   };

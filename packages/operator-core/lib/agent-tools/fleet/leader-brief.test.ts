@@ -6,7 +6,13 @@
  * PG/DI ceremony (mirrors deriveMemberVerdict/deriveContextPressure).
  */
 import { describe, expect, it } from 'vitest';
-import { computeBenchSuggestion, projectMember, reconcilePsuHostLiveness, type DecoratedAgent } from './leader-brief';
+import {
+  computeBenchSuggestion,
+  projectMember,
+  reconcilePsuHostLiveness,
+  selectLeaderBriefMembers,
+  type DecoratedAgent,
+} from './leader-brief';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 
@@ -46,6 +52,31 @@ describe('reconcilePsuHostLiveness (WI-4755)', () => {
     reconcilePsuHostLiveness([agent], new Map([['su-1', 'cup']]), () => null);
     expect(agent.sessionState).toBe('parked');
     expect(agent.alive).toBe(true);
+  });
+});
+
+describe('selectLeaderBriefMembers (EI-11840)', () => {
+  it('keeps every live presence-backed member, including an idle member with no claims', () => {
+    const members = selectLeaderBriefMembers(
+      [
+        baseAgent({ agentId: 'su-live-working', claims: [{ type: 'work-item', id: 'WI-1' }] as never }),
+        baseAgent({ agentId: 'su-live-idle', claims: [], alive: true }),
+        baseAgent({ agentId: 'su-other-fleet', fleetSlug: 'other-fleet', alive: true }),
+        baseAgent({ agentId: 'su-stale', alive: false, claims: [] }),
+      ],
+      'p2p-git',
+    );
+
+    expect(members.map((member) => member.agentId)).toEqual([
+      'su-live-working',
+      'su-live-idle',
+    ]);
+  });
+
+  it('includes stale canonical roster entries only when explicitly requested', () => {
+    const stale = baseAgent({ agentId: 'su-stale', alive: false, claims: [] });
+    expect(selectLeaderBriefMembers([stale], 'p2p-git')).toEqual([]);
+    expect(selectLeaderBriefMembers([stale], 'p2p-git', true)).toEqual([stale]);
   });
 });
 

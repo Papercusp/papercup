@@ -46,6 +46,28 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     expect(cal.daysSinceFire).toBe(5);
   });
 
+  it('keeps a long-cadence loop healthy while its next scheduled fire is still ahead', () => {
+    const [cal] = computeLearningLoopHealth(
+      [LOOPS[0]],
+      [sRow('calibration', { lastFiredAt: daysAgo(12), nextFireAt: daysAgo(-18) })],
+      { nowMs: NOW, staleAfterDays: 3 },
+    );
+
+    expect(cal.status).toBe('firing');
+    expect(cal.daysSinceFire).toBe(12);
+  });
+
+  it('marks a long-cadence loop stale once its promised next fire is overdue', () => {
+    const [cal] = computeLearningLoopHealth(
+      [LOOPS[0]],
+      [sRow('calibration', { lastFiredAt: daysAgo(40), nextFireAt: daysAgo(1) })],
+      { nowMs: NOW, staleAfterDays: 3 },
+    );
+
+    expect(cal.status).toBe('stale');
+    expect(cal.daysSinceFire).toBe(40);
+  });
+
   it('marks Scout stale when its routine fired but scout_ticks activity is stale', () => {
     const [scout] = computeLearningLoopHealth(
       [LOOPS[1]],

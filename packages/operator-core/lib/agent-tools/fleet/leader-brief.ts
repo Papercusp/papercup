@@ -43,7 +43,8 @@ import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/ide
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { COORD_ROLES } from '../coordination/roles';
-import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
+import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
+import type { AgentAssignment } from '../../fleet/assignments';
 import { listPresence } from '../coordination/presence';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import {
@@ -143,6 +144,24 @@ export type DecoratedAgent = AgentAssignment & {
   monitorState?: MonitorState | null;
   nextFireAt?: string | null;
 };
+
+/**
+ * PURE: scope the leader brief from the same presence-primary roster used by
+ * fleet:status. Keeping this projection separate makes the membership parity
+ * contract explicit: a live presence member is never dropped merely because
+ * its assignment leg has no claim row yet.
+ */
+export function selectLeaderBriefMembers(
+  entries: readonly DecoratedAgent[],
+  fleet: string,
+  includeStale = false,
+): DecoratedAgent[] {
+  return entries.filter(
+    (entry) =>
+      entry.fleetSlug === fleet &&
+      (includeStale || entry.claims.length > 0 || entry.alive),
+  );
+}
 
 /**
  * Reconcile a visible member's parked/wakeable projection with the psu-host
@@ -265,13 +284,14 @@ export default defineTool({
       };
     }
     const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
-    const rows = await listFleetAssignments({
-      workspaceId,
-      harness: args.harness,
-      activeOnly: true,
-    });
-    const grouped: DecoratedAgent[] = groupByAgent(rows).filter(
-      (g) => g.fleetSlug === fleet && (args.include_stale || g.claims.length > 0 || g.alive),
+    // fleet:status's presence-primary roster is the membership authority. The
+    // old claim-primary read omitted live idle members whose assignment view had
+    // no row, so leader-brief and fleet:status reported different rosters.
+    const rosterResult = await listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId });
+    const grouped = selectLeaderBriefMembers(
+      rosterResult.entries,
+      fleet,
+      args.include_stale,
     );
     await reconcileWakeability(grouped).catch(() => {});
     // Missing host is a liveness signal only for known visible members. Keep
@@ -314,6 +334,9 @@ export default defineTool({
       // EI-9943: members alive+speaking but not advancing and not yet benched —
       // the live-loop-polling-on-a-blocker pattern this whole item targets.
       bench_suggested: members.filter((m) => m.benchSuggestion != null).length,
+      // WI-3818: make any incomplete canonical roster read explicit to callers
+      // instead of silently presenting a partial membership list.
+      degraded_roster_legs: rosterResult.degradedLegs,
     };
     return {
       data: {

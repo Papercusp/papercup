@@ -150,6 +150,7 @@ export function computeLearningLoopHealth(
     const active = row?.active ?? false;
     const lastFiredAt = row?.lastFiredAt ?? null;
     const firedMs = lastFiredAt ? Date.parse(lastFiredAt) : NaN;
+    const nextMs = row?.nextFireAt ? Date.parse(row.nextFireAt) : NaN;
     const daysSinceFire = Number.isNaN(firedMs) ? null : Math.floor((opts.nowMs - firedMs) / DAY_MS);
     const activity = opts.activityByBlueprintId?.[loop.blueprintId] ?? null;
     const activityLastAt = activity?.lastActivityAt ?? null;
@@ -163,8 +164,14 @@ export function computeLearningLoopHealth(
       // Active but NEVER fired: `pending` if its first fire is still ahead (just
       // activated — e.g. prompt-ablation right after the frontier arming), `stale`
       // if that first fire is already overdue or unknown (a genuinely stuck fire path).
-      const nextMs = row.nextFireAt ? Date.parse(row.nextFireAt) : NaN;
       status = !Number.isNaN(nextMs) && nextMs > opts.nowMs ? 'pending' : 'stale';
+    } else if (!Number.isNaN(nextMs) && nextMs > opts.nowMs) {
+      // A scheduled routine is healthy until its NEXT promised fire. Long-cadence
+      // loops (for example the monthly IQ battery) legitimately exceed the generic
+      // stale window between runs; last-fire age alone falsely pages them for most
+      // of every month. If the engine wedges, next_fire_at remains in the past and
+      // the stale-age fallback below still turns the loop red.
+      status = 'firing';
     } else if (opts.nowMs - firedMs > staleMs) status = 'stale';
     else status = 'firing';
 
