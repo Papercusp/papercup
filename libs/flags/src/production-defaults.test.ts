@@ -72,6 +72,10 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // this host is opt-in, so it ships fail-closed (default-OFF) permanently — each
   // contributing host flips it ON per-host. Not a pending-flip; OFF is the correct default.
   'papercusp-accept-delegated-seats',
+  // 2026-07-14 (WI-2479) — persistent fleet headcount auto-top-up is a
+  // dangerous fleet-autonomy surface. The governor is complete but remains
+  // explicitly default-OFF until its bounded no-storm behavior is ratified.
+  'papercusp-fleet-headcount-governor',
   // papercusp-queen-warm-session GRADUATED to default-ON 2026-07-02 (owner flip
   // directive — see libs/flags/src/types.ts DARK_FLAGS) — removed from this
   // snapshot; the count assertion below dropped from 11 to 10 to match.
@@ -472,7 +476,7 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // probe: BUG-FIX correction, 11th + 12th instances of the EI-7230 class (both comments said
     // dark, never added; real-hardware-unverified cross-machine cutovers, no-op on a single
     // box). Watermark raised 27→29. Count 27 → 29.
-    expect(offCount).toBe(29);
+    expect(offCount).toBe(30);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

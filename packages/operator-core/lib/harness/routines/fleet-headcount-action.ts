@@ -1,5 +1,6 @@
 /** WI-2479: durable, dark-by-default fleet headcount repair action. */
 import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import {
   claimFleetHeadcountAttempt,
   claimFleetLaunchSlot,
@@ -15,7 +16,7 @@ import { memberLaunchCommand } from '../../agent-launch-core';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
-export const FLEET_HEADCOUNT_FLAG = 'papercusp-fleet-headcount-governor';
+export const FLEET_HEADCOUNT_FLAG = FLAGS.FLEET_HEADCOUNT_GOVERNOR;
 export const FLEET_HEADCOUNT_LAUNCH_WINDOW_MS = 300_000;
 
 export function computeHeadcountDeficit(target: number, liveMembers: number): number {

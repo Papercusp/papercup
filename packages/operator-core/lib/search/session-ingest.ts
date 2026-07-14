@@ -60,6 +60,9 @@ const MAX_FILES_PER_TICK = 200;
 const MAX_TURNS_PER_TICK = 4000;
 const MAX_BYTES_PER_FILE_PER_TICK = 5 * 1024 * 1024;
 const MAX_CHATS_PER_TICK = 50;
+/** Historical EI-9970 counter repair caps. The cursor persists across ticks. */
+const MAX_COUNT_BACKFILL_FILES_PER_TICK = 25;
+const MAX_COUNT_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
 /** Per-turn text cap (chars). */
 const TEXT_CAP = 8000;
 /** Skip micro-turns ("ok", "y") — noise for recall. */
@@ -118,6 +121,8 @@ export interface IngestStats {
   filesIngested: number;
   turnsInserted: number;
   chatsIngested: number;
+  /** Historical session_ingest_state rows whose EI-9970 counters advanced. */
+  countBackfillFiles: number;
   errors: number;
   /** First few error messages of the sweep — diagnosis without log spam. */
   errorSample?: string[];
@@ -716,18 +721,29 @@ interface IngestState {
   response_count: number;
   tool_call_count: number;
   last_inference_id: string | null;
+  counts_backfill_offset: number;
+  counts_backfilled_at: string | null;
 }
 
 const EMPTY_STATE: IngestState = {
-  byte_offset: 0, turn_count: 0, prompt_count: 0, response_count: 0, tool_call_count: 0, last_inference_id: null,
+  byte_offset: 0,
+  turn_count: 0,
+  prompt_count: 0,
+  response_count: 0,
+  tool_call_count: 0,
+  last_inference_id: null,
+  counts_backfill_offset: 0,
+  counts_backfilled_at: null,
 };
 
 async function readState(sql: Sql, sourceKind: string, filePath: string): Promise<IngestState> {
   const rows = await sql<Array<{
     byte_offset: string | number; turn_count: number;
     prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
+    counts_backfill_offset: string | number; counts_backfilled_at: string | null;
   }>>`
-    SELECT byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id
+    SELECT byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id,
+           counts_backfill_offset, counts_backfilled_at
       FROM harness_shared.session_ingest_state
      WHERE source_kind = ${sourceKind} AND file_path = ${filePath}
   `;
@@ -740,6 +756,8 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
     response_count: r.response_count ?? 0,
     tool_call_count: r.tool_call_count ?? 0,
     last_inference_id: r.last_inference_id ?? null,
+    counts_backfill_offset: Number(r.counts_backfill_offset ?? 0),
+    counts_backfilled_at: r.counts_backfilled_at ?? null,
   };
 }
 
@@ -748,15 +766,17 @@ async function writeState(
   sourceKind: string,
   filePath: string,
   st: Pick<IngestState, 'byte_offset' | 'turn_count'> &
-    Partial<Pick<IngestState, 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id'>> &
+    Partial<Pick<IngestState, 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id' | 'counts_backfill_offset' | 'counts_backfilled_at'>> &
     { sessionId?: string | null; mtimeMs?: number; lastError?: string | null },
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.session_ingest_state
       (source_kind, file_path, byte_offset, turn_count, prompt_count, response_count,
-       tool_call_count, last_inference_id, session_id, mtime_ms, last_error, updated_at)
+       tool_call_count, last_inference_id, counts_backfill_offset, counts_backfilled_at,
+       session_id, mtime_ms, last_error, updated_at)
     VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count},
             ${st.prompt_count ?? 0}, ${st.response_count ?? 0}, ${st.tool_call_count ?? 0}, ${st.last_inference_id ?? null},
+            ${st.counts_backfill_offset ?? st.byte_offset}, ${st.counts_backfilled_at ?? null},
             ${st.sessionId ?? null}, ${st.mtimeMs != null ? Math.round(st.mtimeMs) : null}, ${st.lastError ?? null}, now())
     ON CONFLICT (source_kind, file_path) DO UPDATE SET
       byte_offset       = EXCLUDED.byte_offset,
@@ -765,6 +785,8 @@ async function writeState(
       response_count    = EXCLUDED.response_count,
       tool_call_count   = EXCLUDED.tool_call_count,
       last_inference_id = EXCLUDED.last_inference_id,
+      counts_backfill_offset = EXCLUDED.counts_backfill_offset,
+      counts_backfilled_at = COALESCE(EXCLUDED.counts_backfilled_at, harness_shared.session_ingest_state.counts_backfilled_at),
       session_id        = COALESCE(EXCLUDED.session_id, harness_shared.session_ingest_state.session_id),
       mtime_ms          = EXCLUDED.mtime_ms,
       last_error        = EXCLUDED.last_error,
