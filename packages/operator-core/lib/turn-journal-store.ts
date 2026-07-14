@@ -45,13 +45,16 @@ export async function recordTurnJournal(
   const { sql } = getOrgPg();
   // `::text::jsonb` (not `::jsonb`) — postgres-js JSON-encodes the string param
   // first, so a bare `::jsonb` double-encodes (activity-pg-store gotcha).
+  // Dates go over as ISO strings — the org client does not serialize Date
+  // params (same convention as session-ingest's turn rows).
   const tripwireJson = input.tripwire ? JSON.stringify(input.tripwire) : null;
+  const turnTsIso = input.turnTs ? input.turnTs.toISOString() : null;
   const inserted = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.session_turn_journal
       (owner_id, agent, source_kind, session_id, turn_ts, note, source, flagged, tripwire, harness_slug)
     VALUES (
       ${input.ownerId}, ${input.agent}, ${input.sourceKind}, ${input.sessionId},
-      ${input.turnTs}, ${input.note}, ${input.source}, ${input.flagged},
+      ${turnTsIso}::timestamptz, ${input.note}, ${input.source}, ${input.flagged},
       ${tripwireJson}::text::jsonb, ${input.harnessSlug}
     )
     ON CONFLICT (session_id, COALESCE(turn_ts, 'epoch'::timestamptz)) DO NOTHING
@@ -61,29 +64,32 @@ export async function recordTurnJournal(
   return { id, deduped: id === null };
 }
 
-/** Newest journal write time for a session — the tripwire's turn-window floor
- *  (ledger entries since the previous journal belong to THIS turn). */
-export async function latestJournalCreatedAt(sessionId: string): Promise<Date | null> {
+/** Newest journal write time for a session (ISO string) — the tripwire's
+ *  turn-window floor (ledger entries since the previous journal belong to
+ *  THIS turn). */
+export async function latestJournalCreatedAt(sessionId: string): Promise<string | null> {
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ latest: Date | null }>>`
-    SELECT max(created_at) AS latest
+  const rows = await sql<Array<{ latest: string | null }>>`
+    SELECT max(created_at)::text AS latest
     FROM harness_shared.session_turn_journal
     WHERE session_id = ${sessionId}
   `;
   return rows[0]?.latest ?? null;
 }
 
-/** The turn's tool-ledger slice from harness_shared.agent_activity. */
+/** The turn's tool-ledger slice from harness_shared.agent_activity, NEWEST
+ *  FIRST (the order detectClaimLedgerMismatch's latest-execution rule needs). */
 export async function ledgerEntriesSince(
   sessionId: string,
-  since: Date,
+  since: Date | string,
   limit = 500,
 ): Promise<LedgerEntry[]> {
   const { sql } = getOrgPg();
+  const sinceIso = typeof since === 'string' ? since : since.toISOString();
   const rows = await sql<Array<{ tool_name: string | null; status: string | null; summary: string | null }>>`
     SELECT tool_name, status, summary
     FROM harness_shared.agent_activity
-    WHERE session_id = ${sessionId} AND created_at > ${since}
+    WHERE session_id = ${sessionId} AND created_at > ${sinceIso}::timestamptz
     ORDER BY id DESC
     LIMIT ${limit}
   `;

@@ -14,6 +14,15 @@
 .pc-qp {
   position: fixed;
   inset: 0;
+  /* Fill the window even when /quick-panel renders CHROMELESS (the standalone
+     popup / dev:quickpanel preview). The route-transition wrapper
+     (<main data-route-transition-page>) sets a transform, which makes IT — not
+     the viewport — the containing block for this fixed element; with the app
+     chrome absent that <main> collapses to height:0, so `inset:0` alone gives
+     the panel 0 height and clips the tabs. Viewport-relative height is immune to
+     the collapsed ancestor (WI-4806). */
+  width: 100vw;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--bg);

@@ -44,6 +44,7 @@ import { marked } from 'marked';
 import type { ReleaseArtifact, ReleaseRow, ShippedItem, ShippedPlan } from './release-registry';
 import { groupItemsByPlan } from './release-registry';
 import { identityLiterals, scrubIdentity, type IdentityLiteral } from './release-content-scrub';
+import { ROBOT_BG_DATA_URI } from './release-bg';
 
 /** A release row with the display data for its FROZEN id lists looked up. */
 export interface HydratedRelease {
