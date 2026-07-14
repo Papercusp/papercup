@@ -102,6 +102,65 @@ describe('<CupboardModerationClient />', () => {
     expect(link?.getAttribute('href')).toBe('https://github.com/o/r');
   });
 
+  it('surfaces the executable provenance for a pending app (release repo + signed manifest + platforms)', async () => {
+    // cupboard-app-distribution P-006: an app distributes a runnable installer —
+    // the moderator must review WHERE the binary comes from, not just the source
+    // repo. The worker returns the raw row (SELECT *), so the app fields ride along.
+    routeFetch({
+      pending: {
+        body: {
+          pending: [
+            {
+              id: 'A1', listing_kind: 'app', listing_ref: null, title: 'Oddsmith',
+              description: 'a desktop app', github_url: 'https://github.com/acme/oddsmith-src',
+              publisher_github_login: 'acme', created_at: 1_700_000_000_000,
+              delivery_type: 'standalone', release_repo: 'acme/oddsmith',
+              latest_json_url: 'https://github.com/acme/oddsmith/releases/latest/download/latest.json',
+              platforms: JSON.stringify(['darwin-aarch64', 'linux-x86_64']),
+            },
+          ],
+        },
+      },
+    });
+    renderClient();
+    await waitFor(() => expect(screen.getByTestId('pending-review-app-trust')).toBeTruthy());
+    // The release the installers come from — the trust-critical surface.
+    const release = screen.getByTestId('pending-review-app-release');
+    expect(release.getAttribute('href')).toBe('https://github.com/acme/oddsmith/releases');
+    // The signed updater manifest.
+    const manifest = screen.getByTestId('pending-review-app-manifest');
+    expect(manifest.getAttribute('href')).toBe(
+      'https://github.com/acme/oddsmith/releases/latest/download/latest.json',
+    );
+    // Platform availability derived from the denormalized column.
+    const trust = screen.getByTestId('pending-review-app-trust');
+    expect(trust.textContent).toContain('macOS');
+    expect(trust.textContent).toContain('Linux');
+    // The caution reframes for an executable — not "injected into agents".
+    expect(screen.getByText(/runnable installer — verify its release provenance/i)).toBeTruthy();
+  });
+
+  it('shows no app-trust block for a non-app pending listing', async () => {
+    routeFetch({
+      pending: {
+        body: {
+          pending: [
+            {
+              id: 'L2', listing_kind: 'blueprint', listing_ref: 'bp', title: 'A Blueprint',
+              description: null, github_url: 'https://github.com/o/bp',
+              publisher_github_login: 'octocat', created_at: 1_700_000_000_000,
+            },
+          ],
+        },
+      },
+    });
+    renderClient();
+    await waitFor(() => expect(screen.getByTestId('pending-review-card')).toBeTruthy());
+    expect(screen.queryByTestId('pending-review-app-trust')).toBeNull();
+    // The non-app caution still applies.
+    expect(screen.getByText(/injected into agents/i)).toBeTruthy();
+  });
+
   it('renders an abuse-report card and filters out an unsafe github url', async () => {
     routeFetch({
       reports: {

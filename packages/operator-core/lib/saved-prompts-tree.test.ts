@@ -5,19 +5,25 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendPosition,
+  breadcrumbOf,
   buildPromptTree,
   displayTitle,
+  extractTags,
   extractVariables,
   fillVariables,
   indent,
   insertAfter,
+  isCompleted,
   isFolder,
   moveDown,
   moveUp,
   outdent,
+  projectDrop,
+  subtreeIds,
   visibleRows,
   type MoveAssignment,
   type PromptNodeFields,
+  type VisibleOpts,
 } from './saved-prompts-tree';
 
 let seq = 0;
@@ -34,6 +40,7 @@ function row(partial: Partial<PromptNodeFields> & { id: string }): PromptNodeFie
     usageCount: 0,
     lastUsedAt: null,
     archivedAt: null,
+    completedAt: null,
     ...partial,
   };
 }
@@ -47,8 +54,8 @@ function apply(rows: PromptNodeFields[], assignments: MoveAssignment[]): PromptN
   });
 }
 
-function visibleIds(rows: PromptNodeFields[], filter?: string): string[] {
-  return visibleRows(buildPromptTree(rows), filter).map((v) => v.node.row.id);
+function visibleIds(rows: PromptNodeFields[], opts?: VisibleOpts): string[] {
+  return visibleRows(buildPromptTree(rows), opts).map((v) => v.node.row.id);
 }
 
 describe('buildPromptTree', () => {
@@ -109,11 +116,165 @@ describe('visibleRows', () => {
   });
 
   it('filter matches bodies, ignores collapse, and keeps ancestors of matches', () => {
-    expect(visibleIds(rows, 'summarize')).toEqual(['closed', 'hidden']);
+    expect(visibleIds(rows, { filter: 'summarize' })).toEqual(['closed', 'hidden']);
   });
 
   it('filter matches the display title and the slug name', () => {
-    expect(visibleIds(rows, 'ship-it')).toEqual(['top', 'kid']);
+    expect(visibleIds(rows, { filter: 'ship-it' })).toEqual(['top', 'kid']);
+  });
+
+  it('zoom re-roots at the node’s children, ignoring its own collapsed flag', () => {
+    expect(visibleIds(rows, { zoomId: 'closed' })).toEqual(['hidden']);
+    const v = visibleRows(buildPromptTree(rows), { zoomId: 'closed' });
+    expect(v[0].depth).toBe(0);
+  });
+
+  it('zoom with an unknown id falls back to home', () => {
+    expect(visibleIds(rows, { zoomId: 'nope' })).toEqual(visibleIds(rows));
+  });
+
+  it('filter applies inside the zoom only', () => {
+    expect(visibleIds(rows, { zoomId: 'top', filter: 'review' })).toEqual(['kid']);
+    expect(visibleIds(rows, { zoomId: 'top', filter: 'summarize' })).toEqual([]);
+  });
+
+  it('hideCompleted hides the node and its whole subtree', () => {
+    const done = [
+      row({ id: 'a', position: 'a0', completedAt: '2026-07-14T00:00:00Z' }),
+      row({ id: 'a1', parentId: 'a', position: 'a0' }),
+      row({ id: 'b', position: 'a1' }),
+    ];
+    expect(visibleIds(done)).toEqual(['a', 'a1', 'b']);
+    expect(visibleIds(done, { hideCompleted: true })).toEqual(['b']);
+    expect(visibleIds(done, { hideCompleted: true, filter: 'node' })).toEqual(['b']);
+  });
+});
+
+describe('breadcrumbOf / subtreeIds', () => {
+  const rows = [
+    row({ id: 'a', position: 'a0', title: 'A' }),
+    row({ id: 'b', parentId: 'a', position: 'a0', title: 'B' }),
+    row({ id: 'c', parentId: 'b', position: 'a0', title: 'C' }),
+    row({ id: 'x', position: 'a1' }),
+  ];
+
+  it('breadcrumbOf returns the chain root-first, including the node', () => {
+    const model = buildPromptTree(rows);
+    expect(breadcrumbOf(model, 'c').map((r) => r.id)).toEqual(['a', 'b', 'c']);
+    expect(breadcrumbOf(model, 'a').map((r) => r.id)).toEqual(['a']);
+    expect(breadcrumbOf(model, 'nope')).toEqual([]);
+  });
+
+  it('subtreeIds includes the node itself and every descendant', () => {
+    const model = buildPromptTree(rows);
+    expect([...subtreeIds(model, 'a')].sort()).toEqual(['a', 'b', 'c']);
+    expect([...subtreeIds(model, 'c')]).toEqual(['c']);
+    expect(subtreeIds(model, 'nope').size).toBe(0);
+  });
+});
+
+describe('projectDrop', () => {
+  const dragRows = () => [
+    row({ id: 'a', position: 'a0' }),
+    row({ id: 'b', position: 'a1' }),
+    row({ id: 'c', position: 'a2' }),
+    row({ id: 'c1', parentId: 'c', position: 'a0' }),
+  ];
+  const flatFor = (rows: PromptNodeFields[], activeId: string, opts?: VisibleOpts) => {
+    const model = buildPromptTree(rows);
+    const drop = subtreeIds(model, activeId);
+    drop.delete(activeId); // descendants leave the list; the active row stays
+    return {
+      model,
+      flat: visibleRows(model, opts).filter((v) => !drop.has(v.node.row.id)),
+    };
+  };
+
+  it('reorders within the same sibling list (drag a over b)', () => {
+    const rows = dragRows();
+    const { model, flat } = flatFor(rows, 'a');
+    const p = projectDrop(model, flat, 'a', 'b', 0);
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBeNull();
+    expect(visibleIds(apply(rows, p!.assignments))).toEqual(['b', 'a', 'c', 'c1']);
+  });
+
+  it('drops to the end of the list at root depth', () => {
+    const rows = dragRows();
+    const { model, flat } = flatFor(rows, 'a');
+    const p = projectDrop(model, flat, 'a', 'c1', 0);
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBeNull();
+    expect(visibleIds(apply(rows, p!.assignments))).toEqual(['b', 'c', 'c1', 'a']);
+  });
+
+  it('a deeper desired depth reparents into the row above', () => {
+    const rows = dragRows();
+    const { model, flat } = flatFor(rows, 'a');
+    const p = projectDrop(model, flat, 'a', 'c1', 1);
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBe('c');
+    const after = buildPromptTree(apply(rows, p!.assignments));
+    expect(after.byId.get('a')?.parent?.row.id).toBe('c');
+    expect(visibleIds(apply(rows, p!.assignments))).toEqual(['b', 'c', 'c1', 'a']);
+  });
+
+  it('clamps depth between the surrounding rows (no orphaned gap)', () => {
+    const rows = dragRows();
+    const { model, flat } = flatFor(rows, 'a');
+    // Between c and its child c1 the only legal depth is 1 (inside c).
+    const p = projectDrop(model, flat, 'a', 'c', 0);
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBe('c');
+    // And a silly-deep desired depth clamps to prev.depth + 1.
+    const p2 = projectDrop(model, flat, 'a', 'c1', 9);
+    expect(p2!.parentId).toBe('c1');
+  });
+
+  it('refuses to make a node its own descendant', () => {
+    const rows = dragRows();
+    const model = buildPromptTree(rows);
+    // Malformed flat (descendant not removed) — the guard still refuses.
+    const flat = visibleRows(model);
+    const p = projectDrop(model, flat, 'c', 'c1', 1);
+    expect(p).toBeNull();
+  });
+
+  it('parents depth-0 drops to the zoom root inside a zoom', () => {
+    const rows = dragRows();
+    const { model } = flatFor(rows, 'c1');
+    const flat = visibleRows(model, { zoomId: 'c' });
+    const extra = row({ id: 'c2', parentId: 'c', position: 'a1' });
+    const zoomModel = buildPromptTree([...rows, extra]);
+    const zoomFlat = visibleRows(zoomModel, { zoomId: 'c' });
+    const p = projectDrop(zoomModel, zoomFlat, 'c1', 'c2', 0, 'c');
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBe('c');
+    expect(visibleIds(apply([...rows, extra], p!.assignments), { zoomId: 'c' })).toEqual([
+      'c2',
+      'c1',
+    ]);
+    void flat;
+  });
+
+  it('resequences legacy NULL-position siblings alongside the drop', () => {
+    const rows = [
+      row({ id: 'p', position: null, title: 'A' }),
+      row({ id: 'q', position: null, title: 'B' }),
+      row({ id: 'r', position: null, title: 'C' }),
+    ];
+    const { model, flat } = flatFor(rows, 'r');
+    const p = projectDrop(model, flat, 'r', 'p', 0);
+    expect(p).not.toBeNull();
+    expect(p!.assignments.length).toBe(3);
+    expect(visibleIds(apply(rows, p!.assignments))).toEqual(['r', 'p', 'q']);
+  });
+
+  it('unknown ids are null', () => {
+    const rows = dragRows();
+    const { model, flat } = flatFor(rows, 'a');
+    expect(projectDrop(model, flat, 'nope', 'b', 0)).toBeNull();
+    expect(projectDrop(model, flat, 'a', 'nope', 0)).toBeNull();
   });
 });
 
@@ -275,6 +436,22 @@ describe('helpers', () => {
     expect(isFolder({ body: '' })).toBe(true);
     expect(isFolder({ body: '  \n ' })).toBe(true);
     expect(isFolder({ body: 'x' })).toBe(false);
+  });
+
+  it('isCompleted keys on completedAt', () => {
+    expect(isCompleted({ completedAt: null })).toBe(false);
+    expect(isCompleted({})).toBe(false);
+    expect(isCompleted({ completedAt: '2026-07-14T00:00:00Z' })).toBe(true);
+  });
+
+  it('extractTags finds #tags and @mentions, deduped case-insensitively', () => {
+    expect(extractTags('ship #Alpha with @bob and #alpha again (#beta)')).toEqual([
+      '#Alpha',
+      '@bob',
+      '#beta',
+    ]);
+    expect(extractTags('email a@b.c and c#d are not tags')).toEqual([]);
+    expect(extractTags('#123 and #a-b_c')).toEqual(['#123', '#a-b_c']);
   });
 
   it('extractVariables dedupes in first-appearance order', () => {

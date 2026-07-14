@@ -190,6 +190,24 @@ describe('writeClaudeCommands', () => {
     expect(existsSync(join(dir, 'note.md'))).toBe(true);
     expect(res.written).toBe(1);
   });
+
+  it('skips ARCHIVED rows and prunes their stale files (WI-4840 D-004)', () => {
+    writeClaudeCommands(dir, [full, bare]);
+    expect(existsSync(join(dir, 'ship-it.md'))).toBe(true);
+    // The row is still listed (archive is a soft delete) but must stop
+    // materializing — and its previously-written file must be pruned.
+    const res = writeClaudeCommands(dir, [
+      { ...full, archivedAt: '2026-07-14T00:00:00Z' },
+      bare,
+    ]);
+    expect(res.written).toBe(1);
+    expect(res.skipped).toBe(1);
+    expect(existsSync(join(dir, 'ship-it.md'))).toBe(false);
+    // Unarchive (archivedAt back to null) re-materializes it.
+    const back = writeClaudeCommands(dir, [{ ...full, archivedAt: null }, bare]);
+    expect(back.written).toBe(2);
+    expect(existsSync(join(dir, 'ship-it.md'))).toBe(true);
+  });
 });
 
 describe('writeCodexPrompts', () => {

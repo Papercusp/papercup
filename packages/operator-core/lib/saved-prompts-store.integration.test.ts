@@ -16,6 +16,10 @@ import {
   listSavedPrompts,
   upsertSavedPrompt,
   removeSavedPrompt,
+  createPromptNode,
+  updatePromptNodeById,
+  archivePromptSubtree,
+  unarchivePromptNodes,
 } from './saved-prompts-store';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
@@ -128,5 +132,97 @@ describe('saved_prompts store (real PG)', () => {
     // removing a non-existent name returns false
     expect(await removeSavedPrompt(db.adminSql, ws, { kind: 'workspace' }, 'a-first')).toBe(false);
     expect(await listSavedPrompts(db.adminSql, ws, { kind: 'workspace' })).toHaveLength(1);
+  });
+
+  // ------------------------------------------------------------------------
+  // Workflowy-clone verbs (WI-4840, migration 606): complete + archive/undo.
+  // ------------------------------------------------------------------------
+
+  it('completed patch stamps completed_at, keeps it on re-complete, clears on false', async () => {
+    const ws = 'ws-sp-complete';
+    const node = await createPromptNode(db.adminSql, {
+      workspaceId: ws,
+      scope: { kind: 'workspace' },
+      title: 'Check me off',
+      body: 'do the thing',
+    });
+    expect(node.completedAt).toBeNull();
+
+    const done = await updatePromptNodeById(db.adminSql, ws, node.id, { completed: true });
+    expect(done?.completedAt).not.toBeNull();
+
+    // Re-completing keeps the ORIGINAL timestamp (COALESCE semantics).
+    const again = await updatePromptNodeById(db.adminSql, ws, node.id, { completed: true });
+    expect(again?.completedAt).toBe(done?.completedAt);
+
+    // An unrelated patch leaves the checkoff alone.
+    const renamed = await updatePromptNodeById(db.adminSql, ws, node.id, { title: 'Renamed' });
+    expect(renamed?.completedAt).toBe(done?.completedAt);
+
+    const undone = await updatePromptNodeById(db.adminSql, ws, node.id, { completed: false });
+    expect(undone?.completedAt).toBeNull();
+  });
+
+  it('archivePromptSubtree stamps the whole subtree once and unarchive restores it', async () => {
+    const ws = 'ws-sp-archive';
+    const root = await createPromptNode(db.adminSql, {
+      workspaceId: ws,
+      scope: { kind: 'workspace' },
+      title: 'Parent',
+      body: '',
+    });
+    const kid = await createPromptNode(db.adminSql, {
+      workspaceId: ws,
+      scope: { kind: 'workspace' },
+      title: 'Kid',
+      body: 'kid body',
+      parentId: root.id,
+    });
+    const grandkid = await createPromptNode(db.adminSql, {
+      workspaceId: ws,
+      scope: { kind: 'workspace' },
+      title: 'Grandkid',
+      body: '',
+      parentId: kid.id,
+    });
+    const bystander = await createPromptNode(db.adminSql, {
+      workspaceId: ws,
+      scope: { kind: 'workspace' },
+      title: 'Bystander',
+      body: 'stays',
+    });
+
+    const archived = await archivePromptSubtree(db.adminSql, ws, root.id);
+    expect(archived.sort()).toEqual([root.id, kid.id, grandkid.id].sort());
+
+    const rows = await listSavedPrompts(db.adminSql, ws, { kind: 'workspace' });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get(root.id)?.archivedAt).not.toBeNull();
+    expect(byId.get(grandkid.id)?.archivedAt).not.toBeNull();
+    expect(byId.get(bystander.id)?.archivedAt).toBeNull();
+
+    // Idempotent: a second archive stamps nothing new (undo sets stay precise).
+    expect(await archivePromptSubtree(db.adminSql, ws, root.id)).toEqual([]);
+
+    // Undo restores exactly the archived set.
+    expect(await unarchivePromptNodes(db.adminSql, ws, archived)).toBe(3);
+    const restored = await listSavedPrompts(db.adminSql, ws, { kind: 'workspace' });
+    expect(restored.every((r) => r.archivedAt === null)).toBe(true);
+    // A second undo is a no-op.
+    expect(await unarchivePromptNodes(db.adminSql, ws, archived)).toBe(0);
+    expect(await unarchivePromptNodes(db.adminSql, ws, [])).toBe(0);
+  });
+
+  it('archive is workspace-scoped — a foreign workspace id archives nothing', async () => {
+    const ws = 'ws-sp-archive-iso';
+    const node = await createPromptNode(db.adminSql, {
+      workspaceId: ws,
+      scope: { kind: 'workspace' },
+      title: 'Mine',
+      body: 'x',
+    });
+    expect(await archivePromptSubtree(db.adminSql, 'ws-sp-other', node.id)).toEqual([]);
+    const rows = await listSavedPrompts(db.adminSql, ws, { kind: 'workspace' });
+    expect(rows.find((r) => r.id === node.id)?.archivedAt).toBeNull();
   });
 });

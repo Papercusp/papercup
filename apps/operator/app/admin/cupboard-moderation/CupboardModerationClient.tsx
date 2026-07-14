@@ -18,8 +18,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { toast } from 'sonner';
-import { Flag, ExternalLink, RefreshCw, Shield } from 'lucide-react';
+import { Flag, ExternalLink, RefreshCw, Shield, PackageOpen } from 'lucide-react';
 import { useLexicon } from '@/lib/useLexicon';
+import { appPlatformFamilies } from '../../cupboard/app-download';
 
 const STATUS_FILTERS = ['pending', 'resolved_unlist', 'resolved_dismiss', 'all'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
@@ -75,14 +76,30 @@ interface PendingRow {
   github_url: string;
   publisher_github_login: string;
   created_at: number;
+  // app-kind provenance (cupboard-app-distribution-2026-07-14 P-006). An `app`
+  // distributes a RUNNABLE INSTALLER — the highest-trust listing kind — so the
+  // moderator must review WHERE the binary comes from (the release repo + the
+  // signed latest.json), not only the source repo. The worker's `/admin/pending`
+  // returns the raw row (SELECT *), so these ride along for app rows and are
+  // absent/null on every other kind.
+  delivery_type?: string | null;
+  release_repo?: string | null;
+  latest_json_url?: string | null;
+  platforms?: string | null;
 }
 
 /**
- * Pre-publication review queue (learning-packs-2026-06-11 P-020, D-007):
- * policy-kind listings (knowledge-pack, blueprint) awaiting an operator
- * decision. Only allowlisted operators reach this — the worker 403s everyone
- * else. Review the CONTENT (the repo link carries the pack/blueprint files)
- * before approving: these listings are instructions injected into agents.
+ * Pre-publication review queue (learning-packs-2026-06-11 P-020, D-007;
+ * app kind added by cupboard-app-distribution-2026-07-14 P-006): policy-kind
+ * listings (knowledge-pack, blueprint, app) awaiting an operator decision. Only
+ * allowlisted operators reach this — the worker 403s everyone else.
+ *
+ * Review the right thing before approving:
+ *   - knowledge-pack / blueprint carry INSTRUCTIONS injected into agents — read
+ *     the repo content.
+ *   - an `app` carries a RUNNABLE INSTALLER (highest trust) — verify the release
+ *     provenance (release repo + the signed latest.json) that the app-trust block
+ *     surfaces, connecting the moderator authority of P-012 to executables.
  */
 function PendingReviewQueue() {
   const [pending, setPending] = useState<PendingRow[]>([]);
@@ -171,6 +188,14 @@ function PendingReviewQueue() {
         <div className="pc-cbmod__list" style={{ flex: 'none' }}>
           {pending.map((p) => {
             const repoUrl = safeHttpUrl(p.github_url);
+            const isApp = p.listing_kind === 'app';
+            // An app's trust surface is its RELEASE, not its source repo: the
+            // signed latest.json + the release repo the installers come from.
+            const releaseReleasesUrl = isApp && p.release_repo
+              ? safeHttpUrl(`https://github.com/${p.release_repo}/releases`)
+              : null;
+            const latestJsonUrl = isApp ? safeHttpUrl(p.latest_json_url ?? null) : null;
+            const appFamilies = isApp ? appPlatformFamilies(p.platforms) : [];
             return (
               <div key={p.id} className="pc-cbmod__card" data-testid="pending-review-card">
                 <div className="pc-cbmod__cardhead">
@@ -179,14 +204,64 @@ function PendingReviewQueue() {
                   {p.listing_ref && <code style={{ fontSize: 11 }}>{p.listing_ref}</code>}
                   {repoUrl && (
                     <a className="pc-cbmod__gh" href={repoUrl} target="_blank" rel="noreferrer">
-                      <ExternalLink size={12} aria-hidden /> review the content
+                      <ExternalLink size={12} aria-hidden /> {isApp ? 'source repo' : 'review the content'}
                     </a>
                   )}
                 </div>
                 {p.description && <div className="pc-cbmod__reason">{p.description}</div>}
+                {isApp && (
+                  // The executable-provenance block (P-006 → P-012): what a
+                  // moderator vouches for when they approve a runnable installer.
+                  <div className="pc-cbmod__apptrust" data-testid="pending-review-app-trust">
+                    <div className="pc-cbmod__apptrust-warn">
+                      <PackageOpen size={12} aria-hidden /> Runnable installer — the highest-trust kind. Verify the
+                      release provenance below before approving.
+                    </div>
+                    <div className="pc-cbmod__apptrust-row">
+                      <span className="pc-cbmod__apptrust-k">Delivery</span>
+                      <code>{p.delivery_type ?? 'standalone'}</code>
+                    </div>
+                    {releaseReleasesUrl && (
+                      <div className="pc-cbmod__apptrust-row">
+                        <span className="pc-cbmod__apptrust-k">Release repo</span>
+                        <a
+                          className="pc-cbmod__gh"
+                          href={releaseReleasesUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          data-testid="pending-review-app-release"
+                        >
+                          <ExternalLink size={12} aria-hidden /> {p.release_repo} releases
+                        </a>
+                      </div>
+                    )}
+                    {latestJsonUrl && (
+                      <div className="pc-cbmod__apptrust-row">
+                        <span className="pc-cbmod__apptrust-k">Update manifest</span>
+                        <a
+                          className="pc-cbmod__gh"
+                          href={latestJsonUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          data-testid="pending-review-app-manifest"
+                        >
+                          <ExternalLink size={12} aria-hidden /> signed latest.json
+                        </a>
+                      </div>
+                    )}
+                    {appFamilies.length > 0 && (
+                      <div className="pc-cbmod__apptrust-row">
+                        <span className="pc-cbmod__apptrust-k">Platforms</span>
+                        <span>{appFamilies.join(', ')}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="pc-cbmod__meta">
-                  submitted by <strong>@{p.publisher_github_login}</strong> · {fmtTime(p.created_at)} · this kind
-                  is injected into agents — read it before approving
+                  submitted by <strong>@{p.publisher_github_login}</strong> · {fmtTime(p.created_at)} ·{' '}
+                  {isApp
+                    ? 'a runnable installer — verify its release provenance before approving'
+                    : 'this kind is injected into agents — read it before approving'}
                 </div>
                 <div className="pc-cbmod__resolve">
                   <input
@@ -440,6 +515,10 @@ export default function CupboardModerationClient() {
         .pc-cbmod__btn--unlist:hover:not(:disabled) { background: color-mix(in oklab, #f87171, transparent 75%); }
         .pc-cbmod__btn--approve { background: color-mix(in oklab, #22c55e, transparent 86%); color: #22c55e; border-color: color-mix(in oklab, #22c55e, transparent 55%); }
         .pc-cbmod__btn--approve:hover:not(:disabled) { background: color-mix(in oklab, #22c55e, transparent 75%); }
+        .pc-cbmod__apptrust { margin: 8px 0 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid color-mix(in oklab, #f59e0b, transparent 62%); background: color-mix(in oklab, #f59e0b, transparent 92%); display: grid; gap: 5px; }
+        .pc-cbmod__apptrust-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; color: #f59e0b; }
+        .pc-cbmod__apptrust-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg, #e7f7ff); flex-wrap: wrap; }
+        .pc-cbmod__apptrust-k { min-width: 92px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); }
         .pc-cbmod__pendingwrap { margin-bottom: 18px; }
         .pc-cbmod__count { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: color-mix(in oklab, #f59e0b, transparent 84%); color: #f59e0b; }
       `}</style>
