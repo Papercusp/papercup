@@ -15,10 +15,10 @@
  * Two independent liveness sources:
  *   1. the rollup's own CRITICAL panels (dead routines, queen dark, accounts
  *      starved, any panel self-reporting `crit`); and
- *   2. a STALE health snapshot — if `runSystemHealthTick` has not refreshed
- *      `lastSystemHealth` within the freshness window, the bg tick itself has
- *      stalled, i.e. the routine engine is frozen. This is the signal that needs
- *      NO live engine to detect a dead engine.
+ *   2. a STALE shared DBOS `routinesTick` watermark — this is the authoritative
+ *      cross-process heartbeat for the separate bg host. The request worker's
+ *      `lastSystemHealth` cache is process-local and therefore cannot prove bg-host
+ *      liveness (WI-4773). This signal needs NO live engine to detect a dead engine.
  *
  * Transition-only + per-signal debounced so it never spams; env-killable
  * (PAPERCUSP_INFRA_LIVENESS_ALARM=0). The watcher does not live in what it watches.
@@ -74,6 +74,10 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { currentLoopLag } from '../event-loop-lag-monitor';
+import {
+  readRoutineEngineLiveness as readSharedRoutineEngineLiveness,
+  type RoutineEngineLiveness,
+} from '../release/routine-engine-liveness';
 
 export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:infra-liveness-alarm',
@@ -551,6 +555,14 @@ const lastPostmasterStartMs = new Map<string, number>();
 export interface AlarmDeps {
   computeHealth?: (ws: string) => Promise<SystemHealth>;
   readLast?: (ws: string) => SystemHealth | null;
+  /**
+   * WI-4773: authoritative CROSS-PROCESS bg-host heartbeat. The request worker's
+   * `lastSystemHealth` cache is process-local, so its age cannot prove whether the
+   * separate bg-host ticker is alive. Production reads the shared DBOS
+   * `routinesTick` watermark; tests that inject `readLast` retain the legacy cache
+   * seam unless they explicitly inject this reader too.
+   */
+  readRoutineEngineLiveness?: (nowMs: number) => Promise<RoutineEngineLiveness>;
   escalate?: (input: {
     severity: EscalationSeverity;
     summary: string;
@@ -598,6 +610,18 @@ export interface AlarmDeps {
    *  expected-predicate can extend the same reader). Fail-soft → []: a read
    *  failure must never crash the request worker nor synthesize a false alarm. */
   readAutoloopFireRows?: (ws: string) => Promise<AutoloopFireRow[]>;
+}
+
+async function defaultReadRoutineEngineLiveness(nowMs: number): Promise<RoutineEngineLiveness> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    return await readSharedRoutineEngineLiveness(getOrgPg().sql, {
+      staleMs: DEFAULT_SNAPSHOT_STALE_MS,
+      nowMs,
+    });
+  } catch {
+    return { stale: false, unknown: true, lastTickMs: null, staleMs: null };
+  }
 }
 
 /**
@@ -733,9 +757,30 @@ export async function runLivenessAlarmTick(
   const pageResolved = deps.pageResolved ?? (async () => {});
 
   const cached = readLast(ws);
-  const snapshotAgeMs = cached ? now - cached.evaluatedAt : null;
-  const stale = snapshotAgeMs === null || snapshotAgeMs > staleMs;
-  const health = stale ? await compute(ws) : (cached as SystemHealth);
+  const localSnapshotAgeMs = cached ? now - cached.evaluatedAt : null;
+  const localSnapshotStale = localSnapshotAgeMs === null || localSnapshotAgeMs > staleMs;
+  const health = localSnapshotStale ? await compute(ws) : (cached as SystemHealth);
+
+  // WI-4773: `lastSystemHealth` is an in-memory Map. In production the periodic
+  // writer runs in papercup-bg-host while this alarm runs in a :3070 request
+  // worker, so the local cache can age forever while the real engine is healthy.
+  // Gate the engine-death signal on the shared DBOS routinesTick watermark. The
+  // unknown case is fail-soft (no fabricated outage), matching probeBgHostTicker.
+  // Existing unit fixtures that inject only the local cache keep their hermetic
+  // legacy behavior; production and the new recurrence tests take this branch.
+  const readRoutineEngine =
+    deps.readRoutineEngineLiveness ?? (deps.readLast === undefined ? defaultReadRoutineEngineLiveness : null);
+  const routineEngine = readRoutineEngine
+    ? await readRoutineEngine(now).catch(
+        () => ({ stale: false, unknown: true, lastTickMs: null, staleMs: null }) as RoutineEngineLiveness,
+      )
+    : null;
+  const snapshotAgeMs = routineEngine
+    ? routineEngine.unknown || !routineEngine.stale
+      ? null
+      : (routineEngine.staleMs ?? staleMs + 1)
+    : localSnapshotAgeMs;
+  const lastSuccessfulTickMs = routineEngine?.lastTickMs ?? cached?.evaluatedAt ?? null;
 
   // P-008: the PG-restart drift baseline. Read the previous postmaster-start value,
   // evaluate against it, then advance it to the current reading — but ONLY when PG
@@ -758,7 +803,7 @@ export async function runLivenessAlarmTick(
     prevPostmasterStartMs,
     autoloopFireRows,
     ...(snapshotAgeMs !== null && snapshotAgeMs > staleMs
-      ? { stallDiagnosis: diagnoseHealthTickStall(health, snapshotAgeMs, now, cached?.evaluatedAt ?? null) }
+      ? { stallDiagnosis: diagnoseHealthTickStall(health, snapshotAgeMs, now, lastSuccessfulTickMs) }
       : {}),
   });
   const currentSigs = new Set(signals.map((s) => s.key));

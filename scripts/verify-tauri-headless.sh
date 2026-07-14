@@ -88,6 +88,8 @@
 #   VERIFY_TAURI_SKIP_GL_CHECK  1 = skip the VirtualGL real-GPU sanity check
 #                                (screenshots will be blank white — DOM/eval
 #                                via the bridge still work; agent-e2e.mdx §15.4)
+#   VERIFY_TAURI_PORT_LOCK_DIR  advisory-lock directory for concurrent verifier
+#                               launches (default: $TMPDIR/papercusp-tauri-port-locks)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -114,25 +116,41 @@ fi
 
 # Ports are DERIVED FROM THE DISPLAY, not picked independently (WI-4342).
 # fed_pick_free_port only proves a port is free RIGHT NOW, but our sidecar binds
-# it minutes later (cargo/tauri boot) — so two concurrent runs both saw 33700
-# free, both picked it, and the loser's hono-host died with EADDRINUSE and its
-# webview silently loaded the PEER's operator on 33700. The DISPLAY, by
-# contrast, is a real OS-level reservation taken within ~1s of the pick (Xvfb
-# binds :N immediately below), so keying the port range off DISPLAY_NUM makes
-# concurrent runs disjoint BY CONSTRUCTION. fed_pick_free_port still runs from
-# that base as a second line of defence (e.g. a stale process squatting).
+# it minutes later (cargo/tauri boot). The advisory lock closes the same-host
+# ss-probe → bind gap between concurrent verifier launchers; flock releases it
+# automatically if a launcher dies. The DISPLAY-derived range still keeps
+# normal concurrent runs disjoint, while the lock covers the forced-display /
+# same-range case. fed_pick_free_port remains the second line of defence for a
+# non-verifier process already squatting on a candidate port.
 PORT_BASE=$(( 33700 + (DISPLAY_NUM - 90) * 10 ))
 [ "$PORT_BASE" -ge 33700 ] || PORT_BASE=33700   # a caller-forced low DISPLAY_NUM must not underflow into real ports
-DEV_PORT="$(fed_pick_free_port "$PORT_BASE")"
-PTY_PORT="$(fed_pick_free_port $((DEV_PORT + 4)))"
+PORT_LOCK_DIR="${VERIFY_TAURI_PORT_LOCK_DIR:-${TMPDIR:-/tmp}/papercusp-tauri-port-locks}"
+PORT_LOCK_ATTEMPTS=0
+while :; do
+  DEV_PORT="$(fed_pick_free_port "$PORT_BASE")"
+  PTY_PORT="$(fed_pick_free_port $((DEV_PORT + 4)))"
+  if [ "$DEV_PORT" != "$PTY_PORT" ] \
+    && fed_acquire_port_lock "$DEV_PORT" "$PORT_LOCK_DIR" \
+    && fed_acquire_port_lock "$PTY_PORT" "$PORT_LOCK_DIR"; then
+    break
+  fi
+  fed_release_port_locks
+  PORT_BASE=$((DEV_PORT + 1))
+  PORT_LOCK_ATTEMPTS=$((PORT_LOCK_ATTEMPTS + 1))
+  [ "$PORT_LOCK_ATTEMPTS" -lt 100 ] || {
+    echo "FATAL: could not reserve a verifier port pair after $PORT_LOCK_ATTEMPTS attempts" >&2
+    exit 1
+  }
+done
 
 log "display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT work=$WORK"
 
 # ── teardown (always runs; scoped to exactly what THIS invocation started) ──
-XVFB_PID="" OPENBOX_PID="" TAURI_PID=""
+XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID=""
 write_stop_script() {
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
+[ -n "$PORT_LOCK_KEEPER_PID" ] && kill "$PORT_LOCK_KEEPER_PID" 2>/dev/null
 [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
 [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
 [ -n "$XVFB_PID" ] && kill -9 $XVFB_PID 2>/dev/null
@@ -146,6 +164,7 @@ teardown() {
   log "tearing down (exit=$ec)"
   write_stop_script
   "$WORK/stop.sh" >/dev/null 2>&1 || true
+  fed_release_port_locks
   exit "$ec"
 }
 
@@ -345,6 +364,12 @@ WARN
 tauri-agent-tools probe --pid "$VERIFY_TAURI_PID" 2>&1 | sed 's/^/[probe] /' >&2 || true
 
 if [ "${1:-}" = "--boot-only" ]; then
+  # The parent exits after printing the source-able environment, so keep the
+  # advisory port locks alive in a tiny child for the interactive session.
+  # It exits automatically when the owned Tauri wrapper dies; the printed stop
+  # script also kills it explicitly during normal cleanup.
+  ( while kill -0 "$TAURI_PID" 2>/dev/null; do sleep 2; done ) &
+  PORT_LOCK_KEEPER_PID=$!
   trap - EXIT INT TERM   # caller owns teardown from here
   write_stop_script
   cat <<EOF

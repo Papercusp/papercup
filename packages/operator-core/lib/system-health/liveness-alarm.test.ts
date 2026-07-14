@@ -378,6 +378,52 @@ describe('runLivenessAlarmTick (debounced, transition-only)', () => {
     expect(escalate.calls.length).toBe(4);
   });
 
+  it('WI-4773: a stale request-worker cache does not page while the shared bg-host heartbeat is fresh', async () => {
+    const stale = mkHealth({ evaluatedAt: 0 });
+    const fresh = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const now = 100 * 60_000;
+    const r = await runLivenessAlarmTick('ws', {
+      readLast: () => stale,
+      computeHealth: async () => fresh,
+      readRoutineEngineLiveness: async () => ({
+        stale: false,
+        unknown: false,
+        lastTickMs: now - 19_000,
+        staleMs: 19_000,
+      }),
+      escalate: async () => {},
+      listOpen: async () => [],
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+    });
+
+    expect(r.signals.map((s) => s.key)).not.toContain('health-tick-stale');
+    expect(r.fired).toEqual([]);
+  });
+
+  it('WI-4773: a stale shared bg-host heartbeat pages even when the request-worker cache is fresh', async () => {
+    const now = 100 * 60_000;
+    const fresh = mkHealth({ evaluatedAt: now - 30_000 });
+    const r = await runLivenessAlarmTick('ws', {
+      readLast: () => fresh,
+      computeHealth: async () => fresh,
+      readRoutineEngineLiveness: async () => ({
+        stale: true,
+        unknown: false,
+        lastTickMs: now - 10 * 60_000,
+        staleMs: 10 * 60_000,
+      }),
+      escalate: async () => {},
+      listOpen: async () => [],
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+    });
+
+    const signal = r.signals.find((s) => s.key === 'health-tick-stale');
+    expect(signal?.severity).toBe('blocker');
+    expect(signal?.diagnosis?.lastSnapshotAtMs).toBe(now - 10 * 60_000);
+  });
+
   it('a fresh cache is used as-is (no recompute) and a healthy system fires nothing', async () => {
     let computed = 0;
     const fresh = mkHealth({ evaluatedAt: 100 * 60_000 });
