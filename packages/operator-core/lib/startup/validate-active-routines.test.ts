@@ -88,6 +88,33 @@ describe('validateActiveRoutines', () => {
     consoleSpy.mockRestore();
   });
 
+  it('accepts reserved singleton and workspace hosts without registry lookups', async () => {
+    const mockWs = 'papercusp-workspace';
+    const mockRoutines = [
+      {
+        install_slug: '@singleton',
+        name: 'bp-singleton-scout-0',
+        workspace_id: mockWs,
+      },
+      {
+        install_slug: mockWs,
+        name: 'workspace-learning-pulse',
+        workspace_id: mockWs,
+      },
+    ];
+
+    const mockSql = vi.fn().mockResolvedValue(mockRoutines);
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
+
+    const result = await validateActiveRoutines();
+
+    expect(result.ok).toBe(true);
+    expect(result.activeRoutineCount).toBe(2);
+    expect(result.problematicRoutines).toHaveLength(0);
+    expect(harnessCore.resolveProject).not.toHaveBeenCalled();
+  });
+
   it('should handle empty routine list', async () => {
     const mockWs = 'papercusp-workspace';
     const mockSql = vi.fn().mockResolvedValue([]);

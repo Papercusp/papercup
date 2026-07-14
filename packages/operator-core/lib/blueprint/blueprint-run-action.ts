@@ -41,6 +41,7 @@ import { getEffectiveBlueprint } from './project-to-pg';
 import { resolveLaunchBlueprint, buildLaunchSpawnRequest } from './launch-blueprint';
 import { operatorApiBase } from '../operator-api-base';
 import { readHarnessRegistryFor } from '../device-harnesses';
+import { isReservedHarnesslessRoutineHost } from '../harness/routines/routine-host';
 import '../coord-ops/index'; // register coord ops (program-mode spine steps)
 import '../blueprint-steps/index'; // register deterministic step-ops (P-010)
 import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner';
@@ -85,8 +86,7 @@ export function setOrphanRoutineSeams(seams: {
  *     be mistaken for "every harness was deleted" → mass-disarm).
  */
 async function installIsGone(workspaceId: string, installSlug: string): Promise<boolean> {
-  if (installSlug.startsWith('@')) return false; // reserved harness-less host
-  if (installSlug === workspaceId) return false; // reserved workspace-scoped harness-less host
+  if (isReservedHarnesslessRoutineHost(installSlug, workspaceId)) return false;
   try {
     const projects = await readHarnessRegistryFor(workspaceId);
     if (projects.length === 0) return false; // registry empty/unreadable — don't risk a false disarm

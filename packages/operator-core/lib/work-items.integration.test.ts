@@ -521,6 +521,52 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
   });
 });
 
+describe('WI-4119 — followBlockers derived subscriptions', () => {
+  it('follows blockers added before or after subscribe, removes the derived edge on unlink, and preserves a direct follow', async () => {
+    const blocker = await wi.createWorkItem({ kind: 'bug', title: 'blocker', harness: 'papercup', createdBy: 'agA' });
+    const dependent = await wi.createWorkItem({ kind: 'bug', title: 'dependent', harness: 'papercup', createdBy: 'agA' });
+    const dependentRef = { kind: 'issue', ref: dependent.id } as const;
+    const blockerRef = { kind: 'issue', ref: blocker.id } as const;
+
+    await wi.linkWorkItem(blocker.id, dependentRef, 'blocks', { by: 'agA' });
+    expect(await wi.subscribeWorkItem('watcher', dependent.id, 'digest', { followBlockers: true })).toEqual({ ok: true });
+    const afterSubscribe = await subscriptions.listSubscriptions('watcher');
+    expect(afterSubscribe.find((row) => row.target_ref === `issue:${blocker.id}`)).toMatchObject({
+      follow_blockers: false,
+      derived_from: dependentRef,
+      delivery_mode: 'digest',
+    });
+
+    await wi.subscribeWorkItem('watcher', blocker.id);
+    await wi.unlinkWorkItem(blocker.id, dependentRef, 'blocks');
+    const afterUnlink = await subscriptions.listSubscriptions('watcher');
+    expect(afterUnlink.find((row) => row.target_ref === `issue:${blocker.id}`)).toMatchObject({
+      follow_blockers: false,
+      derived_from: null,
+    });
+
+    await wi.subscribeWorkItem('watcher-2', dependent.id, 'full', { followBlockers: true });
+    await wi.linkWorkItem(blocker.id, dependentRef, 'blocks', { by: 'agA' });
+    expect((await subscriptions.listSubscriptions('watcher-2')).find((row) => row.target_ref === `issue:${blocker.id}`)).toMatchObject({
+      derived_from: dependentRef,
+    });
+  });
+
+  it('removes all generated follows when the blocker settles', async () => {
+    const blocker = await wi.createWorkItem({ kind: 'bug', title: 'settling blocker', harness: 'papercup', createdBy: 'agA' });
+    const dependent = await wi.createWorkItem({ kind: 'bug', title: 'dependent', harness: 'papercup', createdBy: 'agA' });
+    const dependentRef = { kind: 'issue', ref: dependent.id } as const;
+    await wi.linkWorkItem(blocker.id, dependentRef, 'blocks', { by: 'agA' });
+    await wi.subscribeWorkItem('watcher', dependent.id, 'full', { followBlockers: true });
+    expect((await subscriptions.listSubscriptions('watcher')).some((row) => row.derived_from)).toBe(true);
+
+    await wi.setWorkItemState(blocker.id, 'resolved', { by: 'agA', completionRef: 'WI-4119 test' });
+    await vi.waitFor(async () => {
+      expect((await subscriptions.listSubscriptions('watcher')).some((row) => row.derived_from)).toBe(false);
+    });
+  });
+});
+
 // C4 [P2] — observe/claim consistency (work-items.ts:862 observeWorkItem reports {available,claimedBy}).
 // The single-item observe must stay coherent with the atomic claim across a full take→contend→
 // release→re-take cycle: exactly one holder at a time, observe always reflecting the live holder.

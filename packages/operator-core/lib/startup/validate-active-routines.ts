@@ -24,6 +24,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveProject } from '../harness-core';
+import { isReservedHarnesslessRoutineHost } from '../harness/routines/routine-host';
 import { activeWorkspaceId } from '../workspace-registry';
 
 export interface RoutineValidationResult {
@@ -34,7 +35,9 @@ export interface RoutineValidationResult {
 }
 
 /**
- * Scan all ACTIVE routines and verify each one's install_slug resolves to a registered project.
+ * Scan all ACTIVE routines and verify every harness-owned install_slug resolves to a registered
+ * project. Reserved synthetic/workspace hosts are intentionally harness-less and follow their
+ * system-action fire paths instead.
  * Returns violations in `problematicRoutines` array.
  * 
  * This is PURE-read and non-blocking: it reports what's wrong, never modifies state.
@@ -68,6 +71,8 @@ export async function validateActiveRoutines(workspaceId?: string): Promise<Rout
       continue;
     }
 
+    if (isReservedHarnesslessRoutineHost(slug, routineWs)) continue;
+
     const proj = await resolveProject(slug, routineWs);
     if (!proj) {
       unregisteredHarnesses.add(slug);
@@ -82,7 +87,7 @@ export async function validateActiveRoutines(workspaceId?: string): Promise<Rout
     console.error(
       `[routine-validation] FATAL: ${problematicRoutines.length} active routine(s) target ` +
       `unregistered harness(es): ${Array.from(unregisteredHarnesses).join(', ')}. ` +
-      `Fire-paths will 404 and go dark. Details: ` +
+      `Their fire paths may go dark or act on orphaned state. Details: ` +
       JSON.stringify(problematicRoutines),
     );
   }
