@@ -10,6 +10,7 @@ import net from 'node:net';
 import {
   findLiveHost,
   hostSupports,
+  mcpReconnectViaPty,
   injectIntoHost,
   interruptViaPty,
   recolorViaPty,
@@ -369,5 +370,56 @@ describe('hostSupports (WI-1804 rollout gate)', () => {
   it('is true only when caps advertises the capability', () => {
     expect(hostSupports(hostWith(['compact']), 'compact')).toBe(true);
     expect(hostSupports(hostWith(['osc', 'compact']), 'compact')).toBe(true);
+  });
+});
+
+describe('mcpReconnectViaPty (mcp-transport-resilience P-004 — the in-place /mcp heal envelope)', () => {
+  // Reads the REAL PSU_PTY_DIR (no dir param) — set up a live host there under a
+  // throwaway ownerId, then clean up. Mirrors recolorViaPty/interruptViaPty.
+  it("routes by host capability: 'no-host' / 'no-cap' / 'sent' (+ envelope shape)", async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-mcpheal-test-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`);
+    const meta = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.json`);
+    const recv: string[] = [];
+    const server = net.createServer((conn) => {
+      const chunks: Buffer[] = [];
+      conn.on('data', (d) => chunks.push(d));
+      conn.on('end', () => recv.push(Buffer.concat(chunks).toString('utf8')));
+    });
+    await new Promise<void>((r) => server.listen(sock, r));
+    const writeMeta = (caps: string[] | undefined) =>
+      writeFileSync(
+        meta,
+        JSON.stringify({
+          ownerId,
+          advSessionId: null,
+          pid: process.pid,
+          ptyPid: process.pid,
+          sock,
+          command: 'claude-su',
+          startedAt: 1,
+          ...(caps ? { caps } : {}),
+        }),
+      );
+    cleanups.push(() => {
+      server.close();
+      for (const p of [sock, meta]) if (existsSync(p)) unlinkSync(p);
+    });
+
+    // no live host at all → 'no-host' (watchdog falls back to notify)
+    expect(await mcpReconnectViaPty('su-no-such-owner-mcpheal', 'papercusp-su', ID_OK)).toBe('no-host');
+    // an OLD host (no caps / caps without the macro) → 'no-cap'
+    writeMeta(undefined);
+    expect(await mcpReconnectViaPty(ownerId, 'papercusp-su', ID_OK)).toBe('no-cap');
+    writeMeta(['compact']);
+    expect(await mcpReconnectViaPty(ownerId, 'papercusp-su', ID_OK)).toBe('no-cap');
+    // a macro-capable host → 'sent', with the v1 envelope carrying the server name
+    writeMeta(['compact', 'mcp-reconnect']);
+    expect(await mcpReconnectViaPty(ownerId, 'papercusp-su', ID_OK)).toBe('sent');
+
+    await new Promise((r) => setTimeout(r, 100));
+    expect(recv.length).toBe(1);
+    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'mcp-reconnect', data: 'papercusp-su' });
   });
 });
