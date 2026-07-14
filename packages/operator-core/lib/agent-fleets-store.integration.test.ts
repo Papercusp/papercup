@@ -229,13 +229,15 @@ describe('fleet headcount target (WI-2479)', () => {
   it('resets on success and doubles a failed retry delay with a cap', async () => {
     await insertFleet('headcount-backoff');
     await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-backoff', target: 2, config, sql: rootSql });
+    const readBackoffTarget = async () =>
+      (await listFleetHeadcountTargets(WS, rootSql)).find((target) => target.fleetSlug === 'headcount-backoff');
     await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', now: 9_000_000, sql: rootSql });
     await recordFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', succeeded: false, error: 'spawn failed', now: 9_100_000, sql: rootSql });
-    expect((await listFleetHeadcountTargets(WS, rootSql))[0]).toMatchObject({ backoffMs: 60_000, lastError: 'spawn failed' });
+    expect(await readBackoffTarget()).toMatchObject({ backoffMs: 60_000, lastError: 'spawn failed' });
     await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', now: 9_200_000, sql: rootSql });
     await recordFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', succeeded: false, error: 'spawn failed again', now: 9_300_000, sql: rootSql });
-    expect((await listFleetHeadcountTargets(WS, rootSql))[0]).toMatchObject({ backoffMs: 120_000, lastError: 'spawn failed again' });
+    expect(await readBackoffTarget()).toMatchObject({ backoffMs: 120_000, lastError: 'spawn failed again' });
     await recordFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', succeeded: true, now: 9_500_000, sql: rootSql });
-    expect((await listFleetHeadcountTargets(WS, rootSql))[0]).toMatchObject({ backoffMs: 0, nextAttemptAt: null, lastError: null });
+    expect(await readBackoffTarget()).toMatchObject({ backoffMs: 0, nextAttemptAt: null, lastError: null });
   });
 });
