@@ -798,7 +798,7 @@ export async function runLivenessAlarmTick(
   const readAutoloopFireRows = deps.readAutoloopFireRows ?? defaultReadAutoloopFireRows;
   const autoloopFireRows = await readAutoloopFireRows(ws).catch(() => [] as AutoloopFireRow[]);
 
-  const signals = evaluateLivenessAlarm(health, snapshotAgeMs, {
+  let signals = evaluateLivenessAlarm(health, snapshotAgeMs, {
     snapshotStaleMs: staleMs,
     prevPostmasterStartMs,
     autoloopFireRows,
@@ -806,7 +806,7 @@ export async function runLivenessAlarmTick(
       ? { stallDiagnosis: diagnoseHealthTickStall(health, snapshotAgeMs, now, lastSuccessfulTickMs) }
       : {}),
   });
-  const currentSigs = new Set(signals.map((s) => s.key));
+  let currentSigs = new Set(signals.map((s) => s.key));
 
   const curPostmasterStartMs = health.panels.infra?.data?.pg?.postmasterStartMs ?? null;
   if (curPostmasterStartMs !== null) writeBaseline(ws, curPostmasterStartMs);
@@ -826,6 +826,28 @@ export async function runLivenessAlarmTick(
     }
   } catch {
     openBySig = new Map();
+  }
+
+  // WI-4878: if there are open escalations but no newly-firing signals, ensure
+  // we use fresh health data (not a stale cache) when checking for recovery.
+  // A cached snapshot can blind the auto-resolve detector: if the cache was
+  // computed while failures were active, it would keep showing those failures
+  // even after they roll out of the 1h window, so the signal would never stop
+  // firing and recovery would never be detected. Recompute fresh when we have
+  // open escalations that SHOULD be recovering (no signals currently firing for
+  // their signatures).
+  if (openBySig.size > 0 && !localSnapshotStale) {
+    const sigsShouldRecover = Array.from(openBySig.keys()).some((sig) => !currentSigs.has(sig));
+    if (sigsShouldRecover) {
+      // Recompute fresh health snapshot for accurate recovery detection
+      const freshHealth = await compute(ws);
+      signals = evaluateLivenessAlarm(freshHealth, null, {
+        snapshotStaleMs: staleMs,
+        prevPostmasterStartMs,
+        autoloopFireRows,
+      });
+      currentSigs = new Set(signals.map((s) => s.key));
+    }
   }
 
   // 1. Auto-resolve-on-recovery: every open infra-liveness escalation whose
