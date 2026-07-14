@@ -3501,3 +3501,81 @@ test('POST /admin/readmit on a pool without readmit (single-account) → 503, ne
   const body = (await res.json()) as { error?: { message?: string } };
   assert.match(body.error?.message ?? '', /no readmit/, 'explains the pool has no readmit');
 });
+
+// ── MAINTENANCE summarize lane (deterministic-context-carry P-002, ornith-overflow fixes 2–3) ──────
+
+test('POST /maintenance/summarize — omp remote-compaction wire: {systemPrompt,prompt} → {summary} on the maintenance model, tagged maintenance priority', async () => {
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'THE SUMMARY' }, { type: 'text', text: 'PART 2' }] }));
+    },
+    { maintenanceModel: 'maint-model-test', maintenanceMaxTokens: 512 },
+  );
+  const res = await ask('/maintenance/summarize', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ systemPrompt: 'You summarize.', prompt: 'Summarize this conversation.' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { summary?: string; model?: string };
+  assert.equal(body.summary, 'THE SUMMARY\nPART 2', 'text blocks joined — the exact field omp Gm requires');
+  assert.equal(body.model, 'maint-model-test');
+  // The inner call ran on the CHEAP maintenance model — never the caller's own model/backend.
+  const inner = JSON.parse(upstream.last.body) as { model: string; max_tokens: number; system?: string; stream?: boolean };
+  assert.equal(inner.model, 'maint-model-test');
+  assert.equal(inner.max_tokens, 512);
+  assert.equal(inner.system, 'You summarize.');
+  assert.equal(inner.stream, false);
+  // The loopback tagged itself into the maintenance lane (tier 1 under the tier layer).
+  assert.equal(upstream.last.headers['x-papercusp-priority'], 'maintenance');
+  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number } };
+  assert.deepEqual(s.maintenance, { requests: 1, errors: 0 });
+});
+
+test('POST /maintenance/summarize — missing prompt → 400, counted as neither request nor error', async () => {
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const res = await ask('/maintenance/summarize', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ systemPrompt: 'sys only' }),
+  });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error?: { message?: string } };
+  assert.match(body.error?.message ?? '', /prompt/, 'names the missing field');
+  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number } };
+  assert.deepEqual(s.maintenance, { requests: 0, errors: 0 });
+});
+
+test('POST /maintenance/summarize — model-call failure surfaces a structured error (no summary), counted in maintenance.errors', async () => {
+  await boot(
+    (_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'nope' } }));
+    },
+    { maintenanceModel: 'maint-model-test' },
+  );
+  const res = await ask('/maintenance/summarize', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Summarize.' }),
+  });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { summary?: string; error?: { message?: string } };
+  assert.equal(body.summary, undefined, 'a failure NEVER fabricates a summary field');
+  assert.match(body.error?.message ?? '', /model call failed/);
+  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number } };
+  assert.deepEqual(s.maintenance, { requests: 1, errors: 1 });
+});
+
+test('maintenance label rides tier 1 when the tier layer is on (never AIMD-shed, reserved floor)', async () => {
+  const { parsePriorityTierMap, tierOf, defaultTierCaps, tiersOfMap } = await import('@papercusp/papercusp-shared/agent');
+  const map = parsePriorityTierMap(undefined);
+  assert.equal(tierOf('maintenance', map), 1);
+  assert.equal(tierOf('compaction', map), 1);
+  const { caps } = defaultTierCaps(24, tiersOfMap(map));
+  assert.equal(caps[1], 24, 'tier 1 (incl. maintenance) may use the whole pool');
+});

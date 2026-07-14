@@ -881,6 +881,9 @@ export interface GatewayStats {
    *  exactly the case on 2026-07-09, when the running gateway was older than the routes being shipped.
    *  A consumer must treat its absence as "unknown", never as "not clamped". */
   clamp?: { mode: ServiceableClampMode; recommendation: number | null; applied: number; overridden: boolean };
+  /** MAINTENANCE summarize lane (deterministic-context-carry P-002): compaction summaries served /
+   *  failed via POST /maintenance/summarize. Optional for deploy-skew readers of older gateways. */
+  maintenance?: { requests: number; errors: number };
   /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
   failovers: number;
   upstreamErrors: number;
@@ -2083,6 +2086,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           attempts > 0 ? Math.round(((egressFailsByAccount.get(id) ?? 0) / attempts) * 10_000) / 10_000 : 0,
         ]),
       ),
+      maintenance: { requests: maintenanceRequests, errors: maintenanceErrors },
       selfHealReclaims,
       slotReconcileMismatch,
       inFlightTracked: inFlightReg.size,
@@ -4392,6 +4396,85 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (req.method === 'GET' && url === '/admin/owner-pins') {
       sendJson(res, 200, { ok: true, now: Date.now(), pins: [...ownerPinMap.entries()].map(([ownerId, p]) => ({ ownerId, ...p })) });
+      return;
+    }
+    if (req.method === 'POST' && url === MAINTENANCE_SUMMARIZE_PATH) {
+      // MAINTENANCE SUMMARIZE (deterministic-context-carry P-002, ornith-overflow brief fixes 2–3).
+      // Speaks omp's remote-compaction wire: POST {systemPrompt?, prompt} → {summary}. The summary is
+      // generated on a CHEAP HOSTED model via a LOOPBACK /v1/messages call into this gateway's OWN
+      // admission path, tagged `x-papercusp-priority: maintenance` (tier 1: reserved floor, never
+      // AIMD-shed, longest absorb hold) — so a compaction summary NEVER runs on the requesting agent's
+      // own (possibly saturated) backend and CANNOT be starved by fleet worker traffic. Account-pin
+      // headers are deliberately NOT forwarded: a pinned/exhausted account must not gate maintenance —
+      // the pool auto-selects. The loopback uses the REAL server socket (global fetch, not deps.fetchImpl)
+      // so the inner request pays admission like any other; only its upstream leg rides deps.fetchImpl.
+      void readBody(req)
+        .then(async (buf) => {
+          let body: { systemPrompt?: unknown; prompt?: unknown; model?: unknown; maxTokens?: unknown };
+          try {
+            body = JSON.parse(buf.toString('utf8') || '{}') as typeof body;
+          } catch {
+            sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'maintenance/summarize: body must be JSON' }, gateway: true });
+            return;
+          }
+          const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+          if (!prompt.trim()) {
+            sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'maintenance/summarize: string `prompt` required' }, gateway: true });
+            return;
+          }
+          maintenanceRequests++;
+          const model = (typeof body.model === 'string' && body.model.trim()) || maintenanceModel;
+          const requestedMax = Math.floor(Number(body.maxTokens));
+          const maxTokens = Math.min(
+            MAINTENANCE_MAX_TOKENS_CEILING,
+            Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : maintenanceMaxTokens,
+          );
+          const inner: Record<string, unknown> = {
+            model,
+            max_tokens: maxTokens,
+            messages: [{ role: 'user', content: prompt }],
+            stream: false,
+          };
+          if (typeof body.systemPrompt === 'string' && body.systemPrompt.trim()) inner.system = body.systemPrompt;
+          const addr = server.address();
+          const selfPort = typeof addr === 'object' && addr ? addr.port : 0;
+          try {
+            const headers: Record<string, string> = {
+              'content-type': 'application/json',
+              [PRIORITY_HEADER]: MAINTENANCE_PRIORITY_LABEL,
+            };
+            // Owner attribution carries through (ledger/stall-wake), pins do not (see above).
+            const owner = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
+            if (owner) headers[OWNER_HEADER] = owner;
+            const r = await fetch(`http://127.0.0.1:${selfPort}/v1/messages`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(inner),
+              signal: AbortSignal.timeout(maintenanceTimeoutMs),
+            });
+            if (!r.ok) {
+              maintenanceErrors++;
+              const text = await r.text().catch(() => '');
+              sendJson(res, r.status, { type: 'error', error: { type: 'api_error', message: `maintenance/summarize: model call failed (${r.status}): ${text.slice(0, 400)}` }, gateway: true });
+              return;
+            }
+            const j = (await r.json()) as { content?: Array<{ type?: string; text?: string }> };
+            const summary = (j.content ?? [])
+              .filter((c) => c?.type === 'text' && typeof c.text === 'string')
+              .map((c) => c.text)
+              .join('\n');
+            if (!summary) {
+              maintenanceErrors++;
+              sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: 'maintenance/summarize: model returned no text content' }, gateway: true });
+              return;
+            }
+            sendJson(res, 200, { ok: true, summary, model });
+          } catch (e) {
+            maintenanceErrors++;
+            sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `maintenance/summarize: ${(e as Error).message}` }, gateway: true });
+          }
+        })
+        .catch((e) => sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: `maintenance/summarize: ${(e as Error).message}` }, gateway: true }));
       return;
     }
     if (!url.startsWith('/v1/')) {
