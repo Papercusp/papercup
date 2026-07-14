@@ -412,7 +412,7 @@ function NodeTitleInput({
   }, [row.title]);
 
 
-  const { flush } = useDebouncedSave(text, async (v) => {
+  const { flush, cancel } = useDebouncedSave(text, async (v) => {
     const next = v.trim();
     if (!next || next === displayTitle(row)) return;
     onSaveTitle(next);
@@ -468,8 +468,13 @@ function NodeTitleInput({
         !hasChildren
       ) {
         // Workflowy: backspace at the start of a childless bullet merges it
-        // into the bullet above; a truly empty leaf just disappears.
+        // into the bullet above; a truly empty leaf just disappears. The
+        // pending debounced title-save must be DISCARDED, not flushed — the
+        // merge consumes this text into the row above, and a late flush
+        // (timer or unmount) would both write the title onto the archived
+        // node and push a stray undo entry on top of the merge batch.
         e.preventDefault();
+        cancel();
         if (text.length === 0 && isFolder(row)) onDeleteEmpty();
         else onMergeUp(text);
       } else if (e.key === 'Escape') {
@@ -478,6 +483,7 @@ function NodeTitleInput({
     },
     [
       flush,
+      cancel,
       onCreateAfter,
       onMove,
       onNav,

@@ -169,4 +169,36 @@ describe('useDebouncedSave', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(persist).toHaveBeenCalledTimes(1);
   });
+
+  it('cancel() discards the pending edit — neither the timer nor unmount persists it', async () => {
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const { result, rerender, unmount } = renderHook(
+      ({ v }) => useDebouncedSave(v, persist),
+      { initialProps: { v: 'a' } },
+    );
+    rerender({ v: 'b' });
+    act(() => { result.current.cancel(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(persist).not.toHaveBeenCalled();
+    // The unmount flush must also see the edit as discarded (an outline
+    // merge archives the node — a flush here would resurrect the title).
+    unmount();
+    await flushMicrotasks();
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('a new edit after cancel() saves normally', async () => {
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const { result, rerender } = renderHook(
+      ({ v }) => useDebouncedSave(v, persist),
+      { initialProps: { v: 'a' } },
+    );
+    rerender({ v: 'b' });
+    act(() => { result.current.cancel(); });
+    rerender({ v: 'c' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledWith('c');
+  });
 });

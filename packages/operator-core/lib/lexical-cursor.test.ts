@@ -127,10 +127,10 @@ describe('buildCursor — recency-decayed sparse term-weight vector (P-002)', ()
   });
 
   it('caps to maxTerms, keeping the highest-weighted', () => {
-    const cursor = buildCursor(['WI-1 aaa bbb ccc ddd eee'], { maxTerms: 2 });
+    const cursor = buildCursor(['WI-10 aaa bbb ccc ddd eee'], { maxTerms: 2 });
     expect(cursor.terms).toHaveLength(2);
     // the artifact id (weight 3) is retained; a domain term (weight 1) fills the 2nd slot
-    expect(cursor.terms[0].term).toBe('WI-1');
+    expect(cursor.terms[0].term).toBe('WI-10');
     expect(cursor.weightByTerm.size).toBe(2);
   });
 
@@ -203,15 +203,15 @@ describe('scoreCursorOverlap — legible weighted overlap (P-002)', () => {
   });
 
   it('IDF scaling makes a RARE shared term outweigh a COMMON one (BM25 family)', () => {
-    // 'common' in every session (low idf); 'WI-9' in one (high idf).
+    // 'common' in every session (low idf); 'WI-91' in one (high idf).
     const s1 = buildCursor(['common topic here'], { sessionId: 's1' });
     const s2 = buildCursor(['common topic here'], { sessionId: 's2' });
-    const s3 = buildCursor(['common WI-9 topic here'], { sessionId: 's3' });
+    const s3 = buildCursor(['common WI-91 topic here'], { sessionId: 's3' });
     const index = buildInvertedIndex([s1, s2, s3]);
     // idf: a term in 1 of 3 sessions beats one in 3 of 3
-    expect(index.idf('WI-9')).toBeGreaterThan(index.idf('common'));
+    expect(index.idf('WI-91')).toBeGreaterThan(index.idf('common'));
     // an absent term is maximal
-    expect(index.idf('never-seen')).toBeGreaterThan(index.idf('WI-9'));
+    expect(index.idf('never-seen')).toBeGreaterThan(index.idf('WI-91'));
   });
 
   it('describeOverlap renders a legible one-liner, capped', () => {

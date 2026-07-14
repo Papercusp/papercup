@@ -21,15 +21,16 @@ import { hardText, LIMITS } from '../limits';
 export default defineTool({
   name: 'discovery:set_pot',
   description:
-    "Create or edit a hive's P2P directory listing — title, description, and visibility (public = announce to the global directory; invite = invite-scoped topic only; private = never announced). Saves the metadata to the workspace registry and announces it per visibility so peers can browse + join it.",
+    "Create, edit, or WITHDRAW a hive's public listing — title, description, and visibility. This is ALSO the way to publish a harness/hive to the public Cupboard storefront: public = announce to the global P2P directory AND list the hive's member repos as kind='harness' Cupboard listings; invite = invite-scoped topic only (no Cupboard rows); private = withdraw (stop re-announcing + UNLIST the Cupboard rows). Saves the metadata + (re)publishes per visibility, so a public flip lists on the Cupboard and a private flip delists.",
   capability: 'discovery:write',
   guidance: {
-    when: 'You want to publish a hive to the P2P directory so other peers can discover + join it, or edit an existing listing (title/description/visibility).',
+    when: 'You want to publish a hive so others can find + join it — to the P2P directory AND (for a public hive whose member repos have GitHub coords) the public Cupboard storefront; or edit an existing listing (title/description/visibility); or WITHDRAW it (visibility:private stops re-announcing AND unlists its Cupboard rows). This is the harness/hive equivalent of cupboard:publish-plugin / :publish-template / blueprint:publish.',
     notWhen:
-      'To deploy a pot’s execution frames use deploy:pot. To browse OTHERS’ hives use discovery:pots. Setting visibility:private withdraws a hive from the directory (it stops being re-announced; peers age it out via TTL).',
+      "Creating a hive FROM a GitHub URL (pot:create_from_repo clones + auto-publishes by repo visibility); publishing a NON-harness kind (cupboard:publish-plugin for a plugin/pack, cupboard:publish-template for a template, blueprint:publish for a blueprint, knowledge_packs:publish for a pack, cupboard:publish-app for a standalone app); deploying a pot's execution frames (deploy:pot); browsing OTHERS' hives (discovery:pots).",
     seeAlso: [
+      'pot:create_from_repo (create + auto-publish a hive FROM a GitHub URL)',
       'discovery:pots (browse OTHERS\' hives)',
-      'deploy:pot (deploy the pot\'s execution frames)',
+      'cupboard:publish-plugin (publish a plugin/pack to the Cupboard instead)',
       'pot:get (the pot whose listing you are editing)',
     ],
   },

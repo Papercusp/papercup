@@ -44,6 +44,14 @@ export function useDebouncedSave<T>(
   lastSavedAt: Date | null;
   /** Force an immediate save with the current value. Resolves when done. */
   flush: () => Promise<void>;
+  /**
+   * Discard the pending edit: clear the debounce timer AND the pending flag,
+   * so neither the timer nor the unmount/pagehide flush persists it. For
+   * callers whose edit target is about to be destroyed by a competing action
+   * (an outline merge/delete consumes the text another way) — flushing there
+   * would resurrect the value onto a dead record.
+   */
+  cancel: () => void;
 } {
   const { ms = 300, onSavedAt, onError, skipFirst = true } = opts;
   const [saving, setSaving] = useState(false);
@@ -85,6 +93,14 @@ export function useDebouncedSave<T>(
     }
     pendingRef.current = false;
     await doSaveRef.current();
+  }, []);
+
+  const cancel = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    pendingRef.current = false;
   }, []);
 
   useEffect(() => {
@@ -141,5 +157,5 @@ export function useDebouncedSave<T>(
     };
   }, []);
 
-  return { saving, lastSavedAt, flush };
+  return { saving, lastSavedAt, flush, cancel };
 }
