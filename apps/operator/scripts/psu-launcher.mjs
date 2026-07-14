@@ -4891,16 +4891,41 @@ const CUSTOM_MODEL = '<custom-model>';
  * recognized aliases so it never drifts from what validateModelSpec accepts:
  * KNOWN_CLOUD_ALIASES (opus/sonnet/haiku/fable → Anthropic) + the
  * cloudModelBackendHint codex families (luna/terra/sol → OpenAI/codex).
+ *
+ * WI-4891 (owner directive 2026-07-14): each row carries its `backend` because a
+ * `psu --resume` is HARD-BOUND to session.agent — resumeArgsFor(session,{model})
+ * branches on the session's native CLI, and a claude transcript is not resumable
+ * by codex (nor vice-versa). Offering a codex model on a claude resume just made
+ * `claude -m sol` (a broken launch). resumeModelMenuFor(agent) below filters the
+ * rows to the models the session's backend can ACTUALLY launch.
  */
 export const RESUME_MODEL_MENU = [
-  { name: 'opus — Anthropic Claude Opus (1M, strongest)', value: 'opus' },
-  { name: 'sonnet — Anthropic Claude Sonnet (1M, balanced)', value: 'sonnet' },
-  { name: 'fable — Anthropic Claude Fable (1M)', value: 'fable' },
-  { name: 'haiku — Anthropic Claude Haiku (fast, cheap)', value: 'haiku' },
-  { name: 'sol — OpenAI GPT-5.6 “Sol” (codex)', value: 'sol' },
-  { name: 'luna — OpenAI “Luna” (codex)', value: 'luna' },
-  { name: 'terra — OpenAI “Terra” (codex)', value: 'terra' },
+  { name: 'opus — Anthropic Claude Opus (1M, strongest)', value: 'opus', backend: 'claude' },
+  { name: 'sonnet — Anthropic Claude Sonnet (1M, balanced)', value: 'sonnet', backend: 'claude' },
+  { name: 'fable — Anthropic Claude Fable (1M)', value: 'fable', backend: 'claude' },
+  { name: 'haiku — Anthropic Claude Haiku (fast, cheap)', value: 'haiku', backend: 'claude' },
+  { name: 'sol — OpenAI GPT-5.6 “Sol” (codex)', value: 'sol', backend: 'codex' },
+  { name: 'luna — OpenAI “Luna” (codex)', value: 'luna', backend: 'codex' },
+  { name: 'terra — OpenAI “Terra” (codex)', value: 'terra', backend: 'codex' },
 ];
+
+/** WI-4891: the base-model rows a resume of `agent` may offer — ONLY models that
+ *  backend can launch (a resume can't switch backend). claude → the claude
+ *  family; codex → the codex family; omp is model-agnostic with an open,
+ *  config-driven vocabulary (not the claude/codex CLI aliases) → [] so the caller
+ *  falls through to the free-text spec instead of offering a guessed alias. The
+ *  `backend` tag on each row is the single source of truth, so a new row can
+ *  never leak across backends. Rows are stripped to the inquirer {name,value}
+ *  shape. */
+export function resumeModelMenuFor(agent) {
+  const rows =
+    agent === 'claude'
+      ? RESUME_MODEL_MENU.filter((m) => m.backend === 'claude')
+      : agent === 'codex'
+        ? RESUME_MODEL_MENU.filter((m) => m.backend === 'codex')
+        : [];
+  return rows.map((m) => ({ name: m.name, value: m.value }));
+}
 
 /** Reasoning-effort choices for the resume model menu. Values ⊆ the efforts
  *  validateModelSpec / the `:<effort>` suffix accept; '' = no suffix (model default). */
@@ -4961,28 +4986,42 @@ async function chooseResumeModel(session, args) {
     ],
   });
   if (picked !== CHOOSE_MODEL) return picked;
-  // WI-4889: a MENU instead of a free-text spec. Pick a base model (with a
-  // "type a custom spec…" escape that keeps the old open-set input), then an
-  // effort; composeResumeModelSpec normalizes the two into the psu spec.
-  const baseModel = await select({
-    message: 'Base model',
-    choices: [
-      ...RESUME_MODEL_MENU,
-      { name: 'Type a custom model id / full spec…', value: CUSTOM_MODEL },
-    ],
-  });
-  if (baseModel === CUSTOM_MODEL) {
+  // WI-4889: a MENU instead of a free-text spec. WI-4891: a resume is bound to
+  // session.agent's backend (you can't resume a claude transcript as codex), so
+  // the base-model menu only offers models THAT backend can launch, and the
+  // free-text escape rejects a cross-backend spec instead of building a broken
+  // `claude -m sol`. composeResumeModelSpec normalizes base+effort into the spec.
+  //
+  // The open-set free-text escape (also the whole flow for omp, whose model
+  // vocabulary is config-driven and not the claude/codex CLI aliases): reject a
+  // spec whose native backend differs from this session's — a resume can't
+  // switch backend, so point the user at a fresh session for the other backend.
+  const askCustomSpec = async () => {
     const typed = await input({
       message: 'Model spec (<model>[:<effort>], e.g. fable:high):',
       validate: (v) => {
-        if (!String(v ?? '').trim()) return true; // empty → agent default
-        const r = validateModelSpec(String(v).trim());
-        return r.ok ? true : r.message;
+        const s = String(v ?? '').trim();
+        if (!s) return true; // empty → agent default
+        const r = validateModelSpec(s);
+        if (!r.ok) return r.message;
+        const hinted = cloudModelBackendHint(s);
+        if (hinted && session.agent !== 'omp' && hinted !== session.agent) {
+          return `\`${s}\` is a ${hinted} model, but this session runs ${session.agent} — a resume can't switch backend. Start a NEW ${hinted} session (psu --agent=${hinted}) to use it.`;
+        }
+        return true;
       },
     });
     const spec = String(typed ?? '').trim();
     return spec ? normalizeModelSpec(spec) : null;
-  }
+  };
+  const menu = resumeModelMenuFor(session.agent);
+  // omp (empty menu) → straight to the free-text spec; no guessed alias list.
+  if (!menu.length) return askCustomSpec();
+  const baseModel = await select({
+    message: 'Base model',
+    choices: [...menu, { name: 'Type a custom model id / full spec…', value: CUSTOM_MODEL }],
+  });
+  if (baseModel === CUSTOM_MODEL) return askCustomSpec();
   const effort = await select({
     message: 'Reasoning effort',
     default: '',

@@ -113,6 +113,7 @@ import {
   composeResumeModelSpec,
   RESUME_MODEL_MENU,
   RESUME_EFFORT_MENU,
+  resumeModelMenuFor,
   cloudModelBackendHint,
   validateAgentModelPair,
   autoCompactWindowEnv,
@@ -2118,6 +2119,35 @@ describe('composeResumeModelSpec + resume model menu (WI-4889 — menu, not free
         expect(spec, `${m.value}:${e.value || '(default)'}`).toBeTruthy();
         expect(validateModelSpec(String(spec)).ok, String(spec)).toBe(true);
       }
+    }
+  });
+});
+
+describe('resumeModelMenuFor — the resume menu is scoped to the session backend (WI-4891)', () => {
+  it('a claude session is offered ONLY claude-family models (never sol/luna/terra)', () => {
+    const values = resumeModelMenuFor('claude').map((c) => c.value);
+    expect(values).toEqual(['opus', 'sonnet', 'fable', 'haiku']);
+    for (const v of values) expect(cloudModelBackendHint(v), v).toBe('claude');
+  });
+  it('a codex session is offered ONLY codex-family models (never opus/sonnet/…)', () => {
+    const values = resumeModelMenuFor('codex').map((c) => c.value);
+    expect(values).toEqual(['sol', 'luna', 'terra']);
+    for (const v of values) expect(cloudModelBackendHint(v), v).toBe('codex');
+  });
+  it('an omp session gets an EMPTY menu (falls through to the free-text spec — omp vocabulary is open)', () => {
+    expect(resumeModelMenuFor('omp')).toEqual([]);
+  });
+  it('the crux: every offered row PAIRS with the session backend — no cross-backend model is ever offered', () => {
+    for (const agent of ['claude', 'codex', 'omp'] as const) {
+      for (const row of resumeModelMenuFor(agent)) {
+        // validateAgentModelPair is exactly the guard resumeArgsFor's launch would hit.
+        expect(validateAgentModelPair(agent, row.value).ok, `${agent} ⟵ ${row.value}`).toBe(true);
+      }
+    }
+  });
+  it('rows are stripped to the inquirer {name,value} shape (no leaked backend tag)', () => {
+    for (const row of resumeModelMenuFor('claude')) {
+      expect(Object.keys(row).sort()).toEqual(['name', 'value']);
     }
   });
 });
