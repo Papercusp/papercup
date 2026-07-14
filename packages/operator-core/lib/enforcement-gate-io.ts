@@ -131,7 +131,7 @@ export async function writeFlushFallback(input: {
         : '## Next action\nResume the armed loop; reconstruct working state via coord:orient { afterCompaction: true }.';
       await setLoopCarryNote(
         { harness: input.brief.loop.harness, ownerId: input.ownerId },
-        `⟦auto-checkpoint mechanical @${atIso}⟧ — the system wrote this because the loop was armed with no carry-note at a ${input.tripwires.length > 0 ? 'flush' : ''} boundary; replace it with a real loop:checkpoint.\n\n${note}`,
+        `⟦auto-checkpoint mechanical @${atIso}⟧ — the system wrote this because the loop was armed with no carry-note at a flush boundary; replace it with a real loop:checkpoint.\n\n${note}`,
       );
       result.loopCarryNoteWritten = input.brief.loop.harness;
     } catch {
