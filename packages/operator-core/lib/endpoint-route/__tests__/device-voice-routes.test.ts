@@ -158,14 +158,27 @@ describe('voice-lease endpoints', () => {
   });
 });
 
-describe('voice-session-init — configuration gates', () => {
+describe('voice-session-init — mode resolution (on-desktop-direct-lan-voice-2026-07-14 P-002)', () => {
   const initDef = () => routeByPath('GET', '/device/voice-session-init');
 
-  it('404 voice_not_enabled when the full-agent engine is not EL Conv AI', async () => {
+  it('falls back to desktop-local when the full-agent engine is off (was a 404)', async () => {
     vi.mocked(loadVoicePrefs).mockResolvedValue({ ...VALID_PREFS, fullAgentEngine: 'off' } as never);
     const res = await initDef().handler(req('/device/voice-session-init'), ctx());
-    expect(res.status).toBe(404);
-    expect((await res.json()).error).toBe('voice_not_enabled');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      mode: string;
+      turnPath: string;
+      warmupPath: string;
+      voiceMode: string;
+      deviceId: string;
+      workspaceId: string;
+    };
+    expect(body.mode).toBe('desktop-local');
+    expect(body.turnPath).toBe('/api/device/voice/turn');
+    expect(body.warmupPath).toBe('/api/device/voice/warmup');
+    expect(body.voiceMode).toBe('always-on');
+    expect(body.deviceId).toBe('device-e4');
+    expect(body.workspaceId).toBe('ws-e4');
   });
 
   it('accepts the elevenlabs-conversational engine alias', async () => {
@@ -176,20 +189,54 @@ describe('voice-session-init — configuration gates', () => {
     vi.stubGlobal('fetch', vi.fn(async () => elResponse({ token: 'tok' })));
     const res = await initDef().handler(req('/device/voice-session-init'), ctx());
     expect(res.status).toBe(200);
+    expect(((await res.json()) as { mode: string }).mode).toBe('elevenlabs-conv');
   });
 
-  it('404 no_agent_id when elevenLabsAgentId is unset', async () => {
+  it('falls back to desktop-local when elevenLabsAgentId is unset (was no_agent_id 404)', async () => {
     vi.mocked(loadVoicePrefs).mockResolvedValue({ ...VALID_PREFS, elevenLabsAgentId: '' } as never);
     const res = await initDef().handler(req('/device/voice-session-init'), ctx());
-    expect(res.status).toBe(404);
-    expect((await res.json()).error).toBe('no_agent_id');
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { mode: string }).mode).toBe('desktop-local');
   });
 
-  it('404 no_api_key when no ElevenLabs key is stored', async () => {
+  it('falls back to desktop-local when no ElevenLabs key is stored (was no_api_key 404)', async () => {
     vi.mocked(readElevenLabsKey).mockResolvedValue(null as never);
     const res = await initDef().handler(req('/device/voice-session-init'), ctx());
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { mode: string }).mode).toBe('desktop-local');
+  });
+
+  it('404 voice_not_enabled when mobileVoiceMode is explicitly off', async () => {
+    vi.mocked(loadVoicePrefs).mockResolvedValue({
+      ...VALID_PREFS,
+      mobileVoiceMode: 'off',
+    } as never);
+    const res = await initDef().handler(req('/device/voice-session-init'), ctx());
     expect(res.status).toBe(404);
-    expect((await res.json()).error).toBe('no_api_key');
+    expect((await res.json()).error).toBe('voice_not_enabled');
+  });
+
+  it('mobileVoiceMode desktop-local FORCES the local pipeline even with EL fully configured', async () => {
+    vi.mocked(loadVoicePrefs).mockResolvedValue({
+      ...VALID_PREFS,
+      mobileVoiceMode: 'desktop-local',
+    } as never);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await initDef().handler(req('/device/voice-session-init'), ctx());
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { mode: string }).mode).toBe('desktop-local');
+    expect(fetchMock).not.toHaveBeenCalled(); // never mints an EL token
+  });
+
+  it('legacy 404 when the desktop-local flag is dark AND EL is unavailable', async () => {
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ ...VALID_PREFS, fullAgentEngine: 'off' } as never);
+    vi.mocked(gateApiRoute).mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: false, reason: 'feature-disabled' }), { status: 404 }),
+    );
+    const res = await initDef().handler(req('/device/voice-session-init'), ctx());
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('voice_not_enabled');
   });
 });
 
