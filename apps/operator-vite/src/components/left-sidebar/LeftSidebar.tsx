@@ -136,8 +136,9 @@ export default function LeftSidebar() {
   // 'overwatch' (deep-link / ui:dispatch), so snap a stale ?lst=overwatch back
   // to Mug when the flag is off (mirrors AdvShell's health/overwatch guard).
   const overwatchOn = useFlag(FLAGS.OVERWATCH);
-  // Papercup is flag-gated too (PAPERCUP, default OFF until the role
-  // is live) — same hide-tab + stale-?lst snap-back treatment as overwatch.
+  // Papercup is flag-gated too (PAPERCUP, default ON since
+  // voice-unified-sentinel-pipeline made Papercup the one voice brain) — same
+  // hide-tab + stale-?lst snap-back treatment as overwatch for when it IS off.
   const sentinelOn = useFlag(FLAGS.PAPERCUP);
   const visibleTabs = TABS.filter(
     (x) => (x.id !== 'overwatch' || overwatchOn) && (x.id !== 'sentinel' || sentinelOn),
