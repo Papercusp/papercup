@@ -77,7 +77,16 @@ describe('DogfoodBootstrapBanner (public-release)', () => {
     });
     render(<DogfoodBootstrapBanner />);
     const banner = screen.getByTestId('dogfood-bootstrap-banner');
-    expect(banner.style.top).toBe('var(--pc-env-bar-h, 0px)');
+    // EI-10456: assert the INTENT (offsets below the env bar via --pc-env-bar-h,
+    // never overlaps at top:0), NOT the exact serialized var() string. jsdom's
+    // cssstyle serializes/validates a var() value on the standard `top` property
+    // inconsistently across versions (whitespace after the comma, or an older
+    // cssstyle that validated `top` as a length and dropped the value to ''),
+    // which flip-flaked the old exact-equality assertion (`expected '' to be
+    // 'var(--pc-env-bar-h, 0px)'`). A substring check on the custom-property
+    // reference is stable across cssstyle serialization variance.
+    expect(banner.style.top).toContain('--pc-env-bar-h');
     expect(banner.style.top).not.toBe('0px');
+    expect(banner.style.top).not.toBe('0');
   });
 });
