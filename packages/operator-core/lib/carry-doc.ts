@@ -41,6 +41,7 @@ import {
   type BuildCarryBriefOpts,
   type CarryBrief,
 } from './carry-brief';
+import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import type { RecordedTurnClass } from './turn-provenance/turn-ref';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
