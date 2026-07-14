@@ -1,14 +1,14 @@
 /**
  * owner-preference-feature.test.ts — P-043's feature on the one ranker
- * (FB-15): inert while dark (order-preserving registration — the default
- * registry instance contributes nothing under FLAG_DEFAULTS), bounded
- * re-ranking values with reasons once armed, and the fail-dark guards.
+ * (FB-15): inert while the kill-switch is OFF (injected deps — never live
+ * IO), graduated default-ON in FLAG_DEFAULTS, bounded re-ranking values
+ * with reasons once armed, and the fail-dark guards.
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ScoredItem } from '../harness/improvements/digest';
 import type { OwnerSignal } from '../owner-preference/affinity';
 import type { HumanQueueRankContext } from './blocking-impact-feature';
-import { makeOwnerPreferenceFeature, ownerPreferenceFeature } from './owner-preference-feature';
+import { makeOwnerPreferenceFeature } from './owner-preference-feature';
 
 const item = (id: string, over: Partial<ScoredItem> = {}): ScoredItem => ({
   id,
@@ -52,12 +52,20 @@ describe('owner-preference feature (P-043 on the P-040 registry)', () => {
     expect(readSignal).not.toHaveBeenCalled();
   });
 
-  it('the DEFAULT registry instance is inert under FLAG_DEFAULTS (dark ship)', async () => {
-    // No env override, no test override, no override store, no PostHog client
-    // in the unit env → getFlag falls through to FLAG_DEFAULTS = false, with
-    // zero IO. This is what makes registering the feature order-preserving.
-    const out = await ownerPreferenceFeature.score([item('EI-1')], ctx());
-    expect(out.size).toBe(0);
+  it('the feature is GRADUATED: papercusp-owner-preference-ranking defaults ON (not in DARK_FLAGS)', async () => {
+    // The old pin here asserted the dark-ship contract (default instance inert
+    // under FLAG_DEFAULTS = false) by CALLING score() on the default registry
+    // instance. That was a live-state time-bomb: with the flag graduated to
+    // default-ON (derived FLAG_DEFAULTS — every non-dark flag is true), the
+    // default instance's readSignal really queries the operator DB, so the
+    // assertion flipped red the moment the dev box's accumulated owner
+    // interaction history crossed the model's evidence floor (2026-07-13).
+    // A unit test must never depend on live-DB state, so pin the graduation
+    // itself (pure) instead; the flag-OFF inert path stays pinned above via
+    // injected deps, and fail-dark guards below.
+    const { FLAGS, FLAG_DEFAULTS, DARK_FLAGS } = await import('@papercusp/flags');
+    expect(DARK_FLAGS.has(FLAGS.OWNER_PREFERENCE_RANKING)).toBe(false);
+    expect(FLAG_DEFAULTS[FLAGS.OWNER_PREFERENCE_RANKING]).toBe(true);
   });
 
   it('armed → bounded values with reason lines (promote engaged buckets, demote ignored ones)', async () => {
