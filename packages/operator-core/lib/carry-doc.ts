@@ -323,7 +323,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   const asks = await getAsks(ownerId, ws).catch(() => [] as CarryDocAsk[]);
 
   const getTail = opts.getTailFn ? () => opts.getTailFn!(ownerId) : () => defaultGetTail(opts);
-  const tail = await getTail().catch(() => [] as CarryDocTailTurn[]);
+  const tail = (await getTail().catch(() => [] as CarryDocTailTurn[])).slice(-CARRY_DOC_MAX_TAIL_TURNS);
 
   return {
     brief,
@@ -342,7 +342,77 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     },
     planItems: planItems.slice(0, CARRY_DOC_MAX_PLAN_ITEMS),
     asks: asks.slice(0, CARRY_DOC_MAX_ASKS),
-    tail: tail.slice(-CARRY_DOC_MAX_TAIL_TURNS),
+    tail,
+    continuation: deriveContinuation(tail, opts.boundaryDeliberate ?? false),
+  };
+}
+
+// ── Continuation / last-turn handling (P-010, pure) ─────────────────────────────
+
+const CONT_PREVIEW_CAP = 240;
+
+/**
+ * Derive the {@link CarryDocContinuation} from the (already-capped) verbatim tail.
+ * The "final owner message" is the LAST tail turn mechanically stamped
+ * `owner-typed` (D-003) — never the last `speaker:'owner'`/`'user'` turn, because
+ * a wake-pump or self-compaction turn is recorded as a user turn yet is
+ * agent-injected, NOT the owner (the WI-3532 manufactured-directive class). Pure.
+ */
+export function deriveContinuation(
+  tail: ReadonlyArray<CarryDocTailTurn>,
+  boundaryDeliberate: boolean,
+): CarryDocContinuation {
+  let idx = -1;
+  for (let i = tail.length - 1; i >= 0; i -= 1) {
+    if (tail[i].provenance?.verdict === 'owner-typed') {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) {
+    // No owner turn in the recent tail ⇒ nothing owner-shaped is open. `answered`
+    // is vacuously true (there is no open owner question to cross).
+    return { lastOwnerMessage: null, answered: true, deliberate: boundaryDeliberate };
+  }
+  const owner = tail[idx];
+  // Answered ⇔ a model turn FOLLOWS the owner's final message in the tail.
+  const answered = tail.slice(idx + 1).some((t) => t.speaker === 'assistant');
+  return {
+    lastOwnerMessage: { text: owner.text, ts: owner.ts },
+    answered,
+    deliberate: boundaryDeliberate,
+  };
+}
+
+export interface OpenOwnerQuestionGate {
+  /** True when a DELIBERATE compaction/handoff would cross an UNANSWERED owner
+   *  message — the boundary the consumer must refuse once. A distinct, SEMANTIC
+   *  tripwire alongside the P-016 flush ladder (which keys on the brief, not the
+   *  tail's provenance), so it lives here rather than in the done enforcement gate. */
+  crossesOpenOwnerMessage: boolean;
+  /** Actionable refusal text — present only when `crossesOpenOwnerMessage`. */
+  refusalText?: string;
+}
+
+/**
+ * The P-010 rule "never deliberately compact across an unanswered owner question."
+ * Trips ONLY when the boundary is deliberate AND the owner's final message is open:
+ * a FORCED boundary is not a choice to refuse (its safety net is that the same
+ * `lastOwnerMessage` is delivered to the successor as its first prompt — nothing is
+ * lost, just carried). Pure — the consumer (session:request-compaction / P-018)
+ * wires the actual bounce, mirroring the P-016 gate's single-refuse shape.
+ */
+export function gateOpenOwnerQuestion(cont: CarryDocContinuation): OpenOwnerQuestionGate {
+  if (!cont.deliberate || !cont.lastOwnerMessage || cont.answered) {
+    return { crossesOpenOwnerMessage: false };
+  }
+  return {
+    crossesOpenOwnerMessage: true,
+    refusalText:
+      'This compaction is HELD: your owner\'s final message is still UNANSWERED, and this is a ' +
+      'DELIBERATE boundary — do not abandon it across the cut. Either answer it first, or, if you are ' +
+      'compacting to gain room to answer, retry: the successor receives that exact message as its ' +
+      'first prompt (never as quoted history), so the question is carried, not lost.',
   };
 }
 
@@ -418,9 +488,50 @@ function tailTurnHeader(t: CarryDocTailTurn): string {
   return t.speaker === 'owner' ? 'OWNER' : 'user (unclassified)';
 }
 
-function renderTail(tail: CarryDocTailTurn[]): string | null {
-  if (tail.length === 0) return null;
-  const blocks = tail.map((t) => {
+/**
+ * The typed continuation block (P-010) — states how the successor must treat this
+ * boundary and the owner's final message BEFORE it reads the tail, so it never
+ * misreads an open question as handled or a forced tail as complete.
+ */
+function renderContinuation(cont: CarryDocContinuation): string {
+  const lines: string[] = [
+    cont.deliberate
+      ? '- Boundary: DELIBERATE (self-requested at a clean point — state was flushed; the tail is trustworthy).'
+      : '- Boundary: FORCED (native auto-compact / window-guard fired mid-turn — the tail may be ' +
+        'truncated mid-reply; trust it less and re-verify via the self-recall pointer).',
+  ];
+  if (cont.lastOwnerMessage) {
+    const preview = cap(cont.lastOwnerMessage.text, CONT_PREVIEW_CAP);
+    lines.push(
+      cont.answered
+        ? `- Owner's final message was ANSWERED before this boundary (quoted in the tail below). Preview: «${preview}»`
+        : "- Owner's final message is OPEN (unanswered) — it is delivered to you as your ACTUAL FIRST " +
+          `PROMPT, NOT quoted in the tail below. Respond to it directly. Preview: «${preview}»`,
+    );
+  } else {
+    lines.push('- No owner turn in the recent tail — continue the standing work above.');
+  }
+  return `## Continuation (last-turn handling)\n${lines.join('\n')}`;
+}
+
+function renderTail(tail: CarryDocTailTurn[], cont: CarryDocContinuation): string | null {
+  // When the owner's final message is OPEN it is delivered live as the successor's
+  // first prompt, so it must NOT also appear here as quoted history (P-010 "never
+  // quoted material" — a quoted copy reads as already-handled). Drop that one turn,
+  // the LAST owner-typed turn, from the quoted tail.
+  let quoted = tail;
+  if (cont.lastOwnerMessage && !cont.answered) {
+    let dropAt = -1;
+    for (let i = tail.length - 1; i >= 0; i -= 1) {
+      if (tail[i].provenance?.verdict === 'owner-typed') {
+        dropAt = i;
+        break;
+      }
+    }
+    if (dropAt >= 0) quoted = tail.filter((_, i) => i !== dropAt);
+  }
+  if (quoted.length === 0) return null;
+  const blocks = quoted.map((t) => {
     const ts = t.ts ? ` @${t.ts}` : '';
     return `### ${tailTurnHeader(t)}${ts}\n${cap(t.text, TAIL_TURN_CAP)}`;
   });
@@ -431,7 +542,10 @@ function renderTail(tail: CarryDocTailTurn[]): string | null {
  * Render the full deterministic carry document as text. Pure — every input is
  * already assembled + bounded by {@link buildCarryDoc}. Ordered most-load-bearing
  * first: re-orient banner → identity → session mode → the standing brief → plan
- * state → asks → verbatim tail → self-recall pointer.
+ * state → asks → continuation (last-turn handling) → verbatim tail → self-recall.
+ * The tail sits at the document END (P-010) — most recent turns closest to where
+ * the successor begins — with the continuation block just before it framing how to
+ * read it, and the self-recall pointer as the trailing one-line recovery hint.
  */
 export function renderCarryDoc(doc: CarryDoc, now: number = Date.now()): string {
   const sections: string[] = [
@@ -446,7 +560,8 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now()): string 
   if (plan) sections.push(plan);
   const asks = renderAsks(doc.asks);
   if (asks) sections.push(asks);
-  const tail = renderTail(doc.tail);
+  sections.push(renderContinuation(doc.continuation));
+  const tail = renderTail(doc.tail, doc.continuation);
   if (tail) sections.push(tail);
   sections.push(`## Self-recall\n${SELF_RECALL_POINTER}`);
   return sections.join('\n\n');

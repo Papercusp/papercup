@@ -315,10 +315,14 @@ body.has-op-chat:has(.pc-qp) {
   align-items: center;
   gap: 5px;
   padding: 5px 10px;
-  border: 1px solid var(--accent-strong);
+  border: 1px solid var(--accent);
   border-radius: 5px;
-  background: var(--accent-bg, rgba(87, 215, 255, 0.12));
-  color: var(--accent-strong);
+  /* Flat primary: solid accent fill + ink label. The old style put the LIGHT
+     --accent-strong text on the LIGHT --accent-soft (via --accent-bg) chip —
+     light-on-light in every theme, unreadable. --accent-ink is the token defined
+     for text drawn ON an accent fill, so this stays legible across all themes. */
+  background: var(--accent);
+  color: var(--accent-ink);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -327,7 +331,8 @@ body.has-op-chat:has(.pc-qp) {
 }
 
 .pc-qp__newbtn:hover {
-  background: color-mix(in srgb, var(--accent-strong), transparent 78%);
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 .pc-qp__newbtn:focus-visible {

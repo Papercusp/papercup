@@ -9,6 +9,8 @@ import type { CarryBrief } from './carry-brief';
 import {
   buildCarryDoc,
   renderCarryDoc,
+  deriveContinuation,
+  gateOpenOwnerQuestion,
   SELF_RECALL_POINTER,
   REORIENT_BANNER,
   CARRY_DOC_MAX_TAIL_TURNS,
@@ -17,6 +19,7 @@ import {
   type CarryDocPlanItem,
   type CarryDocAsk,
   type CarryDocTailTurn,
+  type CarryDocContinuation,
 } from './carry-doc';
 
 const NOW = 1_800_000_000_000;
@@ -169,6 +172,7 @@ describe('renderCarryDoc (pure)', () => {
       planItems,
       asks,
       tail,
+      continuation: { lastOwnerMessage: null, answered: true, deliberate: true },
       ...over,
     };
   }
@@ -230,5 +234,122 @@ describe('renderCarryDoc (pure)', () => {
     expect(text).toContain('### machine-injected (wake-pump) — NOT the owner');
     expect(text).toContain('### machine (harness-synthetic) — NOT the owner');
     expect(text).toContain('### user (unclassified)');
+  });
+
+  it('an OPEN owner message renders as the first prompt and is NOT quoted in the tail (P-010)', () => {
+    const text = renderCarryDoc(
+      doc({
+        tail: [
+          { speaker: 'assistant', text: 'earlier work', ts: null },
+          { speaker: 'user', text: 'now fix the migration', ts: null, provenance: { verdict: 'owner-typed', origin: null } },
+        ],
+        continuation: { lastOwnerMessage: { text: 'now fix the migration', ts: null }, answered: false, deliberate: true },
+      }),
+      NOW,
+    );
+    expect(text).toContain('## Continuation (last-turn handling)');
+    expect(text).toContain('Boundary: DELIBERATE');
+    expect(text).toContain('OPEN (unanswered)');
+    expect(text).toContain('ACTUAL FIRST');
+    expect(text).toContain('Preview: «now fix the migration»');
+    // "never quoted material": the open owner turn is delivered live, not quoted.
+    expect(text).not.toContain('### OWNER (typed — mechanically classified)');
+    expect(text).toContain('### you'); // the assistant history turn still shows
+  });
+
+  it('an ANSWERED owner message stays quoted in the tail and a FORCED boundary is flagged', () => {
+    const text = renderCarryDoc(
+      doc({
+        tail: [
+          { speaker: 'user', text: 'ship it', ts: null, provenance: { verdict: 'owner-typed', origin: null } },
+          { speaker: 'assistant', text: 'shipped', ts: null },
+        ],
+        continuation: { lastOwnerMessage: { text: 'ship it', ts: null }, answered: true, deliberate: false },
+      }),
+      NOW,
+    );
+    expect(text).toContain('Boundary: FORCED');
+    expect(text).toContain('ANSWERED before this boundary');
+    expect(text).toContain('### OWNER (typed — mechanically classified)'); // still quoted as history
+  });
+
+  it('no owner turn in the tail renders the standing-work continuation line', () => {
+    const text = renderCarryDoc(doc({ tail: [], continuation: { lastOwnerMessage: null, answered: true, deliberate: true } }), NOW);
+    expect(text).toContain('No owner turn in the recent tail');
+  });
+});
+
+describe('deriveContinuation (pure, P-010)', () => {
+  const ownerTurn = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'owner-typed', origin: null } });
+  const wake = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'agent-injected', origin: 'wake-pump' } });
+  const model = (text: string): CarryDocTailTurn => ({ speaker: 'assistant', text, ts: null });
+
+  it('identifies the final OWNER-typed turn — not a later agent-injected user turn (WI-3532 class)', () => {
+    const cont = deriveContinuation([ownerTurn('do the thing'), model('on it'), wake('loop wake — continue')], true);
+    expect(cont.lastOwnerMessage?.text).toBe('do the thing');
+  });
+
+  it('answered=true when a model turn follows the owner message; false when it is the last real turn', () => {
+    expect(deriveContinuation([ownerTurn('q'), model('a')], true).answered).toBe(true);
+    // A machine wake after the owner message does NOT answer it.
+    expect(deriveContinuation([ownerTurn('q'), wake('w')], true).answered).toBe(false);
+  });
+
+  it('no owner turn ⇒ null message, vacuously answered, boundary flag flows through', () => {
+    const cont = deriveContinuation([model('a'), wake('w')], false);
+    expect(cont).toEqual({ lastOwnerMessage: null, answered: true, deliberate: false });
+  });
+
+  it('picks the LAST owner turn when several are present', () => {
+    const cont = deriveContinuation([ownerTurn('first'), model('a'), ownerTurn('second')], true);
+    expect(cont.lastOwnerMessage?.text).toBe('second');
+    expect(cont.answered).toBe(false);
+  });
+});
+
+describe('gateOpenOwnerQuestion (pure, P-010)', () => {
+  const open: CarryDocContinuation = { lastOwnerMessage: { text: 'answer me', ts: null }, answered: false, deliberate: true };
+
+  it('trips only on a DELIBERATE boundary across an UNANSWERED owner message', () => {
+    const gate = gateOpenOwnerQuestion(open);
+    expect(gate.crossesOpenOwnerMessage).toBe(true);
+    expect(gate.refusalText).toContain('UNANSWERED');
+    expect(gate.refusalText).toContain('first prompt');
+  });
+
+  it('does NOT trip on a forced boundary, an answered message, or no owner message', () => {
+    expect(gateOpenOwnerQuestion({ ...open, deliberate: false }).crossesOpenOwnerMessage).toBe(false);
+    expect(gateOpenOwnerQuestion({ ...open, answered: true }).crossesOpenOwnerMessage).toBe(false);
+    expect(gateOpenOwnerQuestion({ lastOwnerMessage: null, answered: true, deliberate: true }).crossesOpenOwnerMessage).toBe(false);
+  });
+});
+
+describe('buildCarryDoc continuation leg (P-010)', () => {
+  const base = {
+    workspaceId: 'ws-1',
+    harness: 'papercusp',
+    ownerLabel: 'su · su-1',
+    buildCarryBriefFn: async () => brief(),
+    getModesFn: async () => [] as { mode: string; ownerDirected: boolean; reason: string | null }[],
+    getPlanItemsFn: async () => [] as CarryDocPlanItem[],
+    getAsksFn: async () => [] as CarryDocAsk[],
+  };
+
+  it('derives the continuation from the tail + boundaryDeliberate opt', async () => {
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      boundaryDeliberate: true,
+      getTailFn: async () => [
+        { speaker: 'assistant', text: 'prior', ts: null } as CarryDocTailTurn,
+        { speaker: 'user', text: 'open question', ts: null, provenance: { verdict: 'owner-typed', origin: null } } as CarryDocTailTurn,
+      ],
+    });
+    expect(doc.continuation).toEqual({ lastOwnerMessage: { text: 'open question', ts: null }, answered: false, deliberate: true });
+    expect(gateOpenOwnerQuestion(doc.continuation).crossesOpenOwnerMessage).toBe(true);
+  });
+
+  it('defaults boundaryDeliberate to false (forced/unknown — the safe under-promise)', async () => {
+    const doc = await buildCarryDoc('su-1', { ...base, getTailFn: async () => [] });
+    expect(doc.continuation.deliberate).toBe(false);
   });
 });
