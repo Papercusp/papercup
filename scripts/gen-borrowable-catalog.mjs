@@ -65,6 +65,7 @@ const BORROWABLE = [
   ['libs/generic/pubsub-substrate',               'IPC, transport & sync'],
   ['libs/generic/p2p-voice',                      'Audio & media'],
   ['libs/generic/audio-dsp',                      'Audio & media'],
+  ['libs/generic/kokoro-tts',                     'Audio & media'],
   ['libs/generic/ui-primitives',                  'UI components'],
   ['libs/generic/dock-workbench',                 'UI components'],
   ['libs/generic/git-graph',                      'UI components'],
