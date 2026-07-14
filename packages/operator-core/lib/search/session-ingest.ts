@@ -1168,6 +1168,12 @@ export async function pruneSessionTurnsOnce(): Promise<{ deleted: number }> {
      WHERE updated_at < now() - make_interval(days => ${RETENTION_DAYS * 2})
        AND file_path <> ${CHAT_HWM_PATH}
   `;
+  // The per-turn journal (P-012) rides the same retention window — it is a
+  // bounded surface over the same transcripts, not an archive.
+  await sql`
+    DELETE FROM harness_shared.session_turn_journal
+     WHERE created_at < now() - make_interval(days => ${RETENTION_DAYS})
+  `;
   return { deleted };
 }
 

@@ -1701,6 +1701,28 @@ export async function reportLifecycle(phase: 'start' | 'shutdown'): Promise<void
   });
 }
 
+/**
+ * Ping the per-turn JOURNAL collector at turn end (deterministic-context-carry
+ * -2026-07-14 P-012) — the OMP counterpart of the cc/ Stop hook
+ * (stop-turn-journal.sh). No extraction here: the server reads the session
+ * transcript and extracts the agent's trailing ⟦journal⟧ line (mechanical
+ * first-line fallback, flagged). Fire-and-forget; callMcpTool fails open, so
+ * `void reportTurnJournal(ctx)` adds no latency to the turn boundary.
+ */
+export async function reportTurnJournal(ctx: unknown): Promise<void> {
+  const c = ctx as HookSessionLinkContext | undefined;
+  const sessionId = c?.sessionManager?.getSessionId?.()?.trim();
+  if (!sessionId) return;
+  const filePath = c?.sessionManager?.getSessionFile?.();
+  await callMcpTool('journal:record-turn', {
+    owner: hookOwnerId(),
+    agent: 'omp',
+    session_id: sessionId,
+    source_kind: 'omp',
+    ...(filePath ? { transcript_path: filePath } : {}),
+  });
+}
+
 // ── Objective title (session-objective-display-2026-06-22, P-004) ────────
 //
 // The OMP leg of the SESSION-OBJECTIVE DISPLAY. OMP has no statusline, but it
@@ -3601,7 +3623,7 @@ export default function register(pi: HookApi): void {
     }
   });
 
-  pi.on('turn_end', async () => {
+  pi.on('turn_end', async (_event, ctx) => {
     // A CLEAN turn_end ⇒ the session is now idle BETWEEN turns — legitimately
     // waiting for the next input/wake (e.g. after presenting a kickoff routing
     // gate as text and STOPping, per the ask-block redirect), NOT wedged. DISARM
@@ -3613,6 +3635,8 @@ export default function register(pi: HookApi): void {
     // still caught.)
     disarmStallWatchdog();
     await safe(() => onTurnEnd(), undefined);
+    // Per-turn journal ping (P-012) — deliberately un-awaited: fire-and-forget.
+    void safe(() => reportTurnJournal(ctx), undefined);
   });
 
   pi.on('tool_call', async (event) => {

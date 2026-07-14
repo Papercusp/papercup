@@ -114,16 +114,3 @@ export async function recentTurnJournal(filter: {
   `;
   return rows;
 }
-
-/** Retention prune (the table is a bounded surface, not an archive — the
- *  transcript files/archives remain the source). Called from the session-ingest
- *  retention sweep alongside session_turns. */
-export async function pruneTurnJournal(retentionDays: number): Promise<number> {
-  const { sql } = getOrgPg();
-  const rows = await sql<Array<{ id: string }>>`
-    DELETE FROM harness_shared.session_turn_journal
-    WHERE created_at < now() - make_interval(days => ${retentionDays})
-    RETURNING id::text AS id
-  `;
-  return rows.length;
-}

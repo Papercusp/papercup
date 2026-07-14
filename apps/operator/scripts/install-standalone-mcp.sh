@@ -267,6 +267,11 @@ CC_PROVENANCE_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-provenance.sh"
 # initialize prelude / orient / a claim port already injected). Fail-open,
 # psu-gated, 2.5s wall.
 CC_TURN_MEMORY_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-memory.sh"
+# Stop hook (deterministic-context-carry-2026-07-14 P-012): per-turn journal —
+# pings journal:record-turn at each turn end; the server extracts the agent's
+# ⟦journal⟧ line (mechanical first-line fallback, flagged). Fire-and-forget,
+# fail-open, psu-gated.
+CC_TURN_JOURNAL_HOOK="${CC_HOOK_DEST_DIR}/stop-turn-journal.sh"
 
 # Merge our PreToolUse + PostToolUse lock hooks into a settings.json
 # (Claude's ~/.claude/settings.json or a codex-su CODEX_HOME). Idempotent
@@ -443,6 +448,42 @@ hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('UserPromptSubmit', [])) if e]
 arr.append({'hooks': [{'type': 'command', 'command': cmd}]})
 hooks['UserPromptSubmit'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Merge the per-turn journal Stop hook as its OWN entry (no matcher — fires at
+# each turn end). deterministic-context-carry-2026-07-14 P-012. Idempotent:
+# drops any prior entry pointing at our script, preserves all other hooks.
+#   $1 = settings.json path
+merge_turn_journal_hook() {
+  python3 - "$1" "$CC_TURN_JOURNAL_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('Stop', [])) if e]
+arr.append({'hooks': [{'type': 'command', 'command': hook}]})
+hooks['Stop'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
@@ -1125,6 +1166,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/userpromptsubmit-memory.sh" "$CC_TURN_MEMORY_HOOK"
     chmod 755 "$CC_TURN_MEMORY_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/stop-turn-journal.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/stop-turn-journal.sh" "$CC_TURN_JOURNAL_HOOK"
+    chmod 755 "$CC_TURN_JOURNAL_HOOK"
+  fi
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
@@ -1147,6 +1192,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_BASH_GATE_HOOK" ] && merge_bash_gate_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_PROVENANCE_HOOK" ] && merge_provenance_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_TURN_MEMORY_HOOK" ] && merge_turn_memory_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_TURN_JOURNAL_HOOK" ] && merge_turn_journal_hook "$CLAUDE_SETTINGS"
   chmod 600 "$CLAUDE_SETTINGS"
   echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"
 else

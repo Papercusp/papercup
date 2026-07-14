@@ -49,6 +49,8 @@ import { RecorderHost } from '@papercusp/testing-shell';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
 import ChromeShell from '@/app/_components/ChromeShell';
+import { usePathname } from '@/lib/router-compat/navigation';
+import { isChromelessPath } from '../lib/chromeless-routes';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
 // (desktop UI part A). Mounted here — inside RootSyncProvider, at the router
 // root — so it can read the `hiveFromRepo.progress` sync rows and overlay EVERY
@@ -173,6 +175,13 @@ function RootComponent() {
     void import('@/app/_components/voice/voice-mode');
   }, []);
 
+  // Chromeless routes (the Quick Panel popup, iframe/embedded targets) render
+  // the bare route with NO global chrome — no env bar, ChromeShell header+chat,
+  // or presence rail. Providers still wrap <Outlet/> (the panel uses sync +
+  // nuqs); only the VISIBLE chrome is gated. See lib/chromeless-routes.
+  const pathname = usePathname() ?? '';
+  const chromeless = isChromelessPath(pathname);
+
   return (
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
@@ -210,7 +219,7 @@ function RootComponent() {
                   side and never self-hides, so a misrouted /api or a bad target build can't
                   make it vanish; a native global-shortcut + menu backstop (papercusp-desktop
                   src-tauri) is the unkillable escape hatch if a target build white-screens. */}
-              <EnvSwitcherBar />
+              {!chromeless && <EnvSwitcherBar />}
               {/* App-wide keyboard surfaces — mounted at the router root,
                   above ChromeShell, so Ctrl+P (palette) and Alt+Left/Right
                   (history nav) work on EVERY route, including /settings and
@@ -226,7 +235,7 @@ function RootComponent() {
               <GlobalAppShortcuts />
               <GlobalVoiceShortcuts />
               <GlobalSearchDialog />
-              <PresenceRail />
+              {!chromeless && <PresenceRail />}
               {/* Left sidebar — Swarm / Voice / Hives (left-sidebar-tauri-
                   2026-06-07). Inside NuqsAdapter (its open/tab/selection state
                   is URL-backed) + RootSyncProvider (its panels use
