@@ -16,6 +16,7 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { reclaimStaleHoldOpens, isHoldOpenExpired, HOLD_OPEN_GRACE_MS } from './work-items-hold-open';
+import { sweepDeadOwnerControlState } from './dead-owner-control-sweep';
 
 const PRESENCE_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
@@ -32,6 +33,17 @@ const SPAWNED_DDL = `
     finished_at timestamptz,
     cancelled_at timestamptz
   )`;
+const ROUTINES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    id text PRIMARY KEY,
+    workspace_id text NOT NULL,
+    name text NOT NULL,
+    active boolean NOT NULL DEFAULT true,
+    reschedule_interval_sec integer,
+    target_owner_id text,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+  )`;
 
 let db: FreshPgDb;
 let sql: postgres.Sql;
@@ -45,6 +57,7 @@ beforeAll(async () => {
   await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
+  await sql.unsafe(ROUTINES_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -52,7 +65,30 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents`;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.routines`;
+});
+
+describe('agent-operability P-003 — one dead-owner sweep', () => {
+  it('terminates every loop and lifts every expired hold for one unreachable owner atomically', async () => {
+    await seedHeld('WI-DEAD-1', 'su-dead-batch', 8 * 60);
+    await seedHeld('WI-DEAD-2', 'su-dead-batch', 8 * 60);
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, workspace_id, name, active, reschedule_interval_sec, target_owner_id, updated_at)
+      VALUES
+        ('loop-a', ${WS}, 'loop-a', true, 60, 'su-dead-batch', now() - interval '3 hours'),
+        ('loop-b', ${WS}, 'loop-b', true, 300, 'su-dead-batch', now() - interval '3 hours')`;
+
+    const result = await sweepDeadOwnerControlState(sql, { ownerGraceMs: 1, holdOpenGraceMs: 1 });
+
+    expect(result).toEqual({ owners: ['su-dead-batch'], loopsTerminated: 2, holdsLifted: 2 });
+    const [loopState] = await sql<{ active: string }[]>`
+      SELECT count(*) FILTER (WHERE active)::text AS active
+        FROM harness_shared.routines WHERE target_owner_id = 'su-dead-batch'`;
+    expect(loopState?.active).toBe('0');
+    expect(await holdOf('WI-DEAD-1')).toEqual({ by: null, claimHold: null });
+    expect(await holdOf('WI-DEAD-2')).toEqual({ by: null, claimHold: null });
+  });
 });
 
 /** Seed a work-item HELD OPEN by `holder`, stamped `heldAgoMin` ago — exactly the shape

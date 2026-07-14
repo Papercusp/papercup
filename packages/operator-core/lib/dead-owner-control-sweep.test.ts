@@ -6,9 +6,10 @@ describe('sweepDeadOwnerControlState', () => {
     const sql = vi.fn(async () => [{ owners: ['su-dead'], loops_terminated: '3', holds_lifted: '5' }]);
     Object.assign(sql, { unsafe: (value: string) => value });
     const result = await sweepDeadOwnerControlState(sql as never, { ownerGraceMs: 1, holdOpenGraceMs: 1 });
-    expect(sql).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ owners: ['su-dead'], loopsTerminated: 3, holdsLifted: 5 });
-    const fragments = sql.mock.calls[0]![0] as TemplateStringsArray;
+    // Two calls build the reusable liveness SQL fragments; the final tagged
+    // call is the one atomic database statement containing both UPDATE CTEs.
+    const fragments = sql.mock.calls.at(-1)![0] as TemplateStringsArray;
     expect(fragments.join('')).toContain('ended_loop AS');
     expect(fragments.join('')).toContain('lifted_hold AS');
   });

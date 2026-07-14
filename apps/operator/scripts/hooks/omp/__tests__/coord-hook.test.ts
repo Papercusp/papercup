@@ -11,6 +11,7 @@ import { join } from 'node:path';
 
 import {
   buildActivityArgs,
+  consumeActivityHookBundle,
   buildDisplayTitleOsc,
   buildObjectiveTitleOsc,
   callMcpTool,
@@ -25,7 +26,9 @@ import {
   destructiveGitDenyReason,
   detectSymlinkedPaths,
   reportActivity,
+  reportActivityResult,
   reportLifecycle,
+  stageActivityReport,
   extractPathsFromToolInput,
   formatBusyRefusal,
   formatInboxDelta,
@@ -4143,13 +4146,26 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
 
     _resetMidTurnCursorForTests('2026-06-01T00:00:00Z');
     global.fetch = mockMcp({
-      entries: [
-        { ts: '2026-06-01T00:05:00Z', msg_id: 'm1', from: 'peer-X', kind: 'message', summary: 'ambient broadcast' },
-      ],
-      injection: '[coord+1]\n- peerX ambient broadcast',
-      summary: { newest_ts: '2026-06-01T00:05:00Z' },
+      ok: true,
+      hook_bundle: {
+        schemaVersion: 'activity-hook-bundle-v1',
+        generation: 'host-a:42',
+        changed: true,
+        complete: true,
+        surfaces: {
+          inbox: {
+            entries: [
+              { ts: '2026-06-01T00:05:00Z', msg_id: 'm1', from: 'peer-X', kind: 'message', summary: 'ambient broadcast' },
+            ],
+            injection: '[coord+1]\n- peerX ambient broadcast',
+            summary: { newest_ts: '2026-06-01T00:05:00Z' },
+          },
+          glance: { display: { title: 'su-abc', notice: null } },
+        },
+      },
     });
 
+    await subs.get('tool_call')!({ type: 'tool_call', toolName: 'read', toolCallId: 'tc-1', input: {} }, {});
     await subs.get('tool_result')!({ type: 'tool_result', toolCallId: 'tc-1' }, {});
 
     const coordMsg = sent.find((s) => s.msg.customType === 'coord-reminder');
@@ -4230,9 +4246,9 @@ describe('buildActivityArgs (OMP activity port)', () => {
     _resetActivityReportDedupeForTests();
   });
 
-  it('forwards a raw tool call (server derives the summary) with agent=omp + phase=pre', () => {
+  it('forwards a completed tool call (server derives the summary) with agent=omp + phase=post', () => {
     const args = buildActivityArgs({ type: 'tool_call', toolName: 'edit', toolCallId: 'tc1', input: { path: '/repo/a.ts' } });
-    expect(args).toMatchObject({ agent: 'omp', phase: 'pre', tool_name: 'edit', tool_use_id: 'tc1', tool_input: { path: '/repo/a.ts' } });
+    expect(args).toMatchObject({ agent: 'omp', phase: 'post', tool_name: 'edit', tool_use_id: 'tc1', tool_input: { path: '/repo/a.ts' } });
     expect(typeof args.owner).toBe('string');
     expect(String(args.owner)).toMatch(/^omp-/); // hookOwnerId shape
     expect(args).not.toHaveProperty('todos');
@@ -4288,6 +4304,51 @@ describe('buildActivityArgs (OMP activity port)', () => {
       await reportActivity(event);
       await reportActivity({ ...event, toolCallId: 'b' });
       expect(posts.map((p) => p.arguments.tool_use_id)).toEqual(['a', 'b']);
+    } finally {
+      global.fetch = originalFetch;
+      if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL; else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+      if (prevToken === undefined) delete process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN; else process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = prevToken;
+    }
+  });
+
+  it('uses one post-tool activity RPC and never emits separate inbox/glance RPCs for N quiet calls', async () => {
+    const originalFetch = global.fetch;
+    const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+    const prevToken = process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
+    const posts: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const post = (JSON.parse(init.body) as { params: { name: string; arguments: Record<string, unknown> } }).params;
+      posts.push(post);
+      const cursor = (post.arguments.hook_bundle as { generation?: string | null } | undefined)?.generation;
+      const hookBundle = cursor
+        ? { schemaVersion: 'activity-hook-bundle-v1', generation: 'host-a:42', changed: false, complete: true }
+        : {
+            schemaVersion: 'activity-hook-bundle-v1', generation: 'host-a:42', changed: true, complete: true,
+            surfaces: {
+              inbox: { entries: [], injection: '', summary: { newest_ts: null } },
+              glance: { display: { title: 'su-abc', notice: null } },
+            },
+          };
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify({ ok: true, hook_bundle: hookBundle }) }] },
+        }),
+      };
+    }) as unknown as typeof fetch;
+    try {
+      _resetMidTurnCursorForTests('2026-06-01T00:00:00Z');
+      for (let i = 0; i < 20; i += 1) {
+        stageActivityReport({ type: 'tool_call', toolName: 'read', toolCallId: `quiet-${i}`, input: { path: `f${i}` } });
+        const bundle = await reportActivityResult({ type: 'tool_result', toolCallId: `quiet-${i}` });
+        await consumeActivityHookBundle(bundle);
+      }
+      expect(posts).toHaveLength(20);
+      expect(new Set(posts.map((p) => p.name))).toEqual(new Set(['activity:report']));
+      expect(posts.every((p) => (p.arguments.hook_bundle as { since_ts?: string }).since_ts === '2026-06-01T00:00:00Z')).toBe(true);
     } finally {
       global.fetch = originalFetch;
       if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL; else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;

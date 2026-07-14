@@ -851,6 +851,12 @@ export async function pollInboxDelta(): Promise<{ reminder: string }> {
   if (!since) return { reminder: '' };
   const inboxResult = await callMcpTool('coord:inbox', { since_ts: since });
   if (inboxResult === null) return { reminder: '' }; // transient failure — skip
+  return consumeInboxDelta(inboxResult);
+}
+
+/** Consume the server's coord:inbox JSON shape from either the legacy direct
+ * poll or activity:report's bundled surface. */
+export function consumeInboxDelta(inboxResult: unknown): { reminder: string } {
   const r = inboxResult as
     | { entries?: InboxEntry[]; injection?: string; summary?: { newest_ts?: string | null } }
     | null;
@@ -1555,10 +1561,10 @@ export function formatBusyRefusal(busy: BusyEntry[]): string {
 //
 // The cross-CLI counterpart of the shared `posttooluse-activity-report.sh` shell
 // hook (Claude+Codex). OMP has no PostToolUse shell contract, so its activity report
-// rides this in-process tool_call hook and calls the SAME `activity:report` MCP tool.
-// Reports at tool_call (phase 'pre') — the OMP tool_result event carries no input, but
-// tool_call has toolName + input, which is what the server needs. The display summary
-// is derived SERVER-SIDE (one shared formatter), so this forwards RAW fields.
+// rides this in-process hook and calls the SAME `activity:report` MCP tool. The
+// tool_call input is staged in memory, then the matching tool_result emits ONE
+// phase='post' heartbeat whose response also carries coordination deltas. The display
+// summary is derived SERVER-SIDE (one shared formatter), so this forwards RAW fields.
 
 /** Cap a worker's native tool input so a giant Write `content` / patch body never
  *  bloats the report (mirrors the shell hook's cap). */
@@ -1577,6 +1583,20 @@ function capActivityInput(input: Record<string, unknown> | undefined): Record<st
 const ACTIVITY_TODO_TOOLS = new Set(['todo', 'todo_write', 'todowrite', 'taskcreate', 'taskupdate']);
 const ACTIVITY_REPORT_DEDUPE_MS = 10_000;
 const activityReportDedupe = new Map<string, number>();
+const pendingActivityCalls = new Map<string, ToolCallEvent>();
+const ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1';
+let _hookBundleGeneration: string | null = null;
+
+export interface ActivityHookBundle {
+  schemaVersion?: string;
+  generation?: string;
+  changed?: boolean;
+  complete?: boolean;
+  surfaces?: {
+    inbox?: Record<string, unknown>;
+    glance?: Record<string, unknown>;
+  };
+}
 
 /**
  * Build the `activity:report` args from an OMP tool_call event. A todo tool forwards
@@ -1588,7 +1608,7 @@ export function buildActivityArgs(event: ToolCallEvent): Record<string, unknown>
   const args: Record<string, unknown> = {
     owner: hookOwnerId(),
     agent: 'omp',
-    phase: 'pre',
+    phase: 'post',
     tool_name: event.toolName,
     tool_use_id: event.toolCallId,
   };
@@ -1628,6 +1648,14 @@ function shouldSendActivityReport(args: Record<string, unknown>, now = Date.now(
 
 export function _resetActivityReportDedupeForTests(): void {
   activityReportDedupe.clear();
+  pendingActivityCalls.clear();
+  _hookBundleGeneration = null;
+}
+
+/** Stage the input-bearing half of an OMP tool event. The matching tool_result
+ * consumes it so telemetry and coordination deltas share ONE post-tool RPC. */
+export function stageActivityReport(event: ToolCallEvent): void {
+  pendingActivityCalls.set(event.toolCallId, event);
 }
 
 /**
@@ -1639,6 +1667,23 @@ export async function reportActivity(event: ToolCallEvent): Promise<void> {
   const args = buildActivityArgs(event);
   if (!shouldSendActivityReport(args)) return;
   await callMcpTool('activity:report', args);
+}
+
+/** Report a completed tool and request the generation-aware coordination fold. */
+export async function reportActivityResult(event: ToolResultEvent): Promise<ActivityHookBundle | null> {
+  const staged = pendingActivityCalls.get(event.toolCallId);
+  pendingActivityCalls.delete(event.toolCallId);
+  if (!staged) return null;
+  const args = buildActivityArgs(staged);
+  const result = (await callMcpTool('activity:report', {
+    ...args,
+    hook_bundle: {
+      generation: _hookBundleGeneration,
+      ...(_midTurnCursor ? { since_ts: _midTurnCursor } : {}),
+      ...(_hookBundleGeneration === null ? { force_resync: true } : {}),
+    },
+  })) as { hook_bundle?: ActivityHookBundle } | null;
+  return result?.hook_bundle ?? null;
 }
 
 /**
@@ -1821,6 +1866,36 @@ export function _resetStatusNoticeDedup(): void {
   _lastStatusNoticeKey = '';
 }
 
+/** Apply a server-rendered glance snapshot regardless of whether it arrived via
+ * coord:glance directly or inside activity:report's hook bundle. */
+export async function applyStatusDisplay(
+  glance: { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null } | null,
+  pi?: { sendMessage: HookApi['sendMessage'] },
+  ctx?: unknown,
+): Promise<void> {
+  const osc =
+    buildDisplayTitleOsc(glance?.display?.title) ||
+    buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);
+  await writeOscTitle(osc);
+  const key = statusNoticeKey(glance?.display?.notice);
+  if (key.length > 0 && key !== _lastStatusNoticeKey) {
+    const text = (glance?.display?.notice?.text ?? '').trim();
+    try {
+      const c = ctx as { hasUI?: boolean; ui?: { notify?: (m: string, t?: string) => void } } | undefined;
+      if (c?.hasUI && typeof c.ui?.notify === 'function') c.ui.notify(text, 'info');
+      pi?.sendMessage({
+        customType: 'papercusp-status-tip',
+        content: `<system-reminder type="papercusp-status-tip">${text} (fleet status tip — act on it or surface it to the user; coord:glance for detail)</system-reminder>`,
+        display: false,
+        attribution: 'agent',
+      });
+      _lastStatusNoticeKey = key;
+    } catch {
+      /* delivery failed → key stays unset so the next turn retries */
+    }
+  }
+}
+
 /**
  * Fire-and-forget per-turn display emit: ONE coord:glance (audience:'user')
  * read feeds both the terminal TITLE (display.title verbatim; the legacy
@@ -1843,29 +1918,33 @@ export async function emitStatusDisplay(
     // fixture-driven parity tests missed it because fixtures bypass the network entirely.
     { meta: { format: 'json' }, timeoutMs: 5000 },
   )) as { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null } | null;
-  const osc =
-    buildDisplayTitleOsc(glance?.display?.title) ||
-    buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);
-  await writeOscTitle(osc);
-  // 💡 status notice — deliver ON CHANGE only (a standing tip must not spam every turn).
-  const key = statusNoticeKey(glance?.display?.notice);
-  if (key.length > 0 && key !== _lastStatusNoticeKey) {
-    const text = (glance?.display?.notice?.text ?? '').trim();
-    try {
-      const c = ctx as { hasUI?: boolean; ui?: { notify?: (m: string, t?: string) => void } } | undefined;
-      if (c?.hasUI && typeof c.ui?.notify === 'function') c.ui.notify(text, 'info');
-      pi?.sendMessage({
-        customType: 'papercusp-status-tip',
-        content: `<system-reminder type="papercusp-status-tip">${text} (fleet status tip — act on it or surface it to the user; coord:glance for detail)</system-reminder>`,
-        display: false,
-        attribution: 'agent',
-      });
-      // Mark delivered only on success — a failed delivery retries next turn.
-      _lastStatusNoticeKey = key;
-    } catch {
-      /* delivery failed → key stays unset so the next turn retries */
+  await applyStatusDisplay(glance, pi, ctx);
+}
+
+/** Apply one delta bundle. The generation advances only after BOTH surfaces
+ * hydrate, so partial responses retry on the next completed tool. */
+export async function consumeActivityHookBundle(
+  bundle: ActivityHookBundle | null,
+  pi?: { sendMessage: HookApi['sendMessage'] },
+  ctx?: unknown,
+): Promise<{ reminder: string }> {
+  if (!bundle || bundle.schemaVersion !== ACTIVITY_HOOK_BUNDLE_SCHEMA || typeof bundle.generation !== 'string') {
+    _hookBundleGeneration = null;
+    return { reminder: '' };
+  }
+  let reminder = '';
+  if (bundle.changed) {
+    if (bundle.surfaces?.inbox) reminder = consumeInboxDelta(bundle.surfaces.inbox).reminder;
+    if (bundle.surfaces?.glance) {
+      await applyStatusDisplay(
+        bundle.surfaces.glance as { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null },
+        pi,
+        ctx,
+      );
     }
   }
+  _hookBundleGeneration = bundle.complete ? bundle.generation : null;
+  return { reminder };
 }
 
 /** Back-compat alias (pre-display name) — title-only callers keep working. */
@@ -3189,10 +3268,6 @@ export async function onToolCall(
     }
   }
 
-  // Mirror this non-blocked tool call into the cross-CLI activity bridge (the pui
-  // fleet view + curator). Fire-and-forget so it never delays the edit/lock path.
-  void reportActivity(event);
-
   const targets = extractLockTargets(event.toolName, event.input);
   if (targets.length === 0) return {};
 
@@ -3449,6 +3524,9 @@ export default function register(pi: HookApi): void {
   pi.on('session_start', async (_event, ctx) => {
     pokeStallWatchdog(); // heartbeat: arm the stall watchdog at the very first event
     await safe(() => onSessionStart(ctx), undefined);
+    // One startup render gives the terminal an immediate title. Subsequent
+    // display refreshes ride the generation-stamped post-tool activity bundle.
+    void safe(() => emitStatusDisplay(pi, ctx), undefined);
     // WS4 orientation primer — inject once, model-facing (display:false,
     // attribution:'agent' = not billed to the user), same channel as the
     // coord reminders. Non-fatal: the primer is additive guidance.
@@ -3469,12 +3547,6 @@ export default function register(pi: HookApi): void {
     // Scope the doom-loop breaker's consecutive-repeat run to this turn (a loop is
     // emitted inside one turn; a legit re-call across two turns must not accrue).
     resetToolCallLoopState();
-    // Per-turn display emit (tui-status-parity-single-source-2026-07-05): pipe
-    // the server-rendered display.title into the terminal title and deliver the
-    // 💡 status notice on change (human via ctx.ui.notify, model via
-    // pi.sendMessage). Fire-and-forget — it never gates the reminder and
-    // swallows its own errors.
-    void safe(() => emitStatusDisplay(pi, ctx), undefined);
     const { reminder, degraded } = await safe(() => onTurnStart(ctx), {
       reminder: '',
       degraded: true,
@@ -3548,17 +3620,19 @@ export default function register(pi: HookApi): void {
     // (build/test) EXTENDS the watchdog instead of tripping it, then rearm.
     noteStallToolInFlight(true);
     pokeStallWatchdog();
-    return safe(() => onToolCall(event), {});
+    const result = await safe(() => onToolCall(event), {});
+    if (!result.block) stageActivityReport(event);
+    return result;
   });
 
-  pi.on('tool_result', async (event) => {
+  pi.on('tool_result', async (event, ctx) => {
     // heartbeat: the tool finished — clear in-flight and rearm the countdown.
     noteStallToolInFlight(false);
     pokeStallWatchdog();
     // 1. Release the lock acquired for this tool (existing behavior).
     await safe(() => onToolResult(event), undefined);
-    // 2. Mid-turn coord delivery — surface messages that arrived since turn
-    //    start / the last tool call. Delivered as `followUp`, NOT `steer`:
+    // 2. One post-tool activity heartbeat also returns generation-stamped
+    //    inbox/display deltas. Delivered as `followUp`, NOT `steer`:
     //    `steer` routes to omp's steering queue, which ABORTS the in-flight
     //    tool (its result becomes "Skipped due to queued user message") every
     //    time a coord delta lands. On a slow local model (ornith IQ3_M, ~40s
@@ -3572,7 +3646,8 @@ export default function register(pi: HookApi): void {
     //    `additionalContext` parity this hook targets (that path appends, it
     //    does not abort). Urgent control cues still arrive at the next tool
     //    boundary (one call later) — an acceptable trade vs. a full livelock.
-    const { reminder } = await safe(() => pollInboxDelta(), { reminder: '' });
+    const bundle = await safe(() => reportActivityResult(event), null);
+    const { reminder } = await safe(() => consumeActivityHookBundle(bundle, pi, ctx), { reminder: '' });
     if (reminder.length > 0) {
       pi.sendMessage(
         { customType: 'coord-reminder', content: reminder, display: false, attribution: 'agent' },

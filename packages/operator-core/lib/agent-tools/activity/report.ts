@@ -3,16 +3,17 @@
  * lifecycle transition / todo snapshot) into harness_shared.agent_activity.
  *
  * The sink of the cross-CLI activity bridge (papercusp-worker-integration-2026-06-04,
- * D-003). The per-CLI hooks call this on every native tool call:
+ * D-003). The per-CLI hooks call this on every completed native tool call:
  *   - Claude + Codex: the shared `posttooluse-activity-report.sh` PostToolUse hook.
- *   - OMP: the in-process `coord-hook.ts` tool_call port.
+ *   - OMP: the in-process `coord-hook.ts` post-tool bundle port.
  * The migration-143 trigger fires NOTIFY agent_activity, which the pui fleet view
  * rides over /api/activity/stream — so this write is the whole "tell the fleet view
  * what each worker is doing" path. The curator + the event-reaction system read the
  * same table.
  *
- * Design: cheap + non-blocking. The hooks call it fire-and-forget (detached / void),
- * so the handler does ONE bounded INSERT and returns. The display `summary` is
+ * Design: cheap + non-blocking. The default hook path remains fire-and-forget;
+ * OMP optionally waits for the same call's delta bundle. The handler does ONE
+ * bounded INSERT before that fold. The display `summary` is
  * derived server-side (summariseActivity) when the hook didn't pre-format one, so
  * there is a single formatter shared across every CLI. detail is payload-capped.
  *
@@ -33,6 +34,7 @@ import {
 import { writeWatermark } from '../coordination/watermarks';
 import { isWorkspaceContended } from '../locks/contention-retry';
 import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release';
+import { buildActivityHookBundle } from './hook-bundle';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends '▶ session started' (SessionStart) and '■ session ended'
@@ -95,6 +97,18 @@ export default defineTool({
     status: z.string().max(32).optional(),
     /** The worker's cwd at report time. */
     cwd: z.string().max(1024).optional(),
+    /**
+     * Native-hook delta cursor. When present, activity:report also returns the
+     * current coordination inbox/display snapshot iff this generation changed,
+     * replacing separate coord:inbox + coord:glance MCP calls.
+     */
+    hook_bundle: z
+      .object({
+        generation: z.string().max(256).nullable().optional(),
+        since_ts: z.string().max(128).nullable().optional(),
+        force_resync: z.boolean().optional(),
+      })
+      .optional(),
   }),
   async handler(args, ctx) {
     // owner_id is the load-bearing grouping key — prefer the explicit arg (the hook
@@ -145,8 +159,19 @@ export default defineTool({
       // Dropped-under-contention: report a soft, honest result (id null + dropped
       // marker) rather than a handler error. The side-effect arms below are throttled
       // + best-effort and will re-run on the next report, so skipping them here is safe.
+      const hookBundle = args.hook_bundle
+        ? await buildActivityHookBundle(owner, args.hook_bundle, ctx).catch(() => null)
+        : undefined;
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true, id: null, dropped: 'contention' }) }],
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            id: null,
+            dropped: 'contention',
+            ...(hookBundle ? { hook_bundle: hookBundle } : {}),
+          }),
+        }],
       };
     }
 
@@ -214,6 +239,18 @@ export default defineTool({
       }).catch(() => {});
     }
 
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...result }) }] };
+    const hookBundle = args.hook_bundle
+      ? await buildActivityHookBundle(owner, args.hook_bundle, ctx).catch(() => null)
+      : undefined;
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          ...result,
+          ...(hookBundle ? { hook_bundle: hookBundle } : {}),
+        }),
+      }],
+    };
   },
 });
