@@ -19,6 +19,13 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
+// EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
+// child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
+// fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
+// AFTER the blocking spawnSync child has already written, so a workspace's output
+// prints under another workspace's header. Emit our own lines synchronously so
+// they stay glued to the child output they label. See scripts/lib/sync-write.mjs.
+import { writeAllSync, outSync, errSync } from './lib/sync-write.mjs';
 
 // ── Shared-host worker cap (WI-3792 follow-up, 2026-07-10) ──────────────────
 // Vitest defaults each suite's fork pool to EVERY core. On the shared 128-core
@@ -228,7 +235,7 @@ for (const ws of wsByDir.values()) {
 // workspace and exit BEFORE any test run / EL-suite auto-trigger. affectedWorkspaces()
 // is a hoisted function declaration, so it is callable here.
 if (printAffected) {
-  for (const ws of affectedWorkspaces()) console.log(`AFFECTED_WS\t${ws.name}`);
+  for (const ws of affectedWorkspaces()) outSync(`AFFECTED_WS\t${ws.name}`);
   process.exit(0);
 }
 
@@ -251,18 +258,18 @@ function affectedWorkspaces() {
     const looksLikeMergeBaseGap = /no merge base|no common ancestor|unrelated histories/i.test(e.message);
     let healed = false;
     if (looksLikeMergeBaseGap) {
-      console.error('');
-      console.error(`!!!!!! affected-tests: \`git diff\` against ${base} found no merge base — shallow clone horizon gap.`);
-      console.error('!!!!!! Attempting a one-shot self-heal: git fetch --deepen=2000 origin main staging ...');
+      errSync('');
+      errSync(`!!!!!! affected-tests: \`git diff\` against ${base} found no merge base — shallow clone horizon gap.`);
+      errSync('!!!!!! Attempting a one-shot self-heal: git fetch --deepen=2000 origin main staging ...');
       try {
         execSync('git fetch --deepen=2000 origin main staging', { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
         changed = changedFiles();
         healed = true;
-        console.error('!!!!!! Self-heal succeeded — merge base restored, proceeding with the real affected set.');
-        console.error('');
+        errSync('!!!!!! Self-heal succeeded — merge base restored, proceeding with the real affected set.');
+        errSync('');
       } catch (e2) {
-        console.error(`!!!!!! Self-heal fetch/retry failed: ${e2.message}`);
-        console.error('');
+        errSync(`!!!!!! Self-heal fetch/retry failed: ${e2.message}`);
+        errSync('');
       }
     }
     if (!healed) {
@@ -273,12 +280,12 @@ function affectedWorkspaces() {
       // ran all ~80 workspaces, which read as a normal (if slow) run and hid the
       // real cause (EI-1989). A banner on stderr ensures it can't masquerade as
       // the intended fast path.
-      console.error('');
-      console.error('!!!!!! affected-tests: COULD NOT COMPUTE THE AFFECTED SET !!!!!!');
-      console.error(`!!!!!! \`git diff\` against ${base} failed: ${e.message}`);
-      console.error('!!!!!! FALLING BACK TO --all (running EVERY workspace) — SLOW, and a BUG, not the intended path.');
-      console.error('!!!!!! Fix the git error above; do not rely on this fallback.');
-      console.error('');
+      errSync('');
+      errSync('!!!!!! affected-tests: COULD NOT COMPUTE THE AFFECTED SET !!!!!!');
+      errSync(`!!!!!! \`git diff\` against ${base} failed: ${e.message}`);
+      errSync('!!!!!! FALLING BACK TO --all (running EVERY workspace) — SLOW, and a BUG, not the intended path.');
+      errSync('!!!!!! Fix the git error above; do not rely on this fallback.');
+      errSync('');
       return [...wsByDir.values()];
     }
   }
@@ -330,7 +337,7 @@ function elSuiteAutoTrigger() {
   );
 }
 if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
-  console.log('(EL-relevant files changed — auto-enabling --el-suite)');
+  outSync('(EL-relevant files changed — auto-enabling --el-suite)');
   // mutate the flag so the task collector below picks it up
   // eslint-disable-next-line no-global-assign
   globalThis.__autoElSuite = true;
@@ -339,13 +346,13 @@ if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
 const affected = affectedWorkspaces();
 
 if (!affected.length) {
-  console.log('No affected workspaces.');
+  outSync('No affected workspaces.');
   process.exit(0);
 }
 
 const tasks = [];
 for (const ws of affected) {
-  if (excludes.has(ws.name)) { console.log(`(excluded ${ws.name})`); continue; }
+  if (excludes.has(ws.name)) { outSync(`(excluded ${ws.name})`); continue; }
   if (ws.scripts.test) tasks.push({ ws, script: 'test' });
   // Static drift check between el-agent-sync TOOLS list and the
   // commands registry. Cheap (no network), catches the runtime crash
@@ -364,13 +371,13 @@ for (const ws of affected) {
 }
 
 if (!tasks.length) {
-  console.log(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
+  outSync(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
   process.exit(0);
 }
 
-console.log(`Affected workspaces (${affected.length}): ${affected.map((w) => w.name).join(', ')}`);
-console.log(`Running ${tasks.length} task(s):`);
-for (const t of tasks) console.log(`  - ${t.ws.name} :: ${t.script}`);
+outSync(`Affected workspaces (${affected.length}): ${affected.map((w) => w.name).join(', ')}`);
+outSync(`Running ${tasks.length} task(s):`);
+for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
 
 if (dry) process.exit(0);
 
@@ -401,7 +408,7 @@ const currentLoad1 = loadavg()[0];
 const retryFailed =
   explicitRetryFailed != null ? explicitRetryFailed === '1' : currentLoad1 > AUTO_RETRY_LOAD1_THRESHOLD;
 if (explicitRetryFailed == null && retryFailed) {
-  console.log(
+  outSync(
     `>>> load1=${currentLoad1.toFixed(0)} > ${AUTO_RETRY_LOAD1_THRESHOLD} — auto-enabling flake-absorbing retry ` +
       `(EI-9103; set AFFECTED_RETRY_FAILED=0 to force fail-fast anyway)`,
   );
@@ -445,7 +452,7 @@ const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a f
 // outcome for a release check.
 const npmAvailable = spawnSync('npm', ['--version'], { stdio: 'ignore' }).status === 0;
 if (!npmAvailable) {
-  console.log("note: npm not found (packaged install?) — running each workspace's script directly.");
+  outSync("note: npm not found (packaged install?) — running each workspace's script directly.");
 }
 
 /**
@@ -488,7 +495,7 @@ let failed = 0;
 let quarantinedFailed = 0;
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
-  console.log(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
+  outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
   // Under retryFailed we must capture output to learn WHICH files failed; the
   // interactive path keeps stdio:'inherit' for live streaming.
   const run = (extraArgs = []) => {
@@ -497,31 +504,31 @@ for (const t of tasks) {
     // A full vitest suite emits far beyond spawnSync's 1MB default maxBuffer —
     // an ENOBUFS-killed child would read as a failure. 256MB clears any suite.
     const r = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-    if (r.error) console.error(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
-    process.stdout.write(r.stdout ?? '');
-    process.stderr.write(r.stderr ?? '');
+    if (r.error) errSync(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
+    writeAllSync(1, r.stdout ?? '');
+    writeAllSync(2, r.stderr ?? '');
     return r;
   };
   let r = run();
   if (r.status !== 0 && retryFailed && !isQuarantined) {
     const failedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
     if (failedFiles.length > 0 && failedFiles.length <= FRESH_RETRY_MAX_FILES) {
-      console.warn(
+      errSync(
         `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(', ')}`,
       );
       r = run(failedFiles);
       if (r.status === 0)
-        console.warn(`>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`);
+        errSync(`>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`);
     } else {
-      console.warn(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
+      errSync(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
       r = run();
-      if (r.status === 0) console.warn(`>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`);
+      if (r.status === 0) errSync(`>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`);
     }
   }
   if (r.status !== 0) {
     if (isQuarantined) {
       quarantinedFailed++;
-      console.warn(`  (quarantined failure — not gating)`);
+      errSync(`  (quarantined failure — not gating)`);
     } else {
       failed++;
     }
@@ -533,7 +540,7 @@ for (const t of tasks) {
 // The reporter records test results in harness_shared.test_runs (framework='cargo')
 // so the Tests tab covers the desktop shell. Fail-soft per D-007: never affects
 // the overall exit code, only the ledger write.
-console.log(`\n>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suite)...`);
+outSync(`\n>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suite)...`);
 try {
   const cargoReporter = resolve(ROOT, 'scripts', 'report-cargo-tests.mjs');
   const cargoManifest = resolve(ROOT, 'papercusp-desktop', 'src-tauri', 'Cargo.toml');
@@ -542,21 +549,21 @@ try {
     stdio: 'inherit',
   });
   if (cargoRun.status !== 0) {
-    console.error(`>>> cargo test suite exited with code ${cargoRun.status}`);
+    errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
     if (!quarantined.has('papercusp-desktop')) {
       failed++;
     }
   }
 } catch (err) {
-  console.error(`>>> cargo test runner error: ${err.message}`);
+  errSync(`>>> cargo test runner error: ${err.message}`);
   failed++;
 }
 
 if (quarantinedFailed) {
-  console.warn(`\n${quarantinedFailed} quarantined task(s) failed (not gating).`);
+  errSync(`\n${quarantinedFailed} quarantined task(s) failed (not gating).`);
 }
 if (failed) {
-  console.error(`\n${failed} non-quarantined task(s) failed.`);
+  errSync(`\n${failed} non-quarantined task(s) failed.`);
   process.exit(1);
 }
-console.log('\nAll affected tests passed.');
+outSync('\nAll affected tests passed.');
