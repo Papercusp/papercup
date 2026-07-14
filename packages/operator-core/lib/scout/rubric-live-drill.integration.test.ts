@@ -40,7 +40,7 @@ describe('runBlenderRubricDrill — deployed production entry', () => {
     _resetUrlCacheForTests();
     await _resetForTests();
     await registerHarnessProject(db.adminSql, WS, HARNESS);
-  });
+  }, 180_000);
 
   afterAll(async () => {
     for (const [key, value] of Object.entries(saved)) {
@@ -50,7 +50,7 @@ describe('runBlenderRubricDrill — deployed production entry', () => {
     _resetUrlCacheForTests();
     await _resetForTests();
     await db?.cleanup();
-  });
+  }, 180_000);
 
   it('routes + grades a drill-only rubric idea without changing organic metrics', async () => {
     const result = await runBlenderRubricDrill({
