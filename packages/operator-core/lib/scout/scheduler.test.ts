@@ -36,14 +36,32 @@ function makeDeps(over: Partial<ScoutTickDeps> & { state?: Partial<ScoutCadenceS
   };
   const deps: ScoutTickDeps = {
     readCadenceState: async () => ({ idleRatio: 1, frictionSignals: 0, lastRunAtMs: null, nowMs: NOW, ...over.state }),
-    runCycle: over.runCycle ?? (async ({ budget }) => {
-      calls.ranBudget = budget.maxCostUsd;
-      return fakeCycle([{ ideaId: 'i1', lens: 'analogical', rail: 'gym', routedRef: 'gym:1' }]);
-    }),
-    persistRouted: over.persistRouted ?? (async () => { calls.persisted += 1; }),
-    recordFire: over.recordFire ?? (async (o) => { calls.fire.push(o); }),
-    refreshOutcomes: over.refreshOutcomes ?? (async () => { calls.refreshed += 1; }),
-    recordTick: over.recordTick ?? (async (rec) => { calls.ticks.push(rec); }),
+    runCycle:
+      over.runCycle ??
+      (async ({ budget }) => {
+        calls.ranBudget = budget.maxCostUsd;
+        return fakeCycle([{ ideaId: 'i1', lens: 'analogical', rail: 'gym', routedRef: 'gym:1' }]);
+      }),
+    persistRouted:
+      over.persistRouted ??
+      (async () => {
+        calls.persisted += 1;
+      }),
+    recordFire:
+      over.recordFire ??
+      (async (o) => {
+        calls.fire.push(o);
+      }),
+    refreshOutcomes:
+      over.refreshOutcomes ??
+      (async () => {
+        calls.refreshed += 1;
+      }),
+    recordTick:
+      over.recordTick ??
+      (async (rec) => {
+        calls.ticks.push(rec);
+      }),
     ...(over.fireGate ? { fireGate: over.fireGate } : {}),
     newCycleId: over.newCycleId ?? (() => 'cyc-1'),
   };
@@ -74,7 +92,9 @@ describe('runScoutTick (P-008)', () => {
   });
 
   it('short-circuits when the autoloop fire-gate denies (circuit open)', async () => {
-    const { deps, calls } = makeDeps({ fireGate: async () => ({ allow: false, reason: 'circuit-open', retryAfterSec: 3600 }) });
+    const { deps, calls } = makeDeps({
+      fireGate: async () => ({ allow: false, reason: 'circuit-open', retryAfterSec: 3600 }),
+    });
     const r = await runScoutTick(deps);
     expect(r.fired).toBe(false);
     expect(r.reason).toBe('circuit');
@@ -84,7 +104,11 @@ describe('runScoutTick (P-008)', () => {
   });
 
   it('records attempt+error and reports cycle-error when the cycle throws', async () => {
-    const { deps, calls } = makeDeps({ runCycle: async () => { throw new Error('llm exploded'); } });
+    const { deps, calls } = makeDeps({
+      runCycle: async () => {
+        throw new Error('llm exploded');
+      },
+    });
     const r = await runScoutTick(deps);
     expect(r.fired).toBe(false);
     expect(r.reason).toBe('cycle-error');
@@ -182,11 +206,62 @@ describe('runScoutTick — tick observability (P-034)', () => {
   });
 
   it('records an error tick (with the message) when the cycle throws', async () => {
-    const { deps, calls } = makeDeps({ runCycle: async () => { throw new Error('llm exploded'); } });
+    const { deps, calls } = makeDeps({
+      runCycle: async () => {
+        throw new Error('llm exploded');
+      },
+    });
     await runScoutTick(deps);
     expect(calls.ticks).toHaveLength(1);
     expect(calls.ticks[0].status).toBe('error');
-    expect(calls.ticks[0].detail).toMatchObject({ cycleId: 'cyc-1', error: 'llm exploded' });
+    expect(calls.ticks[0].detail).toMatchObject({
+      cycleId: 'cyc-1',
+      error: 'llm exploded',
+      capacityClassifierVersion: 1,
+    });
+  });
+
+  it('persists a typed no-free-slot denial as a loud versioned error', async () => {
+    const denial = Object.assign(new Error('admission unavailable'), {
+      admissionDenial: { reason: 'no-free-slot' as const, freeSlots: 0 },
+    });
+    const { deps, calls } = makeDeps({
+      runCycle: async () => {
+        throw denial;
+      },
+    });
+    const r = await runScoutTick(deps);
+    expect(r.reason).toBe('cycle-error');
+    expect(calls.ticks[0]).toMatchObject({
+      status: 'error',
+      detail: {
+        error: 'admission unavailable',
+        capacityClassifierVersion: 1,
+        admissionDenial: { reason: 'no-free-slot', freeSlots: 0 },
+      },
+    });
+  });
+
+  it('persists typed pool exhaustion as a versioned no-capacity gate', async () => {
+    const denial = Object.assign(new Error('pool exhausted'), {
+      admissionDenial: { reason: 'all-accounts-paused' as const, pausedAccounts: 3, freeSlots: 0 },
+    });
+    const { deps, calls } = makeDeps({
+      runCycle: async () => {
+        throw denial;
+      },
+    });
+    const r = await runScoutTick(deps);
+    expect(r.reason).toBe('no-capacity');
+    expect(calls.ticks[0]).toMatchObject({
+      status: 'gated',
+      gate: 'no-capacity',
+      detail: {
+        error: 'pool exhausted',
+        capacityClassifierVersion: 1,
+        admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 },
+      },
+    });
   });
 
   it('records an error tick, aborts the cycle, and releases the fire as error when the cycle times out', async () => {
@@ -216,7 +291,9 @@ describe('runScoutTick — tick observability (P-034)', () => {
   });
 
   it('is best-effort: a throwing recorder never fails the tick (gated and ran paths)', async () => {
-    const boom = vi.fn(async () => { throw new Error('pg down'); });
+    const boom = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     const ran = await runScoutTick(makeDeps({ recordTick: boom }).deps);
     expect(ran.fired).toBe(true);
     const gated = await runScoutTick(
@@ -252,7 +329,11 @@ describe('runScoutTick — gate ordering + uncovered exits (scout-loop-test-plan
   });
 
   it('reports cycle-error (attempt+error) when provenance persistence fails after a good cycle', async () => {
-    const { deps, calls } = makeDeps({ persistRouted: async () => { throw new Error('pg down'); } });
+    const { deps, calls } = makeDeps({
+      persistRouted: async () => {
+        throw new Error('pg down');
+      },
+    });
     const r = await runScoutTick(deps);
     expect(r.fired).toBe(false);
     expect(r.reason).toBe('cycle-error');
@@ -268,7 +349,7 @@ describe('runScoutTick — gate ordering + uncovered exits (scout-loop-test-plan
   });
 
   it('tolerates a cycle result with no provenance field (defensive ?? [])', async () => {
-    const { deps, calls } = makeDeps({ runCycle: async () => ({} as ScoutCycleLike) });
+    const { deps, calls } = makeDeps({ runCycle: async () => ({}) as ScoutCycleLike });
     const r = await runScoutTick(deps);
     expect(r.fired).toBe(true);
     expect(r.routedCount).toBe(0);
@@ -458,7 +539,7 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
         idleRatio: opts.idleRatio ?? 0,
         frictionSignals: 0,
         // honor an EXPLICIT null (never-run); default 1m-ago so the normal floor would gate
-        lastRunAtMs: 'lastRunAtMs' in opts ? opts.lastRunAtMs ?? null : NOW - 60_000,
+        lastRunAtMs: 'lastRunAtMs' in opts ? (opts.lastRunAtMs ?? null) : NOW - 60_000,
         nowMs: NOW,
       }),
       readQueenFeedback: async () => {
@@ -517,7 +598,11 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
   });
 
   it('a throwing readQueenFeedback is swallowed — falls back to normal cadence', async () => {
-    const { deps } = depsWithFeedback({ feedback: [item('x-2026-06-20')], readThrows: true, lastRunAtMs: NOW - 60_000 });
+    const { deps } = depsWithFeedback({
+      feedback: [item('x-2026-06-20')],
+      readThrows: true,
+      lastRunAtMs: NOW - 60_000,
+    });
     const r = await runScoutTick(deps, { cadence: { minIntervalSec: 3600 } });
     // the read threw → no feedback → the 1m-ago run is gated by the floor
     expect(r.fired).toBe(false);

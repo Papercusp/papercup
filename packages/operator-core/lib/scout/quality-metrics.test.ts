@@ -75,7 +75,15 @@ function outcomesFor<L extends string>(
       const decided = won + lost;
       return [
         l,
-        { lens: l, routed: won + lost + pending, won, lost, pending, winRate: decided > 0 ? won / decided : null, weight: 1 / lenses.length },
+        {
+          lens: l,
+          routed: won + lost + pending,
+          won,
+          lost,
+          pending,
+          winRate: decided > 0 ? won / decided : null,
+          weight: 1 / lenses.length,
+        },
       ];
     }),
   ) as LensOutcomeReport<L>['byLens'];
@@ -112,9 +120,7 @@ describe('computeScoutQualityReport', () => {
     expect(r.ideaToShippedConversion).toBeNull();
     expect(r.costPerAcceptedIdeaUsd).toBeNull();
     // All four gates — incl. 'claim-lost' — always present, zeroed.
-    expect(r.gatedTickBreakdown).toEqual(
-      Object.fromEntries(SCOUT_TICK_GATES.map((g) => [g, 0])),
-    );
+    expect(r.gatedTickBreakdown).toEqual(Object.fromEntries(SCOUT_TICK_GATES.map((g) => [g, 0])));
     for (const l of CREATIVE_LENSES) expect(r.perLensWinRates[l]).toBeNull();
   });
 
@@ -149,9 +155,7 @@ describe('computeScoutQualityReport', () => {
   });
 
   it('ideaToShippedConversion is null when no ideas were generated (even with wins on the books)', () => {
-    const r = computeScoutQualityReport(
-      inputs({ lensOutcomes: outcomes({ analogical: { won: 2 } }) }),
-    );
+    const r = computeScoutQualityReport(inputs({ lensOutcomes: outcomes({ analogical: { won: 2 } }) }));
     expect(r.ideaToShippedConversion).toBeNull();
   });
 
@@ -251,11 +255,24 @@ describe('computeScoutQualityReport', () => {
           // a genuine failure — stays an error
           tick({ status: 'error', detail: { error: 'ideator transport death: 401 unauthorized' } }),
           // typed capacity failures — fold into no-capacity
-          tick({ status: 'error', detail: { error: 'opaque admission failure', admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 } } }),
-          tick({ status: 'error', detail: { error: 'opaque provider failure', admissionDenial: { reason: 'provider-429' } } }),
+          tick({
+            status: 'error',
+            detail: {
+              error: 'opaque admission failure',
+              admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 },
+            },
+          }),
+          tick({
+            status: 'error',
+            detail: { error: 'opaque provider failure', admissionDenial: { reason: 'provider-429' } },
+          }),
           // a LIVE capacity failure (post-reclassification write) already arrives gated —
           // it must land in the SAME bucket, and each tick is counted exactly once.
-          tick({ status: 'gated', gate: 'no-capacity', detail: { error: 'opaque admission failure', admissionDenial: { reason: 'all-accounts-paused' } } }),
+          tick({
+            status: 'gated',
+            gate: 'no-capacity',
+            detail: { error: 'opaque admission failure', admissionDenial: { reason: 'all-accounts-paused' } },
+          }),
         ],
       }),
     );
@@ -265,6 +282,40 @@ describe('computeScoutQualityReport', () => {
     expect(r.gatedTickBreakdown['no-capacity']).toBe(3);
     // Denominator is unchanged — a no-capacity tick is still a tick.
     expect(r.totalTicks).toBe(5);
+  });
+
+  it('keeps legacy fallback behind the per-row classifier-version boundary', () => {
+    const r = computeScoutQualityReport(
+      inputs({
+        ticks: [
+          // These rows predate the typed carrier and are the exact persisted legacy signatures.
+          tick({ status: 'error', detail: { error: 'rate-limit pause exceeds maxWait' } }),
+          tick({
+            status: 'error',
+            detail: {
+              error:
+                'scout: all 1 ideator LLM call(s) failed — transport death: 429 {"error":{"type":"rate_limit_error"}}',
+            },
+          }),
+          // The same prose on a current row is NOT evidence; new writers must carry a typed denial.
+          tick({
+            status: 'error',
+            detail: { error: 'rate-limit pause exceeds maxWait', capacityClassifierVersion: 1 },
+          }),
+          // Typed current evidence still classifies as capacity.
+          tick({
+            status: 'error',
+            detail: {
+              error: 'opaque',
+              capacityClassifierVersion: 1,
+              admissionDenial: { reason: 'provider-429' },
+            },
+          }),
+        ],
+      }),
+    );
+    expect(r.errorTicks).toBe(1);
+    expect(r.gatedTickBreakdown['no-capacity']).toBe(3);
   });
 
   it('an error tick with no detail message stays a genuine error (no false capacity reclassification)', () => {
@@ -349,9 +400,7 @@ describe('evaluateQualityDegradation', () => {
       { triageAcceptanceRate: 0.1 },
     );
     expect(v.degraded).toBe(true);
-    expect(v.breaches).toEqual([
-      { metric: 'triageAcceptanceRate', baseline: 0.8, current: 0.65 },
-    ]);
+    expect(v.breaches).toEqual([{ metric: 'triageAcceptanceRate', baseline: 0.8, current: 0.65 }]);
   });
 
   it('cost uses a RELATIVE band: at +50% not degraded, past it degraded', () => {
@@ -368,9 +417,7 @@ describe('evaluateQualityDegradation', () => {
       { costPerAcceptedIdeaUsd: 0.5 },
     );
     expect(past.degraded).toBe(true);
-    expect(past.breaches).toEqual([
-      { metric: 'costPerAcceptedIdeaUsd', baseline: 2, current: 3.01 },
-    ]);
+    expect(past.breaches).toEqual([{ metric: 'costPerAcceptedIdeaUsd', baseline: 2, current: 3.01 }]);
   });
 
   it('a per-lens win-rate drop breaches with the perLensWinRates.<lens> metric name', () => {
@@ -381,9 +428,7 @@ describe('evaluateQualityDegradation', () => {
       { perLensWinRate: 0.2 },
     );
     expect(v.degraded).toBe(true);
-    expect(v.breaches).toEqual([
-      { metric: 'perLensWinRates.analogical', baseline: 0.7, current: 0.2 },
-    ]);
+    expect(v.breaches).toEqual([{ metric: 'perLensWinRates.analogical', baseline: 0.7, current: 0.2 }]);
   });
 
   it('a null CURRENT metric is skipped (cannot degrade into "unmeasured")', () => {
@@ -484,9 +529,7 @@ describe('checkAndFlagQuality', () => {
     await checkAndFlagQuality(deps); // same degradation re-checked → identical title
     expect(titles).toHaveLength(2);
     expect(titles[0]).toBe(titles[1]);
-    expect(titles[0]).toBe(
-      'Scout quality degradation: costPerAcceptedIdeaUsd, triageAcceptanceRate',
-    );
+    expect(titles[0]).toBe('Scout quality degradation: costPerAcceptedIdeaUsd, triageAcceptanceRate');
   });
 
   it('qualityBreachTitle sorts and dedups metric names', () => {

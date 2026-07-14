@@ -241,11 +241,12 @@ export function evaluateProgramSuccess(
   // Counts only genuine FAILURES. A cycle withheld because the LLM pool had no capacity is
   // gated ('no-capacity'), not errored — pool busy-ness is a resource ceiling, not breakage,
   // and counting it here is what pinned this bar at ~30%. The classification is applied on
-  // BOTH sides by the SAME pure predicate (capacity-errors.isCapacityError): the scheduler
-  // gates a LIVE capacity failure at write time, and computeScoutQualityReport re-classifies
-  // a HISTORICAL error tick the same way at read time — so this bar reflects real breakage
-  // regardless of when the write-path change went live, instead of staying red on legacy rows
-  // (WI-4475). The capacity gate is reported alongside so the pressure stays VISIBLE rather
+  // BOTH sides through capacity-errors: the scheduler gates a LIVE typed capacity failure at
+  // write time, while computeScoutQualityReport re-classifies a HISTORICAL unversioned error
+  // from the narrow legacy signatures. The persisted classifier version prevents current
+  // untyped failures from using that fallback — so this bar reflects real breakage across the
+  // carrier transition without hiding new admission-path defects (WI-4475/WI-4771). The
+  // capacity gate is reported alongside so the pressure stays VISIBLE rather
   // than reclassified out of sight: a high no-capacity count with a green error bar is a real
   // and actionable signal (the loop is healthy but the account pool is starved).
   const errorRate = report.totalTicks > 0 ? report.errorTicks / report.totalTicks : null;

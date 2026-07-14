@@ -142,9 +142,7 @@ export function computeScoutQualityReport<L extends string = CreativeLens>(
   let errorTicks = 0;
   let totalIdeasGenerated = 0;
   let totalSpendUsd = 0;
-  const gatedTickBreakdown: Record<string, number> = Object.fromEntries(
-    SCOUT_TICK_GATES.map((g) => [g, 0]),
-  );
+  const gatedTickBreakdown: Record<string, number> = Object.fromEntries(SCOUT_TICK_GATES.map((g) => [g, 0]));
 
   for (const t of inputs.ticks) {
     if (t.status === 'ran') {
@@ -155,9 +153,10 @@ export function computeScoutQualityReport<L extends string = CreativeLens>(
       gatedTickBreakdown[gate] = (gatedTickBreakdown[gate] ?? 0) + 1;
     } else if (t.status === 'error') {
       // WI-4475: re-classify a HISTORICAL capacity-failure tick the same way the
-      // scheduler now classifies a live one (isCapacityError — one classifier, two
-      // consumers). An error tick whose message is a pool-capacity ceiling is folded
-      // into the 'no-capacity' gate bucket, NOT counted as a genuine error — so the
+      // scheduler now classifies a live one. Typed evidence is authoritative on current
+      // rows; only an unversioned legacy row may use the old provider-ceiling signatures.
+      // A proven pool-capacity ceiling is folded into the 'no-capacity' gate bucket,
+      // NOT counted as a genuine error — so the
       // "error rate < 5%" bar reflects real breakage regardless of when the write-path
       // reclassification went live, instead of staying red on legacy rows for the ~10
       // days it takes them to age out of the window. Pool pressure stays VISIBLE (its
@@ -444,10 +443,7 @@ export interface BuildQualityInputsOptions extends ScoutLedgerOpts {
 export async function buildQualityReportInputs<L extends string = CreativeLens>(
   opts: BuildQualityInputsOptions & { lenses?: readonly L[] } = {},
 ): Promise<ScoutQualityInputs<L>> {
-  const [tickLedger, routedLedger] = await Promise.all([
-    import('./tick-ledger'),
-    import('./routed-ledger'),
-  ]);
+  const [tickLedger, routedLedger] = await Promise.all([import('./tick-ledger'), import('./routed-ledger')]);
   // `origin` (P-013) partitions ALL three reads to the same ledger slice — Scout
   // (default 'scout') or su-ideate. The ledger opt + the tick opt both default 'scout',
   // so an omitted origin is byte-identical to the pre-P-013 Scout read.

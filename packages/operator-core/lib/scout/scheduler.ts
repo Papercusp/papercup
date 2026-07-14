@@ -31,11 +31,7 @@ import { recordRoutedIdea } from './routed-ledger';
 import { refreshScoutOutcomes } from './routed-ledger';
 import { readIdeaQueueStatus } from './routed-ledger';
 import { recordScoutTick, readLastRanTickAtMs, type ScoutTickRecord } from './tick-ledger';
-import {
-  admissionDenialFrom,
-  CAPACITY_CLASSIFIER_SCHEMA_VERSION,
-  isCapacityError,
-} from './capacity-errors';
+import { admissionDenialFrom, CAPACITY_CLASSIFIER_SCHEMA_VERSION, isCapacityError } from './capacity-errors';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 import type { ScoutCyclePhase } from './cycle';
@@ -230,8 +226,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   // Overlay the queen-feedback signal onto the cadence state (readCadenceState owns
   // the fleet/ledger signals; the Queen-feedback channel is the scheduler's, so the
   // flag is merged here rather than coupling the cadence reader to coord).
-  const state: ScoutCadenceState =
-    queenFeedback.length > 0 ? { ...baseState, queenWakePending: true } : baseState;
+  const state: ScoutCadenceState = queenFeedback.length > 0 ? { ...baseState, queenWakePending: true } : baseState;
   const verdict = shouldRunScoutCycle(state, opts.cadence);
   if (!verdict.fire) {
     await note({
@@ -266,8 +261,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     // (autoloop_state.last_fired_at), which is NOT the cadence clock (lastRunAtMs =
     // last RUN). Use fireSlotLastMs when the production wiring supplies it; fall
     // back to lastRunAtMs for the unit-test fakes that model a single shared clock.
-    const claimExpected =
-      state.fireSlotLastMs !== undefined ? state.fireSlotLastMs : state.lastRunAtMs;
+    const claimExpected = state.fireSlotLastMs !== undefined ? state.fireSlotLastMs : state.lastRunAtMs;
     const claimed = await deps.claimFire(claimExpected ?? null);
     if (!claimed) {
       await note({ status: 'gated', gate: 'claim-lost' });
@@ -289,16 +283,17 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     const cycleTimeoutMs = opts.cycleTimeoutMs ?? scoutCycleTimeoutMs();
     const deadlineMs = Date.now() + cycleTimeoutMs;
     const cycle = await withScoutCycleTimeout(
-      (signal) => deps.runCycle({
-        budget,
-        cycleId,
-        ...(queenFeedback.length > 0 ? { queenFeedback } : {}),
-        signal,
-        deadlineMs,
-        onPhase: (phase) => {
-          activePhase = phase;
-        },
-      }),
+      (signal) =>
+        deps.runCycle({
+          budget,
+          cycleId,
+          ...(queenFeedback.length > 0 ? { queenFeedback } : {}),
+          signal,
+          deadlineMs,
+          onPhase: (phase) => {
+            activePhase = phase;
+          },
+        }),
       cycleTimeoutMs,
       () => activePhase,
     );
@@ -321,8 +316,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
       status: 'ran',
       ideasGenerated: cycle.ideas?.length ?? 0,
       ideasRouted: provenance.length,
-      ideasDeduped:
-        cycle.scored && cycle.survivors ? Math.max(0, cycle.scored.length - cycle.survivors.length) : 0,
+      ideasDeduped: cycle.scored && cycle.survivors ? Math.max(0, cycle.scored.length - cycle.survivors.length) : 0,
       ...(cycle.costUsd != null ? { budgetUsedUsd: cycle.costUsd } : {}),
       detail: {
         cycleId,

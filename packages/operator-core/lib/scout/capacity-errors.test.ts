@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { admissionDenialFrom, isCapacityError } from './capacity-errors';
+import {
+  admissionDenialFrom,
+  CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+  isCapacityError,
+  isLegacyCapacityError,
+  isPersistedCapacityError,
+} from './capacity-errors';
 
 /**
  * capacity-errors is a one-function leaf module, but it is a LOAD-BEARING one: it decides
@@ -20,7 +26,9 @@ import { admissionDenialFrom, isCapacityError } from './capacity-errors';
  */
 describe('isCapacityError — the pool genuinely had nothing to give', () => {
   it('matches a typed all-accounts-paused denial', () => {
-    expect(isCapacityError({ admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 } })).toBe(true);
+    expect(
+      isCapacityError({ admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 } }),
+    ).toBe(true);
   });
 
   it('matches a typed provider-429 denial', () => {
@@ -28,10 +36,12 @@ describe('isCapacityError — the pool genuinely had nothing to give', () => {
   });
 
   it('recovers the typed denial from an LlmCallError-shaped value', () => {
-    expect(admissionDenialFrom({ turn: { admissionDenial: { reason: 'all-accounts-paused', freeSlots: 0 } } })).toEqual({
-      reason: 'all-accounts-paused',
-      freeSlots: 0,
-    });
+    expect(admissionDenialFrom({ turn: { admissionDenial: { reason: 'all-accounts-paused', freeSlots: 0 } } })).toEqual(
+      {
+        reason: 'all-accounts-paused',
+        freeSlots: 0,
+      },
+    );
   });
 
   it('does not infer capacity from provider prose', () => {
@@ -72,5 +82,37 @@ describe('isCapacityError — an ADMISSION failure is NOT capacity (WI-4475 / WI
     expect(isCapacityError('TypeError: cannot read property "ideas" of undefined')).toBe(false);
     expect(isCapacityError('invalid JSON in ideator response')).toBe(false);
     expect(isCapacityError('')).toBe(false);
+  });
+});
+
+describe('persisted capacity classification across the typed-carrier transition', () => {
+  const legacy429 =
+    'scout: all 1 ideator LLM call(s) failed — transport death: 429 {"error":{"type":"rate_limit_error"}}';
+
+  it('recognizes only the historical provider-ceiling signatures in the compatibility helper', () => {
+    expect(isLegacyCapacityError({ error: 'rate-limit pause exceeds maxWait' })).toBe(true);
+    expect(isLegacyCapacityError({ error: legacy429 })).toBe(true);
+    expect(isLegacyCapacityError({ error: 'Scout ideator analogical timed out after 180000ms' })).toBe(false);
+    expect(isLegacyCapacityError({ error: 'no capacity within the cycle budget' })).toBe(false);
+  });
+
+  it('uses prose only for unversioned legacy rows', () => {
+    expect(isPersistedCapacityError({ error: legacy429 })).toBe(true);
+    expect(
+      isPersistedCapacityError({
+        error: legacy429,
+        capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+      }),
+    ).toBe(false);
+  });
+
+  it('keeps typed evidence authoritative regardless of the persisted version', () => {
+    expect(
+      isPersistedCapacityError({
+        error: 'opaque',
+        capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+        admissionDenial: { reason: 'all-accounts-paused' },
+      }),
+    ).toBe(true);
   });
 });

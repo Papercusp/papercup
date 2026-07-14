@@ -51,9 +51,7 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
 export function capacityClassifierVersionFrom(input: unknown): number | undefined {
   if (!input || typeof input !== 'object') return undefined;
   const value = input as Record<string, unknown>;
-  return typeof value.capacityClassifierVersion === 'number'
-    ? value.capacityClassifierVersion
-    : undefined;
+  return typeof value.capacityClassifierVersion === 'number' ? value.capacityClassifierVersion : undefined;
 }
 
 /**
