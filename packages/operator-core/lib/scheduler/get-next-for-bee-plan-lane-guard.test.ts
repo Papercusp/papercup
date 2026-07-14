@@ -69,8 +69,14 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
 
   it('fails closed when the bee already holds an active or parked claim (EI-11796)', async () => {
     sqlMock.mockImplementation(async (strings: unknown) => {
+      // getActiveClaimsForBee (claim-spec-store.ts) selects `feature_id AS id,
+      // item_kind AS kind ... WHERE ... taken_by = ...` — countActiveClaimsForBee
+      // is just `.length` of those rows, so the guard cares about ROW COUNT, not
+      // any literal "active_claims" column/alias (there isn't one). Match on
+      // `taken_by` (unique to this query among the ones this loop issues) and
+      // return one row to simulate the bee already holding a claim.
       const query = Array.isArray(strings) ? strings.join(' ') : '';
-      return query.includes('active_claims') ? [{ active_claims: 1 }] : [];
+      return query.includes('taken_by') ? [{ id: 'F-held', kind: 'feature' }] : [];
     });
 
     const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
@@ -100,7 +106,9 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
           },
         ];
       }
-      return query.includes('active_claims') ? [{ active_claims: 1 }] : [];
+      // One held claim (< the spec's maxConcurrentClaims:2 authored above) — the
+      // guard should let this one through. See the row-shape note above.
+      return query.includes('taken_by') ? [{ id: 'F-held', kind: 'feature' }] : [];
     });
     getNextWorkItemMock.mockResolvedValueOnce(claimResult('F-parallel'));
     planItemLaneBlockReasonMock.mockResolvedValueOnce(null);
