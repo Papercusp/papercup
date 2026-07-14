@@ -412,7 +412,14 @@ function NodeTitleInput({
   }, [row.title]);
 
 
+  // Set when a merge/delete has CONSUMED this input's text — the row is being
+  // archived, and every later save path (debounce timer, blur flush, unmount
+  // flush) must treat the edit as discarded or it writes the title onto the
+  // archived node and pushes a stray undo entry. Typing again re-arms saves.
+  const consumedRef = useRef(false);
+
   const { flush, cancel } = useDebouncedSave(text, async (v) => {
+    if (consumedRef.current) return;
     const next = v.trim();
     if (!next || next === displayTitle(row)) return;
     onSaveTitle(next);
@@ -474,6 +481,7 @@ function NodeTitleInput({
         // (timer or unmount) would both write the title onto the archived
         // node and push a stray undo entry on top of the merge batch.
         e.preventDefault();
+        consumedRef.current = true;
         cancel();
         if (text.length === 0 && isFolder(row)) onDeleteEmpty();
         else onMergeUp(text);
@@ -506,7 +514,10 @@ function NodeTitleInput({
       value={text}
       placeholder={isFolder(row) && !hasChildren ? 'New prompt…' : row.name}
       aria-label={`Title of ${displayTitle(row)}`}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        consumedRef.current = false;
+        setText(e.target.value);
+      }}
       onFocus={() => {
         focusedRef.current = true;
         onFocusRow();
