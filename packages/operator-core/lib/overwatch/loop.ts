@@ -57,6 +57,8 @@ import {
   OVERWATCH_ROLE,
   OVERWATCH_BLUEPRINT_ID,
   OVERWATCH_WAKE_TARGET_ACTION,
+  OVERWATCH_INVOKE_TIMEOUT_MS as OVERWATCH_TURN_TIMEOUT_MS,
+  OVERWATCH_SCORECARD_DEADLINE_GRACE_MS,
   declareOverwatchTimeWake,
   clearOverwatchTimeWake,
 } from "./liveness";
@@ -90,8 +92,7 @@ const OVERWATCH_LAUNCH_ACTION = OVERWATCH_WAKE_TARGET_ACTION.startsWith(
  *  died at the timeout with no turn (`timedOut=true, outLen≈750` in autoloop_state)
  *  and the role NEVER produced a scorecard. 480s still fails closed under the 600s
  *  wake cadence (no overlapping turns; overwatchMidTurn guards a slow one). */
-export const OVERWATCH_INVOKE_TIMEOUT_MS = 480_000;
-const OVERWATCH_SCORECARD_DEADLINE_GRACE_MS = 15_000;
+export const OVERWATCH_INVOKE_TIMEOUT_MS = OVERWATCH_TURN_TIMEOUT_MS;
 
 /** Input to the overwatch launch fire — the resolved role + the computed brief. */
 export interface OverwatchLaunchFireInput {

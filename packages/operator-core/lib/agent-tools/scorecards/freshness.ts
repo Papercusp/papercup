@@ -69,6 +69,7 @@ export default defineTool({
         loopStale: boolean;
         lastRunAt: string | null;
         cadenceSec: number;
+        inFlight: boolean;
       };
       interpretation?: ReturnType<typeof interpretOverwatchEmission>;
     } = { ok: true, freshness };
@@ -90,6 +91,7 @@ export default defineTool({
           loopStale: liveness.stale,
           lastRunAt: liveness.lastRunAt,
           cadenceSec: liveness.cadenceSec,
+          inFlight: liveness.inFlight,
         };
         out.overwatch = overwatch;
         out.interpretation = interpretOverwatchEmission(freshness.status, overwatch);

@@ -42,7 +42,12 @@ import {
   listStartedOverwatches,
   DEFAULT_OVERWATCH_CADENCE_SEC,
 } from "./control-state";
-import { overwatchLivenessCheck, OVERWATCH_ROLE } from "./liveness";
+import {
+  overwatchLivenessCheck,
+  OVERWATCH_ROLE,
+  OVERWATCH_INVOKE_TIMEOUT_MS,
+  OVERWATCH_SCORECARD_DEADLINE_GRACE_MS,
+} from "./liveness";
 
 /** Reuse the shared SystemHealth cache when it is at most this fresh (matches the
  *  Health tab's read floor); past it, warm the cache with one tick. */
@@ -200,6 +205,11 @@ export function deriveOverwatchLiveness(input: {
   const nextMs = lastMs != null ? lastMs + cadenceSec * 1000 : null;
   const enabledLoop = started && flagEnabled;
   const staleThresholdMs = cadenceSec * 1000 * STALE_CADENCE_MULTIPLE;
+  const inFlight =
+    fire.lastStatus === "firing" &&
+    ageMs != null &&
+    ageMs <=
+      OVERWATCH_INVOKE_TIMEOUT_MS + OVERWATCH_SCORECARD_DEADLINE_GRACE_MS;
 
   // ALIVE = the loop is meant to be running AND it has fired within the stale
   // window. STALE = meant to be running but the last fire is past the window
@@ -228,6 +238,7 @@ export function deriveOverwatchLiveness(input: {
     lastStatus: fire.lastStatus,
     consecutiveErrors: fire.consecutiveErrors,
     ageMs,
+    inFlight,
     nextRunAt: nextMs != null ? new Date(nextMs).toISOString() : null,
     nextRunInMs: nextMs != null ? nextMs - now : null,
     alive,

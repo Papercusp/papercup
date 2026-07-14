@@ -38,7 +38,12 @@ vi.mock('./control-state', () => ({
   listStartedOverwatches: h.listStartedOverwatches,
   DEFAULT_OVERWATCH_CADENCE_SEC: 600,
 }));
-vi.mock('./liveness', () => ({ overwatchLivenessCheck: h.overwatchLivenessCheck }));
+vi.mock('./liveness', () => ({
+  overwatchLivenessCheck: h.overwatchLivenessCheck,
+  OVERWATCH_ROLE: 'kettle',
+  OVERWATCH_INVOKE_TIMEOUT_MS: 480_000,
+  OVERWATCH_SCORECARD_DEADLINE_GRACE_MS: 15_000,
+}));
 vi.mock('./compute-brief', () => ({
   mapSystemHealthToBrief: h.mapSystemHealthToBrief,
   withAnomalies: h.withAnomalies,
@@ -47,7 +52,11 @@ vi.mock('@papercusp/flags', () => ({ FLAGS: { OVERWATCH: 'papercusp-overwatch' }
 vi.mock('@papercusp/flags/server', () => ({ getFlag: h.getFlag }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: h.getOrgPg }));
 
-import { getOverwatchSnapshot, getOverwatchControlState } from './snapshot';
+import {
+  deriveOverwatchLiveness,
+  getOverwatchSnapshot,
+  getOverwatchControlState,
+} from './snapshot';
 
 /** A minimal SystemHealth — the mapper is mocked, so only the slug-resolution
  *  path (panels.queen.data.potSlug) + evaluatedAt are read here. */
@@ -159,5 +168,37 @@ describe('getOverwatchControlState', () => {
       staleForMs: null,
     });
     expect(h.getOverwatchStarted).not.toHaveBeenCalled();
+  });
+});
+
+describe('deriveOverwatchLiveness', () => {
+  const firedAt = new Date('2026-07-13T20:23:40.000Z');
+
+  it('keeps a firing turn in-flight through the launcher timeout even when a short cadence is stale', () => {
+    const out = deriveOverwatchLiveness({
+      potSlug: 'papercusp',
+      started: true,
+      flagEnabled: true,
+      cadenceSec: 120,
+      fire: { lastFiredAt: firedAt, lastStatus: 'firing', consecutiveErrors: 0 },
+      now: firedAt.getTime() + 300_000,
+    });
+
+    expect(out.stale).toBe(true);
+    expect(out.inFlight).toBe(true);
+  });
+
+  it('expires the in-flight state after the launcher timeout and scorecard grace', () => {
+    const out = deriveOverwatchLiveness({
+      potSlug: 'papercusp',
+      started: true,
+      flagEnabled: true,
+      cadenceSec: 120,
+      fire: { lastFiredAt: firedAt, lastStatus: 'firing', consecutiveErrors: 0 },
+      now: firedAt.getTime() + 495_001,
+    });
+
+    expect(out.inFlight).toBe(false);
+    expect(out.stale).toBe(true);
   });
 });

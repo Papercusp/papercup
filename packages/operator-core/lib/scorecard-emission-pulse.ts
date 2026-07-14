@@ -417,6 +417,7 @@ export async function checkOverwatchEmissionWedge(
       loopAlive: live.alive,
       loopStale: live.stale,
       lastRunAt: live.lastRunAt,
+      inFlight: live.inFlight,
     };
     const interp = interpretOverwatchEmission(f.status, ctx);
     if (!interp.actionable) {

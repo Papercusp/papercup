@@ -200,6 +200,20 @@ describe('interpretOverwatchEmission — WI-1724 self-interpreting freshness ver
     expect(r.note).toContain('2026-07-02T21:07:19.000Z'); // surfaces the last-run time
   });
 
+  it('stale + bounded turn in flight ⇒ turn-in-flight, NON-actionable even past a short cadence window', () => {
+    const r = interpretOverwatchEmission('stale', {
+      flagEnabled: true,
+      started: true,
+      loopAlive: false,
+      loopStale: true,
+      lastRunAt: '2026-07-13T20:23:40.000Z',
+      inFlight: true,
+    });
+    expect(r.verdict).toBe('turn-in-flight');
+    expect(r.actionable).toBe(false);
+    expect(r.note).toContain('IN FLIGHT');
+  });
+
   it('stale + started+enabled + loop never fired ⇒ loop-dead (lastRunAt null renders "never")', () => {
     const r = interpretOverwatchEmission('stale', {
       flagEnabled: true,

@@ -240,6 +240,7 @@ function livenessResult(over: Partial<OverwatchLiveness> = {}): OverwatchLivenes
     lastStatus: 'ok',
     consecutiveErrors: 0,
     ageMs: 30_000,
+    inFlight: false,
     nextRunAt: '2026-07-10T18:10:00Z',
     nextRunInMs: 570_000,
     alive: true,
@@ -296,6 +297,24 @@ describe('checkOverwatchEmissionWedge (WI-3777 cadence-miss escalation)', () => 
     expect(r.verdict).toBe('loop-dead');
     expect(escalate).toHaveBeenCalledTimes(1);
     expect((escalate.mock.calls[0][0] as EmissionWedgeEscalation).lastRunAt).toBe('2026-07-10T17:30:00Z');
+  });
+
+  it('loop cadence reads STALE while a bounded turn is in flight → skipped, not a false wedge', async () => {
+    const { deps, escalate, recordFire } = mkWedgeDeps({
+      liveness: (async () =>
+        livenessResult({
+          alive: false,
+          stale: true,
+          lastStatus: 'firing',
+          ageMs: 300_000,
+          inFlight: true,
+        })) as never,
+    });
+    const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('skipped');
+    expect(r.verdict).toBe('turn-in-flight');
+    expect(escalate).not.toHaveBeenCalled();
+    expect(recordFire).not.toHaveBeenCalled();
   });
 
   it('the startup-race guard: loop NEVER fired (ageMs null) → skipped, NOT a wedge, no escalation', async () => {

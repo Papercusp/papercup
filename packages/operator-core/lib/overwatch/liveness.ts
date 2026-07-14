@@ -59,6 +59,14 @@ export const OVERWATCH_WAKE_ROUTINE_NAME = "overwatch-wake";
  */
 export const OVERWATCH_WAKE_TARGET_ACTION = "system:overwatch-launch";
 
+/**
+ * A Kettle turn may legitimately outlive a short diagnostic/soak cadence. Keep the
+ * launch ceiling and the scorecard grace beside the shared liveness contract so
+ * launch, read surfaces, and monitor interpretation use one deadline.
+ */
+export const OVERWATCH_INVOKE_TIMEOUT_MS = 480_000;
+export const OVERWATCH_SCORECARD_DEADLINE_GRACE_MS = 15_000;
+
 /** The self-wake floor in seconds — env-tunable, hard min 5s (mirrors the hive). */
 export function overwatchWakeFloorSec(): number {
   const n = Number(process.env.PAPERCUSP_OVERWATCH_WAKE_FLOOR_SEC ?? 60);

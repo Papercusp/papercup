@@ -388,6 +388,10 @@ export interface OverwatchLiveness {
   consecutiveErrors: number;
   /** ms since the last fire, or null (never fired). */
   ageMs: number | null;
+  /** A bounded launch is currently running. This remains true through the launch
+   *  timeout + scorecard grace even when a short cadence's generic stale window
+   *  has elapsed. */
+  inFlight: boolean;
   /** Derived next-run estimate (lastRunAt + cadence), ISO-8601, or null if never fired. */
   nextRunAt: string | null;
   /** ms until the next estimated run (negative when overdue), or null if never fired. */

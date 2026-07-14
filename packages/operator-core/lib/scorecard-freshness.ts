@@ -138,6 +138,8 @@ export interface OverwatchEmissionContext {
   loopStale: boolean;
   /** the loop's last fire time (ISO), or null if it never fired */
   lastRunAt: string | null;
+  /** a bounded Kettle launch is still within its timeout + scorecard grace */
+  inFlight?: boolean;
 }
 
 /**
@@ -151,6 +153,7 @@ export type FreshnessVerdict =
   | 'fresh' // a complete scorecard landed in-window — mandate met
   | 'overwatch-disabled' // flag off — staleness EXPECTED, ignore
   | 'overwatch-not-started' // enabled but not started (pre-armed) — ignore until start
+  | 'turn-in-flight' // launch is still within its bounded completion window — wait for verdict
   | 'loop-dead' // started+enabled but the wake loop is stale/never-fired — REVIVE the loop
   | 'agent-skipping'; // loop firing but no COMPLETE scorecard — fix the AGENT (the D-005 case)
 
@@ -167,8 +170,8 @@ export interface FreshnessInterpretation {
  * verdict (WI-1724). Pure + deterministic (no PG / flags / clock) so it unit-tests exhaustively;
  * the `scorecards:freshness` tool supplies the live context via `getOverwatchLiveness`.
  *
- * Precedence (why the gap exists, most-benign first): disabled → not-started → dead loop →
- * skipping agent. `disabled`/`not-started` are NON-actionable (the emission gap is expected);
+ * Precedence (why the gap exists, most-benign first): disabled → not-started → turn-in-flight →
+ * dead loop → skipping agent. `disabled`/`not-started`/`turn-in-flight` are NON-actionable;
  * `loop-dead`/`agent-skipping` are actionable but point at DIFFERENT fixes (revive the loop vs.
  * fix the agent turn), which a bare `stale` could never distinguish.
  */
@@ -196,6 +199,13 @@ export function interpretOverwatchEmission(
       verdict: 'overwatch-not-started',
       actionable: false,
       note: 'Kettle is enabled but NOT started (pre-armed) — no emission is expected until kettle:start. Ignore.',
+    };
+  }
+  if (ctx.inFlight) {
+    return {
+      verdict: 'turn-in-flight',
+      actionable: false,
+      note: `Kettle fired at ${ctx.lastRunAt ?? 'an unknown time'} and its bounded turn is still IN FLIGHT — a complete scorecard is not due until the launch deadline. Re-check after the turn settles.`,
     };
   }
   if (ctx.loopStale || !ctx.loopAlive) {

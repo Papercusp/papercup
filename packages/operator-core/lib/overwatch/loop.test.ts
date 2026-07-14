@@ -29,6 +29,8 @@ vi.mock('./liveness', () => ({
   OVERWATCH_ROLE: 'kettle',
   OVERWATCH_BLUEPRINT_ID: 'coding',
   OVERWATCH_WAKE_TARGET_ACTION: 'system:overwatch-launch',
+  OVERWATCH_INVOKE_TIMEOUT_MS: 480_000,
+  OVERWATCH_SCORECARD_DEADLINE_GRACE_MS: 15_000,
   declareOverwatchTimeWake: (...a: unknown[]) => declareOverwatchTimeWake(...a),
   clearOverwatchTimeWake: (...a: unknown[]) => clearOverwatchTimeWake(...a),
 }));
