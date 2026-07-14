@@ -327,7 +327,7 @@ body.has-op-chat:has(.pc-qp) {
 }
 
 .pc-qp__newbtn:hover {
-  background: var(--accent-bg-hover, rgba(87, 215, 255, 0.22));
+  background: color-mix(in srgb, var(--accent-strong), transparent 78%);
 }
 
 .pc-qp__newbtn:focus-visible {
