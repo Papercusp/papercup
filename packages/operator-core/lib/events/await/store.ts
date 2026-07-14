@@ -718,6 +718,41 @@ export async function markDeliveryFailed(input: {
   return 'retrying';
 }
 
+/**
+ * Re-open a delivery that was optimistically marked delivered when a detached
+ * `resume-headless` process spawned, but whose turn later exited non-zero.
+ *
+ * This is deliberately separate from {@link markDeliveryFailed}: the
+ * synchronous failure path owns `delivering` rows, while this asynchronous
+ * capture-and-watch path may only revise a row that is still `delivered`.
+ */
+export async function reopenDeliveredAfterResumeDeath(input: {
+  id: number;
+  error: string;
+  maxAttempts: number;
+  backoffMs: number;
+}): Promise<'retrying' | 'dead' | 'ignored'> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ status: DeliveryStatus }>>`
+    UPDATE harness_shared.event_wake_deliveries
+       SET status = CASE WHEN attempts >= ${input.maxAttempts} THEN 'dead' ELSE 'pending' END,
+           channel = NULL,
+           delivered_at = NULL,
+           coalesced_count = 1,
+           last_error = ${input.error},
+           next_attempt_at = CASE
+             WHEN attempts >= ${input.maxAttempts} THEN next_attempt_at
+             ELSE now() + make_interval(secs => ${Math.ceil(input.backoffMs / 1000)})
+           END
+     WHERE id = ${input.id} AND status = 'delivered'
+    RETURNING status
+  `;
+  const status = rows[0]?.status;
+  if (status === 'dead') return 'dead';
+  if (status === 'pending') return 'retrying';
+  return 'ignored';
+}
+
 /** Defer a claimed row without burning its attempt as a failure (pacing). */
 export async function markDeliveryDeferred(id: number, deferMs: number): Promise<void> {
   const { sql } = getOrgPg();

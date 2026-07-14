@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
     markDeliveryParked: vi.fn(async () => {}),
     markDeliveryDropped: vi.fn(async () => {}),
     markDeliveryFailed: vi.fn(async () => 'retrying' as const),
+    reopenDeliveredAfterResumeDeath: vi.fn(async () => 'retrying' as const),
     markDeliveryDeferred: vi.fn(async () => {}),
     recoverStuckDeliveries: vi.fn(async () => 0),
     fireTimedOutAwaits: vi.fn(async (): Promise<unknown[]> => []),
@@ -213,6 +214,73 @@ describe('emitAwaitedEvent — WI-4014 Part 2: standing event-key inject subscri
 });
 
 describe('pumpWakeDeliveries — pacing (D-007)', () => {
+  it('reopens ordinary event deliveries when a headless resume dies after spawn', async () => {
+    const first = workRow({
+      id: 90,
+      subscriberId: 'su-a',
+      eventKey: 'release:green:papercusp',
+      source: 'green-checkpoint',
+      attempts: 2,
+      createdAt: new Date(1000).toISOString(),
+    });
+    const timeoutSibling = workRow({
+      id: 91,
+      subscriberId: 'su-a',
+      eventKey: 'green-checkpoint:red:papercusp',
+      source: null,
+      attempts: 2,
+      createdAt: new Date(2000).toISOString(),
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([first, timeoutSibling]);
+    h.executeWake.mockImplementationOnce(
+      async (d: DeliveryWork, deps: { onResumeTurnExit?: (d: DeliveryWork, exit: unknown) => void }) => {
+        // Reproduce the fast-exit race: the child dies before the pump finishes
+        // writing delivered/coalesced state.
+        deps.onResumeTurnExit?.(d, {
+          exitCode: 1,
+          signal: null,
+          stdoutTail: 'API Error: 429 · Rate limited',
+          stderrTail: '',
+        });
+        return { kind: 'delivered', channel: 'resume-headless' };
+      },
+    );
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(stats.delivered).toBe(1);
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(91, 'resume-headless', 2);
+    expect(h.store.markDeliveriesCoalesced).toHaveBeenCalledWith([90], 91);
+    await vi.waitFor(() => {
+      expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledTimes(2);
+    });
+    expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 90, error: 'resume-turn-death:rate_limited', maxAttempts: 8 }),
+    );
+    expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 91, error: 'resume-turn-death:rate_limited', maxAttempts: 8 }),
+    );
+    expect(h.store.markDeliveryDelivered.mock.invocationCallOrder[0]).toBeLessThan(
+      h.store.reopenDeliveredAfterResumeDeath.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not reopen loop deliveries because their circuit handler owns retry semantics', async () => {
+    const loop = workRow({ id: 92, subscriberId: 'su-loop', source: 'loop:r-1', attempts: 1 });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([loop]);
+    h.executeWake.mockImplementationOnce(
+      async (d: DeliveryWork, deps: { onResumeTurnExit?: (d: DeliveryWork, exit: unknown) => void }) => {
+        deps.onResumeTurnExit?.(d, { exitCode: 1, signal: null, stdoutTail: '', stderrTail: 'crashed' });
+        return { kind: 'delivered', channel: 'resume-headless' };
+      },
+    );
+
+    await pumpWakeDeliveries('ws-test');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.store.reopenDeliveredAfterResumeDeath).not.toHaveBeenCalled();
+  });
+
   it('per-subscriber coalesce: multiple due wakes for one agent fold into ONE wake', async () => {
     // Two events fire for su-a → ONE coalesced wake (the newest is the headline; the older
     // settles as coalesced, no second turn) — the unify-watch-primitive gap closing.

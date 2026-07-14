@@ -42,6 +42,7 @@ import {
   markDeliveryDropped,
   markDeliveryFailed,
   markDeliveryParked,
+  reopenDeliveredAfterResumeDeath,
   recoverStuckDeliveries,
 } from './store';
 import {
@@ -55,7 +56,7 @@ import {
 } from './compose-store';
 import { composedWakeSummary } from './compose-spec';
 import { executeWake, type ExecuteWakeDeps } from './wake-executor';
-import type { ResumeTurnExitRaw } from './resume-turn-outcome';
+import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { AwaitRow, DeliveryWork } from './types';
 import {
   recordTimeoutFires,
@@ -560,11 +561,26 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         }
       }
 
-      const outcome = await executeWake(coalesceDeliveries(group), {
+      const coalesced = coalesceDeliveries(group);
+      const downstreamOutcomeHandler = deps.onResumeTurnExit ?? resumeTurnOutcomeHandler ?? undefined;
+      let deliveryRowsSettled = false;
+      let earlyResumeExit: { d: DeliveryWork; exit: ResumeTurnExitRaw } | null = null;
+      const onResumeTurnExit = (d: DeliveryWork, exit: ResumeTurnExitRaw) => {
+        // A short-lived child can exit while the pump is still awaiting the
+        // delivered write. Buffer it so a re-open cannot be overwritten by
+        // that optimistic settlement.
+        if (!deliveryRowsSettled) {
+          earlyResumeExit = { d, exit };
+          return;
+        }
+        void handleSettledResumeTurnExit(group, d, exit, downstreamOutcomeHandler);
+      };
+
+      const outcome = await executeWake(coalesced, {
         ...deps,
-        // P0a: observe the detached resume turn's eventual exit (the loop turn-outcome
-        // handler registered the default). An explicit dep (tests) still wins.
-        onResumeTurnExit: deps.onResumeTurnExit ?? resumeTurnOutcomeHandler ?? undefined,
+        // Capture every detached resume outcome. Loop wakes keep their
+        // registered circuit handler; ordinary event wakes re-open on death.
+        onResumeTurnExit,
         // su-cold-auto P-007: the cold-auto master gate (default ON, owner-enabled) — only
         // read when a wake carries a cold loop marker. An explicit dep (tests) still wins.
         coldAutoEnabled: deps.coldAutoEnabled ?? defaultColdAutoEnabled,
@@ -577,6 +593,11 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         if (siblings.length > 0) {
           await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
           stats.coalesced += siblings.length;
+        }
+        deliveryRowsSettled = true;
+        if (earlyResumeExit) {
+          const observed = earlyResumeExit as { d: DeliveryWork; exit: ResumeTurnExitRaw };
+          void handleSettledResumeTurnExit(group, observed.d, observed.exit, downstreamOutcomeHandler);
         }
         log(`wake #${headline.id} delivered → ${subscriberId} via ${outcome.channel} (${group.length} event(s): ${group.map((d) => d.eventKey).join(', ')})`);
         continue;
@@ -658,6 +679,53 @@ let resumeTurnOutcomeHandler: ((d: DeliveryWork, exit: ResumeTurnExitRaw) => voi
 
 export function registerResumeTurnOutcomeHandler(fn: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void): void {
   resumeTurnOutcomeHandler = fn;
+}
+
+/**
+ * Settle a detached resume's asynchronous outcome after the pump has written
+ * its optimistic delivered/coalesced rows. Loop wakes retain their specialized
+ * circuit/re-arm handler; ordinary event wakes reuse the bounded delivery retry
+ * ladder instead of silently dying until a later timeout happens to wake them.
+ */
+async function handleSettledResumeTurnExit(
+  group: DeliveryWork[],
+  observed: DeliveryWork,
+  exit: ResumeTurnExitRaw,
+  downstream?: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void,
+): Promise<void> {
+  try {
+    downstream?.(observed, exit);
+  } catch (e) {
+    log(`resume-turn outcome observer failed: ${e instanceof Error ? e.message : e}`);
+  }
+
+  const outcome = classifyResumeTurnExit(exit);
+  if (outcome.ok) return;
+
+  // Reopening loop deliveries would double-fire them: their registered handler
+  // feeds the autoloop circuit and re-arms with retry-after semantics.
+  const retryable = group.filter((d) => !d.source?.startsWith('loop:'));
+  if (retryable.length === 0) return;
+
+  const error = `resume-turn-death:${outcome.error.class}`;
+  const results = await Promise.all(
+    retryable.map((d) =>
+      reopenDeliveredAfterResumeDeath({
+        id: d.id,
+        error,
+        maxAttempts: MAX_ATTEMPTS,
+        backoffMs: backoffMs(d.attempts),
+      }),
+    ),
+  );
+  const reopened = results.filter((r) => r === 'retrying').length;
+  const dead = results.filter((r) => r === 'dead').length;
+  if (reopened || dead) {
+    log(
+      `resume turn DIED (${outcome.error.class}) for ${observed.subscriberId}: ` +
+        `${reopened} delivery row(s) reopened, ${dead} exhausted`,
+    );
+  }
 }
 
 // ── the sweeper ───────────────────────────────────────────────────────────────
