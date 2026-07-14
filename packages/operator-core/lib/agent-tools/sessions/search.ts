@@ -24,6 +24,7 @@ import {
   sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef,
   refreshLiveSessionsBeforeRead, type WindowTurn,
 } from './_shared';
+import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
@@ -32,7 +33,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Search agent session transcripts (claude/omp/codex + harness chats) and get each hit WITH its surrounding turns in one call. mode=verbatim finds exact quotes; mode=hybrid (default) finds by meaning. session:'self' searches YOUR OWN current session — including pre-compaction turns (they survive on disk and are re-indexed at read time).",
+    "Search agent session transcripts (claude/omp/codex + harness chats) and get each hit WITH its surrounding turns in one call. mode=verbatim finds exact quotes; mode=hybrid (default) finds by meaning. session:'self' searches YOUR OWN current session — including pre-compaction turns. Continue bounded results with nextCursor.",
   guidance: {
     when:
       '"Which session did agent X say Y" / "we discussed this earlier — where?" / after a compaction, "I said something before the summary — recover it" (session:\'self\', mode:\'verbatim\'). Filters: owner/fleet/speaker/session/source_kind/since/until.',
@@ -52,6 +53,7 @@ export default defineTool({
     harness_slug: z.string().optional(),
     limit: z.number().int().min(1).max(10).optional().describe('Max hits (default 5).'),
     context: z.number().int().min(0).max(5).optional().describe('Turns hydrated on EACH side of a hit (default 2).'),
+    cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:search call with the same query and filters.'),
     ...searchFilterArgs,
   }),
   async handler(args, ctx) {
@@ -60,6 +62,13 @@ export default defineTool({
     const context = args.context ?? 2;
     const mode = args.mode ?? 'hybrid';
     const workspaceId = ctx.workspaceId ?? '';
+    const fingerprintArgs = { ...args, cursor: undefined, limit: undefined };
+    const fingerprint = sessionCursorFingerprint(fingerprintArgs);
+    const cursor = decodeSessionCursor(args.cursor, 'sessions:search', fingerprint);
+    if (!cursor.ok) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
+    }
+    const offset = cursor.offset;
 
     const { filters, selfSession } = await resolveSearchFilters(
       ctx.tx, args, resolveAgentIdentity(ctx).ownerId ?? '', { workspaceId },
@@ -90,7 +99,8 @@ export default defineTool({
            AND (${f.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until ?? null}::timestamptz)
            AND text ILIKE '%' || ${args.query} || '%'
       ORDER BY COALESCE(ts, ingested_at) DESC
-         LIMIT ${limit}
+         LIMIT ${limit + 1}
+        OFFSET ${offset}
       `;
       for (const r of rows) {
         hits.push({
@@ -110,7 +120,7 @@ export default defineTool({
         query: args.query,
         workspaceId,
         scopeFilter: args.harness_slug ?? null,
-        limit,
+        limit: offset + limit + 1,
         mode: 'hybrid',
         embedder,
         embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
@@ -137,9 +147,15 @@ export default defineTool({
       }
     }
 
-    // Hydrate ±context windows for the session hits (top-k is already <= limit).
+    const hasMore = mode === 'verbatim' ? hits.length > limit : hits.length > offset + limit;
+    const pageHits = mode === 'verbatim' ? hits.slice(0, limit) : hits.slice(offset, offset + limit);
+    const nextCursor = hasMore
+      ? encodeSessionCursor('sessions:search', offset + pageHits.length, fingerprint)
+      : undefined;
+
+    // Hydrate ±context windows only for this page.
     const out = [];
-    for (const h of hits) {
+    for (const h of pageHits) {
       let window: WindowTurn[] | undefined;
       if (h.source === 'session_turn' && context > 0) {
         try {
@@ -170,7 +186,9 @@ export default defineTool({
           ok: true,
           query: args.query,
           mode,
-          total_hits: hits.length,
+          total_hits: out.length,
+          hasMore,
+          ...(nextCursor ? { nextCursor } : {}),
           ...(selfSession ? { self_session: { source_kind: selfSession.sourceKind, session_id: selfSession.sessionId } } : {}),
           ...(args.session === 'self' && !selfSession
             ? { note: "session:'self' could not be pinned to a live transcript — degraded to an owner-filtered search." }

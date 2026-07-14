@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS, refreshLiveSessionsBeforeRead } from './_shared';
+import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
@@ -39,7 +40,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    'List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time. ' +
+    'List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time; continue a bounded result with nextCursor. ' +
     'UNITS (EI-9970): `turns` = indexed TEXT-turn rows only (real user+assistant text; excludes tool_use/tool_result/thinking-only lines by design) — NOT a raw record count, NOT one row per model call; don\'t use it alone for cost/effort audits. Use `prompt_count` (real user prompts), `response_count` (distinct model-inference calls, deduped by request/message id — one call can span several raw lines), and `tool_call_count` (real tool invocations) instead; the latter two are null for source_kind=agent_chat (no tool-call signal in that shape).',
   guidance: {
     when:
@@ -51,7 +52,7 @@ export default defineTool({
     // shapes were not, so writing any code:run batch over this tool required calling
     // it once just to learn the field names — a guaranteed wasted round-trip per tool.
     returns:
-      '{ ok, count (rows HERE), total (rows MATCHING, before limit), hasMore, truncated?, note, sessions: [{ source_kind, session_id, turns, prompt_count, owner, harness_slug, cwd, first_ts, last_ts, response_count, tool_call_count }] }. Timestamps are ISO-8601 with an explicit offset. count < total ⇒ the read was TRUNCATED (hasMore:true).',
+      '{ ok, count (rows HERE), total (rows MATCHING), hasMore, nextCursor?, truncated?, note, sessions: [{ source_kind, session_id, turns, prompt_count, owner, harness_slug, cwd, first_ts, last_ts, response_count, tool_call_count }] }. Timestamps are ISO-8601 with an explicit offset. Pass nextCursor back unchanged to continue the same filters.',
     seeAlso: ['sessions:search', 'sessions:read', 'sessions:digest', 'sessions:timeline'],
   },
   requirePrincipal: false,
@@ -63,12 +64,24 @@ export default defineTool({
     cwd_contains: z.string().max(200).optional().describe('Substring match on the session cwd.'),
     since: z.string().max(40).optional().describe('Only sessions active after this ISO timestamp.'),
     limit: z.number().int().min(1).max(100).optional().describe('Default 30.'),
+    cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:list call with the same filters.'),
   }),
   async handler(args, ctx) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
     const limit = args.limit ?? 30;
     const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : (args.owner ?? null);
+    const fingerprint = sessionCursorFingerprint({
+      owner: args.owner ?? null,
+      source_kind: args.source_kind ?? null,
+      cwd_contains: args.cwd_contains ?? null,
+      since: args.since ?? null,
+    });
+    const cursor = decodeSessionCursor(args.cursor, 'sessions:list', fingerprint);
+    if (!cursor.ok) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
+    }
+    const offset = cursor.offset;
 
     // Read-time freshness applies to every owner filter and to the bounded set
     // of open Codex sessions on an unfiltered read, not only owner:'self'.
@@ -129,18 +142,19 @@ export default defineTool({
         FROM turns_agg t
         LEFT JOIN state_agg s USING (source_kind, session_id)
        ORDER BY t.last_ts_raw DESC NULLS LAST
-       LIMIT ${limit}
+       LIMIT ${limit + 1}
+      OFFSET ${offset}
     `;
 
     // EI-10886: `count` used to equal `limit` on a truncated read with nothing to
     // distinguish it from an exhaustive one — a caller could not tell whether the
     // window held 100 sessions or 500, and the max limit (100) made the ambiguity
     // permanent. Report the real total and say plainly whether more remain.
-    const total = rows[0]?.total_matching ?? 0;
+    const total = rows[0]?.total_matching ?? offset;
     // Project explicitly rather than rest-spreading `total_matching` away: the
     // window-function column is a transport detail of THIS query, and an explicit
     // projection guarantees it can never leak into a row the caller reads as data.
-    const sessions = rows.map((r) => ({
+    const sessions = rows.slice(0, limit).map((r) => ({
       source_kind: r.source_kind,
       session_id: r.session_id,
       turns: r.turns,
@@ -153,7 +167,10 @@ export default defineTool({
       response_count: r.response_count,
       tool_call_count: r.tool_call_count,
     }));
-    const hasMore = total > sessions.length;
+    const hasMore = total > offset + sessions.length;
+    const nextCursor = hasMore
+      ? encodeSessionCursor('sessions:list', offset + sessions.length, fingerprint)
+      : undefined;
 
     return {
       content: [{
@@ -163,9 +180,10 @@ export default defineTool({
           count: sessions.length,
           total,
           hasMore,
+          ...(nextCursor ? { nextCursor } : {}),
           ...(hasMore
             ? {
-                truncated: `Showing ${sessions.length} of ${total} matching sessions (newest first). Raise \`limit\` (max 100) or narrow with owner / source_kind / cwd_contains / since.`,
+                truncated: `Showing ${sessions.length} matching sessions at offset ${offset} of ${total} (newest first). Continue with nextCursor or narrow with owner / source_kind / cwd_contains / since.`,
               }
             : {}),
           note:

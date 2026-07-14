@@ -248,6 +248,160 @@ export function defaultLaunchAccount(platform: NodeJS.Platform = process.platfor
   return platform === 'darwin' ? 'auto' : 'default';
 }
 
+export interface MemberLaunchOpts {
+  fleetSlug: string;
+  agent: string;
+  harness: string;
+  plan: string;
+  headless?: boolean;
+  account?: string;
+  workspace?: string;
+  role?: string;
+  model?: string;
+  feature?: string;
+  launchContext?: string;
+  profile?: string;
+  contextSize?: 'full' | 'trimmed';
+  brain?: boolean;
+  addDir?: string[];
+  allowSubagents?: boolean;
+  seat?: string;
+  extraArgs?: string[];
+}
+
+/** Shell-quote free-form values that are embedded in the scripted psu command. */
+function quoteLaunchValue(value: string): string {
+  return /^[A-Za-z0-9_.:=/+@-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Compose the scripted psu launch for a fleet member. The command's base
+ * identity values are validated as identifiers, while paths, role/profile,
+ * launch context, and escape-hatch args retain the fleet launcher's
+ * shell-quoting behavior. This keeps the fleet path on the shared launch core
+ * without weakening its injection boundary or breaking paths with spaces.
+ */
+export function memberLaunchCommand(opts: MemberLaunchOpts): string {
+  const identifier = (label: string, value: string): string => {
+    if (!/^[A-Za-z0-9._:=@/,+-]+$/.test(value)) {
+      throw new Error(`memberLaunchCommand: refusing ${label} with shell metacharacters: ${JSON.stringify(value)}`);
+    }
+    return value;
+  };
+  const parts = [
+    'psu',
+    '--no-picker',
+    `--fleet=${identifier('fleet', opts.fleetSlug)}`,
+    `--agent=${identifier('agent', opts.agent)}`,
+    `--harness=${identifier('harness', opts.harness)}`,
+    `--plan=${identifier('plan', opts.plan)}`,
+  ];
+  if (opts.headless) parts.push('--headless');
+  if (opts.account) parts.push(`--account=${quoteLaunchValue(opts.account)}`);
+  if (opts.workspace) parts.push(`--workspace=${quoteLaunchValue(opts.workspace)}`);
+  if (opts.role) parts.push(`--role=${quoteLaunchValue(opts.role)}`);
+  if (opts.model) parts.push(`--model=${quoteLaunchValue(opts.model)}`);
+  if (opts.feature) parts.push(`--feature=${quoteLaunchValue(opts.feature)}`);
+  if (opts.launchContext) parts.push(`--launch-context=${quoteLaunchValue(opts.launchContext)}`);
+  if (opts.profile) parts.push(`--profile=${quoteLaunchValue(opts.profile)}`);
+  if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
+  if (opts.brain) parts.push('--brain');
+  if (opts.allowSubagents) parts.push('--allow-subagents');
+  if (opts.seat) parts.push(`--seat=${quoteLaunchValue(opts.seat)}`);
+  for (const dir of opts.addDir ?? []) if (dir) parts.push(`--add-dir=${quoteLaunchValue(dir)}`);
+  for (const arg of opts.extraArgs ?? []) if (arg) parts.push(quoteLaunchValue(arg));
+  return parts.join(' ');
+}
+
+export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }> = [
+  {
+    head: 'Already-fixed check FIRST',
+    body: 'Before building anything, spend ~2 min confirming the fix has not already shipped — check code/tests, `git log`, sibling work-items. Re-implementing a peer\'s fix is the single biggest fleet-time waste. If already done, close it as already-fixed WITH the evidence you checked — do not rebuild it.',
+  },
+  {
+    head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
+    body: 'You have no human at your keyboard: as your FIRST action, call `loop:arm { intervalSec, goal }` to drain your lane. Each wake: pull via `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat — the armed loop re-wakes you automatically. `loop:end` ONLY when nothing is claimable for your spec, or you are genuinely blocked. Ending a turn with no armed loop IS parking (EI-8318): you go silent until the leader manually re-wakes you, capping the WHOLE fleet at their re-wake cadence instead of draining continuously.',
+  },
+  {
+    head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
+    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader (`wakeOnReply:true`) — broadcast is easy to miss. A finding >1 paragraph goes on the item, not chat; `coord:read { msg_id }` gets its full text. In-fleet: bare to:["*"] auto-scopes `@fleet:<slug>`; `allHive:true` only for system-wide news.',
+  },
+  {
+    head: 'Do not re-claim a ping-ponging item',
+    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of your next `scheduler:get_next` pull and you loop on it. If an item reappears right after you release it, sink it (`work_items:set_priority`) or set it `blocked` with a reason — do not re-claim.',
+  },
+  {
+    head: 'Completion evidence is mandatory',
+    body: 'Every terminal transition carries a completion_ref stating (a) files / root-cause, (b) the exact test or verification you ran AND its result, (c) any tests you added. Auditors mark you CLEAN on stated evidence — thin evidence on solid work still gets dinged.',
+  },
+  {
+    head: '"Not available" means DEFERRED, not missing',
+    body: 'An InputValidationError / "not available" on a tool means load it (ToolSearch / `tools:find`) and continue — never stop or report a tool as unavailable.',
+  },
+  {
+    head: 'Edit only the staging tree; git-sync owns commit + push',
+    body: 'Never git add / commit / push. If a file-lock blocks an edit, pivot to the next item rather than routing around it.',
+  },
+  {
+    head: 'A hive pause is a Mug-loop signal, not a self-drain order',
+    body: '`pauseNewWork` / `maxBees` / a pot-steering fact you SEE in orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you (check its authority+scope stamp: `hive-queen(<hive>)→hive-wide` is the Mug; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business — ignore it) or an explicit `fleet:*`/owner action. Unsure? Ask your leader, never self-drain on an observed pause.',
+  },
+  {
+    head: 'Turn-end reflection + reporting integrity',
+    body: 'End each turn with ONE bounded reflection: file an observation (`improvements:capture lane:"observation"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING (a sensor reading, never a fix or self-grade). Never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you weren\'t in, a send you didn\'t make, or a reading you didn\'t take.',
+  },
+  {
+    head: 'Carry-note checkpoint at every boundary',
+    body: 'Write `work_items:checkpoint { id, checkpoint }` at task completion, before going idle at a task boundary, and on graceful-evict — so your successor resumes mid-thread instead of cold. Content = what you accomplished / what is left / the key insight / a gotcha for your successor; concrete facts, not self-evaluation; a compact digest, never a transcript. Replace-on-write (blank to clear).',
+  },
+];
+
+export function renderMemberBaseline(opts: {
+  fleetSlug: string;
+  plan: string;
+  count: number;
+  carry?: 'warm' | 'cold';
+}): string {
+  const { fleetSlug, plan, count, carry = 'warm' } = opts;
+  const cold = carry === 'cold';
+  const rules = MEMBER_BASELINE_RULES.map((r, i) => {
+    let body = r.body;
+    if (cold && r.head.startsWith('STAY ALIVE')) {
+      body = body.replace(
+        '`loop:arm { intervalSec, goal }`',
+        "`loop:arm { intervalSec, goal, carry: 'cold' }` — you are a COLD member: each wake starts a FRESH context, so nothing but your checkpoint carries across wakes",
+      );
+    }
+    if (cold && r.head.startsWith('Carry-note checkpoint')) {
+      body = `${body} COLD CARRY makes this LOAD-BEARING, not optional: your next wake reconstructs itself ONLY from this checkpoint — skip it and your successor-self wakes blind with no memory of what you did.`;
+    }
+    return `${i + 1}. **${r.head}.** ${body}`;
+  }).join('\n');
+  return [
+    '# Fleet member — operating baseline',
+    '',
+    `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, working plan \`${plan}\`. The session that launched you is your LEADER — report notable completions and blockers to them.`,
+    '',
+    'Your loop, until nothing is claimable: **pull** via `scheduler:get_next` (NOT `work_items:claim_next` — leader steers WHICH item via `scheduler:set_claim_spec`; no spec = default order) → **read** it (`work_items:get`) → **classify + act** (fix / already-fixed-close / blocked) → drive to a **terminal** state with evidence → repeat. Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader\'s call, PICKUP is yours.',
+    '',
+    '## Non-negotiables',
+    rules,
+  ].join('\n');
+}
+
+export function composeMemberLaunchContext(opts: {
+  fleetSlug: string;
+  plan: string;
+  count: number;
+  carry?: 'warm' | 'cold';
+  customBriefText?: string | null;
+}): string {
+  const baseline = renderMemberBaseline(opts);
+  const brief = opts.customBriefText?.trim();
+  if (!brief) return `${baseline}\n`;
+  return `${baseline}\n\n---\n\n# Fleet-specific brief (from your leader — wins on specifics)\n\n${brief}\n`;
+}
+
 /** The window a launch claim stays authoritative for. Old claims are pruned on
  *  each call — the ledger answers "did THIS call already land", not "has anyone
  *  ever used this key", so a week is generous for a retry. */

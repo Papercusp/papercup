@@ -10,9 +10,31 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { sessionSearchEnabled, disabledResult, refreshLiveSessionsBeforeRead } from './_shared';
+import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 const AUTOMATIC_TOOL_NAMES = ['activity:report', 'coord:glance', 'coord:inbox'] as const;
+
+export interface AutomaticCallAuditRow {
+  total_tool_calls: number;
+  automatic_calls: number;
+  agent_calls: number;
+}
+
+export function buildAutomaticCallAuditSummary(row: AutomaticCallAuditRow) {
+  return {
+    total_tool_calls: row.total_tool_calls,
+    automatic_calls: row.automatic_calls,
+    agent_calls: row.agent_calls,
+    automatic_share: row.total_tool_calls > 0
+      ? Number((row.automatic_calls / row.total_tool_calls).toFixed(4))
+      : 0,
+    classification: {
+      automatic_tools: [...AUTOMATIC_TOOL_NAMES],
+      rule: 'automatic_calls match the known hook/status tool set; every other tool invocation is agent-authored',
+    },
+  };
+}
 
 export interface TimelineEntry {
   kind: 'turn' | 'tool' | 'coord';
@@ -47,7 +69,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status, hide automatic hook traffic (default), and group repeats.",
+    "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status, hide automatic hook traffic (default), group repeats, continue with nextCursor, and report automatic-versus-agent tool-call counts.",
   guidance: {
     when:
       '"What did agent X actually do yesterday" — a postmortem / handoff-archaeology read joining speech + tool calls + coord traffic by owner and time.',
@@ -69,6 +91,7 @@ export default defineTool({
     status: z.string().min(1).max(80).optional().describe('Exact tool-invocation status, e.g. invalid-input, error, timeout, ok.'),
     include_auto: z.boolean().optional().describe('Include automatic hook/status traffic such as activity:report, coord:glance, coord:inbox, and auto:true coord messages. Default false.'),
     group_repeated: z.boolean().optional().describe('Collapse identical entries in the returned window and add repeat_count/oldest_ts. Default false.'),
+    cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:timeline call with the same filters.'),
   }),
   async handler(args, ctx) {
     if (!(await sessionSearchEnabled())) return disabledResult();
@@ -79,6 +102,14 @@ export default defineTool({
     const until = args.until ?? new Date().toISOString();
     const kinds = args.kinds?.length ? args.kinds : null;
     const includeAuto = args.include_auto ?? false;
+    const fingerprintArgs = { ...args, cursor: undefined, limit: undefined };
+    const fingerprint = sessionCursorFingerprint(fingerprintArgs);
+    const cursor = decodeSessionCursor(args.cursor, 'sessions:timeline', fingerprint);
+    if (!cursor.ok) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
+    }
+    const offset = cursor.offset;
+    const fetchLimit = offset + limit + 1;
     await refreshLiveSessionsBeforeRead(ctx.tx, [owner]);
 
     const rows = await ctx.tx<TimelineEntry[]>`
@@ -95,7 +126,7 @@ export default defineTool({
            AND (${kinds}::text[] IS NULL OR 'turn' = ANY(${kinds}::text[]))
            AND ${args.tool ?? null}::text IS NULL
            AND ${args.status ?? null}::text IS NULL
-         ORDER BY COALESCE(ts, ingested_at) DESC LIMIT ${limit}
+         ORDER BY COALESCE(ts, ingested_at) DESC LIMIT ${fetchLimit}
       )
       UNION ALL
       (
@@ -110,7 +141,7 @@ export default defineTool({
            AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
            AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
            AND (${includeAuto} OR tool_name <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[]))
-         ORDER BY invoked_at DESC LIMIT ${limit}
+         ORDER BY invoked_at DESC LIMIT ${fetchLimit}
       )
       UNION ALL
       (
@@ -125,13 +156,28 @@ export default defineTool({
            AND ${args.tool ?? null}::text IS NULL
            AND ${args.status ?? null}::text IS NULL
            AND (${includeAuto} OR COALESCE(body->>'auto', 'false') <> 'true')
-         ORDER BY ts DESC LIMIT ${limit}
+         ORDER BY ts DESC LIMIT ${fetchLimit}
       )
       ORDER BY ts DESC
-      LIMIT ${limit}
+      LIMIT ${fetchLimit}
     `;
 
-    const entries = args.group_repeated ? groupRepeatedTimelineEntries(rows) : rows;
+    const hasMore = rows.length > offset + limit;
+    const pageRows = rows.slice(offset, offset + limit);
+    const entries = args.group_repeated ? groupRepeatedTimelineEntries(pageRows) : pageRows;
+    const nextCursor = hasMore
+      ? encodeSessionCursor('sessions:timeline', offset + pageRows.length, fingerprint)
+      : undefined;
+    const [auditRow = { total_tool_calls: 0, automatic_calls: 0, agent_calls: 0 }] = await ctx.tx<AutomaticCallAuditRow[]>`
+      SELECT count(*)::int AS total_tool_calls,
+             count(*) FILTER (WHERE tool_name = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]))::int AS automatic_calls,
+             count(*) FILTER (WHERE tool_name <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[]))::int AS agent_calls
+        FROM harness_shared.tool_invocations
+       WHERE coord_owner_id = ${owner}
+         AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
+         AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
+         AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
+    `;
     return {
       content: [{
         type: 'text' as const,
@@ -147,8 +193,11 @@ export default defineTool({
             include_auto: includeAuto,
             group_repeated: args.group_repeated ?? false,
           },
-          raw_count: rows.length,
+          raw_count: pageRows.length,
           count: entries.length,
+          hasMore,
+          ...(nextCursor ? { nextCursor } : {}),
+          audit_summary: buildAutomaticCallAuditSummary(auditRow),
           entries,
         }),
       }],

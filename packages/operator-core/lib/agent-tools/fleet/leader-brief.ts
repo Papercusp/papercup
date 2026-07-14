@@ -44,6 +44,8 @@ import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { COORD_ROLES } from '../coordination/roles';
 import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
+import { listPresence } from '../coordination/presence';
+import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import {
   reconcileWakeability,
   decorateParkedOn,
@@ -141,6 +143,28 @@ export type DecoratedAgent = AgentAssignment & {
   monitorState?: MonitorState | null;
   nextFireAt?: string | null;
 };
+
+/**
+ * Reconcile a visible member's parked/wakeable projection with the psu-host
+ * liveness authority. A dead host can leave a fresh heartbeat and inbox-wake
+ * await behind, which otherwise makes leader-brief report a dead owner as
+ * parked/wakeable. Nursery cups remain governed by their nursery state.
+ */
+export function reconcilePsuHostLiveness<T extends DecoratedAgent>(
+  agents: T[],
+  agentRoles: ReadonlyMap<string, string | null>,
+  findHost: (ownerId: string) => unknown | null = findLiveHost,
+): T[] {
+  for (const agent of agents) {
+    const role = agentRoles.get(agent.agentId);
+    if (role == null || role === 'cup') continue;
+    if (agent.sessionState === 'parked' && findHost(agent.agentId) == null) {
+      agent.sessionState = 'ended';
+      agent.alive = false;
+    }
+  }
+  return agents;
+}
 
 /** PURE: exported for direct unit-testing (no PG/DI ceremony needed). */
 export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMember {
@@ -250,6 +274,15 @@ export default defineTool({
       (g) => g.fleetSlug === fleet && (args.include_stale || g.claims.length > 0 || g.alive),
     );
     await reconcileWakeability(grouped).catch(() => {});
+    // Missing host is a liveness signal only for known visible members. Keep
+    // this best-effort so absent roles never reinterpret bootstrapping/remote
+    // rows as desktop deaths.
+    try {
+      const presence = await listPresence({ workspaceId });
+      reconcilePsuHostLiveness(grouped, new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)));
+    } catch {
+      /* host reconciliation never blocks the health brief */
+    }
     await decorateParkedOn(grouped).catch(() => {});
     await decorateLoopMonitorStates(grouped).catch(() => {});
     await decorateMemberVerdicts(grouped).catch(() => {});

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { groupRepeatedTimelineEntries, type TimelineEntry } from './timeline';
+import {
+  buildAutomaticCallAuditSummary,
+  groupRepeatedTimelineEntries,
+  type TimelineEntry,
+} from './timeline';
 
 describe('sessions:timeline audit grouping', () => {
   it('collapses identical machinery while preserving newest-first order and oldest timestamp', () => {
@@ -23,5 +27,32 @@ describe('sessions:timeline effective nested status', () => {
       { kind: 'tool', ts: '2026-07-13T07:00:01Z', ref: '1', text: 'code:run (ok)', tool_name: 'code:run', status: 'ok' },
     ];
     expect(groupRepeatedTimelineEntries(rows)).toHaveLength(2);
+  });
+});
+
+describe('sessions:timeline automatic-versus-agent audit summary', () => {
+  it('returns explicit counts, share, and the classification rule', () => {
+    expect(buildAutomaticCallAuditSummary({
+      total_tool_calls: 8,
+      automatic_calls: 2,
+      agent_calls: 6,
+    })).toEqual({
+      total_tool_calls: 8,
+      automatic_calls: 2,
+      agent_calls: 6,
+      automatic_share: 0.25,
+      classification: {
+        automatic_tools: ['activity:report', 'coord:glance', 'coord:inbox'],
+        rule: 'automatic_calls match the known hook/status tool set; every other tool invocation is agent-authored',
+      },
+    });
+  });
+
+  it('handles an empty audit window without NaN', () => {
+    expect(buildAutomaticCallAuditSummary({
+      total_tool_calls: 0,
+      automatic_calls: 0,
+      agent_calls: 0,
+    }).automatic_share).toBe(0);
   });
 });

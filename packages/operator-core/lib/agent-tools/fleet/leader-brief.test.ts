@@ -6,7 +6,7 @@
  * PG/DI ceremony (mirrors deriveMemberVerdict/deriveContextPressure).
  */
 import { describe, expect, it } from 'vitest';
-import { computeBenchSuggestion, projectMember, type DecoratedAgent } from './leader-brief';
+import { computeBenchSuggestion, projectMember, reconcilePsuHostLiveness, type DecoratedAgent } from './leader-brief';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 
@@ -32,6 +32,22 @@ function baseAgent(overrides: Partial<DecoratedAgent> = {}): DecoratedAgent {
     ...overrides,
   };
 }
+
+describe('reconcilePsuHostLiveness (WI-4755)', () => {
+  it('marks a parked visible member ended when its psu host is gone', () => {
+    const agent = baseAgent({ sessionState: 'parked' });
+    reconcilePsuHostLiveness([agent], new Map([['su-1', 'su']]), () => null);
+    expect(agent.sessionState).toBe('ended');
+    expect(agent.alive).toBe(false);
+  });
+
+  it('preserves nursery cups without a psu host', () => {
+    const agent = baseAgent({ sessionState: 'parked' });
+    reconcilePsuHostLiveness([agent], new Map([['su-1', 'cup']]), () => null);
+    expect(agent.sessionState).toBe('parked');
+    expect(agent.alive).toBe(true);
+  });
+});
 
 describe('projectMember (pure)', () => {
   it('computes lastToolCallAgeMs from the ISO timestamp', () => {

@@ -3,6 +3,7 @@ import {
   buildAgentLaunchCommand,
   injectAccountArg,
   injectKickoffAfterResume,
+  memberLaunchCommand,
   resolveResumeTarget,
 } from './agent-launch-core';
 
@@ -133,6 +134,30 @@ describe('buildAgentLaunchCommand', () => {
     expect(() => buildAgentLaunchCommand({ mode: 'fresh', extraArgs: ['a; b'] })).toThrow(
       /shell metacharacters/,
     );
+  });
+});
+
+describe('memberLaunchCommand', () => {
+  it('builds the fleet auto-kickoff command with quoted free-form values', () => {
+    expect(
+      memberLaunchCommand({
+        fleetSlug: 'ops',
+        agent: 'claude',
+        harness: 'papercusp',
+        plan: 'my-plan',
+        account: 'auto',
+        launchContext: '/tmp/brief one.md',
+        extraArgs: ['--add-dir=/tmp/work tree'],
+      }),
+    ).toBe(
+      "psu --no-picker --fleet=ops --agent=claude --harness=papercusp --plan=my-plan --account=auto --launch-context='/tmp/brief one.md' '--add-dir=/tmp/work tree'",
+    );
+  });
+
+  it('rejects shell metacharacters in fleet identity values', () => {
+    expect(() =>
+      memberLaunchCommand({ fleetSlug: 'ops; touch /tmp/pwned', agent: 'claude', harness: 'h', plan: 'p' }),
+    ).toThrow(/fleet with shell metacharacters/);
   });
 });
 

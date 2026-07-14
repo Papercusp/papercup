@@ -46,6 +46,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { findLiveHost, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
+import { clearPresence } from '../coordination/presence';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
 
@@ -81,6 +82,8 @@ export interface KillDeps {
   /** Resolve+cancel a nursery target (spawn_id or session_owner). Returns null
    *  when the target is not a nursery spawn. */
   cancelNursery?: (target: string, reason: string) => Promise<{ spawn_id: string; cancelled: string[]; processes_aborted: number } | null>;
+  /** Purge stale presence after the psu-host authority proves a target is gone. */
+  clearPresence?: (ownerId: string) => Promise<void>;
   /** Append an audit row. */
   audit?: (action: string, subject: string, details: Record<string, unknown>) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
@@ -218,6 +221,11 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   // ── leg 2: desktop interactive psu session ──
   const host = deps.findHost?.(input.target) ?? null;
   if (!host) {
+    // A dead host can leave a fresh heartbeat/inbox-wake row behind. Remove
+    // that stale roster entry once the authoritative host lookup says it is
+    // gone; the structured result remains not_found because it was already
+    // dead, not successfully killed.
+    await deps.clearPresence?.(input.target).catch(() => {});
     return {
       ok: false,
       target: input.target,
@@ -375,6 +383,7 @@ export default defineTool({
     const deps: KillDeps = {
       findHost: (ownerId) => findLiveHost(ownerId),
       cancelNursery: (target, why) => cancelNurseryTarget(target, why, workspaceId, actor),
+      clearPresence: (ownerId) => clearPresence(ownerId),
       audit: (action, subject, details) => writeKillAudit(action, subject, details, workspaceId, actor.ownerId),
     };
 

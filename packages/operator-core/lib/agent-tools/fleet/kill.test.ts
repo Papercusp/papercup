@@ -159,11 +159,19 @@ describe('killOne', () => {
   });
 
   it('reports not_found for a target with no nursery row and no live host', async () => {
-    const deps: KillDeps = { cancelNursery: async () => null, findHost: () => null };
+    let cleared: string | null = null;
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => null,
+      clearPresence: async (ownerId) => {
+        cleared = ownerId;
+      },
+    };
     const r = await killOne({ actor: 'su-me', target: 'su-ghost', closeTerminal: true, reason: 'x' }, deps);
     expect(r.ok).toBe(false);
     expect(r.code).toBe('not_found');
     expect(r.error).toContain('terminal_pids'); // the stale-window hint
+    expect(cleared).toBe('su-ghost');
   });
 });
 

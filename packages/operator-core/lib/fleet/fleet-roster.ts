@@ -34,6 +34,7 @@ import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assi
 import { listFleets, type AgentFleetRecord } from '../agent-fleets-store';
 import { getOrgPg } from '@papercusp/db-org';
 import { withBoundedTimeout } from '../bounded-timeout';
+import { findLiveHost } from '../events/await/psu-pty-discovery';
 
 /**
  * WI-3818: per-sub-read budget for listFleetRoster's fan-out (presence, then
@@ -382,6 +383,16 @@ export function isBeeRole(agentRole: string | null | undefined): boolean {
   return agentRole === 'cup';
 }
 
+/** Project visible fleet members onto the authoritative psu-host liveness read. */
+export function livePsuFleetMemberIds(
+  rows: ReadonlyArray<{ ownerId: string; agentRole?: string | null }>,
+  findHost: (ownerId: string) => unknown | null = findLiveHost,
+): string[] {
+  return rows
+    .filter((row) => !isBeeRole(row.agentRole) && findHost(row.ownerId) != null)
+    .map((row) => row.ownerId);
+}
+
 /** Pure: split a set of live fleet-roster entries into member vs bee counts by
  *  agent_role (WI-1764 #4). Unit-testable without PG — the fleet:status analog of the
  *  liveFleetAgentCounts SQL split. */
@@ -487,14 +498,14 @@ export async function liveFleetBeeCountsFromNursery(workspaceId: string): Promis
 export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string): Promise<string[]> {
   const { sql } = getOrgPg();
   const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
-  const rows = await sql<{ owner_id: string }[]>`
-    SELECT owner_id
+  const rows = await sql<{ owner_id: string; agent_role: string | null }[]>`
+    SELECT owner_id, agent_role
       FROM harness_shared.coord_presence
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug = ${fleetSlug}
        AND heartbeat_at > now() - ${`${secs} seconds`}::interval
   `;
-  return rows.map((r) => r.owner_id);
+  return livePsuFleetMemberIds(rows.map((r) => ({ ownerId: r.owner_id, agentRole: r.agent_role })));
 }
 
 /**

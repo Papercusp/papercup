@@ -60,6 +60,8 @@ import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
+import { memberLaunchCommand as sharedMemberLaunchCommand } from '../../agent-launch-core';
+export type { MemberLaunchOpts } from '../../agent-launch-core';
 // type-only: the runtime call is a LAZY dynamic import in the handler (the promotion failsafe),
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
@@ -82,45 +84,6 @@ function resolveOperatorBaseUrl(): string {
  *  `--brain`; `extraArgs` is a verbatim escape hatch for any psu flag without a first-class
  *  field. The fleet/agent/harness/plan/no-picker tokens are owned by the tool and not
  *  overridable here. */
-export interface MemberLaunchOpts {
-  fleetSlug: string;
-  agent: string;
-  harness: string;
-  plan: string;
-  /** P-003 headless fleet: emit `psu --headless` so the member launches as a
-   *  background managed-pty session with NO terminal window, yet stays injectable
-   *  for warm loop:arm wakes (usePtyHost bypasses only the isTTY gate). Orthogonal
-   *  to every other flag; the spawn itself routes through spawnHeadless. */
-  headless?: boolean;
-  account?: string;
-  workspace?: string;
-  role?: string;
-  model?: string;
-  feature?: string;
-  launchContext?: string;
-  profile?: string;
-  contextSize?: 'full' | 'trimmed';
-  brain?: boolean;
-  addDir?: string[];
-  /** psu --allow-subagents (default OFF — owner mandate 2026-07-02): opt every member's
-   *  su session back IN to its built-in subagent-launch (Task/Agent) tool. Subagents are
-   *  DENIED BY DEFAULT for every psu launch (su + role), so a desktop fleet member cannot
-   *  fan out unless this is set true. */
-  allowSubagents?: boolean;
-  /** P-005 launch-from-seats: the delegated agent_slot template this member
-   *  consumes ('<model>:<effort>:<account>'). Emits `--seat=<ref>`, which the
-   *  psu launcher threads to bootstrap-su for the consumption ledger (mig 487). */
-  seat?: string;
-  extraArgs?: string[];
-}
-
-/** Shell-quote a value for the spawned greetingCmd: leave a safe token bare (clean,
- *  matches the slug-style flags) and single-quote anything with whitespace / shell
- *  metacharacters (paths, free-form extraArgs) so a member command can never be injected. */
-function shq(v: string): string {
-  return /^[A-Za-z0-9_.:=/+@-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`;
-}
-
 /** A model routed through the LOCAL inference gateway / ollama (e.g. `ollama-cc/…ornith`)
  *  runs ONLY on the `omp` backend — the `claude`/`codex` CLIs cannot load an ollama model id.
  *  `agent` and `model` are therefore COUPLED. Used to (a) infer agent:'omp' when only such a
@@ -371,41 +334,8 @@ export function defaultMemberAccountRouting(
   return platform === 'darwin' ? 'auto' : account;
 }
 
-/**
- * Build the scripted psu launch command for one fleet member working a plan. Pure +
- * exported for tests. `--no-picker --plan` is what triggers the EI-5503 auto-kickoff, so a
- * member starts working on boot. The base tokens (fleet/agent/harness/plan) are constrained
- * slugs/enums (no quoting needed); every optional flag's VALUE is shell-quoted via shq.
- */
-export function memberLaunchCommand(opts: MemberLaunchOpts): string {
-  const parts = [
-    'psu',
-    '--no-picker',
-    `--fleet=${opts.fleetSlug}`,
-    `--agent=${opts.agent}`,
-    `--harness=${opts.harness}`,
-    `--plan=${opts.plan}`,
-  ];
-  // P-003: `--headless` forces the managed-pty host on despite non-TTY stdio (the
-  // member has no window) so the session stays injectable for warm wakes. Boolean
-  // flag like --brain; implies picker=false (already set via --no-picker).
-  if (opts.headless) parts.push('--headless');
-  if (opts.account) parts.push(`--account=${shq(opts.account)}`);
-  if (opts.workspace) parts.push(`--workspace=${shq(opts.workspace)}`);
-  if (opts.role) parts.push(`--role=${shq(opts.role)}`);
-  if (opts.model) parts.push(`--model=${shq(opts.model)}`);
-  if (opts.feature) parts.push(`--feature=${shq(opts.feature)}`);
-  if (opts.launchContext) parts.push(`--launch-context=${shq(opts.launchContext)}`);
-  if (opts.profile) parts.push(`--profile=${shq(opts.profile)}`);
-  // su-context-size-variants: enum-constrained ('full'|'trimmed'), so no shq needed.
-  if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
-  if (opts.brain) parts.push('--brain');
-  if (opts.allowSubagents) parts.push('--allow-subagents');
-  if (opts.seat) parts.push(`--seat=${shq(opts.seat)}`);
-  for (const d of opts.addDir ?? []) if (d) parts.push(`--add-dir=${shq(d)}`);
-  for (const a of opts.extraArgs ?? []) if (a) parts.push(shq(a));
-  return parts.join(' ');
-}
+/** Backward-compatible export for p2p delegated-spawn callers. */
+export const memberLaunchCommand = sharedMemberLaunchCommand;
 
 /**
  * The universal MEMBER OPERATING BASELINE rules, composed onto EVERY member's

@@ -11,6 +11,7 @@ import {
   foldFleetRoster,
   annotateFleetsWithCounts,
   isBeeRole,
+  livePsuFleetMemberIds,
   splitFleetRosterCounts,
   type FleetFoldPresence,
 } from './fleet-roster';
@@ -111,6 +112,21 @@ describe('filterPresenceToFleet', () => {
 
   it('never leaks another fleet', () => {
     expect(filterPresenceToFleet(rows, 'ui-fleet', true).some((r) => r.ownerId === 'b')).toBe(false);
+  });
+});
+
+describe('livePsuFleetMemberIds (WI-4755)', () => {
+  it('keeps only visible members with a live psu host', () => {
+    const rows = [
+      { ownerId: 'live', agentRole: 'su' },
+      { ownerId: 'dead', agentRole: 'su' },
+      { ownerId: 'cup', agentRole: 'cup' },
+    ];
+    expect(livePsuFleetMemberIds(rows, (id) => (id === 'live' ? {} : null))).toEqual(['live']);
+  });
+
+  it('does not treat a nursery cup as a desktop member even if a host-shaped value exists', () => {
+    expect(livePsuFleetMemberIds([{ ownerId: 'cup', agentRole: 'cup' }], () => ({}))).toEqual([]);
   });
 });
 
