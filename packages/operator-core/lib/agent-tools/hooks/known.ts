@@ -19,6 +19,6 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({}),
   async handler() {
-    return { data: { hooks: getKnownHooks() } };
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ hooks: getKnownHooks() }) }] };
   },
 });

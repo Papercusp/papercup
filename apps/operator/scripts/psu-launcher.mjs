@@ -4880,6 +4880,49 @@ async function confirmUntrackedResume(session, args) {
 
 /** Sentinel for the "type a different model" resume-prompt row. */
 const CHOOSE_MODEL = '<choose-model>';
+/** Sentinel for the "type a custom spec" escape inside the base-model menu (WI-4889). */
+const CUSTOM_MODEL = '<custom-model>';
+
+/**
+ * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"
+ * path is a MENU, not a free-text `<model>[:<effort>]` prompt. Two selects —
+ * base model, then reasoning effort — with a "type a custom spec…" escape that
+ * keeps the old open-set free-text path. The menu mirrors the launcher's OWN
+ * recognized aliases so it never drifts from what validateModelSpec accepts:
+ * KNOWN_CLOUD_ALIASES (opus/sonnet/haiku/fable → Anthropic) + the
+ * cloudModelBackendHint codex families (luna/terra/sol → OpenAI/codex).
+ */
+export const RESUME_MODEL_MENU = [
+  { name: 'opus — Anthropic Claude Opus (1M, strongest)', value: 'opus' },
+  { name: 'sonnet — Anthropic Claude Sonnet (1M, balanced)', value: 'sonnet' },
+  { name: 'fable — Anthropic Claude Fable (1M)', value: 'fable' },
+  { name: 'haiku — Anthropic Claude Haiku (fast, cheap)', value: 'haiku' },
+  { name: 'sol — OpenAI GPT-5.6 “Sol” (codex)', value: 'sol' },
+  { name: 'luna — OpenAI “Luna” (codex)', value: 'luna' },
+  { name: 'terra — OpenAI “Terra” (codex)', value: 'terra' },
+];
+
+/** Reasoning-effort choices for the resume model menu. Values ⊆ the efforts
+ *  validateModelSpec / the `:<effort>` suffix accept; '' = no suffix (model default). */
+export const RESUME_EFFORT_MENU = [
+  { name: 'default (model default — no effort suffix)', value: '' },
+  { name: 'low', value: 'low' },
+  { name: 'medium', value: 'medium' },
+  { name: 'high', value: 'high' },
+  { name: 'xhigh', value: 'xhigh' },
+  { name: 'max (strongest reasoning)', value: 'max' },
+];
+
+/** PURE (exported for tests): compose a base model + optional effort into a
+ *  normalized psu model spec. Empty/blank model → null (agent default); a blank
+ *  effort drops the `:<effort>` suffix. normalizeModelSpec adds `[1m]` for the
+ *  default-1M families (opus/sonnet/fable) before the effort suffix. */
+export function composeResumeModelSpec(model, effort) {
+  const m = String(model ?? '').trim();
+  if (!m) return null;
+  const e = String(effort ?? '').trim();
+  return normalizeModelSpec(e ? `${m}:${e}` : m);
+}
 
 /**
  * WI-3758 (owner directive 2026-07-10): a resume SHOWS the session's
@@ -4918,16 +4961,34 @@ async function chooseResumeModel(session, args) {
     ],
   });
   if (picked !== CHOOSE_MODEL) return picked;
-  const typed = await input({
-    message: 'Model spec (<model>[:<effort>], e.g. fable:high):',
-    validate: (v) => {
-      if (!String(v ?? '').trim()) return true; // empty → agent default
-      const r = validateModelSpec(String(v).trim());
-      return r.ok ? true : r.message;
-    },
+  // WI-4889: a MENU instead of a free-text spec. Pick a base model (with a
+  // "type a custom spec…" escape that keeps the old open-set input), then an
+  // effort; composeResumeModelSpec normalizes the two into the psu spec.
+  const baseModel = await select({
+    message: 'Base model',
+    choices: [
+      ...RESUME_MODEL_MENU,
+      { name: 'Type a custom model id / full spec…', value: CUSTOM_MODEL },
+    ],
   });
-  const spec = String(typed ?? '').trim();
-  return spec ? normalizeModelSpec(spec) : null;
+  if (baseModel === CUSTOM_MODEL) {
+    const typed = await input({
+      message: 'Model spec (<model>[:<effort>], e.g. fable:high):',
+      validate: (v) => {
+        if (!String(v ?? '').trim()) return true; // empty → agent default
+        const r = validateModelSpec(String(v).trim());
+        return r.ok ? true : r.message;
+      },
+    });
+    const spec = String(typed ?? '').trim();
+    return spec ? normalizeModelSpec(spec) : null;
+  }
+  const effort = await select({
+    message: 'Reasoning effort',
+    default: '',
+    choices: RESUME_EFFORT_MENU,
+  });
+  return composeResumeModelSpec(baseModel, effort);
 }
 
 /** WI-3859 F4: the archive-at-death lifecycle DELETES an ended session's

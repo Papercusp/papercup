@@ -162,33 +162,6 @@ export function _resetTerminalCacheForTests(): void {
 }
 
 /**
- * EI-11578: the effective client-server terminal preference for a spawn.
- *
- * Normally a DETECTED desktop session (`desktopSessionDetected`) prefers the
- * owner's STANDARD client-server terminal (gnome-terminal/konsole), which reaches
- * its window server on the injected D-Bus bus (WI-4718). But a RESUME launch
- * (`preferProcessPerWindow`) forces a process-per-window emulator
- * (xterm/alacritty/kitty/wezterm) EVEN when a desktop session is detected: a
- * client-server VTE terminal (gnome-terminal-server) silently DROPS the resume of
- * a dormant `.papercusp` state-dir-cwd session — the resumed agent process dies
- * within seconds and no live session / coord presence results (owner-confirmed,
- * hit twice on 2026-07-13) — whereas a process-per-window emulator binds the pty
- * directly and holds the resumed session (xterm reproduced stable >72s). The
- * VTE-server pty/env handoff race that kills the resumed agent is a
- * gnome-terminal-server internal we cannot patch, so a resume routes AROUND it
- * through the reproduced-reliable emulator. Fresh launches are unchanged. Degrades
- * gracefully: findLinuxTerminal(false) still falls back to a client-server
- * terminal if no process-per-window emulator is installed. Pure; exported for
- * unit tests.
- */
-export function resolveClientServerPreference(
-  desktopSessionDetected: boolean,
-  preferProcessPerWindow: boolean,
-): boolean {
-  return preferProcessPerWindow ? false : desktopSessionDetected;
-}
-
-/**
  * EI-11578: resolve the `preferClientServer` value {@link findLinuxTerminal}
  * receives, folding in whether the caller wants a PROCESS-PER-WINDOW emulator
  * forced.

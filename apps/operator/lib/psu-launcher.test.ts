@@ -110,6 +110,9 @@ import {
   runLaunchPreflight,
   normalizeModelSpec,
   validateModelSpec,
+  composeResumeModelSpec,
+  RESUME_MODEL_MENU,
+  RESUME_EFFORT_MENU,
   cloudModelBackendHint,
   validateAgentModelPair,
   autoCompactWindowEnv,
@@ -2074,6 +2077,48 @@ describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-
     expect(parseArgs(['--model=claude-fable-5:xhigh']).model).toBe('claude-fable-5[1m]:xhigh');
     expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
     expect(parseArgs(['--model=sonnet:high']).model).toBe('sonnet[1m]:high');
+  });
+});
+
+describe('composeResumeModelSpec + resume model menu (WI-4889 — menu, not free-text)', () => {
+  it('composes base + effort into the psu spec', () => {
+    expect(composeResumeModelSpec('sol', 'xhigh')).toBe('sol:xhigh'); // codex, open-set, no [1m]
+    expect(composeResumeModelSpec('opus', 'high')).toBe('opus[1m]:high'); // 1M family → [1m] before effort
+    expect(composeResumeModelSpec('sonnet', 'max')).toBe('sonnet[1m]:max');
+  });
+  it('a blank effort drops the suffix (model default)', () => {
+    expect(composeResumeModelSpec('haiku', '')).toBe('haiku'); // haiku is not a 1M family → no marker
+    expect(composeResumeModelSpec('fable', '')).toBe('fable[1m]'); // 1M family still normalizes
+    expect(composeResumeModelSpec('sol', '')).toBe('sol');
+  });
+  it('an empty / null / whitespace model → null (agent default)', () => {
+    expect(composeResumeModelSpec('', 'high')).toBeNull();
+    expect(composeResumeModelSpec(null, 'high')).toBeNull();
+    expect(composeResumeModelSpec(undefined, '')).toBeNull();
+    expect(composeResumeModelSpec('   ', 'high')).toBeNull();
+  });
+  it('every base-model value is a lowercase alias validateModelSpec accepts, and includes sol', () => {
+    const values = RESUME_MODEL_MENU.map((c) => c.value);
+    expect(values).toContain('sol');
+    for (const v of values) {
+      expect(v, v).toBe(v.toLowerCase());
+      expect(validateModelSpec(v).ok, v).toBe(true);
+    }
+  });
+  it('effort values are a subset of the recognized efforts (+ the empty default)', () => {
+    const allowed = new Set(['', 'low', 'medium', 'high', 'xhigh', 'max']);
+    for (const c of RESUME_EFFORT_MENU) expect(allowed.has(c.value), c.value).toBe(true);
+    expect(RESUME_EFFORT_MENU.map((c) => c.value)).toContain(''); // the model-default row
+  });
+  it('menu base + effort compose to a spec validateModelSpec still accepts', () => {
+    // The menu can only ever produce specs the launcher would accept from --model.
+    for (const m of RESUME_MODEL_MENU) {
+      for (const e of RESUME_EFFORT_MENU) {
+        const spec = composeResumeModelSpec(m.value, e.value);
+        expect(spec, `${m.value}:${e.value || '(default)'}`).toBeTruthy();
+        expect(validateModelSpec(String(spec)).ok, String(spec)).toBe(true);
+      }
+    }
   });
 });
 
