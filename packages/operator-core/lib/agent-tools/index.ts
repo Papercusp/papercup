@@ -1073,6 +1073,11 @@ import './cupboard/publish-plugin';
 // agent-callable face of the template publish core; shares publish-template-core.ts
 // with the loopback POST /cupboard/publish-template route.
 import './cupboard/publish-template';
+// cupboard-agent-tool-coverage-2026-07-14 P-005/P-006 — the agent-callable install
+// faces (cupboard:install-blueprint / cupboard:install-plugin), sharing
+// install-blueprint-io.ts / install-io.ts with the loopback install routes.
+import './cupboard/install-blueprint';
+import './cupboard/install-plugin';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';

@@ -44,24 +44,11 @@ async function defaultLookupListingId(repoId: number): Promise<number | string |
 async function defaultDeleteListing(
   listingId: number | string,
 ): Promise<{ ok: boolean; alreadyUnlisted?: boolean; error?: string }> {
-  const { getGhAuthToken } = await import('../identity/gh-token');
-  const tokenRes = await getGhAuthToken();
-  if (tokenRes.kind !== 'ok') return { ok: false, error: 'gh_auth_required' };
-  const { resolveCupboardBaseUrl } = await import(
-    './base-url'
-  );
-  try {
-    const res = await fetch(`${resolveCupboardBaseUrl()}/listings/${listingId}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${tokenRes.token}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) return { ok: false, error: `cupboard_http_${res.status}` };
-    const body = (await res.json().catch(() => ({}))) as { already_unlisted?: boolean };
-    return { ok: true, ...(body.already_unlisted ? { alreadyUnlisted: true } : {}) };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  // The DELETE /listings/:id primitive lives in delete-listing.ts (P-009 D-001) —
+  // shared with the cupboard:unpublish agent tool so there is one authed unlist path.
+  const { deleteCupboardListing } = await import('./delete-listing');
+  const res = await deleteCupboardListing(listingId);
+  return { ok: res.ok, ...(res.alreadyUnlisted ? { alreadyUnlisted: true } : {}), ...(res.error ? { error: res.error } : {}) };
 }
 
 export async function unlistHiveCupboardRows(
