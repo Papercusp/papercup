@@ -784,18 +784,46 @@ export default function CupboardClient() {
       ) : (
         /* Flat browse (single non-harness kind) — each card links to its Hive
            via the Hive chip. */
-        <div style={gridStyle}>
-          {browseOthers.map((listing) => (
-            <ListingCard
-              key={listing.id}
-              listing={listing}
-              hiveRef={listingHiveKey(listing)}
-              onHive={() => void setHive(listingHiveKey(listing))}
-              onAction={() => handleAction(listing)}
-              onDetail={() => router.push(`/cupboard/${listing.id}`)}
-            />
-          ))}
-        </div>
+        <>
+          {/* Apps-tab empty state [owner:Avi 2026-07-14 "1. yes" — Apps tab
+              always-visible]: the Apps tab always renders (see visibleFilters), so
+              when no app has been published (and other kinds populate `listings`,
+              so the generic empty state above doesn't fire) it must explain itself
+              rather than show a blank grid. Scoped to the Apps view only. */}
+          {kindFilter === 'app' && browseOthers.length === 0 && (
+            <div
+              data-testid="cupboard-apps-empty"
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
+                textAlign: 'center', padding: '32px 20px', marginBottom: SIZES.lg,
+                border: `1px dashed ${COLORS.border}`, borderRadius: RADIUS.lg,
+                background: COLORS.surface,
+              }}
+            >
+              <AppWindow size={22} style={{ color: COLORS.textMuted }} />
+              <span style={{ fontFamily: FONTS.ui, fontWeight: 600, fontSize: 15, color: COLORS.text }}>
+                No apps yet
+              </span>
+              <p style={{ fontFamily: FONTS.ui, fontSize: 13, color: COLORS.textMuted, maxWidth: 460, margin: 0, lineHeight: 1.55 }}>
+                Apps are whole applications built on the platform — a teammate publishes one and
+                you download and run it right from here. When someone publishes an app, it appears
+                here to discover and install.
+              </p>
+            </div>
+          )}
+          <div style={gridStyle}>
+            {browseOthers.map((listing) => (
+              <ListingCard
+                key={listing.id}
+                listing={listing}
+                hiveRef={listingHiveKey(listing)}
+                onHive={() => void setHive(listingHiveKey(listing))}
+                onAction={() => handleAction(listing)}
+                onDetail={() => router.push(`/cupboard/${listing.id}`)}
+              />
+            ))}
+          </div>
+        </>
       )}
       </div>
         </>

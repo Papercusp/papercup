@@ -157,6 +157,142 @@ describe('CupboardClient — Pots tab always visible + empty state [owner:Avi 20
   });
 });
 
+describe('CupboardClient — Apps tab always visible + empty state [owner:Avi 2026-07-14]', () => {
+  const originalFetch = global.fetch;
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    // No app listings at all — only a plugin. The Apps tab must still show (it is
+    // always-visible per the owner directive), and clicking it must explain the
+    // feature rather than render a blank grid.
+    fetchMock.mockResolvedValue(new Response(
+      JSON.stringify({ listings: [listing({ id: 2, title: 'Plugin listing', listing_kind: 'plugin' })] }),
+      { status: 200 },
+    ));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('shows the Apps tab even when no app is published, with a self-explaining empty state', async () => {
+    withTooltips(<CupboardClient />);
+
+    await waitFor(() => expect(screen.getByText('Plugin listing')).toBeTruthy());
+    const appsTab = screen.getByTestId('cupboard-kind-tab-app');
+    expect(appsTab).toBeTruthy();
+
+    fireEvent.click(appsTab);
+
+    const empty = screen.getByTestId('cupboard-apps-empty');
+    expect(empty.textContent).toMatch(/No apps yet/i);
+    expect(empty.textContent).toMatch(/built on the platform/i);
+  });
+});
+
+describe('Cupboard ListingCard — app distribution (P-004)', () => {
+  const APP_PLATFORMS = JSON.stringify(['darwin-aarch64', 'linux-x86_64']);
+
+  it('standalone app → download action (link handoff), label falls back to Download for an unknown viewer OS', () => {
+    // Stub the UA to an OS the manifest doesn't advertise so the platform-aware
+    // label deterministically falls back (the CI host's real UA is Linux, which
+    // WOULD match linux-x86_64 — so pin an unknown OS here).
+    const ua = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+    const plat = Object.getOwnPropertyDescriptor(window.navigator, 'platform');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (compatible; UnknownOS)',
+      configurable: true,
+    });
+    Object.defineProperty(window.navigator, 'platform', { value: 'UnknownOS', configurable: true });
+    try {
+      render(
+        <ListingCard
+          listing={listing({ listing_kind: 'app', title: 'Oddsmith', platforms: APP_PLATFORMS })}
+          onAction={() => {}}
+          onDetail={() => {}}
+        />,
+      );
+      const btn = screen.getByTestId('cupboard-action');
+      expect(btn.getAttribute('data-action')).toBe('download');
+      expect(btn.textContent).toContain('Download');
+      expect(btn.textContent).not.toContain('Get for');
+    } finally {
+      if (ua) Object.defineProperty(window.navigator, 'userAgent', ua);
+      if (plat) Object.defineProperty(window.navigator, 'platform', plat);
+    }
+  });
+
+  it('a bundle app → install action (Phase 2 delivery)', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'app', delivery_type: 'bundle', title: 'Bundle App' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('cupboard-action').getAttribute('data-action')).toBe('install');
+  });
+
+  it('renders the OS-family platform chips from the denormalized platforms JSON', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'app', platforms: APP_PLATFORMS })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    const chips = screen.getByTestId('cupboard-app-platforms');
+    expect(chips.textContent).toContain('macOS');
+    expect(chips.textContent).toContain('Linux');
+    // Two distinct OS families, not the raw updater keys.
+    expect(chips.textContent).not.toContain('aarch64');
+  });
+
+  it('omits the platform chips when platforms is absent/unparseable', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'app', platforms: null })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('cupboard-app-platforms')).toBeNull();
+  });
+
+  it('makes the download CTA platform-aware when the viewer OS matches an available platform', () => {
+    const ua = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+      configurable: true,
+    });
+    try {
+      render(
+        <ListingCard
+          listing={listing({ listing_kind: 'app', platforms: APP_PLATFORMS })}
+          onAction={() => {}}
+          onDetail={() => {}}
+        />,
+      );
+      expect(screen.getByTestId('cupboard-action').textContent).toContain('Get for macOS');
+    } finally {
+      if (ua) Object.defineProperty(window.navigator, 'userAgent', ua);
+    }
+  });
+
+  it('renders an app kind badge', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'app', platforms: APP_PLATFORMS })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('cupboard-kind-badge').getAttribute('data-kind')).toBe('app');
+  });
+});
+
 describe('Cupboard ListingCard — claim-status badge', () => {
   it('surfaces the provisional (unclaimed) badge for an unclaimed listing', () => {
     render(
