@@ -662,7 +662,9 @@ describe('liveBlockedState (P-006 latch probe)', () => {
 // P-010 (linking-notify-family-hardening, WI-4014 Part 3 owner-fork → Option A):
 // on settle, notify across fixes/duplicates edges (inject-only) — the fixed
 // target's subscribers (fixes) and each duplicate-holder's assignee (duplicates).
-// Option B (subscribe{followBlockers}) deliberately NOT built (hot-path, D-003).
+// Option B (subscribe{followBlockers}) now rides the existing subscription/link
+// stores with derived-row cleanup; this file continues to pin the inject-only
+// settle-notify behavior separately.
 describe('fix/duplicate settle-notify (P-010)', () => {
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});

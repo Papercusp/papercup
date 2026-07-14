@@ -238,13 +238,14 @@ describe('teardownPotLearningLoop (P-021 — the pot:dissolve inverse)', () => {
     expect(scoutDelete).toBeTruthy();
     expect(scoutDelete!.values).toContain('alpha');
 
-    // P-007 (git-sync-dx-hardening): the git-sync pipeline routines for this install are
-    // ALSO reaped on dissolve (by target_role), scoped to this pot's install_slug.
+    // Install-scoped infrastructure routines are ALSO reaped on dissolve (by target_role),
+    // scoped to this pot's install_slug. This includes the cross-Hive drain pot:create arms.
     const gitSyncDelete = calls.find(
       (c) => c.text.includes('DELETE FROM harness_shared.routines') && c.text.includes('target_role'),
     );
     expect(gitSyncDelete).toBeTruthy();
     expect(gitSyncDelete!.text).toContain('system:git-sync');
+    expect(gitSyncDelete!.text).toContain('system:cross-hive-outbox-drain');
     expect(gitSyncDelete!.values).toContain('alpha');
     expect(gitSyncDelete!.values).toContain('w1');
 

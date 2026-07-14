@@ -247,8 +247,8 @@ export interface TeardownPotLearningLoopResult {
   scoutRoutine: boolean;
   /** The `gym:<pot>` / `scout:<pot>` learning-governor registrants were removed (or absent). */
   governorRegistrants: boolean;
-  /** The git-sync pipeline routines (system:git-sync/green-checkpoint/release-trigger) for
-   *  this install were removed (or were already absent) — git-sync-dx-hardening P-007. */
+  /** The install-scoped infrastructure routines (git/release and outbox drains) for this
+   *  install were removed (or were already absent) — git-sync-dx-hardening P-007. */
   gitSyncRoutines: boolean;
 }
 
@@ -259,9 +259,9 @@ export interface TeardownPotLearningLoopResult {
  *   (a) the dark gym_autoloop_config row keyed (workspace_id, harness_slug=potSlug),
  *   (b) the inactive scout routine (install_slug=potSlug, name='scout-cycle'),
  *   (c) the learning-governor registrants `gym:<pot>` + `scout:<pot>`.
- *   (d) the git-sync pipeline routines (system:git-sync/green-checkpoint/release-trigger)
- *       seeded for this install — git-sync-dx-hardening P-007 (they leaked per benchmark
- *       run; both dissolve paths — pot:dissolve + dissolveBenchPot — flow through here).
+ *   (d) the install-scoped infrastructure routines (git/release + outbox drains) seeded for
+ *       this install — they otherwise leak per benchmark run; both dissolve paths
+ *       (pot:dissolve + dissolveBenchPot) flow through here.
  *
  * Mirrors the provision's `undo` (which removes a+b), extended with the governor
  * registrants the provision NEVER writes (the gym/scout tick mirrors write those
@@ -315,16 +315,22 @@ export async function teardownPotLearningLoop(
     /* best-effort */
   }
 
-  // (d) git-sync pipeline routines (git-sync-dx-hardening-2026-06-17 P-007 / F6): the
-  //     system:git-sync (+ green-checkpoint / release-trigger) routines seeded per install
-  //     were NEVER reaped on dissolve, so every benchmark/pot run leaked rows (135+
-  //     accumulated). Scoped tightly to THIS pot's install_slug + the git-sync trio, so a
-  //     live install's sync is never touched. Best-effort, like the rest.
+  // (d) install-scoped infrastructure routines (git-sync-dx-hardening-2026-06-17 P-007 / F6):
+  //     git/release and outbox-drain rows seeded per install must leave with that install.
+  //     Missing one target here leaked the WI-3329 disposable pot's cross-hive drain after
+  //     dissolve, leaving an active routine under an unregistered slug. Scoped tightly to
+  //     THIS pot's install_slug, so a live install's routines are never touched.
   try {
     await sql`
       DELETE FROM harness_shared.routines
        WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug}
-         AND target_role IN ('system:git-sync', 'system:green-checkpoint', 'system:release-trigger', 'system:cross-pot-outbox-drain')`;
+         AND target_role IN (
+           'system:git-sync',
+           'system:green-checkpoint',
+           'system:release-trigger',
+           'system:cross-pot-outbox-drain',
+           'system:cross-hive-outbox-drain'
+         )`;
     result.gitSyncRoutines = true;
   } catch {
     /* best-effort */
