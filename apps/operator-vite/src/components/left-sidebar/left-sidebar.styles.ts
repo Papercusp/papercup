@@ -594,11 +594,11 @@ body.has-left-sidebar .pc-header {
   text-overflow: ellipsis;
 }
 
-/* Per-hive start/stop control — mirrors the in-page AdvNowRunning "Start hive"
-   / "Stop hive" actions (pc-advshell__action--start/stop): a bordered,
-   uppercase, color-coded pill (green start, red stop) with a hover lift, sized
-   for the compact sidebar row. Replaces the flat .pclsb-pill badge so the
-   sidebar toggle reads as the same control as the one inside a hive page. */
+/* Per-hive start/stop control — a FLAT semantic pill matching this file's own
+   .pclsb-pill--good/--bad idiom (and the design spec's flat-button rule): a 1px
+   color-mix border over a tinted color-mix fill, semantic-colored text, hover
+   deepens the fill only (no raised/lift treatment). start = --good, stop = --bad.
+   Sized for the compact sidebar row. */
 .pclsb-hivebtn {
   flex: 0 0 auto;
   display: inline-flex;
@@ -618,20 +618,20 @@ body.has-left-sidebar .pc-header {
   cursor: default;
 }
 .pclsb-hivebtn--start {
-  background: rgba(34, 197, 94, 0.16);
-  color: #86efac;
-  border-color: rgba(34, 197, 94, 0.38);
+  background: color-mix(in oklab, var(--good, #4ade80), transparent 85%);
+  color: var(--good, #4ade80);
+  border-color: color-mix(in oklab, var(--good, #4ade80), transparent 62%);
 }
 .pclsb-hivebtn--start:hover:not(:disabled) {
-  background: rgba(34, 197, 94, 0.26);
+  background: color-mix(in oklab, var(--good, #4ade80), transparent 76%);
 }
 .pclsb-hivebtn--stop {
-  background: rgba(239, 68, 68, 0.12);
-  color: #fca5a5;
-  border-color: rgba(239, 68, 68, 0.34);
+  background: color-mix(in oklab, var(--bad, #f87171), transparent 85%);
+  color: var(--bad, #f87171);
+  border-color: color-mix(in oklab, var(--bad, #f87171), transparent 62%);
 }
 .pclsb-hivebtn--stop:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.22);
+  background: color-mix(in oklab, var(--bad, #f87171), transparent 76%);
 }
 
 /* Section headers inside a tab (task list / plan progress / comms). */
