@@ -1593,7 +1593,7 @@ export function claudeSeedToolNames(env = process.env) {
 // packages/operator-core/lib/model-tier.ts modelCapabilityTier heuristic (kept simple here
 // — no TS import). Unknown/empty ⇒ NOT weak (safe default: never accidentally trim a strong
 // model). OMP runs weak AND strong models, so the tier comes from the MODEL, not the client.
-const OMP_LOCAL_MODEL_PREFIXES = ['ollama/', 'local/', 'llamacpp/', 'llama.cpp/', 'lmstudio/', 'localai/'];
+const OMP_LOCAL_MODEL_PREFIXES = ['ollama/', 'ollama-cc/', 'local/', 'llamacpp/', 'llama.cpp/', 'lmstudio/', 'localai/'];
 export function isWeakOmpModel(modelId) {
   if (!modelId) return false;
   const id = String(modelId).trim().toLowerCase();
@@ -1748,6 +1748,23 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     cfg = cfg.replace(/^eval:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '');
     if (!cfg.endsWith('\n')) cfg += '\n';
     cfg += 'eval:\n  py: false\n  js: false\n  rb: false\n  jl: false\n';
+    // Deterministic compaction for LOCAL-model sessions (deterministic-context-carry P-001,
+    // ornith overflow 2026-07-13): omp's default strategy `snapcompact` archives history as
+    // IMAGES (useless to a text-only local model) and falls back to LLM summarization on the
+    // session's own saturated single-slot backend — 429 self-starvation, then an un-gated
+    // 213K-token send into a 204K window → HTTP 400 and a dead session. `shake` is mechanical
+    // (no LLM call, no images) and thresholdPercent 70 fires it well before the wall. Settings
+    // live in config.yml (NOT agent/config.json — verified against the omp bundle's settings
+    // loader, which migrates legacy settings.json INTO config.yml). Same remove-then-append
+    // surgery as `eval` above; hosted-model sessions keep the copied config untouched.
+    const effModel = model || cfg.match(/modelRoles:[\s\S]*?\n[ \t]+default:[ \t]*([^\s#]+)/)?.[1]?.trim() || null;
+    if (isWeakOmpModel(effModel)) {
+      cfg = cfg
+        .replace(/^compaction:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '')
+        .replace(/^compaction\.[A-Za-z.]+:.*\n?/gm, '');
+      if (!cfg.endsWith('\n')) cfg += '\n';
+      cfg += 'compaction:\n  strategy: shake\n  thresholdPercent: 70\n';
+    }
     writeFileSync(join(dstAgent, 'config.yml'), cfg, { mode: 0o600 });
     // Faithful model registry + auth so model resolution + provider baseUrls survive the
     // relocation (the data root collapses onto the relocated configRoot; missing registry ⇒

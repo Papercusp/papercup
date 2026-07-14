@@ -29,6 +29,7 @@ export type ModelCapabilityTier = 'weak' | 'frontier';
  */
 const LOCAL_PROVIDER_PREFIXES: readonly string[] = [
   'ollama/',
+  'ollama-cc/', // custom ollama-compatible llama-server provider (e.g. ollama-cc/maxwell1500/ornith-35b) — missed by the bare ollama/ prefix, so the ornith incident session was tiered frontier (deterministic-context-carry P-001)
   'local/',
   'llamacpp/',
   'llama.cpp/',
