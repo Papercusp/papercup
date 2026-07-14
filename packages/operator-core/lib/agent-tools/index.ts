@@ -1078,6 +1078,11 @@ import './cupboard/publish-template';
 // install-blueprint-io.ts / install-io.ts with the loopback install routes.
 import './cupboard/install-blueprint';
 import './cupboard/install-plugin';
+// cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
+// (cupboard:search over browse-listings.ts) + the universal delist
+// (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
+import './cupboard/search';
+import './cupboard/unpublish';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';

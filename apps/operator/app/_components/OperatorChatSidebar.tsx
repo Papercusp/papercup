@@ -58,7 +58,11 @@ const CHAT_VIEW_VALUES = ['chat', 'pot'] as const;
  * PapercupVoiceBar (WI-4740: the owner asked for the duplicated voice controls
  * to live on the chat bar ONLY; this was the one control the chat bar lacked).
  * Muting silences spoken output but keeps voice mode + PTT live. Same
- * persisted flag + cross-tab broadcast event as the original.
+ * persisted flag + cross-tab broadcast event as the original. NOTE: only
+ * replies to VOICE-input turns are ever spoken (OperatorConversationProvider
+ * gates speak() on `spokenReply`) — TYPED chat is always silent, so the label
+ * is scoped to "voice replies" to match the behavior rather than promising all
+ * responses are read aloud (EI-12152, owner call 2026-07-14).
  */
 function TtsMuteButton() {
   const [muted, setMuted] = useState(false);
@@ -77,13 +81,13 @@ function TtsMuteButton() {
     setVoiceOutputMuted(next);
   };
   return (
-    <Tooltip label={muted ? 'Responses are muted — click to hear them spoken aloud' : 'Responses are spoken aloud — click to mute'}>
+    <Tooltip label={muted ? 'Voice replies muted — click to hear Papercup answer your spoken turns aloud' : 'Papercup speaks its replies when you talk by voice — click to mute (typed chat stays silent)'}>
       <button
         type="button"
         className={`op-chat-tts${muted ? ' is-muted' : ''}`}
         onClick={toggle}
         aria-pressed={!muted}
-        aria-label={muted ? 'Unmute spoken responses' : 'Mute spoken responses'}
+        aria-label={muted ? 'Unmute spoken voice replies' : 'Mute spoken voice replies'}
       >
         {muted ? <VolumeX size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
       </button>

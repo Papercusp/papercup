@@ -323,15 +323,15 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     await waitFor(() => {
       expect(document.body.classList.contains('has-op-chat')).toBe(true);
     });
-    const tts = await screen.findByRole('button', { name: 'Mute spoken responses' });
+    const tts = await screen.findByRole('button', { name: 'Mute spoken voice replies' });
     expect(tts.getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(tts);
     expect(setVoiceOutputMutedSpy).toHaveBeenCalledWith(true);
-    expect(screen.getByRole('button', { name: 'Unmute spoken responses' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Unmute spoken voice replies' })).toBeTruthy();
     // Cross-tab broadcast re-sync (same event contract the middle bar had).
     fireEvent(window, new CustomEvent('papercusp:voiceOutputMutedChanged', { detail: { muted: false } }));
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Mute spoken responses' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Mute spoken voice replies' })).toBeTruthy();
     });
   });
 
