@@ -32,15 +32,57 @@ const msAgo = (d: number): number => NOW - d * 24 * 60 * 60 * 1000;
 
 const friction: ImprovementCandidate[] = [
   // Recurring friction: same stable signature ×2, both open.
-  { id: 'EI-1', kind: 'bug', scope: 'operator', title: 'lock contention blocks file edits', state: 'open', updatedAt: daysAgo(1) },
-  { id: 'EI-2', kind: 'bug', scope: 'operator', title: 'lock contention blocks file edits', state: 'open', updatedAt: daysAgo(5) },
+  {
+    id: 'EI-1',
+    kind: 'bug',
+    scope: 'operator',
+    title: 'lock contention blocks file edits',
+    state: 'open',
+    updatedAt: daysAgo(1),
+  },
+  {
+    id: 'EI-2',
+    kind: 'bug',
+    scope: 'operator',
+    title: 'lock contention blocks file edits',
+    state: 'open',
+    updatedAt: daysAgo(5),
+  },
   // One-off friction (count=1) — must NOT appear in recurringFriction.
-  { id: 'EI-3', kind: 'bug', scope: 'operator', title: 'flaky vitest timeout in operator core', state: 'open', updatedAt: daysAgo(2) },
+  {
+    id: 'EI-3',
+    kind: 'bug',
+    scope: 'operator',
+    title: 'flaky vitest timeout in operator core',
+    state: 'open',
+    updatedAt: daysAgo(2),
+  },
   // Capability gap: net-new feature ask (count=1, still surfaced as a gap).
-  { id: 'EI-4', kind: 'feature', scope: 'operator', title: 'add a bulk export tool for plans', state: 'open', updatedAt: daysAgo(3) },
+  {
+    id: 'EI-4',
+    kind: 'feature',
+    scope: 'operator',
+    title: 'add a bulk export tool for plans',
+    state: 'open',
+    updatedAt: daysAgo(3),
+  },
   // Capability gap via keyword, recurring ×2 ("no way to ...").
-  { id: 'EI-5', kind: 'change', scope: 'operator', title: 'no way to rename a harness', state: 'open', updatedAt: daysAgo(2) },
-  { id: 'EI-6', kind: 'change', scope: 'operator', title: 'no way to rename a harness', state: 'resolved', updatedAt: daysAgo(8) },
+  {
+    id: 'EI-5',
+    kind: 'change',
+    scope: 'operator',
+    title: 'no way to rename a harness',
+    state: 'open',
+    updatedAt: daysAgo(2),
+  },
+  {
+    id: 'EI-6',
+    kind: 'change',
+    scope: 'operator',
+    title: 'no way to rename a harness',
+    state: 'resolved',
+    updatedAt: daysAgo(8),
+  },
 ];
 
 const spend: SpendRecord[] = [
@@ -52,9 +94,21 @@ const spend: SpendRecord[] = [
 const deferrals: DeferralRecord[] = [
   // Chronic: same thing deferred ×2 across two plans (one a hard needs-human stop).
   { planSlug: 'plan-a', refId: 'P-003', source: 'item', status: 'blocked', text: 'wire the cadence trigger primitive' },
-  { planSlug: 'plan-b', refId: 'P-008', source: 'item', status: 'needs-human', text: 'wire the cadence trigger primitive' },
+  {
+    planSlug: 'plan-b',
+    refId: 'P-008',
+    source: 'item',
+    status: 'needs-human',
+    text: 'wire the cadence trigger primitive',
+  },
   // One-off deferred decision.
-  { planSlug: 'plan-c', refId: 'D-009', source: 'decision', status: 'decision', text: 'defer the gym A/B threshold tuning' },
+  {
+    planSlug: 'plan-c',
+    refId: 'D-009',
+    source: 'decision',
+    status: 'decision',
+    text: 'defer the gym A/B threshold tuning',
+  },
 ];
 
 const reverts: RevertRecord[] = [
@@ -76,8 +130,11 @@ const completions: ChangeFeedEntry[] = [
 // source-hive; the pure-`healthy` criteria must drop out of the surfaced lane.
 const observations: StructuredObservationRecord[] = [
   {
-    id: 'EI-OBS-1', title: 'pot-coordination-health scorecard',
-    sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(1),
+    id: 'EI-OBS-1',
+    title: 'pot-coordination-health scorecard',
+    sourceHive: 'papercusp',
+    rubricRef: 'pot-coordination-health',
+    lastSeenMs: msAgo(1),
     ratings: {
       'end-to-end-flow': { rating: 'broken', evidence: '88 items unplaced despite idle capacity' },
       'ideation-quality': { rating: 'healthy', evidence: 'lens weights diverged from uniform' },
@@ -85,33 +142,54 @@ const observations: StructuredObservationRecord[] = [
     },
   },
   {
-    id: 'EI-OBS-2', title: 'pot-coordination-health scorecard',
-    sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(3),
+    id: 'EI-OBS-2',
+    title: 'pot-coordination-health scorecard',
+    sourceHive: 'papercusp',
+    rubricRef: 'pot-coordination-health',
+    lastSeenMs: msAgo(3),
     ratings: {
       'end-to-end-flow': { rating: 'broken', evidence: 'frontier stuck — 0 placements last hr' },
       'ideation-quality': { rating: 'healthy', evidence: 'fresh ideas generated' },
     },
   },
   {
-    id: 'EI-OBS-3', title: 'scorecard',
-    sourceHive: 'generic-test', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(2),
+    id: 'EI-OBS-3',
+    title: 'scorecard',
+    sourceHive: 'generic-test',
+    rubricRef: 'pot-coordination-health',
+    lastSeenMs: msAgo(2),
     ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'slow but moving' } },
   },
   {
-    id: 'EI-OBS-4', title: 'scorecard',
-    sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(1),
+    id: 'EI-OBS-4',
+    title: 'scorecard',
+    sourceHive: 'papercusp',
+    rubricRef: 'pot-coordination-health',
+    lastSeenMs: msAgo(1),
     ratings: { 'tool-utilization': { rating: 'healthy', evidence: 'all tools loading fine' } },
   },
 ];
 
 function fixtureReaders(over: Partial<StateOfHiveReaders> = {}): StateOfHiveReaders {
   return {
-    async completions() { return completions; },
-    async reverts() { return reverts; },
-    async friction() { return friction; },
-    async spend() { return spend; },
-    async deferrals() { return deferrals; },
-    async observations() { return observations; },
+    async completions() {
+      return completions;
+    },
+    async reverts() {
+      return reverts;
+    },
+    async friction() {
+      return friction;
+    },
+    async spend() {
+      return spend;
+    },
+    async deferrals() {
+      return deferrals;
+    },
+    async observations() {
+      return observations;
+    },
     ...over,
   };
 }
@@ -152,8 +230,12 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
     it('excludes rubric scorecard observations from friction mining while keeping free-text observations', async () => {
       const scorecardRows: ImprovementCandidate[] = [
         {
-          id: 'EI-SC-1', kind: 'bug', scope: 'operator', title: 'pot-coordination-health scorecard',
-          state: 'open', updatedAt: daysAgo(1),
+          id: 'EI-SC-1',
+          kind: 'bug',
+          scope: 'operator',
+          title: 'pot-coordination-health scorecard',
+          state: 'open',
+          updatedAt: daysAgo(1),
           observation: {
             sourceHive: 'papercusp',
             rubricRef: 'pot-coordination-health',
@@ -161,8 +243,12 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
           },
         },
         {
-          id: 'EI-SC-2', kind: 'bug', scope: 'operator', title: 'pot-coordination-health scorecard',
-          state: 'open', updatedAt: daysAgo(2),
+          id: 'EI-SC-2',
+          kind: 'bug',
+          scope: 'operator',
+          title: 'pot-coordination-health scorecard',
+          state: 'open',
+          updatedAt: daysAgo(2),
           observation: {
             sourceHive: 'papercusp',
             rubricRef: 'pot-coordination-health',
@@ -170,22 +256,40 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
           },
         },
         {
-          id: 'EI-FLOOR-1', kind: 'bug', scope: 'operator', title: 'scorecard (synthesized floor)',
-          state: 'open', updatedAt: daysAgo(1),
+          id: 'EI-FLOOR-1',
+          kind: 'bug',
+          scope: 'operator',
+          title: 'scorecard (synthesized floor)',
+          state: 'open',
+          updatedAt: daysAgo(1),
           observation: { kind: 'friction', synthesized: true } as unknown as ImprovementCandidate['observation'],
         },
         {
-          id: 'EI-FLOOR-2', kind: 'bug', scope: 'operator', title: 'scorecard (synthesized floor)',
-          state: 'open', updatedAt: daysAgo(2),
+          id: 'EI-FLOOR-2',
+          kind: 'bug',
+          scope: 'operator',
+          title: 'scorecard (synthesized floor)',
+          state: 'open',
+          updatedAt: daysAgo(2),
           observation: { kind: 'friction', synthesized: true } as unknown as ImprovementCandidate['observation'],
         },
         {
-          id: 'EI-FT-1', kind: 'bug', scope: 'operator', title: 'free-text observation reports stuck dispatch',
-          state: 'open', updatedAt: daysAgo(1), observation: { kind: 'friction' },
+          id: 'EI-FT-1',
+          kind: 'bug',
+          scope: 'operator',
+          title: 'free-text observation reports stuck dispatch',
+          state: 'open',
+          updatedAt: daysAgo(1),
+          observation: { kind: 'friction' },
         },
         {
-          id: 'EI-FT-2', kind: 'bug', scope: 'operator', title: 'free-text observation reports stuck dispatch',
-          state: 'open', updatedAt: daysAgo(3), observation: { kind: 'friction' },
+          id: 'EI-FT-2',
+          kind: 'bug',
+          scope: 'operator',
+          title: 'free-text observation reports stuck dispatch',
+          state: 'open',
+          updatedAt: daysAgo(3),
+          observation: { kind: 'friction' },
         },
       ];
 
@@ -194,13 +298,19 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
           friction: async () => scorecardRows,
           observations: async () => [
             {
-              id: 'EI-SC-1', title: 'pot-coordination-health scorecard',
-              sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(1),
+              id: 'EI-SC-1',
+              title: 'pot-coordination-health scorecard',
+              sourceHive: 'papercusp',
+              rubricRef: 'pot-coordination-health',
+              lastSeenMs: msAgo(1),
               ratings: { 'end-to-end-flow': { rating: 'broken', evidence: 'frontier stuck' } },
             },
             {
-              id: 'EI-SC-2', title: 'pot-coordination-health scorecard',
-              sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(2),
+              id: 'EI-SC-2',
+              title: 'pot-coordination-health scorecard',
+              sourceHive: 'papercusp',
+              rubricRef: 'pot-coordination-health',
+              lastSeenMs: msAgo(2),
               ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'placements slow' } },
             },
           ],
@@ -312,7 +422,11 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
     it('isolates a throwing observations reader — empty lane, rest of the digest intact', async () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
       const digest = await synthesizeStateOfHive(
-        fixtureReaders({ async observations() { throw new Error('PG down'); } }),
+        fixtureReaders({
+          async observations() {
+            throw new Error('PG down');
+          },
+        }),
         { nowMs: NOW },
       );
       expect(digest.rubricRatings).toEqual([]);
@@ -328,7 +442,14 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
 
   it('every surfaced pattern carries a non-empty ref + summary, weight in [0,1]', async () => {
     const digest = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
-    const lanes = [digest.recurringFriction, digest.timeTokenSinks, digest.chronicDeferrals, digest.capabilityGaps, digest.reverts, digest.rubricRatings];
+    const lanes = [
+      digest.recurringFriction,
+      digest.timeTokenSinks,
+      digest.chronicDeferrals,
+      digest.capabilityGaps,
+      digest.reverts,
+      digest.rubricRatings,
+    ];
     for (const lane of lanes) {
       for (const p of lane) {
         expect(p.summary.length).toBeGreaterThan(0);
@@ -355,7 +476,11 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
   it('isolates a throwing reader — one bad source does not kill the digest', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const digest = await synthesizeStateOfHive(
-      fixtureReaders({ async spend() { throw new Error('PG down'); } }),
+      fixtureReaders({
+        async spend() {
+          throw new Error('PG down');
+        },
+      }),
       { nowMs: NOW },
     );
     expect(digest.timeTokenSinks).toEqual([]); // failed lane is empty
@@ -365,12 +490,24 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
 
   it('handles a fully-empty corpus', async () => {
     const empty: StateOfHiveReaders = {
-      async completions() { return []; },
-      async reverts() { return []; },
-      async friction() { return []; },
-      async spend() { return []; },
-      async deferrals() { return []; },
-      async observations() { return []; },
+      async completions() {
+        return [];
+      },
+      async reverts() {
+        return [];
+      },
+      async friction() {
+        return [];
+      },
+      async spend() {
+        return [];
+      },
+      async deferrals() {
+        return [];
+      },
+      async observations() {
+        return [];
+      },
     };
     const digest = await synthesizeStateOfHive(empty, { nowMs: NOW });
     expect(() => DigestSchema.parse(digest)).not.toThrow();
@@ -389,9 +526,33 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
   describe('rubricGaps', () => {
     // 3 captures of the SAME friction, 3 distinct authors, across 2 distinct days.
     const gapFriction: ImprovementCandidate[] = [
-      { id: 'EI-G1', kind: 'bug', scope: 'operator', title: 'deploy gate wedges on a stale lock', state: 'open', createdBy: 'su-a', updatedAt: daysAgo(1) },
-      { id: 'EI-G2', kind: 'bug', scope: 'operator', title: 'deploy gate wedges on a stale lock', state: 'open', createdBy: 'su-b', updatedAt: daysAgo(2) },
-      { id: 'EI-G3', kind: 'bug', scope: 'operator', title: 'deploy gate wedges on a stale lock', state: 'open', createdBy: 'su-c', updatedAt: daysAgo(2) },
+      {
+        id: 'EI-G1',
+        kind: 'bug',
+        scope: 'operator',
+        title: 'deploy gate wedges on a stale lock',
+        state: 'open',
+        createdBy: 'su-a',
+        updatedAt: daysAgo(1),
+      },
+      {
+        id: 'EI-G2',
+        kind: 'bug',
+        scope: 'operator',
+        title: 'deploy gate wedges on a stale lock',
+        state: 'open',
+        createdBy: 'su-b',
+        updatedAt: daysAgo(2),
+      },
+      {
+        id: 'EI-G3',
+        kind: 'bug',
+        scope: 'operator',
+        title: 'deploy gate wedges on a stale lock',
+        state: 'open',
+        createdBy: 'su-c',
+        updatedAt: daysAgo(2),
+      },
     ];
 
     it('flags a recurring, multi-author, multi-cycle cluster with no covering rubric', async () => {
@@ -414,7 +575,12 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
         fixtureReaders({
           friction: async () => gapFriction,
           rubrics: async () => [
-            { rubricId: 'deploy-health', characteristic: 'deploy gate health', title: 'Deploy gate', criteriaTitles: ['lock contention'] },
+            {
+              rubricId: 'deploy-health',
+              characteristic: 'deploy gate health',
+              title: 'Deploy gate',
+              criteriaTitles: ['lock contention'],
+            },
           ],
         }),
         { nowMs: NOW },
@@ -465,8 +631,22 @@ describe('buildFederatedMapLane', () => {
   it('surfaces crowded niches across the local+foreign union and prioritizes empty one-step neighbors of local niches', () => {
     const lane = buildFederatedMapLane([
       { nicheKey: 'module|sync|low', scope: 'module', domain: 'sync', risk: 'low', fitness: 0.91 },
-      { nicheKey: 'module|sync|low', scope: 'module', domain: 'sync', risk: 'low', fitness: 0.88, sourceHive: 'peer-a' },
-      { nicheKey: 'module|sync|low', scope: 'module', domain: 'sync', risk: 'low', fitness: 0.82, sourceHive: 'peer-b' },
+      {
+        nicheKey: 'module|sync|low',
+        scope: 'module',
+        domain: 'sync',
+        risk: 'low',
+        fitness: 0.88,
+        sourceHive: 'peer-a',
+      },
+      {
+        nicheKey: 'module|sync|low',
+        scope: 'module',
+        domain: 'sync',
+        risk: 'low',
+        fitness: 0.82,
+        sourceHive: 'peer-b',
+      },
       { nicheKey: 'module|docs|low', scope: 'module', domain: 'docs', risk: 'low', fitness: 0.73 },
     ]);
 
@@ -520,6 +700,13 @@ describe('structural contract with scout/types.ts', () => {
     expect(() => MetaPatternSchema.parse(pattern)).not.toThrow();
     const asSchema: import('zod').infer<typeof MetaPatternSchema> = pattern; // types.ts → schema-output
     expect(asSchema.category).toBe('rubric-rating');
+  });
+
+  it('the four P-011 curation categories stay in sync across the schema enum + types.ts', () => {
+    for (const category of ['spend-anomaly', 'owner-correction', 'knowledge-reuse-gap', 'plan-health'] as const) {
+      const pattern: TypesMetaPattern = { category, summary: 's', ref: `${category}:x`, weight: 1 };
+      expect(() => MetaPatternSchema.parse(pattern)).not.toThrow();
+    }
   });
 
   it('a digest pattern is a valid MetaPattern per the schema validator', async () => {

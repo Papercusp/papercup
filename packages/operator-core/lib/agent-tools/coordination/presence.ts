@@ -69,10 +69,9 @@ const store = new PgPresenceStore({
 // through UNCHANGED (undefined) — the store's ON CONFLICT is unconditional
 // (EXCLUDED.host/EXCLUDED.pid), so an undefined `input.host`/`input.pid` here
 // resolves to PgPresenceStore's own column defaults (''/null), never a
-// fabricated value. The `suspect`/`draining` SessionState and the
-// confirmLiveness UX hint (#2/#3) remain deliberately NOT touched here — they
-// are breaking/UX changes to a hot shared path that need their own dedicated
-// pass per the item's own staged-rollout note.
+// fabricated value. The `suspect`/`draining` SessionState is derived on the
+// read path once these values are present; the confirmLiveness UX hint remains
+// the separate follow-up.
 //
 // `LOCAL_HOSTNAME` below is still legitimate: it is the OPERATOR's own
 // hostname, used only as the comparison target in `probeProcessLiveness` (the
@@ -253,9 +252,8 @@ export async function touchHeartbeat(
  *    reused by a different-UID process would also read EPERM, which must
  *    NOT be reported as "dead").
  *
- * Deliberately NOT wired into SessionState/coord:presence reads here — that
- * `suspect`/`draining` state-shape change is remedy #2, scoped out per the
- * item's own staged-rollout note. This is the tested primitive #2 will call.
+ * The presence snapshot calls this primitive on the read path; the claim lease
+ * reaper uses the same probe to remove a confirmed-dead owner from its live set.
  */
 export function probeProcessLiveness(record: {
   host: string | null | undefined;

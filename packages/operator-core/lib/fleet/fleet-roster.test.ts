@@ -243,7 +243,7 @@ describe('foldFleetRoster', () => {
     const [e] = foldFleetRoster([p], [], tier1({}), NOW, wake({ 'su-recent-park': { wakeable: true, liveTurn: false } }));
     // The distinguishing signal is sessionState (parked, resumable — NOT ended);
     // `alive` is heartbeat-derived and already false for any stale row.
-    expect(e.sessionState).toBe('parked');
+    expect(e.sessionState).toBe('draining');
     expect(e.alive).toBe(false);
   });
 

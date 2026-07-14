@@ -378,21 +378,14 @@ export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: st
 
   // P-010: the domain MISSION framing is blueprint-overridable; the lens stance +
   // rules + output contract below are the engine mechanism and stay hardcoded.
-  const system: string[] = [
-    input.mission ?? DEFAULT_IDEATOR_MISSION,
-    '',
-    `## Your lens: ${def.label}`,
-    def.stance,
-  ];
+  const system: string[] = [input.mission ?? DEFAULT_IDEATOR_MISSION, '', `## Your lens: ${def.label}`, def.stance];
 
   if (def.usesDistantDomain) {
     const dom = input.seedDomain;
     system.push(
       '',
       '## Your primed distant domain',
-      dom
-        ? `${dom.key}: ${dom.prime}`
-        : '(no domain assigned — pick one genuinely distant from software and name it)',
+      dom ? `${dom.key}: ${dom.prime}` : '(no domain assigned — pick one genuinely distant from software and name it)',
     );
   }
 
@@ -413,7 +406,7 @@ export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: st
     '',
     '## Rules',
     '- Do NOT propose the obvious, incremental, or already-tried. Each idea must be a genuine leap through your lens.',
-    '- GROUND every idea in the Hive\'s real history: cite the `ref`(s) of the digest meta-pattern(s) it addresses in `addressesPatternRefs`. An idea that grounds in nothing will be rejected downstream.',
+    "- GROUND every idea in the Hive's real history: cite the `ref`(s) of the digest meta-pattern(s) it addresses in `addressesPatternRefs`. An idea that grounds in nothing will be rejected downstream.",
     '- If federated mutation seeds are provided, ADAPT them to local friction instead of copying them. Cite any foreign elite you actively reuse in optional `seededByRefs`.',
     '- State the concrete `mechanism` — HOW it would work. No hand-waving.',
     '- Diverge: prefer one strong unexpected idea over three safe ones.',

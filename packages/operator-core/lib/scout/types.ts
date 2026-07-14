@@ -35,11 +35,7 @@ import type { CorpusMatch, CritiqueVerdict } from './critique-core';
  *  - `reframing`         — find the real constraint nobody named (problem-finding).
  *  - `constraint-removal`— negate a load-bearing assumption; build what it blocked.
  */
-export type CreativeLens =
-  | 'analogical'
-  | 'first-principles'
-  | 'reframing'
-  | 'constraint-removal';
+export type CreativeLens = 'analogical' | 'first-principles' | 'reframing' | 'constraint-removal';
 
 /** All lenses, in a stable order (the default ideator roster). */
 export const CREATIVE_LENSES: readonly CreativeLens[] = [

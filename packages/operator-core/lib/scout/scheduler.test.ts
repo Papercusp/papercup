@@ -628,11 +628,21 @@ describe('groundingLaneHistogram (blender-self-learning-2026-07-12 P-006)', () =
     const { groundingLaneHistogram } = await import('./scheduler');
     expect(
       groundingLaneHistogram([
-        { addressesPatternRefs: ['rubric:r#c@h', 'wi:12'] },
-        { addressesPatternRefs: ['fact:workspace:k', 'niche:n1', 'rubric:r2#c@h'] },
+        { addressesPatternRefs: ['rubric:r#c@h', 'wi:12', 'spend:attribution-gap'] },
+        { addressesPatternRefs: ['fact:workspace:k', 'niche:n1', 'rubric:r2#c@h', 'owner-correction:idea:i1'] },
+        { addressesPatternRefs: ['knowledge:search-miss:docs:q', 'plan-health:stale-backlog:h:p'] },
         {},
       ]),
-    ).toEqual({ 'rubric-rating': 2, corpus: 1, 'standing-fact': 1, 'niche-map': 1 });
+    ).toEqual({
+      'rubric-rating': 2,
+      corpus: 1,
+      'standing-fact': 1,
+      'niche-map': 1,
+      'spend-anomaly': 1,
+      'owner-correction': 1,
+      'knowledge-reuse-gap': 1,
+      'plan-health': 1,
+    });
   });
 
   it('empty provenance yields an empty histogram (detail key omitted upstream)', async () => {

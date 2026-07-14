@@ -64,7 +64,10 @@ const bar = (r: ProgramSuccessReport, key: string) => r.criteria.find((c) => c.k
 describe('evaluateProgramSuccess — rubric-grounded ideas', () => {
   it('PASSES when a routed idea is grounded in the rubric lane', () => {
     const r = evaluateProgramSuccess(
-      inputs([ranTick({ ideasRouted: 1 })], [idea({ addressesPatternRefs: ['rubric:su-agent-behavior/tool-discipline'] })]),
+      inputs(
+        [ranTick({ ideasRouted: 1 })],
+        [idea({ addressesPatternRefs: ['rubric:su-agent-behavior/tool-discipline'] })],
+      ),
     );
     expect(bar(r, 'rubric-grounded-ideas').status).toBe('pass');
     expect(bar(r, 'rubric-grounded-ideas').observed).toContain('1 of 1');
@@ -250,18 +253,22 @@ describe('evaluateProgramSuccess — ledger reconciliation', () => {
 describe('evaluateProgramSuccess — grader feedback revised', () => {
   const gradedAt = '2026-07-13T12:00:00.000Z';
 
-  it('PASSES only with a same-origin typed revision created after the grade', () => {
+  it('PASSES with an attributed typed revision created after the grade, including a successor session', () => {
     const r = evaluateProgramSuccess(
       inputs(
         [ranTick({ ideasRouted: 1 })],
-        [idea({
-          humanGrade: 3,
-          humanFeedback: 'tighten the scope',
-          gradedBy: 'owner',
-          gradedAt,
-          createdBy: 'su-originator',
-          feedbackRevisions: [{ revisionRef: 'EI-2', createdBy: 'su-originator', revisedAt: '2026-07-13T12:01:00.000Z' }],
-        })],
+        [
+          idea({
+            humanGrade: 3,
+            humanFeedback: 'tighten the scope',
+            gradedBy: 'owner',
+            gradedAt,
+            createdBy: 'su-originator',
+            feedbackRevisions: [
+              { revisionRef: 'EI-2', createdBy: 'su-successor', revisedAt: '2026-07-13T12:01:00.000Z' },
+            ],
+          }),
+        ],
       ),
     );
     const b = bar(r, 'grader-feedback-revised');
@@ -269,12 +276,26 @@ describe('evaluateProgramSuccess — grader feedback revised', () => {
     expect(b.observed).toContain('1 routed idea(s) have a causally valid typed feedback revision');
   });
 
-  it('FAILS closed on no edge, a pre-grade edge, and a wrong-origin edge', () => {
-    const base = { humanGrade: 2, humanFeedback: 'revise it', gradedBy: 'owner' as const, gradedAt, createdBy: 'su-originator' };
+  it('FAILS closed on no edge, a pre-grade edge, and an unattributed edge', () => {
+    const base = {
+      humanGrade: 2,
+      humanFeedback: 'revise it',
+      gradedBy: 'owner' as const,
+      gradedAt,
+      createdBy: 'su-originator',
+    };
     const cases: RoutedIdeaProvenance[] = [
       idea(base),
-      idea({ ...base, ideaId: 'i2', feedbackRevisions: [{ revisionRef: 'EI-2', createdBy: 'su-originator', revisedAt: '2026-07-13T11:59:00.000Z' }] }),
-      idea({ ...base, ideaId: 'i3', feedbackRevisions: [{ revisionRef: 'EI-3', createdBy: 'somebody-else', revisedAt: '2026-07-13T12:01:00.000Z' }] }),
+      idea({
+        ...base,
+        ideaId: 'i2',
+        feedbackRevisions: [{ revisionRef: 'EI-2', createdBy: 'su-originator', revisedAt: '2026-07-13T11:59:00.000Z' }],
+      }),
+      idea({
+        ...base,
+        ideaId: 'i3',
+        feedbackRevisions: [{ revisionRef: 'EI-3', revisedAt: '2026-07-13T12:01:00.000Z' }],
+      }),
     ];
     for (const candidate of cases) {
       const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [candidate]));
@@ -294,12 +315,15 @@ describe('evaluateProgramSuccess — lens diversity (D-004, WI-4482)', () => {
 
   it('PASSES when the roster spans >=2 lenses', () => {
     const r = evaluateProgramSuccess(
-      inputs([ranTick({ ideasRouted: 4 })], [
-        scoutIdea('analogical', 1),
-        scoutIdea('reframing', 2),
-        scoutIdea('first-principles', 3),
-        scoutIdea('constraint-removal', 4),
-      ]),
+      inputs(
+        [ranTick({ ideasRouted: 4 })],
+        [
+          scoutIdea('analogical', 1),
+          scoutIdea('reframing', 2),
+          scoutIdea('first-principles', 3),
+          scoutIdea('constraint-removal', 4),
+        ],
+      ),
     );
     const b = bar(r, 'lens-diversity');
     expect(b.status).toBe('pass');
@@ -309,7 +333,10 @@ describe('evaluateProgramSuccess — lens diversity (D-004, WI-4482)', () => {
   it('FAILS when the roster has collapsed to a single lens — the live WI-4482 regression', () => {
     // maxIdeators:1 ⇒ rosterForBudget slices to the FIRST lens ⇒ every idea is analogical.
     const r = evaluateProgramSuccess(
-      inputs([ranTick({ ideasRouted: 5 })], [1, 2, 3, 4, 5].map((n) => scoutIdea('analogical', n))),
+      inputs(
+        [ranTick({ ideasRouted: 5 })],
+        [1, 2, 3, 4, 5].map((n) => scoutIdea('analogical', n)),
+      ),
     );
     const b = bar(r, 'lens-diversity');
     expect(b.status).toBe('fail');
@@ -360,7 +387,9 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
             gradedBy: 'owner',
             gradedAt: '2026-07-13T12:00:00.000Z',
             createdBy: 'su-green',
-            feedbackRevisions: [{ revisionRef: 'EI-green-2', createdBy: 'su-green', revisedAt: '2026-07-13T12:01:00.000Z' }],
+            feedbackRevisions: [
+              { revisionRef: 'EI-green-2', createdBy: 'su-green', revisedAt: '2026-07-13T12:01:00.000Z' },
+            ],
           }),
           idea({
             ideaId: 'i-reframing',
@@ -371,7 +400,9 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
             gradedBy: 'owner',
             gradedAt: '2026-07-13T12:00:00.000Z',
             createdBy: 'su-green-2',
-            feedbackRevisions: [{ revisionRef: 'EI-green-3', createdBy: 'su-green-2', revisedAt: '2026-07-13T12:01:00.000Z' }],
+            feedbackRevisions: [
+              { revisionRef: 'EI-green-3', createdBy: 'su-green-2', revisedAt: '2026-07-13T12:01:00.000Z' },
+            ],
           }),
         ],
       ),
@@ -393,7 +424,9 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
             gradedBy: 'owner',
             gradedAt: '2026-07-13T12:00:00.000Z',
             createdBy: 'su-green',
-            feedbackRevisions: [{ revisionRef: 'EI-green-2', createdBy: 'su-green', revisedAt: '2026-07-13T12:01:00.000Z' }],
+            feedbackRevisions: [
+              { revisionRef: 'EI-green-2', createdBy: 'su-green', revisedAt: '2026-07-13T12:01:00.000Z' },
+            ],
           }),
         ],
       ),

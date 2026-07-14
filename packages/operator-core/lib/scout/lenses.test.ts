@@ -66,7 +66,13 @@ describe('buildIdeatorPrompt — anti-mode-collapse + lens stance', () => {
   });
 
   it('honors the mission override + maxIdeas + appends non-blank priming to the user prompt', () => {
-    const r = buildIdeatorPrompt({ lens: 'reframing', digest: d, mission: 'CUSTOM MISSION', maxIdeas: 7, priming: '  prior elites here  ' });
+    const r = buildIdeatorPrompt({
+      lens: 'reframing',
+      digest: d,
+      mission: 'CUSTOM MISSION',
+      maxIdeas: 7,
+      priming: '  prior elites here  ',
+    });
     expect(r.system).toContain('CUSTOM MISSION');
     expect(r.system).not.toContain(DEFAULT_IDEATOR_MISSION);
     expect(r.system).toContain('at most 7 ideas');
@@ -81,13 +87,29 @@ describe('flattenDigest / digestRefSet / renderDigest', () => {
     recurringFriction: [pat('wi:1', 'A')],
     capabilityGaps: [pat('gap:2', 'B')],
     rubricRatings: [pat('rub:3', 'C')],
+    spendAnomalies: [pat('spend:4', 'D')],
+    ownerCorrections: [pat('owner-correction:5', 'E')],
+    knowledgeReuseGaps: [pat('knowledge:6', 'F')],
+    planHealth: [pat('plan-health:7', 'G')],
   } as Partial<CorpusDigest>);
 
   it('flattenDigest collapses all lanes, stamping each pattern with its category lane', () => {
     const flat = flattenDigest(d);
-    expect(flat.map((p) => p.ref).sort()).toEqual(['gap:2', 'rub:3', 'wi:1']);
+    expect(flat.map((p) => p.ref).sort()).toEqual([
+      'gap:2',
+      'knowledge:6',
+      'owner-correction:5',
+      'plan-health:7',
+      'rub:3',
+      'spend:4',
+      'wi:1',
+    ]);
     expect(flat.find((p) => p.ref === 'wi:1')!.category).toBe('recurring-friction');
     expect(flat.find((p) => p.ref === 'rub:3')!.category).toBe('rubric-rating');
+    expect(flat.find((p) => p.ref === 'spend:4')!.category).toBe('spend-anomaly');
+    expect(flat.find((p) => p.ref === 'owner-correction:5')!.category).toBe('owner-correction');
+    expect(flat.find((p) => p.ref === 'knowledge:6')!.category).toBe('knowledge-reuse-gap');
+    expect(flat.find((p) => p.ref === 'plan-health:7')!.category).toBe('plan-health');
   });
 
   it('flattenDigest tolerates missing lanes (?? [])', () => {
@@ -95,7 +117,15 @@ describe('flattenDigest / digestRefSet / renderDigest', () => {
   });
 
   it('digestRefSet is the set of every ref across the lanes', () => {
-    expect([...digestRefSet(d)].sort()).toEqual(['gap:2', 'rub:3', 'wi:1']);
+    expect([...digestRefSet(d)].sort()).toEqual([
+      'gap:2',
+      'knowledge:6',
+      'owner-correction:5',
+      'plan-health:7',
+      'rub:3',
+      'spend:4',
+      'wi:1',
+    ]);
   });
 
   it('renderDigest shows the headline + a category-tagged line per pattern with its ref', () => {
@@ -104,6 +134,10 @@ describe('flattenDigest / digestRefSet / renderDigest', () => {
     expect(out).toContain('(ref: wi:1)');
     expect(out).toContain('[Recurring friction]');
     expect(out).toContain('[Rubric rating]');
+    expect(out).toContain('[Spend anomaly');
+    expect(out).toContain('[Owner correction');
+    expect(out).toContain('[Knowledge reuse gap');
+    expect(out).toContain('[Plan health');
   });
 
   it('renderDigest on an empty digest reports no patterns surfaced', () => {
@@ -180,7 +214,12 @@ describe('assignDistantDomain + defaultLensRoster', () => {
 
 describe('deterministic rubric seeding (blender-self-learning-2026-07-12 P-004)', () => {
   const withRubrics = digest({
-    rubricRatings: [pat('rubric:r1#a@h', 'worst'), pat('rubric:r1#b@h', 'second'), pat('rubric:r2#c@h', 'third'), pat('rubric:r2#d@h', 'fourth')],
+    rubricRatings: [
+      pat('rubric:r1#a@h', 'worst'),
+      pat('rubric:r1#b@h', 'second'),
+      pat('rubric:r2#c@h', 'third'),
+      pat('rubric:r2#d@h', 'fourth'),
+    ],
   } as Partial<CorpusDigest>);
 
   it('buildRubricFocus renders the worst-first top-K with citable refs', () => {
@@ -195,7 +234,11 @@ describe('deterministic rubric seeding (blender-self-learning-2026-07-12 P-004)'
   });
 
   it('the prompt gains a MANDATORY rubric-focus section when supplied — and not otherwise', () => {
-    const seeded = buildIdeatorPrompt({ lens: 'reframing', digest: withRubrics, rubricFocus: buildRubricFocus(withRubrics)! });
+    const seeded = buildIdeatorPrompt({
+      lens: 'reframing',
+      digest: withRubrics,
+      rubricFocus: buildRubricFocus(withRubrics)!,
+    });
     expect(seeded.system).toContain('## Rubric focus');
     expect(seeded.system).toContain('MUST address one of them');
     expect(seeded.system).toContain('rubric:r1#a@h');

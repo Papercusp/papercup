@@ -439,7 +439,7 @@ export function groundingLaneHistogram(
                   ? 'knowledge-reuse-gap'
                   : ref.startsWith('plan-health:')
                     ? 'plan-health'
-            : 'corpus';
+                    : 'corpus';
       out[lane] = (out[lane] ?? 0) + 1;
     }
   }

@@ -41,17 +41,10 @@ import {
   type RiskBand,
   type ScopeBand,
 } from '../gym/qd/niche';
-import {
-  dedupSignature,
-  findLikelyDuplicates,
-  signatureRecurrence,
-} from '../harness/improvements/digest';
+import { dedupSignature, findLikelyDuplicates, signatureRecurrence } from '../harness/improvements/digest';
 import { clusterFrictionByEmbedding } from './digest-embed-cluster-leg';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
-import {
-  computeDepthAwareCrowding,
-  type FederatedEliteView,
-} from './federated-priming';
+import { computeDepthAwareCrowding, type FederatedEliteView } from './federated-priming';
 import type { MetaPattern, MetaPatternCategory } from './types';
 
 // ---------------------------------------------------------------------------
@@ -495,7 +488,6 @@ async function safe<T>(fn: () => Promise<T[]>, label: string): Promise<T[]> {
   try {
     return await fn();
   } catch (err) {
-     
     console.warn(`[corpus-digest] reader "${label}" failed:`, err instanceof Error ? err.message : err);
     return [];
   }
@@ -615,9 +607,7 @@ function buildRecurringFriction(
 ): MetaPattern[] {
   const originTag = clusterOrigin === 'embed' ? ' · via:embed-cluster' : '';
   const scored: Scored[] = clusters.map((cluster) => {
-    const members = cluster.ids
-      .map((id) => byId.get(id))
-      .filter((c): c is ImprovementCandidate => Boolean(c));
+    const members = cluster.ids.map((id) => byId.get(id)).filter((c): c is ImprovementCandidate => Boolean(c));
     const openCount = members.filter((m) => (m.state ?? 'open') === 'open').length;
     // Exemplar + decay clock = the most-recently-seen member.
     const newest = [...members].sort((a, b) => lastSeenMsOf(b) - lastSeenMsOf(a))[0];
@@ -658,10 +648,47 @@ const MIN_RUBRIC_COVER_TOKENS = 2;
 
 /** Generic words that carry no coverage signal — dropped before token-overlap. */
 const GAP_STOPWORDS = new Set([
-  'the', 'and', 'for', 'that', 'this', 'with', 'not', 'but', 'are', 'was', 'has',
-  'have', 'via', 'per', 'when', 'then', 'than', 'into', 'from', 'does', 'did',
-  'can', 'cant', 'won', 'wont', 'you', 'your', 'all', 'any', 'out', 'get', 'got',
-  'its', 'their', 'there', 'here', 'over', 'under', 'about', 'after', 'before',
+  'the',
+  'and',
+  'for',
+  'that',
+  'this',
+  'with',
+  'not',
+  'but',
+  'are',
+  'was',
+  'has',
+  'have',
+  'via',
+  'per',
+  'when',
+  'then',
+  'than',
+  'into',
+  'from',
+  'does',
+  'did',
+  'can',
+  'cant',
+  'won',
+  'wont',
+  'you',
+  'your',
+  'all',
+  'any',
+  'out',
+  'get',
+  'got',
+  'its',
+  'their',
+  'there',
+  'here',
+  'over',
+  'under',
+  'about',
+  'after',
+  'before',
 ]);
 
 /** Significant lowercase tokens (≥3 chars, non-stopword) — the coverage-match unit. */
@@ -683,9 +710,7 @@ function utcDay(ms: number): string {
  *  title + criterion titles share ≥ MIN_RUBRIC_COVER_TOKENS significant tokens with
  *  the cluster theme. Loose (Queen-gated downstream); the characteristic dominates. */
 function rubricCovers(rubric: RubricSummary, clusterTokens: Set<string>): boolean {
-  const rubricTokens = gapTokens(
-    `${rubric.characteristic} ${rubric.title} ${(rubric.criteriaTitles ?? []).join(' ')}`,
-  );
+  const rubricTokens = gapTokens(`${rubric.characteristic} ${rubric.title} ${(rubric.criteriaTitles ?? []).join(' ')}`);
   let overlap = 0;
   for (const t of clusterTokens) {
     if (rubricTokens.has(t) && ++overlap >= MIN_RUBRIC_COVER_TOKENS) return true;
@@ -710,9 +735,7 @@ function buildRubricGaps(
 ): MetaPattern[] {
   const scored: Scored[] = [];
   for (const cluster of clusters) {
-    const members = cluster.ids
-      .map((id) => byId.get(id))
-      .filter((c): c is ImprovementCandidate => Boolean(c));
+    const members = cluster.ids.map((id) => byId.get(id)).filter((c): c is ImprovementCandidate => Boolean(c));
     if (members.length < 2) continue; // not recurring
 
     // ≥3 DISTINCT authors (the filer's ownerId; unknown author contributes nothing).
@@ -721,7 +744,10 @@ function buildRubricGaps(
 
     // ≥2 distinct day-cycles (loose proxy for "recurs across ≥2 cycles").
     const days = new Set(
-      members.map((m) => lastSeenMsOf(m)).filter((ms) => ms > 0).map(utcDay),
+      members
+        .map((m) => lastSeenMsOf(m))
+        .filter((ms) => ms > 0)
+        .map(utcDay),
     );
     if (days.size < MIN_GAP_CYCLES) continue;
 
@@ -802,9 +828,22 @@ function buildChronicDeferrals(deferrals: DeferralRecord[], limit: number): Meta
  *  that NAMES a missing capability, aggregated by signature so a repeatedly
  *  requested capability ranks highest. */
 const GAP_KEYWORDS = [
-  'no way to', 'cannot ', "can't ", 'unable to', 'missing', 'there is no', "there's no",
-  'wish there was', 'would be nice', 'lacks', 'not possible', 'need a tool', 'no tool',
-  'unsupported', 'no support for', 'add support',
+  'no way to',
+  'cannot ',
+  "can't ",
+  'unable to',
+  'missing',
+  'there is no',
+  "there's no",
+  'wish there was',
+  'would be nice',
+  'lacks',
+  'not possible',
+  'need a tool',
+  'no tool',
+  'unsupported',
+  'no support for',
+  'add support',
 ];
 
 function namesMissingCapability(c: ImprovementCandidate): boolean {
@@ -917,9 +956,14 @@ function buildRubricRatings(observations: StructuredObservationRecord[], limit: 
       const rating = r?.rating;
       if (!criterion || typeof rating !== 'string' || !rating.trim()) continue;
       const key = `${obs.rubricRef}\u0000${obs.sourceHive ?? ''}\u0000${criterion}`;
-      const g: RatingGroup =
-        groups.get(key) ??
-        { rubricRef: obs.rubricRef, sourceHive: obs.sourceHive, criterion, counts: new Map<string, number>(), severity: 0, total: 0 };
+      const g: RatingGroup = groups.get(key) ?? {
+        rubricRef: obs.rubricRef,
+        sourceHive: obs.sourceHive,
+        criterion,
+        counts: new Map<string, number>(),
+        severity: 0,
+        total: 0,
+      };
       g.counts.set(rating, (g.counts.get(rating) ?? 0) + 1);
       g.severity += ratingSeverity(rating);
       g.total += 1;
@@ -996,9 +1040,7 @@ export async function synthesizeStateOfHive(
   const frictionById = new Map(frictionForMining.map((c) => [c.id, c] as const));
   const embedClusters = await clusterFrictionByEmbedding(frictionForMining);
   const clusterOrigin: 'lexical' | 'embed' = embedClusters ? 'embed' : 'lexical';
-  const frictionClusters = (embedClusters ?? findLikelyDuplicates(frictionForMining)).filter(
-    (c) => c.ids.length > 1,
-  );
+  const frictionClusters = (embedClusters ?? findLikelyDuplicates(frictionForMining)).filter((c) => c.ids.length > 1);
 
   const recurringFriction = buildRecurringFriction(frictionClusters, frictionById, nowMs, limit, clusterOrigin);
   const timeTokenSinks = buildTimeTokenSinks(spend, limit);

@@ -89,8 +89,8 @@ export interface PresenceSnapshot {
     byState: {
       live: number;
       parked: number;
-      draining: number;
-      suspect: number;
+      draining?: number;
+      suspect?: number;
       ended: number;
       recorded: number;
     };
@@ -546,10 +546,12 @@ export function renderPresenceRebootstrapBlock(snap: PresenceSnapshot): string {
     `baseline restored, tail [coord+N] deltas from here (as_of ${snap.as_of})`;
 
   if (total >= REBOOTSTRAP_INLINE_MAX_ROWS) {
-    const { live, parked, ended, recorded } = snap.summary.byState;
+    const { live, parked, draining, suspect, ended, recorded } = snap.summary.byState;
     const stateBits = [
       live ? `${live} live` : null,
       parked ? `${parked} parked` : null,
+      draining ? `${draining} draining` : null,
+      suspect ? `${suspect} suspect` : null,
       ended ? `${ended} ended` : null,
       recorded ? `${recorded} recorded` : null,
     ].filter((b): b is string => b !== null);

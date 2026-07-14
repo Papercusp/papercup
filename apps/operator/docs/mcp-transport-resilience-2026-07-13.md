@@ -1,6 +1,6 @@
 # MCP transport resilience — client-side death detection + in-place heal (2026-07-13)
 
-**Owner directive [owner:Avi 2026-07-13, interactive]:** after a live incident
+**Owner directive (2026-07-13, interactive):** after a live incident
 (su-39f079d3's papercusp-su MCP transport severed by a Claude Code self-relaunch;
 session ran tool-less ~5h, monitor loop silently dead, undetected):
 *"I'd rather just have /mcp inject — that's better than having my session suddenly

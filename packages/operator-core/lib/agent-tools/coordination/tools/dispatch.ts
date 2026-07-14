@@ -259,11 +259,11 @@ export async function composeDispatch(
   //    means the lane was assigned durably but NO live process will pick it up until
   //    the target is relaunched/resumed — surface it instead of a silent woken:0.
   const dead = Array.isArray(wake.recipient_dead) ? wake.recipient_dead : [];
-  if (sessionState === 'ended' || dead.length > 0) {
+  if (sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining' || dead.length > 0) {
     result.warning =
       `coord:dispatch reached no LIVE session for ${resolvedTo} (sessionState=${sessionState ?? 'unknown'})` +
       `${assigned?.ok ? ' — the lane was assigned durably (survives), but' : ' —'} the wake landed nowhere: ` +
-      'this target needs a RELAUNCH/resume, not a wake. Re-dispatch to a `parked`/`live` agent ' +
+      'this target needs claim/session reconciliation and then a RELAUNCH/resume, not a wake. Re-dispatch to a `parked`/`live` agent ' +
       '(coord:presence → wakeable:true) or respawn this one.';
   } else if (staged > 0 && woken === 0) {
     // EI-5957: the target is ALIVE but in MANUAL wake-mode, so the directed note

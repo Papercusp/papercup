@@ -53,7 +53,7 @@ export const successMetricsArgs = z
       .min(0)
       .max(1)
       .optional()
-      .describe('cycle error-rate bar (default 0.05 — the plan\'s <5%, down from the historical ~30%)'),
+      .describe("cycle error-rate bar (default 0.05 — the plan's <5%, down from the historical ~30%)"),
   })
   .strict();
 export type SuccessMetricsArgs = z.infer<typeof successMetricsArgs>;
@@ -77,10 +77,10 @@ export async function runSuccessMetrics(
 export default defineTool({
   name: 'blender:success-metrics',
   description:
-    "The blender-self-learning program's done-check, over the LIVE ledgers: six bars — rubric-grounded routed ideas >0, zero score-0 cycles fired, cycle error rate <5% over a time-boxed 48h singleton-tick window, ledger rows reconcile with tick routed counts (per cycle), >=1 grader suggestion adopted with attribution, and recent lens diversity — each PASS/FAIL/UNKNOWN with the measurement behind it. verdict='pass' only when every bar passes; 'incomplete' when a bar has no evidence yet (an empty window never certifies the program done); 'fail' on any real regression. Read-only.",
+    "The blender-self-learning program's done-check, over the LIVE ledgers: six bars — rubric-grounded routed ideas >0, zero score-0 cycles fired, cycle error rate <5% over a time-boxed 48h singleton-tick window, ledger rows reconcile with tick routed counts (per cycle), >=1 graded idea has attributed feedback plus an attributed typed revision created after the grade, and recent lens diversity — each PASS/FAIL/UNKNOWN with the measurement behind it. verdict='pass' only when every bar passes; 'incomplete' when a bar has no evidence yet (an empty window never certifies the program done); 'fail' on any real regression. Read-only.",
   capability: 'curation:read',
   guidance: {
-    when: "Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live rather than merely shipped.",
+    when: 'Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live rather than merely shipped.',
     notWhen:
       'Asking whether Scout ideas are getting BETTER over time (that is the quality/degradation report — this is an absolute done-check, not a trend). Grading an individual idea (blender:grade-idea).',
     chaining:

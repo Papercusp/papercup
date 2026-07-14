@@ -722,6 +722,7 @@ interface IngestState {
   tool_call_count: number;
   last_inference_id: string | null;
   counts_backfill_offset: number;
+  counts_backfill_last_inference_id: string | null;
   counts_backfilled_at: string | null;
 }
 
@@ -733,6 +734,7 @@ const EMPTY_STATE: IngestState = {
   tool_call_count: 0,
   last_inference_id: null,
   counts_backfill_offset: 0,
+  counts_backfill_last_inference_id: null,
   counts_backfilled_at: null,
 };
 
@@ -740,10 +742,11 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
   const rows = await sql<Array<{
     byte_offset: string | number; turn_count: number;
     prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
-    counts_backfill_offset: string | number; counts_backfilled_at: string | null;
+    counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
+    counts_backfilled_at: string | null;
   }>>`
     SELECT byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id,
-           counts_backfill_offset, counts_backfilled_at
+           counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
       FROM harness_shared.session_ingest_state
      WHERE source_kind = ${sourceKind} AND file_path = ${filePath}
   `;
@@ -757,6 +760,7 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
     tool_call_count: r.tool_call_count ?? 0,
     last_inference_id: r.last_inference_id ?? null,
     counts_backfill_offset: Number(r.counts_backfill_offset ?? 0),
+    counts_backfill_last_inference_id: r.counts_backfill_last_inference_id ?? null,
     counts_backfilled_at: r.counts_backfilled_at ?? null,
   };
 }
@@ -766,17 +770,17 @@ async function writeState(
   sourceKind: string,
   filePath: string,
   st: Pick<IngestState, 'byte_offset' | 'turn_count'> &
-    Partial<Pick<IngestState, 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id' | 'counts_backfill_offset' | 'counts_backfilled_at'>> &
+    Partial<Pick<IngestState, 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id' | 'counts_backfill_offset' | 'counts_backfill_last_inference_id' | 'counts_backfilled_at'>> &
     { sessionId?: string | null; mtimeMs?: number; lastError?: string | null },
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.session_ingest_state
       (source_kind, file_path, byte_offset, turn_count, prompt_count, response_count,
-       tool_call_count, last_inference_id, counts_backfill_offset, counts_backfilled_at,
+       tool_call_count, last_inference_id, counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at,
        session_id, mtime_ms, last_error, updated_at)
     VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count},
             ${st.prompt_count ?? 0}, ${st.response_count ?? 0}, ${st.tool_call_count ?? 0}, ${st.last_inference_id ?? null},
-            ${st.counts_backfill_offset ?? st.byte_offset}, ${st.counts_backfilled_at ?? null},
+            ${st.counts_backfill_offset ?? st.byte_offset}, ${st.counts_backfill_last_inference_id ?? null}, ${st.counts_backfilled_at ?? null},
             ${st.sessionId ?? null}, ${st.mtimeMs != null ? Math.round(st.mtimeMs) : null}, ${st.lastError ?? null}, now())
     ON CONFLICT (source_kind, file_path) DO UPDATE SET
       byte_offset       = EXCLUDED.byte_offset,
@@ -786,6 +790,7 @@ async function writeState(
       tool_call_count   = EXCLUDED.tool_call_count,
       last_inference_id = EXCLUDED.last_inference_id,
       counts_backfill_offset = EXCLUDED.counts_backfill_offset,
+      counts_backfill_last_inference_id = COALESCE(EXCLUDED.counts_backfill_last_inference_id, harness_shared.session_ingest_state.counts_backfill_last_inference_id),
       counts_backfilled_at = COALESCE(EXCLUDED.counts_backfilled_at, harness_shared.session_ingest_state.counts_backfilled_at),
       session_id        = COALESCE(EXCLUDED.session_id, harness_shared.session_ingest_state.session_id),
       mtime_ms          = EXCLUDED.mtime_ms,
@@ -832,6 +837,7 @@ async function backfillFileCounts(
       tool_call_count: row.tool_call_count,
       last_inference_id: row.last_inference_id,
       counts_backfill_offset: row.counts_backfill_offset,
+      counts_backfill_last_inference_id: row.counts_backfill_last_inference_id,
       counts_backfilled_at: new Date().toISOString(),
       sessionId: row.session_id ?? meta.sessionId,
       lastError: 'counts_backfill_source_missing',
@@ -844,7 +850,7 @@ async function backfillFileCounts(
   let promptCount = row.prompt_count;
   let responseCount = row.response_count;
   let toolCallCount = row.tool_call_count;
-  let lastInferenceId = row.last_inference_id;
+  let lastInferenceId = row.counts_backfill_last_inference_id;
   let progressed = false;
   while (cursor < sourceSize && budget.bytes > 0) {
     const result = await readNewLines(
@@ -875,6 +881,7 @@ async function backfillFileCounts(
       tool_call_count: toolCallCount,
       last_inference_id: lastInferenceId,
       counts_backfill_offset: cursor,
+      counts_backfill_last_inference_id: lastInferenceId,
       counts_backfilled_at: complete ? new Date().toISOString() : null,
       sessionId: row.session_id ?? meta.sessionId,
     });
@@ -903,12 +910,13 @@ async function backfillHistoricalCounts(sql: Sql): Promise<number> {
       tool_call_count: number;
       last_inference_id: string | null;
       counts_backfill_offset: string | number;
+      counts_backfill_last_inference_id: string | null;
       counts_backfilled_at: string | null;
       session_id: string | null;
     }>>`
       SELECT file_path, byte_offset, turn_count, prompt_count, response_count,
              tool_call_count, last_inference_id, counts_backfill_offset,
-             counts_backfilled_at, session_id
+             counts_backfill_last_inference_id, counts_backfilled_at, session_id
         FROM harness_shared.session_ingest_state
        WHERE source_kind = ${adapter.sourceKind}
          AND counts_backfilled_at IS NULL
@@ -926,6 +934,7 @@ async function backfillHistoricalCounts(sql: Sql): Promise<number> {
         tool_call_count: r.tool_call_count ?? 0,
         last_inference_id: r.last_inference_id ?? null,
         counts_backfill_offset: Number(r.counts_backfill_offset ?? 0),
+        counts_backfill_last_inference_id: r.counts_backfill_last_inference_id ?? null,
         counts_backfilled_at: r.counts_backfilled_at ?? null,
         session_id: r.session_id ?? null,
       }, budget);
@@ -975,6 +984,7 @@ async function backfillHistoricalCounts(sql: Sql): Promise<number> {
         tool_call_count: chat.tool_call_count ?? 0,
         last_inference_id: chat.last_inference_id ?? null,
         counts_backfill_offset: transcript.length,
+        counts_backfill_last_inference_id: null,
         counts_backfilled_at: new Date().toISOString(),
         sessionId: chat.session_id,
       });
@@ -1026,6 +1036,7 @@ export async function ingestFileNow(
       tool_call_count: st.tool_call_count + toolCallCount,
       last_inference_id: lastInferenceId,
       counts_backfill_offset: newOffset,
+      counts_backfill_last_inference_id: lastInferenceId,
       counts_backfilled_at: new Date().toISOString(),
       sessionId: opts.sessionId ?? meta.sessionId,
     });
@@ -1114,6 +1125,7 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
       response_count: st.response_count + responseDelta,
       tool_call_count: st.tool_call_count,
       counts_backfill_offset: transcript.length,
+      counts_backfill_last_inference_id: null,
       counts_backfilled_at: new Date().toISOString(),
       sessionId: chat.id,
     });
@@ -1223,10 +1235,11 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       const stateRows = await sql<Array<{
         file_path: string; byte_offset: string | number; turn_count: number;
         prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
-        counts_backfill_offset: string | number; counts_backfilled_at: string | null;
+        counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
+        counts_backfilled_at: string | null;
       }>>`
         SELECT file_path, byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id,
-               counts_backfill_offset, counts_backfilled_at
+               counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
           FROM harness_shared.session_ingest_state
          WHERE source_kind = ${adapter.sourceKind}
       `;
@@ -1239,6 +1252,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           tool_call_count: r.tool_call_count ?? 0,
           last_inference_id: r.last_inference_id ?? null,
           counts_backfill_offset: Number(r.counts_backfill_offset ?? r.byte_offset),
+          counts_backfill_last_inference_id: r.counts_backfill_last_inference_id ?? null,
           counts_backfilled_at: r.counts_backfilled_at ?? null,
         }]),
       );
@@ -1277,6 +1291,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             tool_call_count: st.tool_call_count + toolCallCount,
             last_inference_id: lastInferenceId,
             counts_backfill_offset: newOffset,
+            counts_backfill_last_inference_id: lastInferenceId,
             counts_backfilled_at: new Date().toISOString(),
             sessionId: meta.sessionId,
             mtimeMs: cand.mtimeMs,

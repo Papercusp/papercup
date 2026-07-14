@@ -299,7 +299,10 @@ export function evaluateProgramSuccess(
     if (claimed === actual) reconciled += 1;
     else mismatches.push(`${cycleId}: tick claims ${claimed}, ledger has ${actual}`);
   }
-  const preFixNote = preFixSkipped > 0 ? ` (${preFixSkipped} pre-fix cycle(s) excluded — their rows were destroyed by the pre-P-003 overwrite bug; see WI-4467)` : '';
+  const preFixNote =
+    preFixSkipped > 0
+      ? ` (${preFixSkipped} pre-fix cycle(s) excluded — their rows were destroyed by the pre-P-003 overwrite bug; see WI-4467)`
+      : '';
   criteria.push({
     key: 'ledger-reconciles',
     bar: 'ledger rows reconcile with tick routed counts (per cycle)',
@@ -328,25 +331,26 @@ export function evaluateProgramSuccess(
   // ── 5. ≥1 graded idea has a causally valid typed revision ────────────────────
   // WI-4768 removed the false-green that treated pre-grade routedRef as adoption.
   // WI-4769 closes the missing evidence seam with an explicit `revises` edge. The
-  // edge is necessary but not sufficient: the successor must come from the SAME
-  // originator and be created AFTER the recorded grade. Wrong-agent and pre-grade
-  // links therefore cannot manufacture closure.
+  // edge is necessary but not sufficient: both endpoints must have author
+  // attribution and the successor must be created AFTER the recorded grade.
+  // Session owner ids are intentionally NOT compared: they are ephemeral and an
+  // ended originator cannot be resumed/addressed, while a later session can validly
+  // incorporate the feedback. The typed edge is the durable causal assertion;
+  // author + timestamp attribution makes it auditable.
   const graded = ideas.filter((i) => i.humanGrade != null);
-  const attributedFeedback = graded.filter(
-    (i) => i.humanFeedback && i.humanFeedback.trim().length > 0 && i.gradedBy,
-  );
+  const attributedFeedback = graded.filter((i) => i.humanFeedback && i.humanFeedback.trim().length > 0 && i.gradedBy);
   const revisedFromFeedback = attributedFeedback.filter((idea) => {
     if (!idea.createdBy || !idea.gradedAt) return false;
     const gradedAtMs = Date.parse(idea.gradedAt);
     if (!Number.isFinite(gradedAtMs)) return false;
     return (idea.feedbackRevisions ?? []).some((revision) => {
       const revisedAtMs = Date.parse(revision.revisedAt);
-      return revision.createdBy === idea.createdBy && Number.isFinite(revisedAtMs) && revisedAtMs > gradedAtMs;
+      return Boolean(revision.createdBy) && Number.isFinite(revisedAtMs) && revisedAtMs > gradedAtMs;
     });
   });
   criteria.push({
     key: 'grader-feedback-revised',
-    bar: '>=1 routed idea has attributed feedback and a same-origin typed revision created after the grade',
+    bar: '>=1 routed idea has attributed feedback and an attributed typed revision created after the grade',
     ...(graded.length === 0
       ? {
           status: 'unknown' as const,
@@ -417,8 +421,10 @@ export function evaluateProgramSuccess(
   };
 }
 
-export interface BuildProgramSuccessOptions
-  extends Pick<BuildQualityInputsOptions, 'workspaceId' | 'harnessSlug' | 'limit' | 'tickLimit'> {
+export interface BuildProgramSuccessOptions extends Pick<
+  BuildQualityInputsOptions,
+  'workspaceId' | 'harnessSlug' | 'limit' | 'tickLimit'
+> {
   maxErrorRate?: number;
   /** Release-bar time box. Default 48h, matching blender-release-readiness. */
   cycleWindowMs?: number;
@@ -482,9 +488,7 @@ export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}):
  * rows when the loop was quiet and could also hide a current error when harness scoping omitted
  * the workspace-global singleton rows. A release bar is about elapsed time, not row volume.
  */
-export async function buildProgramSuccessReport(
-  opts: BuildProgramSuccessOptions = {},
-): Promise<ProgramSuccessReport> {
+export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions = {}): Promise<ProgramSuccessReport> {
   const limit = opts.limit ?? DEFAULT_LEDGER_LIMIT;
   const scopes = programSuccessReadScopes({ ...opts, limit });
   const [cadence, suIdeate] = await Promise.all([

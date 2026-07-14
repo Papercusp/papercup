@@ -292,7 +292,7 @@ export async function checkMcpDark(
 }
 
 // ═══ Interactive-session transport-death sweep + heal ladder ═══════════════════
-// (mcp-transport-resilience P-005, 2026-07-13 — [owner:Avi 2026-07-13]: "I'd
+// (mcp-transport-resilience P-005, 2026-07-13 — owner directive: "I'd
 // rather just have /mcp inject — that's better than having my session suddenly
 // die on me"; kill+resume is acceptable for HEADLESS sessions only.)
 //

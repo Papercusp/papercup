@@ -27,7 +27,13 @@ import type { MetaPattern } from './types';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function slug(raw: string, max = 64): string {
-  return raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, max) || 'unknown';
+  return (
+    raw
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, max) || 'unknown'
+  );
 }
 
 function trunc(raw: string, max = 180): string {
@@ -53,10 +59,7 @@ export interface SpendAnomalyOptions {
 }
 
 /** Raw cost buckets → only distribution/attribution anomalies (not another spend list). */
-export function buildSpendAnomalyPatterns(
-  input: CoordTokenBreakdown,
-  opts: SpendAnomalyOptions = {},
-): MetaPattern[] {
+export function buildSpendAnomalyPatterns(input: CoordTokenBreakdown, opts: SpendAnomalyOptions = {}): MetaPattern[] {
   const minSpend = opts.minSpendUsd ?? 100;
   const unattributedFloor = opts.unattributedShare ?? 0.25;
   const concentrationFloor = opts.concentrationShare ?? 0.85;
@@ -72,7 +75,7 @@ export function buildSpendAnomalyPatterns(
       category: 'spend-anomaly',
       ref: 'spend:attribution-gap',
       summary: `${usd(unattributed || total)} of ${usd(total)} recent spend lacks a usable turn-trigger attribution`,
-      detail: `${Math.round((unattributed || total) / total * 100)}% of cost cannot be separated into user, coord-wake, cron, or autoloop demand; the raw time-token lane shows where cost landed, but not what caused it.`,
+      detail: `${Math.round(((unattributed || total) / total) * 100)}% of cost cannot be separated into user, coord-wake, cron, or autoloop demand; the raw time-token lane shows where cost landed, but not what caused it.`,
       weight: Math.min(1, 0.5 + unattributedRatio / 2),
     });
   }
@@ -113,7 +116,12 @@ export function buildSpendAnomalyPatterns(
 }
 
 export interface OwnerCorrectionInput {
-  ideas: Array<Pick<RoutedIdeaProvenance, 'ideaId' | 'title' | 'routedRef' | 'humanGrade' | 'humanFeedback' | 'gradedBy' | 'gradedAt'>>;
+  ideas: Array<
+    Pick<
+      RoutedIdeaProvenance,
+      'ideaId' | 'title' | 'routedRef' | 'humanGrade' | 'humanFeedback' | 'gradedBy' | 'gradedAt'
+    >
+  >;
   facts: Array<Pick<AgentFact, 'scope' | 'scopeRef' | 'key' | 'body' | 'sourceRef' | 'sourceProvenance' | 'updatedAt'>>;
 }
 
@@ -128,7 +136,9 @@ export function buildOwnerCorrectionPatterns(
 
   for (const idea of input.ideas) {
     if (idea.gradedBy !== 'owner' || idea.humanGrade == null || idea.humanGrade > maxGrade) continue;
-    const feedback = idea.humanFeedback ? trunc(idea.humanFeedback, 260) : 'No written feedback; the low owner grade is the correction signal.';
+    const feedback = idea.humanFeedback
+      ? trunc(idea.humanFeedback, 260)
+      : 'No written feedback; the low owner grade is the correction signal.';
     ranked.push({
       ts: dateMs(idea.gradedAt) ?? 0,
       strength: 6 - idea.humanGrade,
@@ -246,7 +256,10 @@ export function buildPlanHealthPatterns(
           category: 'plan-health',
           ref: `plan-health:lifecycle-drift:${refSuffix}`,
           summary: `Terminal plan “${trunc(label, 110)}” still has ${open.length} open item(s)`,
-          detail: `lifecycle=${plan.status}; open=${open.slice(0, 6).map((i) => `${i.id}:${i.status}`).join(', ')}. The plan index and its terminal claim disagree.`,
+          detail: `lifecycle=${plan.status}; open=${open
+            .slice(0, 6)
+            .map((i) => `${i.id}:${i.status}`)
+            .join(', ')}. The plan index and its terminal claim disagree.`,
           weight: 1,
         },
       });
@@ -305,41 +318,61 @@ async function failSoft<T>(read: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 /** Production reader edge. Each source fails soft independently. */
-export async function buildCurationSignalLanes(
-  opts: { workspaceId?: string; harnessSlug: string } ,
-): Promise<CurationSignalLanes> {
+export async function buildCurationSignalLanes(opts: {
+  workspaceId?: string;
+  harnessSlug: string;
+}): Promise<CurationSignalLanes> {
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
   const runQuery = async <T = unknown>(query: string, params: unknown[]) =>
     (await sql.unsafe(query, params as never)) as unknown as T[];
 
   const [spend, ideas, facts, demand, recipeSweep, plans] = await Promise.all([
-    failSoft(async () => {
-      const { loadCoordTokenBreakdown } = await import('../harness-insights/load-token-rollups');
-      return loadCoordTokenBreakdown({ workspace_id: ws, windowMs: 7 * DAY_MS, runQuery });
-    }, { windowMs: 7 * DAY_MS, byTrigger: [], triggerAttributionAvailable: false, byRoleClass: [] } as CoordTokenBreakdown),
+    failSoft(
+      async () => {
+        const { loadCoordTokenBreakdown } = await import('../harness-insights/load-token-rollups');
+        return loadCoordTokenBreakdown({ workspace_id: ws, windowMs: 7 * DAY_MS, runQuery });
+      },
+      {
+        windowMs: 7 * DAY_MS,
+        byTrigger: [],
+        triggerAttributionAvailable: false,
+        byRoleClass: [],
+      } as CoordTokenBreakdown,
+    ),
     failSoft(async () => {
       const { readRoutedIdeas } = await import('./routed-ledger');
       return readRoutedIdeas({ workspaceId: ws, harnessSlug: opts.harnessSlug, origin: 'all', limit: 500 });
     }, [] as RoutedIdeaProvenance[]),
     failSoft(async () => {
       const { foldFacts } = await import('../agent-facts/store');
-      return foldFacts(
-        [{ scope: 'workspace' }, { scope: 'harness', scopeRef: opts.harnessSlug }],
-        { workspaceId: ws, limitPerSelector: 50 },
-      );
+      return foldFacts([{ scope: 'workspace' }, { scope: 'harness', scopeRef: opts.harnessSlug }], {
+        workspaceId: ws,
+        limitPerSelector: 50,
+      });
     }, [] as AgentFact[]),
-    failSoft(async () => {
-      const { readDemandSnapshot } = await import('../negative-space/demand-read');
-      return readDemandSnapshot(sql, ws, 100);
-    }, { entries: [], totalEntries: 0, totalMisses: 0, filedCount: 0, minedAt: null }),
-    failSoft(async () => {
-      const { sweepRecipes } = await import('../code-recipes-store');
-      return sweepRecipes(sql, { dryRun: true, staleDays: 30, maxRunCount: 1 });
-    }, { swept: [] as CodeRecipeRow[], dryRun: true }),
+    failSoft(
+      async () => {
+        const { readDemandSnapshot } = await import('../negative-space/demand-read');
+        return readDemandSnapshot(sql, ws, 100);
+      },
+      { entries: [], totalEntries: 0, totalMisses: 0, filedCount: 0, minedAt: null },
+    ),
+    failSoft(
+      async () => {
+        const { sweepRecipes } = await import('../code-recipes-store');
+        return sweepRecipes(sql, { dryRun: true, staleDays: 30, maxRunCount: 1 });
+      },
+      { swept: [] as CodeRecipeRow[], dryRun: true },
+    ),
     failSoft(async () => {
       const { listPlanIndexRowsForWorkspace } = await import('../agent-tools/plans/source');
-      return listPlanIndexRowsForWorkspace({ workspaceId: ws, includeArchived: false, includeInstances: false, limit: 2000 });
+      return listPlanIndexRowsForWorkspace({
+        workspaceId: ws,
+        includeArchived: false,
+        includeInstances: false,
+        limit: 2000,
+      });
     }, [] as PlanIndexRow[]),
   ]);
 

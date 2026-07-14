@@ -158,9 +158,7 @@ function buildNicheMapPriming(
   const crowded = nicheMap.filter((p) => p.ref.startsWith('niche:v1:crowded:')).slice(0, cfg.crowded);
   const empty = nicheMap.filter((p) => p.ref.startsWith('niche:v1:empty:')).slice(0, cfg.empty);
   if (crowded.length === 0 && empty.length === 0) return undefined;
-  const lines = [
-    'AVOID crowded niches and TARGET empty niches when you choose what to mutate next.',
-  ];
+  const lines = ['AVOID crowded niches and TARGET empty niches when you choose what to mutate next.'];
   if (crowded.length > 0) {
     lines.push('', 'Crowded niches to avoid:');
     for (const item of crowded) lines.push(`- ${item.summary} (ref: ${item.ref})`);
@@ -251,7 +249,6 @@ export async function readNoveltyCorpus(): Promise<CorpusEntry[]> {
       out.push({ ref: r.routed_ref, kind: 'idea', text, ...(state ? { state } : {}) });
     }
   } catch (err) {
-     
     console.warn('[scout/cycle-deps] readNoveltyCorpus failed:', err instanceof Error ? err.message : err);
   }
   return out;
@@ -268,8 +265,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
   const routerPorts: RouterPorts = {
     plansNew: buildPlansNewPort(opts.createPlanDraft),
     gymDispatch: buildGymDispatchPort(opts.archive),
-    capture:
-      opts.capturePort ?? buildCapturePort({ scope: `harness:${opts.harnessSlug}`, ...opts.captureOptions }),
+    capture: opts.capturePort ?? buildCapturePort({ scope: `harness:${opts.harnessSlug}`, ...opts.captureOptions }),
     // whole-system → InstanceSubject (reconciliation P-005). Acknowledge-only until the
     // apiary's intake queue is built — the routed-idea ledger (rail='instance') is the
     // pending-candidate record the apiary reads.
@@ -397,10 +393,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       // disturbs the digest or the cycle.
       try {
         const { foldFacts } = await import('../agent-facts/store');
-        const facts = await foldFacts(
-          [{ scope: 'workspace' }, { scope: 'harness', scopeRef: opts.harnessSlug }],
-          {},
-        );
+        const facts = await foldFacts([{ scope: 'workspace' }, { scope: 'harness', scopeRef: opts.harnessSlug }], {});
         if (facts.length > 0) {
           digest.standingFacts = facts.map((f) => ({
             summary: f.body,
@@ -531,9 +524,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       // contract: a snapshot outage never disturbs the digest or the cycle,
       // and no stamp = the legacy whole-digest rendering.
       try {
-        const { readPreviousSnapshotRefs, persistDigestSnapshot } = await import(
-          './digest-snapshots'
-        );
+        const { readPreviousSnapshotRefs, persistDigestSnapshot } = await import('./digest-snapshots');
         const prevRefs = await readPreviousSnapshotRefs();
         await persistDigestSnapshot({
           digest,
@@ -600,11 +591,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       // the autoloop fire-gate off, instead of a benign 'ran/no-ideas' that hammers a dead
       // gateway every cadence. Partial failures still return their ideas (one dead ideator
       // never kills the batch — the existing defensive contract in runIdeators).
-      if (
-        ideated.ideas.length === 0 &&
-        ideated.ideators.length > 0 &&
-        ideated.ideators.every((i) => !i.ok)
-      ) {
+      if (ideated.ideas.length === 0 && ideated.ideators.length > 0 && ideated.ideators.every((i) => !i.ok)) {
         throw new ScoutIdeatorsTransportError(
           ideated.ideators.length,
           ideated.ideators.find((i) => i.error)?.error,
@@ -615,12 +602,17 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     },
     critique: async (ideas, ctx) =>
       (
-        await critiqueIdeas(ideas, ctx.corpus, { llmCall: ctx.llmCall }, {
-          novelty: scoutConfig.novelty,
-          bucket: scoutConfig.buckets,
-          // P-010: per-blueprint critic mission framing (default ⇒ byte-identical).
-          critic: { mission: scoutConfig.framing.criticMission, model: scoutConfig.models.critic },
-        })
+        await critiqueIdeas(
+          ideas,
+          ctx.corpus,
+          { llmCall: ctx.llmCall },
+          {
+            novelty: scoutConfig.novelty,
+            bucket: scoutConfig.buckets,
+            // P-010: per-blueprint critic mission framing (default ⇒ byte-identical).
+            critic: { mission: scoutConfig.framing.criticMission, model: scoutConfig.models.critic },
+          },
+        )
       ).critiques,
     recombine: async (scored, ctx) =>
       (await recombineProposals(scored, { llmCall: ctx.llmCall }, { model: scoutConfig.models.recombine })).proposals,

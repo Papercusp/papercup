@@ -17,8 +17,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config';
+import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
@@ -35,7 +34,7 @@ const WS = 'ws-flguard';
 const WINDOW = 60_000;
 
 let rootSql: postgres.Sql;
-let dbName: string;
+let db: FreshPgDb;
 
 async function insertFleet(slug: string): Promise<void> {
   await rootSql.unsafe(
@@ -46,19 +45,13 @@ async function insertFleet(slug: string): Promise<void> {
 }
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  dbName = `flg_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  // max > 1 so the concurrency test is a genuine multi-connection race.
-  rootSql = postgres(u.toString(), { max: 6, onnotice: () => {} });
-  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  // EI-11788: use the shared Papercusp fixture, which retries transient PG
+  // connects and drops only this throwaway database. The former bespoke
+  // CREATE DATABASE path could wait behind concurrent green-checkpoint work
+  // until Vitest's 90s suite timeout, losing the actual test verdict.
+  db = await createFreshPgDb('fleet-headcount-store');
+  rootSql = db.sql;
+  // max > 1 (the helper's max=4) keeps the concurrency test genuine.
   // The agent_fleets shape: 417 baseline + the 484 launch-guard columns + the
   // 575 control-state columns (P-009 / H4).
   await rootSql.unsafe(`
@@ -89,7 +82,7 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  await db?.cleanup();
 });
 
 describe('claimFleetLaunchSlot (P-005 cross-worker idempotency)', () => {

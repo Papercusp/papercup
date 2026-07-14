@@ -49,7 +49,7 @@ describe('deriveSessionState', () => {
     expect(deriveSessionState({ stale: false, wakeable: true, liveTurn: true, hardStale: true })).toBe('ended');
   });
 
-  it('hardStale:false leaves the pre-fix behavior unchanged (back-compat)', () => {
+  it('hardStale:false preserves resumability while exposing stale wind-down', () => {
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: false })).toBe('draining');
     // omitted hardStale defaults to false
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
