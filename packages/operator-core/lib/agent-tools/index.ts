@@ -1060,6 +1060,10 @@ import './blueprint/extend';
 // publish entry point (mirror of knowledge_packs:publish): promote a local/private
 // blueprint to the published/installed tier via the shared Cupboard core.
 import './blueprint/publish';
+// cupboard-app-distribution-2026-07-14 P-003 — cupboard:publish-app, the publish
+// entry point for a whole standalone application (Oddsmith-style): validate its
+// latest.json resolves, then list a kind='app' listing on the Cupboard Apps tab.
+import './cupboard/publish-app';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';

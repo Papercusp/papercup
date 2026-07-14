@@ -214,6 +214,18 @@ export interface NewHarnessInput {
   blueprint_kind?: string | null;
   /** Pre-publication review (migration 008): policy kinds publish 'pending'. */
   review_status?: ReviewStatus;
+  // App distribution (migration 014 / cupboard-app-distribution-2026-07-14 P-003).
+  // All app-only; null on every other kind. See HarnessRow for column semantics.
+  /** 'standalone' | 'bundle'; null ⇒ treated as standalone. app only. */
+  delivery_type?: 'standalone' | 'bundle' | null;
+  /** STANDALONE: signed latest.json updater-manifest URL the download flow reads. */
+  latest_json_url?: string | null;
+  /** STANDALONE: `<owner>/<repo>` hosting the release installers, if distinct. */
+  release_repo?: string | null;
+  /** App icon URL for the storefront card/detail. */
+  icon_url?: string | null;
+  /** Denormalized JSON string[] of OS keys present in latest.json. */
+  platforms?: string | null;
   created_at: number;
 }
 
@@ -229,9 +241,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           provides_tools, provides_events, requires_events,
           hive_pubkey, hive_title, blueprint_kind,
           review_status,
+          delivery_type, latest_json_url, release_repo, icon_url, platforms,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -257,6 +270,11 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.hive_title ?? null,
       h.blueprint_kind ?? null,
       h.review_status ?? 'approved',
+      h.delivery_type ?? null,
+      h.latest_json_url ?? null,
+      h.release_repo ?? null,
+      h.icon_url ?? null,
+      h.platforms ?? null,
       h.created_at,
       h.created_at,
     )

@@ -83,6 +83,15 @@ interface PublishBody {
   // owning Hive's raw-32-byte-base64 Ed25519 pubkey + denormalized title.
   hive_pubkey?: unknown;             // expected: 44-char base64 (32 bytes)
   hive_title?: unknown;              // expected: string ≤200; requires hive_pubkey
+  // App distribution (migration 014 / cupboard-app-distribution-2026-07-14 P-003).
+  // ALL app-only — the worker 400s them on any non-app kind. A STANDALONE app's
+  // "install" is a download-link handoff: the Cupboard stores latest_json_url and
+  // never re-hosts the binary. delivery_type discriminates standalone|bundle.
+  delivery_type?: unknown;           // expected: 'standalone' | 'bundle'
+  latest_json_url?: unknown;         // expected: https URL; REQUIRED for a standalone app
+  release_repo?: unknown;            // expected: '<owner>/<repo>'
+  icon_url?: unknown;                // expected: https URL
+  platforms?: unknown;               // expected: string[] of OS keys present in latest.json
 }
 
 /** provides_tools caps (migration 006): bounded so a listing can't smuggle a payload. */
@@ -108,6 +117,15 @@ const HIVE_TITLE_MAX = 200;
 // refs (a/b) and dotted versions; bounded length.
 const LISTING_REF_RE = /^[A-Za-z0-9._/-]{1,200}$/;
 const PROJECT_REF_MAX = 300;
+
+// App distribution (migration 014). An https installer-handoff url must not be
+// downgradeable; a release_repo is a bare `<owner>/<repo>`; platforms is a small
+// denormalized set of OS keys (a hint, not a payload).
+const APP_URL_MAX = 500;
+const HTTPS_URL_RE = /^https:\/\/[^\s]{1,494}$/;
+const RELEASE_REPO_RE = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
+const APP_PLATFORMS_MAX_ENTRIES = 20;
+const APP_PLATFORM_KEY_MAX_LEN = 64;
 
 function uuidv4(): string {
   // crypto.randomUUID is available in Workers + Node 19+ + browser
@@ -419,6 +437,85 @@ function registerListingEndpoints(
       requiresEventsJson = JSON.stringify(clean);
     }
 
+    // App distribution fields (migration 014 / cupboard-app-distribution P-003).
+    // ALL app-only: a non-app listing carrying any of them is a client bug, so
+    // reject rather than silently drop (same posture as provides_tools's
+    // plugin_or_pack_kind_only). For a STANDALONE app, latest_json_url is
+    // REQUIRED — it is the download handoff target; a standalone app row without
+    // it is born un-downloadable. The Cupboard shape-validates the url but never
+    // FETCHES it (that is the publish tool's assertAppManifestResolves gate,
+    // client-side); the storefront stores the publisher's claim like topic_hex.
+    const anyAppField =
+      body.delivery_type != null ||
+      body.latest_json_url != null ||
+      body.release_repo != null ||
+      body.icon_url != null ||
+      body.platforms != null;
+    let deliveryType: 'standalone' | 'bundle' | null = null;
+    let latestJsonUrl: string | null = null;
+    let releaseRepo: string | null = null;
+    let iconUrl: string | null = null;
+    let platformsJson: string | null = null;
+    if (anyAppField && kind !== 'app') {
+      return c.json({ error: 'invalid_field', field: 'app_fields', reason: 'app_kind_only' }, 400);
+    }
+    if (kind === 'app') {
+      const badApp = (field: string, reason: string) =>
+        c.json({ error: 'invalid_field', field, reason }, 400);
+      if (body.delivery_type != null) {
+        if (body.delivery_type !== 'standalone' && body.delivery_type !== 'bundle') {
+          return badApp('delivery_type', 'standalone_or_bundle');
+        }
+        deliveryType = body.delivery_type;
+      }
+      // NULL delivery_type ⇒ standalone (the safe download-handoff default).
+      const effectiveDelivery = deliveryType ?? 'standalone';
+      if (body.latest_json_url != null) {
+        if (
+          typeof body.latest_json_url !== 'string' ||
+          body.latest_json_url.length > APP_URL_MAX ||
+          !HTTPS_URL_RE.test(body.latest_json_url)
+        ) {
+          return badApp('latest_json_url', 'https_url_max_500');
+        }
+        latestJsonUrl = body.latest_json_url;
+      }
+      if (effectiveDelivery === 'standalone' && latestJsonUrl == null) {
+        // A standalone app IS its latest.json handoff — refuse a dead listing.
+        return badApp('latest_json_url', 'required_for_standalone_app');
+      }
+      if (body.release_repo != null) {
+        if (typeof body.release_repo !== 'string' || !RELEASE_REPO_RE.test(body.release_repo)) {
+          return badApp('release_repo', 'owner_slash_repo');
+        }
+        releaseRepo = body.release_repo;
+      }
+      if (body.icon_url != null) {
+        if (
+          typeof body.icon_url !== 'string' ||
+          body.icon_url.length > APP_URL_MAX ||
+          !HTTPS_URL_RE.test(body.icon_url)
+        ) {
+          return badApp('icon_url', 'https_url_max_500');
+        }
+        iconUrl = body.icon_url;
+      }
+      if (body.platforms != null) {
+        const p = body.platforms;
+        if (!Array.isArray(p) || p.length === 0 || p.length > APP_PLATFORMS_MAX_ENTRIES) {
+          return badApp('platforms', 'array_1_to_20');
+        }
+        if (
+          !p.every(
+            (k) => typeof k === 'string' && k.trim().length > 0 && k.length <= APP_PLATFORM_KEY_MAX_LEN,
+          )
+        ) {
+          return badApp('platforms', 'non_empty_strings_max_64');
+        }
+        platformsJson = JSON.stringify(p);
+      }
+    }
+
     // Repo→Hive binding fields (migration 007 / hive-from-github-url D-004
     // HYBRID). Shape-validated only — the signed directory announce is the
     // content authority; the Cupboard stores the publisher's claim like any
@@ -554,6 +651,13 @@ function registerListingEndpoints(
         kind === 'blueprint' && (body.blueprint_kind === 'hive' || body.blueprint_kind === 'harness')
           ? body.blueprint_kind
           : null,
+      // App distribution (migration 014). App-only — null on every other kind
+      // (the validation above rejects an app field on a non-app publish).
+      delivery_type: deliveryType,
+      latest_json_url: latestJsonUrl,
+      release_repo: releaseRepo,
+      icon_url: iconUrl,
+      platforms: platformsJson,
       created_at: now,
     });
     await audit(c.env.DB, now, 'published', {
