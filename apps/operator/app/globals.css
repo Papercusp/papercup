@@ -26973,32 +26973,16 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   border: 1px solid color-mix(in srgb, var(--warn), transparent 65%);
 }
 
+/* WI-4778: the strip's affordance glyph — 🫖, the same control the header
+   toggle carries; clicking the strip opens the full-height Pot Health view
+   (the old fold-out panel is gone — one detail surface). */
 .op-pot-caret {
   flex: none;
   margin-left: auto;
-  color: var(--fg-mute);
-  font-size: 10px;
-  transition: transform 160ms ease;
+  font-size: 11px;
 }
 
 .op-pot-needs + .op-pot-caret { margin-left: 2px; }
-
-.op-pot-strip[aria-expanded="true"] .op-pot-caret { transform: rotate(180deg); }
-
-@media (prefers-reduced-motion: reduce) {
-  .op-pot-caret { transition: none; }
-}
-
-/* The fold-out panel — mockup: deep translucent ground, hairline section
-   separators, thin scrollbar; sections own their padding. */
-.op-pot-panel {
-  max-height: 348px;
-  overflow-y: auto;
-  background: color-mix(in srgb, var(--bg-deepest), transparent 45%);
-  font-size: 12px;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 68%) transparent;
-}
 
 .op-pot-section {
   display: flex;

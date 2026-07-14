@@ -1,33 +1,28 @@
 'use client';
 
 /**
- * PotStatusStrip — the chat sidebar's ambient pot health + fold-out panel
+ * PotStatusStrip — the chat sidebar's ambient one-line pot health digest
  * (operator-chat-sidebar-revival-2026-07-13 P-018, approved mockup variant A).
  *
  * Design thesis (P-016/P-017, owner-approved): the sidebar shows the DIGEST,
- * not the dashboards. The one-line strip is always visible — Mug + Kettle
- * liveness with last-wake age, working-cup count, ready count, a "need you"
- * badge — and clicking it folds out the pot panel: Needs attention (anomalies
- * + escalations, the Kettle's funnel), Cups (who's doing what), Up next (the
- * ranked frontier, honestly), and Your steering (the directive the Mug obeys).
+ * not the dashboards. The one-line strip is always visible in chat view — Mug +
+ * Kettle liveness with last-wake age, working-cup count, ready count, a "need
+ * you" badge. WI-4778 replaced the old fold-out panel with the full-height Pot
+ * Health view (PotHealthPane): clicking the strip now opens THAT view (the
+ * same `?opcv=pot` state the header 🫖 toggle drives), so there is exactly one
+ * detail surface.
  *
- * Data (reuse-first, no parallel path):
- *  - strip → `overwatch.snapshot` + `overwatch.liveness` (SSE-live; the same
- *    queries the left-rail OverwatchTab reads).
- *  - panel → `mugBrief.floorView` (the Mug-brief floor projection resolver),
- *    fetched ONLY while the panel is expanded.
- *
- * The open state is user-meaningful → nuqs (`?pot=`).
+ * Data (reuse-first, no parallel path): `overwatch.snapshot` +
+ * `overwatch.liveness` (SSE-live — the same queries PotHealthPane reads).
  */
 
 import { useMemo } from 'react';
-import { parseAsBoolean, useQueryState } from 'nuqs';
+import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import type {
   OverwatchBrief,
   OverwatchLiveness,
 } from '@papercusp/operator-core/lib/overwatch/brief-types';
-import type { MugBriefFloorView } from '@papercusp/operator-core/lib/pot/mug-brief-launch';
 
 /** Compact "2m / 40s / 3h" age from an ISO timestamp or epoch ms; null-safe. */
 export function compactAge(from: string | number | null | undefined, now = Date.now()): string {
@@ -50,19 +45,6 @@ export function compactCount(n: number, cap = 99): string {
   return n > cap ? `${cap}+` : String(n);
 }
 
-const ACTION_CHIP: Record<string, string> = {
-  nudge: 'NUDGE',
-  escalate: 'ESCALATE',
-  observe: 'OBSERVE',
-};
-
-/** Chip tone class per suggested action (mockup .act-chip.esc/.nudge). */
-const ACTION_TONE: Record<string, string> = {
-  nudge: 'nudge',
-  escalate: 'esc',
-  observe: 'obs',
-};
-
 /** Split a leading work-item id off a cup's `doing` line so it renders in
  *  accent mono like the mockup's `.doing .wi` ("WI-4662 fleet-spec …"). */
 export function splitLeadingWi(doing: string): { wi: string | null; rest: string } {
@@ -71,7 +53,12 @@ export function splitLeadingWi(doing: string): { wi: string | null; rest: string
 }
 
 export function PotStatusStrip() {
-  const [potOpen, setPotOpen] = useQueryState('pot', parseAsBoolean.withDefault(false));
+  // WI-4778: the strip's click-through target is the full-height Pot Health
+  // view — the SAME nuqs param the header 🫖 toggle drives.
+  const [, setView] = useQueryState(
+    'opcv',
+    parseAsStringEnum(['chat', 'pot']).withDefault('chat'),
+  );
 
   const snapQ = useSyncQuery<OverwatchBrief>({
     queryName: 'overwatch.snapshot',
@@ -83,17 +70,9 @@ export function PotStatusStrip() {
     args: {},
     staleTime: 15_000,
   });
-  // The panel body is the heavier read — fetch only while expanded.
-  const floorQ = useSyncQuery<MugBriefFloorView>({
-    queryName: 'mugBrief.floorView',
-    args: {},
-    staleTime: 30_000,
-    enabled: potOpen,
-  });
 
   const snap = snapQ.data?.[0];
   const live = liveQ.data?.[0];
-  const floor = floorQ.data?.[0];
 
   const needYou = useMemo(() => {
     if (!snap) return 0;
@@ -111,37 +90,13 @@ export function PotStatusStrip() {
   const working = snap?.bees.running ?? 0;
   const ready = snap?.workFeed.frontier ?? 0;
 
-  const attention = potOpen && floor
-    ? [
-        ...(snap?.anomalies ?? []).map((a) => ({
-          key: `anomaly:${a.kind}:${a.subject}`,
-          severity: a.severity,
-          subj: a.subject as string | null,
-          text: a.detail,
-          chip: ACTION_CHIP[a.suggestedAction.type] ?? 'OBSERVE',
-          tone: ACTION_TONE[a.suggestedAction.type] ?? 'obs',
-        })),
-        ...floor.escalations.map((e) => ({
-          key: e.id,
-          severity: e.severity === 'critical' ? ('critical' as const) : ('warning' as const),
-          subj: null as string | null,
-          text: e.summary,
-          chip: 'ESCALATE',
-          tone: 'esc',
-        })),
-      ]
-    : [];
-
-  const moreFrontier = floor ? Math.max(0, floor.frontierTotal - floor.frontier.length) : 0;
-
   return (
     <div className="op-pot-status">
       <button
         type="button"
         className="op-pot-strip"
-        aria-expanded={potOpen}
-        aria-label={`Pot status — Mug ${mugAge}, Kettle ${kettleAge}, ${working} working, ${ready} ready${needYou > 0 ? `, ${needYou} need you` : ''}`}
-        onClick={() => void setPotOpen(!potOpen)}
+        aria-label={`Pot status — Mug ${mugAge}, Kettle ${kettleAge}, ${working} working, ${ready} ready${needYou > 0 ? `, ${needYou} need you` : ''}. Open pot health.`}
+        onClick={() => void setView('pot')}
       >
         <span className={`op-pot-dot ${mugOk ? 'ok' : 'bad'}`} aria-hidden="true" />
         <span className="op-pot-who">Mug</span>
@@ -159,143 +114,8 @@ export function PotStatusStrip() {
             <span className="op-pot-badge">{compactCount(needYou)}</span> need you
           </span>
         )}
-        <span className="op-pot-caret" aria-hidden="true">▾</span>
+        <span className="op-pot-caret" aria-hidden="true">🫖</span>
       </button>
-
-      {potOpen && (
-        <div className="op-pot-panel" role="region" aria-label="Pot status detail">
-          {!floor && <div className="op-pot-empty">Loading pot status…</div>}
-          {floor && (
-            <>
-              <section className="op-pot-section">
-                <h3 className="op-pot-h">
-                  Needs attention
-                  {attention.length > 0 && <span className="op-pot-h-badge">{attention.length}</span>}
-                </h3>
-                {attention.length === 0 ? (
-                  <div className="op-pot-empty">nothing — system healthy</div>
-                ) : (
-                  <ul className="op-pot-list">
-                    {attention.map((a) => (
-                      <li key={a.key} className={`op-pot-attn sev-${a.severity}`}>
-                        <span className="op-pot-attn-text">
-                          {a.subj != null && (
-                            <>
-                              <b className="op-pot-attn-subj">{a.subj}</b>
-                              {' — '}
-                            </>
-                          )}
-                          {a.text}
-                        </span>
-                        <span className={`op-pot-chip ${a.tone}`}>{a.chip}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-
-              <section className="op-pot-section">
-                <h3 className="op-pot-h">
-                  Cups
-                  {floor.cups.length > 0 && <span className="op-pot-h-badge n">{floor.cups.length}</span>}
-                </h3>
-                {floor.cups.length === 0 ? (
-                  <div className="op-pot-empty">no live cups</div>
-                ) : (
-                  <ul className="op-pot-list op-pot-cups">
-                    {floor.cups.map((c) => {
-                      const doing = c.doing != null ? splitLeadingWi(c.doing) : null;
-                      return (
-                        <li key={c.id} className={`op-pot-cup${c.doing != null ? '' : ' idle'}`}>
-                          <span className="op-pot-cup-glyph" aria-hidden="true">☕</span>
-                          <span className="op-pot-cup-id">{c.id}</span>
-                          <span className="op-pot-cup-doing">
-                            {doing == null ? (
-                              'idle'
-                            ) : (
-                              <>
-                                {doing.wi != null && (
-                                  <>
-                                    <span className="op-pot-wi">{doing.wi}</span>{' '}
-                                  </>
-                                )}
-                                {doing.rest}
-                              </>
-                            )}
-                          </span>
-                          <span className="op-pot-cup-load">{c.load}</span>
-                          <span className={`op-pot-dot ${c.alive ? 'ok' : 'bad'}`} aria-hidden="true" />
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-
-              <section className="op-pot-section">
-                <h3 className="op-pot-h">
-                  Up next
-                  {floor.frontierTotal > 0 && <span className="op-pot-h-badge n">{floor.frontierTotal}</span>}
-                </h3>
-                {floor.frontier.length === 0 ? (
-                  <div className="op-pot-empty">
-                    {floor.frontierQuarantined > 0
-                      ? `frontier empty — ${floor.frontierQuarantined} quarantined by the admission gate`
-                      : 'no ready work'}
-                  </div>
-                ) : (
-                  <ol className="op-pot-list op-pot-queue">
-                    {floor.frontier.map((f) => (
-                      <li key={f.id} className="op-pot-next">
-                        <span className="op-pot-next-id">{f.id}</span>
-                        <span className="op-pot-next-title">{f.title}</span>
-                      </li>
-                    ))}
-                  </ol>
-                )}
-                <div className="op-pot-foot">
-                  {moreFrontier > 0 ? `+${moreFrontier} more · ` : ''}
-                  {floor.frontierBlocked} blocked · {floor.frontierQuarantined} quarantined
-                  {floor.openPlacements.recovering > 0 ? (
-                    <>
-                      {' · '}
-                      <span className="op-pot-recovering">
-                        {floor.openPlacements.recovering} recovering ↻
-                      </span>
-                    </>
-                  ) : (
-                    ''
-                  )}
-                  {floor.openPlacements.stranded > 0
-                    ? ` · ${floor.openPlacements.stranded} stranded`
-                    : ''}
-                </div>
-              </section>
-
-              <section className="op-pot-section">
-                <h3 className="op-pot-h">Your steering</h3>
-                {floor.steering ? (
-                  <div className="op-pot-steering">
-                    {floor.steering.directive && (
-                      <div className="op-pot-directive">“{floor.steering.directive}”</div>
-                    )}
-                    <div className="op-pot-steer-facts">
-                      <span>
-                        New work: <b>{floor.steering.pauseNewWork ? 'paused' : 'allowed'}</b>
-                      </span>
-                      {floor.steering.eligiblePlans.length > 0 && (
-                        <span>Eligible: {floor.steering.eligiblePlans.join(', ')}</span>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="op-pot-empty">un-steered — the Mug places by rank</div>
-                )}
-              </section>
-            </>
-          )}
-        </div>
-      )}
     </div>
   );
 }

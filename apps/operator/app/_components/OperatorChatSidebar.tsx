@@ -1068,6 +1068,7 @@ body.has-op-chat .pc-header {
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
 .op-chat-controls .pc-voice-settings-link,
+.op-chat-controls .op-chat-pot-toggle,
 .op-chat-controls .op-chat-tts {
   min-height: 27px !important;
   box-shadow: none !important;
@@ -1179,6 +1180,7 @@ body.has-op-chat .pc-header {
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
 .op-chat-controls .pc-voice-settings-link,
+.op-chat-controls .op-chat-pot-toggle,
 .op-chat-controls .op-chat-tts {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   background: color-mix(in srgb, var(--bg-1), transparent 4%) !important;
@@ -1190,6 +1192,12 @@ body.has-op-chat .pc-header {
 .op-chat-controls .op-chat-tts.is-muted {
   color: var(--fg-mute, #7f9bb4) !important;
   background: transparent !important;
+}
+
+/* Same carve-out for the lit 🫖 state (WI-4778). */
+.op-chat-controls .op-chat-pot-toggle.is-on {
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 30%) !important;
+  background: color-mix(in srgb, var(--accent), transparent 82%) !important;
 }
 
 .op-chat-controls .pc-voice-btn-orb {
