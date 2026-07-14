@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { sessionSearchEnabled, disabledResult } from './_shared';
+import { sessionSearchEnabled, disabledResult, refreshLiveSessionsBeforeRead } from './_shared';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 const AUTOMATIC_TOOL_NAMES = ['activity:report', 'coord:glance', 'coord:inbox'] as const;
@@ -79,6 +79,7 @@ export default defineTool({
     const until = args.until ?? new Date().toISOString();
     const kinds = args.kinds?.length ? args.kinds : null;
     const includeAuto = args.include_auto ?? false;
+    await refreshLiveSessionsBeforeRead(ctx.tx, [owner]);
 
     const rows = await ctx.tx<TimelineEntry[]>`
       (

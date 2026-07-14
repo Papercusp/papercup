@@ -38,6 +38,52 @@ export interface WindowTurn {
   text: string;
 }
 
+interface LiveRefreshDeps {
+  resolve?: (ownerId: string) => Promise<{ filePath: string; sessionId: string } | null>;
+  ingest?: (filePath: string, opts: { owner: string; sessionId: string }) => Promise<unknown>;
+}
+
+/**
+ * Bring open Codex sessions into the indexed corpus immediately before a read.
+ * Archive ingestion is intentionally not a freshness boundary: an active
+ * session may not have reached either the periodic sweep or archive-at-death.
+ * The owner set is bounded and refreshed concurrently to avoid a serial FS
+ * walk on the unfiltered sessions:list path.
+ */
+export async function refreshLiveSessionsBeforeRead(
+  sql: Sql,
+  owners?: readonly string[] | null,
+  deps: LiveRefreshDeps = {},
+): Promise<{ attempted: number; refreshed: number }> {
+  let ownerIds = [...new Set((owners ?? []).filter(Boolean))].slice(0, 20);
+  if (ownerIds.length === 0) {
+    const rows = await sql<Array<{ owner: string }>>`
+      SELECT DISTINCT coord_owner_id AS owner
+        FROM harness_shared.adv_sessions
+       WHERE ended_at IS NULL
+         AND agent = 'codex'
+         AND coord_owner_id IS NOT NULL
+       ORDER BY coord_owner_id
+       LIMIT 20`;
+    ownerIds = rows.map((row) => row.owner);
+  }
+  if (ownerIds.length === 0) return { attempted: 0, refreshed: 0 };
+
+  const resolve = deps.resolve ?? (await import('../../search/self-session')).resolveSelfSession;
+  const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
+  const results = await Promise.all(ownerIds.map(async (owner) => {
+    try {
+      const live = await resolve(owner);
+      if (!live) return false;
+      await ingest(live.filePath, { owner, sessionId: live.sessionId });
+      return true;
+    } catch {
+      return false;
+    }
+  }));
+  return { attempted: ownerIds.length, refreshed: results.filter(Boolean).length };
+}
+
 /** ±context turns around one hit (per-turn text bounded for token economy). */
 export async function hydrateWindow(
   sql: Sql,

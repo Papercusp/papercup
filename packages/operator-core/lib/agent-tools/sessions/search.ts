@@ -21,7 +21,8 @@ import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/e
 import { searchFilterArgs, resolveSearchFilters } from '../search/filters';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
-  sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef, type WindowTurn,
+  sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef,
+  refreshLiveSessionsBeforeRead, type WindowTurn,
 } from './_shared';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
@@ -63,6 +64,7 @@ export default defineTool({
     const { filters, selfSession } = await resolveSearchFilters(
       ctx.tx, args, resolveAgentIdentity(ctx).ownerId ?? '', { workspaceId },
     );
+    await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
 
     interface RawHit {
       sourceKind: string; sessionId: string; turnIdx: number;
