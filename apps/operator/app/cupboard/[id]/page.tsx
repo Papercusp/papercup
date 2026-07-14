@@ -676,7 +676,7 @@ export default function CupboardDetailPage() {
 
 /**
  * AppDownloadPanel — the standalone-app download handoff
- * (cupboard-app-distribution-2026-07-14 P-005 [owner:Avi 2026-07-14]).
+ * (cupboard-app-distribution-2026-07-14 P-005 [owner 2026-07-14]).
  *
  * A standalone app is a separate downloadable product; the Cupboard never
  * re-hosts the binary. At publish time the gate proved the app's `latest.json`

@@ -71,7 +71,7 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  *                              cupboard-full-dogfood-2026-07-10 P-003)
  *   app           → download  (STANDALONE) | install (BUNDLE) — a whole
  *                              distributable application (cupboard-app-distribution
- *                              -2026-07-14 [owner:Avi 2026-07-14]). The
+ *                              -2026-07-14 [owner 2026-07-14]). The
  *                              `delivery_type` field discriminates the two models:
  *                              a `'standalone'` app is a separate downloadable
  *                              product (e.g. Oddsmith, a Tauri desktop app built on
@@ -95,7 +95,7 @@ export type ListingKind = (typeof LISTING_KINDS)[number];
 
 /**
  * The delivery model for a `listing_kind: 'app'` row (cupboard-app-distribution
- * -2026-07-14 D-001 [owner:Avi 2026-07-14]):
+ * -2026-07-14 D-001 [owner 2026-07-14]):
  *   standalone → a separate downloadable product (own installer/binary), e.g. the
  *                Oddsmith Tauri desktop app. "Install" = download the platform
  *                installer from the app's GitHub release; the Cupboard hands off a
@@ -121,7 +121,7 @@ export type ListingAction = 'view-hive' | 'install' | 'download';
  * primary action (`null`). blueprint + plugin/pack → install (clone the listing).
  *
  * An `app` row's action forks on `delivery_type` (cupboard-app-distribution
- * D-001 [owner:Avi 2026-07-14]): a STANDALONE app → 'download' (hand off the
+ * D-001 [owner 2026-07-14]): a STANDALONE app → 'download' (hand off the
  * platform installer link — v1 is download-link handoff only); a BUNDLE app →
  * 'install' (compose it into the workspace, Phase 2). A standalone app row with
  * `delivery_type` absent still defaults to 'download' — the safe, no-side-effect
@@ -379,7 +379,7 @@ export interface HarnessListing {
   blueprint_kind?: 'pot' | 'hive' | 'harness' | null;
 
   // ── App-distribution fields (Cupboard worker migration 014 /
-  // cupboard-app-distribution-2026-07-14 P-001 [owner:Avi 2026-07-14]). Present
+  // cupboard-app-distribution-2026-07-14 P-001 [owner 2026-07-14]). Present
   // only for `listing_kind: 'app'` rows; absent/null on every other kind.
   // A STANDALONE app is distributed by download-link handoff (v1): the Cupboard
   // points at the app's own GitHub release, it never re-hosts the binary. ──

@@ -1,5 +1,5 @@
 -- Cupboard migration 014 — the 'app' listing kind + its distribution columns.
--- (cupboard-app-distribution-2026-07-14 P-001 / D-001 [owner:Avi 2026-07-14].)
+-- (cupboard-app-distribution-2026-07-14 P-001 / D-001 [owner 2026-07-14].)
 --
 -- WHY
 -- ---

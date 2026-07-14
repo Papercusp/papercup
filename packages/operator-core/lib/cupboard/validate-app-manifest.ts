@@ -1,7 +1,7 @@
 /**
  * validate-app-manifest.ts — publish-time gate that a STANDALONE app listing's
  * `latest.json` updater manifest actually RESOLVES and parses
- * (cupboard-app-distribution-2026-07-14 P-003 / D-001 [owner:Avi 2026-07-14]).
+ * (cupboard-app-distribution-2026-07-14 P-003 / D-001 [owner 2026-07-14]).
  *
  * A standalone app (e.g. Oddsmith) is a separate downloadable product: the
  * Cupboard never re-hosts the binary — it stores the URL of the app's signed

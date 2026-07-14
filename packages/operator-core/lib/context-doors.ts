@@ -7,7 +7,7 @@
  * (P-007: soft = window − (2×maxTurn + overhead), hard = window − maxTurn) hold by
  * CONSTRUCTION, never by observation of past turns (owner-rejected feedback loops, D-001).
  *
- * DECIDED formula [owner:Avi 2026-07-14, plan D-007]:
+ * DECIDED formula [owner 2026-07-14, plan D-007]:
  *   maxTurn = min(15K, max(8K, effectiveWindow / 26))
  * Knees: the 8K floor binds below ~208K windows (Ornith 204.8K → 8K); the 15K cap binds
  * above ~390K; /26 scales in between. `maxTurn` is the SUM of the per-door caps, and when
@@ -98,7 +98,7 @@ export function computeTurnDoors(effectiveWindow: number, c: DoorConstants = BAK
  *  Ornith 204.8K → soft ~90.2% / hard ~96.1%; 400K → soft 91.5% / hard 96.25%. */
 export const COMPACTION_OVERHEAD_TOKENS = 4_000;
 
-/** The decided defaults [owner:Avi 2026-07-14, plan D-007] as one DoorConstants value.
+/** The decided defaults [owner 2026-07-14, plan D-007] as one DoorConstants value.
  *  Declared after every constant it references (module-eval order); the compute functions
  *  above reference it only in default-parameter position, which evaluates at call time. */
 export const BAKED_DOOR_CONSTANTS: DoorConstants = Object.freeze({

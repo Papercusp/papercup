@@ -167,3 +167,13 @@ apps/operator/dist-host/
 # committing the junk and re-dirtying the tree continuously, which blocks every
 # release cut (release-local.sh refuses a -dirty superproject). Ignore them.
 whisper-server-*.wav
+
+# WI-4776: a browser-extension probe (claude-in-chrome setup tooling, external to
+# this repo) creates a temp `probehome.<random>/` HOME-probe directory at the repo
+# root containing REAL machine paths (NativeMessagingHosts manifests with this
+# box's actual $HOME baked in). git-sync's blanket `git add -A` committed one of
+# these on 2026-07-13 and it sat tracked in the tree leaking a real home path
+# until removed — the same identity-leak CLASS check-no-box-identity.mjs /
+# check-no-identity-literals.mjs exist to prevent, just via an untracked-junk path
+# instead of authored source. Ignore the whole class so it can never recur.
+probehome.*/

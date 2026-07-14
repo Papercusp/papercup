@@ -273,7 +273,7 @@ export default function CupboardClient() {
   // Per-kind counts over the full unfiltered fetch. A kind tab with ZERO
   // listings is HIDDEN (cupboard-public-release-2026-07-12 P-015: "all tabs
   // non-empty or hidden" — e.g. pack when nothing is published yet).
-  // EXCEPTION: the Pots (harness) tab ALWAYS shows [owner:Avi 2026-07-14 "revive
+  // EXCEPTION: the Pots (harness) tab ALWAYS shows [owner 2026-07-14 "revive
   // the pots tab, even if we don't have any shared pots yet"] — pot-sharing is a
   // headline feature, so a fresh install must surface it (with an empty state)
   // rather than hide it until someone happens to publish the first public pot.
@@ -292,7 +292,7 @@ export default function CupboardClient() {
       k === 'all' ||
       k === 'tools' ||
       k === 'harness' ||
-      // The Apps tab is ALWAYS visible [owner:Avi 2026-07-14 "1. yes" — Apps tab
+      // The Apps tab is ALWAYS visible [owner 2026-07-14 "1. yes" — Apps tab
       // always-shown], with an empty state until the first app is published —
       // apps are a headline distribution surface (Oddsmith), so a fresh install
       // must advertise it rather than hide it until someone publishes one.
@@ -666,7 +666,7 @@ export default function CupboardClient() {
         /* Hive-first flat browse (P-002): one card per hive, plain cards for
            the other kinds, legacy pre-hive harness rows collapsed below. */
         <>
-          {/* Pots-tab empty state [owner:Avi 2026-07-14]: the Pots tab always
+          {/* Pots-tab empty state [owner 2026-07-14]: the Pots tab always
               renders (see visibleFilters), so when no public pot has been
               published it must explain itself + point at how to publish, rather
               than showing a blank grid. Scoped to the Pots view only — on 'all'
@@ -744,7 +744,7 @@ export default function CupboardClient() {
         /* Flat browse (single non-harness kind) — each card links to its Hive
            via the Hive chip. */
         <>
-          {/* Apps-tab empty state [owner:Avi 2026-07-14 "1. yes" — Apps tab
+          {/* Apps-tab empty state [owner 2026-07-14 "1. yes" — Apps tab
               always-visible]: the Apps tab always renders (see visibleFilters), so
               when no app has been published (and other kinds populate `listings`,
               so the generic empty state above doesn't fire) it must explain itself

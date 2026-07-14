@@ -1,7 +1,7 @@
 /**
  * cupboard:publish-app — list a whole standalone application on the Cupboard's
  * new "Apps" tab (cupboard-app-distribution-2026-07-14 P-003 / D-001
- * [owner:Avi 2026-07-14]).
+ * [owner 2026-07-14]).
  *
  * A STANDALONE app (e.g. Oddsmith, a Tauri desktop app built on the papercusp
  * platform) is a separate downloadable product — NOT a plugin that runs inside

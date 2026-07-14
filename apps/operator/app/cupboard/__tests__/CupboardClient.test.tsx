@@ -120,7 +120,7 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
   });
 });
 
-describe('CupboardClient — Pots tab always visible + empty state [owner:Avi 2026-07-14]', () => {
+describe('CupboardClient — Pots tab always visible + empty state [owner 2026-07-14]', () => {
   const originalFetch = global.fetch;
   const fetchMock = vi.fn();
 
@@ -157,7 +157,7 @@ describe('CupboardClient — Pots tab always visible + empty state [owner:Avi 20
   });
 });
 
-describe('CupboardClient — Apps tab always visible + empty state [owner:Avi 2026-07-14]', () => {
+describe('CupboardClient — Apps tab always visible + empty state [owner 2026-07-14]', () => {
   const originalFetch = global.fetch;
   const fetchMock = vi.fn();
 

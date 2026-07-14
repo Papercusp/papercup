@@ -26,7 +26,7 @@ import type { Env } from './env.ts';
  *  now accepted on the publish path so templates list "as authored by papercusp"
  *  via the standard flow.
  *  `app` (migration 014 / cupboard-app-distribution-2026-07-14 P-001, D-001
- *  [owner:Avi 2026-07-14]): a whole distributable application. A STANDALONE app
+ *  [owner 2026-07-14]): a whole distributable application. A STANDALONE app
  *  (e.g. Oddsmith, a Tauri desktop app built on the papercusp platform) is a
  *  separate downloadable product — "install" DOWNLOADS its platform installer
  *  from the app's own GitHub release (the Cupboard never re-hosts the binary); a

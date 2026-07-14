@@ -72,7 +72,7 @@ describe('listingActionFor (row → consumer verb, comb-retire D-001/D-003)', ()
     expect(listingActionFor(makeListing({ listing_kind: 'pack' }))).toBe('install');
   });
 
-  // ── app kind (cupboard-app-distribution-2026-07-14 D-001 [owner:Avi 2026-07-14]) ──
+  // ── app kind (cupboard-app-distribution-2026-07-14 D-001 [owner 2026-07-14]) ──
   it('standalone app → download (hand off the installer link — v1 is download-handoff)', () => {
     expect(
       listingActionFor(makeListing({ listing_kind: 'app', delivery_type: 'standalone' })),

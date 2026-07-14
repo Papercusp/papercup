@@ -1,6 +1,6 @@
 /**
  * app-download.ts — the client-side helpers for a STANDALONE app's download flow
- * (cupboard-app-distribution-2026-07-14 P-004/P-005 [owner:Avi 2026-07-14]).
+ * (cupboard-app-distribution-2026-07-14 P-004/P-005 [owner 2026-07-14]).
  *
  * A standalone app (e.g. the Oddsmith Tauri desktop app) is a separate
  * downloadable product: the Cupboard never re-hosts the binary. It stores the
