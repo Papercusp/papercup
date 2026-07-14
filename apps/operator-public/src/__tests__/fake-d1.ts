@@ -77,6 +77,12 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     review_status: 'approved',
     reviewed_at: null,
     review_reason: null,
+    // migration 014 (cupboard-app-distribution): app-only distribution columns.
+    delivery_type: null,
+    latest_json_url: null,
+    release_repo: null,
+    icon_url: null,
+    platforms: null,
     ...over,
   };
 }
@@ -95,7 +101,7 @@ export class FakeStore {
     const upper = sql.trim().toUpperCase();
     if (upper.startsWith('INSERT INTO HARNESSES')) {
       // ⚠ POSITIONAL: this destructure must track insertHarness()'s bind order in
-      // db.ts EXACTLY (migrations 004/006/007/008/012/013). Insert a column
+      // db.ts EXACTLY (migrations 004/006/007/008/012/013/014). Insert a column
       // mid-list in one place and not the other and every later field silently
       // shifts by one — the tests keep passing while writing wrong data into
       // wrong columns.
@@ -106,6 +112,7 @@ export class FakeStore {
         provides_tools, provides_events, requires_events,
         hive_pubkey, hive_title, blueprint_kind,
         review_status,
+        delivery_type, latest_json_url, release_repo, icon_url, platforms,
         created_at, updated_at,
       ] = binds;
       this.tables.harnesses.push(
@@ -133,6 +140,11 @@ export class FakeStore {
           hive_title: hive_title ?? null,
           blueprint_kind: blueprint_kind ?? null,
           review_status: review_status ?? 'approved',
+          delivery_type: (delivery_type as 'standalone' | 'bundle' | null) ?? null,
+          latest_json_url: (latest_json_url as string | null) ?? null,
+          release_repo: (release_repo as string | null) ?? null,
+          icon_url: (icon_url as string | null) ?? null,
+          platforms: (platforms as string | null) ?? null,
           created_at,
           updated_at,
         }),

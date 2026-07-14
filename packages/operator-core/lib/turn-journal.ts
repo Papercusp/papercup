@@ -276,6 +276,55 @@ export async function readLastAssistantTurn(
   }
 }
 
+/** One verbatim tail turn — the carry-document's raw last-N-turns leg
+ *  (deterministic-context-carry P-009 tail). Speaker+text+ts only; the
+ *  owner-vs-agent provenance stamp is a separate leg (P-009 provenance). */
+export interface TranscriptTailTurn {
+  speaker: 'user' | 'assistant';
+  /** Verbatim text (already ingest-capped by the adapter). */
+  text: string;
+  ts: Date | null;
+}
+
+/**
+ * Read the LAST `maxTurns` text turns (user + assistant) from a transcript,
+ * returned most-recent LAST. Same bounded tail-read + adapter as
+ * {@link readLastAssistantTurn}, generalized from "the one last assistant turn"
+ * to "the last N turns of either speaker" for the carry-document verbatim tail.
+ * Never throws on an empty/malformed tail — returns what parsed.
+ */
+export async function readVerbatimTail(
+  filePath: string,
+  sourceKind: JournalSourceKind,
+  maxTurns: number,
+): Promise<TranscriptTailTurn[]> {
+  if (maxTurns <= 0) return [];
+  const adapter = FILE_ADAPTERS.find((a) => a.sourceKind === sourceKind);
+  if (!adapter) return [];
+  const st = await stat(filePath);
+  const start = Math.max(0, st.size - TAIL_READ_BYTES);
+  const fh = await open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(st.size - start);
+    await fh.read(buf, 0, buf.length, start);
+    let lines = buf.toString('utf8').split('\n');
+    // A mid-file start lands mid-line — the first fragment is unparseable.
+    if (start > 0) lines = lines.slice(1);
+    const out: TranscriptTailTurn[] = [];
+    for (let i = lines.length - 1; i >= 0 && out.length < maxTurns; i -= 1) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      const turn = adapter.parseLine(line);
+      if (turn && (turn.speaker === 'assistant' || turn.speaker === 'user')) {
+        out.push({ speaker: turn.speaker, text: turn.text, ts: turn.ts });
+      }
+    }
+    return out.reverse();
+  } finally {
+    await fh.close();
+  }
+}
+
 /** Root spec shape shared with session-ingest (structural — RootSpec is not
  *  exported from there). */
 export interface JournalRootSpec {
