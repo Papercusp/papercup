@@ -291,7 +291,12 @@ export function OperatorChatSidebar() {
 const OP_CHAT_SIDEBAR_CSS = `
 .op-chat-sidebar {
   position: fixed;
-  top: 0;
+  /* Sit BELOW the dev env-switcher bar (WI-4729: the header orb was clipped
+     under it). The operator-vite EnvSwitcherBar publishes its measured height
+     as --pc-env-bar-h on the root element while shown; the 0px fallback keeps
+     the sidebar flush to the top everywhere else — same convention as
+     .pclsb/.pcdar and .pc-header. */
+  top: var(--pc-env-bar-h, 0px);
   left: 0;
   bottom: 0;
   /* Above .operator-panel (z-index 1200) so the Deck scrim + backdrop-filter
