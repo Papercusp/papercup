@@ -188,31 +188,39 @@ findPluginManifests(join(REPO, 'libs/papercusp/plugins'));
 
 const CATALOG = new Map<string, CatalogEntry>();
 
-// Pass 1 — defineTool files
+// Pass 1 — defineTool files. A file may define SEVERAL tools (e.g.
+// knowledge_packs/publish.ts co-locates export+publish as two deliberate steps), so the
+// scan is per-defineTool CHUNK, never first-match-per-file — the old single-match scan
+// silently dropped every tool after the first, and the drift check then reported the
+// dropped tool as an "orphaned" allowedTools entry that actually exists.
 for (const file of TOOL_FILES) {
   const src = readFileSync(file, 'utf8');
   if (!src.includes('defineTool(')) continue;
-  // Require at least one separator (`:` or `.`) so we skip inline `name: 'project'`
-  // style arguments that appear before the tool's own `name:` field.
-  const nameMatch = src.match(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/);
-  if (!nameMatch) continue;
-  const name = nameMatch[1];
-  const rolesMatch = src.match(/roles:\s*\[([^\]]*)\]/);
-  const rolesStr = rolesMatch?.[1] ?? '';
-  // SU_ROLES expands to every agent role in lib/agent-tools/plans/*; treat it
-  // as the same "all roles" signal as ALL_ROLES / AGENT_ROLES.
-  const allRolesSpread = /\.\.\.ALL_ROLES|\.\.\.AGENT_ROLES|\.\.\.SU_ROLES/.test(rolesStr);
-  const roles = allRolesSpread
-    ? [...KNOWN_ROLES]
-    : [...rolesStr.matchAll(/['"]([a-z]+)['"]/g)].map((m) => m[1]);
-  const hasGuidanceBlock = /guidance:\s*\{/.test(src);
-  const hasWhen = hasGuidanceBlock && /guidance:\s*\{[^}]*?when:\s*['"`]/s.test(src);
-  CATALOG.set(name, {
-    roles,
-    hasWhen,
-    byRoleKeys: parseByRoleTopLevelKeys(src),
-    source: file.replace(REPO + '/', ''),
-  });
+  // Chunk N spans its own defineTool( body (up to the next defineTool(), so the
+  // per-chunk field regexes below can't read a sibling tool's fields.
+  for (const chunk of src.split(/defineTool\s*\(/).slice(1)) {
+    // Require at least one separator (`:` or `.`) so we skip inline `name: 'project'`
+    // style arguments that appear before the tool's own `name:` field.
+    const nameMatch = chunk.match(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/);
+    if (!nameMatch) continue;
+    const name = nameMatch[1];
+    const rolesMatch = chunk.match(/roles:\s*\[([^\]]*)\]/);
+    const rolesStr = rolesMatch?.[1] ?? '';
+    // SU_ROLES expands to every agent role in lib/agent-tools/plans/*; treat it
+    // as the same "all roles" signal as ALL_ROLES / AGENT_ROLES.
+    const allRolesSpread = /\.\.\.ALL_ROLES|\.\.\.AGENT_ROLES|\.\.\.SU_ROLES/.test(rolesStr);
+    const roles = allRolesSpread
+      ? [...KNOWN_ROLES]
+      : [...rolesStr.matchAll(/['"]([a-z]+)['"]/g)].map((m) => m[1]);
+    const hasGuidanceBlock = /guidance:\s*\{/.test(chunk);
+    const hasWhen = hasGuidanceBlock && /guidance:\s*\{[^}]*?when:\s*['"`]/s.test(chunk);
+    CATALOG.set(name, {
+      roles,
+      hasWhen,
+      byRoleKeys: parseByRoleTopLevelKeys(chunk),
+      source: file.replace(REPO + '/', ''),
+    });
+  }
 }
 
 // Pass 2 — plugin manifests

@@ -26,6 +26,8 @@ import type { RoutedIdeaProvenance, LensOutcomeReport } from './outcome-feedback
 import { SU_IDEATION_LENSES, type SuIdeationLens, type CreativeLens } from './types';
 
 const emptyOutcomes = (): LensOutcomeReport<SuIdeationLens> => ({
+  total: 0,
+  ranked: [],
   byLens: Object.fromEntries(
     SU_IDEATION_LENSES.map((l) => [l, { won: 0, lost: 0, pending: 0, winRate: null, weight: 1 }]),
   ) as LensOutcomeReport<SuIdeationLens>['byLens'],
