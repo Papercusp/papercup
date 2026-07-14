@@ -89,13 +89,18 @@ async function gatherEscalations(limit = 10): Promise<BriefEscalation[]> {
       .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id))
       .slice(0, limit)
       .map((e) => {
-        const repeatCount = typeof (e as { repeatCount?: unknown }).repeatCount === 'number'
-          ? Math.max(1, Math.floor((e as { repeatCount: number }).repeatCount))
-          : 1;
+        // The repeatCount overlay is untyped on EscalationRecord — read it via an
+        // optional-unknown view (a direct `{ repeatCount: number }` cast is TS2352:
+        // the types don't sufficiently overlap).
+        const rawRepeat = (e as { repeatCount?: unknown }).repeatCount;
+        const repeatCount = typeof rawRepeat === 'number' ? Math.max(1, Math.floor(rawRepeat)) : 1;
+        // CoordEnvelope.summary is optional; escalations always carry one at
+        // runtime (openEscalation requires it) — coalesce for the type.
+        const summary = e.summary ?? '';
         return {
           id: `escalation:${e.msg_id}`,
           severity: e.severity,
-          summary: repeatCount > 1 ? `${e.summary} (x${repeatCount})` : e.summary,
+          summary: repeatCount > 1 ? `${summary} (x${repeatCount})` : summary,
         };
       });
   } catch {

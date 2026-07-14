@@ -135,10 +135,15 @@ async function runSnapshot(
     const wb = workspaceBackupFor(workspaceId);
     const settings = await wb.getSettings();
     if (!settings.enabled) return;
-    // Event triggers — gate by per-workspace setting.
-    if (reason !== 'interval' && reason !== 'manual' && reason !== 'startup'
-        && !settings.eventTriggers.includes(reason)) {
-      return;
+    // Manual snapshots are always explicit and interval snapshots are admitted
+    // by tick() above. Every other reason (including startup) is an event: an
+    // interval-only schedule must never fire it, and event/both schedules must
+    // opt into the individual trigger. Previously cadenceMode was ignored on
+    // this path, so selecting "interval" in settings still produced event
+    // snapshots whenever a lifecycle hook called triggerSnapshotEvent().
+    if (reason !== 'interval' && reason !== 'manual') {
+      if (settings.cadenceMode !== 'event' && settings.cadenceMode !== 'both') return;
+      if (!settings.eventTriggers.includes(reason)) return;
     }
     await wb.snapshot(reason, context);
   } catch (err) {
