@@ -15,7 +15,7 @@
 
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
-import { activeWorkspaceId } from './workspace-registry';
+import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import type { ParsedReport } from './operator-converse-tags';
 
 const oc = generated.operatorConversationsInHarnessShared;
@@ -109,10 +109,27 @@ export interface TurnRow {
  * Returns the workspace's active operator conversation, creating it if
  * none exists. Workspace-scoped: NEVER varies by harness slug. The
  * `harness_slug` column is always written as NULL on new rows.
+ *
+ * `workspaceId` — the EXPLICIT workspace to resolve, threaded from the
+ * caller (the sync read passes the window's `window.__PAPERCUSP_WS__`).
+ * A blank / '*' / undefined value falls back to `activeWorkspaceId()`
+ * (the ambient request/process workspace), preserving the behavior of
+ * every caller that doesn't pass one. This closes the read/write split
+ * behind the "chat empty after reload" bug (WI-4801): the WRITE path
+ * (operator-converse) resolves the window's workspace via the request
+ * header→ALS, but the sync READ (batch fetch) carries no workspace, so
+ * it fell back to the process-global `reg.current`. When that global
+ * lagged the window's workspace (multi-window shared operator, or a
+ * transient on boot / right after a workspace switch), the read returned
+ * a DIFFERENT (empty) conversation than writes landed in — the thread
+ * looked wiped on reload while the turns were safe in PG. Honoring the
+ * caller's explicit workspace makes the read scope match the write.
  */
-export async function getOrCreateActiveConversation(): Promise<ConversationRow> {
+export async function getOrCreateActiveConversation(
+  workspaceId?: string,
+): Promise<ConversationRow> {
   const { db } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const ws = resolveConcreteWorkspaceId(workspaceId);
 
   const existing = await db
     .select(conversationCols)

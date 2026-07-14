@@ -38,9 +38,13 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { CHARS_PER_TOKEN_ESTIMATE, capInjectionText, computeTurnDoors } from './context-doors';
+import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 
-/** The floor `resultEach` door (window 0 ⇒ the 8K-floor split ⇒ 1500 tokens). */
+/** The BAKED floor `resultEach` door (window 0 ⇒ the 8K-floor split ⇒ 1500 tokens).
+ *  The live door is resolved per call through the P-023 config surface
+ *  (getDoorConstantsSync — workspace defaults ⟵ per-session override); un-configured,
+ *  it is exactly this value. */
 export const RESULT_DOOR_TOKENS = computeTurnDoors(0).resultEach;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -61,6 +65,9 @@ export interface ResultDoorOpts {
   workspaceId?: string | null;
   /** Spawn run id when it is a UUID; otherwise a fresh UUID names the spill dir. */
   runId?: string | null;
+  /** Caller's resolved agent ownerId (resolveAgentIdentity) — keys the P-023
+   *  per-session door override; absent ⇒ workspace/baked constants. */
+  ownerId?: string | null;
 }
 
 function isTextItem(it: unknown): it is { type: 'text'; text: string } {
@@ -97,7 +104,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const items = result.content;
     if (!Array.isArray(items)) return result;
 
-    const budgetChars = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+    // P-023: the effective resultEach door for THIS caller (workspace defaults ⟵
+    // session override; sync snapshot, fail-soft to the baked 1500-token floor).
+    const doorTokens = computeTurnDoors(0, getDoorConstantsSync(opts.ownerId)).resultEach;
+    const budgetChars = doorTokens * CHARS_PER_TOKEN_ESTIMATE;
     let totalChars = 0;
     for (const it of items) if (isTextItem(it)) totalChars += it.text.length;
     if (totalChars <= budgetChars) return result;
@@ -114,7 +124,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const header =
       `# result-door spill — FULL tool result (the in-context copy was truncated at the door)\n` +
       `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
-      `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${RESULT_DOOR_TOKENS} tokens\n\n`;
+      `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n\n`;
     writeFileSync(fsPath, header + fullText, { mode: 0o600 });
 
     // Rebuild content: text items consume the budget in order (the boundary item
@@ -139,7 +149,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     doored.push({
       type: 'text',
       text:
-        `\n[result-door: this result exceeded the ~${RESULT_DOOR_TOKENS}-token per-result budget ` +
+        `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
         `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
         `The FULL result is at ${fsPath} (scratch URI: ${uri}) — page it with a bounded read ` +
         `(offset/limit) instead of re-running the tool.]`,

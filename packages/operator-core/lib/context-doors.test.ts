@@ -2,6 +2,7 @@
  *  and the proportional door split, pinned so a constant change is a deliberate test change. */
 import { describe, expect, it } from 'vitest';
 import {
+  BAKED_DOOR_CONSTANTS,
   capInjectionText,
   COMPACTION_OVERHEAD_TOKENS,
   computeCompactionThresholds,
@@ -74,6 +75,35 @@ describe('computeCompactionThresholds (P-007: soft = w − (2×maxTurn + overhea
     expect(t.softTokens).toBeGreaterThanOrEqual(0);
     expect(t.hardTokens).toBeGreaterThanOrEqual(t.softTokens);
     expect(t.hardPct).toBeGreaterThanOrEqual(t.softPct);
+  });
+});
+
+describe('DoorConstants parameterization (P-023 — the config surface feeds the same math)', () => {
+  it('BAKED_DOOR_CONSTANTS mirrors the exported constants exactly (no drift)', () => {
+    expect(BAKED_DOOR_CONSTANTS).toEqual({
+      maxTurnFloorTokens: MAX_TURN_FLOOR_TOKENS,
+      maxTurnCapTokens: MAX_TURN_CAP_TOKENS,
+      maxTurnWindowDivisor: 26,
+      doorSplit: DOOR_SPLIT,
+      compactionOverheadTokens: COMPACTION_OVERHEAD_TOKENS,
+    });
+  });
+
+  it('omitting the constants argument is byte-identical to passing BAKED', () => {
+    for (const w of [0, 204_800, 400_000, 1_000_000]) {
+      expect(computeMaxTurn(w)).toBe(computeMaxTurn(w, BAKED_DOOR_CONSTANTS));
+      expect(computeTurnDoors(w)).toEqual(computeTurnDoors(w, BAKED_DOOR_CONSTANTS));
+      expect(computeCompactionThresholds(w)).toEqual(computeCompactionThresholds(w, BAKED_DOOR_CONSTANTS));
+    }
+  });
+
+  it('a custom constant set flows through every function', () => {
+    const c = { ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 12_000, compactionOverheadTokens: 6_000 };
+    expect(computeMaxTurn(204_800, c)).toBe(12_000); // raised floor binds
+    expect(computeTurnDoors(0, c)).toEqual({ maxTurn: 12_000, output: 6_000, resultEach: 2_250, resultSlots: 2, injections: 1_500 });
+    const t = computeCompactionThresholds(204_800, c);
+    expect(t.softTokens).toBe(204_800 - (2 * 12_000 + 6_000));
+    expect(t.hardTokens).toBe(204_800 - 12_000);
   });
 });
 

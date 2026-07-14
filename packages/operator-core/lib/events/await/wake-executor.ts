@@ -49,6 +49,7 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { capInjectionText, computeTurnDoors } from '../../context-doors';
+import { getDoorConstantsSync } from '../../context-doors-config';
 import {
   sessionClaudeConfigDir,
   sessionMcpJsonPath,
@@ -400,9 +401,13 @@ export function wakeTurnText(d: DeliveryWork): string {
 /** Injections door (deterministic-context-carry P-006 enforcement leg (b), plan D-007):
  *  the per-hop budget for machine-composed injected text. The FLOOR door — /26 lands
  *  virtually every fleet model AT the 8K floor (the brief's own observation), and the spill
- *  pointer preserves the full text for the models the floor over-trims. Becomes a P-023
- *  config knob; until then `PAPERCUSP_INJECTION_DOOR_OFF=1` is the operational kill-switch. */
-const INJECTION_DOOR_TOKENS = computeTurnDoors(0).injections;
+ *  pointer preserves the full text for the models the floor over-trims. Resolved per
+ *  delivery through the P-023 config surface (workspace defaults ⟵ the RECIPIENT
+ *  session's override; fail-soft to this baked floor); `PAPERCUSP_INJECTION_DOOR_OFF=1`
+ *  stays the operational kill-switch. */
+function injectionDoorTokens(subscriberId: string | null | undefined): number {
+  return computeTurnDoors(0, getDoorConstantsSync(subscriberId)).injections;
+}
 
 /**
  * Cap a composed wake text at the injections door, spilling the FULL original to a file
@@ -417,7 +422,8 @@ const INJECTION_DOOR_TOKENS = computeTurnDoors(0).injections;
 export function applyInjectionDoor(d: DeliveryWork, text: string): string {
   try {
     if (process.env.PAPERCUSP_INJECTION_DOOR_OFF === '1') return text;
-    const { kept, overflow } = capInjectionText(text, INJECTION_DOOR_TOKENS);
+    const doorTokens = injectionDoorTokens(d.subscriberId);
+    const { kept, overflow } = capInjectionText(text, doorTokens);
     if (overflow == null) return text;
     const dir = join(homedir(), '.papercusp', 'wake-spills', String(d.subscriberId ?? 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_'));
     mkdirSync(dir, { recursive: true });
@@ -425,12 +431,12 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
     writeFileSync(
       file,
       `# Wake spill — delivery #${d.id} (event ${d.eventKey})\n\n` +
-        `The injected wake exceeded the per-hop injection door (~${INJECTION_DOOR_TOKENS} tokens); ` +
+        `The injected wake exceeded the per-hop injection door (~${doorTokens} tokens); ` +
         `this file carries the FULL original text. Safe to delete after reading.\n\n---\n\n${text}\n`,
       { mode: 0o600 },
     );
     return (
-      `${kept}\n[injection-door: wake text exceeded the ~${INJECTION_DOOR_TOKENS}-token per-hop injection budget and was truncated; ` +
+      `${kept}\n[injection-door: wake text exceeded the ~${doorTokens}-token per-hop injection budget and was truncated; ` +
       `the FULL text is at ${file} — read it if this truncated tail matters for your next action.]`
     );
   } catch {

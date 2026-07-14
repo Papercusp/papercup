@@ -4,8 +4,15 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
+
+// P-023: the door resolves its constants through the config surface per call — stub it
+// (the config module has its own suite) so these tests run PG-free and one case can
+// exercise a per-session override widening the budget.
+const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
+vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
+
 import { applyResultDoor, RESULT_DOOR_TOKENS } from './result-door';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -23,6 +30,8 @@ beforeEach(() => {
   process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
   prevKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
   delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+  doorConstantsMock.mockReset();
+  doorConstantsMock.mockReturnValue(BAKED_DOOR_CONSTANTS);
 });
 
 afterEach(() => {
@@ -112,6 +121,15 @@ describe('applyResultDoor', () => {
     const pointer = (doored.content.at(-1) as { text: string }).text;
     expect(pointer).toContain('papercusp://scratch/unscoped/plans:get/');
     expect(pointer).not.toContain('not-a-uuid');
+  });
+
+  it('P-023: a per-session override widens the door — the same over-baked result passes through', () => {
+    const original = longText(BUDGET_CHARS * 2); // over the BAKED 1500-token door
+    // The session's resolved constants double the floor → resultEach 3000 tokens.
+    doorConstantsMock.mockReturnValue({ ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 16_000 });
+    const result = { content: [{ type: 'text' as const, text: original }] };
+    expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID, ownerId: 'su-x' })).toBe(result);
+    expect(doorConstantsMock).toHaveBeenCalledWith('su-x'); // keyed on the caller's identity
   });
 
   it('fail-soft: an unwritable scratch root returns the ORIGINAL result untouched', () => {

@@ -4354,9 +4354,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // turns in the shared sync cache prevents the mount-time REST response from
   // racing a newer pushed transcript.
   'operatorConversations.current': {
-    resolve: async () => {
+    // Honor the window's workspace (WI-4801). The batch-fetch transport carries
+    // no workspace header, so a bare resolver falls back to the process-global
+    // `reg.current` — which diverges from the window's workspace in a multi-window
+    // shared operator (or transiently on boot / after a switch), making the READ
+    // resolve a different (empty) conversation than the header-scoped WRITE path
+    // wrote to. The client passes its `window.__PAPERCUSP_WS__` here; thread it
+    // through so read scope == write scope. Blank/absent ⇒ ambient (unchanged).
+    argsSchema: z.object({ workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const { workspaceId } = args as { workspaceId?: string };
       const { getOrCreateActiveConversation } = await import('../operator-conversations');
-      return [await getOrCreateActiveConversation()];
+      return [await getOrCreateActiveConversation(workspaceId)];
     },
   },
   'operatorTurns.byConversation': {

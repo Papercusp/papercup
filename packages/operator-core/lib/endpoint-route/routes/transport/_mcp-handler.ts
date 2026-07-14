@@ -72,6 +72,7 @@ import {
 } from '@papercusp/tooldef-mcp';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor } from '../../../result-door';
+import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
@@ -1890,7 +1891,20 @@ const handler = createMcpHandler(
                     PROJECTED_DEPS,
                   )) as McpCallResult,
                 }),
-                { toolName, workspaceId: dispatchSpawnCtx.workspaceId, runId: dispatchSpawnCtx.runId ?? null },
+                {
+                  toolName,
+                  workspaceId: dispatchSpawnCtx.workspaceId,
+                  runId: dispatchSpawnCtx.runId ?? null,
+                  // P-023: key the per-session door override on the SAME identity
+                  // config:doors-set-session stamps (resolveAgentIdentity, never runId).
+                  ownerId: (() => {
+                    try {
+                      return resolveAgentIdentity(ctx).ownerId;
+                    } catch {
+                      return null;
+                    }
+                  })(),
+                },
               );
               // Persist the outcome BEFORE the response hits the (possibly
               // already-closed) stream — the whole point of P-046/EI-68: the

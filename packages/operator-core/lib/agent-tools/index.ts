@@ -665,6 +665,9 @@ import './watchdog/status';
 
 // live-configurability-audit-2026-06-20 P-024/P-025 — the runtime-config override-registry
 // readback (config:list-overrides); the concern modules (e.g. watchdog-tunables) self-register.
+import './config/doors-get';
+import './config/doors-set';
+import './config/doors-set-session';
 import './config/list-overrides';
 import './config/reset-overrides';
 import './config/set-compaction-limit';
