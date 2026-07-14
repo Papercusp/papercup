@@ -466,11 +466,18 @@ describe('executeWake — the liveness ladder', () => {
     vi.useFakeTimers();
     try {
       const write = vi.fn(() => true);
+      const forceResume = vi.fn(async () => true);
       const out = await executeWake(
         work({ wakeHandle: advHandle() }),
-        deps({ findPty: vi.fn(() => ({ id: 'pty-7' })) as never, write: write as never }),
+        deps({
+          findPty: vi.fn(() => ({ id: 'pty-7' })) as never,
+          write: write as never,
+          isLoopArmed: vi.fn(async () => true),
+          forceResume,
+        }),
       );
       expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+      expect(forceResume).not.toHaveBeenCalled();
       // First write = the turn TEXT, with NO trailing CR. A one-shot text+CR burst
       // is swallowed by the claude TUI's paste detector (CR → literal newline), so
       // the CR must arrive as its own keystroke.

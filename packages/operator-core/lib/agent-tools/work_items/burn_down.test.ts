@@ -112,6 +112,40 @@ describe('work_items:burn_down', () => {
     });
   });
 
+  it('parks needs-human and actively blocked rows instead of counting them unclaimed (WI-4759)', () => {
+    const result = buildBurnDownResult(
+      [
+        item({ id: 'EI-needs-human', payload: { needsHuman: true } }),
+        item({
+          id: 'EI-external-blocker',
+          payload: {
+            externalBlockers: [{
+              kind: 'runtime',
+              capability: 'live-dependency',
+              capabilitySource: 'explicit',
+              ref: 'runtime:test',
+              summary: 'test runtime is unavailable',
+              status: 'active',
+              createdAt: '2026-07-05T20:00:00.000Z',
+              createdBy: 'su-test',
+              updatedAt: '2026-07-05T20:00:00.000Z',
+            }],
+          },
+        }),
+        item({ id: 'EI-unclaimed' }),
+      ],
+      new Set(),
+      { harness: 'papercusp' },
+    );
+
+    expect(result.parked.map((row) => [row.id, row.mechanism])).toEqual([
+      ['EI-needs-human', 'needs-human'],
+      ['EI-external-blocker', 'external-blocker'],
+    ]);
+    expect(result.unclaimed.map((row) => row.id)).toEqual(['EI-unclaimed']);
+    expect(result.counts).toMatchObject({ parked: 2, unclaimed: 1 });
+  });
+
   it('omits closedSince/openedSince when `since` is not passed', () => {
     const result = buildBurnDownResult(
       [item({ id: 'WI-done', state: 'done', updatedAt: '2026-07-05T20:10:00.000Z' })],

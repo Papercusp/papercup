@@ -40,7 +40,7 @@ export interface BurnDownRow {
 
 export interface BurnDownParkedRow extends BurnDownRow {
   reason: string;
-  mechanism: 'claimHold' | 'blocked' | 'needs-human' | 'state';
+  mechanism: 'claimHold' | 'blocked' | 'needs-human' | 'external-blocker' | 'state';
   aliasedState?: string;
 }
 
@@ -196,6 +196,33 @@ function hasClaimHold(item: WorkItem): boolean {
   );
 }
 
+function hasNeedsHuman(item: WorkItem): boolean {
+  const payload = item.payload;
+  return Boolean(
+    payload &&
+      typeof payload === 'object' &&
+      !Array.isArray(payload) &&
+      (payload as Record<string, unknown>).needsHuman === true,
+  );
+}
+
+function hasActiveExternalBlocker(item: WorkItem): boolean {
+  if (item.externalBlockers?.some((blocker) => blocker.status === 'active')) return true;
+  const payload = item.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const blockers = (payload as Record<string, unknown>).externalBlockers;
+  return (
+    Array.isArray(blockers) &&
+    blockers.some(
+      (blocker) =>
+        blocker &&
+        typeof blocker === 'object' &&
+        !Array.isArray(blocker) &&
+        (blocker as Record<string, unknown>).status === 'active',
+    )
+  );
+}
+
 function toRow(item: WorkItem, assigneeLive?: boolean): BurnDownRow {
   return {
     id: item.id,
@@ -281,6 +308,28 @@ export function buildBurnDownResult(
         reason: 'excluded from self-select by payload._claimHold',
         mechanism: 'claimHold',
         aliasedState: state,
+      });
+      continue;
+    }
+
+    // These are the same queue floors used by scheduler:get_next and
+    // work_items:claim_next. They remain open/directly actionable, but are
+    // parked rather than reported as unclaimed so leader census agrees with
+    // scheduler admission (WI-4759).
+    if (hasNeedsHuman(item)) {
+      parked.push({
+        ...row,
+        reason: 'excluded from self-select by payload.needsHuman',
+        mechanism: 'needs-human',
+      });
+      continue;
+    }
+
+    if (hasActiveExternalBlocker(item)) {
+      parked.push({
+        ...row,
+        reason: 'excluded from self-select by active external blocker',
+        mechanism: 'external-blocker',
       });
       continue;
     }
@@ -407,7 +456,7 @@ export default defineTool({
     inFlight: z.array(rowSchema),
     parked: z.array(rowSchema.extend({
       reason: z.string(),
-      mechanism: z.enum(['claimHold', 'blocked', 'needs-human', 'state']),
+      mechanism: z.enum(['claimHold', 'blocked', 'needs-human', 'external-blocker', 'state']),
       aliasedState: z.string().optional(),
     })),
     unclaimed: z.array(rowSchema),

@@ -1133,10 +1133,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         // The bounded force leg ended the old turn; continue to Channel 2
         // below instead of attempting a keystroke against a dead process.
       } else {
-      // Channel 3: alive in a terminal we don't own, OR the live managed pty at
-      // this pid belongs to a different agent (recycled pid, EI-151) — either
-      // way not an injectable pty for THIS subscriber → park (+ inbox nudge).
-      return { kind: 'park', reason: `session pid ${pid} alive but not an injectable managed pty for this subscriber` };
+        // Channel 3: alive in a terminal we don't own, OR the live managed pty at
+        // this pid belongs to a different agent (recycled pid, EI-151) — either
+        // way not an injectable pty for THIS subscriber → park (+ inbox nudge).
+        return { kind: 'park', reason: `session pid ${pid} alive but not an injectable managed pty for this subscriber` };
       }
     }
     if (isAlive) {
