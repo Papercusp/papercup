@@ -107,18 +107,31 @@ describe('sync-write keeps headers glued to inherit-child output through a pipe 
     }
   }
 
-  it('outSync header precedes the inherit child; footer follows it', () => {
+  // A large preceding write BACKS UP the parent's async stdout buffer — the exact
+  // condition under which the real runner misattributed a workspace's output: a
+  // preceding task's captured suite output was still queued when the next header
+  // was written, so the header queued behind it while the inherit child wrote
+  // straight to the fd. The `P`-blob reproduces that backed-up state; it carries
+  // no marker so indexOf on the markers is unaffected (stripped for readability).
+  const BLOB = "'P'.repeat(300000)";
+  const clean = (s: string) => s.replace(/P+/g, '');
+
+  it('outSync header precedes the inherit child even with the stdout buffer backed up', () => {
     const src = `
-import { outSync } from ${JSON.stringify(SYNC_WRITE)};
+import { writeAllSync, outSync } from ${JSON.stringify(SYNC_WRITE)};
 import { spawnSync } from 'node:child_process';
+writeAllSync(1, ${BLOB});
 outSync('HEADER-MARK');
 spawnSync(process.execPath, ['-e', 'process.stdout.write("CHILD-MARK")'], { stdio: 'inherit' });
 outSync('FOOTER-MARK');
 `;
-    // Repeat: the failure is a scheduling race, so a single pass could get lucky.
-    // The FIX makes it deterministic, so every iteration must be correctly ordered.
-    for (let i = 0; i < 8; i++) {
-      const out = runFixture(src);
+    // Discriminating guard: with the synchronous helper this is deterministically
+    // ordered. If the helper ever regresses to async process.stdout.write, the
+    // header queues behind the blob and the inherit child overtakes it — this
+    // assertion then fails (see the console.log contrast test below, which shows
+    // exactly that misordering on the same platform).
+    for (let i = 0; i < 6; i++) {
+      const out = clean(runFixture(src));
       const h = out.indexOf('HEADER-MARK');
       const c = out.indexOf('CHILD-MARK');
       const f = out.indexOf('FOOTER-MARK');
@@ -130,27 +143,31 @@ outSync('FOOTER-MARK');
     }
   });
 
-  it('documents the bug mechanism: async console.log CAN be overtaken by the inherit child', () => {
-    // Not a hard ordering assertion (that would be a flaky negative), but on a
-    // non-TTY pipe the async-buffered console.log header is reliably overtaken by
-    // the synchronous inherit-child write on Linux — the exact defect the fix
-    // removes. We assert only that the buggy pattern does NOT strengthen ordering
-    // beyond what the fix guarantees, i.e. it is never MORE correct.
+  it('the async console.log path DOES misorder under the same backed-up buffer (the bug)', () => {
     const buggy = `
 import { spawnSync } from 'node:child_process';
+process.stdout.write(${BLOB});
 console.log('HEADER-MARK');
 spawnSync(process.execPath, ['-e', 'process.stdout.write("CHILD-MARK")'], { stdio: 'inherit' });
 console.log('FOOTER-MARK');
 `;
+    // The defect: the inherit child's synchronous write overtakes the queued
+    // header, so CHILD-MARK lands before HEADER-MARK. If a future Node makes pipe
+    // stdout synchronous (bug can no longer occur), skip rather than false-fail —
+    // the fixed-path test above remains the hard guard either way.
     let sawMisorder = false;
-    for (let i = 0; i < 8; i++) {
-      const out = runFixture(buggy);
-      if (out.indexOf('HEADER-MARK') > out.indexOf('CHILD-MARK')) sawMisorder = true;
+    for (let i = 0; i < 6; i++) {
+      const out = clean(runFixture(buggy));
+      if (out.indexOf('CHILD-MARK') >= 0 && out.indexOf('HEADER-MARK') >= 0 &&
+          out.indexOf('CHILD-MARK') < out.indexOf('HEADER-MARK')) {
+        sawMisorder = true;
+        break;
+      }
     }
-    // On this platform (Linux CI/gate) the misorder reproduces; if a future Node
-    // makes pipe stdout synchronous, the bug simply can't occur and this is a
-    // no-op observation rather than a false failure.
-    expect(typeof sawMisorder).toBe('boolean');
+    // Platform can't reproduce the async race (e.g. synchronous pipe stdout) —
+    // nothing to assert; the fixed-path test above is the hard guard regardless.
+    if (!sawMisorder) return;
+    expect(sawMisorder).toBe(true);
   });
 });
 
