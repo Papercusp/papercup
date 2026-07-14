@@ -2,6 +2,7 @@
  *  and the proportional door split, pinned so a constant change is a deliberate test change. */
 import { describe, expect, it } from 'vitest';
 import {
+  capInjectionText,
   computeMaxTurn,
   computeTurnDoors,
   DOOR_SPLIT,
@@ -48,5 +49,28 @@ describe('computeTurnDoors (proportional split inside maxTurn)', () => {
   it('the split proportions sum to exactly 1 (a drifted constant fails HERE, not in production)', () => {
     expect(DOOR_SPLIT.output + DOOR_SPLIT.resultSlots * DOOR_SPLIT.resultEach + DOOR_SPLIT.injections).toBe(1);
     expect(MAX_TURN_FLOOR_TOKENS).toBeLessThan(MAX_TURN_CAP_TOKENS);
+  });
+});
+
+describe('capInjectionText (P-006 leg (b) — the pure door split)', () => {
+  it('text within the budget passes through untouched, overflow null', () => {
+    const r = capInjectionText('short wake', 1_000);
+    expect(r).toEqual({ kept: 'short wake', overflow: null });
+  });
+
+  it('over-budget text splits at a line/space boundary near the budget; kept+overflow reassemble the original', () => {
+    const text = Array.from({ length: 300 }, (_, i) => `line ${i} of the wake body with some words`).join('\n');
+    const r = capInjectionText(text, 100); // 400-char budget
+    expect(r.overflow).not.toBeNull();
+    expect(r.kept.length).toBeLessThanOrEqual(400);
+    expect(r.kept + r.overflow).toBe(text);
+    // the cut landed on a boundary, not mid-word (the boundary char leads the overflow)
+    expect(r.overflow![0]).toMatch(/[\n ]/);
+  });
+
+  it('unbreakable text (no boundary in the tail window) still cuts AT the budget, never over', () => {
+    const r = capInjectionText('x'.repeat(2_000), 100);
+    expect(r.kept.length).toBe(400);
+    expect(r.kept + r.overflow).toBe('x'.repeat(2_000));
   });
 });

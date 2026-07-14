@@ -3,7 +3,7 @@
  * (await-event-primitive-2026-06-05 P-006, D-003/D-009).
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,6 +15,7 @@ import {
   ompResumePtyLooksReady,
   resumeCommandFor,
   wakeTurnText,
+  applyInjectionDoor,
   type ExecuteWakeDeps,
 } from './wake-executor';
 import { PtyError } from '../../pty-bridge';
@@ -1343,5 +1344,39 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
       }),
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+  });
+});
+
+describe('applyInjectionDoor (deterministic-context-carry P-006 leg (b))', () => {
+  it('a wake within the door passes through byte-identical (the common case pays nothing)', () => {
+    const text = 'a normal-sized wake';
+    expect(applyInjectionDoor(work(), text)).toBe(text);
+  });
+
+  it('an over-door wake is truncated with a pointer line, and the FULL text is spilled to the subscriber spill file', () => {
+    const d = work({ id: 990_001, subscriberId: 'su-door-test' });
+    const text = Array.from({ length: 400 }, (_, i) => `carry-note line ${i} with enough words to overflow the injection budget`).join('\n');
+    const out = applyInjectionDoor(d, text);
+    expect(out.length).toBeLessThan(text.length);
+    expect(out).toMatch(/\[injection-door: wake text exceeded/);
+    const m = out.match(/the FULL text is at (\S+) —/);
+    expect(m).not.toBeNull();
+    const spillPath = m![1];
+    expect(spillPath).toContain(join('.papercusp', 'wake-spills', 'su-door-test', 'delivery-990001.md'));
+    const spilled = readFileSync(spillPath, 'utf8');
+    expect(spilled).toContain(text); // the WHOLE original, not just the overflow
+    rmSync(spillPath, { force: true });
+  });
+
+  it('kill-switch PAPERCUSP_INJECTION_DOOR_OFF=1 bypasses the door entirely', () => {
+    const prev = process.env.PAPERCUSP_INJECTION_DOOR_OFF;
+    process.env.PAPERCUSP_INJECTION_DOOR_OFF = '1';
+    try {
+      const text = 'y'.repeat(50_000);
+      expect(applyInjectionDoor(work(), text)).toBe(text);
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_INJECTION_DOOR_OFF;
+      else process.env.PAPERCUSP_INJECTION_DOOR_OFF = prev;
+    }
   });
 });

@@ -397,6 +397,47 @@ export function wakeTurnText(d: DeliveryWork): string {
   ).replace(/\s*\n\s*/g, ' ');
 }
 
+/** Injections door (deterministic-context-carry P-006 enforcement leg (b), plan D-007):
+ *  the per-hop budget for machine-composed injected text. The FLOOR door — /26 lands
+ *  virtually every fleet model AT the 8K floor (the brief's own observation), and the spill
+ *  pointer preserves the full text for the models the floor over-trims. Becomes a P-023
+ *  config knob; until then `PAPERCUSP_INJECTION_DOOR_OFF=1` is the operational kill-switch. */
+const INJECTION_DOOR_TOKENS = computeTurnDoors(0).injections;
+
+/**
+ * Cap a composed wake text at the injections door, spilling the FULL original to a file
+ * the recipient can read back (`~/.papercusp/wake-spills/<subscriber>/delivery-<id>.md`)
+ * and appending a pointer line. A wake's unbounded fields (`summary` carries a loop's
+ * whole carry-note; a coord body can ride a wake) previously injected without ANY cap —
+ * the exact "injections" lane of the 2026-07-13 hop-budget analysis. FAIL-SOFT: a spill
+ * write failure delivers the FULL untrimmed text (a lost wake tail is worse than a fat
+ * hop), and the kill-switch env bypasses entirely. Applied BEFORE provenance tagging so
+ * the envelope is never sheared.
+ */
+export function applyInjectionDoor(d: DeliveryWork, text: string): string {
+  try {
+    if (process.env.PAPERCUSP_INJECTION_DOOR_OFF === '1') return text;
+    const { kept, overflow } = capInjectionText(text, INJECTION_DOOR_TOKENS);
+    if (overflow == null) return text;
+    const dir = join(homedir(), '.papercusp', 'wake-spills', String(d.subscriberId ?? 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_'));
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `delivery-${d.id}.md`);
+    writeFileSync(
+      file,
+      `# Wake spill — delivery #${d.id} (event ${d.eventKey})\n\n` +
+        `The injected wake exceeded the per-hop injection door (~${INJECTION_DOOR_TOKENS} tokens); ` +
+        `this file carries the FULL original text. Safe to delete after reading.\n\n---\n\n${text}\n`,
+      { mode: 0o600 },
+    );
+    return (
+      `${kept}\n[injection-door: wake text exceeded the ~${INJECTION_DOOR_TOKENS}-token per-hop injection budget and was truncated; ` +
+      `the FULL text is at ${file} — read it if this truncated tail matters for your next action.]`
+    );
+  } catch {
+    return text;
+  }
+}
+
 /**
  * turn-provenance P-002 (turn-provenance-owner-vs-agent-2026-07-11): envelope +
  * ledger-tag a wake turn BEFORE it is typed into a PTY / submitted as a resume
@@ -1015,7 +1056,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // because the socket inject below sat under this early-return).
       const outcome = await injectPsuHostWakeWithReverify(
         d,
-        tagWakeText(d, wakeTurnText(d), tagTurn),
+        tagWakeText(d, applyInjectionDoor(d, wakeTurnText(d)), tagTurn),
         findPsuHost,
         injectPsuHost,
         deps,
@@ -1035,7 +1076,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // static plans-tool dependency.
       const resumePlanRun =
         deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
-      const r = await resumePlanRun({ runId: handle.runId, wakeText: tagWakeText(d, wakeTurnText(d), tagTurn) });
+      const r = await resumePlanRun({ runId: handle.runId, wakeText: tagWakeText(d, applyInjectionDoor(d, wakeTurnText(d)), tagTurn) });
       if (r.ok) return { kind: 'delivered', channel: 'plan-run-resume' };
       return { kind: 'error', error: r.error };
     }
@@ -1060,7 +1101,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       isAlive = Boolean(p && !p.stale && !p.revoked);
     }
 
-    const text = tagWakeText(d, wakeTurnText(d), tagTurn);
+    const text = tagWakeText(d, applyInjectionDoor(d, wakeTurnText(d)), tagTurn);
 
     // Channel 1b (turn-lifecycle-control Phase 3, P-014): a live INTERACTIVE psu
     // session hosts its pty + control socket in the psu PROCESS (D-006), so our
