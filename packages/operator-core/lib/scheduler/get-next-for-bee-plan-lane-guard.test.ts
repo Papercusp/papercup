@@ -18,9 +18,13 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
+const { sqlMock } = vi.hoisted(() => ({
+  sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
+}));
+
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: async () => [] }),
+  getOrgPg: () => ({ sql: sqlMock }),
 }));
 
 const getNextWorkItemMock = vi.fn();
@@ -56,10 +60,23 @@ function claimResult(id: string) {
 
 describe('getNextForBee — plan-item-lane guard retry loop', () => {
   beforeEach(() => {
+    sqlMock.mockReset().mockResolvedValue([]);
     getNextWorkItemMock.mockReset();
     planItemLaneBlockReasonMock.mockReset();
     releaseWorkItemMock.mockReset().mockResolvedValue(null);
     matchesWorkItemClaimSpecMock.mockReset().mockReturnValue(true);
+  });
+
+  it('fails closed when the bee already holds an active or parked claim (EI-11796)', async () => {
+    sqlMock.mockImplementation(async (strings: unknown) => {
+      const query = Array.isArray(strings) ? strings.join(' ') : '';
+      return query.includes('active_claims') ? [{ active_claims: 1 }] : [];
+    });
+
+    const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
+
+    expect(res).toBeNull();
+    expect(getNextWorkItemMock).not.toHaveBeenCalled();
   });
 
   it('serves the first claim straight through when its plan-item lane is clear', async () => {

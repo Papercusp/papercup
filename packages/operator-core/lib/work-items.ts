@@ -64,6 +64,7 @@ import {
   normalizeFeatureStateInput,
 } from './work-item-dispatch-states';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
+import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, type CompletionAudit } from './completion-audit';
@@ -3810,7 +3811,11 @@ export async function linkWorkItem(
   if (wi.family === 'issue') {
     await linkIssue(id, dst, rel, opts.by);
   } else {
-    await links.link(workItemObjectRef(wi), dst, rel, { created_by: opts.by, created_ts: nowIso() });
+    const src = workItemObjectRef(wi);
+    await links.link(src, dst, rel, { created_by: opts.by, created_ts: nowIso() });
+    if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
+      await mirrorWorkItemBlockingEdge(src, dst, { createdBy: opts.by });
+    }
   }
   if (rel === 'blocks') await syncDerivedBlockerSubscriptions(dst);
   return { ok: true };
@@ -3825,7 +3830,13 @@ export async function unlinkWorkItem(
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await unlinkIssue(id, dst, rel);
-  else await links.unlink(workItemObjectRef(wi), dst, rel);
+  else {
+    const src = workItemObjectRef(wi);
+    await links.unlink(src, dst, rel);
+    if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
+      await removeMirroredWorkItemBlockingEdge(src, dst);
+    }
+  }
   if (rel === 'blocks') await subs.unsubscribeDerivedForEdge(dst, workItemObjectRef(wi));
   // WI-4034 (the unlink gap): removing a `blocks` edge can be the dependent's
   // LAST live blocker clearing — the same condition emitWorkItemSettledEvents

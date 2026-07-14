@@ -50,6 +50,7 @@ import { auditPredicateSql, auditPredicateSqlFor, type CompletionAudit } from '.
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
+import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 
 /**
  * Upper bound on rows a single `listIssues` read returns. Kept in lock-step with
@@ -1186,10 +1187,21 @@ export async function unsubscribeIssue(subscriberId: string, id: string): Promis
 
 /** Linkable.link — an issue→target edge (rel 'blocks' | 'relates' | 'duplicates' | …). Phase 2. */
 export async function linkIssue(id: string, dst: ObjectRef, rel: string, by?: string): Promise<void> {
-  await links.link(issueRef(id), dst, rel, { created_by: by, created_ts: nowIso() });
+  const src = issueRef(id);
+  await links.link(src, dst, rel, { created_by: by, created_ts: nowIso() });
+  // Scheduler readiness reads work_item_deps, while the polymorphic issue link
+  // surface persists coord_links. Mirror only scheduler work-item targets;
+  // plan-item/event links intentionally remain coord_links-only.
+  if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
+    await mirrorWorkItemBlockingEdge(src, dst, { createdBy: by });
+  }
 }
 export async function unlinkIssue(id: string, dst: ObjectRef, rel: string): Promise<void> {
-  await links.unlink(issueRef(id), dst, rel);
+  const src = issueRef(id);
+  await links.unlink(src, dst, rel);
+  if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
+    await removeMirroredWorkItemBlockingEdge(src, dst);
+  }
 }
 
 /** One outbound edge from an issue, as {@link issuesOutLinksMany} returns it. */

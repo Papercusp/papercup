@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { wouldCreateCycle } from './work-item-deps-store';
+import { workItemBlockingEdge, wouldCreateCycle } from './work-item-deps-store';
 
 // edges are blocked -> [blockers]; a cycle = a circular blocking dependency (deadlock).
 const m = (o: Record<string, string[]>): Map<string, string[]> => new Map(Object.entries(o));
@@ -33,5 +33,26 @@ describe('wouldCreateCycle (acyclicity guard, P-008)', () => {
   it('detects a cycle introduced among multiple new blockers', () => {
     // X blocked-by A,B (fine); but B is blocked-by X already -> X<-B<-X
     expect(wouldCreateCycle(m({ B: ['X'] }), 'X', ['A', 'B'])).toBe(true);
+  });
+});
+
+describe('workItemBlockingEdge (coord_links → scheduler mirror)', () => {
+  it('reverses blocker→blocked into the work_item_deps orientation', () => {
+    expect(
+      workItemBlockingEdge(
+        { kind: 'issue', ref: 'EI-blocker' },
+        { kind: 'issue', ref: 'EI-dependent' },
+      ),
+    ).toEqual({
+      blocked_kind: 'issue',
+      blocked_ref: 'EI-dependent',
+      blocker_kind: 'issue',
+      blocker_ref: 'EI-blocker',
+      dep_type: 'blocks',
+    });
+  });
+
+  it('drops a self-edge before it reaches the database', () => {
+    expect(workItemBlockingEdge({ kind: 'issue', ref: 'EI-1' }, { kind: 'issue', ref: 'EI-1' })).toBeNull();
   });
 });

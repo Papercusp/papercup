@@ -41,7 +41,7 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: undefined }) }));
 vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercup' }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 
-const { reconcileLearningSingletons } = await import('./seed-learning-singletons');
+const { reconcileLearningSingletons, reconcileLearningSingletonsExitCode } = await import('./seed-learning-singletons');
 
 /** A fake `sql` returning the given @singleton routine rows for the one SELECT it makes. */
 const sqlWithRows = (names: string[]): Sql =>
@@ -58,6 +58,12 @@ beforeEach(() => {
 });
 
 describe('reconcileLearningSingletons — a declared loop with no routine row (EI-10625)', () => {
+  it('returns a failing CLI status when check mode finds a missing declaration', () => {
+    expect(reconcileLearningSingletonsExitCode(false, 1)).toBe(1);
+    expect(reconcileLearningSingletonsExitCode(false, 0)).toBe(0);
+    expect(reconcileLearningSingletonsExitCode(true, 1)).toBe(0);
+  });
+
   it('FIRES: detects the loop that was declared but never materialized', async () => {
     // The live state exactly: memory-precision has a row (someone re-ran the CLI);
     // the canary, added afterwards, has none.

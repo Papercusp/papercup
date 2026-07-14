@@ -58,6 +58,11 @@ interface PoolAccount {
   boundTo: string[];
   available: boolean;
   sustainedlyLimited: boolean;
+  edgeThrottleKnown?: boolean;
+  edgeThrottled?: boolean;
+  edgeThrottleResetAt?: number;
+  edgeThrottleCooledIps?: number;
+  edgeThrottleBare429Streak?: number;
   rate: AccountRate;
   egress?: { proxyUrl?: string; localAddress?: string };
   liveBuckets: { key: string; provider: string; modelClass: string; paused: boolean; pausedUntil: number }[];
@@ -344,6 +349,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
                     {isForced && <span className="pclsb-acct__chip is-force">forced</span>}
                     {isExcluded && <span className="pclsb-acct__chip is-excl">excluded</span>}
                     {a.sustainedlyLimited && <span className="pclsb-acct__chip is-excl">limited</span>}
+                    {a.edgeThrottled && <span className="pclsb-acct__chip is-excl">edge throttle</span>}
                     {a.rate.penaltyCount > 0 && (
                       <span className="pclsb-acct__chip">{a.rate.penaltyCount} penalt{a.rate.penaltyCount === 1 ? 'y' : 'ies'}</span>
                     )}

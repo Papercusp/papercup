@@ -519,6 +519,27 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
     const blocks = (await links.listOut({ kind: 'issue', ref: bug.id })).filter((l) => l.rel === 'blocks');
     expect(blocks).toHaveLength(1); // upserted, not duplicated
   });
+
+  it('mirrors issue blocks edges into work_item_deps so scheduler readiness sees them', async () => {
+    const blocker = await wi.createWorkItem({ kind: 'bug', title: 'dependency blocker', harness: 'papercup', createdBy: 'agA' });
+    const blocked = await wi.createWorkItem({ kind: 'bug', title: 'dependency target', harness: 'papercup', createdBy: 'agA' });
+    const blockedRef = { kind: 'issue', ref: blocked.id } as const;
+
+    expect(await wi.linkWorkItem(blocker.id, blockedRef, 'blocks', { by: 'agA' })).toEqual({ ok: true });
+    await expect(
+      db.sql<{ blocked_kind: string; blocked_ref: string; blocker_kind: string; blocker_ref: string }[]>`
+        SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref
+          FROM harness_shared.work_item_deps
+         WHERE blocked_ref = ${blocked.id} AND blocker_ref = ${blocker.id} AND dep_type = 'blocks'`,
+    ).resolves.toEqual([
+      { blocked_kind: 'issue', blocked_ref: blocked.id, blocker_kind: 'issue', blocker_ref: blocker.id },
+    ]);
+
+    expect(await wi.unlinkWorkItem(blocker.id, blockedRef, 'blocks')).toEqual({ ok: true });
+    await expect(
+      db.sql`SELECT 1 FROM harness_shared.work_item_deps WHERE blocked_ref = ${blocked.id} AND blocker_ref = ${blocker.id}`,
+    ).resolves.toEqual([]);
+  });
 });
 
 describe('WI-4119 — followBlockers derived subscriptions', () => {

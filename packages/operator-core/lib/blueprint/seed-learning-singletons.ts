@@ -50,6 +50,12 @@ export interface LearningSingleton {
   legacyRoutine: string;
 }
 
+/** Exit status for `--reconcile` check mode. A missing declaration must make the
+ * CLI fail so CI/boot callers cannot mistake a printed FATAL for a green check. */
+export function reconcileLearningSingletonsExitCode(execute: boolean, missingCount: number): number {
+  return !execute && missingCount > 0 ? 1 : 0;
+}
+
 /**
  * All 13 migrated workspace-singleton loops (D-018/D-024). A loop is only acted on once its
  * blueprint actually declares `singleton: true`. The 10 FRONTIER learning loops are dark-by-design
@@ -450,7 +456,7 @@ async function main(): Promise<void> {
           `${r.missing.length ? ` (${r.missing.join(', ')})` : ''}` +
           `${execute ? `; healed ${r.healed.length}` : ' — pass --execute to heal'}.`,
       );
-      if (!execute && r.missing.length > 0) process.exitCode = 1; // a check mode that can FAIL
+      process.exitCode = reconcileLearningSingletonsExitCode(execute, r.missing.length);
     } finally {
       await sql.end({ timeout: 5 });
     }
@@ -499,7 +505,7 @@ async function main(): Promise<void> {
 // the desktop sidecar — see isCliEntry / EI-650).
 if (isCliEntry(import.meta.url)) {
   main()
-    .then(() => process.exit(0))
+    .then(() => process.exit(process.exitCode ?? 0))
     .catch((e) => {
       console.error('[seed-learning-singletons] FAILED:', e instanceof Error ? e.message : e);
       process.exit(1);

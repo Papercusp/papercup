@@ -26,6 +26,11 @@ export interface RawGatewayStats {
   queueDepth?: number;
   admission?: { running?: number; queued?: number; maxConcurrent?: number };
   upstream429?: number;
+  /** Live per-account Cloudflare/per-IP bare-429 evidence, optional for deploy-skew readers. */
+  edgeThrottleByAccount?: Record<
+    string,
+    { edgeThrottled?: boolean; cooldownUntil?: number; cooledIpCount?: number; bare429Streak?: number }
+  >;
   queued429?: number;
   shed429?: number;
   upstreamErrors?: number;

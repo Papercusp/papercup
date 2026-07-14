@@ -63,6 +63,8 @@ import {
   type OpusBudgetDecision,
   type WorkCriticality,
 } from '../opus-budget-governor';
+import { fetchGatewayStatsRaw } from '../inference-gateway/observability';
+import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
 
 // ── P-004: the owner's session-now account override (fail-soft, no-op-when-unset) ──
 
@@ -566,6 +568,13 @@ export interface AccountStatusRow {
    *  provider supplied the window reset; absent otherwise. */
   usageResetAt?: number;
   sustainedlyLimited: boolean;
+  /** Whether the live gateway supplied an edge-throttle signal for this row. */
+  edgeThrottleKnown: boolean;
+  /** A live Cloudflare/per-IP bare-429 cooldown; distinct from quota utilization and rate pause. */
+  edgeThrottled: boolean;
+  edgeThrottleResetAt?: number;
+  edgeThrottleCooledIps: number;
+  edgeThrottleBare429Streak: number;
   rate: AccountRateState;
   /** Per-account egress pin (proxy / local source IP), if the account is IP-routed. */
   egress?: AccountEgress;
@@ -575,11 +584,41 @@ export interface AccountStatusRow {
   liveBuckets: { key: string; provider: string; modelClass: string; paused: boolean; pausedUntil: number }[];
 }
 
+export interface AccountStatusDeps {
+  /** Inject a gateway snapshot for deterministic tests; omitted means best-effort live :8788 read. */
+  gatewayStats?: RawGatewayStats | null;
+}
+
+export interface LiveEdgeThrottleStatus {
+  edgeThrottleKnown: boolean;
+  edgeThrottled: boolean;
+  edgeThrottleResetAt?: number;
+  edgeThrottleCooledIps: number;
+  edgeThrottleBare429Streak: number;
+}
+
+/** Project the gateway's live edge signal onto one persisted account row. Pure for recurrence tests. */
+export function projectLiveEdgeThrottle(
+  accountId: string,
+  gatewayStats: RawGatewayStats | null,
+): LiveEdgeThrottleStatus {
+  const signal = gatewayStats?.edgeThrottleByAccount?.[accountId];
+  return {
+    edgeThrottleKnown: gatewayStats !== null,
+    edgeThrottled: signal?.edgeThrottled === true,
+    edgeThrottleResetAt: signal?.cooldownUntil,
+    edgeThrottleCooledIps: signal?.cooledIpCount ?? 0,
+    edgeThrottleBare429Streak: signal?.bare429Streak ?? 0,
+  };
+}
+
 /** Assemble the per-account status: the persisted projection + any live local governor buckets. */
-export async function accountStatus(ws?: string, now = Date.now()): Promise<AccountStatusRow[]> {
+export async function accountStatus(ws?: string, now = Date.now(), deps: AccountStatusDeps = {}): Promise<AccountStatusRow[]> {
   const pool = await loadAccountPool(ws);
   const live = snapshotGovernors();
   const scalePolicy = await readScalePolicy();
+  const gatewayStats =
+    deps.gatewayStats !== undefined ? deps.gatewayStats : await fetchGatewayStatsRaw({ timeoutMs: 500 });
   return pool.accounts.map((a) => ({
     id: a.id,
     provider: accountProvider(a),
@@ -594,6 +633,7 @@ export async function accountStatus(ws?: string, now = Date.now()): Promise<Acco
     usageWalled: effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL,
     usageResetAt: usageWalledUntil(a, now) || undefined,
     sustainedlyLimited: isSustainedlyLimited(a, now, scalePolicy),
+    ...projectLiveEdgeThrottle(a.id, gatewayStats),
     rate: a.rate,
     egress: a.egress,
     egressPool: a.egressPool,

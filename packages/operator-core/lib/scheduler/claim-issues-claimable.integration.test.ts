@@ -201,6 +201,36 @@ describe('SCHEDULER_ISSUES_CLAIMABLE — flag ON: issues self-pickable, readines
     expect(await claimOne('w-on-3')).toBe('EI-3');
   });
 
+  it('does NOT claim a linked issue dependency until the blocker reaches terminal state', async () => {
+    await seedIssue('EI-linked-blocker', { state: 'open', createdTs: 40, kind: 'change', takenBy: 'leader-live' });
+    await seedIssue('EI-linked-dependent', { state: 'open', createdTs: 100 });
+
+    expect(
+      await wi.linkWorkItem(
+        'EI-linked-blocker',
+        { kind: 'issue', ref: 'EI-linked-dependent' },
+        'blocks',
+        { by: 'test-linker' },
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      await db.sql<{ blocked_kind: string; blocked_ref: string; blocker_kind: string; blocker_ref: string }[]>`
+        SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref
+          FROM harness_shared.work_item_deps
+         WHERE blocked_ref = 'EI-linked-dependent' AND blocker_ref = 'EI-linked-blocker'`,
+    ).toEqual([
+      { blocked_kind: 'issue', blocked_ref: 'EI-linked-dependent', blocker_kind: 'issue', blocker_ref: 'EI-linked-blocker' },
+    ]);
+
+    expect(await claimOne('w-on-linked')).toBeNull();
+
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET status = 'resolved', taken_by = NULL, taken_at = NULL
+       WHERE feature_id = 'EI-linked-blocker'`;
+    expect(await claimOne('w-on-linked')).toBe('EI-linked-dependent');
+  });
+
   it('excludes a TERMINAL (resolved/closed) issue from the claim', async () => {
     await seedIssue('EI-done', { state: 'resolved', createdTs: 100 });
     await seedIssue('EI-closed', { state: 'closed', createdTs: 110 });

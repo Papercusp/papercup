@@ -13,6 +13,74 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { featureRef, FEATURE_KIND } from '../issue-blocks-merge';
 import { detectDependencyCycle } from '../feature-deps';
 
+/** The polymorphic endpoints accepted by work_item_deps (issue/feature today). */
+export interface WorkItemDepEndpoint {
+  kind: string;
+  ref: string;
+}
+
+export interface WorkItemBlockingEdge {
+  blocked_kind: string;
+  blocked_ref: string;
+  blocker_kind: string;
+  blocker_ref: string;
+  dep_type: 'blocks';
+}
+
+/** Pure coord_links (blocker → blocked) to work_item_deps (blocked → blocker) mapping. */
+export function workItemBlockingEdge(
+  blocker: WorkItemDepEndpoint,
+  blocked: WorkItemDepEndpoint,
+): WorkItemBlockingEdge | null {
+  if (blocker.kind === blocked.kind && blocker.ref === blocked.ref) return null;
+  return {
+    blocked_kind: blocked.kind,
+    blocked_ref: blocked.ref,
+    blocker_kind: blocker.kind,
+    blocker_ref: blocker.ref,
+    dep_type: 'blocks',
+  };
+}
+
+/**
+ * Mirror one coord_links `blocks` edge into the scheduler's readiness store.
+ * coord_links uses blocker → blocked orientation; work_item_deps stores the
+ * same edge as blocked → blocker. Keeping this conversion here gives every
+ * work-item link writer one durable mirror primitive.
+ */
+export async function mirrorWorkItemBlockingEdge(
+  blocker: WorkItemDepEndpoint,
+  blocked: WorkItemDepEndpoint,
+  opts: { createdBy?: string } = {},
+): Promise<void> {
+  const edge = workItemBlockingEdge(blocker, blocked);
+  if (!edge) return;
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+    VALUES
+      (${DEFAULT_COORD_WORKSPACE}, ${edge.blocked_kind}, ${edge.blocked_ref}, ${edge.blocker_kind}, ${edge.blocker_ref}, ${edge.dep_type}, ${opts.createdBy ?? null})
+    ON CONFLICT (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+    DO NOTHING`;
+}
+
+/** Remove the scheduler-readiness mirror for one coord_links `blocks` edge. */
+export async function removeMirroredWorkItemBlockingEdge(
+  blocker: WorkItemDepEndpoint,
+  blocked: WorkItemDepEndpoint,
+): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    DELETE FROM harness_shared.work_item_deps
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND blocked_kind = ${blocked.kind}
+       AND blocked_ref = ${blocked.ref}
+       AND blocker_kind = ${blocker.kind}
+       AND blocker_ref = ${blocker.ref}
+       AND dep_type = 'blocks'`;
+}
+
 /** blocked feature_id → blocker feature_ids (within `harnessSlug`, prefix-stripped). Pure read. */
 export async function getWorkItemDepBlockers(harnessSlug: string): Promise<Map<string, string[]>> {
   const { sql } = getOrgPg();

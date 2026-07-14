@@ -819,6 +819,11 @@ export interface GatewayStats {
   queued429: number;
   /** Count of 429s returned because the admission queue hit `maxQueued` (load-shed, not a task error). */
   shed429: number;
+  /** Live Cloudflare/per-IP bare-429 evidence, keyed by account. Optional for deploy-skew readers. */
+  edgeThrottleByAccount?: Record<
+    string,
+    { edgeThrottled: boolean; cooldownUntil: number; cooledIpCount: number; bare429Streak: number }
+  >;
   /** Count of 429s shed at ADMISSION because the WHOLE pool was throttled with a far-off reset — the
    *  fail-fast path (B-GW-1) that frees the slot immediately instead of taking the acquire/retry path. */
   shedAllThrottled: number;
@@ -1501,6 +1506,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const egressFailStreak = new Map<string, number>();
   /** Consecutive bare-429 streak per account → the BARE-429 PERSISTENCE CIRCUIT (auto-route-around). Reset on 2xx. */
   const bare429Streak = new Map<string, number>();
+  /** Account-level edge pause deadline, distinct from quota utilization. A hard pin with no sibling IP
+   * falls through to the account circuit; keep that live evidence visible to accounts:status. */
+  const bare429PauseUntil = new Map<string, number>();
   const egressProbePending = new Set<string>();
   // FLAPPING BACKOFF state (2026-06-22): per-account reopen count + last-open time, so a proxy that keeps
   // reopening soon after readmit gets a progressively longer circuit-open (decays via EGRESS_FLAP_RESET_MS).
@@ -1985,6 +1993,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const smoothing = Object.keys(smoothingByAccount).length
       ? { engaged: smoothRpm, byAccount: smoothingByAccount }
       : undefined;
+    const edgeThrottleByAccount: NonNullable<GatewayStats['edgeThrottleByAccount']> = {};
+    for (const account of pool.entries?.() ?? [active]) {
+      const entries = effectiveEgressEntries(account);
+      const cooled = entries.filter((entry) => (ipCooldownUntil.get(egressCacheKey(account.accountId, entry)) ?? 0) > now);
+      const cooldownUntil = Math.max(
+        bare429PauseUntil.get(account.accountId) ?? 0,
+        ...cooled.map((entry) => ipCooldownUntil.get(egressCacheKey(account.accountId, entry)) ?? 0),
+      );
+      edgeThrottleByAccount[account.accountId] = {
+        edgeThrottled: cooldownUntil > now || cooled.length > 0,
+        cooldownUntil,
+        cooledIpCount: cooled.length,
+        bare429Streak: bare429Streak.get(account.accountId) ?? 0,
+      };
+    }
     return {
       accountId: active.accountId,
       upstreamBase,
@@ -2000,6 +2023,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       upstream429,
       queued429,
       shed429,
+      edgeThrottleByAccount,
       shedAllThrottled,
       bareBurstRotateSuppressed,
       opusToSonnetDowngrades,
@@ -3213,6 +3237,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
               exhaustResetAt,
               ipRotate: bareIpRotate,
             };
+            // Keep the edge signal live even when a sibling IP lets this request succeed. The account
+            // remains serviceable in that case, but operators must see why a pinned route degraded.
+            bare429PauseUntil.set(active.accountId, Math.max(bare429PauseUntil.get(active.accountId) ?? 0, exhaustResetAt));
           }
         } else if (up.status === 403) {
           // Account-level org/subscription DISQUALIFICATION (not a transient throttle): the account's
@@ -3495,6 +3522,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // BARE-429 PERSISTENCE CIRCUIT: a 2xx means this account's egress IP is serving again → clear its
           // bare-429 streak so a recovered IP rejoins rotation at the base 15s pace (no stale escalation).
           if (bare429Streak.has(active.accountId)) bare429Streak.delete(active.accountId);
+          bare429PauseUntil.delete(active.accountId);
           // egress-ip-pool: the EXACT egress IP this attempt used just served a 2xx → clear its per-IP bare-429
           // streak + cooldown so a recovered IP rejoins the account's rotation immediately at the base pace.
           ipBare429Streak.delete(curEgressKey);

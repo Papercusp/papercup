@@ -34,6 +34,32 @@ export interface SetClaimSpecResult {
 }
 
 /**
+ * EI-11796: count this bee's still-active claims before self-selection. A parked
+ * item retains `taken_by` (and may carry `_claimHold`), so looking only at the
+ * claimable pool lets a member accumulate a second lane after parking the first.
+ * The unified work_items view covers both feature- and issue-family claims; use
+ * the resolved workspace plus the legacy default partition because the two claim
+ * families can legitimately live in different partitions while the workspace
+ * routing flag is being migrated.
+ */
+export async function countActiveClaimsForBee(
+  args: { cupId: string; workspaceId?: string },
+  sqlOverride?: OrgSql,
+): Promise<number> {
+  const sql = sqlOverride ?? getOrgPg().sql;
+  const workspaces = [...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE])];
+  const rows = (await sql`
+    SELECT COUNT(*)::int AS active_claims
+      FROM harness_shared.work_items
+     WHERE workspace_id = ANY(${workspaces}::text[])
+       AND taken_by = ${args.cupId}
+       AND status NOT IN ('passed', 'deprecated', 'resolved', 'closed')`) as Array<{
+    active_claims: number | string;
+  }>;
+  return Number(rows[0]?.active_claims ?? 0);
+}
+
+/**
  * WI-1564 (LIVE-1 D5 failure): resolve the workspace partition a claim-spec
  * write/read should use from the caller's identity. The bug class: a tool
  * handler that omits `workspaceId` falls back to DEFAULT_COORD_WORKSPACE
@@ -240,6 +266,16 @@ export async function getNextForBee(args: {
   const record = args.ignoreStoredSpec
     ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
     : resolvedRecord;
+
+  // EI-11796: one active/held lane is the fail-closed default. The limit is
+  // intentionally read from the resolved spec, not from prompt compliance:
+  // parked claims remain assigned, and a fresh get_next must not hand the same
+  // member another item unless its leader explicitly authored concurrency > 1.
+  const maxConcurrentClaims = record.spec.limits?.maxConcurrentClaims ?? 1;
+  const activeClaims = await countActiveClaimsForBee(
+    { cupId: args.cupId, workspaceId: args.workspaceId },
+  );
+  if (activeClaims >= maxConcurrentClaims) return null;
 
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
   // edges + the coarse plan-WIDE reserved-lane floor, but nothing checks a linked
