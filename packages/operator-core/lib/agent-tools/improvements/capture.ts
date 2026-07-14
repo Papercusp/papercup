@@ -21,6 +21,7 @@ import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
+import { readRunningGeneration } from '../../scout/generation-watermark';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
@@ -216,7 +217,7 @@ export default defineTool({
     const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const ctxHarness =
       typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
-    const observation = args.observation
+    const observationBase = args.observation
       ? (() => {
           // P-002 notExercised expansion (rubric-system-improvements-2026-07-12):
           // each listed key becomes an idle:-tagged unknown UNLESS explicitly rated;
@@ -238,6 +239,20 @@ export default defineTool({
             sourceHive: rest.sourceHive ?? ctxHarness,
           };
         })()
+      : undefined;
+    // EI-12147: stamp the GRADED GENERATION on a rubric scorecard, SERVER-SIDE (no caller
+    // change — the observation schema is .strict(), so only this stamp can write it). A
+    // long-lived host executes whatever was on disk when it last STARTED, so a scorecard
+    // without a generation identity is ambiguous evidence after any restart/deploy: the
+    // 2026-07-14 GO stall was graders reconciling verdicts that had silently judged two
+    // different generations. Best-effort by construction (both legs degrade to null) —
+    // the stamp must never fail the capture it rides on.
+    const gradedGeneration =
+      observationBase?.rubricRef && observationBase.ratings
+        ? await readRunningGeneration().catch(() => null)
+        : null;
+    const observation = observationBase
+      ? { ...observationBase, ...(gradedGeneration ? { gradedGeneration } : {}) }
       : undefined;
     // P-007 (su-ideate-learning-substrate): persist the declared IDEATE-pass provenance
     // onto the created item's payload (payload.ideation) so the triage/learning read can

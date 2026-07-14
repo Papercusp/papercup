@@ -112,6 +112,31 @@ export interface ScorecardRow {
    * are not references).
    */
   linkedItems: { rel: string; dst: { kind: string; ref: string } }[];
+  /**
+   * The GENERATION this scorecard graded (EI-12147) — stamped SERVER-SIDE by
+   * improvements:capture at file time (never caller-supplied): the serving
+   * checkout's sha + the bg-host's start instant. A reader comparing an older
+   * `hostStartedAt` to the current one knows the scorecard judged a DIFFERENT
+   * generation (stale evidence after a restart/deploy), which is the ambiguity
+   * that stalled the 2026-07-14 GO call. Absent on pre-stamp scorecards.
+   */
+  gradedGeneration?: { sha: string | null; hostStartedAt: string | null };
+}
+
+/**
+ * PURE: validate a raw payload `gradedGeneration` into the projected shape — an object
+ * with string-or-null `sha`/`hostStartedAt`; anything else (malformed / absent /
+ * pre-stamp rows) is null so a bad row degrades, never throws.
+ */
+export function parseGradedGeneration(
+  raw: unknown,
+): { sha: string | null; hostStartedAt: string | null } | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as { sha?: unknown; hostStartedAt?: unknown };
+  const sha = typeof o.sha === 'string' && o.sha ? o.sha : null;
+  const hostStartedAt = typeof o.hostStartedAt === 'string' && o.hostStartedAt ? o.hostStartedAt : null;
+  if (sha === null && hostStartedAt === null) return null; // an all-null stamp carries no identity
+  return { sha, hostStartedAt };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -278,6 +303,11 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
     // which may strip unknown keys) so the floor stays distinguishable.
     const synthRaw = (row.payload as { observation?: { synthesized?: unknown } } | null)?.observation?.synthesized;
     const synthesized = synthRaw === true || synthRaw === 'true';
+    // EI-12147: the generation stamp, also from the RAW payload — the parsed structured
+    // observation may strip keys it does not know.
+    const gradedGeneration = parseGradedGeneration(
+      (row.payload as { observation?: { gradedGeneration?: unknown } } | null)?.observation?.gradedGeneration,
+    );
 
     out.push({
       issueId: row.issue_id,
@@ -293,6 +323,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       synthesized,
       score10: scorecardScore10(projectionRatings, meta.overrides),
       linkedItems: linksByIssue.get(row.issue_id) ?? [],
+      ...(gradedGeneration ? { gradedGeneration } : {}),
     });
   }
 

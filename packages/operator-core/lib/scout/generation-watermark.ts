@@ -21,6 +21,8 @@
  */
 import { execFile } from 'node:child_process';
 
+import { getBuildInfo } from '../build-info';
+
 /** The named watermark: the running scout bg-host generation's start instant. */
 export const BG_HOST_RESTART_WATERMARK = 'bg-host-restart';
 
@@ -71,6 +73,33 @@ export function readBgHostActiveEnterMs(unit: string = BG_HOST_UNIT): Promise<nu
       },
     );
   });
+}
+
+/**
+ * The RUNNING generation, as a stampable identity (EI-12147, P-003/P-007):
+ *  - `sha` — the serving checkout's git sha (via {@link getBuildInfo}; PAPERCUSP_BUILD_SHA
+ *    at deploy, else a one-time rev-parse). What code is ON DISK for this process.
+ *  - `hostStartedAt` — the bg-host's ActiveEnterTimestamp (ISO). What code is actually
+ *    EXECUTING in the long-lived scout loop: the host runs whatever was on disk when it
+ *    last started, so a scorecard stamped with an OLDER hostStartedAt than the current
+ *    one graded a DIFFERENT generation — stale evidence, not a verdict about now.
+ * Both legs are best-effort null — a stamp must never fail the capture it rides on.
+ */
+export interface RunningGeneration {
+  sha: string | null;
+  hostStartedAt: string | null;
+}
+
+/** Read the running generation's identity. Never throws; each leg degrades to null. */
+export async function readRunningGeneration(): Promise<RunningGeneration> {
+  const ms = await readBgHostActiveEnterMs().catch(() => null);
+  let sha: string | null = null;
+  try {
+    sha = getBuildInfo().sha;
+  } catch {
+    sha = null;
+  }
+  return { sha, hostStartedAt: ms != null ? new Date(ms).toISOString() : null };
 }
 
 export type WatermarkResolution = { ok: true; ms: number } | { ok: false; error: string };
