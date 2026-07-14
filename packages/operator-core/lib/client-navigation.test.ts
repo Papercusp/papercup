@@ -4,9 +4,15 @@
  * (history pushState/replaceState + popstate vs location.assign/replace).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { shouldSoftNavigate, resolveClientNavigation, navigateClient } from './client-navigation';
+import {
+  shouldSoftNavigate,
+  resolveClientNavigation,
+  navigateClient,
+  resolveQuickPanelHandoff,
+} from './client-navigation';
 
 const CUR = 'http://localhost:3070/harness/p';
+const PANEL = 'http://localhost:3070/quick-panel';
 
 describe('shouldSoftNavigate', () => {
   it('true for a same-origin target', () => {
@@ -78,18 +84,69 @@ describe('resolveClientNavigation', () => {
   });
 });
 
+// WI-4827: the Quick Panel window must never navigate itself into the full app.
+describe('resolveQuickPanelHandoff', () => {
+  const inPanel = { isQuickPanelWindow: true };
+  it('returns null when NOT the quick-panel window (main app navigates normally)', () => {
+    expect(resolveQuickPanelHandoff('/settings/voice', CUR, { isQuickPanelWindow: false })).toBeNull();
+  });
+  it('hands off a same-origin nav that LEAVES the chromeless sandbox', () => {
+    expect(resolveQuickPanelHandoff('/settings/voice', PANEL, inPanel)).toBe('/settings/voice');
+    expect(resolveQuickPanelHandoff('http://localhost:3070/settings/user?x=1#y', PANEL, inPanel)).toBe(
+      '/settings/user?x=1#y',
+    );
+  });
+  it('stays in place (null) for panel→panel / any chromeless destination', () => {
+    expect(resolveQuickPanelHandoff('/quick-panel?tab=docs', PANEL, inPanel)).toBeNull();
+    expect(resolveQuickPanelHandoff('/pi/thing', PANEL, inPanel)).toBeNull();
+    expect(resolveQuickPanelHandoff('/project-docs', PANEL, inPanel)).toBeNull();
+  });
+  it('does not hand off off-origin or non-http targets (they go out via the OS)', () => {
+    expect(resolveQuickPanelHandoff('http://evil.com/x', PANEL, inPanel)).toBeNull();
+    expect(resolveQuickPanelHandoff('mailto:a@b.c', PANEL, inPanel)).toBeNull();
+    expect(resolveQuickPanelHandoff('javascript:alert(1)', PANEL, inPanel)).toBeNull();
+  });
+});
+
 describe('navigateClient', () => {
-  function stubWindow() {
+  function stubWindow(extra?: Record<string, unknown>) {
     const win = {
       location: { href: CUR, assign: vi.fn(), replace: vi.fn() },
       history: { pushState: vi.fn(), replaceState: vi.fn() },
       dispatchEvent: vi.fn(),
+      ...extra,
     };
     vi.stubGlobal('window', win);
     vi.stubGlobal('PopStateEvent', class { constructor(public type: string) {} });
     return win;
   }
   afterEach(() => vi.unstubAllGlobals());
+
+  it('in the quick-panel window, an out-of-sandbox nav is handed to the app, not run in place', () => {
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    const w = stubWindow({
+      location: { href: PANEL, assign: vi.fn(), replace: vi.fn() },
+      __PAPERCUSP_QUICK_PANEL_WINDOW__: true,
+      __TAURI_INTERNALS__: { invoke },
+    });
+    navigateClient('/settings/voice');
+    expect(invoke).toHaveBeenCalledWith('open_route_in_app', { route: '/settings/voice' });
+    // Crucially: the panel window itself does NOT navigate.
+    expect(w.history.pushState).not.toHaveBeenCalled();
+    expect(w.location.assign).not.toHaveBeenCalled();
+  });
+
+  it('in the quick-panel window, a panel→panel nav still runs in place', () => {
+    const invoke = vi.fn();
+    const w = stubWindow({
+      location: { href: PANEL, assign: vi.fn(), replace: vi.fn() },
+      __PAPERCUSP_QUICK_PANEL_WINDOW__: true,
+      __TAURI_INTERNALS__: { invoke },
+    });
+    navigateClient('/quick-panel?tab=brainstorm');
+    expect(invoke).not.toHaveBeenCalled();
+    expect(w.history.pushState).toHaveBeenCalledWith({}, '', '/quick-panel?tab=brainstorm');
+  });
 
   it('soft nav pushes state + dispatches popstate', () => {
     const w = stubWindow();
