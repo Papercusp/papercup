@@ -1783,7 +1783,7 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
       const blockMatch = cfg.match(blockRe);
       if (blockMatch) {
         const body = blockMatch[1].replace(/^[ \t]+remoteEndpoint:.*\n?/gm, '');
-        cfg = cfg.replace(blockRe, 'compaction:\n' + body + remoteEndpointLine);
+        cfg = cfg.replace(blockRe, () => 'compaction:\n' + body + remoteEndpointLine);
       } else {
         if (!cfg.endsWith('\n')) cfg += '\n';
         cfg += 'compaction:\n' + remoteEndpointLine;

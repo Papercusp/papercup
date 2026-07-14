@@ -533,7 +533,7 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).toMatch(/\n\s+py:\s*false/);
   });
 
-  it('seeds shake@70 compaction for a LOCAL-model session (deterministic-context-carry P-001)', () => {
+  it('seeds shake@70 compaction + gateway remoteEndpoint for a LOCAL-model session (deterministic-context-carry P-001/P-002)', () => {
     // The ornith overflow (2026-07-13): default snapcompact + all-default thresholds on a
     // text-only 204K local window → image archives, summarizer 429 self-starvation, HTTP 400.
     writeOmpSessionConfigDir('sess1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
@@ -541,19 +541,65 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).toMatch(/^compaction:$/m);
     expect(written).toMatch(/\n\s+strategy:\s*shake/);
     expect(written).toMatch(/\n\s+thresholdPercent:\s*70/);
+    // P-002: any LLM summarization the session still runs rides the gateway maintenance
+    // lane, never the local model's own single-slot backend.
+    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
   });
 
-  it('does NOT seed compaction for a hosted-model session (config copied untouched)', () => {
+  it('seeds remoteEndpoint ONLY for a gateway-routed hosted model; a direct hosted model stays untouched (P-002)', () => {
+    // Gateway-routed: the gateway is already a hard dependency, so summarization joins it —
+    // but the hosted model keeps its NATIVE strategy (no shake forced; P-001 decision).
     writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6' }, home);
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).not.toContain('compaction');
+    expect(written).toMatch(/^compaction:$/m);
+    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
+    expect(written).not.toContain('strategy: shake');
+    expect(written).not.toContain('thresholdPercent');
+    // Direct (non-gateway) hosted model: omp THROWS on a remoteEndpoint failure with no
+    // local fallback, and the gateway is NOT a dependency here — config copied untouched.
+    writeOmpSessionConfigDir('sess2', { model: 'anthropic/claude-opus-4-8' }, home);
+    expect(readFileSync(agentPath('sess2', 'config.yml'), 'utf8')).not.toContain('compaction');
+  });
+
+  it('remoteEndpoint injection PRESERVES an inherited compaction block for a gateway model (no duplicate keys)', () => {
+    const withCompaction = AGENT_CFG + 'compaction:\n  strategy: snapcompact\n  thresholdPercent: 90\n  remoteEndpoint: "http://old:1/x"\n';
+    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withCompaction);
+    writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6' }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect((written.match(/^compaction:/gm) ?? []).length).toBe(1);
+    expect((written.match(/remoteEndpoint:/g) ?? []).length).toBe(1); // stale endpoint replaced
+    expect(written).not.toContain('http://old:1/x');
+    expect(written).toContain('strategy: snapcompact'); // native strategy preserved
+    expect(written).toMatch(/\n\s+thresholdPercent:\s*90/);
+    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
+  });
+
+  it('remoteEndpoint honors PAPERCUSP_GATEWAY_PORT (launcher port rule, default 8788)', () => {
+    const saved = process.env.PAPERCUSP_GATEWAY_PORT;
+    try {
+      process.env.PAPERCUSP_GATEWAY_PORT = '8797';
+      writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith' }, home);
+      expect(readFileSync(agentPath('sess1', 'config.yml'), 'utf8')).toContain(
+        'remoteEndpoint: "http://127.0.0.1:8797/maintenance/summarize"',
+      );
+      delete process.env.PAPERCUSP_GATEWAY_PORT;
+      writeOmpSessionConfigDir('sess2', { model: 'ollama/ornith' }, home);
+      expect(readFileSync(agentPath('sess2', 'config.yml'), 'utf8')).toContain(
+        'remoteEndpoint: "http://127.0.0.1:8788/maintenance/summarize"',
+      );
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT;
+      else process.env.PAPERCUSP_GATEWAY_PORT = saved;
+    }
   });
 
   it('falls back to the config.yml modelRoles.default when no model opt is passed', () => {
-    // AGENT_CFG's default is a hosted gateway model → no seeding…
+    // AGENT_CFG's default is a gateway-routed hosted model → endpoint-only seeding (P-002)…
     writeOmpSessionConfigDir('sess1', {}, home);
-    expect(readFileSync(agentPath('sess1', 'config.yml'), 'utf8')).not.toContain('compaction');
-    // …but a LOCAL default (the incident box's actual config) seeds even with model omitted.
+    const gwWritten = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(gwWritten).toContain('/maintenance/summarize');
+    expect(gwWritten).not.toContain('strategy: shake');
+    // …and a LOCAL default (the incident box's actual config) seeds shake even with model omitted.
     writeFileSync(
       join(home, '.omp', 'agent', 'config.yml'),
       AGENT_CFG.replace('papercusp-gateway/claude-sonnet-4-6', 'ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh'),

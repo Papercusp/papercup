@@ -907,26 +907,6 @@ body.has-op-chat .pc-header {
   pointer-events: none;
 }
 
-.op-chat-header-orb {
-  position: relative;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 36% 28%, rgba(255,255,255,0.25), transparent 24%),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 78%), color-mix(in srgb, var(--accent), transparent 92%));
-}
-
-.op-chat-header-orb::after {
-  content: '';
-  position: absolute;
-  inset: 3px;
-  border-radius: 11px;
-  border: 1px solid rgba(255,255,255,0.05);
-}
-
-.op-chat-header-logo {
-  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent-strong), transparent 74%));
-}
-
 .op-chat-sidebar .op-chat-banner {
   position: relative;
   overflow: hidden;
@@ -1079,26 +1059,6 @@ body.has-op-chat .pc-header {
 
 .op-chat-header-main {
   gap: 9px !important;
-}
-
-.op-chat-header-orb {
-  width: 34px !important;
-  height: 34px !important;
-  flex-basis: 34px !important;
-  border-radius: 12px !important;
-  background: color-mix(in srgb, var(--accent), transparent 90%) !important;
-  box-shadow: none !important;
-}
-
-.op-chat-header-orb::after {
-  inset: 2px !important;
-  border-radius: 10px !important;
-}
-
-.op-chat-header-logo {
-  width: 26px !important;
-  height: 26px !important;
-  filter: none !important;
 }
 
 .op-chat-header-main .op-chat-wordmark-title {
