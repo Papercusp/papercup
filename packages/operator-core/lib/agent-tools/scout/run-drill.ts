@@ -22,7 +22,7 @@ export const runDrillArgs = z
 export default defineTool({
   name: 'blender:run-drill',
   description:
-    "Run the deployed P-013 Blender rubric-seeding health drill now: plant an origin='drill' broken-criterion scorecard, drive the production digest→ideation→routing composition with a bounded deterministic model seam, persist + grade origin='drill' routes, and prove the organic routed/tick/lens counters did not change. Synthetic artifacts remain excluded from organic learning and work queues. Returns ok only when every live assertion passes.",
+    "Run the deployed P-013 Blender rubric-seeding health drill now: plant an origin='drill' broken-criterion scorecard, drive the production digest→ideation→routing composition with a bounded deterministic model seam, persist + grade origin='drill' routes, and prove this drill's cycle id produced no organic-origin route or tick. Concurrent organic counter movement is reported separately and never misattributed to the drill. Synthetic artifacts remain excluded from organic learning and work queues. Returns ok only when every causal live assertion passes.",
   capability: 'harness:write',
   guidance: {
     when:

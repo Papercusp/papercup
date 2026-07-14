@@ -49,7 +49,11 @@ export interface BlenderDrillEvidence {
   gradedRows: number;
   syntheticScorecard: boolean;
   syntheticRoutes: number;
+  /** Causal assertion: this drill's cycle id produced zero non-drill routes/ticks. */
   organicMetricsUnchanged: boolean;
+  /** Diagnostic only: false means legitimate concurrent organic activity occurred
+   *  during the drill window; it is not attributable to the drill. */
+  organicCountersStable: boolean;
 }
 
 export interface BlenderRubricDrillResult {
@@ -79,7 +83,7 @@ export function evaluateBlenderDrillEvidence(
     [evidence.gradedRows === evidence.routedRows, 'not every drill route reached the grading surface'],
     [evidence.syntheticScorecard, 'the planted scorecard lost origin=drill provenance'],
     [evidence.syntheticRoutes === evidence.routedRows, 'a routed drill artifact leaked into the organic issue lane'],
-    [evidence.organicMetricsUnchanged, 'organic routed/tick/lens metrics changed during the drill window'],
+    [evidence.organicMetricsUnchanged, 'the drill cycle leaked a route or tick into an organic origin'],
   ];
   const failures = checks.filter(([pass]) => !pass).map(([, message]) => message);
   return { ok: failures.length === 0, failures };
@@ -179,10 +183,20 @@ async function readSyntheticIntegrity(args: {
   workspaceId: string;
   cycleId: string;
   scorecardId: string;
-}): Promise<{ syntheticScorecard: boolean; syntheticRoutes: number }> {
+}): Promise<{
+  syntheticScorecard: boolean;
+  syntheticRoutes: number;
+  organicRouteLeaks: number;
+  organicTickLeaks: number;
+}> {
   const { sql } = getOrgPg();
   const rows = await sql<
-    Array<{ scorecard_is_drill: boolean; synthetic_routes: string | number }>
+    Array<{
+      scorecard_is_drill: boolean;
+      synthetic_routes: string | number;
+      organic_route_leaks: string | number;
+      organic_tick_leaks: string | number;
+    }>
   >`
     SELECT
       EXISTS (
@@ -198,10 +212,26 @@ async function readSyntheticIntegrity(args: {
            AND r.cycle_id = ${args.cycleId}
            AND r.origin = 'drill'
            AND i.signal_origin = 'drill'
-      ) AS synthetic_routes`;
+      ) AS synthetic_routes,
+      (
+        SELECT count(*)
+          FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${args.workspaceId}
+           AND cycle_id = ${args.cycleId}
+           AND origin IS DISTINCT FROM 'drill'
+      ) AS organic_route_leaks,
+      (
+        SELECT count(*)
+          FROM harness_shared.scout_ticks
+         WHERE workspace_id = ${args.workspaceId}
+           AND origin = 'scout'
+           AND detail->>'cycleId' = ${args.cycleId}
+      ) AS organic_tick_leaks`;
   return {
     syntheticScorecard: rows[0]?.scorecard_is_drill === true,
     syntheticRoutes: Number(rows[0]?.synthetic_routes ?? 0),
+    organicRouteLeaks: Number(rows[0]?.organic_route_leaks ?? 0),
+    organicTickLeaks: Number(rows[0]?.organic_tick_leaks ?? 0),
   };
 }
 
@@ -321,7 +351,12 @@ export async function runBlenderRubricDrill(args: {
     gradedRows: graded.filter((row) => row.humanGrade === 5).length,
     syntheticScorecard: synthetic.syntheticScorecard,
     syntheticRoutes: synthetic.syntheticRoutes,
-    organicMetricsUnchanged: JSON.stringify(organicBefore) === JSON.stringify(organicAfter),
+    // Exact workspace counters are diagnostic only: Scout may legitimately run
+    // concurrently. The release assertion is CAUSAL — this drill's cycle id must
+    // never appear under an organic route/tick origin.
+    organicMetricsUnchanged:
+      synthetic.organicRouteLeaks === 0 && synthetic.organicTickLeaks === 0,
+    organicCountersStable: JSON.stringify(organicBefore) === JSON.stringify(organicAfter),
   };
   const verdict = evaluateBlenderDrillEvidence(evidence);
   return {

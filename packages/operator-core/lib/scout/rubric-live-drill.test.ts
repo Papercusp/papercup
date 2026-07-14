@@ -15,6 +15,7 @@ const green: BlenderDrillEvidence = {
   syntheticScorecard: true,
   syntheticRoutes: 1,
   organicMetricsUnchanged: true,
+  organicCountersStable: true,
 };
 
 describe('evaluateBlenderDrillEvidence', () => {

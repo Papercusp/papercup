@@ -71,6 +71,7 @@ describe('runBlenderRubricDrill — deployed production entry', () => {
       syntheticScorecard: true,
       syntheticRoutes: 1,
       organicMetricsUnchanged: true,
+      organicCountersStable: true,
     });
     expect(result.organicAfter).toEqual(result.organicBefore);
     expect(result.routedRefs[0]).toMatch(/^wi:EI-/);
