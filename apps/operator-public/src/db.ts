@@ -24,8 +24,15 @@ import type { Env } from './env.ts';
  *  GitHub-repo-backed per `listing_ref` like a blueprint. Previously the 11
  *  official template rows were seeded directly (bypassing POST /listings); it is
  *  now accepted on the publish path so templates list "as authored by papercusp"
- *  via the standard flow. */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template'] as const;
+ *  via the standard flow.
+ *  `app` (migration 014 / cupboard-app-distribution-2026-07-14 P-001, D-001
+ *  [owner:Avi 2026-07-14]): a whole distributable application. A STANDALONE app
+ *  (e.g. Oddsmith, a Tauri desktop app built on the papercusp platform) is a
+ *  separate downloadable product — "install" DOWNLOADS its platform installer
+ *  from the app's own GitHub release (the Cupboard never re-hosts the binary); a
+ *  BUNDLE app is a papercusp-native composition installed into the workspace
+ *  (Phase 2). The `delivery_type` column discriminates the two. */
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template', 'app'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -55,8 +62,16 @@ export function normalizeListingKind(v: unknown): ListingKind | null {
  * run as agent roles (blueprints) — land `pending` at publish and go public
  * only on operator approval. Code kinds keep install-consent + reactive
  * moderation.
+ *
+ * `app` (cupboard-app-distribution-2026-07-14 P-001, D-001): an app distributes a
+ * runnable EXECUTABLE (a standalone installer) — the highest-trust thing the
+ * Cupboard carries — so it is fail-closed here: an app publishes `pending` and is
+ * publicly invisible until reviewed. This is the safe default the moment the kind
+ * exists, so the eventual publish path (P-003) can never make an app public
+ * without review. The moderation *flow* + who reviews is P-006 / the open P-012
+ * owner wall on cupboard-public-release-2026-07-12 (which this kind escalates).
  */
-export const REVIEW_POLICY_KINDS: readonly ListingKind[] = ['knowledge-pack', 'blueprint'];
+export const REVIEW_POLICY_KINDS: readonly ListingKind[] = ['knowledge-pack', 'blueprint', 'app'];
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
@@ -129,6 +144,25 @@ export interface HarnessRow {
   review_status: ReviewStatus;
   reviewed_at: number | null;
   review_reason: string | null;
+  // App distribution (migration 014 / cupboard-app-distribution-2026-07-14 P-001).
+  // All app-only; NULL on every other kind and every pre-014 row.
+  // delivery_type discriminates the app model: 'standalone' (a separate
+  // downloadable product — "install" is a download-link handoff) | 'bundle' (a
+  // papercusp-native composition, Phase 2). NULL ⇒ treated as 'standalone'.
+  delivery_type: 'standalone' | 'bundle' | null;
+  // STANDALONE: URL of the app's signed `latest.json` updater manifest
+  // (@papercusp/tauri-release-kit output) the download flow reads to resolve the
+  // platform-specific installer URL.
+  latest_json_url: string | null;
+  // STANDALONE: `<owner>/<repo>` whose GitHub Releases host the installers, when
+  // distinct from the source repo. NULL ⇒ fall back to github_owner/github_name.
+  release_repo: string | null;
+  // App icon URL for the storefront card/detail (an app is a whole product).
+  icon_url: string | null;
+  // Denormalized JSON string[] of OS keys present in latest.json (e.g.
+  // ["darwin-aarch64","linux-x86_64","windows-x86_64"]) so the card can show
+  // availability without fetching the manifest. NULL ⇒ unknown until fetched.
+  platforms: string | null;
 }
 
 export interface ReportRow {

@@ -126,6 +126,7 @@ function harness(over: Partial<HarnessRow> = {}): HarnessRow {
     languages: null, stats_refreshed_at: null,
     created_at: 1, updated_at: 1, unlisted_at: null, unlisted_reason: null,
     review_status: 'approved', reviewed_at: null, review_reason: null,
+    delivery_type: null, latest_json_url: null, release_repo: null, icon_url: null, platforms: null,
     ...over,
   };
 }
