@@ -78,6 +78,25 @@ const FIXTURE_LINES = [
 ];
 
 describe('readNewLines prompt/response/tool-call counting (EI-9970)', () => {
+  it('skips one oversized complete record and makes later turns reachable', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'session-ingest-dedup-'));
+    const file = join(dir, 'oversized.jsonl');
+    const oversized = JSON.stringify({ type: 'tool_result', content: 'x'.repeat(6 * 1024 * 1024) });
+    const next = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'the turn after the oversized record' },
+    });
+    await writeFile(file, `${oversized}\n${next}\n`);
+
+    const skipped = await readNewLines(file, 0, parseClaudeLine, classifyClaudeLine, null);
+    expect(skipped.newOffset).toBe(Buffer.byteLength(`${oversized}\n`));
+    expect(skipped.turns).toHaveLength(0);
+
+    const resumed = await readNewLines(file, skipped.newOffset, parseClaudeLine, classifyClaudeLine, null);
+    expect(resumed.newOffset).toBe(Buffer.byteLength(`${oversized}\n${next}\n`));
+    expect(resumed.turns.map((turn) => turn.text)).toEqual(['the turn after the oversized record']);
+  });
+
   it('a split multi-line Claude response counts as ONE response, not one-per-line', async () => {
     dir = await mkdtemp(join(tmpdir(), 'session-ingest-dedup-'));
     const file = join(dir, 'fixture.jsonl');

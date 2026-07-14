@@ -39,19 +39,42 @@ import { potHomeSlugForHarness } from '../../hive-federation';
 import { getRecipe, recordRecipeRun } from '../../code-recipes-store';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import {
+  validateRecipeAuthorityProof,
+  type RecipeAuthorityProof,
+} from '../../recipe-authority';
+import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 
 interface RunItem {
   id: string;
   dryRun?: boolean;
   timeoutSec?: number;
+  authority?: RecipeAuthorityProof;
 }
+
+const authorityContextSchema = z.object({
+  workspace: z.string().min(1).optional(),
+  fleet: z.string().min(1).optional(),
+  plan: z.string().min(1).optional(),
+  harness: z.string().min(1).optional(),
+  items: z.array(z.string().min(1)).max(100).optional(),
+  resources: z.array(z.string().min(1)).max(100).optional(),
+}).strict();
+
+const authorityProofSchema = z.object({
+  version: z.literal(1),
+  revision: z.string().regex(/^[0-9a-f]{64}$/),
+  context: authorityContextSchema,
+}).strict();
 
 export default defineTool({
   name: 'recipes:run',
   description:
     'Run one OR many saved code:run RECIPEs by id — the reuse path. Each recipe\'s script executes under YOUR ' +
     'role-scoped tool envelope (NOT the author\'s — no privilege travels with a recipe); returns ' +
-    'only each script\'s summary. Use dryRun:true to preview write-effect mutations. Single: { id, dryRun?, ' +
+    'only each script\'s summary. For a recipes:search/code:run recommendation, pass its exact runArgs so ' +
+    'the stored revision and entity authority are revalidated. Use dryRun:true to preview write-effect mutations. Single: { id, authority?, dryRun?, ' +
     'timeoutSec? }. Many same options: { ids:[…], dryRun? }. Many heterogeneous: items:[{ id, dryRun?, timeoutSec? }]. ' +
     'Returns { ok, results:[{ ok, id, result? | error }], counts } — correlate by id, not by position; one recipe ' +
     'failing never fails the rest.',
@@ -87,6 +110,7 @@ export default defineTool({
         .optional()
         .describe('Preview: record effect:write tool calls without executing them (reads still run). Applies to the inline id / every id in `ids`.'),
       timeoutSec: z.number().int().min(1).max(120).optional().describe('Wall-clock budget (default 30s). Applies to the inline id / every id in `ids`.'),
+      authority: authorityProofSchema.optional().describe('Exact proof from a recommendation\'s runArgs; required for entity-bound recipes.'),
       ids: z.array(z.string().min(1)).min(1).max(50).optional().describe('run MANY recipes with the same dryRun/timeoutSec (homogeneous)'),
       items: z
         .array(
@@ -94,6 +118,7 @@ export default defineTool({
             id: z.string().min(1),
             dryRun: z.boolean().optional(),
             timeoutSec: z.number().int().min(1).max(120).optional(),
+            authority: authorityProofSchema.optional(),
           }),
         )
         .min(1)
@@ -108,20 +133,35 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const sql = getOrgPg().sql;
     const list: RunItem[] = args.items?.length
-      ? args.items.map((it) => ({ id: it.id, dryRun: it.dryRun ?? args.dryRun, timeoutSec: it.timeoutSec ?? args.timeoutSec }))
+      ? args.items.map((it) => ({
+          id: it.id,
+          dryRun: it.dryRun ?? args.dryRun,
+          timeoutSec: it.timeoutSec ?? args.timeoutSec,
+          authority: it.authority ?? args.authority,
+        }))
       : args.ids?.length
-        ? args.ids.map((id) => ({ id, dryRun: args.dryRun, timeoutSec: args.timeoutSec }))
-        : [{ id: args.id as string, dryRun: args.dryRun, timeoutSec: args.timeoutSec }];
+        ? args.ids.map((id) => ({ id, dryRun: args.dryRun, timeoutSec: args.timeoutSec, authority: args.authority }))
+        : [{ id: args.id as string, dryRun: args.dryRun, timeoutSec: args.timeoutSec, authority: args.authority }];
 
     // Resolve the REUSER's identity ONCE (used by every per-recipe run-record).
     // Best-effort: a recipe run does not require an identity to execute.
     let ownerId: string | null = null;
     try {
-      const { resolveAgentIdentity } = await import('../coordination/identity');
       ownerId = resolveAgentIdentity(ctx).ownerId;
     } catch {
       ownerId = null;
     }
+    let liveFleet: string | null = null;
+    try {
+      liveFleet = (await resolvePresenceFleet(ownerId ?? undefined, deriveFleetMembership())).fleetSlug;
+    } catch {
+      liveFleet = null;
+    }
+    const liveAuthorityContext = {
+      workspace: workspaceId,
+      ...(liveFleet ? { fleet: liveFleet } : {}),
+      ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+    };
 
     const all = listAllProjectedTools();
     // SECURITY INVARIANT (D-004 / P-006): scope to the REUSER's role (ctx.role) —
@@ -137,6 +177,15 @@ export default defineTool({
         const recipe = await getRecipe(sql, it.id);
         if (!recipe) {
           return { ok: false, id: it.id, error: 'not_found' };
+        }
+        const authority = await validateRecipeAuthorityProof({
+          script: recipe.script,
+          updatedAt: recipe.updatedAt,
+          proof: it.authority,
+          liveContext: liveAuthorityContext,
+        });
+        if (!authority.ok) {
+          return { ok: false, id: it.id, error: authority.error };
         }
         const dryRun = it.dryRun ?? false;
         const result = await runToolOrchestration(recipe.script, {

@@ -604,6 +604,33 @@ export async function readNewLines(
     const chunk = buf.toString('utf8');
     const lastNl = chunk.lastIndexOf('\n');
     if (lastNl < 0) {
+      // A single Codex record can exceed the 5 MiB tick window (for example a
+      // tool result carrying a screenshot or a very large command response).
+      // Returning the same offset wedges this file forever: every later tick
+      // rereads the same prefix and again finds no newline. Scan forward with
+      // bounded memory and skip that one unindexable record once it is
+      // complete; subsequent normal turns remain searchable. If the record is
+      // still being written and has no newline yet, retain the offset so a
+      // partial record is never mistaken for complete data.
+      const scanSize = 1024 * 1024;
+      let cursor = offset + toRead;
+      while (cursor < s.size) {
+        const size = Math.min(scanSize, s.size - cursor);
+        const scan = Buffer.alloc(size);
+        await fh.read(scan, 0, size, cursor);
+        const nl = scan.indexOf(0x0a);
+        if (nl >= 0) {
+          return {
+            turns: [],
+            newOffset: cursor + nl + 1,
+            promptCount: 0,
+            responseCount: 0,
+            toolCallCount: 0,
+            lastInferenceId,
+          };
+        }
+        cursor += size;
+      }
       return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId };
     }
     const usable = chunk.slice(0, lastNl + 1);

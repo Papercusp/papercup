@@ -17,6 +17,7 @@ import {
   listAllProjectedTools,
   roleScopedToolNames,
 } from '@papercusp/agent-mcp';
+import { recipeRevision } from '../../recipe-authority';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
@@ -228,6 +229,38 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     ]);
     // The two present recipes were each orchestrated; the missing one was not.
     expect(runOrchestrationMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires and revalidates authority for an entity-bound recipe (P-008)', async () => {
+    const script = `return await tools.workItems.get({ id: 'WI-bound', harness: 'alpha' });`;
+    const updatedAt = '2026-07-13T12:00:00.000Z';
+    getRecipeMock.mockResolvedValue({
+      id: 'bound', title: 'bound', description: 'd', script, updatedAt,
+      authorRole: 'operator', toolsUsed: ['work_items:get'], runCount: 0,
+      successCount: 0, status: 'active', tags: [],
+    });
+
+    const missing = await findTool('recipes:run').fn({ id: 'bound' }, mkCtx('worker'));
+    const missingBody = JSON.parse((missing as { content: { text: string }[] }).content[0].text);
+    expect(missingBody.results[0]).toMatchObject({ ok: false, id: 'bound', error: 'authority_required' });
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+
+    const authority = {
+      version: 1,
+      revision: recipeRevision(script, updatedAt),
+      context: { harness: 'alpha', items: ['WI-bound'] },
+    };
+    const accepted = await findTool('recipes:run').fn({ id: 'bound', authority }, mkCtx('worker'));
+    const acceptedBody = JSON.parse((accepted as { content: { text: string }[] }).content[0].text);
+    expect(acceptedBody.results[0]).toMatchObject({ ok: true, id: 'bound' });
+    expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
+
+    const stale = await findTool('recipes:run').fn({
+      id: 'bound',
+      authority: { ...authority, revision: '0'.repeat(64) },
+    }, mkCtx('worker'));
+    const staleBody = JSON.parse((stale as { content: { text: string }[] }).content[0].text);
+    expect(staleBody.results[0]).toMatchObject({ ok: false, error: 'authority_stale_revision' });
   });
 });
 

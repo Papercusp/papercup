@@ -19,12 +19,13 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
+import { deriveRecipeAuthority, recipeRevision } from '../../recipe-authority';
 
 export default defineTool({
   name: 'recipes:get',
   description:
     'Fetch one OR many reusable code:run RECIPEs by id — including the full script — so you can inspect ' +
-    'what they do before recipes:run-ning them. Pass `id` for one or `ids` for several. Returns ' +
+    'what they do before recipes:run-ning them, including entity bindings and the current revision. Pass `id` for one or `ids` for several. Returns ' +
     '{ ok, results:[{ ok, id, recipe? | error }], counts } — correlate by id, not by position; a ' +
     'missing id comes back as that item\'s { ok:false } without failing the rest. Read-only.',
   guidance: {
@@ -65,6 +66,8 @@ export default defineTool({
         if (!recipe) {
           return { ok: false as const, id, error: 'not_found' };
         }
+        const authority = await deriveRecipeAuthority(recipe.script);
+        const updatedAt = recipe.updatedAt ?? recipe.createdAt ?? '';
         return {
           ok: true as const,
           id,
@@ -80,6 +83,13 @@ export default defineTool({
             lastRunAt: recipe.lastRunAt,
             status: recipe.status,
             tags: recipe.tags,
+            authority: {
+              version: 1,
+              revision: recipeRevision(recipe.script, updatedAt),
+              refs: authority.refs,
+              requiresContext: authority.bound,
+              runnable: !authority.unresolved,
+            },
           },
         };
       },

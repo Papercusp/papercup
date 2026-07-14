@@ -208,4 +208,43 @@ describe('code_recipes hybrid search (real PG)', () => {
     expect(hit?.similarity).toBeGreaterThan(0);
     expect(hit?.similarity).toBeLessThanOrEqual(1);
   });
+
+  it('fails closed on entity-mismatched recipes and returns a revision-preserving runArgs continuation (P-008)', async () => {
+    await upsertRecipe(db.adminSql, {
+      id: 'authority-wi-4655',
+      title: 'Read exact authority-bound item',
+      description: 'load the exact work item for this lane',
+      script: `return await tools.workItems.get({ id: 'WI-4655', harness: 'papercusp' });`,
+      toolsUsed: ['work_items:get'],
+      embedding: seededEmbedding(31),
+    });
+    await upsertRecipe(db.adminSql, {
+      id: 'authority-wi-other',
+      title: 'Read exact authority-bound item',
+      description: 'load the exact work item for this lane',
+      script: `return await tools.workItems.get({ id: 'WI-other', harness: 'papercusp' });`,
+      toolsUsed: ['work_items:get'],
+      embedding: seededEmbedding(31),
+    });
+
+    const results = await searchSimilarRecipes(db.adminSql, {
+      title: 'Read exact authority-bound item',
+      description: 'load the exact work item for this lane',
+      toolsUsed: ['work_items:get'],
+      embedding: seededEmbedding(31),
+      recommendationContext: { harness: 'papercusp', items: ['WI-4655'] },
+      limit: 10,
+    });
+
+    expect(results.find((row) => row.id === 'authority-wi-other')).toBeUndefined();
+    const matched = results.find((row) => row.id === 'authority-wi-4655');
+    expect(matched).toMatchObject({
+      authorityRefs: { harnesses: ['papercusp'], items: ['WI-4655'] },
+      runArgs: {
+        id: 'authority-wi-4655',
+        authority: { version: 1, context: { harness: 'papercusp', items: ['WI-4655'] } },
+      },
+    });
+    expect(matched?.authority.revision).toMatch(/^[0-9a-f]{64}$/);
+  });
 });
