@@ -1,32 +1,31 @@
 // @vitest-environment jsdom
 /**
  * LeftSidebar shell coverage (left-sidebar-tauri-2026-06-07) — the docked,
- * collapsible Colony rail. Mirrors the DevAdminRail shell test: the lazy tab
+ * collapsible Colony rail. Mirrors the DevAdminRail shell test: the 5 lazy tab
  * panels are stubbed so this covers the SHELL — the collapsed icon rail vs the
  * expanded shell, open/collapse + tab switching writing ?lsb/?lst atomically (one
- * setRail), the PAPERCUP flag gating the Sentinel tab (and snapping a stale
- * ?lst=sentinel back to Swarm), Swarm as the default tab (WI-4778 — the retired
- * Mug tab held the old default), retired queen/overwatch ids degrading to the
- * default, the body-reservation side effect, and the chromeless-route null-out.
- * nuqs runs via the real testing adapter so the atomic useQueryStates write is
- * exercised end-to-end.
+ * setRail), the OVERWATCH flag gating its tab (and snapping a stale ?lst=overwatch
+ * back to Mug), Mug as the default tab, the body-reservation side effect, and
+ * the chromeless-route null-out. nuqs runs via the real testing adapter so the
+ * atomic useQueryStates write is exercised end-to-end.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
-const H = vi.hoisted(() => ({ sentinelOn: false, pathname: '/adv' }));
+const H = vi.hoisted(() => ({ overwatchOn: false, pathname: '/adv' }));
 
-vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.sentinelOn }));
+vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.overwatchOn }));
 vi.mock('@/lib/router-compat/navigation', () => ({ usePathname: () => H.pathname }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test:${k}`,
 }));
 // Stub the lazy tab panels with trivial markers — their own surfaces are tested
-// separately (SwarmTab / VoiceTab / PotsTab / AccountsTab / PapercupTab).
+// separately (MugTab / OverwatchTab / SwarmTab / VoiceTab / PotsTab).
 vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-accounts" /> }));
-vi.mock('./PapercupTab', () => ({ default: () => <div data-testid="panel-sentinel" /> }));
+vi.mock('./MugTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
+vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwatch" /> }));
 vi.mock('./SwarmTab', () => ({ default: () => <div data-testid="panel-swarm" /> }));
 vi.mock('./VoiceTab', () => ({ default: () => <div data-testid="panel-voice" /> }));
 vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
@@ -57,7 +56,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   localStorage.clear();
-  H.sentinelOn = false;
+  H.overwatchOn = false;
   H.pathname = '/adv';
   document.body.className = '';
 });
@@ -83,51 +82,45 @@ function renderRail(searchParams = '') {
 }
 
 describe('<LeftSidebar> shell', () => {
-  it('defaults to OPEN on the Swarm tab (WI-4778 — the retired Mug tab held the old default)', async () => {
+  it('defaults to OPEN on the Mug tab (the owner-default Colony tab)', async () => {
     renderRail();
     const rail = screen.getByTestId('left-sidebar');
     expect(rail.getAttribute('data-collapsed')).toBe('false');
-    expect(rail.getAttribute('data-tab')).toBe('swarm');
-    expect(await screen.findByTestId('panel-swarm')).toBeTruthy();
+    expect(rail.getAttribute('data-tab')).toBe('queen');
+    expect(await screen.findByTestId('panel-queen')).toBeTruthy();
   });
 
-  it('has NO queen/overwatch tabs (WI-4778 — retired to _retired/mug-kettle-rail-tabs)', () => {
+  it('orders Accounts as the leftmost tab before Mug', () => {
     renderRail();
-    expect(screen.queryByTestId('left-sidebar-tab-queen')).toBeNull();
-    expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
-    // The lexicon mock echoes keys: 'fleet' = Swarm's label.
     const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
-    expect(tabs.map((x) => x.textContent?.trim()).slice(0, 2)).toEqual(['Accounts', 'fleet']);
-  });
-
-  it('a stale ?lst=queen deep-link degrades to the default tab (the literal parser rejects it)', async () => {
-    renderRail('?lst=queen');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('swarm');
-    expect(await screen.findByTestId('panel-swarm')).toBeTruthy();
+    // The queen tab label now routes through the lexicon (t('brain')); the
+    // useLexicon mock above echoes the key, so it renders as 'brain'
+    // (restore-pot-lexicon P-005 — classic pack shows 'Brain' at runtime).
+    expect(tabs.map((x) => x.textContent?.trim()).slice(0, 2)).toEqual(['Accounts', 'brain']);
   });
 
   it('deep-links a tab from ?lst= and mounts only that panel', async () => {
     renderRail('?lst=hives');
     expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('hives');
     expect(await screen.findByTestId('panel-hives')).toBeTruthy();
-    expect(screen.queryByTestId('panel-swarm')).toBeNull();
+    expect(screen.queryByTestId('panel-queen')).toBeNull();
   });
 
   it('collapses to the icon rail on ?lsb=false and unmounts the active panel', () => {
     renderRail('?lsb=false');
     const rail = screen.getByTestId('left-sidebar');
     expect(rail.getAttribute('data-collapsed')).toBe('true');
-    expect(screen.queryByTestId('panel-swarm')).toBeNull();
+    expect(screen.queryByTestId('panel-queen')).toBeNull();
     // The collapsed expand-rail icon buttons are present.
     expect(screen.getByTestId('left-sidebar-rail-swarm')).toBeTruthy();
   });
 
   it('clicking a tab switches the active panel and writes ?lst', async () => {
     const { lastQuery } = renderRail();
-    fireEvent.click(screen.getByTestId('left-sidebar-tab-hives'));
-    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('hives'));
-    expect(await screen.findByTestId('panel-hives')).toBeTruthy();
-    expect(lastQuery()).toContain('lst=hives');
+    fireEvent.click(screen.getByTestId('left-sidebar-tab-swarm'));
+    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('swarm'));
+    expect(await screen.findByTestId('panel-swarm')).toBeTruthy();
+    expect(lastQuery()).toContain('lst=swarm');
   });
 
   it('the collapse button writes ?lsb=false', async () => {
@@ -151,27 +144,27 @@ describe('<LeftSidebar> shell', () => {
     expect(await screen.findByTestId('panel-voice')).toBeTruthy();
   });
 
-  it('hides the Sentinel tab while the PAPERCUP flag is off', () => {
-    H.sentinelOn = false;
+  it('hides the Overwatch tab while the OVERWATCH flag is off', () => {
+    H.overwatchOn = false;
     renderRail();
-    expect(screen.queryByTestId('left-sidebar-tab-sentinel')).toBeNull();
+    expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
     // Other tabs are present.
-    expect(screen.getByTestId('left-sidebar-tab-swarm')).toBeTruthy();
+    expect(screen.getByTestId('left-sidebar-tab-queen')).toBeTruthy();
   });
 
-  it('shows the Sentinel tab when the flag is on', () => {
-    H.sentinelOn = true;
+  it('shows the Overwatch tab when the flag is on', () => {
+    H.overwatchOn = true;
     renderRail();
-    expect(screen.getByTestId('left-sidebar-tab-sentinel')).toBeTruthy();
+    expect(screen.getByTestId('left-sidebar-tab-overwatch')).toBeTruthy();
   });
 
-  it('snaps a stale ?lst=sentinel back to Swarm while the flag is off', async () => {
-    H.sentinelOn = false;
-    renderRail('?lst=sentinel');
-    // The guard effect rewrites lst → swarm (the default, so it's omitted from
-    // the URL); assert the rail lands on the Swarm tab + panel.
-    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('swarm'));
-    expect(await screen.findByTestId('panel-swarm')).toBeTruthy();
+  it('snaps a stale ?lst=overwatch back to Mug while the flag is off', async () => {
+    H.overwatchOn = false;
+    renderRail('?lst=overwatch');
+    // The guard effect rewrites lst → queen (the default, so it's omitted from the
+    // URL); assert the rail lands on the Mug tab + panel.
+    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen'));
+    expect(await screen.findByTestId('panel-queen')).toBeTruthy();
   });
 
   it('renders nothing on a chromeless (iframe-target) route', () => {

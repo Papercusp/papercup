@@ -123,14 +123,16 @@ body.has-left-sidebar .pc-header {
 .pclsb__tab--accounts {
   --pclsb-tab-accent: #a78bfa;
 }
+.pclsb__rail-btn--queen,
+.pclsb__tab--queen,
 .pclsb__rail-btn--hives,
 .pclsb__tab--hives {
   --pclsb-tab-accent: var(--warn, #fbbf24);
 }
-/* WI-4778: the queen/overwatch tab accents retired with their tabs
-   (_retired/mug-kettle-rail-tabs/). Their pc-owsb/pc-mt/pc-mhb + throttle/
-   autonomy panel blocks below stay in place for restore fidelity — and
-   because the live PapercupTab consumes the shared pc-queen__* primitives. */
+.pclsb__rail-btn--overwatch,
+.pclsb__tab--overwatch {
+  --pclsb-tab-accent: #f87171;
+}
 .pclsb__rail-btn--voice,
 .pclsb__tab--voice,
 .pclsb__rail-btn--expand {

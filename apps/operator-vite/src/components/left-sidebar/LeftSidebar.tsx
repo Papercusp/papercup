@@ -29,7 +29,7 @@ import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Users, AudioLines, Network, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -47,12 +47,15 @@ const PotsTab = lazy(() => import('./PotsTab'));
 // may use right now), beside Mug as a sibling owner-steering lever (accounts-pool-tab
 // P-005; promoted to the LEFTMOST sidebar tab by owner request 2026-06-17).
 const AccountsTab = lazy(() => import('./AccountsTab'));
-// The Mug (queen) + Kettle (overwatch) rail tabs are RETIRED (WI-4778, owner
-// 2026-07-14: "I don't like there being a kettle and mug chat at all" —
-// Papercup is the ONE persona). Their decision-INPUT reads now live in the
-// chat sidebar's full-height Pot Health view (🫖); the steering/control
-// panels they carried are preserved at `_retired/mug-kettle-rail-tabs/`
-// (restore per its RESTORE.md) — steering writes go through Papercup.
+// 👑 Mug steering — the owner's focus/pause controls for the autonomous Mug.
+// Moved here from the /adv top tab strip as an owner-steering tab (owner
+// review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
+const MugTab = lazy(() => import('./MugTab'));
+// 👁 Overwatch — the autonomous supervisor's actionable panel (control + the
+// anomaly→action list). Moved here from the /adv strip next to Mug (owner ask
+// 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
+// Health tab owns the panels). Flag-gated (OVERWATCH); hidden when the role is dark.
+const OverwatchTab = lazy(() => import('./OverwatchTab'));
 // 📣 Sentinel — the always-on, voice-first human-facing companion's
 // quick live-override settings (audience mode, voice, proactive nudges, DND). The
 // sidebar is the quick live-override surface; full workspace settings hold the
@@ -68,9 +71,11 @@ const PapercupTab = lazy(() => import('./PapercupTab'));
 // Overwatch has no TermKey (D-002) so it stays literal in both packs.
 const TABS = [
   { id: 'accounts', label: (_t: BoundLexicon) => 'Accounts', icon: KeyRound, tip: (_t: BoundLexicon) => 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
-  // WI-4778: the queen/overwatch tabs that sat here are retired — Papercup is
-  // the one persona; the Mug/Kettle decision inputs render in the chat pane's
-  // 🫖 Pot Health view instead.
+  // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ · Kettle→Thermometer
+  // (no lucide kettle exists; the thermometer ties the kettle's heat to overwatch's
+  // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.
+  { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
+  { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
   { id: 'swarm', label: (t: BoundLexicon) => t('fleet'), icon: Users, tip: (t: BoundLexicon) => `The ${t('fleet', { lower: true })} — live roster of SU agents & ${t('contributor', { plural: true, lower: true })} and what each is doing`, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: (_t: BoundLexicon) => 'Peers', icon: AudioLines, tip: (_t: BoundLexicon) => 'Peers — live voice/video channels with other people', render: (a: boolean) => <VoiceTab active={a} /> },
@@ -118,24 +123,28 @@ export default function LeftSidebar() {
   // lsb=false survived). A single setRail() write is atomic.
   const [{ lsb: open, lst: tab }, setRail] = useQueryStates({
     lsb: parseAsBoolean.withDefault(true),
-    // Swarm is the DEFAULT-OPEN tab (WI-4778 — the retired Mug steering tab
-    // held this slot; the fleet roster is the always-on next-most-useful
-    // glance, and stale ?lst=queen/overwatch deep-links also degrade here via
-    // the literal parser's default).
-    lst: parseAsStringLiteral(TAB_IDS).withDefault('swarm'),
+    // Mug is the DEFAULT-OPEN tab (owner's call 2026-06-15) — the steering
+    // panel is the first thing the owner reaches in the Colony sidebar.
+    lst: parseAsStringLiteral(TAB_IDS).withDefault('queen'),
   });
   const setOpen = (v: boolean) => void setRail({ lsb: v });
   const setTab = (v: TabId) => void setRail({ lst: v });
 
-  // Papercup is flag-gated (PAPERCUP, default OFF until the role is live):
+  // Overwatch is flag-gated (OVERWATCH, default OFF until proven live, D-009):
   // hide its sidebar tab while the role is dark. The nuqs enum still accepts
-  // 'sentinel' (deep-link / ui:dispatch), so snap a stale ?lst=sentinel back
-  // to Swarm when the flag is off.
+  // 'overwatch' (deep-link / ui:dispatch), so snap a stale ?lst=overwatch back
+  // to Mug when the flag is off (mirrors AdvShell's health/overwatch guard).
+  const overwatchOn = useFlag(FLAGS.OVERWATCH);
+  // Papercup is flag-gated too (PAPERCUP, default OFF until the role
+  // is live) — same hide-tab + stale-?lst snap-back treatment as overwatch.
   const sentinelOn = useFlag(FLAGS.PAPERCUP);
-  const visibleTabs = TABS.filter((x) => x.id !== 'sentinel' || sentinelOn);
+  const visibleTabs = TABS.filter(
+    (x) => (x.id !== 'overwatch' || overwatchOn) && (x.id !== 'sentinel' || sentinelOn),
+  );
   useEffect(() => {
-    if (!sentinelOn && tab === 'sentinel') void setRail({ lst: 'swarm' });
-  }, [sentinelOn, tab, setRail]);
+    if (!overwatchOn && tab === 'overwatch') void setRail({ lst: 'queen' });
+    if (!sentinelOn && tab === 'sentinel') void setRail({ lst: 'queen' });
+  }, [overwatchOn, sentinelOn, tab, setRail]);
 
   const pathname = usePathname() ?? '';
   const chromeless = CHROMELESS_PREFIXES.some(
