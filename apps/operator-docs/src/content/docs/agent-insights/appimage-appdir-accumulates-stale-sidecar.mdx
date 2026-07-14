@@ -24,9 +24,9 @@ The 0.0.9 release cut passed every in-build privacy audit — `build-desktop-sid
 pruned the internal-build-infra docs out of `src-tauri/sidecar` and its `--scan-dir`
 gate reported the sidecar **CLEAN** — and the resulting **.deb was genuinely clean**.
 Yet an independent scan of the assembled **`.AppImage` AppDir FAILED**: 339 files carrying
-mac-VM credentials (`aviweiss`/`avraham`) + build-box identity (`/home/<builder>`, hostname,
-`avi@…`) — a long-dropped `code-server` tree (~447 MB), a `meridian-host` tree, pre-prune
-`operator-docs`, a stale `seed/corestore/db/LOG`, and old identity-baked SPA assets. Same
+the mac-VM sudo/login credentials + build-box identity (the builder's home path, hostname,
+build-box email) — a long-dropped `code-server` tree (~447 MB), a `meridian-host` tree,
+pre-prune `operator-docs`, a stale `seed/corestore/db/LOG`, and old identity-baked SPA assets. Same
 build, same commit, same `sidecar/**/*` resources glob — one bundle clean, the other leaking.
 
 ## Why the two bundles differ despite one clean source
