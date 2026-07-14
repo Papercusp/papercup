@@ -660,7 +660,8 @@ export function decodeControl(payload) {
         o.mode === 'osc' ||
         o.mode === 'reset' ||
         o.mode === 'recycle' ||
-        o.mode === 'compact')
+        o.mode === 'compact' ||
+        o.mode === 'mcp-reconnect')
     ) {
       if (o.mode === 'raw') return { mode: 'raw', data: String(o.data ?? ''), gated: false };
       // osc = recolor escape bytes for the terminal DISPLAY (not the agent) —
@@ -684,6 +685,14 @@ export function decodeControl(payload) {
           focus: o.focus != null ? String(o.focus) : '',
           gated: true,
         };
+      // mcp-reconnect (mcp-transport-resilience P-003, 2026-07-13): drive the
+      // claude TUI's /mcp dialog to reconnect a dead HTTP-MCP server IN PLACE
+      // (headed sessions keep their terminal — the owner-mandated alternative
+      // to kill+resume). GATED like a turn (never mid-turn, never over a
+      // half-typed owner line). `data` = the target server name (default
+      // 'papercusp-su' applied by the handler).
+      if (o.mode === 'mcp-reconnect')
+        return { mode: 'mcp-reconnect', data: String(o.data ?? ''), gated: true };
       return { mode: 'turn', data: String(o.data ?? ''), gated: true };
     }
   } catch {
@@ -697,6 +706,180 @@ export function decodeControl(payload) {
  *  host no longer writes a turn in one shot; see controlWrites. */
 export function controlBytes(decoded) {
   return decoded.mode === 'raw' ? decoded.data : `${decoded.data}\r`;
+}
+
+// ── mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13) ─────────
+//
+// A Claude Code self-re-exec (auto-update relaunch / TUI fullscreen switch)
+// severs the session's HTTP-MCP transport: tools vanish, and the armed loop's
+// events:await registration dies with it — the session runs DARK until a human
+// types /mcp (the su-39f07 5h incident). There is no scriptable reconnect in
+// the CLI (verified 2.1.208: `claude mcp` manages config only), so the host —
+// the one process that owns the pty and SEES the TUI's output — drives the
+// /mcp dialog itself: closed-loop (parse → keypress → re-parse), never blind
+// keystrokes. Truth of the heal is judged OPERATOR-side (presence beat
+// advancing, mcp-dark-watchdog P-005); the host result is advisory. Every step
+// is bounded and fail-soft: any unmet expectation → Esc Esc + a durable host
+// event — worst case is exactly the pre-macro status quo.
+
+/** Strip ANSI escapes (CSI / OSC / simple ESC pairs) + normalize \r so a TUI
+ *  byte stream reads as plain lines. Pure — exported for tests. */
+export function stripAnsi(s) {
+  return String(s ?? '')
+    // OSC: ESC ] … terminated by BEL or ST (ESC \)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // CSI: ESC [ params intermediates final
+    .replace(/\x1b\[[0-9;?:]*[ -/]*[@-~]/g, '')
+    // remaining simple ESC pairs (charset selects, keypad modes, bare ESC)
+    .replace(/\x1b[@-Z\\-_]?/g, '')
+    // carriage returns are line-rewrites in a TUI — treat as newlines
+    .replace(/\r\n?/g, '\n')
+    // drop other control chars except newline/tab
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
+
+/** Status of the /mcp dialog row naming `name`: 'connected' | 'not-connected' |
+ *  'unknown' | null (row doesn't name it). Negative markers are checked FIRST;
+ *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
+ *  after "dis"), but explicit negatives keep this robust to copy drift. Pure —
+ *  exported for tests. */
+export function mcpServerRowStatus(line, name) {
+  const l = String(line ?? '');
+  if (!l.includes(name)) return null;
+  if (/\b(disconnected|failed|error|needs authentication|connecting|pending|retrying)\b/i.test(l))
+    return 'not-connected';
+  if (/\bconnected\b/i.test(l)) return 'connected';
+  return 'unknown';
+}
+
+/** Is the ❯ selection cursor on the (freshest) dialog row matching `test`?
+ *  Parses an ANSI-stripped visible chunk; the LAST matching line reflects the
+ *  most recent repaint. Pure — exported for tests. */
+export function mcpDialogRowSelected(visible, test) {
+  const lines = String(visible ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const row = [...lines].reverse().find((l) => test(l));
+  if (!row) return false;
+  // the cursor glyph precedes the row text; require it BEFORE the matched content
+  const m = row.search(/❯|›/u);
+  return m >= 0 && m < row.length && test(row.slice(m));
+}
+
+/**
+ * Drive the claude TUI's /mcp dialog to reconnect `serverName` — the P-003
+ * closed-loop macro. All IO is injected (write = child stdin bytes; readTap /
+ * resetTap = the rolling child-output tap) so the walker unit-tests against a
+ * scripted fake TUI. Steps (each bounded, each verified off the screen):
+ *   1. type `/mcp`, settle, CR (separate keystroke — paste-detector, WI-2930).
+ *   2. wait for the dialog to paint (target server name visible).
+ *      Already-connected ⇒ close + ok('already-connected') — the benign-misfire
+ *      no-op the watchdog relies on.
+ *   3. arrow-down until the ❯ cursor sits on the target row (re-parse after
+ *      every keypress; bounded), then Enter.
+ *   4. if a reconnect action row paints, cursor onto it the same way + Enter
+ *      (some versions reconnect straight off step 3's Enter — then this is
+ *      skipped by the connected-wait below).
+ *   5. wait for the target row to read connected; Esc Esc out either way.
+ * Returns { ok, step, detail } — the caller appendHostEvent()s it durably.
+ */
+export async function runMcpReconnectMacro({
+  serverName,
+  write,
+  readTap,
+  resetTap,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  crDelayMs = 150,
+  settleMs = 300,
+  paintBudgetMs = 8_000,
+  reconnectBudgetMs = 20_000,
+  maxArrows = 40,
+}) {
+  const ESC = '\x1b';
+  const DOWN = '\x1b[B';
+  const CR = '\r';
+  const visible = () => stripAnsi(readTap());
+  const closeOut = async () => {
+    write(ESC);
+    await sleep(150);
+    write(ESC);
+  };
+  const waitFor = async (test, budgetMs) => {
+    const until = Date.now() + budgetMs;
+    for (;;) {
+      const v = visible();
+      if (test(v)) return v;
+      if (Date.now() >= until) return null;
+      await sleep(150);
+    }
+  };
+  const targetRowStatus = (v) => {
+    const lines = v.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const st = mcpServerRowStatus(lines[i], serverName);
+      if (st) return st;
+    }
+    return null;
+  };
+
+  // (1) open the dialog
+  resetTap();
+  write('/mcp');
+  await sleep(crDelayMs);
+  write(CR);
+
+  // (2) painted?
+  const painted = await waitFor((v) => v.includes(serverName), paintBudgetMs);
+  if (!painted) {
+    await closeOut();
+    return { ok: false, step: 'open-dialog', detail: `'${serverName}' never painted within ${paintBudgetMs}ms` };
+  }
+  if (targetRowStatus(painted) === 'connected') {
+    await closeOut();
+    return { ok: true, step: 'already-connected', detail: 'target row reads connected — nothing to heal' };
+  }
+
+  // (3) cursor onto the target row
+  const onTarget = () => mcpDialogRowSelected(visible(), (l) => l.includes(serverName));
+  let selected = onTarget();
+  for (let i = 0; !selected && i < maxArrows; i++) {
+    resetTap();
+    write(DOWN);
+    await sleep(settleMs);
+    selected = onTarget();
+  }
+  if (!selected) {
+    await closeOut();
+    return { ok: false, step: 'select-server', detail: `cursor never reached '${serverName}' in ${maxArrows} downs` };
+  }
+  resetTap();
+  write(CR);
+  await sleep(settleMs);
+
+  // (4) a reconnect action row (if this version paints one)
+  if (/\breconnect\b/i.test(visible())) {
+    const onReconnect = () => mcpDialogRowSelected(visible(), (l) => /\breconnect\b/i.test(l));
+    let sel = onReconnect();
+    for (let i = 0; !sel && i < maxArrows; i++) {
+      resetTap();
+      write(DOWN);
+      await sleep(settleMs);
+      sel = onReconnect();
+    }
+    if (sel) {
+      resetTap();
+      write(CR);
+    }
+    // not found selected ⇒ fall through — the connected-wait below still judges it
+  }
+
+  // (5) did it connect?
+  const done = await waitFor((v) => targetRowStatus(v) === 'connected', reconnectBudgetMs);
+  await closeOut();
+  return done
+    ? { ok: true, step: 'done', detail: 'target row reads connected' }
+    : { ok: false, step: 'await-connected', detail: `no connected marker within ${reconnectBudgetMs}ms` };
 }
 
 // ── Same-source turn coalescing (compaction-continuity-hardening-2026-07-07 P-001a) ──
@@ -1619,6 +1802,51 @@ export function hostThroughPty(o) {
               ? { attempts: carry.attempts, rewordedForOwnerInput: ownerTypedDuringWait }
               : { reason: carry.reason, attempts: carry.attempts },
           );
+          return;
+        }
+        // MCP-RECONNECT (mcp-transport-resilience P-003, 2026-07-13): drive the
+        // claude TUI's /mcp dialog to re-attach a dead HTTP-MCP server IN PLACE.
+        // The gates above already guaranteed a settled turn + quiet input line.
+        // Claude-only: the dialog walker is pinned to the claude TUI; other
+        // backends drop durably (the compact no-backend-command posture). Truth
+        // of the heal is judged operator-side (presence beat, P-005) — the host
+        // event is advisory.
+        if (msg.mode === 'mcp-reconnect') {
+          const agent = String(env.PAPERCUSP_AGENT || 'claude');
+          if (agent !== 'claude') {
+            appendHostEvent(ownerId, 'mcp-reconnect-dropped', {
+              reason: 'unsupported-backend',
+              backend: agent,
+            });
+            return;
+          }
+          const serverName = String(msg.data ?? '').trim() || 'papercusp-su';
+          const tap = makeOutputTap();
+          appendHostEvent(ownerId, 'mcp-reconnect-started', { serverName });
+          try {
+            const result = await runMcpReconnectMacro({
+              serverName,
+              write: (b) => child.write(b),
+              readTap: tap.read,
+              resetTap: tap.reset,
+              crDelayMs: turnSubmitCrDelayForAgent(agent, env),
+            });
+            appendHostEvent(ownerId, result.ok ? 'mcp-reconnect-completed' : 'mcp-reconnect-failed', {
+              serverName,
+              step: result.step,
+              detail: result.detail,
+            });
+            try {
+              process.stderr.write(
+                `psu-pty-host: mcp-reconnect ${result.ok ? 'OK' : 'FAILED'} for ${ownerId} ` +
+                  `(${serverName}: ${result.step} — ${result.detail})\n`,
+              );
+            } catch {
+              /* diagnostic only */
+            }
+          } finally {
+            tap.close();
+          }
           return;
         }
         // mode:'osc' targets the terminal DISPLAY — the host's stdout IS the
