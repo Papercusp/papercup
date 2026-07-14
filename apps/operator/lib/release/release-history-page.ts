@@ -199,46 +199,53 @@ function beaconScript(a: Analytics, page: string, version: string | null): strin
 }
 
 /**
- * The papercusp.com palette, lifted from the live site so a beta tester who clicks
+ * The papercusp.com theme, lifted from the live site so a beta tester who clicks
  * through from the product lands somewhere that looks like the same company.
  *
- * ⚠ LIGHT-ONLY, on purpose. papercusp.com commits to one look — a glassy light-blue
- * surface over a faint grid — and has no dark variant. The old stylesheet here had a
- * `prefers-color-scheme: dark` block that inverted everything to near-black; keeping
- * it would mean half our testers see a page that matches the marketing site and half
- * see one that pointedly doesn't. Matching a single-theme site means adopting its
- * single theme. If papercusp.com ever ships a dark mode, mirror it here — don't
- * invent one.
+ * DARK, matching the site. papercusp.com now ships a single dark theme by default
+ * (html[data-theme="dark"], --bg:#07101d) sitting over a static "robot" flow-field —
+ * the same backdrop the marketing site wears, minus the video/animation
+ * (ROBOT_BG_DATA_URI, inlined below so the page stays self-contained). This file used
+ * to be light-only, back when the site genuinely had no dark variant; it does now, so
+ * we mirror it. Matching a single-theme site means adopting its single theme — if the
+ * site's palette moves, move these tokens with it rather than inventing a second look.
  */
 const STYLES = `
 :root {
-  --bg: #e9f3fa; --bg-2: #f4fafe; --bg-3: #ffffff;
-  --surface: rgba(255, 255, 255, .72); --surface-2: rgba(255, 255, 255, .9);
-  --border: rgba(20, 90, 130, .16); --border-strong: rgba(20, 90, 130, .28);
-  --fg: #082033; --fg-dim: #1c3c52; --muted: #4d6c82;
-  --accent: #0284c7; --accent-2: #0d9488; --accent-deep: #0369a1;
-  --glow: rgba(2, 132, 199, .14); --grid: rgba(20, 90, 130, .05);
-  --shadow: 0 24px 60px -34px rgba(20, 60, 90, .4);
+  --bg: #07101d; --bg-2: #0b1626; --bg-3: #0e1d31;
+  --surface: rgba(18, 38, 63, .45); --surface-2: rgba(12, 26, 44, .7);
+  --border: rgba(96, 168, 214, .18); --border-strong: rgba(96, 168, 214, .34);
+  --fg: #e7f7ff; --fg-dim: #c3dcec; --muted: #8ea9c0;
+  --accent: #38bdf8; --accent-2: #5eead4; --accent-deep: #0ea5e9;
+  --glow: rgba(56, 189, 248, .22); --grid: rgba(120, 180, 220, .05);
+  --shadow: 0 24px 60px -30px rgba(0, 0, 0, .7);
   --radius: 8px;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-/* The background layers span the DOCUMENT, not the viewport — deliberately.
-   background-attachment:fixed is the obvious way to write this and it is wrong here:
-   on any page taller than the viewport the gradient stops dead at the fold and leaves
-   a hard horizontal seam across the release cards. These pages are long (a plan page
-   runs thousands of words), so the background has to grow with them. */
 body {
   position: relative;
   margin: 0; padding: 3.5rem 1.25rem 6rem; min-height: 100vh;
   color: var(--fg); font: 16px/1.65 var(--sans);
+  background: var(--bg);
+}
+/* The static robot backdrop, pinned as its OWN fixed layer rather than a
+   background-attachment:fixed on <body>. Deliberate: these pages are long (a plan page
+   runs thousands of words) and background-attachment:fixed seams at the fold on tall
+   pages, whereas a fixed element composites once and never seams. z-index:-1 drops it
+   behind the grid (body::before, z-0) and the content (main, z-1). It is decorative and
+   aria-hidden; if the data URI ever fails to paint, the solid --bg underneath is the
+   same colour, so the page is unharmed. */
+.bgfx {
+  position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden;
   background:
     radial-gradient(1100px 620px at 82% -10%, var(--glow), transparent 60%),
-    radial-gradient(900px 520px at 6% 2%, rgba(13, 148, 136, .10), transparent 62%),
-    linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 100%);
-  background-repeat: no-repeat;
+    radial-gradient(900px 520px at 6% 2%, rgba(94, 234, 212, .10), transparent 62%),
+    url("${ROBOT_BG_DATA_URI}") center top / cover no-repeat,
+    var(--bg);
 }
 /* the faint engineering grid papercusp.com sits on, faded out down the page */
 body::before {
@@ -355,6 +362,7 @@ function shell(title: string, body: string, beacon: string, redact: IdentityLite
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#07101d">
 <!-- Unlisted beta page. Not indexed, not linked from anywhere public. -->
 <meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="referrer" content="no-referrer">
@@ -362,6 +370,7 @@ function shell(title: string, body: string, beacon: string, redact: IdentityLite
 <style>${STYLES}</style>
 </head>
 <body>
+<div class="bgfx" aria-hidden="true"></div>
 <main>
 ${body}
 </main>
