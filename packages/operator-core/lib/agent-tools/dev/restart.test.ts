@@ -10,6 +10,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/dev/restart.test.ts
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 vi.mock('../locks/identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
@@ -38,7 +40,9 @@ const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
 
-const tool = (await import('./restart')).default;
+const restartModule = await import('./restart');
+const tool = restartModule.default;
+const { RESTART_TARGETS } = restartModule;
 
 type Out = { content: { text: string }[] };
 type Fence = { assertCurrent: () => Promise<{ current: boolean; reason?: string; live_fence_seq?: number }>; seq?: number };
@@ -73,6 +77,21 @@ afterAll(() => {
 });
 
 describe('dev:restart dry run', () => {
+  it('registers every target resource and cooldown marker in the locks migration ledger', () => {
+    const sqlDir = new URL('../../../../../libs/papercusp/packages/locks/src/sql/', import.meta.url).pathname;
+    const migrations = readdirSync(sqlDir)
+      .filter((name) => /^\d{3}-.*\.sql$/.test(name))
+      .map((name) => readFileSync(join(sqlDir, name), 'utf8'))
+      .join('\n');
+
+    for (const { resource, cooldownResource } of Object.values(RESTART_TARGETS)) {
+      expect(migrations, `missing agent_resource_registry seed for ${resource}`).toContain(`('${resource}',`);
+      if (cooldownResource) {
+        expect(migrations, `missing agent_resource_registry seed for ${cooldownResource}`).toContain(`('${cooldownResource}',`);
+      }
+    }
+  });
+
   it('defaults target to dev and reports the dev unit', async () => {
     const b = body(await call({}));
     expect(b).toMatchObject({ ok: true, dry_run: true, target: 'dev', would_run: 'systemctl --user restart papercup-dev-api.service' });

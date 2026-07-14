@@ -78,7 +78,12 @@ const GATEWAY_COOLDOWN_SEC = 120;
 
 type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar';
 
-const TARGETS: Record<RestartTarget, { unit: string; resource: string; cooldownResource?: string; blastRadius: string }> = {
+/**
+ * Exported for the registry-parity regression test. A target added here is
+ * not operable until its resource (and optional cooldown marker) is seeded by
+ * a locks-package migration — WI-4780 was the production miss this prevents.
+ */
+export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: string; cooldownResource?: string; blastRadius: string }> = {
   dev: { unit: 'papercup-dev-api.service', resource: 'dev-server', blastRadius: 'the :3070 operator (green release checkout)' },
   staging: {
     unit: 'papercup-staging-api.service',
@@ -148,7 +153,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const target: RestartTarget = args.target ?? 'dev';
-    const cfg = TARGETS[target];
+    const cfg = RESTART_TARGETS[target];
     const restartCmd = `systemctl --user restart ${cfg.unit}`;
 
     // Dry run — ctx-free, takes no lock, drains nobody.
