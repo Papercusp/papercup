@@ -159,8 +159,16 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(mem.args).toMatchObject({ query: 'implement P-005', harness_slug: 'h', limit: 5 });
     const decl = calls.find((c) => c.name === 'coord:declare-intent')!;
     expect(decl.args).toMatchObject({ intent: 'implement P-005', current_plan_slug: 'tool-call-batching-wrappers-2026-06-21', items: ['P-005'] });
-    // recipes:search uses intent as the query; result folded COMPACT (id/title/runCount/similarity).
-    expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({ query: 'implement P-005', limit: 3 });
+    // recipes:search uses intent plus the live lane identity as a hard authority filter.
+    expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({
+      query: 'implement P-005',
+      limit: 3,
+      context: {
+        plan: 'tool-call-batching-wrappers-2026-06-21',
+        harness: 'h',
+        items: ['P-005'],
+      },
+    });
     expect(r.recipes).toEqual([{ id: 'fan-out-wi', title: 'Fan-out work items', runCount: 7, similarity: 0.82 }]);
     // order: core three → memory → whoami (P-007: hoisted above the facts fold)
     // → plan-events → recipes → declare
@@ -177,16 +185,33 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   });
 
   it('folds intent-relevant recipes (recipes:search), compact; skipped when includeRecipes:false', async () => {
+    const authority = { version: 1, revision: 'a'.repeat(64), context: { harness: 'papercusp' } };
     const recipeHandler = () => ({
       ok: true,
-      recipes: [{ id: 'sweep-stale', title: 'Sweep stale items', description: 'd', runCount: 3, toolsUsed: ['work_items:list'], similarity: 0.7 }],
+      recipes: [{
+        id: 'sweep-stale',
+        title: 'Sweep stale items',
+        description: 'd',
+        runCount: 3,
+        toolsUsed: ['work_items:list'],
+        similarity: 0.7,
+        authorityRefs: { harnesses: ['papercusp'] },
+        runArgs: { id: 'sweep-stale', authority },
+      }],
     });
     // present + relevant → folded
     {
       const { call, calls } = fakeCall({ ...CORE, 'recipes:search': recipeHandler });
       const r = await composeOrient({ intent: 'tidy the backlog' }, call, 'me');
       expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({ query: 'tidy the backlog', limit: 3 });
-      expect(r.recipes).toEqual([{ id: 'sweep-stale', title: 'Sweep stale items', runCount: 3, similarity: 0.7 }]);
+      expect(r.recipes).toEqual([{
+        id: 'sweep-stale',
+        title: 'Sweep stale items',
+        runCount: 3,
+        similarity: 0.7,
+        authorityRefs: { harnesses: ['papercusp'] },
+        runArgs: { id: 'sweep-stale', authority },
+      }]);
     }
     // includeRecipes:false → no recipes:search call, field absent
     {

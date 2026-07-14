@@ -217,9 +217,17 @@ export interface OrientResult {
    *  `unchanged` ⇒ normal full delivery (baseline, changed, or no cursor injected). */
   planEvents?: { total: number; recent: unknown[]; unchanged?: boolean } | null;
   /** Reusable code:run recipes relevant to `intent`/`memoryQuery` (recipes:search) —
-   *  id + title + run/similarity, bounded. Reuse one (recipes:run) instead of hand-looping
-   *  or re-authoring. null on failure; absent when no query or includeRecipes:false. */
-  recipes?: Array<{ id?: unknown; title?: string; runCount?: unknown; similarity?: unknown }> | null;
+   *  compact identity/similarity plus the exact authority-preserving runArgs.
+   *  Reuse via runArgs instead of hand-looping or re-authoring. Entity-bound
+   *  recipes were already filtered against this orient's live lane context. */
+  recipes?: Array<{
+    id?: unknown;
+    title?: string;
+    runCount?: unknown;
+    similarity?: unknown;
+    authorityRefs?: unknown;
+    runArgs?: unknown;
+  }> | null;
   /** Whether the optional coord:declare-intent succeeded (present only when
    *  `intent` was passed; false = the caller lacked coord:write). */
   intentDeclared?: boolean;
@@ -988,14 +996,29 @@ export async function composeOrient(
       const rec = (await call('recipes:search', {
         query: recipeQuery,
         limit: recLimit,
+        context: {
+          ...(fleetMembership?.fleetSlug ? { fleet: fleetMembership.fleetSlug } : {}),
+          ...(args.planSlug ? { plan: args.planSlug } : {}),
+          ...(args.harness ? { harness: args.harness } : {}),
+          ...(args.planItems?.length ? { items: args.planItems } : {}),
+        },
       })) as
-        | { recipes?: Array<{ id?: unknown; title?: unknown; runCount?: unknown; similarity?: unknown }> }
+        | { recipes?: Array<{
+            id?: unknown;
+            title?: unknown;
+            runCount?: unknown;
+            similarity?: unknown;
+            authorityRefs?: unknown;
+            runArgs?: unknown;
+          }> }
         | undefined;
       result.recipes = (rec?.recipes ?? []).slice(0, recLimit).map((r) => ({
         id: r.id,
         title: typeof r.title === 'string' ? r.title.slice(0, RECIPE_TITLE_CAP) : undefined,
         runCount: r.runCount,
         similarity: r.similarity,
+        ...(r.authorityRefs && typeof r.authorityRefs === 'object' ? { authorityRefs: r.authorityRefs } : {}),
+        ...(r.runArgs && typeof r.runArgs === 'object' ? { runArgs: r.runArgs } : {}),
       }));
     } catch {
       result.recipes = null;

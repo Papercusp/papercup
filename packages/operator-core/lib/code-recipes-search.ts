@@ -119,6 +119,8 @@ export interface SimilarRecipe {
   authority: RecipeAuthorityProof;
   /** The concrete entity bindings derived from the current stored script. */
   authorityRefs: RecipeAuthorityRefs;
+  /** Exact callable continuation; preserves the matched authority proof. */
+  runArgs: { id: string; authority: RecipeAuthorityProof };
 }
 
 export interface SearchSimilarRecipesInput {
@@ -243,6 +245,7 @@ export async function searchSimilarRecipes(
       similarity,
       authority: authority.proof,
       authorityRefs: authority.refs,
+      runArgs: { id: meta.id, authority: authority.proof },
     });
   }
 

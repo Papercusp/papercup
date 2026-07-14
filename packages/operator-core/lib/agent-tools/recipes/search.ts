@@ -15,17 +15,21 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchSimilarRecipes } from '../../code-recipes-search';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 
 export default defineTool({
   name: 'recipes:search',
   description:
     'Search reusable code:run RECIPES by intent (hybrid BM25 + embedding + tool-set overlap). Use ' +
-    'BEFORE authoring a multi-step code:run to find a recipe that already does it. Read-only.',
+    'BEFORE authoring a multi-step code:run to find a recipe that already does it. Entity-bound ' +
+    'recipes are returned only when fleet/plan/harness/item/resource context matches; use each hit\'s runArgs unchanged. Read-only.',
   guidance: {
     when:
       'BEFORE writing a multi-step code:run — describe what you want to do and this ranks the ' +
       'recipes in your hive that already do something similar (semantic + tool-set match). If a ' +
-      'high-similarity recipe fits, recipes:run it instead of re-authoring.',
+      'high-similarity recipe fits, call recipes:run with the hit\'s exact runArgs so its revision ' +
+      'and entity authority are revalidated before execution.',
     notWhen:
       'To browse all recipes most-run-first (recipes:list), or when you already hold the id ' +
       '(recipes:get / recipes:run). code:run still auto-surfaces similarRecipes after the fact — ' +
@@ -45,6 +49,17 @@ export default defineTool({
   args: z.object({
     query: z.string().min(1).max(500).describe('What you want to do — title/description text, free-form.'),
     limit: z.number().int().min(1).max(20).optional().describe('Top-N to return (default 5).'),
+    context: z
+      .object({
+        fleet: z.string().min(1).optional(),
+        plan: z.string().min(1).optional(),
+        harness: z.string().min(1).optional(),
+        items: z.array(z.string().min(1)).max(100).optional(),
+        resources: z.array(z.string().min(1)).max(100).optional(),
+      })
+      .strict()
+      .optional()
+      .describe('Current entity context. Bound recipes fail closed unless every embedded identity matches.'),
   }),
   async handler(args, ctx) {
     // Bound the acquisition — .catch handles a rejection but NOT a cold-pipeline
@@ -53,6 +68,13 @@ export default defineTool({
     // The query carries no separate description / tool-set — feed it as the title
     // and let the lexical + cosine legs do the work (toolsUsed empty ⇒ the
     // structural leg contributes 0, so ranking is purely text similarity here).
+    let liveFleet: string | null = null;
+    try {
+      const ownerId = resolveAgentIdentity(ctx).ownerId;
+      liveFleet = (await resolvePresenceFleet(ownerId ?? undefined, deriveFleetMembership())).fleetSlug;
+    } catch {
+      liveFleet = null;
+    }
     const recipes = await searchSimilarRecipes(
       getOrgPg().sql,
       {
@@ -61,6 +83,12 @@ export default defineTool({
         toolsUsed: [],
         embedding: null,
         limit: args.limit ?? 5,
+        recommendationContext: {
+          ...args.context,
+          ...(ctx.workspaceId ? { workspace: ctx.workspaceId } : {}),
+          ...(liveFleet ? { fleet: liveFleet } : {}),
+          ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+        },
       },
       { embedder, log: (msg) => ctx.log(msg) },
     );

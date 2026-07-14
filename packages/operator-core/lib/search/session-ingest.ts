@@ -42,6 +42,7 @@
  *     `text_embedding` asynchronously; ingest must never block on network.
  */
 
+import { readFileSync } from 'node:fs';
 import { open, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
@@ -419,6 +420,29 @@ interface FileAdapter {
   meta: (filePath: string) => { sessionId: string; owner: string | null };
 }
 
+/** Resolve Codex rollout identity from its filename plus the per-session
+ * CODEX_HOME diagnostics stamp. Shared ~/.codex rollouts intentionally have
+ * no coordination owner; only managed su-codex-homes carry lockOwnerSid. */
+export function codexTranscriptMeta(filePath: string): { sessionId: string; owner: string | null } {
+  const stem = basename(filePath, '.jsonl');
+  const sessionMatch = stem.match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i);
+  const homeMatch = filePath.match(/^(.*\/su-codex-homes\/session-[^/]+)\/sessions\//);
+  let owner: string | null = null;
+  if (homeMatch) {
+    try {
+      const diagnostics = JSON.parse(
+        readFileSync(join(homeMatch[1], 'papercusp-diagnostics.json'), 'utf8'),
+      ) as { lockOwnerSid?: unknown };
+      if (typeof diagnostics.lockOwnerSid === 'string' && diagnostics.lockOwnerSid.trim()) {
+        owner = diagnostics.lockOwnerSid;
+      }
+    } catch {
+      // A legacy/raced home has no trustworthy owner stamp; leave it unowned.
+    }
+  }
+  return { sessionId: sessionMatch ? sessionMatch[1] : stem, owner };
+}
+
 const HOME = homedir();
 
 export const FILE_ADAPTERS: FileAdapter[] = [
@@ -470,12 +494,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
     ],
     parseLine: parseCodexLine,
     classifyLine: classifyCodexLine,
-    meta: (filePath) => {
-      // rollout-<ts>-<uuid>.jsonl → uuid tail is the session id.
-      const stem = basename(filePath, '.jsonl');
-      const m = stem.match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i);
-      return { sessionId: m ? m[1] : stem, owner: null };
-    },
+    meta: codexTranscriptMeta,
   },
 ];
 
@@ -635,6 +654,30 @@ async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
     ON CONFLICT DO NOTHING
   `;
   return r.count ?? rows.length;
+}
+
+/** Repair rows ingested before a managed Codex home's owner stamp was wired
+ * into the adapter. One bulk UPDATE per sweep avoids the historical
+ * per-transcript-query trap while making owner-filtered session reads correct
+ * without waiting for another turn to be appended. */
+async function backfillSessionOwners(
+  sql: Sql,
+  sourceKind: SourceKind,
+  ownersBySession: Map<string, string>,
+): Promise<void> {
+  if (!ownersBySession.size) return;
+  const sessionIds = [...ownersBySession.keys()];
+  const owners = sessionIds.map((sessionId) => ownersBySession.get(sessionId)!);
+  await sql`
+    UPDATE harness_shared.session_turns AS turns
+       SET owner = resolved.owner
+      FROM UNNEST(${sql.array(sessionIds)}::text[], ${sql.array(owners)}::text[])
+           AS resolved(session_id, owner)
+     WHERE turns.workspace_id = 'default'
+       AND turns.source_kind = ${sourceKind}
+       AND turns.session_id = resolved.session_id
+       AND turns.owner IS DISTINCT FROM resolved.owner
+  `;
 }
 
 interface IngestState {
@@ -944,17 +987,19 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
         }]),
       );
       let filesThisAdapter = 0;
+      const ownerBackfill = new Map<string, string>();
       for (const cand of candidates) {
         if (budget.turns <= 0 || filesThisAdapter >= MAX_FILES_PER_TICK) break;
         stats.filesScanned += 1;
         try {
           const st = stateMap.get(cand.path) ?? { ...EMPTY_STATE };
+          const meta = adapter.meta(cand.path);
+          if (meta.owner) ownerBackfill.set(meta.sessionId, meta.owner);
           if (cand.size <= st.byte_offset) continue; // nothing new
           filesThisAdapter += 1;
           const { turns, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId } =
             await readNewLines(cand.path, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id);
           if (newOffset === st.byte_offset) continue;
-          const meta = adapter.meta(cand.path);
           const rows: TurnRow[] = turns.map((t, i) => ({
             workspace_id: 'default',
             source_kind: adapter.sourceKind,
@@ -997,6 +1042,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           } catch { /* bookkeeping best-effort */ }
         }
       }
+      await backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill);
     }
 
     if (budget.turns > 0) {
