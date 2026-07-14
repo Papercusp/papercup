@@ -1758,12 +1758,36 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     // loader, which migrates legacy settings.json INTO config.yml). Same remove-then-append
     // surgery as `eval` above; hosted-model sessions keep the copied config untouched.
     const effModel = model || cfg.match(/modelRoles:[\s\S]*?\n[ \t]+default:[ \t]*([^\s#]+)/)?.[1]?.trim() || null;
+    // remoteEndpoint (deterministic-context-carry P-002): route the summarizer's LLM call to
+    // the gateway's reserved maintenance lane instead of the session's own backend. The path
+    // is LOCKSTEP with operator-core inference-gateway/gateway.ts MAINTENANCE_SUMMARIZE_PATH
+    // (plain .mjs — no TS import; same mirror rule as OMP_LOCAL_MODEL_PREFIXES above). omp
+    // THROWS on a remoteEndpoint failure (no local fallback), so it is seeded ONLY where the
+    // gateway is already a hard dependency (a papercusp-gateway/-routed model) or where the
+    // alternative is worse (a weak local model summarizing on its own saturated slot).
+    const gwp = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+    const gwPort = Number.isFinite(gwp) && gwp > 0 ? gwp : 8788;
+    const remoteEndpointLine = `  remoteEndpoint: "http://127.0.0.1:${gwPort}/maintenance/summarize"\n`;
     if (isWeakOmpModel(effModel)) {
       cfg = cfg
         .replace(/^compaction:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '')
         .replace(/^compaction\.[A-Za-z.]+:.*\n?/gm, '');
       if (!cfg.endsWith('\n')) cfg += '\n';
-      cfg += 'compaction:\n  strategy: shake\n  thresholdPercent: 70\n';
+      cfg += 'compaction:\n  strategy: shake\n  thresholdPercent: 70\n' + remoteEndpointLine;
+    } else if (String(effModel || '').trim().toLowerCase().startsWith('papercusp-gateway/')) {
+      // Gateway-routed hosted model: inject the endpoint ONLY, preserving whatever
+      // compaction settings the copied config carries — never force shake on a hosted
+      // model (deterministic-context-carry P-001 decision).
+      cfg = cfg.replace(/^compaction\.remoteEndpoint:.*\n?/gm, '');
+      const blockRe = /^compaction:[ \t]*\n((?:[ \t]+\S.*\n?)*)/m;
+      const blockMatch = cfg.match(blockRe);
+      if (blockMatch) {
+        const body = blockMatch[1].replace(/^[ \t]+remoteEndpoint:.*\n?/gm, '');
+        cfg = cfg.replace(blockRe, 'compaction:\n' + body + remoteEndpointLine);
+      } else {
+        if (!cfg.endsWith('\n')) cfg += '\n';
+        cfg += 'compaction:\n' + remoteEndpointLine;
+      }
     }
     writeFileSync(join(dstAgent, 'config.yml'), cfg, { mode: 0o600 });
     // Faithful model registry + auth so model resolution + provider baseUrls survive the

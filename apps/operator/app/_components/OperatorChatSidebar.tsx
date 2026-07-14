@@ -277,15 +277,32 @@ export function OperatorChatSidebar() {
             voice button stretched to fill it) read as a "gigantic" mic. */}
         <div className="op-chat-header">
           <div className="op-chat-header-main">
-            <div className="op-chat-header-orb" aria-hidden="true">
-              <OperatorLogoMark className="op-chat-header-logo" />
-            </div>
-            <OperatorWordmarkLockup
-              className="op-chat-wordmark"
-              titleClassName="op-chat-wordmark-title"
-              subtitleClassName="op-chat-wordmark-subtitle"
-              subtitle=""
-            />
+            {/* WI-4793 (owner ask 2026-07-14 "make the Papercup button look
+                like the Pot Health button"): the Papercup identity is now a
+                FLAT peer toggle sharing the 🫖 button's pill chrome — the two
+                faces read as a matched pair [🥤 Papercup] [🫖 Pot Health]. It
+                is lit (is-on) while the chat face shows and returns to it from
+                the pot view (the symmetric dual of the 🫖 toggle). The old
+                raised, glowing 38px orb is gone. */}
+            <Tooltip label={potOpen ? 'Back to Papercup chat' : 'Papercup chat'}>
+              <button
+                type="button"
+                className={`op-chat-papercup-toggle${potOpen ? '' : ' is-on'}`}
+                onClick={() => void setView('chat')}
+                aria-pressed={!potOpen}
+                aria-label="Papercup chat"
+              >
+                <span className="op-chat-papercup-mark" aria-hidden="true">
+                  <OperatorLogoMark className="op-chat-papercup-logo" />
+                </span>
+                <OperatorWordmarkLockup
+                  className="op-chat-wordmark"
+                  titleClassName="op-chat-wordmark-title"
+                  subtitleClassName="op-chat-wordmark-subtitle"
+                  subtitle=""
+                />
+              </button>
+            </Tooltip>
             {/* WI-4778/WI-4789: the 🫖 toggle — chat ⇄ the full-height Pot
                 Health view (the info the Mug + Kettle look at), same pane.
                 Sits RIGHT BESIDE the Papercup identity (owner ask 2026-07-14)
@@ -481,25 +498,6 @@ const OP_CHAT_SIDEBAR_CSS = `
   min-width: 0;
 }
 
-.op-chat-header-orb {
-  width: 38px;
-  height: 38px;
-  flex: 0 0 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%);
-  background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.18), transparent 24%), color-mix(in srgb, var(--accent), transparent 90%);
-  color: var(--accent-strong, var(--accent-soft));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px color-mix(in srgb, var(--bg-deeper), transparent 72%);
-}
-
-.op-chat-header-logo {
-  width: 30px;
-  height: 30px;
-}
-
 /* WI-4738 one-line header: the wordmark yields (truncates) before the
    controls do, so the row never wraps at narrow sidebar widths. */
 .op-chat-header-main .op-chat-wordmark {
@@ -594,6 +592,7 @@ const OP_CHAT_SIDEBAR_CSS = `
    while the pot view is on. Docked immediately AFTER the Papercup orb + name
    (owner ask 2026-07-14) and carrying its own "Pot Health" label so the
    pane's two faces read as peers: [🥤 Papercup] [🫖 Pot Health]. */
+.op-chat-header-main .op-chat-papercup-toggle,
 .op-chat-header-main .op-chat-pot-toggle {
   flex: 0 1 auto;
   min-width: 0;
@@ -609,6 +608,20 @@ const OP_CHAT_SIDEBAR_CSS = `
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
+}
+
+/* WI-4793: the Papercup toggle's leading glyph — the brand mark inline at the
+   🫖 peer's scale, with NO orb box / gradient / glow (the 🫖 side is a plain
+   text emoji), so the two pills read as a matched pair. */
+.op-chat-header-main .op-chat-papercup-mark {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.op-chat-header-main .op-chat-papercup-logo {
+  width: 18px;
+  height: 18px;
 }
 
 /* The label besides the glyph — the wordmark-title treatment, one step
@@ -629,16 +642,19 @@ const OP_CHAT_SIDEBAR_CSS = `
   color: var(--fg);
 }
 
+.op-chat-header-main .op-chat-papercup-toggle.is-on,
 .op-chat-header-main .op-chat-pot-toggle.is-on {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 30%);
   background: color-mix(in srgb, var(--accent), transparent 82%);
 }
 
+.op-chat-header-main .op-chat-papercup-toggle:hover,
 .op-chat-header-main .op-chat-pot-toggle:hover {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
   background: color-mix(in srgb, var(--accent), transparent 88%);
 }
 
+.op-chat-header-main .op-chat-papercup-toggle:focus-visible,
 .op-chat-header-main .op-chat-pot-toggle:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent-strong), transparent 18%);
   outline-offset: 2px;
@@ -1092,6 +1108,7 @@ body.has-op-chat .pc-header {
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
 .op-chat-controls .pc-voice-settings-link,
+.op-chat-header-main .op-chat-papercup-toggle,
 .op-chat-header-main .op-chat-pot-toggle,
 .op-chat-controls .op-chat-tts {
   min-height: 27px !important;
@@ -1204,6 +1221,7 @@ body.has-op-chat .pc-header {
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
 .op-chat-controls .pc-voice-settings-link,
+.op-chat-header-main .op-chat-papercup-toggle,
 .op-chat-header-main .op-chat-pot-toggle,
 .op-chat-controls .op-chat-tts {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
@@ -1218,7 +1236,8 @@ body.has-op-chat .pc-header {
   background: transparent !important;
 }
 
-/* Same carve-out for the lit 🫖 state (WI-4778). */
+/* Same carve-out for the lit 🫖 / Papercup state (WI-4778 / WI-4793). */
+.op-chat-header-main .op-chat-papercup-toggle.is-on,
 .op-chat-header-main .op-chat-pot-toggle.is-on {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 30%) !important;
   background: color-mix(in srgb, var(--accent), transparent 82%) !important;
