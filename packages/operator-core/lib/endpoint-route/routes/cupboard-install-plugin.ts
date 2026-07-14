@@ -1,25 +1,22 @@
 /**
  * POST /api/cupboard/install-plugin — install a plugin from the Cupboard
  * (revive-cupboard-distribution-2026-06-04 D-003 / P2). Replaces the dead
- * `:3057`/CLI tarball install (marketplace/install-plugin.ts) with a git clone
- * of the listing's GitHub repo + the existing capability-gate + install-consent
- * path (D-009).
+ * `:3057`/CLI tarball install with a git clone of the listing's GitHub repo +
+ * the existing capability-gate + install-consent path (D-009).
+ *
+ * The install logic lives in `cupboard/install-io.ts` (`installPluginFromCupboard`
+ * — resolve coords → install core → backup trigger) — the ONE path shared with
+ * the agent-callable `cupboard:install-plugin` tool (cupboard-agent-tool-coverage-
+ * 2026-07-14 P-006, D-001 reuse-first). This route only parses the loopback body
+ * and maps the structured result to an HTTP response.
  *
  * Body: { listingId?, githubUrl?, listingRef?, harness?, acceptCapabilities? }
- *   - listingId   resolve the repo URL + listing_ref from the Cupboard listing
- *   - githubUrl   OR install a repo directly (listingRef = plugin subdir/slug)
- *   - harness + acceptCapabilities → grant the manifest's caps for that harness
  *
- * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate, like the
- * sibling cupboard routes. The Cupboard ships UNGATED (no MARKETPLACE flag).
+ * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate. The
+ * Cupboard ships UNGATED (no MARKETPLACE flag).
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import {
-  installPluginFromCupboardCore,
-  InstallPluginError,
-  type InstallPluginCoreInput,
-} from '../../cupboard/install-plugin-core';
-import { buildInstallPluginDeps, resolveListingCoords } from '../../cupboard/install-io';
+import { installPluginFromCupboard } from '../../cupboard/install-io';
 
 export default defineTool({
   method: 'POST',
@@ -40,62 +37,20 @@ export default defineTool({
       return Response.json({ ok: false, error: 'invalid_json' }, { status: 400 });
     }
 
-    let githubUrl = typeof body.githubUrl === 'string' ? body.githubUrl.trim() : '';
-    let listingRef = typeof body.listingRef === 'string' ? body.listingRef.trim() : undefined;
-
-    if (!githubUrl && body.listingId) {
-      const resolved = await resolveListingCoords(String(body.listingId));
-      if (!resolved) {
-        return Response.json({ ok: false, error: 'listing_not_found_or_unreachable' }, { status: 404 });
-      }
-      githubUrl = resolved.githubUrl;
-      listingRef = listingRef ?? resolved.listingRef;
-    }
-    if (!githubUrl) {
-      return Response.json({ ok: false, error: 'githubUrl or listingId required' }, { status: 400 });
-    }
-
-    const input: InstallPluginCoreInput = {
-      githubUrl,
-      listingRef,
-      harness: typeof body.harness === 'string' ? body.harness.trim() : undefined,
+    const outcome = await installPluginFromCupboard({
+      ...(typeof body.listingId === 'string' ? { listingId: body.listingId } : {}),
+      ...(typeof body.githubUrl === 'string' ? { githubUrl: body.githubUrl } : {}),
+      ...(typeof body.listingRef === 'string' ? { listingRef: body.listingRef } : {}),
+      ...(typeof body.harness === 'string' ? { harness: body.harness } : {}),
       acceptCapabilities: body.acceptCapabilities === true,
-    };
+    });
 
-    try {
-      // Install-time dep gate (tool-distribution-granularity D-003) is wired in
-      // buildInstallPluginDeps(): hard-missing deps 422 before the copy;
-      // installable ones surface advisorily.
-      const result = await installPluginFromCupboardCore(input, buildInstallPluginDeps());
-
-      // Fire the `plugin_install` backup trigger — /settings/backups renders it as
-      // "After plugin install" and it ships ON by default (event_triggers_json), but
-      // NOTHING emitted it, so the checkbox was inert (settings-audit 2026-07-09).
-      // Emitted at the route rather than inside installPluginFromCupboardCore because
-      // that core is pure (all IO injected via `deps`); the sibling
-      // plugins/uninstall.ts route emits its `pre_destructive` the same way. Fires
-      // AFTER a successful install, per the label (cf. `pre_destructive`, which
-      // deliberately snapshots BEFORE its op). Best-effort: a backup failure must
-      // never turn a successful install into an error response.
-      try {
-        const [{ triggerSnapshotEvent }, { activeWorkspaceId }] = await Promise.all([
-          import('../../backup'),
-          import('../../workspace-registry'),
-        ]);
-        await triggerSnapshotEvent(activeWorkspaceId(), 'plugin_install', {
-          op: 'plugin_install', githubUrl: input.githubUrl, listingRef, harness: input.harness,
-        }).catch(() => { /* ignore */ });
-      } catch { /* backup module not loaded — fine */ }
-
-      return Response.json(result);
-    } catch (e) {
-      if (e instanceof InstallPluginError) {
-        return Response.json({ ok: false, error: e.message }, { status: e.status });
-      }
+    if (!outcome.ok) {
       return Response.json(
-        { ok: false, error: 'install failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) },
-        { status: 500 },
+        { ok: false, error: outcome.error, ...(outcome.detail ? { detail: outcome.detail } : {}) },
+        { status: outcome.status },
       );
     }
+    return Response.json(outcome.result);
   },
 });

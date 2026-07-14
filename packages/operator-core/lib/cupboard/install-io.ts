@@ -18,7 +18,10 @@ import { grantCapabilities } from '../plugin-grants';
 import { resolveCupboardBaseUrl } from './base-url';
 import {
   installPluginFromCupboardCore,
+  InstallPluginError,
   type InstallPluginCoreDeps,
+  type InstallPluginCoreInput,
+  type InstallPluginCoreResult,
 } from './install-plugin-core';
 import type { InstallableUnitRef } from './resolve-and-install';
 
@@ -140,6 +143,84 @@ export function buildInstallPluginDeps(): InstallPluginCoreDeps {
       return merged;
     },
   };
+}
+
+export type InstallPluginFromCupboardResult =
+  | { ok: true; result: InstallPluginCoreResult }
+  | { ok: false; status: number; error: string; detail?: string };
+
+/**
+ * The ONE orchestrated path that installs a plugin/pack from the Cupboard by
+ * listing id OR direct github url: resolve coords → install through the core
+ * (dep gate + capability grant wired via buildInstallPluginDeps) → fire the
+ * `plugin_install` backup trigger. Shared by the loopback POST
+ * /cupboard/install-plugin route AND the agent-callable `cupboard:install-plugin`
+ * tool (cupboard-agent-tool-coverage-2026-07-14 P-006, D-001 reuse-first) — never
+ * throws for an expected failure; the caller maps status+error to its response.
+ */
+export async function installPluginFromCupboard(input: {
+  listingId?: string;
+  githubUrl?: string;
+  listingRef?: string;
+  harness?: string;
+  acceptCapabilities?: boolean;
+}): Promise<InstallPluginFromCupboardResult> {
+  let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
+  let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
+
+  if (!githubUrl && input.listingId) {
+    const resolved = await resolveListingCoords(String(input.listingId));
+    if (!resolved) return { ok: false, status: 404, error: 'listing_not_found_or_unreachable' };
+    githubUrl = resolved.githubUrl;
+    listingRef = listingRef ?? resolved.listingRef;
+  }
+  if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
+
+  const coreInput: InstallPluginCoreInput = {
+    githubUrl,
+    listingRef,
+    harness: typeof input.harness === 'string' ? input.harness.trim() : undefined,
+    acceptCapabilities: input.acceptCapabilities === true,
+  };
+
+  try {
+    // Install-time dep gate is wired in buildInstallPluginDeps(): hard-missing deps
+    // 422 before the copy; installable ones surface advisorily.
+    const result = await installPluginFromCupboardCore(coreInput, buildInstallPluginDeps());
+
+    // Fire the `plugin_install` backup trigger — "After plugin install" in
+    // /settings/backups (ON by default). Emitted here (not inside the pure core,
+    // which injects all IO) so BOTH callers get it. Best-effort: a backup failure
+    // must never turn a successful install into an error.
+    try {
+      const [{ triggerSnapshotEvent }, { activeWorkspaceId }] = await Promise.all([
+        import('../backup'),
+        import('../workspace-registry'),
+      ]);
+      await triggerSnapshotEvent(activeWorkspaceId(), 'plugin_install', {
+        op: 'plugin_install',
+        githubUrl: coreInput.githubUrl,
+        listingRef,
+        harness: coreInput.harness,
+      }).catch(() => {
+        /* ignore */
+      });
+    } catch {
+      /* backup module not loaded — fine */
+    }
+
+    return { ok: true, result };
+  } catch (e) {
+    if (e instanceof InstallPluginError) {
+      return { ok: false, status: e.status, error: e.message };
+    }
+    return {
+      ok: false,
+      status: 500,
+      error: 'install failed',
+      detail: e instanceof Error ? e.message.slice(0, 300) : String(e),
+    };
+  }
 }
 
 /**
