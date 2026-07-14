@@ -25,7 +25,13 @@ beforeEach(async () => {
   home = path.join(tmp, 'home');
   desktopPath = path.join(home, '.local', 'share', 'applications', 'papercusp-tutorial.desktop');
 });
-afterEach(() => fs.rm(tmp, { recursive: true, force: true }));
+afterEach(() =>
+  // writeLinuxTutorialDesktopEntry intentionally refreshes the desktop database
+  // in a detached best-effort child. On a loaded gate that child can still hold
+  // the applications directory for a few milliseconds, so make fixture cleanup
+  // tolerate the documented transient ENOTEMPTY race instead of flaking the suite.
+  fs.rm(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }),
+);
 
 describe('writeLinuxTutorialDesktopEntry', () => {
   it('writes a valid per-user .desktop launcher pointed at the dispatcher', async () => {

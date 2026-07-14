@@ -32,6 +32,8 @@
  *     happen, the recommended first bring-up mode (mirrors idle-session-reaper).
  */
 
+import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
+
 export interface HetznerFrameInfo {
   id: string;
   name: string;
@@ -103,8 +105,10 @@ export function isTransientNetworkError(e: unknown): boolean {
 export interface OwnerLiveness {
   ownerId: string;
   /** `ended` = confirmed dead (the only state this reaper acts on). Anything else
-   *  (`live`/`parked`/`recorded`/`unknown`) means "don't touch". */
-  sessionState: 'live' | 'parked' | 'ended' | 'recorded' | 'unknown';
+   *  (including transitional `draining`/`suspect`, or `unknown`) means "don't touch".
+   *  Reuse the coordinator's canonical union so new non-terminal states cannot
+   *  silently drift this destructive consumer's contract out of sync. */
+  sessionState: SessionState | 'unknown';
 }
 
 export interface HetznerOrphanReaperDeps {
@@ -188,7 +192,9 @@ export async function reapOrphanedHetznerFrames(
   out.matchedRigNames = candidates.length;
   if (candidates.length === 0) return out;
 
-  const ownerIds = [...new Set(candidates.map((f) => f.labels[OWNER_LABEL_KEY]).filter((v): v is string => Boolean(v)))];
+  const ownerIds = [
+    ...new Set(candidates.map((f) => f.labels[OWNER_LABEL_KEY]).filter((v): v is string => Boolean(v))),
+  ];
   const liveness = ownerIds.length > 0 ? await deps.resolveOwnerLiveness(ownerIds) : [];
   const livenessByOwner = new Map(liveness.map((l) => [l.ownerId, l.sessionState]));
 

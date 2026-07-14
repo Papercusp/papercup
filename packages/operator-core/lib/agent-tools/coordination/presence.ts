@@ -24,10 +24,7 @@ import {
 import { deriveAgentRole, deriveFleetMembership, type AgentIdentity } from './identity';
 import { getCachedMachineCapabilityTags } from './machine-capability-tags';
 import { writeSessionBrief } from '../../session-brief';
-import {
-  appendFleetMembershipEvent,
-  appendFleetMembershipIfAbsent,
-} from '../../fleet-membership-store';
+import { appendFleetMembershipEvent, appendFleetMembershipIfAbsent } from '../../fleet-membership-store';
 import { refreshControlAnchorAfterMutation } from './control-anchor';
 
 export { PRESENCE_STALE_MS };
@@ -255,10 +252,7 @@ export async function touchHeartbeat(
  * The presence snapshot calls this primitive on the read path; the claim lease
  * reaper uses the same probe to remove a confirmed-dead owner from its live set.
  */
-export function probeProcessLiveness(record: {
-  host: string | null | undefined;
-  pid: number | null | undefined;
-}): boolean | null {
+export function probeProcessLiveness(record: { host?: string | null; pid?: number | null }): boolean | null {
   if (!record.pid || !record.host || record.host !== LOCAL_HOSTNAME) return null;
   try {
     process.kill(record.pid, 0);

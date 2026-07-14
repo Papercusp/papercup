@@ -61,7 +61,9 @@ describe('reapOrphanedHetznerFrames', () => {
 
   it('never touches a non-rig-named server, even with an ended-owner label', async () => {
     const deps = makeDeps({
-      frames: [frame({ id: '1', name: 'papercusp-prod', labels: { [OWNER_LABEL_KEY]: 'su-dead' }, createdAt: hoursAgo(100) })],
+      frames: [
+        frame({ id: '1', name: 'papercusp-prod', labels: { [OWNER_LABEL_KEY]: 'su-dead' }, createdAt: hoursAgo(100) }),
+      ],
       liveness: { 'su-dead': 'ended' },
     });
     const r = await reapOrphanedHetznerFrames(deps);
@@ -70,14 +72,14 @@ describe('reapOrphanedHetznerFrames', () => {
     expect(deps.destroyed).toEqual([]);
   });
 
-  it('skips a rig-named frame with no owner label — never destroy what can\'t be verified', async () => {
+  it("skips a rig-named frame with no owner label — never destroy what can't be verified", async () => {
     const deps = makeDeps({ frames: [frame({ id: '1', labels: {}, createdAt: hoursAgo(100) })] });
     const r = await reapOrphanedHetznerFrames(deps);
     expect(r.skippedNoOwnerLabel).toEqual(['1']);
     expect(r.destroyed).toEqual([]);
   });
 
-  it.each(['live', 'parked', 'recorded', 'unknown'] as const)(
+  it.each(['live', 'parked', 'draining', 'suspect', 'recorded', 'unknown'] as const)(
     'skips when owner sessionState is %s (only a confirmed "ended" owner qualifies)',
     async (state) => {
       const deps = makeDeps({
@@ -90,7 +92,7 @@ describe('reapOrphanedHetznerFrames', () => {
     },
   );
 
-  it('skips a confirmed-ended owner\'s frame that has not cleared the min-age grace window', async () => {
+  it("skips a confirmed-ended owner's frame that has not cleared the min-age grace window", async () => {
     const deps = makeDeps({
       frames: [frame({ id: '1', labels: { [OWNER_LABEL_KEY]: 'su-dead' }, createdAt: hoursAgo(0.5) })],
       liveness: { 'su-dead': 'ended' },
