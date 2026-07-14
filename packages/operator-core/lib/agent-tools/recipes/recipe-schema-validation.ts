@@ -91,11 +91,12 @@ export async function validateRecipeScriptAgainstCatalog(
   await ensureParseCheckReady();
   const analysis = checkScript(script, tools, allowed);
   const byName = new Map(tools.map((tool) => [mcpName(tool), tool]).filter(([name]) => name));
-  const issues: RecipeSchemaIssue[] = analysis.unknownRefs.map((tool) => ({
-    tool,
-    path: 'script',
-    message: 'recipe references a tool absent from the current catalog',
-  }));
+  // Unknown/disallowed references remain the runtime facade's concern: the
+  // existing orchestration parser reports those with the caller's role-scoped
+  // allow-set. This guard focuses on the failure class that survives name
+  // resolution: literal arguments accepted when the recipe was saved but no
+  // longer accepted by the current tool schema.
+  const issues: RecipeSchemaIssue[] = [];
 
   for (const call of analysis.calls) {
     if (call.dynamicArgs || call.args == null) continue;

@@ -215,6 +215,20 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(recordRecipeRunMock).not.toHaveBeenCalled();
   });
 
+  it('rejects a saved recipe whose literal arguments no longer match the live tool schema', async () => {
+    getRecipeMock.mockResolvedValue({
+      id: 'stale', workspaceId: 'ws-test', potSlug: 'alpha', title: 'stale', description: 'd',
+      script: 'return await tools.recipes.list({ bogus: true });',
+      authorRole: 'operator', toolsUsed: ['recipes:list'], runCount: 1, successCount: 1,
+      status: 'active', tags: [],
+    });
+    const res = await findTool('recipes:run').fn({ id: 'stale' }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.results[0]).toMatchObject({ ok: false, id: 'stale', error: 'recipe_schema_stale' });
+    expect(payload.results[0].schemaIssues[0].message).toContain('bogus');
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+  });
+
   it('returns not_found for a missing recipe per item (no orchestration) — bulk envelope', async () => {
     getRecipeMock.mockResolvedValue(null);
     const res = await findTool('recipes:run').fn({ id: 'nope' }, mkCtx('worker'));

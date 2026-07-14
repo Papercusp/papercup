@@ -49,6 +49,7 @@ import { deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { getTxPool } from '../locks/su-lock-store';
 import { readIdentity } from '../locks/identity';
+import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 
 interface RunItem {
   id: string;
@@ -229,6 +230,19 @@ export default defineTool({
         const recipe = await getRecipe(sql, it.id);
         if (!recipe) {
           return { ok: false, id: it.id, error: 'not_found' };
+        }
+        // A recipe can outlive a tool-schema change. Validate the statically
+        // provable calls against the CURRENT catalog before execution so a
+        // removed enum/argument (e.g. checkpoint-run op:"status") fails with
+        // an actionable stale-recipe result instead of a runtime surprise.
+        const schemaValidation = await validateRecipeScriptAgainstCatalog(recipe.script, all);
+        if (!schemaValidation.ok) {
+          return {
+            ok: false,
+            id: it.id,
+            error: 'recipe_schema_stale',
+            schemaIssues: schemaValidation.issues,
+          };
         }
         const authority = await validateRecipeAuthorityProof({
           script: recipe.script,
