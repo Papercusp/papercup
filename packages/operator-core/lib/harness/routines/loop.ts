@@ -440,6 +440,48 @@ export async function deactivateLoop(ownerId: string, opts: { sql?: Sql } = {}):
   return Number((result as { count: number }).count ?? 0) > 0;
 }
 
+/**
+ * Intentionally hand an active engine loop to another session without ending and
+ * recreating it. The single UPDATE is the ownership cutover: cadence, fire
+ * history, parked state, limits, and carry policy stay on the same routine row.
+ *
+ * A target that already owns an active loop is rejected rather than silently
+ * merging two histories. Callers can end that target loop explicitly first.
+ */
+export async function transferLoopOwnership(
+  fromOwnerId: string,
+  toOwnerId: string,
+  opts: { sql?: Sql } = {},
+): Promise<{ transferred: boolean; routineId: string | null }> {
+  if (!fromOwnerId.trim() || !toOwnerId.trim()) throw new Error('fromOwnerId and toOwnerId are required');
+  if (fromOwnerId === toOwnerId) return { transferred: false, routineId: null };
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ id: string }>>`
+    UPDATE harness_shared.routines source
+       SET target_owner_id = ${toOwnerId},
+           name = ${loopRoutineName(toOwnerId)},
+           updated_at = now(),
+           metadata = COALESCE(source.metadata, '{}'::jsonb) || jsonb_build_object(
+             'loop_transferred_from', ${fromOwnerId}::text,
+             'loop_transferred_to', ${toOwnerId}::text,
+             'loop_transferred_at', now()::text
+           )
+     WHERE source.name = ${loopRoutineName(fromOwnerId)}
+       AND source.target_owner_id = ${fromOwnerId}
+       AND source.reschedule_interval_sec IS NOT NULL
+       AND source.active = TRUE
+       AND NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.routines target
+          WHERE target.workspace_id = source.workspace_id
+            AND target.target_owner_id = ${toOwnerId}
+            AND target.reschedule_interval_sec IS NOT NULL
+            AND target.active = TRUE
+       )
+    RETURNING source.id`;
+  return { transferred: rows.length === 1, routineId: rows[0]?.id ?? null };
+}
+
 /** A lean view of an owner's loop, for loop:status / observability. */
 export interface LoopStatus {
   name: string;

@@ -162,7 +162,7 @@ describe('pot:declare-wake', () => {
   it('time wake (`inSeconds`): requests ≈ now + N seconds', async () => {
     const before = Date.now();
     const res = parse(await tool.handler({ inSeconds: 600, harness: 'papercup' }, ctx()));
-    expect(res.mode).toBe('time');
+    expect(res.mode).toBe('time+event'); // EI-10525: the demand defaults ride alongside the time wake
     expect(declarePotTimeWake).toHaveBeenCalledTimes(1);
     const opts = declarePotTimeWake.mock.calls[0][1] as { at: Date };
     const delta = opts.at.getTime() - before;
@@ -269,7 +269,7 @@ describe('pot:declare-wake', () => {
   it('EI-309 guard: a TIME wake is allowed even with an unplaced frontier (a timer re-wakes to place)', async () => {
     listUnplacedPotFrontier.mockResolvedValueOnce(['WI-116']); // would refuse if read, but a time wake skips the guard
     const res = parse(await tool.handler({ inSeconds: 300, harness: 'papercup' }, ctx()));
-    expect(res.mode).toBe('time');
+    expect(res.mode).toBe('time+event'); // EI-10525: the demand defaults ride alongside the time wake
     expect(declarePotTimeWake).toHaveBeenCalledTimes(1);
   });
 

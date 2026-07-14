@@ -249,6 +249,7 @@ import './loop/checkpoint';
 import './loop/end';
 import './loop/soak_report';
 import './loop/status';
+import './loop/transfer';
 // owner-directive slots (EI-11484): explicit owner orders, recorded verbatim,
 // rendered above the loop agenda every wake until dispositioned.
 import './orders/record';
