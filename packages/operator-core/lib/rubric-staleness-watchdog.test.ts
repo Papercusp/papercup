@@ -83,8 +83,11 @@ describe('rubricStalenessSweep — orchestration (injected deps, no PG)', () => 
   });
 
   it('sweeps ONLY releaseGating rubrics — an un-gated rubric is never paged on', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const d = deps();
     const results = await rubricStalenessSweep({}, d);
+    expect(warn).toHaveBeenCalledOnce(); // the loud ALERT line is part of the contract
+    warn.mockRestore();
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ rubricRef: 'blender-release-readiness', outcome: 'alerted' });
     expect(d.checkScorecardFreshness).toHaveBeenCalledTimes(1);
