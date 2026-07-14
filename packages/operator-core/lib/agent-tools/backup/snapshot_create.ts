@@ -63,8 +63,6 @@ export default defineTool({
     } else {
       result = await workspaceBackupFor(ws).snapshot(args.reason, context);
     }
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    };
+    return { data: result };
   },
 });

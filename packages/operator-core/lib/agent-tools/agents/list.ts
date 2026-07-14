@@ -29,6 +29,6 @@ export default defineTool({
       slug: args.slug,
       limit: args.limit ?? 40,
     });
-    return { content: [{ type: 'text', text: JSON.stringify({ agents }) }] };
+    return { data: { agents } };
   },
 });

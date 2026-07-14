@@ -32,6 +32,6 @@ export default defineTool({
     const conv = await getOrCreateActiveConversation();
     const page = await listTurnsRecent({ conversationId: conv.conversationId, limit: args.limit ?? 20 });
     const turns = page.turns.map((t) => ({ role: t.role, text: t.text, source: t.source, seq: t.seq }));
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, turns }) }] };
+    return { data: { ok: true, turns } };
   },
 });

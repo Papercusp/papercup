@@ -38,8 +38,6 @@ export default defineTool({
     await triggerSnapshotEvent(ws, 'pre_destructive', { op: 'promote_restore', restoredPath: args.restoredPath })
       .catch(() => { /* non-fatal */ });
     const result = await durablePromoteRestore(ws, args);
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result) }],
-    };
+    return { data: result };
   },
 });

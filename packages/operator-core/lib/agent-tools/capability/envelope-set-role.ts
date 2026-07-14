@@ -15,7 +15,7 @@ import { readEnvelopeOverrides, setRoleEnvelope } from '../../capability-envelop
 import type { RoleEnvelope } from '../../capability-envelope/policy';
 
 function json(obj: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+  return { data: obj };
 }
 
 export default defineTool({
