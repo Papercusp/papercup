@@ -304,7 +304,15 @@ export async function runBlenderRubricDrill(args: {
   await archive.flush();
   for (const row of result.provenance) {
     await recordRoutedIdea({
-      ...row,
+      ideaId: row.ideaId,
+      lens: row.lens,
+      rail: row.rail,
+      routedRef: row.routedRef,
+      ...(row.title ? { title: row.title } : {}),
+      ...(row.addressesPatternRefs
+        ? { addressesPatternRefs: row.addressesPatternRefs }
+        : {}),
+      ...(row.targetHive ? { targetHive: row.targetHive } : {}),
       harnessSlug: args.harnessSlug,
       sourceHive,
       workspaceId,

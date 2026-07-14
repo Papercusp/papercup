@@ -139,6 +139,28 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     // must use the published bar height, same as .pclsb/.pcdar/.pc-header.
     expect(sidebarRule).toContain('top: var(--pc-env-bar-h, 0px)');
   });
+
+  it('the compact-density avatar override keeps the agent mark readable (WI-4731)', async () => {
+    // The sidebar's own !important density block WINS over globals.css'
+    // .oracle-msg-avatar sizing — a globals-only bump silently does nothing
+    // in this pane (live-verified 2026-07-13: computed 20px while globals
+    // said 34px). Pin the operative override at the readable size so the
+    // two-rule trap can't regress.
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    const avatarRules = css.match(/\.op-chat-sidebar \.oracle-msg-avatar\s*\{[^}]*\}/g) ?? [];
+    expect(avatarRules.length).toBeGreaterThan(0);
+    const important = avatarRules.find((r) => r.includes('!important')) ?? '';
+    expect(important).toContain('width: 30px !important');
+    expect(important).toContain('height: 30px !important');
+    const iconRule = css.match(/\.op-chat-sidebar \.oracle-msg-icon\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(iconRule).toContain('width: 18px !important');
+  });
 });
 
 describe('OperatorChatSidebar collapse behavior', () => {
