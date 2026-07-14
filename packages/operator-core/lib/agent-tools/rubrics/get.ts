@@ -5,8 +5,8 @@
  * (rubric-driven-observations-2026-06-20 P-002; bulk-standardized per
  * bulk-endpoint-standardization-2026-06-21).
  *
- * Bulk by default (the house keyed-array contract): pass `rubricId` for one or
- * `rubricIds` for several → { ok, results:[{ ok, rubricId, rubric? | error }],
+ * Bulk by default (the house keyed-array contract): pass `rubricRef` for one or
+ * `rubricRefs` for several → { ok, results:[{ ok, rubricId, rubric? | error }],
  * counts } — each result self-describes its rubricId, so a not-found id never
  * poisons the rest and the agent correlates by id (not array position).
  */
@@ -21,11 +21,11 @@ export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass `rubricId` for one or `rubricIds` for several. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing id never fails the rest.",
+    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing ref never fails the rest.",
   guidance: {
-    when: 'You have one or more rubric_ids (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every id at once via `rubricIds`.',
+    when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
-    chaining: "rubrics:list → rubrics:get { rubricIds:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.",
+    chaining: "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.",
     seeAlso: [
       'rubrics:list (scan summary rows to find an id)',
       'rubrics:search (keyword lookup)',
@@ -37,15 +37,15 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      rubricId: z.string().min(1).optional().describe('a single rubric slug, e.g. "pot-coordination-health" (n=1 shorthand for rubricIds:[id])'),
-      rubricIds: z.array(z.string().min(1)).min(1).max(100).optional().describe('rubric slugs to fetch (1–100)'),
+      rubricRef: z.string().min(1).optional().describe('a single rubric ref/slug, e.g. "pot-coordination-health" (n=1 shorthand for rubricRefs:[ref])'),
+      rubricRefs: z.array(z.string().min(1)).min(1).max(100).optional().describe('rubric refs/slugs to fetch (1–100)'),
     })
-    .refine((a) => Boolean(a.rubricId) || (a.rubricIds?.length ?? 0) > 0, {
-      message: 'pass `rubricId` (one) or `rubricIds` (many)',
+    .refine((a) => Boolean(a.rubricRef) || (a.rubricRefs?.length ?? 0) > 0, {
+      message: 'pass `rubricRef` (one) or `rubricRefs` (many)',
     }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const ids = mergeIds(args.rubricId, args.rubricIds);
+    const ids = mergeIds(args.rubricRef, args.rubricRefs);
     const env = await runBulk(
       ids,
       async (rubricId) => {

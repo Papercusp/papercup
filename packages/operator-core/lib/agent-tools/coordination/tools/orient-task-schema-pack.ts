@@ -1,0 +1,223 @@
+/**
+ * A bounded, task-derived tool-schema pack for coord:orient (P-006 / EI-11409).
+ *
+ * Dynamic tool surfaces already know how to grow a seeded MCP session through
+ * ctx.activateTools. The missing leg was choosing the small set a task needs at
+ * the wake boundary and carrying enough schema to survive a compaction. This
+ * module deliberately reuses the projected tool registry and the existing
+ * activation notification; it does not create a second catalog.
+ */
+import { createHash } from 'node:crypto';
+import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { schemaToText } from '../../../cupboard/tools-discovery';
+
+export const TASK_SCHEMA_PACK_SCHEMA = 'orient-task-tool-schema-pack-v1' as const;
+export const TASK_SCHEMA_PACK_BUDGET_CHARS = 9_000;
+export const TASK_SCHEMA_PACK_MAX_TOOLS = 28;
+const ARG_SCHEMA_CAP = 420;
+
+interface ProjectedToolLike {
+  expose?: { mcp?: { name?: string } | null };
+  inputSchema?: unknown;
+}
+
+export interface TaskSchemaPackInput {
+  intent?: string;
+  modes?: readonly string[];
+  harness?: string | null;
+  plan?: string | null;
+  planItems?: readonly string[];
+  recipeTitles?: readonly string[];
+}
+
+export interface TaskToolSchemaPack {
+  schemaVersion: typeof TASK_SCHEMA_PACK_SCHEMA;
+  generation: string;
+  watermark: string;
+  tools: Array<{ name: string; args: string | null }>;
+  missing: string[];
+  basis: {
+    modes: string[];
+    harness: string | null;
+    plan: string | null;
+    planItems: string[];
+    signals: string[];
+  };
+  budget: { maxChars: number; serializedChars: number; estimatedTokens: number; maxTools: number };
+  provenance: { source: 'coord:orient'; schemaSource: 'projected-tool-registry' };
+  resync: {
+    on: readonly ['missing-base', 'schema-mismatch', 'watermark-mismatch', 'mode-transition', 'scope-transition'];
+    verb: 'coord:orient';
+    args: { afterCompaction: true };
+    rule: 'replace-full-never-merge-behind';
+  };
+}
+
+type CandidateMap = Map<string, number>;
+
+function add(candidates: CandidateMap, names: readonly string[], priority: number): void {
+  for (const name of names) candidates.set(name, Math.max(priority, candidates.get(name) ?? 0));
+}
+
+const MODE_TOOLS: Record<string, readonly string[]> = {
+  auto: ['loop:arm', 'loop:status', 'loop:checkpoint', 'loop:end'],
+  drain: ['scheduler:get_next', 'work_items:burn_down', 'fleet:assignments', 'fleet:leader-brief', 'fleet:bench'],
+  ideate: [
+    'curation:state-of-pot',
+    'rubrics:list',
+    'rubrics:search',
+    'scorecards:freshness',
+    'blender:ideation-feedback',
+    'blender:route-idea',
+    'blender:ideate-pass-record',
+    'improvements:capture',
+  ],
+};
+
+const SIGNAL_GROUPS: Array<{ id: string; pattern: RegExp; tools: readonly string[] }> = [
+  {
+    id: 'grade',
+    pattern: /\b(grade|rubric|scorecard|evaluation|audit score)\b/i,
+    tools: ['rubrics:list', 'rubrics:search', 'rubrics:get', 'scorecards:list', 'scorecards:freshness', 'blender:grade-idea', 'blender:ideation-feedback'],
+  },
+  {
+    id: 'monitor',
+    pattern: /\b(monitor|watch|await|event|wake|cadence|loop)\b/i,
+    tools: ['loop:status', 'loop:checkpoint', 'watch:create', 'events:await', 'events:status', 'coord:glance'],
+  },
+  {
+    id: 'fleet-drain',
+    pattern: /\b(fleet|drain|backlog|scheduler|claim.?spec|burndown)\b/i,
+    tools: ['scheduler:get_next', 'scheduler:get_claim_spec', 'work_items:burn_down', 'fleet:assignments', 'fleet:leader-brief', 'fleet:bench'],
+  },
+  {
+    id: 'release',
+    pattern: /\b(release|deploy|gate|green|sha|pipeline)\b/i,
+    tools: ['release:trace', 'release:checkpoint-run', 'deploy:status', 'deploy:await', 'dev:build_status'],
+  },
+  {
+    id: 'sessions',
+    pattern: /\b(session|transcript|compaction|timeline)\b/i,
+    tools: ['sessions:list', 'sessions:search', 'sessions:timeline', 'sessions:read', 'session:request-compaction'],
+  },
+  {
+    id: 'tool-schema',
+    pattern: /\b(tool|schema|catalog|argument|parameter)\b/i,
+    tools: ['tools:find', 'tools:invoke', 'agent_tools:list'],
+  },
+  {
+    id: 'recipe',
+    pattern: /\b(recipe|orchestrat|batch|fan.?out)\b/i,
+    tools: ['recipes:get', 'recipes:run', 'recipes:search', 'code:run'],
+  },
+];
+
+function compactSchema(schema: unknown): string | null {
+  const rendered = schemaToText(schema);
+  if (!rendered) return null;
+  return rendered.length > ARG_SCHEMA_CAP ? `${rendered.slice(0, ARG_SCHEMA_CAP - 1)}…` : rendered;
+}
+
+function projectedCatalog(): ProjectedToolLike[] {
+  return listAllProjectedTools() as unknown as ProjectedToolLike[];
+}
+
+/** Pure over its input + injected catalog. Exported for the recurrence test. */
+export function buildTaskToolSchemaPack(
+  input: TaskSchemaPackInput,
+  catalog: readonly ProjectedToolLike[] = projectedCatalog(),
+): TaskToolSchemaPack {
+  const candidates: CandidateMap = new Map();
+  const signals: string[] = [];
+
+  // The task lifecycle spine: orient once, inspect/checkpoint/finish the held
+  // unit. These are useful for every non-trivial task and intentionally tiny.
+  add(candidates, ['coord:orient', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'], 100);
+
+  const modes = [...new Set((input.modes ?? []).map((m) => m.toLowerCase()))].sort();
+  for (const mode of modes) {
+    const tools = MODE_TOOLS[mode];
+    if (tools) {
+      signals.push(`mode:${mode}`);
+      add(candidates, tools, 95);
+    }
+  }
+
+  if (input.plan || input.planItems?.length) {
+    signals.push('scope:plan');
+    add(candidates, ['plans:get', 'plans:items', 'locks:acquire', 'locks:release'], 92);
+  }
+
+  const recipeTitles = (input.recipeTitles ?? []).filter(Boolean);
+  const signalText = [input.intent ?? '', ...recipeTitles].join('\n');
+  for (const group of SIGNAL_GROUPS) {
+    if (group.pattern.test(signalText)) {
+      signals.push(`intent:${group.id}`);
+      add(candidates, group.tools, 85);
+    }
+  }
+  if (input.intent && input.recipeTitles !== undefined) {
+    // A surfaced recipe is executable context even when its short title has no
+    // recognizable keyword. Carry the two direct continuation verbs.
+    signals.push('surface:recipes');
+    add(candidates, ['recipes:get', 'recipes:run'], 88);
+  }
+
+  const byName = new Map<string, ProjectedToolLike>();
+  for (const tool of catalog) {
+    const name = tool.expose?.mcp?.name;
+    if (name) byName.set(name, tool);
+  }
+
+  const requested = [...candidates.entries()]
+    .sort(([a, ap], [b, bp]) => bp - ap || a.localeCompare(b));
+  const missing = requested.filter(([name]) => !byName.has(name)).map(([name]) => name);
+  const tools = requested
+    .flatMap(([name]) => {
+      const tool = byName.get(name);
+      return tool ? [{ name, args: compactSchema(tool.inputSchema) }] : [];
+    })
+    // Missing registry entries are reported above and never consume the pack's
+    // live-tool budget. This matters during rolling deploys: one unavailable
+    // low-priority tool must not evict a real schema the caller can use now.
+    .slice(0, TASK_SCHEMA_PACK_MAX_TOOLS);
+
+  // The char budget is an invariant, not guidance. Drop lowest-priority tail
+  // entries until the actual serialized schema projection fits.
+  while (tools.length > 1 && JSON.stringify(tools).length > TASK_SCHEMA_PACK_BUDGET_CHARS) tools.pop();
+
+  const basis = {
+    modes,
+    harness: input.harness ?? null,
+    plan: input.plan ?? null,
+    planItems: [...new Set(input.planItems ?? [])].sort(),
+    signals: [...new Set(signals)].sort(),
+  };
+  const watermark = createHash('sha256')
+    .update(JSON.stringify({ schemaVersion: TASK_SCHEMA_PACK_SCHEMA, basis, tools }))
+    .digest('hex')
+    .slice(0, 24);
+  const serializedChars = JSON.stringify(tools).length;
+
+  return {
+    schemaVersion: TASK_SCHEMA_PACK_SCHEMA,
+    generation: watermark,
+    watermark,
+    tools,
+    missing,
+    basis,
+    budget: {
+      maxChars: TASK_SCHEMA_PACK_BUDGET_CHARS,
+      serializedChars,
+      estimatedTokens: Math.ceil(serializedChars / 4),
+      maxTools: TASK_SCHEMA_PACK_MAX_TOOLS,
+    },
+    provenance: { source: 'coord:orient', schemaSource: 'projected-tool-registry' },
+    resync: {
+      on: ['missing-base', 'schema-mismatch', 'watermark-mismatch', 'mode-transition', 'scope-transition'],
+      verb: 'coord:orient',
+      args: { afterCompaction: true },
+      rule: 'replace-full-never-merge-behind',
+    },
+  };
+}

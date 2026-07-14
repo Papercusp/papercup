@@ -253,6 +253,27 @@ export function OperatorChatSidebar() {
     statusText = 'ready';
   }
 
+  // WI-4739: the header identity follows the ACTIVE rail pane. Switching the
+  // left rail to the Mug (queen) or Kettle (overwatch) tab is, in the owner's
+  // model, "switching to the mug/kettle chat" — so the top-left orb + name
+  // track it (Coffee/"Mug", Thermometer/"Kettle" — the LeftSidebar tab
+  // iconography + lexicon words). Any other tab, a collapsed rail, or a
+  // chromeless route (no docked rail) shows the Papercup identity as before.
+  // Read-only nuqs peek at the rail's own params (`lsb` open / `lst` tab).
+  const t = useLexicon();
+  const railDocked = useBodyHasClass('has-left-sidebar');
+  const [{ lsb: railOpen, lst: railTab }] = useQueryStates({
+    lsb: parseAsBoolean.withDefault(true),
+    lst: parseAsString.withDefault('queen'),
+  });
+  const headerMark = railDocked && railOpen
+    ? railTab === 'queen'
+      ? { Icon: Coffee, name: t('brain') }
+      : railTab === 'overwatch'
+        ? { Icon: Thermometer, name: t('overwatch') }
+        : null
+    : null;
+
   return (
     <aside
       className="op-chat-sidebar"
@@ -276,35 +297,38 @@ export function OperatorChatSidebar() {
         <ChevronRight className="op-chat-expand-chevron" strokeWidth={1.9} aria-hidden="true" />
       </button></Tooltip>
       <div className="op-chat-expanded-shell" aria-hidden={!chatOpen}>
+        {/* WI-4738: ONE header line (owner ask 2026-07-13) — orb, name, then the
+            compact controls and the collapse chevron on the same row. The old
+            two-row layout (title row over a full-width controls row, with the
+            voice button stretched to fill it) read as a "gigantic" mic. */}
         <div className="op-chat-header">
           <div className="op-chat-header-main">
             <div className="op-chat-header-orb" aria-hidden="true">
-              <OperatorLogoMark className="op-chat-header-logo" />
+              {headerMark
+                ? <headerMark.Icon className="op-chat-header-logo op-chat-header-mark" strokeWidth={1.7} aria-hidden="true" />
+                : <OperatorLogoMark className="op-chat-header-logo" />}
             </div>
-            <div className="op-chat-header-copy">
-              <div className="op-chat-header-title-row">
-                <OperatorWordmarkLockup
-                  className="op-chat-wordmark"
-                  titleClassName="op-chat-wordmark-title"
-                  subtitleClassName="op-chat-wordmark-subtitle"
-                  subtitle=""
-                />
-                <Tooltip label="Collapse Papercup chat"><button
-                  type="button"
-                  className="op-chat-toggle"
-                  onClick={collapseChat}
-                  aria-label="Collapse Papercup chat"
-
-                >
-                  <ChevronLeft strokeWidth={1.9} aria-hidden="true" />
-                </button></Tooltip>
-              </div>
-              <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
-                <AudienceModeSelector />
-                <OperatorActiveToggle />
-                <VoiceButton />
-              </div>
+            <OperatorWordmarkLockup
+              className="op-chat-wordmark"
+              titleClassName="op-chat-wordmark-title"
+              subtitleClassName="op-chat-wordmark-subtitle"
+              subtitle=""
+              title={headerMark?.name}
+            />
+            <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
+              <AudienceModeSelector />
+              <OperatorActiveToggle />
+              <VoiceButton />
+              <TtsMuteButton />
             </div>
+            <Tooltip label="Collapse Papercup chat"><button
+              type="button"
+              className="op-chat-toggle"
+              onClick={collapseChat}
+              aria-label="Collapse Papercup chat"
+            >
+              <ChevronLeft strokeWidth={1.9} aria-hidden="true" />
+            </button></Tooltip>
           </div>
         </div>
         {/* P-018 (mockup variant A): the pot status strip — ambient Mug/Kettle
@@ -482,29 +506,29 @@ const OP_CHAT_SIDEBAR_CSS = `
   height: 30px;
 }
 
-.op-chat-header-copy {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.op-chat-header-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* WI-4738 one-line header: the wordmark yields (truncates) before the
+   controls do, so the row never wraps at narrow sidebar widths. */
+.op-chat-header-main .op-chat-wordmark {
+  flex: 0 1 auto;
   min-width: 0;
 }
 
-.op-chat-header-title-row strong {
-  color: #f3f8ff;
+.op-chat-header-main .op-chat-wordmark-title {
   font-size: 14px;
   line-height: 1.1;
-  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+
+/* WI-4739: the rail-agent mark (Coffee/Thermometer) rendered inside the orb
+   when the Mug/Kettle pane is active — a stroked lucide glyph, not the filled
+   papercup logo, so give it the accent ink directly. */
+.op-chat-header-mark {
+  color: var(--accent-strong, var(--accent-soft));
+}
+
 .op-chat-toggle {
-  margin-left: auto;
   width: 28px;
   height: 28px;
   flex: 0 0 28px;
@@ -544,6 +568,10 @@ const OP_CHAT_SIDEBAR_CSS = `
   gap: 5px;
   min-width: 0;
   overflow: visible;
+  /* WI-4738: right-align the control cluster on the single header row. */
+  margin-left: auto;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
 }
 
 .op-chat-controls .op-active-toggle {
@@ -556,7 +584,9 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 .op-chat-controls .pc-voice-control {
   position: relative;
-  flex: 1 1 auto;
+  /* WI-4738: natural size — the old flex:1 stretched the voice button across
+     the whole row, which is exactly the "gigantic mic" the owner flagged. */
+  flex: 0 0 auto;
   min-width: 0;
   gap: 4px;
   margin-left: 0;
@@ -564,12 +594,38 @@ const OP_CHAT_SIDEBAR_CSS = `
 }
 
 .op-chat-controls .pc-voice-btn {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   justify-content: center;
   min-width: 0;
   min-height: 26px;
   padding: 3px 7px 3px 6px;
   gap: 5px;
+}
+
+/* WI-4740: the speak-responses (TTS) mute — moved here from the retired
+   middle-bar (PapercupVoiceBar) so voice controls live on the chat bar only. */
+.op-chat-controls .op-chat-tts {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-1), transparent 4%);
+  color: #eef8ff;
+  cursor: pointer;
+}
+
+.op-chat-controls .op-chat-tts.is-muted {
+  color: var(--fg-mute, #7f9bb4);
+  background: transparent;
+}
+
+.op-chat-controls .op-chat-tts:hover {
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
 }
 
 .op-chat-controls .pc-voice-btn-orb {
@@ -987,17 +1043,14 @@ body.has-op-chat .pc-header {
   filter: none !important;
 }
 
-.op-chat-header-copy {
-  gap: 3px !important;
-}
-
-.op-chat-header-title-row strong {
+.op-chat-header-main .op-chat-wordmark-title {
   font-size: 13.5px !important;
 }
 
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
-.op-chat-controls .pc-voice-settings-link {
+.op-chat-controls .pc-voice-settings-link,
+.op-chat-controls .op-chat-tts {
   min-height: 27px !important;
   box-shadow: none !important;
 }
@@ -1107,10 +1160,18 @@ body.has-op-chat .pc-header {
 
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
-.op-chat-controls .pc-voice-settings-link {
+.op-chat-controls .pc-voice-settings-link,
+.op-chat-controls .op-chat-tts {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   background: color-mix(in srgb, var(--bg-1), transparent 4%) !important;
   color: #eef8ff !important;
+}
+
+/* Keep the muted TTS state visually distinct despite the contrast group's
+   !important ink above. */
+.op-chat-controls .op-chat-tts.is-muted {
+  color: var(--fg-mute, #7f9bb4) !important;
+  background: transparent !important;
 }
 
 .op-chat-controls .pc-voice-btn-orb {

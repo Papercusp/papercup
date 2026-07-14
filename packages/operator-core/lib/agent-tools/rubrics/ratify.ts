@@ -9,8 +9,8 @@
  * callers bypass the role gate (so the owner/su can seed). Hardening the gate to
  * queen-only (via the autonomy policy) is a v2 follow-up; the intent is documented here.
  *
- * Bulk by default (the house keyed-array contract): ratify ONE inline ({ rubricId
- * }), MANY (rubricIds:[…]) → { ok, results:[{ ok, rubricId, rubric? | error }],
+ * Bulk by default (the house keyed-array contract): ratify ONE inline ({ rubricRef
+ * }), MANY (rubricRefs:[…]) → { ok, results:[{ ok, rubricId, rubric? | error }],
  * counts }. Each result self-describes its rubricId; one not-found id never fails
  * the rest.
  */
@@ -25,11 +25,11 @@ export default defineTool({
   name: 'rubrics:ratify',
   profile: 'engineer',
   description:
-    'Ratify one OR many proposed rubrics → status "active" (D-001: the Mug/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricId }. Many: { rubricIds:[…] }. Returns { ok, results:[{ ok, rubricId, rubric?, completeness? | error }], counts } — correlate by rubricId, not by position; a not-found id never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) — the owner shape is one procedure per aspect PLUS one main methodRef; review the gaps before ratifying.',
+    'Ratify one OR many proposed rubrics → status "active" (D-001: the Mug/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricRef }. Many: { rubricRefs:[…] }. Returns { ok, results:[{ ok, rubricId, rubric?, completeness? | error }], counts } — correlate by rubricId, not by position; a not-found ref never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) — the owner shape is one procedure per aspect PLUS one main methodRef; review the gaps before ratifying.',
   guidance: {
-    when: 'You are the Mug/owner reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricIds:[…].',
+    when: 'You are the Mug/owner reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricRefs:[…].',
     notWhen: 'Authoring or revising content — rubrics:propose. You are not the ratifying authority — leave it proposed and flag the Mug.',
-    chaining: 'rubrics:list { status: "proposed" } → rubrics:get → rubrics:ratify { rubricIds:[…] }. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.',
+    chaining: 'rubrics:list { status: "proposed" } → rubrics:get → rubrics:ratify { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.',
     seeAlso: [
       'rubrics:propose (author or revise content, not activate)',
       'rubrics:list { status:"proposed" } (find rubrics awaiting ratification)',
@@ -40,15 +40,15 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      rubricId: z.string().min(1).optional().describe('single-ratify shorthand: the rubric slug to activate'),
-      rubricIds: z.array(z.string().min(1)).min(1).max(100).optional().describe('rubric slugs to activate (1–100)'),
+      rubricRef: z.string().min(1).optional().describe('single-ratify shorthand: the rubric ref/slug to activate'),
+      rubricRefs: z.array(z.string().min(1)).min(1).max(100).optional().describe('rubric refs/slugs to activate (1–100)'),
     })
-    .refine((a) => Boolean(a.rubricId) || (a.rubricIds?.length ?? 0) > 0, {
-      message: 'pass `rubricId` (one) or `rubricIds` (many)',
+    .refine((a) => Boolean(a.rubricRef) || (a.rubricRefs?.length ?? 0) > 0, {
+      message: 'pass `rubricRef` (one) or `rubricRefs` (many)',
     }),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
-    const ids = mergeIds(args.rubricId, args.rubricIds);
+    const ids = mergeIds(args.rubricRef, args.rubricRefs);
     const env = await runBulk(
       ids,
       async (rubricId) => {

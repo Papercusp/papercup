@@ -29,7 +29,7 @@ import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen } from 'lucide-react';
+import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';

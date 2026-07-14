@@ -315,6 +315,12 @@ export interface OrientResult {
    *  ABSENT (never a false green) for a harness with no green-checkpoint routine, and on any
    *  read failure/timeout — see pipeline-health.ts. Both modes: a monitor tick wants this most. */
   pipeline?: OrientPipeline | null;
+  /** P-006 / EI-11409: compact schemas for the exact task/mode pack orient
+   *  activated on this session. Re-delivered after compaction with a stable
+   *  content watermark and replace-full resync contract. */
+  taskToolSchemaPack?: import('./orient-task-schema-pack').TaskToolSchemaPack & {
+    activation: { requested: true; surfaceChanged: boolean | null };
+  };
 }
 
 /** P-016: the role-specific fold closures the HANDLER injects (dynamic-import IO
@@ -1516,6 +1522,43 @@ export default defineTool({
         /* fail-soft: prompt snapshot remains conservative/manual */
       }
     }
+    // P-006 / EI-11409: derive the small tool set this task actually needs
+    // from the active modes + declared scope + surfaced recipe context, then
+    // grow the EXISTING per-session MCP surface. list_changed-capable clients
+    // (Codex/OMP) re-fetch the real full schemas; the compact schema pack in
+    // the response makes the same task resumable after compaction with no
+    // tools:find/tools:invoke rediscovery tax. Every orient recomputes it, so a
+    // mode/scope transition yields a new watermark and a post-compaction orient
+    // reconstructs the same pack. Fail-soft: orientation remains usable if the
+    // registry or client activation seam is unavailable during a rolling deploy.
+    let taskToolSchemaPack: OrientResult['taskToolSchemaPack'];
+    try {
+      const { buildTaskToolSchemaPack } = await import('./orient-task-schema-pack');
+      const pack = buildTaskToolSchemaPack({
+        intent: args.intent ?? args.memoryQuery,
+        modes: runtimeModeIds ?? [],
+        harness: args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null,
+        plan: args.planSlug ?? null,
+        planItems: args.planItems ?? [],
+        recipeTitles: Array.isArray(result.recipes)
+          ? result.recipes.flatMap((recipe) => (typeof recipe.title === 'string' ? [recipe.title] : []))
+          : args.intent
+            ? []
+            : undefined,
+      });
+      let surfaceChanged: boolean | null = null;
+      try {
+        surfaceChanged = ctx.activateTools?.(pack.tools.map((tool) => tool.name)) ?? null;
+      } catch {
+        surfaceChanged = null;
+      }
+      taskToolSchemaPack = {
+        ...pack,
+        activation: { requested: true, surfaceChanged },
+      };
+    } catch {
+      /* fail-soft */
+    }
     // EI-11484: OPEN OWNER DIRECTIVES fold — every orient (full AND monitor;
     // orient is the mandated bootstrap, so this is how a SUCCESSOR session in
     // the workspace inherits an order whose recording session died). Rendered
@@ -1537,6 +1580,7 @@ export default defineTool({
       ...(captureMiss ? { captureMiss } : {}),
       ...(configIntegrity ? { configIntegrity } : {}),
       ...(codexLocks ? { codexLocks } : {}),
+      ...(taskToolSchemaPack ? { taskToolSchemaPack } : {}),
       ...(recovery ? { recovery } : {}),
       ...(result as object),
     };

@@ -31,7 +31,7 @@ export default defineTool({
   name: 'rubrics:propose',
   profile: 'engineer',
   description:
-    'Propose a rubric (the shared standard for a system characteristic) → status "proposed". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricId replaces ALL of its content — rubrics:get it first, edit, and resubmit EVERY criterion with its full method/replication text (a partial criteria list deletes the rest). Loss-guards enforce this: dropping a stored criterion key needs a dropKeys ack; shrinking a criterion\'s method+replication procedure >40% (or losing its REPLICATION DRILL marker) needs allowMethodShrink + shrinkReason.',
+    'Propose a rubric (the shared standard for a system characteristic) → status "proposed". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricRef replaces ALL of its content — rubrics:get it first, edit, and resubmit EVERY criterion with its full method/replication text (a partial criteria list deletes the rest). Loss-guards enforce this: dropping a stored criterion key needs a dropKeys ack; shrinking a criterion\'s method+replication procedure >40% (or losing its REPLICATION DRILL marker) needs allowMethodShrink + shrinkReason.',
   guidance: {
     when: 'You see a recurring characteristic worth grading consistently and no rubric covers it — or you are REVISING an existing rubric (rubrics:get first; resubmit ALL criteria). Author each criterion: model + method + driftMarkers + its own replication drill (the copy-runnable testing procedure); methodRef points at the rubric-level long-form runbook.',
     notWhen: 'A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.',
@@ -46,7 +46,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    rubricId: z.string().min(1).max(120).describe('slug, e.g. "pot-coordination-health"'),
+    rubricRef: z.string().min(1).max(120).describe('rubric ref/slug, e.g. "pot-coordination-health"'),
     characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
     title: hardText(LIMITS.SHORT_TITLE),
     description: hardText(8000).optional(),
@@ -79,7 +79,7 @@ export default defineTool({
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
     const rubric = await proposeRubric({
-      rubricId: args.rubricId,
+      rubricId: args.rubricRef,
       characteristic: args.characteristic,
       title: args.title,
       description: args.description,

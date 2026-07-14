@@ -28,7 +28,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    rubricId: z.string().min(1).max(120).describe('the rubric slug to amend'),
+    rubricRef: z.string().min(1).max(120).describe('the rubric ref/slug to amend'),
     criterion: z
       .object({
         key: z.string().min(1).describe('the criterion key (must exist — keys are identity, not amendable)'),
@@ -70,7 +70,7 @@ export default defineTool({
     // identities collapse onto plan.owner, making D-012 unauditable — is tracked separately.)
     resolveAgentIdentity(ctx); // still resolve: authz/identity side-effects + a clear failure if unidentified
     const rubric = await amendRubric({
-      rubricId: args.rubricId,
+      rubricId: args.rubricRef,
       ...(args.criterion ? { criterion: args.criterion } : {}),
       ...(args.methodRef !== undefined ? { methodRef: args.methodRef } : {}),
       ...(args.allowMethodShrink !== undefined ? { allowMethodShrink: args.allowMethodShrink } : {}),
@@ -79,7 +79,7 @@ export default defineTool({
     if (!rubric) {
       return {
         content: [
-          { type: 'text' as const, text: JSON.stringify({ ok: false, error: `no rubric '${args.rubricId}' — rubrics:list to see ids` }) },
+          { type: 'text' as const, text: JSON.stringify({ ok: false, error: `no rubric '${args.rubricRef}' — rubrics:list to see refs` }) },
         ],
       };
     }
