@@ -76,11 +76,16 @@ beforeAll(async () => {
   // EI-11796: the production guard counts through the unified work_items view. This
   // claim-spec-only fixture does not need the full work-item schema; keep the smallest
   // real table that exercises the count and its terminal-state floor.
+  // EI-12095: `item_kind` added so getActiveClaimsForBee's `feature_id AS id, item_kind AS
+  // kind` projection (the concurrency-diagnosis held-ids read) also has a real column to
+  // select against — production's harness_shared.work_items has no `id` column at all;
+  // the unified id lives in `feature_id` and the family/kind in `item_kind`.
   await db.sql.unsafe(`CREATE TABLE harness_shared.work_items (
     workspace_id text NOT NULL,
     feature_id text PRIMARY KEY,
     taken_by text,
-    status text NOT NULL DEFAULT 'todo'
+    status text NOT NULL DEFAULT 'todo',
+    item_kind text NOT NULL DEFAULT 'change'
   )`);
 }, 180_000);
 afterAll(async () => {

@@ -60,17 +60,40 @@ function extractCollectCommands(mainRs: string): string[] {
     .filter((t) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(t));
 }
 
+/**
+ * Find the `]` that closes the `[` at `openIdx`, by bracket-DEPTH counting
+ * rather than a lazy `[\s\S]*?\]` regex. EI-12083 regression: one of the
+ * array's own inline comments reads `not a #[tauri::command];` — a lazy
+ * regex terminates on THAT `]` (immediately followed by `;`) and silently
+ * truncates the extracted command list many entries early. Depth counting is
+ * immune: `#[` opens a nested bracket that its own `]` closes, so depth
+ * never spuriously returns to 0 inside a balanced inline comment.
+ */
+function findMatchingBracket(s: string, openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < s.length; i++) {
+    if (s[i] === '[') depth++;
+    else if (s[i] === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  throw new Error(`no matching ']' found for '[' at index ${openIdx}`);
+}
+
 function extractBuildCommands(buildRs: string): string[] {
   // EI-12083: the command list moved from an inline `.commands(&[...])` array
   // literal to a hoisted `let commands: &[&str] = &[...]` binding (so build.rs's
   // own pre-tauri_build capability/manifest cross-check — see
   // check_capability_commands_are_registered — can read the same list without
   // duplicating it). Match either shape so this extractor survives both.
-  const m =
-    buildRs.match(/let\s+commands\s*:\s*&\[&str\]\s*=\s*&\[([\s\S]*?)\];/) ??
-    buildRs.match(/\.commands\(&\[([\s\S]*?)\]\)/);
+  const letMatch = /let\s+commands\s*:\s*&\[&str\]\s*=\s*&(\[)/.exec(buildRs);
+  const inlineMatch = letMatch ? null : /\.commands\(&(\[)/.exec(buildRs);
+  const m = letMatch ?? inlineMatch;
   if (!m) throw new Error('.commands(&[...]) / let commands: &[&str] = &[...] not found in build.rs');
-  const body = stripLineComments(m[1]);
+  const openIdx = m.index + m[0].length - 1; // index of the `[` captured in group 1
+  const closeIdx = findMatchingBracket(buildRs, openIdx);
+  const body = stripLineComments(buildRs.slice(openIdx + 1, closeIdx));
   const out: string[] = [];
   const re = /"([^"]+)"/g;
   let mm: RegExpExecArray | null;

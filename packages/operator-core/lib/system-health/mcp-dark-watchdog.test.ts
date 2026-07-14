@@ -4,16 +4,30 @@
  * and a negative case; the DB wiring (checkMcpDark) is integration-covered. Clock + restartAt are
  * injected so no real time is involved.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import {
   evaluateMcpDark,
   evaluateInteractiveMcpDark,
   planInteractiveHeal,
   markHealSent,
   healedWakeText,
+  checkInteractiveMcpDark,
   type McpDarkSnapshot,
   type InteractiveDarkSnapshot,
 } from './mcp-dark-watchdog';
+
+// checkInteractiveMcpDark lazily `await import()`s this module — mock it so the
+// recovery-sweep tests below never touch the real FS/pty layer.
+const listLiveHostsMock = vi.fn<() => Array<{ ownerId: string; startedAt: number; lastActivityAt?: number | null }>>(
+  () => [],
+);
+const mcpReconnectViaPtyMock = vi.fn(async () => 'sent' as const);
+vi.mock('../events/await/psu-pty-discovery', () => ({
+  listLiveHosts: (...args: unknown[]) => listLiveHostsMock(...(args as [])),
+  mcpReconnectViaPty: (...args: unknown[]) => mcpReconnectViaPtyMock(...(args as [])),
+  findLiveHost: () => null,
+  injectIntoHost: async () => true,
+}));
 
 const RESTART = 1_000_000_000_000; // fixed operator-boot epoch ms
 const M = 60_000;
@@ -221,5 +235,103 @@ describe('healedWakeText', () => {
     expect(text).toContain('loop:status');
     expect(text).toContain('re-park');
     expect(text).toContain('~45m');
+  });
+});
+
+describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12059 / su-39f079d3)', () => {
+  // EI-12059 root cause: the per-owner heal ladder only ever visits owners in
+  // `hosts` (currently-live psu-pty sessions). Once an interactive session
+  // ENDS — its discovery entry disappears — it drops out of `hosts` forever,
+  // so `runInteractiveHealStep`'s own escalation-clear (fired only on
+  // 'announce-healed') can never reach it again. An escalation raised while
+  // that session was dark then stays open FOREVER. The fix: an unconditional
+  // recovery sweep (mirroring the bee-variant's) that clears ANY standing
+  // mcp-dark-int:% escalation whose owner is not in THIS pass's dark set —
+  // including, critically, when there are ZERO live hosts at all.
+
+  /** Fake postgres tag routing on query text: an escalations-phase SELECT, an
+   *  escalations UPDATE (recovery clear), a coord_presence SELECT, and a
+   *  routines (armed-loop) SELECT — the four query shapes checkInteractiveMcpDark
+   *  issues. `openPhases` seeds the standing (still-open) escalation rows. */
+  function fakeSql(opts: {
+    openPhases: string[];
+    presenceByOwner?: Record<string, number | null>;
+  }) {
+    const updatedPhases: string[] = [];
+    const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const q = strings.join(' ');
+      if (q.includes('SELECT phase FROM harness_shared.harness_escalations')) {
+        return Promise.resolve(opts.openPhases.map((phase) => ({ phase })));
+      }
+      if (q.includes('UPDATE harness_shared.harness_escalations')) {
+        // ANY(${toRecover}) is the sole interpolated array value on this query shape.
+        const arr = values.find((v) => Array.isArray(v)) as string[] | undefined;
+        if (arr) updatedPhases.push(...arr);
+        return Promise.resolve([]);
+      }
+      if (q.includes('coord_presence')) {
+        const owners = values[0] as string[];
+        return Promise.resolve(
+          owners
+            .filter((o) => (opts.presenceByOwner ?? {})[o] != null)
+            .map((o) => ({ owner_id: o, presence_ms: (opts.presenceByOwner ?? {})[o] })),
+        );
+      }
+      if (q.includes('harness_shared.routines')) {
+        return Promise.resolve([]); // no armed loops in these tests
+      }
+      return Promise.resolve([]);
+    }) as never;
+    return { tag, updatedPhases };
+  }
+
+  beforeEach(() => {
+    listLiveHostsMock.mockReset().mockReturnValue([]);
+    mcpReconnectViaPtyMock.mockReset().mockResolvedValue('sent');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('ZERO live hosts still clears a stale escalation for an ENDED session (the exact EI-12059 shape)', async () => {
+    const phase = 'mcp-dark-int:su-39f079d3-4154-495e-af05-710c5a1148ea';
+    const { tag, updatedPhases } = fakeSql({ openPhases: [phase] });
+    listLiveHostsMock.mockReturnValue([]); // the session has fully ended — no pty host left
+
+    const out = await checkInteractiveMcpDark(tag);
+
+    expect(updatedPhases).toContain(phase);
+    expect(out.recovered).toContain('su-39f079d3-4154-495e-af05-710c5a1148ea');
+    expect(out.darkOwners).toEqual([]);
+  });
+
+  it('a live host that IS still dark keeps its OWN escalation open, while an unrelated ENDED session is swept', async () => {
+    const darkOwner = 'su-live-dark';
+    const endedOwner = 'su-ended';
+    const { tag, updatedPhases } = fakeSql({
+      openPhases: [`mcp-dark-int:${darkOwner}`, `mcp-dark-int:${endedOwner}`],
+      presenceByOwner: { [darkOwner]: INOW - 45 * M }, // stale beat, in-use host below ⇒ dark (no-loop clause)
+    });
+    listLiveHostsMock.mockReturnValue([
+      { ownerId: darkOwner, startedAt: INOW - 6 * 60 * M, lastActivityAt: INOW - 1 * M },
+    ]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+
+    const out = await checkInteractiveMcpDark(tag);
+
+    expect(out.darkOwners).toContain(darkOwner);
+    expect(updatedPhases).not.toContain(`mcp-dark-int:${darkOwner}`); // still dark — left open
+    expect(updatedPhases).toContain(`mcp-dark-int:${endedOwner}`); // no longer live at all — swept
+    vi.useRealTimers();
+  });
+
+  it('never throws when the escalations SELECT itself fails (fail-soft, per the function contract)', async () => {
+    const throwingSql = (() => Promise.reject(new Error('pg connection reset'))) as never;
+    await expect(checkInteractiveMcpDark(throwingSql)).resolves.toEqual({
+      darkOwners: [],
+      healed: [],
+      healSent: [],
+      notified: [],
+      recovered: [],
+    });
   });
 });

@@ -90,6 +90,18 @@
 #                                via the bridge still work; agent-e2e.mdx §15.4)
 #   VERIFY_TAURI_PORT_LOCK_DIR  advisory-lock directory for concurrent verifier
 #                               launches (default: $TMPDIR/papercusp-tauri-port-locks)
+#   VERIFY_TAURI_MEMORY_LIMIT_MB
+#                               RSS high-water mark (MiB) the isolated verify
+#                                sidecar's memory-watchdog recycles at (default
+#                                12288 — the background-primary footprint; EI-11641).
+#                                The role-aware default would mis-size this
+#                                substrate-booting sidecar to the 3200 request-worker
+#                                limit, which its own fresh boot (~3.3 GB) already
+#                                exceeds → a perpetual recycle loop that wedges the
+#                                agent bridge. Must be a positive MiB value (a
+#                                non-positive value falls back to the role default);
+#                                to disable the watchdog outright, export
+#                                PAPERCUSP_MEMORY_WATCHDOG=0 in the ambient env.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,6 +113,18 @@ source "$DESKTOP_DIR/bin/lib/federation-asserts.sh"   # reuse fed_pick_free_port
 [ -d "$DESKTOP_DIR" ] || { echo "FATAL: $DESKTOP_DIR not found — set PAPERCUSP_REPO_DIR" >&2; exit 1; }
 
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
+# EI-11641: pin the isolated verify sidecar's memory-watchdog high-water mark. The
+# sidecar boots the full operator (substrate + the DBOS routines tick that
+# dev-operator-ifneeded.sh enables), so its FRESH-boot RSS is background-primary-
+# sized (~3.3 GB observed). But it launches PAPERCUSP_BACKGROUND_WORKERS=0, so
+# resolveMemoryWatchdogLimitMb() (memory-watchdog.ts) mis-sizes it to the 3200 MiB
+# REQUEST-worker limit — below its own boot RSS. The watchdog then recycles the
+# sidecar every ~60 s in a perpetual loop; the webview's backend churns and the
+# tauri-agent-tools bridge wedges (every eval times out), making live UI
+# verification impossible on a loaded box. This instance is short-lived, single-
+# purpose and torn down after the run, so give it the background-primary limit
+# (its real footprint) — a genuine runaway still recycles, a normal boot never does.
+MEMORY_LIMIT_MB="${VERIFY_TAURI_MEMORY_LIMIT_MB:-12288}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
 
@@ -245,6 +269,7 @@ cd "$DESKTOP_DIR"
 exec env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   OPERATOR_DEV_PORT="$DEV_PORT" OPERATOR_DEV_PTY_PORT="$PTY_PORT" \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL=0 \\
+  PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=$MEMORY_LIMIT_MB \\
   $SPA_ENV_LINE \\
   ${LAUNCH_PREFIX[*]} npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:$DEV_PORT"}}'
 LAUNCH

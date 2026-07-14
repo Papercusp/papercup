@@ -54,8 +54,12 @@ export async function getActiveClaimsForBee(
 ): Promise<{ id: string; kind: string }[]> {
   const sql = sqlOverride ?? getOrgPg().sql;
   const workspaces = [...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE])];
+  // NOTE: harness_shared.work_items's unified item id lives in `feature_id` (not `id` —
+  // there is no `id` column on this table) and its family/kind in `item_kind` (`kind` is a
+  // separate, unrelated legacy column that is null for issue-family rows). Aliased below so
+  // every caller of this function sees the { id, kind } shape its name promises.
   const rows = (await sql`
-    SELECT id, kind
+    SELECT feature_id AS id, item_kind AS kind
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ${args.cupId}
