@@ -135,7 +135,7 @@ export type DecoratedAgent = AgentAssignment & {
   sessionState?: SessionState | null;
   confirmLiveness?: boolean | null;
   verdict?: MemberVerdict;
-  wakeMode?: WakeMode | string | null;
+  wakeMode?: WakeMode;
   lastToolCallAt?: string | null;
   parkedOn?: string[];
   contextPressure?: ContextPressureBucket | null;
@@ -289,8 +289,14 @@ export default defineTool({
     // old claim-primary read omitted live idle members whose assignment view had
     // no row, so leader-brief and fleet:status reported different rosters.
     const rosterResult = await listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId });
+    const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
+      ...entry,
+      ...(entry.wakeMode === 'auto' || entry.wakeMode === 'manual'
+        ? { wakeMode: entry.wakeMode }
+        : { wakeMode: undefined }),
+    }));
     const grouped = selectLeaderBriefMembers(
-      rosterResult.entries,
+      rosterEntries,
       fleet,
       args.include_stale,
     );
