@@ -785,9 +785,23 @@ export async function refreshScoutOutcomes(
 ): Promise<LensOutcomeReport> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
+  // EI-10520: the Scout lens-weight corpus is a SINGLE per-workspace bucket. The
+  // workspace Scout writes EVERY routed idea under SCOUT_TICK_INSTALL_SLUG
+  // ('@singleton', success-metrics.ts) and persists its lens weights under the
+  // hive-home / workspace-sentinel scope (the potSlug resolution below), NEVER the
+  // member harness_slug. Filtering the corpus read by a single harness_slug
+  // therefore FRAGMENTS it: a win recorded under a different/older harness_slug
+  // (e.g. the pre-'@singleton' cutover rows) is invisible to a refresh keyed to the
+  // current slug, so real 'won' outcomes produced ZERO weight movement and the
+  // learning loop silently never learned (uniform 0.25, wins=0/decided=0 despite
+  // decided-won ideas in the ledger). Read the corpus scoped to (workspace +
+  // origin) ONLY — opts.harnessSlug is still used below to resolve the WEIGHT
+  // PERSIST scope, which is correct. Mirrors readIdeaQueueStatus's wsCoordOn
+  // harness-drop ("one brain sees the whole pipeline").
+  const corpusOpts = { ...opts, harnessSlug: undefined };
   const [provenance, completions] = await Promise.all([
-    readRoutedIdeas(opts),
-    gatherCompletionsForOrigin(opts.origin, opts),
+    readRoutedIdeas(corpusOpts),
+    gatherCompletionsForOrigin(opts.origin, corpusOpts),
   ]);
 
   if (provenance.length > 0) {

@@ -188,6 +188,25 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     for (const r of weightRows) expect(r.decided).toBeGreaterThanOrEqual(0);
   });
 
+  // EI-10520 REGRESSION: the Scout lens-weight corpus is ONE per-workspace bucket —
+  // the workspace Scout writes every idea under SCOUT_TICK_INSTALL_SLUG ('@singleton')
+  // and persists weights under the hive-home / workspace-sentinel scope, NOT the
+  // member harness_slug. refreshScoutOutcomes used to FILTER the corpus read by the
+  // scheduler's current harness_slug, so a win recorded under a different/older
+  // harness_slug (the pre-'@singleton' cutover rows) was orphaned from the refresh —
+  // 61 'won' outcomes moved the weights ZERO (uniform 0.25, wins=0/decided=0). The
+  // corpus must be read workspace-wide: a refresh keyed to a harness_slug that
+  // matches NO routed row must STILL see the workspace's scout wins.
+  it('EI-10520: reads the scout corpus workspace-wide, not filtered by the scheduler harness_slug', async () => {
+    // 'no-such-harness-slug' matches none of the seeded rows (all harness_slug='papercup').
+    // Before the fix: readRoutedIdeas filtered harness_slug='no-such-harness-slug' → 0 rows
+    // → every lens decided=0 (the dead uniform state). After: workspace-wide → analogical
+    // sees gym sp-1 accepted (won) + gym sp-2 rejected/graded (decided) → decided > 0.
+    const report = await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: 'no-such-harness-slug' });
+    const analogical = report.byLens.analogical;
+    expect(analogical.won + analogical.lost).toBeGreaterThan(0);
+  });
+
   // ── scout-idea-grading C-2 (migration 234): gradeRoutedIdea against the real
   //    guard SQL + the C-1 → C-1b read-back. Runs LAST — grades must not
   //    perturb the outcome-derivation tests above (classifyIdeaOutcome is
