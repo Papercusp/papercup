@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS, type FactSourceProvenance } from '../../agent-facts/store';
 import { resolveScopeRefAlias } from './scope-ctx';
-import { provenanceLintField } from '../../carry-surface-provenance-lint';
+import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
@@ -124,8 +124,9 @@ export default defineTool({
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
     });
-    // WI-3801: warn-only nudge — undefined (no field) on the common clean case.
-    const provenanceLint = provenanceLintField(args.body);
+    // WI-3801 lint + P-014 turn-ref verification/origin stamp — warn-only,
+    // no fields on the common clean case.
+    const provenanceFields = await carryProvenanceFields(args.body, identity.ownerId);
     // EI-10952: a body over the cap is TRUNCATED, not rejected (P-007 — the hard
     // reject cost 7 whole facts in 14d, so truncate-not-reject stays). But the
     // caller was never TOLD: the response was a clean `ok:true` and the fact
@@ -142,7 +143,7 @@ export default defineTool({
             ok: true,
             fact,
             ...(truncation ? { truncated: truncation } : {}),
-            ...(provenanceLint ? { provenanceLint } : {}),
+            ...provenanceFields,
           }),
         },
       ],

@@ -37,6 +37,17 @@
   padding-left: var(--op-chat-w, 0px);
 }
 
+/* The docked OperatorChatSidebar (mounted by page.tsx behind
+   OPERATOR_CHAT_SIDEBAR) is position:fixed anchored top/bottom, which resolves
+   against the same transformed 0-height <main> described above — collapsing
+   the sidebar to 0 height inside the popup. Pin it viewport-relative here,
+   exactly like .pc-qp itself (WI-4806). */
+.pc-qp .op-chat-sidebar {
+  top: 0;
+  bottom: auto;
+  height: 100vh;
+}
+
 .pc-qp__root {
   display: flex;
   flex-direction: column;

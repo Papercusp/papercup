@@ -60,7 +60,7 @@ import { setWorkItemCheckpoint, setWorkItemCheckpointWithPrior, getWorkItemCheck
 import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
-import { provenanceLintField } from '../../carry-surface-provenance-lint';
+import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 
 /** First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
@@ -265,9 +265,9 @@ export default defineTool({
           /** P-003: first 80 chars of what was stored — eyeball-check without a re-read. */
           storedHead: stored !== null ? stored.slice(0, 80) : null,
           by: ident.ownerId,
-          // WI-3801: warn-only nudge — an untagged owner-attributed imperative in this
-          // checkpoint, undefined (no field) on the overwhelming common clean case.
-          ...(stored !== null ? { provenanceLint: provenanceLintField(stored) } : {}),
+          // WI-3801 lint + P-014 turn-ref verification/origin stamp — warn-only,
+          // absent (no fields) on the overwhelming common clean case.
+          ...(stored !== null ? await carryProvenanceFields(stored, ident.ownerId) : {}),
           // EI-9325: warn-only nudge — a plain replace-on-write that shrank the
           // checkpoint by more than half, off a substantial prior checkpoint, usually
           // means an accidental placeholder/truncated paste rather than an

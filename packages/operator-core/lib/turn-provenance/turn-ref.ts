@@ -51,7 +51,12 @@ const TURN_REF_RE = /\[turn:([0-9a-f]{4,36})@([0-9T:.+Z-]{10,40})\]/gi;
 export function parseTurnRefs(text: string | null | undefined): TurnRef[] {
   if (!text) return [];
   const out: TurnRef[] = [];
+  const seen = new Set<string>();
   for (const m of text.matchAll(TURN_REF_RE)) {
+    // Dedupe by literal ref — a note citing the same turn twice (e.g. an
+    // append joining two sections) needs one verdict, not two.
+    if (seen.has(m[0])) continue;
+    seen.add(m[0]);
     out.push({ sessionPrefix: m[1].toLowerCase(), ts: m[2], raw: m[0] });
   }
   return out;
@@ -118,11 +123,12 @@ export interface RecordedUserTurn {
   text: string;
 }
 
-/** Ref verification scans this much transcript tail (refs usually point at
- *  recent turns; older ones fall back to sessions:search by hand). */
+/** Ref verification and the current-turn stamp scan this much transcript tail
+ *  (refs usually point at recent turns; older ones fall back to
+ *  sessions:search by hand). A long session's final 512KB can be ALL
+ *  tool-result plumbing with no text-bearing user turn — observed live on
+ *  :3170 — so the current-turn walk gets the same deep tail as ref scans. */
 const SCAN_BYTES = 4 * 1024 * 1024;
-/** The current-turn stamp only needs the very tail. */
-const TAIL_BYTES = 512 * 1024;
 
 async function readTail(filePath: string, bytes: number): Promise<string> {
   const fh = await open(filePath, 'r');
@@ -267,12 +273,20 @@ export interface CurrentTurnStamp {
  * what kind of turn drove it. Fail-soft: null when the transcript is
  * unreachable (the write proceeds unstamped).
  */
-export async function resolveCurrentTurnStamp(ownerId: string): Promise<CurrentTurnStamp | null> {
-  const self = await resolveSelfSession(ownerId).catch(() => null);
-  if (!self) return null;
+export async function resolveCurrentTurnStamp(
+  ownerId: string,
+  opts: { filePath?: string; sessionId?: string } = {},
+): Promise<CurrentTurnStamp | null> {
+  let { filePath, sessionId } = opts;
+  if (!filePath || !sessionId) {
+    const self = await resolveSelfSession(ownerId).catch(() => null);
+    if (!self) return null;
+    filePath = filePath ?? self.filePath;
+    sessionId = sessionId ?? self.sessionId;
+  }
   let turns: RecordedUserTurn[];
   try {
-    turns = parseUserTurns(await readTail(self.filePath, TAIL_BYTES));
+    turns = parseUserTurns(await readTail(filePath, SCAN_BYTES));
   } catch {
     return null;
   }
@@ -282,7 +296,7 @@ export async function resolveCurrentTurnStamp(ownerId: string): Promise<CurrentT
     const cls = classifyRecordedTurn(turns[i].text);
     if (cls.verdict === 'synthetic') continue;
     return {
-      ref: formatTurnRef(self.sessionId, turns[i].ts),
+      ref: formatTurnRef(sessionId, turns[i].ts),
       verdict: cls.verdict,
       origin: cls.origin,
     };

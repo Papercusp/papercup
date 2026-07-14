@@ -21,7 +21,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { findLiveHost, injectIntoHost, hostSupports } from '../../events/await/psu-pty-discovery';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
-import { provenanceLintField } from '../../carry-surface-provenance-lint';
+import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 
 /** Focus applied when the agent names none AND the carry-brief read fails —
  *  the static floor under the session-specific default (P-003 below). */
@@ -297,11 +297,13 @@ export default defineTool({
               : ''
           }`
         : '';
-    // WI-3801: warn-only nudge over the two free-text carry hints this call writes
-    // (focus always; continueNote only when the caller passed one explicitly — the
-    // synthesized defaultContinueNote is machine-authored, nothing to lint).
-    const provenanceLint = provenanceLintField(
+    // WI-3801 lint + P-014 turn-ref verification/origin stamp over the two
+    // free-text carry hints this call writes (focus always; continueNote only
+    // when the caller passed one explicitly — the synthesized
+    // defaultContinueNote is machine-authored, nothing to lint).
+    const provenanceFields = await carryProvenanceFields(
       [focus, args.continueNote].filter((s): s is string => Boolean(s && s.trim())).join('\n'),
+      identity.ownerId,
     );
     return {
       content: [
@@ -312,7 +314,7 @@ export default defineTool({
             requested: ok,
             autoContinue: ok ? canAutoContinue : false,
             staleCheckpoints,
-            ...(provenanceLint ? { provenanceLint } : {}),
+            ...provenanceFields,
             note:
               (!ok
                 ? 'Failed to reach the session TUI host socket; try again or compact manually.'
