@@ -34,8 +34,18 @@ import { useLexicon } from '@/lib/useLexicon';
 import {
   ShieldCheck, ExternalLink, Users, Clock, GitBranch,
   ArrowLeft, Loader2, AlertTriangle, Plug, Globe, Hexagon,
+  Download, MonitorDown,
 } from 'lucide-react';
 import type { HarnessListing, ListingAction } from '@papercusp/operator-core/lib/cupboard/types';
+import {
+  appPlatformFamilies,
+  viewerOsFamily,
+  parseLatestManifest,
+  installersFromManifest,
+  resolveInstallerForViewer,
+  type LatestManifest,
+  type ResolvedInstaller,
+} from '../app-download';
 import {
   listingActionFor,
   listingKindOf,
@@ -84,6 +94,8 @@ function ActionIcon({ action, size = 14 }: { action: ListingAction | null; size?
   switch (action) {
     case 'view-hive': return <Hexagon size={size} />;
     case 'install': return <Plug size={size} />;
+    // standalone app → download the platform installer (link handoff).
+    case 'download': return <Download size={size} />;
     default: return <Globe size={size} />;
   }
 }
@@ -134,6 +146,14 @@ export default function CupboardDetailPage() {
     // below) owns install-into-pot + the conflict review, so this kind has no
     // primary-button action — guard against a stray call.
     if (kind === 'knowledge-pack') {
+      return;
+    }
+    // app (cupboard-app-distribution P-005): the AppDownloadPanel below owns the
+    // standalone-app download handoff (fetch latest.json → resolve the viewer-OS
+    // installer → hand off the link; the Cupboard never re-hosts). No generic
+    // primary-button action — guard against a stray call (e.g. a bundle app that
+    // one day routes 'install' here would fall through to the plugin path).
+    if (kind === 'app') {
       return;
     }
     // template (cupboard-full-dogfood P-003 / public-release P-002): clone the
@@ -560,11 +580,21 @@ export default function CupboardDetailPage() {
           <KnowledgePackInstall listing={listing} />
         )}
 
+        {/* app / standalone (cupboard-app-distribution P-005): the download panel
+            fetches the app's latest.json, resolves the viewer-OS installer, and
+            hands off the link — the Cupboard never re-hosts. Owns the download
+            action for this kind; the generic primary button below is suppressed
+            for a download app (a future bundle app keeps the generic Install). */}
+        {kind === 'app' && action === 'download' && (
+          <AppDownloadPanel listing={listing} />
+        )}
+
         {/* Per-listing primary CTA — hidden for legacy harness rows (per-harness
-            join is retired; nothing to act on) and for knowledge packs (the
-            KnowledgePackInstall panel above owns their Install action). */}
+            join is retired; nothing to act on), for knowledge packs (the
+            KnowledgePackInstall panel owns their Install action), and for a
+            standalone-download app (the AppDownloadPanel owns its handoff). */}
         <div style={{ marginTop: SIZES.lg, display: 'flex', gap: 8 }}>
-          {action && kind !== 'knowledge-pack' && (
+          {action && kind !== 'knowledge-pack' && !(kind === 'app' && action === 'download') && (
           <Button
             size="lg"
             variant="primary"

@@ -49,6 +49,9 @@ import {
   type ListingAction,
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
+// The standalone-app OS/platform helpers are shared with the detail-page download
+// flow (P-005) — one definition of "which OS is this key / this viewer".
+import { appPlatformFamilies, viewerOsFamily } from './app-download';
 import { ClaimStatusBadge, CLAIM_STATUS_COPY } from '../_components/ClaimStatusBadge';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
 import { Button } from '../harness/Button';
@@ -98,50 +101,6 @@ function ActionIcon({ action, size = 13 }: { action: ListingAction; size?: numbe
     // standalone app → download the platform installer (link handoff).
     case 'download': return <Download size={size} />;
   }
-}
-
-/** Map an updater platform key (linux-x86_64, darwin-aarch64, windows-x86_64) to
- *  a friendly OS family. Unknown keys pass through unchanged. */
-function platformOsFamily(key: string): string {
-  if (key.startsWith('darwin') || key.startsWith('macos')) return 'macOS';
-  if (key.startsWith('windows')) return 'Windows';
-  if (key.startsWith('linux')) return 'Linux';
-  return key;
-}
-
-/** The distinct OS families a standalone app advertises, parsed from the
- *  denormalized `platforms` JSON string[] on the listing (P-003). Returns [] when
- *  absent/unparseable — e.g. a legacy row, or an app whose manifest never
- *  resolved. */
-function appPlatformFamilies(platformsJson: string | null | undefined): string[] {
-  if (!platformsJson) return [];
-  let keys: unknown;
-  try {
-    keys = JSON.parse(platformsJson);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(keys)) return [];
-  const families: string[] = [];
-  for (const k of keys) {
-    if (typeof k !== 'string') continue;
-    const fam = platformOsFamily(k);
-    if (!families.includes(fam)) families.push(fam);
-  }
-  return families;
-}
-
-/** Best-effort viewer OS family, to make a standalone app's download CTA
- *  platform-aware ("Get for macOS"). null when undetectable (SSR / unknown) — the
- *  caller falls back to the plain "Download" label. */
-function viewerOsFamily(): string | null {
-  if (typeof navigator === 'undefined') return null;
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  const s = `${nav.userAgentData?.platform ?? ''} ${nav.userAgent} ${nav.platform}`.toLowerCase();
-  if (s.includes('mac')) return 'macOS';
-  if (s.includes('win')) return 'Windows';
-  if (s.includes('linux') || s.includes('x11')) return 'Linux';
-  return null;
 }
 
 const filterButtonStyle = (active: boolean): React.CSSProperties => ({

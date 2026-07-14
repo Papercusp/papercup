@@ -455,6 +455,50 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     expect(exit).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  // EI-11785: on a sanctioned staging restart the SIGTERM drain wedged in
+  // do_exit past the service's TimeoutStopSec — active native handles
+  // (onnxruntime/node-pty/sharp) kept the drain from completing, and the eventual
+  // process.exit ran Node's env teardown that throws the uncaught Napi::Error →
+  // a multi-minute test outage. The recurrence guard: SIGTERM with a drain that
+  // NEVER completes (the wedged-handle case) must still force-exit via the
+  // no-cleanup backstop (killSelf), NOT process.exit, and it must do so within
+  // the bounded hardExitMs window — i.e. well before any systemd stop deadline.
+  it('SIGTERM with a wedged drain still hard-exits via the backstop before the deadline (never process.exit)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const exit = vi.fn();
+    const killSelf = vi.fn();
+    const closeSubstrate = vi.fn(() => Promise.resolve());
+    // Server whose close callback NEVER fires — models active native handles
+    // that keep the in-flight HTTP drain from ever completing.
+    const server: RecycleServerLike = { close: () => {} };
+    const { on, fire } = fakeSignals();
+
+    installGracefulShutdown({
+      server,
+      on,
+      exit,
+      killSelf,
+      closeSubstrate,
+      hardExitOnRecycle: true,
+      hardExitMs: 8000,
+    });
+    fire('SIGTERM');
+
+    // Just before the backstop deadline: still alive, no exit of any kind — and
+    // crucially process.exit (which would run the Napi::Error env teardown) is
+    // never used.
+    await vi.advanceTimersByTimeAsync(7999);
+    expect(killSelf).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+
+    // At the deadline: force-terminate via the no-cleanup path, once, bounded
+    // (8s ≪ systemd TimeoutStopSec), so the host can never sit in do_exit.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(killSelf).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 // WI-3849: arms Node's diagnostic-report-on-SIGABRT so the next native
