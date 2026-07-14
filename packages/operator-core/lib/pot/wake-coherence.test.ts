@@ -47,7 +47,7 @@ vi.mock('../sync-sse', () => ({
       reconnectHook = null;
     };
   }),
-  notifySyncInvalidate: (...args: unknown[]) => notifySyncInvalidate(...args),
+  notifySyncInvalidate,
 }));
 
 const {

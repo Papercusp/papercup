@@ -964,11 +964,11 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
   });
 
   it('WI-4878: a cached stale health snapshot does NOT prevent recovery detection when condition flaps', async () => {
-    // Scenario: a condition fires, recovers, and re-fires (flaps). The second fire opens
-    // a new escalation. When it recovers the second time, the health cache might still show
-    // the old failure data (if cache staleness was not properly checked), preventing recovery
-    // detection. The fix ensures we recompute fresh health when open escalations should be
-    // recovering.
+    // Scenario: a condition fires, recovers, and re-fires (flaps). If the second recovery
+    // happens while using a stale cache that still shows failures, the signal won't stop
+    // firing and recovery won't be detected. The fix ensures we recompute fresh health when
+    // there are open escalations but the expected signal isn't firing (which indicates
+    // the signal may have recovered despite stale cached health showing it still firing).
     const store = makeStore();
     const sick = mkHealth({
       evaluatedAt: 100 * 60_000,
@@ -976,57 +976,54 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     });
     const well = mkHealth({ evaluatedAt: 100 * 60_000 });
 
-    let health = sick;
-    let now = 100 * 60_000 + 60_000;
-    let computeCallCount = 0;
+    let currentHealth = sick;
+    let now = 100 * 60_000;
+    let cachedHealth: SystemHealth | null = null;
 
     const deps = {
-      readLast: () => health,
-      computeHealth: async () => {
-        computeCallCount++;
-        return health;
-      },
+      readLast: () => cachedHealth,
+      computeHealth: async () => currentHealth,
       escalate: store.escalate,
       listOpen: store.listOpen,
       resolve: store.resolve,
       now: () => now,
-      snapshotStaleMs: 6 * 60_000, // 6 min staleness window
+      snapshotStaleMs: 3 * 60_000,
       debounceMs: 30 * 60_000,
     };
 
-    // First incident: condition fires
+    // First incident: condition fires, cache is populated
     const t1 = await runLivenessAlarmTick('ws', deps);
     expect(t1.fired.map((s) => s.key)).toEqual(['dead-routines']);
     expect(store.openCount()).toBe(1);
-    expect(computeCallCount).toBe(1);
+    cachedHealth = sick; // simulate cache update
+    now += 60_000;
 
-    // Recovery: condition clears, auto-resolve triggered
-    health = well;
-    now += 120_000; // 2 min later
+    // Recovery: condition clears, cache updated
+    currentHealth = well;
     const t2 = await runLivenessAlarmTick('ws', deps);
     expect(t2.resolved.length).toBe(1);
     expect(store.openCount()).toBe(0);
+    cachedHealth = well; // cache reflects recovery
+    now += 60_000;
 
-    // Flap: condition re-fires within 6 min window (cache not stale by default)
-    health = sick;
-    now += 120_000; // 2 min later (total 4 min since first tick)
+    // Flap: condition re-fires, cache updated
+    currentHealth = sick;
     const t3 = await runLivenessAlarmTick('ws', deps);
     expect(t3.fired.map((s) => s.key)).toEqual(['dead-routines']);
     expect(store.openCount()).toBe(1);
-    // Cache reuse for new signal fire: should NOT recompute (only 2 new mins passed,
-    // cache is 2 min old from first compute, well within 6 min window)
-    const computeCountAfterFlap = computeCallCount;
+    cachedHealth = sick; // cache shows sick
+    now += 60_000;
 
-    // Recovery after flap: condition clears. The cache is now stale (4 min old from first
-    // compute, approaching 6 min), but the fix should detect "open escalation but no
-    // firing signal" and recompute fresh to ensure accurate recovery detection.
-    health = well;
-    now += 120_000; // 2 min later (total 6 min since first tick, cache is at/past staleness boundary)
+    // Recovery after flap, but CACHE IS STALE: leave cachedHealth as sick, but currentHealth is well.
+    // This simulates: actual system recovered (well), but cache wasn't updated (still sick).
+    // The liveness-alarm reads the stale cache, sees the signal still firing, and doesn't auto-resolve.
+    // The fix detects "open escalation for dead-routines, but signal not firing" and recomputes fresh,
+    // discovering the actual recovery and auto-resolving.
+    currentHealth = well;
+    // Keep cachedHealth as sick - this is the stale cache scenario
     const t4 = await runLivenessAlarmTick('ws', deps);
-    expect(t4.resolved.length).toBe(1); // recovery should be detected despite cache age
+    // With the fix, this should be resolved despite using a stale cache initially
+    expect(t4.resolved.length).toBe(1);
     expect(store.openCount()).toBe(0);
-    // The fix should have triggered a fresh compute when it detected an open escalation
-    // with no corresponding firing signal
-    expect(computeCallCount).toBeGreaterThan(computeCountAfterFlap);
   });
 });

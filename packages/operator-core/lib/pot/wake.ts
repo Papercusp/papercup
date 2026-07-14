@@ -408,7 +408,9 @@ export async function ensurePotWakeRuleSync(): Promise<boolean> {
 
   runtime.start = (async () => {
     const { registerInvalidationListenHook, subscribe } = await import('../sync-sse');
-    runtime.removeListenHook = registerInvalidationListenHook(() => refreshAllPotWakeRules());
+    runtime.removeListenHook = registerInvalidationListenHook(async () => {
+      await refreshAllPotWakeRules();
+    });
     runtime.handle = await subscribe((event) => {
       if (event.name !== POT_WAKE_RULES_INVALIDATION) return;
       const workspaceId = event.args?.workspaceId;
