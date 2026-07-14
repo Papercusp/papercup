@@ -44,9 +44,8 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
-import { resolveMugOwner } from '../pot/placement-watchdog';
+import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
-import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { promotePlanItems } from '../plan-workitem-promotion-run';
 
 // ── tunables ──────────────────────────────────────────────────────────────────
@@ -168,14 +167,17 @@ export interface ScoutReadyAutostartResult {
  *  items (plans:add-item) — the next sweep then auto-starts it. */
 async function fireDecomposeWake(
   workspaceId: string,
-  queenOwner: string,
+  queenOwner: string | null,
   itemless: readonly ScoutReadyCandidate[],
+  harnessSlug: string | null = null,
 ): Promise<void> {
   const list = itemless
     .slice(0, 5)
     .map((c) => `• ${c.planSlug}${c.title ? ` — ${c.title}` : ''}`)
     .join('\n');
-  await wakeRecipients([queenOwner], {
+  await wakeMug({
+    workspaceId,
+    mugOwner: queenOwner,
     summary:
       `Scout ready-plan autostart: ${itemless.length} RATIFIED scout plan(s) have NO open items, so ` +
       `they cannot start (nothing to promote to work_items). Decompose each into 1–5 concrete items ` +
@@ -184,7 +186,8 @@ async function fireDecomposeWake(
       `dead end, WI-1574).\n\n${list}`,
     payload: { kind: 'scout-ready-decompose', slugs: itemless.map((c) => c.planSlug) },
     source: 'scout-ready-decompose',
-    workspaceId,
+    body: `${list}`,
+    harnessSlug,
   });
 }
 
@@ -239,25 +242,23 @@ export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartRes
             (await recentWatchdogFires(workspaceId, installSlug, 1, 'scout-ready-decompose')) > 0;
           if (!alreadyFired) {
             const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
-            if (queenOwner) {
-              await fireDecomposeWake(workspaceId, queenOwner, itemless);
-              await recordFire({
-                workspaceId,
-                installSlug,
-                source: 'scout-ready-decompose',
-                reason: `${itemless.length} ratified itemless scout plan(s): ${itemless
-                  .slice(0, 5)
-                  .map((c) => c.planSlug)
-                  .join(', ')}`,
-                wakeAt: null,
-              });
-              results.push({
-                workspaceId,
-                installSlug,
-                outcome: 'decompose-nudged',
-                reason: `${itemless.length} itemless ready plan(s)`,
-              });
-            }
+            await fireDecomposeWake(workspaceId, queenOwner, itemless, installSlug);
+            await recordFire({
+              workspaceId,
+              installSlug,
+              source: 'scout-ready-decompose',
+              reason: `${itemless.length} ratified itemless scout plan(s): ${itemless
+                .slice(0, 5)
+                .map((c) => c.planSlug)
+                .join(', ')}`,
+              wakeAt: null,
+            });
+            results.push({
+              workspaceId,
+              installSlug,
+              outcome: 'decompose-nudged',
+              reason: `${itemless.length} itemless ready plan(s)`,
+            });
           }
         }
       } catch (e) {

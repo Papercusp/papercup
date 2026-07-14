@@ -76,7 +76,7 @@ describe('installFrame desktop threading (hive-frame-desktops P-001/P-003)', () 
     expect(exec.scripts.at(-1)!).not.toContain('Xvfb');
   });
 
-  it('blueprint env AGENT_BACKEND=claude-code → claude backend bootstrap (no Meridian install)', async () => {
+  it('blueprint env AGENT_BACKEND=claude-code → claude backend bootstrap (no OMP install)', async () => {
     const exec = recordingExec();
     await installFrame(
       FRAME,
@@ -90,7 +90,7 @@ describe('installFrame desktop threading (hive-frame-desktops P-001/P-003)', () 
     expect(bootstrap).toContain('backend is not omp');
   });
 
-  it('no AGENT_BACKEND env → historical omp default (Meridian installed + started)', async () => {
+  it('no AGENT_BACKEND env → historical omp default (OMP installed without Meridian)', async () => {
     const exec = recordingExec();
     await installFrame(
       FRAME,
@@ -99,8 +99,10 @@ describe('installFrame desktop threading (hive-frame-desktops P-001/P-003)', () 
       { makeRemoteExec: () => exec, sshWait: { attempts: 1, delayMs: 1 } },
     );
     const bootstrap = exec.scripts.at(-1)!;
-    expect(bootstrap).toContain('@rynfar/meridian');
-    expect(bootstrap).toContain('meridian >/var/log/meridian.log');
+    expect(bootstrap).toContain('@oh-my-pi/pi-coding-agent');
+    expect(bootstrap).toContain('OMP gateway/account routing is supplied per spawn by the runtime');
+    expect(bootstrap).not.toContain('@rynfar/meridian');
+    expect(bootstrap).not.toContain('meridian >/var/log/meridian.log');
   });
 });
 

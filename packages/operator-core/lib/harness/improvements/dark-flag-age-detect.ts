@@ -152,7 +152,7 @@ export function detectDarkFlagAge(input: DarkFlagAgeInput): DarkFlagAgeFinding[]
       title: 'Dark-flag allowlist needs owner review',
       body:
         `The DARK_FLAGS allowlist needs owner attention: the review-by ${reviewPhrase}` +
-        (nearWatermark ? `, and the dark set is ${countPhrase}` : '') +
+        (nearWatermark ? `, and the parked/incomplete subset is ${countPhrase}` : '') +
         `. Walk every dark flag in libs/flags/src/types.ts — flip the ones now ready to default-ON ` +
         `(remove them from DARK_FLAGS), then push DARK_FLAGS_REVIEW_BY out with a fresh look. ` +
         `Raising the watermark needs explicit owner sign-off. ` +
@@ -179,7 +179,8 @@ export function detectDarkFlagAge(input: DarkFlagAgeInput): DarkFlagAgeFinding[]
 export async function collectDarkFlagAgeSignals(
   now: number = Date.now(),
 ): Promise<{ signals: DarkFlagAgeFinding[]; note?: string }> {
-  const { DARK_FLAGS_PARKING_COUNT, DARK_FLAGS_HIGH_WATERMARK, DARK_FLAGS_REVIEW_BY } = await import('@papercusp/flags');
+  const { DARK_FLAGS_PARKING_COUNT, DARK_FLAGS_HIGH_WATERMARK, DARK_FLAGS_REVIEW_BY } =
+    await import('@papercusp/flags');
   const signals = detectDarkFlagAge({
     darkCount: DARK_FLAGS_PARKING_COUNT,
     watermark: DARK_FLAGS_HIGH_WATERMARK,

@@ -41,9 +41,8 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
-import { resolveMugOwner } from '../pot/placement-watchdog';
+import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
-import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 
 // ── tunable (env-overridable, like the liveness-watchdog floor) ───────────────
 
@@ -152,17 +151,18 @@ export interface ScoutDraftReviewResult {
  * "nudged" (it only ever recorded that the SWEEP ran, never that delivery landed), and no
  * durable trace of the notification exists anywhere — the backstop was silently a no-op.
  *
- * The fix: ALSO durably park an `@role:queen`-addressed coord message (the same channel
- * WI-682 wired `gatherInbox`/queen-brief-launch.ts to drain into EVERY future Queen wake's
+ * The fix: use the shared stable `@role:mug` seam (the same channel
+ * WI-682 wired `gatherInbox`/mug-brief-launch.ts to drain into EVERY future Mug wake's
  * brief, regardless of her owner id at drain time). This is now the RELIABLE half of the
  * notification; the event-wake above is kept as a best-effort bonus for the rare case a live
  * session happens to be watching that exact key.
  */
 export async function fireReviewWake(
   workspaceId: string,
-  queenOwner: string,
+  queenOwner: string | null,
   stale: readonly ScoutDraftCandidate[],
   staleSec: number,
+  harnessSlug: string | null = null,
 ): Promise<void> {
   const hours = Math.max(1, Math.round(staleSec / 3_600));
   const shown = stale.slice(0, 5);
@@ -174,35 +174,19 @@ export async function fireReviewWake(
     `This is a backstop WAKE, not an idle activity: review each and either promote it (= ready), coord:send ` +
     `feedback to its scout owner to iterate, or deprecate it WITH learnings (never just leave it). Clearing ` +
     `or progressing them stops this wake.\n\n${list}${more}`;
-  await wakeRecipients([queenOwner], {
+  await wakeMug({
+    workspaceId,
+    mugOwner: queenOwner,
     summary,
     payload: { kind: 'scout-draft-review', slugs: stale.map((s) => s.planSlug), staleHours: hours },
     source: 'scout-draft-review',
-    workspaceId,
+    body: `${list}${more}`,
+    harnessSlug,
   });
-  // WI-963 durable half — see the function doc above. Best-effort: a park failure must
-  // never break the sweep (the caller's try/catch also guards this, but degrade locally
-  // too so a park hiccup doesn't mask the wake attempt above having already happened).
-  try {
-    const [{ sendMessage }, { runWithWorkspace }] = await Promise.all([
-      import('../agent-tools/coordination/messages'),
-      import('../workspace-als'),
-    ]);
-    await runWithWorkspace(workspaceId, () =>
-      sendMessage(
-        {
-          ownerId: 'scout-draft-review-watchdog',
-          ownerLabel: 'scout-draft-review-watchdog',
-          source: 'static-client',
-          workspaceId,
-          userId: null,
-        },
-        { to: ['@role:queen'], summary, body: `${list}${more}` },
-      ),
-    );
-  } catch (e) {
-    console.warn(`[scout-draft-review] @role:queen park failed: ${e instanceof Error ? e.message : e}`);
-  }
+  /*
+   * wakeMug owns both direct delivery and durable parking. Keeping that seam
+   * centralized prevents a stale per-wake owner from becoming the only route.
+   */
 }
 
 /**
@@ -234,20 +218,10 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
           continue;
         }
         const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
-        if (!queenOwner) {
-          results.push({
-            workspaceId,
-            installSlug,
-            outcome: 'skipped',
-            staleCount: stale.length,
-            reason: 'no live Queen session to wake',
-          });
-          continue;
-        }
         const reason =
           `${stale.length} scout-routed draft(s) unreviewed > ${windowHours}h: ` +
           stale.slice(0, 5).map((s) => s.planSlug).join(', ');
-        await fireReviewWake(workspaceId, queenOwner, stale, staleSec);
+        await fireReviewWake(workspaceId, queenOwner, stale, staleSec, installSlug);
         // Record the fire so the debounce engages next tick (source='scout-draft-review').
         await recordFire({ workspaceId, installSlug, source: 'scout-draft-review', reason, wakeAt: null });
         results.push({ workspaceId, installSlug, outcome: 'nudged', staleCount: stale.length, reason });

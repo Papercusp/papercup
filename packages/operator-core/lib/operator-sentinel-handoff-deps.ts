@@ -13,7 +13,7 @@
  *                            order lever; bump to head).
  *   - subscribeOperator   → work-items.subscribeWorkItem as OPERATOR_COORD_OWNER
  *                            (the same owner the hindsight drain reads).
- *   - nudgeMug            → coord send/escalate to @role:queen (the slot selector
+ *   - nudgeMug            → coord send/escalate to @role:mug (the slot selector
  *                            parks→drains on her next spawn) with the urgent-wake
  *                            already fired by the work_item create.
  *   - surfaceForApproval  → coord:escalate (question) to the human + a standing-
@@ -100,9 +100,9 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
       } else {
         // Routine nudge → coord:send to the Mug's role-slot with an optimistic
         // wake (the work_item create already fired the demand wake; this is the
-        // durable inbox record). @role:queen parks→drains on her next spawn.
+        // durable inbox record). @role:mug parks→drains on the next spawn.
         await sendMessage(identity, {
-          to: ['@role:queen'],
+          to: ['@role:mug'],
           summary: `Sentinel handoff: ${summary}`.slice(0, 200),
           body,
           ...(harness ? { harnessSlug: harness } : {}),

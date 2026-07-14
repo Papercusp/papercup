@@ -11,14 +11,10 @@ import { vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 vi.mock('../pot/started', () => ({ listStartedPots: vi.fn() }));
-vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner: vi.fn() }));
+const wakeMug = vi.fn().mockResolvedValue(undefined);
+vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner: vi.fn(), wakeMug }));
 vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
-vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: vi.fn() }));
-const sendMessage = vi.fn().mockResolvedValue(undefined);
-vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage: (...args: unknown[]) => sendMessage(...args) }));
-vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
 
-import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { listStartedPots } from '../pot/started';
 import {
   selectUngradedFilings,
@@ -125,46 +121,22 @@ describe('shouldNudgeMug', () => {
   });
 });
 
-describe('fireGradingNudge (the WI-963 two-half delivery)', () => {
+describe('fireGradingNudge (the WI-2187 stable Mug seam)', () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it('fires the best-effort event-key wake AND durably parks an @role:mug message', async () => {
+  it('passes the concrete owner and payload to the shared Mug wake seam', async () => {
     await fireGradingNudge('ws-1', 'mug-owner-123', [filing('idea-su-1', 10)], 604_800);
-
-    // The event-key wake — best-effort (the resolved Mug owner id is often an
-    // already-ended fresh-per-wake session by sweep time; harmless if so).
-    expect(wakeRecipients).toHaveBeenCalledWith(
-      ['mug-owner-123'],
-      expect.objectContaining({ source: 'su-ideate-ungraded', workspaceId: 'ws-1' }),
-    );
-
-    // The RELIABLE half: a durable coord message addressed to the `@role:mug` slot,
-    // sent inside the target workspace — mug-brief-launch.ts drains that slot into
-    // the Mug's VERY NEXT wake brief regardless of which owner id it boots under.
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    const [identity, opts] = sendMessage.mock.calls[0] as [
-      { ownerId: string; source: string; workspaceId: string },
-      { to: string[]; summary: string; body: string },
-    ];
-    expect(identity.workspaceId).toBe('ws-1');
-    expect(opts.to).toEqual(['@role:mug']);
-    // The nudge names the filing + the grading verb (the Mug's next action).
-    expect(opts.summary).toContain('idea-su-1');
-    expect(opts.summary).toContain('blender:grade-idea');
-    expect(opts.body).toContain('wi:idea-su-1');
+    expect(wakeMug).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1', mugOwner: 'mug-owner-123', source: 'su-ideate-ungraded',
+      summary: expect.stringContaining('idea-su-1'),
+    }));
   });
 
-  it('a park failure never throws out of fireGradingNudge (best-effort)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    sendMessage.mockRejectedValueOnce(new Error('coord down'));
-    await expect(
-      fireGradingNudge('ws-1', 'mug-owner-1', [filing('idea-su-2', 10)], 604_800),
-    ).resolves.toBeUndefined();
-    expect(wakeRecipients).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('@role:mug park failed'));
-    warn.mockRestore();
+  it('parks through the durable seam even when no concrete Mug owner exists', async () => {
+    await fireGradingNudge('ws-1', null, [filing('idea-su-2', 10)], 604_800, 'pot-1');
+    expect(wakeMug).toHaveBeenCalledWith(expect.objectContaining({ mugOwner: null, harnessSlug: 'pot-1' }));
   });
 });
 

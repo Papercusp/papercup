@@ -14,12 +14,12 @@
  *      (revise.ts), ping the Queen back per draft so she re-reviews (promote=ready
  *      or another round).
  *
- * WI-963 fix (2026-07-02): BOTH pings address the durable `@role:queen` SLOT
+ * WI-963 fix (2026-07-02): BOTH pings address the durable `@role:mug` SLOT
  * (in addition to a best-effort concrete resolved/threaded-back owner id) — never
  * the concrete owner ALONE. The Queen is fresh-per-wake (a brand-new coord owner
  * id every session — queen-brief-launch.ts's `gatherInbox` / WI-682), so a
  * concrete-owner-only address is a session that has almost always already ended
- * by the time anyone reads it; `@role:queen` parks durably (slot-parked-store)
+ * by the time anyone reads it; `@role:mug` parks durably (slot-parked-store)
  * and `gatherInbox` already drains it into every future Queen wake regardless of
  * her current owner id. This is what actually closes the loop; the concrete
  * owner is just a best-effort immediate-delivery bonus.
@@ -59,7 +59,7 @@ export interface DraftRoutedResult {
   notified: boolean;
   /** The resolved concrete Queen owner id, when one was found — best-effort direct
    *  address only; delivery no longer depends on this (see WI-963: the durable
-   *  `@role:queen` slot is always addressed too, so `null` here does NOT mean
+   *  `@role:mug` slot is always addressed too, so `null` here does NOT mean
    *  the Queen won't see it). */
   recipient: string | null;
 }
@@ -76,7 +76,7 @@ export interface DraftRoutedResult {
  * draft `scout-rubric-pot-coordination-health-scorecard-2026-06-26` sat
  * unreviewed 3+ days despite this notify firing on route (WI-963 root cause).
  *
- * The fix: ALWAYS ALSO address the durable `@role:queen` slot selector.
+ * The fix: ALWAYS ALSO address the durable `@role:mug` slot selector.
  * `sendMessage` parks a `@role:...` addressee (slot-parked-store) and
  * `gatherInbox` already drains it into EVERY future Queen wake's brief
  * regardless of her current owner id — the exact reliable channel WI-682
@@ -96,7 +96,7 @@ export async function notifyQueenDraftRouted(
   } catch {
     owner = null;
   }
-  const to = owner ? [owner, '@role:queen'] : ['@role:queen'];
+  const to = owner ? [owner, '@role:mug'] : ['@role:mug'];
   try {
     await ports.send({
       to,
@@ -119,7 +119,7 @@ export async function notifyQueenDraftRouted(
  * Ping the Queen back after a revision tick (D-001 step 3) — one message per draft,
  * threaded back to the owner that sent the feedback. Skips items with no recipient
  * (a `fromOwnerId` is required to know WHICH draft's feedback this replies to; the
- * `@role:queen` slot is addressed alongside it — WI-963 — never instead of it, since
+ * `@role:mug` slot is addressed alongside it — WI-963 — never instead of it, since
  * only `fromOwnerId` carries the per-draft thread). Never throws (per-item send
  * errors are swallowed) so it can't fail the revision cycle. Returns the count
  * actually delivered.
@@ -135,10 +135,10 @@ export async function notifyQueenRevised(
     try {
       // WI-963: by the time a revision cycle completes, the Queen session that
       // sent the original feedback (`o.fromOwnerId`) has almost always already
-      // ended (fresh-per-wake) — also address the durable `@role:queen` slot so
+      // ended (fresh-per-wake) — also address the durable `@role:mug` slot so
       // the ping-back reliably reaches her next wake even when the concrete
       // owner is already dead.
-      await ports.send({ to: [o.fromOwnerId, '@role:queen'], planSlug: o.planSlug, summary, body });
+      await ports.send({ to: [o.fromOwnerId, '@role:mug'], planSlug: o.planSlug, summary, body });
       delivered += 1;
     } catch {
       /* best-effort per item */

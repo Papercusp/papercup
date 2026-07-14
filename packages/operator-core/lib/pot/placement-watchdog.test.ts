@@ -5,6 +5,11 @@
  * P-023 (reconcile "steer, don't dispatch" WITH the completion mandate).
  */
 import { describe, it, expect, vi } from 'vitest';
+const wakeRecipients = vi.fn().mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [], fanoutCapped: [] });
+const sendMessage = vi.fn().mockResolvedValue(undefined);
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients }));
+vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage }));
+vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspaceId: string, fn: () => unknown) => fn() }));
 import {
   deriveCupLiveness,
   evaluatePlacement,
@@ -19,6 +24,8 @@ import {
   placementConfig,
   reconcilePotPlacements,
   resolveMugOwners,
+  wakeMug,
+  MUG_COORD_SLOT,
   type PlacementObservation,
   type PlacementConfig,
   type ReconcileSweepDeps,
@@ -27,6 +34,46 @@ import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 
 const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000, infraBreakerThreshold: 12 };
 const NOW = 1_000_000_000_000;
+
+describe('wakeMug (WI-2187 fresh-per-wake routing)', () => {
+  it('direct-wakes the concrete owner and parks the stable role with both identities', async () => {
+    await wakeMug({
+      workspaceId: 'ws-1',
+      mugOwner: 'stale-owner-123',
+      summary: 'recover WI-1',
+      source: 'test-watchdog',
+      payload: { kind: 'recovery' },
+      harnessSlug: 'pot-1',
+    });
+    expect(wakeRecipients).toHaveBeenCalledWith(['stale-owner-123'], expect.objectContaining({
+      source: 'test-watchdog',
+      payload: expect.objectContaining({ mugWake: {
+        logicalAlias: MUG_COORD_SLOT,
+        concreteOwnerId: 'stale-owner-123',
+        source: 'test-watchdog',
+      } }),
+    }));
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-1' }),
+      expect.objectContaining({
+        to: [MUG_COORD_SLOT],
+        harnessSlug: 'pot-1',
+        extra: { mugWake: expect.objectContaining({ concreteOwnerId: 'stale-owner-123' }) },
+      }),
+    );
+  });
+
+  it('parks even with no current concrete owner', async () => {
+    wakeRecipients.mockClear();
+    sendMessage.mockClear();
+    await wakeMug({ workspaceId: 'ws-1', mugOwner: null, summary: 'durable only', source: 'test-watchdog' });
+    expect(wakeRecipients).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ to: [MUG_COORD_SLOT], extra: { mugWake: expect.objectContaining({ concreteOwnerId: null }) } }),
+    );
+  });
+});
 
 function obs(over: Partial<PlacementObservation>): PlacementObservation {
   return {

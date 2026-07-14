@@ -51,7 +51,7 @@ export interface OverwatchQueenHealth {
   /** Her next scheduled wake (ISO-8601), or null if none is declared. */
   nextFireAt: string | null;
   /** Latest Queen coord owner id, for diagnostics and continuity only. Queen
-   *  nudges must use the stable `@role:queen` slot because concrete Queen owner
+   *  nudges must use the stable `@role:mug` slot because concrete Mug owner
    *  ids are fresh-per-wake and can expire before Overwatch sends. */
   coordOwner: string | null;
   /** Most-recent CONSECUTIVE Queen wakes that ran 0 LLM tokens (the LLM never executed —
@@ -505,7 +505,7 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   // Queen nudges use the stable role slot. A concrete coordOwner is diagnostic
   // only: Queen sessions are fresh-per-wake and direct owner sends can race the
   // session ending before Overwatch sends.
-  out.push(`- nudge the Mug via \`coord:send { to: ['@role:queen'], wake: 'optimistic', summary, body }\` (role-slot drains into her next wake brief)`);
+  out.push(`- nudge the Mug via \`coord:send { to: ['@role:mug'], wake: 'optimistic', summary, body }\` (role-slot drains into her next wake brief)`);
   out.push(q.coordOwner ? `- latest Mug session owner (diagnostic only): ${q.coordOwner}` : `- latest Mug session owner: unknown (role-slot nudge still parks for the next Mug wake)`);
 
   const b = brief.bees;

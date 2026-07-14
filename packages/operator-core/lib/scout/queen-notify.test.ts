@@ -26,7 +26,7 @@ const outcome = (over: Partial<RevisionOutcome>): RevisionOutcome => ({
 });
 
 describe('notifyQueenDraftRouted (D-003 #1 — start the loop)', () => {
-  it('pings the resolved Queen owner AND the durable @role:queen slot (WI-963)', async () => {
+  it('pings the resolved Queen owner AND the durable @role:mug slot (WI-963)', async () => {
     const { sent, send } = recorder();
     const ports: QueenNotifyPorts = { resolveQueenOwner: async () => 'queen-owner-9', send };
     const res = await notifyQueenDraftRouted(ports, {
@@ -36,22 +36,22 @@ describe('notifyQueenDraftRouted (D-003 #1 — start the loop)', () => {
     });
     expect(res).toEqual({ notified: true, recipient: 'queen-owner-9' });
     expect(sent).toHaveLength(1);
-    expect(sent[0].to).toEqual(['queen-owner-9', '@role:queen']);
+    expect(sent[0].to).toEqual(['queen-owner-9', '@role:mug']);
     expect(sent[0].planSlug).toBe('scout-foo-2026-06-20');
     expect(sent[0].summary).toMatch(/routed a new draft/i);
     expect(sent[0].body).toContain('scout:papercusp'); // the feedback address
   });
 
-  it('still notifies via the durable @role:queen slot when there is no recent Queen session (WI-963)', async () => {
+  it('still notifies via the durable @role:mug slot when there is no recent Queen session (WI-963)', async () => {
     const { sent, send } = recorder();
     const ports: QueenNotifyPorts = { resolveQueenOwner: async () => null, send };
     const res = await notifyQueenDraftRouted(ports, { slug: 's-1', title: 'T', scoutOwner: 'scout:h' });
     expect(res).toEqual({ notified: true, recipient: null });
     expect(sent).toHaveLength(1);
-    expect(sent[0].to).toEqual(['@role:queen']);
+    expect(sent[0].to).toEqual(['@role:mug']);
   });
 
-  it('still notifies via the durable @role:queen slot when resolve throws (never throws itself)', async () => {
+  it('still notifies via the durable @role:mug slot when resolve throws (never throws itself)', async () => {
     const { sent, send } = recorder();
     const ports: QueenNotifyPorts = {
       resolveQueenOwner: async () => {
@@ -62,7 +62,7 @@ describe('notifyQueenDraftRouted (D-003 #1 — start the loop)', () => {
     const res = await notifyQueenDraftRouted(ports, { slug: 's-1', title: 'T', scoutOwner: 'scout:h' });
     expect(res).toEqual({ notified: true, recipient: null });
     expect(sent).toHaveLength(1);
-    expect(sent[0].to).toEqual(['@role:queen']);
+    expect(sent[0].to).toEqual(['@role:mug']);
   });
 
   it('returns notified:false but keeps recipient when send throws (best-effort)', async () => {

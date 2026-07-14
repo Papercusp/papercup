@@ -40,9 +40,8 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
-import { resolveMugOwner } from '../pot/placement-watchdog';
+import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
-import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 
 // ── tunables (env-overridable, like scoutDraftReviewStaleSec) ─────────────────
 
@@ -200,9 +199,10 @@ export interface SuUngradedSweepResult {
  */
 export async function fireGradingNudge(
   workspaceId: string,
-  mugOwner: string,
+  mugOwner: string | null,
   stale: readonly SuUngradedCandidate[],
   staleSec: number,
+  harnessSlug: string | null = null,
 ): Promise<void> {
   const days = Math.max(1, Math.round(staleSec / 86_400));
   const shown = stale.slice(0, 5);
@@ -216,7 +216,9 @@ export async function fireGradingNudge(
     `priming + lens win-rates, and a grade of 3 or lower with feedback wakes the originator to ` +
     `revise. Grading them (or their artifacts reaching a terminal state) stops this nudge.\n\n` +
     `${list}${more}`;
-  await wakeRecipients([mugOwner], {
+  await wakeMug({
+    workspaceId,
+    mugOwner,
     summary,
     payload: {
       kind: 'su-ideate-ungraded',
@@ -225,31 +227,9 @@ export async function fireGradingNudge(
       staleDays: days,
     },
     source: 'su-ideate-ungraded',
-    workspaceId,
+    body: `${list}${more}`,
+    harnessSlug,
   });
-  // The durable half — best-effort: a park failure must never break the sweep (the
-  // caller's try/catch also guards this, but degrade locally too so a park hiccup
-  // doesn't mask the wake attempt above having already happened).
-  try {
-    const [{ sendMessage }, { runWithWorkspace }] = await Promise.all([
-      import('../agent-tools/coordination/messages'),
-      import('../workspace-als'),
-    ]);
-    await runWithWorkspace(workspaceId, () =>
-      sendMessage(
-        {
-          ownerId: 'su-ideate-ungraded-watchdog',
-          ownerLabel: 'su-ideate-ungraded-watchdog',
-          source: 'static-client',
-          workspaceId,
-          userId: null,
-        },
-        { to: ['@role:mug'], summary, body: `${list}${more}` },
-      ),
-    );
-  } catch (e) {
-    console.warn(`[su-ideate-ungraded] @role:mug park failed: ${e instanceof Error ? e.message : e}`);
-  }
 }
 
 /**
@@ -283,20 +263,10 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
           continue;
         }
         const mugOwner = await resolveMugOwner(sql, workspaceId, installSlug);
-        if (!mugOwner) {
-          results.push({
-            workspaceId,
-            installSlug,
-            outcome: 'skipped',
-            staleCount: stale.length,
-            reason: 'no live Mug session to wake',
-          });
-          continue;
-        }
         const reason =
           `${stale.length} su-ideate filing(s) ungraded > ${days}d: ` +
           stale.slice(0, 5).map((s) => s.ideaId).join(', ');
-        await fireGradingNudge(workspaceId, mugOwner, stale, staleSec);
+        await fireGradingNudge(workspaceId, mugOwner, stale, staleSec, installSlug);
         // Record the fire so the debounce engages next tick (source='su-ideate-ungraded').
         await recordFire({ workspaceId, installSlug, source: 'su-ideate-ungraded', reason, wakeAt: null });
         results.push({ workspaceId, installSlug, outcome: 'nudged', staleCount: stale.length, reason });

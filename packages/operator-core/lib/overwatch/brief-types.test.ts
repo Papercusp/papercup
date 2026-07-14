@@ -67,7 +67,7 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   // Health panels — one line each, every field surfaced.
   assert.match(out, /### Mug\n- last woke 2026-06-15T01:00:00Z \[STALLED\] · cadence OFF · driving 3 placement\(s\) · next unscheduled/);
   // The Mug-nudge address is the stable role slot; the session owner is diagnostic only.
-  assert.match(out, /nudge the Mug via `coord:send \{ to: \['@role:queen'\], wake: 'optimistic'/);
+  assert.match(out, /nudge the Mug via `coord:send \{ to: \['@role:mug'\], wake: 'optimistic'/);
   assert.match(out, /latest Mug session owner \(diagnostic only\): s-queen-1781000000-abc/);
 
   // The pre-folded Inbox section (coord messages addressed to the overwatch).

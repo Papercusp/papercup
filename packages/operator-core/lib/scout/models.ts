@@ -5,8 +5,8 @@
  * the step implementations use, without importing the heavier step modules.
  */
 
-/** Strong by default: divergent ideation benefits most from a creative model. */
-export const DEFAULT_SCOUT_IDEATOR_MODEL = 'claude-opus-4-8';
+/** Owner directive: keep every autonomous loop role on the shared sonnet lane. */
+export const DEFAULT_SCOUT_IDEATOR_MODEL = 'claude-sonnet-5[1m]:high';
 
 /** Cheap by default: deterministic novelty already does the load-bearing dedup. */
 export const DEFAULT_SCOUT_CRITIC_MODEL = 'claude-haiku-4-5';

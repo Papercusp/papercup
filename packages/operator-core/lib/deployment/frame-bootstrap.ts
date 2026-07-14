@@ -8,7 +8,7 @@
  *
  * Per the ratified D-006/D-007, a frame is SELF-SUFFICIENT: it runs its OWN
  * orchestrator loop (D-006) against its OWN embedded-pg that federates via the
- * peer-log (D-007). So the script installs the runtime + agent CLIs + Meridian,
+ * peer-log (D-007). So the script installs the runtime + agent CLIs,
  * mounts the per-frame Claude credentials (P-011), runs the env spec's
  * setup/install/build, starts embedded-pg + applies migrations, and launches the
  * frame's orchestrator loop scoped to the one harness it hosts.
@@ -37,7 +37,7 @@ export interface FrameBootstrapOpts {
   environment?: BlueprintEnvironment;
   /** Node major to install (default 22). */
   nodeVersion?: number;
-  /** Agent backend the frame's loop spawns (default `omp` via Meridian). */
+  /** Agent backend the frame's loop spawns (default `omp`). */
   agentBackend?: 'omp' | 'claude' | 'codex';
   /** D-007: run the frame's own embedded-pg, federating via the peer-log (default true). */
   embeddedPg?: boolean;
@@ -179,17 +179,17 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     'npm i -g tsx',
   ]);
 
-  // Agent CLIs, per backend: omp needs Meridian (OAuth router on :3456) + the omp
-  // CLI + claude (which vendors the OAuth credentials Meridian reads); a claude
-  // frame needs only the claude CLI — installing/launching Meridian there was
-  // pure waste (cloud-deployment-layer follow-up, fixed 2026-06-09).
+  // Agent CLIs, per backend: OMP uses the existing gateway/account-pool spawn seam
+  // (per-session models.yml + PAPERCUSP_ACCOUNT_ID), while Claude and Codex use
+  // their normal CLIs. Staged Claude credentials remain available for direct
+  // fallback; no separate OAuth router is required on the frame.
   add('agent-clis', `agent CLIs (backend=${backend})`, [
-    ...(backend === 'omp' ? ['npm i -g @rynfar/meridian @oh-my-pi/pi-coding-agent'] : []),
-    '# claude CLI (primary or fallback backend; vendors the OAuth credentials Meridian reads)',
+    ...(backend === 'omp' ? ['npm i -g @oh-my-pi/pi-coding-agent'] : []),
+    '# claude CLI (primary or fallback backend; direct fallback uses staged credentials)',
     'curl -fsSL https://claude.ai/install.sh | bash || npm i -g @anthropic-ai/claude-code',
     backend === 'omp'
-      ? '( meridian >/var/log/meridian.log 2>&1 & ) # OAuth router on :3456'
-      : '# backend is not omp — Meridian not installed/started',
+      ? '# OMP gateway/account routing is supplied per spawn by the runtime'
+      : '# backend is not omp — OMP CLI not installed',
   ]);
 
   const desktop = normalizeDesktop(opts.desktop);

@@ -1316,23 +1316,21 @@ export async function reconcileOnePot(
  *  pot:status on her next natural turn"; the liveness watchdog keeps her armed. */
 async function fireRecoveryWake(
   workspaceId: string,
-  mugOwner: string,
+  mugOwner: string | null,
   unitId: string,
   harness: string | null,
   attempt: number,
 ): Promise<void> {
-  try {
-    await wakeRecipients([mugOwner], {
-      summary:
-        `Placement watchdog: work-item ${unitId}${harness ? ` (${harness})` : ''} is not terminal but its ` +
-        `cup is dead/stalled (placement attempt ${attempt}) — re-place or recover it.`,
-      payload: { kind: 'placement-recovery', workItemId: unitId, harness, attempt },
-      source: 'pot-placement-watchdog',
-      workspaceId,
-    });
-  } catch (e) {
-    console.warn(`[pot-placement-watchdog] recovery wake failed for ${unitId}: ${e instanceof Error ? e.message : e}`);
-  }
+  await wakeMug({
+    workspaceId,
+    mugOwner,
+    summary:
+      `Placement watchdog: work-item ${unitId}${harness ? ` (${harness})` : ''} is not terminal but its ` +
+      `cup is dead/stalled (placement attempt ${attempt}) — re-place or recover it.`,
+    payload: { kind: 'placement-recovery', workItemId: unitId, harness, attempt },
+    source: 'pot-placement-watchdog',
+    harnessSlug: harness,
+  });
 }
 
 /** P-032 — count the NON-TERMINAL downstream features that `blockerId` (in `harness`)
@@ -1368,23 +1366,21 @@ async function countNonTerminalDownstream(
  *  the Mug seeing the freed lanes in her next natural pot:survey. */
 async function fireUnblockWake(
   workspaceId: string,
-  mugOwner: string,
+  mugOwner: string | null,
   completedId: string,
   harness: string | null,
   downstream: number,
 ): Promise<void> {
-  try {
-    await wakeRecipients([mugOwner], {
-      summary:
-        `Placement watchdog: ${completedId}${harness ? ` (${harness})` : ''} completed and un-gated ` +
-        `${downstream} downstream lane(s) — survey + place the next wave batch.`,
-      payload: { kind: 'placement-unblocked', workItemId: completedId, harness, downstream },
-      source: 'pot-placement-watchdog',
-      workspaceId,
-    });
-  } catch (e) {
-    console.warn(`[pot-placement-watchdog] unblock wake failed for ${completedId}: ${e instanceof Error ? e.message : e}`);
-  }
+  await wakeMug({
+    workspaceId,
+    mugOwner,
+    summary:
+      `Placement watchdog: ${completedId}${harness ? ` (${harness})` : ''} completed and un-gated ` +
+      `${downstream} downstream lane(s) — survey + place the next wave batch.`,
+    payload: { kind: 'placement-unblocked', workItemId: completedId, harness, downstream },
+    source: 'pot-placement-watchdog',
+    harnessSlug: harness,
+  });
 }
 
 /** P-021 — route a cursed unit to the owner escalation queue (the D-011 Queue

@@ -141,10 +141,19 @@ describe('buildFrameBootstrap', () => {
     expect(script).toContain(`PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES='x'\\''; rm -rf /'`);
   });
 
-  it('non-omp backend does not start Meridian', () => {
+  it('non-omp backend does not install OMP', () => {
     const { script } = buildFrameBootstrap({ harnessSlug: 'h', environment: baseEnv, agentBackend: 'claude' });
-    expect(script).toContain('backend is not omp');
+    expect(script).not.toContain('@oh-my-pi/pi-coding-agent');
+    expect(script).toContain('backend is not omp — OMP CLI not installed');
     expect(script).toContain("AGENT_BACKEND='claude-code'");
+  });
+
+  it('OMP backend installs the CLI but leaves gateway/account routing to the runtime', () => {
+    const { script } = buildFrameBootstrap({ harnessSlug: 'h', environment: baseEnv, agentBackend: 'omp' });
+    expect(script).toContain('@oh-my-pi/pi-coding-agent');
+    expect(script).toContain('OMP gateway/account routing is supplied per spawn by the runtime');
+    expect(script).not.toContain('@rynfar/meridian');
+    expect(script).not.toContain('meridian >/var/log/meridian.log');
   });
 
   it('exports the instance config via HARNESS_CONFIG_JSON when provided (P-008)', () => {

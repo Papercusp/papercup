@@ -47,7 +47,7 @@ describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', 
     expect(DEFAULT_SCOUT_CONFIG.novelty.decidedPenalty).toBe(0.15);
     expect(DEFAULT_SCOUT_CONFIG.routing.defaultRail).toBe('improvement');
     expect(DEFAULT_SCOUT_CONFIG.federatedPriming).toEqual({ foreignElites: 3, crowded: 5, empty: 5 });
-    expect(DEFAULT_SCOUT_CONFIG.models.ideator).toBe('claude-opus-4-8');
+    expect(DEFAULT_SCOUT_CONFIG.models.ideator).toBe('claude-sonnet-5[1m]:high');
   });
 });
 
