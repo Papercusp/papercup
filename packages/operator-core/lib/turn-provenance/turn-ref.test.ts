@@ -67,6 +67,49 @@ describe('classifyRecordedTurn', () => {
       classifyRecordedTurn('note: injectors prefix ⟦turn-origin:loop-fire nonce:aabbccdd00112233⟧ to turns').verdict,
     ).toBe('owner-typed');
   });
+
+  // The transcript classifier feeds the carry-doc continuation (P-010): a
+  // machine turn misread as owner-typed would become a successor's "open owner
+  // message" first prompt. These are the un-enrolled machine surfaces observed
+  // in real psu transcripts — each must land NOT-owner (machine-surface).
+  it('a Task-subsystem completion notification is machine-surface, not owner', () => {
+    expect(
+      classifyRecordedTurn(
+        '<task-notification> <task-id>btjclo7aj</task-id> <summary>Monitor event fired</summary> </task-notification>',
+      ).verdict,
+    ).toBe('machine-surface');
+  });
+
+  it('the TUI interrupt marker is machine-surface (owner action, but not an owner directive)', () => {
+    expect(classifyRecordedTurn('[Request interrupted by user]').verdict).toBe('machine-surface');
+    expect(classifyRecordedTurn('[Request interrupted by user for tool use]').verdict).toBe('machine-surface');
+  });
+
+  it('a self-issued /compact command self-declares machine provenance (rides after the slash prefix)', () => {
+    expect(
+      classifyRecordedTurn(
+        '/compact ⟦machine-issued self-compaction — not owner-typed⟧ Resume Phase 6; keep the identity block.',
+      ).verdict,
+    ).toBe('machine-surface');
+  });
+
+  it('the compaction UI status echo is machine-surface', () => {
+    expect(
+      classifyRecordedTurn(' ✻ Conversation compacted (ctrl+o for history)   ● Compaction is queued').verdict,
+    ).toBe('machine-surface');
+  });
+
+  it('an owner turn that merely MENTIONS these surfaces mid-sentence stays owner-typed', () => {
+    // No special bracket / head marker → the owner discussing the feature is
+    // not mistaken for the machine surface itself.
+    expect(
+      classifyRecordedTurn('can we make the task notification and the request interrupted marker classify correctly?')
+        .verdict,
+    ).toBe('owner-typed');
+    // A plain owner /compact-shaped sentence without the ⟦machine-issued⟧ marker
+    // (no bracket glyph) is still owner prose.
+    expect(classifyRecordedTurn('compact the plan into fewer items please').verdict).toBe('owner-typed');
+  });
 });
 
 describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
