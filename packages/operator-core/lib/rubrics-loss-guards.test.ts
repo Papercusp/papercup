@@ -230,6 +230,65 @@ describe('criterion `replication` field end-to-end (schema + plan-row mapping)',
   });
 });
 
+// ─── rubric-system-hardening-2026-07-14 P-001/P-004 (EI-12146/EI-12149) ───────────────
+// releaseGating + the structured criterion window ride template_data end-to-end: the
+// schema accepts them, planRowToRubric projects them, and the AMENDMENT path carries
+// them — dropping either on a re-write is the WI-4287 loss class (a silently un-gated
+// release rubric / a criterion silently back on the hardcoded window).
+describe('releaseGating + criterion window end-to-end (EI-12146/EI-12149)', () => {
+  it('rubricTemplateDataSchema accepts releaseGating and stays strict on unknowns', () => {
+    const data = {
+      characteristic: 'c',
+      criteria: [crit({ key: 'a' })],
+      ratingScale: ['pass', 'fail', 'unknown'],
+      releaseGating: true,
+    };
+    expect(rubricTemplateDataSchema.safeParse(data).success).toBe(true);
+    expect(rubricTemplateDataSchema.safeParse({ ...data, releaseGatting: true }).success).toBe(false);
+  });
+
+  it('planRowToRubric projects releaseGating + criterion window (and omits them when absent)', () => {
+    const row = {
+      plan_slug: 'r1',
+      workspace_id: 'default',
+      harness_slug: 'papercusp',
+      title: 'R1',
+      status: 'active' as string | null,
+      created: '2026-07-14',
+      updated: '2026-07-14',
+      updated_at: '2026-07-14T00:00:00.000Z',
+      owner: 'su-1',
+      archived: false,
+      template_data: {
+        characteristic: 'c',
+        criteria: [
+          {
+            key: 'cycle-error-rate',
+            title: 'A',
+            model: 'm',
+            method: 'how',
+            driftMarkers: 'bad',
+            window: { kind: 'post-watermark', watermarkRef: 'bg-host-restart' },
+          },
+          { key: 'b', title: 'B', model: 'm', method: 'how', driftMarkers: 'bad' },
+        ],
+        ratingScale: ['healthy', 'unknown'],
+        releaseGating: true,
+      },
+    };
+    const mapped = planRowToRubric(row);
+    expect(mapped?.releaseGating).toBe(true);
+    expect(mapped?.criteria[0]?.window).toEqual({ kind: 'post-watermark', watermarkRef: 'bg-host-restart' });
+    expect(mapped?.criteria[1]).not.toHaveProperty('window');
+    const unmarked = planRowToRubric({
+      ...row,
+      template_data: { ...row.template_data, releaseGating: undefined },
+    });
+    expect(unmarked).not.toBeNull();
+    expect(unmarked).not.toHaveProperty('releaseGating');
+  });
+});
+
 // ─── rubric-system-improvements-2026-07-12 P-003: the small-amendment path ────────────
 // applyRubricAmendment is the pure core of rubrics:amend — patch one criterion field /
 // methodRef and shape the whole-doc ProposeRubricInput (status preserved, guards
@@ -242,6 +301,23 @@ describe('applyRubricAmendment (rubrics:amend pure core)', () => {
       crit({ key: 'placement', replication: LONG_DRILL }),
       crit({ key: 'wake' }),
     ]);
+
+  it('an amendment CARRIES releaseGating + criterion windows — never silently un-gates (EI-12149)', () => {
+    const gated = rubric([
+      crit({ key: 'placement', window: { kind: 'rolling', ms: 3_600_000 } }),
+      crit({ key: 'wake' }),
+    ], { releaseGating: true });
+    const out = applyRubricAmendment(gated, {
+      rubricId: 'su-agent-behavior',
+      criterion: { key: 'wake', field: 'method', mode: 'append', text: 'also check X' },
+    });
+    expect(out.releaseGating).toBe(true);
+    expect(out.criteria.find((c) => c.key === 'placement')?.window).toEqual({ kind: 'rolling', ms: 3_600_000 });
+    // ...and an un-gated rubric stays un-gated (no manufactured field).
+    expect(
+      applyRubricAmendment(stored(), { rubricId: 'su-agent-behavior', methodRef: 'x' }),
+    ).not.toHaveProperty('releaseGating');
+  });
 
   it('append adds a paragraph to the field, keeps every other criterion, and PRESERVES status', () => {
     const out = applyRubricAmendment(stored(), {

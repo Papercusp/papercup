@@ -1,0 +1,153 @@
+/**
+ * rubric-staleness-watchdog.test.ts — EI-12149: a release-gating rubric that goes
+ * ungraded must PAGE, not silently sit. Pure decider in all three states + the
+ * sweep's orchestration (gating filter, debounce, fail-soft) via injected deps —
+ * no PG (the DISCRIMINATION bar: a watchdog never shown to fire on a dead grader
+ * is a green light with extra steps).
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  evaluateRubricStaleness,
+  rubricStalenessSweep,
+  rubricStalenessThresholdSec,
+} from './rubric-staleness-watchdog';
+import type { Rubric } from './rubrics';
+import type { ScorecardFreshness } from './scorecard-freshness';
+
+const SIX_H = 6 * 3_600_000;
+
+const freshness = (over: Partial<ScorecardFreshness> = {}): ScorecardFreshness => ({
+  rubricRef: 'blender-release-readiness',
+  since: '2026-07-14T12:00:00.000Z',
+  status: 'stale',
+  emitted: false,
+  complete: false,
+  count: 0,
+  partialCount: 0,
+  lastEmittedAt: null,
+  lastCompleteAt: null,
+  latestMissingKeys: [],
+  latestExtraKeys: [],
+  ...over,
+});
+
+describe('evaluateRubricStaleness — the pure decider', () => {
+  const rubric = { rubricId: 'blender-release-readiness' };
+
+  it('HEALTHY when a complete scorecard landed in-window', () => {
+    const v = evaluateRubricStaleness(
+      rubric,
+      freshness({ status: 'fresh', complete: true, count: 2, lastCompleteAt: '2026-07-14T17:00:00.000Z' }),
+      SIX_H,
+    );
+    expect(v.stale).toBe(false);
+    expect(v.reason).toContain('2026-07-14T17:00:00.000Z');
+  });
+
+  it('STALE on an empty window — grading stopped is a page, not a quiet period', () => {
+    const v = evaluateRubricStaleness(rubric, freshness(), SIX_H);
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('NO scorecard in the last 6h');
+    expect(v.reason).toContain('blender-release-readiness');
+  });
+
+  it('STALE on partial-only — and names TRUNCATION, a different chase than a dead loop', () => {
+    const v = evaluateRubricStaleness(
+      rubric,
+      freshness({ status: 'partial-only', emitted: true, count: 3, partialCount: 3, lastEmittedAt: '2026-07-14T17:30:00.000Z' }),
+      SIX_H,
+    );
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('NONE complete');
+    expect(v.reason).toContain('silent truncation');
+  });
+
+  it('kill switch (thresholdMs <= 0) is never stale', () => {
+    expect(evaluateRubricStaleness(rubric, freshness(), 0).stale).toBe(false);
+    expect(evaluateRubricStaleness(rubric, freshness(), -1).stale).toBe(false);
+  });
+});
+
+describe('rubricStalenessSweep — orchestration (injected deps, no PG)', () => {
+  const gatingRubric = { rubricId: 'blender-release-readiness', releaseGating: true, status: 'active' } as unknown as Rubric;
+  const plainRubric = { rubricId: 'pot-coordination-health', status: 'active' } as unknown as Rubric;
+
+  const deps = (over: Parameters<typeof rubricStalenessSweep>[1] = {}) => ({
+    listRubrics: vi.fn(async () => [gatingRubric, plainRubric]),
+    checkScorecardFreshness: vi.fn(async () => freshness()),
+    recentWatchdogFires: vi.fn(async () => 0),
+    recordFire: vi.fn(async () => undefined),
+    openEscalation: vi.fn(async () => ({}) as never),
+    ...over,
+  });
+
+  it('sweeps ONLY releaseGating rubrics — an un-gated rubric is never paged on', async () => {
+    const d = deps();
+    const results = await rubricStalenessSweep({}, d);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ rubricRef: 'blender-release-readiness', outcome: 'alerted' });
+    expect(d.checkScorecardFreshness).toHaveBeenCalledTimes(1);
+    // The alert fired BOTH channels: the countable fires row + the coord escalation.
+    expect(d.recordFire).toHaveBeenCalledTimes(1);
+    expect(d.recordFire.mock.calls[0]![0]).toMatchObject({ source: 'rubric-staleness' });
+    expect(d.openEscalation).toHaveBeenCalledTimes(1);
+    const esc = d.openEscalation.mock.calls[0]![1] as { summary: string; body?: string };
+    expect(esc.summary).toContain('blender-release-readiness');
+    expect(esc.body).toContain('improvements:capture'); // the re-grade recipe rides the page
+  });
+
+  it('healthy when the gating rubric has a complete in-window scorecard — no fire, no escalation', async () => {
+    const d = deps({
+      checkScorecardFreshness: vi.fn(async () => freshness({ status: 'fresh', complete: true, count: 1 })),
+    });
+    const results = await rubricStalenessSweep({}, d);
+    expect(results[0]!.outcome).toBe('healthy');
+    expect(d.recordFire).not.toHaveBeenCalled();
+    expect(d.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('debounces via the fires ledger — a recent fire suppresses the re-page', async () => {
+    const d = deps({ recentWatchdogFires: vi.fn(async () => 1) });
+    const results = await rubricStalenessSweep({}, d);
+    expect(results[0]!.outcome).toBe('debounced');
+    expect(d.recordFire).not.toHaveBeenCalled();
+    expect(d.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('is fail-soft per rubric — a freshness read error is recorded, never thrown', async () => {
+    const d = deps({
+      checkScorecardFreshness: vi.fn(async () => {
+        throw new Error('pg down');
+      }),
+    });
+    const results = await rubricStalenessSweep({}, d);
+    expect(results[0]).toMatchObject({ rubricRef: 'blender-release-readiness', outcome: 'error' });
+    expect(results[0]!.reason).toContain('pg down');
+  });
+
+  it('is fail-soft overall — a rubric-list error yields one error result, never a throw', async () => {
+    const d = deps({
+      listRubrics: vi.fn(async () => {
+        throw new Error('plans store unavailable');
+      }),
+    });
+    const results = await rubricStalenessSweep({}, d);
+    expect(results).toEqual([{ rubricRef: '*', outcome: 'error', reason: 'plans store unavailable' }]);
+  });
+
+  it('the env kill switch skips the whole sweep', async () => {
+    const prev = process.env.PAPERCUSP_RUBRIC_STALENESS_THRESHOLD_SEC;
+    process.env.PAPERCUSP_RUBRIC_STALENESS_THRESHOLD_SEC = '0';
+    try {
+      expect(rubricStalenessThresholdSec()).toBe(0);
+      const d = deps();
+      const results = await rubricStalenessSweep({}, d);
+      expect(results).toEqual([{ rubricRef: '*', outcome: 'skipped', reason: 'kill switch' }]);
+      expect(d.listRubrics).not.toHaveBeenCalled();
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_RUBRIC_STALENESS_THRESHOLD_SEC;
+      else process.env.PAPERCUSP_RUBRIC_STALENESS_THRESHOLD_SEC = prev;
+    }
+  });
+});

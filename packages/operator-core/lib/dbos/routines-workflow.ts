@@ -647,6 +647,34 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'release-deploy-staleness-sweep' },
   );
 
+  // rubric-system-hardening-2026-07-14 P-004 (EI-12149): the RUBRIC-STALENESS
+  // watchdog — an ACTIVE releaseGating rubric with no COMPLETE scorecard within
+  // the threshold window (default 6h) fires one debounced pot_watchdog_fires row
+  // + a coord escalation. The blender-release-readiness rubric went ~14h ungraded
+  // when its grader loop died silently and nothing paged; a release bar nobody is
+  // grading is a silent gate, not a green one. Fail-soft; kill switch:
+  // PAPERCUSP_RUBRIC_STALENESS_THRESHOLD_SEC<=0. Returns the per-rubric outcomes
+  // so watchdog:status has one authoritative record.
+  await DBOS.runStep(
+    async () => {
+      const { rubricStalenessSweep } = await import('../rubric-staleness-watchdog');
+      const results = await rubricStalenessSweep();
+      for (const res of results) {
+        if (res.outcome === 'alerted' || res.outcome === 'error') {
+          console.warn(`[rubric-staleness] ${res.outcome}: ${res.rubricRef} — ${res.reason}`);
+        }
+      }
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        alertedCount: results.filter((r) => r.outcome === 'alerted').length,
+        errorCount: results.filter((r) => r.outcome === 'error').length,
+        results: results.slice(0, 10),
+      };
+    },
+    { name: 'rubric-staleness-sweep' },
+  );
+
   // hive-seed-bundle P-008 (D-007): the COLD-JOIN CANARY. Now that seeded installs
   // only carry the join DELTA (P-006/P-007), the full cold join (no seed, whole-
   // history transfer) stops being exercised on every install and can silently
