@@ -171,7 +171,7 @@ describe('detectClaimLedgerMismatch — P-029 domains (deploy / commit) + isolat
   });
 
   it('cross-domain isolation: a failed DEPLOY never contradicts a COMMIT claim', () => {
-    expect(detectClaimLedgerMismatch('pushed the release branch', [failedDeploy])).toBeNull();
+    expect(detectClaimLedgerMismatch('Pushed the branch upstream.', [failedDeploy])).toBeNull();
   });
 
   it('priority: when tests AND deploy are both claimed and both failed, tests wins the slot', () => {

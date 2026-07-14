@@ -28,6 +28,11 @@ import { BookOpenText, Lightbulb, ListTree } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { FLAGS } from '@papercusp/flags';
 import { lazyWithRetry } from '@papercusp/operator-core/lib/lazy-with-retry';
+import {
+  isQuickPanelWindow,
+  openRouteInApp,
+  resolveQuickPanelHandoff,
+} from '@papercusp/operator-core/lib/client-navigation';
 import { useFlag } from '@/lib/flag-hooks';
 import { Select } from '@/app/harness/Select';
 import { OperatorChatSidebar } from '@/app/_components/OperatorChatSidebar';
@@ -129,6 +134,40 @@ export default function QuickPanelPage({ headerSlot }: { headerSlot?: ReactNode 
     'tab',
     parseAsStringEnum<QpTab>([...QP_TABS]).withDefault('prompts'),
   );
+
+  // WI-4827: the Quick Panel window is chromeless by ROUTE only — a control that
+  // links into the full app (the chat sidebar's mic-settings gear → /settings/voice,
+  // the account menu → /settings/user, a TanStack <Link>, …) would navigate this
+  // small popup in place and render the whole operator app inside it. Capture link
+  // clicks that would LEAVE the chromeless sandbox and hand them to the desktop,
+  // which opens them in the main app window (Spotlight-style) and hides the panel.
+  // navigateClient's own guard covers programmatic navigations; this covers anchors.
+  useEffect(() => {
+    if (!isQuickPanelWindow()) return;
+    const onClick = (e: MouseEvent) => {
+      // Respect modified / non-primary clicks (open-in-new-window etc.) and
+      // already-handled events.
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+        return;
+      }
+      const anchor = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (!href) return;
+      const handoff = resolveQuickPanelHandoff(href, window.location.href, {
+        isQuickPanelWindow: true,
+      });
+      if (!handoff) return;
+      // Fully own the click: preventDefault stops the browser navigation, and
+      // stopPropagation stops the anchor's own React onClick (e.g. a
+      // navigateClient handler) from double-firing the hand-off.
+      e.preventDefault();
+      e.stopPropagation();
+      openRouteInApp(handoff);
+    };
+    document.addEventListener('click', onClick, { capture: true });
+    return () => document.removeEventListener('click', onClick, { capture: true });
+  }, []);
 
   if (!enabled) {
     return (

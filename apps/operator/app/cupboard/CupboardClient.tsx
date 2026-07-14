@@ -154,6 +154,9 @@ export default function CupboardClient() {
       plugin: 'Plugins',
       pack: 'Packs',
       'knowledge-pack': 'Knowledge Packs',
+      // The Apps tab itself (adding 'app' to VIEW_FILTERS) lands in P-004; this
+      // label keeps the Record<ViewFilter> exhaustive now the 'app' kind exists.
+      app: 'Apps',
       tools: 'Tools',
     }),
     [t],

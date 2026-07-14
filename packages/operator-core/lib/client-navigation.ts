@@ -1,4 +1,76 @@
 import { getBrowserWorkspaceId } from './browser-workspace';
+import { isChromelessPath } from './chromeless-routes';
+
+/**
+ * The Quick Panel popup window (papercusp-desktop `src-tauri/src/docs_search.rs`)
+ * is chromeless by ROUTE only — nothing else stops it from navigating to a
+ * full-app route in place, which turns the small 760×540 palette into the whole
+ * operator app (owner report 2026-07-14, WI-4827). The Rust palette window sets
+ * this global via an initialization script; the main app window never does.
+ */
+export function isQuickPanelWindow(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    (window as unknown as { __PAPERCUSP_QUICK_PANEL_WINDOW__?: boolean })
+      .__PAPERCUSP_QUICK_PANEL_WINDOW__ === true
+  );
+}
+
+/**
+ * Should a navigation FROM the Quick Panel window be handed off to the main app
+ * instead of run in place? Returns the app-relative `path+search+hash` to open
+ * in the main window, or null when the navigation should proceed normally —
+ * i.e. this is not the panel window, the target is off-origin / an exotic
+ * scheme (external links, mailto:, custom schemes go out via the OS, not the
+ * panel), or the destination is still inside the chromeless sandbox
+ * (panel→panel navigation, which must stay in place).
+ *
+ * Pure + window-free so it is unit-testable; `navigateClient` and the panel
+ * page's capture-phase anchor interceptor both drive it (WI-4827).
+ */
+export function resolveQuickPanelHandoff(
+  target: string,
+  currentHref: string,
+  opts: { isQuickPanelWindow: boolean },
+): string | null {
+  if (!opts.isQuickPanelWindow) return null;
+  let next: URL;
+  let current: URL;
+  try {
+    next = new URL(target, currentHref);
+    current = new URL(currentHref, currentHref);
+  } catch {
+    return null;
+  }
+  if (!(next.protocol === 'http:' || next.protocol === 'https:')) return null;
+  if (next.origin !== current.origin) return null;
+  if (isChromelessPath(next.pathname)) return null;
+  return `${next.pathname}${next.search}${next.hash}`;
+}
+
+/**
+ * Hand `route` to the desktop, which opens it in the main app window
+ * (Spotlight-style) and hides the palette. Raw Tauri invoke because
+ * `tauri-bindings.ts` is specta-generated and this command is new (same pattern
+ * as OnboardingConsole's raw invoke). Best-effort: outside a Tauri webview this
+ * is a no-op, but the only caller path is gated on `isQuickPanelWindow()`, which
+ * only the Rust palette window sets — so we are always in Tauri here.
+ */
+export function openRouteInApp(route: string): void {
+  if (typeof window === 'undefined') return;
+  const internals = (
+    window as unknown as {
+      __TAURI_INTERNALS__?: {
+        invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+      };
+    }
+  ).__TAURI_INTERNALS__;
+  try {
+    void internals?.invoke?.('open_route_in_app', { route });
+  } catch {
+    /* best-effort — a failed hand-off must never navigate the panel in place */
+  }
+}
 
 /**
  * Does `target` switch the window to a workspace other than `currentWorkspaceId`?
@@ -101,6 +173,18 @@ function hardNavigate(href: string, replace: boolean): void {
 
 export function navigateClient(target: string, opts?: { replace?: boolean; hard?: boolean }): void {
   if (typeof window === 'undefined') return;
+  // WI-4827: in the Quick Panel window, a navigation that would LEAVE the
+  // chromeless sandbox is handed to the main app instead of run in place (which
+  // would turn the palette into the whole operator app). The panel page's
+  // capture-phase anchor interceptor handles link clicks; this catches the
+  // PROGRAMMATIC navigations (router/useNavigate/direct navigateClient calls).
+  const handoff = resolveQuickPanelHandoff(target, window.location.href, {
+    isQuickPanelWindow: isQuickPanelWindow(),
+  });
+  if (handoff) {
+    openRouteInApp(handoff);
+    return;
+  }
   const action = resolveClientNavigation(target, window.location.href, {
     ...opts,
     currentWorkspaceId: getBrowserWorkspaceId(),
