@@ -27,7 +27,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../../credentials', () => ({ readCredentials: vi.fn() }));
 vi.mock('../../voice-prefs', () => ({ loadVoicePrefs: vi.fn() }));
 
-import { buildQueryEmbedder, withAcquireBudget } from './embedder';
+import { buildQueryEmbedder, withAcquireBudget, _clearQueryEmbedCacheForTests } from './embedder';
 import { readCredentials } from '../../credentials';
 import { loadVoicePrefs } from '../../voice-prefs';
 
@@ -35,6 +35,9 @@ const savedKey = process.env.OPENAI_API_KEY;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // WI-4734: the query-embed memo is module-scoped — without this, a vector
+  // cached by one test (closing over ITS fetch stub) leaks into the next.
+  _clearQueryEmbedCacheForTests();
   delete process.env.OPENAI_API_KEY;
   // Defaults: no stored key, no voice pref. Each test overrides as needed.
   vi.mocked(readCredentials).mockResolvedValue({});
@@ -211,5 +214,48 @@ describe('withAcquireBudget — bounds the query-embedder acquisition (WI-3922)'
 
   it('a rejected acquisition within budget degrades to null, never throws', async () => {
     await expect(withAcquireBudget(Promise.reject(new Error('cold pipeline boom')), 200)).resolves.toBeNull();
+  });
+});
+
+describe('query-embed memo (WI-4734 — facet/window re-queries must not re-pay the embed)', () => {
+  function openAiReady(vec: number[] = [0.1, 0.2]) {
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ embedding: vec }] }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('the same query embeds ONCE — the second call is a cache hit (even across embedder builds)', async () => {
+    const fetchMock = openAiReady([0.5]);
+    const e1 = await buildQueryEmbedder();
+    expect(await e1!('improvements')).toEqual([0.5]);
+    expect(await e1!('improvements')).toEqual([0.5]);
+    // A facet/window re-query builds a FRESH embedder for the same q — still a hit.
+    const e2 = await buildQueryEmbedder();
+    expect(await e2!('improvements')).toEqual([0.5]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a different query is a miss; a failed embed is evicted (never sticks)', async () => {
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    const fetchMock = vi
+      .fn()
+      // 1st: q-a ok; 2nd: q-b fails; 3rd: q-b retried ok (proves eviction).
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [1] }] }) })
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [2] }] }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const embedder = await buildQueryEmbedder();
+    expect(await embedder!('q-a')).toEqual([1]);
+    await expect(embedder!('q-b')).rejects.toThrow('openai_embed_500');
+    expect(await embedder!('q-b')).toEqual([2]); // retried — the failure was not cached
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

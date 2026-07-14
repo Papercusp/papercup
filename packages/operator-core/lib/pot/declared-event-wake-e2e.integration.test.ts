@@ -13,8 +13,9 @@
  * start-pot-wake-orchestration) does not: the MUG-DECLARED subscription path
  * (declare_wake tool → setPotEventSubscriptions → syncPotWakeRules) rather
  * than the armed DEFAULT subscriptions, a burst of 3 (not 2), the kickoff
- * carrying the subscription's provenance/note, and declare-wake's REPLACE
- * semantics (re-declaring with no events clears the rules — no further wakes).
+ * carrying the subscription's provenance/note, and the EI-10525 always-armed
+ * demand-wake invariant (re-declaring with no events replaces her CUSTOM subs
+ * but KEEPS the three default demand wakes armed).
  *
  * Mirrors that sibling's testcontainer + projected-dispatch scaffolding.
  */
@@ -314,7 +315,10 @@ describe('the declared event wake, end to end (P-008)', () => {
     });
     expect(out.ok, JSON.stringify(out)).toBe(true);
     expect(out.mode).toBe('event');
-    expect(out.eventRules).toBe(1);
+    // EI-10525: her plans:start sub + the two uncovered defaults (work_items:create,
+    // coord:escalate) are ensured. Her declared plans:start (with its note) wins for
+    // that key, so the burst below still carries her provenance.
+    expect(out.eventRules).toBe(3);
   });
 
   it('a burst of 3 matched events collapses to ONE wake, and the wake produces the launch', async () => {
@@ -360,17 +364,20 @@ describe('the declared event wake, end to end (P-008)', () => {
     await vi.waitFor(() => expect(launches()).toBe(2), { timeout: 5_000 });
   });
 
-  it('REPLACE semantics: re-declaring with no events clears the subscription — no further wakes', async () => {
+  it('EI-10525: re-declaring with no events replaces her CUSTOM subs but KEEPS the default demand subs armed', async () => {
     const out = await dispatch('pot:declare-wake', { harness: 'papercup', mode: 'none' });
     expect(out.ok).toBe(true);
-    expect(out.eventRules).toBe(0);
-    expect(out.mode).toBe('none');
+    // Always-armed invariant: the three defaults survive a mode:'none' re-declaration
+    // (her custom plans:start note is replaced by the default plans:start sub). This
+    // USED to persist [] and go fully dark to demand — the EI-10525 clobber.
+    expect(out.eventRules).toBe(3);
+    expect(out.mode).toBe('event');
 
-    await clearWakeFloor(); // a wake COULD fire — the only gate left is the cleared rule set
+    await clearWakeFloor();
     await insertPlan('after-clear');
     const started = await dispatch('plans:start', { slug: 'after-clear', harness: 'papercup' });
     expect(started.transitioned).toBe(true);
-    await settle();
-    expect(launches()).toBe(2); // unchanged — the declared subscription is gone
+    // the DEFAULT plans:start demand wake is still armed → this transition wakes again
+    await vi.waitFor(() => expect(launches()).toBe(3), { timeout: 5_000 });
   });
 });

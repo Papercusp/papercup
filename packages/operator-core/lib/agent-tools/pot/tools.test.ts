@@ -138,20 +138,25 @@ describe('pot:declare-wake', () => {
     expect(setPotEventSubscriptions).not.toHaveBeenCalled();
   });
 
-  it("time wake (`at`): declares the one-shot, clears events, mode:'time'", async () => {
+  it("time wake (`at`): declares the one-shot, PRESERVES the default demand subs (EI-10525), mode:'time+event'", async () => {
     const at = '2026-07-01T00:00:00.000Z';
     const res = parse(await tool.handler({ at, harness: 'papercup' }, ctx()));
     expect(res.ok).toBe(true);
     // canonicalHarnessSlug maps 'papercup' → 'papercusp' (rename-compat shim EI-2224)
     expect(res.harness).toBe('papercusp');
-    expect(res.mode).toBe('time');
+    // EI-10525: a time-only re-declaration USED to wipe the event subs (REPLACE
+    // semantics → setPotEventSubscriptions(ws, [])). Now the three default demand
+    // subscriptions are always ensured, so the mode reflects both.
+    expect(res.mode).toBe('time+event');
     expect(res.time).toEqual({ at, clamped: false });
-    expect(res.eventRules).toBe(0);
+    expect(res.eventRules).toBe(3);
+    expect(res.defaultsEnsured).toBe(3);
     expect(res.floorSec).toBe(60);
     expect(declarePotTimeWake).toHaveBeenCalledTimes(1);
     expect(clearPotTimeWake).not.toHaveBeenCalled();
-    // events omitted ⇒ cleared (REPLACE semantics) via an empty-set declare
-    expect(setPotEventSubscriptions).toHaveBeenCalledWith('ws-test', []);
+    // The persisted set is the three defaults — NEVER [] (the always-armed invariant).
+    const [, persisted] = setPotEventSubscriptions.mock.calls[0] as [string, Array<{ on: string }>];
+    expect(persisted.map((s) => s.on)).toEqual(['plans:start', 'work_items:create', 'coord:escalate']);
   });
 
   it('time wake (`inSeconds`): requests ≈ now + N seconds', async () => {
@@ -165,7 +170,7 @@ describe('pot:declare-wake', () => {
     expect(delta).toBeLessThanOrEqual(600_000 + 2_000);
   });
 
-  it("event wake only: clears the time wake, persists subs, mode:'event'", async () => {
+  it("event wake: clears the time wake, keeps her sub + ensures the uncovered defaults (EI-10525), mode:'event'", async () => {
     const res = parse(
       await tool.handler(
         { events: [{ on: 'coord:escalate', note: 'watch escalations' }], harness: 'papercup' },
@@ -173,16 +178,22 @@ describe('pot:declare-wake', () => {
       ),
     );
     expect(res.mode).toBe('event');
-    expect(res.eventRules).toBe(1);
+    // her coord:escalate + the two uncovered defaults (plans:start, work_items:create)
+    expect(res.eventRules).toBe(3);
+    expect(res.defaultsEnsured).toBe(2);
     expect(res.time).toBeNull();
     expect(clearPotTimeWake).toHaveBeenCalledTimes(1);
     expect(declarePotTimeWake).not.toHaveBeenCalled();
-    expect(setPotEventSubscriptions).toHaveBeenCalledWith('ws-test', [
-      { on: 'coord:escalate', when: undefined, note: 'watch escalations' },
-    ]);
+    const [, persisted] = setPotEventSubscriptions.mock.calls[0] as [
+      string,
+      Array<{ on: string; when?: unknown; note?: string }>,
+    ];
+    // her declared sub is kept verbatim + first (covers the coord:escalate default)
+    expect(persisted[0]).toEqual({ on: 'coord:escalate', when: undefined, note: 'watch escalations' });
+    expect(persisted.map((s) => s.on)).toEqual(['coord:escalate', 'plans:start', 'work_items:create']);
   });
 
-  it("time + event together → mode:'time+event'", async () => {
+  it("time + event together → mode:'time+event' (her sub + the 3 defaults)", async () => {
     const res = parse(
       await tool.handler(
         { inSeconds: 300, events: [{ on: 'work_items:complete' }], harness: 'papercup' },
@@ -190,17 +201,39 @@ describe('pot:declare-wake', () => {
       ),
     );
     expect(res.mode).toBe('time+event');
-    expect(res.eventRules).toBe(1);
+    // work_items:complete is not a default key, so all three defaults are added on top
+    expect(res.eventRules).toBe(4);
+    expect(res.defaultsEnsured).toBe(3);
     expect(declarePotTimeWake).toHaveBeenCalledTimes(1);
   });
 
-  it("mode:'none' → clears both, mode:'none'", async () => {
+  it("mode:'none' → clears the time wake but KEEPS the default demand subs armed (EI-10525)", async () => {
     const res = parse(await tool.handler({ mode: 'none', harness: 'papercup' }, ctx()));
-    expect(res.mode).toBe('none');
+    // EI-10525: even an explicit 'none' can't leave a STARTED pot with zero demand
+    // wakes — only the time wake is cleared; the three defaults stay armed.
+    expect(res.mode).toBe('event');
     expect(res.time).toBeNull();
-    expect(res.eventRules).toBe(0);
+    expect(res.eventRules).toBe(3);
+    expect(res.defaultsEnsured).toBe(3);
     expect(clearPotTimeWake).toHaveBeenCalledTimes(1);
-    expect(setPotEventSubscriptions).toHaveBeenCalledWith('ws-test', []);
+    expect(setPotEventSubscriptions).not.toHaveBeenCalledWith('ws-test', []);
+    const [, persisted] = setPotEventSubscriptions.mock.calls[0] as [string, Array<{ on: string }>];
+    expect(persisted.map((s) => s.on)).toEqual(['plans:start', 'work_items:create', 'coord:escalate']);
+  });
+
+  it('EI-10525 regression: a bare time-only re-declaration NEVER wipes the default demand subs', async () => {
+    // Reproduces the 2026-07-12 clobber: the Mug ends a turn with a TIME-ONLY
+    // pot:declare-wake ({ inSeconds }), which under the old REPLACE semantics
+    // persisted [] — leaving the time wake armed but the demand wakes (a new unplaced
+    // work item / escalation) DEAD, undetected by the watchdog ("a wake is armed").
+    const res = parse(await tool.handler({ inSeconds: 600, harness: 'papercup' }, ctx()));
+    expect(res.ok).toBe(true);
+    // never an empty declare — the always-armed invariant holds
+    expect(setPotEventSubscriptions).not.toHaveBeenCalledWith('ws-test', []);
+    const [, persisted] = setPotEventSubscriptions.mock.calls[0] as [string, Array<{ on: string }>];
+    expect(persisted.map((s) => s.on)).toEqual(['plans:start', 'work_items:create', 'coord:escalate']);
+    expect(res.eventRules).toBe(3);
+    expect(res.defaultsEnsured).toBe(3);
   });
 
   it('EI-309 guard: REFUSES an event-only wake while the home harness has unplaced work (frontier_not_empty)', async () => {
@@ -229,7 +262,7 @@ describe('pot:declare-wake', () => {
       await tool.handler({ events: [{ on: 'work_items:create' }], harness: 'papercup', force: true }, ctx()),
     );
     expect(res.mode).toBe('event');
-    expect(res.eventRules).toBe(1);
+    expect(res.eventRules).toBe(3); // her work_items:create + plans:start + coord:escalate (EI-10525)
     expect(setPotEventSubscriptions).toHaveBeenCalled();
   });
 
@@ -250,7 +283,7 @@ describe('pot:declare-wake', () => {
     try {
       const res = parse(await tool.handler({ events: [{ on: 'work_items:create' }], harness: 'papercup' }, ctx()));
       expect(res.mode).toBe('event'); // guard disabled ⇒ the declaration applies
-      expect(res.eventRules).toBe(1);
+      expect(res.eventRules).toBe(3); // her sub + the ensured defaults (EI-10525)
     } finally {
       setFlagOverridesForTest(null);
       listUnplacedPotFrontier.mockResolvedValue([]);

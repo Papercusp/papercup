@@ -794,7 +794,7 @@ export default function AdvShell({
           color: var(--fg-mute, #7f9bb4);
           cursor: default;
         }
-        /* The `.pc-advshell__action` base + `:disabled` and the hives pill/popover
+        /* The .pc-advshell__action base + :disabled and the hives pill/popover
            rules were moved to the shared adv-header-pills.css (imported at the top
            of this file) so the HivesRunningPill + AgentsRunningPill render styled in
            the Quick Panel popup too, which does not mount AdvShell

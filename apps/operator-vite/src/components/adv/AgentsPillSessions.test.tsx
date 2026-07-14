@@ -6,12 +6,15 @@
  * AgentsRunningPill.test.tsx so importing the module stays cheap.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: [] }] }) }));
 vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
 vi.mock('@/app/harness/AgentInspectorModal', () => ({ default: () => null }));
 vi.mock('@/app/harness/AgentThinkingStream', () => ({ ThinkingDot: () => null }));
+// SessionSearchResults (WI-4734 tests below) is URL-backed via nuqs; the suite
+// runs without a NuqsAdapter, so mirror AgentsRunningPill.test.tsx's mock.
+vi.mock('nuqs', () => ({ useQueryState: () => [null, vi.fn()] }));
 
 import {
   appendEndedPage,
@@ -22,7 +25,9 @@ import {
   searchHitStreamUrl,
   searchResultResumeTarget,
   InactiveSessionsSection,
+  SessionSearchResults,
   type EndedSessionRow,
+  type SearchSessionResult,
 } from './AgentsPillSessions';
 import type { RosterAgent } from './AgentsRunningPill';
 
@@ -263,5 +268,80 @@ describe('InactiveSessionsSection row layout (WI-4195 r3 — name not truncated 
     expect(count.textContent).toContain('(2+)');
     // It reuses the active roster's group-count class so it looks identical.
     expect(count.className).toContain('pc-agents-roster__group-count');
+  });
+});
+
+describe('SessionSearchResults in-flight honesty (WI-4734 — owner-hit: a 20s search with no visible progress)', () => {
+  const NOW = Date.parse('2026-07-13T12:00:00Z');
+
+  function searchResult(over: Partial<SearchSessionResult> & { sessionId: string }): SearchSessionResult {
+    return {
+      sourceKind: 'claude',
+      topScore: 1,
+      hits: [],
+      active: null,
+      session: null,
+      ...over,
+    } as SearchSessionResult;
+  }
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('shows the pending indicator IMMEDIATELY on render — before the debounce ever fires', () => {
+    // A never-settling fetch: if the indicator only appeared when the fetch
+    // fired (the old behavior: setLoading inside the debounce timer), this
+    // synchronous assertion — zero timers elapsed — would fail.
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    render(<SessionSearchResults query="improvements" nowMs={NOW} />);
+    expect(screen.getByTestId('search-pending').textContent).toContain('Searching…');
+  });
+
+  it('escalates the message after ~5s so a slow search is visibly alive', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    render(<SessionSearchResults query="improvements" nowMs={NOW} />);
+    expect(screen.getByTestId('search-pending').textContent).toContain('Searching…');
+    act(() => {
+      vi.advanceTimersByTime(5_200); // debounce (200ms) is inside this window too
+    });
+    expect(screen.getByTestId('search-pending').textContent).toContain('Still searching');
+  });
+
+  it('keeps previous-query results visible but DIMMED (is-stale) while the next search runs', async () => {
+    // First query resolves with one inactive-session result…
+    const first = {
+      ok: true,
+      json: async () => ({ ok: true, sessions: [searchResult({ sessionId: 'sess-11112222' })] }),
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(first)
+      // …the SECOND query (new keystroke) never settles.
+      .mockImplementation(() => new Promise(() => {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { rerender } = render(<SessionSearchResults query="improvements" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    const section = screen.getByText(/Inactive sessions/).closest('section');
+    expect(section?.className).not.toContain('is-stale');
+
+    rerender(<SessionSearchResults query="improvements now" nowMs={NOW} />);
+    // Pending is back instantly AND the old results are visibly stale.
+    expect(screen.getByTestId('search-pending')).toBeTruthy();
+    expect(screen.getByText(/Inactive sessions/).closest('section')?.className).toContain('is-stale');
+  });
+
+  it('clears pending + stale dim once the search settles', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, sessions: [searchResult({ sessionId: 'sess-33334444' })] }),
+    })));
+    render(<SessionSearchResults query="improvements" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    expect(screen.getByText(/Inactive sessions/).closest('section')?.className).not.toContain('is-stale');
   });
 });

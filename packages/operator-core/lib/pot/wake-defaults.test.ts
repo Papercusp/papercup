@@ -26,6 +26,7 @@ import {
   armDefaultPotWakeSubscriptions,
   blueprintWakeSubscriptions,
   defaultPotEventSubscriptions,
+  withDefaultPotWakeSubscriptions,
 } from './wake-defaults';
 
 const WS = 'test-ws';
@@ -50,6 +51,27 @@ describe('defaultPotEventSubscriptions', () => {
     const subs = defaultPotEventSubscriptions();
     expect(subs.map((s) => s.on)).toEqual(['plans:start', 'work_items:create', 'coord:escalate']);
     for (const s of subs) expect(s.when).toBeDefined();
+  });
+});
+
+describe('withDefaultPotWakeSubscriptions (EI-10525 — always-armed demand-wake invariant)', () => {
+  it('unions all three defaults onto an EMPTY declared set (a time-only re-declaration)', () => {
+    expect(withDefaultPotWakeSubscriptions([]).map((s) => s.on)).toEqual([
+      'plans:start',
+      'work_items:create',
+      'coord:escalate',
+    ]);
+  });
+  it("keeps the Mug's declared subs verbatim (first) and adds only the uncovered defaults", () => {
+    const declared = [{ on: 'coord:escalate', when: { 'result.data.ok': true }, note: 'mine' }];
+    const merged = withDefaultPotWakeSubscriptions(declared);
+    expect(merged[0]).toEqual(declared[0]); // hers, verbatim + first — covers the coord:escalate default
+    expect(merged.map((s) => s.on)).toEqual(['coord:escalate', 'plans:start', 'work_items:create']);
+  });
+  it('honors a non-empty explicit defaults set (blueprint-declared wakes)', () => {
+    expect(withDefaultPotWakeSubscriptions([], [{ on: 'release:green' }]).map((s) => s.on)).toEqual([
+      'release:green',
+    ]);
   });
 });
 
