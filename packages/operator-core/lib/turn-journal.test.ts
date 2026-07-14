@@ -12,6 +12,7 @@ import {
   JOURNAL_NOTE_MAX_CHARS,
   MECHANICAL_NOTE_MAX_CHARS,
   readLastAssistantTurn,
+  readVerbatimTail,
   resolveTranscriptPath,
 } from './turn-journal';
 
@@ -249,5 +250,41 @@ describe('readLastAssistantTurn / resolveTranscriptPath', () => {
     const f = join(root, 'proj', 'deadbeef-1234.jsonl');
     writeFileSync(f, claudeLine('assistant', 'hi', '2026-07-14T10:00:00Z') + '\n');
     expect(await resolveTranscriptPath('claude', 'deadbeef-1234', undefined, [{ root, dirDepth: 1 }])).toBe(f);
+  });
+});
+
+describe('readVerbatimTail (P-009 carry-document tail leg)', () => {
+  let sandbox: string;
+  const claudeLine = (role: 'user' | 'assistant', text: string, ts: string) =>
+    JSON.stringify({ type: role, timestamp: ts, sessionId: 'sess-1', message: { role, content: [{ type: 'text', text }] } });
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), 'papercusp-verbatim-tail-test-'));
+  });
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('returns the last N text turns of BOTH speakers, most-recent LAST', async () => {
+    const f = join(sandbox, 'sess.jsonl');
+    writeFileSync(
+      f,
+      [
+        claudeLine('user', 'first ask', '2026-07-14T10:00:00Z'),
+        claudeLine('assistant', 'first answer', '2026-07-14T10:00:05Z'),
+        claudeLine('user', 'second ask', '2026-07-14T10:00:10Z'),
+        claudeLine('assistant', 'second answer', '2026-07-14T10:00:15Z'),
+      ].join('\n') + '\n',
+    );
+    const tail = await readVerbatimTail(f, 'claude', 3);
+    expect(tail.map((t) => t.text)).toEqual(['first answer', 'second ask', 'second answer']);
+    expect(tail[0].speaker).toBe('assistant');
+    expect(tail[2].ts?.toISOString()).toBe('2026-07-14T10:00:15.000Z');
+  });
+
+  it('maxTurns <= 0 reads nothing', async () => {
+    const f = join(sandbox, 'sess.jsonl');
+    writeFileSync(f, claudeLine('assistant', 'hi', '2026-07-14T10:00:00Z') + '\n');
+    expect(await readVerbatimTail(f, 'claude', 0)).toEqual([]);
   });
 });

@@ -1,6 +1,9 @@
 /** Deterministic carry-document builder (deterministic-context-carry P-009):
  *  the seam-driven assembly (identity + session-mode + plan-state + asks + tail
  *  layered on the carry brief) and the pure full-document renderer. */
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import type { CarryBrief } from './carry-brief';
 import {
@@ -9,6 +12,7 @@ import {
   SELF_RECALL_POINTER,
   REORIENT_BANNER,
   CARRY_DOC_MAX_TAIL_TURNS,
+  CARRY_DOC_MAX_PLAN_ITEMS,
   type CarryDoc,
   type CarryDocPlanItem,
   type CarryDocAsk,
@@ -81,11 +85,44 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(doc.tail[doc.tail.length - 1].text).toBe(`turn ${CARRY_DOC_MAX_TAIL_TURNS + 3}`);
   });
 
-  it('plan-state / asks / tail default to empty when no seam is given', async () => {
-    const doc = await buildCarryDoc('su-1', base);
-    expect(doc.planItems).toEqual([]);
+  it('the plan-state seam flows through and is capped to the max', async () => {
+    const many: CarryDocPlanItem[] = Array.from({ length: CARRY_DOC_MAX_PLAN_ITEMS + 3 }, (_, i) => ({
+      itemId: `P-${i}`,
+      planSlug: 'plan-x',
+      status: 'wip',
+      disposition: 'active',
+    }));
+    const doc = await buildCarryDoc('su-1', { ...base, getPlanItemsFn: async () => many });
+    expect(doc.planItems).toHaveLength(CARRY_DOC_MAX_PLAN_ITEMS);
+    expect(doc.planItems[0]).toMatchObject({ itemId: 'P-0', planSlug: 'plan-x', disposition: 'active' });
+  });
+
+  it('asks / tail default to empty when no seam or transcript is given', async () => {
+    const doc = await buildCarryDoc('su-1', { ...base, getPlanItemsFn: async () => [] });
     expect(doc.asks).toEqual([]);
     expect(doc.tail).toEqual([]);
+  });
+
+  it('the real tail leg reads a transcript file when a path is supplied', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-carry-doc-test-'));
+    try {
+      const f = join(dir, 'sess.jsonl');
+      const line = (role: 'user' | 'assistant', text: string, ts: string) =>
+        JSON.stringify({ type: role, timestamp: ts, sessionId: 's', message: { role, content: [{ type: 'text', text }] } });
+      writeFileSync(
+        f,
+        [
+          line('user', 'ship the carry doc', '2026-07-14T10:00:00Z'),
+          line('assistant', 'wiring the tail reader', '2026-07-14T10:00:05Z'),
+        ].join('\n') + '\n',
+      );
+      const doc = await buildCarryDoc('su-1', { ...base, getPlanItemsFn: async () => [], transcriptPath: f });
+      expect(doc.tail.map((t) => t.text)).toEqual(['ship the carry doc', 'wiring the tail reader']);
+      expect(doc.tail[1].speaker).toBe('assistant');
+      expect(doc.tail[0].ts).toBe('2026-07-14T10:00:00.000Z');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

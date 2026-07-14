@@ -128,6 +128,13 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   harness?: string | null;
   account?: string | null;
   ownerLabel?: string | null;
+  /** The caller's native transcript file, for the verbatim-tail leg. The session
+   *  id → transcript path resolution belongs to the CONSUMER (it knows its own
+   *  session), so a path is passed in rather than derived from the coordination
+   *  ownerId (which names the coordination identity, not the transcript file). */
+  transcriptPath?: string | null;
+  /** Which client wrote the transcript (default 'claude'). */
+  transcriptSourceKind?: 'claude' | 'omp' | 'codex';
   // Test seams — each defaults to the real reader (or a best-effort empty leg).
   buildCarryBriefFn?: (ownerId: string, opts: BuildCarryBriefOpts) => Promise<CarryBrief>;
   getModesFn?: (workspaceId: string, ownerId: string) => Promise<CarryDocMode[]>;
@@ -146,6 +153,52 @@ async function defaultGetModes(workspaceId: string, ownerId: string): Promise<Ca
       mode: r.mode,
       ownerDirected: Boolean(r.ownerDirected),
       reason: r.reason ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Read the caller's claimed / in-flight plan items. Assignment is keyed on the
+ *  agent-NAME a session adopts (not the coordination ownerId), so resolve the
+ *  adopted name first; a session with no adopted name simply owns no items.
+ *  Best-effort: a throwing read yields no items, never a failed document. */
+async function defaultGetPlanItems(ownerId: string, workspaceId: string): Promise<CarryDocPlanItem[]> {
+  try {
+    const { resolveAdoptedName } = await import('./plan-items/agent-names');
+    const name = await resolveAdoptedName(workspaceId, ownerId);
+    if (!name) return [];
+    const { myItemsWithState } = await import('./plan-items/liveness');
+    const items = await myItemsWithState(workspaceId, name);
+    return items.map((s) => ({
+      itemId: s.assignment.itemId,
+      planSlug: s.assignment.planSlug,
+      // myItemsWithState pairs assignment+live-claim but does not fetch the plan
+      // item's stored status; the disposition (active / assigned-idle / …) is the
+      // load-bearing state here. Status stays null until a leg fetches it.
+      status: null,
+      disposition: s.disposition,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Read the verbatim tail from the caller's transcript, mapped to tail turns.
+ *  No-ops (empty) when no transcript path is supplied; best-effort otherwise. */
+async function defaultGetTail(opts: BuildCarryDocOpts): Promise<CarryDocTailTurn[]> {
+  if (!opts.transcriptPath) return [];
+  try {
+    const { readVerbatimTail } = await import('./turn-journal');
+    const turns = await readVerbatimTail(
+      opts.transcriptPath,
+      opts.transcriptSourceKind ?? 'claude',
+      CARRY_DOC_MAX_TAIL_TURNS,
+    );
+    return turns.map((t) => ({
+      speaker: t.speaker,
+      text: t.text,
+      ts: t.ts ? t.ts.toISOString() : null,
     }));
   } catch {
     return [];
@@ -176,15 +229,17 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   const getModes = opts.getModesFn ?? defaultGetModes;
   const modes = await getModes(ws, ownerId).catch(() => [] as CarryDocMode[]);
 
-  const planItems = opts.getPlanItemsFn
-    ? await opts.getPlanItemsFn(ownerId, ws).catch(() => [] as CarryDocPlanItem[])
-    : [];
+  const getPlanItems = opts.getPlanItemsFn ?? defaultGetPlanItems;
+  const planItems = await getPlanItems(ownerId, ws).catch(() => [] as CarryDocPlanItem[]);
+
+  // Asks has no real default reader yet (its store is workspace/identity-scoped
+  // per request) — the consumer wires it; absent a seam the slot is empty.
   const asks = opts.getAsksFn
     ? await opts.getAsksFn(ownerId, ws).catch(() => [] as CarryDocAsk[])
     : [];
-  const tail = opts.getTailFn
-    ? await opts.getTailFn(ownerId).catch(() => [] as CarryDocTailTurn[])
-    : [];
+
+  const getTail = opts.getTailFn ? () => opts.getTailFn!(ownerId) : () => defaultGetTail(opts);
+  const tail = await getTail().catch(() => [] as CarryDocTailTurn[]);
 
   return {
     brief,

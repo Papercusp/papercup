@@ -48,7 +48,7 @@ describe('assertAppManifestResolves', () => {
     const fetchText = fakeFetch(GOOD);
     await expect(
       assertAppManifestResolves('http://insecure/latest.json', { fetchText }),
-    ).rejects.toMatchObject({ status: 400, reason: 'latest_json_not_https' });
+    ).rejects.toMatchObject({ status: 400, reason: 'latest_json_url_not_https' });
     expect(fetchText).not.toHaveBeenCalled();
   });
 

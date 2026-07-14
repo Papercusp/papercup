@@ -770,3 +770,111 @@ describe('Cupboard /listings — requires_events (migration 013)', () => {
     }
   });
 });
+
+// App distribution (migration 014 / cupboard-app-distribution-2026-07-14 P-003):
+// the kind='app' publish path. A STANDALONE app is a separate downloadable
+// product — the Cupboard stores its latest.json handoff url + the denormalized
+// platform keys and never re-hosts the binary. `app` is fail-closed
+// (REVIEW_POLICY_KINDS) so it publishes PENDING.
+const APP_BASE = {
+  github_owner: 'acme',
+  github_name: 'oddsmith',
+  github_url: 'https://github.com/acme/oddsmith',
+  project_ref: 'acme/oddsmith',
+};
+const LATEST_JSON = 'https://github.com/acme/oddsmith/releases/latest/download/latest.json';
+
+describe('Cupboard /listings — kind=app (standalone distribution)', () => {
+  let api: ReturnType<typeof buildApi>;
+  beforeEach(() => {
+    api = buildApi();
+  });
+
+  it('publishes a standalone app: stores delivery/url/platforms + lands PENDING (fail-closed)', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 40, private: false, permissions: { admin: true } } });
+    const res = await publish(api, env, {
+      ...APP_BASE, github_repository_id: 40, listing_kind: 'app', listing_ref: 'oddsmith',
+      title: 'Oddsmith', delivery_type: 'standalone', latest_json_url: LATEST_JSON,
+      release_repo: 'acme/oddsmith-releases', icon_url: 'https://acme.dev/icon.png',
+      platforms: ['darwin-aarch64', 'linux-x86_64'],
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { ok: boolean; review_status: string; pending_review?: boolean; listing: Record<string, unknown> };
+    expect(j.ok).toBe(true);
+    expect(j.review_status).toBe('pending');       // app is fail-closed
+    expect(j.pending_review).toBe(true);
+    expect(j.listing.listing_kind).toBe('app');
+    expect(j.listing.delivery_type).toBe('standalone');
+    expect(j.listing.latest_json_url).toBe(LATEST_JSON);
+    expect(j.listing.release_repo).toBe('acme/oddsmith-releases');
+    expect(j.listing.icon_url).toBe('https://acme.dev/icon.png');
+    expect(j.listing.platforms).toBe(JSON.stringify(['darwin-aarch64', 'linux-x86_64']));
+    expect(store.tables.harnesses).toHaveLength(1);
+  });
+
+  it('defaults delivery_type to standalone (still requires latest_json_url)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 41, private: false } });
+    const res = await publish(api, env, {
+      ...APP_BASE, github_repository_id: 41, listing_kind: 'app', listing_ref: 'oddsmith',
+      latest_json_url: LATEST_JSON,
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { listing: Record<string, unknown> };
+    // stored delivery_type stays null (⇒ treated as standalone downstream)
+    expect(j.listing.delivery_type).toBe(null);
+    expect(j.listing.latest_json_url).toBe(LATEST_JSON);
+  });
+
+  it('rejects a standalone app with no latest_json_url (a dead download)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 42, private: false } });
+    const res = await publish(api, env, {
+      ...APP_BASE, github_repository_id: 42, listing_kind: 'app', listing_ref: 'oddsmith',
+    });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { field: string; reason: string };
+    expect(j.field).toBe('latest_json_url');
+    expect(j.reason).toBe('required_for_standalone_app');
+  });
+
+  it('rejects app fields on a NON-app kind (app_kind_only)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 43, private: false } });
+    const res = await publish(api, env, {
+      ...APP_BASE, github_repository_id: 43, listing_kind: 'blueprint', listing_ref: 'x',
+      latest_json_url: LATEST_JSON,
+    });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { field: string; reason: string };
+    expect(j.field).toBe('app_fields');
+    expect(j.reason).toBe('app_kind_only');
+  });
+
+  it('rejects malformed app field shapes', async () => {
+    const cases: Array<[Record<string, unknown>, string, string]> = [
+      [{ delivery_type: 'weird' }, 'delivery_type', 'standalone_or_bundle'],
+      [{ latest_json_url: 'http://insecure/latest.json' }, 'latest_json_url', 'https_url_max_500'],
+      [{ latest_json_url: LATEST_JSON, release_repo: 'not-a-repo' }, 'release_repo', 'owner_slash_repo'],
+      [{ latest_json_url: LATEST_JSON, icon_url: 'ftp://x/icon.png' }, 'icon_url', 'https_url_max_500'],
+      [{ latest_json_url: LATEST_JSON, platforms: [] }, 'platforms', 'array_1_to_20'],
+      [{ latest_json_url: LATEST_JSON, platforms: ['ok', ''] }, 'platforms', 'non_empty_strings_max_64'],
+    ];
+    let repoId = 50;
+    for (const [extra, field, reason] of cases) {
+      // Fresh env per case (the 5/hr publish cap runs BEFORE field validation).
+      const { env } = makeEnv();
+      stubGithub({ user: { id: 6, login: 'pub' }, repo: { id: repoId, private: false } });
+      const res = await publish(api, env, {
+        ...APP_BASE, github_repository_id: repoId, listing_kind: 'app',
+        listing_ref: `oddsmith-${repoId}`, ...extra,
+      });
+      expect(res.status, `extra=${JSON.stringify(extra)}`).toBe(400);
+      const j = await res.json() as { field: string; reason: string };
+      expect(j.field, `extra=${JSON.stringify(extra)}`).toBe(field);
+      expect(j.reason, `extra=${JSON.stringify(extra)}`).toBe(reason);
+      repoId++;
+    }
+  });
+});
