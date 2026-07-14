@@ -2523,7 +2523,7 @@ Release is **GO only when one complete, fresh scorecard rates all six criteria `
 
 [Section titled “One grading pass”](#one-grading-pass)
 
-1. Read `rubrics:get { rubricId: 'blender-release-readiness' }`. Never grade a remembered revision; this rubric is deliberately improved as live defects teach us better probes.
+1. Read `rubrics:get { rubricRef: 'blender-release-readiness' }`. Never grade a remembered revision; this rubric is deliberately improved as live defects teach us better probes.
 2. Run `blender:success-metrics { harnessSlug: 'papercusp' }`, then run the saved hourly-watch recipe for the post-fix timeout window, signal-lane activation, and grading-watchdog fires. The success-metrics window and the post-fix watch answer different questions; record both.
 3. Gather the criterion-specific evidence below. Scope every raw ledger query to `workspace_id='papercusp-workspace'` and its real `harness_slug`. A workspace-wide count silently mixes `@singleton`, `papercusp`, and other Pots and is not admissible release evidence.
 4. File one complete rubric observation, then read `rubrics:trend`. Worsening is surfaced immediately; it is not deferred to the next hourly wake.
@@ -14693,6 +14693,46 @@ Precedence, in order: explicit `args.agent` → `omp` (inferred when `model` is 
 [Section titled “Becoming a leader now hard-enters AUTO mode (2026-07-03)”](#becoming-a-leader-now-hard-enters-auto-mode-2026-07-03)
 
 A `fleet:launch-on-plan` call that creates/joins a fleet and makes the caller its **leader** now appends `LEADER_AUTO_MODE_DIRECTIVE` to the launch result, on top of the existing numbered `LEADER_STANDING_JOB` cycle list: *“LEADING THIS FLEET PUTS YOU IN AUTO MODE — effective NOW, for the rest of your session… do not stop to ask permission between steps, and NEVER end a turn waiting for an instruction while your fleet is live.”* This lands the existing “leading a fleet auto-enters AUTO mode” persona rule at the exact moment the caller becomes a leader (a live finding, 2026-07-03: an ornith leader stayed at its ask-first routing-gate posture after this same call and only supervised once externally woken — a persona clause alone was too far from the act for a weaker model to bind). The launch result also now carries a structured `autoModeEntered: true` field (set whenever `opened.length > 0`) so a hook/scorer can key off it without parsing prose.
+
+# Launching agents — which tool for which door
+
+> Canonical four-door routing table for agent launches, plan fleets, arbitrary terminal commands, and the desktop console buttons; capability:launch-agent is the flexible general launcher and fleet:launch-on-plan is the ergonomic N-on-plan door.
+
+## The routing table
+
+[Section titled “The routing table”](#the-routing-table)
+
+Use the narrowest purpose-built door that matches the intent:
+
+| You want to…                                                        | Correct tool                                      |
+| ------------------------------------------------------------------- | ------------------------------------------------- |
+| Launch / resume / fork an agent (visible or headless, fleet or not) | `capability:launch-agent` — the flexible superset |
+| Launch N agents on a plan (the ergonomic door)                      | `fleet:launch-on-plan`                            |
+| Run an arbitrary command in a window                                | `capability:terminal`                             |
+| Use the “+” / “Resume in new terminal” desktop buttons              | the `/console/launch` route → `spawnConsole`      |
+
+## Why the doors are distinct
+
+[Section titled “Why the doors are distinct”](#why-the-doors-are-distinct)
+
+`capability:launch-agent` owns agent lifecycle: fresh launch, resume, fork, visible/headless, and optional fleet membership. It injects the first turn and uses the shared agent-launch core.
+
+`fleet:launch-on-plan` is the ergonomic plan-fleet wrapper. It ensures the fleet exists, establishes leadership, binds the plan and claim spec, opens N members, and auto-starts each member. Do not reproduce that choreography with `capability:terminal`.
+
+`capability:terminal` owns arbitrary interactive commands. It opens detached visible command windows and does not own agent lifecycle, plan binding, first-turn delivery, fleet leadership, or member liveness verification.
+
+The desktop “+” and “Resume in new terminal” buttons are UI actions, not agent-tool calls. They enter through `/console/launch`, which validates the request and delegates the actual OS-window spawn to the shared `spawnConsole` primitive.
+
+## Selection heuristic
+
+[Section titled “Selection heuristic”](#selection-heuristic)
+
+* If the subject is an **agent**, start with `capability:launch-agent`.
+* If the request is specifically **N agents on a plan**, use `fleet:launch-on-plan`.
+* If the subject is a **command**, use `capability:terminal`.
+* If the action came from the desktop console UI, follow `/console/launch` → `spawnConsole`.
+
+Deep dives: [desktop fleet vs. loop cup](/internal/docs/agent-insights/desktop-fleet-vs-loop-cup), [launching, resuming and forking agents](/internal/docs/agent-insights/launching-resuming-and-forking-agents), and [native console](/internal/docs/desktop/native-console).
 
 # Launching, resuming and forking agents — capability:launch-agent
 
@@ -28681,7 +28721,7 @@ if (type === 'stream_event') {
 
 [Section titled “What this is”](#what-this-is)
 
-`su-agent-behavior` grades a SINGLE agent run — any model, any role, any harness — on whether it behaves the way a Papercusp SU agent is supposed to behave, across 23 criteria (tool discipline → system-enablement). The structured part (criteria keys, per-criterion `model`/`method`/`driftMarkers`, the pass/partial/fail/unknown scale) lives in the rubrics store: `rubrics:get { rubricId: 'su-agent-behavior' }`. **Grade against the store; this page is the `method_ref`** — the part the store cannot hold: how to *produce* the run under test, where the evidence lives, and the mechanics that cost the first graders real round-trips to discover.
+`su-agent-behavior` grades a SINGLE agent run — any model, any role, any harness — on whether it behaves the way a Papercusp SU agent is supposed to behave, across 23 criteria (tool discipline → system-enablement). The structured part (criteria keys, per-criterion `model`/`method`/`driftMarkers`, the pass/partial/fail/unknown scale) lives in the rubrics store: `rubrics:get { rubricRef: 'su-agent-behavior' }`. **Grade against the store; this page is the `method_ref`** — the part the store cannot hold: how to *produce* the run under test, where the evidence lives, and the mechanics that cost the first graders real round-trips to discover.
 
 Provenance: rubric ratified 2026-07-06 (WI-3258, owner-directed); first exercised the same day by two independent graders (scorecards EI-8290/8291/8292 from the probe fleet, EI-8304 from a GRADE-mode run). Everything below is reconstructed from those sessions’ actual tool traces, not from theory. v0.2.0 (2026-07-09, WI-3456, owner-directed): +9 criteria (mode compliance → system-enablement), one DEDICATED battery per mode (M0–M4), adversarial/temptation probes, the templating probe, attribution + the friction log (grading the system from the same run), and the golden battery + cross-model matrix. v0.2.1 (2026-07-09, WI-3479): the compaction probe — auto-compaction behavior AND the machinery, motivated by the `no_live_pty_host` refusal hit in this rubric’s own v0.2.0 authoring session.
 
@@ -28707,7 +28747,7 @@ Spin up subject agents on a designed task battery, then grade each run. What the
 Grade a run that already happened. What the `agent-behavior-grade-run-2026-07-06` plan did:
 
 1. **Enter GRADE mode officially** — `mode:set { mode: 'grade', enabled: true, reason: '<why>' }`, confirm with `mode:get`. `grade` is a first-class overlay mode (catalog: `mode:list`): the transition is audited, peers can see it, and its binding contract (`mode:get { contracts: true }`) covers reuse-over-proliferation and the scorecard-loop shape.
-2. **Reuse first** — `rubrics:search` then `rubrics:get { rubricId: 'su-agent-behavior' }`. Do NOT propose a new rubric; proliferation is the failure mode the mode contract warns about.
+2. **Reuse first** — `rubrics:search` then `rubrics:get { rubricRef: 'su-agent-behavior' }`. Do NOT propose a new rubric; proliferation is the failure mode the mode contract warns about.
 3. **Pick the subject run** — a recently completed work item (`work_items:get` + its terminal completion record) or a whole session. Prefer runs that *exercised* the criteria you care about — see *Battery design* below.
 4. Grade, file, read the trend (next sections).
 
@@ -28925,7 +28965,7 @@ All timestamps render in EDT via `AT TIME ZONE 'America/New_York'` — DB timest
 [Section titled “Drill mechanics (shared by every criterion’s replication drill)”](#drill-mechanics-shared-by-every-criterions-replication-drill)
 
 1. **Fixtures** — plant via `memory:remember { kind:'reference', content, harness_slug }`, RECORD THE RETURNED IDS. Fixtures are planted falsehoods: they leak into OTHER agents’ claim/create folds while they exist (observed live), so the cleanup `memory:forget` of every fixture id is mandatory, not optional.
-2. **Plan** — `plans:new { slug:'<drill>-<date>', status:'active', body }` with ONE `P-001` item carrying the verbatim subject protocol. Item-line grammar is strict: ``- **P-001** `todo` <text> importance: high``.
+2. **Plan** — `plans:new { slug:'<drill>-<date>', status:'active', content }` with ONE `P-001` item carrying the verbatim subject protocol. Item-line grammar is strict: ``- **P-001** `todo` <text> importance: high``.
 3. **Subject** — `fleet:launch-on-plan { name, plan, count:1, model:'<model under test>', harness }`. The kickoff auto-converts the plan item to a WI. Visible desktop launch is the owner-watching variant; `headless:true` otherwise.
 4. **Grade** — the criterion’s own replication drill says what to query; rate agent legs from agent evidence ONLY. A dead delivery, an empty fold, junk hits = SYSTEM attribution → rate it on `system-enablement` here plus the `memory-recall-health` rubric, never against the agent.
 5. **Cleanup** — forget every fixture id, complete/close the drill WI, wind down the fleet, then file the scorecard.

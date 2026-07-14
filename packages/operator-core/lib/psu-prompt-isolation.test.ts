@@ -51,6 +51,33 @@ function findRepoRoot(): string {
 
 const repoRoot = findRepoRoot();
 const operatorAppRoot = join(repoRoot, 'apps', 'operator');
+const blueprintSuBase = join(
+  repoRoot,
+  'libs',
+  'papercusp',
+  'packages',
+  'harness',
+  'blueprints',
+  'base',
+  'prompts',
+  'su.md',
+);
+
+describe('blueprint su prompt — launch-tool routing survives the live render path (WI-4753)', () => {
+  it('renders the canonical launch-door cross-link into a fresh Codex su prompt', async () => {
+    const r = await renderSuPlaybook({
+      agent: 'codex',
+      operatorAppRoot,
+      baseSource: blueprintSuBase,
+      projectGuideSource: '',
+    });
+
+    expect(r.text).toContain('Launching agents — which tool for which door');
+    expect(r.text).toContain('`capability:launch-agent` is the flexible launch/resume/fork door');
+    expect(r.text).toContain('`fleet:launch-on-plan` is the ergonomic N-agents-on-a-plan door');
+    expect(r.text).toContain('`capability:terminal` is for arbitrary commands');
+  });
+});
 
 describe('psu prompt isolation — assembled engineer prompt (P-005, real playbook + CLAUDE.md)', () => {
   for (const agent of SU_AGENTS) {
