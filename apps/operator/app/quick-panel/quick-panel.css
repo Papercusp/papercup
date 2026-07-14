@@ -29,6 +29,20 @@
   min-height: 0;
 }
 
+/* Header status strip — hosts the shared AdvShell "N POT running" + "N agents
+   running" pills (quick-panel-status-pills-2026-07-13). Compact flat row above
+   the tabs; the pills bring their own button styling (adv-header-pills.css). */
+.pc-qp__statusbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 10px;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
 .pc-qp__tabs {
   display: flex;
   gap: 2px;

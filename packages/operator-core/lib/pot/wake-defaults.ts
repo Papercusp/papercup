@@ -75,6 +75,34 @@ export function defaultPotEventSubscriptions(): PotEventSubscription[] {
 const onKeys = (on: string | string[]): string[] => (Array.isArray(on) ? on : [on]);
 
 /**
+ * Union the default demand subscriptions onto a `base` set (e.g. the Mug's
+ * just-declared events), keeping every base subscription verbatim and adding
+ * only the defaults whose trigger tool is NOT already covered by the base. Pure.
+ *
+ * The always-armed demand-wake invariant (EI-10525): a Mug re-declaration —
+ * including a TIME-ONLY (or `mode:'none'`) one that carries no events — must
+ * never drop the default demand subscriptions. `pot:declare-wake` has REPLACE
+ * semantics, so a bare `{ inSeconds }` / `{ mode:'none' }` used to persist `[]`
+ * and silently wipe the three defaults, leaving demand wakes (a new unplaced
+ * work item / escalation) DEAD while a time wake still "looked armed" to the
+ * watchdog. Routing the declared set through this before persisting preserves
+ * the invariant: her declared events REPLACE her OWN custom set (re-tunable),
+ * but the defaults always survive.
+ *
+ * `defaults` is the set to ensure (the blueprint-declared wakes when non-empty,
+ * else the built-in three) — same resolution as {@link armDefaultPotWakeSubscriptions}.
+ */
+export function withDefaultPotWakeSubscriptions(
+  base: PotEventSubscription[],
+  defaults?: PotEventSubscription[],
+): PotEventSubscription[] {
+  const ensure = defaults && defaults.length > 0 ? defaults : defaultPotEventSubscriptions();
+  const covered = new Set(base.flatMap((s) => onKeys(s.on)));
+  const missing = ensure.filter((d) => onKeys(d.on).some((k) => !covered.has(k)));
+  return [...base, ...missing];
+}
+
+/**
  * Arm the default subscriptions for a workspace.
  *
  * - `'replace'` — the set becomes exactly the defaults (pot:create: the state
@@ -101,8 +129,7 @@ export async function armDefaultPotWakeSubscriptions(
     return { rules, added: defaults.length };
   }
   const current = (await readPotWakeState(workspaceId)).subscriptions;
-  const covered = new Set(current.flatMap((s) => onKeys(s.on)));
-  const missing = defaults.filter((d) => onKeys(d.on).some((k) => !covered.has(k)));
-  const rules = await setPotEventSubscriptions(workspaceId, [...current, ...missing]);
-  return { rules, added: missing.length };
+  const merged = withDefaultPotWakeSubscriptions(current, defaults);
+  const rules = await setPotEventSubscriptions(workspaceId, merged);
+  return { rules, added: merged.length - current.length };
 }

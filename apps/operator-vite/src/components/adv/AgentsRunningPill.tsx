@@ -22,6 +22,11 @@ import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
 import { InactiveSessionsSection, SessionSearchResults, SessionsSearchInput } from './AgentsPillSessions';
 import { useLexicon } from '@/lib/useLexicon';
+// Portable pill styles (the `.pc-advshell__action` button base) — shared with
+// AdvShell so this pill renders styled in the Quick Panel popup too, which does
+// not mount AdvShell (quick-panel-status-pills D-001). This pill's own wrapper +
+// roster popover styles remain self-injected in RosterStyles below.
+import './adv-header-pills.css';
 
 /** The subset of a server RosterEntry (adv-roster.ts) this control reads. The
  *  fleet fields are stamped by resolveFleetInfoByOwner; the base frontend

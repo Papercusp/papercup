@@ -21,7 +21,7 @@
  * URL-backed (nuqs) per the repo rule — deep-linkable and agent-drivable
  * via ui:dispatch.
  */
-import { Suspense, useEffect, useMemo } from 'react';
+import { Suspense, useEffect, useMemo, type ReactNode } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { BookOpenText, Lightbulb, ListTree } from 'lucide-react';
@@ -107,7 +107,15 @@ function BrainstormPane() {
   );
 }
 
-export default function QuickPanelPage() {
+/**
+ * @param headerSlot Optional status strip rendered above the tabs. The Vite SPA
+ *   route (apps/operator-vite/src/routes/quick-panel.tsx) injects the shared
+ *   AdvShell "N POT running" + "N agents running" pills here — those components
+ *   live under operator-vite/src and cannot be imported up-layer from this
+ *   operator/app page, so the route composes them and passes them down
+ *   (quick-panel-status-pills-2026-07-13 D-001).
+ */
+export default function QuickPanelPage({ headerSlot }: { headerSlot?: ReactNode } = {}) {
   const enabled = useFlag(FLAGS.QUICK_PANEL);
   const [tab, setTab] = useQueryState(
     'tab',
@@ -127,6 +135,7 @@ export default function QuickPanelPage() {
 
   return (
     <div className="pc-qp">
+      {headerSlot ? <div className="pc-qp__statusbar">{headerSlot}</div> : null}
       <Tabs.Root
         className="pc-qp__root"
         value={tab}

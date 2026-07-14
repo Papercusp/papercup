@@ -16,6 +16,9 @@ import { Popover } from '@/app/harness/Popover';
 import { useLexicon } from '@/lib/useLexicon';
 import { countStarted, hivesRunningLabel, type HiveControlRow } from './hive-control';
 import LocalHivesControl from '../left-sidebar/LocalHivesControl';
+// Portable pill styles (button base + hives popover) — shared with AdvShell so
+// this pill renders styled in the Quick Panel popup too (quick-panel-status-pills D-001).
+import './adv-header-pills.css';
 
 export default function HivesRunningPill() {
   const t = useLexicon();

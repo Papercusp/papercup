@@ -571,10 +571,11 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           </button>
         </div>
       )}
-      {!error && (facetGroups.length > 0 || windowToken) && (
+      {!error && !(loading && sessions.length === 0) && (
         // WI-4734: stays MOUNTED during a re-search (dimmed via is-stale) so the
         // bar doesn't flicker out on every keystroke now that `loading` spans
-        // the debounce window too — and the recency pills stay clickable.
+        // the debounce window too — and the recency pills stay clickable. A
+        // FIRST search (no results yet) still shows "Searching…" alone.
         <div className={loading ? 'is-stale' : undefined}>
           <FacetBar
             groups={facetGroups}
@@ -852,6 +853,17 @@ function SessionsStyles() {
       .pc-agents-sessions__search:focus { outline: 1px solid var(--accent, #38bdf8); }
       .pc-agents-sessions__status { padding: 8px 10px; font-size: 11.5px; color: var(--fg-mute); font-style: italic; }
       .pc-agents-sessions__status.is-error { color: #d97757; }
+      /* WI-4734: the in-flight state must be UNMISSABLE — animated ellipsis on
+         the status line, and stale previous-query results dimmed (still
+         interactive) so they read as "old results, new search running". */
+      .pc-agents-sessions__status.is-searching::after {
+        content: ''; display: inline-block; width: 1.2em; text-align: left;
+        animation: pc-agents-search-dots 1.2s steps(4, end) infinite;
+      }
+      @keyframes pc-agents-search-dots {
+        0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; }
+      }
+      .is-stale { opacity: 0.45; transition: opacity 120ms ease; }
       .pc-agents-sessions__retry {
         margin-left: 6px; padding: 1px 8px; font-size: 11px; font-style: normal;
         color: var(--accent, #7aa2f7); background: transparent;

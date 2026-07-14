@@ -33,6 +33,7 @@ import {
   listUnplacedPotFrontier,
   listNonTerminalPlacements,
 } from '../../pot/wake-frontier-guard';
+import { withDefaultPotWakeSubscriptions } from '../../pot/wake-defaults';
 import { getPotStarted } from '../../pot/started';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 import { softText, clampText, LIMITS } from '../limits';
@@ -171,12 +172,24 @@ export default defineTool({
       await clearPotTimeWake(sql, installSlug, { workspaceId });
     }
 
-    const subs: PotEventSubscription[] = (args.events ?? []).map((s) => ({
+    const declared: PotEventSubscription[] = (args.events ?? []).map((s) => ({
       on: s.on,
       when: s.when as DataCondition | undefined,
       note: clampText(s.note, LIMITS.ANNOTATION),
     }));
+    // EI-10525 — always-armed demand-wake invariant. This tool has REPLACE
+    // semantics, so a TIME-ONLY (or mode:'none') re-declaration carries no `events`
+    // and USED to persist [], silently wiping the three default demand
+    // subscriptions (plans:start / work_items:create / coord:escalate). The Mug was
+    // then left with a time wake only — a new unplaced work item or escalation no
+    // longer woke her, and the watchdog didn't flag it because "a wake is armed"
+    // (time-only) satisfied the liveness check. Union the defaults onto whatever she
+    // declared before persisting: her declared events REPLACE her own custom set
+    // (re-tunable, exactly as pot:start's ENSURE mode preserves her tuning), but the
+    // demand defaults always survive while the pot is started.
+    const subs = withDefaultPotWakeSubscriptions(declared);
     const eventRules = await setPotEventSubscriptions(workspaceId, subs);
+    const defaultsEnsured = subs.length - declared.length;
 
     // Carry-note (P-015 / B-04): REPLACE-semantics — store the note for the next
     // wake's brief tail, or clear it when omitted (re-derive from the floor).
@@ -191,6 +204,10 @@ export default defineTool({
             harness: installSlug,
             time,
             eventRules,
+            // How many default demand subs were auto-added to preserve the always-armed
+            // invariant (EI-10525) — distinguishes what the Mug declared from what was
+            // ensured beneath her declaration.
+            defaultsEnsured,
             carryNote: carryNote ? { set: true, chars: carryNote.length } : { set: false },
             floorSec: potWakeFloorSec(),
             mode: time && eventRules > 0 ? 'time+event' : time ? 'time' : eventRules > 0 ? 'event' : 'none',
