@@ -286,22 +286,38 @@ describe('resolveLinuxDesktopEnv — session D-Bus bus resolution (WI-4718)', ()
     expect(r.dbusVia).toBe('user-bus');
   });
 
-  it('operator already carries a DBUS bus ⇒ trusted, session detected, nothing injected, probe not consulted', () => {
-    let probeCalled = false;
+  it('operator bus matches the live session bus ⇒ trusted, session detected, nothing injected', () => {
     const r = resolveLinuxDesktopEnv(
       { DISPLAY: ':0', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/existing' },
       probes({
         existsSync: (p) => p === '/tmp/.X11-unix/X0',
-        sessionBus: () => {
-          probeCalled = true;
-          return 'unix:path=/should-not-be-used';
-        },
+        sessionBus: () => 'unix:path=/existing',
       }),
     );
     expect(r.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined(); // not overridden
     expect(r.desktopSessionDetected).toBe(true);
     expect(r.dbusVia).toBe('operator-env');
-    expect(probeCalled).toBe(false);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('WI-4752: a mismatched inherited bus is replaced by the live desktop-session bus', () => {
+    const r = resolveLinuxDesktopEnv(
+      {
+        DISPLAY: ':1',
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      },
+      probes({
+        activeSeatDisplays: () => [':1'],
+        existsSync: () => false,
+        sessionBus: () => 'unix:path=/tmp/dbus-live,guid=abc',
+      }),
+    );
+    expect(r.env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/tmp/dbus-live,guid=abc');
+    expect(r.desktopSessionDetected).toBe(true);
+    expect(r.dbusVia).toBe('session-scan');
+    expect(r.warnings).toEqual([
+      expect.stringMatching(/inherited DBUS_SESSION_BUS_ADDRESS.*live desktop-session bus.*WI-4752/),
+    ]);
   });
 
   it('no session AND no user bus on disk ⇒ dbusVia null, no session detected', () => {

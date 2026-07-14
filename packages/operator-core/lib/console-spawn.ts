@@ -680,30 +680,40 @@ export function resolveLinuxDesktopEnv(
   // user bus. On the dev box GNOME started its own dbus-daemon at /tmp/dbus-*,
   // and injecting a hardcoded /run/user/<uid>/bus pointed the terminal client at
   // an empty bus with no server → it ghosted (the invisible window). So:
-  //   1. operator already has a bus  → trust it (it is in a desktop session);
-  //   2. else scan the live session (running gnome-terminal-server/gnome-shell)
-  //      for the real bus and inject it — this is what makes the owner's STANDARD
-  //      terminal open reliably from the headless operator;
+  //   1. scan the live session (running gnome-terminal-server/gnome-shell) for
+  //      its real bus. It is authoritative even when the long-lived operator
+  //      already carries a DIFFERENT bus: a logout/login can leave the operator
+  //      attached to a live-but-wrong user bus whose GNOME Terminal name points
+  //      at a vanished unique owner (WI-4752);
+  //   2. absent a discoverable session bus, trust the operator's inherited bus;
   //   3. else fall back to the systemd user bus, but WITHOUT marking a desktop
   //      session detected (no window server known) so the caller prefers a
   //      process-per-window terminal instead.
   const runtimeDir = `/run/user/${probes.uid}`;
   let desktopSessionDetected = false;
   let dbusVia: 'operator-env' | 'session-scan' | 'user-bus' | null = null;
-  if (baseEnv.DBUS_SESSION_BUS_ADDRESS) {
+  const resolvedDisplay = env.DISPLAY ?? baseEnv.DISPLAY ?? null;
+  const sessionBus = probes.sessionBus?.(resolvedDisplay) ?? null;
+  if (sessionBus) {
+    desktopSessionDetected = true;
+    if (sessionBus !== baseEnv.DBUS_SESSION_BUS_ADDRESS) {
+      env.DBUS_SESSION_BUS_ADDRESS = sessionBus;
+      dbusVia = 'session-scan';
+      if (baseEnv.DBUS_SESSION_BUS_ADDRESS) {
+        warnings.push(
+          'inherited DBUS_SESSION_BUS_ADDRESS does not match the live desktop-session bus; ' +
+            'using the bus owned by gnome-terminal-server/gnome-shell instead (WI-4752)',
+        );
+      }
+    } else {
+      dbusVia = 'operator-env';
+    }
+  } else if (baseEnv.DBUS_SESSION_BUS_ADDRESS) {
     desktopSessionDetected = true;
     dbusVia = 'operator-env';
-  } else {
-    const resolvedDisplay = env.DISPLAY ?? baseEnv.DISPLAY ?? null;
-    const sessionBus = probes.sessionBus?.(resolvedDisplay) ?? null;
-    if (sessionBus) {
-      env.DBUS_SESSION_BUS_ADDRESS = sessionBus;
-      desktopSessionDetected = true;
-      dbusVia = 'session-scan';
-    } else if (probes.existsSync(`${runtimeDir}/bus`)) {
-      env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
-      dbusVia = 'user-bus';
-    }
+  } else if (probes.existsSync(`${runtimeDir}/bus`)) {
+    env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
+    dbusVia = 'user-bus';
   }
   if (!baseEnv.XDG_RUNTIME_DIR && probes.existsSync(runtimeDir)) {
     env.XDG_RUNTIME_DIR = runtimeDir;
