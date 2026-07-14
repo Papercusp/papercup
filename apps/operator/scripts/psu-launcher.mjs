@@ -5588,11 +5588,22 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     const advisory = ompDefaultModelAdvisory();
     if (advisory) console.error(advisory);
     const effectiveModel = args.model || ompDefaultModel();
+    // effectiveWindow probe (deterministic-context-carry P-005): for a LOCAL model, read the
+    // live per-slot n_ctx from the gateway's backend probe so the per-session registry is
+    // clamped to min(configured, live) — never trusting a hand-set number the backend has
+    // drifted away from. Fail-soft: a null probe keeps the configured registry (pre-P-005
+    // behavior), it never blocks the launch.
+    let backendWindow = null;
+    if (isWeakOmpModel(effectiveModel)) {
+      backendWindow = await probeOmpBackendContextWindow(effectiveModel);
+      if (backendWindow) console.error(`psu: live backend context window for ${effectiveModel}: ${backendWindow} tokens/slot — per-session registry set to min(configured, live).`);
+      else console.error(`psu: live backend context-window probe unavailable for ${effectiveModel} (gateway/backend miss) — keeping configured registry values.`);
+    }
     if (args.contextSize === 'full') {
       // ESCAPE HATCH (dynamic-tool-surface D-010): --context-size=full opts OUT of the
       // seed — eager-load the whole catalog with discovery OFF (latency-critical broad-tool
       // task / debugging). Everything else defaults to the seed below.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow });
       if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
     } else {
@@ -5613,7 +5624,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       if (spine.length !== OMP_CORE_MCP_TOOL_NAMES.length) {
         console.error(`psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${OMP_CORE_MCP_TOOL_NAMES.length - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`);
       }
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow });
       if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
       else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }

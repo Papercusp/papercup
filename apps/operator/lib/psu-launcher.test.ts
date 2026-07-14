@@ -16,6 +16,11 @@ import {
   claudeSeedToolNames,
   CLAUDE_SEED_EXTRA_TOOL_NAMES,
   isWeakOmpModel,
+  bareOmpModelId,
+  probeOmpBackendContextWindow,
+  readModelsYmlContextWindow,
+  rewriteModelsYmlContextWindow,
+  rewriteModelsJsonContextWindow,
   OMP_CORE_MCP_TOOL_NAMES,
   SU_CONTEXT_CHOICES,
   SU_CONTEXT_DEFAULT,
@@ -4129,6 +4134,129 @@ describe('re-exec-safe permissions (mcp-transport-resilience P-002, 2026-07-13)'
       });
       expect(ok).toBe(false);
       expect(logs.join('')).toContain('re-exec-safe permissions');
+    });
+  });
+});
+
+describe('effectiveWindow derivation (deterministic-context-carry P-005 — live backend n_ctx clamp)', () => {
+  const ORNITH_YML = [
+    'providers:',
+    '  anthropic:',
+    '    models:',
+    '      - id: claude-opus-4-8',
+    '        contextWindow: 1000000',
+    '  ollama-cc:',
+    '    baseUrl: http://127.0.0.1:8788/v1',
+    '    models:',
+    '      - id: maxwell1500/ornith-35b:IQ3_M',
+    '        name: Ornith 35B IQ3_M',
+    '        contextWindow: 200000',
+    '        maxTokens: 8192',
+    '      - id: ornith:fast',
+    '        contextWindow: 200000',
+    '',
+  ].join('\n');
+  const ORNITH_JSON = JSON.stringify(
+    { models: [
+      { id: 'maxwell1500/ornith-35b:IQ3_M', contextWindow: 57344 },
+      { id: 'ornith:fast', contextWindow: 57344 },
+      { id: 'claude-opus-4-8', contextWindow: 1000000 },
+    ] },
+    null, 2,
+  );
+
+  it('bareOmpModelId strips the local provider prefix and a trailing reasoning-effort suffix', () => {
+    expect(bareOmpModelId('ollama-cc/maxwell1500/ornith-35b:IQ3_M')).toBe('maxwell1500/ornith-35b:IQ3_M');
+    expect(bareOmpModelId('ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh')).toBe('maxwell1500/ornith-35b:IQ3_M');
+    expect(bareOmpModelId('ollama/ornith:high')).toBe('ornith');
+    // a hosted id keeps its provider (it is not a local prefix) — only the effort suffix goes
+    expect(bareOmpModelId('anthropic/claude-opus-4-8:high')).toBe('anthropic/claude-opus-4-8');
+    expect(bareOmpModelId('')).toBe('');
+  });
+
+  it('readModelsYmlContextWindow reads ONLY the named entry (siblings invisible)', () => {
+    expect(readModelsYmlContextWindow(ORNITH_YML, 'maxwell1500/ornith-35b:IQ3_M')).toBe(200000);
+    expect(readModelsYmlContextWindow(ORNITH_YML, 'claude-opus-4-8')).toBe(1000000);
+    expect(readModelsYmlContextWindow(ORNITH_YML, 'not-a-model')).toBe(null);
+  });
+
+  it('rewriteModelsYmlContextWindow rewrites ONLY the named entry, byte-preserving the rest', () => {
+    const out = rewriteModelsYmlContextWindow(ORNITH_YML, 'maxwell1500/ornith-35b:IQ3_M', 123456);
+    expect(readModelsYmlContextWindow(out, 'maxwell1500/ornith-35b:IQ3_M')).toBe(123456);
+    expect(readModelsYmlContextWindow(out, 'ornith:fast')).toBe(200000);
+    expect(readModelsYmlContextWindow(out, 'claude-opus-4-8')).toBe(1000000);
+    expect(out).toContain('maxTokens: 8192');
+    // absent entry → unchanged input
+    expect(rewriteModelsYmlContextWindow(ORNITH_YML, 'nope', 1)).toBe(ORNITH_YML);
+  });
+
+  it('rewriteModelsJsonContextWindow sets every record with the id; parse failure returns input', () => {
+    const out = JSON.parse(rewriteModelsJsonContextWindow(ORNITH_JSON, 'maxwell1500/ornith-35b:IQ3_M', 200000));
+    expect(out.models[0].contextWindow).toBe(200000);
+    expect(out.models[1].contextWindow).toBe(57344);
+    expect(out.models[2].contextWindow).toBe(1000000);
+    expect(rewriteModelsJsonContextWindow('not json', 'x', 1)).toBe('not json');
+  });
+
+  it('probeOmpBackendContextWindow hits the gateway probe with the BARE id and returns nCtx', async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(String(url));
+      return { ok: true, json: async () => ({ ok: true, nCtx: 204800, totalSlots: 3 }) };
+    }) as unknown as typeof fetch;
+    const n = await probeOmpBackendContextWindow('ollama-cc/maxwell1500/ornith-35b:IQ3_M', { PAPERCUSP_GATEWAY_PORT: '8797' } as NodeJS.ProcessEnv, fetchImpl);
+    expect(n).toBe(204800);
+    expect(calls[0]).toBe(`http://127.0.0.1:8797/maintenance/backend-context?model=${encodeURIComponent('maxwell1500/ornith-35b:IQ3_M')}`);
+  });
+
+  it('probeOmpBackendContextWindow is fail-soft: non-ok, garbage nCtx, and thrown fetch all → null', async () => {
+    const notOk = (async () => ({ ok: false, json: async () => ({}) })) as unknown as typeof fetch;
+    const garbage = (async () => ({ ok: true, json: async () => ({ nCtx: 'many' }) })) as unknown as typeof fetch;
+    const boom = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+    expect(await probeOmpBackendContextWindow('ollama/ornith', {} as NodeJS.ProcessEnv, notOk)).toBe(null);
+    expect(await probeOmpBackendContextWindow('ollama/ornith', {} as NodeJS.ProcessEnv, garbage)).toBe(null);
+    expect(await probeOmpBackendContextWindow('ollama/ornith', {} as NodeJS.ProcessEnv, boom)).toBe(null);
+  });
+
+  describe('writeOmpSessionConfigDir backendWindow clamp', () => {
+    let home: string;
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), 'psu-effwin-'));
+      mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+      writeFileSync(join(home, '.omp', 'agent', 'config.yml'), 'modelRoles:\n  default: ollama-cc/maxwell1500/ornith-35b:IQ3_M\n');
+      writeFileSync(join(home, '.omp', 'agent', 'models.yml'), ORNITH_YML);
+      writeFileSync(join(home, '.omp', 'agent', 'models.json'), ORNITH_JSON);
+    });
+    afterEach(() => rmSync(home, { recursive: true, force: true }));
+    const read = (f: string) => readFileSync(join(home, '.papercusp', 'su-omp-homes', 'session-s1', 'agent', f), 'utf8');
+
+    it('configured < backend → effective stays configured; models.json stale value is ALIGNED (three-way conflict eliminated)', () => {
+      const dir = writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 204800 }, home);
+      expect(dir).toBeTruthy();
+      expect(readModelsYmlContextWindow(read('models.yml'), 'maxwell1500/ornith-35b:IQ3_M')).toBe(200000);
+      const j = JSON.parse(read('models.json'));
+      expect(j.models[0].contextWindow).toBe(200000); // was the stale 57344
+      expect(j.models[2].contextWindow).toBe(1000000); // hosted sibling untouched
+    });
+
+    it('configured > backend → LOUD config error + clamp to the live backend window in BOTH registry copies', () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 57344 }, home);
+        expect(readModelsYmlContextWindow(read('models.yml'), 'maxwell1500/ornith-35b:IQ3_M')).toBe(57344);
+        expect(JSON.parse(read('models.json')).models[0].contextWindow).toBe(57344);
+        const msgs = err.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(msgs).toMatch(/CONFIG ERROR/);
+        expect(msgs).toMatch(/EXCEEDS the live backend window 57344/);
+      } finally {
+        err.mockRestore();
+      }
+    });
+
+    it('no backendWindow (probe miss / hosted model) → registry copied VERBATIM (pre-P-005 behavior)', () => {
+      writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
+      expect(read('models.yml')).toBe(ORNITH_YML);
+      expect(read('models.json')).toBe(ORNITH_JSON);
     });
   });
 });

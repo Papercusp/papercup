@@ -407,3 +407,66 @@ test('GET /admin/local-backends omits an owner with no recorded activity (clean 
   const json = (await adminRes.json()) as { clients: { ownerId: string }[] };
   assert.equal(json.clients.find((c) => c.ownerId === 'owner-a'), undefined);
 });
+
+// ── MAINTENANCE backend-context probe (deterministic-context-carry P-005) ──────────────────────
+// The live per-slot window read: GET /maintenance/backend-context?model=<id> → the serving
+// backend's /props n_ctx. Session launchers clamp their per-session registry to
+// min(configured, THIS) — the ground truth a hand-set contextWindow drifts away from.
+
+test('GET /maintenance/backend-context — reads n_ctx + total_slots from the serving backend /props', async () => {
+  const b1 = await startFakeBackend('ornith-be', (req, res) => {
+    if (req.url === '/props') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ default_generation_settings: { n_ctx: 204800 }, total_slots: 3 }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  backends = [b1];
+  await boot([{ id: 'ornith-be', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['ornith-35b'], maxConcurrent: 4, enabled: true }]);
+
+  const res = await fetch(`http://127.0.0.1:${port}/maintenance/backend-context?model=ornith-35b`);
+  assert.equal(res.status, 200);
+  const json = (await res.json()) as { ok: boolean; model: string; backendId: string; nCtx: number; totalSlots: number | null };
+  assert.deepEqual(json, { ok: true, model: 'ornith-35b', backendId: 'ornith-be', nCtx: 204800, totalSlots: 3 });
+  assert.equal(b1.requests.length, 1);
+  assert.equal(b1.requests[0].url, '/props');
+});
+
+test('GET /maintenance/backend-context — missing model param → 400', async () => {
+  await boot([]);
+  const res = await fetch(`http://127.0.0.1:${port}/maintenance/backend-context`);
+  assert.equal(res.status, 400);
+  const json = (await res.json()) as { error: { message: string } };
+  assert.match(json.error.message, /`model` query param required/);
+});
+
+test('GET /maintenance/backend-context — model served by NO local backend → 404 (hosted models have no live n_ctx)', async () => {
+  const b1 = await startFakeBackend('b1', okJsonReply({}));
+  backends = [b1];
+  await boot([{ id: 'b1', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['other-model'], maxConcurrent: 4, enabled: true }]);
+  const res = await fetch(`http://127.0.0.1:${port}/maintenance/backend-context?model=claude-opus-4-8`);
+  assert.equal(res.status, 404);
+  const json = (await res.json()) as { error: { message: string } };
+  assert.match(json.error.message, /no local backend serves model/);
+});
+
+test('GET /maintenance/backend-context — backend /props failure → 502, never a crash or a made-up number', async () => {
+  const b1 = await startFakeBackend('flaky', (_req, res) => { res.writeHead(500).end(); });
+  backends = [b1];
+  await boot([{ id: 'flaky', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 4, enabled: true }]);
+  const res = await fetch(`http://127.0.0.1:${port}/maintenance/backend-context?model=m`);
+  assert.equal(res.status, 502);
+  const json = (await res.json()) as { error: { message: string } };
+  assert.match(json.error.message, /props returned 500/);
+});
+
+test('GET /maintenance/backend-context — /props with no usable n_ctx → 502 (a missing field is not a window)', async () => {
+  const b1 = await startFakeBackend('empty', okJsonReply({ default_generation_settings: {} }));
+  backends = [b1];
+  await boot([{ id: 'empty', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 4, enabled: true }]);
+  const res = await fetch(`http://127.0.0.1:${port}/maintenance/backend-context?model=m`);
+  assert.equal(res.status, 502);
+  const json = (await res.json()) as { error: { message: string } };
+  assert.match(json.error.message, /no usable n_ctx/);
+});
