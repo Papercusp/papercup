@@ -62,6 +62,7 @@ describe('projectLiveEdgeThrottle (EI-11790)', () => {
       edgeThrottleCooledIps: 0,
       edgeThrottleBare429Streak: 0,
     });
+    expect(projectLiveEdgeThrottle('aviynw8', {})).toMatchObject({ edgeThrottleKnown: false, edgeThrottled: false });
   });
 });
 

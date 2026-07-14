@@ -603,8 +603,9 @@ export function projectLiveEdgeThrottle(
   gatewayStats: RawGatewayStats | null,
 ): LiveEdgeThrottleStatus {
   const signal = gatewayStats?.edgeThrottleByAccount?.[accountId];
+  const known = gatewayStats?.edgeThrottleByAccount !== undefined;
   return {
-    edgeThrottleKnown: gatewayStats !== null,
+    edgeThrottleKnown: known,
     edgeThrottled: signal?.edgeThrottled === true,
     edgeThrottleResetAt: signal?.cooldownUntil,
     edgeThrottleCooledIps: signal?.cooledIpCount ?? 0,
