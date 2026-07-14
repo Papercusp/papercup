@@ -190,7 +190,11 @@ export function hysteresisTick(input: HysteresisTickInput): HysteresisTickResult
   // 1–3. Unsubscribe / suggest / subscribe transitions.
   for (const s of next.values()) {
     if (s.subscribed) {
-      const stale = s.ticksSinceHit >= params.stalenessTicks;
+      // The staleness backstop targets the forever-LUKEWARM topic (D-009 §2:
+      // "regardless of residual WEAK similarity") — a topic currently at/above
+      // the enter threshold is hot, re-earning its seat on similarity grounds,
+      // and exempt (else a hot topic whose hits lag would cycle sub→stale→sub).
+      const stale = s.ticksSinceHit >= params.stalenessTicks && s.lastRelevance < params.enterThreshold;
       const drifted = s.belowExitStreak >= params.exitDwell;
       if (!stale && !drifted) continue;
 

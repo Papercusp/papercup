@@ -775,11 +775,16 @@ export async function runLivenessAlarmTick(
         () => ({ stale: false, unknown: true, lastTickMs: null, staleMs: null }) as RoutineEngineLiveness,
       )
     : null;
-  const snapshotAgeMs = routineEngine
-    ? routineEngine.unknown || !routineEngine.stale
-      ? null
-      : (routineEngine.staleMs ?? staleMs + 1)
-    : localSnapshotAgeMs;
+  // If we recomputed fresh due to local cache staleness, report the freshly-computed
+  // snapshot as fresh (null age) so it isn't double-penalized as "stale" by the alarm
+  // evaluator. Otherwise use the routine-engine staleness or local cache age.
+  const snapshotAgeMs = localSnapshotStale
+    ? null  // We just recomputed fresh, so don't report it as stale
+    : routineEngine
+      ? routineEngine.unknown || !routineEngine.stale
+        ? null
+        : (routineEngine.staleMs ?? staleMs + 1)
+      : localSnapshotAgeMs;
   const lastSuccessfulTickMs = routineEngine?.lastTickMs ?? cached?.evaluatedAt ?? null;
 
   // P-008: the PG-restart drift baseline. Read the previous postmaster-start value,

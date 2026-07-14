@@ -99,8 +99,17 @@ describe('D-009 §2 — staleness backstop', () => {
     const params: HysteresisParams = { ...DEFAULT_HYSTERESIS_PARAMS, stalenessTicks: 5 };
     const { subs, notices } = runTopic('T', [...rep(0.4, 8, false), ...rep(0.7, 7, false)], { params });
     expect(notices.filter((n) => n.kind === 'subscribed')).toHaveLength(1); // once, not a flap
-    // No hit ever landed: the backstop STILL fires — but timed from the subscribe,
-    // not from tracking start (subscribe at tick 10; stale at tick 15).
+    expect(notices.filter((n) => n.kind === 'unsubscribed')).toHaveLength(0);
+    expect(subs[0].subscribed).toBe(true); // hot + fresh clock ⇒ holds
+  });
+
+  it('REGRESSION: a HOT no-hit topic is exempt from the backstop; it fires once the topic goes lukewarm', () => {
+    // Sub at high relevance, never a hit: while hot (≥ enter) the backstop must
+    // NOT cycle it. When it drops to lukewarm (≥ exit, < enter), staleness fires
+    // — timed from the subscribe, not from tracking start.
+    const params: HysteresisParams = { ...DEFAULT_HYSTERESIS_PARAMS, stalenessTicks: 5 };
+    const { subs, notices } = runTopic('T', [...rep(0.7, 12, false), ...rep(0.4, 4, false)], { params });
+    expect(notices.filter((n) => n.kind === 'subscribed')).toHaveLength(1);
     const cleared = notices.filter((n) => n.kind === 'unsubscribed');
     expect(cleared).toHaveLength(1);
     expect(cleared[0].reason).toMatch(/staleness/);
