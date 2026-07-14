@@ -116,6 +116,10 @@ import './ui/dispatch';
 import './tui/dispatch';
 import './activity/report';
 import './activity/recent';
+// deterministic-context-carry-2026-07-14 P-012 — the per-turn journal
+// (turn-end ingest via the per-CLI hooks + the fleet-readable read surface).
+import './journal/record-turn';
+import './journal/recent';
 import './curation/feed';
 import './curation/change-feed';
 // hive-creative-ideation-2026-06-08 P-003 (B1) — the "state of the Hive" corpus digest (Scout loop substrate):

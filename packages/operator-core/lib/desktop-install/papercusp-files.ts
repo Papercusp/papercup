@@ -505,6 +505,10 @@ const CC_HOOK_FILES = [
   // small high-precision recall for THIS prompt via the local operator,
   // epoch-deduped (never re-pays what initialize/orient already injected).
   'userpromptsubmit-memory.sh',
+  // deterministic-context-carry-2026-07-14 P-012: per-turn journal collection —
+  // pings journal:record-turn at each Stop; the server extracts the agent's
+  // ⟦journal⟧ line (mechanical first-line fallback, flagged).
+  'stop-turn-journal.sh',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1401,6 +1405,12 @@ export function mergeClaudeHookSettings(
   if (has('userpromptsubmit-memory.sh'))
     hooks.UserPromptSubmit = replaceOurHookEntries(ev('UserPromptSubmit'), ours('userpromptsubmit-memory.sh'), {
       hooks: cmd('userpromptsubmit-memory.sh'),
+    });
+  // merge_turn_journal_hook — Stop, no matcher (fires at each turn end).
+  // deterministic-context-carry-2026-07-14 P-012: per-turn journal collection.
+  if (has('stop-turn-journal.sh'))
+    hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-turn-journal.sh'), {
+      hooks: cmd('stop-turn-journal.sh'),
     });
 
   return cfg;

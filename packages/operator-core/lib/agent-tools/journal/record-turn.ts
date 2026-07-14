@@ -1,0 +1,113 @@
+/**
+ * journal:record-turn — ingest one per-turn journal note at turn end
+ * (deterministic-context-carry-2026-07-14 P-012, plan D-003).
+ *
+ * Called by the per-CLI turn-end hooks (the cc/ Stop hook for Claude/Codex;
+ * the OMP in-process turn_end port) with the session id + transcript path.
+ * The SERVER does the extraction — one extractor across every client: the
+ * agent's trailing `⟦journal⟧ …` line when it wrote one (source='agent'),
+ * else the first line of the last assistant message (source='mechanical',
+ * flagged). The claim-vs-ledger tripwire runs at ingest: a success claim in
+ * the note contradicted by an error in the same turn's agent_activity ledger
+ * stamps `tripwire` on the row (journals are never graded — the diff audits
+ * honesty; ambient-semantic-push D-008).
+ */
+import { z } from 'zod';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity } from '../coordination/identity';
+import {
+  detectClaimLedgerMismatch,
+  extractJournalFromAssistantText,
+  readLastAssistantTurn,
+  resolveTranscriptPath,
+} from '../../turn-journal';
+import {
+  latestJournalCreatedAt,
+  ledgerEntriesSince,
+  recordTurnJournal,
+} from '../../turn-journal-store';
+
+/** Without a previous journal row the turn window falls back to this. */
+const DEFAULT_TURN_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+export default defineTool({
+  name: 'journal:record-turn',
+  profile: 'engineer',
+  description:
+    "Record the acting agent's per-turn journal note at turn end: extracts the trailing ⟦journal⟧ line from the session's last assistant message (mechanical first-line fallback, flagged), runs the claim-vs-ledger tripwire against the turn's tool ledger, and stores one row in session_turn_journal. Called by the per-CLI turn-end hooks; fire-and-forget.",
+  capability: 'activity:report',
+  guidance: {
+    when: 'Almost never call this by hand — the per-CLI turn-end hooks (stop-turn-journal.sh / the OMP turn_end port) call it automatically at each turn end.',
+    notWhen: 'To READ journal notes use `journal:recent`. To report a tool call use `activity:report`.',
+    seeAlso: ['journal:recent (read the journal stream)', 'activity:report (the tool ledger the tripwire diffs against)'],
+  },
+  requirePrincipal: false,
+  agentRoles: [...SU_ROLES],
+  args: z.object({
+    /** The journaling worker's coordination identity (PAPERCUSP_SID). */
+    owner: z.string().min(1).max(256).optional(),
+    /** Which CLI produced the turn: 'claude' | 'codex' | 'omp'. Best-effort. */
+    agent: z.string().max(32).optional(),
+    /** The CLI's native session id. */
+    session_id: z.string().min(1).max(256),
+    /** The transcript JSONL path (from the hook event). Must live under a
+     *  known transcript root — anything else is refused, then the roots are
+     *  walked by session id instead. */
+    transcript_path: z.string().max(1024).optional(),
+    /** Transcript adapter kind (default 'claude'). */
+    source_kind: z.enum(['claude', 'omp', 'codex']).optional(),
+    /** The harness the worker is in, when known. */
+    harness: z.string().max(80).optional(),
+  }),
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
+    const ownerId = args.owner ?? identity.ownerId ?? null;
+    const sourceKind = args.source_kind ?? 'claude';
+
+    const filePath = await resolveTranscriptPath(sourceKind, args.session_id, args.transcript_path);
+    if (!filePath) {
+      return { data: { ok: false, recorded: false, reason: 'transcript_not_found' } };
+    }
+    const turn = await readLastAssistantTurn(filePath, sourceKind);
+    if (!turn) {
+      return { data: { ok: false, recorded: false, reason: 'no_assistant_turn' } };
+    }
+    const extracted = extractJournalFromAssistantText(turn.text);
+    if (!extracted) {
+      return { data: { ok: false, recorded: false, reason: 'no_note' } };
+    }
+
+    // Turn window = everything since the previous journal row for this session
+    // (first journal of a session falls back to a bounded window).
+    const prev = await latestJournalCreatedAt(args.session_id);
+    const since = prev ?? new Date(Date.now() - DEFAULT_TURN_WINDOW_MS);
+    const ledger = await ledgerEntriesSince(args.session_id, since);
+    const tripwire = detectClaimLedgerMismatch(extracted.note, ledger);
+
+    const { id, deduped } = await recordTurnJournal({
+      ownerId,
+      agent: args.agent ?? null,
+      sourceKind,
+      sessionId: args.session_id,
+      turnTs: turn.ts,
+      note: extracted.note,
+      source: extracted.source,
+      flagged: extracted.flagged,
+      tripwire,
+      harnessSlug: args.harness ?? null,
+    });
+
+    return {
+      data: {
+        ok: true,
+        recorded: !deduped,
+        deduped,
+        id,
+        source: extracted.source,
+        flagged: extracted.flagged,
+        tripwire,
+        turn_ts: turn.ts ? turn.ts.toISOString() : null,
+      },
+    };
+  },
+});
