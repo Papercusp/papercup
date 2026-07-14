@@ -566,13 +566,13 @@ const OP_CHAT_SIDEBAR_CSS = `
 }
 
 .op-chat-sidebar .oracle-msg-avatar {
-  width: 26px;
-  height: 26px;
-  flex-basis: 26px;
+  width: 30px;
+  height: 30px;
+  flex-basis: 30px;
 }
 
 .op-chat-sidebar .oracle-msg-stack {
-  max-width: calc(100% - 36px);
+  max-width: calc(100% - 40px);
 }
 
 .op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
@@ -954,22 +954,27 @@ body.has-op-chat .pc-header {
   column-gap: 7px !important;
 }
 
+/* WI-4731: the owner flagged the agent mark as too small to read. This
+   compact-density override was pinning it at 20px with !important, silently
+   defeating the globals.css bump (24 -> 34px) -- the avatar the owner sees IS
+   this rule. Keep the sidebar denser than the full-width chat, but large
+   enough that the role mark reads: 30px avatar / 18px glyph. */
 .op-chat-sidebar .oracle-msg-avatar {
-  width: 20px !important;
-  height: 20px !important;
-  flex-basis: 20px !important;
-  margin-top: 3px;
-  opacity: 0.66;
+  width: 30px !important;
+  height: 30px !important;
+  flex-basis: 30px !important;
+  margin-top: 1px;
+  opacity: 0.9;
   box-shadow: none !important;
 }
 
 .op-chat-sidebar .oracle-msg-icon {
-  width: 12px !important;
-  height: 12px !important;
+  width: 18px !important;
+  height: 18px !important;
 }
 
 .op-chat-sidebar .oracle-msg-stack {
-  max-width: calc(100% - 28px) !important;
+  max-width: calc(100% - 38px) !important;
 }
 
 .op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
