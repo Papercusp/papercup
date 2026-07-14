@@ -100,6 +100,32 @@ export interface CarryDocTailTurn {
   provenance?: RecordedTurnClass | null;
 }
 
+/**
+ * The last-turn / continuation handling (P-010). At a boundary the single most
+ * load-bearing turn is the owner's FINAL message — because a successor's job is
+ * to continue it, and getting its status wrong (treating an open question as
+ * handled, or a machine wake as the owner) is the expensive failure. This block
+ * types that turn explicitly so the consumer never has to re-derive it from prose:
+ *   - `lastOwnerMessage` — the final OWNER-typed turn (identified mechanically by
+ *     the D-003 provenance stamp, never by speaker heuristic). When present and
+ *     UNANSWERED the consumer (P-018 psu respawn) delivers its `text` as the
+ *     successor's ACTUAL first prompt, so the render never quotes it as tail
+ *     material (a quoted copy reads as already-handled history — the exact
+ *     confusion this avoids);
+ *   - `answered` — did a model turn follow it? false = the owner's message is
+ *     still OPEN; a deliberate compaction across it is refused
+ *     ({@link gateOpenOwnerQuestion});
+ *   - `deliberate` — was this boundary self-requested at a clean point
+ *     (session:request-compaction) or FORCED (native auto-compact / window-guard
+ *     mid-turn)? A forced boundary may have truncated an in-flight reply, so the
+ *     successor trusts the tail less.
+ */
+export interface CarryDocContinuation {
+  lastOwnerMessage: { text: string; ts: string | null } | null;
+  answered: boolean;
+  deliberate: boolean;
+}
+
 export interface CarryDoc {
   /** The standing continuity brief (loop note, held checkpoints, walls, facts…). */
   brief: CarryBrief;
@@ -108,6 +134,9 @@ export interface CarryDoc {
   planItems: CarryDocPlanItem[];
   asks: CarryDocAsk[];
   tail: CarryDocTailTurn[];
+  /** Last-turn continuation handling (P-010) — how a successor must treat the
+   *  final owner message and this boundary. */
+  continuation: CarryDocContinuation;
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
@@ -148,6 +177,14 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   transcriptPath?: string | null;
   /** Which client wrote the transcript (default 'claude'). */
   transcriptSourceKind?: 'claude' | 'omp' | 'codex';
+  /** Was this boundary reached DELIBERATELY (self-requested at a clean point via
+   *  session:request-compaction / the psu threshold-end) vs FORCED (native
+   *  auto-compact or the gateway window-guard firing mid-turn)? Feeds the P-010
+   *  continuation flags. Defaults to `false` (treat as forced/unknown) — the safe
+   *  under-promise: a successor trusts a "forced" tail less, and the deliberate
+   *  psu path asserts `true` explicitly. Only a deliberate boundary can be
+   *  REFUSED across an open owner question ({@link gateOpenOwnerQuestion}). */
+  boundaryDeliberate?: boolean;
   // Test seams — each defaults to the real reader (or a best-effort empty leg).
   buildCarryBriefFn?: (ownerId: string, opts: BuildCarryBriefOpts) => Promise<CarryBrief>;
   getModesFn?: (workspaceId: string, ownerId: string) => Promise<CarryDocMode[]>;
