@@ -423,6 +423,28 @@ const DEFAULT_LOCAL_BACKEND_CLIENT_COOLDOWN_MS =
   Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_CLIENT_COOLDOWN_MS) || DEFAULT_CLIENT_CIRCUIT_COOLDOWN_MS;
 /** Header a bee/spawn sets to prioritise its requests (interactive/queen > batch). */
 export const PRIORITY_HEADER = 'x-papercusp-priority';
+/** MAINTENANCE lane (deterministic-context-carry P-002, ornith-overflow brief fixes 2–3): the
+ *  priority label + endpoint path for compaction/summarizer calls. The label maps to tier 1
+ *  (reserved floor, never AIMD-shed) so fleet worker traffic can never starve a compaction —
+ *  the 2026-07-13 incident's summarizer 429'd against the agent's own saturated backend, then
+ *  its hosted fallback 429'd under fleet load, and the session hit its context wall on camera. */
+export const MAINTENANCE_PRIORITY_LABEL = 'maintenance';
+/** POST path speaking omp's remote-compaction wire: `{systemPrompt?, prompt}` → `{summary}`
+ *  (the shape omp's `compaction.remoteEndpoint` client sends/expects, verified in the bundle).
+ *  psu-launcher.mjs hardcodes this path (it cannot import TS) — keep them in lockstep. */
+export const MAINTENANCE_SUMMARIZE_PATH = '/maintenance/summarize';
+/** Model the maintenance summarizer runs on — CHEAP + hosted, never the caller's own backend.
+ *  `claude-haiku-4-5` is the repo-canonical haiku id (haiku.ts, scout, memory extraction). */
+const DEFAULT_MAINTENANCE_MODEL = process.env.PAPERCUSP_GATEWAY_MAINTENANCE_MODEL || 'claude-haiku-4-5';
+/** Output cap for a maintenance summary. omp's own summarizer asked for 0.8×window — far more than
+ *  a carry summary needs; 8K bounds cost while comfortably fitting the largest useful summary. */
+const DEFAULT_MAINTENANCE_MAX_TOKENS = Number(process.env.PAPERCUSP_GATEWAY_MAINTENANCE_MAX_TOKENS) || 8192;
+/** Hard ceiling on a caller-supplied maxTokens override (keeps the lane cheap by construction). */
+const MAINTENANCE_MAX_TOKENS_CEILING = 16384;
+/** Whole-call deadline for a maintenance summarize (loopback admission + upstream generation).
+ *  Below omp's 180s remote-compaction client timeout so the caller gets a structured error, not
+ *  a socket hang; generous enough to ride out a transient throttle-park via the absorb path. */
+const DEFAULT_MAINTENANCE_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_MAINTENANCE_TIMEOUT_MS) || 150_000;
 /** Header a spawn sets to pin its requests to one pool account for cache affinity
  *  (inference-gateway-multi-credential-routing P-003). Stripped before the upstream forward. */
 export const ACCOUNT_HEADER = 'x-papercusp-account';
@@ -686,6 +708,12 @@ export interface GatewayDeps {
     /** Steady-state per-tier caps + reserved tier-1 floor (the un-shed baseline). */
     config: TierAdmissionConfig;
   };
+  /** MAINTENANCE summarize lane (deterministic-context-carry P-002): model / output-cap / deadline
+   *  overrides for POST /maintenance/summarize. Defaults: `claude-haiku-4-5` (env
+   *  PAPERCUSP_GATEWAY_MAINTENANCE_MODEL), 8192 tokens, 150s. Tests inject small values. */
+  maintenanceModel?: string;
+  maintenanceMaxTokens?: number;
+  maintenanceTimeoutMs?: number;
   /** Max wait for upstream RESPONSE HEADERS before the request is aborted as stalled. A stalled
    *  upstream (Anthropic accepts the socket during an overload but never responds) used to hang the
    *  proxy task forever, leaking its admission slot until the pool deadlocked (the 2026-06-19 outage).
@@ -1267,6 +1295,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const rawLog = deps.log ?? (() => {});
   const log: NonNullable<typeof deps.log> = (level, msg) => rawLog(level, scrubSecrets(msg));
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
+  const maintenanceModel = deps.maintenanceModel ?? DEFAULT_MAINTENANCE_MODEL;
+  const maintenanceMaxTokens = deps.maintenanceMaxTokens ?? DEFAULT_MAINTENANCE_MAX_TOKENS;
+  const maintenanceTimeoutMs = deps.maintenanceTimeoutMs ?? DEFAULT_MAINTENANCE_TIMEOUT_MS;
   const selfHealEnabled = deps.selfHeal?.enabled ?? DEFAULT_SELFHEAL_ENABLED;
   const selfHealFreezeMs = deps.selfHeal?.freezeMs ?? DEFAULT_SELFHEAL_FREEZE_MS;
   const selfHealPollMs = deps.selfHeal?.pollMs ?? DEFAULT_SELFHEAL_POLL_MS;
@@ -1751,6 +1782,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let beeEgressExhausted = 0; // 503 after all egress-proxy retries stalled/errored (the flaky-proxy leak)
   let beeTokenStall = 0; // 503 from a stalled OAuth token refresh
   let selfHealReclaims = 0; // EI-2086: in-process release-valve slot reclaims (pre-empted watchdog restarts)
+  // MAINTENANCE summarize lane (deterministic-context-carry P-002): how many compaction summaries this
+  // gateway served / failed — the P-004 acceptance drain reads these to prove the lane actually carried
+  // the fleet's compactions (a zero here with compactions happening = the omp remoteEndpoint never landed).
+  let maintenanceRequests = 0;
+  let maintenanceErrors = 0;
   // P-005/W3 slot-leak RECURRENCE GUARD (D-001): the reconcile-invariant counters. The self-heal sweep
   // cross-checks the queue's held-slot counter against the in-flight registry each tick and bumps
   // `slotReconcileMismatch` when they disagree in a way the valve cannot reclaim — a leak surfaced as a
