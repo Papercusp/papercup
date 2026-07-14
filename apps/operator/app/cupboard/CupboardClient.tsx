@@ -651,6 +651,34 @@ export default function CupboardClient() {
         /* Hive-first flat browse (P-002): one card per hive, plain cards for
            the other kinds, legacy pre-hive harness rows collapsed below. */
         <>
+          {/* Pots-tab empty state [owner:Avi 2026-07-14]: the Pots tab always
+              renders (see visibleFilters), so when no public pot has been
+              published it must explain itself + point at how to publish, rather
+              than showing a blank grid. Scoped to the Pots view only — on 'all'
+              the other kinds fill the grid, so a "no pots" notice would be noise. */}
+          {kindFilter === 'harness' &&
+            browseSplit.hives.length === 0 &&
+            browseSplit.legacy.length === 0 && (
+              <div
+                data-testid="cupboard-pots-empty"
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
+                  textAlign: 'center', padding: '32px 20px', marginBottom: SIZES.lg,
+                  border: `1px dashed ${COLORS.border}`, borderRadius: RADIUS.lg,
+                  background: COLORS.surface,
+                }}
+              >
+                <Package size={22} style={{ color: COLORS.textMuted }} />
+                <span style={{ fontFamily: FONTS.ui, fontWeight: 600, fontSize: 15, color: COLORS.text }}>
+                  No shared {t('pot', { plural: true, lower: true })} yet
+                </span>
+                <p style={{ fontFamily: FONTS.ui, fontSize: 13, color: COLORS.textMuted, maxWidth: 460, margin: 0, lineHeight: 1.55 }}>
+                  {t('pot', { plural: true })} are shared workspaces — a team's agents, knowledge, and tools
+                  in one place. When someone publishes a {t('pot', { lower: true })} publicly, it appears here
+                  to discover and join. Publish one of yours from its settings to be the first.
+                </p>
+              </div>
+            )}
           <div style={gridStyle}>
             {browseSplit.hives.map((group) => (
               <HiveBrowseCard

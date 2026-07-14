@@ -120,6 +120,43 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
   });
 });
 
+describe('CupboardClient — Pots tab always visible + empty state [owner:Avi 2026-07-14]', () => {
+  const originalFetch = global.fetch;
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    // No pot (harness) listings at all — only a plugin. Pre-revival this hid the
+    // Pots tab entirely (P-015 "empty tabs hide"); now it must still show.
+    fetchMock.mockResolvedValue(new Response(
+      JSON.stringify({ listings: [listing({ id: 2, title: 'Plugin listing', listing_kind: 'plugin' })] }),
+      { status: 200 },
+    ));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('shows the Pots tab even when no pot is published, and its empty state explains + points to publishing', async () => {
+    withTooltips(<CupboardClient />);
+
+    await waitFor(() => expect(screen.getByText('Plugin listing')).toBeTruthy());
+    // The Pots (harness) tab renders despite zero pot listings.
+    const potsTab = screen.getByTestId('cupboard-kind-tab-harness');
+    expect(potsTab).toBeTruthy();
+
+    fireEvent.click(potsTab);
+
+    // NB: the lexicon mock echoes t('pot') verbatim (no pluralization), so the
+    // live "No shared pots yet" reads "No shared pot yet" under test.
+    const empty = screen.getByTestId('cupboard-pots-empty');
+    expect(empty.textContent).toMatch(/No shared pot .*yet/i);
+    expect(empty.textContent).toMatch(/Publish one of yours/i);
+  });
+});
+
 describe('Cupboard ListingCard — claim-status badge', () => {
   it('surfaces the provisional (unclaimed) badge for an unclaimed listing', () => {
     render(

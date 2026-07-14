@@ -1,0 +1,188 @@
+/**
+ * enforcement-gate — the flush-integrity ENFORCEMENT tier over the P-012..P-015
+ * tracking surfaces (deterministic-context-carry-2026-07-14 P-016, Phase 5 close).
+ *
+ * P-003 (staleCheckpointWarnings, in session:request-compaction) DETECTS unflushed
+ * state at a compaction boundary but only WARNS — a deliberate choice, because a
+ * hard-refuse on the very tool an agent calls BECAUSE it is at its context limit
+ * would strand it there on any gate bug (a worse failure than the one it catches).
+ *
+ * P-016 adds teeth WITHOUT reintroducing that strand: the boundary REFUSES once,
+ * naming exactly what to flush; if the agent still won't flush and retries, the
+ * system writes a MECHANICAL fallback checkpoint ITSELF and lets the operation
+ * proceed. The ladder is therefore bounded — the worst case for any gate bug is
+ * ONE bounced call, after which the operation always proceeds with system-written
+ * durable state. The wiring layer (enforcement-gate-io.ts) additionally runs the
+ * whole gate fail-OPEN, so an evaluation error degrades to `clear`, never a block.
+ *
+ * This module is PURE (brief → tripwires → verdict → refusal text); the IO layer
+ * owns the brief read, the refusal-marker state, and the fallback writes.
+ *
+ * The three tripwires named in the P-016 item map here as:
+ *   - "stale checkpoint after N hops"     → 'stale-checkpoint' / 'missing-checkpoint'
+ *       There is no per-hop counter at these seams and D-001 forbids deriving one
+ *       from history/telemetry, so "N hops" is realized as elapsed wall-time
+ *       ({@link STALE_CHECKPOINT_WARN_MS}, ~several wakes / a task step) — the same
+ *       signal P-003 already uses. 'missing-checkpoint' is the never-written case.
+ *   - "unflushed state past soft threshold" → the BOUNDARY itself. A compaction seam
+ *       fires at/near the soft threshold by construction (the agent calls it because
+ *       it is near its limit); a handoff is the analogous hand-off boundary. So the
+ *       "past soft threshold" condition is satisfied by BEING at the seam — the
+ *       missing/stale tripwires above ARE the unflushed state at that threshold. No
+ *       token gauge is read here (D-001).
+ *   - "armed loop without loop:checkpoint" → 'armed-loop-no-carry-note'.
+ */
+import type { CarryBrief } from './carry-brief';
+
+/** A held item's checkpoint older than this at a boundary is STALE — the turns
+ *  since it was written will NOT carry across the boundary. 15 min ≈ several
+ *  monitor wakes / a full task step; younger than that, the checkpoint plausibly
+ *  still covers the current unit. (Formerly owned by session:request-compaction;
+ *  this is now the single source, re-exported there for its existing warn path.) */
+export const STALE_CHECKPOINT_WARN_MS = 15 * 60_000;
+
+/**
+ * A held work-item flagged by the flush-integrity check (P-003 shape, kept
+ * byte-compatible so session:request-compaction's warn path re-exports it):
+ *   - 'missing' — NO checkpoint at all (highest-risk genuine state loss);
+ *   - 'stale'   — written, but long enough ago that the turns since will not carry.
+ */
+export interface CheckpointFlushWarning {
+  id: string;
+  title: string | null;
+  reason: 'missing' | 'stale';
+  /** Minutes since the checkpoint was written — only on reason:'stale'. */
+  ageMinutes?: number;
+}
+
+/**
+ * Best-effort flush-integrity scan over a carry brief's held work-items (P-003).
+ * Pure; an absent brief yields an empty list. This is the detector both the WARN
+ * path (request-compaction) and the ENFORCEMENT gate (below) share.
+ */
+export function staleCheckpointWarnings(
+  brief: CarryBrief | null,
+  nowMs: number = Date.now(),
+): CheckpointFlushWarning[] {
+  if (!brief) return [];
+  const out: CheckpointFlushWarning[] = [];
+  for (const h of brief.heldItems) {
+    if (h.checkpoint === null) {
+      out.push({ id: h.id, title: h.title, reason: 'missing' });
+    } else if (
+      typeof h.checkpointUpdatedAtMs === 'number' &&
+      nowMs - h.checkpointUpdatedAtMs > STALE_CHECKPOINT_WARN_MS
+    ) {
+      out.push({
+        id: h.id,
+        title: h.title,
+        reason: 'stale',
+        ageMinutes: Math.round((nowMs - h.checkpointUpdatedAtMs) / 60_000),
+      });
+    }
+  }
+  return out;
+}
+
+/** The boundaries the gate protects. Both are stale-snapshot cut-overs: compaction
+ *  drops unparked context; a handoff hands the receiver whatever the offerer flushed. */
+export type GateBoundary = 'compaction' | 'handoff';
+
+/** The enforcement tripwire kinds (the three P-016 detectors, split by cause). */
+export type FlushTripwireKind = 'missing-checkpoint' | 'stale-checkpoint' | 'armed-loop-no-carry-note';
+
+export interface FlushTripwire {
+  kind: FlushTripwireKind;
+  /** The subject: a held work-item id, or the loop's harness for the armed-loop case. */
+  subject: string;
+  /** Human-facing one-liner for the refusal text. */
+  detail: string;
+  /** Minutes since the last write — only on 'stale-checkpoint'. */
+  ageMinutes?: number;
+}
+
+/**
+ * The flush tripwires present at a boundary: missing/stale held-item checkpoints
+ * (via {@link staleCheckpointWarnings}) plus an armed loop carrying no
+ * loop:checkpoint note. Pure; empty when the brief is clean or unavailable.
+ */
+export function detectFlushTripwires(brief: CarryBrief | null, nowMs: number = Date.now()): FlushTripwire[] {
+  if (!brief) return [];
+  const out: FlushTripwire[] = [];
+  for (const w of staleCheckpointWarnings(brief, nowMs)) {
+    if (w.reason === 'missing') {
+      out.push({
+        kind: 'missing-checkpoint',
+        subject: w.id,
+        detail: `${w.id} has NO checkpoint written — its in-flight state will not carry.`,
+      });
+    } else {
+      out.push({
+        kind: 'stale-checkpoint',
+        subject: w.id,
+        ageMinutes: w.ageMinutes,
+        detail: `${w.id} has a STALE checkpoint (${w.ageMinutes}m old) — everything since it was written will not carry.`,
+      });
+    }
+  }
+  // Armed loop with no carry-note: a cold wake reconstructs from the loop
+  // carry-note; an active loop with none means a cold successor starts blind.
+  if (brief.loop && brief.loop.active && !(brief.loop.carryNote ?? '').trim()) {
+    out.push({
+      kind: 'armed-loop-no-carry-note',
+      subject: brief.loop.harness,
+      detail: `armed loop @${brief.loop.harness} has NO loop:checkpoint carry-note — a cold wake would start blind.`,
+    });
+  }
+  return out;
+}
+
+/** The gate's decision. `clear` = proceed; `refuse` = bounce once, naming the
+ *  flush; `mechanical-fallback` = the agent already refused and still hasn't
+ *  flushed, so the system writes the checkpoints itself and the caller proceeds. */
+export type FlushGateVerdict = 'clear' | 'refuse' | 'mechanical-fallback';
+
+/**
+ * The pure ladder (P-016): no tripwires ⇒ clear; tripwires on a first encounter
+ * ⇒ refuse; tripwires when the boundary was ALREADY refused for this owner and
+ * they still weren't cleared ⇒ mechanical-fallback (write + proceed). Never a
+ * permanent block — the second state is always terminal-and-proceeding.
+ */
+export function decideFlushGate(input: {
+  tripwires: ReadonlyArray<FlushTripwire>;
+  alreadyRefused: boolean;
+}): FlushGateVerdict {
+  if (input.tripwires.length === 0) return 'clear';
+  return input.alreadyRefused ? 'mechanical-fallback' : 'refuse';
+}
+
+/** The actionable refusal text — names the exact flush command per tripwire, and
+ *  states the escape (flush + retry, OR retry as-is and the system flushes for you).
+ *  Written for the agent that reads the tool result, not a log. */
+export function renderFlushRefusal(boundary: GateBoundary, tripwires: ReadonlyArray<FlushTripwire>): string {
+  const noCheckpointIds = tripwires.filter((t) => t.kind === 'missing-checkpoint').map((t) => t.subject);
+  const staleIds = tripwires
+    .filter((t) => t.kind === 'stale-checkpoint')
+    .map((t) => `${t.subject} (${t.ageMinutes}m old)`);
+  const armedLoop = tripwires.find((t) => t.kind === 'armed-loop-no-carry-note');
+  const steps: string[] = [];
+  if (noCheckpointIds.length > 0) {
+    steps.push(
+      `write a checkpoint for ${noCheckpointIds.join(', ')} — work_items:checkpoint { id, checkpoint } (no in-flight state survives without it)`,
+    );
+  }
+  if (staleIds.length > 0) {
+    steps.push(`refresh the stale checkpoint(s) for ${staleIds.join(', ')} — work_items:checkpoint { id, checkpoint }`);
+  }
+  if (armedLoop) {
+    steps.push(
+      `write your loop carry-note — loop:checkpoint { did, left, insight, next } (your armed loop @${armedLoop.subject} has none, so a cold wake starts blind)`,
+    );
+  }
+  const what = boundary === 'compaction' ? 'Compaction' : 'This handoff';
+  return (
+    `${what} is HELD: unflushed state would be lost across the boundary. Flush first, then retry:\n- ` +
+    steps.join('\n- ') +
+    `\nIf you retry WITHOUT flushing, the system will write a mechanical fallback checkpoint for you and proceed — but a checkpoint you write yourself carries far more than the mechanical one.`
+  );
+}
