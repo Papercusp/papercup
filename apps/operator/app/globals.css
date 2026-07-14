@@ -27195,13 +27195,19 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 68%) transparent;
 }
 
-/* Section rubric — "what the Mug/Kettle decides from". */
+/* Section rubric — "what the Mug/Kettle decides from". The title is the
+   strongest scan anchor: bright-neutral text on a titled section-rule, with a
+   generous gap above so the Kettle group and the Mug group read as two
+   distinct clusters in the one scroll. */
 .op-ph-sec {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 6px 0 0;
-  font-size: 10px;
+  margin: 16px 0 0;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 10.5px;
   font-weight: 750;
   /* letter-spacing stays 0: design-primitives lint + /internal/docs/design */
   text-transform: uppercase;
@@ -27209,8 +27215,14 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 
 .op-ph-sec:first-child { margin-top: 0; }
 
-.op-ph-sec.mug { color: var(--ph-mug); }
-.op-ph-sec.ket { color: var(--ph-ket); }
+/* Mug/Kettle IDENTITY is carried by the hued icon + a low-opacity section
+   rule — never a STATUS colour as resting chrome. Reserving --good/--warn/--bad
+   for the dots + chips (actual health) means a healthy Kettle section no longer
+   reads as an all-red alarm; the hue only IDENTIFIES, it never signals. */
+.op-ph-sec.mug { border-bottom-color: color-mix(in oklab, var(--ph-mug), transparent 72%); }
+.op-ph-sec.ket { border-bottom-color: color-mix(in oklab, var(--ph-ket), transparent 72%); }
+.op-ph-sec.mug > svg { color: var(--ph-mug); }
+.op-ph-sec.ket > svg { color: var(--ph-ket); }
 
 .op-ph-sec-d {
   margin-left: auto;
@@ -27232,16 +27244,21 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   padding: 8px 10px;
 }
 
-.op-ph-card.mug { border-left: 3px solid color-mix(in srgb, var(--ph-mug), transparent 35%); }
-.op-ph-card.ket { border-left: 3px solid color-mix(in srgb, var(--ph-ket), transparent 35%); }
+/* Softer identity rail (was transparent 35%) — quiet enough to identify the
+   card's section without competing with the sev-stripe idiom inside it. */
+.op-ph-card.mug { border-left: 3px solid color-mix(in srgb, var(--ph-mug), transparent 55%); }
+.op-ph-card.ket { border-left: 3px solid color-mix(in srgb, var(--ph-ket), transparent 55%); }
 
+/* Card title — the mid-level scan anchor. Brighter (--fg-dim) and a hair
+   larger (10px) than the old 9.5px/--fg-mute so the eye catches which card is
+   which before reading its rows; the count suffix stays --fg-mute (secondary). */
 .op-ph-card-h {
   display: flex;
   align-items: baseline;
   gap: 7px;
   margin: 0;
-  color: var(--fg-mute);
-  font-size: 9.5px;
+  color: var(--fg-dim);
+  font-size: 10px;
   font-weight: 750;
   text-transform: uppercase;
 }
