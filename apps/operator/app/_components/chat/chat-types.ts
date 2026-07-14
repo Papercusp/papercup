@@ -33,6 +33,16 @@ export interface ChatToolCall {
 export interface ChatMessage {
   /** Who spoke. Surfaces tint by role. */
   role: 'user' | 'assistant' | 'system';
+  /**
+   * WHICH agent spoke, when the surface knows (WI-4731 — the owner sees the
+   * Papercup mark on every assistant message even when the message is the
+   * Mug's or the Kettle's). Drives the per-message avatar: ChatConversation
+   * maps the known cast ids to their canonical marks (mug → Coffee,
+   * kettle → Thermometer — the LeftSidebar tab iconography) and falls back
+   * to the pane's own icon when absent/unknown. Optional so existing
+   * papercup-only feeds are untouched.
+   */
+  agent?: 'papercup' | 'mug' | 'kettle' | (string & {});
   /** Visible message text. May be empty while the assistant turn is still streaming. */
   content: string;
   /** Optional tool calls to render above the content (chat:ask_choice uses this). */

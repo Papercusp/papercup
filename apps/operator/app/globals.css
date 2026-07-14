@@ -25530,9 +25530,11 @@ body.papercusp-chromeless .oracle-fab {
 }
 
 .oracle-msg-avatar {
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
+  /* WI-4731 (owner 2026-07-13): "the logo by the agent message is very small"
+     — 24px read as a dot; sized up toward the 38px header orb. */
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -25551,8 +25553,8 @@ body.papercusp-chromeless .oracle-fab {
 }
 
 .oracle-msg-icon {
-  width: 13px;
-  height: 13px;
+  width: 20px;
+  height: 20px;
 }
 
 .oracle-msg-content {
@@ -25607,14 +25609,14 @@ body.papercusp-chromeless .oracle-fab {
   }
 
   .oracle-msg-avatar {
-    width: 22px;
-    height: 22px;
-    flex-basis: 22px;
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
   }
 
   .oracle-msg-icon {
-    width: 12px;
-    height: 12px;
+    width: 18px;
+    height: 18px;
   }
 
   .oracle-input-shell input {

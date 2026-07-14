@@ -27,7 +27,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight, Coffee, CupSoda, Thermometer } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { ChatMessage, ChatToolCall } from './chat-types';
 
@@ -43,6 +43,19 @@ export type ChatIconComponent = ComponentType<{
   className?: string;
   'aria-hidden'?: boolean;
 }>;
+
+/**
+ * Canonical per-agent avatar marks (WI-4731) — the SAME iconography the
+ * LeftSidebar rail tabs use (LeftSidebar.tsx TAB table: Mug→Coffee,
+ * Kettle→Thermometer, Papercup→CupSoda), so a message signed by an agent
+ * wears the mark the user already knows that agent by. Unknown/unstamped
+ * agents fall back to the hosting pane's icon.
+ */
+export const AGENT_MARKS: Record<string, ChatIconComponent> = {
+  mug: Coffee,
+  kettle: Thermometer,
+  papercup: CupSoda,
+};
 
 /**
  * Discord's ↑-to-edit-last, adapted for an agent chat (discord-shortcuts
@@ -423,7 +436,13 @@ export function ChatConversation(props: ChatConversationProps) {
             {virtualItems.map((vi) => {
               const m = messages[vi.index];
               if (!m) return null;
-              const Icon = iconForRole ? iconForRole(m.role) : emptyState.icon;
+              // WI-4731: a message stamped with the speaking agent gets that
+              // agent's canonical mark (the LeftSidebar tab iconography:
+              // mug → Coffee, kettle → Thermometer, papercup → CupSoda) so a
+              // Mug/Kettle message never wears the Papercup logo. Unstamped
+              // messages keep the pane's own icon (iconForRole / empty-state).
+              const AgentIcon = m.agent ? AGENT_MARKS[m.agent] : undefined;
+              const Icon = AgentIcon ?? (iconForRole ? iconForRole(m.role) : emptyState.icon);
               const label =
                 labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : emptyState.title);
               const showRoleLabel = label.trim().length > 0;

@@ -1094,6 +1094,7 @@ import './scout/route-idea';
 // su analogue of a scout-cycle tick, partitioned OFF Scout's cadence/health reads.
 import './scout/ideate-pass-record';
 import './scout/success-metrics';
+import './scout/run-drill';
 
 // self-learning-frontier-2026-06-12 P-004 (FB-02, D-003) — the behavior-change
 // ledger read surface: recent prompt/rule mutations (change_ledger:list) + the
