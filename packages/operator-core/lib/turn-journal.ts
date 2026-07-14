@@ -100,8 +100,12 @@ const EXECUTION_TOOL_RE = /^(bash|shell|exec|run|local_shell|capability:bash)/i;
 
 function isExecutionEntry(e: LedgerEntry): boolean {
   if (e.toolName && EXECUTION_TOOL_RE.test(e.toolName)) return true;
-  // The activity hooks summarize commands as "$ <cmd>".
-  return typeof e.summary === 'string' && e.summary.trimStart().startsWith('$');
+  // Command-shaped summaries: the server summariser renders shell calls as
+  // "▶ <cmd>" (activity-bridge summariseActivity — the live shape, P-013 recon);
+  // "$ <cmd>" covers pre-formatted hook summaries.
+  if (typeof e.summary !== 'string') return false;
+  const s = e.summary.trimStart();
+  return s.startsWith('$') || s.startsWith('▶');
 }
 
 function isFailureEntry(e: LedgerEntry): boolean {

@@ -72,6 +72,13 @@ describe('detectClaimLedgerMismatch (note says pass, ledger says exit 1; ledger 
     expect(t!.evidence).toEqual([failedBash]);
   });
 
+  it('recognizes the live "▶ <cmd>" summary shape as an execution (P-013 recon fix)', () => {
+    const t = detectClaimLedgerMismatch('all tests pass', [
+      { toolName: null, status: 'error', summary: '▶ npx vitest run' },
+    ]);
+    expect(t).not.toBeNull();
+  });
+
   it('tripwires on ledger summary text ("exit code 1") when status was not stamped', () => {
     const t = detectClaimLedgerMismatch('build green, done', [
       { toolName: 'Bash', status: null, summary: '$ npm run build → exit code 1' },
