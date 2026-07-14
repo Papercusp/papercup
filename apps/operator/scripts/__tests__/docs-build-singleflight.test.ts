@@ -1,0 +1,95 @@
+// docs-build-singleflight (EI-11539) — the docs analog of operator-vite's
+// vite-build-singleflight (EI-9836). Two agents running the documented
+// post-MDX-edit refresh (`cd apps/operator-docs && npm run build`) at the same
+// time used to interleave create/delete on the SAME dist/.prerender chunks and
+// BOTH died with ERR_MODULE_NOT_FOUND on a random chunk — masquerading as a
+// flaky build. The wrapper serializes every build through one bounded lock.
+//
+// Exercised through the DOCS_BUILD_CMD seam (a shell stand-in for the real
+// pipeline) + DOCS_BUILD_LOCK (lock in a tmp dir): the stand-in flags OVERLAP
+// if it ever starts while a peer is mid-"build". The test lives here (not in
+// apps/operator-docs) because operator-docs has no vitest infra — this
+// directory already hosts the repo-script tests.
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+const SCRIPT = resolve(__dirname, '../../../operator-docs/scripts/docs-build-singleflight');
+
+let tmp: string;
+const children: ChildProcess[] = [];
+
+function launch(cmd: string, env: Record<string, string> = {}): ChildProcess {
+  const child = spawn('bash', [SCRIPT], {
+    env: {
+      ...process.env,
+      DOCS_BUILD_LOCK: join(tmp, 'build.lock'),
+      DOCS_BUILD_CMD: cmd,
+      DOCS_BUILD_WAIT_SECS: '30',
+      RUN_DIR: tmp, // referenced by the stand-in cmds below
+      ...env,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  children.push(child);
+  return child;
+}
+
+const exited = (c: ChildProcess) => new Promise<number | null>((r) => c.on('exit', (code) => r(code)));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+beforeEach(() => {
+  tmp = mkdtempSync(join(tmpdir(), 'dbs-'));
+});
+
+afterEach(() => {
+  for (const c of children) {
+    try {
+      c.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+  children.length = 0;
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+describe('docs-build-singleflight (EI-11539)', () => {
+  it('serializes two concurrent builds — the second QUEUES; they never overlap, and both run', async () => {
+    const cmd =
+      'if [ -e "$RUN_DIR/running" ]; then echo overlap >> "$RUN_DIR/violations"; fi; ' +
+      'touch "$RUN_DIR/running"; sleep 0.4; rm -f "$RUN_DIR/running"; echo done >> "$RUN_DIR/order"';
+    const a = launch(cmd);
+    await sleep(100); // let A take the lock first
+    const b = launch(cmd);
+    const [ca, cb] = await Promise.all([exited(a), exited(b)]);
+    expect(ca).toBe(0);
+    expect(cb).toBe(0);
+    // Never ran concurrently…
+    expect(existsSync(join(tmp, 'violations'))).toBe(false);
+    // …but both DID run (a queued build still deserves to run — it picks up
+    // the second agent's edits; refusing outright would silently drop them).
+    expect(readFileSync(join(tmp, 'order'), 'utf8').trim().split('\n')).toHaveLength(2);
+  });
+
+  it("propagates the inner build's failure exit code (a red build stays loud)", async () => {
+    const c = launch('exit 7');
+    expect(await exited(c)).toBe(7);
+  });
+
+  it('times out LOUDLY (bounded wait) instead of queuing forever behind a wedged holder', async () => {
+    const holder = launch('sleep 30');
+    await sleep(200); // holder owns the lock
+    const waiter = launch('echo ran >> "$RUN_DIR/order"', { DOCS_BUILD_WAIT_SECS: '1' });
+    let err = '';
+    waiter.stderr?.on('data', (d) => {
+      err += String(d);
+    });
+    expect(await exited(waiter)).toBe(1);
+    expect(err).toContain('TIMED OUT');
+    expect(existsSync(join(tmp, 'order'))).toBe(false); // the inner cmd never ran
+    holder.kill('SIGKILL');
+  });
+});
