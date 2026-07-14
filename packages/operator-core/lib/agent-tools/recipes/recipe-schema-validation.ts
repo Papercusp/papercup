@@ -90,7 +90,11 @@ export async function validateRecipeScriptAgainstCatalog(
 ): Promise<RecipeSchemaValidation> {
   await ensureParseCheckReady();
   const analysis = checkScript(script, tools, allowed);
-  const byName = new Map(tools.map((tool) => [mcpName(tool), tool]).filter(([name]) => name));
+  const byName = new Map<string, ProjectedTool>();
+  for (const tool of tools) {
+    const name = mcpName(tool);
+    if (name) byName.set(name, tool);
+  }
   // Unknown/disallowed references remain the runtime facade's concern: the
   // existing orchestration parser reports those with the caller's role-scoped
   // allow-set. This guard focuses on the failure class that survives name
