@@ -13,6 +13,7 @@ import {
   handleAccountExhausted,
   initAccountScaleObserver,
   _resetAccountScaleObserver,
+  projectLiveEdgeThrottle,
   type ScaleOutResult,
 } from './account-pool-store';
 import {
@@ -36,6 +37,33 @@ function poolOf(...ids: string[]): AccountPool {
   return p;
 }
 const frameOf = (id: string): Frame => ({ id, target: 'hetzner', placement: 'remote' });
+
+describe('projectLiveEdgeThrottle (EI-11790)', () => {
+  it('links a live bare-429 edge penalty to the account status row without changing quota availability', () => {
+    expect(
+      projectLiveEdgeThrottle('aviynw8', {
+        edgeThrottleByAccount: {
+          aviynw8: { edgeThrottled: true, cooldownUntil: T0 + 30_000, cooledIpCount: 1, bare429Streak: 4 },
+        },
+      }),
+    ).toEqual({
+      edgeThrottleKnown: true,
+      edgeThrottled: true,
+      edgeThrottleResetAt: T0 + 30_000,
+      edgeThrottleCooledIps: 1,
+      edgeThrottleBare429Streak: 4,
+    });
+  });
+
+  it('keeps deploy-skew/old gateway evidence distinct from a healthy edge signal', () => {
+    expect(projectLiveEdgeThrottle('aviynw8', null)).toEqual({
+      edgeThrottleKnown: false,
+      edgeThrottled: false,
+      edgeThrottleCooledIps: 0,
+      edgeThrottleBare429Streak: 0,
+    });
+  });
+});
 
 describe('selectAccountForDeploy (P-020)', () => {
   it('respects an explicit credentialRef (no pool touch)', async () => {

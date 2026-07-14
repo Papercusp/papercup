@@ -624,6 +624,11 @@ test('BARE-429 PERSISTENCE CIRCUIT: a sustained bare-429 streak on one account E
   // Base backoff is 50ms; the circuit escalates it (×2 per step past the threshold), so the surviving pause
   // is well beyond a single 50ms pace — which is what makes the pool durably route AROUND this IP.
   assert.ok(pausedForMs > 100, `bare-429 circuit escalated A's pause to ${pausedForMs}ms (>> the 50ms base) so the pool routes around the throttled IP`);
+  const stats = (await (await ask('/stats')).json()) as {
+    edgeThrottleByAccount?: Record<string, { edgeThrottled: boolean; cooldownUntil: number; bare429Streak: number }>;
+  };
+  assert.equal(stats.edgeThrottleByAccount?.A?.edgeThrottled, true, 'live stats expose the active Cloudflare edge throttle instead of reporting only quota/rate state');
+  assert.ok((stats.edgeThrottleByAccount?.A?.bare429Streak ?? 0) > 0, 'live stats preserve the recurrence signal for the pinned account');
   resetGovernorRegistry();
 });
 

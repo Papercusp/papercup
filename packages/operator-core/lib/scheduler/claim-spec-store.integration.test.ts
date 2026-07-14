@@ -23,7 +23,15 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { setClaimSpec, getClaimSpec, getClaimSpecRecord, getClaimSpecHeadsForBees, resolveClaimSpecWorkspace, fleetSpecBeeKey } =
+const {
+  setClaimSpec,
+  getClaimSpec,
+  getClaimSpecRecord,
+  getClaimSpecHeadsForBees,
+  resolveClaimSpecWorkspace,
+  fleetSpecBeeKey,
+  countActiveClaimsForBee,
+} =
   await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
 const { buildBeeClaimSpecProjection } = await import('../sync/hyperbee/projections/bee-claim-spec');
@@ -65,12 +73,35 @@ beforeAll(async () => {
   // The store's ON CONFLICT (workspace_id, bee_id) is column-based, so a
   // table-only rename is sufficient (constraint names are untouched, unreferenced).
   await db.sql.unsafe('ALTER TABLE harness_shared.bee_claim_specs RENAME TO cup_claim_specs');
+  // EI-11796: the production guard counts through the unified work_items view. This
+  // claim-spec-only fixture does not need the full work-item schema; keep the smallest
+  // real table that exercises the count and its terminal-state floor.
+  await db.sql.unsafe(`CREATE TABLE harness_shared.work_items (
+    workspace_id text NOT NULL,
+    feature_id text PRIMARY KEY,
+    taken_by text,
+    status text NOT NULL DEFAULT 'todo'
+  )`);
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup?.();
 });
 
 describe('cup_claim_specs store (mig 372)', () => {
+  it('counts an active/parked claim but ignores terminal claims (EI-11796)', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)
+      VALUES ('default', 'EI-11796-active', 'su-bee-active', 'open'),
+             ('default', 'EI-11796-done', 'su-bee-active', 'resolved')`;
+
+    expect(await countActiveClaimsForBee({ cupId: 'su-bee-active' }, db.sql)).toBe(1);
+
+    await db.sql`
+      UPDATE harness_shared.work_items SET status = 'closed'
+       WHERE feature_id = 'EI-11796-active'`;
+    expect(await countActiveClaimsForBee({ cupId: 'su-bee-active' }, db.sql)).toBe(0);
+  });
+
   it('stores a valid spec, returns it, and bumps the revision on re-steer', async () => {
     const r1 = await setClaimSpec({ cupId: 'su-bee-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
     expect(r1.ok).toBe(true);
