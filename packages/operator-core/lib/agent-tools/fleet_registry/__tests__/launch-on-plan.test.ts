@@ -105,6 +105,15 @@ import tool, {
 // The REAL claim-spec validator (NOT the mocked claim-spec-STORE) — #4 specs must pass it.
 import { validateClaimSpec } from '../../../scheduler/claim-spec';
 
+describe('launch-tool routing guidance', () => {
+  it('identifies fleet:launch-on-plan as the ergonomic N-agents-on-a-plan door', () => {
+    expect(tool.guidance?.when).toContain('ERGONOMIC N-AGENTS-ON-A-PLAN DOOR');
+    expect(tool.guidance?.when).toContain('capability:terminal');
+    expect(tool.guidance?.notWhen).toContain('capability:launch-agent');
+    expect(tool.guidance?.notWhen).toContain('launching-agents-which-tool-for-which-door');
+  });
+});
+
 describe('memberLaunchCommand', () => {
   beforeEach(() => {
     spawnConsoleMock.mockReset();

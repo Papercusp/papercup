@@ -694,9 +694,9 @@ export default defineTool({
   description:
     'Launch su member sessions on a plan in one call — visible desktop terminals, or headless background sessions with `headless:true` (same leader-led su fleet either way; use cup:spawn only for Mug-supervised cups). Ensures the named fleet exists, opens N members, and each scripted psu launch auto-starts work on the plan. Author the plan first. `carry` picks warm/cold auto-mode; `perMemberLaunchContext` gives distinct per-member briefs. Linux/macOS/Windows desktop.',
   guidance: {
-    when: 'The owner wants a new su fleet working a plan immediately — desktop terminals by default, `headless:true` for windowless (both are su members, not cups). Pass plan slug, fleet name, count; disclose owner-chosen `headless`/`carry`; members start on boot.',
+    when: 'ERGONOMIC N-AGENTS-ON-A-PLAN DOOR: launch a leader-led su fleet whose members auto-join and auto-start the plan, visible by default or headless with `headless:true`. Prefer this over hand-building agent commands with capability:terminal.',
     notWhen:
-      'Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for background cups (cup:spawn), plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
+      'Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for background cups (cup:spawn), plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
       'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional — plan items become claimable work-items only through it; skipped, the fleet launches onto an empty backlog (this tool backstops it idempotently). As leader, loop:arm a lean monitor; avoid polling full rosters every wake.',
   },

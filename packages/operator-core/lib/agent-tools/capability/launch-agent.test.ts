@@ -123,6 +123,16 @@ beforeEach(() => {
   fetchPresenceFleetMock.mockResolvedValue(new Map());
 });
 
+describe('launch-tool routing guidance', () => {
+  it('identifies capability:launch-agent as the general agent-launch door', () => {
+    expect(launchAgent.guidance?.when).toContain('GENERAL AGENT-LAUNCH DOOR');
+    expect(launchAgent.guidance?.when).toContain('visible or headless');
+    expect(launchAgent.guidance?.when).toContain('fleet or unfleeted');
+    expect(launchAgent.guidance?.when).toContain('fleet:launch-on-plan');
+    expect(launchAgent.guidance?.notWhen).toContain('capability:terminal');
+  });
+});
+
 describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
   it('launches a visible agent whose FIRST TURN is the brief', async () => {
     const res = await launchAgent.handler({ brief: 'audit the release script' }, ctx);

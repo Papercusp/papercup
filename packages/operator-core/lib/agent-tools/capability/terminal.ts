@@ -6,8 +6,8 @@
  * Two forms:
  *   - single: { command, cwd?, label? }            → one window
  *   - bulk:   { terminals: [{command,cwd?,label?}] } → N windows in ONE call
- * (bulk is the mechanism behind "create a new desktop fleet" — each entry
- * launches one agent terminal; see named-su-agent-fleets-2026-06-29 D-004.)
+ * Agent launches have their own purpose-built doors: capability:launch-agent
+ * for the general case, and fleet:launch-on-plan for N members on a plan.
  *
  * Reuses the maintained console machinery instead of forking a spawner:
  *   buildConsoleEnvelope({ skipMcpJson }) → the base envelope (cwd/env)
@@ -82,14 +82,15 @@ function err(text: string) {
 export default defineTool({
   name: 'capability:terminal',
   description:
-    "Open a NEW terminal window on the user's desktop and run a command in it — or open MANY at once with `terminals: [...]`. Each command runs, then its terminal drops to an interactive shell (stays open). Use this when the user should SEE / interact with real terminals (a dev server, a REPL, a watch process, an installer, a desktop fleet of agents). For headless execution with captured output, use capability:bash instead.",
+    "Open a NEW terminal window on the user's desktop and run an arbitrary command in it — or open MANY command windows at once with `terminals: [...]`. Each command runs, then its terminal drops to an interactive shell (stays open). For agents, use capability:launch-agent; for N agents on a plan, use fleet:launch-on-plan. For headless execution with captured output, use capability:bash.",
   guidance: {
-    when: 'Open one or more visible desktop terminals and run commands the user should watch or interact with — a dev server, a REPL/installer, a `tail -f`, or N agent windows at once (pass `terminals: [...]`).',
+    when: 'ARBITRARY-COMMAND WINDOW ONLY: open one or more visible desktop terminals for a dev server, REPL, installer, `tail -f`, or another command the user should watch or interact with.',
     notWhen:
-      'For headless command execution with captured output / exit code, use capability:bash. This tool returns as soon as the terminals are spawned and CANNOT capture output (they are interactive and detached).',
+      'Do NOT use this to launch agents: use capability:launch-agent for the general visible/headless/fleet/unfleeted launch, or fleet:launch-on-plan for N agents on a plan. For headless command execution with captured output / exit code, use capability:bash.',
     chaining:
       'Returns immediately after spawning — it does NOT wait for the commands and has no output channel. Use EITHER `command` (single) or `terminals` (bulk, max 12), not both.',
     seeAlso: [
+      'capability:launch-agent (launch, resume, or fork agents — the flexible superset)',
       'capability:bash (headless execution with captured output / exit code)',
       'fleet:launch-on-plan (spawn desktop fleet members that auto-join + kickoff)',
     ],

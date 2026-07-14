@@ -99,6 +99,16 @@ beforeEach(() => {
   );
 });
 
+describe('launch-tool routing guidance', () => {
+  it('keeps capability:terminal scoped to arbitrary commands, never agent launch', () => {
+    expect(terminalTool.guidance?.when).toContain('ARBITRARY-COMMAND WINDOW ONLY');
+    expect(terminalTool.guidance?.notWhen).toContain('Do NOT use this to launch agents');
+    expect(terminalTool.guidance?.notWhen).toContain('capability:launch-agent');
+    expect(terminalTool.guidance?.notWhen).toContain('fleet:launch-on-plan');
+    expect(terminalTool.description).not.toContain('desktop fleet of agents');
+  });
+});
+
 describe('capability:terminal scheme resolution', () => {
   it('explicit `fleet` arg resolves scheme by fleet name and passes it to spawnConsole', async () => {
     await terminalTool.handler({ command: 'echo hi', fleet: 'Alpha Fleet' }, baseCtx);

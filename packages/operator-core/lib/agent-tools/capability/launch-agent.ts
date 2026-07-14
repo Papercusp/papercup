@@ -71,7 +71,7 @@ export default defineTool({
   description:
     'Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent\'s FIRST TURN, so it starts working immediately instead of parking idle.',
   guidance: {
-    when: 'You want another agent working: an ad-hoc task (`brief`), a plan (`plan`), a dead agent brought back mid-thread with its context intact (`resume: { agentId: "su-…" }`), or a branch off a live one (`fork: true`). `fleet` is optional — a non-leader can launch a plain unfleeted agent.',
+    when: 'GENERAL AGENT-LAUNCH DOOR: launch, resume, or fork one or many agents — visible or headless, fleet or unfleeted. Use fleet:launch-on-plan instead only for the ergonomic “N agents on this plan” workflow.',
     notWhen:
       'To run a COMMAND (dev server, build, REPL) rather than an agent: capability:terminal / capability:bash. For N members on a plan with fleet seats + capacity advice in one call, fleet:launch-on-plan is still the ergonomic door.',
     chaining:
