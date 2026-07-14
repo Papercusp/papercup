@@ -56,6 +56,10 @@ const ACCOUNT = {
   boundTo: ['papercup-hive'],
   available: true,
   sustainedlyLimited: false,
+  edgeThrottleKnown: true,
+  edgeThrottled: true,
+  edgeThrottleCooledIps: 1,
+  edgeThrottleBare429Streak: 2,
   rate: {
     pausedUntil: 0,
     lastPenaltyAt: 0,
@@ -125,6 +129,7 @@ describe('AccountsTab', () => {
     expect(screen.getByText('1 bound')).toBeTruthy();
     expect(screen.getByText('1 bucket')).toBeTruthy();
     expect(screen.getByText('egress')).toBeTruthy();
+    expect(screen.getByText('edge throttle')).toBeTruthy();
     expect(screen.getByLabelText(/5h usage ~23%/)).toBeTruthy();
     expect(screen.getByLabelText(/7d usage ~61%/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Force only acct-opus-1' })).toBeTruthy();

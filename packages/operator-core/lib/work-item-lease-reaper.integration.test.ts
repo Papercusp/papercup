@@ -95,7 +95,7 @@ async function issueAssignee(id: string): Promise<string | null> {
 async function seedPresence(owner: string, ageMs: number, liveness: { host?: string; pid?: number } = {}): Promise<void> {
   await sql`
     INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at, host, pid)
-    VALUES (${owner}, now() - make_interval(secs => ${Math.round(ageMs / 1000)}), ${liveness.host ?? null}, ${liveness.pid ?? null})
+    VALUES (${owner}, now() - make_interval(secs => ${Math.round(ageMs / 1000)}), ${liveness.host ?? hostname()}, ${liveness.pid ?? null})
     ON CONFLICT (owner_id) DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at, host = EXCLUDED.host, pid = EXCLUDED.pid`;
 }
 

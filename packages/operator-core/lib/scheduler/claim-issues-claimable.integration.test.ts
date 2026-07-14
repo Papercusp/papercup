@@ -29,6 +29,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FLAGS, FLAG_DEFAULTS, type FlagKey } from '@papercusp/flags';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -145,6 +146,7 @@ async function claimOneKind(
 beforeAll(async () => {
   db = await createFreshPgDb('claim-issues-claimable');
   h.sql = db.sql;
+  await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL); // base work_items + the hfc + engineer_issues views
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // the feature floor LEFT-JOINs the trust list
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the readiness dep table

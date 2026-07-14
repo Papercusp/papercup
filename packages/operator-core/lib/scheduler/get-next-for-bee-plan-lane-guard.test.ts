@@ -79,6 +79,38 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     expect(getNextWorkItemMock).not.toHaveBeenCalled();
   });
 
+  it('honors an explicitly authored concurrency limit above one', async () => {
+    sqlMock.mockImplementation(async (strings: unknown) => {
+      const query = Array.isArray(strings) ? strings.join(' ') : '';
+      if (query.includes('SELECT spec, revision')) {
+        return [
+          {
+            spec: {
+              specVersion: '1.0',
+              specId: 'parallel-lane',
+              revision: 1,
+              view: {},
+              rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+              limits: { maxConcurrentClaims: 2 },
+            },
+            revision: 1,
+            updated_by: 'leader',
+            updated_at: new Date().toISOString(),
+            harness_slug: null,
+          },
+        ];
+      }
+      return query.includes('active_claims') ? [{ active_claims: 1 }] : [];
+    });
+    getNextWorkItemMock.mockResolvedValueOnce(claimResult('F-parallel'));
+    planItemLaneBlockReasonMock.mockResolvedValueOnce(null);
+
+    const res = await getNextForBee({ cupId: 'me', harness: 'papercusp' });
+
+    expect(res?.workItem.id).toBe('F-parallel');
+    expect(getNextWorkItemMock).toHaveBeenCalledOnce();
+  });
+
   it('serves the first claim straight through when its plan-item lane is clear', async () => {
     getNextWorkItemMock.mockResolvedValueOnce(claimResult('F-1'));
     planItemLaneBlockReasonMock.mockResolvedValueOnce(null);

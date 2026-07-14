@@ -43,6 +43,16 @@ export async function releaseAllWorkItemLeasesForOwner(ownerId: string): Promise
     const { sql } = getOrgPg();
     const featureWs = activeWorkspaceId();
     const issueWs = issuesScopeWorkspace();
+    // Clear the coordination claim ledger BEFORE releasing the work-item rows.
+    // releaseWorkItem() also schedules best-effort lease cleanup, so doing this
+    // afterward made the explicit cleanup race with that fire-and-forget path and
+    // report claimsCleared=0 even though the row disappeared (WI-11788/WI-4399).
+    let claimsCleared = 0;
+    try {
+      claimsCleared = await releaseAllClaimsForOwner(featureWs, ownerId);
+    } catch (e) {
+      console.warn(`[work-item-lease-release] claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
+    }
     const [featureRows, issueRows] = await Promise.all([
       sql<Array<{ id: string; harness: string }>>`
         SELECT feature_id AS id, harness_slug AS harness
@@ -68,12 +78,6 @@ export async function releaseAllWorkItemLeasesForOwner(ownerId: string): Promise
       } catch (e) {
         console.warn(`[work-item-lease-release] release failed for ${r.id} (${ownerId}):`, (e as Error)?.message ?? e);
       }
-    }
-    let claimsCleared = 0;
-    try {
-      claimsCleared = await releaseAllClaimsForOwner(featureWs, ownerId);
-    } catch (e) {
-      console.warn(`[work-item-lease-release] claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
     }
     return { releasedIds, claimsCleared };
   } catch (e) {

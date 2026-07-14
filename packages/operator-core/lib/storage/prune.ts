@@ -40,6 +40,15 @@ export interface PruneRequest {
   /** workspace for the VACUUM resource-lock coordination domain. */
   workspaceId: string;
   signal?: AbortSignal;
+  /**
+   * Wall-time budget (ms) for the chunked PG delete loop (EI-11379). When the
+   * budget is hit mid-drain, the loop stops and returns a continuation instead
+   * of running past the caller's transport envelope (the ~55s MCP cap) — which
+   * used to commit part of the delete and then time out with NO usable result.
+   * Default {@link DEFAULT_TIME_BUDGET_MS}. `0` = stop after the first chunk
+   * (one bounded step per call — used to force small continuation steps).
+   */
+  timeBudgetMs?: number;
 }
 
 export interface PruneResult {
@@ -55,13 +64,32 @@ export interface PruneResult {
   vacuumed: boolean;
   reason?: string;
   note?: string;
-  /** PG: a per-call row ceiling was hit; run again to continue. */
+  /** PG: a per-call row/time ceiling was hit and eligible rows still remain;
+   *  replay to continue (see {@link continuation}). */
   partial?: boolean;
+  /** PG execute: rows still matching the trim after this call (0 when complete). */
+  totalRemaining?: number;
+  /** PG execute: true iff no eligible rows remain — the trim is finished. */
+  complete?: boolean;
+  /**
+   * PG execute: replay these EXACT args to continue a partial trim (EI-11379).
+   * Safe + idempotent — each call deletes only still-eligible rows (the age
+   * WHERE clause) and reports only what IT removed, so re-running never
+   * double-counts. Present only while `complete` is false.
+   */
+  continuation?: { categoryId: string; olderThanDays: number | null };
 }
 
 /** chunked-delete batch size + per-call ceiling (rerun to continue past it). */
 const CHUNK = 10_000;
 const MAX_ROWS_PER_CALL = 20_000_000;
+/**
+ * Default wall-time budget (ms) for the chunked delete loop. Safely under the
+ * ~55s MCP transport cap (docstrings clamp a foreground call to ~50s), leaving
+ * headroom to measure `totalRemaining` and serialize the continuation before
+ * the caller's envelope elapses (EI-11379).
+ */
+const DEFAULT_TIME_BUDGET_MS = 40_000;
 /** plain-disk-store guard: never remove an entry touched within this window. */
 const PLAIN_DISK_FLOOR_MS = 60_000;
 
@@ -132,11 +160,20 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
     return result;
   }
 
-  // Execute — chunked deletes so no single statement takes a long lock.
+  // Execute — chunked deletes so no single statement takes a long lock, under a
+  // wall-time budget (EI-11379): a multi-million-row trim must return a
+  // continuation BEFORE the caller's transport envelope (the ~55s MCP cap)
+  // rather than committing part of the delete and then timing out with no
+  // usable result. Each chunk is its own committed DELETE keyed on the age
+  // WHERE clause, so a replay is idempotent — it deletes only rows STILL
+  // eligible and reports only what THIS call removed.
+  const budgetMs = req.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
+  const startMs = Date.now();
   let removed = 0;
+  let stoppedEarly = false;
   for (;;) {
     if (req.signal?.aborted) {
-      result.partial = true;
+      stoppedEarly = true;
       break;
     }
     const rows = await sql.unsafe(`
@@ -147,17 +184,40 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
       ) SELECT count(*)::int AS n FROM del`);
     const n = num(rows[0]?.n);
     removed += n;
-    if (n < CHUNK) break;
+    if (n < CHUNK) break; // drained the eligible set
     if (removed >= MAX_ROWS_PER_CALL) {
-      result.partial = true;
+      stoppedEarly = true;
+      break;
+    }
+    if (Date.now() - startMs >= budgetMs) {
+      stoppedEarly = true;
       break;
     }
   }
   result.removed = removed;
 
+  // Continuation contract: on an early stop, measure what still matches so the
+  // caller knows whether to replay; a clean drain is complete with nothing left.
+  if (stoppedEarly) {
+    const remRows = await sql.unsafe(`SELECT count(*)::bigint AS n FROM ${t} ${where}`);
+    const remaining = num(remRows[0]?.n);
+    result.totalRemaining = remaining;
+    result.complete = remaining === 0;
+    result.partial = !result.complete;
+    if (!result.complete) {
+      result.continuation = { categoryId: cat.id, olderThanDays: req.olderThanDays };
+      result.note = `partial: ${removed} row(s) deleted this call, ${remaining} still match — re-run with the same { category, olderThanDays } to continue`;
+    }
+  } else {
+    result.totalRemaining = 0;
+    result.complete = true;
+  }
+
   // Bloat-queue: logical delete does not return disk → VACUUM FULL under the
   // db:migrate exclusive lock with drain (the plan's coordination requirement).
-  if (cat.bloats && removed > 0) {
+  // Skipped while the trim is still partial — VACUUM FULL is a long, locking op
+  // that would itself blow the budget; it runs on the final draining call.
+  if (cat.bloats && removed > 0 && result.complete) {
     try {
       const { guardResource } = await import('../agent-tools/locks/resource-lock-guard');
       const outcome = await guardResource(
