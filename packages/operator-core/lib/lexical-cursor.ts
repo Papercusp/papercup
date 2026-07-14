@@ -97,8 +97,11 @@ const SYMBOL_RES: RegExp[] = [
 ];
 
 /** Domain terms — the fuzzy floor. Lowercased content tokens, length ≥ 3,
- *  stopwords out. Mirrors intent-pivot.intentTokens' idiom. */
-const DOMAIN_RE = /\b[a-z][a-z0-9]{2,}\b/gi;
+ *  stopwords out. Internal hyphens are PRESERVED so this domain's compounds
+ *  (dead-end, auto-subscribe, echo-loop, cross-agent) stay whole join keys
+ *  instead of splitting into weaker halves. Mirrors intent-pivot.intentTokens'
+ *  idiom, widened for the compound vocabulary. */
+const DOMAIN_RE = /\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*\b/gi;
 
 /** Stopwords for the domain-term floor (superset of intent-pivot's — journal
  *  notes carry more scaffolding prose: "landed", "turn", "tests", etc. are

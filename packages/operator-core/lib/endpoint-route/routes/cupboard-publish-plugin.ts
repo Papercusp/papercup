@@ -4,44 +4,19 @@
  * `kind=pack` listing (revive-cupboard-distribution-2026-06-04 D-003 / P2;
  * pack kind: tool-distribution-granularity-2026-06-05 P-005).
  *
- * The cupboard-publish primitive already accepts `listing_kind` +
- * `listing_ref`; the listing kind follows the installed manifest's `kind`
- * field ('pack' → kind=pack listing, else plugin). A unit listing is
- * GitHub-repo-backed: it points at the unit's repo (+ `listing_ref` = the
- * unit slug). We resolve the repo coords from an explicit `github_url` or from
- * the installed unit dir's `origin` remote, default title/description from the
- * manifest, and declare the unit's tools (`provides_tools` — explicit body
- * value, else derived from the manifest's `tools[]`) so the Cupboard's
- * tool→provider discovery can resolve each tool to this listing.
- *
- * The EVENT axis rides the same publish (D-003; P-007 resolver, P-008 wire):
- * `provides_events` (manifest `provides.events`) and `requires_events` (manifest
- * `dependencies.events`) are derived from the installed manifest and sent with
- * the listing. Unlike provides_tools these are NOT body-overridable — see the
- * comment at the derivation site.
+ * The publish logic lives in `cupboard/publish-plugin-core.ts`
+ * (`publishInstalledUnitToCupboard`) — the ONE path shared with the
+ * agent-callable `cupboard:publish-plugin` tool (cupboard-agent-tool-coverage-
+ * 2026-07-14 P-001/P-004, D-001 reuse-first). This route only parses the loopback
+ * request body and maps the structured result to an HTTP response.
  *
  * Body: { slug, github_url?, project_ref?, listing_ref?, title?, description?,
  *         provides_tools? }
- *   - slug            the installed unit's manifest name (used as listing_ref unless overridden)
- *   - github_url      override the repo (else resolved from the installed unit's git origin)
- *   - provides_tools  override the declared MCP tool names (else manifest-derived)
  *
  * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { validateManifestEventDeclarations } from '@papercusp/plugin-sdk';
-import { findInstalledPlugin } from '../../cupboard/plugin-listings';
-import { manifestToolNames, parseProvidedEvents, parseRequiredEvents } from '../../cupboard/pack-catalog';
-import { publishListingToCupboard } from '../../cupboard/publish-listing';
-import {
-  resolveRepoCoordsFromDir,
-  parseGithubRemote,
-  gitOriginUrl,
-  fetchGithubRepoMeta,
-  fetchGithubRepoFile,
-  type RepoCoords,
-} from '../../cupboard/resolve-repo-coords';
-import { assertPluginManifestPublishable, PublishManifestError } from '../../cupboard/publish-manifest-check';
+import { publishInstalledUnitToCupboard } from '../../cupboard/publish-plugin-core';
 
 export default defineTool({
   method: 'POST',
@@ -62,138 +37,15 @@ export default defineTool({
     } catch {
       return Response.json({ ok: false, error: 'invalid_json' }, { status: 400 });
     }
-    const slug = String(body.slug ?? '').trim();
-    if (!/^@?[a-z0-9][a-z0-9._/-]{0,127}$/i.test(slug)) {
-      return Response.json({ ok: false, error: `invalid plugin slug "${slug}"` }, { status: 400 });
-    }
 
-    // Explicit provides_tools override (validated to the worker's shape); else
-    // derived from the installed manifest below.
-    let providesToolsOverride: string[] | undefined;
-    if (body.provides_tools != null) {
-      const pt = body.provides_tools;
-      if (
-        !Array.isArray(pt) ||
-        pt.length === 0 ||
-        pt.length > 200 ||
-        !pt.every((t) => typeof t === 'string' && t.trim().length > 0 && t.length <= 128)
-      ) {
-        return Response.json({ ok: false, error: 'invalid provides_tools (string[], 1–200 entries, ≤128 chars)' }, { status: 400 });
-      }
-      providesToolsOverride = pt;
-    }
-
-    const installed = await findInstalledPlugin(slug);
-
-    // Resolve the plugin repo's GitHub coords: explicit github_url wins, else the
-    // installed plugin dir's `origin` remote.
-    let coords: RepoCoords | { error: string };
-    if (typeof body.github_url === 'string' && body.github_url.trim()) {
-      const parsed = parseGithubRemote(body.github_url.trim());
-      if (!parsed) {
-        return Response.json({ ok: false, error: `invalid github_url "${body.github_url}"` }, { status: 400 });
-      }
-      const meta = await fetchGithubRepoMeta(parsed.owner, parsed.repo);
-      coords = meta
-        ? {
-            github_repository_id: meta.id,
-            github_owner: parsed.owner,
-            github_name: parsed.repo,
-            github_url: meta.html_url || `https://github.com/${parsed.owner}/${parsed.repo}`,
-          }
-        : { error: `could not resolve GitHub repo ${parsed.owner}/${parsed.repo}` };
-    } else if (installed) {
-      coords = await resolveRepoCoordsFromDir(installed.path, {
-        getOriginUrl: gitOriginUrl,
-        fetchRepoMeta: fetchGithubRepoMeta,
-      });
-    } else {
-      return Response.json(
-        { ok: false, error: `plugin "${slug}" is not installed and no github_url was given` },
-        { status: 404 },
-      );
-    }
-
-    if ('error' in coords) {
-      return Response.json({ ok: false, error: coords.error }, { status: 422 });
-    }
-
-    // A runtime-less code-tool pack manifest (kind:'pack') lists as the
-    // canonical 'pack' listing kind (migration 010 renamed the interim
-    // 'tool-pack' back to 'pack' — cupboard-public-release-2026-07-12 P-003;
-    // the manifest format already uses 'pack'); everything else stays a plugin
-    // listing (D-001: plugin = pack + runtime).
-    const listingKind = installed?.kind === 'pack' ? ('pack' as const) : ('plugin' as const);
-    const providesTools =
-      providesToolsOverride ?? (installed ? manifestToolNames(installed) : []);
-    const listingRef =
-      typeof body.listing_ref === 'string' && body.listing_ref.trim() ? body.listing_ref.trim() : slug;
-
-    // The EVENT axis (D-003; P-007 resolver + P-008 wire). Derived from the
-    // installed manifest — NOT body-overridable like provides_tools, because a
-    // provided family carries a keyTemplate that must match what the unit
-    // actually emits at runtime; letting a publisher hand-type it invites a
-    // listing that promises `deploy:<env>` while the code fires something else,
-    // and every awaiter of the advertised key hangs forever on a key nothing
-    // emits. The manifest is the only declaration the runtime is held to.
-    //
-    // WITHOUT THIS THE WHOLE INSTALLABLE RUNG IS INERT: nothing else in the
-    // system writes provides_events, so an unpublished family means
-    // cupboardEventIndex is empty, resolveEventProvider can never answer
-    // 'installable', and an event dep can never pull its provider in.
-    const providesEvents = installed ? parseProvidedEvents(installed.provides?.events) : [];
-    const requiresEvents = installed ? parseRequiredEvents(installed.dependencies?.events) : [];
-
-    // A malformed event declaration is LOUD at publish time — the opposite of the
-    // catalog's fail-soft parse. Fail-soft is right when reading a THIRD PARTY's
-    // manifest (one bad unit must not break catalog derivation for everyone);
-    // it is wrong when publishing YOUR OWN, where silently dropping a family the
-    // author believes they declared ships a listing that lies about itself.
-    if (installed) {
-      const issues = validateManifestEventDeclarations(installed);
-      if (issues.length > 0) {
-        return Response.json(
-          { ok: false, error: 'invalid manifest event declarations', detail: issues },
-          { status: 422 },
-        );
-      }
-    }
-
-    // Publish-time installability gate (EI-387 / P-005): a kind=plugin listing
-    // must point at a repo the STANDARD install path can resolve — one carrying a
-    // papercusp.json with {name, version} where the installer looks (the
-    // listing_ref subdir, then the root). Refuse (422) a publish that would list
-    // an un-installable repo. Scoped to plugin per P-005 (a pack ships the
-    // same manifest, but keep the gate to the stated kind for now).
-    if (listingKind === 'plugin') {
-      try {
-        await assertPluginManifestPublishable(
-          { owner: coords.github_owner, repo: coords.github_name, listingRef },
-          { fetchRepoFile: fetchGithubRepoFile },
-        );
-      } catch (e) {
-        if (e instanceof PublishManifestError) {
-          return Response.json({ ok: false, error: e.message }, { status: e.status });
-        }
-        throw e;
-      }
-    }
-
-    const result = await publishListingToCupboard({
-      listing_kind: listingKind,
-      listing_ref: listingRef,
-      project_ref: typeof body.project_ref === 'string' ? body.project_ref : undefined,
-      ...coords,
-      title: typeof body.title === 'string' ? body.title : (installed?.name ?? slug),
-      description:
-        typeof body.description === 'string'
-          ? body.description
-          : typeof installed?.description === 'string'
-            ? installed.description
-            : undefined,
-      ...(providesTools.length > 0 ? { provides_tools: providesTools } : {}),
-      ...(providesEvents.length > 0 ? { provides_events: providesEvents } : {}),
-      ...(requiresEvents.length > 0 ? { requires_events: requiresEvents } : {}),
+    const result = await publishInstalledUnitToCupboard({
+      slug: String(body.slug ?? ''),
+      ...(typeof body.github_url === 'string' ? { github_url: body.github_url } : {}),
+      ...(typeof body.project_ref === 'string' ? { project_ref: body.project_ref } : {}),
+      ...(typeof body.listing_ref === 'string' ? { listing_ref: body.listing_ref } : {}),
+      ...(typeof body.title === 'string' ? { title: body.title } : {}),
+      ...(typeof body.description === 'string' ? { description: body.description } : {}),
+      ...(body.provides_tools != null ? { provides_tools: body.provides_tools } : {}),
     });
 
     if (!result.ok) {
@@ -202,6 +54,6 @@ export default defineTool({
         { status: result.status },
       );
     }
-    return Response.json({ ok: true, listing: result.data });
+    return Response.json({ ok: true, listing: result.listing });
   },
 });

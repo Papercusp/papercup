@@ -1064,6 +1064,15 @@ import './blueprint/publish';
 // entry point for a whole standalone application (Oddsmith-style): validate its
 // latest.json resolves, then list a kind='app' listing on the Cupboard Apps tab.
 import './cupboard/publish-app';
+// cupboard-agent-tool-coverage-2026-07-14 P-001/P-004 — cupboard:publish-plugin,
+// the agent-callable face of the installed-unit publish core (plugin OR pack,
+// kind auto-detected from the manifest); shares publish-plugin-core.ts with the
+// loopback POST /cupboard/publish-plugin route.
+import './cupboard/publish-plugin';
+// cupboard-agent-tool-coverage-2026-07-14 P-002 — cupboard:publish-template, the
+// agent-callable face of the template publish core; shares publish-template-core.ts
+// with the loopback POST /cupboard/publish-template route.
+import './cupboard/publish-template';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';
