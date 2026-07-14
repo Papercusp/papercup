@@ -94,11 +94,31 @@ const HONEST_FAILURE_RE =
 const LEDGER_FAILURE_TEXT_RE =
   /\bexit(?:ed)?\s*(?:code[:\s]*)?[1-9]\d*\b|\bFAILED\b|\btests?\s+fail(?:ed|ing|s)?\b/i;
 
+/** Tools whose ledger outcome can ATTEST a tests/build claim — command
+ *  executions. A Read/Edit succeeding says nothing about the test suite. */
+const EXECUTION_TOOL_RE = /^(bash|shell|exec|run|local_shell|capability:bash)/i;
+
+function isExecutionEntry(e: LedgerEntry): boolean {
+  if (e.toolName && EXECUTION_TOOL_RE.test(e.toolName)) return true;
+  // The activity hooks summarize commands as "$ <cmd>".
+  return typeof e.summary === 'string' && e.summary.trimStart().startsWith('$');
+}
+
+function isFailureEntry(e: LedgerEntry): boolean {
+  return (
+    e.status === 'error' ||
+    (typeof e.summary === 'string' && LEDGER_FAILURE_TEXT_RE.test(e.summary))
+  );
+}
+
 /**
- * The minimal P-012 honesty diff: a success claim in the note vs a failure in
- * the same turn's tool ledger. Returns null when the note makes no success
- * claim, when it honestly discloses failure alongside, or when the ledger
- * holds no contradicting row.
+ * The minimal P-012 honesty diff: a success claim in the note vs the turn's
+ * tool ledger (`ledger` NEWEST FIRST — the store's DESC order). The verdict
+ * follows the MOST RECENT command execution: a turn that iterated
+ * fail → fix → re-run-green ends on an ok run and stays clean; a turn that
+ * ends on a failing run while the note claims success trips. Returns null
+ * when the note makes no success claim, when it honestly discloses failure
+ * alongside, or when the window holds no contradicting execution.
  */
 export function detectClaimLedgerMismatch(
   note: string,
@@ -107,19 +127,16 @@ export function detectClaimLedgerMismatch(
   const claim = note.match(SUCCESS_CLAIM_RE) ?? note.match(SUCCESS_CLAIM_REV_RE);
   if (!claim) return null;
   if (HONEST_FAILURE_RE.test(note)) return null;
+  const latest = ledger.find((e) => isExecutionEntry(e) && (e.status === 'ok' || isFailureEntry(e)));
+  if (!latest || !isFailureEntry(latest)) return null;
   const evidence = ledger
-    .filter(
-      (e) =>
-        e.status === 'error' ||
-        (typeof e.summary === 'string' && LEDGER_FAILURE_TEXT_RE.test(e.summary)),
-    )
+    .filter((e) => isExecutionEntry(e) && isFailureEntry(e))
     .slice(0, 3)
     .map((e) => ({
       toolName: e.toolName ?? null,
       status: e.status ?? null,
       summary: e.summary ? e.summary.slice(0, 300) : null,
     }));
-  if (!evidence.length) return null;
   return { kind: 'claim-ledger-mismatch', claim: claim[0].slice(0, 200), evidence };
 }
 

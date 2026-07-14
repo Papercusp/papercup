@@ -59,11 +59,12 @@ describe('extractJournalFromAssistantText', () => {
   });
 });
 
-describe('detectClaimLedgerMismatch (note says pass, ledger says exit 1)', () => {
+describe('detectClaimLedgerMismatch (note says pass, ledger says exit 1; ledger NEWEST FIRST)', () => {
   const failedBash = { toolName: 'Bash', status: 'error', summary: '$ npx vitest run' };
   const cleanBash = { toolName: 'Bash', status: 'ok', summary: '$ npx vitest run' };
+  const okRead = { toolName: 'Read', status: 'ok', summary: 'lib/foo.ts' };
 
-  it('tripwires a success claim contradicted by an error-status ledger row', () => {
+  it('tripwires a success claim whose latest execution errored', () => {
     const t = detectClaimLedgerMismatch('All 12 tests pass; shipping it.', [failedBash]);
     expect(t).not.toBeNull();
     expect(t!.kind).toBe('claim-ledger-mismatch');
@@ -73,13 +74,27 @@ describe('detectClaimLedgerMismatch (note says pass, ledger says exit 1)', () =>
 
   it('tripwires on ledger summary text ("exit code 1") when status was not stamped', () => {
     const t = detectClaimLedgerMismatch('build green, done', [
-      { toolName: 'Bash', status: null, summary: 'npm run build → exit code 1' },
+      { toolName: 'Bash', status: null, summary: '$ npm run build → exit code 1' },
     ]);
     expect(t).not.toBeNull();
   });
 
+  it('the iterate-until-green turn stays clean: latest run ok, earlier run failed', () => {
+    expect(detectClaimLedgerMismatch('all tests pass', [cleanBash, failedBash])).toBeNull();
+  });
+
+  it('a claimed pass with an old failure and NO re-run still trips (Read/Edit ok does not attest)', () => {
+    const t = detectClaimLedgerMismatch('all tests pass', [okRead, failedBash]);
+    expect(t).not.toBeNull();
+    expect(t!.evidence).toEqual([failedBash]);
+  });
+
   it('a clean ledger never tripwires', () => {
     expect(detectClaimLedgerMismatch('all tests pass', [cleanBash])).toBeNull();
+  });
+
+  it('no execution at all in the window → no tripwire (unverifiable, not dishonest)', () => {
+    expect(detectClaimLedgerMismatch('all tests pass', [okRead])).toBeNull();
   });
 
   it('a note with NO success claim never tripwires, whatever the ledger says', () => {
@@ -95,7 +110,7 @@ describe('detectClaimLedgerMismatch (note says pass, ledger says exit 1)', () =>
   it('evidence is capped at 3 rows', () => {
     const t = detectClaimLedgerMismatch(
       'typecheck clean',
-      Array.from({ length: 10 }, (_, i) => ({ toolName: 'Bash', status: 'error', summary: `run ${i}` })),
+      Array.from({ length: 10 }, (_, i) => ({ toolName: 'Bash', status: 'error', summary: `$ run ${i}` })),
     );
     expect(t!.evidence).toHaveLength(3);
   });
