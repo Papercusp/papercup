@@ -1,30 +1,31 @@
 // @vitest-environment jsdom
-// PotStatusStrip — operator-chat-sidebar-revival-2026-07-13 P-018 (variant A).
-// Pins the strip/panel contract: ambient strip from overwatch.snapshot +
-// overwatch.liveness; the heavier mugBrief.floorView fetched ONLY while the
-// panel is expanded; panel sections render the floor projection.
+// PotStatusStrip — operator-chat-sidebar-revival-2026-07-13 P-018 (variant A),
+// slimmed by WI-4778: the strip is the ambient one-line digest ONLY (snapshot +
+// liveness); its click opens the full-height Pot Health view (?opcv=pot — the
+// fold-out panel and its mugBrief.floorView fetch are gone; PotHealthPane owns
+// the detail surface and its own tests).
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  potOpen: false,
-  setPotOpen: vi.fn(),
+  setView: vi.fn(),
   queries: {} as Record<string, { data?: unknown[]; enabled?: boolean }>,
+  queryNames: [] as string[],
 }));
 
 vi.mock('nuqs', () => ({
-  useQueryState: () => [h.potOpen, h.setPotOpen],
-  parseAsBoolean: { withDefault: () => ({}) },
+  useQueryState: () => ['chat', h.setView],
+  parseAsStringEnum: () => ({ withDefault: () => ({}) }),
 }));
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string; enabled?: boolean }) => {
-    h.queries[opts.queryName] = { ...(h.queries[opts.queryName] ?? {}), enabled: opts.enabled ?? true };
+    h.queryNames.push(opts.queryName);
     if (opts.enabled === false) return { data: undefined };
     return { data: h.queries[opts.queryName]?.data };
   },
 }));
 
-import { PotStatusStrip, compactAge, compactCount } from './PotStatusStrip';
+import { PotStatusStrip, compactAge, compactCount, splitLeadingWi } from './PotStatusStrip';
 
 const NOW = Date.now();
 
@@ -55,40 +56,11 @@ function seedSnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function seedFloor() {
-  h.queries['mugBrief.floorView'] = {
-    data: [
-      {
-        potSlug: 'papercusp',
-        computedAt: NOW,
-        cups: [
-          { id: 'cup-a49e', doing: 'WI-4662 fleet-spec live e2e verify', load: 2, alive: true },
-          { id: 'cup-12d7', doing: null, load: 0, alive: false },
-        ],
-        frontier: [
-          { id: 'WI-4665', title: 'Durable CTRL anchor', view: 'work-item', harness: 'papercusp' },
-        ],
-        frontierTotal: 3,
-        frontierBlocked: 2,
-        frontierQuarantined: 1,
-        openPlacements: { recovering: 1, stranded: 0, workingTracked: 2 },
-        escalations: [{ id: 'escalation:m1', severity: 'critical', summary: 'WI-4655 stranded' }],
-        steering: {
-          directive: 'Focus the sidebar revival',
-          pauseNewWork: false,
-          pausedUntil: null,
-          eligiblePlans: ['operator-chat-sidebar-revival'],
-        },
-      },
-    ],
-  };
-}
-
-describe('PotStatusStrip (P-018 variant A)', () => {
+describe('PotStatusStrip (P-018 variant A, WI-4778 strip-only)', () => {
   beforeEach(() => {
-    h.potOpen = false;
-    h.setPotOpen.mockClear();
+    h.setView.mockClear();
     h.queries = {};
+    h.queryNames = [];
   });
   afterEach(() => cleanup());
 
@@ -117,9 +89,7 @@ describe('PotStatusStrip (P-018 variant A)', () => {
     // aria-label carry the honest total.
     expect(screen.getByText('99+')).toBeTruthy();
     expect(screen.getByTitle('269 need you').textContent).toBe('99+ need you');
-    expect(
-      screen.getByRole('button', { name: /269 need you/ }),
-    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: /269 need you/ })).toBeTruthy();
   });
 
   it('renders nothing while both overwatch queries are cold', () => {
@@ -127,40 +97,17 @@ describe('PotStatusStrip (P-018 variant A)', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('does NOT fetch mugBrief.floorView while collapsed (enabled:false)', () => {
+  it('does NOT fetch mugBrief.floorView at all (WI-4778 — the fold-out panel is gone)', () => {
     seedSnapshot();
     render(<PotStatusStrip />);
-    expect(h.queries['mugBrief.floorView']?.enabled).toBe(false);
+    expect(h.queryNames).not.toContain('mugBrief.floorView');
   });
 
-  it('clicking the strip toggles the nuqs pot state', () => {
+  it('clicking the strip opens the Pot Health view (?opcv=pot — the 🫖 target, WI-4778)', () => {
     seedSnapshot();
     render(<PotStatusStrip />);
     fireEvent.click(screen.getByRole('button', { name: /pot status/i }));
-    expect(h.setPotOpen).toHaveBeenCalledWith(true);
-  });
-
-  it('expanded: fetches the floor and renders attention, cups, up-next, steering', () => {
-    seedSnapshot();
-    seedFloor();
-    h.potOpen = true;
-    render(<PotStatusStrip />);
-    expect(h.queries['mugBrief.floorView']?.enabled).toBe(true);
-    // attention: anomaly + escalation merged
-    expect(screen.getByText(/4 accounts at their 7-day wall/)).toBeTruthy();
-    expect(screen.getByText('WI-4655 stranded')).toBeTruthy();
-    // cups roster
-    expect(screen.getByText('cup-a49e')).toBeTruthy();
-    expect(screen.getByText('idle')).toBeTruthy();
-    // up next + honest footer (the recovering count is its own amber span —
-    // WI-4726 — so assert the footer's joined text content)
-    expect(screen.getByText('WI-4665')).toBeTruthy();
-    const foot = document.querySelector('.op-pot-foot');
-    expect(foot?.textContent).toBe('+2 more · 2 blocked · 1 quarantined · 1 recovering ↻');
-    // steering (the pause verdict is a <b> inside the fact span)
-    expect(screen.getByText(/Focus the sidebar revival/)).toBeTruthy();
-    const facts = document.querySelector('.op-pot-steer-facts');
-    expect(facts?.textContent).toContain('New work: allowed');
+    expect(h.setView).toHaveBeenCalledWith('pot');
   });
 });
 
@@ -182,5 +129,15 @@ describe('compactAge', () => {
     expect(compactAge(now - 5 * 86_400_000, now)).toBe('5d');
     expect(compactAge(null, now)).toBe('—');
     expect(compactAge('not-a-date', now)).toBe('—');
+  });
+});
+
+describe('splitLeadingWi', () => {
+  it('splits a leading work-item id off a doing line, passthrough otherwise', () => {
+    expect(splitLeadingWi('WI-4662 fleet-spec live e2e verify')).toEqual({
+      wi: 'WI-4662',
+      rest: 'fleet-spec live e2e verify',
+    });
+    expect(splitLeadingWi('idle sweep')).toEqual({ wi: null, rest: 'idle sweep' });
   });
 });

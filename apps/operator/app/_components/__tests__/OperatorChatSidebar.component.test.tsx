@@ -192,22 +192,45 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(titleRule).toContain('text-overflow: ellipsis');
   });
 
-  it('header identity follows the active rail pane: Mug on the queen tab, Papercup when the rail is not docked (WI-4739)', async () => {
-    // No docked rail (no has-left-sidebar on <body>) → Papercup identity.
-    const first = render(<OperatorChatSidebar />);
+  it('the header is ALWAYS the Papercup identity — no Mug/Kettle mark, even with a docked rail (WI-4778 reverts WI-4739)', async () => {
+    // Rail docked (the old WI-4739 trigger) → still Papercup: there is no
+    // Mug/Kettle chat to switch to; the 🫖 toggle shows their inputs instead.
+    document.body.classList.add('has-left-sidebar');
+    render(<OperatorChatSidebar />);
     await waitFor(() => {
       expect(document.body.classList.contains('has-op-chat')).toBe(true);
     });
     expect(screen.getByText('Papercup')).toBeTruthy();
-    first.unmount();
+    expect(screen.queryByText('Mug')).toBeNull();
+    expect(document.querySelector('.op-chat-header-mark')).toBeNull();
+  });
 
-    // Rail docked + default tab (queen) → the Mug mark + name take the header.
-    document.body.classList.add('has-left-sidebar');
+  it('the 🫖 toggle swaps the chat body for the full-height Pot Health view and back (WI-4778)', async () => {
     render(<OperatorChatSidebar />);
     await waitFor(() => {
-      expect(screen.getByText('Mug')).toBeTruthy();
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
     });
-    expect(document.querySelector('.op-chat-header-mark')).toBeTruthy();
+    // Default: the chat body renders, no pot-health region.
+    expect(screen.getByTestId('operator-chat')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Pot health' })).toBeNull();
+
+    const toggle = screen.getByRole('button', { name: 'Show pot health' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(toggle);
+
+    // 🫖 on: the pot view REPLACES the chat body (same pane, full height).
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: 'Pot health' })).toBeTruthy();
+    });
+    expect(screen.queryByTestId('operator-chat')).toBeNull();
+    const back = screen.getByRole('button', { name: 'Back to chat' });
+    expect(back.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(back);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('operator-chat')).toBeTruthy();
+    });
+    expect(screen.queryByRole('region', { name: 'Pot health' })).toBeNull();
   });
 
   it('the TTS speak-responses mute lives on the chat bar: hydrates, flips + persists, re-syncs on broadcast (WI-4740)', async () => {
