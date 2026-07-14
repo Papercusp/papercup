@@ -125,6 +125,20 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(headerRule).toContain('var(--left-sidebar-w, 0px)');
     expect(headerRule).toContain('var(--dev-rail-w, 0px)');
   });
+
+  it('the fixed sidebar sits below the dev env-switcher bar (WI-4729 clipped header orb)', async () => {
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    const sidebarRule = css.match(/\.op-chat-sidebar\s*\{[^}]*\}/)?.[0] ?? '';
+    // top: 0 hides the header orb under the fixed EnvSwitcherBar — the rail
+    // must use the published bar height, same as .pclsb/.pcdar/.pc-header.
+    expect(sidebarRule).toContain('top: var(--pc-env-bar-h, 0px)');
+  });
 });
 
 describe('OperatorChatSidebar collapse behavior', () => {
