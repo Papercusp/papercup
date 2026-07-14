@@ -26,6 +26,10 @@ import {
   type CodeRecipeRow,
 } from '../../code-recipes-store';
 import { searchSimilarRecipes, type SimilarRecipe } from '../../code-recipes-search';
+import {
+  deriveRecipeAuthority,
+  recipeAuthorityContextFromDescriptor,
+} from '../../recipe-authority';
 
 /** Stable kebab slug from a title (the recipe PRIMARY KEY). Matches the
  *  plans:apply-plan-block toKebab so recipe ids look like every other slug. */
@@ -212,6 +216,7 @@ export async function captureRecipe(
     // the run, so degrade to [].
     let similarRecipes: SimilarRecipe[] = [];
     try {
+      const sourceAuthority = await deriveRecipeAuthority(input.script);
       similarRecipes = await searchSimilarRecipes(
         deps.sql,
         {
@@ -221,6 +226,10 @@ export async function captureRecipe(
           embedding,
           excludeId: id,
           limit: 5,
+          recommendationContext: recipeAuthorityContextFromDescriptor(sourceAuthority, {
+            workspace: input.workspaceId,
+            harness: input.harness,
+          }),
         },
         { log },
       );

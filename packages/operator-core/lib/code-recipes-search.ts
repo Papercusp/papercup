@@ -27,6 +27,12 @@
  */
 import type postgres from 'postgres';
 import { runHybridSearch, type SearchSource, type SearchSourceParams, type Listing } from '@papercusp/search';
+import {
+  buildRecipeAuthorityRecommendation,
+  type RecipeAuthorityContext,
+  type RecipeAuthorityProof,
+  type RecipeAuthorityRefs,
+} from './recipe-authority';
 
 /**
  * EI-9312: bound the ACTUAL per-query embed call, not just the embedder's
@@ -109,6 +115,10 @@ export interface SimilarRecipe {
   toolsUsed: string[];
   /** Blended 0..1 similarity (fused hybrid score normalized + tool-set Jaccard). */
   similarity: number;
+  /** Content-revision + matched context. Pass this unchanged to recipes:run. */
+  authority: RecipeAuthorityProof;
+  /** The concrete entity bindings derived from the current stored script. */
+  authorityRefs: RecipeAuthorityRefs;
 }
 
 export interface SearchSimilarRecipesInput {
@@ -122,6 +132,9 @@ export interface SearchSimilarRecipesInput {
   excludeId?: string;
   /** Top-N to return (default 5). */
   limit?: number;
+  /** Live/source context used as a HARD recommendation filter. A recipe with
+   * concrete entity refs is omitted unless every ref is present here. */
+  recommendationContext?: RecipeAuthorityContext;
 }
 
 /** Jaccard overlap of two tool-sets — |A∩B| / |A∪B|, 0 when both empty. */
@@ -165,7 +178,10 @@ export async function searchSimilarRecipes(
       ? async () => input.embedding as number[]
       : (deps.embedder ?? null);
 
-  // Over-fetch so the exclude + structural re-rank have headroom before top-N.
+  // Over-fetch so the exclude + structural re-rank + HARD entity filter have
+  // headroom before top-N. Still bounded: recommendation reads never inspect
+  // more than 100 candidates.
+  const searchLimit = Math.min(100, Math.max(limit + (input.excludeId ? 1 : 0) + 5, limit * 8 + 20));
   const { results } = await runHybridSearch([codeRecipesSource], {
     sql,
     query,
@@ -173,7 +189,7 @@ export async function searchSimilarRecipes(
     // codeRecipesSource ignores them — pass non-filtering placeholders.
     workspaceId: '',
     scopeFilter: null,
-    limit: limit + (input.excludeId ? 1 : 0) + 5,
+    limit: searchLimit,
     mode: 'hybrid',
     embedder,
     embedTimeoutMs: RECIPE_EMBED_CALL_TIMEOUT_MS,
@@ -186,15 +202,17 @@ export async function searchSimilarRecipes(
   const ids = results.map((r) => r.source_id).filter((id) => id !== input.excludeId);
   if (ids.length === 0) return [];
   const metaRows = (await sql`
-    SELECT id, title, description, run_count, tools_used
+    SELECT id, title, description, script, run_count, tools_used, updated_at
       FROM harness_shared.code_recipes
      WHERE id = ANY(${ids})
   `) as unknown as Array<{
     id: string;
     title: string;
     description: string;
+    script: string;
     run_count: number | string;
     tools_used: string[] | null;
+    updated_at: Date | string;
   }>;
   const metaById = new Map(metaRows.map((m) => [m.id, m]));
 
@@ -208,6 +226,14 @@ export async function searchSimilarRecipes(
     const normalizedFused = maxFused > 0 ? hit.score / maxFused : 0;
     const overlap = jaccard(input.toolsUsed, meta.tools_used ?? []);
     const similarity = (normalizedFused + overlap) / 2;
+    const authority = await buildRecipeAuthorityRecommendation({
+      script: meta.script,
+      updatedAt: typeof meta.updated_at === 'string' ? meta.updated_at : meta.updated_at.toISOString(),
+      context: input.recommendationContext,
+    });
+    // P-008: semantic similarity is never authority. Opaque, stale-unverifiable,
+    // or entity-mismatched recipes fail CLOSED and are not recommendations.
+    if (!authority) continue;
     blended.push({
       id: meta.id,
       title: meta.title,
@@ -215,6 +241,8 @@ export async function searchSimilarRecipes(
       runCount: typeof meta.run_count === 'number' ? meta.run_count : parseInt(meta.run_count, 10),
       toolsUsed: meta.tools_used ?? [],
       similarity,
+      authority: authority.proof,
+      authorityRefs: authority.refs,
     });
   }
 
