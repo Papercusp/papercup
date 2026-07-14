@@ -385,6 +385,29 @@ export function deriveContinuation(
   };
 }
 
+/**
+ * Derive JUST the {@link CarryDocContinuation} for a session's own transcript —
+ * the verbatim tail read + per-turn provenance stamp ({@link classifyRecordedTurn})
+ * + {@link deriveContinuation} — WITHOUT the rest of the carry-doc assembly
+ * (modes / plan-items / asks / brief rebuild). session:request-compaction uses
+ * this to surface the P-010 open-owner-question warn on its hot path without
+ * paying for a whole {@link buildCarryDoc}. Best-effort by construction: an
+ * unreadable/absent transcript yields an empty tail ⇒ `{ lastOwnerMessage:null,
+ * answered:true }` (nothing open), so a caller's warn stays SILENT rather than
+ * firing blind on a read miss.
+ */
+export async function deriveSessionContinuation(opts: {
+  transcriptPath?: string | null;
+  transcriptSourceKind?: 'claude' | 'omp' | 'codex';
+  boundaryDeliberate?: boolean;
+}): Promise<CarryDocContinuation> {
+  const tail = await defaultGetTail({
+    transcriptPath: opts.transcriptPath ?? undefined,
+    transcriptSourceKind: opts.transcriptSourceKind,
+  });
+  return deriveContinuation(tail.slice(-CARRY_DOC_MAX_TAIL_TURNS), opts.boundaryDeliberate ?? false);
+}
+
 export interface OpenOwnerQuestionGate {
   /** True when a DELIBERATE compaction/handoff would cross an UNANSWERED owner
    *  message — the boundary the consumer must refuse once. A distinct, SEMANTIC

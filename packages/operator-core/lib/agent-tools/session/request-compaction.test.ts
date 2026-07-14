@@ -38,6 +38,15 @@ vi.mock('../../carry-brief', async () => {
 });
 const emptyBrief = { ownerId: 'su-caller', loop: null, heldItems: [], walls: [], facts: [], awaits: [], fleet: null };
 
+// deterministic-context-carry P-010: the open-owner-question WARN reads the
+// session continuation. Mock the derive so tests drive the open/answered branch;
+// keep the REAL gateOpenOwnerQuestion so the gate logic is exercised honestly.
+const deriveSessionContinuation = vi.fn();
+vi.mock('../../carry-doc', async () => {
+  const actual = await vi.importActual<typeof import('../../carry-doc')>('../../carry-doc');
+  return { ...actual, deriveSessionContinuation: (...a: unknown[]) => deriveSessionContinuation(...a) };
+});
+
 const tool = (await import('./request-compaction')).default;
 
 type Out = { content: { text: string }[]; isError?: boolean };
@@ -67,6 +76,9 @@ beforeEach(() => {
   __resetRefusalMarkers(); // P-016 gate marker is module-level — isolate each test
   injectIntoHost.mockResolvedValue(true);
   buildCarryBrief.mockResolvedValue(emptyBrief);
+  // Default: nothing open (mirrors the real no-transcript fallback), so the WARN
+  // stays silent in every unrelated test; the P-010 suite overrides per-case.
+  deriveSessionContinuation.mockResolvedValue({ lastOwnerMessage: null, answered: true, deliberate: true });
   provDir = mkdtempSync(join(tmpdir(), 'reqcomp-prov-'));
   process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provDir;
 });
@@ -400,6 +412,70 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(second.requested).toBe(true);
     expect(second.mechanicalFallback).toBeDefined();
     expect(second.staleCheckpoints).toEqual([{ id: 'WI-9', title: null, reason: 'missing' }]);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * deterministic-context-carry-2026-07-14 P-010: a DELIBERATE self-compaction that
+ * would cross an UNANSWERED owner message is surfaced WARN-ONLY — never a block.
+ * The gate itself (gateOpenOwnerQuestion, carry-doc.ts) is pure and unit-tested
+ * there; this asserts the WIRING — the warn appears (field + note) when the owner
+ * message is open, stays silent when answered/absent, always passes
+ * boundaryDeliberate:true, and NEVER blocks the compaction (a hard refuse would
+ * strand: a retry cannot answer the owner for you). The REAL gate runs; only the
+ * continuation derivation is mocked.
+ */
+describe('session:request-compaction — P-010 open-owner-question WARN (warn-only)', () => {
+  beforeEach(() => {
+    findLiveHost.mockReturnValue(compactHost);
+    injectIntoHost.mockResolvedValue(true);
+    buildCarryBrief.mockResolvedValue(emptyBrief);
+  });
+
+  it('an OPEN (unanswered) owner message at this deliberate boundary → openOwnerQuestion:true + a warn note, compaction STILL queued', async () => {
+    deriveSessionContinuation.mockResolvedValue({
+      lastOwnerMessage: { text: 'ship the release when green', ts: null },
+      answered: false,
+      deliberate: true,
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.openOwnerQuestion).toBe(true);
+    expect(b.note).toContain('open-owner-question');
+    // Warn-only: the compaction was NOT blocked and still auto-continues.
+    expect(b.ok).toBe(true);
+    expect(b.requested).toBe(true);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+    // A self-compaction is a DELIBERATE boundary — the wiring must say so.
+    expect(deriveSessionContinuation).toHaveBeenCalledWith(
+      expect.objectContaining({ boundaryDeliberate: true }),
+    );
+  });
+
+  it('an ANSWERED owner message → no warn (openOwnerQuestion:false), compaction proceeds clean', async () => {
+    deriveSessionContinuation.mockResolvedValue({
+      lastOwnerMessage: { text: 'ship it', ts: null },
+      answered: true,
+      deliberate: true,
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.openOwnerQuestion).toBe(false);
+    expect(b.note).not.toContain('open-owner-question');
+    expect(b.ok).toBe(true);
+  });
+
+  it('no owner turn in the recent tail → no warn', async () => {
+    deriveSessionContinuation.mockResolvedValue({ lastOwnerMessage: null, answered: true, deliberate: true });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.openOwnerQuestion).toBe(false);
+    expect(b.note).not.toContain('open-owner-question');
+  });
+
+  it('deriveSessionContinuation throwing never blocks the compaction (the warn fails soft)', async () => {
+    deriveSessionContinuation.mockRejectedValue(new Error('transcript unreadable'));
+    const b = body(await call({ focus: 'x' }));
+    expect(b.openOwnerQuestion).toBe(false);
+    expect(b.ok).toBe(true);
     expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 });

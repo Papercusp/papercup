@@ -233,14 +233,36 @@ export default defineTool({
     // the server-mediated write-time flush that works for EVERY client
     // (claude/omp/codex), no PreCompact hook required. Fail-soft: the 2-min
     // ingest tick + the read-time self live-tail (D-002) cover any miss.
+    let self: Awaited<
+      ReturnType<typeof import('../../search/self-session').resolveSelfSession>
+    > | null = null;
     try {
       const { resolveSelfSession } = await import('../../search/self-session');
-      const self = await resolveSelfSession(identity.ownerId);
+      self = await resolveSelfSession(identity.ownerId);
       if (self) {
         const { ingestFileNow } = await import('../../search/session-ingest');
         await ingestFileNow(self.filePath);
       }
     } catch { /* best-effort */ }
+    // P-010 open-owner-question WARN (deterministic-context-carry-2026-07-14):
+    // a DELIBERATE self-compaction that would cross an UNANSWERED owner message
+    // is surfaced — WARN-ONLY, never a block. A hard refuse would STRAND (a
+    // retry cannot answer the owner for you), and it could fire spuriously if a
+    // machine turn were mis-stamped owner-typed; warn-only carries the same
+    // signal with none of that risk. The message is never lost regardless: the
+    // fresh context opens on the tail, and the P-018 respawn path delivers it as
+    // the successor's first prompt. Best-effort — a tail-read miss stays silent
+    // (deriveSessionContinuation returns "nothing open"), never blind-fires.
+    let openOwnerQuestion = false;
+    try {
+      const { deriveSessionContinuation, gateOpenOwnerQuestion } = await import('../../carry-doc');
+      const cont = await deriveSessionContinuation({
+        transcriptPath: self?.filePath,
+        transcriptSourceKind: self?.sourceKind,
+        boundaryDeliberate: true,
+      });
+      openOwnerQuestion = gateOpenOwnerQuestion(cont).crossesOpenOwnerMessage;
+    } catch { /* best-effort — the warn must never break a compaction */ }
     const canAutoContinue = autoContinue && hostSupports(host, 'compact');
     // turn-provenance P-002 (turn-provenance-owner-vs-agent-2026-07-11): the
     // continuation note is typed into the PTY after the compaction turn ends —
@@ -289,6 +311,13 @@ export default defineTool({
               : ''
           }`
         : '';
+    // P-010 warn-only: appended alongside the flush-integrity note, never a block.
+    const openQuestionNote =
+      ok && openOwnerQuestion
+        ? " ⚠ open-owner-question: your owner's final message looks UNANSWERED at this DELIBERATE" +
+          ' boundary. It is NOT lost — the fresh context opens on the tail, and a respawn would' +
+          ' deliver it as your first prompt — but if you have room, answer it before you stop.'
+        : '';
     // WI-3801 lint + P-014 turn-ref verification/origin stamp over the two
     // free-text carry hints this call writes (focus always; continueNote only
     // when the caller passed one explicitly — the synthesized
@@ -306,6 +335,7 @@ export default defineTool({
             requested: ok,
             autoContinue: ok ? canAutoContinue : false,
             staleCheckpoints,
+            openOwnerQuestion,
             ...(gate.verdict === 'mechanical-fallback' && gate.fallback
               ? { mechanicalFallback: gate.fallback }
               : {}),
@@ -319,7 +349,9 @@ export default defineTool({
                       autoContinue
                         ? ' (This host predates auto-continue, so it will NOT resume on its own — a loop/AUTO wake or your next turn picks the work back up.)'
                         : ''
-                    }`) + staleNote,
+                    }`) +
+              staleNote +
+              openQuestionNote,
           }),
         },
       ],
