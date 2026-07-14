@@ -149,6 +149,14 @@ const columns: ColumnDef<ClaimAttemptDisplayRow>[] = [
 
 export function ClaimAttemptTimeline(props: ClaimAttemptTimelineProps): ReactNode {
   const attempts = props.attempts ?? [];
+  // Single source of truth for "this row matches the highlight filter" — drives
+  // BOTH the visual bg (getRowBg) and the stable data-highlighted attribute the
+  // tests assert on. Asserting the highlight DECISION via a data-* flag keeps the
+  // test independent of whether jsdom/cssstyle round-trips the color-mix() bg
+  // value through the CSSOM `style` attribute (it varies by version — the cause
+  // of EI-10457's env-flaky red).
+  const isHighlighted = (row: ClaimAttemptDisplayRow): boolean =>
+    props.highlightOutcome !== undefined && row.outcome === props.highlightOutcome;
   return (
     <div data-testid="claim-attempt-timeline" style={WRAP}>
       <div style={HEADER}>
@@ -169,10 +177,11 @@ export function ClaimAttemptTimeline(props: ClaimAttemptTimelineProps): ReactNod
             getRowId={(row) => String(row.id)}
             rowMinHeight={32}
             headerHeight={32}
-            getRowBg={(row) => props.highlightOutcome !== undefined && row.outcome === props.highlightOutcome ? 'color-mix(in oklab, var(--accent), transparent 92%)' : undefined}
+            getRowBg={(row) => isHighlighted(row) ? 'color-mix(in oklab, var(--accent), transparent 92%)' : undefined}
             rowProps={({ row }) => ({
               'data-testid': `claim-attempt-row-${row.id}`,
               'data-outcome': row.outcome,
+              'data-highlighted': isHighlighted(row) ? 'true' : 'false',
             })}
           />
         </div>

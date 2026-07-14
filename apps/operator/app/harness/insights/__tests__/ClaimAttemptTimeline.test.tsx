@@ -111,9 +111,15 @@ describe('ClaimAttemptTimeline — rendered rows', () => {
     );
     const r1 = screen.getByTestId('claim-attempt-row-1');
     const r2 = screen.getByTestId('claim-attempt-row-2');
-    // The highlighted row should carry a distinct background from the base grid row.
-    expect(r2.getAttribute('style') ?? '').toContain('color-mix(in oklab, var(--accent), transparent 92%)');
-    expect(r1.getAttribute('style') ?? '').not.toContain('color-mix(in oklab, var(--accent), transparent 92%)');
+    // The matching row is flagged for the highlight styling. We assert the
+    // highlight DECISION via the stable `data-highlighted` attribute rather than
+    // reading a color-mix() value back out of the serialized inline `style`:
+    // jsdom/cssstyle round-trips color-mix() inconsistently across versions,
+    // which dropped the bg value on some fleet machines and made the CSS-string
+    // assertion env-flaky (EI-10457). The attribute and getRowBg share one
+    // predicate, so this still guards the highlight wiring.
+    expect(r2.getAttribute('data-highlighted')).toBe('true');
+    expect(r1.getAttribute('data-highlighted')).toBe('false');
   });
 
   it('renders an em-dash for ts=0 (defensive)', () => {
