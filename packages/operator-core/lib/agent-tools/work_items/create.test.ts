@@ -124,6 +124,34 @@ describe('work_items:create handler (keyed-array)', () => {
     expect(createM).toHaveBeenCalledWith(expect.objectContaining({ title: 'a', harness: 'h-default' }), expect.anything());
   });
 
+  it('threads explicit routing intent + cadence through single and bulk creates', async () => {
+    await body({
+      kind: 'task',
+      title: 'daily digest',
+      routing_intent: 'schedule-recurrence',
+      cadence: 'daily at 09:00',
+    });
+    expect(createM).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        routing_intent: 'schedule-recurrence',
+        cadence: 'daily at 09:00',
+      }),
+      expect.anything(),
+    );
+
+    await body({
+      items: [{
+        kind: 'task',
+        title: 'release alert',
+        routing_intent: 'watch-alert',
+      }],
+    });
+    expect(createM).toHaveBeenLastCalledWith(
+      expect.objectContaining({ routing_intent: 'watch-alert' }),
+      expect.anything(),
+    );
+  });
+
   it('a mirror-duplicate fails only that item (carries error + existing), batch still runs', async () => {
     createM.mockImplementation(async (spec: { title: string }) =>
       spec.title === 'dup'
@@ -174,6 +202,21 @@ describe('work_items:create — body/summary alias + strict (WI-4492)', () => {
 
     it('REJECTS an unknown field inside items:[…]', () => {
       expect(() => parse({ items: [{ kind: 'bug', title: 'x', bogus: 1 }] })).toThrow();
+    });
+
+    it('REJECTS an explicit schedule intent without cadence in either arity', () => {
+      expect(() => parse({
+        kind: 'task',
+        title: 'digest',
+        routing_intent: 'schedule-recurrence',
+      })).toThrow(/cadence is required/i);
+      expect(() => parse({
+        items: [{
+          kind: 'task',
+          title: 'digest',
+          routing_intent: 'schedule-recurrence',
+        }],
+      })).toThrow(/cadence is required/i);
     });
   });
 });

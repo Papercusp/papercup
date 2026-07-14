@@ -56,7 +56,7 @@ export interface RoutingGateMatchInput {
 
 const SCHEDULE_ACTIONS = [
   'schedule', 'send', 'run', 'generate', 'publish', 'deliver', 'email',
-  'post', 'execute', 'repeat', 'do ',
+  'post', 'execute', 'repeat',
 ] as const;
 const SCHEDULE_CADENCES = [
   'daily', 'weekly', 'nightly', 'every day', 'every week', 'on a schedule',
@@ -169,7 +169,7 @@ export function matchRoutingGateHint(
   const scheduleAction = SCHEDULE_ACTIONS.find((kw) => hay.includes(kw));
   const scheduleCadence = SCHEDULE_CADENCES.find((kw) => hay.includes(kw));
   if (scheduleAction && scheduleCadence) {
-    const row = ROUTING_GATE_ROWS[0];
+    const row = ROUTING_GATE_ROWS.find((candidate) => candidate.id === 'schedule-recurrence')!;
     return {
       row: row.id,
       mechanism: row.mechanism,
