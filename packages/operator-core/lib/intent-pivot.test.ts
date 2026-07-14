@@ -1,6 +1,6 @@
 /** P-015 (deterministic-context-carry) — mechanical pivot detection between
  *  consecutive declared intents (D-006: extractive embedding use only). */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   PIVOT_EMBED_MAX_SIM,
   cosineSimilarity,
@@ -71,12 +71,19 @@ describe('detectIntentPivot', () => {
     expect(r?.method).toBe('lexical');
     expect(r?.pivot).toBe(true);
 
-    const slow = await detectIntentPivot(
-      'debug the mac VM loginwindow SPICE handshake',
-      'ship the beta release-history analytics page',
-      { embed: () => new Promise(() => {}), timeoutMs: 50 },
-    );
-    expect(slow?.method).toBe('lexical');
+    // The deadline path warns by design (bounded-timeout's disclosure) — that
+    // expected warn must not trip the fail-on-console rule.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const slow = await detectIntentPivot(
+        'debug the mac VM loginwindow SPICE handshake',
+        'ship the beta release-history analytics page',
+        { embed: () => new Promise(() => {}), timeoutMs: 50 },
+      );
+      expect(slow?.method).toBe('lexical');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('lexical method: same-plan progression is NOT a pivot', async () => {

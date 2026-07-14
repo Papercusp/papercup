@@ -372,7 +372,12 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
-      getPresence.mockImplementationOnce(() => new Promise<never>(() => {})); // return-payload read wedged
+      // Both getPresence reads wedged: the P-015 prev-intent capture (before
+      // writePresence) and the return-payload read. Each is independently
+      // bounded — the declaration still lands, presence degrades to null.
+      getPresence
+        .mockImplementationOnce(() => new Promise<never>(() => {}))
+        .mockImplementationOnce(() => new Promise<never>(() => {}));
       const p = tool.handler({ intent: 'work' }, ctx);
       await vi.advanceTimersByTimeAsync(40_000);
       const res = parse(await p);

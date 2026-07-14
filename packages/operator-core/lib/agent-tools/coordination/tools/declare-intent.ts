@@ -310,14 +310,15 @@ export default defineTool({
         (async () => {
           if (!prevIntent) return null;
           const { detectIntentPivot } = await import('../../../intent-pivot');
-          let embed: ((text: string) => Promise<number[]>) | undefined;
-          try {
+          // Lazy embedder: resolved only if the comparison actually runs (the
+          // short/identical-intent short-circuits never pay for it). An
+          // unresolvable/disabled embedder throws → lexical fallback inside.
+          const embed = async (text: string): Promise<number[]> => {
             const { resolveBackfillEmbedder } = await import('../../../search/embed-backfill');
             const resolved = await resolveBackfillEmbedder();
-            if (resolved.mode !== 'disabled') embed = resolved.embed;
-          } catch {
-            /* lexical fallback */
-          }
+            if (resolved.mode === 'disabled') throw new Error('embedder disabled');
+            return resolved.embed(text);
+          };
           return detectIntentPivot(prevIntent, args.intent, { embed });
         })(),
         { fallback: null, timeoutMs: 2_500, label: 'declare-intent:pivot' },
