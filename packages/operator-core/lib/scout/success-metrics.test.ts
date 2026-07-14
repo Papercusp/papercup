@@ -154,7 +154,35 @@ describe('evaluateProgramSuccess — cycle error rate', () => {
     ];
     const r = evaluateProgramSuccess(inputs(ticks, []));
     expect(bar(r, 'cycle-error-rate').status).toBe('fail');
-    expect(bar(r, 'cycle-error-rate').observed).toContain('1 error ticks / 13 total');
+    expect(bar(r, 'cycle-error-rate').observed).toContain('1 error ticks / 13 cycle ticks');
+  });
+
+  it('EXCLUDES gated self-veto ticks from the denominator — the rate is over CYCLES, not all ticks (EI-11418)', () => {
+    // The live false-pass: 1 genuine error among 13 CYCLE ticks is 7.7% (>5% => FAIL), but a quiet
+    // window padded with gated self-vetoes (min-interval/no-trigger/no-signal/circuit/no-capacity)
+    // dilutes 1/33 to 3.0% and FALSE-PASSES. A gated tick is a decision NOT to run a cycle — it is
+    // not a cycle and must not be in the error-rate denominator. Red on the buggy /totalTicks math,
+    // green on the fixed /cycleTicks math.
+    const ticks: ScoutTickRecord[] = [
+      ...[...Array(12)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } })),
+      {
+        status: 'error',
+        detail: { cycleId: 'scout-err', error: 'Scout cycle timed out after 600000ms during phase ideate' },
+      },
+      ...[...Array(20)].map((): ScoutTickRecord => ({ status: 'gated', gate: 'min-interval' })),
+    ];
+    const r = evaluateProgramSuccess(inputs(ticks, []));
+    expect(bar(r, 'cycle-error-rate').status).toBe('fail');
+    // Denominator is the 13 CYCLE ticks (12 ran + 1 errored), not the 33 total ticks in the window.
+    expect(bar(r, 'cycle-error-rate').observed).toContain('1 error ticks / 13 cycle ticks');
+    expect(r.window.ticks).toBe(33);
+  });
+
+  it('a window of ONLY gated ticks is UNKNOWN — no cycle got a fair shot, so no error-rate denominator', () => {
+    const ticks: ScoutTickRecord[] = [...Array(15)].map((): ScoutTickRecord => ({ status: 'gated', gate: 'no-capacity' }));
+    const r = evaluateProgramSuccess(inputs(ticks, []));
+    expect(bar(r, 'cycle-error-rate').status).toBe('unknown');
+    // The old /totalTicks math would have read 0/15 = 0% and PASSED — a false green on zero cycles.
   });
 });
 

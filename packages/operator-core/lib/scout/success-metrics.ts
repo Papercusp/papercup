@@ -249,7 +249,19 @@ export function evaluateProgramSuccess(
   // capacity gate is reported alongside so the pressure stays VISIBLE rather
   // than reclassified out of sight: a high no-capacity count with a green error bar is a real
   // and actionable signal (the loop is healthy but the account pool is starved).
-  const errorRate = report.totalTicks > 0 ? report.errorTicks / report.totalTicks : null;
+  // The denominator is CYCLE ticks — the ticks where a cycle actually fired (ran + genuine
+  // error) — NOT every tick in the window. A GATED tick (min-interval / no-trigger / no-signal /
+  // circuit / no-capacity) is a decision NOT to run a cycle, and a capacity failure is a pool
+  // ceiling the rubric requires "classified separately as no-capacity" — neither is a cycle that
+  // got a fair shot, so both are excluded from BOTH the numerator (errorTicks already excludes
+  // reclassified capacity) and this denominator. Dividing genuine errors by ALL ticks silently
+  // DILUTES the rate: a quiet window padded with self-veto ticks turns a real >5% cycle-failure
+  // rate into a sub-5% FALSE PASS. This was live (EI-11418): 5 genuine timeout errors among 81
+  // cycle ticks is 6.2% and correctly FAILS, but /107 total ticks (18 of them gated) reads 4.7%
+  // and passed. windowCycles (status='ran') + errorTicks (genuine, post no-capacity
+  // reclassification) is exactly the set of cycles this bar judges.
+  const cycleTicks = report.windowCycles + report.errorTicks;
+  const errorRate = cycleTicks > 0 ? report.errorTicks / cycleTicks : null;
   const noCapacity = report.gatedTickBreakdown['no-capacity'] ?? 0;
   const capacityNote =
     noCapacity > 0 ? ` — plus ${noCapacity} cycle(s) withheld by the no-capacity gate (pool starved, not broken)` : '';
@@ -259,12 +271,12 @@ export function evaluateProgramSuccess(
     ...(errorRate === null
       ? {
           status: 'unknown' as const,
-          observed: 'no ticks in the window',
-          unknownReason: 'empty tick window — no denominator',
+          observed: `no cycle ran or errored in the window (${report.totalTicks} tick(s), all gated)${capacityNote}`,
+          unknownReason: 'empty cycle window — no cycle got a fair shot, so there is no error-rate denominator',
         }
       : {
           status: (errorRate < maxErrorRate ? 'pass' : 'fail') as SuccessStatus,
-          observed: `${report.errorTicks} error ticks / ${report.totalTicks} total = ${pct(errorRate)}${capacityNote}`,
+          observed: `${report.errorTicks} error ticks / ${cycleTicks} cycle ticks (ran + errored) = ${pct(errorRate)}${capacityNote}`,
         }),
   });
 
