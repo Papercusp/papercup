@@ -27,6 +27,10 @@ const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea, getScoutLensOutcomes
   await import('./routed-ledger');
 const invalidate = vi.mocked((await import('../sync-sse')).notifySyncInvalidate);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+// EI-11978: prove the aged-out win is genuinely OUTSIDE the raw feed window, so
+// the recovered 'won' can only come from the ref-scoped augmentation.
+const { gatherCompletions } = await import('../curation/change-feed');
+const { buildChangeFeedReaders } = await import('../curation/change-feed-deps');
 
 const WS = 'ws-scout-ledger-test';
 const HARNESS = 'papercup';
@@ -349,6 +353,75 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       const rows = await db.adminSql<{ target_hive: string | null }[]>`
         SELECT target_hive FROM harness_shared.scout_routed_ideas WHERE idea_id = 'i-selfhive'`;
       expect(rows[0]?.target_hive).toBeNull();
+    });
+  });
+
+  // ── EI-11978: scout lens-weight DURABILITY. refreshScoutOutcomes recomputes
+  //    lens weights LIVE from the Change Feed each cycle. The feed's completion
+  //    readers are each a top-500 recency window (change-feed-deps.ts), so a scout
+  //    idea whose winning artifact has since aged past that window is no longer
+  //    joinable → classifyIdeaOutcome returns 'pending' → upsertScoutLensWeights
+  //    OVERWRITES the persisted weights back toward uniform. su-ideate-learning-
+  //    substrate P-016 fixed this exact window problem for origin='su-ideate' via
+  //    a ledger-ref-scoped terminal read, but that was gated to su; scout never
+  //    got it. gatherCompletionsForOrigin now folds scout's ref-scoped, WINDOW-FREE
+  //    winning terminals into the completions join, so an aged-out win stays 'won'.
+  //    Runs LAST — it seeds 520 filler completions that would perturb the count-
+  //    sensitive outcome tests above.
+  describe('EI-11978: aged-out scout wins stay durable (ref-scoped, window-free)', () => {
+    const CYCLE = 'ei-11978-aged';
+    const AGED_TS = Date.parse('2026-01-01T00:00:00Z'); // older than every filler
+    const FILLER_BASE = Date.parse('2026-07-01T00:00:00Z'); // all strictly newer
+
+    beforeAll(async () => {
+      const sql = db.adminSql;
+      // The aged scout win: a winning work-item WITH the WI-1403/WI-1405
+      // completion-integrity pair (so it qualifies for the feed), but OLD.
+      await sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (workspace_id, harness_slug, feature_id, title, status, updated_ts,
+           terminal_owner, terminal_completion_ref)
+        VALUES
+          (${WS}, ${HARNESS}, 'F-AGED-WIN', 'aged scout win', 'passed', ${AGED_TS},
+           'agent-x', 'landed in PR #99')`;
+      // 520 NEWER winning completions (integrity-paired, but routed by NO scout
+      // idea) — they fill the feed's top-500 window and push F-AGED-WIN out of it.
+      await sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (workspace_id, harness_slug, feature_id, title, status, updated_ts,
+           terminal_owner, terminal_completion_ref)
+        SELECT ${WS}, ${HARNESS}, 'F-FILLER-' || g, 'filler ' || g, 'passed',
+               (${FILLER_BASE}::bigint + g), 'filler-owner', 'filler-ref'
+          FROM generate_series(1, 520) AS g`;
+      // A scout idea routing a UNIQUE lens to the aged win, on a fresh cycle so
+      // this assertion is fully isolated from the shared fixture above.
+      await recordRoutedIdea({
+        ideaId: 'i-aged-win', lens: 'constraint-removal', rail: 'improvement',
+        routedRef: 'wi:F-AGED-WIN', harnessSlug: HARNESS, cycleId: CYCLE,
+        title: 'aged-out scout win', workspaceId: WS,
+      });
+    }, 120_000);
+
+    it('the raw feed drops the aged win (window guard) yet getScoutLensOutcomes recovers it as won', async () => {
+      // Guard: the win is genuinely OUT of the raw feed window — so a recovered
+      // 'won' can only come from the ref-scoped read, never a false green.
+      const feed = await gatherCompletions(buildChangeFeedReaders());
+      expect(feed.some((e) => e.ref === 'wi:F-AGED-WIN')).toBe(false);
+
+      const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+      expect(report.total).toBe(1); // only the one cycle-scoped idea
+      const cr = report.byLens['constraint-removal'];
+      expect(cr.won).toBe(1); // pre-fix: 0 (aged out → pending)
+      expect(cr.pending).toBe(0);
+      expect(cr.winRate).toBe(1);
+    });
+
+    it('refreshScoutOutcomes persists the recovered win (durable, not reset to pending)', async () => {
+      await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+      const [row] = await db.adminSql<{ outcome: string | null }[]>`
+        SELECT outcome FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${WS} AND idea_id = 'i-aged-win'`;
+      expect(row.outcome).toBe('won');
     });
   });
 });
