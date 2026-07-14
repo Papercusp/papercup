@@ -18,7 +18,9 @@ describe('loop:transfer', () => {
 
   it('transfers from the caller by default and refreshes both CTRL anchors', async () => {
     transfer.mockResolvedValue({ transferred: true, routineId: 'loop-1' });
-    const result = await tool.handler({ toOwnerId: 'su-next' }, { clientId: 'su-me', workspaceId: 'ws' } as never);
+    const result = await tool.handler({ toOwnerId: 'su-next' }, { clientId: 'su-me', workspaceId: 'ws' } as never) as {
+      content: Array<{ text: string }>;
+    };
     expect(transfer).toHaveBeenCalledWith('su-me', 'su-next');
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(JSON.parse(result.content[0]!.text)).toMatchObject({ ok: true, fromOwnerId: 'su-me', toOwnerId: 'su-next' });
@@ -26,7 +28,9 @@ describe('loop:transfer', () => {
 
   it('returns an error instead of merging into an existing destination loop', async () => {
     transfer.mockResolvedValue({ transferred: false, routineId: null });
-    const result = await tool.handler({ fromOwnerId: 'su-old', toOwnerId: 'su-next' }, { clientId: 'su-me', workspaceId: 'ws' } as never);
+    const result = await tool.handler({ fromOwnerId: 'su-old', toOwnerId: 'su-next' }, { clientId: 'su-me', workspaceId: 'ws' } as never) as {
+      isError?: boolean;
+    };
     expect(result.isError).toBe(true);
     expect(refresh).not.toHaveBeenCalled();
   });

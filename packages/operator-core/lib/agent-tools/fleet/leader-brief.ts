@@ -133,8 +133,9 @@ export function computeBenchSuggestion(
 
 export type DecoratedAgent = AgentAssignment & {
   sessionState?: SessionState | null;
-  verdict?: MemberVerdict;
-  wakeMode?: WakeMode;
+  confirmLiveness?: boolean | null;
+  verdict?: MemberVerdict | null;
+  wakeMode?: WakeMode | string | null;
   lastToolCallAt?: string | null;
   parkedOn?: string[];
   contextPressure?: ContextPressureBucket | null;
@@ -194,7 +195,7 @@ export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMemb
     fleetRole: a.fleetRole ?? null,
     sessionState: a.sessionState ?? null,
     verdict: a.verdict ?? null,
-    wakeMode: a.wakeMode ?? null,
+    wakeMode: a.wakeMode === 'auto' || a.wakeMode === 'manual' ? a.wakeMode : null,
     monitorState: a.monitorState ?? null,
     nextFireAt: a.nextFireAt ?? null,
     lastToolCallAgeMs: Number.isFinite(lastMs) ? Math.max(0, nowMs - lastMs) : null,

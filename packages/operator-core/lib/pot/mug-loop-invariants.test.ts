@@ -146,6 +146,7 @@ describe('P-051 Mug-loop contract — BEHAVIORAL completion guarantee (B-09 seam
     infraLossCount: 0,
     placementStatus: null,
     lastRecoveryAtMs: null,
+    recoveryStartedAtMs: null,
     now: NOW,
     ...over,
   });

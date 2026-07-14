@@ -121,7 +121,7 @@ export async function buildActivityHookBundle(
 ): Promise<ActivityHookBundle> {
   const generation = await deps.generation();
   const changed = request.force_resync === true || request.generation !== generation;
-  const base = {
+  const base: Omit<ActivityHookBundle, 'complete' | 'surfaces'> = {
     schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
     generation,
     changed,

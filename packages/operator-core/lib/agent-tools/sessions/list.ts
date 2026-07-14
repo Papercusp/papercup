@@ -82,7 +82,7 @@ export default defineTool({
     });
     const cursor = decodeSessionCursor(args.cursor, 'sessions:list', fingerprint);
     if (!cursor.ok) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ...cursor, ok: false }) }] };
     }
     const offset = cursor.offset;
     // Freeze the upper time boundary on page one and carry it in every cursor.

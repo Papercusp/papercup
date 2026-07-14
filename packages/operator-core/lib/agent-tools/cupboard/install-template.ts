@@ -44,7 +44,6 @@ export default defineTool({
     listingRef: z.string().max(200).optional().describe('Within-repo template discriminator (the per-ref subdir to install). Required with githubUrl; resolved from the listing when only listingId is given.'),
     workspace: z.string().max(120).optional(),
   }),
-  timeoutSec: 120,
   async handler(args, ctx) {
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
 

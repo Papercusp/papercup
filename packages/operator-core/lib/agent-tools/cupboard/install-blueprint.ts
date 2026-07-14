@@ -45,7 +45,6 @@ export default defineTool({
       .describe("Consent to auto-install the blueprint's Cupboard-resolvable plugin deps."),
     workspace: z.string().max(120).optional(),
   }),
-  timeoutSec: 120,
   async handler(args, ctx) {
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
 

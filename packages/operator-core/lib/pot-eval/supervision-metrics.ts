@@ -115,6 +115,7 @@ function needsRecoveryAt(c: SupervisionCase, now: number, cfg: PlacementConfig):
       infraLossCount: 0,
       placementStatus: null,
       lastRecoveryAtMs: null,
+      recoveryStartedAtMs: null,
       now,
     },
     cfg,

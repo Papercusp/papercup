@@ -234,7 +234,7 @@ export class WorkspaceBackup {
       runPreSnapshotHook({
         workspaceId: this.workspaceId,
         workspaceRoot: this.workspaceRoot,
-      }).then((result) => this.event(snapshotRowId, 'hook_pg_dump', result))
+      }).then((result) => this.event(snapshotRowId, 'hook_pg_dump', { ...result }))
         .catch((err) => {
           // eslint-disable-next-line no-console
           console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);

@@ -11,9 +11,15 @@ import { describe, it, expect, vi } from 'vitest';
 import { warmTranscriptSearchPath, type TranscriptSearchWarmupDeps } from './transcript-search-warmup';
 
 function makeDeps(overrides: Partial<TranscriptSearchWarmupDeps> = {}) {
-  const runHybridSearch = vi.fn(async () => ({ results: [], totalHits: 0 }));
-  const buildQueryEmbedder = vi.fn(async () => async () => [0.1]);
-  const mergeRosterWithAssignments = vi.fn(async () => ({ active: [] }));
+  const runHybridSearch = vi.fn(
+    async (_sources: unknown[], _ctx: Record<string, unknown>) => ({ results: [], totalHits: 0 }),
+  );
+  const buildQueryEmbedder = vi.fn(
+    async (_opts?: { acquireBudgetMs?: number }) => async () => [0.1],
+  );
+  const mergeRosterWithAssignments = vi.fn(
+    async (_opts: Record<string, unknown>) => ({ active: [] }),
+  );
   const deps: TranscriptSearchWarmupDeps = {
     loadEngine: async () => ({ runHybridSearch }),
     loadSources: async () => ({
@@ -41,7 +47,7 @@ describe('warmTranscriptSearchPath (WI-4734)', () => {
     expect(buildQueryEmbedder.mock.calls[0][0]).toMatchObject({ acquireBudgetMs: 60_000 });
 
     expect(runHybridSearch).toHaveBeenCalledTimes(1);
-    const [sources, ctx] = runHybridSearch.mock.calls[0] as [Array<{ name: string }>, Record<string, unknown>];
+    const [sources, ctx] = runHybridSearch.mock.calls[0]! as [Array<{ name: string }>, Record<string, unknown>];
     expect(sources.map((s) => s.name)).toEqual(['session_turn']); // never the whole registry
     expect(ctx.mode).toBe('hybrid');
     expect(ctx.limit).toBe(1);

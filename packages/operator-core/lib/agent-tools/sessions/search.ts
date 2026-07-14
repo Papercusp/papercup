@@ -80,7 +80,7 @@ export default defineTool({
     );
     const cursor = decodeSessionCursor(args.cursor, 'sessions:search', fingerprint);
     if (!cursor.ok) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ...cursor, ok: false }) }] };
     }
     const offset = cursor.offset;
     const snapshotUntil = args.until ?? cursor.bounds.until ?? new Date().toISOString();

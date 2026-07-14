@@ -106,7 +106,7 @@ export default defineTool({
     );
     const cursor = decodeSessionCursor(args.cursor, 'sessions:timeline', fingerprint);
     if (!cursor.ok) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ...cursor, ok: false }) }] };
     }
     const until = args.until ?? cursor.bounds.until ?? new Date().toISOString();
     const since = args.since ?? cursor.bounds.since ?? new Date(Date.parse(until) - 24 * 3600 * 1000).toISOString();

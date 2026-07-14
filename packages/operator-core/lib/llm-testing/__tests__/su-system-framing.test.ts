@@ -67,14 +67,14 @@ describe('su SUT system-prompt framing', () => {
 describe('su SUT hermetic tool fallback grounding', () => {
   it('makes empty read results explicit without leaking test-frame wording', () => {
     const result = defaultToolResultForModel('docs:search');
-    expect(JSON.parse(result.content[0].text)).toEqual({
+    expect(JSON.parse(result.content[0]!.text!)).toEqual({
       ok: true,
       results: [],
       items: [],
       hits: [],
       rows: [],
     });
-    expect(result.content[0].text).not.toMatch(/stub|test harness|llm-testing/i);
+    expect(result.content[0]!.text).not.toMatch(/stub|test harness|llm-testing/i);
   });
 
   it('keeps mutation/unknown fallbacks as benign acknowledgements', () => {

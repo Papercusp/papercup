@@ -34,6 +34,7 @@ import type { LoopStatus } from '../../harness/routines/loop';
 
 function baseAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & {
   sessionState?: SessionState | null;
+  confirmLiveness?: boolean | null;
 } {
   return {
     agentId: 'su-agent-1',

@@ -22,7 +22,12 @@ const h = vi.hoisted(() => ({
     fireTimedOutAwaits: vi.fn(async (): Promise<unknown[]> => []),
     expireLapsedAwaits: vi.fn(async () => 0),
   },
-  executeWake: vi.fn(async (): Promise<unknown> => ({ kind: 'delivered', channel: 'resume' })),
+  executeWake: vi.fn(
+    async (
+      _delivery: DeliveryWork,
+      _deps: { onResumeTurnExit?: (delivery: DeliveryWork, exit: unknown) => void },
+    ): Promise<unknown> => ({ kind: 'delivered', channel: 'resume' }),
+  ),
   sendMessage: vi.fn(async () => ({ msg_id: 'm-1' })),
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
   // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.

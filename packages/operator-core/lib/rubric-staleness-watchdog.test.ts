@@ -93,9 +93,9 @@ describe('rubricStalenessSweep — orchestration (injected deps, no PG)', () => 
     expect(d.checkScorecardFreshness).toHaveBeenCalledTimes(1);
     // The alert fired BOTH channels: the countable fires row + the coord escalation.
     expect(d.recordFire).toHaveBeenCalledTimes(1);
-    expect(d.recordFire.mock.calls[0]![0]).toMatchObject({ source: 'rubric-staleness' });
+    expect(vi.mocked(d.recordFire).mock.calls[0]![0]).toMatchObject({ source: 'rubric-staleness' });
     expect(d.openEscalation).toHaveBeenCalledTimes(1);
-    const esc = d.openEscalation.mock.calls[0]![1] as { summary: string; body?: string };
+    const esc = vi.mocked(d.openEscalation).mock.calls[0]![1] as { summary: string; body?: string };
     expect(esc.summary).toContain('blender-release-readiness');
     expect(esc.body).toContain('improvements:capture'); // the re-grade recipe rides the page
   });

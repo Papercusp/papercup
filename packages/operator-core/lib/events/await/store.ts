@@ -24,6 +24,7 @@ import { WAKE_TURN_CHANNELS } from './types';
 import type {
   AwaitPolicy,
   AwaitRow,
+  DeliveryStatus,
   DeliveryRow,
   DeliveryWork,
   TimeoutBehavior,

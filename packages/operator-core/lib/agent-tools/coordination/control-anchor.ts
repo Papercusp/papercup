@@ -64,7 +64,7 @@ export type ControlTransitionOrigin = 'owner' | 'agent' | 'system';
 export interface ControlTransitionProvenance {
   origin: ControlTransitionOrigin;
   actorId: string;
-  source: 'mode:set' | 'loop:arm' | 'loop:end' | 'fleet:membership' | 'control-anchor:reconcile';
+  source: 'mode:set' | 'loop:arm' | 'loop:end' | 'loop:transfer' | 'fleet:membership' | 'control-anchor:reconcile';
   ownerDirected: boolean;
   recordedAt: string;
 }

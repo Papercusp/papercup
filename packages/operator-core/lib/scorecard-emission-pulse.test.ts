@@ -39,6 +39,7 @@ function freshnessResult(over: Partial<ScorecardFreshness> = {}): ScorecardFresh
     lastEmittedAt: null,
     lastCompleteAt: null,
     latestMissingKeys: [],
+    latestExtraKeys: [],
     ...over,
   };
 }

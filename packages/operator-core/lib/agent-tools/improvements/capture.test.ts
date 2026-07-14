@@ -564,7 +564,7 @@ describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
 describe('improvements:capture — gradedGeneration stamp (EI-12147)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockIdentity.mockReturnValue(identity('su-abc'));
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-abc'));
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-9', created: true } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
@@ -619,7 +619,7 @@ describe('improvements:capture — gradedGeneration stamp (EI-12147)', () => {
 describe('improvements:capture — notExercised shorthand (rubric-system-improvements P-002)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockIdentity.mockReturnValue(identity('su-abc'));
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-abc'));
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-9', created: true } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
