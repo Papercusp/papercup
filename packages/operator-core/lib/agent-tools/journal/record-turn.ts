@@ -81,8 +81,17 @@ export default defineTool({
     // (first journal of a session falls back to a bounded window).
     const prev = await latestJournalCreatedAt(args.session_id);
     const since = prev ?? new Date(Date.now() - DEFAULT_TURN_WINDOW_MS);
+    const sinceIso = typeof since === 'string' ? since : since.toISOString();
     const ledger = await ledgerEntriesSince(args.session_id, since);
-    const tripwire = detectClaimLedgerMismatch(extracted.note, ledger);
+    const claimTripwire = detectClaimLedgerMismatch(extracted.note, ledger);
+    // P-015 turn-end sweep: deliverables written to scratch this turn with no
+    // artifacts:save registration. The claim-mismatch tripwire outranks it on
+    // the single tripwire slot (dishonesty > untracked output); the sweep is
+    // bounded + fail-soft and only runs when the slot is free.
+    const artifactTripwire = claimTripwire
+      ? null
+      : await (await import('../../turn-end-tracking-io')).boundedArtifactSweep(args.session_id, sinceIso);
+    const tripwire = claimTripwire ?? artifactTripwire;
 
     const { id, deduped } = await recordTurnJournal({
       ownerId,
@@ -97,6 +106,23 @@ export default defineTool({
       harnessSlug: args.harness ?? null,
     });
 
+    // P-015 turn-end sweep: mechanically checkpoint the holder's stale held
+    // work-items (missing checkpoint, or older than the staleness threshold)
+    // from what the system already tracks — this turn's journal note + the
+    // P-013 tool-call log tail. Marked ⟦auto-checkpoint mechanical⟧, never
+    // overwrites agent-authored prose. Bounded + fail-soft; plan D-003.
+    let autoCheckpointed: Array<{ id: string; mechanical: true }> = [];
+    if (ownerId && !deduped) {
+      const { boundedAutoCheckpoint } = await import('../../turn-end-tracking-io');
+      autoCheckpointed = await boundedAutoCheckpoint({
+        ownerId,
+        workspaceId: identity.workspaceId ?? '*',
+        sessionId: args.session_id,
+        sinceIso,
+        journalNote: extracted.note,
+      });
+    }
+
     return {
       data: {
         ok: true,
@@ -107,6 +133,7 @@ export default defineTool({
         flagged: extracted.flagged,
         tripwire,
         turn_ts: turn.ts ? turn.ts.toISOString() : null,
+        ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
       },
     };
   },

@@ -148,6 +148,15 @@ export default defineTool({
         isError: true,
       };
     }
+    // P-015 pivot detection reads the PREVIOUS intent before the upsert
+    // overwrites it. Bounded + fail-soft — a slow read just skips the nudge.
+    const prevIntent = (
+      await withBoundedTimeout(
+        getPresence(identity.ownerId).then((p) => p?.intent ?? null),
+        { fallback: null, timeoutMs: 1_500, label: 'declare-intent:prev-intent' },
+      )
+    ).value;
+
     await writePresence(
       identity,
       {
@@ -291,6 +300,33 @@ export default defineTool({
       ? { ...record, fleetSlug: fleet?.fleetSlug ?? null, fleetRole: fleet?.fleetRole ?? null }
       : record;
     const overCoverageHint = broadIntentHint(args.intent, !!(args.items && args.items.length > 0));
+    // P-015: mechanical pivot detection between consecutive intents (plan D-006
+    // — extractive embedding use only; deterministic lexical fallback). A sharp
+    // pivot usually means the previous approach dead-ended — the nudge points
+    // at the typed slot (facts:assert { slot: 'dead-end' }). Advisory only;
+    // bounded so the leg can never hold the declare past its budget.
+    const pivot = (
+      await withBoundedTimeout(
+        (async () => {
+          if (!prevIntent) return null;
+          const { detectIntentPivot } = await import('../../../intent-pivot');
+          let embed: ((text: string) => Promise<number[]>) | undefined;
+          try {
+            const { resolveBackfillEmbedder } = await import('../../../search/embed-backfill');
+            const resolved = await resolveBackfillEmbedder();
+            if (resolved.mode !== 'disabled') embed = resolved.embed;
+          } catch {
+            /* lexical fallback */
+          }
+          return detectIntentPivot(prevIntent, args.intent, { embed });
+        })(),
+        { fallback: null, timeoutMs: 2_500, label: 'declare-intent:pivot' },
+      )
+    ).value;
+    const pivotField =
+      pivot?.pivot === true
+        ? { pivotHint: (await import('../../../intent-pivot')).pivotHint(pivot) }
+        : undefined;
     return {
       content: [
         {
@@ -300,6 +336,7 @@ export default defineTool({
             presence,
             ...(claims ? { claims } : {}),
             ...(overCoverageHint ? { overCoverageHint } : {}),
+            ...(pivotField ?? {}),
           }),
         },
       ],

@@ -38,8 +38,9 @@ const MECHANICAL_SEP = '\n\n---\n';
 
 export interface HeldCheckpointState {
   checkpoint: string | null;
-  /** Epoch ms of the checkpoint's last write; null when unknown. */
-  checkpointUpdatedAtMs: number | null;
+  /** Epoch ms of the checkpoint's last write; null/undefined when unknown
+   *  (matches CarryBriefHeldItem's optional meta). */
+  checkpointUpdatedAtMs?: number | null;
 }
 
 /**
@@ -54,7 +55,7 @@ export function isStaleHeldCheckpoint(
   thresholdMs: number = STALE_CHECKPOINT_MS,
 ): boolean {
   if (item.checkpoint === null || item.checkpoint.trim() === '') return true;
-  if (item.checkpointUpdatedAtMs === null) return false;
+  if (item.checkpointUpdatedAtMs === null || item.checkpointUpdatedAtMs === undefined) return false;
   return nowMs - item.checkpointUpdatedAtMs > thresholdMs;
 }
 
