@@ -30,6 +30,7 @@ import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-inte
 import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
+import { scheduleTranscriptSearchWarmup } from '@papercusp/operator-core/lib/transcript-search-warmup';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 import { startLoopPressureGovernor } from '@papercusp/operator-core/lib/loop-pressure-governor';
 import { FLAGS } from '@papercusp/flags';
@@ -238,6 +239,14 @@ function startRequestServers(): void {
     // (Logic + rationale in lib/workspace-pin-guard.ts, unit-tested.)
     const pinWarning = workspacePinWarning();
     if (pinWarning) console.warn(pinWarning);
+
+    // WI-4734: pre-warm the interactive transcript-search path (module graph,
+    // query embedder, PG pool, roster stores) so the FIRST human search after a
+    // deploy restart is a warm ~300ms, not the full cold stack (owner-hit ~20s
+    // on 2026-07-13). Per request worker (each has its own module graph + pool);
+    // fire-and-forget after a short boot-settle delay; opt-out via
+    // PAPERCUSP_DISABLE_SEARCH_WARMUP=1.
+    scheduleTranscriptSearchWarmup();
   };
 
   // P3-2 cluster-worker listen (INCIDENT 2026-06-18 fix): a cluster WORKER must bind

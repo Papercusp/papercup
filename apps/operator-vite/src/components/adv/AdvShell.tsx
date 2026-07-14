@@ -788,24 +788,12 @@ export default function AdvShell({
           color: var(--fg-mute, #7f9bb4);
           cursor: default;
         }
-        .pc-advshell__action {
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          padding: 5px 10px;
-          font-size: 11px;
-          font-weight: 700;
-          letter-spacing: 0;
-          text-transform: uppercase;
-          border-radius: 6px;
-          border: 1px solid transparent;
-          cursor: pointer;
-          flex-shrink: 0;
-        }
-        .pc-advshell__action:disabled {
-          opacity: 0.55;
-          cursor: default;
-        }
+        /* The `.pc-advshell__action` base + `:disabled` and the hives pill/popover
+           rules were moved to the shared adv-header-pills.css (imported at the top
+           of this file) so the HivesRunningPill + AgentsRunningPill render styled in
+           the Quick Panel popup too, which does not mount AdvShell
+           (quick-panel-status-pills-2026-07-13 D-001). The AdvShell-only button
+           variants below cascade off that shared base. */
         .pc-advshell__action--start {
           background: rgba(34, 197, 94, 0.16);
           color: #86efac;

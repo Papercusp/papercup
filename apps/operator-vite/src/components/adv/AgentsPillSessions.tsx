@@ -461,12 +461,25 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
     [facetsRaw],
   );
 
+  // WI-4734 (owner-hit: a 20s search with "no indication that the search was
+  // still running"): the pending flag flips SYNCHRONOUSLY with the query
+  // change — including the debounce window — never only when the fetch fires.
+  // Stale previous-query results stay visible but DIMMED (is-stale below), so
+  // the UI reads "old results, new search running", not "done".
+  const [slowHint, setSlowHint] = useState(false);
+  useEffect(() => {
+    if (!loading) { setSlowHint(false); return; }
+    const t = setTimeout(() => setSlowHint(true), 5_000);
+    return () => clearTimeout(t);
+  }, [loading]);
+
   useEffect(() => {
     const ctl = new AbortController();
+    // Pending is visible from the FIRST keystroke (see WI-4734 note above).
+    setLoading(true);
+    setError(null);
     // Debounce keystrokes; abort a stale in-flight search on the next one.
     const t = setTimeout(async () => {
-      setLoading(true);
-      setError(null);
       // CLIENT-SIDE deadline (owner-hit 07-10): a server that never answers —
       // mid-boot after an auto-deploy restart, wedged socket — otherwise spins
       // "Searching…" forever (fetch has no default timeout). 35s sits just past
@@ -495,9 +508,10 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           setError(searchFailureMessage(null));
           setLoading(false);
         }
-        // else: superseded by a newer keystroke / unmount — stay silent.
+        // else: superseded by a newer keystroke / unmount — stay silent
+        // (loading stays true — the newer effect owns it now).
       }
-    }, 300);
+    }, 200); // WI-4734: 300→200ms — the debounce is part of perceived latency
     return () => { clearTimeout(t); ctl.abort(); };
   }, [query, attempt, windowToken]);
 
@@ -537,7 +551,13 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
 
   return (
     <div className="pc-agents-sessions__results" data-testid="agents-search-results">
-      {loading && <div className="pc-agents-sessions__status">Searching…</div>}
+      {loading && (
+        <div className="pc-agents-sessions__status is-searching" data-testid="search-pending" role="status" aria-live="polite">
+          {slowHint
+            ? 'Still searching — the server is taking longer than usual…'
+            : 'Searching…'}
+        </div>
+      )}
       {error && (
         <div className="pc-agents-sessions__status is-error" data-testid="search-error">
           {error}{' '}
@@ -551,15 +571,20 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           </button>
         </div>
       )}
-      {!loading && !error && (
-        <FacetBar
-          groups={facetGroups}
-          selection={selection}
-          onToggle={onToggleFacet}
-          onClearAll={onClearFacets}
-          windowToken={windowToken}
-          onWindow={(t) => void setWindowToken(t)}
-        />
+      {!error && (facetGroups.length > 0 || windowToken) && (
+        // WI-4734: stays MOUNTED during a re-search (dimmed via is-stale) so the
+        // bar doesn't flicker out on every keystroke now that `loading` spans
+        // the debounce window too — and the recency pills stay clickable.
+        <div className={loading ? 'is-stale' : undefined}>
+          <FacetBar
+            groups={facetGroups}
+            selection={selection}
+            onToggle={onToggleFacet}
+            onClearAll={onClearFacets}
+            windowToken={windowToken}
+            onWindow={(t) => void setWindowToken(t)}
+          />
+        </div>
       )}
       {!loading && !error && sessions.length === 0 && (
         <div className="pc-agents-sessions__status">No matches in any session.</div>
@@ -570,7 +595,7 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
         </div>
       )}
       {groups.length > 0 && (
-        <div className="pc-agents-sessions__scroll">
+        <div className={`pc-agents-sessions__scroll${loading ? ' is-stale' : ''}`} data-testid="active-results">
           {groups.map((g) => (
             <section key={g.slug ?? '__none'} className="pc-agents-roster__group">
               <header
@@ -601,7 +626,7 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
         </div>
       )}
       {inactiveResults.length > 0 && (
-        <section className="pc-agents-roster__group">
+        <section className={`pc-agents-roster__group${loading ? ' is-stale' : ''}`}>
           <header className="pc-agents-roster__group-head">
             <span className="pc-agents-roster__group-caret" aria-hidden>▾</span>
             Inactive sessions <span className="pc-agents-roster__group-count">({inactiveResults.length})</span>

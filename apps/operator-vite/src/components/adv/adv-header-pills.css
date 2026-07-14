@@ -1,0 +1,123 @@
+/*
+ * adv-header-pills.css — the SHARED styles for the AdvShell header "running" pills
+ * (HivesRunningPill = "▶ N POT running", AgentsRunningPill = "⚡ N agents running").
+ *
+ * SINGLE SOURCE OF TRUTH (quick-panel-status-pills-2026-07-13 D-001). These rules
+ * used to live in AdvShell.tsx's inline <style>, so the pills rendered correctly
+ * ONLY while AdvShell was mounted. The Quick Panel popup window
+ * (apps/operator/app/quick-panel) reuses the SAME two pill components but does NOT
+ * mount AdvShell, so a bare drop-in rendered the pills as unstyled browser-default
+ * buttons (the "silver 3D outset button" gotcha). Extracting the button base +
+ * the hives pill/popover here — and importing it from BOTH AdvShell AND each pill
+ * component — makes the pills portable to any consumer with no duplicated CSS to
+ * drift. The AdvShell-only toolbar-button variants (--start/--stop/--new/--share/
+ * --shared/--waiting) stay in AdvShell's inline <style>; they cascade off the
+ * `.pc-advshell__action` base defined here.
+ *
+ * AgentsRunningPill's own wrapper + roster popover styles remain self-injected in
+ * its RosterStyles <style> (already portable); this file only needs to carry what
+ * BOTH pills share (the `.pc-advshell__action` button base) plus the hives pill's
+ * button variant + fold-out popover.
+ */
+
+/* ── The header pill/toolbar button base (shared by both pills) ───────────── */
+.pc-advshell__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.pc-advshell__action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ── HivesRunningPill: "▶ N POT running" button + fold-out control popover ── */
+.pc-advshell__hives-pill-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+.pc-advshell__action--hives {
+  background: #0f1b2d;
+  color: #b9f6d3;
+  border-color: rgba(52, 211, 153, 0.38);
+}
+.pc-advshell__action--hives:hover,
+.pc-advshell__action--hives[aria-expanded="true"] {
+  background: #13243a;
+  border-color: rgba(52, 211, 153, 0.58);
+  color: #d9ffe8;
+}
+.pc-advshell__action--hives.is-running {
+  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.14);
+}
+.pc-advshell__hives-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 80;
+  width: min(340px, calc(100vw - 28px));
+  overflow: visible;
+  border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, #111c2f 0%, #0b1525 100%);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.54),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+}
+.pc-advshell__hives-pop::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  right: 24px;
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  border-left: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
+  border-top: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
+  background: #111c2f;
+}
+.pc-advshell__hives-pop .pclsb-panel {
+  position: relative;
+  gap: 6px;
+  max-height: min(420px, calc(100vh - 96px));
+  padding: 10px;
+  overflow: auto;
+  border-radius: inherit;
+  background: transparent;
+}
+.pc-advshell__hives-pop .pclsb-panel__bar {
+  min-height: 26px;
+  padding: 0 1px 7px;
+  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+}
+.pc-advshell__hives-pop .pclsb-panel__bar-label {
+  color: #b9d4e8;
+}
+.pc-advshell__hives-pop .pclsb-row {
+  padding: 8px 9px;
+  border-color: var(--border, rgba(125, 211, 252, 0.16));
+  background: #0f1b2d;
+}
+.pc-advshell__hives-pop .pclsb-row + .pclsb-row {
+  margin-top: 4px;
+}
+.pc-advshell__hives-pop .pclsb-row__title {
+  color: #e7f7ff;
+}
+.pc-advshell__hives-pop .pclsb-row__sub {
+  color: #8aa4bd;
+}
+.pc-advshell__hives-pop .pclsb-panel__empty,
+.pc-advshell__hives-pop .pclsb-panel__error {
+  background: #0f1b2d;
+}
