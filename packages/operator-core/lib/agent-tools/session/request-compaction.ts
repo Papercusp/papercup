@@ -22,6 +22,17 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { findLiveHost, injectIntoHost, hostSupports } from '../../events/await/psu-pty-discovery';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
+import {
+  staleCheckpointWarnings,
+  STALE_CHECKPOINT_WARN_MS,
+  type CheckpointFlushWarning,
+} from '../../enforcement-gate';
+import { runFlushGate } from '../../enforcement-gate-io';
+
+// Re-exported for back-compat: the flush-integrity detector + its shape now live
+// in enforcement-gate.ts (the single source shared with the P-016 enforcement
+// tier), but this tool's warn path — and any importer — keeps its old surface.
+export { staleCheckpointWarnings, STALE_CHECKPOINT_WARN_MS, type CheckpointFlushWarning };
 
 /** Focus applied when the agent names none AND the carry-brief read fails —
  *  the static floor under the session-specific default (P-003 below). */
@@ -87,58 +98,6 @@ async function carryBriefFocus(brief: import('../../carry-brief').CarryBrief | n
     /* fall through to the static floor */
   }
   return DEFAULT_FOCUS;
-}
-
-/** P-003 (fleet-deltas-leader-primitives): a held item's checkpoint older than this
- *  at compaction time is flagged STALE — the turns since it was written will NOT
- *  carry across the boundary. 15 min ≈ several monitor wakes / a full task step;
- *  younger than that, the checkpoint plausibly still covers the current unit. */
-export const STALE_CHECKPOINT_WARN_MS = 15 * 60_000;
-
-export interface CheckpointFlushWarning {
-  id: string;
-  title: string | null;
-  /** 'missing' = never written (EI-8987, genuine state loss); 'stale' = written, but
-   *  long enough ago that the turns since it will not carry (P-003). */
-  reason: 'missing' | 'stale';
-  /** Minutes since the checkpoint was written — only on reason:'stale'. */
-  ageMinutes?: number;
-}
-
-/**
- * EI-8987 + P-003 (fleet-deltas-leader-primitives): a WARN-only (never refuse — a
- * hard-refuse gate on the tool an agent calls BECAUSE it is at its context limit
- * would strand it there on any gate bug, a worse failure than the one this catches)
- * proactive flush-integrity check over the caller's held work-items:
- *   - 'missing' — NO checkpoint at all (the highest-risk case: a compacted-away
- *     transcript with zero durable carry-note is a genuine state loss);
- *   - 'stale'   — a checkpoint OLDER than STALE_CHECKPOINT_WARN_MS (the WI-3549
- *     class: the flush happened, but so much has happened since that the summary
- *     boundary will drop unparked state anyway).
- * Best-effort: an unavailable brief yields an empty list, never blocks compaction.
- */
-export function staleCheckpointWarnings(
-  brief: import('../../carry-brief').CarryBrief | null,
-  nowMs: number = Date.now(),
-): CheckpointFlushWarning[] {
-  if (!brief) return [];
-  const out: CheckpointFlushWarning[] = [];
-  for (const h of brief.heldItems) {
-    if (h.checkpoint === null) {
-      out.push({ id: h.id, title: h.title, reason: 'missing' });
-    } else if (
-      typeof h.checkpointUpdatedAtMs === 'number' &&
-      nowMs - h.checkpointUpdatedAtMs > STALE_CHECKPOINT_WARN_MS
-    ) {
-      out.push({
-        id: h.id,
-        title: h.title,
-        reason: 'stale',
-        ageMinutes: Math.round((nowMs - h.checkpointUpdatedAtMs) / 60_000),
-      });
-    }
-  }
-  return out;
 }
 
 /**
@@ -230,6 +189,39 @@ export default defineTool({
     const brief = await loadCarryBrief(identity.ownerId, identity.workspaceId);
     const focus = (args.focus ?? '').trim() || (await carryBriefFocus(brief));
     const staleCheckpoints = staleCheckpointWarnings(brief);
+    // P-016 enforcement gate: the WARN above becomes teeth. Unflushed state
+    // (missing/stale held checkpoint, or an armed loop with no carry-note) HOLDS
+    // the compaction ONCE, naming the flush; a retry that still hasn't flushed
+    // gets a system-written mechanical fallback and proceeds. The gate is bounded,
+    // fail-OPEN, and env-disable-able (enforcement-gate-io), so it can never
+    // reintroduce the strand this tool's warn-only design was avoiding.
+    const gateNowMs = Date.now();
+    const gate = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: identity.ownerId,
+      workspaceId: identity.workspaceId ?? '*',
+      sessionId: identity.ownerId,
+      sinceIso: new Date(gateNowMs - 30 * 60_000).toISOString(),
+      brief,
+      nowMs: gateNowMs,
+    });
+    if (gate.verdict === 'refuse') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              requested: false,
+              error: 'flush-required',
+              tripwires: gate.tripwires,
+              note: gate.refusalText,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     const autoContinue = args.autoContinue ?? true;
     // WI-1804: when the live host understands mode:'compact', let IT drive the sequence —
     // submit /compact, wait for the compaction TURN to complete (output-idle, the only place
@@ -314,6 +306,9 @@ export default defineTool({
             requested: ok,
             autoContinue: ok ? canAutoContinue : false,
             staleCheckpoints,
+            ...(gate.verdict === 'mechanical-fallback' && gate.fallback
+              ? { mechanicalFallback: gate.fallback }
+              : {}),
             ...provenanceFields,
             note:
               (!ok

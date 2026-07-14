@@ -18,6 +18,7 @@ import { COORD_ROLES } from '../roles';
 import type { HydratableRef } from '../ref-hydrate';
 import { renderHydratedRefs } from '../ref-hydrate';
 import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
+import { runFlushGate } from '../../../enforcement-gate-io';
 
 /**
  * WI-4165: inline the named plan-items' own bodies into a handoff's `body`
@@ -127,6 +128,36 @@ export default defineTool({
               ok: false,
               error: 'missing_fields',
               detail: 'open-handoff requires to[], plan_slug, summary',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    // P-016 enforcement gate: a handoff hands the receiver whatever the OFFERER
+    // flushed — unflushed held-item state (or an armed loop with no carry-note)
+    // means the receiver picks up blind. Same refuse-once-then-mechanical-fallback
+    // ladder as compaction; bounded + fail-OPEN, so it never blocks a handoff
+    // outright. Loads the offerer's carry brief itself (not otherwise read here).
+    const gateNowMs = Date.now();
+    const gate = await runFlushGate({
+      boundary: 'handoff',
+      ownerId: identity.ownerId,
+      workspaceId: identity.workspaceId ?? '*',
+      sessionId: identity.ownerId,
+      sinceIso: new Date(gateNowMs - 30 * 60_000).toISOString(),
+      nowMs: gateNowMs,
+    });
+    if (gate.verdict === 'refuse') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'flush-required',
+              tripwires: gate.tripwires,
+              note: gate.refusalText,
             }),
           },
         ],
@@ -248,6 +279,9 @@ export default defineTool({
             accepted: false,
             pending_acceptance: true,
             ...(itemsHydrated > 0 ? { itemsHydrated } : {}),
+            ...(gate.verdict === 'mechanical-fallback' && gate.fallback
+              ? { mechanicalFallback: gate.fallback }
+              : {}),
             ...(wake ? { wake } : {}),
           }),
         },
