@@ -370,6 +370,7 @@ function NodeTitleInput({
   hasChildren,
   autoFocus,
   caretTo,
+  presetText,
   onFocused,
   onFocusRow,
   onCreateAfter,
@@ -387,6 +388,7 @@ function NodeTitleInput({
   hasChildren: boolean;
   autoFocus: boolean;
   caretTo: number | null;
+  presetText: string | null;
   onFocused: () => void;
   onFocusRow: () => void;
   onCreateAfter: () => void;
@@ -409,6 +411,7 @@ function NodeTitleInput({
     if (!focusedRef.current) setText(row.title ?? '');
   }, [row.title]);
 
+
   const { flush } = useDebouncedSave(text, async (v) => {
     const next = v.trim();
     if (!next || next === displayTitle(row)) return;
@@ -417,12 +420,19 @@ function NodeTitleInput({
 
   useEffect(() => {
     if (autoFocus && ref.current) {
+      // A merge lands its joined title here before the refetch delivers it —
+      // the mirror above won't run (the input is being focused), and the caret
+      // below must land inside the joined text, so write the DOM value now.
+      if (presetText !== null) {
+        setText(presetText);
+        ref.current.value = presetText;
+      }
       ref.current.focus();
       const pos = caretTo ?? ref.current.value.length;
       ref.current.setSelectionRange(pos, pos);
       onFocused();
     }
-  }, [autoFocus, caretTo, onFocused]);
+  }, [autoFocus, caretTo, presetText, onFocused]);
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -745,7 +755,14 @@ export default function PromptsTab() {
 
   // Focus hand-off to a row's inline input once it exists (a just-created
   // node's row arrives via the sync refetch).
-  const [pendingFocus, setPendingFocus] = useState<{ id: string; caret: number | null } | null>(null);
+  const [pendingFocus, setPendingFocus] = useState<{
+    id: string;
+    caret: number | null;
+    /** Optimistic text for the focused input (a merge's joined title) — the
+        row model won't carry it until the refetch lands, and the mirror
+        effect deliberately skips focused inputs. */
+    text?: string;
+  } | null>(null);
   const clearPendingFocus = useCallback(() => setPendingFocus(null), []);
   // Which row's note editor is open even while the body is still empty.
   const [noteOpen, setNoteOpen] = useState<string | null>(null);
@@ -859,7 +876,7 @@ export default function PromptsTab() {
         pushUndo({ kind: 'batch', entries });
         invalidate();
         void setSel(prevRow.id);
-        setPendingFocus({ id: prevRow.id, caret });
+        setPendingFocus({ id: prevRow.id, caret, text: mergedTitle });
       } catch (err) {
         toast.error(`Merge failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1202,6 +1219,7 @@ export default function PromptsTab() {
                       hasChildren={hasKids}
                       autoFocus={pendingFocus?.id === row.id}
                       caretTo={pendingFocus?.id === row.id ? pendingFocus.caret : null}
+                      presetText={pendingFocus?.id === row.id ? (pendingFocus.text ?? null) : null}
                       onFocused={clearPendingFocus}
                       onFocusRow={() => void setSel(row.id)}
                       onCreateAfter={() => void addNodeAfter(row.id)}
