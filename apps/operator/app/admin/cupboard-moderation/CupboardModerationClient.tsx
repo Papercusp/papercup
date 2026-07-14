@@ -518,7 +518,7 @@ export default function CupboardModerationClient() {
         .pc-cbmod__apptrust { margin: 8px 0 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid color-mix(in oklab, #f59e0b, transparent 62%); background: color-mix(in oklab, #f59e0b, transparent 92%); display: grid; gap: 5px; }
         .pc-cbmod__apptrust-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; color: #f59e0b; }
         .pc-cbmod__apptrust-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg, #e7f7ff); flex-wrap: wrap; }
-        .pc-cbmod__apptrust-k { min-width: 92px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); }
+        .pc-cbmod__apptrust-k { min-width: 92px; font-size: 10px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
         .pc-cbmod__pendingwrap { margin-bottom: 18px; }
         .pc-cbmod__count { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: color-mix(in oklab, #f59e0b, transparent 84%); color: #f59e0b; }
       `}</style>

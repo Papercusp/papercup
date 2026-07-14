@@ -249,6 +249,17 @@ jobs:
       - name: Lint no named owner provenance tags in tracked source
         run: npm run lint:no-owner-name-tags
 
+      # Third sibling, same WI-4419 family (WI-4776): the two rules above catch a
+      # `[owner:<name>]` TAG and a `/home/<user>/` PATH — both structural shapes
+      # that need no knowledge of whose box is running. This one catches what
+      # neither can: a BARE mention of THIS box's own git name/email/hostname
+      # with no tag and no path shape at all (e.g. a name dropped straight into a
+      # comment). It can only ever find what THIS runner's own git identity is —
+      # a no-op on a bare CI box is expected, not a bug (see the script header).
+      # BASELINE IS EMPTY: remove the literal, never add an exception.
+      - name: Lint no bare build-box identity literals in tracked source
+        run: npm run lint:no-identity-literals
+
       # Committed conflict-marker guard (EI-1836): a COMMITTED git conflict bracket
       # (the live-merge resolver does NOT catch one already committed by a bad
       # git-sync auto-merge) broke `vite build` with a cryptic CssSyntaxError, which
