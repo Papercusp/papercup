@@ -76,6 +76,33 @@ export interface CupboardListingInput {
    * actually available is the resolver's answer, against the local catalog.
    */
   requires_events?: RequiredEventFamily[];
+  /**
+   * App distribution (worker migration 014 / cupboard-app-distribution-2026-07-14
+   * P-003, D-001). Kind `app` only — the worker 400s these on any other kind.
+   * `delivery_type` discriminates the model: 'standalone' (a separate downloadable
+   * product — "install" DOWNLOADS the platform installer from its own release;
+   * the Cupboard never re-hosts the binary) | 'bundle' (a papercusp-native
+   * composition, Phase 2). Omitted ⇒ the worker treats it as 'standalone'.
+   */
+  delivery_type?: 'standalone' | 'bundle';
+  /**
+   * STANDALONE: URL of the app's signed `latest.json` updater manifest
+   * (@papercusp/tauri-release-kit `buildLatestManifest` output). The download
+   * flow (P-005) reads it to resolve the platform-specific installer URL. The
+   * `cupboard:publish-app` tool VALIDATES this RESOLVES before publishing
+   * (assertAppManifestResolves) so a broken release can't publish a dead listing.
+   */
+  latest_json_url?: string;
+  /** STANDALONE: `<owner>/<repo>` whose GitHub Releases host the installers, when
+   *  distinct from the source repo. Omit ⇒ falls back to the listing's repo. */
+  release_repo?: string;
+  /** App icon URL for the storefront card/detail (an app is a whole product, so
+   *  it gets a real icon rather than a kind glyph). */
+  icon_url?: string;
+  /** Denormalized OS keys present in `latest.json` (e.g.
+   *  ["darwin-aarch64","linux-x86_64"]) so the card shows availability without
+   *  fetching the manifest. Derived from the validated manifest by the tool. */
+  platforms?: string[];
 }
 
 export type CupboardPublishResult =
