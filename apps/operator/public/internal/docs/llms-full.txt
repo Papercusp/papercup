@@ -1588,6 +1588,83 @@ And the general form, which is worth carrying beyond this repo:
 
 The corollary is the one that bites hardest in an autonomous loop: a green you did not earn is strictly worse than a red, because a red gets investigated and a green gets *shipped*.
 
+# The .AppImage leaks a clean source — the culprit is tauri's release resource-STAGING dir, not the AppDir
+
+> A perfectly clean sidecar can still leak in the shipped .AppImage while the .deb of the SAME build is clean. tauri stages each `resources` glob into target/release/<name>/ next to the release binary and BUILDS THE APPIMAGE FROM THERE — that staging dir is copied-into-never-deleted, so it accumulates the union of every past cut (dropped code-server/meridian-host, pre-prune docs, old identity-baked SPA). Wiping the AppDir does NOT fix it (tauri just refills the AppDir from the stale staging dir). The deb is immune because dpkg archives fresh from the source. Fix: rm -rf target/release/{sidecar,seed,resources} before the tauri appimage build; a fail-closed --scan-dir gate on the assembled AppDir is the backstop.
+
+> **Correction (2026-07-14):** an earlier revision of this note blamed the *AppDir* (`release/bundle/appimage/<product>.AppDir`) and prescribed `rm -rf "$APPIMG_DIR"/*.AppDir`. That was **wrong** — proven when a mtime-FRESH AppDir (built *after* that wipe) still leaked 339 files. The real accumulation point is one level up: tauri’s **resource-staging** dir `target/release/<name>/`. This note now describes the correct cause + fix. The AppDir wipe is retained as a cheap belt-and-suspenders, but it is not the fix.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The 0.0.9 release cut passed every in-build privacy audit — `build-desktop-sidecar.sh` pruned the internal-build-infra docs out of `src-tauri/sidecar` and its `--scan-dir` gate reported the sidecar **CLEAN** — and the resulting **.deb was genuinely clean**. Yet an independent scan of the assembled **`.AppImage` AppDir FAILED**: 339 files carrying the mac-VM sudo/login credentials + build-box identity (the builder’s home path, hostname, build-box email) — a long-dropped `code-server` tree (\~447 MB), a `meridian-host` tree, pre-prune `operator-docs`, a stale `seed/corestore/db/LOG`, and old identity-baked SPA assets. Same build, same commit, same `sidecar/**/*` resources glob — one bundle clean, the other leaking.
+
+## Why the two bundles differ despite one clean source
+
+[Section titled “Why the two bundles differ despite one clean source”](#why-the-two-bundles-differ-despite-one-clean-source)
+
+The tell: the leaking trees in the AppDir (`code-server`, `meridian-host`, the un-pruned docs) were **absent from the current `src-tauri/sidecar`** — yet present in an AppDir whose files had a **fresh (this-cut) mtime**. A fresh AppDir built from a clean source cannot contain trees the source lacks. So the AppDir was *not* built from `src-tauri/sidecar` directly. It was built from an intermediate.
+
+Root cause: **tauri stages the bundle `resources` into a persistent per-profile directory next to the release binary, and the AppImage is assembled FROM that staging dir.** For each glob in `tauri.conf.json` `bundle.resources` (`sidecar/**`, `seed/**`, `resources/*`), the build copies the current tree into `target/release/<name>/` (e.g. `~/.cargo-target/release/sidecar`). That copy is **copy-into-never-delete** — it never removes files absent from the new set — so each dir accumulates the **union of every past cut**:
+
+* `code-server` / `meridian-host` from cuts *before* they were dropped (owner directive 2026-07-07) → still there (observed: `code-server` mtime **2026-06-17**, a month stale, in a **11 GB** `release/sidecar` — vs a \~1.2 GB clean source);
+* pre-prune internal docs from before the doc-prune existed → still there;
+* a stale `seed/corestore/db/LOG` in `release/seed`; old identity-baked SPA in `release/resources`;
+* all of it **coexisting** with the current cut’s freshly-copied files (same dir, mixed mtimes).
+
+The AppImage’s AppDir is then populated from these stale staging dirs → it ships the union.
+
+**The deb is immune** because `dpkg-deb` archives a **fresh** tree straight from the clean `src-tauri/sidecar` each build — there is no persistent staging dir to accumulate into. That asymmetry is the whole bug: deb reflects the clean source; AppImage silently does not.
+
+## Why wiping the AppDir does NOT fix it
+
+[Section titled “Why wiping the AppDir does NOT fix it”](#why-wiping-the-appdir-does-not-fix-it)
+
+The intuitive fix — `rm -rf "$APPIMG_DIR"/*.AppDir` before `tauri build --bundles appimage` — **fails**, because after the wipe tauri rebuilds a *fresh* AppDir but **refills it from the still-stale `target/release/<name>/` staging dir**, not from `src-tauri/sidecar`. Proven 2026-07-13/14: a cut whose AppDir was purged still produced a fresh-mtime AppDir carrying 339 leaking files. You must purge the **upstream** staging dir, not the downstream AppDir.
+
+## Why the in-build audit missed it
+
+[Section titled “Why the in-build audit missed it”](#why-the-in-build-audit-missed-it)
+
+`build-desktop-sidecar.sh`’s `--scan-dir` gate scans the freshly-assembled sidecar (a temp `sidecar.tmp.<pid>` that is then atomically swapped into `src-tauri/sidecar`) — the **source**, which was correctly pruned and genuinely clean. It never looked at tauri’s `target/release/*` staging dirs or the assembled AppDir. A gate that scans the source instead of the shipped artifact reports green while the artifact leaks — the same lesson `audit-release-bundle.py`’s header already states for `source.tar.zst` (“scan the artifact, not the repo”).
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+1. **Purge tauri’s release resource-staging dirs before the appimage build** — the root-cause fix (`build-appimage.sh` step 0b):
+
+   ```bash
+   # $CT = cargo target dir (cargo metadata → target_directory)
+   rm -rf "$CT/release/sidecar" "$CT/release/seed" "$CT/release/resources"
+   ```
+
+   tauri then restages **only** the current (pruned, clean) resources, so the AppDir’s sidecar equals the clean deb sidecar. (Bonus: reclaims \~15 GB on a disk-pressured builder.) Verify tauri actually restages (the AppDir sidecar is non-empty) — the appimage bundle step copies resources at bundle time, so it does.
+
+2. **A fail-closed `--scan-dir` gate on the assembled AppDir**, right before `appimagetool` packages it — scans *the bytes that ship*, so any future regression reds the build instead of shipping silently:
+
+   ```bash
+   python3 bin/audit-release-bundle.py --scan-dir "$APPDIR" || exit 1
+   ```
+
+   (Also relativize any absolute symlink whose target points inside the AppDir — `grep` never follows a symlink target, so `--scan-dir` cannot see a build-box path hidden in a `.DirIcon` / `.desktop` symlink; rewrite them relative.)
+
+3. The pre-existing `rm -rf "$APPIMG_DIR"/*.AppDir` is kept as a cheap belt-and-suspenders, but it is NOT the fix — see “Why wiping the AppDir does NOT fix it” above.
+
+## Generalize: the accumulator is often UPSTREAM of the artifact you’re staring at
+
+[Section titled “Generalize: the accumulator is often UPSTREAM of the artifact you’re staring at”](#generalize-the-accumulator-is-often-upstream-of-the-artifact-youre-staring-at)
+
+The bug is the shape “a persistent output directory that is **copied into** rather than **rebuilt fresh**” — but the trap is that the *first* such dir you find (the AppDir) may be a red herring for a *staging* dir feeding it. When a fresh-mtime artifact contains trees its source lacks, walk UP the copy chain to find the dir that is never wiped. Audit every format:
+
+* **deb** — dpkg archives fresh each build → structurally safe.
+* **Windows** (`build-windows-on-vm.sh`) — explicitly wipes its `bundle/inno` output before packing and packs a freshly-tarred pruned sidecar → structurally safe.
+* **AppImage** — the offender above; safe only after wiping `target/release/{sidecar,seed,resources}`.
+* **macOS `.app`** — check whether `tauri build --bundles app` restages from a persistent `target/release/*` too. If a cut’s `.app` looks clean only because a disk-reclaim happened to delete the staging dir first, that cleanliness is a side-effect, not a guarantee.
+
+Rule of thumb: **prune/scan the assembled artifact that ships, and make sure the assembler — and every staging dir it copies from — starts from empty.** A clean source tree is necessary but not sufficient when an intermediate accumulates.
+
 # Arm-call-site risk tier — use the ceiling, not fail-safe critical
 
 > When planReversibleArm runs without a declared riskTier (the common case — cups never pass decision.riskTier), deriving the risk from the category's effective ceiling is what makes tripwires actually arm. Defaulting to 'critical' silently prevents every tripwire from firing.
@@ -6838,6 +6915,64 @@ Five suites read migration DDL through hand-rolled `../../..` candidate lists wi
 [Section titled “What the gate does NOT cover (loud boundary)”](#what-the-gate-does-not-cover-loud-boundary)
 
 `GATE_COVERAGE_BOUNDARY`: Playwright e2e, Cargo tests, LLM scenarios — they run on their own rails. `green(S)` means *all npm-workspace shards passed*, not *all testing passed*.
+
+# How docs drift-tracking actually works (anchors → git → sweep → steward)
+
+> The full pipeline behind the Docs tab's fresh/stale badges — subject_ref anchors, git-log drift detection, the post-git-sync sweep with its GIN reverse index, and the doc-steward dispatch. Read this before touching doc freshness or answering "how do docs stay current?".
+
+Audited end-to-end 2026-07-13 (code as the only source of truth) so the next agent doesn’t have to re-derive it. Plans: harness-docs-integration-2026-06-05, docs-corpus-audit WS2.
+
+## The pipeline in one paragraph
+
+[Section titled “The pipeline in one paragraph”](#the-pipeline-in-one-paragraph)
+
+Every doc carries a typed **anchor** (`subject_ref`) declaring *what code it documents*; drift detection is **plain git** — `git log <baseline>..HEAD -- <anchored paths>` non-empty ⇒ stale; the check runs **after every git-sync tick** via a cheap reverse-index prefilter; and a flagged doc **closes the loop** — generated docs get a regeneration enqueued, manual docs get a re-verify flag, and a single **doc-steward agent** is dispatched to re-sync the drifted batch.
+
+## 1. Anchors — `subject_ref` (subject-ref.ts, manual-anchor.ts)
+
+[Section titled “1. Anchors — subject\_ref (subject-ref.ts, manual-anchor.ts)”](#1-anchors--subject_ref-subject-refts-manual-anchorts)
+
+Three strategies, all reducing to concrete repo paths:
+
+* `path` — glob(s), used verbatim as git pathspecs.
+* `symbol` — `file :: name`, traced precisely with `git log -L :name:file` so an unrelated edit elsewhere in the same file does NOT flag the doc (file-level `--follow` fallback when `-L` can’t run).
+* `feature` — `F-NNN` / `WI-NNN`, resolved to the work-item’s recorded implementing commits → the files those commits touched.
+
+Manual docs declare anchors via a `documents:` frontmatter key (this very file does); otherwise refs are best-effort **inferred from repo paths mentioned in the body**. An unanchored doc is allowed but surfaces as **“Not drift-tracked”** — the old silent-rot mode made visible instead of hidden.
+
+## 2. Baseline + detection (drift.ts)
+
+[Section titled “2. Baseline + detection (drift.ts)”](#2-baseline--detection-driftts)
+
+* Baseline: `generated_from_sha` for generated docs, `last_verified_sha` for manual docs (set by the verify action → HEAD).
+* Stale ⇔ `git log <baseline>..HEAD -- <resolved paths>` returns commits.
+* Honest edges (accepted in D-001): whitespace/comment-only commits can false-nudge (a false nudge beats silent rot); renames handled with `--follow`; anchors under **git submodules** are routed INSIDE the submodule against the gitlink-recovered baseline (else they never flag); any git/ baseline error maps to status `unknown` (“can’t tell”), never a confident fresh/stale.
+
+## 3. When it runs (freshness-sweep.ts, sweep-after-sync.ts)
+
+[Section titled “3. When it runs (freshness-sweep.ts, sweep-after-sync.ts)”](#3-when-it-runs-freshness-sweepts-sweep-after-syncts)
+
+After each git-sync `synced`, the tick’s changed paths are intersected with the denormalised **reverse index** — per-record `anchor_paths text[]`, GIN-indexed (migration 172) — and only the intersecting docs pay for the precise git confirm. On-demand recompute exists per doc (`GET /api/harness/:slug/docs?path=<docId>&recompute=1`). The whole bridge is best-effort and swallowed on failure: it must never wedge git-sync.
+
+## 4. Closing the loop (doc-steward-dispatch.ts)
+
+[Section titled “4. Closing the loop (doc-steward-dispatch.ts)”](#4-closing-the-loop-doc-steward-dispatchts)
+
+Newly-drifted docs dispatch ONE **doc-steward** agent (gate: `papercusp-doc-steward`; batch-capped with a dispatch cooldown per WI-2104 — the old whole-set-per-spawn pattern burned 58% of spawns at timeout). Each drifted doc is handed with its `anchorPaths`, the drift reason, and the **work-items that changed the anchored code** (derived from `git_sync_commit_attribution`, D-006) so the steward reads intent instead of reverse-engineering diffs.
+
+## 5. Statuses + UI (AdvDocsTab.tsx, routes/harness/docs.ts)
+
+[Section titled “5. Statuses + UI (AdvDocsTab.tsx, routes/harness/docs.ts)”](#5-statuses--ui-advdocstabtsx-routesharnessdocsts)
+
+`fresh | stale | review | untracked | unknown` — badges ”⚠ May be out of date” / “Not drift-tracked”, nav freshness dots, and the close-the-loop verbs: `POST /api/harness/:slug/docs/{verify|regenerate|overlay|anchor}`.
+
+## Gotchas worth knowing before you touch this
+
+[Section titled “Gotchas worth knowing before you touch this”](#gotchas-worth-knowing-before-you-touch-this)
+
+* The reverse index (`anchor_paths`) is denormalised — if you change how anchors resolve, the sweep prefilter and the precise confirm can disagree.
+* `symbol` anchors get file-level fallback on rename/removal; expect occasional over-flagging there, by design.
+* Docs under submodule paths are only correct because of the explicit submodule routing in drift.ts — don’t “simplify” it away.
 
 # How the papercusp-workspace + papercup-self-registration boot path works
 
@@ -15872,6 +16007,21 @@ Item #7 above (“Observability is near-zero … the 429 itself is in the discar
 * `executeWake` now checks, **immediately before** building the `resumeCommandFor(...)` invocation, whether the target session’s local files are still on disk and, if not, calls `rematerializeSession(...)` to pull them back byte-exactly from the PG archive before `claude --resume <uuid>` / `codex resume <uuid>` / the omp thread-resume runs. Wired for all three resume agents: `codex` (`codexHomeForAdvSession`, falling back to `findArchivedSessionIdForAdv` when no local session id is known), `omp` (`ompSessionsRoot()`), and `claude` (`sessionClaudeConfigDir(owner)`). Each check is FS-only (a no-op) when the file is already on disk; a miss costs one PG read + a decompress-and-write.
 * This closes a **different** turn-death class than the 429-storm this doc is about: a resume that would previously fail outright with “session not found” (because archive-at-death had deleted the local transcript) now transparently restores it first. It does not change when a delivery is marked `delivered` (still on `spawnDetached` returning a PID — see step 1 above), does not feed the turn-error taxonomy or the autoloop circuit, and is orthogonal to the resume-exit observer / reconcile stuck-park path this doc’s remediation roadmap covers.
 
+## Also since this doc (2026-07-14) — ordinary event wakes now reuse the captured outcome
+
+[Section titled “Also since this doc (2026-07-14) — ordinary event wakes now reuse the captured outcome”](#also-since-this-doc-2026-07-14--ordinary-event-wakes-now-reuse-the-captured-outcome)
+
+WI-4779 found the remaining scope hole in the capture-and-watch design: the registered `onResumeTurnExit` handler only acted when `source` was `loop:<routineId>`. An ordinary `events:await` delivery still captured the detached child exit, but the loop handler returned `handled:false` and discarded it. Live evidence was await 19350: `release:green:papercusp` fired at 05:20, delivery 18970 was marked `delivered/resume-headless` when its PID spawned, the session produced no turn, and only the paired red-key timeout woke it at 06:09.
+
+The pump now observes every detached resume and splits the existing capture-and-watch policy by source:
+
+* **Loop-sourced delivery:** unchanged. `loop-turn-outcome.ts` owns circuit accounting and retry-after-aware re-arm; the delivery is not reopened, avoiding a duplicate loop iteration.
+* **Ordinary event delivery:** a non-zero/signalled exit is classified by the shared `classifyResumeTurnExit` taxonomy, then `reopenDeliveredAfterResumeDeath` atomically moves every still-delivered row from that coalesced wake back to `pending` (or `dead` after the existing eight-attempt ceiling). It clears the optimistic channel/timestamp and reuses the delivery ladder’s exponential backoff.
+* **Fast child exit:** buffered until `markDeliveryDelivered` plus sibling coalescing finish, so a child that dies immediately cannot be reopened and then overwritten back to delivered.
+* **Late/duplicate exit callback:** ignored unless the row is still `delivered`, preventing a stale observer from clobbering a row another recovery path already moved.
+
+The recurrence lives in `events/await/engine.test.ts` (fast-exit + coalesced rows + loop exclusion) and `events/await/await-store.integration.test.ts` (real-PG delivered→pending, metadata clearing, duplicate callback guard). This closes the generic event half of the same delivered-vs-survived defect without changing live injection channels or loop semantics.
+
 # The fed_hlc LWW comparator is non-transitive under MIXED HLC presence
 
 > lwwPick / the fed_hlc PG guard used to use "both-HLC → compare HLC, else → compare ts" — a rule that CYCLED when a no-HLC (pre-314) op sat between two skewed HLC ops, so the fold winner became order-dependent and peers could diverge (EI-1698). FIXED as of 2026-07-02 (compare in one HLC space, everywhere) — plus a follow-up exact-tie/node-id fix (WI-1672, mig-459) and a THIRD hardening, the HlcClock recv ratchet ε-bound (maxDriftMs) that stops one absurd remote stamp from poisoning a node's (and, re-propagated, the pot's) clock.
@@ -16993,6 +17143,52 @@ Coerce **only** the two exact strings. Do **not** reach for `z.coerce.boolean()`
 **Note — `force` now has dual responsibility (EI-134 / 2026-06-25).** The `plans:new` `force` arg has since grown a second job: when `force !== true`, creation is first rejected with `similar_exists` + the overlapping plans when existing slugs/titles share ≥2 topic tokens (audit P-049 / EI-134 — duplicate plans split project history). So `force: true` now bypasses both the dedup gate AND signals explicit intent when a stale session coerces the string `"true"`. The string-tolerant coercion applies transparently in both cases — a stale session passing `"true"` is coerced to `true` and correctly skips the dedup check.
 
 **Role access update (2026-06-25):** `plans:new` changed from `agentRoles: [...SU_ROLES, 'cup']` to `agentRoles: [...AGENT_ROLES]` in the same batch — every built-in role can now call it. This does not affect the string-coercion or dedup behavior above, but means a wider set of sessions (worker, validator, etc.) may encounter the stale-schema `"true"` wire value when running against an old pinned manifest.
+
+# MCP tools vanished mid-session — client transport death, self-diagnosis + the auto-heal
+
+> A Claude Code self-re-exec (auto-update relaunch / TUI fullscreen switch) severs the session's papercusp-su HTTP-MCP transport while the SERVER stays healthy — tools vanish, and the armed loop's events:await registration + every MCP carry surface (loop:checkpoint, facts:assert) die with it. Diagnose with a bash curl of the :9071 initialize handshake; park state in FILES; the fix is client-side (/mcp reconnect or the P-005 auto-heal), never a server restart.
+
+## The failure shape (su-39f07, 2026-07-13 — 5h dark)
+
+[Section titled “The failure shape (su-39f07, 2026-07-13 — 5h dark)”](#the-failure-shape-su-39f07-2026-07-13--5h-dark)
+
+Mid-session, every `mcp__papercusp*` tool disappears (“MCP server disconnected”). The instinct is “the operator is down” — **verify before concluding**, because in this class the server is fine and the CLIENT died:
+
+```bash
+curl -s -m 8 -o /dev/null -w "HTTP %{http_code}\n" -X POST \
+  "http://127.0.0.1:9071/api/mcp?superuser=1" \
+  -H "Authorization: Bearer <your .claude.json papercusp-su token>" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"diag","version":"0"}}}'
+```
+
+HTTP 200 with a serverInfo body ⇒ **the server is healthy; your session’s transport is severed** — typically by a Claude Code self-re-exec (auto-update relaunch or TUI fullscreen switch; the launcher now sets `DISABLE_AUTOUPDATER=1` to kill the main trigger). Restarting the operator or the :9071 proxy will NOT fix it and needlessly blips every healthy session.
+
+## The blast radius is bigger than “tools gone”
+
+[Section titled “The blast radius is bigger than “tools gone””](#the-blast-radius-is-bigger-than-tools-gone)
+
+Everything registered on the dead transport dies silently with it:
+
+* your **armed loop** — the `events:await` inbox-wake re-registration is an MCP call, so the loop stops firing (the routine row stays `active`, which is exactly the signal the watchdog keys on);
+* your **carry surfaces** — `loop:checkpoint`, `facts:assert`, `work_items:checkpoint`, `memory:remember` are all MCP. **Park state in FILES** (your memory directory / scratchpad) until the transport is back;
+* your **coord presence** — peers see you going stale; you cannot read your own inbox.
+
+## What heals it
+
+[Section titled “What heals it”](#what-heals-it)
+
+1. **The auto-heal (mcp-transport-resilience P-005)**: the mcp-dark watchdog’s interactive sweep detects “live psu-pty host + frozen tool-call presence beat” within \~1–2 sweep intervals and injects the host-side `/mcp` dialog macro (`mode:'mcp-reconnect'`) — your terminal and context survive. After a confirmed heal you get ONE wake telling you to re-arm your loop and re-park state — **do both**.
+2. **Manual**: the owner types `/mcp` in the session’s terminal → reconnect `papercusp-su`. (An agent cannot run `/mcp` on itself — the client owns the transport.)
+3. **Headless sessions** only: kill + `psu --resume` — the transport re-initializes at launch. Never the first resort for a headed session (owner directive, 2026-07-13).
+
+## While dark, an agent should
+
+[Section titled “While dark, an agent should”](#while-dark-an-agent-should)
+
+1. Diagnose (the curl above) — do not blame the server without it.
+2. Park all in-flight state in files; note the transcript survives on disk and is recoverable after reconnect.
+3. Surface plainly to the owner: “MCP transport dead client-side; server verified healthy; `/mcp` reconnect fixes it” — then keep doing whatever file/bash-only work remains useful.
 
 # Measuring code:run adoption + token impact (a systematic A/B)
 

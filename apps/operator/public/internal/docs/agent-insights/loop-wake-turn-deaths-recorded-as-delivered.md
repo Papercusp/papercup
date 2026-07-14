@@ -395,3 +395,32 @@ delivered-vs-survived accounting this doc analyzes:
   returning a PID — see step 1 above), does not feed the turn-error taxonomy or the
   autoloop circuit, and is orthogonal to the resume-exit observer / reconcile stuck-park
   path this doc's remediation roadmap covers.
+
+## Also since this doc (2026-07-14) — ordinary event wakes now reuse the captured outcome
+
+WI-4779 found the remaining scope hole in the capture-and-watch design: the registered
+`onResumeTurnExit` handler only acted when `source` was `loop:<routineId>`. An ordinary
+`events:await` delivery still captured the detached child exit, but the loop handler returned
+`handled:false` and discarded it. Live evidence was await 19350: `release:green:papercusp`
+fired at 05:20, delivery 18970 was marked `delivered/resume-headless` when its PID spawned,
+the session produced no turn, and only the paired red-key timeout woke it at 06:09.
+
+The pump now observes every detached resume and splits the existing capture-and-watch policy
+by source:
+
+* **Loop-sourced delivery:** unchanged. `loop-turn-outcome.ts` owns circuit accounting and
+  retry-after-aware re-arm; the delivery is not reopened, avoiding a duplicate loop iteration.
+* **Ordinary event delivery:** a non-zero/signalled exit is classified by the shared
+  `classifyResumeTurnExit` taxonomy, then `reopenDeliveredAfterResumeDeath` atomically moves
+  every still-delivered row from that coalesced wake back to `pending` (or `dead` after the
+  existing eight-attempt ceiling). It clears the optimistic channel/timestamp and reuses the
+  delivery ladder's exponential backoff.
+* **Fast child exit:** buffered until `markDeliveryDelivered` plus sibling coalescing finish,
+  so a child that dies immediately cannot be reopened and then overwritten back to delivered.
+* **Late/duplicate exit callback:** ignored unless the row is still `delivered`, preventing a
+  stale observer from clobbering a row another recovery path already moved.
+
+The recurrence lives in `events/await/engine.test.ts` (fast-exit + coalesced rows + loop
+exclusion) and `events/await/await-store.integration.test.ts` (real-PG delivered→pending,
+metadata clearing, duplicate callback guard). This closes the generic event half of the same
+delivered-vs-survived defect without changing live injection channels or loop semantics.
