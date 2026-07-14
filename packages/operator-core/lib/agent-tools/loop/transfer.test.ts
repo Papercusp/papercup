@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const transfer = vi.fn();
-const refresh = vi.fn(async () => ({ generation: 1 }));
+const { transfer, refresh } = vi.hoisted(() => ({
+  transfer: vi.fn(),
+  refresh: vi.fn(async () => ({ generation: 1 })),
+}));
 vi.mock('../../harness/routines/loop', () => ({ transferLoopOwnership: transfer }));
 vi.mock('../coordination/control-anchor', () => ({ refreshControlAnchorAfterMutation: refresh }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'su-me', ownerLabel: 'su · me', workspaceId: 'ws', source: 'omp-hook-session', userId: null }),
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 
 import tool from './transfer';

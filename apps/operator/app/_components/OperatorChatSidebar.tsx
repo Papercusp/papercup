@@ -24,8 +24,8 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { parseAsBoolean, useQueryState } from 'nuqs';
+import { ChevronLeft, ChevronRight, Coffee, Thermometer, Volume2, VolumeX } from 'lucide-react';
+import { parseAsBoolean, parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
 import { PotStatusStrip } from './PotStatusStrip';
 import { LocalCardHost } from './chat/LocalCardHost';
@@ -37,6 +37,8 @@ import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
 import { AudienceModeSelector } from './AudienceModeSelector';
+import { useLexicon } from '@/lib/useLexicon';
+import { isVoiceOutputMuted, setVoiceOutputMuted } from './voice/voice-mode';
 import {
   OPERATOR_CHAT_COLLAPSED_WIDTH,
   OPERATOR_CHAT_DEFAULT_WIDTH,
@@ -45,6 +47,63 @@ import {
 } from './operator-chat-layout';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
+
+/**
+ * Reactive read of a body class. The LeftSidebar rail (operator-vite) reserves
+ * layout space by stamping `has-left-sidebar` on <body> (removed on chromeless
+ * routes / unmount) — this is the truth signal for "the rail is actually
+ * docked", which the WI-4739 header identity below needs alongside the nuqs
+ * `lsb`/`lst` params (the params alone can't tell a chromeless route apart).
+ */
+function useBodyHasClass(cls: string): boolean {
+  const [has, setHas] = useState(false);
+  useEffect(() => {
+    const read = () => setHas(document.body.classList.contains(cls));
+    read();
+    const mo = new MutationObserver(read);
+    mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    return () => mo.disconnect();
+  }, [cls]);
+  return has;
+}
+
+/**
+ * Speak-responses (TTS output) mute toggle — MOVED here from the left rail's
+ * PapercupVoiceBar (WI-4740: the owner asked for the duplicated voice controls
+ * to live on the chat bar ONLY; this was the one control the chat bar lacked).
+ * Muting silences spoken output but keeps voice mode + PTT live. Same
+ * persisted flag + cross-tab broadcast event as the original.
+ */
+function TtsMuteButton() {
+  const [muted, setMuted] = useState(false);
+  useEffect(() => {
+    setMuted(isVoiceOutputMuted());
+    const onChange = (e: Event) => {
+      const d = (e as CustomEvent<{ muted?: boolean }>).detail;
+      setMuted(typeof d?.muted === 'boolean' ? d.muted : isVoiceOutputMuted());
+    };
+    window.addEventListener('papercusp:voiceOutputMutedChanged', onChange);
+    return () => window.removeEventListener('papercusp:voiceOutputMutedChanged', onChange);
+  }, []);
+  const toggle = () => {
+    const next = !muted;
+    setMuted(next);
+    setVoiceOutputMuted(next);
+  };
+  return (
+    <Tooltip label={muted ? 'Responses are muted — click to hear them spoken aloud' : 'Responses are spoken aloud — click to mute'}>
+      <button
+        type="button"
+        className={`op-chat-tts${muted ? ' is-muted' : ''}`}
+        onClick={toggle}
+        aria-pressed={!muted}
+        aria-label={muted ? 'Unmute spoken responses' : 'Mute spoken responses'}
+      >
+        {muted ? <VolumeX size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
+      </button>
+    </Tooltip>
+  );
+}
 
 /** Read the stored width from localStorage, clamped to the viewport ceiling. */
 function readStoredWidth(): number {
