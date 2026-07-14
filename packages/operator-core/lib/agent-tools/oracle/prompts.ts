@@ -53,6 +53,11 @@ export const ORACLE_ALLOWED_TOOLS = [
   // app is built from (read-only; materialize stays with the builder surfaces).
   'mcp__agentmcp__templates:list',
   'mcp__agentmcp__templates:get-guide',
+  // cupboard-agent-tool-coverage-2026-07-14 — cross-kind Cupboard BROWSE (read-only;
+  // publish/install/delist stay with the operator-converse surface per the Oracle's
+  // read-only posture). Answer "what's on the Cupboard?" across every listing kind.
+  'mcp__agentmcp__cupboard:search',
+  'mcp__agentmcp__knowledge_packs:list',
   // Agent dispatch.
   'mcp__agentmcp__agents:list',
   'mcp__agentmcp__agent_chats:list',

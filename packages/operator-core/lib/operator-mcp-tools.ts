@@ -204,6 +204,30 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__templates:get-guide',
   'mcp__agentmcp__templates:new-app',
 
+  // cupboard-agent-tool-coverage-2026-07-14 (owner-directed): the FULL Cupboard
+  // publish / install / browse / delist family, so an END USER drives every listing
+  // kind (harness · blueprint · plugin · pack · knowledge-pack · template · app) by
+  // simply ASKING the chat operator. Browse cross-kind → cupboard:search. Publish →
+  // cupboard:publish-plugin (plugin+pack), publish-template, publish-app,
+  // blueprint:publish, knowledge_packs:publish; harness/hive publish is
+  // discovery:set_pot { visibility:'public' }. Install → cupboard:install-plugin
+  // (plugin+pack), install-blueprint, install-template, knowledge_packs:install
+  // (templates:new-app above materializes). Delist → cupboard:unpublish (one
+  // listing) or discovery:set_pot { visibility:'private' } (a whole hive).
+  'mcp__agentmcp__cupboard:search',
+  'mcp__agentmcp__cupboard:publish-plugin',
+  'mcp__agentmcp__cupboard:publish-template',
+  'mcp__agentmcp__cupboard:publish-app',
+  'mcp__agentmcp__cupboard:install-plugin',
+  'mcp__agentmcp__cupboard:install-blueprint',
+  'mcp__agentmcp__cupboard:install-template',
+  'mcp__agentmcp__cupboard:unpublish',
+  'mcp__agentmcp__discovery:set_pot',
+  'mcp__agentmcp__blueprint:publish',
+  'mcp__agentmcp__knowledge_packs:list',
+  'mcp__agentmcp__knowledge_packs:publish',
+  'mcp__agentmcp__knowledge_packs:install',
+
   // hive-tool-namespace-2026-06-08 — local hive lifecycle. The operator manages
   // its hives: list/get to inspect; create/update/dissolve to manage. create/
   // dissolve/update are root-only (the operator is root; bees are refused). Wake

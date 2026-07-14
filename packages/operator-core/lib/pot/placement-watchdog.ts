@@ -137,7 +137,9 @@ export interface PlacementConfig {
 }
 
 export function placementConfig(): PlacementConfig {
-  const threshold = Number(process.env.PAPERCUSP_POT_PLACEMENT_BREAKER ?? process.env.PAPERCUSP_POT_PLACEMENT_BREAKER ?? 3);
+  const threshold = Number(
+    process.env.PAPERCUSP_POT_PLACEMENT_BREAKER ?? process.env.PAPERCUSP_POT_PLACEMENT_BREAKER ?? 3,
+  );
   const debounce = Number(
     process.env.PAPERCUSP_POT_PLACEMENT_DEBOUNCE_MS ?? process.env.PAPERCUSP_POT_PLACEMENT_DEBOUNCE_MS ?? 5 * 60_000,
   );
@@ -169,7 +171,9 @@ export function placementConfig(): PlacementConfig {
  * toward the placement curse. Env-overridable like the other watchdog tunables. */
 export const ACTIVE_RECLAIM_WINDOW_MS = (() => {
   const v = Number(
-    process.env.PAPERCUSP_POT_ACTIVE_RECLAIM_WINDOW_MS ?? process.env.PAPERCUSP_POT_ACTIVE_RECLAIM_WINDOW_MS ?? 15 * 60_000,
+    process.env.PAPERCUSP_POT_ACTIVE_RECLAIM_WINDOW_MS ??
+      process.env.PAPERCUSP_POT_ACTIVE_RECLAIM_WINDOW_MS ??
+      15 * 60_000,
   );
   return Number.isFinite(v) && v >= 0 ? v : 15 * 60_000;
 })();
@@ -384,7 +388,8 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
   // Mug recovery wake for a parked unit every debounce window forever, each wake
   // re-placing a fresh cup that could only re-confirm the same gate and die —
   // observed live on WI-1439 (a new cup every ~5-40min for days).
-  if (obs.unitParked) return { kind: 'parked', reason: 'unit status is a deliberate park (e.g. blocked) — no holder expected' };
+  if (obs.unitParked)
+    return { kind: 'parked', reason: 'unit status is a deliberate park (e.g. blocked) — no holder expected' };
 
   // EI-865 — the cursed latch: a unit already tripped by the breaker is HALTED.
   // No live holder + not terminal + already cursed ⇒ leave it latched. Re-firing /
@@ -430,7 +435,8 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
       kind: 'recover',
       nextFailCount: obs.failCount, // FLAT — proof-of-life: a slow-but-alive cup is genuinely working
       nextInfraLossCount: obs.infraLossCount, // and is fully exempt — never even the bounded infra counter
-      reason: 'serving cup reaper-reclaimed while still active (slow-but-alive) — re-placing, not counting toward any breaker',
+      reason:
+        'serving cup reaper-reclaimed while still active (slow-but-alive) — re-placing, not counting toward any breaker',
     };
   }
 
@@ -491,11 +497,7 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
       reason: 'no serving-cup attempt since the last loss — re-place only, nothing to count',
     };
   }
-  if (
-    obs.servingCupSpawnId != null &&
-    obs.lastLossSpawnId != null &&
-    obs.servingCupSpawnId === obs.lastLossSpawnId
-  ) {
+  if (obs.servingCupSpawnId != null && obs.lastLossSpawnId != null && obs.servingCupSpawnId === obs.lastLossSpawnId) {
     return {
       kind: 'recover',
       nextFailCount: obs.failCount,
@@ -526,7 +528,8 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
       // EI-3216 — re-place silently: a no-fair-attempt zombie loss is infra, not item-pathology,
       // so it does NOT fire a per-item Mug recovery wake (re-placing makes another zombie).
       infraAttributed: true,
-      reason: 'serving cup made 0 tool calls (no-fair-attempt / zombie) — counted toward the bounded infra breaker, not the pathology breaker',
+      reason:
+        'serving cup made 0 tool calls (no-fair-attempt / zombie) — counted toward the bounded infra breaker, not the pathology breaker',
     };
   }
 
@@ -741,7 +744,10 @@ export async function wakeMug(opts: MugWakeOptions): Promise<void> {
     try {
       await wakeRecipients([opts.mugOwner], {
         summary: opts.summary,
-        payload: { ...(typeof opts.payload === 'object' && opts.payload !== null ? opts.payload : {}), mugWake: metadata },
+        payload: {
+          ...(typeof opts.payload === 'object' && opts.payload !== null ? opts.payload : {}),
+          mugWake: metadata,
+        },
         source: opts.source,
         workspaceId: opts.workspaceId,
       });
@@ -895,9 +901,7 @@ export async function reconcilePotPlacements(
       try {
         results.push(...(await reconcileOnePotFn(sql, workspaceId, installSlug, cfg, now)));
       } catch (e) {
-        console.warn(
-          `[pot-placement-watchdog] pot ${installSlug} failed: ${e instanceof Error ? e.message : e}`,
-        );
+        console.warn(`[pot-placement-watchdog] pot ${installSlug} failed: ${e instanceof Error ? e.message : e}`);
       }
     }
   } catch (e) {
@@ -1225,7 +1229,13 @@ export async function reconcileOnePot(
               const downstream = await countNonTerminalDownstream(sql, workspaceId, base.harnessSlug, unitId);
               if (downstream > 0) {
                 await fireUnblockWake(workspaceId, mugOwner, unitId, base.harnessSlug, downstream);
-                out.push({ workspaceId, installSlug, workItemId: unitId, decision: 'unblocked', detail: `${downstream} downstream` });
+                out.push({
+                  workspaceId,
+                  installSlug,
+                  workItemId: unitId,
+                  decision: 'unblocked',
+                  detail: `${downstream} downstream`,
+                });
               }
             }
           }
@@ -1344,6 +1354,13 @@ export async function reconcileOnePot(
           break;
         case 'abandon':
           if (existing && existing.status !== 'abandoned' && existing.status !== 'completed') {
+            if (existing.escalation_msg_id) {
+              await resolvePlacementEscalation(
+                existing.escalation_msg_id,
+                unitId,
+                `auto-resolved: work-item ${unitId} no longer exists; the ${existing.status} advisory is no longer relevant`,
+              );
+            }
             await upsertPlacement(sql, {
               ...base,
               status: 'abandoned',
@@ -1352,6 +1369,7 @@ export async function reconcileOnePot(
               lastLossSpawnId: null,
               disposition: 'abandoned',
             });
+            out.push({ workspaceId, installSlug, workItemId: unitId, decision: 'abandon', detail: decision.reason });
           }
           break;
       }
@@ -1464,7 +1482,9 @@ async function escalateCursedPlacement(unitId: string, harness: string | null, f
     });
     return rec.msg_id;
   } catch (e) {
-    console.warn(`[pot-placement-watchdog] cursed escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[pot-placement-watchdog] cursed escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`,
+    );
     return null;
   }
 }
@@ -1481,7 +1501,9 @@ async function escalateStaleRecovery(unitId: string, harness: string | null, age
     });
     return rec.msg_id;
   } catch (e) {
-    console.warn(`[pot-placement-watchdog] stale-recovery escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[pot-placement-watchdog] stale-recovery escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`,
+    );
     return null;
   }
 }
@@ -1546,7 +1568,13 @@ async function reconcileTerminalPlacements(
 ): Promise<PlacementSweepResult[]> {
   const out: PlacementSweepResult[] = [];
   const openRows = await sql<
-    { work_item_id: string; status: string; escalation_msg_id: string | null; harness_slug: string | null; fail_count: number }[]
+    {
+      work_item_id: string;
+      status: string;
+      escalation_msg_id: string | null;
+      harness_slug: string | null;
+      fail_count: number;
+    }[]
   >`
     SELECT work_item_id, status, escalation_msg_id, harness_slug, fail_count
       FROM harness_shared.pot_placements
@@ -1673,7 +1701,9 @@ async function reconcileStrandedWork(
       });
       msgId = rec.msg_id;
     } catch (e) {
-      console.warn(`[pot-placement-watchdog] stranded escalation failed for ${blk.blocker_id}: ${e instanceof Error ? e.message : e}`);
+      console.warn(
+        `[pot-placement-watchdog] stranded escalation failed for ${blk.blocker_id}: ${e instanceof Error ? e.message : e}`,
+      );
       continue;
     }
     await upsertPlacement(sql, {
@@ -1692,7 +1722,13 @@ async function reconcileStrandedWork(
       escalationMsgId: msgId,
       now,
     });
-    out.push({ workspaceId, installSlug, workItemId: blk.blocker_id, decision: 'stranded', detail: `${blk.downstream} downstream` });
+    out.push({
+      workspaceId,
+      installSlug,
+      workItemId: blk.blocker_id,
+      decision: 'stranded',
+      detail: `${blk.downstream} downstream`,
+    });
   }
   return out;
 }
@@ -1768,7 +1804,8 @@ export function buildOpenPlacementSummary(
     if (r.status !== 'working') {
       const updatedAtMs = r.updated_at != null ? new Date(r.updated_at).getTime() : NaN;
       const ageHours = Number.isFinite(updatedAtMs) ? Math.max(0, (nowMs - updatedAtMs) / 3_600_000) : undefined;
-      const stale = r.status === 'recovering' && ageHours != null && ageHours * 3_600_000 >= DEFAULT_STALE_RECOVERING_MS;
+      const stale =
+        r.status === 'recovering' && ageHours != null && ageHours * 3_600_000 >= DEFAULT_STALE_RECOVERING_MS;
       const planItemId = r.source_plan_item_ids?.[0];
       const planItem = r.source_plan_slug && planItemId ? `${r.source_plan_slug}#${planItemId}` : null;
       summary.items.push({

@@ -105,8 +105,7 @@ export const POST_COMPACTION_MARKER_WINDOW_MIN = 15;
 
 /** The post-compaction regression markers: a resumed session acting on hallucinated
  *  schema (column/relation-not-found) right after its context was rebuilt. */
-export const POST_COMPACTION_ERROR_MARKER_REGEX =
-  'column .* does not exist|relation .* does not exist|no such column';
+export const POST_COMPACTION_ERROR_MARKER_REGEX = 'column .* does not exist|relation .* does not exist|no such column';
 
 /**
  * Context-burn telemetry (P-008): what the coordination layer itself injects into
@@ -381,12 +380,9 @@ async function readBgHostJournal(windowHours: number): Promise<BgHostJournalMetr
           '-u',
           'papercup-bg-host.service',
           '--grep',
-          [
-            BG_HOST_RESTART_PATTERN,
-            BG_HOST_OOM_PATTERN,
-            BG_HOST_MEMORY_PEAK_PATTERN,
-            BG_HOST_FAILURE_PATTERN,
-          ].join('|'),
+          [BG_HOST_RESTART_PATTERN, BG_HOST_OOM_PATTERN, BG_HOST_MEMORY_PEAK_PATTERN, BG_HOST_FAILURE_PATTERN].join(
+            '|',
+          ),
         ],
         { maxBuffer },
       ),
@@ -440,9 +436,7 @@ function roleSuccessRowsToView(rows: SpawnAggRow[]): RoleTurnSuccess[] {
 }
 
 function computeDeployLatency(rows: PipelineEventRow[]): DeployLatencyMetrics {
-  const ordered = rows
-    .slice()
-    .sort((a, b) => toMs(a.created_at) - toMs(b.created_at));
+  const ordered = rows.slice().sort((a, b) => toMs(a.created_at) - toMs(b.created_at));
   let pendingGreenAt: number | null = null;
   const deltas: number[] = [];
   for (const row of ordered) {
@@ -649,7 +643,10 @@ export async function readPotSoakReport(
     infraCurse: {
       placementsSeen: Number(curse.placements_seen ?? 0),
       infraCurses: Number(curse.infra_curses ?? 0),
-      rate: Number(curse.placements_seen ?? 0) > 0 ? Number(curse.infra_curses ?? 0) / Number(curse.placements_seen ?? 0) : null,
+      rate:
+        Number(curse.placements_seen ?? 0) > 0
+          ? Number(curse.infra_curses ?? 0) / Number(curse.placements_seen ?? 0)
+          : null,
       recoveringOpen: Number(curse.recovering_open ?? 0),
       staleRecovering: Number(curse.stale_recovering ?? 0),
     },
@@ -662,7 +659,10 @@ export async function readPotSoakReport(
     gateGreenRatio: {
       green: Number(pipeline.green_success ?? 0),
       total: Number(pipeline.green_total ?? 0),
-      ratio: Number(pipeline.green_total ?? 0) > 0 ? Number(pipeline.green_success ?? 0) / Number(pipeline.green_total ?? 0) : null,
+      ratio:
+        Number(pipeline.green_total ?? 0) > 0
+          ? Number(pipeline.green_success ?? 0) / Number(pipeline.green_total ?? 0)
+          : null,
     },
     deployLatency,
     contextBurn: {
@@ -672,8 +672,7 @@ export async function readPotSoakReport(
       estMeanWakeTokens: meanWakeChars != null ? Math.round(meanWakeChars / 4) : null,
       requestedCompactions: Number(compaction.compactions ?? 0),
       sessionsCompacting,
-      compactionsPerSession:
-        sessionsCompacting > 0 ? Number(compaction.compactions ?? 0) / sessionsCompacting : null,
+      compactionsPerSession: sessionsCompacting > 0 ? Number(compaction.compactions ?? 0) / sessionsCompacting : null,
       postCompactionErrorMarkers: Number(compaction.post_markers ?? 0),
     },
   });

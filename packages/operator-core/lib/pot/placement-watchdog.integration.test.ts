@@ -39,7 +39,12 @@ import { RECLAIM_STALE_MS } from '../fleet/spawn-reclaim';
 const WS = 'default'; // coord_links default workspace == the org workspace here
 const POT = 'papercup';
 const MUG = 'mug-owner-1';
-const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000, infraBreakerThreshold: 12 };
+const CFG: PlacementConfig = {
+  breakerThreshold: 3,
+  recoveryDebounceMs: 5 * 60_000,
+  dormancyGraceMs: 10 * 60_000,
+  infraBreakerThreshold: 12,
+};
 const NOW = 1_900_000_000_000;
 
 let db: OrgTestDb;
@@ -99,8 +104,22 @@ async function seedUnit(opts: {
 
 async function readPlacement(
   id: string,
-): Promise<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null; recovery_started_at: string | Date | null } | null> {
-  const rows = await sql<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null; recovery_started_at: string | Date | null }[]>`
+): Promise<{
+  status: string;
+  fail_count: number;
+  infra_loss_count: number;
+  escalation_msg_id: string | null;
+  recovery_started_at: string | Date | null;
+} | null> {
+  const rows = await sql<
+    {
+      status: string;
+      fail_count: number;
+      infra_loss_count: number;
+      escalation_msg_id: string | null;
+      recovery_started_at: string | Date | null;
+    }[]
+  >`
     SELECT status, fail_count, infra_loss_count, escalation_msg_id, recovery_started_at
       FROM harness_shared.pot_placements
      WHERE workspace_id = ${WS} AND install_slug = ${POT} AND work_item_id = ${id}`;
@@ -254,7 +273,13 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
   });
 
   it('P-020: a live cup on a non-terminal unit → working, no wake (steering, hands-off)', async () => {
-    await seedCup({ owner: 'cup-1', featureId: 'F-110', status: 'running', heartbeatAtMs: NOW - 1000, lastOutputAtMs: NOW - 1000 });
+    await seedCup({
+      owner: 'cup-1',
+      featureId: 'F-110',
+      status: 'running',
+      heartbeatAtMs: NOW - 1000,
+      lastOutputAtMs: NOW - 1000,
+    });
     await seedUnit({ id: 'F-110', status: 'in_progress', takenBy: 'cup-1' });
 
     await reconcileOnePot(sql, WS, POT, CFG, NOW);
@@ -266,7 +291,13 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
   it('P-020: a re-placement that took (unit now held by a LIVE cup) reads healthy, not failed', async () => {
     // Old cup died on F-120; a new live cup re-claimed it.
     await seedCup({ owner: 'cup-dead', featureId: 'F-120', status: 'failed' });
-    await seedCup({ owner: 'cup-live', featureId: null, status: 'running', heartbeatAtMs: NOW - 1000, lastOutputAtMs: NOW - 1000 });
+    await seedCup({
+      owner: 'cup-live',
+      featureId: null,
+      status: 'running',
+      heartbeatAtMs: NOW - 1000,
+      lastOutputAtMs: NOW - 1000,
+    });
     await seedUnit({ id: 'F-120', status: 'in_progress', takenBy: 'cup-live' });
 
     await reconcileOnePot(sql, WS, POT, CFG, NOW);
@@ -613,7 +644,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
         msg_id: 'esc-prior',
         choice: 'item-now-terminal',
         resolver: 'system:pot-placement-watchdog',
-      })
+      }),
     );
   });
 
@@ -645,7 +676,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
       expect.objectContaining({
         msg_id: 'esc-cursed',
         choice: 'item-now-terminal',
-      })
+      }),
     );
     expect(out.find((r) => r.workItemId === 'F-CURED-2')?.decision).toBe('completed');
   });
@@ -688,9 +719,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     await reconcileOnePot(sql, WS, POT, CFG, NOW);
 
     expect((await readPlacement('F-STRAND'))?.status).toBe('completed');
-    expect(mocks.resolveEscalation).toHaveBeenCalledWith(
-      expect.objectContaining({ msg_id: 'esc-strand' }),
-    );
+    expect(mocks.resolveEscalation).toHaveBeenCalledWith(expect.objectContaining({ msg_id: 'esc-strand' }));
   });
 
   it('EI-1524: backstop GC abandons a cursed escalation whose unit no longer exists', async () => {
@@ -705,9 +734,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     const out = await reconcileOnePot(sql, WS, POT, CFG, NOW);
 
     expect((await readPlacement('F-GONE'))?.status).toBe('abandoned');
-    expect(mocks.resolveEscalation).toHaveBeenCalledWith(
-      expect.objectContaining({ msg_id: 'esc-gone' }),
-    );
+    expect(mocks.resolveEscalation).toHaveBeenCalledWith(expect.objectContaining({ msg_id: 'esc-gone' }));
     expect(out.find((r) => r.workItemId === 'F-GONE')?.decision).toBe('abandon');
   });
 

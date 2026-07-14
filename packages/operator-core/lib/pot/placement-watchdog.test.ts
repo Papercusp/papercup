@@ -6,7 +6,9 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 const { wakeRecipients, sendMessage } = vi.hoisted(() => ({
-  wakeRecipients: vi.fn().mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [], fanoutCapped: [] }),
+  wakeRecipients: vi
+    .fn()
+    .mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [], fanoutCapped: [] }),
   sendMessage: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients }));
@@ -34,7 +36,12 @@ import {
 } from './placement-watchdog';
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 
-const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000, dormancyGraceMs: 10 * 60_000, infraBreakerThreshold: 12 };
+const CFG: PlacementConfig = {
+  breakerThreshold: 3,
+  recoveryDebounceMs: 5 * 60_000,
+  dormancyGraceMs: 10 * 60_000,
+  infraBreakerThreshold: 12,
+};
 const NOW = 1_000_000_000_000;
 
 describe('wakeMug (WI-2187 fresh-per-wake routing)', () => {
@@ -47,14 +54,19 @@ describe('wakeMug (WI-2187 fresh-per-wake routing)', () => {
       payload: { kind: 'recovery' },
       harnessSlug: 'pot-1',
     });
-    expect(wakeRecipients).toHaveBeenCalledWith(['stale-owner-123'], expect.objectContaining({
-      source: 'test-watchdog',
-      payload: expect.objectContaining({ mugWake: {
-        logicalAlias: MUG_COORD_SLOT,
-        concreteOwnerId: 'stale-owner-123',
+    expect(wakeRecipients).toHaveBeenCalledWith(
+      ['stale-owner-123'],
+      expect.objectContaining({
         source: 'test-watchdog',
-      } }),
-    }));
+        payload: expect.objectContaining({
+          mugWake: {
+            logicalAlias: MUG_COORD_SLOT,
+            concreteOwnerId: 'stale-owner-123',
+            source: 'test-watchdog',
+          },
+        }),
+      }),
+    );
     expect(sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws-1' }),
       expect.objectContaining({
@@ -72,7 +84,10 @@ describe('wakeMug (WI-2187 fresh-per-wake routing)', () => {
     expect(wakeRecipients).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ to: [MUG_COORD_SLOT], extra: { mugWake: expect.objectContaining({ concreteOwnerId: null }) } }),
+      expect.objectContaining({
+        to: [MUG_COORD_SLOT],
+        extra: { mugWake: expect.objectContaining({ concreteOwnerId: null }) },
+      }),
     );
   });
 });
@@ -173,7 +188,15 @@ describe('buildOpenPlacementSummary', () => {
     const staleUpdatedAt = new Date(nowMs - (DEFAULT_STALE_RECOVERING_MS + 60 * 60_000)).toISOString();
     const summary = buildOpenPlacementSummary(
       [{ status: 'recovering', count: 1 }],
-      [{ work_item_id: 'WI-329', status: 'recovering', fail_count: 0, harness_slug: 'papercusp', updated_at: staleUpdatedAt }],
+      [
+        {
+          work_item_id: 'WI-329',
+          status: 'recovering',
+          fail_count: 0,
+          harness_slug: 'papercusp',
+          updated_at: staleUpdatedAt,
+        },
+      ],
       nowMs,
     );
     expect(summary.items[0]).toMatchObject({ workItemId: 'WI-329', stale: true });
@@ -185,7 +208,15 @@ describe('buildOpenPlacementSummary', () => {
     const freshUpdatedAt = new Date(nowMs - 60 * 60_000).toISOString(); // 1h ago
     const summary = buildOpenPlacementSummary(
       [{ status: 'recovering', count: 1 }],
-      [{ work_item_id: 'WI-FRESH', status: 'recovering', fail_count: 0, harness_slug: 'papercusp', updated_at: freshUpdatedAt }],
+      [
+        {
+          work_item_id: 'WI-FRESH',
+          status: 'recovering',
+          fail_count: 0,
+          harness_slug: 'papercusp',
+          updated_at: freshUpdatedAt,
+        },
+      ],
       nowMs,
     );
     expect(summary.items[0].stale).toBeUndefined();
@@ -197,7 +228,15 @@ describe('buildOpenPlacementSummary', () => {
     const staleUpdatedAt = new Date(nowMs - (DEFAULT_STALE_RECOVERING_MS + 60 * 60_000)).toISOString();
     const summary = buildOpenPlacementSummary(
       [{ status: 'cursed', count: 1 }],
-      [{ work_item_id: 'WI-CURSED-OLD', status: 'cursed', fail_count: 3, harness_slug: 'papercusp', updated_at: staleUpdatedAt }],
+      [
+        {
+          work_item_id: 'WI-CURSED-OLD',
+          status: 'cursed',
+          fail_count: 3,
+          harness_slug: 'papercusp',
+          updated_at: staleUpdatedAt,
+        },
+      ],
       nowMs,
     );
     expect(summary.items[0].stale).toBeUndefined();
@@ -240,16 +279,28 @@ describe('deriveCupLiveness (P-020 — reuses the fleet-reclaim thresholds)', ()
     }
   });
   it('running + fresh heartbeat → live', () => {
-    expect(deriveCupLiveness({ status: 'running', heartbeatAtMs: NOW - 1000, lastOutputAtMs: NOW - 1000, now: NOW })).toBe('live');
+    expect(
+      deriveCupLiveness({ status: 'running', heartbeatAtMs: NOW - 1000, lastOutputAtMs: NOW - 1000, now: NOW }),
+    ).toBe('live');
   });
   it('running + heartbeat stale beyond RECLAIM_STALE_MS → dead (orphaned)', () => {
     expect(
-      deriveCupLiveness({ status: 'running', heartbeatAtMs: NOW - RECLAIM_STALE_MS - 1, lastOutputAtMs: NOW, now: NOW }),
+      deriveCupLiveness({
+        status: 'running',
+        heartbeatAtMs: NOW - RECLAIM_STALE_MS - 1,
+        lastOutputAtMs: NOW,
+        now: NOW,
+      }),
     ).toBe('dead');
   });
   it('running + fresh heartbeat but output silent beyond WEDGE_SILENT_MS → wedged', () => {
     expect(
-      deriveCupLiveness({ status: 'running', heartbeatAtMs: NOW - 1000, lastOutputAtMs: NOW - WEDGE_SILENT_MS - 1, now: NOW }),
+      deriveCupLiveness({
+        status: 'running',
+        heartbeatAtMs: NOW - 1000,
+        lastOutputAtMs: NOW - WEDGE_SILENT_MS - 1,
+        now: NOW,
+      }),
     ).toBe('wedged');
   });
   it('running + null heartbeat (freshly spawned) → live (reclaim owns true orphans)', () => {
@@ -295,7 +346,13 @@ describe('deriveCupLiveness (P-020 — reuses the fleet-reclaim thresholds)', ()
   });
   it('terminal spawn status stays dead even when confirmedAliveSameHost=true (terminal status wins)', () => {
     expect(
-      deriveCupLiveness({ status: 'failed', heartbeatAtMs: NOW, lastOutputAtMs: NOW, now: NOW, confirmedAliveSameHost: true }),
+      deriveCupLiveness({
+        status: 'failed',
+        heartbeatAtMs: NOW,
+        lastOutputAtMs: NOW,
+        now: NOW,
+        confirmedAliveSameHost: true,
+      }),
     ).toBe('dead');
   });
 });
@@ -322,7 +379,7 @@ describe('evaluatePlacement — P-020 completion tracking', () => {
 });
 
 describe('isUnitParked', () => {
-  it('flags only the deliberate-park band (mirrors FEATURE_NON_REQUEUE_STATES\' blocked + needs-human)', () => {
+  it("flags only the deliberate-park band (mirrors FEATURE_NON_REQUEUE_STATES' blocked + needs-human)", () => {
     expect(isUnitParked('blocked')).toBe(true);
     // EI-6563: needs-human was added to the sibling FEATURE_NON_REQUEUE_STATES reaper
     // set (fleet-scheduler-hardening-2026-07-03 P-004) but not mirrored here — a unit
@@ -357,7 +414,13 @@ describe('evaluatePlacement — WI-1439 a deliberately PARKED unit is never reco
   });
   it('parked short-circuits BEFORE the recovery debounce — never re-fires a wake on a timer', () => {
     const d = evaluatePlacement(
-      obs({ unitParked: true, hasLiveHolder: false, placementStatus: 'recovering', failCount: 1, lastRecoveryAtMs: NOW - (CFG.recoveryDebounceMs + 1) }),
+      obs({
+        unitParked: true,
+        hasLiveHolder: false,
+        placementStatus: 'recovering',
+        failCount: 1,
+        lastRecoveryAtMs: NOW - (CFG.recoveryDebounceMs + 1),
+      }),
       CFG,
     );
     expect(d.kind).toBe('parked');
@@ -437,7 +500,12 @@ describe('evaluatePlacement — P-021 cursed-item circuit breaker (mirrors repla
     expect([fail1.kind, fail2.kind, fail3.kind]).toEqual(['recover', 'recover', 'breaker']);
   });
   it('honors a custom (lower) breaker threshold', () => {
-    const cfg: PlacementConfig = { breakerThreshold: 1, recoveryDebounceMs: 0, dormancyGraceMs: 10 * 60_000, infraBreakerThreshold: 12 };
+    const cfg: PlacementConfig = {
+      breakerThreshold: 1,
+      recoveryDebounceMs: 0,
+      dormancyGraceMs: 10 * 60_000,
+      infraBreakerThreshold: 12,
+    };
     // First failure already reaches threshold 1 → breaker, never re-placed.
     expect(evaluatePlacement(obs({ failCount: 0 }), cfg).kind).toBe('breaker');
   });
@@ -474,11 +542,15 @@ describe('evaluatePlacement — EI-865 the breaker LATCHES (it does NOT re-fire)
   });
 
   it('the curse CLEARS when the unit reaches terminal (a re-placed item that finally completed)', () => {
-    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, unitTerminal: true }), CFG).kind).toBe('completed');
+    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, unitTerminal: true }), CFG).kind).toBe(
+      'completed',
+    );
   });
 
   it('the curse CLEARS when a LIVE cup re-claims the unit (a fix + re-place that took)', () => {
-    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, hasLiveHolder: true }), CFG).kind).toBe('healthy');
+    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, hasLiveHolder: true }), CFG).kind).toBe(
+      'healthy',
+    );
   });
 
   it('the breaker still TRIPS once (recovering → breaker at the threshold), then latches thereafter', () => {
@@ -502,7 +574,7 @@ describe('isReaperReclaim — reaper reclaim vs genuine cup exit (WI-233)', () =
     expect(isReaperReclaim('failed', 'reclaimed: spawn heartbeat stale > 300s (host presumed dead)')).toBe(true);
     expect(isReaperReclaim('failed', 'reclaimed: child process (pid 42) confirmed dead on host-7')).toBe(true);
   });
-  it('a GENUINE non-zero exit (status failed carrying the cup\'s OWN error) is NOT a reaper reclaim', () => {
+  it("a GENUINE non-zero exit (status failed carrying the cup's OWN error) is NOT a reaper reclaim", () => {
     // This is the case that MUST still count toward the curse — a real cup failure.
     expect(isReaperReclaim('failed', 'Error: tsc exited 2')).toBe(false);
     expect(isReaperReclaim('failed', null)).toBe(false);
@@ -524,10 +596,7 @@ describe('evaluatePlacement — WI-233 a reaper-reclaim of a STILL-ALIVE cup doe
   it('the fail count NEVER reaches the breaker for a string of false reclaims (the false-curse bug)', () => {
     // failCount 2 + a NORMAL failure trips the breaker (== threshold 3); a false reclaim
     // at the SAME count must instead recover flat — the whole point of the relaxation.
-    const normal = evaluatePlacement(
-      obs({ placementStatus: 'working', failCount: 2 }),
-      CFG,
-    );
+    const normal = evaluatePlacement(obs({ placementStatus: 'working', failCount: 2 }), CFG);
     expect(normal.kind).toBe('breaker');
     const falseReclaim = evaluatePlacement(
       obs({ placementStatus: 'working', failCount: 2, servingCupReclaimedWhileActive: true }),
@@ -551,22 +620,35 @@ describe('evaluatePlacement — WI-233 a reaper-reclaim of a STILL-ALIVE cup doe
   });
 
   it('a GENUINE failure (flag false) still climbs toward the curse — the breaker is intact', () => {
-    const d = evaluatePlacement(obs({ placementStatus: 'working', failCount: 1, servingCupReclaimedWhileActive: false }), CFG);
+    const d = evaluatePlacement(
+      obs({ placementStatus: 'working', failCount: 1, servingCupReclaimedWhileActive: false }),
+      CFG,
+    );
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') expect(d.nextFailCount).toBe(2);
   });
 
   it('a live holder still wins over the flag (healthy, hands-off — the flag only matters with no live holder)', () => {
-    expect(evaluatePlacement(obs({ hasLiveHolder: true, servingCupReclaimedWhileActive: true }), CFG).kind).toBe('healthy');
+    expect(evaluatePlacement(obs({ hasLiveHolder: true, servingCupReclaimedWhileActive: true }), CFG).kind).toBe(
+      'healthy',
+    );
   });
 
   it('an already-cursed item stays LATCHED even with the flag (the latch is checked first — no thrash)', () => {
-    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, servingCupReclaimedWhileActive: true }), CFG).kind).toBe('latched');
+    expect(
+      evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, servingCupReclaimedWhileActive: true }), CFG)
+        .kind,
+    ).toBe('latched');
   });
 
   it('the recovery debounce still applies to a false reclaim (no re-wake spam mid-recovery)', () => {
     const d = evaluatePlacement(
-      obs({ placementStatus: 'recovering', failCount: 0, lastRecoveryAtMs: NOW - 60_000, servingCupReclaimedWhileActive: true }),
+      obs({
+        placementStatus: 'recovering',
+        failCount: 0,
+        lastRecoveryAtMs: NOW - 60_000,
+        servingCupReclaimedWhileActive: true,
+      }),
       CFG,
     );
     expect(d.kind).toBe('debounced');
@@ -598,7 +680,10 @@ describe('evaluatePlacement — F-FIX-041 / WI-677 infra-loss handling (two dist
     // The exact pre-fix failure: a string of host restarts climbed every placement to
     // infraBreakerThreshold and cursed it at fail_count=0. Now dormancy never accrues, so it
     // can never reach the bound — even seeded one short, it recovers FLAT, never `breaker`.
-    const d = evaluatePlacement(obs({ postDormancySweep: true, failCount: 0, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
+    const d = evaluatePlacement(
+      obs({ postDormancySweep: true, failCount: 0, infraLossCount: CFG.infraBreakerThreshold - 1 }),
+      CFG,
+    );
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') {
       expect(d.nextFailCount).toBe(0);
@@ -610,7 +695,15 @@ describe('evaluatePlacement — F-FIX-041 / WI-677 infra-loss handling (two dist
     let storedFail = 0;
     let storedInfra = 0;
     for (let i = 0; i < 100; i++) {
-      const d = evaluatePlacement(obs({ placementStatus: 'working', postDormancySweep: true, failCount: storedFail, infraLossCount: storedInfra }), CFG);
+      const d = evaluatePlacement(
+        obs({
+          placementStatus: 'working',
+          postDormancySweep: true,
+          failCount: storedFail,
+          infraLossCount: storedInfra,
+        }),
+        CFG,
+      );
       expect(d.kind).toBe('recover');
       if (d.kind === 'recover') {
         storedFail = d.nextFailCount;
@@ -649,7 +742,10 @@ describe('evaluatePlacement — F-FIX-041 / WI-677 infra-loss handling (two dist
     // One below the infra threshold + another ZOMBIE loss → the infra breaker trips (cursed),
     // so even an all-zombie-attributed (or mis-attributed) item eventually halts. dormancy
     // (item-independent) does NOT — see the dormancy guard above.
-    const zomb = evaluatePlacement(obs({ servingCupMadeNoToolCalls: true, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
+    const zomb = evaluatePlacement(
+      obs({ servingCupMadeNoToolCalls: true, infraLossCount: CFG.infraBreakerThreshold - 1 }),
+      CFG,
+    );
     expect(zomb.kind).toBe('breaker');
     if (zomb.kind === 'breaker') expect(zomb.nextInfraLossCount).toBe(CFG.infraBreakerThreshold);
   });
@@ -657,7 +753,10 @@ describe('evaluatePlacement — F-FIX-041 / WI-677 infra-loss handling (two dist
   it('dormancy takes precedence over a co-occurring zombie signal (a host-restart reap shows both — attribute to the item-independent cause)', () => {
     // A host restart reaps a cup mid-work: postDormancySweep AND (often) 0-tool-calls both
     // read true. The item-independent cause wins → fully exempt, NOT the bounded breaker.
-    const d = evaluatePlacement(obs({ postDormancySweep: true, servingCupMadeNoToolCalls: true, infraLossCount: CFG.infraBreakerThreshold - 1 }), CFG);
+    const d = evaluatePlacement(
+      obs({ postDormancySweep: true, servingCupMadeNoToolCalls: true, infraLossCount: CFG.infraBreakerThreshold - 1 }),
+      CFG,
+    );
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') expect(d.nextInfraLossCount).toBe(CFG.infraBreakerThreshold - 1); // held — dormancy exemption wins
   });
@@ -673,7 +772,13 @@ describe('evaluatePlacement — F-FIX-041 / WI-677 infra-loss handling (two dist
 
   it('reclaimedWhileActive (proof-of-life) is FULLY exempt — neither counter climbs, even with the infra flags also set', () => {
     const d = evaluatePlacement(
-      obs({ servingCupReclaimedWhileActive: true, servingCupMadeNoToolCalls: true, postDormancySweep: true, failCount: 2, infraLossCount: 5 }),
+      obs({
+        servingCupReclaimedWhileActive: true,
+        servingCupMadeNoToolCalls: true,
+        postDormancySweep: true,
+        failCount: 2,
+        infraLossCount: 5,
+      }),
       CFG,
     );
     expect(d.kind).toBe('recover');
@@ -685,12 +790,18 @@ describe('evaluatePlacement — F-FIX-041 / WI-677 infra-loss handling (two dist
 
   it('an already-cursed item stays LATCHED even with infra signals set (latch is checked first)', () => {
     expect(
-      evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, postDormancySweep: true, servingCupMadeNoToolCalls: true }), CFG).kind,
+      evaluatePlacement(
+        obs({ placementStatus: 'cursed', failCount: 3, postDormancySweep: true, servingCupMadeNoToolCalls: true }),
+        CFG,
+      ).kind,
     ).toBe('latched');
   });
 
   it('a live holder still wins over the infra signals (healthy — they only matter with no live holder)', () => {
-    expect(evaluatePlacement(obs({ hasLiveHolder: true, postDormancySweep: true, servingCupMadeNoToolCalls: true }), CFG).kind).toBe('healthy');
+    expect(
+      evaluatePlacement(obs({ hasLiveHolder: true, postDormancySweep: true, servingCupMadeNoToolCalls: true }), CFG)
+        .kind,
+    ).toBe('healthy');
   });
 
   it('the recovery debounce still applies on an infra-loss sweep (no re-wake spam mid-recovery)', () => {
@@ -736,10 +847,7 @@ describe('evaluatePlacement — EI-3216 infra-attribution gates the per-item wak
   });
 
   it('an infra recover (zombie / post-dormancy) is infraAttributed — the handler skips the per-item Mug wake', () => {
-    for (const infraObs of [
-      obs({ servingCupMadeNoToolCalls: true }),
-      obs({ postDormancySweep: true }),
-    ]) {
+    for (const infraObs of [obs({ servingCupMadeNoToolCalls: true }), obs({ postDormancySweep: true })]) {
       const d = evaluatePlacement(infraObs, CFG);
       expect(d.kind).toBe('recover');
       if (d.kind === 'recover') expect(d.infraAttributed).toBe(true);
@@ -815,7 +923,11 @@ describe('reconcilePotPlacements — the all-started-hives sweep (orchestration)
     const listStartedPots = vi.fn();
     const reconcileOnePot = vi.fn();
     const out = await reconcilePotPlacements({
-      deps: { getFlag: vi.fn(async () => false), listStartedPots, reconcileOnePot } as unknown as Partial<ReconcileSweepDeps>,
+      deps: {
+        getFlag: vi.fn(async () => false),
+        listStartedPots,
+        reconcileOnePot,
+      } as unknown as Partial<ReconcileSweepDeps>,
     });
     expect(out).toEqual([]);
     expect(listStartedPots).not.toHaveBeenCalled();
@@ -825,7 +937,12 @@ describe('reconcilePotPlacements — the all-started-hives sweep (orchestration)
   it('flag on but no started hives → empty, no reconcile', async () => {
     const reconcileOnePot = vi.fn();
     const out = await reconcilePotPlacements({
-      deps: { getFlag: flagOn(), listStartedPots: startedPots([]), getOrgPg: orgPg(), reconcileOnePot } as unknown as Partial<ReconcileSweepDeps>,
+      deps: {
+        getFlag: flagOn(),
+        listStartedPots: startedPots([]),
+        getOrgPg: orgPg(),
+        reconcileOnePot,
+      } as unknown as Partial<ReconcileSweepDeps>,
     });
     expect(out).toEqual([]);
     expect(reconcileOnePot).not.toHaveBeenCalled();
@@ -951,9 +1068,9 @@ describe('evaluateStalePlacementEscalation — EI-1524/1518 backstop escalation 
 describe('evaluateTerminalPlacementReconcile — EI-6109 completion-reconcile GC (all open statuses)', () => {
   it('completes ANY open placement whose unit reached terminal — incl. working/recovering', () => {
     for (const placementStatus of ['working', 'recovering', 'cursed', 'stranded']) {
-      expect(
-        evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: true }),
-      ).toBe('resolve-completed');
+      expect(evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: true })).toBe(
+        'resolve-completed',
+      );
     }
   });
 
@@ -973,25 +1090,25 @@ describe('evaluateTerminalPlacementReconcile — EI-6109 completion-reconcile GC
 
   it('abandons any open placement whose unit no longer exists', () => {
     for (const placementStatus of ['working', 'recovering', 'cursed', 'stranded']) {
-      expect(
-        evaluateTerminalPlacementReconcile({ placementStatus, unitExists: false, unitTerminal: false }),
-      ).toBe('resolve-abandoned');
+      expect(evaluateTerminalPlacementReconcile({ placementStatus, unitExists: false, unitTerminal: false })).toBe(
+        'resolve-abandoned',
+      );
     }
   });
 
   it('KEEPS an open placement whose unit is still non-terminal (never robs an in-flight lane)', () => {
     for (const placementStatus of ['working', 'recovering', 'cursed', 'stranded']) {
-      expect(
-        evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: false }),
-      ).toBe('keep');
+      expect(evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: false })).toBe(
+        'keep',
+      );
     }
   });
 
   it('KEEPS an already-terminal placement status (completed/abandoned) — not an open row', () => {
     for (const placementStatus of ['completed', 'abandoned']) {
-      expect(
-        evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: true }),
-      ).toBe('keep');
+      expect(evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: true })).toBe(
+        'keep',
+      );
     }
   });
 });
@@ -1002,10 +1119,7 @@ describe('evaluatePlacement — attempt-once loss counting (WI-677 round 2, mig 
   // the counter measured SWEEPS, not attempts. These pin the per-attempt contract.
 
   it('NO serving cup at all → re-place only, BOTH counters flat (nothing to count)', () => {
-    const d = evaluatePlacement(
-      obs({ hasServingCup: false, failCount: 2, infraLossCount: 5 }),
-      CFG,
-    );
+    const d = evaluatePlacement(obs({ hasServingCup: false, failCount: 2, infraLossCount: 5 }), CFG);
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') {
       expect(d.nextFailCount).toBe(2);

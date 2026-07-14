@@ -55,6 +55,7 @@ import { whisperSttBaseUrl, warmLocalWhisper } from '../../../voice-node/local-w
 import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
 import { loadVoicePrefs } from '../../../voice-prefs';
 import { createSentenceExtractor } from '../../../voice-turn-sentences';
+import { stripNonSpeechAnnotations } from './voice-transcript-normalize';
 
 /** How many recent turns feed the brain — same as the device text path. */
 const HISTORY_CONTEXT_TURNS = 24;
@@ -170,7 +171,11 @@ const voiceTurn = defineTool({
           sink.close();
           return;
         }
-        const transcript = stt.text;
+        // whisper emits truthy non-speech markers ([BLANK_AUDIO], [SILENCE], …)
+        // for silence; strip them so a silent utterance is recognized as empty
+        // instead of burning a brain+TTS round-trip and polluting the shared
+        // conversation (voice-transcript-normalize).
+        const transcript = stripNonSpeechAnnotations(stt.text);
         sink.event('transcript', { text: transcript });
         if (!transcript) {
           // Silence / noise — never bother the brain with an empty turn.

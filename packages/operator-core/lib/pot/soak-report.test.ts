@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { WAKE_MEAN_CHAR_BUDGET, computeSoakReport, parseBgHostGlobalJournal, parseBgHostUnitJournal } from './soak-report';
+import {
+  WAKE_MEAN_CHAR_BUDGET,
+  computeSoakReport,
+  parseBgHostGlobalJournal,
+  parseBgHostUnitJournal,
+} from './soak-report';
 
 describe('parseBgHostUnitJournal', () => {
   it('counts restarts, oom evidence, and memory peaks', () => {
@@ -25,11 +30,11 @@ describe('parseBgHostUnitJournal', () => {
     // failure line. A crash logs "Failed with result '<why>'" — exactly one per
     // death. Both bump restartCount; only the crash may red the gate.
     const deliberate = [
-      "Jul 13 00:31:02 host systemd[4022]: Stopping papercup-bg-host.service - Papercusp dedicated background host...",
+      'Jul 13 00:31:02 host systemd[4022]: Stopping papercup-bg-host.service - Papercusp dedicated background host...',
       'Jul 13 00:31:04 host systemd[4022]: Started papercup-bg-host.service - Papercusp dedicated background host.',
     ].join('\n');
     const crashed = [
-      "Jul 13 01:02:03 host systemd[4022]: papercup-bg-host.service: Main process exited, code=killed, status=9/KILL",
+      'Jul 13 01:02:03 host systemd[4022]: papercup-bg-host.service: Main process exited, code=killed, status=9/KILL',
       "Jul 13 01:02:03 host systemd[4022]: papercup-bg-host.service: Failed with result 'oom-kill'.",
       'Jul 13 01:02:05 host systemd[4022]: Started papercup-bg-host.service - Papercusp dedicated background host.',
     ].join('\n');
@@ -121,7 +126,16 @@ describe('computeSoakReport', () => {
       surveySlugs: ['papercusp'],
       windowHours: 24,
       generatedAtMs: Date.UTC(2026, 6, 2, 10, 0, 0),
-      bgHost: { oomKillCount: 0, restartCount: 0, failureCount: 0, peakMemoryMb: null, highMemoryPeakCount: 0, journalError: null, tickerUp: true, tickerNote: null },
+      bgHost: {
+        oomKillCount: 0,
+        restartCount: 0,
+        failureCount: 0,
+        peakMemoryMb: null,
+        highMemoryPeakCount: 0,
+        journalError: null,
+        tickerUp: true,
+        tickerNote: null,
+      },
       roleSuccess: [
         { role: 'cup', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
         { role: 'mug', totalTerminalTurns: 1, successfulTurns: 1, successRate: 1 },
