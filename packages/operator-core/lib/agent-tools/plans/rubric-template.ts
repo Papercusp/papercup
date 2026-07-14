@@ -23,6 +23,116 @@ import { registerPlanTemplate, type PlanTemplate } from './template-registry';
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
 export const RUBRIC_TEMPLATE_NAME = 'rubric';
 
+// ─── structured criterion grading-window (rubric-system-hardening-2026-07-14 P-001) ──
+// EI-12146: the grading window used to live ONLY in criterion prose ("<5% post-watermark
+// per the runbook") while the deployed instrument hardcoded its own (48h rolling) — on
+// 2026-07-14 the two disagreed 9%-vs-0% on the same live system and stalled a release
+// call. The window is now a STRUCTURED, machine-readable field on the criterion, and
+// instruments/runbooks resolve it via resolveCriterionWindow() instead of re-hardcoding.
+
+/** How far back a criterion's evidence window reaches. */
+export const rubricCriterionWindowSchema = z
+  .object({
+    kind: z
+      .enum(['rolling', 'post-watermark'])
+      .describe(
+        "'rolling' = a fixed look-back from now (ms required); 'post-watermark' = everything since a named event watermark (watermarkRef required), e.g. the running bg-host generation",
+      ),
+    ms: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("rolling window length in ms (required when kind='rolling')"),
+    watermarkRef: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "named watermark the window starts at (required when kind='post-watermark'), e.g. 'bg-host-restart' = the running papercup-bg-host generation start",
+      ),
+  })
+  .strict()
+  .superRefine((w, ctx) => {
+    if (w.kind === 'rolling' && w.ms == null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "window kind 'rolling' requires ms (the look-back length)" });
+    }
+    if (w.kind === 'post-watermark' && !w.watermarkRef) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "window kind 'post-watermark' requires watermarkRef (the named watermark the window starts at)",
+      });
+    }
+  });
+
+/** The structured grading window a criterion may declare (validated on write). */
+export type RubricCriterionWindow = z.infer<typeof rubricCriterionWindowSchema>;
+
+/** The default evidence window when a criterion declares none — 48h rolling (the bar the
+ *  blender-release-readiness rubric and its instrument shipped with). Consumers that need
+ *  a different default pass their own `defaultMs`. */
+export const DEFAULT_CRITERION_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/** A resolved, concrete evidence window: the epoch-ms floor + how it was derived. */
+export interface ResolvedCriterionWindow {
+  /** Inclusive epoch-ms floor — evidence at/after this instant is in the window. */
+  sinceMs: number;
+  kind: 'rolling' | 'post-watermark';
+  /** The rolling look-back length (rolling resolutions only). */
+  windowMs?: number;
+  /** The watermark that produced sinceMs (post-watermark resolutions only). */
+  watermarkRef?: string;
+  /**
+   * Provenance — a verdict must never be read without knowing which window judged it:
+   *  'window' = the criterion's own structured window resolved cleanly;
+   *  'default' = no structured window declared, the caller's default applied;
+   *  'watermark-unresolved' = a post-watermark window was declared but its watermarkRef
+   *    did not resolve — fell back to the rolling default rather than judging nothing.
+   */
+  source: 'window' | 'default' | 'watermark-unresolved';
+}
+
+/**
+ * Resolve a criterion's structured window into a concrete epoch-ms floor. PURE — the
+ * caller supplies `watermarks` (named ref → epoch-ms) it resolved through its own IO
+ * (e.g. 'bg-host-restart' via scout/generation-watermark.ts). Degrades with provenance,
+ * never throws: an unresolvable watermark falls back to the rolling default and SAYS SO
+ * (`source:'watermark-unresolved'`), so a read-only instrument keeps answering while the
+ * gap stays visible instead of silently judging the wrong window.
+ */
+export function resolveCriterionWindow(
+  window: RubricCriterionWindow | undefined,
+  opts: {
+    nowMs?: number;
+    /** Fallback rolling window (default {@link DEFAULT_CRITERION_WINDOW_MS}). */
+    defaultMs?: number;
+    /** Named watermark refs the caller has resolved (ref → epoch-ms; null/absent = unresolved). */
+    watermarks?: Readonly<Record<string, number | null | undefined>>;
+  } = {},
+): ResolvedCriterionWindow {
+  const nowMs = opts.nowMs ?? Date.now();
+  const defaultMs = opts.defaultMs ?? DEFAULT_CRITERION_WINDOW_MS;
+  if (!window) {
+    return { sinceMs: nowMs - defaultMs, kind: 'rolling', windowMs: defaultMs, source: 'default' };
+  }
+  if (window.kind === 'rolling') {
+    const ms = window.ms ?? defaultMs;
+    return { sinceMs: nowMs - ms, kind: 'rolling', windowMs: ms, source: 'window' };
+  }
+  const ref = window.watermarkRef;
+  const wm = ref != null ? opts.watermarks?.[ref] : undefined;
+  if (typeof wm === 'number' && Number.isFinite(wm) && wm > 0) {
+    return { sinceMs: wm, kind: 'post-watermark', ...(ref ? { watermarkRef: ref } : {}), source: 'window' };
+  }
+  return {
+    sinceMs: nowMs - defaultMs,
+    kind: 'rolling',
+    windowMs: defaultMs,
+    ...(ref ? { watermarkRef: ref } : {}),
+    source: 'watermark-unresolved',
+  };
+}
+
 /**
  * One gradeable criterion of a rubric. Field-for-field the v1 `RubricCriterion`
  * (rubrics.ts) so the re-pointed store maps templateData → Rubric 1:1 with no drift
@@ -54,6 +164,13 @@ export const rubricCriterionSchema = z
           'spawn/measurement → grading queries → cleanup). Structured slot, so a rubric revision ' +
           "can't silently drop it as 'verbose method prose' (WI-4287; rubrics:propose loss-guards " +
           'key off it)',
+      ),
+    window: rubricCriterionWindowSchema
+      .optional()
+      .describe(
+        "the criterion's STRUCTURED evidence window (EI-12146) — instruments/graders resolve it " +
+          'via resolveCriterionWindow() instead of re-hardcoding a look-back in prose. Omitted = ' +
+          "the consumer's default (48h rolling)",
       ),
   })
   .strict();

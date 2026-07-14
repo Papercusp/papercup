@@ -53,8 +53,6 @@ export default defineTool({
     if (args.sent_ts) {
       out.seen = !!wm.messages_shown_ts && wm.messages_shown_ts >= args.sent_ts;
     }
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(out) }],
-    };
+    return { data: out };
   },
 });

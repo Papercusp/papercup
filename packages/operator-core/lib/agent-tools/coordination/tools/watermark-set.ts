@@ -55,13 +55,6 @@ export default defineTool({
         /* advisory cleanup only — the watermark write above already succeeded */
       }
     }
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ ok: true, owner_id: identity.ownerId, watermark: wm }),
-        },
-      ],
-    };
+    return { data: { ok: true, owner_id: identity.ownerId, watermark: wm } };
   },
 });

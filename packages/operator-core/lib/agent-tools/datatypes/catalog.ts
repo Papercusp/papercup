@@ -35,7 +35,7 @@ export default defineTool({
     limit: z.number().int().min(1).max(500).optional().describe('max rows (default 1000)'),
   }),
   async handler(args) {
-    const reply = (obj: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(obj) }] });
+    const reply = (obj: unknown) => ({ data: obj });
     const sql = getOrgPg().sql;
     const rows = await listApprovedPublishedDatatypes(sql, { limit: args.limit });
     return reply({

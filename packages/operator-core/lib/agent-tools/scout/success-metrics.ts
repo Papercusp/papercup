@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 
 import { buildProgramSuccessReport, type ProgramSuccessReport } from '../../scout/success-metrics';
+import { BG_HOST_RESTART_WATERMARK, resolveWatermarkRef } from '../../scout/generation-watermark';
 
 export const successMetricsArgs = z
   .object({
@@ -29,6 +30,21 @@ export const successMetricsArgs = z
       .optional()
       .describe(
         'scope harness-owned su-ideate rows; workspace Scout ticks and routed ideas always resolve through the @singleton brain (default: all su-ideate harnesses)',
+      ),
+    sinceMs: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'ABSOLUTE epoch-ms floor for the tick window — judge only evidence at/after this instant (overrides the rolling 48h box). Mutually exclusive with watermarkRef; omit both for the default window.',
+      ),
+    watermarkRef: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        `named generation watermark to floor the window at, resolved server-side. '${BG_HOST_RESTART_WATERMARK}' = the running scout bg-host's start instant — judge only what the CURRENTLY RUNNING code produced (a rolling window keeps failing on pre-fix errors for up to 48h after a fix ships; EI-12148). Mutually exclusive with sinceMs.`,
       ),
     limit: z
       .number()
@@ -58,17 +74,52 @@ export const successMetricsArgs = z
   .strict();
 export type SuccessMetricsArgs = z.infer<typeof successMetricsArgs>;
 
+/** Window provenance echoed back when a NON-default window was requested (EI-12148) —
+ *  a verdict must never be read without knowing which window judged it. Absent on the
+ *  default read, so omitted args stay byte-identical to pre-EI-12148 output. */
+export interface ResolvedSuccessWindow {
+  sinceMs: number;
+  sinceIso: string;
+  source: 'sinceMs' | `watermark:${string}`;
+}
+
 export async function runSuccessMetrics(
   args: SuccessMetricsArgs,
-): Promise<{ ok: true; report: ProgramSuccessReport } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; report: ProgramSuccessReport; resolvedWindow?: ResolvedSuccessWindow }
+  | { ok: false; error: string }
+> {
   try {
+    // Resolve the requested window floor (EI-12148). An EXPLICITLY requested watermark
+    // that cannot be resolved is a LOUD error, never a silent fallback — substituting a
+    // different window than the caller asked to judge is the exact instrument-vs-intent
+    // disagreement this arg exists to remove.
+    let resolvedWindow: ResolvedSuccessWindow | undefined;
+    if (args.watermarkRef != null) {
+      if (args.sinceMs != null) {
+        return {
+          ok: false,
+          error: 'invalid_args: pass sinceMs OR watermarkRef, not both — they both set the window floor',
+        };
+      }
+      const wm = await resolveWatermarkRef(args.watermarkRef);
+      if (!wm.ok) return { ok: false, error: `watermark_unresolved: ${wm.error}` };
+      resolvedWindow = {
+        sinceMs: wm.ms,
+        sinceIso: new Date(wm.ms).toISOString(),
+        source: `watermark:${args.watermarkRef}`,
+      };
+    } else if (args.sinceMs != null) {
+      resolvedWindow = { sinceMs: args.sinceMs, sinceIso: new Date(args.sinceMs).toISOString(), source: 'sinceMs' };
+    }
     const report = await buildProgramSuccessReport({
       ...(args.harnessSlug ? { harnessSlug: args.harnessSlug } : {}),
       ...(args.limit != null ? { limit: args.limit } : {}),
       ...(args.tickLimit != null ? { tickLimit: args.tickLimit } : {}),
       ...(args.maxErrorRate != null ? { maxErrorRate: args.maxErrorRate } : {}),
+      ...(resolvedWindow ? { sinceMs: resolvedWindow.sinceMs } : {}),
     });
-    return { ok: true, report };
+    return { ok: true, report, ...(resolvedWindow ? { resolvedWindow } : {}) };
   } catch (e) {
     return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) };
   }

@@ -33,7 +33,7 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({}),
   async handler(_args, ctx) {
-    const reply = (obj: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(obj) }] });
+    const reply = (obj: unknown) => ({ data: obj });
     const sql = getOrgPg().sql;
     const summary = await datatypesSummary(sql, ctx.workspaceId ?? '');
     return reply({ ok: true, ...summary });

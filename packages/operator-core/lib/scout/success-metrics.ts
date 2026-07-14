@@ -440,6 +440,14 @@ export interface BuildProgramSuccessOptions extends Pick<
   maxErrorRate?: number;
   /** Release-bar time box. Default 48h, matching blender-release-readiness. */
   cycleWindowMs?: number;
+  /**
+   * ABSOLUTE epoch-ms floor for the tick window (EI-12148) — overrides the rolling
+   * `cycleWindowMs` box. The generation-watermark use case: after a fix ships and the
+   * bg-host restarts, a rolling window keeps judging PRE-fix errors for up to 48h; a
+   * caller that passes the restart instant here judges only what the RUNNING code
+   * produced. Omitted ⇒ the rolling default (byte-identical to pre-EI-12148 behavior).
+   */
+  sinceMs?: number;
   /** Deterministic clock injection for tests. */
   nowMs?: number;
 }
@@ -464,8 +472,12 @@ export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}):
   tickWindowMs: number;
   tickSinceMs: number;
 } {
-  const tickWindowMs = opts.cycleWindowMs ?? CYCLE_ERROR_WINDOW_MS;
-  const tickSinceMs = (opts.nowMs ?? Date.now()) - tickWindowMs;
+  const nowMs = opts.nowMs ?? Date.now();
+  // An absolute floor (sinceMs — e.g. the running bg-host generation's start) overrides
+  // the rolling box; tickWindowMs is then DERIVED for provenance. Omitted ⇒ the rolling
+  // default, byte-identical to the pre-EI-12148 read.
+  const tickSinceMs = opts.sinceMs ?? nowMs - (opts.cycleWindowMs ?? CYCLE_ERROR_WINDOW_MS);
+  const tickWindowMs = opts.sinceMs != null ? Math.max(0, nowMs - opts.sinceMs) : (opts.cycleWindowMs ?? CYCLE_ERROR_WINDOW_MS);
   const shared: BuildQualityInputsOptions = {
     ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     ...(opts.limit != null ? { limit: opts.limit } : {}),

@@ -48,6 +48,6 @@ export default defineTool({
         ...(args.contracts && def ? { contract: def.contract } : {}),
       };
     });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, agent: target, modes }) }] };
+    return { data: { ok: true, agent: target, modes } };
   },
 });

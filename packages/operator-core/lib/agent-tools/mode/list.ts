@@ -35,14 +35,11 @@ export default defineTool({
     const activeIds = new Set(active.map((r) => r.mode));
     const catalog = MODES.map((m) => ({ mode: m.id, axis: m.axis, title: m.title, oneLiner: m.oneLiner, active: activeIds.has(m.id) }));
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: true,
-          axes: 'same-axis modes exclude each other (auto-switch on set); cross-axis modes stack; overlays stack with everything',
-          modes: catalog,
-        }),
-      }],
+      data: {
+        ok: true,
+        axes: 'same-axis modes exclude each other (auto-switch on set); cross-axis modes stack; overlays stack with everything',
+        modes: catalog,
+      },
     };
   },
 });

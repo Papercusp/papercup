@@ -24,13 +24,6 @@ export default defineTool({
   }),
   async handler(args) {
     const entries = await readThread(args.root_msg_id);
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ root: args.root_msg_id, entries }),
-        },
-      ],
-    };
+    return { data: { root: args.root_msg_id, entries } };
   },
 });

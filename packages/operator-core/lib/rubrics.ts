@@ -31,6 +31,19 @@ import { activeWorkspaceId } from './workspace-registry';
 import {
   rubricTemplateDataSchema,
   RUBRIC_TEMPLATE_NAME,
+  type RubricCriterionWindow,
+} from './agent-tools/plans/rubric-template';
+
+// Structured criterion grading-window (EI-12146): schema + the pure resolver live in
+// rubric-template.ts (dependency-free, so instruments can import them without this
+// module's PG edge). Re-exported here so rubric consumers find them where the Rubric
+// shape lives.
+export {
+  rubricCriterionWindowSchema,
+  resolveCriterionWindow,
+  DEFAULT_CRITERION_WINDOW_MS,
+  type RubricCriterionWindow,
+  type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
 import { recordPlanRevision } from './agent-tools/plans/revisions';
@@ -64,6 +77,10 @@ export interface RubricCriterion {
    *  from being silently dropped on re-propose, and rubricCompleteness reports criteria
    *  still lacking one. */
   replication?: string;
+  /** The criterion's STRUCTURED evidence window (EI-12146) — resolve via
+   *  resolveCriterionWindow() instead of re-hardcoding a look-back in prose. Omitted =
+   *  the consumer's default (48h rolling). */
+  window?: RubricCriterionWindow;
 }
 
 export interface Rubric {
@@ -212,6 +229,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
       driftMarkers: c.driftMarkers,
       ...(c.ratingScale ? { ratingScale: c.ratingScale } : {}),
       ...(c.replication ? { replication: c.replication } : {}),
+      ...(c.window ? { window: c.window } : {}),
     })),
     ratingScale: d.ratingScale,
     methodRef: d.methodRef ?? null,

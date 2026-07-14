@@ -147,7 +147,27 @@ for (const file of TOOL_FILES) {
 //
 // The remaining ~439 are the same mechanical shape. If you are here because the gate
 // is red again: migrate a batch and lower this further — do NOT bump it a sixth time.
-const BASELINE = 445;
+//
+// 2026-07-14 (green-checkpoint red, candidate b7d8f5e2, release-fixer): reds again
+// at 447 (451 by the time this landed) from ordinary fleet churn — no single
+// attributable regression. Per this file's own "do NOT bump it a sixth time"
+// instruction, this was paid off in the intended currency again instead of bumped:
+// 19 more tools migrated to the canonical `{ data: obj }` shape — agents/list,
+// auth/set-full-access-roles, backup/{promote,rollback,snapshot_create,
+// snapshot_list}, capability/{envelope-set-role,set-tier}, clamp/set-safe-tools,
+// conversation/recent, coordination/tools/{thread,watermark,watermark-set},
+// hooks/known, mode/{get,list}, datatypes/{catalog,list,summary}. Each was checked
+// for a test calling its `.handler(...)` directly against the legacy
+// `content[0].text` shape (none found — all read via the wire-encoding path, so no
+// test needed repointing) and for an `isError` branch (none — `coord:rebind-identity`
+// was the one candidate with a conditional `isError` and was deliberately LEFT
+// inline-JSON, since `{ data }` has no `isError` slot and that would silently drop
+// its error signaling). Real count 451 → 432, so this LOWERS the ceiling to 440,
+// leaving 8 slots of churn headroom.
+//
+// If you are here because the gate is red again: migrate a batch and lower this
+// further — do NOT just bump it.
+const BASELINE = 440;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {
