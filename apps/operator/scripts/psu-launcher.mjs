@@ -555,6 +555,23 @@ export const NATIVE_SCHEDULER_DENY_FLAG =
  * native-scheduler-lockout D-003 human-keeps-it carve-out.
  */
 export const NO_SUBAGENTS_DENY_FLAG = '--disallowedTools=Task,Agent,Workflow';
+
+/**
+ * Owner-desktop-notification lockout (owner directive 2026-07-14): agents were
+ * hand-firing `notify-send` popups at the owner's desktop. Deny the easy Bash
+ * paths (bare name + the absolute paths that would trivially bypass the
+ * ~/.papercusp/bin PATH shim) on EVERY claude launch — su + role + resume,
+ * unconditional, no opt-out (claude unions repeated --disallowedTools
+ * occurrences, so this composes with the other deny flags). Layered with the
+ * PATH shim (all backends, compound forms) + the root-CLAUDE.md standing rule
+ * (route human-facing alerts via coord:escalate / notifyAttention). MUST stay
+ * one `=` token — same greed-guard reason as NATIVE_SCHEDULER_DENY_FLAG. The
+ * literal mirrors `OWNER_DESKTOP_NOTIFY_BASH_DENY` in
+ * `@papercusp/orchestrator/owner-desktop-notify-deny`; the lockstep test in
+ * `lib/psu-launcher.test.ts` pins the two copies together. Exported for tests.
+ */
+export const OWNER_DESKTOP_NOTIFY_DENY_FLAG =
+  '--disallowedTools=Bash(notify-send:*),Bash(/usr/bin/notify-send:*),Bash(/bin/notify-send:*)';
 export const BRAIN_TOMBSTONE_MESSAGE =
   'psu: --brain is deprecated and no longer launches a pinned brain session. Use the live operator/sentinel converse surface or a normal `psu` session.';
 
@@ -599,6 +616,8 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
         // Agent sessions must schedule ONLY via the harness routines table —
         // never claude's own cron/schedule/loop surfaces (D-001).
         NATIVE_SCHEDULER_DENY_FLAG,
+        // Owner-desktop notify-send lockout (owner directive 2026-07-14).
+        OWNER_DESKTOP_NOTIFY_DENY_FLAG,
         // Subagent-launch (Task/Agent) is DENIED BY DEFAULT (owner mandate
         // 2026-07-02) — a role/bee never fans out via its own subagent tool
         // unless the launch explicitly opts in (`--allow-subagents`). See
