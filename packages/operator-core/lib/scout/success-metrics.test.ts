@@ -247,25 +247,28 @@ describe('evaluateProgramSuccess — ledger reconciliation', () => {
   });
 });
 
-describe('evaluateProgramSuccess — grader suggestion adopted', () => {
-  it('PASSES on a graded, attributed idea that was routed onto a rail (the closed loop)', () => {
+describe('evaluateProgramSuccess — grader feedback attributed', () => {
+  it('PASSES when a routed idea carries a grade, feedback, and grader attribution', () => {
     const r = evaluateProgramSuccess(
       inputs(
         [ranTick({ ideasRouted: 1 })],
-        [idea({ humanGrade: 4, humanFeedback: 'tighten the scope', gradedBy: 'owner', routedRef: 'wi:WI-1' })],
+        [idea({ humanGrade: 4, humanFeedback: 'tighten the scope', gradedBy: 'owner', routedRef: null })],
       ),
     );
-    expect(bar(r, 'grader-suggestion-adopted').status).toBe('pass');
+    const b = bar(r, 'grader-feedback-attributed');
+    expect(b.status).toBe('pass');
+    expect(b.observed).toContain('does not claim the feedback was adopted');
+    expect(b.bar).not.toContain('adopted');
   });
 
-  it('FAILS when grades exist but none carry an attributed suggestion that shipped', () => {
+  it('FAILS when grades exist but none carry attributed feedback', () => {
     const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [idea({ humanGrade: 2 })]));
-    expect(bar(r, 'grader-suggestion-adopted').status).toBe('fail');
+    expect(bar(r, 'grader-feedback-attributed').status).toBe('fail');
   });
 
   it('is UNKNOWN when nothing is graded yet — the channel has produced no input', () => {
     const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [idea()]));
-    expect(bar(r, 'grader-suggestion-adopted').status).toBe('unknown');
+    expect(bar(r, 'grader-feedback-attributed').status).toBe('unknown');
   });
 });
 

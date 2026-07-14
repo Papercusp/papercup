@@ -324,19 +324,20 @@ export function evaluateProgramSuccess(
           }),
   });
 
-  // ── 5. ≥1 grader suggestion adopted + shipped with attribution ──────────────
-  // Operational definition (stated so a green here is auditable): an idea that carries a
-  // grader's free-text critique (humanFeedback — the suggestion), a grade attributed to a
-  // grader (gradedBy), and a routedRef (it was adopted onto a rail, not just scored). That
-  // triple is the closed learning loop the program set out to build: a grade that CHANGED
-  // something and can be traced back to who said it.
+  // ── 5. ≥1 routed idea has grade + feedback + grader attribution ──────────────
+  // This ledger can prove that feedback was RECORDED and ATTRIBUTED on a routed idea. It
+  // cannot prove the feedback was ADOPTED: routedRef is written when the idea is initially
+  // routed, before human_grade / human_feedback exist, so using routedRef as post-grade
+  // adoption evidence is structurally backwards (WI-4768). Keep this bar deliberately
+  // narrower and honest; feedback-driven revision/adoption is judged by the rubric's
+  // grade→revise drill until the ledger carries explicit revision lineage.
   const graded = ideas.filter((i) => i.humanGrade != null);
-  const adopted = ideas.filter(
-    (i) => i.humanFeedback && i.humanFeedback.trim().length > 0 && i.gradedBy && i.routedRef,
+  const attributedFeedback = graded.filter(
+    (i) => i.humanFeedback && i.humanFeedback.trim().length > 0 && i.gradedBy,
   );
   criteria.push({
-    key: 'grader-suggestion-adopted',
-    bar: '>=1 grader suggestion adopted + shipped with attribution',
+    key: 'grader-feedback-attributed',
+    bar: '>=1 routed idea carries an explicit grade, feedback, and grader attribution',
     ...(graded.length === 0
       ? {
           status: 'unknown' as const,
@@ -344,8 +345,8 @@ export function evaluateProgramSuccess(
           unknownReason: 'no grades in the window — the grading channel has not produced input yet',
         }
       : {
-          status: (adopted.length > 0 ? 'pass' : 'fail') as SuccessStatus,
-          observed: `${adopted.length} graded+attributed idea(s) routed onto a rail (of ${graded.length} graded / ${ideas.length} routed)`,
+          status: (attributedFeedback.length > 0 ? 'pass' : 'fail') as SuccessStatus,
+          observed: `${attributedFeedback.length} routed idea(s) carry grade+feedback+grader attribution (of ${graded.length} graded / ${ideas.length} routed); this bar does not claim the feedback was adopted`,
         }),
   });
 
