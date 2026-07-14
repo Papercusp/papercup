@@ -431,6 +431,14 @@ export function groundingLaneHistogram(
           ? 'standing-fact'
           : ref.startsWith('niche:')
             ? 'niche-map'
+            : ref.startsWith('spend:')
+              ? 'spend-anomaly'
+              : ref.startsWith('owner-correction:')
+                ? 'owner-correction'
+                : ref.startsWith('knowledge:')
+                  ? 'knowledge-reuse-gap'
+                  : ref.startsWith('plan-health:')
+                    ? 'plan-health'
             : 'corpus';
       out[lane] = (out[lane] ?? 0) + 1;
     }

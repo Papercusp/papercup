@@ -74,7 +74,7 @@ export interface PresenceSnapshot {
   scope_note?: string;
   /** `wakeable` (P-001) is the count a coordinator should read INSTEAD of
    *  `active` — agents an events:emit / coord:dispatch will actually reach.
-   *  `byState` breaks the roster down live | parked | ended. */
+   *  `byState` breaks the roster down live | parked | draining | suspect | ended. */
   summary: {
     active: number;
     stale: number;
@@ -86,7 +86,14 @@ export interface PresenceSnapshot {
     /** Agents a human is CURRENTLY viewing in the operator web/Tauri PTY panel
      *  (no OS window) — the reaper's other hard-exempt cohort (pty-viewer-heartbeat.ts). */
     viewerAttached: number;
-    byState: { live: number; parked: number; ended: number; recorded: number };
+    byState: {
+      live: number;
+      parked: number;
+      draining: number;
+      suspect: number;
+      ended: number;
+      recorded: number;
+    };
     /** P-007: agents whose context-pressure bucket is 'high' or 'critical' right
      *  now — the fleet-health headline (silent by design: 'ok'/unknown agents are
      *  the common case and aren't counted, mirroring the ambient gauge's own
@@ -348,6 +355,7 @@ export async function assemblePresenceSnapshot(
     // 30-minute ceiling. `=== false` only: `null` (remote host / no pid /
     // EPERM) is inconclusive and must never force `ended`.
     const pidConfirmedDead = probeProcessLiveness({ host: r.host, pid: r.pid }) === false;
+    const claimsHeld = (r.claimedItems?.length ?? 0) > 0 || (r.workItemClaims?.length ?? 0) > 0;
     const sessionState: RosterRow['sessionState'] = recordedLiveOnly
       ? 'recorded'
       : deriveSessionState({
@@ -356,6 +364,7 @@ export async function assemblePresenceSnapshot(
           liveTurn: w.liveTurn,
           hardStale,
           pidConfirmedDead,
+          claimsHeld,
         });
     return {
       ...r,
@@ -440,7 +449,7 @@ export async function assemblePresenceSnapshot(
   // the WHOLE roster (active + stale) — `wakeable` is the headline a coordinator
   // reads instead of `active`, and `byState` separates the dispatchable (parked)
   // from the busy (live) and the dead (ended).
-  const byState = { live: 0, parked: 0, ended: 0, recorded: 0 };
+  const byState = { live: 0, parked: 0, draining: 0, suspect: 0, ended: 0, recorded: 0 };
   const byContextPressure = { high: 0, critical: 0 };
   let wakeable = 0;
   let onDesktop = 0;
@@ -452,7 +461,7 @@ export async function assemblePresenceSnapshot(
     if (r.contextPressure === 'high') byContextPressure.high += 1;
     else if (r.contextPressure === 'critical') byContextPressure.critical += 1;
     const state = r.sessionState;
-    if (state === 'live' || state === 'parked' || state === 'ended' || state === 'recorded') {
+    if (state === 'live' || state === 'parked' || state === 'draining' || state === 'suspect' || state === 'ended' || state === 'recorded') {
       byState[state] += 1;
     }
   }

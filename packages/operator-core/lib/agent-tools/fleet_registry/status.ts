@@ -55,7 +55,7 @@ export default defineTool({
         'coord:roster { view:"members" } (membership across hive + fleet)',
       ];
       if (j?.ok && j.slug) {
-        const ended = (j.members ?? []).filter((m) => m.sessionState === 'ended').length;
+        const ended = (j.members ?? []).filter((m) => ['ended', 'suspect', 'draining'].includes(m.sessionState ?? '')).length;
         out.push({
           tool: 'coord:catch-up',
           selector: `@fleet:${j.slug}`,
@@ -135,13 +135,13 @@ export default defineTool({
     // EI-7137: splitFleetRosterCounts's own contract is "a set of LIVE fleet-roster
     // entries" — but `roster` here is the FULL roster (every presence row tagged with
     // this fleet_slug, including ones EI-5858's wakeability reconciliation has already
-    // marked sessionState:'ended'). Passing it in unfiltered let memberCount count dead
+    // marked sessionState:'ended'/'suspect'/'draining'). Passing it in unfiltered let memberCount count dead
     // former members forever (observed live: memberCount=19 for a 10-live fleet after a
-    // wave died). `sessionState==='ended'` is the authoritative dead signal (a stale-but-
+    // wave died). non-runnable `sessionState` values are the authoritative dead signal (a stale-but-
     // still-heartbeating row can otherwise mask a dead session — see EI-5858) — filter
     // those out before counting, but keep them in the full `members[]` list below (still
     // wants full visibility, including who died, for the leader/owner reading this).
-    const liveRoster = roster.filter((m) => m.sessionState !== 'ended');
+    const liveRoster = roster.filter((m) => !['ended', 'suspect', 'draining'].includes(m.sessionState ?? ''));
     const { members: memberCount } = splitFleetRosterCounts(liveRoster);
 
     // agent-launch-resume-primitives P-006 / D-006: there is deliberately NO
@@ -151,7 +151,9 @@ export default defineTool({
     // the leader the FACTS instead: for each ENDED member, when it died and whether a
     // session is actually resumable — and let it compose the revival per member
     // (capability:launch-agent { resume: { agentId } }, or fresh, or a fork).
-    const endedIds = roster.filter((m) => m.sessionState === 'ended').map((m) => m.agentId);
+    const endedIds = roster
+      .filter((m) => ['ended', 'suspect'].includes(m.sessionState ?? ''))
+      .map((m) => m.agentId);
     let resumableByOwner = new Map<string, { sessionId: string | null; endedAt: string | null }>();
     if (endedIds.length) {
       try {
@@ -200,7 +202,7 @@ export default defineTool({
         // P-006: only on the dead — what a leader needs to decide whether (and how) to
         // bring this one back. `resumable:true` ⇒ `capability:launch-agent { resume:
         // { agentId }, fleet, brief }` restores it mid-thread with its context intact.
-        ...(m.sessionState === 'ended'
+        ...(['ended', 'suspect'].includes(m.sessionState ?? '')
           ? (() => {
               const r = resumableByOwner.get(m.agentId);
               return {

@@ -108,7 +108,21 @@ export type MetaPatternCategory =
   // blender-self-learning-2026-07-12 P-009 / WI-4454: measured tool DX friction —
   // per-tool error rates, arg-limit rejections, retry/batching-waste loops, and
   // chronic p95 latency, from tool_invocations.
-  | 'tool-telemetry';
+  | 'tool-telemetry'
+  // blender-self-learning-2026-07-12 P-011: cost-distribution anomalies the raw
+  // time-token-sink lane cannot express (missing trigger attribution / extreme
+  // trigger or role-class concentration).
+  | 'spend-anomaly'
+  // P-011: explicit owner correction signals — low owner grades + verified
+  // owner-turn facts — so the next ideation cycle learns from correction, not
+  // only from eventual artifact outcomes.
+  | 'owner-correction'
+  // P-011: repeated zero-hit knowledge demand + reusable recipes that aged out
+  // after one run, exposing where the fleet keeps rediscovering instead of reusing.
+  | 'knowledge-reuse-gap'
+  // P-011: plan lifecycle coherence and stale planning backlog (separate from
+  // the watchdog's already-covered stuck operational execution signal).
+  | 'plan-health';
 
 /**
  * A grounded meta-pattern: a cross-corpus regularity (not a single capture),
@@ -194,6 +208,19 @@ export interface CorpusDigest {
    *  `tool:retry-loop:<tool>` / `tool:p95:<tool>`). OPTIONAL: populated by the
    *  cycle seam, like watchdogHealth. */
   toolTelemetry?: MetaPattern[];
+  /** SPEND ANOMALIES (blender-self-learning-2026-07-12 P-011) — missing turn-
+   *  trigger attribution and extreme trigger / role-class cost concentration
+   *  (`ref` = `spend:attribution-gap` / `spend:*:concentration:*`). */
+  spendAnomalies?: MetaPattern[];
+  /** OWNER CORRECTIONS (P-011) — low owner grades and verified owner-turn facts
+   *  (`ref` = `owner-correction:idea:*` / `owner-correction:fact:*`). */
+  ownerCorrections?: MetaPattern[];
+  /** KNOWLEDGE REUSE GAPS (P-011) — repeated zero-hit demand and stale one-run
+   *  recipes (`ref` = `knowledge:search-miss:*` / `knowledge:recipe-reuse-gap`). */
+  knowledgeReuseGaps?: MetaPattern[];
+  /** PLAN HEALTH (P-011) — lifecycle/index drift, drained-but-unclosed plans,
+   *  and stale draft/ready backlog (`ref` = `plan-health:*`). */
+  planHealth?: MetaPattern[];
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS fired cycle's persisted digest snapshot
    *  carried (scout_digest_snapshots, migration 582). {@link renderDigest}

@@ -13,6 +13,7 @@
  * boundary, dryRun, and the underlying `gatherProtectedSessionOwners` liveness toggle.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hostname } from 'node:os';
 import type { Sql } from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -91,11 +92,11 @@ async function issueAssignee(id: string): Promise<string | null> {
   return row?.assignee ?? null;
 }
 
-async function seedPresence(owner: string, ageMs: number): Promise<void> {
+async function seedPresence(owner: string, ageMs: number, liveness: { host?: string; pid?: number } = {}): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at)
-    VALUES (${owner}, now() - make_interval(secs => ${Math.round(ageMs / 1000)}))
-    ON CONFLICT (owner_id) DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at`;
+    INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at, host, pid)
+    VALUES (${owner}, now() - make_interval(secs => ${Math.round(ageMs / 1000)}), ${liveness.host ?? null}, ${liveness.pid ?? null})
+    ON CONFLICT (owner_id) DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at, host = EXCLUDED.host, pid = EXCLUDED.pid`;
 }
 
 const GRACE_MS = 600_000; // IDLE_SESSION_GRACE_MS (STALE_MS)
@@ -124,6 +125,16 @@ describe('runWorkItemLeaseReap (P-001 — the backstop schedule)', () => {
 
     expect(res.reapedIds).not.toContain('F-LIVE-1');
     expect(await featureTakenBy('F-LIVE-1')).toBe('su-live');
+  });
+
+  it('releases an old lease immediately when a fresh local heartbeat carries a confirmed-dead PID', async () => {
+    await seedFeature('F-PID-DEAD-1', 'su-pid-dead', 5 * GRACE_MS);
+    await seedPresence('su-pid-dead', 1_000, { host: hostname(), pid: 999_999_999 });
+
+    const res = await runWorkItemLeaseReap({});
+
+    expect(res.reapedIds).toContain('F-PID-DEAD-1');
+    expect(await featureTakenBy('F-PID-DEAD-1')).toBeNull();
   });
 
   it('NEVER releases a lease claimed within the grace floor, even with no heartbeat yet (its first beat may not have landed)', async () => {

@@ -178,10 +178,21 @@ export function foldFleetRoster(
     // (counted a live member) forever. Feed the DEAD-ceiling check so an
     // hour-cold heartbeat is authoritatively `ended` regardless of that zombie await.
     const hbMs = (p?.heartbeatAt ?? base.heartbeatAt) ? Date.parse((p?.heartbeatAt ?? base.heartbeatAt)!) : null;
+    const tier = tier1.get(id);
+    const claimsHeld =
+      base.load > 0 ||
+      (tier?.claimedItems?.length ?? 0) > 0 ||
+      (tier?.workItemClaims?.length ?? 0) > 0;
     const sessionState: SessionState | null = w
-      ? deriveSessionState({ stale, wakeable: w.wakeable, liveTurn: w.liveTurn, hardStale: isHardStale(hbMs, nowMs) })
+      ? deriveSessionState({
+          stale,
+          wakeable: w.wakeable,
+          liveTurn: w.liveTurn,
+          hardStale: isHardStale(hbMs, nowMs),
+          claimsHeld,
+        })
       : null;
-    const alive = sessionState === 'ended' ? false : base.alive;
+    const alive = sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining' ? false : base.alive;
     out.push({
       ...base,
       alive,

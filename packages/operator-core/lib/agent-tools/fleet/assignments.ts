@@ -139,10 +139,16 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
     const sessionState =
       !w.wakeable && recordedLive.has(a.agentId)
         ? 'recorded'
-        : deriveSessionState({ stale: !a.alive, wakeable: w.wakeable, liveTurn: w.liveTurn, hardStale });
+        : deriveSessionState({
+            stale: !a.alive,
+            wakeable: w.wakeable,
+            liveTurn: w.liveTurn,
+            hardStale,
+            claimsHeld: a.load > 0,
+          });
     a.sessionState = sessionState;
     if (sessionState === 'recorded') a.alive = true;
-    if (sessionState === 'ended') a.alive = false;
+    if (sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining') a.alive = false;
   }
   return agents;
 }
@@ -258,7 +264,7 @@ export function deriveMemberVerdict(
   },
   nowMs: number = Date.now(),
 ): MemberVerdict {
-  if (a.sessionState === 'ended' || !a.alive) return 'dead';
+  if (a.sessionState === 'ended' || a.sessionState === 'suspect' || a.sessionState === 'draining' || !a.alive) return 'dead';
   if (a.monitorState) return a.monitorState;
   const last = a.lastToolCallAtMs;
   if (last != null && nowMs - last <= VERDICT_SPEAKING_FRESH_MS) return 'speaking';

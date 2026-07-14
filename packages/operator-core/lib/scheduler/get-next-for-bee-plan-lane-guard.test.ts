@@ -10,8 +10,9 @@
  * confirmed blocked; see the last test below).
  *
  * getNextWorkItem / planItemLaneBlockReason / releaseWorkItem are mocked at
- * the module boundary — no PG. `ignoreStoredSpec:true` skips
- * getClaimSpecRecord entirely (exercised elsewhere), isolating the loop
+ * the module boundary — no PG. `ignoreStoredSpec:true` still resolves the
+ * claim-spec record so WI-4770's fleet-transition guard can fail closed; the
+ * SQL fixture therefore behaves like an empty store while isolating the loop
  * under test. Run: cd packages/operator-core && npx vitest run
  * lib/scheduler/get-next-for-bee-plan-lane-guard.test.ts
  */
@@ -19,7 +20,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: {} }),
+  getOrgPg: () => ({ sql: async () => [] }),
 }));
 
 const getNextWorkItemMock = vi.fn();

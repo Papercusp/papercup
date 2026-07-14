@@ -34,6 +34,10 @@ export interface PresenceTier1 {
   intentStale: boolean | null;
   /** Plan-item ids the agent currently holds (its lane). */
   claimedItems: string[];
+  /** Unified work-item ids held by this owner; used only to classify a dead
+   *  process as `suspect` until claim cleanup finishes. Not emitted in the
+   *  compact presence payload. */
+  workItemClaims?: string[];
   /** Model tier the agent runs on (opus/sonnet/haiku…), or null. */
   model: string | null;
   /** True iff the agent is parked on an events:await (blocked-on). */
@@ -142,12 +146,17 @@ export async function fetchPresenceTier1(
   if (ownerIds.length === 0) return out;
   const { sql } = getOrgPg();
 
-  const [claims, models, awaits, wakeOverrides, wakeDefault] = await Promise.all([
+  const [claims, workItemClaims, models, awaits, wakeOverrides, wakeDefault] = await Promise.all([
     sql<{ owner: string; items: string[] }[]>`
       SELECT owner, array_agg(item_id ORDER BY item_id) AS items
         FROM harness_shared.plan_item_claims
        WHERE owner = ANY(${ownerIds}::text[]) AND expires_ts > now()
-       GROUP BY owner`,
+        GROUP BY owner`,
+    sql<{ taken_by: string; items: string[] }[]>`
+      SELECT taken_by, array_agg(feature_id ORDER BY feature_id) AS items
+        FROM harness_shared.work_items
+       WHERE taken_by = ANY(${ownerIds}::text[])
+       GROUP BY taken_by`,
     sql<{ session_owner: string; model_tier: string | null }[]>`
       SELECT DISTINCT ON (session_owner) session_owner, model_tier
         FROM harness_shared.spawned_agents
@@ -166,6 +175,7 @@ export async function fetchPresenceTier1(
   ]);
 
   const claimsByOwner = new Map(claims.map((r) => [r.owner, r.items ?? []]));
+  const workItemClaimsByOwner = new Map(workItemClaims.map((r) => [r.taken_by, r.items ?? []]));
   const modelByOwner = new Map(models.map((r) => [r.session_owner, r.model_tier]));
   const awaitByOwner = new Map(awaits.map((r) => [r.subscriber_id, r]));
 
@@ -173,6 +183,7 @@ export async function fetchPresenceTier1(
     const aw = awaitByOwner.get(ownerId);
     out.set(ownerId, {
       claimedItems: claimsByOwner.get(ownerId) ?? [],
+      workItemClaims: workItemClaimsByOwner.get(ownerId) ?? [],
       model: modelByOwner.get(ownerId) ?? null,
       awaitingEvent: aw != null,
       awaitingEventKey: aw?.event_key ?? null,

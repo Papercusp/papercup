@@ -9,6 +9,7 @@ import {
   reapZombieResumeProcs,
   planDeadAwaitReclaim,
   liveHostOwnerSet,
+  confirmedDeadOwnerSet,
   resumableOpenSessionOwners,
   parseForegroundFromStat,
   IDLE_SESSION_GRACE_MS,
@@ -108,6 +109,19 @@ describe('planIdleSessionReap (P-011 idle-session reaper — slice 1: dead-proce
     expect(plan.keptLive).toEqual([live]);
     expect(plan.keptFresh).toEqual([fresh]);
     expect(plan.keptNoOwner).toEqual([noOwner]);
+  });
+});
+
+describe('confirmedDeadOwnerSet (WI-4399 PID/claim reconciliation)', () => {
+  it('returns only owners whose local PID probe affirmatively reports gone', () => {
+    const rows = [
+      { ownerId: 'su-dead', host: 'box', pid: 10 },
+      { ownerId: 'su-live', host: 'box', pid: 11 },
+      { ownerId: 'su-remote', host: 'other-box', pid: 12 },
+      { ownerId: 'su-unknown', host: null, pid: null },
+    ];
+    const out = confirmedDeadOwnerSet(rows, ({ pid }) => (pid === 10 ? false : pid === 11 ? true : null));
+    expect(out).toEqual(new Set(['su-dead']));
   });
 });
 

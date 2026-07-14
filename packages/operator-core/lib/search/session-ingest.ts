@@ -1025,6 +1025,8 @@ export async function ingestFileNow(
       response_count: st.response_count + responseCount,
       tool_call_count: st.tool_call_count + toolCallCount,
       last_inference_id: lastInferenceId,
+      counts_backfill_offset: newOffset,
+      counts_backfilled_at: new Date().toISOString(),
       sessionId: opts.sessionId ?? meta.sessionId,
     });
   }
@@ -1111,6 +1113,8 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
       prompt_count: st.prompt_count + promptDelta,
       response_count: st.response_count + responseDelta,
       tool_call_count: st.tool_call_count,
+      counts_backfill_offset: transcript.length,
+      counts_backfilled_at: new Date().toISOString(),
       sessionId: chat.id,
     });
     budget.turns -= rows.length;
@@ -1119,6 +1123,7 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
   await writeState(sql, 'agent_chat', CHAT_HWM_PATH, {
     byte_offset: 0,
     turn_count: 0,
+    counts_backfilled_at: new Date().toISOString(),
     mtimeMs: maxUpdated,
   });
   return ingested;
@@ -1176,7 +1181,8 @@ export function getLastSessionIngestStats(): IngestStats | null {
 export async function runSessionIngestOnce(): Promise<IngestStats> {
   const started = Date.now();
   const stats: IngestStats = {
-    filesScanned: 0, filesIngested: 0, turnsInserted: 0, chatsIngested: 0, errors: 0, durationMs: 0,
+    filesScanned: 0, filesIngested: 0, turnsInserted: 0, chatsIngested: 0, countBackfillFiles: 0,
+    errors: 0, durationMs: 0,
   };
   if (__sweep.running) return { ...stats, skipped: 'already_running' };
   __sweep.running = true;
@@ -1190,6 +1196,12 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     if (!enabled) return { ...stats, skipped: 'flag_off' };
 
     const { sql } = getOrgPg();
+    try {
+      stats.countBackfillFiles = await backfillHistoricalCounts(sql);
+    } catch (err) {
+      stats.errors += 1;
+      console.warn(`[session-ingest] historical count backfill skipped (non-fatal): ${(err as Error).message}`);
+    }
     const sinceMs = Date.now() - INGEST_WINDOW_DAYS * 24 * 3600 * 1000;
     const budget = { turns: MAX_TURNS_PER_TICK };
 
@@ -1211,8 +1223,10 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       const stateRows = await sql<Array<{
         file_path: string; byte_offset: string | number; turn_count: number;
         prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
+        counts_backfill_offset: string | number; counts_backfilled_at: string | null;
       }>>`
-        SELECT file_path, byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id
+        SELECT file_path, byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id,
+               counts_backfill_offset, counts_backfilled_at
           FROM harness_shared.session_ingest_state
          WHERE source_kind = ${adapter.sourceKind}
       `;
@@ -1224,6 +1238,8 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           response_count: r.response_count ?? 0,
           tool_call_count: r.tool_call_count ?? 0,
           last_inference_id: r.last_inference_id ?? null,
+          counts_backfill_offset: Number(r.counts_backfill_offset ?? r.byte_offset),
+          counts_backfilled_at: r.counts_backfilled_at ?? null,
         }]),
       );
       let filesThisAdapter = 0;
@@ -1260,6 +1276,8 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             response_count: st.response_count + responseCount,
             tool_call_count: st.tool_call_count + toolCallCount,
             last_inference_id: lastInferenceId,
+            counts_backfill_offset: newOffset,
+            counts_backfilled_at: new Date().toISOString(),
             sessionId: meta.sessionId,
             mtimeMs: cand.mtimeMs,
           });

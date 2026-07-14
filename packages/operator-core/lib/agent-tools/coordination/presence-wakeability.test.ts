@@ -31,10 +31,9 @@ describe('deriveSessionState', () => {
     expect(deriveSessionState({ stale: false, wakeable: true, liveTurn: false })).toBe('parked');
   });
 
-  it('wakeable + stale heartbeat → parked (process exited but the await resumes it)', () => {
-    // A stale row is NOT automatically dead: a live await means a wake relaunches it.
-    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: true })).toBe('parked');
-    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
+  it('stale + wakeable → draining (not a healthy parked dispatch target)', () => {
+    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: true })).toBe('draining');
+    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('draining');
   });
 
   // fleet-liveness-zombie-await-2026-07-07: an abrupt death (reboot/SIGKILL)
@@ -45,12 +44,13 @@ describe('deriveSessionState', () => {
     // The exact incident shape: wakeable (zombie await) + no running turn, but the
     // heartbeat has been cold past the DEAD ceiling ⇒ dead, needs relaunch.
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: true })).toBe('ended');
+    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: true, claimsHeld: true })).toBe('suspect');
     // hardStale beats even a (spurious) running-turn signal.
     expect(deriveSessionState({ stale: false, wakeable: true, liveTurn: true, hardStale: true })).toBe('ended');
   });
 
   it('hardStale:false leaves the pre-fix behavior unchanged (back-compat)', () => {
-    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: false })).toBe('parked');
+    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: false })).toBe('draining');
     // omitted hardStale defaults to false
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
   });
@@ -74,6 +74,12 @@ describe('deriveSessionState', () => {
     ).toBe('ended');
   });
 
+  it('pidConfirmedDead with held claims → suspect until claim cleanup runs', () => {
+    expect(
+      deriveSessionState({ stale: false, wakeable: true, liveTurn: true, pidConfirmedDead: true, claimsHeld: true }),
+    ).toBe('suspect');
+  });
+
   it('pidConfirmedDead:false / omitted leaves prior behavior unchanged (back-compat)', () => {
     expect(
       deriveSessionState({ stale: false, wakeable: true, liveTurn: true, pidConfirmedDead: false }),
@@ -94,6 +100,11 @@ describe('overrideIntentStaleForSessionState (EI-9262)', () => {
   it('forces intentStale TRUE for ended too', () => {
     expect(overrideIntentStaleForSessionState(false, 'ended')).toBe(true);
     expect(overrideIntentStaleForSessionState(null, 'ended')).toBe(true);
+  });
+
+  it('forces intentStale TRUE for draining and suspect too', () => {
+    expect(overrideIntentStaleForSessionState(false, 'draining')).toBe(true);
+    expect(overrideIntentStaleForSessionState(false, 'suspect')).toBe(true);
   });
 
   it('leaves intentStale untouched for live (a running turn is never intent-stale)', () => {

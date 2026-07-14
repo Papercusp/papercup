@@ -182,6 +182,11 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // P-009 (blender-self-learning): measured tool DX friction rides the flatten so
     // ideation targets failing / slow / arg-limit-rejecting / over-called tools directly.
     ['tool-telemetry', digest.toolTelemetry ?? []],
+    // P-011: four deferred curation signals, projected from existing ledgers.
+    ['spend-anomaly', digest.spendAnomalies ?? []],
+    ['owner-correction', digest.ownerCorrections ?? []],
+    ['knowledge-reuse-gap', digest.knowledgeReuseGaps ?? []],
+    ['plan-health', digest.planHealth ?? []],
   ];
   const out: MetaPattern[] = [];
   for (const [category, patterns] of lanes) {
@@ -222,6 +227,14 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Coord health (coordination breakdown — escalation storms, unanswered directed mail, inbox/wake floods, claim conflicts)';
     case 'tool-telemetry':
       return 'Tool telemetry (measured DX friction — per-tool error rates, arg-limit rejections, retry/batching-waste loops, chronic p95 latency)';
+    case 'spend-anomaly':
+      return 'Spend anomaly (cost attribution or concentration outside the raw spend-sink view)';
+    case 'owner-correction':
+      return 'Owner correction (explicit low grade or verified owner-turn conclusion)';
+    case 'knowledge-reuse-gap':
+      return 'Knowledge reuse gap (repeated zero-hit demand or reusable knowledge aging unused)';
+    case 'plan-health':
+      return 'Plan health (lifecycle drift, drained-but-unclosed work, or stale planning backlog)';
   }
 }
 

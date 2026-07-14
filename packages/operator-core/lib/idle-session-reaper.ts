@@ -48,6 +48,7 @@ import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
 import { issuesScopeWorkspace } from './issues-engineer';
 import { activeWorkspaceId } from './workspace-registry';
 import { releaseAllWorkItemLeasesForOwner } from './work-item-lease-release';
+import { probeProcessLiveness } from './agent-tools/coordination/presence';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -159,6 +160,23 @@ export function liveHostOwnerSet(hosts: ReadonlyArray<{ ownerId?: string | null 
 }
 
 /**
+ * PURE: resolve the local PID rows that are affirmatively gone. A missing PID,
+ * remote host, or EPERM is inconclusive and therefore never enters the set.
+ * Keeping the probe injectable makes the claim-release path testable without
+ * killing real processes.
+ */
+export function confirmedDeadOwnerSet(
+  rows: ReadonlyArray<{ ownerId?: string | null; host?: string | null; pid?: number | null }>,
+  probe: (row: { host?: string | null; pid?: number | null }) => boolean | null = probeProcessLiveness,
+): Set<string> {
+  const out = new Set<string>();
+  for (const row of rows) {
+    if (row.ownerId && probe(row) === false) out.add(row.ownerId);
+  }
+  return out;
+}
+
+/**
  * PURE (WI-2858): which owners' OPEN adv_session counts as genuinely RESUMABLE —
  * only those with a LIVE psu-host that can relaunch/inject the wake. An open
  * adv_session ALONE is NOT enough: that was the slice-4 half of the deadlock — a
@@ -217,7 +235,13 @@ function safeLiveHostOwners(): Set<string> {
  */
 export async function gatherProtectedSessionOwners(
   sql: Awaited<ReturnType<typeof getOrgPg>>['sql'],
-  opts: { graceMs?: number; liveHostOwners?: ReadonlySet<string>; includeClaimHolders?: boolean } = {},
+  opts: {
+    graceMs?: number;
+    liveHostOwners?: ReadonlySet<string>;
+    includeClaimHolders?: boolean;
+    /** Probe the recorded local process identity and remove confirmed-dead owners. */
+    confirmDeadPids?: boolean;
+  } = {},
 ): Promise<Set<string>> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
   const includeClaimHolders = opts.includeClaimHolders !== false;
@@ -249,6 +273,17 @@ export async function gatherProtectedSessionOwners(
   // WI-2858: a LIVE psu-host protects (it can inject/relaunch the wake) — this
   // REPLACES the removed bare-await leg without the slice-1↔slice-4 deadlock.
   for (const o of opts.liveHostOwners ?? []) protectedOwners.add(o);
+  if (opts.confirmDeadPids) {
+    const pidRows = await sql<Array<{ owner_id: string; host: string | null; pid: number | null }>>`
+      SELECT DISTINCT owner_id, host, pid
+        FROM harness_shared.coord_presence
+       WHERE owner_id IS NOT NULL AND pid IS NOT NULL AND pid > 0 AND host IS NOT NULL AND host <> ''`;
+    for (const owner of confirmedDeadOwnerSet(
+      pidRows.map((r) => ({ ownerId: r.owner_id, host: r.host, pid: r.pid })),
+    )) {
+      protectedOwners.delete(owner);
+    }
+  }
   return protectedOwners;
 }
 
@@ -319,7 +354,7 @@ export async function runIdleSessionReap(
     // and REPLACE the removed bare-await leg that deadlocked slice-1 against slice-4.
     const liveHostOwners = safeLiveHostOwners();
     const [protectedOwners, onDesktop, viewerOwners] = await Promise.all([
-      gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs, liveHostOwners }),
+      gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs, liveHostOwners, confirmDeadPids: true }),
       gatherOnDesktopSessions().catch(() => null),
       gatherViewerAttachedOwners().catch(() => new Set<string>()),
     ]);
@@ -506,7 +541,12 @@ export async function runWorkItemLeaseReap(
     const [liveOwners, onDesktop, viewerOwners] = await Promise.all([
       // includeClaimHolders:false — see the module comment above: a claim can
       // never be the reason its own holder is judged alive.
-      gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs, liveHostOwners, includeClaimHolders: false }),
+      gatherProtectedSessionOwners(sql, {
+        graceMs: opts.graceMs,
+        liveHostOwners,
+        includeClaimHolders: false,
+        confirmDeadPids: true,
+      }),
       gatherOnDesktopSessions().catch(() => null),
       gatherViewerAttachedOwners().catch(() => new Set<string>()),
     ]);

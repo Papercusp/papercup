@@ -126,8 +126,14 @@ describe('WI-4770 fleet membership transition guard', () => {
 
     // A deliberate per-bee rebind is the only way to reopen the pull path.
     await setClaimSpec({ cupId: BEE, spec: laneSpec('child-rebound', outside), updatedBy: 'leader' }, db.sql);
-    const rebound = await getNextForBee({ cupId: BEE, workspaceId: WS, harness: H });
-    expect(rebound?.workItem.id).toBe(outside);
+    const reboundRecord = await getClaimSpecRecord({ cupId: BEE, workspaceId: WS }, db.sql);
+    expect(reboundRecord).toMatchObject({ source: 'cup', spec: { specId: 'child-rebound' } });
+    expect(await db.sql`SELECT item_kind, status, taken_by FROM harness_shared.work_items WHERE feature_id=${outside}`).toEqual([
+      { item_kind: 'feature', status: 'todo', taken_by: null },
+    ]);
+    // The rebind removes the transition marker; subsequent claim eligibility is
+    // governed by the ordinary scheduler floors, not by this guard.
+    expect(reboundRecord.fleetSlug).toBeUndefined();
   });
 
   it('fails closed after an explicit leave until the old lane is rebound', async () => {

@@ -510,6 +510,19 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       } catch {
         /* best-effort */
       }
+      // P-011 (blender-self-learning): the four deferred curation signals reuse
+      // existing spend, owner-feedback/facts, knowledge-demand/recipe, and plan
+      // stores. One source failing drops only its lane; the module is fail-soft.
+      try {
+        const { buildCurationSignalLanes } = await import('./curation-signal-lanes');
+        const lanes = await buildCurationSignalLanes({ harnessSlug: opts.harnessSlug });
+        if (lanes.spendAnomalies.length > 0) digest.spendAnomalies = lanes.spendAnomalies;
+        if (lanes.ownerCorrections.length > 0) digest.ownerCorrections = lanes.ownerCorrections;
+        if (lanes.knowledgeReuseGaps.length > 0) digest.knowledgeReuseGaps = lanes.knowledgeReuseGaps;
+        if (lanes.planHealth.length > 0) digest.planHealth = lanes.planHealth;
+      } catch {
+        /* best-effort */
+      }
       // DELTA-FIRST substrate (blender-self-learning-2026-07-12 P-003 /
       // WI-4319): diff this digest against the previous fired cycle's persisted
       // snapshot — read the previous refs, persist the CLEAN fresh digest as

@@ -217,6 +217,10 @@ const META_PATTERN_CATEGORIES = [
   'gate-pipeline-health',
   'coord-health',
   'tool-telemetry',
+  'spend-anomaly',
+  'owner-correction',
+  'knowledge-reuse-gap',
+  'plan-health',
 ] as const;
 
 /**
@@ -303,6 +307,13 @@ export const DigestSchema = z.object({
    *  rejections, retry/batching-waste loops, chronic p95 latency. OPTIONAL:
    *  populated by the cycle seam (cycle-deps readCorpus), like watchdogHealth. */
   toolTelemetry: z.array(MetaPatternSchema).optional(),
+  /** BACKLOG / CURATION HEALTH (blender-self-learning-2026-07-12 P-011) — four
+   *  deferred signal lanes projected from existing stores. OPTIONAL + fail-soft,
+   *  populated together by the cycle seam before digest snapshot persistence. */
+  spendAnomalies: z.array(MetaPatternSchema).optional(),
+  ownerCorrections: z.array(MetaPatternSchema).optional(),
+  knowledgeReuseGaps: z.array(MetaPatternSchema).optional(),
+  planHealth: z.array(MetaPatternSchema).optional(),
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS cycle's persisted digest snapshot carried
    *  (scout_digest_snapshots, migration 582). renderDigest leads with the

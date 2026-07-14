@@ -15,7 +15,7 @@ export default defineTool({
     when: 'After a fleet:launch-on-plan wave, when the fleet should maintain a target member count across member death and operator restarts.',
     notWhen: 'For a one-off launch wave, use fleet:launch-on-plan. Clear the governor with target:null when the fleet should stop auto-top-up.',
   },
-  capability: 'fleet:launch-on-plan',
+  capability: 'fleet:headcount-target',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({

@@ -12,13 +12,17 @@
  *                   authoritative woken:1-vs-woken:0 signal: a cleanly-ended or
  *                   reaped session has cancelled its await (cancelInboxWakeAwaits)
  *                   → not wakeable → a wake reaches nobody (relaunch only).
- *   - sessionState — live | parked | ended:
+ *   - sessionState — live | parked | draining | suspect | ended:
  *       ended  = NOT wakeable (no live await; the dead/zombie row — never wake it,
  *                it needs a relaunch).
  *       live   = wakeable AND a turn is running right now (fresh heartbeat AND a
  *                recent agent_activity turn with NO trailing '■ session ended').
- *       parked = wakeable but not running (process exited / between turns) — the
- *                IDEAL dispatch target: a wake resumes it.
+ *       parked   = wakeable but not running (between turns) — the ideal dispatch
+ *                  target: a wake resumes it.
+ *       draining = heartbeat is stale but a wake-await remains; the session may
+ *                  be winding down and must not count as a healthy member.
+ *       suspect  = a local process is confirmed gone (or the hard stale ceiling
+ *                  fired) while claims may still need reconciliation.
  *
  * Why the live-vs-parked split needs the agent_activity end-marker (the crux of
  * D-001): heartbeat LAGS. An su session ENDS (its process exits) right after it
@@ -43,6 +47,8 @@ import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
  * Coordinator-facing session state.
  *   live     — a turn is running now (wakeable + recent activity).
  *   parked   — wakeable but idle (the ideal coord:dispatch target).
+ *   draining — stale heartbeat but still wakeable; wind-down/reconciliation.
+ *   suspect  — process is confirmed gone while claims may still be held.
  *   ended    — NOT wakeable, no authoritative liveness signal → dead, relaunch.
  *   recorded — authoritatively LIVE per the session log (`adv_sessions.ended_at
  *              IS NULL`) but not (yet) inbox-wake-dispatchable. The state of a
@@ -52,7 +58,7 @@ import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
  *              from `ended`: it is alive, just not coord-wakeable
  *              (presence-derive-from-session-log-2026-06-22 P-001).
  */
-export type SessionState = 'live' | 'parked' | 'ended' | 'recorded';
+export type SessionState = 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded';
 
 /** The raw per-agent signals `deriveSessionState` consumes. */
 export interface WakeabilitySignals {
@@ -112,8 +118,11 @@ export function isHardStale(heartbeatAtMs: number | null | undefined, nowMs: num
  * co-located dead agent is detected in ~seconds instead of up to 30 minutes.
  * Then `hardStale` (a zombie await from an abrupt death can't outvote an
  * hour-cold heartbeat, see PRESENCE_DEAD_MS), then wakeability is the gate (not
- * wakeable ⇒ `ended` regardless of a still-warm heartbeat), then a running turn
- * ⇒ `live`, else `parked` (wakeable but idle — the dispatch target). Injected
+ * wakeable ⇒ `ended` regardless of a still-warm heartbeat), then a stale but
+ * wakeable session is `draining`, a running turn ⇒ `live`, else `parked`
+ * (wakeable but idle — the dispatch target). A confirmed-dead owner with claims
+ * remains `suspect` until claim cleanup runs; one with no claims is `ended`.
+ * Injected
  * inputs so the boundary unit-tests without PG. `hardStale`/`pidConfirmedDead`
  * default to false/undefined, so a caller that doesn't compute them keeps prior
  * behavior unchanged.
@@ -129,17 +138,19 @@ export function deriveSessionState(input: {
    *  (not probed) must NEVER be passed here as `true` — only an affirmative
    *  ESRCH result may. */
   pidConfirmedDead?: boolean;
+  /** The owner still has a plan/work-item claim that cleanup must reconcile. */
+  claimsHeld?: boolean;
 }): SessionState {
-  if (input.pidConfirmedDead) return 'ended';
-  if (input.hardStale) return 'ended';
+  if (input.pidConfirmedDead || input.hardStale) return input.claimsHeld ? 'suspect' : 'ended';
   if (!input.wakeable) return 'ended';
+  if (input.stale) return 'draining';
   if (input.liveTurn && !input.stale) return 'live';
   return 'parked';
 }
 
 /**
  * PURE: force `intentStale` TRUE the instant `sessionState` is confirmed
- * non-live (`parked` | `ended`), overriding the 30-minute activity heuristic
+ * non-live (`parked` | `draining` | `suspect` | `ended`), overriding the 30-minute activity heuristic
  * (INTENT_STALE_SEC in presence-tier1.ts) — EI-9262.
  *
  * The gap: a killed/exited agent's `sessionState` flips to `parked`/`ended`
@@ -164,7 +175,7 @@ export function overrideIntentStaleForSessionState(
   intentStale: boolean | null,
   sessionState: SessionState | null,
 ): boolean | null {
-  if (sessionState === 'parked' || sessionState === 'ended') return true;
+  if (sessionState === 'parked' || sessionState === 'draining' || sessionState === 'suspect' || sessionState === 'ended') return true;
   return intentStale;
 }
 
