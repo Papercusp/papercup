@@ -204,6 +204,14 @@ export const rubricTemplateDataSchema = z
       .nullable()
       .optional()
       .describe('agent-insights runbook slug holding the long-form METHOD (no prose duplication)'),
+    releaseGating: z
+      .boolean()
+      .optional()
+      .describe(
+        'this rubric GATES a release verdict (EI-12149): the rubric-staleness watchdog alerts when an ' +
+          'ACTIVE releaseGating rubric has no COMPLETE scorecard within its threshold window — a release ' +
+          'bar nobody is grading is a silent gate, not a green one',
+      ),
     description: z
       .string()
       .optional()

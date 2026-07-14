@@ -230,6 +230,12 @@ describe('transcriptSource seam (P-001)', () => {
 
 describe('speak / cancelAllSpeech queue', () => {
   it('force-speaks through the browser engine and cancelAllSpeech stops it', async () => {
+    // Voice prefs hydrate through the shared sync bridge and default to Kokoro
+    // (WI-4873: cold cache resolves the engine synchronously; only an EXPLICIT
+    // 'browser' pref uses Web Speech). Pin the browser engine to exercise the
+    // speechSynthesis path this test asserts.
+    const prefs = await import('./voice-prefs-client');
+    prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'browser' });
     const mod = await loadVoiceMode();
     mod.speak('hello there', 'system:operator', 'polite', { force: true });
     expect((globalThis as any).window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
@@ -338,6 +344,11 @@ describe('barge-in (TTS interruption)', () => {
   });
 
   it('clears the queue so a pending utterance never plays (no overlap)', async () => {
+    // Pin the browser engine — prefs default to Kokoro post-WI-4873, and this
+    // test observes the speechSynthesis queue directly (see the note on
+    // "a fresh utterance speaks again after a barge-in").
+    const prefs = await import('./voice-prefs-client');
+    prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'browser' });
     const mod = await loadVoiceMode();
     mod.setVoiceMode('always-on');
     mod.speak('first', 'system:operator', 'polite', { force: true }); // plays now

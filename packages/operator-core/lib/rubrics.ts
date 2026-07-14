@@ -94,6 +94,9 @@ export interface Rubric {
   ratingScale: string[];
   /** agent-insights runbook slug holding the long-form METHOD (no prose duplication). */
   methodRef: string | null;
+  /** This rubric GATES a release verdict (EI-12149) — the rubric-staleness watchdog
+   *  alerts when an ACTIVE releaseGating rubric goes ungraded past its threshold. */
+  releaseGating?: boolean;
   status: RubricStatus;
   createdBy: string | null;
   proposedBy: string | null;
@@ -233,6 +236,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     })),
     ratingScale: d.ratingScale,
     methodRef: d.methodRef ?? null,
+    ...(d.releaseGating !== undefined ? { releaseGating: d.releaseGating } : {}),
     status,
     createdBy: row.owner ?? null,
     proposedBy: d.proposedBy ?? row.owner ?? null,
@@ -431,6 +435,9 @@ export interface ProposeRubricInput {
   criteria: RubricCriterion[];
   ratingScale?: string[];
   methodRef?: string;
+  /** Mark this rubric release-gating (EI-12149) — the staleness watchdog then alerts
+   *  when it goes ungraded past its threshold while active. */
+  releaseGating?: boolean;
   /** Who is proposing (ownerId). Recorded as the plan owner. */
   by?: string;
   /**
@@ -624,6 +631,7 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     criteria: input.criteria,
     ratingScale: input.ratingScale ?? [...DEFAULT_RATING_SCALE],
     ...(input.methodRef ? { methodRef: input.methodRef } : {}),
+    ...(input.releaseGating !== undefined ? { releaseGating: input.releaseGating } : {}),
     ...(input.description !== undefined ? { description: input.description } : {}),
     // EI-10751 provenance: the proposer of record is whoever authored THIS revision —
     // the plan owner column stays the original creator and never tracks a re-propose.
@@ -881,6 +889,9 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     description: stored.description,
     criteria,
     ratingScale: stored.ratingScale,
+    // EI-12149: an amendment must carry the stored release-gating mark — dropping it
+    // would silently un-gate the rubric (the WI-4287 loss class, on a boolean).
+    ...(stored.releaseGating !== undefined ? { releaseGating: stored.releaseGating } : {}),
     ...(input.methodRef ?? stored.methodRef ? { methodRef: (input.methodRef ?? stored.methodRef)! } : {}),
     ...(input.by ?? stored.createdBy ? { by: (input.by ?? stored.createdBy)! } : {}),
     status: stored.status,

@@ -210,7 +210,12 @@ export type WatchdogSource =
   // scorecard-blender-pipeline-fixes-2026-07-11 P-001 (WI-4274): the Scout cycle
   // error-streak pager — N consecutive ERROR ticks fire one debounced @role:mug
   // escalation (the circuit gate backs off but pages nobody).
-  | 'scout-error-streak';
+  | 'scout-error-streak'
+  // rubric-system-hardening-2026-07-14 P-004 (EI-12149): the rubric-staleness
+  // watchdog — an ACTIVE releaseGating rubric with no COMPLETE scorecard within
+  // its threshold window (default 6h) fires one debounced alert + escalation
+  // (a release bar nobody is grading is a silent gate, not a green one).
+  | 'rubric-staleness';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
