@@ -551,7 +551,10 @@ export async function checkInteractiveMcpDark(
     );
 
     const now = Date.now();
-    const verdictByOwner = new Map<string, { dark: boolean; reason: string | null; staleMins: number }>();
+    const verdictByOwner = new Map<
+      string,
+      { dark: boolean; recovered: boolean; reason: string | null; staleMins: number }
+    >();
     for (const h of hosts) {
       const presenceMs = presenceBy.get(h.ownerId) ?? null;
       const verdict = evaluateInteractiveMcpDark(
@@ -566,8 +569,13 @@ export async function checkInteractiveMcpDark(
         now,
         opts,
       );
+      // POSITIVE-evidence recovery (2026-07-14 false-heal fix): tools are
+      // demonstrably flowing NOW — a fresh tool-call-coupled beat. ¬dark alone
+      // (idle session, reaped/absent presence row) proves nothing.
+      const recovered = presenceMs != null && now - presenceMs < RECOVERED_FRESH_MS;
       verdictByOwner.set(h.ownerId, {
         dark: verdict.dark,
+        recovered,
         reason: verdict.reason,
         staleMins: mins(now - (presenceMs ?? h.startedAt ?? now)),
       });
@@ -576,7 +584,7 @@ export async function checkInteractiveMcpDark(
 
     const plan = planInteractiveHeal(
       interactiveHealState,
-      [...verdictByOwner.entries()].map(([ownerId, v]) => ({ ownerId, dark: v.dark })),
+      [...verdictByOwner.entries()].map(([ownerId, v]) => ({ ownerId, dark: v.dark, recovered: v.recovered })),
       now,
       opts.maxAttempts ?? DEFAULT_HEAL_MAX_ATTEMPTS,
     );
@@ -586,8 +594,11 @@ export async function checkInteractiveMcpDark(
       if (step.action === 'heal') {
         const sent = await discovery.mcpReconnectViaPty(step.ownerId);
         console.warn(`[mcp-dark-watchdog] interactive DARK ${step.ownerId} — heal ${sent}: ${v?.reason ?? ''}`);
-        if (sent === 'sent') out.healSent.push(step.ownerId);
-        else {
+        if (sent === 'sent') {
+          out.healSent.push(step.ownerId);
+          // Only LANDED envelopes may later justify an announce (false-heal bug #3).
+          markHealSent(interactiveHealState, step.ownerId);
+        } else {
           // No injectable host / old host / write failure ⇒ no heal will ever land
           // this way — skip straight to the notify posture on this same pass.
           const st = interactiveHealState.get(step.ownerId);

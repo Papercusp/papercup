@@ -33,6 +33,8 @@ import {
   RUBRIC_TEMPLATE_NAME,
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
+import { recordPlanRevision } from './agent-tools/plans/revisions';
+import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { listLocalRubrics, rubricsNeedingSeed } from './cupboard/rubric-store';
 
@@ -699,6 +701,50 @@ async function resolveRubricWriteScope(
 }
 
 /**
+ * EI-10443 audit trail: build the `withPlanLock` afterWrite that appends ONE
+ * `plan_revisions` row for a rubric propose/ratify write. The rubric write path went
+ * through withPlanLock with NO afterWrite, so the plan revision spine had ZERO rows for
+ * every rubric plan (`plan_slug='pot-coordination-health'` returned 0 revisions) — a
+ * destructive rubric write (e.g. the loss-guard strip that filed this bug) left no audit
+ * trail and could be neither detected nor recovered via `plans:revisions`. Wiring this in
+ * gives rubric writes the SAME revision spine every other plans:* write already records.
+ *
+ * `by` is the acting identity (the proposer/ratifier ownerId the MCP handler resolves and
+ * threads through); when absent the row is attributed to a stable system actor so the audit
+ * row still lands (auditability > attribution precision). Best-effort by construction —
+ * `recordPlanRevision` never throws, so this can never fail the rubric write (it runs
+ * post-commit, and withPlanLock awaits it).
+ */
+function rubricRevisionAfterWrite(
+  rubricId: string,
+  by: string | undefined,
+  rationale: string,
+): (writtenBody: string, scope?: { workspaceId: string; harnessSlug: string }) => Promise<void> {
+  const identity: AgentIdentity = {
+    ownerId: by ?? 'rubrics:system',
+    ownerLabel: by ?? 'rubrics:system',
+    // Not a `principal` (in-process human) — a rubric write is an agent/Queen action, so
+    // classifyAuthor records author_kind='agent'.
+    source: 'static-client',
+    workspaceId: null,
+    userId: null,
+  };
+  return async (writtenBody, scope) => {
+    // Thread the (workspaceId, harnessSlug) withPlanLock resolved for THIS write so the
+    // revision lands on the rubric plan's own PK (recordPlanRevision re-resolves through
+    // the same resolvePlanScope — the operator-home short-circuit for the rubric harness).
+    await recordPlanRevision({
+      planSlug: rubricId,
+      ...(scope?.harnessSlug ? { harnessSlug: scope.harnessSlug } : {}),
+      ...(scope?.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+      content: writtenBody,
+      rationale,
+      identity,
+    });
+  };
+}
+
+/**
  * Propose (idempotent upsert) a rubric → a `template: rubric` plan. status defaults to
  * 'proposed' (draft plan); 'active' authors a ratified rubric directly. Re-proposing the
  * same rubricId updates the plan content + template_data.
@@ -738,7 +784,13 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // read-modify-write — so template_data lands regardless of the in-transaction row read.
   const result = await withPlanLock<true>(
     null,
-    { slug: input.rubricId, intent: `rubrics:propose ${input.rubricId}`, ...scope },
+    {
+      slug: input.rubricId,
+      intent: `rubrics:propose ${input.rubricId}`,
+      ...scope,
+      // EI-10443: record a plan_revisions audit row for the propose write.
+      afterWrite: rubricRevisionAfterWrite(input.rubricId, input.by, `rubrics:propose (${rubricStatus})`),
+    },
     async () => ({ newBody: body, templateData: { data: templateData }, value: true }),
   );
   if (result.kind === 'busy') {
@@ -886,7 +938,15 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
   }
   const result = await withPlanLock<boolean>(
     null,
-    { slug: rubricId, intent: `rubrics:ratify ${rubricId}`, ...scope },
+    {
+      slug: rubricId,
+      intent: `rubrics:ratify ${rubricId}`,
+      ...scope,
+      // EI-10443: record a plan_revisions audit row for the status-flip write. afterWrite
+      // only fires when a body was actually written (a no-op ratify — no frontmatter status
+      // line — returns newBody:null and records nothing).
+      afterWrite: rubricRevisionAfterWrite(rubricId, by, 'rubrics:ratify → active'),
+    },
     async (current) => {
       if (current === null) return { newBody: null, value: false };
       const flipped = setPlanFrontmatterStatus(current, 'active');
