@@ -344,6 +344,11 @@ export default defineTool({
               scheme,
               allowDesktopBridge: true,
               displayOverride: args.display,
+              // EI-11578: a RESUME/FORK re-attaches a transcript under psu's
+              // managed-pty host, which gnome-terminal's VTE pty drops (the
+              // resumed claude died within seconds → a silent no-op). Force a
+              // process-per-window emulator (xterm/alacritty), which holds it.
+              preferProcessPerWindow: isResume,
             }),
       ),
     );

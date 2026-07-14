@@ -221,6 +221,17 @@ describe('resume + fork (D-004/D-007)', () => {
     advSessionId: 11,
   };
 
+  it('EI-11578: a RESUME forces a process-per-window emulator (preferProcessPerWindow) — a resumed dormant session dies under gnome-terminal\'s VTE pty', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
+  });
+
+  it('EI-11578: a FRESH launch does NOT force process-per-window (keeps the WI-4718 standard-terminal preference)', async () => {
+    await launchAgent.handler({ brief: 'fresh work' }, ctx);
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: false });
+  });
+
   it('resumes a dead agent BY AGENT ID — no uuid hunting', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);

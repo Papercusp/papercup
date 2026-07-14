@@ -25,6 +25,7 @@ import {
   buildHeadlessSpawnCommand,
   _resetTerminalCacheForTests,
   pickLinuxTerminal,
+  resolveTerminalPreference,
   findDisplayHonoringTerminal,
   _resetDisplayHonoringTerminalCacheForTests,
   type AppearanceOpts,
@@ -669,6 +670,52 @@ describe('pickLinuxTerminal — preference is conditional on a detected desktop 
     vi.stubEnv('TERMINAL', '');
     expect(pickLinuxTerminal(() => false, true)).toBeNull();
     expect(pickLinuxTerminal(() => false, false)).toBeNull();
+  });
+});
+
+// EI-11578: capability:launch-agent { resume } opened a gnome-terminal window
+// whose resumed dormant .papercusp-cwd session died within seconds (VTE pty drops
+// the reattached psu managed-pty host), while the same psu command under xterm
+// held the session >72s. The fix forces a process-per-window emulator for
+// resume/fork launches even on a detected desktop session — resolveTerminalPreference
+// is the pure decision, composed with pickLinuxTerminal (the WI-4718 injectable seam).
+describe('resolveTerminalPreference — force process-per-window for resume launches (EI-11578)', () => {
+  const onlyOnPath = (...bins: string[]) => (bin: string) => bins.includes(bin);
+
+  it('a detected desktop session normally prefers client-server (gnome-terminal) — unchanged for a fresh launch', () => {
+    // preferProcessPerWindow=false (a fresh launch) ⇒ base WI-4718 behavior.
+    expect(resolveTerminalPreference(true, false)).toBe(true);
+  });
+
+  it('a RESUME launch (preferProcessPerWindow) forces process-per-window even WITH a detected desktop session', () => {
+    // This is the bug: on the dev box a desktop session IS detected, so without
+    // the override gnome-terminal wins and the resumed session dies. The override
+    // flips the preference so a process-per-window emulator is chosen instead.
+    expect(resolveTerminalPreference(true, true)).toBe(false);
+  });
+
+  it('no desktop session already prefers process-per-window, regardless of the override', () => {
+    expect(resolveTerminalPreference(false, false)).toBe(false);
+    expect(resolveTerminalPreference(false, true)).toBe(false);
+  });
+
+  it('composed with pickLinuxTerminal: a resume on a desktop box picks xterm over gnome-terminal (the bug fix)', () => {
+    vi.stubEnv('TERMINAL', '');
+    // desktopSessionDetected=true + resume(preferProcessPerWindow=true) → false →
+    // process-per-window ordering → xterm wins even though gnome-terminal is installed.
+    const preferClientServer = resolveTerminalPreference(true, true);
+    const t = pickLinuxTerminal(onlyOnPath('gnome-terminal', 'xterm'), preferClientServer);
+    expect(t?.bin).toBe('xterm');
+    vi.unstubAllEnvs();
+  });
+
+  it('composed with pickLinuxTerminal: a FRESH launch on the same desktop box still picks the standard gnome-terminal', () => {
+    vi.stubEnv('TERMINAL', '');
+    const preferClientServer = resolveTerminalPreference(true, false);
+    const t = pickLinuxTerminal(onlyOnPath('gnome-terminal', 'xterm'), preferClientServer);
+    expect(t?.bin).toBe('gnome-terminal');
+    expect(t?.args).toContain('--wait');
+    vi.unstubAllEnvs();
   });
 });
 

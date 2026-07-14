@@ -161,6 +161,61 @@ export function _resetTerminalCacheForTests(): void {
   cachedTerminal.clear();
 }
 
+/**
+ * EI-11578: the effective client-server terminal preference for a spawn.
+ *
+ * Normally a DETECTED desktop session (`desktopSessionDetected`) prefers the
+ * owner's STANDARD client-server terminal (gnome-terminal/konsole), which reaches
+ * its window server on the injected D-Bus bus (WI-4718). But a RESUME launch
+ * (`preferProcessPerWindow`) forces a process-per-window emulator
+ * (xterm/alacritty/kitty/wezterm) EVEN when a desktop session is detected: a
+ * client-server VTE terminal (gnome-terminal-server) silently DROPS the resume of
+ * a dormant `.papercusp` state-dir-cwd session — the resumed agent process dies
+ * within seconds and no live session / coord presence results (owner-confirmed,
+ * hit twice on 2026-07-13) — whereas a process-per-window emulator binds the pty
+ * directly and holds the resumed session (xterm reproduced stable >72s). The
+ * VTE-server pty/env handoff race that kills the resumed agent is a
+ * gnome-terminal-server internal we cannot patch, so a resume routes AROUND it
+ * through the reproduced-reliable emulator. Fresh launches are unchanged. Degrades
+ * gracefully: findLinuxTerminal(false) still falls back to a client-server
+ * terminal if no process-per-window emulator is installed. Pure; exported for
+ * unit tests.
+ */
+export function resolveClientServerPreference(
+  desktopSessionDetected: boolean,
+  preferProcessPerWindow: boolean,
+): boolean {
+  return preferProcessPerWindow ? false : desktopSessionDetected;
+}
+
+/**
+ * EI-11578: resolve the `preferClientServer` value {@link findLinuxTerminal}
+ * receives, folding in whether the caller wants a PROCESS-PER-WINDOW emulator
+ * forced.
+ *
+ * The base preference is `desktopSessionDetected` (WI-4718: a reachable desktop
+ * session ⇒ prefer the owner's standard gnome-terminal/konsole). But a RESUME (or
+ * fork) of a dormant session is the one launch type that DROPS under a
+ * client-server terminal's VTE pty: `capability:launch-agent { resume }` opened a
+ * gnome-terminal window whose resumed claude died within seconds (the reattached
+ * psu managed-pty host does not survive gnome-terminal-server's pty/env handoff),
+ * while the IDENTICAL psu command under xterm — a process-per-window emulator that
+ * binds the pty directly — held the session for >72s through
+ * resume+compaction+turn-end. So when `preferProcessPerWindow` is set (the
+ * resume/fork launches), force the process-per-window ordering EVEN on a detected
+ * desktop session: the owner gets a LIVE resumed session in an xterm/alacritty
+ * window instead of a dead one in their standard terminal (the window itself
+ * always stays open — buildConsoleOneliner execs a login shell after the greeting
+ * — so the visible-drop is specifically the resumed agent process, not the
+ * window). Pure; exported for unit tests.
+ */
+export function resolveTerminalPreference(
+  desktopSessionDetected: boolean,
+  preferProcessPerWindow: boolean,
+): boolean {
+  return desktopSessionDetected && !preferProcessPerWindow;
+}
+
 // WI-4272: emulators that honor the DISPLAY env var for window placement. The
 // client-server emulators (gnome-terminal, konsole, xfce4-terminal) are
 // deliberately EXCLUDED — their client process just asks the per-session
@@ -816,6 +871,17 @@ export interface SpawnConsoleOpts {
    */
   desktopEnvProbes?: DesktopEnvProbes;
   /**
+   * EI-11578: force a PROCESS-PER-WINDOW emulator (xterm/alacritty/kitty/wezterm)
+   * even when a desktop session was detected — used by capability:launch-agent's
+   * RESUME/FORK path. A resumed dormant session drops under gnome-terminal's VTE
+   * pty (the reattached psu managed-pty host dies), but survives under a
+   * process-per-window emulator that binds the pty directly. Default false: a
+   * fresh launch keeps the WI-4718 behavior (prefer the owner's standard
+   * gnome-terminal on a detected session). See {@link resolveTerminalPreference}.
+   * No effect on the macOS / Windows-bridge / displayOverride paths.
+   */
+  preferProcessPerWindow?: boolean;
+  /**
    * Displace (back up + write) the envelope's superuser `.mcp.json` into the
    * cwd before spawning. The superuser console wants this so the user's agent
    * auto-discovers the MCP door; capability:terminal (run-a-command) does NOT —
@@ -1047,7 +1113,12 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
       // operator) so a recurrence has a named cause instead of a silent wedge.
       console.warn(`[console-spawn] ${desktop.warnings.join('; ')}`);
     }
-    term = findLinuxTerminal(desktop.desktopSessionDetected);
+    // EI-11578: a RESUME/FORK launch forces the process-per-window ordering even
+    // on a detected desktop session — gnome-terminal's VTE pty drops the resumed
+    // session's reattached psu managed-pty host, while xterm/alacritty hold it.
+    term = findLinuxTerminal(
+      resolveTerminalPreference(desktop.desktopSessionDetected, opts.preferProcessPerWindow ?? false),
+    );
     if (!term) {
       return {
         status: 'error',
