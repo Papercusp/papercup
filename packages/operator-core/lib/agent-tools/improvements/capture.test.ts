@@ -24,6 +24,10 @@ vi.mock('../../scout/novelty-precheck', () => ({ noveltyPriorArt: vi.fn(async ()
 // the bug lived (it never passed addressesPatternRefs, so no su idea could ever be counted as
 // grounded). Mock it so the ledger row's CONTENTS are pinned, PG-free.
 vi.mock('../../scout/routed-ledger', () => ({ recordRoutedIdea: vi.fn(async () => undefined) }));
+// EI-12147: the generation stamp's real read execs systemctl + git — mock for determinism.
+vi.mock('../../scout/generation-watermark', () => ({
+  readRunningGeneration: vi.fn(async () => ({ sha: 'abc1234', hostStartedAt: '2026-07-14T18:21:25.000Z' })),
+}));
 
 const mockCapture = vi.mocked(captureImprovement);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
@@ -554,6 +558,61 @@ describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
     const body = await bodyOf({ title: 'a fresh su idea', kind: 'feature' });
     expect(body).toEqual({ ok: true, id: 'EI-1', created: true });
     expect('priorArt' in body).toBe(false);
+  });
+});
+
+describe('improvements:capture — gradedGeneration stamp (EI-12147)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('su-abc'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-9', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+  });
+
+  const passedObservation = () =>
+    (mockCapture.mock.calls[0]![0] as { payloadExtra?: { observation?: Record<string, unknown> } }).payloadExtra
+      ?.observation;
+
+  it('stamps a rubric SCORECARD (rubricRef + ratings) with the running generation, server-side', async () => {
+    await callTool({
+      title: 'release scorecard',
+      lane: 'observation',
+      observation: {
+        rubricRef: 'blender-release-readiness',
+        ratings: { 'cycle-error-rate': { rating: 'pass', evidence: '0/8 post-watermark' } },
+      },
+    });
+    expect(passedObservation()?.gradedGeneration).toEqual({
+      sha: 'abc1234',
+      hostStartedAt: '2026-07-14T18:21:25.000Z',
+    });
+  });
+
+  it('does NOT stamp a plain (non-rubric) observation — the stamp is scorecard identity, not ambient metadata', async () => {
+    await callTool({
+      title: 'a plain reflection',
+      lane: 'observation',
+      observation: { kind: 'friction', refs: ['tool:foo'] },
+    });
+    expect(passedObservation()).toBeDefined();
+    expect(passedObservation()?.gradedGeneration).toBeUndefined();
+  });
+
+  it('a caller CANNOT supply gradedGeneration (strict schema rejects) — provenance stays server-authored', () => {
+    const schema = (
+      captureTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }
+    ).args;
+    const r = schema.safeParse({
+      title: 'forged stamp',
+      lane: 'observation',
+      observation: {
+        rubricRef: 'r',
+        ratings: { k: { rating: 'pass', evidence: 'e' } },
+        gradedGeneration: { sha: 'deadbeef', hostStartedAt: '2020-01-01T00:00:00Z' },
+      },
+    });
+    expect(r.success).toBe(false);
   });
 });
 

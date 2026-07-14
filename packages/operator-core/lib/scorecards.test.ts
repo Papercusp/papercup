@@ -7,8 +7,40 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, isIdleUnknown, parseCriterionInstrumentKey, ratingScore10, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, scorecardScore10, scoreOverridesForScale } from './scorecards';
 import type { CriterionTrend } from './scorecards';
+
+// EI-12147: the graded-generation stamp's read-side validator — a scorecard row must
+// surface WHICH generation it graded, and a malformed/pre-stamp payload must degrade.
+describe('parseGradedGeneration (EI-12147)', () => {
+  it('projects a complete stamp', () => {
+    expect(parseGradedGeneration({ sha: 'abc1234', hostStartedAt: '2026-07-14T18:21:25.000Z' })).toEqual({
+      sha: 'abc1234',
+      hostStartedAt: '2026-07-14T18:21:25.000Z',
+    });
+  });
+  it('tolerates a half-resolved stamp (one leg null) — partial identity still discriminates', () => {
+    expect(parseGradedGeneration({ sha: null, hostStartedAt: '2026-07-14T18:21:25.000Z' })).toEqual({
+      sha: null,
+      hostStartedAt: '2026-07-14T18:21:25.000Z',
+    });
+    expect(parseGradedGeneration({ sha: 'abc1234', hostStartedAt: null })).toEqual({
+      sha: 'abc1234',
+      hostStartedAt: null,
+    });
+  });
+  it('an all-null stamp carries no identity — null, so pre-stamp and unresolved rows read the same', () => {
+    expect(parseGradedGeneration({ sha: null, hostStartedAt: null })).toBeNull();
+    expect(parseGradedGeneration({})).toBeNull();
+  });
+  it('malformed payloads degrade to null, never throw', () => {
+    expect(parseGradedGeneration(undefined)).toBeNull();
+    expect(parseGradedGeneration(null)).toBeNull();
+    expect(parseGradedGeneration('abc1234')).toBeNull();
+    expect(parseGradedGeneration(['abc1234'])).toBeNull();
+    expect(parseGradedGeneration({ sha: 42, hostStartedAt: false })).toBeNull();
+  });
+});
 
 // WI-4607: the criterion→instrument binding is a trailing token on the model prose.
 describe('parseCriterionInstrumentKey (WI-4607)', () => {

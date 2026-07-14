@@ -43,6 +43,16 @@ describe('parseSystemdTimestamp', () => {
   });
 });
 
+describe('readRunningGeneration — the stampable generation identity (EI-12147)', () => {
+  it('returns { sha, hostStartedAt } with each leg string-or-null, never throwing', async () => {
+    const { readRunningGeneration } = await import('./generation-watermark');
+    const gen = await readRunningGeneration();
+    expect(gen.sha === null || typeof gen.sha === 'string').toBe(true);
+    // On a systemd box with the bg-host running this is its start ISO; elsewhere null.
+    expect(gen.hostStartedAt === null || !Number.isNaN(Date.parse(gen.hostStartedAt!))).toBe(true);
+  });
+});
+
 describe('resolveWatermarkRef — the ref vocabulary', () => {
   it("an unknown ref is a TEACHING error naming the vocabulary — a typo must not judge some other window", async () => {
     const r = await resolveWatermarkRef('bg-host-restrat');
