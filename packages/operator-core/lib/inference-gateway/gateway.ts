@@ -433,6 +433,17 @@ export const MAINTENANCE_PRIORITY_LABEL = 'maintenance';
  *  (the shape omp's `compaction.remoteEndpoint` client sends/expects, verified in the bundle).
  *  psu-launcher.mjs hardcodes this path (it cannot import TS) — keep them in lockstep. */
 export const MAINTENANCE_SUMMARIZE_PATH = '/maintenance/summarize';
+/** GET path exposing a local backend's LIVE per-slot context window (deterministic-context-carry
+ *  P-005): `?model=<id>` → `{ok, model, backendId, nCtx, totalSlots}` read from the backend's
+ *  `/props` (`default_generation_settings.n_ctx` is PER-SLOT for llama-server: total -c divided
+ *  by -np). The gateway is the only component that knows the model→backend mapping, and it only
+ *  proxies /v1/* otherwise — so session launchers read the live limit HERE instead of trusting a
+ *  hand-set registry number. psu-launcher.mjs hardcodes this path (it cannot import TS) — keep
+ *  them in lockstep. */
+export const MAINTENANCE_BACKEND_CONTEXT_PATH = '/maintenance/backend-context';
+/** Deadline for the backend `/props` probe — a local /props read is milliseconds; anything
+ *  slower means the backend is wedged and the caller should fall back to its configured limit. */
+const BACKEND_CONTEXT_PROBE_TIMEOUT_MS = 5_000;
 /** Model the maintenance summarizer runs on — CHEAP + hosted, never the caller's own backend.
  *  `claude-haiku-4-5` is the repo-canonical haiku id (haiku.ts, scout, memory extraction). */
 const DEFAULT_MAINTENANCE_MODEL = process.env.PAPERCUSP_GATEWAY_MAINTENANCE_MODEL || 'claude-haiku-4-5';
@@ -4475,6 +4486,51 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
         })
         .catch((e) => sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: `maintenance/summarize: ${(e as Error).message}` }, gateway: true }));
+      return;
+    }
+    if (req.method === 'GET' && (url === MAINTENANCE_BACKEND_CONTEXT_PATH || url.startsWith(`${MAINTENANCE_BACKEND_CONTEXT_PATH}?`))) {
+      // BACKEND CONTEXT PROBE (deterministic-context-carry P-005): report the LIVE per-slot
+      // context window of the local backend serving `model`, from the backend's own /props —
+      // the ground truth a hand-set registry contextWindow drifts away from (the 2026-07-13
+      // three-way conflict: models.yml 200000 vs llama-server 204800 vs stale models.json 57344).
+      // Read-only against the pool snapshot (no select(): no load-balance cursor advance, no
+      // in-flight accounting) — an eligibility read, not a request placement.
+      void (async () => {
+        const model = new URL(url, 'http://localhost').searchParams.get('model')?.trim() ?? '';
+        if (!model) {
+          sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'maintenance/backend-context: `model` query param required' }, gateway: true });
+          return;
+        }
+        const backend = deps.localBackends?.entries().find((b) => b.enabled && b.models.includes(model)) ?? null;
+        if (!backend) {
+          sendJson(res, 404, { type: 'error', error: { type: 'not_found_error', message: `maintenance/backend-context: no local backend serves model "${model}"` }, gateway: true });
+          return;
+        }
+        try {
+          const doFetch = deps.fetchImpl ?? fetch;
+          const upstream = await doFetch(`${backend.baseUrl}/props`, { signal: AbortSignal.timeout(BACKEND_CONTEXT_PROBE_TIMEOUT_MS) } as RequestInit);
+          if (!upstream.ok) {
+            sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `maintenance/backend-context: backend /props returned ${upstream.status}` }, gateway: true });
+            return;
+          }
+          const props = (await upstream.json()) as { default_generation_settings?: { n_ctx?: unknown }; total_slots?: unknown };
+          const nCtx = Number(props?.default_generation_settings?.n_ctx);
+          if (!Number.isFinite(nCtx) || nCtx <= 0) {
+            sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: 'maintenance/backend-context: backend /props carried no usable n_ctx' }, gateway: true });
+            return;
+          }
+          const totalSlots = Number(props?.total_slots);
+          sendJson(res, 200, {
+            ok: true,
+            model,
+            backendId: backend.id,
+            nCtx,
+            totalSlots: Number.isFinite(totalSlots) && totalSlots > 0 ? totalSlots : null,
+          });
+        } catch (e) {
+          sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `maintenance/backend-context: backend /props probe failed: ${(e as Error).message}` }, gateway: true });
+        }
+      })().catch((e) => sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: `maintenance/backend-context: ${(e as Error).message}` }, gateway: true }));
       return;
     }
     if (!url.startsWith('/v1/')) {

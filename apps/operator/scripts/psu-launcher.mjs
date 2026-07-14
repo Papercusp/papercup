@@ -1601,6 +1601,121 @@ export function isWeakOmpModel(modelId) {
   return OMP_LOCAL_MODEL_PREFIXES.some((p) => id.startsWith(p));
 }
 
+/** The registry-file form of an OMP model id: the provider prefix (`ollama-cc/…`) and any
+ *  trailing reasoning-effort suffix (`:xhigh`) are launch-spec decoration — models.yml/models.json
+ *  entries carry the bare id (e.g. `maxwell1500/ornith-35b:IQ3_M`), and the gateway's
+ *  model→backend router matches that bare form. Exported for tests. */
+export function bareOmpModelId(modelId) {
+  let id = String(modelId ?? '').trim();
+  if (!id) return '';
+  const lower = id.toLowerCase();
+  for (const p of OMP_LOCAL_MODEL_PREFIXES) {
+    if (lower.startsWith(p)) {
+      id = id.slice(p.length);
+      break;
+    }
+  }
+  return id.replace(/:(?:minimal|low|medium|high|xhigh)$/i, '');
+}
+
+/** Read the LIVE per-slot context window for a local model from the gateway's backend probe
+ *  (deterministic-context-carry P-005): GET /maintenance/backend-context?model=<bare-id> →
+ *  { nCtx } from the backend's own /props. The path is LOCKSTEP with operator-core
+ *  inference-gateway/gateway.ts MAINTENANCE_BACKEND_CONTEXT_PATH (plain .mjs — no TS import;
+ *  same mirror rule as OMP_LOCAL_MODEL_PREFIXES above). Fail-soft null on ANY miss (gateway
+ *  down, model not backend-served, wedged /props) — the caller keeps the configured registry
+ *  values, which is exactly the pre-P-005 behavior. Exported for tests. */
+export async function probeOmpBackendContextWindow(modelId, env = process.env, fetchImpl = fetch) {
+  try {
+    const bare = bareOmpModelId(modelId);
+    if (!bare) return null;
+    const gwp = Number(env.PAPERCUSP_GATEWAY_PORT);
+    const port = Number.isFinite(gwp) && gwp > 0 ? gwp : 8788;
+    const r = await fetchImpl(
+      `http://127.0.0.1:${port}/maintenance/backend-context?model=${encodeURIComponent(bare)}`,
+      { signal: AbortSignal.timeout(6000) },
+    );
+    if (!r.ok) return null;
+    const j = await r.json();
+    const n = Number(j?.nCtx);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `contextWindow` a models.yml carries for `bareId`, or null. Scans the id's entry only
+ *  (from its `- id:` line to the next `- id:`/dedent) so sibling models are never misread.
+ *  Exported for tests. */
+export function readModelsYmlContextWindow(ymlText, bareId) {
+  const entry = modelsYmlEntrySpan(ymlText, bareId);
+  if (!entry) return null;
+  const m = entry.text.match(/^[ \t]*contextWindow:[ \t]*(\d+)/m);
+  return m ? Number(m[1]) : null;
+}
+
+/** Rewrite `contextWindow` to `newWindow` inside `bareId`'s models.yml entry (only that entry —
+ *  hosted siblings in the same registry are untouched). Returns the input unchanged when the
+ *  entry or its contextWindow line is absent. Exported for tests. */
+export function rewriteModelsYmlContextWindow(ymlText, bareId, newWindow) {
+  const entry = modelsYmlEntrySpan(ymlText, bareId);
+  if (!entry) return ymlText;
+  const rewritten = entry.text.replace(/^([ \t]*contextWindow:[ \t]*)\d+/m, `$1${newWindow}`);
+  return ymlText.slice(0, entry.start) + rewritten + ymlText.slice(entry.end);
+}
+
+/** The [start,end) span of `bareId`'s list entry in a models.yml: from its `- id:` line up to the
+ *  next `- `-prefixed line at the same indent or any dedent past the entry's own indentation. */
+function modelsYmlEntrySpan(ymlText, bareId) {
+  const lines = String(ymlText ?? '').split('\n');
+  const esc = bareId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const idRe = new RegExp(`^([ \\t]*)-[ \\t]+id:[ \\t]*"?${esc}"?[ \\t]*$`);
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(idRe);
+    if (!m) {
+      offset += lines[i].length + 1;
+      continue;
+    }
+    const indent = m[1].length;
+    let end = offset + lines[i].length + 1;
+    for (let j = i + 1; j < lines.length; j++) {
+      const l = lines[j];
+      const lead = l.match(/^[ \t]*/)[0].length;
+      // A new list item at the entry's indent, or any non-blank dedent, ends the entry.
+      if (l.trim() && (lead < indent || (lead === indent && l.trimStart().startsWith('-')))) break;
+      end += l.length + 1;
+    }
+    return { start: offset, end: Math.min(end, ymlText.length), text: ymlText.slice(offset, Math.min(end, ymlText.length)) };
+  }
+  return null;
+}
+
+/** Set `contextWindow` to `newWindow` on every models.json record whose `id` is `bareId`
+ *  (a JSON parse/stringify — models.json is machine-written; no comment/format concerns).
+ *  Returns the input unchanged on any parse failure. Exported for tests. */
+export function rewriteModelsJsonContextWindow(jsonText, bareId, newWindow) {
+  try {
+    const root = JSON.parse(jsonText);
+    let touched = false;
+    const walk = (node) => {
+      if (Array.isArray(node)) {
+        for (const v of node) walk(v);
+      } else if (node && typeof node === 'object') {
+        if (node.id === bareId && typeof node.contextWindow === 'number') {
+          node.contextWindow = newWindow;
+          touched = true;
+        }
+        for (const v of Object.values(node)) walk(v);
+      }
+    };
+    walk(root);
+    return touched ? JSON.stringify(root, null, 2) : jsonText;
+  } catch {
+    return jsonText;
+  }
+}
+
 /** The OMP session's DEFAULT model id (config.yml `modelRoles.default`), or null. Used to
  *  compute the model tier when the launch didn't pass an explicit --model. Exported for tests. */
 export function ompDefaultModel(home = homedir()) {
@@ -1720,7 +1835,7 @@ export function applyOmpMcpUrlParams(mcpJsonText, params) {
  * — no regression). Exported for tests.
  */
 export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir()) {
-  const { discoveryOff = false, toolsAllowlist = null, operatorUrl = OPERATOR_URL, model = null, clientId = null } = opts;
+  const { discoveryOff = false, toolsAllowlist = null, operatorUrl = OPERATOR_URL, model = null, clientId = null, backendWindow = null } = opts;
   try {
     if (!sessionId) return null;
     const srcAgent = join(home, '.omp', 'agent');
@@ -1793,9 +1908,42 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     // Faithful model registry + auth so model resolution + provider baseUrls survive the
     // relocation (the data root collapses onto the relocated configRoot; missing registry ⇒
     // "model not found"). Skip the big session/history dbs — a fresh session recreates them.
+    //
+    // effectiveWindow clamp (deterministic-context-carry P-005): when the caller probed the LIVE
+    // backend window (opts.backendWindow, from the gateway /maintenance/backend-context read),
+    // this session's registry copies are rewritten so EVERY source agrees on
+    // effectiveWindow = min(configured models.yml limit, live backend n_ctx) — eliminating the
+    // three-way contextWindow conflict (models.yml 200000 vs backend 204800 vs stale models.json
+    // 57344) at the one seam every psu omp session passes through. A configured limit ABOVE the
+    // live backend window is the 2026-07-13 overflow class (the session believes it has room the
+    // backend cannot hold) — clamped here, loudly. Only THIS model's entries are touched; hosted
+    // siblings keep their registry values.
+    const bwNum = Number(backendWindow);
+    const clampBare = Number.isFinite(bwNum) && bwNum > 0 && effModel ? bareOmpModelId(effModel) : '';
+    let effectiveWindow = null;
     for (const f of ['models.yml', 'models.json', 'models.db', 'auth.json', 'claude-bridge.json', 'config.json', 'SYSTEM.md']) {
       const s = join(srcAgent, f);
-      if (existsSync(s)) cpSync(s, join(dstAgent, f));
+      if (!existsSync(s)) continue;
+      if (clampBare && f === 'models.yml') {
+        let text = readFileSync(s, 'utf8');
+        const configured = readModelsYmlContextWindow(text, clampBare);
+        effectiveWindow = configured ? Math.min(configured, bwNum) : bwNum;
+        if (configured && configured > bwNum) {
+          console.error(
+            `psu: CONFIG ERROR — models.yml contextWindow ${configured} for ${clampBare} EXCEEDS the live backend window ${bwNum}; ` +
+              `clamping this session's registry to ${effectiveWindow}. Fix the registry: a configured limit above what the backend serves is the 2026-07-13 overflow class.`,
+          );
+        }
+        text = rewriteModelsYmlContextWindow(text, clampBare, effectiveWindow);
+        writeFileSync(join(dstAgent, f), text, { mode: 0o600 });
+        continue;
+      }
+      if (clampBare && f === 'models.json' && effectiveWindow) {
+        const text = rewriteModelsJsonContextWindow(readFileSync(s, 'utf8'), clampBare, effectiveWindow);
+        writeFileSync(join(dstAgent, f), text, { mode: 0o600 });
+        continue;
+      }
+      cpSync(s, join(dstAgent, f));
     }
     // mcp.json — carry the papercusp-su server (else the relocated session has NO MCP at all),
     // optionally trimming its advertised surface to the core spine for a weak model.

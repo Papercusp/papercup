@@ -127,11 +127,9 @@ orchestrator run-loop + orchestrator-spawn plugin
 pane is the only chat surface), the legacy per-slug harness dashboard
 (`_retired/harness-dashboard/` — `/harness/$slug` shell/pages/Real-panels; the
 design-system primitives AND the dock engine in `apps/operator/app/harness/`
-stay LIVE — `/adv`+`/workbench` are built on them), and the Mug/Kettle left-rail
-tabs (`_retired/mug-kettle-rail-tabs/` — the queen steering + overwatch
-supervisor panels; WI-4778: Papercup is the ONE persona, their decision inputs
-render in the chat sidebar's 🫖 Pot Health view). `lint:no-retired` guards
-re-imports.
+stay LIVE — `/adv`+`/workbench` are built on them). `lint:no-retired` guards
+re-imports. (The Mug/Kettle left-rail tabs, retired under WI-4778, were
+RESTORED to the LeftSidebar by owner ask 2026-07-14 — they are live again.)
 
 Full table with restore points + the retiring-a-surface convention:
 [repo-conventions § retired surfaces](/internal/docs/system/repo-conventions).
