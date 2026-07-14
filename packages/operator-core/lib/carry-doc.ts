@@ -24,10 +24,16 @@
  * yields that slot empty, never a failed document — because this runs at the
  * worst possible moment (context exhausted, session about to reset).
  *
- * v1 wires the identity + session-mode legs to real readers and renders the
- * full document; the plan-state / asks / verbatim-tail legs are injectable seams
- * that default to empty pending their real readers (P-010 refines the tail's
- * last-turn handling, so v1 renders a plain verbatim tail when one is supplied).
+ * All legs have real default readers (each still an injectable test seam):
+ * identity + session-mode from the brief + modes store; plan-state via the
+ * adopted agent-name (assignment is keyed on the NAME a session adopts, not the
+ * coordination ownerId); asks from the open kind='question' conversations the
+ * caller asked; the verbatim tail from the caller's transcript (the consumer
+ * passes its own transcriptPath — the session-id→file resolution is the
+ * consumer's knowledge), with every USER turn mechanically stamped
+ * owner-typed / agent-injected from the recorded ⟦turn-origin:…⟧ envelope
+ * (classifyRecordedTurn — D-003; the WI-3532 manufactured-directive killer).
+ * P-010 refines the tail's last-turn handling; v1 renders the plain tail.
  */
 import {
   buildCarryBrief,

@@ -119,7 +119,7 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(doc.tail).toEqual([]);
   });
 
-  it('the real tail leg reads a transcript file when a path is supplied', async () => {
+  it('the real tail leg reads a transcript file and MECHANICALLY stamps user turns (D-003)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-carry-doc-test-'));
     try {
       const f = join(dir, 'sess.jsonl');
@@ -130,12 +130,21 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
         [
           line('user', 'ship the carry doc', '2026-07-14T10:00:00Z'),
           line('assistant', 'wiring the tail reader', '2026-07-14T10:00:05Z'),
+          line('user', '⟦turn-origin:wake-pump nonce:6b5c8079e022af6b⟧ loop wake — continue', '2026-07-14T10:01:00Z'),
         ].join('\n') + '\n',
       );
       const doc = await buildCarryDoc('su-1', { ...base, getPlanItemsFn: async () => [], transcriptPath: f });
-      expect(doc.tail.map((t) => t.text)).toEqual(['ship the carry doc', 'wiring the tail reader']);
-      expect(doc.tail[1].speaker).toBe('assistant');
+      expect(doc.tail.map((t) => t.text)).toEqual([
+        'ship the carry doc',
+        'wiring the tail reader',
+        '⟦turn-origin:wake-pump nonce:6b5c8079e022af6b⟧ loop wake — continue',
+      ]);
       expect(doc.tail[0].ts).toBe('2026-07-14T10:00:00.000Z');
+      // The stamp is decided by the recorded envelope, not the prose: no
+      // envelope → owner-typed; an envelope → agent-injected with its origin.
+      expect(doc.tail[0].provenance).toEqual({ verdict: 'owner-typed', origin: null });
+      expect(doc.tail[1].provenance).toBeNull(); // assistant turns carry none
+      expect(doc.tail[2].provenance).toEqual({ verdict: 'agent-injected', origin: 'wake-pump' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -203,5 +212,23 @@ describe('renderCarryDoc (pure)', () => {
     const text = renderCarryDoc(doc({ sessionMode: { modes: [], loopActive: false, loopIntervalSec: null } }), NOW);
     expect(text).toContain('loop: not armed');
     expect(text).toContain('- no active modes');
+  });
+
+  it('the mechanical stamp OUTRANKS the speaker in tail headers (WI-3532 class)', () => {
+    const text = renderCarryDoc(
+      doc({
+        tail: [
+          { speaker: 'user', text: 'ship it', ts: null, provenance: { verdict: 'owner-typed', origin: null } },
+          { speaker: 'user', text: 'loop wake', ts: null, provenance: { verdict: 'agent-injected', origin: 'wake-pump' } },
+          { speaker: 'user', text: '/compact ran', ts: null, provenance: { verdict: 'synthetic', origin: null } },
+          { speaker: 'user', text: 'no ledger era', ts: null },
+        ],
+      }),
+      NOW,
+    );
+    expect(text).toContain('### OWNER (typed — mechanically classified)');
+    expect(text).toContain('### machine-injected (wake-pump) — NOT the owner');
+    expect(text).toContain('### machine (harness-synthetic) — NOT the owner');
+    expect(text).toContain('### user (unclassified)');
   });
 });
