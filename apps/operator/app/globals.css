@@ -26984,52 +26984,10 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 
 .op-pot-needs + .op-pot-caret { margin-left: 2px; }
 
-.op-pot-section {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 9px 14px 10px;
-}
-
-.op-pot-section + .op-pot-section {
-  border-top: 1px solid rgb(from var(--accent-soft) r g b / 0.09);
-}
-
-.op-pot-h {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  color: var(--fg-mute);
-  font-size: 9.5px;
-  font-weight: 750;
-  /* letter-spacing stays 0: design-primitives lint + /internal/docs/design */
-  text-transform: uppercase;
-}
-
-/* Count pill beside a section header — amber for attention, accent for
-   neutral counts (mockup .sec-head .badge / .badge.n). */
-.op-pot-h-badge {
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 999px;
-  display: inline-grid;
-  place-items: center;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9.5px;
-  font-weight: 700;
-  background: color-mix(in srgb, var(--warn), transparent 84%);
-  color: color-mix(in srgb, var(--warn), var(--fg) 35%);
-  border: 1px solid color-mix(in srgb, var(--warn), transparent 65%);
-}
-
-.op-pot-h-badge.n {
-  background: rgb(from var(--accent-strong) r g b / 0.12);
-  color: var(--accent-soft);
-  border-color: rgb(from var(--accent-strong) r g b / 0.32);
-}
-
+/* Shared row idioms below (op-pot-list / -cup / -next / -attn / -chip /
+   -steering / -empty) are consumed by BOTH the strip's old home and the
+   full-height PotHealthPane (WI-4778) — keep them list-shaped, no ancestor
+   coupling. */
 .op-pot-list {
   display: flex;
   flex-direction: column;
