@@ -16,11 +16,8 @@ const syncData: Record<string, unknown[]> = {};
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => ({ data: syncData[queryName] ?? [] }),
 }));
-// MugTab pulls in heavy deps; the hook only needs resolveHomeHive — stub it.
-vi.mock('./MugTab', () => ({
-  resolveHomeHive: (projects: Array<{ slug: string; harness_kind?: string | null }>, rows: Array<{ slug: string }>) =>
-    projects.find((p) => p.harness_kind === 'hive')?.slug || rows[0]?.slug || '',
-}));
+// resolveHomeHive lives in its own light module now (WI-4778 — the heavy MugTab
+// that used to export it is retired), so the hook exercises the REAL resolver.
 
 import { useModelOverride } from './useModelOverride';
 

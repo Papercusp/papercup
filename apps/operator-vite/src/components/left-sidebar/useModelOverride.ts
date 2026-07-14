@@ -14,7 +14,7 @@
  */
 import { useCallback, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
-import { resolveHomeHive } from './MugTab';
+import { resolveHomeHive } from './resolve-home-hive';
 
 interface SteeringRow {
   slug: string;
