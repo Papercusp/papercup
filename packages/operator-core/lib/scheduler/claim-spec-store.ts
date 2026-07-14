@@ -34,29 +34,45 @@ export interface SetClaimSpecResult {
 }
 
 /**
- * EI-11796: count this bee's still-active claims before self-selection. A parked
+ * EI-11796: this bee's still-active claims before self-selection. A parked
  * item retains `taken_by` (and may carry `_claimHold`), so looking only at the
  * claimable pool lets a member accumulate a second lane after parking the first.
  * The unified work_items view covers both feature- and issue-family claims; use
  * the resolved workspace plus the legacy default partition because the two claim
  * families can legitimately live in different partitions while the workspace
  * routing flag is being migrated.
+ *
+ * EI-12095: returns the held ids (not just a count) so a concurrency-blocked
+ * miss can name exactly what to release/complete — see get_next.ts's
+ * buildMissDiagnosis, which special-cases this BEFORE running the pool/floor
+ * diagnosis (a caller at/over its concurrency limit never reaches the claim
+ * query at all, so a floor-admissibility report is actively misleading).
  */
-export async function countActiveClaimsForBee(
+export async function getActiveClaimsForBee(
   args: { cupId: string; workspaceId?: string },
   sqlOverride?: OrgSql,
-): Promise<number> {
+): Promise<{ id: string; kind: string }[]> {
   const sql = sqlOverride ?? getOrgPg().sql;
   const workspaces = [...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE])];
   const rows = (await sql`
-    SELECT COUNT(*)::int AS active_claims
+    SELECT id, kind
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ${args.cupId}
        AND status NOT IN ('passed', 'deprecated', 'resolved', 'closed')`) as Array<{
-    active_claims: number | string;
+    id: string;
+    kind: string;
   }>;
-  return Number(rows[0]?.active_claims ?? 0);
+  return rows;
+}
+
+/** Thin count-only projection of {@link getActiveClaimsForBee} — kept for callers (and tests)
+ *  that only need the number, so the shared query stays in one place. */
+export async function countActiveClaimsForBee(
+  args: { cupId: string; workspaceId?: string },
+  sqlOverride?: OrgSql,
+): Promise<number> {
+  return (await getActiveClaimsForBee(args, sqlOverride)).length;
 }
 
 /**

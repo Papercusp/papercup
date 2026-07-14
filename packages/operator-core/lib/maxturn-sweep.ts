@@ -398,3 +398,149 @@ export async function runMaxTurnSweep(input: RunSweepInput = {}): Promise<SweepR
     unreachableCells,
   };
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// P-025 — measure + report per cell; recommend per-class constants (advisory-only)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The SCORER over the CellResult[] runMaxTurnSweep produces. Aggregates the per-cell
+// metrics into per-(class, maxTurn-target) points, then recommends a per-class maxTurn
+// constant from the evidence. The recommendation is ADVISORY ONLY — a human ratifies any
+// constant change, never auto-applied (plan D-001). Pure, mirroring cold-boot-drill's
+// gradeColdBootDrills / residual-carry-pass's scoreResidualMissRate.
+//
+// The recommendation heuristic encodes the plan's stance ("context is rent — a bigger
+// window is headroom for the SESSION, not licence for bigger hops", context-doors.ts):
+// prefer the SMALLEST maxTurn that still clears the quality gates (task success high,
+// length-stops low, spill-chase reliable). A bigger hop budget that only marginally
+// reduces length-stops is not worth the per-hop token rent.
+
+export interface SweepScoreParams {
+  /** A point must average ≥ this task success rate to be recommendable (default 0.95). */
+  minTaskSuccessRate: number;
+  /** …and ≤ this length-stop rate (hops hitting the output door; default 0.05). */
+  maxStopReasonLengthRate: number;
+  /** …and ≥ this spill-chase success rate (agent actually read the spilled pointers; default 0.95). */
+  minSpillChaseSuccessRate: number;
+  /** Minimum ok cells behind a (class, target) point before it is trusted (default 1). */
+  minCellsPerPoint: number;
+}
+
+export const DEFAULT_SWEEP_SCORE_PARAMS: SweepScoreParams = {
+  minTaskSuccessRate: 0.95,
+  maxStopReasonLengthRate: 0.05,
+  minSpillChaseSuccessRate: 0.95,
+  minCellsPerPoint: 1,
+};
+
+/** Mean of the non-null values, or null when there are none (never a fabricated 0). */
+function meanOrNull(values: Array<number | null>): number | null {
+  const present = values.filter((v): v is number => typeof v === 'number');
+  return present.length ? present.reduce((a, b) => a + b, 0) / present.length : null;
+}
+
+export interface PointAggregate {
+  sessionClass: SweepSessionClass;
+  maxTurnTargetTokens: number;
+  /** Count of status:'ok' cells behind this point (staged/error cells are excluded). */
+  okCells: number;
+  meanStopReasonLengthRate: number | null;
+  meanSpillChaseSuccessRate: number | null;
+  meanHopsPerTask: number | null;
+  meanCompactionCount: number | null;
+  meanWallClockMs: number | null;
+  meanTaskSuccessRate: number | null;
+  meanCacheReadInputTokens: number | null;
+  meanFreshInputTokens: number | null;
+  /** True ⇒ meets every quality gate with ≥ minCellsPerPoint ok cells — a recommendable point. */
+  qualityPassing: boolean;
+}
+
+export interface ClassRecommendation {
+  sessionClass: SweepSessionClass;
+  /** The smallest maxTurn target whose point cleared the gates; null when none did. */
+  recommendedMaxTurnTokens: number | null;
+  rationale: string;
+  /** Every target whose point cleared the gates (ascending). */
+  passingTargets: number[];
+  /** Always true — a constant change requires human ratification (D-001), never auto-applied. */
+  advisoryOnly: true;
+}
+
+export interface SweepScoreReport {
+  points: PointAggregate[];
+  recommendations: ClassRecommendation[];
+  params: SweepScoreParams;
+  advisoryOnly: true;
+}
+
+/**
+ * Score a batch of cell results into per-(class,target) aggregates + a per-class advisory
+ * recommendation. PURE. Only status:'ok' cells contribute; staged/error cells are excluded
+ * (they carry no real metrics). A point is `qualityPassing` when it has ≥ minCellsPerPoint
+ * ok cells and clears all three gates; the per-class recommendation is the SMALLEST passing
+ * target (cheapest hop budget that still works), or null when no target passed.
+ */
+export function scoreMaxTurnSweep(results: CellResult[], params: SweepScoreParams = DEFAULT_SWEEP_SCORE_PARAMS): SweepScoreReport {
+  // Bucket ok cells by (class, target).
+  const buckets = new Map<string, { sessionClass: SweepSessionClass; target: number; cells: CellResult[] }>();
+  for (const r of results) {
+    if (r.status !== 'ok') continue;
+    const key = `${r.cell.sessionClass}__${r.cell.maxTurnTargetTokens}`;
+    const b = buckets.get(key) ?? { sessionClass: r.cell.sessionClass, target: r.cell.maxTurnTargetTokens, cells: [] };
+    b.cells.push(r);
+    buckets.set(key, b);
+  }
+
+  const points: PointAggregate[] = [];
+  for (const { sessionClass, target, cells } of buckets.values()) {
+    const m = (pick: (x: CellRunMetrics) => number | null) => meanOrNull(cells.map((c) => pick(c.metrics)));
+    const meanTaskSuccessRate = m((x) => x.taskSuccessRate);
+    const meanStopReasonLengthRate = m((x) => x.stopReasonLengthRate);
+    const meanSpillChaseSuccessRate = m((x) => x.spillChaseSuccessRate);
+    const qualityPassing =
+      cells.length >= params.minCellsPerPoint &&
+      meanTaskSuccessRate !== null &&
+      meanTaskSuccessRate >= params.minTaskSuccessRate &&
+      meanStopReasonLengthRate !== null &&
+      meanStopReasonLengthRate <= params.maxStopReasonLengthRate &&
+      meanSpillChaseSuccessRate !== null &&
+      meanSpillChaseSuccessRate >= params.minSpillChaseSuccessRate;
+    points.push({
+      sessionClass,
+      maxTurnTargetTokens: target,
+      okCells: cells.length,
+      meanStopReasonLengthRate,
+      meanSpillChaseSuccessRate,
+      meanHopsPerTask: m((x) => x.hopsPerTask),
+      meanCompactionCount: m((x) => x.compactionCount),
+      meanWallClockMs: m((x) => x.wallClockMs),
+      meanTaskSuccessRate,
+      meanCacheReadInputTokens: m((x) => x.cacheReadInputTokens),
+      meanFreshInputTokens: m((x) => x.freshInputTokens),
+      qualityPassing,
+    });
+  }
+  points.sort((a, b) => a.sessionClass.localeCompare(b.sessionClass) || a.maxTurnTargetTokens - b.maxTurnTargetTokens);
+
+  // Per-class recommendation: the smallest passing target (cheapest hop budget that works).
+  const byClass = new Map<SweepSessionClass, PointAggregate[]>();
+  for (const p of points) {
+    const arr = byClass.get(p.sessionClass) ?? [];
+    arr.push(p);
+    byClass.set(p.sessionClass, arr);
+  }
+  const recommendations: ClassRecommendation[] = [];
+  for (const [sessionClass, pts] of byClass) {
+    const passing = pts.filter((p) => p.qualityPassing).map((p) => p.maxTurnTargetTokens).sort((a, b) => a - b);
+    const recommendedMaxTurnTokens = passing.length ? passing[0] : null;
+    const rationale =
+      recommendedMaxTurnTokens !== null
+        ? `smallest maxTurn clearing the gates (success ≥ ${params.minTaskSuccessRate}, length-stop ≤ ${params.maxStopReasonLengthRate}, spill-chase ≥ ${params.minSpillChaseSuccessRate}) — cheapest hop budget that still works; bigger buys little for the per-hop token rent (advisory, human-ratified per D-001)`
+        : `no (class, target) point cleared the quality gates; needs more cells or relaxed gates before recommending a constant`;
+    recommendations.push({ sessionClass, recommendedMaxTurnTokens, rationale, passingTargets: passing, advisoryOnly: true });
+  }
+  recommendations.sort((a, b) => a.sessionClass.localeCompare(b.sessionClass));
+
+  return { points, recommendations, params, advisoryOnly: true };
+}

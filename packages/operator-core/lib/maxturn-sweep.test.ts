@@ -16,9 +16,12 @@ import {
   resolveCellConfig,
   emptyCellMetrics,
   runMaxTurnSweep,
+  scoreMaxTurnSweep,
+  DEFAULT_SWEEP_SCORE_PARAMS,
   type SweepAxes,
   type SweepCell,
   type CellRunMetrics,
+  type CellResult,
 } from './maxturn-sweep';
 
 const ORNITH_WINDOW = 204_800;
@@ -218,5 +221,115 @@ describe('runMaxTurnSweep — staged by default, fail-soft when armed', () => {
     expect(DEFAULT_SWEEP_AXES.sessionClasses.map((c) => c.sessionClass)).toEqual(['ornith-drone', 'gateway-claude-drone', 'interactive']);
     expect(DEFAULT_SWEEP_AXES.doorSplitVariants.map((v) => v.id)).toEqual(['baked', 'result-heavy', 'output-heavy']);
     expect(DEFAULT_SWEEP_AXES.tasks.map((t) => t.kind)).toEqual(['drain-style', 'file-heavy-writes', 'long-log-analysis']);
+  });
+});
+
+describe('scoreMaxTurnSweep (P-025) — per-class advisory recommendation', () => {
+  const cell = (sessionClass: 'ornith-drone' | 'interactive', target: number): SweepCell => ({
+    cellId: cellId(sessionClass, target, 'baked', 'drain'),
+    maxTurnTargetTokens: target,
+    sessionClass,
+    effectiveWindowTokens: sessionClass === 'ornith-drone' ? ORNITH_WINDOW : M1_WINDOW,
+    doorSplitVariantId: 'baked',
+    taskId: 'drain',
+    taskKind: 'drain-style',
+  });
+  const okResult = (sessionClass: 'ornith-drone' | 'interactive', target: number, m: Partial<CellRunMetrics>): CellResult => ({
+    cellId: cellId(sessionClass, target, 'baked', 'drain'),
+    cell: cell(sessionClass, target),
+    config: resolveCellConfig(cell(sessionClass, target)),
+    repeats: 1,
+    status: 'ok',
+    metrics: { ...emptyCellMetrics(), ...m },
+  });
+  const passing = (extra: Partial<CellRunMetrics> = {}): Partial<CellRunMetrics> => ({
+    taskSuccessRate: 1,
+    stopReasonLengthRate: 0,
+    spillChaseSuccessRate: 1,
+    ...extra,
+  });
+
+  it('recommends the SMALLEST target that clears every gate', () => {
+    const results: CellResult[] = [
+      okResult('ornith-drone', 2_000, passing({ stopReasonLengthRate: 0.3 })), // fails: too many length-stops
+      okResult('ornith-drone', 8_000, passing()), // passes
+      okResult('ornith-drone', 25_000, passing()), // also passes but bigger
+    ];
+    const rep = scoreMaxTurnSweep(results);
+    const rec = rep.recommendations.find((r) => r.sessionClass === 'ornith-drone')!;
+    expect(rec.passingTargets).toEqual([8_000, 25_000]);
+    expect(rec.recommendedMaxTurnTokens).toBe(8_000); // smallest passing
+    expect(rec.advisoryOnly).toBe(true);
+    expect(rep.advisoryOnly).toBe(true);
+  });
+
+  it('recommends null with a rationale when no target clears the gates', () => {
+    const results = [
+      okResult('interactive', 8_000, passing({ taskSuccessRate: 0.5 })),
+      okResult('interactive', 15_000, passing({ spillChaseSuccessRate: 0.2 })),
+    ];
+    const rec = scoreMaxTurnSweep(results).recommendations[0];
+    expect(rec.recommendedMaxTurnTokens).toBeNull();
+    expect(rec.passingTargets).toEqual([]);
+    expect(rec.rationale).toContain('no');
+  });
+
+  it('excludes staged/error cells from the aggregation', () => {
+    const staged: CellResult = { ...okResult('ornith-drone', 4_000, passing()), status: 'staged', metrics: emptyCellMetrics() };
+    const errored: CellResult = { ...okResult('ornith-drone', 4_000, {}), status: 'error', note: 'boom', metrics: emptyCellMetrics() };
+    const rep = scoreMaxTurnSweep([staged, errored, okResult('ornith-drone', 8_000, passing())]);
+    // Only the 8K ok cell forms a point.
+    expect(rep.points.map((p) => p.maxTurnTargetTokens)).toEqual([8_000]);
+    expect(rep.points[0].okCells).toBe(1);
+  });
+
+  it('averages metrics over multiple ok cells at the same (class,target) point', () => {
+    const results = [
+      okResult('ornith-drone', 8_000, passing({ hopsPerTask: 10, stopReasonLengthRate: 0.02 })),
+      okResult('ornith-drone', 8_000, passing({ hopsPerTask: 20, stopReasonLengthRate: 0.04 })),
+    ];
+    const p = scoreMaxTurnSweep(results).points[0];
+    expect(p.okCells).toBe(2);
+    expect(p.meanHopsPerTask).toBe(15);
+    expect(p.meanStopReasonLengthRate).toBeCloseTo(0.03);
+    expect(p.qualityPassing).toBe(true);
+  });
+
+  it('honors minCellsPerPoint (a lone cell cannot pass when 2 are required)', () => {
+    const rep = scoreMaxTurnSweep([okResult('ornith-drone', 8_000, passing())], {
+      ...DEFAULT_SWEEP_SCORE_PARAMS,
+      minCellsPerPoint: 2,
+    });
+    expect(rep.points[0].qualityPassing).toBe(false);
+    expect(rep.recommendations[0].recommendedMaxTurnTokens).toBeNull();
+  });
+
+  it('a point with a null gate metric never passes (no fabricated success)', () => {
+    // taskSuccessRate present + good, but spillChaseSuccessRate never captured (null).
+    const rep = scoreMaxTurnSweep([okResult('ornith-drone', 8_000, { taskSuccessRate: 1, stopReasonLengthRate: 0, spillChaseSuccessRate: null })]);
+    expect(rep.points[0].qualityPassing).toBe(false);
+  });
+
+  it('sorts points and recommendations deterministically by class then target', () => {
+    const rep = scoreMaxTurnSweep([
+      okResult('interactive', 15_000, passing()),
+      okResult('ornith-drone', 8_000, passing()),
+      okResult('ornith-drone', 2_000, passing()),
+    ]);
+    expect(rep.points.map((p) => `${p.sessionClass}:${p.maxTurnTargetTokens}`)).toEqual([
+      'interactive:15000',
+      'ornith-drone:2000',
+      'ornith-drone:8000',
+    ]);
+    expect(rep.recommendations.map((r) => r.sessionClass)).toEqual(['interactive', 'ornith-drone']);
+  });
+
+  it('exposes the documented default score params', () => {
+    expect(DEFAULT_SWEEP_SCORE_PARAMS).toEqual({
+      minTaskSuccessRate: 0.95,
+      maxStopReasonLengthRate: 0.05,
+      minSpillChaseSuccessRate: 0.95,
+      minCellsPerPoint: 1,
+    });
   });
 });

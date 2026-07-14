@@ -17,7 +17,12 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getNextForBee, resolveClaimSpecWorkspace, getClaimSpecRecord } from '../../scheduler/claim-spec-store';
+import {
+  getNextForBee,
+  resolveClaimSpecWorkspace,
+  getClaimSpecRecord,
+  getActiveClaimsForBee,
+} from '../../scheduler/claim-spec-store';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { cancelClaimableAwaits } from '../../events/await/store';
 
@@ -85,10 +90,42 @@ async function buildMissDiagnosis(args: {
     const { diagnoseClaimNextMiss, explainIssueClaimFloors } = await import('../../work-items');
     let floors: unknown;
     let namedSummary = '';
+    const resolvedWorkspace = resolveClaimSpecWorkspace(args.workspaceId);
     const rec = await getClaimSpecRecord({
       cupId: args.ownerId,
-      workspaceId: resolveClaimSpecWorkspace(args.workspaceId),
+      workspaceId: resolvedWorkspace,
     }).catch(() => null);
+
+    // EI-12095: getNextForBee short-circuits BEFORE the claim query whenever the caller
+    // already holds >= its spec's maxConcurrentClaims (default 1) — a parked/held item
+    // still counts (it retains `taken_by`). That miss has NOTHING to do with pool/floor
+    // admissibility, so running diagnoseClaimNextMiss for it produces a real, expensive
+    // false signal ("N admissible" while the true cause is "you're at your concurrency
+    // limit") — a live incident burned a fleet leader hours bisecting the claim query for
+    // exactly this. Check it FIRST and, when true, report it plainly (with the held ids,
+    // so the caller can act immediately) instead of computing floors at all.
+    const activeClaims = await getActiveClaimsForBee({
+      cupId: args.ownerId,
+      workspaceId: resolvedWorkspace,
+    }).catch(() => null);
+    if (activeClaims) {
+      const maxConcurrentClaims = rec?.spec.limits?.maxConcurrentClaims ?? 1;
+      if (activeClaims.length >= maxConcurrentClaims) {
+        const heldIds = activeClaims.map((c) => c.id);
+        return {
+          error:
+            `${STATIC}. Diagnosis: you already hold ${activeClaims.length}/${maxConcurrentClaims} concurrent ` +
+            `claim(s) — release or complete one before claiming another; held: ${heldIds.join(', ')}.`,
+          diagnosis: {
+            concurrencyBlocked: true,
+            activeClaims: activeClaims.length,
+            maxConcurrentClaims,
+            heldIds,
+          },
+        };
+      }
+    }
+
     // D-002 (drain-claim-spec-hardening-2026-07-13, fixes EI-11300): mirror getNextWorkItem's
     // own states resolution (per-call override wins; else the spec's `states`; else the
     // ['todo'] floor default) so the miss diagnosis reflects the SAME pool the real claim

@@ -517,6 +517,12 @@ export interface InteractiveMcpDarkResult {
   healed: string[];
   healSent: string[];
   notified: string[];
+  /** Escalation phases cleared this pass because their owner is no longer in
+   *  the current dark set — either a live session that recovered, OR (the
+   *  case the per-owner heal ladder can never reach) a session that ENDED
+   *  entirely, so it dropped out of `hosts` and would otherwise never be
+   *  revisited again. See the recovery-sweep comment in checkInteractiveMcpDark. */
+  recovered: string[];
 }
 
 /**
@@ -529,82 +535,121 @@ export async function checkInteractiveMcpDark(
   sql: Sql,
   opts: InteractiveDarkThresholds & { maxAttempts?: number } = {},
 ): Promise<InteractiveMcpDarkResult> {
-  const out: InteractiveMcpDarkResult = { darkOwners: [], healed: [], healSent: [], notified: [] };
+  const out: InteractiveMcpDarkResult = { darkOwners: [], healed: [], healSent: [], notified: [], recovered: [] };
   try {
     const discovery = await import('../events/await/psu-pty-discovery');
     const hosts = discovery.listLiveHosts();
-    if (hosts.length === 0) return out;
+    // NOTE: unlike an earlier version of this function, we do NOT early-return
+    // here when hosts.length === 0 — the recovery sweep below (which clears
+    // stale escalations for owners no longer in the dark set) must still run
+    // on an empty-hosts pass, or an escalation raised for a session that has
+    // since ENDED entirely is never revisited again (see that comment).
     const owners = hosts.map((h) => h.ownerId);
-
-    const presenceRows = await sql<{ owner_id: string; presence_ms: string | number | null }[]>`
-      SELECT owner_id, extract(epoch from heartbeat_at) * 1000 AS presence_ms
-        FROM harness_shared.coord_presence
-       WHERE owner_id = ANY(${owners})`;
-    const loopRows = await sql<
-      { target_owner_id: string; reschedule_interval_sec: string | number | null }[]
-    >`
-      SELECT target_owner_id, reschedule_interval_sec
-        FROM harness_shared.routines
-       WHERE active
-         AND reschedule_interval_sec IS NOT NULL
-         AND name LIKE 'loop-%'
-         AND target_owner_id = ANY(${owners})`;
-    const presenceBy = new Map(presenceRows.map((r) => [r.owner_id, r.presence_ms != null ? Number(r.presence_ms) : null]));
-    const loopBy = new Map(
-      loopRows.map((r) => [r.target_owner_id, r.reschedule_interval_sec != null ? Number(r.reschedule_interval_sec) : null]),
-    );
-
     const now = Date.now();
-    const verdictByOwner = new Map<
-      string,
-      { dark: boolean; recovered: boolean; reason: string | null; staleMins: number }
-    >();
-    for (const h of hosts) {
-      const presenceMs = presenceBy.get(h.ownerId) ?? null;
-      const verdict = evaluateInteractiveMcpDark(
-        {
-          ownerId: h.ownerId,
-          hostStartedMs: h.startedAt ?? null,
-          hostLastActivityMs: h.lastActivityAt ?? null,
-          presenceHeartbeatMs: presenceMs,
-          loopActive: loopBy.has(h.ownerId),
-          loopIntervalSec: loopBy.get(h.ownerId) ?? null,
-        },
-        now,
-        opts,
+
+    // Only query per-host presence/loop state + run the verdict/heal ladder
+    // when there IS at least one live host — an empty `owners` array feeding
+    // `= ANY(${owners})` is exactly what the original hosts.length===0 guard
+    // avoided, and skipping this block leaves darkOwners empty (correct: zero
+    // live hosts means zero owners can be dark THIS pass), which the recovery
+    // sweep below then treats identically to "all clear".
+    if (owners.length > 0) {
+      const presenceRows = await sql<{ owner_id: string; presence_ms: string | number | null }[]>`
+        SELECT owner_id, extract(epoch from heartbeat_at) * 1000 AS presence_ms
+          FROM harness_shared.coord_presence
+         WHERE owner_id = ANY(${owners})`;
+      const loopRows = await sql<
+        { target_owner_id: string; reschedule_interval_sec: string | number | null }[]
+      >`
+        SELECT target_owner_id, reschedule_interval_sec
+          FROM harness_shared.routines
+         WHERE active
+           AND reschedule_interval_sec IS NOT NULL
+           AND name LIKE 'loop-%'
+           AND target_owner_id = ANY(${owners})`;
+      const presenceBy = new Map(presenceRows.map((r) => [r.owner_id, r.presence_ms != null ? Number(r.presence_ms) : null]));
+      const loopBy = new Map(
+        loopRows.map((r) => [r.target_owner_id, r.reschedule_interval_sec != null ? Number(r.reschedule_interval_sec) : null]),
       );
-      // POSITIVE-evidence recovery (2026-07-14 false-heal fix): tools are
-      // demonstrably flowing NOW — a fresh tool-call-coupled beat. ¬dark alone
-      // (idle session, reaped/absent presence row) proves nothing.
-      const recovered = presenceMs != null && now - presenceMs < RECOVERED_FRESH_MS;
-      verdictByOwner.set(h.ownerId, {
-        dark: verdict.dark,
-        recovered,
-        reason: verdict.reason,
-        staleMins: mins(now - (presenceMs ?? h.startedAt ?? now)),
-      });
-    }
-    out.darkOwners = [...verdictByOwner.entries()].filter(([, v]) => v.dark).map(([o]) => o);
 
-    const plan = planInteractiveHeal(
-      interactiveHealState,
-      [...verdictByOwner.entries()].map(([ownerId, v]) => ({ ownerId, dark: v.dark, recovered: v.recovered })),
-      now,
-      opts.maxAttempts ?? DEFAULT_HEAL_MAX_ATTEMPTS,
-    );
-
-    for (const step of plan) {
-      const v = verdictByOwner.get(step.ownerId);
-      try {
-        await runInteractiveHealStep(step, v, { sql, discovery, out, now });
-      } catch (e) {
-        // One owner's failure must not abort the rest of the pass (live incident
-        // 2026-07-14: the workspace_id NOT NULL crash killed every later step).
-        console.warn(
-          `[mcp-dark-watchdog] interactive step ${step.action} failed for ${step.ownerId} (non-fatal): ` +
-            `${e instanceof Error ? e.message : String(e)}`,
+      const verdictByOwner = new Map<
+        string,
+        { dark: boolean; recovered: boolean; reason: string | null; staleMins: number }
+      >();
+      for (const h of hosts) {
+        const presenceMs = presenceBy.get(h.ownerId) ?? null;
+        const verdict = evaluateInteractiveMcpDark(
+          {
+            ownerId: h.ownerId,
+            hostStartedMs: h.startedAt ?? null,
+            hostLastActivityMs: h.lastActivityAt ?? null,
+            presenceHeartbeatMs: presenceMs,
+            loopActive: loopBy.has(h.ownerId),
+            loopIntervalSec: loopBy.get(h.ownerId) ?? null,
+          },
+          now,
+          opts,
         );
+        // POSITIVE-evidence recovery (2026-07-14 false-heal fix): tools are
+        // demonstrably flowing NOW — a fresh tool-call-coupled beat. ¬dark alone
+        // (idle session, reaped/absent presence row) proves nothing.
+        const recovered = presenceMs != null && now - presenceMs < RECOVERED_FRESH_MS;
+        verdictByOwner.set(h.ownerId, {
+          dark: verdict.dark,
+          recovered,
+          reason: verdict.reason,
+          staleMins: mins(now - (presenceMs ?? h.startedAt ?? now)),
+        });
       }
+      out.darkOwners = [...verdictByOwner.entries()].filter(([, v]) => v.dark).map(([o]) => o);
+
+      const plan = planInteractiveHeal(
+        interactiveHealState,
+        [...verdictByOwner.entries()].map(([ownerId, v]) => ({ ownerId, dark: v.dark, recovered: v.recovered })),
+        now,
+        opts.maxAttempts ?? DEFAULT_HEAL_MAX_ATTEMPTS,
+      );
+
+      for (const step of plan) {
+        const v = verdictByOwner.get(step.ownerId);
+        try {
+          await runInteractiveHealStep(step, v, { sql, discovery, out, now });
+        } catch (e) {
+          // One owner's failure must not abort the rest of the pass (live incident
+          // 2026-07-14: the workspace_id NOT NULL crash killed every later step).
+          console.warn(
+            `[mcp-dark-watchdog] interactive step ${step.action} failed for ${step.ownerId} (non-fatal): ` +
+              `${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
+
+    // ── Recovery sweep (durability follow-up, 2026-07-14): clear ANY standing
+    // mcp-dark-int:% escalation whose owner is NOT in THIS pass's dark set —
+    // mirrors the equivalent bee-variant sweep above (PHASE_PREFIX, ~L274-286).
+    // The per-owner heal ladder above only ever visits owners in `hosts`
+    // (CURRENTLY live psu-pty sessions), so runInteractiveHealStep's own
+    // escalation-clear (on 'announce-healed') can NEVER reach an owner whose
+    // session has since ENDED entirely — it simply drops out of `hosts` and is
+    // never revisited again. Without this sweep, an escalation raised while a
+    // session was dark stays open FOREVER once that session exits (the exact
+    // shape of EI-12059 / su-39f079d3: session ended ~03:15, zero live hosts or
+    // presence rows for it since, escalation still open 14+h later because
+    // nothing in this file's control flow was ever going to touch it again).
+    // Safe/idempotent for the live-and-recovered case too (already cleared
+    // above via 'announce-healed' — this just re-confirms it, a no-op UPDATE).
+    const alertedInteractiveRows = await sql<{ phase: string }[]>`
+      SELECT phase FROM harness_shared.harness_escalations
+       WHERE phase LIKE ${INTERACTIVE_PHASE_PREFIX + '%'} AND escalation IS NOT NULL`;
+    const darkInteractivePhases = new Set(out.darkOwners.map((o) => INTERACTIVE_PHASE_PREFIX + o));
+    const toRecoverInteractive = alertedInteractiveRows.map((r) => r.phase).filter((p) => !darkInteractivePhases.has(p));
+    if (toRecoverInteractive.length > 0) {
+      await sql`
+        UPDATE harness_shared.harness_escalations
+           SET escalation = NULL, mtime_ms = ${now}
+         WHERE phase = ANY(${toRecoverInteractive}) AND escalation IS NOT NULL`;
+      out.recovered = toRecoverInteractive.map((p) => p.slice(INTERACTIVE_PHASE_PREFIX.length));
     }
     return out;
   } catch (e) {

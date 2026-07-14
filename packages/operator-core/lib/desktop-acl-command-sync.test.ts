@@ -61,8 +61,15 @@ function extractCollectCommands(mainRs: string): string[] {
 }
 
 function extractBuildCommands(buildRs: string): string[] {
-  const m = buildRs.match(/\.commands\(&\[([\s\S]*?)\]\)/);
-  if (!m) throw new Error('.commands(&[...]) not found in build.rs');
+  // EI-12083: the command list moved from an inline `.commands(&[...])` array
+  // literal to a hoisted `let commands: &[&str] = &[...]` binding (so build.rs's
+  // own pre-tauri_build capability/manifest cross-check — see
+  // check_capability_commands_are_registered — can read the same list without
+  // duplicating it). Match either shape so this extractor survives both.
+  const m =
+    buildRs.match(/let\s+commands\s*:\s*&\[&str\]\s*=\s*&\[([\s\S]*?)\];/) ??
+    buildRs.match(/\.commands\(&\[([\s\S]*?)\]\)/);
+  if (!m) throw new Error('.commands(&[...]) / let commands: &[&str] = &[...] not found in build.rs');
   const body = stripLineComments(m[1]);
   const out: string[] = [];
   const re = /"([^"]+)"/g;
@@ -135,4 +142,35 @@ describe('desktop ACL command sync (WI-2143 guard)', () => {
     expect(buildRs).toContain('std::env::var_os("CARGO_MANIFEST_DIR")');
     expect(buildRs).not.toContain('env!("CARGO_MANIFEST_DIR")');
   });
+
+  maybe(
+    'EI-12083: a capability/manifest mismatch panics BEFORE tauri_build with an actionable message, not the ~500-line permission wall',
+    () => {
+      const buildRs = readFileSync(BUILD_RS, 'utf8');
+      // The pre-check must run before tauri_build::try_build in main(), on the
+      // SAME `commands` list passed to AppManifest::commands(...) — otherwise it
+      // could silently validate a different list than what actually ships.
+      const checkFn =
+        buildRs.match(/fn check_capability_commands_are_registered[\s\S]*?\n\}\n/)?.[0] ?? '';
+      expect(checkFn).not.toBe('');
+      expect(checkFn).toContain("strip_prefix(\"allow-\")");
+      expect(checkFn).toContain('panic!(');
+      // The actionable message must name BOTH plausible causes: the transient
+      // git-sync split-commit race this was filed for, AND a genuine omission —
+      // never just "expected one of [...]" like tauri_build's own wall.
+      expect(checkFn).toMatch(/mid-edit/);
+      expect(checkFn).toMatch(/git-sync/);
+      expect(checkFn).toContain('desktop-acl-command-sync.test.ts');
+
+      const mainFn = buildRs.match(/fn main\(\)[\s\S]*$/)?.[0] ?? '';
+      const checkCallIdx = mainFn.indexOf('check_capability_commands_are_registered(');
+      const tryBuildIdx = mainFn.indexOf('tauri_build::try_build(');
+      expect(checkCallIdx).toBeGreaterThan(-1);
+      expect(tryBuildIdx).toBeGreaterThan(-1);
+      expect(checkCallIdx).toBeLessThan(tryBuildIdx);
+      // Both calls must reference the SAME `commands` binding the extractor reads.
+      expect(mainFn).toMatch(/check_capability_commands_are_registered\(&manifest_dir,\s*commands\)/);
+      expect(mainFn).toMatch(/AppManifest::new\(\)\.commands\(commands\)/);
+    },
+  );
 });
