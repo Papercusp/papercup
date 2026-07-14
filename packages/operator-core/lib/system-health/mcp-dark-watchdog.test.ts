@@ -9,6 +9,7 @@ import {
   evaluateMcpDark,
   evaluateInteractiveMcpDark,
   planInteractiveHeal,
+  markHealSent,
   healedWakeText,
   type McpDarkSnapshot,
   type InteractiveDarkSnapshot,
@@ -142,7 +143,7 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
   });
 });
 
-describe('planInteractiveHeal (the cross-pass heal ladder)', () => {
+describe('planInteractiveHeal (the cross-pass heal ladder — tri-state verdicts, 2026-07-14 false-heal fix)', () => {
   it('dark → heal, heal, then notify ONCE, then none', () => {
     const state = new Map();
     const dark = [{ ownerId: 'su-x', dark: true }];
@@ -152,21 +153,54 @@ describe('planInteractiveHeal (the cross-pass heal ladder)', () => {
     expect(planInteractiveHeal(state, dark, INOW + 15 * M)).toEqual([{ ownerId: 'su-x', action: 'none' }]);
   });
 
-  it('recovery after an attempt → announce-healed exactly once, state cleared', () => {
+  it('RECOVERED (fresh beat) after a SENT attempt → announce-healed exactly once, state cleared', () => {
     const state = new Map();
     planInteractiveHeal(state, [{ ownerId: 'su-x', dark: true }], INOW);
-    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: false }], INOW + 5 * M)).toEqual([
+    markHealSent(state, 'su-x'); // the executor confirmed the envelope landed
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: false, recovered: true }], INOW + 5 * M)).toEqual([
       { ownerId: 'su-x', action: 'announce-healed' },
     ]);
     // next pass: nothing on record ⇒ none
-    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: false }], INOW + 10 * M)).toEqual([
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: false, recovered: true }], INOW + 10 * M)).toEqual([
       { ownerId: 'su-x', action: 'none' },
     ]);
+  });
+
+  it('LIVE REGRESSION su-39f07 2026-07-14: ¬dark alone is INDETERMINATE — never an announce, state held', () => {
+    // The deployed first cut announced "healed" when the dark verdict merely
+    // flipped (session went idle / presence row absent). recovered:false must
+    // hold everything.
+    const state = new Map();
+    planInteractiveHeal(state, [{ ownerId: 'su-x', dark: true }], INOW);
+    markHealSent(state, 'su-x');
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: false, recovered: false }], INOW + 5 * M)).toEqual([
+      { ownerId: 'su-x', action: 'none' },
+    ]);
+    expect(state.has('su-x')).toBe(true); // state HELD, not cleared
+    // …and when it goes dark again (su-5651d flip-flop shape), the ladder resumes
+    // where it left off instead of announcing.
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: true }], INOW + 10 * M)).toEqual([
+      { ownerId: 'su-x', action: 'heal' },
+    ]);
+  });
+
+  it('LIVE REGRESSION no-cap heals 2026-07-14: recovery with NO sent envelope clears silently — no announce', () => {
+    // Both live hosts predated the macro (no-cap): nothing was ever injected, so
+    // a later genuine recovery (owner ran /mcp) must NOT claim "the macro healed you".
+    const state = new Map();
+    planInteractiveHeal(state, [{ ownerId: 'su-x', dark: true }], INOW); // attempt recorded, but never sent
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: false, recovered: true }], INOW + 5 * M)).toEqual([
+      { ownerId: 'su-x', action: 'none' },
+    ]);
+    expect(state.has('su-x')).toBe(false); // cleared — a fresh incident starts a fresh ladder
   });
 
   it('never-dark owners never act (no announce without a recorded attempt)', () => {
     const state = new Map();
     expect(planInteractiveHeal(state, [{ ownerId: 'su-y', dark: false }], INOW)).toEqual([
+      { ownerId: 'su-y', action: 'none' },
+    ]);
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-y', dark: false, recovered: true }], INOW)).toEqual([
       { ownerId: 'su-y', action: 'none' },
     ]);
   });
