@@ -10,6 +10,11 @@ describe('modelCapabilityTier', () => {
     expect(modelCapabilityTier('llamacpp/bar')).toBe('weak');
   });
 
+  it('classifies ollama-cc/ (custom llama-server provider) as weak — the ornith incident model was tiered frontier before this (deterministic-context-carry P-001)', () => {
+    expect(modelCapabilityTier('ollama-cc/maxwell1500/ornith-35b:IQ3_M')).toBe('weak');
+    expect(modelCapabilityTier('ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh')).toBe('weak');
+  });
+
   it('is case-insensitive on the provider prefix', () => {
     expect(modelCapabilityTier('LMStudio/some-model')).toBe('weak');
     expect(modelCapabilityTier('OLLAMA/ornith')).toBe('weak');

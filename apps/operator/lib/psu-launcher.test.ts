@@ -533,6 +533,60 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).toMatch(/\n\s+py:\s*false/);
   });
 
+  it('seeds shake@70 compaction for a LOCAL-model session (deterministic-context-carry P-001)', () => {
+    // The ornith overflow (2026-07-13): default snapcompact + all-default thresholds on a
+    // text-only 204K local window → image archives, summarizer 429 self-starvation, HTTP 400.
+    writeOmpSessionConfigDir('sess1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toMatch(/^compaction:$/m);
+    expect(written).toMatch(/\n\s+strategy:\s*shake/);
+    expect(written).toMatch(/\n\s+thresholdPercent:\s*70/);
+  });
+
+  it('does NOT seed compaction for a hosted-model session (config copied untouched)', () => {
+    writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6' }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).not.toContain('compaction');
+  });
+
+  it('falls back to the config.yml modelRoles.default when no model opt is passed', () => {
+    // AGENT_CFG's default is a hosted gateway model → no seeding…
+    writeOmpSessionConfigDir('sess1', {}, home);
+    expect(readFileSync(agentPath('sess1', 'config.yml'), 'utf8')).not.toContain('compaction');
+    // …but a LOCAL default (the incident box's actual config) seeds even with model omitted.
+    writeFileSync(
+      join(home, '.omp', 'agent', 'config.yml'),
+      AGENT_CFG.replace('papercusp-gateway/claude-sonnet-4-6', 'ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh'),
+    );
+    writeOmpSessionConfigDir('sess2', {}, home);
+    const written = readFileSync(agentPath('sess2', 'config.yml'), 'utf8');
+    expect(written).toMatch(/\n\s+strategy:\s*shake/);
+  });
+
+  it('REPLACES an inherited compaction block for a local model (remove-then-append, no duplicate key)', () => {
+    const withCompaction = AGENT_CFG + 'compaction:\n  strategy: snapcompact\n  thresholdPercent: 90\n';
+    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withCompaction);
+    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith' }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect((written.match(/^compaction:/gm) ?? []).length).toBe(1);
+    expect(written).not.toContain('snapcompact');
+    expect(written).toMatch(/\n\s+thresholdPercent:\s*70/);
+    // A hosted model keeps the inherited block exactly as the user set it.
+    writeOmpSessionConfigDir('sess2', { model: 'anthropic/claude-opus-4-8' }, home);
+    const hosted = readFileSync(agentPath('sess2', 'config.yml'), 'utf8');
+    expect(hosted).toContain('strategy: snapcompact');
+  });
+
+  it('strips flat dotted compaction.* keys too (both spellings are valid omp settings)', () => {
+    const withFlat = AGENT_CFG + 'compaction.strategy: snapcompact\ncompaction.thresholdPercent: 95\n';
+    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withFlat);
+    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith' }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).not.toContain('snapcompact');
+    expect(written).not.toContain('compaction.thresholdPercent');
+    expect(written).toMatch(/\n\s+strategy:\s*shake/);
+  });
+
   it('carries the faithful model registry + auth so model resolution survives relocation', () => {
     writeOmpSessionConfigDir('sess1', {}, home);
     expect(readFileSync(agentPath('sess1', 'auth.json'), 'utf8')).toBe('{"token":"AUTHSECRET"}');
@@ -733,6 +787,7 @@ describe('applyOmpToolsAllowlist (weak-model-tool-tier — mcp.json URL trim)', 
 describe('isWeakOmpModel / ompDefaultModel (weak-model-tool-tier — tier gate)', () => {
   it('classifies local-provider models as weak, hosted as not-weak, unknown as not-weak (safe)', () => {
     expect(isWeakOmpModel('ollama/maxwell1500/ornith-35b:IQ3_M:xhigh')).toBe(true);
+    expect(isWeakOmpModel('ollama-cc/maxwell1500/ornith-35b:IQ3_M')).toBe(true); // the incident model — was frontier before P-001
     expect(isWeakOmpModel('OLLAMA/ornith')).toBe(true); // case-insensitive
     expect(isWeakOmpModel('lmstudio/foo')).toBe(true);
     expect(isWeakOmpModel('anthropic/claude-opus-4-8')).toBe(false);
