@@ -219,8 +219,16 @@ export function appendPosition<R extends PromptNodeFields>(
   parentId: string | null,
 ): string {
   const siblings = parentId ? (model.byId.get(parentId)?.node.children ?? []) : model.roots;
-  const last = siblings.length ? siblings[siblings.length - 1].row.position : null;
-  return generateKeyBetween(last ?? null, null);
+  // Legacy NULL-position rows sort AFTER positioned ones, so the LAST sibling's
+  // position can be null even when positioned siblings exist — appending from it
+  // would mint 'a0' again and collide with the first positioned sibling
+  // (live-caught in WI-4806). Append past the highest DEFINED key instead.
+  let last: string | null = null;
+  for (const s of siblings) {
+    const p = s.row.position;
+    if (p !== null && (last === null || p > last)) last = p;
+  }
+  return generateKeyBetween(last, null);
 }
 
 /**

@@ -120,3 +120,41 @@ export async function recentTurnJournal(filter: {
   `;
   return rows;
 }
+
+/** P-015 (turn-end-tracking): distinct file paths WRITTEN this turn — the
+ *  ✎-glyph ledger rows carry the absolute path in detail->>'file'. Edits are
+ *  included (an edited deliverable is still a deliverable); reads (👁) are not
+ *  file-write rows and never carry the write glyph. */
+export async function fileWritesSince(
+  sessionId: string,
+  since: Date | string,
+  limit = 200,
+): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const sinceIso = typeof since === 'string' ? since : since.toISOString();
+  const rows = await sql<Array<{ file: string }>>`
+    SELECT DISTINCT detail->>'file' AS file
+    FROM harness_shared.agent_activity
+    WHERE session_id = ${sessionId}
+      AND created_at > ${sinceIso}::timestamptz
+      AND detail ? 'file'
+      AND summary LIKE '✎%'
+    LIMIT ${limit}
+  `;
+  return rows.map((r) => r.file).filter(Boolean);
+}
+
+/** P-015: rel_paths registered via artifacts:save in the window — the
+ *  registrations the turn's deliverable writes are matched against. */
+export async function artifactRelPathsSince(since: Date | string, limit = 200): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const sinceIso = typeof since === 'string' ? since : since.toISOString();
+  const rows = await sql<Array<{ rel_path: string }>>`
+    SELECT rel_path
+    FROM harness_shared.harness_text_artifacts
+    WHERE updated_at > ${sinceIso}::timestamptz
+    ORDER BY updated_at DESC
+    LIMIT ${limit}
+  `;
+  return rows.map((r) => r.rel_path).filter(Boolean);
+}

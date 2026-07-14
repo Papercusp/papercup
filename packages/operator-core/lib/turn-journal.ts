@@ -72,13 +72,20 @@ export interface LedgerEntry {
   summary?: string | null;
 }
 
-export interface JournalTripwire {
+export interface ClaimLedgerMismatchTripwire {
   kind: 'claim-ledger-mismatch';
   /** The success claim matched in the note. */
   claim: string;
   /** The ledger rows contradicting it (capped). */
   evidence: Array<{ toolName: string | null; status: string | null; summary: string | null }>;
 }
+
+/** The journal tripwire union. P-015 adds 'unregistered-artifact'
+ *  (turn-end-tracking.ts) — a jsonb column, so widening costs no migration;
+ *  readers discriminate on `kind`. */
+export type JournalTripwire =
+  | ClaimLedgerMismatchTripwire
+  | import('./turn-end-tracking').UnregisteredArtifactTripwire;
 
 /** "tests pass" / "build green" / "typecheck clean" shaped claims. */
 const SUCCESS_CLAIM_RE =
@@ -127,7 +134,7 @@ function isFailureEntry(e: LedgerEntry): boolean {
 export function detectClaimLedgerMismatch(
   note: string,
   ledger: LedgerEntry[],
-): JournalTripwire | null {
+): ClaimLedgerMismatchTripwire | null {
   const claim = note.match(SUCCESS_CLAIM_RE) ?? note.match(SUCCESS_CLAIM_REV_RE);
   if (!claim) return null;
   if (HONEST_FAILURE_RE.test(note)) return null;

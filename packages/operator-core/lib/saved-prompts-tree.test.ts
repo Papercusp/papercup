@@ -198,6 +198,18 @@ describe('move operations', () => {
     expect(rootPos > 'a2').toBe(true);
   });
 
+  it('appendPosition skips trailing legacy NULL-position siblings (WI-4806)', () => {
+    // NULL-position rows sort AFTER positioned ones — the append key must
+    // still land past the highest DEFINED key, not restart at 'a0'.
+    const rows = [
+      row({ id: 'a', position: 'a0' }),
+      row({ id: 'b', position: 'a1' }),
+      row({ id: 'legacy', position: null, title: 'Zzz' }),
+    ];
+    const pos = appendPosition(buildPromptTree(rows), null);
+    expect(pos > 'a1').toBe(true);
+  });
+
   it('insertAfter a leaf places the new node as the next sibling', () => {
     const rows = positioned();
     const p = insertAfter(buildPromptTree(rows), 'a');
