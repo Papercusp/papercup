@@ -117,7 +117,7 @@ export interface LeaderBriefMember {
  *  state: `stalled`'s existing progress-window check is the "blocked for a
  *  while" signal this reuses instead of inventing a separate wake counter. */
 export function computeBenchSuggestion(
-  a: Pick<DecoratedAgent, 'stalled' | 'verdict' | 'parkedOn' | 'doing'>,
+  a: Pick<DecoratedAgent, 'stalled' | 'parkedOn' | 'doing'> & { verdict?: MemberVerdict | null },
 ): LeaderBriefMember['benchSuggestion'] {
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
   if (a.verdict !== 'speaking' && a.verdict !== 'first-turn-done') return undefined;
@@ -134,7 +134,7 @@ export function computeBenchSuggestion(
 export type DecoratedAgent = AgentAssignment & {
   sessionState?: SessionState | null;
   confirmLiveness?: boolean | null;
-  verdict?: MemberVerdict | null;
+  verdict?: MemberVerdict;
   wakeMode?: WakeMode | string | null;
   lastToolCallAt?: string | null;
   parkedOn?: string[];
