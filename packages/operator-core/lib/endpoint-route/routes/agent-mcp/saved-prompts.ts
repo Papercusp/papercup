@@ -157,8 +157,10 @@ const nodeCreate = defineTool({
       description?: string | null;
       argHint?: string | null;
     };
+    // Blank titles are legal (WI-4806): the Workflowy-style outline creates an
+    // empty bullet you type into — the store derives the unique 'prompt-N'
+    // slug and keeps title NULL until the first rename.
     const title = (body.title ?? '').trim();
-    if (!title) return Response.json({ error: 'missing_title' }, { status: 400 });
     const ws = activeWorkspaceId();
     const scope = scopeFromHarness(body.harness?.trim() || null);
     const prompt = await createPromptNode(getOrgPg().sql, {

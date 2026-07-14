@@ -26,6 +26,10 @@ import {
   type ProvenanceLintMatch,
 } from './carry-surface-provenance-lint';
 import {
+  ownerQuestionSlotField,
+  type TypedSlotLintMatch,
+} from './carry-surface-typed-slots';
+import {
   parseTurnRefs,
   resolveCurrentTurnStamp,
   verifyTurnRefs,
@@ -39,6 +43,9 @@ export const STAMP_IO_BUDGET_MS = 3_000;
 export interface CarryProvenanceStamp {
   /** The pure lint result (unchanged shape) — absent when clean. */
   lint?: { flagged: true; note: string; matches: ProvenanceLintMatch[] };
+  /** P-015 typed-slot lint: owner-blocking-question prose with no [ask:…]
+   *  record ref — absent when clean. */
+  slotLint?: { flagged: true; note: string; matches: TypedSlotLintMatch[] };
   /** Verdicts for every [turn:…] ref the write carried — absent when none. */
   refs?: TurnRefVerdict[];
   /** The system's classification of the turn this write happened during. */
@@ -55,12 +62,14 @@ export async function stampCarrySurfaceProvenance(
   ownerId: string | null | undefined,
 ): Promise<CarryProvenanceStamp | undefined> {
   const lint = provenanceLintField(text);
+  const slotLint = ownerQuestionSlotField(text);
   const refs = parseTurnRefs(text);
 
-  // No directive shapes, no refs → nothing to verify or stamp. The
-  // writtenDuring stamp only matters alongside directive-ish content; keeping
-  // the clean case field-free is deliberate (response-size discipline).
-  if (!lint && refs.length === 0) return undefined;
+  // No directive shapes, no untyped questions, no refs → nothing to verify or
+  // stamp. The writtenDuring stamp only matters alongside directive-ish
+  // content; keeping the clean case field-free is deliberate (response-size
+  // discipline).
+  if (!lint && !slotLint && refs.length === 0) return undefined;
 
   let verified: TurnRefVerdict[] = [];
   let writtenDuring: CurrentTurnStamp | null = null;
@@ -78,6 +87,7 @@ export async function stampCarrySurfaceProvenance(
 
   const stamp: CarryProvenanceStamp = {};
   if (lint) stamp.lint = lint;
+  if (slotLint) stamp.slotLint = slotLint;
   if (verified.length) stamp.refs = verified;
   if (writtenDuring) stamp.writtenDuring = writtenDuring;
   return Object.keys(stamp).length ? stamp : undefined;
