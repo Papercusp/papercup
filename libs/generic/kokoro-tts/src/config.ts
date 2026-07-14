@@ -45,8 +45,11 @@ export interface KokoroTransformersHost {
   AutoTokenizer: {
     from_pretrained(modelId: string, opts: Record<string, unknown>): Promise<KokoroTokenizerHandle>;
   };
-  /** A tensor constructor, e.g. `new Tensor('float32', data, dims)`. */
-  Tensor: new (dtype: string, data: unknown, dims: number[]) => unknown;
+  /** A tensor constructor, e.g. `new Tensor('float32', data, dims)`. Narrowed to the one
+   *  dtype literal this package actually constructs — a wider `string` param made the real
+   *  transformers.js `Tensor` (whose dtype param is a specific literal union) structurally
+   *  un-assignable here (TS2322: source must accept every value the target's param promises). */
+  Tensor: new (dtype: 'float32', data: unknown, dims: number[]) => unknown;
 }
 
 const HOST_KEY = Symbol.for('@papercusp/kokoro-tts:host');
