@@ -1,0 +1,7 @@
+{
+  "serveSha256": "a3bda58a7100e673164f117cbce87295759f32bcf9a3dc685e792db2c03fcc7e",
+  "mcpProxySha256": "4f66ae943f413cfedd04db656ab716471d5eb5a9e808c9df9b59588bacc978e9",
+  "builtAtUtc": "2026-07-14T07:24:47Z",
+  "epochSec": 1784013887,
+  "gitHead": "0b3cfd1728"
+}

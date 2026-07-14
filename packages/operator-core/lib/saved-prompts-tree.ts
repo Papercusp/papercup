@@ -223,6 +223,38 @@ export function appendPosition<R extends PromptNodeFields>(
   return generateKeyBetween(last ?? null, null);
 }
 
+/**
+ * Placement for a node created "on Enter" from `id` — Workflowy semantics: an
+ * EXPANDED node with children gets the new node as its FIRST CHILD (visually
+ * the next line); anything else gets it as the NEXT SIBLING. Returns the
+ * create placement plus any normalization assignments (legacy NULL positions —
+ * apply them via move alongside the create). Null for an unknown id.
+ */
+export function insertAfter<R extends PromptNodeFields>(
+  model: PromptTreeModel<R>,
+  id: string,
+): { parentId: string | null; position: string; assignments: MoveAssignment[] } | null {
+  const entry = model.byId.get(id);
+  if (!entry) return null;
+  const { node } = entry;
+  if (node.children.length > 0 && !node.row.collapsed) {
+    const { positions, assignments } = effectiveSequence(node.children, node.row.id);
+    return {
+      parentId: node.row.id,
+      position: generateKeyBetween(null, positions[0] ?? null),
+      assignments,
+    };
+  }
+  const ctx = siblingListOf(model, id);
+  if (!ctx) return null;
+  const i = ctx.siblings.findIndex((s) => s.row.id === id);
+  if (i === -1) return null;
+  const parentId = ctx.parent?.row.id ?? null;
+  const { positions, assignments } = effectiveSequence(ctx.siblings, parentId);
+  const after = i + 1 < positions.length ? positions[i + 1] : null;
+  return { parentId, position: generateKeyBetween(positions[i], after), assignments };
+}
+
 /** Swap with the previous sibling. Null when already first (or unknown id). */
 export function moveUp<R extends PromptNodeFields>(
   model: PromptTreeModel<R>,

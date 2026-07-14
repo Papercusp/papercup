@@ -24,6 +24,7 @@
  */
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -54,6 +55,7 @@ import {
   extractVariables,
   fillVariables,
   indent as indentOp,
+  insertAfter as insertAfterOp,
   isFolder,
   moveDown as moveDownOp,
   moveUp as moveUpOp,
@@ -271,6 +273,115 @@ function PreviewPane({
   );
 }
 
+/**
+ * Inline-editable node title — the Workflowy behavior: the outline text IS the
+ * editor. Typing saves on debounce; while the input is NOT focused it mirrors
+ * the server row (so a rename from the preview pane shows up), and while
+ * focused the local draft wins (so the sync refetch can't clobber typing).
+ *
+ * Keys (Workflowy grammar): Enter → new node below · Tab/Shift+Tab
+ * indent/outdent · Alt+↑/↓ move · ↑/↓ hop to the prev/next bullet ·
+ * Backspace on an EMPTY leaf deletes it · Escape returns focus to the tree.
+ */
+function NodeTitleInput({
+  row,
+  hasChildren,
+  autoFocus,
+  onFocused,
+  onFocusRow,
+  onCreateAfter,
+  onMove,
+  onNav,
+  onDeleteEmpty,
+}: {
+  row: SavedPrompt;
+  hasChildren: boolean;
+  autoFocus: boolean;
+  onFocused: () => void;
+  onFocusRow: () => void;
+  onCreateAfter: () => void;
+  onMove: (dir: 'up' | 'down' | 'indent' | 'outdent') => void;
+  onNav: (delta: 1 | -1) => void;
+  onDeleteEmpty: () => void;
+}) {
+  const [text, setText] = useState(row.title ?? '');
+  const focusedRef = useRef(false);
+  const ref = useRef<HTMLInputElement>(null);
+
+  // Mirror external renames while not editing (see the component docstring).
+  useEffect(() => {
+    if (!focusedRef.current) setText(row.title ?? '');
+  }, [row.title]);
+
+  const { flush } = useDebouncedSave(text, async (v) => {
+    const next = v.trim();
+    if (!next || next === displayTitle(row)) return;
+    await updatePromptNode(row.id, { title: next });
+  });
+
+  useEffect(() => {
+    if (autoFocus && ref.current) {
+      ref.current.focus();
+      const end = ref.current.value.length;
+      ref.current.setSelectionRange(end, end);
+      onFocused();
+    }
+  }, [autoFocus, onFocused]);
+
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        void flush().then(onCreateAfter);
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        onMove(e.shiftKey ? 'outdent' : 'indent');
+      } else if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        onMove(e.key === 'ArrowUp' ? 'up' : 'down');
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        onNav(e.key === 'ArrowDown' ? 1 : -1);
+      } else if (
+        e.key === 'Backspace' &&
+        text.length === 0 &&
+        !hasChildren &&
+        isFolder(row)
+      ) {
+        // Workflowy: backspace on an empty bullet removes it. Only a truly
+        // empty LEAF (no title text, no body, no children) qualifies — nothing
+        // with content can be deleted from the keyboard by accident.
+        e.preventDefault();
+        onDeleteEmpty();
+      } else if (e.key === 'Escape') {
+        ref.current?.blur();
+      }
+    },
+    [flush, onCreateAfter, onMove, onNav, onDeleteEmpty, text, hasChildren, row],
+  );
+
+  return (
+    <input
+      ref={ref}
+      className="pc-qp__nodetitle"
+      value={text}
+      placeholder={isFolder(row) && !hasChildren ? 'New prompt…' : row.name}
+      aria-label={`Title of ${displayTitle(row)}`}
+      onChange={(e) => setText(e.target.value)}
+      onFocus={() => {
+        focusedRef.current = true;
+        onFocusRow();
+      }}
+      onBlur={() => {
+        focusedRef.current = false;
+        void flush();
+        setText((t) => (t.trim() ? t : (row.title ?? '')));
+      }}
+      onKeyDown={onKeyDown}
+    />
+  );
+}
+
 export default function PromptsTab() {
   const { data, invalidate } = useSyncQuery<SavedPrompt>({
     queryName: 'savedPrompts.byScope',
@@ -330,22 +441,84 @@ export default function PromptsTab() {
     [model, applyMove],
   );
 
+  // The node whose inline title input should grab focus once it exists in the
+  // outline (a just-created node's row arrives via the sync refetch, so the
+  // focus is deferred until its input mounts — Workflowy's type-immediately).
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null);
+  const clearPendingFocus = useCallback(() => setPendingFocus(null), []);
+
   const addNode = useCallback(
     async (parentId: string | null) => {
       try {
+        // Empty title (Workflowy: a new bullet is blank and you just type);
+        // the server derives a placeholder slug until the first rename.
         const created = await createPromptNode({
-          title: 'New prompt',
+          title: '',
           body: '',
           parentId,
           position: appendPosition(model, parentId),
         });
         invalidate();
         void setSel(created.id);
+        setPendingFocus(created.id);
       } catch (err) {
         toast.error(`Create failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
     [model, invalidate, setSel],
+  );
+
+  /** Enter on a node: create the next bullet (sibling — or first child when
+   *  the node is expanded with children) and move typing focus into it. */
+  const addNodeAfter = useCallback(
+    async (id: string) => {
+      const placement = insertAfterOp(model, id);
+      if (!placement) return;
+      try {
+        if (placement.assignments.length > 0) await movePromptNodes(placement.assignments);
+        const created = await createPromptNode({
+          title: '',
+          body: '',
+          parentId: placement.parentId,
+          position: placement.position,
+        });
+        invalidate();
+        void setSel(created.id);
+        setPendingFocus(created.id);
+      } catch (err) {
+        toast.error(`Create failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [model, invalidate, setSel],
+  );
+
+  /** Backspace on an empty leaf: remove it and put the caret on the previous bullet. */
+  const deleteEmptyNode = useCallback(
+    async (id: string) => {
+      const idx = visible.findIndex((v) => v.node.row.id === id);
+      const prev = idx > 0 ? visible[idx - 1].node.row.id : null;
+      try {
+        await deletePromptNode(id);
+        invalidate();
+        void setSel(prev ?? '');
+        if (prev) setPendingFocus(prev);
+      } catch (err) {
+        toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [visible, invalidate, setSel],
+  );
+
+  /** ↑/↓ from an inline input: hop the caret to the adjacent visible bullet. */
+  const navFrom = useCallback(
+    (id: string, delta: 1 | -1) => {
+      const idx = visible.findIndex((v) => v.node.row.id === id);
+      if (idx === -1) return;
+      const target = visible[Math.max(0, Math.min(visible.length - 1, idx + delta))];
+      void setSel(target.node.row.id);
+      setPendingFocus(target.node.row.id);
+    },
+    [visible, setSel],
   );
 
   const removeNode = useCallback(async () => {
@@ -377,6 +550,9 @@ export default function PromptsTab() {
 
   const onOutlineKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
+      // The inline title inputs own their key handling (Workflowy grammar);
+      // this container-level fallback is only for focus on the tree itself.
+      if ((e.target as HTMLElement).tagName === 'INPUT') return;
       if (visible.length === 0) return;
       const idx = visible.findIndex((v) => v.node.row.id === sel);
       const clamp = (i: number) => Math.max(0, Math.min(visible.length - 1, i));
@@ -415,11 +591,15 @@ export default function PromptsTab() {
               aria-label="Filter prompts"
             />
           </div>
-          <Tooltip label="New top-level prompt">
-            <button type="button" className="pc-qp__iconbtn" onClick={() => void addNode(null)}>
-              <Plus size={14} />
-            </button>
-          </Tooltip>
+          {/* Prominent labeled create button (owner ask 2026-07-14: the old
+              bare-icon button read as an unclickable dot). */}
+          <button
+            type="button"
+            className="pc-qp__newbtn"
+            onClick={() => void addNode(null)}
+          >
+            <Plus size={14} aria-hidden /> New prompt
+          </button>
         </div>
 
         {pinned.length > 0 && (
@@ -480,7 +660,20 @@ export default function PromptsTab() {
                   <ChevronRight size={11} />
                 </button>
                 <span className="pc-qp__bullet" aria-hidden />
-                <span className="pc-qp__nodetitle">{displayTitle(row)}</span>
+                <NodeTitleInput
+                  row={row}
+                  hasChildren={hasKids}
+                  autoFocus={pendingFocus === row.id}
+                  onFocused={clearPendingFocus}
+                  onFocusRow={() => void setSel(row.id)}
+                  onCreateAfter={() => void addNodeAfter(row.id)}
+                  onMove={(dir) => {
+                    move(dir, row.id);
+                    setPendingFocus(row.id);
+                  }}
+                  onNav={(delta) => navFrom(row.id, delta)}
+                  onDeleteEmpty={() => void deleteEmptyNode(row.id)}
+                />
                 {row.pinned && <Pin size={10} className="pc-qp__nodepin" aria-hidden />}
                 {hasKids && row.collapsed && (
                   <span className="pc-qp__count">{node.children.length}</span>
@@ -491,9 +684,11 @@ export default function PromptsTab() {
         </div>
 
         <div className="pc-qp__hints">
+          <span><kbd>↵</kbd> new</span>
           <span><kbd>↑↓</kbd> select</span>
           <span><kbd>⌥↑↓</kbd> move</span>
           <span><kbd>Tab</kbd>/<kbd>⇧Tab</kbd> indent</span>
+          <span><kbd>⌫</kbd> delete empty</span>
         </div>
       </div>
 

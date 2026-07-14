@@ -1,0 +1,1 @@
+import{l as e,p as t}from"./console-spawn-SFWcWWWz.js";e();export{t as spawnConsole};
