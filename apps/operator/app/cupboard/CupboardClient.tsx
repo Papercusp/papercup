@@ -262,7 +262,11 @@ export default function CupboardClient() {
   const facetCount = groupedListings.length;
   // Per-kind counts over the full unfiltered fetch. A kind tab with ZERO
   // listings is HIDDEN (cupboard-public-release-2026-07-12 P-015: "all tabs
-  // non-empty or hidden" — e.g. harness/pack when nothing is published yet).
+  // non-empty or hidden" — e.g. pack when nothing is published yet).
+  // EXCEPTION: the Pots (harness) tab ALWAYS shows [owner:Avi 2026-07-14 "revive
+  // the pots tab, even if we don't have any shared pots yet"] — pot-sharing is a
+  // headline feature, so a fresh install must surface it (with an empty state)
+  // rather than hide it until someone happens to publish the first public pot.
   // 'all' + the 'tools' discovery view always show; the currently-selected kind
   // stays visible even if empty so a URL-pinned `?kind=` filter isn't stranded.
   const kindCounts = useMemo(() => {
@@ -277,6 +281,7 @@ export default function CupboardClient() {
     (k) =>
       k === 'all' ||
       k === 'tools' ||
+      k === 'harness' ||
       k === kindFilter ||
       (kindCounts.get(k as ListingKind) ?? 0) > 0,
   );
