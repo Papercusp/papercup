@@ -231,6 +231,61 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(ratifyRev.content_snapshot).toMatch(/status:\s*active/); // the destructive-class flip is captured
   });
 
+  it('ratify PRESERVES every criterion replication drill in template_data (EI-10443 — the status-flip must not strip them)', async () => {
+    // The reported bug: rubrics:ratify's status-flip write DESTROYED criterion.replication
+    // drills from template_data — whole-document revalidation silently dropped the then-
+    // unknown key. WI-4287 made `replication` a first-class schema field, and ratifyRubric
+    // now merges the RAW stored template_data through verbatim (only stamping ratifiedBy)
+    // while the body write leaves template_data untouched on conflict — so the drills
+    // survive. This pins that exact regression: a ratify must not lose a single drill.
+    const criteriaWithDrills = [
+      {
+        key: 'placement-health',
+        title: 'Placement health',
+        model: 'The Queen places ready frontier items onto live bees within a cadence.',
+        method: 'Count ready work_items with no claim older than the cadence.',
+        driftMarkers: 'A growing backlog of ready-but-unplaced items.',
+        replication:
+          'DRILL A: seed 3 ready work_items → run placement → assert each lands on a live bee within the cadence → cleanup the seeded rows.',
+      },
+      {
+        key: 'ideation-diversity',
+        title: 'Ideation diversity',
+        model: 'Scout lens weights drift away from uniform as grades steer ideation.',
+        method: 'Inspect lens_weights; off-uniform 0.25 means grades are steering.',
+        driftMarkers: 'Lens weights stuck uniform; repeated near-identical ideas.',
+        replication:
+          'DRILL B: propose N ideas → grade one lens up → assert lens_weights move off 0.25 → reset the weights.',
+      },
+    ];
+    const expectedDrills = criteriaWithDrills.map((c) => c.replication);
+    await rubrics.proposeRubric({
+      rubricId: 'drills-rubric',
+      characteristic: 'hive-coordination',
+      title: 'Drills',
+      criteria: criteriaWithDrills,
+      by: 'author-a',
+    });
+    // Sanity: propose persisted every drill into the RAW template_data.
+    const readDrills = async () => {
+      const [row] = await db.adminSql<{ template_data: { criteria: { key: string; replication?: string }[] } }[]>`
+        SELECT template_data FROM harness_shared.harness_plans
+         WHERE plan_slug = 'drills-rubric' AND template = 'rubric'`;
+      return row.template_data.criteria.map((c) => c.replication);
+    };
+    expect(await readDrills()).toEqual(expectedDrills);
+
+    // Ratify with a DIFFERENT identity (D-012 author ≠ ratifier).
+    const active = await rubrics.ratifyRubric('drills-rubric', 'queen-1');
+    expect(active?.status).toBe('active');
+
+    // The exact EI-10443 regression: every drill SURVIVES the status-flip write in the
+    // RAW stored template_data (not silently stripped by the write pipeline)…
+    expect(await readDrills()).toEqual(expectedDrills);
+    // …and the projected rubric carries them too.
+    expect(active?.criteria.map((c) => c.replication)).toEqual(expectedDrills);
+  });
+
   it('D-012 enforced on persisted provenance: the proposer cannot ratify their own proposal', async () => {
     await rubrics.proposeRubric({ rubricId: 'selfy', characteristic: 'c', title: 'S', criteria: sampleCriteria, by: 'author-a' });
     await expect(rubrics.ratifyRubric('selfy', 'author-a')).rejects.toThrow(/author ≠ ratifier|cannot ratify their own/i);

@@ -14,12 +14,12 @@
  *   GET    /device/workspaces                device JWT
  *   POST   /device/heartbeat                 device JWT
  */
-import { networkInterfaces } from 'node:os';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal, isLoopbackHost } from './_shared';
 import { signDeviceToken } from '../../../device-jwt';
 import { getMobileVoicePort } from '../../../device-voice-ws';
+import { advertisedBaseUrls, lanAddress } from '../../../device-base-urls';
 import { mintPairToken, consumePairToken, newDeviceId } from '../../../device-pair-store';
 import { readRegistry, workspaceById } from '../../../workspace-registry';
 import {
@@ -31,27 +31,10 @@ import {
   touchLastSeen,
 } from '../../../device-store';
 
-/**
- * First non-internal RFC1918 IPv4 on this host — so the pairing QR
- * encodes a LAN address the phone can route to (vs `localhost`, which
- * on the phone resolves to the phone itself).
- */
-function lanAddress(): string | null {
-  const ifaces = networkInterfaces();
-  for (const list of Object.values(ifaces)) {
-    if (!list) continue;
-    for (const i of list) {
-      if (i.family !== 'IPv4' || i.internal) continue;
-      if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(i.address)) return i.address;
-    }
-  }
-  for (const list of Object.values(ifaces)) {
-    if (!list) continue;
-    for (const i of list) {
-      if (i.family === 'IPv4' && !i.internal) return i.address;
-    }
-  }
-  return null;
+/** `host:port` → the port, else null (tunnel hosts carry no explicit port). */
+function portOf(host: string | undefined): string | null {
+  const m = host?.match(/:(\d+)$/);
+  return m ? m[1] : null;
 }
 
 /**
@@ -190,6 +173,10 @@ const pairRoute = defineTool({
       desktopHost: pending.desktopHost,
       workspaceId: pending.workspaceId,
       defguardEnrollmentUrl,
+      // Additive (on-desktop-direct-lan-voice-2026-07-14 P-005): every route
+      // to this desktop, preference order mesh → lan → tunnel. Old clients
+      // keep reading `desktopHost`; new clients probe this list (P-006).
+      baseUrls: advertisedBaseUrls({ port: portOf(pending.desktopHost) }),
     });
   },
 });
@@ -275,6 +262,10 @@ const runtimeConfigRoute = defineTool({
         port: getMobileVoicePort(),
         path: '/api/device/voice',
       },
+      // Additive (P-005): the fresh multi-path advertise list — a paired
+      // phone re-reads this on app start / network change and re-probes
+      // mesh → lan → tunnel (P-006).
+      baseUrls: advertisedBaseUrls(),
     });
   },
 });

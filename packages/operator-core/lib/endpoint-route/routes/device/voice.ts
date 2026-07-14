@@ -168,6 +168,7 @@ const voiceSessionInit = defineTool({
         );
       }
       const { resolveVoiceInit } = await import('../../../device-voice-init-prefs');
+      const { advertisedBaseUrls } = await import('../../../device-base-urls');
       const resolved = resolveVoiceInit(
         { mode: q('mode'), idleMin: q('idleMin'), sessionMaxMin: q('sessionMaxMin') },
         prefs,
@@ -182,6 +183,10 @@ const voiceSessionInit = defineTool({
         audienceMode: prefs.audienceMode ?? 'engineer',
         deviceId: principal.slug,
         workspaceId: principal.workspaceId,
+        // Fresh multi-path advertise (P-005/P-006): the phone probes
+        // mesh → lan → tunnel and streams the heavy turn traffic over the
+        // first reachable path.
+        baseUrls: advertisedBaseUrls(),
       });
     }
     // ── ElevenLabs pipeline (legacy shape, D-010) ────────────────────────
