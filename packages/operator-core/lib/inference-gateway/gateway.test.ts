@@ -3,7 +3,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, classifyColdRest429, classifyProxyHandlerError, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, type ActiveAccount, type AccountPool } from './gateway';
+import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, classifyColdRest429, classifyProxyHandlerError, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, normalizeGatewayRequestBody, resolveGatewayModel, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
@@ -168,6 +168,24 @@ test('estimateTokens — uses max_tokens for output, ~chars/4 for input', () => 
   const e = estimateTokens({ system: 'hi', messages: [{ role: 'user', content: 'hello world' }], max_tokens: 256 });
   assert.equal(e.outTok, 256);
   assert.ok(e.inTok > 0);
+});
+
+test('resolveGatewayModel — strips the CLI 1M marker and resolves bare aliases to upstream ids', () => {
+  assert.deepEqual(resolveGatewayModel('opus[1m]'), { model: 'claude-opus-4-8', context1m: true });
+  assert.deepEqual(resolveGatewayModel('sonnet[1m]:high'), { model: 'claude-sonnet-5', context1m: true });
+  assert.deepEqual(resolveGatewayModel('claude-opus-4-8[1m]'), { model: 'claude-opus-4-8', context1m: true });
+  assert.deepEqual(resolveGatewayModel('claude-opus-4-8'), { model: 'claude-opus-4-8', context1m: false });
+});
+
+test('normalizeGatewayRequestBody — rewrites only marked requests and preserves ordinary bytes', () => {
+  const marked = normalizeGatewayRequestBody(Buffer.from(JSON.stringify({ model: 'opus[1m]', messages: [] })));
+  assert.equal(marked.model, 'claude-opus-4-8');
+  assert.equal(marked.context1m, true);
+  assert.equal(JSON.parse(marked.body.toString()).model, 'claude-opus-4-8');
+  const ordinary = Buffer.from(JSON.stringify({ model: 'claude-opus-4-8', messages: [] }));
+  const unchanged = normalizeGatewayRequestBody(ordinary);
+  assert.equal(unchanged.context1m, false);
+  assert.strictEqual(unchanged.body, ordinary);
 });
 
 test('parseRateReset — prefers unified unix-seconds reset; drops a retry-after that disagrees', () => {
@@ -389,8 +407,22 @@ test('transparent proxy — injects OAuth bearer + merges anthropic-beta, forwar
   assert.equal(upstream.last.headers['authorization'], 'Bearer test-token');
   assert.ok(String(upstream.last.headers['anthropic-beta']).includes('oauth-2025-04-20'));
   assert.ok(String(upstream.last.headers['anthropic-beta']).includes('fine-grained-2025'), 'preserves the client beta flags');
+  assert.ok(!String(upstream.last.headers['anthropic-beta']).includes('context-1m-2025-08-07'));
   assert.equal(upstream.last.headers['accept-encoding'], 'identity');
   assert.equal(JSON.parse(upstream.last.body).model, 'claude-opus-4-99');
+});
+
+test('transparent proxy — resolves a CLI [1m] model and forwards the context-1m beta', async () => {
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const res = await post({ model: 'opus[1m]', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(upstream.last.body).model, 'claude-opus-4-8');
+  const betas = String(upstream.last.headers['anthropic-beta']);
+  assert.ok(betas.includes('oauth-2025-04-20'));
+  assert.ok(betas.includes('context-1m-2025-08-07'));
 });
 
 test('transparent proxy — streams an SSE body through untouched, drops content-length', async () => {

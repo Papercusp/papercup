@@ -1,0 +1,107 @@
+---
+title: "The AppImage AppDir is never purged — it ships a union of every past cut's sidecar"
+description: "A perfectly clean sidecar can still leak in the shipped .AppImage while the .deb of the SAME build is clean. `tauri build --bundles appimage` copies resources INTO a persistent AppDir and never deletes files absent from the new resource set — so the AppImage packs the union of every historical cut (pre-prune docs, dropped components, old build-identity-baked assets). The deb is immune because dpkg archives fresh. Fix: rm -rf the AppDir before the tauri build, plus a fail-closed --scan-dir gate on the assembled AppDir."
+discovered: 2026-07-14
+tags: [appimage, appdir, tauri, release, desktop, sidecar, privacy, build-pipeline, stale-artifact]
+status: active
+documents:
+  - papercusp-desktop/bin/build-appimage.sh
+  - papercusp-desktop/bin/audit-release-bundle.py
+  - papercusp-desktop/bin/build-desktop-sidecar.sh
+  - papercusp-desktop/bin/build-linux-local.sh
+---
+
+## Symptom
+
+The 0.0.9 release cut passed every in-build privacy audit — `build-desktop-sidecar.sh`
+pruned the internal-build-infra docs out of `src-tauri/sidecar` and its `--scan-dir`
+gate reported the sidecar **CLEAN** — and the resulting **.deb was genuinely clean**.
+Yet an independent scan of the shipped **`.AppImage` FAILED**: it carried ~145 internal
+docs (including a prior cut's plaintext mac-VM credentials), a long-dropped `code-server`
+tree (~447 MB), a `meridian-host` tree, and SPA assets with the build box's home path
+and hostname baked in. Same build, same commit, same `sidecar/**/*` resources glob — one
+bundle clean, the other leaking.
+
+## Why the two bundles differ despite one resource set
+
+The tell: the AppImage's bundled sidecar had **64,465 files**; the current
+`src-tauri/sidecar` on disk (what the deb bundled) had **13,347** — and the ONLY
+top-level trees present in the AppImage but absent from the current sidecar were exactly
+the ones the build **stopped producing in earlier cuts** (`code-server`, dropped by owner
+directive; `meridian-host`). The AppImage was not built from a fatter sidecar — it was
+built **on top of a fatter one that never existed as a whole at any single moment**.
+
+Root cause: **the AppImage AppDir is a persistent directory that is never purged between
+cuts.** `build-appimage.sh` runs `tauri build --bundles appimage`, which populates
+`~/.cargo-target/release/bundle/appimage/<productName>.AppDir/…/sidecar/` by **copying
+the current resources into it** — but a copy does not delete files that are absent from
+the new resource set. So every cut's sidecar is *unioned* onto whatever the last cut left
+behind:
+
+- pre-prune internal docs from a cut before the doc-prune existed → still there;
+- `code-server` / `meridian-host` from a cut before they were dropped → still there;
+- old SPA assets with build-box identity baked in from an earlier compile → still there.
+
+**The deb is immune** because `dpkg-deb` builds a **fresh archive** from the current
+staging each time — there is no persistent staging directory to accumulate into. That
+asymmetry is the whole bug: the pipeline had a durable prune+scan on the *source* sidecar,
+and one bundle format (deb) reflected it while the other (AppImage) silently did not.
+
+## Why the in-build audit missed it (the important part)
+
+`build-desktop-sidecar.sh`'s `--scan-dir` gate scans `src-tauri/sidecar` — the **source**
+tree, which was correctly pruned and genuinely clean. It never looked at the **assembled
+AppDir that actually ships**. A gate that scans the source instead of the artifact reports
+green while the artifact leaks. This is the same lesson `audit-release-bundle.py`'s header
+already states for source.tar.zst ("scan the artifact, not the repo") — it just had one
+more assembled object (the AppDir) that no gate was pointed at yet.
+
+Proof it was accumulation and not a live source leak:
+`python3 bin/audit-release-bundle.py --scan-dir src-tauri/sidecar` on the current tree =
+**CLEAN** (0 hits for any known build-identity or credential literal). A *fresh* AppDir
+built from that same tree is clean. The leak lived only in the stale residue.
+
+## Fix
+
+Two parts, both in `build-appimage.sh`:
+
+1. **Purge the stale AppDir before the tauri build** — the root-cause fix:
+
+   ```bash
+   rm -rf "$APPIMG_DIR"/*.AppDir     # BEFORE `tauri build --bundles appimage`
+   ```
+
+   tauri then rebuilds the AppDir from **only** the current (pruned, clean) resources, so
+   its sidecar equals the clean deb sidecar. No `--prune-docs` on the AppDir is needed once
+   this is in place — the stale files simply never appear.
+
+2. **A fail-closed `--scan-dir` gate on the assembled AppDir**, right before
+   `appimagetool` packages it:
+
+   ```bash
+   python3 bin/audit-release-bundle.py --scan-dir "$APPDIR" || exit 1
+   ```
+
+   This is the backstop that scans *the bytes that ship*, so any future regression reds the
+   build instead of shipping silently. (Also relativize any absolute symlink whose target
+   points inside the AppDir — `grep` never follows a symlink target, so `--scan-dir` cannot
+   see a build-box path hidden in a `.DirIcon` / `.desktop` symlink; rewrite them relative.)
+
+## Generalize: any copied-into, never-rebuilt bundle dir is suspect
+
+The bug is not specific to AppImage — it is the shape "a persistent output directory that
+is **copied into** rather than **rebuilt fresh**." Audit every release format for it:
+
+- **deb** — dpkg archives fresh each build → structurally safe.
+- **Windows** (`build-windows-on-vm.sh`) — explicitly wipes its `bundle/inno` output before
+  packing and packs a freshly-tarred pruned sidecar → structurally safe.
+- **AppImage** — the offender above; safe only after the `rm -rf` wipe.
+- **macOS `.app`** — check whether `tauri build --bundles app` recreates the `.app` fresh or
+  copies into a persistent one. If a cut's `.app` looks clean only because a disk-reclaim
+  happened to delete the bundle dir first, that cleanliness is a side-effect, not a
+  guarantee — add an explicit `rm -rf "<bundle>/macos"/*.app` before the build to make it
+  structural.
+
+Rule of thumb: **prune/scan the assembled artifact that ships, and make sure the assembler
+starts from empty.** A clean source tree is necessary but not sufficient when the packer
+accumulates.

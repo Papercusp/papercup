@@ -24,6 +24,8 @@ import {
   type DistantDomain,
 } from './lenses';
 import { DEFAULT_SCOUT_IDEATOR_MODEL } from './models';
+import { admissionDenialFrom } from './capacity-errors';
+import type { AdmissionDenial } from '@papercusp/papercusp-shared/agent';
 
 /** The default ideator model — a strong model matters for the creative leap. */
 export const SCOUT_IDEATOR_MODEL = DEFAULT_SCOUT_IDEATOR_MODEL;
@@ -212,6 +214,7 @@ export interface IdeatorRunInfo {
   raw: number;
   ok: boolean;
   error?: string;
+  admissionDenial?: AdmissionDenial;
 }
 
 export interface RunIdeatorsResult {
@@ -236,7 +239,8 @@ export interface RunIdeatorsResult {
 export class ScoutIdeatorsTransportError extends Error {
   readonly failedCount: number;
   readonly sample?: string;
-  constructor(failedCount: number, sample?: string) {
+  readonly admissionDenial?: AdmissionDenial;
+  constructor(failedCount: number, sample?: string, admissionDenial?: AdmissionDenial) {
     super(
       `scout: all ${failedCount} ideator LLM call(s) failed — transport death (0 ideas, $0 spent)` +
         (sample ? `: ${sample}` : ''),
@@ -244,6 +248,7 @@ export class ScoutIdeatorsTransportError extends Error {
     this.name = 'ScoutIdeatorsTransportError';
     this.failedCount = failedCount;
     if (sample !== undefined) this.sample = sample;
+    if (admissionDenial !== undefined) this.admissionDenial = admissionDenial;
   }
 }
 
@@ -396,6 +401,7 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
           cost: res.costUsd ?? 0,
         };
       } catch (err) {
+        const admissionDenial = admissionDenialFrom(err);
         return {
           info: {
             lens: slot.lens,
@@ -405,6 +411,7 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
             raw: 0,
             ok: false,
             error: err instanceof Error ? err.message : String(err),
+            ...(admissionDenial ? { admissionDenial } : {}),
           },
           ideas: [],
           cost: 0,

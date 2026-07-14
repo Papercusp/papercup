@@ -72,7 +72,8 @@ export default defineTool({
     const limit = args.limit ?? 30;
     const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : (args.owner ?? null);
     const fingerprint = sessionCursorFingerprint({
-      owner: args.owner ?? null,
+      workspace_id: workspaceId,
+      owner,
       source_kind: args.source_kind ?? null,
       cwd_contains: args.cwd_contains ?? null,
       since: args.since ?? null,

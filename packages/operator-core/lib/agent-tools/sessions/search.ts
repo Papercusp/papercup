@@ -62,7 +62,18 @@ export default defineTool({
     const context = args.context ?? 2;
     const mode = args.mode ?? 'hybrid';
     const workspaceId = ctx.workspaceId ?? '';
-    const fingerprintArgs = { ...args, cursor: undefined, limit: undefined };
+    const callerOwnerId = resolveAgentIdentity(ctx).ownerId ?? '';
+    const fingerprintArgs = {
+      ...args,
+      cursor: undefined,
+      limit: undefined,
+      workspace_id: workspaceId,
+      // Bind the syntactic `self` sugar to the authority that resolved it.
+      // Otherwise another caller can replay the same opaque cursor against a
+      // different owner/session result set while retaining the same literal
+      // query fingerprint.
+      self_owner_id: args.owner === 'self' || args.session === 'self' ? callerOwnerId : undefined,
+    };
     const fingerprint = sessionCursorFingerprint(fingerprintArgs);
     const cursor = decodeSessionCursor(args.cursor, 'sessions:search', fingerprint);
     if (!cursor.ok) {
@@ -73,7 +84,7 @@ export default defineTool({
     const effectiveArgs = { ...args, until: snapshotUntil };
 
     const { filters, selfSession } = await resolveSearchFilters(
-      ctx.tx, effectiveArgs, resolveAgentIdentity(ctx).ownerId ?? '', { workspaceId },
+      ctx.tx, effectiveArgs, callerOwnerId, { workspaceId },
     );
     await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
 

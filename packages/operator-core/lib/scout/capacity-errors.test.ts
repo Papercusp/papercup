@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isCapacityError } from './capacity-errors';
+import { admissionDenialFrom, isCapacityError } from './capacity-errors';
 
 /**
  * capacity-errors is a one-function leaf module, but it is a LOAD-BEARING one: it decides
@@ -19,26 +19,23 @@ import { isCapacityError } from './capacity-errors';
  * broader string match.
  */
 describe('isCapacityError — the pool genuinely had nothing to give', () => {
-  it('matches the governor\'s own wait bail', () => {
-    expect(isCapacityError('rate-limit pause exceeds maxWait')).toBe(true);
+  it('matches a typed all-accounts-paused denial', () => {
+    expect(isCapacityError({ admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 } })).toBe(true);
   });
 
-  it('matches the raw provider ceiling', () => {
-    expect(isCapacityError('429 rate_limit_error: too many requests')).toBe(true);
-    expect(isCapacityError('Error 429: rate limit hit')).toBe(true);
-    expect(isCapacityError('rate limit exceeded')).toBe(true);
+  it('matches a typed provider-429 denial', () => {
+    expect(isCapacityError({ turn: { admissionDenial: { reason: 'provider-429' } } })).toBe(true);
   });
 
-  it('matches the ideator transport-death wrapper carrying a capacity cause', () => {
-    expect(
-      isCapacityError(
-        'scout: all 2 ideator LLM call(s) failed — transport death (0 ideas, $0 spent): rate-limit pause exceeds maxWait',
-      ),
-    ).toBe(true);
+  it('recovers the typed denial from an LlmCallError-shaped value', () => {
+    expect(admissionDenialFrom({ turn: { admissionDenial: { reason: 'all-accounts-paused', freeSlots: 0 } } })).toEqual({
+      reason: 'all-accounts-paused',
+      freeSlots: 0,
+    });
   });
 
-  it('is case-insensitive (providers disagree on casing)', () => {
-    expect(isCapacityError('RATE-LIMIT PAUSE EXCEEDS MAXWAIT')).toBe(true);
+  it('does not infer capacity from provider prose', () => {
+    expect(isCapacityError('429 rate_limit_error: too many requests')).toBe(false);
   });
 });
 
@@ -50,13 +47,12 @@ describe('isCapacityError — an ADMISSION failure is NOT capacity (WI-4475 / WI
     "Scout ideator contrarian was never admitted within 420000ms — no capacity within the cycle's remaining budget (not a transport timeout)";
 
   it('does NOT classify a never-admitted ideator as capacity — it stays a loud error', () => {
-    expect(isCapacityError(neverAdmitted)).toBe(false);
+    expect(isCapacityError({ admissionDenial: { reason: 'no-free-slot', freeSlots: 0 } })).toBe(false);
   });
 
   it('does not accidentally match on the phrase "no capacity" (the message says it in prose)', () => {
     // Guards the substring-matching implementation: the classifier must key on the PROVIDER's
     // signal, never on our own prose about capacity — otherwise our error text steers our metric.
-    expect(neverAdmitted.toLowerCase()).toContain('no capacity');
     expect(isCapacityError(neverAdmitted)).toBe(false);
   });
 

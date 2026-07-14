@@ -493,6 +493,48 @@ export function rewriteRequestModel(bodyBuf: Buffer, newModel: string): Buffer |
     return null;
   }
 }
+
+/** Claude CLI's `[1m]` marker is a client-side window selector, not an Anthropic API model id. */
+const ONE_MILLION_MODEL_ALIASES: Record<string, string> = {
+  opus: 'claude-opus-4-8',
+  sonnet: 'claude-sonnet-5',
+  fable: 'claude-fable-5',
+};
+
+export interface GatewayModelResolution {
+  model: string;
+  context1m: boolean;
+}
+
+/** Resolve a CLI model marker to the real upstream model id and its beta requirement. */
+export function resolveGatewayModel(model: string): GatewayModelResolution {
+  if (!/\[1m\]/i.test(model)) return { model, context1m: false };
+  // The marker is inserted before an optional CLI effort suffix (e.g. opus[1m]:high).
+  const unmarked = model.replace(/\[1m\]/gi, '').replace(/:(?:low|medium|high|xhigh|max)$/i, '');
+  return {
+    model: ONE_MILLION_MODEL_ALIASES[unmarked.toLowerCase()] ?? unmarked,
+    context1m: true,
+  };
+}
+
+/** Normalize a buffered Anthropic request once, before admission and upstream forwarding. */
+export function normalizeGatewayRequestBody(bodyBuf: Buffer): {
+  body: Buffer;
+  model: string | null;
+  context1m: boolean;
+} {
+  if (!bodyBuf.length) return { body: bodyBuf, model: null, context1m: false };
+  try {
+    const body = JSON.parse(bodyBuf.toString('utf8')) as { model?: unknown } & Record<string, unknown>;
+    if (typeof body.model !== 'string') return { body: bodyBuf, model: null, context1m: false };
+    const resolved = resolveGatewayModel(body.model);
+    if (resolved.model === body.model) return { body: bodyBuf, model: resolved.model, context1m: resolved.context1m };
+    body.model = resolved.model;
+    return { body: Buffer.from(JSON.stringify(body), 'utf8'), model: resolved.model, context1m: resolved.context1m };
+  } catch {
+    return { body: bodyBuf, model: null, context1m: false };
+  }
+}
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
 const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'x-papercusp-account-pin', 'x-papercusp-owner', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
@@ -2271,6 +2313,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // pool-wide (see the downgrade hook in the internal-retry loop below).
     let bodyBuf = await readBody(req);
     let model = 'claude-opus-4';
+    let context1m = false;
     // WI-1073: at-most-once guard — we downgrade a walled OPUS request to sonnet only ONCE per request,
     // so a failed sonnet retry forwards (never opus→sonnet→sonnet looping).
     let opusDowngraded = false;
@@ -2280,6 +2323,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // body never gets the short clip.
     let isStream = false;
     if (url.startsWith('/v1/messages') && bodyBuf.length) {
+      const normalized = normalizeGatewayRequestBody(bodyBuf);
+      bodyBuf = normalized.body;
+      context1m = normalized.context1m;
       try {
         const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string; stream?: boolean };
         if (typeof j.model === 'string') model = j.model;
@@ -2668,7 +2714,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
         baseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
       }
-      baseHeaders['anthropic-beta'] = withOAuthBeta(baseHeaders['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined));
+      baseHeaders['anthropic-beta'] = withOAuthBeta(
+        baseHeaders['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined),
+        context1m,
+      );
       if (!baseHeaders['anthropic-version']) baseHeaders['anthropic-version'] = ANTHROPIC_VERSION;
       baseHeaders['accept-encoding'] = 'identity';
 

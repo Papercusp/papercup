@@ -31,7 +31,7 @@ import { recordRoutedIdea } from './routed-ledger';
 import { refreshScoutOutcomes } from './routed-ledger';
 import { readIdeaQueueStatus } from './routed-ledger';
 import { recordScoutTick, readLastRanTickAtMs, type ScoutTickRecord } from './tick-ledger';
-import { isCapacityError } from './capacity-errors';
+import { admissionDenialFrom, isCapacityError } from './capacity-errors';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 import type { ScoutCyclePhase } from './cycle';
@@ -379,8 +379,13 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     // pressure becomes MORE visible, with its own number), and the provider's message is
     // preserved verbatim in `error`. Genuine failures — transport death, 401s, timeouts —
     // stay status:'error', which is what the <5% bar should have been measuring all along.
-    if (isCapacityError(error)) {
-      await note({ status: 'gated', gate: 'no-capacity', detail: { cycleId, error, ...timeoutDetail } });
+    const admissionDenial = admissionDenialFrom(e);
+    if (isCapacityError(e)) {
+      await note({
+        status: 'gated',
+        gate: 'no-capacity',
+        detail: { cycleId, error, ...(admissionDenial ? { admissionDenial } : {}), ...timeoutDetail },
+      });
       return { fired: false, reason: 'no-capacity', cycleId, error };
     }
     await note({ status: 'error', detail: { cycleId, error, ...timeoutDetail } });

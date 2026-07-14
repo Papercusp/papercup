@@ -21,11 +21,28 @@
  * into disagreeing about what "a capacity failure" is.
  */
 
+import type { AdmissionDenial } from '@papercusp/papercusp-shared/agent';
+
+/** Extract the typed admission fact from a TurnError/LlmCallError or persisted tick detail. */
+export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const value = input as Record<string, unknown>;
+  const turn = value.turn && typeof value.turn === 'object' ? (value.turn as Record<string, unknown>) : undefined;
+  const candidate = value.admissionDenial ?? turn?.admissionDenial;
+  if (!candidate || typeof candidate !== 'object') return undefined;
+  const denial = candidate as Record<string, unknown>;
+  const reason = denial.reason;
+  if (reason !== 'all-accounts-paused' && reason !== 'no-free-slot' && reason !== 'provider-429') return undefined;
+  return {
+    reason,
+    ...(typeof denial.pausedAccounts === 'number' ? { pausedAccounts: denial.pausedAccounts } : {}),
+    ...(typeof denial.freeSlots === 'number' ? { freeSlots: denial.freeSlots } : {}),
+  };
+}
+
 /**
  * PURE: is this failure a CAPACITY ceiling (the pool had nothing to give) rather than a
- * genuine cycle failure? Matched on the provider/gateway's own message, since the capacity
- * signal arrives as a thrown Error from deep inside the ideator's LLM transport and there is
- * no typed carrier for it today.
+ * genuine cycle failure? The governor/gateway's typed denial is the only authoritative input.
  *
  * The live signatures (measured over the recent 200-tick window, 2026-07-12):
  *   - "rate-limit pause exceeds maxWait"                    — the gateway governor's own wait bail
@@ -62,12 +79,7 @@
  * should carry that as a TYPED reason instead of making this module guess from a string. Until
  * that carrier exists, do not widen the match below to admission failures.
  */
-export function isCapacityError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    m.includes('rate-limit pause exceeds maxwait') ||
-    m.includes('rate_limit_error') ||
-    (m.includes('429') && m.includes('rate limit')) ||
-    m.includes('rate limit exceeded')
-  );
+export function isCapacityError(input: unknown): boolean {
+  const reason = admissionDenialFrom(input)?.reason;
+  return reason === 'all-accounts-paused' || reason === 'provider-429';
 }

@@ -595,6 +595,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
         throw new ScoutIdeatorsTransportError(
           ideated.ideators.length,
           ideated.ideators.find((i) => i.error)?.error,
+          ideated.ideators.find((i) => i.admissionDenial)?.admissionDenial,
         );
       }
       return ideated.ideas;

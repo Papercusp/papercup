@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   parseCredentialRef,
   withOAuthBeta,
+  CLAUDE_CONTEXT_1M_BETA,
   bundleTokenStorage,
   makeCredentialResolver,
   makeBearerCredentialResolver,
@@ -72,6 +73,8 @@ test('withOAuthBeta — always includes oauth flag, de-duplicated, preserves oth
   assert.equal(withOAuthBeta(null), 'oauth-2025-04-20');
   assert.equal(withOAuthBeta('oauth-2025-04-20'), 'oauth-2025-04-20');
   assert.equal(withOAuthBeta('fine-grained-tool-streaming-2025-05-14'), 'fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20');
+  assert.equal(withOAuthBeta(null, true), `oauth-2025-04-20,${CLAUDE_CONTEXT_1M_BETA}`);
+  assert.equal(withOAuthBeta(`oauth-2025-04-20,${CLAUDE_CONTEXT_1M_BETA}`, true), `oauth-2025-04-20,${CLAUDE_CONTEXT_1M_BETA}`);
 });
 
 test('bundleTokenStorage — read maps claudeAiOauth, update rewrites + preserves other fields', async () => {

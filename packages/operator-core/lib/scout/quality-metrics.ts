@@ -162,8 +162,7 @@ export function computeScoutQualityReport<L extends string = CreativeLens>(
       // reclassification went live, instead of staying red on legacy rows for the ~10
       // days it takes them to age out of the window. Pool pressure stays VISIBLE (its
       // own gate count grows); it just stops masquerading as ideator breakage.
-      const errMsg = typeof t.detail?.error === 'string' ? t.detail.error : '';
-      if (errMsg && isCapacityError(errMsg)) {
+      if (isCapacityError(t.detail)) {
         gatedTickBreakdown['no-capacity'] = (gatedTickBreakdown['no-capacity'] ?? 0) + 1;
       } else {
         errorTicks += 1;

@@ -11,6 +11,12 @@ describe('sessions cursor contract', () => {
     expect(fingerprint).toBe(
       sessionCursorFingerprint({ filters: { kind: 'codex', since: '2026-07-13' }, owner: 'su-1' }),
     );
+    expect(sessionCursorFingerprint({ owner: 'su-1', workspace_id: 'workspace-a' })).not.toBe(
+      sessionCursorFingerprint({ owner: 'su-2', workspace_id: 'workspace-a' }),
+    );
+    expect(sessionCursorFingerprint({ owner: 'su-1', workspace_id: 'workspace-a' })).not.toBe(
+      sessionCursorFingerprint({ owner: 'su-1', workspace_id: 'workspace-b' }),
+    );
     const bounds = { until: '2026-07-14T03:00:00.000Z' };
     const cursor = encodeSessionCursor('sessions:list', 25, fingerprint, bounds);
     expect(decodeSessionCursor(cursor, 'sessions:list', fingerprint)).toEqual({
