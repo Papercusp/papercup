@@ -409,29 +409,50 @@ export type InteractiveHealAction = 'heal' | 'notify' | 'announce-healed' | 'non
 
 interface OwnerHealState {
   attemptsMs: number[];
+  /** Heal attempts whose macro envelope actually LANDED ('sent'). Only these can
+   *  ever justify an announce — a no-cap/no-host attempt injected nothing and
+   *  cannot have healed anything (live false-heal bug #3, 2026-07-14). */
+  sentCount: number;
   notified: boolean;
 }
 
 /**
- * Pure cross-pass planner: given each live owner's dark verdict + the in-memory
- * heal state, decide this pass's action per owner. The ladder [owner-mandated]:
- * dark + attempts left ⇒ 'heal' (fire the /mcp macro, judge NOTHING yet); dark +
- * attempts exhausted ⇒ 'notify' (once); no longer dark after a recent attempt ⇒
- * 'announce-healed' (one follow-up wake: re-arm + re-park). State mutates in
- * place (attempt stamps, notified latch, healed cleanup). Exported for tests.
+ * Pure cross-pass planner: given each live owner's tri-state verdict + the
+ * in-memory heal state, decide this pass's action per owner.
+ *
+ * VERDICT SEMANTICS (rewritten after the 2026-07-14 live false-heal incident —
+ * the first deployed pass announced "healed" to two sessions whose transports
+ * were still dead): recovery is POSITIVE EVIDENCE ONLY. `recovered` = a FRESH
+ * tool-call-coupled presence beat exists right now (tools demonstrably
+ * flowing); `dark` = the evaluateInteractiveMcpDark verdict. NEITHER
+ * (¬dark ∧ ¬recovered — e.g. the session merely went idle and slipped under
+ * the in-use gate, or its presence row is reaped/absent) is INDETERMINATE:
+ * hold all state, take no action. The old ¬dark ⇒ healed inference flip-
+ * flopped on the in-use hysteresis (su-5651d: HEALED 02:46 → DARK 02:51) and
+ * announced heals off behavioral changes, not transport truth.
+ *
+ * The ladder [owner-mandated]: dark + attempts left ⇒ 'heal' (fire the /mcp
+ * macro; the executor marks whether the envelope landed via markHealSent);
+ * dark + attempts exhausted ⇒ 'notify' (once); recovered after a SENT attempt
+ * ⇒ 'announce-healed' (one follow-up wake: re-arm + re-park); recovered
+ * otherwise (owner ran /mcp himself, or only no-cap attempts) ⇒ clear state
+ * silently. State mutates in place. Exported for tests.
  */
 export function planInteractiveHeal(
   state: Map<string, OwnerHealState>,
-  verdicts: Array<{ ownerId: string; dark: boolean }>,
+  verdicts: Array<{ ownerId: string; dark: boolean; recovered?: boolean }>,
   nowMs: number,
   maxAttempts = DEFAULT_HEAL_MAX_ATTEMPTS,
 ): Array<{ ownerId: string; action: InteractiveHealAction }> {
   const out: Array<{ ownerId: string; action: InteractiveHealAction }> = [];
   for (const v of verdicts) {
     const st = state.get(v.ownerId);
-    if (!v.dark) {
-      // Recovered (or never dark). A recent attempt on record ⇒ the heal worked.
-      if (st && st.attemptsMs.length > 0) {
+    if (v.recovered) {
+      // Positive evidence the transport is alive NOW. Announce only when one of
+      // OUR macro envelopes actually landed — otherwise (self-recovered / owner
+      // /mcp / no-cap attempts) clear silently: the session will discover its
+      // live tools on its own, and a wrong "the macro healed you" is worse.
+      if (st && st.sentCount > 0) {
         state.delete(v.ownerId);
         out.push({ ownerId: v.ownerId, action: 'announce-healed' });
       } else {
@@ -440,7 +461,14 @@ export function planInteractiveHeal(
       }
       continue;
     }
-    const cur = st ?? { attemptsMs: [], notified: false };
+    if (!v.dark) {
+      // INDETERMINATE (¬dark ∧ ¬recovered): the session may have gone idle, its
+      // presence row may be reaped — no transport truth either way. Hold state
+      // (attempts/notified latches survive) and do nothing.
+      out.push({ ownerId: v.ownerId, action: 'none' });
+      continue;
+    }
+    const cur = st ?? { attemptsMs: [], sentCount: 0, notified: false };
     cur.attemptsMs = cur.attemptsMs.filter((t) => nowMs - t < HEAL_ATTEMPT_WINDOW_MS);
     if (cur.attemptsMs.length < maxAttempts) {
       cur.attemptsMs.push(nowMs);
@@ -456,6 +484,14 @@ export function planInteractiveHeal(
     }
   }
   return out;
+}
+
+/** Executor callback: mark that a 'heal' action's macro envelope actually LANDED
+ *  ('sent') — the only attempts that can later justify an announce. Exported for
+ *  tests. */
+export function markHealSent(state: Map<string, OwnerHealState>, ownerId: string): void {
+  const st = state.get(ownerId);
+  if (st) st.sentCount += 1;
 }
 
 /** The one follow-up wake a healed session gets (exported for tests). */

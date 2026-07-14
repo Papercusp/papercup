@@ -21,7 +21,14 @@ vi.mock('nuqs', async () => {
         return { defaultValue };
       },
     },
-    useQueryState(_key: string, parser?: { defaultValue?: boolean }) {
+    parseAsStringEnum(_values: string[]) {
+      return {
+        withDefault(defaultValue: string) {
+          return { defaultValue };
+        },
+      };
+    },
+    useQueryState(_key: string, parser?: { defaultValue?: boolean | string }) {
       return React.useState(parser?.defaultValue ?? true);
     },
     useQueryStates(spec: Record<string, { defaultValue?: unknown }>) {
