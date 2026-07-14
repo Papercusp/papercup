@@ -213,6 +213,11 @@ export function hysteresisTick(input: HysteresisTickInput): HysteresisTickResult
       s.subscribed = true;
       s.subscribedAtTick = tick;
       s.belowExitStreak = 0;
+      // Fresh staleness clock: the backstop measures "SUBSCRIBED but never hit".
+      // Hits only land on subscribed topics, so the clock accumulated while
+      // merely tracked would otherwise carry in ≥ stalenessTicks and stale-kick
+      // the brand-new subscription next tick — a permanent 2-tick flap.
+      s.ticksSinceHit = 0;
       s.removalSuggested = false;
       notices.push(notice('subscribed', s, `relevance ≥ ${params.enterThreshold} for ${s.aboveEnterStreak} consecutive ticks (enter-dwell met)`));
     }

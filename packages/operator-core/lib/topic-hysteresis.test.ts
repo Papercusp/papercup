@@ -90,6 +90,22 @@ describe('D-009 §2 — staleness backstop', () => {
     expect(subs[0].subscribed).toBe(false);
     expect(notices.find((n) => n.kind === 'unsubscribed')!.reason).toMatch(/staleness/);
   });
+
+  it('REGRESSION: a long-tracked topic gets a FRESH staleness clock at subscribe (no 2-tick flap)', () => {
+    // Hits only land on subscribed topics, so a topic that hovers mid-band
+    // (≥ exit, < enter) for ≥ stalenessTicks before finally subscribing used to
+    // carry that clock in and get stale-kicked the very next tick — then re-earn
+    // the dwell and flap forever, spamming subscribe/unsubscribe notice pairs.
+    const params: HysteresisParams = { ...DEFAULT_HYSTERESIS_PARAMS, stalenessTicks: 5 };
+    const { subs, notices } = runTopic('T', [...rep(0.4, 8, false), ...rep(0.7, 7, false)], { params });
+    expect(notices.filter((n) => n.kind === 'subscribed')).toHaveLength(1); // once, not a flap
+    // No hit ever landed: the backstop STILL fires — but timed from the subscribe,
+    // not from tracking start (subscribe at tick 10; stale at tick 15).
+    const cleared = notices.filter((n) => n.kind === 'unsubscribed');
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0].reason).toMatch(/staleness/);
+    expect(subs[0].subscribed).toBe(false);
+  });
 });
 
 describe('D-009 §3 — provenance guard (manual is never auto-removed)', () => {

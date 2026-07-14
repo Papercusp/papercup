@@ -962,4 +962,54 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     await runLivenessAlarmTick('ws', deps); // steady-state healthy tick — silent
     expect(pageResolvedCalls).toEqual([['dead-routines']]);
   });
+
+  it('WI-4878: recovery detection works even when local cache is stale (> 6 min old)', async () => {
+    // Scenario: an infra panel signal fires, opening an escalation. Later, the
+    // underlying failures roll out of the 1h window, so the signal should stop
+    // firing. But if the local snapshot cache is older than 6 minutes (stale),
+    // the prior code would skip recovery detection and never emit RECOVERED.
+    // This test ensures that recovery is detected even with a stale cache.
+    const store = makeStore();
+    const staleMs = 6 * 60_000; // default stale threshold
+
+    // Time 0: infra panel CRIT (failures in window), cache computed
+    const now0 = 100 * 60_000;
+    const infraCrit = mkHealth({
+      evaluatedAt: now0,
+      panels: { infra: { status: 'crit', summary: 'MCP PROXY FAILING: 12 hard failures/1h' } },
+    });
+
+    // Tick 1: cache is fresh, escalation fires
+    let now = now0;
+    let currentHealth = infraCrit;
+    const deps = {
+      readLast: () => currentHealth,
+      computeHealth: async () => currentHealth,
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      pageResolved: async (sigs: string[]) => { /* tracked via resolved below */ },
+      now: () => now,
+      snapshotStaleMs: staleMs,
+      debounceMs: 30 * 60_000,
+    };
+
+    const t1 = await runLivenessAlarmTick('ws', deps);
+    expect(t1.signals.map((s) => s.key)).toContain('panel:infra');
+    expect(t1.fired.length).toBeGreaterThan(0);
+    const openEsc = await store.listOpen();
+    expect(openEsc.length).toBeGreaterThan(0);
+
+    // Tick 2: cache is 7+ minutes old (STALE), but failures have rolled out
+    // of the 1h window, so infra panel is now OK
+    now = now0 + 8 * 60_000; // 8 minutes later
+    const infraOk = mkHealth({ evaluatedAt: now0 }); // still using old evaluatedAt
+    currentHealth = infraOk; // health is now OK (failures rolled out)
+
+    const t2 = await runLivenessAlarmTick('ws', deps);
+    // The key assertion: even though the cache is stale, recovery should be detected
+    // and RECOVERED should be emitted (returned in resolved).
+    expect(t2.signals.map((s) => s.key)).not.toContain('panel:infra');
+    expect(t2.resolved.length).toBeGreaterThan(0); // RECOVERED was emitted
+  });
 });
