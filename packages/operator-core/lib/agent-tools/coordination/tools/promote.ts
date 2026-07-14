@@ -1067,7 +1067,7 @@ export default defineTool({
       // EI-8809 (routing-gate hint at dispatch): stamp a matched papercusp-way row
       // onto the promoted feature so the claimer sees the prescribed mechanism —
       // hint only, never a promote-blocking check.
-      const routingHint = matchRoutingGateHint(f.title, f.body);
+      const routingHint = matchRoutingGateHint(f.title);
       if (routingHint) metadata.routingHint = routingHint;
       // P-043: stamp generative provenance on resolver-produced children (the
       // completion-time replay-dedup key + audit trail).

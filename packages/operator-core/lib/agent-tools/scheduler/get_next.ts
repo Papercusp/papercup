@@ -249,7 +249,7 @@ export default defineTool({
         wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
           ? (wi.payload as Record<string, unknown>).routingHint
           : undefined;
-      routingHint = existing ?? matchRoutingGateHint(wi.title, wi.summary) ?? undefined;
+      routingHint = existing ?? matchRoutingGateHint(wi.title) ?? undefined;
     }
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
     // D-006): on a hit, piggyback a targeted memory recall for the claimed

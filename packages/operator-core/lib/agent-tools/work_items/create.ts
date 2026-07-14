@@ -38,6 +38,7 @@ import {
   notifyFleetScopeRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import type { ClaimSpecSubject } from '../../scheduler/claim-spec-match';
+import { ROUTING_GATE_INTENTS } from '../../routing-gate-hints';
 
 /**
  * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
@@ -77,6 +78,20 @@ const linkSpec = z.object({
   target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),
   target_harness: z.string().max(80).optional().describe('harness for a feature target_id (disambiguation)'),
 });
+
+function rejectMissingScheduleCadence(
+  value: { routing_intent?: string; cadence?: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.routing_intent === 'schedule-recurrence' && !value.cadence?.trim()) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['cadence'],
+      message:
+        "cadence is required when routing_intent='schedule-recurrence' — e.g. 'daily at 09:00' or a cron expression",
+    });
+  }
+}
 
 /**
  * Heuristic: does this work-item text smell like CODE work? Used ONLY for a
@@ -139,6 +154,8 @@ const itemSpec = z.object({
   parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
   topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
   payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
+  routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('explicit papercusp-way routing intent. Body/summary prose is never classified. schedule-recurrence also requires cadence.'),
+  cadence: hardText(200).optional().describe('explicit cadence for routing_intent=schedule-recurrence, e.g. "daily at 09:00" or a cron expression'),
   urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
   force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard for this item.'),
   assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Overrides assign_all_to_self for this item.'),
@@ -157,7 +174,8 @@ const itemSpec = z.object({
   // WI-4492: strict — an unknown field name is a LOUD error naming it, never a silent drop
   // (the defect that filed WI-4491/WI-4492 as empty shells: a `body` arg was stripped).
   .strict()
-  .superRefine(rejectBodySummaryConflict);
+  .superRefine(rejectBodySummaryConflict)
+  .superRefine(rejectMissingScheduleCadence);
 
 export default defineTool({
   name: 'work_items:create',
@@ -219,6 +237,8 @@ export default defineTool({
       parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
       topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
       payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
+      routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('explicit papercusp-way routing intent. Body/summary prose is never classified. schedule-recurrence also requires cadence.'),
+      cadence: hardText(200).optional().describe('explicit cadence for routing_intent=schedule-recurrence, e.g. "daily at 09:00" or a cron expression'),
       urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
       force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard.'),
       assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Omit ⇒ unclaimed.'),
@@ -239,7 +259,8 @@ export default defineTool({
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.kind) && Boolean(a.title)), {
       message: 'pass { kind, title } for one, or items:[{ kind, title }] for many',
     })
-    .superRefine(rejectBodySummaryConflict),
+    .superRefine(rejectBodySummaryConflict)
+    .superRefine(rejectMissingScheduleCadence),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };
@@ -270,6 +291,8 @@ export default defineTool({
             parent: args.parent,
             topics: args.topics,
             payload: args.payload,
+            routing_intent: args.routing_intent,
+            cadence: args.cadence,
             state: args.state, // EI-10897
             urgent: args.urgent,
             force: args.force,

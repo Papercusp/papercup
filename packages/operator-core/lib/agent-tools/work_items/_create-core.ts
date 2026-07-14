@@ -28,7 +28,7 @@ import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
-import { matchRoutingGateHint } from '../../routing-gate-hints';
+import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
 
 /**
  * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
@@ -49,6 +49,10 @@ export interface CreateOneWorkItemArgs {
   parent?: string;
   topics?: string[];
   payload?: Record<string, unknown>;
+  /** Explicit papercusp-way routing row; body prose is never classified. */
+  routing_intent?: RoutingGateIntent;
+  /** Required for routing_intent='schedule-recurrence'. */
+  cadence?: string;
   urgent?: boolean;
   force?: boolean;
   /** Atomic create+claim target (B-LOOP-4): the agent id to own the new item. */
@@ -241,7 +245,10 @@ export async function createOneWorkItem(
     // prescribed mechanism in payload.routingHint instead of having to re-derive it
     // from a raw title mid-flow. Hint only, never a validation gate; a caller's
     // OWN payload.routingHint (if ever explicitly set) is never clobbered.
-    const routingHint = matchRoutingGateHint(args.title, args.summary);
+    const routingHint = matchRoutingGateHint(args.title, {
+      ownerIntent: args.routing_intent,
+      cadence: args.cadence,
+    });
     const payloadWithHint =
       routingHint && !(args.payload && 'routingHint' in args.payload)
         ? { ...(args.payload ?? {}), routingHint }

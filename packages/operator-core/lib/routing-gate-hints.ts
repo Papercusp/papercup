@@ -37,17 +37,42 @@ export interface RoutingGateRow {
   keywords: readonly string[];
 }
 
+export const ROUTING_GATE_INTENTS = [
+  'schedule-recurrence',
+  'watch-alert',
+  'credential-key',
+  'create-app',
+  'bring-repo-under-management',
+  'design-screen',
+] as const;
+export type RoutingGateIntent = (typeof ROUTING_GATE_INTENTS)[number];
+
+export interface RoutingGateMatchInput {
+  /** Explicit owner/caller-selected routing row. Never inferred from body prose. */
+  ownerIntent?: RoutingGateIntent | null;
+  /** Required with an explicit schedule intent; e.g. "daily at 09:00" or a cron. */
+  cadence?: string | null;
+}
+
+const SCHEDULE_ACTIONS = [
+  'schedule', 'send', 'run', 'generate', 'publish', 'deliver', 'email',
+  'post', 'execute', 'repeat', 'do ',
+] as const;
+const SCHEDULE_CADENCES = [
+  'daily', 'weekly', 'nightly', 'every day', 'every week', 'on a schedule',
+  'on a cadence', 'recurring', 'cron', 'each morning', 'every morning',
+  '9am', 'periodic', 'every hour', 'hourly',
+] as const;
+
 export const ROUTING_GATE_ROWS: readonly RoutingGateRow[] = [
   {
     id: 'schedule-recurrence',
     trigger: 'do X daily / weekly / on a schedule',
     mechanism: 'plans:set-schedule THEN plans:arm-schedule',
     gloss: 'arming is a separate, autonomy-gated step — an unarmed schedule never fires.',
-    keywords: [
-      'daily', 'weekly', 'nightly', 'every day', 'every week', 'on a schedule',
-      'on a cadence', 'recurring', 'recurrence', 'cron', 'each morning',
-      'every morning', '9am digest', 'periodic', 'every hour', 'hourly',
-    ],
+    // Schedule routing is deliberately NOT a one-keyword match. The matcher
+    // below requires one action + one cadence, or typed ownerIntent + cadence.
+    keywords: SCHEDULE_CADENCES,
   },
   {
     id: 'watch-alert',
@@ -115,18 +140,45 @@ export interface RoutingGateHint {
 }
 
 /**
- * Cheap keyword match of `title` + `summary` against ROUTING_GATE_ROWS. Returns
- * the FIRST matching row (rows are checked in declaration order) or `null` when
- * nothing matches. Pure, synchronous, case-insensitive substring match — no I/O,
- * safe to call on every create/claim/dispatch.
+ * Match an owner-authored TITLE or an explicit typed intent. Arbitrary body /
+ * summary prose is intentionally absent from this API: implementation phrases
+ * such as "add a recurrence guard" cannot silently prescribe a scheduler.
+ * Schedule inference additionally requires an action AND a cadence.
  */
 export function matchRoutingGateHint(
   title: string | null | undefined,
-  summary?: string | null,
+  input: RoutingGateMatchInput = {},
 ): RoutingGateHint | null {
-  const hay = `${title ?? ''} ${summary ?? ''}`.toLowerCase();
-  if (!hay.trim()) return null;
-  for (const row of ROUTING_GATE_ROWS) {
+  const hay = (title ?? '').toLowerCase().trim();
+  const explicit = input.ownerIntent
+    ? ROUTING_GATE_ROWS.find((row) => row.id === input.ownerIntent)
+    : undefined;
+  if (explicit) {
+    if (explicit.id === 'schedule-recurrence' && !(input.cadence ?? '').trim()) return null;
+    return {
+      row: explicit.id,
+      mechanism: explicit.mechanism,
+      gloss: explicit.gloss,
+      matchedOn: explicit.id === 'schedule-recurrence'
+        ? `ownerIntent+cadence:${input.cadence!.trim()}`
+        : `ownerIntent:${explicit.id}`,
+    };
+  }
+  if (!hay) return null;
+
+  const scheduleAction = SCHEDULE_ACTIONS.find((kw) => hay.includes(kw));
+  const scheduleCadence = SCHEDULE_CADENCES.find((kw) => hay.includes(kw));
+  if (scheduleAction && scheduleCadence) {
+    const row = ROUTING_GATE_ROWS[0];
+    return {
+      row: row.id,
+      mechanism: row.mechanism,
+      gloss: row.gloss,
+      matchedOn: `${scheduleAction}+${scheduleCadence}`,
+    };
+  }
+
+  for (const row of ROUTING_GATE_ROWS.slice(1)) {
     const hit = row.keywords.find((kw) => hay.includes(kw));
     if (hit) {
       return { row: row.id, mechanism: row.mechanism, gloss: row.gloss, matchedOn: hit };
