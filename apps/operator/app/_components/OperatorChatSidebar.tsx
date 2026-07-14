@@ -287,11 +287,12 @@ export function OperatorChatSidebar() {
               subtitleClassName="op-chat-wordmark-subtitle"
               subtitle=""
             />
-            {/* WI-4778: the 🫖 toggle — chat ⇄ the full-height Pot Health view
-                (the info the Mug + Kettle decide from), same pane. Sits RIGHT
-                BESIDE the Papercup identity (owner ask 2026-07-14): the user
-                switches chat ⇄ pot health constantly, so the two "faces" of
-                the pane live next to each other, not across the header. */}
+            {/* WI-4778/WI-4789: the 🫖 toggle — chat ⇄ the full-height Pot
+                Health view (the info the Mug + Kettle look at), same pane.
+                Sits RIGHT BESIDE the Papercup identity (owner ask 2026-07-14)
+                and carries its own "Pot Health" wordmark-style label (owner
+                ask 2026-07-14) so the pane's two "faces" read as peers:
+                [🥤 Papercup] [🫖 Pot Health]. */}
             <Tooltip label={potOpen ? 'Back to chat' : 'Pot health — see what the Kettle and Mug look at'}>
               <button
                 type="button"
@@ -301,6 +302,7 @@ export function OperatorChatSidebar() {
                 aria-label={potOpen ? 'Back to chat' : 'Show pot health'}
               >
                 <span aria-hidden="true">🫖</span>
+                <span className="op-chat-pot-toggle-label">Pot Health</span>
               </button>
             </Tooltip>
             <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
@@ -324,12 +326,10 @@ export function OperatorChatSidebar() {
              chat body (strip + messages + composer), same pane, one scroll. */
           <PotHealthPane />
         ) : (
-          <>
-            {/* P-018 (mockup variant A): the pot status strip — ambient
-                Mug/Kettle health under the header; clicking it opens the
-                full-height Pot Health view (WI-4778). */}
-            <PotStatusStrip />
-            <OperatorChat
+          /* WI-4789 (owner ask 2026-07-14): the ambient Mug/Kettle status
+             strip that used to sit here is GONE — the 🫖 Pot Health toggle
+             beside the Papercup name is the one entry to that information. */
+          <OperatorChat
               messages={conv.messages}
               busy={conv.busy}
               passive={conv.mode === 'passive'}

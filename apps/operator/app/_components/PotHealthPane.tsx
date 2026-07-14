@@ -31,7 +31,7 @@ import type {
   OverwatchLiveness,
 } from '@papercusp/operator-core/lib/overwatch/brief-types';
 import type { MugBriefFloorView } from '@papercusp/operator-core/lib/pot/mug-brief-launch';
-import { compactAge, compactCount, splitLeadingWi } from './PotStatusStrip';
+import { compactAge, compactCount, splitLeadingWi } from './pot-health-format';
 
 const ACTION_CHIP: Record<string, string> = {
   nudge: 'NUDGE',
