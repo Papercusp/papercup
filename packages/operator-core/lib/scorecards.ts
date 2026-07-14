@@ -79,6 +79,11 @@ export interface ScorecardRow {
    * never misread as "complete"). Sorted in the rubric's own criteria order.
    */
   missingKeys: string[];
+  /**
+   * Rated keys that the current rubric does NOT declare. Historical malformed
+   * scorecards remain auditable, but are incomplete and never become trend axes.
+   */
+  extraKeys: string[];
   /** Whether `rubricRef` resolved to a known rubric (so `missingKeys` is meaningful). */
   rubricResolved: boolean;
   /**
@@ -261,6 +266,14 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
     const criteriaKeys = meta.keys;
     const rubricResolved = criteriaKeys !== null;
     const missingKeys = rubricResolved ? criteriaKeys!.filter((k) => !ratedKeys.has(k)) : [];
+    const criterionKeySet = rubricResolved ? new Set(criteriaKeys!) : null;
+    const extraKeys = criterionKeySet ? [...ratedKeys].filter((k) => !criterionKeySet.has(k)) : [];
+    // Preserve raw ratings for audit, but project the numeric score only across
+    // the rubric's declared dimensions. A historical extra must not inflate or
+    // depress the score while still being visible via `extraKeys`.
+    const projectionRatings = criterionKeySet
+      ? Object.fromEntries(Object.entries(ratings).filter(([k]) => criterionKeySet.has(k)))
+      : ratings;
     // Read the synthesized marker from the RAW payload (not the parsed observation,
     // which may strip unknown keys) so the floor stays distinguishable.
     const synthRaw = (row.payload as { observation?: { synthesized?: unknown } } | null)?.observation?.synthesized;
@@ -275,9 +288,10 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       ratings,
       nKeys: ratedKeys.size,
       missingKeys,
+      extraKeys,
       rubricResolved,
       synthesized,
-      score10: scorecardScore10(ratings, meta.overrides),
+      score10: scorecardScore10(projectionRatings, meta.overrides),
       linkedItems: linksByIssue.get(row.issue_id) ?? [],
     });
   }
@@ -607,6 +621,9 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // Scale-aware numeric projection for mean10 (one rubric per trend → one resolve).
   const trendRubric = await getRubric(filter.rubricRef);
   const scoreOverrides = scoreOverridesForScale(trendRubric?.ratingScale);
+  const declaredCriterionKeys = trendRubric
+    ? new Set(trendRubric.criteria.map((c) => c.key))
+    : null;
 
   // WI-4607: parse each criterion's instrument binding once per key so the trend
   // view can show which instrument grades each criterion.
@@ -619,6 +636,12 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   const byCriterion = new Map<string, { at: string; rating: string; idle: boolean }[]>();
   for (const sc of chrono) {
     for (const [criterion, entry] of Object.entries(sc.ratings)) {
+      // Historical writers could store ad-hoc rating keys while still passing
+      // the old missing-only completeness gate (EI-11617). Keep those visible
+      // on scorecards:list via extraKeys, but never promote them to rubric trend
+      // dimensions. Unknown rubrics remain readable because there is no declared
+      // key set to filter against.
+      if (declaredCriterionKeys && !declaredCriterionKeys.has(criterion)) continue;
       const arr = byCriterion.get(criterion) ?? [];
       arr.push({ at: sc.createdAt, rating: entry.rating, idle: isIdleUnknown(entry.rating, entry.evidence) });
       byCriterion.set(criterion, arr);

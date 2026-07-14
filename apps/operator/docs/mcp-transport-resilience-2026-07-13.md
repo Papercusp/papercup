@@ -117,3 +117,22 @@ MCP servers. None are blockers — the layers above work without them.
 ## Status
 - Authored during the 2026-07-13 incident by su-39f079d3 (MCP down — plan not
   yet registered in the plans system; import on reconnect).
+- **P-001..P-005 IMPLEMENTED + unit/integration green (same session):**
+  - launcher: `DISABLE_AUTOUPDATER` + `persistReExecSafePermissions` —
+    psu-launcher.test.ts 407/407 (8 new);
+  - host: `mode:'mcp-reconnect'` + `runMcpReconnectMacro` + output taps +
+    caps — psu-pty-host.test.ts 113/113 (15 new, incl. a scripted fake-TUI
+    end-to-end walk), real-pty integration 21/21;
+  - discovery: mode union + `mcpReconnectViaPty` — 30/30 (wake-executor
+    consumers 87/87);
+  - watchdog: `evaluateInteractiveMcpDark` + `planInteractiveHeal` heal ladder
+    riding the mcp-dark timer (kill-switch `PAPERCUSP_MCP_DARK_INTERACTIVE=0`)
+    — 20/20 incl. the su-39f07 incident-shape regression.
+- **ACTIVATION:** bg-host loads the watchdog at process start → lands on its
+  next restart (do it with a fleet heads-up, not blind). Existing psu-pty hosts
+  lack the 'mcp-reconnect' cap → watchdog falls back to notify for them; new
+  sessions get the macro. LIVE-DIALOG CAVEAT: the walker is validated against a
+  scripted fake TUI + fail-soft; run the plan's live verification (kill a
+  scratch session's transport, watch detect→heal→follow-up) before trusting it
+  at production cadence.
+- Known v1 hardcode: interactive escalation rows use harness_slug='papercusp'.

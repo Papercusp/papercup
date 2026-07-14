@@ -83,13 +83,16 @@ describe('listScorecards (P-013) — real PG', () => {
       by: 'su-test',
     });
 
-    // A COMPLETE papercusp scorecard (all 3 criteria), newest.
+    // A historically malformed papercusp scorecard: all 3 required criteria plus
+    // one extra key. Direct createIssue intentionally bypasses the capture gate so
+    // the read path proves old rows remain auditable without polluting trends.
     await fileScorecard(db, {
       id: 'complete', rubricRef: RUBRIC, sourceHive: 'papercusp', createdAt: '2026-06-20T12:00:00.000Z',
       ratings: {
         'end-to-end-flow': { rating: 'broken', evidence: '88 unplaced' },
         'ideation-quality': { rating: 'healthy', evidence: 'fresh ideas' },
         'watchdog-determinism': { rating: 'degraded', evidence: '2 flaky red-tests' },
+        'legacy-ad-hoc-check': { rating: 'healthy', evidence: 'old writer invented a dimension' },
       },
     });
     // A PARTIAL papercusp scorecard (1 of 3) — the drift P-014 must catch.
@@ -139,14 +142,17 @@ describe('listScorecards (P-013) — real PG', () => {
     const complete = rows[0];
     expect(complete.createdBy).toBe('kettle');
     expect(complete.sourceHive).toBe('papercusp');
-    expect(complete.nKeys).toBe(3);
+    expect(complete.nKeys).toBe(4);
     expect(complete.missingKeys).toEqual([]); // all 3 criteria rated
+    expect(complete.extraKeys).toEqual(['legacy-ad-hoc-check']);
     expect(complete.rubricResolved).toBe(true);
+    expect(complete.score10).toBe(5); // known criteria only: broken(0), healthy(10), degraded(5)
     expect(complete.ratings['end-to-end-flow']).toEqual({ rating: 'broken', evidence: '88 unplaced' });
 
     const partial = rows[1];
     expect(partial.nKeys).toBe(1);
     expect(partial.missingKeys).toEqual(['ideation-quality', 'watchdog-determinism']); // unrated, in rubric order
+    expect(partial.extraKeys).toEqual([]);
     expect(partial.rubricResolved).toBe(true);
   });
 
@@ -169,6 +175,7 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].rubricResolved).toBe(false);
     expect(rows[0].missingKeys).toEqual([]); // can't compute — but rubricResolved=false flags it
+    expect(rows[0].extraKeys).toEqual([]); // unknown rubric ⇒ no declared key set to compare
     expect(rows[0].nKeys).toBe(1);
   });
 
@@ -193,6 +200,7 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(trend.window).toEqual({ from: '2026-06-20T10:00:00.000Z', to: '2026-06-20T12:00:00.000Z' });
     // criteria sorted ASC by key.
     expect(trend.criteria.map((c) => c.criterion)).toEqual(['end-to-end-flow', 'ideation-quality', 'watchdog-determinism']);
+    expect(trend.criteria.some((c) => c.criterion === 'legacy-ad-hoc-check')).toBe(false);
 
     const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
     expect(e2e.count).toBe(2);

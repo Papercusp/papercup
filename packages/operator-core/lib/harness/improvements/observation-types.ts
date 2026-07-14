@@ -149,7 +149,7 @@ export function validateObservationRatings(obs: StructuredObservation | undefine
 
 /**
  * Enforce the scorecard COMPLETENESS mandate (plan-templates-and-rubric-v2 P-014a / D-005):
- * a rubric-graded observation (a scorecard) MUST rate EVERY criterion the rubric declares.
+ * a rubric-graded observation (a scorecard) MUST rate EXACTLY the criteria the rubric declares.
  * An omitted criterion is a silent partial-truncation — D-005 caught a pressured Overwatch
  * emitting 3–4 of 13 keys with no error — NOT a pass. A not-assessable criterion is rated
  * 'unknown' (with evidence, e.g. "no signal this wake"), never dropped. The sibling of
@@ -161,7 +161,9 @@ export function validateObservationRatings(obs: StructuredObservation | undefine
  * rubric is unknown/unloaded, so completeness can't be enforced → skip (rubricRef *validity*
  * is a separate concern). A free-text / no-rubric / empty-ratings observation passes
  * unconditionally (rubrics augment, never force). Throws `ObservationEvidenceError` (the
- * capture tool catches it into a clean `{ ok:false, error }`), naming the missing keys.
+ * capture tool catches it into a clean `{ ok:false, error }`), naming missing and
+ * unexpected keys. Extras are not harmless metadata: they become permanent fake
+ * dimensions in rubric trends (WI-4761 / EI-11617).
  */
 export function validateScorecardCompleteness(
   obs: StructuredObservation | undefined | null,
@@ -172,12 +174,18 @@ export function validateScorecardCompleteness(
   if (ratedKeys.length === 0) return; // empty ratings → validateObservationRatings owns that case
   if (!requiredKeys || requiredKeys.length === 0) return; // unknown / criteria-less rubric → can't enforce
   const rated = new Set(ratedKeys);
+  const required = new Set(requiredKeys);
   const missing = requiredKeys.filter((k) => !rated.has(k));
-  if (missing.length > 0) {
+  const unexpected = ratedKeys.filter((k) => !required.has(k));
+  if (missing.length > 0 || unexpected.length > 0) {
+    const mismatch = [
+      ...(missing.length > 0 ? [`missing required criterion key(s): ${missing.join(', ')}`] : []),
+      ...(unexpected.length > 0 ? [`unexpected criterion key(s): ${unexpected.join(', ')}`] : []),
+    ].join('; ');
     throw new ObservationEvidenceError(
-      `scorecard for rubric '${obs.rubricRef ?? '(unnamed)'}' is INCOMPLETE — missing required criterion ` +
-        `key(s): ${missing.join(', ')}. A rubric scorecard must rate every criterion (rate a not-assessable ` +
-        `one 'unknown' WITH evidence, never omit it) — a partial scorecard is a silent truncation, not a pass.`,
+      `scorecard for rubric '${obs.rubricRef ?? '(unnamed)'}' is INVALID/INCOMPLETE — ${mismatch}. ` +
+        `A rubric scorecard must rate exactly the declared criteria (rate a not-assessable one 'unknown' ` +
+        `WITH evidence, never omit or invent a key) — a key mismatch corrupts completeness and trend history.`,
     );
   }
 }

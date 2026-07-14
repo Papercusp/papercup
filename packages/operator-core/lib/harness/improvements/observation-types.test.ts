@@ -135,7 +135,7 @@ describe('validateScorecardCompleteness — the P-014a completeness gate', () =>
     expect(() => validateScorecardCompleteness(partial, [])).not.toThrow();
   });
 
-  it('ignores EXTRA rated keys beyond the rubric (only MISSING keys fail — completeness, not exactness)', () => {
+  it('rejects EXTRA rated keys and names them (WI-4761 trend-pollution guard)', () => {
     expect(() =>
       validateScorecardCompleteness(
         {
@@ -149,7 +149,22 @@ describe('validateScorecardCompleteness — the P-014a completeness gate', () =>
         },
         required,
       ),
-    ).not.toThrow();
+    ).toThrow(/unexpected criterion key\(s\): extraKey/);
+  });
+
+  it('reports missing and extra keys together so one retry can repair the whole scorecard', () => {
+    expect(() =>
+      validateScorecardCompleteness(
+        {
+          rubricRef: 'pot-coordination-health',
+          ratings: {
+            placement: { rating: 'healthy', evidence: 'e' },
+            invented: { rating: 'healthy', evidence: 'e' },
+          },
+        },
+        required,
+      ),
+    ).toThrow(/missing required criterion key\(s\): wake, federation; unexpected criterion key\(s\): invented/);
   });
 });
 

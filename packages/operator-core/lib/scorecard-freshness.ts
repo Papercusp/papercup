@@ -10,8 +10,8 @@
  * inherits its workspace-scope + organic-only + rubric filtering, and stays correct as the storage
  * evolves (Phase-3 rubric-as-a-plan re-point keeps the listScorecards seam).
  *
- * A "complete" scorecard = `rubricResolved && missingKeys.length === 0` (every rubric criterion
- * rated). `rubricResolved === false` (unknown rubric) is NEVER counted complete — an empty
+ * A "complete" scorecard = `rubricResolved && missingKeys.length === 0 && extraKeys.length === 0`
+ * (the rating keys exactly equal the rubric criteria). `rubricResolved === false` (unknown rubric) is NEVER counted complete — an empty
  * `missingKeys` from an unresolved rubric must not be misread as "all rated".
  *
  * The caller passes `since` = the Overwatch's last wake (the freshness window). Omitted ⇒ a lookback
@@ -46,6 +46,8 @@ export interface ScorecardFreshness {
   lastCompleteAt: string | null;
   /** The newest in-window scorecard's missingKeys — what is unrated right now (empty if complete/none). */
   latestMissingKeys: string[];
+  /** The newest in-window scorecard's unexpected/non-rubric keys. */
+  latestExtraKeys: string[];
 }
 
 /** 2h — generous vs a typical Overwatch wake interval, so a since-less query is still meaningful. */
@@ -96,9 +98,12 @@ export async function checkScorecardFreshness(
 
   // A valid "complete" requires the rubric to have resolved — an empty missingKeys from an
   // UNresolved rubric is not "all rated", it is "unknowable" (mirrors listScorecards's own note).
-  const isComplete = (r: ScorecardRow) => r.rubricResolved && r.missingKeys.length === 0;
+  const isComplete = (r: ScorecardRow) =>
+    r.rubricResolved && r.missingKeys.length === 0 && r.extraKeys.length === 0;
   const completes = rows.filter(isComplete);
-  const partials = rows.filter((r) => r.rubricResolved && r.missingKeys.length > 0);
+  const partials = rows.filter(
+    (r) => r.rubricResolved && (r.missingKeys.length > 0 || r.extraKeys.length > 0),
+  );
 
   const emitted = rows.length > 0;
   const complete = completes.length > 0;
@@ -117,6 +122,7 @@ export async function checkScorecardFreshness(
     lastEmittedAt: rows[0]?.createdAt ?? null,
     lastCompleteAt: completes[0]?.createdAt ?? null,
     latestMissingKeys: rows[0]?.missingKeys ?? [],
+    latestExtraKeys: rows[0]?.extraKeys ?? [],
   };
 }
 

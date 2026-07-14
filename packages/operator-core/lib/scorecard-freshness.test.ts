@@ -21,6 +21,7 @@ function row(p: Partial<ScorecardRow> & { issueId: string; createdAt: string }):
     ratings: {},
     nKeys: 0,
     missingKeys: [],
+    extraKeys: [],
     rubricResolved: true,
     synthesized: false,
     ...p,
@@ -44,6 +45,7 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
     expect(r.emitted).toBe(true);
     expect(r.lastCompleteAt).toBe('2026-06-20T13:00:00.000Z');
     expect(r.latestMissingKeys).toEqual([]);
+    expect(r.latestExtraKeys).toEqual([]);
   });
 
   it('PARTIAL-ONLY: scorecards landed but ALL incomplete — the silent truncation becomes visible', async () => {
@@ -77,6 +79,7 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
     expect(r.lastEmittedAt).toBeNull();
     expect(r.lastCompleteAt).toBeNull();
     expect(r.latestMissingKeys).toEqual([]);
+    expect(r.latestExtraKeys).toEqual([]);
   });
 
   it('FRESH picks the newest COMPLETE even when a later partial follows an earlier complete', async () => {
@@ -106,6 +109,27 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
     expect(r.complete).toBe(false); // unresolved → not a confirmable complete
     expect(r.partialCount).toBe(0); // not confirmed-incomplete either
     expect(r.status).toBe('partial-only'); // emitted but no confirmed-complete
+  });
+
+  it('treats a scorecard with extra non-rubric keys as partial-only, not complete', async () => {
+    const r = await checkScorecardFreshness(
+      { rubricRef: 'pot-coordination-health', since: SINCE },
+      withRows([
+        row({
+          issueId: 'EI-EXTRA',
+          createdAt: '2026-06-20T13:00:00.000Z',
+          nKeys: 15,
+          missingKeys: [],
+          extraKeys: ['invented-dimension'],
+          rubricResolved: true,
+        }),
+      ]),
+    );
+    expect(r.status).toBe('partial-only');
+    expect(r.complete).toBe(false);
+    expect(r.partialCount).toBe(1);
+    expect(r.latestMissingKeys).toEqual([]);
+    expect(r.latestExtraKeys).toEqual(['invented-dimension']);
   });
 
   it('EXCLUDES the synthesized floor by default — a floor-only window reads STALE so the agent skip stays visible', async () => {
