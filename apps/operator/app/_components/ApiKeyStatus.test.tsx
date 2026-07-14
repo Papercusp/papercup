@@ -33,9 +33,15 @@ function okJson(body: unknown): Response {
 function creds(over: Partial<Record<'anthropic_api_key' | 'openai_api_key' | 'github_pat', string | null>> = {}) {
   return { anthropic_api_key: null, openai_api_key: null, github_pat: null, ...over };
 }
-/** The dot's background color (the second inline span). */
+/**
+ * The dot's background color (the second inline span). Reads the `backgroundColor`
+ * longhand — NOT the `background` shorthand: jsdom's cssstyle validates `var()` on
+ * the shorthand inconsistently across versions and can drop it to '' (EI-10455's
+ * flip-flake); the longhand preserves `var()` verbatim.
+ */
 function dotColor(): string | undefined {
-  return (document.querySelector('span > span[aria-hidden]') as HTMLElement | null)?.style.background;
+  return (document.querySelector('span > span[aria-hidden]') as HTMLElement | null)?.style
+    .backgroundColor;
 }
 
 describe('ApiKeyStatus', () => {

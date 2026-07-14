@@ -44,7 +44,12 @@ export default function ApiKeyStatus() {
           width: 8,
           height: 8,
           borderRadius: '50%',
-          background: dotColor,
+          // Use the `background-color` longhand (not the `background` shorthand): a
+          // color-only value is all we set, and jsdom's cssstyle validates the
+          // `background` shorthand's `var()` inconsistently across versions (drops it
+          // to '' on some), which flip-flaked ApiKeyStatus.test.tsx. The longhand
+          // preserves `var()` verbatim and is identical in real browsers. (EI-10455)
+          backgroundColor: dotColor,
           flexShrink: 0,
         }}
       />
