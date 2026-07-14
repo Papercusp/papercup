@@ -29,6 +29,12 @@
   color: var(--fg);
   font-size: 13px;
   overflow: hidden;
+  /* Offset for the docked Papercup/Pot-Health sidebar (OperatorChatSidebar
+     mounted by page.tsx — owner ask 2026-07-14). The sidebar maintains
+     --op-chat-w on :root (56px collapsed rail / drag width open) and removes
+     it on unmount, so this pads to exactly the rail and collapses to zero
+     when the sidebar is flagged off. */
+  padding-left: var(--op-chat-w, 0px);
 }
 
 .pc-qp__root {
@@ -50,6 +56,12 @@
   flex: none;
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);
+  /* The POT/agents pills' expand popovers are plain absolute drops (no
+     portal, z-index 80 inside the pill). Raise the strip's stacking context
+     so a popover paints OVER the tabs/pane below instead of being cut off
+     by them (owner report 2026-07-14). */
+  position: relative;
+  z-index: 90;
 }
 
 .pc-qp__tabs {
@@ -271,6 +283,34 @@
   outline-offset: -1px;
 }
 
+/* The create button — a real labeled button (owner ask 2026-07-14: the old
+   24px bare-icon button read as an unclickable dot). Flat accent per design
+   hard rule 9 (no gradients/raised shadows). */
+.pc-qp__newbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 5px;
+  background: var(--accent-bg, rgba(87, 215, 255, 0.12));
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  flex: none;
+}
+
+.pc-qp__newbtn:hover {
+  background: var(--accent-bg-hover, rgba(87, 215, 255, 0.22));
+}
+
+.pc-qp__newbtn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* pinned strip */
 
 .pc-qp__pins {
@@ -385,6 +425,9 @@
   background: var(--accent-strong);
 }
 
+/* Inline node-title editor (the Workflowy behavior: the outline text IS the
+   editor). Styled as bare text — the ROW carries hover/selection chrome, so
+   the input itself stays invisible until you type. */
 .pc-qp__nodetitle {
   flex: 1;
   min-width: 0;
@@ -392,6 +435,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 12.5px;
+  font-family: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  cursor: text;
+}
+
+.pc-qp__nodetitle::placeholder {
+  color: var(--fg-3, rgba(148, 178, 205, 0.45));
 }
 
 .pc-qp__nodepin {

@@ -30,6 +30,7 @@ import { FLAGS } from '@papercusp/flags';
 import { lazyWithRetry } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { useFlag } from '@/lib/flag-hooks';
 import { Select } from '@/app/harness/Select';
+import { OperatorChatSidebar } from '@/app/_components/OperatorChatSidebar';
 import PromptsTab from './PromptsTab';
 import './quick-panel.css';
 
@@ -37,7 +38,8 @@ const BrainstormFull = lazyWithRetry(() =>
   import('@/app/harness/brainstorm/BrainstormFull').then((m) => ({ default: m.BrainstormFull })),
 );
 
-const QP_TABS = ['prompts', 'docs', 'brainstorm'] as const;
+// UI order (owner ask 2026-07-14: Brainstorm second): Prompts · Brainstorm · Docs.
+const QP_TABS = ['prompts', 'brainstorm', 'docs'] as const;
 type QpTab = (typeof QP_TABS)[number];
 
 /** The lite registry row the harness picker needs (subset of harnessProjects.lite). */
@@ -117,6 +119,12 @@ function BrainstormPane() {
  */
 export default function QuickPanelPage({ headerSlot }: { headerSlot?: ReactNode } = {}) {
   const enabled = useFlag(FLAGS.QUICK_PANEL);
+  // The Papercup chat / 🫖 Pot Health sidebar, docked left inside the panel
+  // window (owner ask 2026-07-14). /quick-panel is chromeless, so ChromeShell —
+  // the sidebar's usual host — never renders here; the page mounts it itself,
+  // behind the same flag. It sets --op-chat-w on :root, which .pc-qp consumes
+  // as left padding, exactly like the main app's body offset.
+  const chatSidebar = useFlag(FLAGS.OPERATOR_CHAT_SIDEBAR);
   const [tab, setTab] = useQueryState(
     'tab',
     parseAsStringEnum<QpTab>([...QP_TABS]).withDefault('prompts'),
@@ -135,6 +143,7 @@ export default function QuickPanelPage({ headerSlot }: { headerSlot?: ReactNode 
 
   return (
     <div className="pc-qp">
+      {chatSidebar && <OperatorChatSidebar />}
       {headerSlot ? <div className="pc-qp__statusbar">{headerSlot}</div> : null}
       <Tabs.Root
         className="pc-qp__root"
@@ -146,18 +155,22 @@ export default function QuickPanelPage({ headerSlot }: { headerSlot?: ReactNode 
             <ListTree size={13} aria-hidden />
             Prompts
           </Tabs.Trigger>
-          <Tabs.Trigger className="pc-qp__tab" value="docs">
-            <BookOpenText size={13} aria-hidden />
-            Docs
-          </Tabs.Trigger>
           <Tabs.Trigger className="pc-qp__tab" value="brainstorm">
             <Lightbulb size={13} aria-hidden />
             Brainstorm
+          </Tabs.Trigger>
+          <Tabs.Trigger className="pc-qp__tab" value="docs">
+            <BookOpenText size={13} aria-hidden />
+            Docs
           </Tabs.Trigger>
         </Tabs.List>
 
         <Tabs.Content className="pc-qp__pane" value="prompts">
           <PromptsTab />
+        </Tabs.Content>
+
+        <Tabs.Content className="pc-qp__pane" value="brainstorm">
+          <BrainstormPane />
         </Tabs.Content>
 
         <Tabs.Content className="pc-qp__pane" value="docs">
@@ -168,10 +181,6 @@ export default function QuickPanelPage({ headerSlot }: { headerSlot?: ReactNode 
             src="/internal/docs/search-palette.html"
             title="Docs search"
           />
-        </Tabs.Content>
-
-        <Tabs.Content className="pc-qp__pane" value="brainstorm">
-          <BrainstormPane />
         </Tabs.Content>
       </Tabs.Root>
     </div>

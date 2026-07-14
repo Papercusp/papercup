@@ -1,1 +1,0 @@
-import{n as e,t}from"./cross-hive-boundary-boot-Uiiq2-op.js";e();export{t as ensureCrossHiveBoundariesWired};

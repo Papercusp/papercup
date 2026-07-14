@@ -25,6 +25,7 @@
  */
 
 import { open } from 'node:fs/promises';
+import { classifyRecordedTurn } from '../../turn-provenance/turn-ref';
 import type { AgentIdentity } from './identity';
 import { getMessageById } from './messages';
 import { resolveSelfSession } from '../../search/self-session';
@@ -55,18 +56,14 @@ interface HumanTurn {
   text: string;
 }
 
-/** Harness-synthetic user entries that are NOT owner words (local-command
- *  echoes, caveats, command stdout, post-compaction continuation plumbing). */
-const SYNTHETIC_MARKERS = [
-  '<local-command-caveat>',
-  '<local-command-stdout>',
-  '<command-name>',
-  '<command-message>',
-];
-
+/** NOT owner words: harness-synthetic entries (local-command echoes, caveats),
+ *  machine surfaces (system-notification banners, compaction continuations),
+ *  and — P-014 fix — MACHINE-INJECTED turns: every enrolled injector prefixes a
+ *  durable ⟦turn-origin:…⟧ envelope, and before this check a wake-pump/loop-fire
+ *  turn counted as a "human turn", so a Tier-2/3 relay could stamp an injected
+ *  directive owner-verified. Shared classifier: turn-provenance/turn-ref.ts. */
 function isSyntheticTurn(text: string): boolean {
-  const head = text.slice(0, 200);
-  return SYNTHETIC_MARKERS.some((m) => head.includes(m));
+  return classifyRecordedTurn(text).verdict !== 'owner-typed';
 }
 
 /** Parse the human (owner-typed) turns out of raw JSONL text, in file order.

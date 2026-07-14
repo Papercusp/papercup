@@ -10,6 +10,7 @@ import {
   extractVariables,
   fillVariables,
   indent,
+  insertAfter,
   isFolder,
   moveDown,
   moveUp,
@@ -195,6 +196,59 @@ describe('move operations', () => {
     expect(pos > 'a0').toBe(true);
     const rootPos = appendPosition(model, null);
     expect(rootPos > 'a2').toBe(true);
+  });
+
+  it('insertAfter a leaf places the new node as the next sibling', () => {
+    const rows = positioned();
+    const p = insertAfter(buildPromptTree(rows), 'a');
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBeNull();
+    expect(p!.assignments).toEqual([]);
+    // between a (a0) and b (a1)
+    expect(p!.position > 'a0' && p!.position < 'a1').toBe(true);
+  });
+
+  it('insertAfter the last sibling appends past it', () => {
+    const p = insertAfter(buildPromptTree(positioned()), 'c1');
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBe('c');
+    expect(p!.position > 'a0').toBe(true);
+  });
+
+  it('insertAfter an EXPANDED parent creates its first child', () => {
+    const p = insertAfter(buildPromptTree(positioned()), 'c');
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBe('c');
+    expect(p!.position < 'a0').toBe(true); // before existing child c1 (a0)
+  });
+
+  it('insertAfter a COLLAPSED parent creates a sibling instead', () => {
+    const rows = [
+      row({ id: 'a', position: 'a0' }),
+      row({ id: 'c', position: 'a2', collapsed: true }),
+      row({ id: 'c1', parentId: 'c', position: 'a0' }),
+    ];
+    const p = insertAfter(buildPromptTree(rows), 'c');
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBeNull();
+    expect(p!.position > 'a2').toBe(true);
+  });
+
+  it('insertAfter resequences legacy NULL-position siblings', () => {
+    const rows = [
+      row({ id: 'p', position: null, title: 'A' }),
+      row({ id: 'q', position: null, title: 'B' }),
+    ];
+    const p = insertAfter(buildPromptTree(rows), 'p');
+    expect(p).not.toBeNull();
+    expect(p!.assignments.length).toBe(2); // full resequence rides along
+    const resequenced = apply(rows, p!.assignments);
+    const created = row({ id: 'new', parentId: p!.parentId, position: p!.position, title: 'x' });
+    expect(visibleIds([...resequenced, created])).toEqual(['p', 'new', 'q']);
+  });
+
+  it('insertAfter an unknown id is null', () => {
+    expect(insertAfter(buildPromptTree(positioned()), 'nope')).toBeNull();
   });
 });
 

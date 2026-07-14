@@ -1,1 +1,0 @@
-import{n as e,t}from"./text-artifacts-CL8lGT3X.js";t();export{e as loadTextArtifact};

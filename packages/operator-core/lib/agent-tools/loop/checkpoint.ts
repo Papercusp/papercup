@@ -39,7 +39,7 @@ import { readInbox } from '../coordination/messages';
 import { readWatermark } from '../coordination/watermarks';
 import { continuationGateFromReads, countPendingInterrupts } from '../coordination/tools/continuation-gate';
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
-import { provenanceLintField } from '../../carry-surface-provenance-lint';
+import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
@@ -315,8 +315,9 @@ export default defineTool({
     );
     const continuation = continuationRead.value;
 
-    // WI-3801: warn-only nudge — undefined (no field) on a clean/cleared write.
-    const provenanceLint = stored !== null ? provenanceLintField(stored) : undefined;
+    // WI-3801 lint + P-014 turn-ref verification/origin stamp — both warn-only,
+    // absent (no fields) on a clean/cleared write.
+    const provenanceFields = stored !== null ? await carryProvenanceFields(stored, ownerId) : {};
     return {
       content: [
         {
@@ -329,7 +330,7 @@ export default defineTool({
             length: stored?.length ?? 0,
             walls: walls.length,
             ...(continuation ? { continuation } : {}),
-            ...(provenanceLint ? { provenanceLint } : {}),
+            ...provenanceFields,
           }),
         },
       ],

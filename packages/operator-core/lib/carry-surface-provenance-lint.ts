@@ -29,6 +29,18 @@
 /** The four tagged-source forms the "Directive provenance" convention recognizes. */
 const SOURCE_TAG_RE = /\[(?:owner:[^\]]+|self-imposed|peer:[^\]]+|inferred)\]/i;
 
+/** P-014 (deterministic-context-carry): a turn ref `[turn:<session>@<ts>]` is the
+ *  VERIFIABLE anchor for a directive — the stamper (carry-surface-provenance-stamp)
+ *  resolves it against the writer's own transcript and classifies the referenced
+ *  turn owner-vs-agent mechanically. A line carrying one is never lint-flagged. */
+const TURN_REF_LINE_RE = /\[turn:[0-9a-f]{4,36}@[0-9T:.+Z-]{10,40}\]/i;
+
+/** A hand-written owner tag with NO turn ref. P-014 retires these as evidence:
+ *  the tag asserts, a turn ref proves — and the WI-3532 drift showed asserted
+ *  tags survive compaction hops while their truth decays. Warn-only, like all
+ *  of this module. */
+const OWNER_TAG_RE = /\[owner:[^\]]+\]/i;
+
 /** Phrases that attribute a claim/imperative to the owner, or a bare "do not X
  *  until Y" gate/permission imperative — the two shapes EI-9091 found drifting
  *  (a block AND a permission can both be manufactured the same way). Kept to a
@@ -55,7 +67,7 @@ export interface ProvenanceLintMatch {
   /** The offending line, trimmed and capped for display (never the full body). */
   line: string;
   /** Which heuristic matched. */
-  kind: 'owner-attribution' | 'bare-gate-imperative';
+  kind: 'owner-attribution' | 'bare-gate-imperative' | 'manual-owner-tag';
 }
 
 export interface ProvenanceLintResult {
@@ -88,7 +100,14 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
     if (matches.length >= MAX_MATCH_LINES) break;
     const line = rawLine.trim();
     if (!line) continue;
-    if (SOURCE_TAG_RE.test(line)) continue; // already tagged on this line — not flagged
+    if (TURN_REF_LINE_RE.test(line)) continue; // turn-ref'd — mechanically verifiable (P-014)
+    if (OWNER_TAG_RE.test(line)) {
+      // P-014: a bare [owner:…] tag no longer clears the line — it asserts an
+      // owner directive without a verifiable anchor. Nudge for a [turn:…] ref.
+      matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'manual-owner-tag' });
+      continue;
+    }
+    if (SOURCE_TAG_RE.test(line)) continue; // [self-imposed]/[peer:]/[inferred] — not owner-authority
     if (OWNER_ATTRIBUTION_RE.test(line)) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-attribution' });
     } else if (!hasTaggedProvenanceBlock && BARE_GATE_IMPERATIVE_RE.test(line)) {
@@ -100,10 +119,11 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
 
 /** The advisory note a consumer tool folds into its response when flagged. */
 export const PROVENANCE_LINT_NOTE =
-  'provenance_lint: untagged owner-attributed imperative(s) detected in this carry-surface write. ' +
-  'Tag the source ([owner:<name> <date>] · [self-imposed] · [peer:<sid>] · [inferred]) or verify against ' +
-  "the verbatim transcript (sessions:search { session:'self', mode:'verbatim' }) before this is read back as " +
-  'an owner directive. See "Directive provenance" (papercusp-compaction.base.md) / WI-3532 / EI-9091.';
+  'provenance_lint: owner-attributed directive(s) without a verifiable turn ref in this carry-surface write. ' +
+  'Anchor each to its source turn with [turn:<session>@<iso-ts>] (the system verifies it against your own ' +
+  'transcript and stamps owner-vs-agent origin — P-014); a hand-written [owner:…] tag alone asserts but does ' +
+  'not prove. Non-owner sources still tag [self-imposed] · [peer:<sid>] · [inferred]. Verify a remembered ' +
+  "directive via sessions:search { session:'self', mode:'verbatim' }. See WI-3532 / EI-9091.";
 
 /** Convenience: build the `{ flagged, note?, matches? }` shape every consumer
  *  tool folds into its JSON response — `undefined` fields when clean, so a clean
