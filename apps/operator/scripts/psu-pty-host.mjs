@@ -752,6 +752,29 @@ export function mcpServerRowStatus(line, name) {
   return 'unknown';
 }
 
+/** Does the freshest paint read as "`name` is connected"? Two shapes exist:
+ *  the LIST view puts name + status on ONE row (mcpServerRowStatus decides);
+ *  the DETAIL view shows the name as a header and `Status: … connected` on its
+ *  OWN line — so a bare status line is decisive there (the detail view shows
+ *  only one server). Scans freshest-line-first; the first decisive row wins.
+ *  Pure — exported for tests. */
+export function mcpConnectedVerdict(visible, name) {
+  const lines = String(visible ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    const rowSt = mcpServerRowStatus(l, name);
+    if (rowSt) return rowSt === 'connected';
+    if (/\bstatus\b/i.test(l)) {
+      if (/\b(disconnected|failed|error|connecting|pending|retrying|needs authentication)\b/i.test(l)) return false;
+      if (/\bconnected\b/i.test(l)) return true;
+    }
+  }
+  return false;
+}
+
 /** Is the ❯ selection cursor on the (freshest) dialog row matching `test`?
  *  Parses an ANSI-stripped visible chunk; the LAST matching line reflects the
  *  most recent repaint. Pure — exported for tests. */
@@ -874,11 +897,11 @@ export async function runMcpReconnectMacro({
     // not found selected ⇒ fall through — the connected-wait below still judges it
   }
 
-  // (5) did it connect?
-  const done = await waitFor((v) => targetRowStatus(v) === 'connected', reconnectBudgetMs);
+  // (5) did it connect? (list-row OR detail-status shape — mcpConnectedVerdict)
+  const done = await waitFor((v) => mcpConnectedVerdict(v, serverName), reconnectBudgetMs);
   await closeOut();
   return done
-    ? { ok: true, step: 'done', detail: 'target row reads connected' }
+    ? { ok: true, step: 'done', detail: 'connected verdict observed' }
     : { ok: false, step: 'await-connected', detail: `no connected marker within ${reconnectBudgetMs}ms` };
 }
 
@@ -1331,6 +1354,28 @@ export function hostThroughPty(o) {
   let wireChildExit = () => {};
   let recycleChild = async () => {};
 
+  // Output taps (mcp-transport-resilience P-003): live subscribers to the
+  // child's raw output bytes — the mcp-reconnect macro reads the TUI screen
+  // through one. Fed by wireChildData below (so a tap survives a RECYCLE's
+  // re-wire); a tap's lifetime is its caller's (add → close), and a throwing
+  // tap can never break the stdout bridge.
+  const outputTaps = new Set();
+  const makeOutputTap = (capBytes = 65_536) => {
+    let buf = '';
+    const fn = (d) => {
+      buf += d;
+      if (buf.length > capBytes) buf = buf.slice(-(capBytes >> 1));
+    };
+    outputTaps.add(fn);
+    return {
+      read: () => buf,
+      reset: () => {
+        buf = '';
+      },
+      close: () => outputTaps.delete(fn),
+    };
+  };
+
   // P-006: activity annotation rides the SAME discovery file — additive
   // fields only (the read-side contract in operator-core psu-pty-discovery.ts
   // tolerates their absence for files written by older hosts).
@@ -1348,7 +1393,9 @@ export function hostThroughPty(o) {
     // this (psu-pty-discovery.hostSupports) to decide whether to send mode:'compact'
     // (post-compaction auto-continuation) or fall back to a plain /compact turn on an
     // older host that has no `caps` field. Additive — grow this as new modes land.
-    caps: ['compact'],
+    // 'mcp-reconnect' (P-003, 2026-07-13): the in-place /mcp dialog heal; an old
+    // host without it makes the watchdog fall back to notify-only.
+    caps: ['compact', 'mcp-reconnect'],
   };
   const writeMeta = () => {
     try {
@@ -1947,6 +1994,17 @@ export function hostThroughPty(o) {
     child.onData((d) => {
       activity.touchOutput();
       stdout.write(d);
+      // P-003: feed any live output taps (mcp-reconnect macro screen reads).
+      if (outputTaps.size > 0) {
+        const s = typeof d === 'string' ? d : String(d);
+        for (const t of outputTaps) {
+          try {
+            t(s);
+          } catch {
+            /* a tap must never break the stdout bridge */
+          }
+        }
+      }
     });
   };
   wireChildData();
