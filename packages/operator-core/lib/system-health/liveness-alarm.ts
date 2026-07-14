@@ -73,6 +73,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { activeWorkspaceId } from '../workspace-registry';
 import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
+import { currentLoopLag } from '../event-loop-lag-monitor';
 
 export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:infra-liveness-alarm',
@@ -83,10 +84,27 @@ export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
 };
 
 /** A live supervision problem worth an out-of-band owner alert. */
+export type HealthTickStallCause =
+  | 'pg-pool-starvation'
+  | 'event-loop-pressure'
+  | 'routine-engine-stall'
+  | 'background-worker-unavailable'
+  | 'unattributed-stale-tick';
+
+/** Durable evidence attached to a stale health-tick signal. */
+export interface HealthTickStallDiagnosis {
+  cause: HealthTickStallCause;
+  evidence: string[];
+  snapshotAgeMs: number;
+  lastSnapshotAtMs: number | null;
+  observedAtMs: number;
+}
+
 export interface AlarmSignal {
   key: string;
   severity: EscalationSeverity;
   summary: string;
+  diagnosis?: HealthTickStallDiagnosis;
 }
 
 const DEFAULT_SNAPSHOT_STALE_MS = 6 * 60_000;
@@ -131,6 +149,66 @@ function autoloopFireStaleMultiplier(): number {
 }
 
 /**
+ * Attribute a stale system-health snapshot from the evidence available to the
+ * request-path observer. This is deliberately conservative: a stale snapshot
+ * alone proves a missed health tick, not its mechanism. Pool/loop evidence wins
+ * over downstream dead-routine symptoms; when no corroborating signal exists we
+ * say so explicitly instead of repeating the old unqualified "likely frozen".
+ */
+export function diagnoseHealthTickStall(
+  health: SystemHealth,
+  snapshotAgeMs: number,
+  observedAtMs: number,
+  lastSnapshotAtMs: number | null,
+): HealthTickStallDiagnosis {
+  const evidence: string[] = [];
+  const infra = health.panels.infra?.data as
+    | {
+        pg?: { total?: number; active?: number } | null;
+        pool?: { probeMs?: number; band?: string } | null;
+        perf?: { status?: string; stale?: boolean; eventLoopLagP95Ms?: number | null; reasons?: string[] } | null;
+      }
+    | null
+    | undefined;
+  const workFeed = health.panels.workFeed?.data as
+    | { deadRoutines?: number; deadRoutineNames?: string[] }
+    | null
+    | undefined;
+  const loop = currentLoopLag();
+
+  if (infra?.pool?.band === 'critical') {
+    evidence.push(`pg acquire probe ${infra.pool.probeMs ?? '?'}ms (critical)`);
+  }
+  if (loop && Number.isFinite(loop.p95Ms) && loop.p95Ms >= 600) {
+    evidence.push(`event-loop p95 ${Math.round(loop.p95Ms)}ms (critical)`);
+  }
+  if (infra?.perf && !infra.perf.stale && infra.perf.eventLoopLagP95Ms != null && infra.perf.eventLoopLagP95Ms >= 1000) {
+    evidence.push(`captured event-loop p95 ${Math.round(infra.perf.eventLoopLagP95Ms)}ms (critical)`);
+  }
+  if ((workFeed?.deadRoutines ?? 0) > 0) {
+    const names = workFeed?.deadRoutineNames?.slice(0, 3).join(', ');
+    evidence.push(`${workFeed?.deadRoutines} overdue routine(s)${names ? `: ${names}` : ''}`);
+  }
+  if (infra?.pg === null) evidence.push('request-path PG read failed');
+
+  const cause: HealthTickStallCause =
+    infra?.pool?.band === 'critical'
+      ? 'pg-pool-starvation'
+      : loop && loop.p95Ms >= 600
+        ? 'event-loop-pressure'
+        : infra?.perf && !infra.perf.stale && infra.perf.eventLoopLagP95Ms != null && infra.perf.eventLoopLagP95Ms >= 1000
+          ? 'event-loop-pressure'
+          : (workFeed?.deadRoutines ?? 0) > 0
+            ? 'routine-engine-stall'
+            : infra?.pg === null
+              ? 'background-worker-unavailable'
+              : 'unattributed-stale-tick';
+
+  if (evidence.length === 0) evidence.push('no corroborating pool, loop, routine, or PG evidence was readable');
+  return { cause, evidence, snapshotAgeMs, lastSnapshotAtMs, observedAtMs };
+}
+
+/**
  * PURE: derive the critical supervision signals from a SystemHealth snapshot.
  * `snapshotAgeMs` is the age of `lastSystemHealth` at evaluation (null = the
  * snapshot was computed fresh this tick, so staleness is not a signal).
@@ -145,6 +223,9 @@ export function evaluateLivenessAlarm(
      *  Optional — omitted/empty means "not evaluated this tick" (fail-open, never
      *  a false negative from a caller that hasn't wired the fetch). */
     autoloopFireRows?: AutoloopFireRow[];
+    /** EI-11841: typed evidence for a stale health tick, computed by the request-path
+     *  caller while the last successful snapshot is still available. */
+    stallDiagnosis?: HealthTickStallDiagnosis;
   } = {},
 ): AlarmSignal[] {
   const staleMs = opts.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
@@ -160,10 +241,15 @@ export function evaluateLivenessAlarm(
   //    that lives in it) is likely frozen. The request-path catch for the
   //    BACKGROUND_WORKERS=0 / bg-host-down class.
   if (tickStale) {
+    const diagnosis = opts.stallDiagnosis;
+    const detail = diagnosis
+      ? ` Root cause: ${diagnosis.cause}; evidence: ${diagnosis.evidence.join('; ')}; last successful tick ${diagnosis.lastSnapshotAtMs === null ? 'unknown' : new Date(diagnosis.lastSnapshotAtMs).toISOString()}; observed ${new Date(diagnosis.observedAtMs).toISOString()}.`
+      : '';
     signals.push({
       key: 'health-tick-stale',
       severity: 'blocker',
-      summary: `system-health tick stale for ${Math.round(snapshotAgeMs / 60_000)}m — the background routine engine (DBOS) is likely frozen; routines / git-sync / Mug will be stalled and the in-engine watchdog is blind.`,
+      summary: `system-health tick stale for ${Math.round(snapshotAgeMs / 60_000)}m — the background routine engine (DBOS) may be frozen; routines / git-sync / Mug may be stalled and the in-engine watchdog may be blind.${detail}`,
+      ...(diagnosis ? { diagnosis } : {}),
     });
   }
 
@@ -671,6 +757,9 @@ export async function runLivenessAlarmTick(
     snapshotStaleMs: staleMs,
     prevPostmasterStartMs,
     autoloopFireRows,
+    ...(snapshotAgeMs !== null && snapshotAgeMs > staleMs
+      ? { stallDiagnosis: diagnoseHealthTickStall(health, snapshotAgeMs, now, cached?.evaluatedAt ?? null) }
+      : {}),
   });
   const currentSigs = new Set(signals.map((s) => s.key));
 
@@ -779,7 +868,14 @@ export async function runLivenessAlarmTick(
           `(the failure that blinds the in-engine watchdog). Signal: ${s.key}. Workspace: ${ws}.`,
         // EI-2146: stamp the signature so dedup + auto-resolve match exactly
         // (no summary-parsing needed for records this alarm writes).
-        meta: { livenessSignature: s.key },
+        meta: {
+          // EI-11841: stable dedup identity must not include dynamic timing/evidence
+          // fields, or concurrent request workers can open duplicate flap rows.
+          livenessSignature: s.key,
+          dedupKind: 'infra-liveness',
+          subjectSignature: s.key,
+          ...(s.diagnosis ? { healthTickStallDiagnosis: s.diagnosis } : {}),
+        },
       });
     } catch {
       /* an alarm-send failure must never crash the request worker */
