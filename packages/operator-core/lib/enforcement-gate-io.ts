@@ -191,14 +191,19 @@ async function runFlushGateInner(input: {
   nowMs?: number;
 }): Promise<FlushGateOutcome> {
   const nowMs = input.nowMs ?? Date.now();
-  let brief = input.brief ?? null;
-  if (brief === undefined || brief === null) {
+  // Only FETCH when the caller didn't provide a brief at all (undefined). An
+  // explicit `null` means the caller already tried and the read failed (e.g. the
+  // compaction seam's loadCarryBrief) — don't re-pay a failing round-trip.
+  let brief: CarryBrief | null;
+  if (input.brief === undefined) {
     try {
       const { buildCarryBrief } = await import('./carry-brief');
       brief = await buildCarryBrief(input.ownerId, { workspaceId: input.workspaceId });
     } catch {
       brief = null;
     }
+  } else {
+    brief = input.brief;
   }
   const tripwires = detectFlushTripwires(brief, nowMs);
   const alreadyRefused = wasRecentlyRefused(input.boundary, input.ownerId, nowMs);

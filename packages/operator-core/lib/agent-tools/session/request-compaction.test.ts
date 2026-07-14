@@ -15,6 +15,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { truncateHint, COMPACT_PROVENANCE_MARKER } from './request-compaction';
+import { __resetRefusalMarkers } from '../../enforcement-gate-io';
 
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
@@ -63,6 +64,7 @@ const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetRefusalMarkers(); // P-016 gate marker is module-level — isolate each test
   injectIntoHost.mockResolvedValue(true);
   buildCarryBrief.mockResolvedValue(emptyBrief);
   provDir = mkdtempSync(join(tmpdir(), 'reqcomp-prov-'));
@@ -233,16 +235,17 @@ describe('session:request-compaction over-long hint truncation (EI-7032)', () =>
 });
 
 /**
- * EI-8987: session:request-compaction proactively surfaces held work-items with
- * NO checkpoint at all — the highest-risk case (a compacted-away transcript with
- * zero durable carry-note is a genuine state loss). WARN-only: never refuses the
- * compaction (a hard-refuse gate on the tool an agent calls BECAUSE it's at its
- * context limit would strand it on any gate bug — worse than the failure this
- * catches). The compaction is already queued by the time the warning is read, but
- * the calling turn hasn't ended yet, so it's still actionable: the agent can fire
- * one more work_items:checkpoint before it truly stops.
+ * EI-8987 + P-016: session:request-compaction surfaces held work-items with a
+ * missing/stale checkpoint (the highest-risk case: a compacted-away transcript with
+ * zero durable carry-note is a genuine state loss). P-016 turns the old warn into an
+ * enforcement gate: unflushed state HOLDS the compaction ONCE (naming the flush);
+ * a retry that still hasn't flushed gets a system-written mechanical fallback and
+ * proceeds. The ladder never strands — the second encounter always proceeds — so it
+ * respects the original "don't hard-refuse the tool an agent calls at its limit"
+ * constraint while adding teeth. staleCheckpoints (the raw list) is still surfaced
+ * on every proceed path. (The pure detection is covered in enforcement-gate.test.ts.)
  */
-describe('session:request-compaction — EI-8987 stale-checkpoint warning', () => {
+describe('session:request-compaction — P-016 flush-enforcement gate', () => {
   beforeEach(() => {
     findLiveHost.mockReturnValue(compactHost);
     injectIntoHost.mockResolvedValue(true);
@@ -265,22 +268,22 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
     expect(b.staleCheckpoints).toEqual([]);
   });
 
-  it('a held item with NO checkpoint (null) → flagged in staleCheckpoints + the note, compaction STILL proceeds (warn, never refuse)', async () => {
+  it('a held item with NO checkpoint (null) → the gate REFUSES the compaction ONCE, naming the flush; nothing queued (P-016)', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [{ id: 'WI-200', title: 'the risky one', body: null, harness: 'papercup', checkpoint: null }],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.staleCheckpoints).toEqual([{ id: 'WI-200', title: 'the risky one', reason: 'missing' }]);
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('flush-required');
+    expect(b.tripwires.map((t: { kind: string }) => t.kind)).toContain('missing-checkpoint');
     expect(b.note).toContain('WI-200');
-    expect(b.note).toContain('NO checkpoint');
-    // Never a refusal — the compaction is still queued.
-    expect(b.ok).toBe(true);
-    expect(b.requested).toBe(true);
-    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+    expect(b.note).toContain('work_items:checkpoint');
+    // The compaction was NOT queued — the agent must flush (or retry) first.
+    expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
-  it('multiple held items, mixed → only the checkpoint-less ones are flagged', async () => {
+  it('the refusal names ALL un-checkpointed held items', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [
@@ -290,13 +293,17 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
       ],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.staleCheckpoints).toEqual([
-      { id: 'WI-2', title: 'missing', reason: 'missing' },
-      { id: 'WI-3', title: 'also missing', reason: 'missing' },
-    ]);
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('flush-required');
+    const subjects = b.tripwires.map((t: { subject: string }) => t.subject);
+    expect(subjects).toContain('WI-2');
+    expect(subjects).toContain('WI-3');
+    expect(subjects).not.toContain('WI-1'); // the checkpointed one is not flagged
+    expect(b.note).toContain('WI-2');
+    expect(b.note).toContain('WI-3');
   });
 
-  it('P-003: a held item whose checkpoint is OLDER than the stale window → flagged reason:stale with ageMinutes, note names the age, compaction proceeds', async () => {
+  it('P-003: a held item whose checkpoint is OLDER than the stale window → refuses with a stale tripwire naming the age', async () => {
     const fortyMinAgo = Date.now() - 40 * 60_000;
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
@@ -305,10 +312,12 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
       ],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.staleCheckpoints).toEqual([{ id: 'WI-300', title: 'long-running', reason: 'stale', ageMinutes: 40 }]);
-    expect(b.note).toContain('STALE checkpoint');
-    expect(b.note).toContain('WI-300 40m old');
-    expect(b.ok).toBe(true); // warn, never refuse
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('flush-required');
+    expect(b.tripwires).toEqual([
+      expect.objectContaining({ kind: 'stale-checkpoint', subject: 'WI-300', ageMinutes: 40 }),
+    ]);
+    expect(b.note).toContain('WI-300 (40m old)');
   });
 
   it('P-003: a FRESH checkpoint (within the stale window) is not flagged', async () => {
@@ -331,7 +340,7 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
     expect(b.staleCheckpoints).toEqual([]);
   });
 
-  it('P-003: missing + stale mix — both legs appear in the note independently', async () => {
+  it('P-003: missing + stale mix — both tripwire kinds appear in the refusal', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [
@@ -340,12 +349,22 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
       ],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.staleCheckpoints).toEqual([
-      { id: 'WI-310', title: 'no note', reason: 'missing' },
-      { id: 'WI-311', title: 'old note', reason: 'stale', ageMinutes: 20 },
-    ]);
-    expect(b.note).toContain('NO checkpoint');
-    expect(b.note).toContain('STALE checkpoint');
+    expect(b.ok).toBe(false);
+    expect(b.tripwires.map((t: { kind: string }) => t.kind).sort()).toEqual(['missing-checkpoint', 'stale-checkpoint']);
+    expect(b.note).toContain('WI-310');
+    expect(b.note).toContain('WI-311 (20m old)');
+  });
+
+  it('an armed loop with NO carry-note refuses, naming loop:checkpoint', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      loop: { harness: 'papercusp', active: true, intervalSec: 60, carryNote: null, carryNoteUpdatedAtMs: null },
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.ok).toBe(false);
+    expect(b.tripwires[0].kind).toBe('armed-loop-no-carry-note');
+    expect(b.note).toContain('loop:checkpoint');
+    expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
   it('buildCarryBrief throwing → fails soft to an empty staleCheckpoints list, never blocks the compaction', async () => {
@@ -362,16 +381,25 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
     expect(buildCarryBrief).toHaveBeenCalledTimes(1);
   });
 
-  it('a failed socket write still surfaces staleCheckpoints (informational regardless of injection outcome)', async () => {
-    injectIntoHost.mockResolvedValue(false);
+  it('the P-016 ladder: an un-flushed RETRY (already refused) gets a mechanical fallback and the compaction PROCEEDS', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [{ id: 'WI-9', title: null, body: null, harness: null, checkpoint: null }],
     });
-    const b = body(await call({ focus: 'x' }));
-    expect(b.ok).toBe(false);
-    // Failed injection short-circuits the stale-note suffix (nothing was actually
-    // queued), but the raw list is still returned for the caller to act on.
-    expect(b.staleCheckpoints).toEqual([{ id: 'WI-9', title: null, reason: 'missing' }]);
+    // First call → refused, nothing queued.
+    const first = body(await call({ focus: 'x' }));
+    expect(first.ok).toBe(false);
+    expect(first.error).toBe('flush-required');
+    expect(injectIntoHost).not.toHaveBeenCalled();
+
+    // Retry with the SAME unflushed state → the system writes the fallback ITSELF and
+    // the compaction proceeds (never strands). The mechanicalFallback field is present
+    // and staleCheckpoints is still surfaced.
+    const second = body(await call({ focus: 'x' }));
+    expect(second.ok).toBe(true);
+    expect(second.requested).toBe(true);
+    expect(second.mechanicalFallback).toBeDefined();
+    expect(second.staleCheckpoints).toEqual([{ id: 'WI-9', title: null, reason: 'missing' }]);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 });

@@ -21,6 +21,7 @@
  * DBOS workflow_status row.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { probeHttpReachable } from '../escalating-http-probe';
@@ -444,6 +445,45 @@ function countStuckFrontier(rows: ReadonlyArray<{ ageDays?: number }>): number {
   return n;
 }
 
+/**
+ * Dead routines (EI-584): active CRON/rrule routines whose next_fire_at is long
+ * overdue — the routinesTick that should claim+fire them isn't, so the feed
+ * starves. `workFeedStatus` crits on this and the request-path liveness alarm
+ * pages a fleet-wide "routine engine is starved" blocker, so it must mean exactly
+ * that: the ENGINE is frozen.
+ *
+ * EI-11797 — EXCLUDE PURE LOOP routines (`reschedule_interval_sec` set, no
+ * cron/rrule). A pure loop's period is (turn-duration + interval): it parks at
+ * `next_fire_at='infinity'` while its turn runs, then the completion-rebase re-arms
+ * it to `completed_at + interval`. A busy owner (an actively-running fleet loop) or
+ * the transient window between that re-arm and the next claim legitimately leaves a
+ * healthy loop's `next_fire_at` briefly past — which is NOT engine starvation. Yet
+ * the old unfiltered query counted it, mis-firing the workFeed CRIT + the fleet
+ * blocker page "while the active fleet loop is running" (the dead-routines flap,
+ * 2026-07-11/12 — repeat_count up to 31). Loop overdue-ness is already a per-lane
+ * WARN in the loops panel (collectLoops / loopsStatus, whose own comment notes "the
+ * workFeed dead-routine crit already covers an engine-wide freeze"), and a
+ * genuinely-dead loop is auto-paused by the loop reconcile's dead-owner terminal
+ * guard — so a stalled loop never belongs in the engine-starvation crit.
+ *
+ * A cron+loop (BOTH a cron/rrule AND an interval) STAYS caught: it is a recurrence
+ * (claimDueRoutine advances it to cron-next every tick, never parks it at infinity),
+ * so an overdue cron+loop genuinely means the engine isn't advancing it. The
+ * exclusion therefore matches claimDueRoutine's own PURE-loop definition
+ * (`isLoop && !hasRecurrence`).
+ */
+export async function readDeadRoutines(sql: Sql, overdueMs: number): Promise<string[]> {
+  const rows = await sql<Array<{ name: string }>>`
+    SELECT name FROM harness_shared.routines
+     WHERE active = true AND next_fire_at IS NOT NULL
+       AND NOT ( reschedule_interval_sec IS NOT NULL
+                 AND NOT jsonb_exists(trigger_config, 'cron')
+                 AND NOT jsonb_exists(trigger_config, 'rrule') )
+       AND next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})
+     ORDER BY next_fire_at ASC LIMIT 20`;
+  return rows.map((r) => r.name);
+}
+
 async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHealth>> {
   return panelSafe<WorkFeedHealth>('workFeed', async () => {
     const { ws, potSlug } = ctx;
@@ -473,15 +513,13 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         }
       } catch { /* survey unreadable — leave zeros, dead-routine signal still computes */ }
     }
-    // Dead routines (EI-584): active routines whose next_fire_at is long overdue —
-    // the routinesTick that should claim+fire them isn't, so the feed starves.
+    // Dead routines (EI-584): active CRON/rrule routines whose next_fire_at is long
+    // overdue — the routinesTick that should claim+fire them isn't, so the feed
+    // starves. EI-11797: PURE loop routines are excluded (see readDeadRoutines) —
+    // a healthy running fleet loop legitimately sits briefly overdue and must not
+    // mis-fire the engine-starvation crit + fleet blocker page.
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ name: string }>>`
-      SELECT name FROM harness_shared.routines
-       WHERE active = true AND next_fire_at IS NOT NULL
-         AND next_fire_at < now() - make_interval(secs => ${DEAD_ROUTINE_OVERDUE_MS / 1000})
-       ORDER BY next_fire_at ASC LIMIT 20`;
-    const deadRoutineNames = rows.map((r) => r.name);
+    const deadRoutineNames = await readDeadRoutines(sql, DEAD_ROUTINE_OVERDUE_MS);
     // Auto-eligible-stuck (EI-584): improvements that ARE auto-eligible but sit at
     // attempts:0 — eligible yet never dispatched (the feed isn't pumping them). Read
     // the same digest collectImprovements uses; independent + fail-soft (leave 0).
