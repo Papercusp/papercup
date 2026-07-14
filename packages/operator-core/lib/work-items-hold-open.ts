@@ -117,7 +117,7 @@ export interface HoldOpenSweepResult {
  * PAST-grace (a hold with no anchor cannot be shown to be recent — and, like the claim
  * reaper's NULL taken_at, it is still only reaped when its holder is independently dead).
  */
-const HELD_AT_EXPR = `CASE
+export const HELD_AT_EXPR = `CASE
         WHEN w.payload->>'held_open_at' ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}'
         THEN (w.payload->>'held_open_at')::timestamptz
       END`;

@@ -67,7 +67,7 @@ misreads.
    they leak into OTHER agents' claim/create folds while they exist (observed
    live), so the cleanup `memory:forget` of every fixture id is mandatory, not
    optional.
-2. **Plan** — `plans:new { slug:'<drill>-<date>', status:'active', body }` with
+2. **Plan** — `plans:new { slug:'<drill>-<date>', status:'active', content }` with
    ONE `P-001` item carrying the verbatim subject protocol. Item-line grammar
    is strict: ``- **P-001** `todo` <text> importance: high``.
 3. **Subject** — `fleet:launch-on-plan { name, plan, count:1, model:'<model

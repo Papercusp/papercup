@@ -197,7 +197,7 @@ test('EI-9936: tree rubric.json seed matches the live-rubric criterion key set (
     [...SU_AGENT_BEHAVIOR_CRITERIA].sort(),
     'rubrics/su-agent-behavior/rubric.json criteria keys drifted from the SU_AGENT_BEHAVIOR_CRITERIA ' +
       'runtime fallback (and, by the coupling above, the live rubric store) — re-sync the seed file ' +
-      '(rubrics:get { rubricId: "su-agent-behavior" } is the live source) or update the fallback, never let them diverge silently.',
+      '(rubrics:get { rubricRef: "su-agent-behavior" } is the live source) or update the fallback, never let them diverge silently.',
   );
   // v0.3.0 (2026-07-09, owner-directed 5-level expansion) — see scoreOverridesForScale.
   assert.deepEqual(

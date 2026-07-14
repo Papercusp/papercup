@@ -125,14 +125,15 @@ describe('kettle persona — the owner #1 pot-coordination-health scorecard mand
     expect(persona).toMatch(/schema-confidence detour/i);
   });
 
-  it('references rubrics:get with the CORRECT arg name (rubricId, not rubric) — EI-6365', () => {
-    // The real rubrics:get tool arg is `rubricId` (see rubrics/get.ts). A `{ rubric: … }`
+  it('references rubrics:get with the canonical arg name (rubricRef, not rubric/rubricId) — EI-6365', () => {
+    // The real rubrics:get tool arg is `rubricRef` (see rubrics/get.ts). A `{ rubric: … }`
     // call fails validation, which is exactly what sends the Overwatch into the
     // schema-confidence spiral. Guard against the wrong arg re-appearing.
     expect(persona).not.toMatch(/rubrics:get\s*\{\s*rubric\s*:/);
-    // If the persona references rubrics:get at all, it uses rubricId.
+    expect(persona).not.toMatch(/rubrics:get\s*\{\s*rubricId\s*:/);
+    // If the persona references rubrics:get at all, it uses rubricRef.
     if (/rubrics:get/.test(persona)) {
-      expect(persona).toMatch(/rubrics:get\s*\{\s*rubricId\s*:/);
+      expect(persona).toMatch(/rubrics:get\s*\{\s*rubricRef\s*:/);
     }
   });
 

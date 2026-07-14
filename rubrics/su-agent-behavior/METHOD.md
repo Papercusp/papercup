@@ -5,7 +5,7 @@
 whether it behaves the way a Papercusp SU agent is supposed to behave, across 23
 criteria (tool discipline → system-enablement). The structured part (criteria
 keys, per-criterion `model`/`method`/`driftMarkers`, the pass/partial/fail/unknown
-scale) lives in the rubrics store: `rubrics:get { rubricId: 'su-agent-behavior' }`.
+scale) lives in the rubrics store: `rubrics:get { rubricRef: 'su-agent-behavior' }`.
 **Grade against the store; this page is the `method_ref`** — the part the store
 cannot hold: how to *produce* the run under test, where the evidence lives, and the
 mechanics that cost the first graders real round-trips to discover.
@@ -56,7 +56,7 @@ plan did:
    transition is audited, peers can see it, and its binding contract
    (`mode:get { contracts: true }`) covers reuse-over-proliferation and the
    scorecard-loop shape.
-2. **Reuse first** — `rubrics:search` then `rubrics:get { rubricId: 'su-agent-behavior' }`.
+2. **Reuse first** — `rubrics:search` then `rubrics:get { rubricRef: 'su-agent-behavior' }`.
    Do NOT propose a new rubric; proliferation is the failure mode the mode contract
    warns about.
 3. **Pick the subject run** — a recently completed work item (`work_items:get` + its

@@ -29,7 +29,7 @@ certifies health, and old evidence does not substitute for an on-demand drill.
 
 ## One grading pass
 
-1. Read `rubrics:get { rubricId: 'blender-release-readiness' }`. Never grade a
+1. Read `rubrics:get { rubricRef: 'blender-release-readiness' }`. Never grade a
    remembered revision; this rubric is deliberately improved as live defects
    teach us better probes.
 2. Run `blender:success-metrics { harnessSlug: 'papercusp' }`, then run the

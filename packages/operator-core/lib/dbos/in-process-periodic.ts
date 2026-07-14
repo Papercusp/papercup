@@ -492,6 +492,28 @@ const staleClaimSweepCheck: PeriodicCheck = {
       );
     }
 
+    // P-003 agent-operability: one owner-batched transaction terminates EVERY active
+    // loop and lifts EVERY expired hold for owners unreachable past grace. This runs
+    // before the generic hold sweep, which remains the backstop for dead holders that
+    // never owned a loop.
+    try {
+      const { sweepDeadOwnerControlState } = await import('../dead-owner-control-sweep');
+      const dead = await sweepDeadOwnerControlState(sql, {
+        graceMs: livenessCfg.reclaimGraceMs,
+        parkedGraceMs: livenessCfg.reclaimParkedGraceMs,
+        holdOpenGraceMs: livenessCfg.holdOpenGraceMs,
+      });
+      if (dead.owners.length > 0) {
+        console.warn(
+          `[dead-owner-control] swept ${dead.owners.length} owner(s) in one transaction: ` +
+            `${dead.loopsTerminated} loop(s) terminated, ${dead.holdsLifted} expired hold(s) lifted ` +
+            `(${dead.owners.join(', ')})`,
+        );
+      }
+    } catch (e) {
+      console.warn(`[dead-owner-control] sweep failed (non-fatal — retries next tick): ${e instanceof Error ? e.message : String(e)}`);
+    }
+
     // WI-4531 — the HOLD-OPEN reaper. A hold (payload.held_open_by) is a STRONGER block than
     // a claim: it excludes the item from self-select AND refuses a terminal transition by
     // anyone but the holder. It had no TTL and no liveness check, so it outlived its holder
