@@ -321,6 +321,33 @@ export function scanMobileArtifacts(
   version: string,
   tag: string,
 ): ReleaseArtifact[] {
+  const found: ReleaseArtifact[] = [];
+  for (const { src, outName } of scanMobileArtifactSources(mobileRoot, version)) {
+    const kind = classifyArtifact(outName);
+    if (!kind) continue;
+    found.push({
+      ...kind,
+      name: outName,
+      url: `${tag}/${outName}`,
+      size: fs.statSync(src).size,
+      sha256: sha256File(src),
+    });
+  }
+  return found.sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
+}
+
+/**
+ * The source-path ↔ published-name pairs behind `scanMobileArtifacts` — exported
+ * separately because the UPLOADER needs it too: mobile artifacts are recorded
+ * under synthesized versioned names (`Papercusp_0.0.9_android.apk`) that do NOT
+ * exist on disk, so whoever pushes bytes must know which real file maps to which
+ * object key. `bin/upload-mobile-release.sh` consumes this via `--scan-mobile`
+ * (TSV: src TAB outName) so the candidate list lives in exactly one place.
+ */
+export function scanMobileArtifactSources(
+  mobileRoot: string | null,
+  version: string,
+): Array<{ src: string; outName: string }> {
   if (!mobileRoot || !fs.existsSync(mobileRoot)) return [];
   // Ordered: release preferred over debug. First hit per synthesized name wins.
   const candidates: Array<{ dir: string; ext: RegExp; recurse?: boolean; outName: string }> = [
@@ -329,7 +356,7 @@ export function scanMobileArtifacts(
     { dir: 'android/app/build/outputs/bundle/release', ext: /\.aab$/i, outName: `Papercusp_${version}_android.aab` },
     { dir: 'ios/build', ext: /\.ipa$/i, recurse: true, outName: `Papercusp_${version}_ios.ipa` },
   ];
-  const found: ReleaseArtifact[] = [];
+  const found: Array<{ src: string; outName: string }> = [];
   const seen = new Set<string>();
   for (const c of candidates) {
     const dir = path.join(mobileRoot, c.dir);
@@ -340,20 +367,12 @@ export function scanMobileArtifacts(
     );
     for (const full of files) {
       if (!fs.statSync(full).isFile()) continue;
-      const kind = classifyArtifact(c.outName);
-      if (!kind) continue;
       seen.add(c.outName);
-      found.push({
-        ...kind,
-        name: c.outName,
-        url: `${tag}/${c.outName}`,
-        size: fs.statSync(full).size,
-        sha256: sha256File(full),
-      });
+      found.push({ src: full, outName: c.outName });
       break; // one artifact per candidate dir
     }
   }
-  return found.sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
+  return found;
 }
 
 /** Regenerate the whole static site from the registry (every release, newest first). */
@@ -574,9 +593,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('   changelog: record-release-cli --version <x.y.z> --generate-changelog [--force-changelog]');
     console.error('              # writes a reviewable draft from the window and STOPS (records nothing)');
     console.error('   or: record-release-cli --regenerate [--out <dir>]   # re-render pages only');
+    console.error('   or: record-release-cli --scan-mobile --version <x.y.z>   # print mobile src↔name TSV for the uploader');
     return 2;
   }
   const opts = buildRunOpts(argv);
+  // --scan-mobile: print the mobile source-path ↔ published-name pairs (TSV) and
+  // stop. The uploader's door into the ONE candidate list (scanMobileArtifactSources).
+  if (argv.includes('--scan-mobile')) {
+    if (!opts.version) {
+      console.error('usage: record-release-cli --scan-mobile --version <x.y.z> [--mobile-root <dir>]');
+      return 2;
+    }
+    for (const { src, outName } of scanMobileArtifactSources(opts.mobileRoot, opts.version)) {
+      console.log(`${src}\t${outName}`);
+    }
+    return 0;
+  }
   if (regenerate) return regenerateOnly(opts.scope, opts.outDir);
   return run(opts);
 }

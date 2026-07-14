@@ -8,6 +8,7 @@ import {
   classifyArtifact,
   releaseTag,
   scanArtifacts,
+  scanMobileArtifactSources,
   scanMobileArtifacts,
 } from './record-release-cli';
 
