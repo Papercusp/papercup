@@ -48,6 +48,19 @@
   height: 100vh;
 }
 
+/* The sidebar also injects a GLOBAL body shift (body.has-op-chat
+   { padding-left: var(--op-chat-w) + … }) so ordinary pages absorb its width.
+   In this popup that shift is redundant (.pc-qp pads itself, above) and
+   actively harmful: the route-transition <main> is the containing block for
+   the panel's fixed elements, so padding body moves main to x=--op-chat-w and
+   every "fixed" element inherits that offset — double-shifting the tabs/pane
+   off-viewport (WI-4806). Neutralize the body shift whenever the quick panel
+   is the mounted page; higher specificity beats the injected rule regardless
+   of <style> insertion order. */
+body.has-op-chat:has(.pc-qp) {
+  padding-left: 0;
+}
+
 .pc-qp__root {
   display: flex;
   flex-direction: column;
