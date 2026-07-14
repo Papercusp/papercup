@@ -248,7 +248,14 @@ describe('EnvSwitcherBar', () => {
     expect(dev.style.flexShrink).toBe('0');
     const stats = await screen.findByTestId('env-pipeline-stats');
     expect(stats.style.flexShrink).toBe('1');
-    expect(stats.style.minWidth).toBe('0px');
+    // min-width:0 lets the stats span flex-shrink below its content width. The
+    // component sets `minWidth: 0` (numeric zero); React serializes a zero-length
+    // with NO unit ('0'), and whether jsdom/cssstyle canonicalizes that back to
+    // '0px' on read is a CSS-parser version detail (cssstyle 6.2 → '0px'; the gate's
+    // resolved version → '0'). Assert the real contract (the min-width IS zero),
+    // not the parser's zero-length serialization, so this doesn't red on a version
+    // skew (EI-10482).
+    expect(stats.style.minWidth).toMatch(/^0(px)?$/);
     expect(stats.style.textOverflow).toBe('ellipsis');
     const nav = screen.getByTestId('env-switcher-bar');
     expect(nav.style.overflowX).toBe('auto');

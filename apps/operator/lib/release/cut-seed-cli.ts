@@ -593,7 +593,32 @@ async function main(): Promise<void> {
       );
     }
     store = new Corestore(storeDir);
-    await store.ready();
+    try {
+      await store.ready();
+    } catch (e) {
+      // WI-4487 #3 (the "floor"): a fresh-snapshot cut opens the LIVE hive corestore
+      // read-write, and its migrate-on-open (CorestoreStorage._migrateStore) grabs an
+      // EXCLUSIVE RocksDB fd lock. On any box that runs the operator (i.e. every box that
+      // ever cuts a release) the operator already holds that lock, so this throws a raw
+      // hyperbee "File descriptor could not be locked" with zero hint at the cause — and
+      // by here we're already minutes into a cut. Re-throw with the real diagnosis + the
+      // supported no-outage remedies so the next cutter doesn't lose a cut re-deriving it.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/could not be locked|descriptor.*lock|resource.*locked/i.test(msg)) {
+        throw new Error(
+          `[cut-seed] cannot snapshot the LIVE hive corestore at ${storeDir}: it is locked by the running ` +
+            'operator (the migrate-on-open needs an exclusive fd lock the operator already holds). A box that ' +
+            'runs the operator can never take a default fresh-snapshot cut without stopping it first. Use a ' +
+            'no-outage path instead:\n' +
+            '  • PAPERCUSP_SEED_CORESTORE=0 / --no-corestore  → git-only seed (fresh installs cold-clone the hive on first boot)\n' +
+            '  • --reuse-corestore <prior seed dir>           → graft an already-cut corestore, no quiesce (WI-3232)\n' +
+            '  • PAPERCUSP_SKIP_SEED_CUT=1 (release-local.sh)  → reuse the existing src-tauri/seed as-is\n' +
+            '  • or stop the operator, then re-run (an OUTAGE — not for the shared dev box).\n' +
+            `See WI-4487. (underlying error: ${msg})`,
+        );
+      }
+      throw e;
+    }
     if (workspaceId && args['skip-corestore-refresh'] !== true) {
       await refreshCorestoreStateForSeed({ workspaceId, hive, store, sparse });
     } else if (!workspaceId) {
