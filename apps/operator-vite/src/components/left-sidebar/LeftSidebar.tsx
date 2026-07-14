@@ -33,9 +33,12 @@ import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, Pan
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
-// Always-on operator-voice controls, pinned to the TOP of the rail (above the
-// tabs) so they show on every tab, not just Sentinel (owner request 2026-06-22).
-import PapercupVoiceBar from '../voice-bar/PapercupVoiceBar';
+// The always-on operator-voice controls that used to sit here (PapercupVoiceBar)
+// are RETIRED (WI-4740, owner ask 2026-07-13): they duplicated the chat
+// sidebar's op-chat-controls row button-for-button, so the chat bar is now the
+// ONLY voice-controls surface (the TTS mute moved there too). Only the rail
+// collapse control — the one genuinely rail-specific button — stays, in the
+// slim row above the tabs.
 
 const SwarmTab = lazy(() => import('./SwarmTab'));
 const VoiceTab = lazy(() => import('./VoiceTab'));
@@ -266,12 +269,21 @@ export default function LeftSidebar() {
         <div className="pclsb__expanded-shell" aria-hidden={!open}>
           {open && (
             <>
-              {/* Voice controls pinned to the top of the rail — always shown, on
-                  every tab (not just Sentinel). The collapse control lives in this
-                  bar's header now; the old empty header row was removed (owner
-                  2026-06-22) and the active-tab title heading before it (the
-                  highlighted tab already shows which view you're on). */}
-              <PapercupVoiceBar onCollapse={() => setOpen(false)} />
+              {/* WI-4740: the voice-controls bar that lived here is retired —
+                  its buttons duplicated the chat sidebar's header controls.
+                  Only the rail-specific collapse control remains. */}
+              <div className="pclsb__collapse-row">
+                <Tooltip label="Collapse sidebar" side="right">
+                  <button
+                    type="button"
+                    className="pclsb__collapse-btn"
+                    onClick={() => setOpen(false)}
+                    aria-label="Collapse sidebar"
+                  >
+                    <PanelLeftClose size={15} aria-hidden="true" />
+                  </button>
+                </Tooltip>
+              </div>
 
               <div className="pclsb__tabs" role="tablist">
                 {visibleTabs.map((x) => {

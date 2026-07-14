@@ -62,39 +62,31 @@ export const argsSchema = z
       ),
     title: hardText(LIMITS.SHORT_TITLE),
     status: z.enum([...PLAN_STATUSES] as [string, ...string[]]).optional(),
-    owner: z.string().email().optional(),
+    ownerEmail: z
+      .string()
+      .email()
+      .optional()
+      .describe('Optional plan owner email written to frontmatter.'),
     rationale: z
       .string()
       .optional()
       .describe(
         "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009).",
       ),
-    body: z
+    content: z
       .string()
       .max(200_000)
       .optional()
       .describe(
-        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). When provided, plans:new writes valid frontmatter + this body in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/owner. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item and is silently ignored. plans:new returns itemsParsed + the parsed items so you can confirm they registered. Omit body to get the empty starter template. (`description` is accepted as an alias for this field — EI-8811 — since every other verb in the system spells this `summary`/`description`; if both are passed, `body` wins.)',
+        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). This is the same canonical field name used by plans:set-content. When provided, plans:new writes valid frontmatter + this content in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/ownerEmail. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item and is silently ignored. plans:new returns itemsParsed + the parsed items so you can confirm they registered. Omit content to get the empty starter template.',
       ),
-    // EI-8811: `body` is the field name, but `description` is the natural
-    // guess (matching work_items:create/complete's `summary`, the general
-    // convention elsewhere) and used to be REJECTED outright by `.strict()`
-    // below ("Unrecognized key: description") — a hard fail on a plausible
-    // synonym. Accept it as an alias (same pattern as `facts:assert`'s
-    // ref/scope_ref/scopeRef aliasing) instead of hard-rejecting.
-    description: z
-      .string()
-      .max(200_000)
-      .optional()
-      .describe('Alias for `body` (EI-8811). Prefer `body`; if both are passed, `body` wins.'),
     force: stringTolerantBool
       .optional()
       .describe(
         'Creation is rejected with `similar_exists` + the overlapping plans when existing slugs/titles share this topic (EI-134 — duplicate plans split project history). Review the candidates; pass force: true only when this is genuinely a NEW effort, not a continuation. Accepts the wire strings "true"/"false" too (EI-302: stale manifest-pinned tools/list schemas).',
       ),
   })
-  // EI-8285: without .strict(), an unrecognized top-level key (e.g. the
-  // natural-but-wrong `content` — plans:set-content's field name) is
+  // EI-8285: without .strict(), an unrecognized top-level key is
   // SILENTLY STRIPPED by zod's default "strip unknown keys" behavior, so a
   // caller who typos `content` for `body` gets `ok:true` with an EMPTY
   // starter-template plan and no indication their body was dropped. .strict()
@@ -104,16 +96,6 @@ export const argsSchema = z
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-/**
- * EI-8811: resolve the effective plan body from `body` and its `description`
- * alias. `body` wins when both are given. Pulled out as a pure fn (mirroring
- * `ensureDatedSlug`/`dedupTokens` in this file) so the alias precedence is
- * unit-testable without a handler/PG fixture.
- */
-export function resolveNewPlanBody(args: { body?: string; description?: string }): string | undefined {
-  return args.body ?? args.description;
 }
 
 /**
@@ -295,13 +277,13 @@ export function findSimilarPlans(
 export default defineTool({
   name: 'plans:new',
   description:
-    'Create a new plan in the plan STORE. This is the ONLY way to create a plan — never write a plan file on disk yourself (a raw file is not registered in the store and collides here). Pass `body` to author the whole plan in ONE call (frontmatter is generated for you); omit it for an empty starter template. Slug uniqueness enforced inside a lock.',
+    'Create a new plan in the plan STORE. This is the ONLY way to create a plan — never write a plan file on disk yourself (a raw file is not registered in the store and collides here). Pass `content` to author the whole plan in ONE call (frontmatter is generated for you); omit it for an empty starter template. Slug uniqueness enforced inside a lock.',
   guidance: {
-    when: 'Starting a new plan. The one-shot path: plans:new { slug, title, body } — pass the full markdown body (## Now / ## Background / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip.',
+    when: 'Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip.',
     notWhen:
       'You want to edit an existing plan — use plans:set-content / set-now / add-decision / add-item. Never create a plan by writing a .md file under docs/plans/ — it is not in the store; always use this tool.',
     chaining:
-      'Author-in-one: plans:new { slug, title, body }. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items.',
+      'Author-in-one: plans:new { slug, title, content }. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',
@@ -319,10 +301,7 @@ export default defineTool({
     // §3.1: plan filenames carry a -YYYY-MM-DD suffix; ensureDatedSlug
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
-    // EI-8811: `description` is an accepted alias for `body`; `body` wins if
-    // both are given. Every downstream use reads this merged value, never
-    // `args.body` directly.
-    const body = resolveNewPlanBody(args);
+    const body = args.content;
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
@@ -421,7 +400,7 @@ export default defineTool({
           slug,
           title: args.title,
           status,
-          owner: args.owner ?? null,
+          owner: args.ownerEmail ?? null,
           date,
           ...(body != null ? { body } : {}),
         });

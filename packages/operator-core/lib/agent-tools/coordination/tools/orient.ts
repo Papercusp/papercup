@@ -1548,7 +1548,7 @@ export default defineTool({
       });
       let surfaceChanged: boolean | null = null;
       try {
-        surfaceChanged = ctx.activateTools?.(pack.tools.map((tool) => tool.name)) ?? null;
+        surfaceChanged = ctx.activateTools?.(pack.toolNames) ?? null;
       } catch {
         surfaceChanged = null;
       }

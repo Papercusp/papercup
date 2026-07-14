@@ -40,7 +40,7 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
       recipeTitles: ['saved rubric scorecard watch'],
     }, catalog);
 
-    const names = pack.tools.map((tool) => tool.name);
+    const names = pack.toolNames;
     expect(pack.schemaVersion).toBe(TASK_SCHEMA_PACK_SCHEMA);
     expect(names).toEqual(expect.arrayContaining([
       'coord:orient',
@@ -85,6 +85,6 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
   it('reports unavailable canonical tools loudly instead of advertising phantom schemas', () => {
     const pack = buildTaskToolSchemaPack({ intent: 'grade rubric scorecard', modes: [] }, catalog.slice(0, 4));
     expect(pack.missing).toContain('rubrics:list');
-    expect(pack.tools.map((tool) => tool.name)).not.toContain('rubrics:list');
+    expect(pack.toolNames).not.toContain('rubrics:list');
   });
 });

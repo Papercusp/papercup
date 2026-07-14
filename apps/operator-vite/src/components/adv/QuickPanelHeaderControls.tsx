@@ -4,7 +4,7 @@ import AgentsRunningPill from './AgentsRunningPill';
 /**
  * QuickPanelHeaderControls — the Quick Panel popup's header status strip
  * (quick-panel-status-pills-2026-07-13). It reuses the EXACT AdvShell header
- * pills, verbatim (owner ask [owner:Avi 2026-07-13]: "use the same component"):
+ * pills, verbatim (owner ask, 2026-07-13: "use the same component"):
  *   - HivesRunningPill  → "▶ N POT running" + click-to-expand start/stop control
  *   - AgentsRunningPill → "⚡ N agents running · M thinking" + the fleet-grouped
  *     roster popover (inspect / wake / focus / message / kill).

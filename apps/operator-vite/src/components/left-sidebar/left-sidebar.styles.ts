@@ -182,6 +182,35 @@ body.has-left-sidebar .pc-header {
   color: var(--fg, #e7f7ff);
 }
 
+/* Slim collapse row above the tabs — all that remains of the retired
+   PapercupVoiceBar (WI-4740: the voice controls now live ONLY on the chat
+   sidebar's header; the rail keeps just its own collapse affordance). */
+.pclsb__collapse-row {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  padding: 5px 9px 0;
+}
+.pclsb__collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.22));
+  background: var(--bg-3, rgba(255, 255, 255, 0.05));
+  color: var(--fg-mute, #7f9bb4);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.pclsb__collapse-btn:hover {
+  color: var(--fg, #e7f7ff);
+  border-color: var(--accent, #8b5cf6);
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 16%, transparent);
+}
+
 /* Tab strip — owner and fleet surfaces as compact accented tabs. */
 .pclsb__tabs {
   flex: 0 0 auto;

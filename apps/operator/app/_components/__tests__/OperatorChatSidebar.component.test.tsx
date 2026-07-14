@@ -16,8 +16,19 @@ vi.mock('nuqs', async () => {
         return { defaultValue };
       },
     },
+    parseAsString: {
+      withDefault(defaultValue: string) {
+        return { defaultValue };
+      },
+    },
     useQueryState(_key: string, parser?: { defaultValue?: boolean }) {
       return React.useState(parser?.defaultValue ?? true);
+    },
+    useQueryStates(spec: Record<string, { defaultValue?: unknown }>) {
+      const [state, setState] = React.useState(() =>
+        Object.fromEntries(Object.entries(spec).map(([k, p]) => [k, p?.defaultValue])),
+      );
+      return [state, setState];
     },
   };
 });
@@ -60,11 +71,22 @@ vi.mock('../OperatorLogoMark', () => ({
 }));
 
 vi.mock('../OperatorWordmarkLockup', () => ({
-  OperatorWordmarkLockup: ({ className, titleClassName }: { className?: string; titleClassName?: string }) => (
+  OperatorWordmarkLockup: ({ className, titleClassName, title }: { className?: string; titleClassName?: string; title?: string }) => (
     <div className={className}>
-      <strong className={titleClassName}>Papercup</strong>
+      <strong className={titleClassName}>{title ?? 'Papercup'}</strong>
     </div>
   ),
+}));
+
+vi.mock('@/lib/useLexicon', () => ({
+  useLexicon: () => (key: string) => (key === 'brain' ? 'Mug' : key === 'overwatch' ? 'Kettle' : 'Papercup'),
+}));
+
+const voiceModeState = { muted: false };
+const setVoiceOutputMutedSpy = vi.fn();
+vi.mock('../voice/voice-mode', () => ({
+  isVoiceOutputMuted: () => voiceModeState.muted,
+  setVoiceOutputMuted: (v: boolean) => setVoiceOutputMutedSpy(v),
 }));
 
 vi.mock('../OperatorActiveToggle', () => ({
@@ -77,6 +99,8 @@ vi.mock('../voice/VoiceButton', () => ({
 const localStorageState = new Map<string, string>();
 
 beforeEach(() => {
+  voiceModeState.muted = false;
+  setVoiceOutputMutedSpy.mockReset();
   localStorageState.clear();
   Object.defineProperty(window, 'localStorage', {
     configurable: true,
@@ -138,6 +162,70 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     // top: 0 hides the header orb under the fixed EnvSwitcherBar — the rail
     // must use the published bar height, same as .pclsb/.pcdar/.pc-header.
     expect(sidebarRule).toContain('top: var(--pc-env-bar-h, 0px)');
+  });
+
+  it('keeps the header on ONE line: name truncates, controls hug the right, the mic never stretches (WI-4738)', async () => {
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    // Structure: wordmark, controls, and collapse toggle are all DIRECT
+    // siblings on the single .op-chat-header-main row (no title-row/copy
+    // column wrappers left to wrap onto a second line).
+    const main = document.querySelector('.op-chat-header-main');
+    expect(main).toBeTruthy();
+    const childClasses = Array.from(main!.children).map((c) => c.className);
+    expect(childClasses.some((c) => String(c).includes('op-chat-wordmark'))).toBe(true);
+    expect(childClasses.some((c) => String(c).includes('op-chat-controls'))).toBe(true);
+    expect(document.querySelector('.op-chat-header-copy')).toBeNull();
+    expect(document.querySelector('.op-chat-header-title-row')).toBeNull();
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    // The mic's old flex:1 stretch is the "gigantic mic" the owner flagged —
+    // pin the natural-size rule and the right-aligned control cluster.
+    const voiceControlRule = css.match(/\.op-chat-controls \.pc-voice-control\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(voiceControlRule).toContain('flex: 0 0 auto');
+    const controlsRule = css.match(/\.op-chat-controls\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(controlsRule).toContain('margin-left: auto');
+    const titleRule = css.match(/\.op-chat-header-main \.op-chat-wordmark-title\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(titleRule).toContain('text-overflow: ellipsis');
+  });
+
+  it('header identity follows the active rail pane: Mug on the queen tab, Papercup when the rail is not docked (WI-4739)', async () => {
+    // No docked rail (no has-left-sidebar on <body>) → Papercup identity.
+    const first = render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    expect(screen.getByText('Papercup')).toBeTruthy();
+    first.unmount();
+
+    // Rail docked + default tab (queen) → the Mug mark + name take the header.
+    document.body.classList.add('has-left-sidebar');
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(screen.getByText('Mug')).toBeTruthy();
+    });
+    expect(document.querySelector('.op-chat-header-mark')).toBeTruthy();
+  });
+
+  it('the TTS speak-responses mute lives on the chat bar: hydrates, flips + persists, re-syncs on broadcast (WI-4740)', async () => {
+    voiceModeState.muted = false;
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    const tts = await screen.findByRole('button', { name: 'Mute spoken responses' });
+    expect(tts.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(tts);
+    expect(setVoiceOutputMutedSpy).toHaveBeenCalledWith(true);
+    expect(screen.getByRole('button', { name: 'Unmute spoken responses' })).toBeTruthy();
+    // Cross-tab broadcast re-sync (same event contract the middle bar had).
+    fireEvent(window, new CustomEvent('papercusp:voiceOutputMutedChanged', { detail: { muted: false } }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Mute spoken responses' })).toBeTruthy();
+    });
   });
 
   it('the compact-density avatar override keeps the agent mark readable (WI-4731)', async () => {

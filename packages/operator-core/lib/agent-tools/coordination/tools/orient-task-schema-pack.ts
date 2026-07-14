@@ -12,9 +12,10 @@ import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { schemaToText } from '../../../cupboard/tools-discovery';
 
 export const TASK_SCHEMA_PACK_SCHEMA = 'orient-task-tool-schema-pack-v1' as const;
-export const TASK_SCHEMA_PACK_BUDGET_CHARS = 9_000;
-export const TASK_SCHEMA_PACK_MAX_TOOLS = 28;
-const ARG_SCHEMA_CAP = 420;
+export const TASK_SCHEMA_PACK_BUDGET_CHARS = 3_500;
+export const TASK_SCHEMA_PACK_MAX_TOOLS = 36;
+const ARG_SCHEMA_CAP = 180;
+const SCHEMA_DETAIL_MAX_TOOLS = 6;
 
 interface ProjectedToolLike {
   expose?: { mcp?: { name?: string } | null };
@@ -34,6 +35,9 @@ export interface TaskToolSchemaPack {
   schemaVersion: typeof TASK_SCHEMA_PACK_SCHEMA;
   generation: string;
   watermark: string;
+  /** Every tool activated for the task. Kept separate from schema detail so a
+   * bounded orient projection can always preserve the exact activation set. */
+  toolNames: string[];
   tools: Array<{ name: string; args: string | null }>;
   missing: string[];
   basis: {
@@ -172,7 +176,7 @@ export function buildTaskToolSchemaPack(
   const requested = [...candidates.entries()]
     .sort(([a, ap], [b, bp]) => bp - ap || a.localeCompare(b));
   const missing = requested.filter(([name]) => !byName.has(name)).map(([name]) => name);
-  const tools = requested
+  const allTools = requested
     .flatMap(([name]) => {
       const tool = byName.get(name);
       return tool ? [{ name, args: compactSchema(tool.inputSchema) }] : [];
@@ -181,10 +185,20 @@ export function buildTaskToolSchemaPack(
     // live-tool budget. This matters during rolling deploys: one unavailable
     // low-priority tool must not evict a real schema the caller can use now.
     .slice(0, TASK_SCHEMA_PACK_MAX_TOOLS);
+  const toolNames = allTools.map((tool) => tool.name);
+  const tools = allTools.slice(0, SCHEMA_DETAIL_MAX_TOOLS);
 
-  // The char budget is an invariant, not guidance. Drop lowest-priority tail
-  // entries until the actual serialized schema projection fits.
-  while (tools.length > 1 && JSON.stringify(tools).length > TASK_SCHEMA_PACK_BUDGET_CHARS) tools.pop();
+  // The char budget is an invariant, not guidance. `toolNames` is the exact
+  // activation set; `tools` is only a small inline schema preview. The client
+  // receives complete schemas for every name through tools/list_changed.
+  for (
+    let i = tools.length - 1;
+    i >= 0 && JSON.stringify({ toolNames, tools }).length > TASK_SCHEMA_PACK_BUDGET_CHARS;
+    i -= 1
+  ) {
+    tools[i] = { ...tools[i], args: null };
+  }
+  while (tools.length > 1 && JSON.stringify({ toolNames, tools }).length > TASK_SCHEMA_PACK_BUDGET_CHARS) tools.pop();
 
   const basis = {
     modes,
@@ -194,15 +208,16 @@ export function buildTaskToolSchemaPack(
     signals: [...new Set(signals)].sort(),
   };
   const watermark = createHash('sha256')
-    .update(JSON.stringify({ schemaVersion: TASK_SCHEMA_PACK_SCHEMA, basis, tools }))
+    .update(JSON.stringify({ schemaVersion: TASK_SCHEMA_PACK_SCHEMA, basis, tools: allTools }))
     .digest('hex')
     .slice(0, 24);
-  const serializedChars = JSON.stringify(tools).length;
+  const serializedChars = JSON.stringify({ toolNames, tools }).length;
 
   return {
     schemaVersion: TASK_SCHEMA_PACK_SCHEMA,
     generation: watermark,
     watermark,
+    toolNames,
     tools,
     missing,
     basis,
