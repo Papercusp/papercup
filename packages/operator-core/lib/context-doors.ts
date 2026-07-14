@@ -44,11 +44,23 @@ export const DOOR_SPLIT = Object.freeze({
   injections: 0.125,
 });
 
+/** The full constant set the door/threshold math runs on. The BAKED values below are the
+ *  decided defaults; the P-023 config surface (context-doors-config.ts) resolves an
+ *  EFFECTIVE set (workspace defaults ⟵ per-session override) and passes it in — every
+ *  compute function defaults to BAKED so an un-configured system is byte-identical. */
+export interface DoorConstants {
+  maxTurnFloorTokens: number;
+  maxTurnCapTokens: number;
+  maxTurnWindowDivisor: number;
+  doorSplit: { output: number; resultEach: number; resultSlots: number; injections: number };
+  compactionOverheadTokens: number;
+}
+
 /** maxTurn for an effective window (tokens): min(cap, max(floor, window/divisor)). */
-export function computeMaxTurn(effectiveWindow: number): number {
+export function computeMaxTurn(effectiveWindow: number, c: DoorConstants = BAKED_DOOR_CONSTANTS): number {
   const w = Number(effectiveWindow);
-  if (!Number.isFinite(w) || w <= 0) return MAX_TURN_FLOOR_TOKENS;
-  return Math.min(MAX_TURN_CAP_TOKENS, Math.max(MAX_TURN_FLOOR_TOKENS, Math.floor(w / MAX_TURN_WINDOW_DIVISOR)));
+  if (!Number.isFinite(w) || w <= 0) return c.maxTurnFloorTokens;
+  return Math.min(c.maxTurnCapTokens, Math.max(c.maxTurnFloorTokens, Math.floor(w / c.maxTurnWindowDivisor)));
 }
 
 export interface TurnDoors {
@@ -83,6 +95,17 @@ export function computeTurnDoors(effectiveWindow: number): TurnDoors {
  *  fits" and reality. 4000 reproduces the plan's decided operating points exactly:
  *  Ornith 204.8K → soft ~90.2% / hard ~96.1%; 400K → soft 91.5% / hard 96.25%. */
 export const COMPACTION_OVERHEAD_TOKENS = 4_000;
+
+/** The decided defaults [owner:Avi 2026-07-14, plan D-007] as one DoorConstants value.
+ *  Declared after every constant it references (module-eval order); the compute functions
+ *  above reference it only in default-parameter position, which evaluates at call time. */
+export const BAKED_DOOR_CONSTANTS: DoorConstants = Object.freeze({
+  maxTurnFloorTokens: MAX_TURN_FLOOR_TOKENS,
+  maxTurnCapTokens: MAX_TURN_CAP_TOKENS,
+  maxTurnWindowDivisor: MAX_TURN_WINDOW_DIVISOR,
+  doorSplit: DOOR_SPLIT,
+  compactionOverheadTokens: COMPACTION_OVERHEAD_TOKENS,
+});
 
 export interface CompactionThresholds {
   /** soft = window − (2×maxTurn + overhead): nudge self-compaction — two full hops of headroom

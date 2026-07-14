@@ -123,7 +123,10 @@ type StateTable =
   // Migration 401 — runtime capability→tier overrides, DARK (live-configurability-audit P-010):
   | 'operator_capability_tiers'
   // Migration 526 — generic third-party integration API keys (owner-ask-batch-2026-07-06 P-002):
-  | 'operator_integration_credentials';
+  | 'operator_integration_credentials'
+  // Migration 604 — context-door / compaction-threshold constant overrides
+  // (deterministic-context-carry-2026-07-14 P-023): workspace defaults + per-session:
+  | 'operator_context_doors_config';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //
