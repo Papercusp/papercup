@@ -71,6 +71,7 @@ import {
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { applyResultDoor } from '../../../result-door';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
@@ -1867,21 +1868,30 @@ const handler = createMcpHandler(
             // completes server-side + persists (P-046/EI-68), so a retry with the same
             // idempotencyKey replays the outcome instead of re-running.
             const execute = async (): Promise<McpCallResult> => {
-              const result = await maybeRunWithDeltaProxy({
-                sessionKey: replayOwnerKey,
-                toolName,
-                args: dispatchArgs,
-                requestedFormat,
-                explicitDelta,
-                itemKeyField: projected.delta?.itemKeyField,
-                runRaw: async (autoRequestedDelta, overrideDelta = true) => (await dispatchProjectedToolToMcp(
-                  projected,
+              // P-006 leg C: cap this model-facing result at the resultEach door
+              // (spill-to-scratch + pointer). AFTER the delta proxy — a delta
+              // result is skipped inside applyResultDoor (its content[0].text is
+              // client-parsed JSON), and the proxy's internal full-body state
+              // must stay undoored. BEFORE persistence, so a replay serves the
+              // same doored bytes the client saw.
+              const result = applyResultDoor(
+                await maybeRunWithDeltaProxy({
+                  sessionKey: replayOwnerKey,
                   toolName,
-                  dispatchArgs,
-                  overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx,
-                  PROJECTED_DEPS,
-                )) as McpCallResult,
-              });
+                  args: dispatchArgs,
+                  requestedFormat,
+                  explicitDelta,
+                  itemKeyField: projected.delta?.itemKeyField,
+                  runRaw: async (autoRequestedDelta, overrideDelta = true) => (await dispatchProjectedToolToMcp(
+                    projected,
+                    toolName,
+                    dispatchArgs,
+                    overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx,
+                    PROJECTED_DEPS,
+                  )) as McpCallResult,
+                }),
+                { toolName, workspaceId: dispatchSpawnCtx.workspaceId, runId: dispatchSpawnCtx.runId ?? null },
+              );
               // Persist the outcome BEFORE the response hits the (possibly
               // already-closed) stream — the whole point of P-046/EI-68: the
               // result must survive the transport. Best-effort.
