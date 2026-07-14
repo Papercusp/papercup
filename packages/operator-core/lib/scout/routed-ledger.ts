@@ -72,12 +72,12 @@ export interface RecordRoutedIdeaInput {
   workspaceId?: string;
   /**
    * The ORIGIN dimension (su-loop-capability-parity P-005 / D-009), ORTHOGONAL to `lens`:
-   * 'scout' (default — a Scout-routed idea, counts toward per-lens weight learning) vs
-   * 'su-ideate' (an SU session's IDEATE-pass origination — rides the ledger for
-   * provenance/grading/priming but is EXCLUDED from lens-weight learning, so it never skews
-   * the diversity floor). NOT a pseudo-lens.
+   * 'scout' (default — a Scout-routed idea, counts toward per-lens weight learning),
+   * 'su-ideate' (an SU session's IDEATE-pass origination), or 'drill' (a
+   * vaccination-planted release probe). Both non-scout origins are excluded from
+   * Scout lens-weight learning. NOT a pseudo-lens.
    */
-  origin?: 'scout' | 'su-ideate';
+  origin?: 'scout' | 'su-ideate' | 'drill';
   /**
    * The ORIGINATING AGENT's ownerId (migration 558, su-ideate-learning-substrate P-001) —
    * persisted as `created_by`. Stamped by the su capture bridge for origin='su-ideate'
@@ -100,9 +100,10 @@ export interface ScoutLedgerOpts {
    * ORIGIN filter (su-loop-capability-parity P-005 / D-009). DEFAULT 'scout' — so every
    * existing lens-weight / outcome / cadence reader stays byte-identical (all pre-migration
    * rows are 'scout') AND automatically EXCLUDES 'su-ideate' rows from lens learning. The
-   * SU-priming path passes 'su-ideate'; 'all' reads both (admin / cross-origin views).
+   * SU-priming passes 'su-ideate'; the deployed health drill passes 'drill';
+   * 'all' reads every origin (admin / cross-origin views).
    */
-  origin?: 'scout' | 'su-ideate' | 'all';
+  origin?: 'scout' | 'su-ideate' | 'drill' | 'all';
 }
 
 /** The origin WHERE fragment for a ledger read (default 'scout' — D-009 lens-learning isolation). */

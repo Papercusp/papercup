@@ -23,6 +23,7 @@
  */
 
 import { captureImprovement } from '../harness/improvements/capture-core';
+import type { SignalOrigin } from '../harness/improvements/provenance';
 import { seedDistantNiches, type ArchivePort, type SeedDistantOptions } from './gym-bridge';
 import type { Proposal } from './types';
 import {
@@ -49,6 +50,9 @@ export interface CapturePortOptions {
   foundDuring?: string;
   /** The capture kind. Scout proposals are desired improvements → 'change' by default. */
   kind?: 'bug' | 'change' | 'feature';
+  /** Synthetic provenance for a bounded drill/replay/shadow run. Omitted keeps
+   *  the production Scout path organic. */
+  origin?: SignalOrigin;
 }
 
 /** Compose a readable improvement body from a proposal's structured fields. */
@@ -85,6 +89,7 @@ export function buildCapturePort(
       scope: opts.scope ?? 'operator',
       sourceRole: opts.sourceRole ?? 'Scout',
       foundDuring: opts.foundDuring ?? 'scout-loop',
+      ...(opts.origin ? { origin: opts.origin } : {}),
     });
     if (res.created && res.issue) {
       return { id: res.issue.id, created: true };

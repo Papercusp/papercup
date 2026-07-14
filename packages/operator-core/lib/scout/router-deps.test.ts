@@ -78,6 +78,26 @@ describe('buildCapturePort', () => {
     const res = await port({ proposal: proposal() });
     expect(res).toEqual({ id: 'EI-7', created: false });
   });
+
+  it('passes synthetic drill provenance through without changing the default Scout path', async () => {
+    const fake = vi.fn(
+      async (_input: CaptureImprovementInput): Promise<CaptureImprovementResult> => ({
+        ok: true,
+        created: true,
+        kind: 'change',
+        issue: { id: 'EI-drill' } as never,
+        topics: [],
+        possibleDuplicates: [],
+      }),
+    );
+    const port = buildCapturePort({ origin: 'drill', foundDuring: 'blender-drill:123' }, fake);
+    await port({ proposal: proposal() });
+
+    expect(fake.mock.calls[0][0]).toMatchObject({
+      origin: 'drill',
+      foundDuring: 'blender-drill:123',
+    });
+  });
 });
 
 describe('buildPlansNewPort', () => {
