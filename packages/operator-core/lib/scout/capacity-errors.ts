@@ -23,6 +23,13 @@
 
 import type { AdmissionDenial } from '@papercusp/papercusp-shared/agent';
 
+/**
+ * Persisted on every tick produced by the typed classifier. Its presence is the
+ * boundary between legacy rows (whose only capacity evidence is provider prose)
+ * and current rows (which must carry an authoritative AdmissionDenial).
+ */
+export const CAPACITY_CLASSIFIER_SCHEMA_VERSION = 1;
+
 /** Extract the typed admission fact from a TurnError/LlmCallError or persisted tick detail. */
 export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined {
   if (!input || typeof input !== 'object') return undefined;
@@ -38,6 +45,37 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
     ...(typeof denial.pausedAccounts === 'number' ? { pausedAccounts: denial.pausedAccounts } : {}),
     ...(typeof denial.freeSlots === 'number' ? { freeSlots: denial.freeSlots } : {}),
   };
+}
+
+/** Read the persisted classifier boundary from a scout tick detail. */
+export function capacityClassifierVersionFrom(input: unknown): number | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const value = input as Record<string, unknown>;
+  return typeof value.capacityClassifierVersion === 'number'
+    ? value.capacityClassifierVersion
+    : undefined;
+}
+
+/**
+ * Compatibility-only classifier for rows written before
+ * {@link CAPACITY_CLASSIFIER_SCHEMA_VERSION} existed. These are the exact
+ * provider-ceiling signatures the old writer persisted. Never call this on a
+ * versioned row: current failures must be decided from the typed denial.
+ */
+export function isLegacyCapacityError(input: unknown): boolean {
+  const message =
+    typeof input === 'string'
+      ? input
+      : input && typeof input === 'object' && typeof (input as Record<string, unknown>).error === 'string'
+        ? ((input as Record<string, unknown>).error as string)
+        : '';
+  const m = message.toLowerCase();
+  return (
+    m.includes('rate-limit pause exceeds maxwait') ||
+    m.includes('rate_limit_error') ||
+    (m.includes('429') && m.includes('rate limit')) ||
+    m.includes('rate limit exceeded')
+  );
 }
 
 /**
@@ -77,4 +115,16 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
 export function isCapacityError(input: unknown): boolean {
   const reason = admissionDenialFrom(input)?.reason;
   return reason === 'all-accounts-paused' || reason === 'provider-429';
+}
+
+/**
+ * Ledger-read classifier. Typed evidence always wins; only an UNVERSIONED
+ * historical row may fall back to the old provider-prose signatures. This
+ * preserves the 48h release window across the schema transition without
+ * letting a new untyped admission-path defect disappear into the capacity bucket.
+ */
+export function isPersistedCapacityError(input: unknown): boolean {
+  if (isCapacityError(input)) return true;
+  if (capacityClassifierVersionFrom(input) !== undefined) return false;
+  return isLegacyCapacityError(input);
 }

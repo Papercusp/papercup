@@ -31,7 +31,11 @@ import { recordRoutedIdea } from './routed-ledger';
 import { refreshScoutOutcomes } from './routed-ledger';
 import { readIdeaQueueStatus } from './routed-ledger';
 import { recordScoutTick, readLastRanTickAtMs, type ScoutTickRecord } from './tick-ledger';
-import { admissionDenialFrom, isCapacityError } from './capacity-errors';
+import {
+  admissionDenialFrom,
+  CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+  isCapacityError,
+} from './capacity-errors';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 import type { ScoutCyclePhase } from './cycle';
@@ -384,11 +388,26 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
       await note({
         status: 'gated',
         gate: 'no-capacity',
-        detail: { cycleId, error, ...(admissionDenial ? { admissionDenial } : {}), ...timeoutDetail },
+        detail: {
+          cycleId,
+          error,
+          capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+          ...(admissionDenial ? { admissionDenial } : {}),
+          ...timeoutDetail,
+        },
       });
       return { fired: false, reason: 'no-capacity', cycleId, error };
     }
-    await note({ status: 'error', detail: { cycleId, error, ...timeoutDetail } });
+    await note({
+      status: 'error',
+      detail: {
+        cycleId,
+        error,
+        capacityClassifierVersion: CAPACITY_CLASSIFIER_SCHEMA_VERSION,
+        ...(admissionDenial ? { admissionDenial } : {}),
+        ...timeoutDetail,
+      },
+    });
     return { fired: false, reason: 'cycle-error', cycleId, error };
   }
 }

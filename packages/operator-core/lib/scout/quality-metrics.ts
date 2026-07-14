@@ -33,7 +33,7 @@
 import type { RoutedIdeaProvenance, LensOutcomeReport, LensWeightOptions } from './outcome-feedback';
 import { gatherLensOutcomes } from './outcome-feedback';
 import type { ScoutTickRecord } from './tick-ledger';
-import { isCapacityError } from './capacity-errors';
+import { isPersistedCapacityError } from './capacity-errors';
 import type { ScoutLedgerOpts } from './routed-ledger';
 import { CREATIVE_LENSES, type CreativeLens, SU_IDEATION_LENSES, type SuIdeationLens } from './types';
 import { computeNoveltyGainReport, mapProvenanceToNoveltyRow } from './novelty-metrics';
@@ -162,7 +162,7 @@ export function computeScoutQualityReport<L extends string = CreativeLens>(
       // reclassification went live, instead of staying red on legacy rows for the ~10
       // days it takes them to age out of the window. Pool pressure stays VISIBLE (its
       // own gate count grows); it just stops masquerading as ideator breakage.
-      if (isCapacityError(t.detail)) {
+      if (isPersistedCapacityError(t.detail)) {
         gatedTickBreakdown['no-capacity'] = (gatedTickBreakdown['no-capacity'] ?? 0) + 1;
       } else {
         errorTicks += 1;

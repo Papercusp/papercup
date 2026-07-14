@@ -794,6 +794,197 @@ async function writeState(
   `;
 }
 
+interface CountBackfillBudget {
+  files: number;
+  bytes: number;
+}
+
+interface CountBackfillStateRow extends IngestState {
+  file_path: string;
+  session_id: string | null;
+}
+
+/** Replay only the counter signal for one historical file. The indexed-turn
+ * byte_offset/turn_count remain untouched; counts_backfill_offset is the
+ * independent resumable cursor. */
+async function backfillFileCounts(
+  sql: Sql,
+  adapter: FileAdapter,
+  row: CountBackfillStateRow,
+  budget: CountBackfillBudget,
+): Promise<boolean> {
+  if (budget.files <= 0 || budget.bytes <= 0) return false;
+  const meta = adapter.meta(row.file_path);
+  let sourceSize: number;
+  try {
+    const source = await stat(row.file_path);
+    if (!source.isFile()) throw new Error('not a file');
+    sourceSize = source.size;
+  } catch {
+    // The transcript may have been archived/deleted after its index state was
+    // written. Mark it terminally unavailable so a missing source cannot wake
+    // the same repair forever; the archive remains the authoritative payload.
+    await writeState(sql, adapter.sourceKind, row.file_path, {
+      byte_offset: row.byte_offset,
+      turn_count: row.turn_count,
+      prompt_count: row.prompt_count,
+      response_count: row.response_count,
+      tool_call_count: row.tool_call_count,
+      last_inference_id: row.last_inference_id,
+      counts_backfill_offset: row.counts_backfill_offset,
+      counts_backfilled_at: new Date().toISOString(),
+      sessionId: row.session_id ?? meta.sessionId,
+      lastError: 'counts_backfill_source_missing',
+    });
+    budget.files -= 1;
+    return true;
+  }
+
+  let cursor = Math.min(row.counts_backfill_offset, sourceSize);
+  let promptCount = row.prompt_count;
+  let responseCount = row.response_count;
+  let toolCallCount = row.tool_call_count;
+  let lastInferenceId = row.last_inference_id;
+  let progressed = false;
+  while (cursor < sourceSize && budget.bytes > 0) {
+    const result = await readNewLines(
+      row.file_path,
+      cursor,
+      adapter.parseLine,
+      adapter.classifyLine,
+      lastInferenceId,
+    );
+    if (result.newOffset === cursor) break;
+    const advanced = result.newOffset - cursor;
+    cursor = result.newOffset;
+    promptCount += result.promptCount;
+    responseCount += result.responseCount;
+    toolCallCount += result.toolCallCount;
+    lastInferenceId = result.lastInferenceId;
+    budget.bytes -= advanced;
+    progressed = true;
+  }
+
+  const complete = cursor >= sourceSize;
+  if (progressed || complete) {
+    await writeState(sql, adapter.sourceKind, row.file_path, {
+      byte_offset: row.byte_offset,
+      turn_count: row.turn_count,
+      prompt_count: promptCount,
+      response_count: responseCount,
+      tool_call_count: toolCallCount,
+      last_inference_id: lastInferenceId,
+      counts_backfill_offset: cursor,
+      counts_backfilled_at: complete ? new Date().toISOString() : null,
+      sessionId: row.session_id ?? meta.sessionId,
+    });
+  }
+  if (progressed || complete) budget.files -= 1;
+  return progressed || complete;
+}
+
+/** Backfill pre-579 file and agent-chat rows in small resumable slices. This
+ * deliberately runs before the ordinary newest-first tail so historical rows
+ * converge even when they are older than INGEST_WINDOW_DAYS. */
+async function backfillHistoricalCounts(sql: Sql): Promise<number> {
+  const budget: CountBackfillBudget = {
+    files: MAX_COUNT_BACKFILL_FILES_PER_TICK,
+    bytes: MAX_COUNT_BACKFILL_BYTES_PER_TICK,
+  };
+  let progressed = 0;
+  for (const adapter of FILE_ADAPTERS) {
+    if (budget.files <= 0 || budget.bytes <= 0) break;
+    const rows = await sql<Array<{
+      file_path: string;
+      byte_offset: string | number;
+      turn_count: number;
+      prompt_count: number;
+      response_count: number;
+      tool_call_count: number;
+      last_inference_id: string | null;
+      counts_backfill_offset: string | number;
+      counts_backfilled_at: string | null;
+      session_id: string | null;
+    }>>`
+      SELECT file_path, byte_offset, turn_count, prompt_count, response_count,
+             tool_call_count, last_inference_id, counts_backfill_offset,
+             counts_backfilled_at, session_id
+        FROM harness_shared.session_ingest_state
+       WHERE source_kind = ${adapter.sourceKind}
+         AND counts_backfilled_at IS NULL
+       ORDER BY updated_at ASC, file_path ASC
+       LIMIT ${MAX_COUNT_BACKFILL_FILES_PER_TICK}
+    `;
+    for (const r of rows) {
+      if (budget.files <= 0 || budget.bytes <= 0) break;
+      const changed = await backfillFileCounts(sql, adapter, {
+        file_path: r.file_path,
+        byte_offset: Number(r.byte_offset),
+        turn_count: r.turn_count,
+        prompt_count: r.prompt_count ?? 0,
+        response_count: r.response_count ?? 0,
+        tool_call_count: r.tool_call_count ?? 0,
+        last_inference_id: r.last_inference_id ?? null,
+        counts_backfill_offset: Number(r.counts_backfill_offset ?? 0),
+        counts_backfilled_at: r.counts_backfilled_at ?? null,
+        session_id: r.session_id ?? null,
+      }, budget);
+      if (changed) progressed += 1;
+    }
+  }
+
+  if (budget.files > 0) {
+    const chats = await sql<Array<{
+      file_path: string;
+      byte_offset: string | number;
+      turn_count: number;
+      prompt_count: number;
+      response_count: number;
+      tool_call_count: number;
+      last_inference_id: string | null;
+      counts_backfill_offset: string | number;
+      session_id: string | null;
+      transcript: Array<{ role?: string; content?: unknown }> | null;
+    }>>`
+      SELECT st.file_path, st.byte_offset, st.turn_count, st.prompt_count,
+             st.response_count, st.tool_call_count, st.last_inference_id,
+             st.counts_backfill_offset, st.session_id, c.transcript
+        FROM harness_shared.session_ingest_state AS st
+        JOIN harness_shared.agent_chats_consolidated AS c
+          ON st.file_path = ('chat:' || c.workspace_id || ':' || c.harness_slug || ':' || c.id)
+       WHERE st.source_kind = 'agent_chat'
+         AND st.file_path <> ${CHAT_HWM_PATH}
+         AND st.counts_backfilled_at IS NULL
+       ORDER BY st.updated_at ASC, st.file_path ASC
+       LIMIT ${MAX_CHATS_PER_TICK}
+    `;
+    for (const chat of chats) {
+      if (budget.files <= 0) break;
+      const transcript = Array.isArray(chat.transcript) ? chat.transcript : [];
+      let prompts = chat.prompt_count ?? 0;
+      let responses = chat.response_count ?? 0;
+      for (const turn of transcript) {
+        if (turn.role === 'user') prompts += 1;
+        else if (turn.role === 'assistant') responses += 1;
+      }
+      await writeState(sql, 'agent_chat', chat.file_path, {
+        byte_offset: Number(chat.byte_offset),
+        turn_count: chat.turn_count,
+        prompt_count: prompts,
+        response_count: responses,
+        tool_call_count: chat.tool_call_count ?? 0,
+        last_inference_id: chat.last_inference_id ?? null,
+        counts_backfill_offset: transcript.length,
+        counts_backfilled_at: new Date().toISOString(),
+        sessionId: chat.session_id,
+      });
+      budget.files -= 1;
+      progressed += 1;
+    }
+  }
+  return progressed;
+}
+
 /** Tail ONE file now (bounded, incremental). The read-time freshness lever:
  * sessions:search { session:'self' } and the post-compaction orient call this
  * on the caller's own transcript so the last few minutes are never a blind
