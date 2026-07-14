@@ -483,3 +483,69 @@ describe('summarizeLintReports — bounded all-plans output (F-FIX-034 overflow 
     expect(s.plans.map((p) => p.slug)).toEqual(['p1']); // p2 (clean) omitted
   });
 });
+
+// ─── EI-12150 (rubric-system-hardening P-005): the derived-verdict guard ────────────
+// A GREEN/GO claim in ## Now is prose that never re-derives; when the plan references
+// a release-gating rubric, the claim must agree with that rubric's newest COMPLETE
+// scorecard. Pure decider + claim detector tested here (the PG gather fails open).
+import { evaluateDerivedVerdict, hasReleaseClaim, type GatingRubricScorecardSummary } from './lint';
+
+describe('hasReleaseClaim (EI-12150)', () => {
+  it('matches uppercase verdict tokens and release-ready phrases', () => {
+    expect(hasReleaseClaim('**State:** Verdict: GO — all six criteria pass')).toBe(true);
+    expect(hasReleaseClaim('PUBLIC RELEASE GREEN as of 14:00')).toBe(true);
+    expect(hasReleaseClaim('we are release-ready pending docs')).toBe(true);
+    expect(hasReleaseClaim('Ready for public release')).toBe(true);
+  });
+  it('does NOT match everyday lowercase prose or a NO-GO', () => {
+    expect(hasReleaseClaim('go to the settings page and pick the green button')).toBe(false);
+    expect(hasReleaseClaim('Verdict: NO-GO — cycle-error-rate red')).toBe(false);
+    expect(hasReleaseClaim('NO GO until the drill passes')).toBe(false);
+  });
+});
+
+describe('evaluateDerivedVerdict (EI-12150)', () => {
+  const gating = (
+    ratings: Record<string, { rating: string }> | null,
+  ): GatingRubricScorecardSummary[] => [
+    {
+      rubricRef: 'blender-release-readiness',
+      newestComplete: ratings
+        ? { issueId: 'EI-12107', createdAt: '2026-07-14T20:00:00.000Z', ratings }
+        : null,
+    },
+  ];
+  const planRaw = '# P\n\n## Now\n\n**State:** GO — graded against blender-release-readiness.\n';
+
+  it('silent when the newest complete scorecard is all-pass (pass/healthy vocabularies)', () => {
+    expect(
+      evaluateDerivedVerdict(planRaw, gating({ a: { rating: 'pass' }, b: { rating: 'healthy' } })),
+    ).toEqual([]);
+  });
+
+  it('WARNS (never errors) when the newest complete scorecard is not all-pass, naming the failing keys', () => {
+    const findings = evaluateDerivedVerdict(
+      planRaw,
+      gating({ 'cycle-error-rate': { rating: 'fail' }, 'e2e-drill': { rating: 'pass' }, x: { rating: 'unknown' } }),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ level: 'warning', code: 'derived_verdict_mismatch' });
+    expect(findings[0]!.message).toContain('cycle-error-rate=fail');
+    expect(findings[0]!.message).toContain('x=unknown');
+    expect(findings[0]!.message).toContain('EI-12107');
+  });
+
+  it('an UNVERIFIED claim (no complete scorecard at all) is its own distinct warning', () => {
+    const findings = evaluateDerivedVerdict(planRaw, gating(null));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ level: 'warning', code: 'derived_verdict_unverified' });
+  });
+
+  it('ignores gating rubrics the plan never references — a plan answers only for ITS rubric', () => {
+    const findings = evaluateDerivedVerdict(
+      '# P\n\n## Now\n\n**State:** GO — unrelated to any rubric.\n',
+      gating({ a: { rating: 'fail' } }),
+    );
+    expect(findings).toEqual([]);
+  });
+});

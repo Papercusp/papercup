@@ -527,7 +527,120 @@ export async function lintParsed(
     }
   }
 
+  // EI-12150 (rubric-system-hardening P-005): the DERIVED-VERDICT guard. A `## Now`
+  // claiming GREEN / GO / release-ready is PROSE — it does not re-derive when the
+  // gating rubric's scorecards move, so it silently goes stale and the next reader
+  // treats a days-old claim as the current verdict (the 2026-07-14 GO stall: a
+  // "PUBLIC RELEASE GREEN" Now contradicted by three newer at-risk scorecards).
+  // When the Now claims green AND the plan references an ACTIVE releaseGating
+  // rubric, compare against that rubric's NEWEST COMPLETE scorecard and WARN
+  // (advisory, never an error — lints advise) when the evidence disagrees.
+  // Fail-open like countFeaturesFromPlan: a PG/rubrics blip must never break lint.
+  // Cost-gated: the rubric/scorecard reads run ONLY when the claim regex hits.
+  if (parsed.now && hasReleaseClaim(parsed.now.raw)) {
+    try {
+      const gating = await gatingRubricScorecardSummaries();
+      report.warnings.push(...evaluateDerivedVerdict(parsed.raw, gating));
+    } catch {
+      /* fail open — the guard is advisory */
+    }
+  }
+
   return report;
+}
+
+// ─── EI-12150: derived-verdict guard (pure decider + fail-open PG gather) ────────
+
+/**
+ * PURE: does this prose CLAIM a green/GO/release-ready verdict? The bare tokens are
+ * matched UPPERCASE-ONLY (a lowercase "go"/"green" is everyday prose — "go to",
+ * "green button"), phrase-forms case-insensitively, and a NO-GO never reads as GO.
+ */
+export function hasReleaseClaim(text: string): boolean {
+  return (
+    /(?<!NO[- ])\b(?:GO|GREEN)\b/.test(text) ||
+    /release[- ]ready|ready for (?:public )?release|public[- ]release green/i.test(text)
+  );
+}
+
+/** One active releaseGating rubric + its newest COMPLETE scorecard (null when none). */
+export interface GatingRubricScorecardSummary {
+  rubricRef: string;
+  newestComplete: {
+    issueId: string;
+    createdAt: string;
+    ratings: Record<string, { rating: string }>;
+  } | null;
+}
+
+/** Ratings that COUNT as passing for the all-pass read. Anything else — fail, broken,
+ *  degraded, partial, at-risk, unknown — means the newest complete evidence does not
+ *  support a green claim. */
+const PASSING_RATINGS = new Set(['pass', 'healthy']);
+
+/**
+ * PURE: the derived-verdict comparison. For each gating rubric the plan REFERENCES
+ * (its rubricRef appears in the plan text), a green claim must be backed by the
+ * newest COMPLETE scorecard being all-pass; a missing complete scorecard is called
+ * out distinctly (an UNVERIFIED claim, not merely a failing one). Rubrics the plan
+ * never mentions are ignored — this guard checks claims against THEIR OWN evidence,
+ * it does not make every plan answer for every rubric.
+ */
+export function evaluateDerivedVerdict(
+  planRaw: string,
+  gating: GatingRubricScorecardSummary[],
+): LintFinding[] {
+  const findings: LintFinding[] = [];
+  for (const g of gating) {
+    if (!planRaw.includes(g.rubricRef)) continue;
+    if (!g.newestComplete) {
+      findings.push({
+        level: 'warning',
+        code: 'derived_verdict_unverified',
+        message:
+          `\`## Now\` claims GREEN/GO/release-ready and references release-gating rubric '${g.rubricRef}', ` +
+          `but NO complete scorecard exists for it — the claim is unverified prose. File one ` +
+          `(improvements:capture { lane:'observation', observation: { rubricRef, ratings } }) or soften the claim (EI-12150).`,
+      });
+      continue;
+    }
+    const failing = Object.entries(g.newestComplete.ratings)
+      .filter(([, r]) => !PASSING_RATINGS.has(r.rating.toLowerCase()))
+      .map(([k, r]) => `${k}=${r.rating}`);
+    if (failing.length > 0) {
+      findings.push({
+        level: 'warning',
+        code: 'derived_verdict_mismatch',
+        message:
+          `\`## Now\` claims GREEN/GO/release-ready, but rubric '${g.rubricRef}' newest COMPLETE scorecard ` +
+          `(${g.newestComplete.issueId}, ${g.newestComplete.createdAt}) is NOT all-pass: ${failing.join(', ')}. ` +
+          `A verdict in prose does not re-derive — update the Now to match the evidence, or re-grade if the ` +
+          `evidence is stale (EI-12150).`,
+      });
+    }
+  }
+  return findings;
+}
+
+/** The fail-open PG gather: every ACTIVE releaseGating rubric + its newest COMPLETE
+ *  scorecard. Dynamic imports (the countFeaturesFromPlan pattern) keep lint off the
+ *  rubrics/scorecards static dependency graph. */
+async function gatingRubricScorecardSummaries(): Promise<GatingRubricScorecardSummary[]> {
+  const { listRubrics } = await import('../../rubrics');
+  const { listScorecards } = await import('../../scorecards');
+  const gating = (await listRubrics({ status: 'active' })).filter((r) => r.releaseGating === true);
+  return Promise.all(
+    gating.map(async (r) => {
+      const rows = await listScorecards({ rubricRef: r.rubricId, limit: 25 });
+      const newest = rows.find((row) => row.rubricResolved && row.missingKeys.length === 0 && row.extraKeys.length === 0);
+      return {
+        rubricRef: r.rubricId,
+        newestComplete: newest
+          ? { issueId: newest.issueId, createdAt: newest.createdAt, ratings: newest.ratings }
+          : null,
+      };
+    }),
+  );
 }
 
 /** One plan's row in the bounded all-plans summary: identity + finding
