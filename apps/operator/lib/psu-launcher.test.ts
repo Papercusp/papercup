@@ -76,6 +76,7 @@ import {
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
+  OWNER_DESKTOP_NOTIFY_DENY_FLAG,
   BRAIN_TOMBSTONE_MESSAGE,
   reExecSafePermissionsFromArgs,
   persistReExecSafePermissions,
@@ -112,6 +113,7 @@ import {
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
+import { ownerDesktopNotifyDenyFlag } from '@papercusp/orchestrator/owner-desktop-notify-deny';
 import { ACCOUNT_HEADER, OWNER_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
 // WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
@@ -1056,7 +1058,7 @@ describe('psu-launcher arg parsing', () => {
     expect(resumeArgsFor({ agent: 'claude', cwd: '/x' })).toEqual({
       bin: 'claude',
       // Subagent deny is re-armed by DEFAULT on every claude resume (owner mandate 2026-07-02).
-      args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG],
+      args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG],
     });
     // omp: thread target (or -c) + yolo; -e only when a coordExtPath is supplied.
     expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' })).toEqual({
@@ -1077,7 +1079,7 @@ describe('psu-launcher arg parsing', () => {
   it('resumeArgsFor uses precise resume-by-id when a native sessionId is known', () => {
     // Store-found (untracked) sessions carry the agent's native id → resume EXACTLY it.
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }).args).toEqual([
-      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG,
+      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
     expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }).args).toEqual([
       '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', 'uuid-2',
@@ -1086,11 +1088,11 @@ describe('psu-launcher arg parsing', () => {
 
   it('resumeArgsFor appends --fork-session for a claude fork (branch, leave the original)', () => {
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }, { fork: true }).args).toEqual([
-      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--fork-session',
+      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--fork-session',
     ]);
     // Fork also composes with the most-recent (--continue) resume.
     expect(resumeArgsFor({ agent: 'claude' }, { fork: true }).args).toEqual([
-      '--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--fork-session',
+      '--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--fork-session',
     ]);
   });
 
@@ -1113,11 +1115,11 @@ describe('psu-launcher arg parsing', () => {
     // The plain --session-id/--resume conflict is lifted by --fork-session, so the
     // trio is valid — this is how launchTrackedFork pins the fork to a psu-minted id.
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { fork: true, forkSessionId: 'forked' }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--fork-session', '--session-id', 'forked',
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--fork-session', '--session-id', 'forked',
     ]);
     // forkSessionId WITHOUT fork is ignored (no --fork-session ⇒ --session-id would conflict with --resume).
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { forkSessionId: 'forked' }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG,
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
 
@@ -1132,11 +1134,11 @@ describe('psu-launcher arg parsing', () => {
   it('resumeArgsFor threads --add-dir into each backend at the right position', () => {
     // claude: appended after the resume/permission flags.
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([
-      '--resume', 'u', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--add-dir=/d',
+      '--resume', 'u', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--add-dir=/d',
     ]);
     // claude fork: --add-dir comes after the fork flags.
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { fork: true, forkSessionId: 'f', addDir: ['/d'] }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--fork-session', '--session-id', 'f', '--add-dir=/d',
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--fork-session', '--session-id', 'f', '--add-dir=/d',
     ]);
     // codex: --add-dir is a TOP-LEVEL option, so it must precede the `resume` subcommand.
     expect(resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([
@@ -1622,6 +1624,7 @@ describe('roleLaunchArgs (interactive role session)', () => {
       '--strict-mcp-config',
       '--permission-mode', 'bypassPermissions',
       NATIVE_SCHEDULER_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
   });
@@ -1635,6 +1638,20 @@ describe('roleLaunchArgs (interactive role session)', () => {
   it('the scheduler lockout is one `=` token (the variadic space form would eat following args)', () => {
     expect(NATIVE_SCHEDULER_DENY_FLAG.startsWith('--disallowedTools=')).toBe(true);
     expect(/\s/.test(NATIVE_SCHEDULER_DENY_FLAG)).toBe(false);
+  });
+
+  it('the owner-desktop notify-send lockout stays in LOCKSTEP with the canonical TS module (owner directive 2026-07-14)', () => {
+    expect(OWNER_DESKTOP_NOTIFY_DENY_FLAG).toBe(ownerDesktopNotifyDenyFlag());
+    expect(OWNER_DESKTOP_NOTIFY_DENY_FLAG.startsWith('--disallowedTools=')).toBe(true);
+    expect(/\s/.test(OWNER_DESKTOP_NOTIFY_DENY_FLAG)).toBe(false);
+  });
+
+  it('the notify-send lockout is UNCONDITIONAL on every claude launch shape — su + role + resume, even with allowSubagents:true', () => {
+    expect(roleLaunchArgs('claude', files).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
+    expect(suLaunchArgs('claude', { promptFile: '/p.md' }).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
+    expect(suLaunchArgs('claude', { promptFile: '/p.md', allowSubagents: true }).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
+    expect(resumeArgsFor({ agent: 'claude', cwd: '/x' }).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
+    expect(resumeArgsFor({ agent: 'claude', cwd: '/x' }, { allowSubagents: true }).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
   });
 
   it('the no-subagent-fanout deny carries Task + Agent + Workflow (no-subagent-deny.ts)', () => {
@@ -1738,6 +1755,7 @@ describe('roleLaunchArgs (interactive role session)', () => {
       '--strict-mcp-config',
       '--permission-mode', 'bypassPermissions',
       NATIVE_SCHEDULER_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
     expect(args).not.toContain('--append-system-prompt-file');
@@ -1781,6 +1799,8 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
       '--permission-mode', 'bypassPermissions',
       // Subagent deny is DEFAULT-ON as of the 2026-07-02 owner mandate.
       NO_SUBAGENTS_DENY_FLAG,
+      // notify-send lockout is unconditional — su sessions included (2026-07-14).
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
     // su relies on the user-level papercusp-su MCP (no per-launch --mcp-config),
     // so the user's full toolkit loads (D-005) and the server isn't doubled.
@@ -1839,6 +1859,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
       '--session-id', 'uuid-9',
       '--permission-mode', 'bypassPermissions',
       NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
 
@@ -1872,6 +1893,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
       '--exclude-dynamic-system-prompt-sections',
       '--permission-mode', 'bypassPermissions',
       NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
     expect(args).not.toContain('--append-system-prompt-file');
   });
@@ -1903,6 +1925,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
       '--session-id', 'uuid-9',
       '--permission-mode', 'bypassPermissions',
       NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
 });
@@ -2846,7 +2869,7 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
 
   it('resumeArgsFor threads a model into each backend resume — codex flags BEFORE the subcommand', () => {
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }, { model: 'fable:high' }).args).toEqual([
-      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--model', 'fable', '--effort', 'high',
+      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--model', 'fable', '--effort', 'high',
     ]);
     // codex `-m`/`-c` are TOP-LEVEL options — after the `resume` subcommand they'd
     // be parsed as resume's own args and fail the launch.

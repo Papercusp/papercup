@@ -133,24 +133,62 @@ const voiceSessionInit = defineTool({
     const { readElevenLabsKey } = await import('../../../voice-credentials');
     const { readCooldownMark, writeCooldownMark } = await import('../../../cooldown-marks');
     const prefs = await loadVoicePrefs();
-    if (prefs.fullAgentEngine !== 'elevenlabs-conv' &&
-        prefs.fullAgentEngine !== 'elevenlabs-conversational') {
+
+    // ── Mode resolution (on-desktop-direct-lan-voice-2026-07-14 P-002) ──
+    // 'auto' (default): EL when the EL conv engine is selected AND fully
+    // configured; otherwise the free desktop-local pipeline. EL support is
+    // RETAINED (D-010) — an EL-configured workspace gets the EXACT legacy
+    // response shape (plus an additive `mode` field).
+    const mobileMode = prefs.mobileVoiceMode ?? 'auto';
+    if (mobileMode === 'off') {
       return Response.json(
-        { error: 'voice_not_enabled', hint: 'Set fullAgentEngine to elevenlabs-conv in /settings/voice.' },
+        { error: 'voice_not_enabled', hint: 'mobileVoiceMode is off — set it to auto or desktop-local in /settings/voice.' },
         { status: 404 },
       );
     }
+    const elSelected =
+      prefs.fullAgentEngine === 'elevenlabs-conv' ||
+      prefs.fullAgentEngine === 'elevenlabs-conversational';
     const agentId = prefs.elevenLabsAgentId?.trim();
-    if (!agentId) {
-      return Response.json(
-        { error: 'no_agent_id', hint: 'Set elevenLabsAgentId in /settings/voice.' },
-        { status: 404 },
+    const apiKey = elSelected && agentId ? await readElevenLabsKey() : null;
+    const useEl = mobileMode === 'auto' && elSelected && !!agentId && !!apiKey;
+
+    if (!useEl) {
+      // Desktop-local pipeline: phone audio → local whisper STT → papercup
+      // brain → kokoro TTS, streamed over SSE (routes/device/voice-turn.ts).
+      const { gateApiRoute } = await import('../../../require-flag');
+      const { FLAGS } = await import('@papercusp/flags');
+      const gated = await gateApiRoute(req, FLAGS.MOBILE_DESKTOP_VOICE);
+      if (gated) {
+        // Flag dark AND EL unavailable — the legacy 404, so old clients keep
+        // their existing "voice not enabled" behavior.
+        return Response.json(
+          { error: 'voice_not_enabled', hint: 'Set fullAgentEngine to elevenlabs-conv in /settings/voice.' },
+          { status: 404 },
+        );
+      }
+      const { resolveVoiceInit } = await import('../../../device-voice-init-prefs');
+      const resolved = resolveVoiceInit(
+        { mode: q('mode'), idleMin: q('idleMin'), sessionMaxMin: q('sessionMaxMin') },
+        prefs,
       );
+      return Response.json({
+        mode: 'desktop-local',
+        turnPath: '/api/device/voice/turn',
+        warmupPath: '/api/device/voice/warmup',
+        idleTimeoutMin: resolved.idleTimeoutMin,
+        sessionMaxMin: resolved.sessionMaxMin,
+        voiceMode: resolved.voiceMode,
+        audienceMode: prefs.audienceMode ?? 'engineer',
+        deviceId: principal.slug,
+        workspaceId: principal.workspaceId,
+      });
     }
-    const apiKey = await readElevenLabsKey();
-    if (!apiKey) {
+    // ── ElevenLabs pipeline (legacy shape, D-010) ────────────────────────
+    if (!agentId || !apiKey) {
+      // Unreachable (useEl implies both) — narrows the types + a safe fallback.
       return Response.json(
-        { error: 'no_api_key', hint: 'Add ElevenLabs API key in /settings/api-keys.' },
+        { error: !agentId ? 'no_agent_id' : 'no_api_key', hint: 'Configure ElevenLabs in /settings/voice.' },
         { status: 404 },
       );
     }
@@ -218,6 +256,9 @@ const voiceSessionInit = defineTool({
     );
 
     return Response.json({
+      // Additive (D-010): lets updated phone clients dispatch on `mode`
+      // while pre-existing EL consumers keep reading the same fields.
+      mode: 'elevenlabs-conv',
       conversationToken: result.token,
       agentId,
       idleTimeoutMin: resolved.idleTimeoutMin,

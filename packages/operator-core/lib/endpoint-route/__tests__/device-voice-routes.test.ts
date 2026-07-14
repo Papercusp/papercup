@@ -34,8 +34,12 @@ vi.mock('../../device-surface', () => ({
 vi.mock('../../device-voice-init-prefs', () => ({
   resolveVoiceInit: vi.fn(() => ({ idleTimeoutMin: 10, sessionMaxMin: 30, voiceMode: 'always-on' })),
 }));
+// Flag gate for the desktop-local branch (on-desktop-direct-lan-voice-2026-07-14
+// P-002): default OPEN in tests; individual tests override to simulate dark.
+vi.mock('../../require-flag', () => ({ gateApiRoute: vi.fn(async () => null) }));
 
 import { claimVoiceLease, releaseVoiceLease, readVoiceLease } from '../../voice-lease';
+import { gateApiRoute } from '../../require-flag';
 import { loadVoicePrefs } from '../../voice-prefs';
 import { readElevenLabsKey } from '../../voice-credentials';
 import { readCooldownMark, writeCooldownMark } from '../../cooldown-marks';

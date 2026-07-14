@@ -223,6 +223,20 @@ export interface VoicePrefs {
    */
   fullAgentVoiceMode: 'continuous' | 'hybrid' | 'single-utterance';
   /**
+   * Which pipeline a paired PHONE uses for voice
+   * (on-desktop-direct-lan-voice-2026-07-14 P-002/D-010):
+   *   'auto' (default) — ElevenLabs when the full-agent engine is an EL conv
+   *     engine AND fully configured (agent id + API key); otherwise the free
+   *     desktop-local pipeline (POST /api/device/voice/turn — local whisper
+   *     STT → papercup brain → kokoro TTS, streamed SSE).
+   *   'desktop-local' — force the desktop-local pipeline even when EL is
+   *     configured (e.g. out of EL credit but keys still stored).
+   *   'off' — no mobile voice: /device/voice-session-init 404s as before.
+   * EL support is RETAINED (D-010): 'auto' + a configured EL engine restores
+   * EL mobile voice unchanged.
+   */
+  mobileVoiceMode: 'auto' | 'off' | 'desktop-local';
+  /**
    * The full-agent provider (EL Conv AI / OpenAI Realtime) speaks a low-latency
    * "ack" voice (e.g. "On it — I'll come back to you") BEFORE the real answer is
    * synthesized through our own voice-out (Kokoro / the shared synthesize seam).
@@ -404,6 +418,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   fullAgentIdleTimeoutMin: 2,
   fullAgentSessionMaxMin: 30,
   fullAgentVoiceMode: 'continuous',
+  mobileVoiceMode: 'auto',
   // Default keeps the provider's own low-latency ack voice (current behavior);
   // flip to 'suppressed' to hear only our synthesized answer (P-002).
   fullAgentAckVoice: 'provider',
