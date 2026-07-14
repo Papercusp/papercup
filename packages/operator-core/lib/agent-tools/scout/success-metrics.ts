@@ -27,7 +27,9 @@ export const successMetricsArgs = z
       .string()
       .min(1)
       .optional()
-      .describe('scope the ledger + tick reads to one harness (default: the whole workspace)'),
+      .describe(
+        'scope harness-owned su-ideate rows; workspace Scout ticks and routed ideas always resolve through the @singleton brain (default: all su-ideate harnesses)',
+      ),
     limit: z
       .number()
       .int()

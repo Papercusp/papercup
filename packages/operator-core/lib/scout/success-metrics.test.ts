@@ -156,16 +156,22 @@ describe('evaluateProgramSuccess — cycle error rate', () => {
 });
 
 describe('programSuccessReadScopes — release window and singleton host', () => {
-  it('keeps harness-scoped ideas but reads Scout ticks from @singleton over a full 48h time box', () => {
+  it('reads Scout ticks and routed ideas from @singleton while keeping su-ideate harness-scoped', () => {
     const nowMs = Date.parse('2026-07-13T16:30:00Z');
     const scopes = programSuccessReadScopes({ harnessSlug: 'papercusp', nowMs });
-    expect(scopes.cadence.harnessSlug).toBe('papercusp');
+    expect(scopes.cadence.harnessSlug).toBe(SCOUT_TICK_INSTALL_SLUG);
     expect(scopes.cadence.tickInstallSlug).toBe(SCOUT_TICK_INSTALL_SLUG);
     expect(scopes.cadence.tickSinceMs).toBe(nowMs - CYCLE_ERROR_WINDOW_MS);
     expect(scopes.cadence.tickLimit).toBeUndefined();
     // su-ideate is a per-harness partition; it must not inherit the singleton tick host.
     expect(scopes.suIdeate.harnessSlug).toBe('papercusp');
     expect(scopes.suIdeate.tickInstallSlug).toBeUndefined();
+  });
+
+  it('still scopes the cadence ledger to @singleton when no member harness is supplied', () => {
+    const scopes = programSuccessReadScopes({ nowMs: Date.parse('2026-07-13T16:30:00Z') });
+    expect(scopes.cadence.harnessSlug).toBe(SCOUT_TICK_INSTALL_SLUG);
+    expect(scopes.suIdeate.harnessSlug).toBeUndefined();
   });
 });
 

@@ -418,14 +418,15 @@ export interface BuildProgramSuccessOptions
 const DEFAULT_LEDGER_LIMIT = 500;
 /** The active blender-release-readiness rubric's cycle-error window. */
 export const CYCLE_ERROR_WINDOW_MS = 48 * 60 * 60 * 1000;
-/** Workspace-global Scout ticks moved here; routed ideas remain harness-scoped. */
+/** Workspace-global Scout ticks and Scout-origin routed ideas live here. */
 export const SCOUT_TICK_INSTALL_SLUG = '@singleton';
 
 /**
  * Build the two production reader scopes in one pure helper. The split is load-bearing:
- * `harnessSlug:'papercusp'` scopes routed ideas, but Scout cadence ticks live under
- * `install_slug='@singleton'`. Coupling those fields produced a falsely-green 0/167 error
- * reading while a current singleton status=error row existed (EI-11418).
+ * workspace Scout cadence ticks AND Scout-origin routed ideas live under `@singleton`,
+ * while su-ideate rows remain scoped to their originating harness. Using a member harness
+ * for the cadence ledger manufactured missing-row failures: the singleton ticks claimed
+ * routes that the same read had filtered out (WI-4733).
  */
 export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}): {
   cadence: BuildQualityInputsOptions & { origin: 'scout' };
@@ -437,18 +438,23 @@ export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}):
   const tickSinceMs = (opts.nowMs ?? Date.now()) - tickWindowMs;
   const shared: BuildQualityInputsOptions = {
     ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-    ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
     ...(opts.limit != null ? { limit: opts.limit } : {}),
     ...(opts.tickLimit != null ? { tickLimit: opts.tickLimit } : {}),
   };
   return {
     cadence: {
       ...shared,
+      harnessSlug: SCOUT_TICK_INSTALL_SLUG,
       origin: 'scout',
       tickInstallSlug: SCOUT_TICK_INSTALL_SLUG,
       tickSinceMs,
     },
-    suIdeate: { ...shared, origin: 'su-ideate', lenses: SU_IDEATION_LENSES },
+    suIdeate: {
+      ...shared,
+      ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+      origin: 'su-ideate',
+      lenses: SU_IDEATION_LENSES,
+    },
     tickWindowMs,
     tickSinceMs,
   };
