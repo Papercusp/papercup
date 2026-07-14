@@ -406,6 +406,13 @@ function selfHealSettings() {
       cfg.permissions = Object.assign({}, perms, { defaultMode: 'bypassPermissions' });
       fixed.push('permissions.defaultMode');
     }
+    // (b2) EI-12086: the claude 2.1.209+ skip-the-bypass-accept-prompt grant —
+    // same settings-rewrite-damage class. A settings-save that drops it re-wedges
+    // a headless member on the "Yes, I accept" prompt after a self-re-exec.
+    if (cfg.skipDangerousModePermissionPrompt !== true) {
+      cfg.skipDangerousModePermissionPrompt = true;
+      fixed.push('skipDangerousModePermissionPrompt');
+    }
     // (c) this hook's own SessionStart registration (without it, the next
     // relaunch loses playbook recovery AND this self-heal).
     const hooks = cfg.hooks && typeof cfg.hooks === 'object' ? cfg.hooks : {};
@@ -823,7 +830,22 @@ function writeSessionSettings(srcSettings: string | null, dest: string): void {
   hooks.SessionStart = sessionStart;
   try {
     if (present(dest) && lstatSync(dest).isSymbolicLink()) rmSync(dest);
-    writeFileSync(dest, JSON.stringify({ ...cfg, permissions, hooks }, null, 2));
+    // EI-12086: claude 2.1.209+ gates `--dangerously-skip-permissions` behind an
+    // interactive "Bypass Permissions mode" accept prompt (❯ 1. No, exit / 2. Yes,
+    // I accept) that a HEADLESS member can never answer — it wedges forever,
+    // alive-but-idle, with no error. The prompt is skipped when
+    // `skipDangerousModePermissionPrompt` is truthy in user/local settings —
+    // claude's own gate is `!JG() && !accepted` where
+    // `JG()=Cr("userSettings")?.skipDangerousModePermissionPrompt || Cr("localSettings")?…`,
+    // so this key SHORT-CIRCUITS the whole check. (The sibling `.claude.json`
+    // `bypassPermissionsModeAccepted` flag was NOT honored from the isolated
+    // config dir — this settings key is the reliable lever.) Baked into the
+    // session settings so it survives a claude self-re-exec and never depends on
+    // the mutable global settings.json.
+    writeFileSync(
+      dest,
+      JSON.stringify({ ...cfg, permissions, hooks, skipDangerousModePermissionPrompt: true }, null, 2),
+    );
   } catch {
     /* best-effort — argv still carries the grant on a non-re-exec launch */
   }

@@ -190,6 +190,22 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).not.toContain('bypassPermissions');
   });
 
+  it('EI-12086: bakes skipDangerousModePermissionPrompt so a headless member is not wedged on the claude 2.1.209 bypass-accept prompt', () => {
+    seedHome(home);
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-skip', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    // claude 2.1.209+ gates --dangerously-skip-permissions behind an interactive
+    // "Bypass Permissions mode" accept prompt a headless member can never answer.
+    // claude's gate is `!JG() && !accepted`, JG()=userSettings.skipDangerousModePermissionPrompt||…,
+    // so this key short-circuits the prompt entirely. Baked into the session
+    // settings (not relied on from the mutable global file).
+    expect(settings.skipDangerousModePermissionPrompt).toBe(true);
+    // and it does NOT leak into the user's global settings.json.
+    expect(
+      readFileSync(join(home, '.claude', 'settings.json'), 'utf8'),
+    ).not.toContain('skipDangerousModePermissionPrompt');
+  });
+
   it('does NOT mirror the personal global memory (CLAUDE.md / AGENTS.md) — the P-002 / D-001 leak fix', () => {
     seedHome(home);
     const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-iso', home });
