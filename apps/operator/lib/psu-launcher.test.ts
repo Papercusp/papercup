@@ -3908,3 +3908,103 @@ describe('rehealResumeCredentials (psu-resume-relogin)', () => {
     expect(claudeCredExpiresAt(join(dir, 'nope.json'))).toBe(-1);
   });
 });
+
+describe('re-exec-safe permissions (mcp-transport-resilience P-002, 2026-07-13)', () => {
+  it('derives defaultMode from --dangerously-skip-permissions and --permission-mode (both forms)', () => {
+    expect(reExecSafePermissionsFromArgs(['--dangerously-skip-permissions'])).toEqual({
+      defaultMode: 'bypassPermissions',
+      deny: [],
+    });
+    expect(reExecSafePermissionsFromArgs(['--permission-mode', 'plan'])).toEqual({
+      defaultMode: 'plan',
+      deny: [],
+    });
+    expect(reExecSafePermissionsFromArgs(['--permission-mode=acceptEdits'])).toEqual({
+      defaultMode: 'acceptEdits',
+      deny: [],
+    });
+  });
+
+  it('unions repeated --disallowedTools occurrences and dedups (claude unions them too)', () => {
+    const derived = reExecSafePermissionsFromArgs([
+      NATIVE_SCHEDULER_DENY_FLAG,
+      NO_SUBAGENTS_DENY_FLAG,
+      '--disallowedTools',
+      'Task,ExtraTool',
+    ]);
+    expect(derived).not.toBeNull();
+    expect(derived!.deny).toContain('CronCreate');
+    expect(derived!.deny).toContain('Task');
+    expect(derived!.deny).toContain('Workflow');
+    expect(derived!.deny).toContain('ExtraTool');
+    // deduped: Task appears in NO_SUBAGENTS_DENY_FLAG and the space-form list
+    expect(derived!.deny.filter((t: string) => t === 'Task')).toHaveLength(1);
+  });
+
+  it('returns null when the argv expresses no permissions (nothing to persist)', () => {
+    expect(reExecSafePermissionsFromArgs(['--session-id', 'abc', '--model', 'opus'])).toBeNull();
+    expect(reExecSafePermissionsFromArgs([])).toBeNull();
+  });
+
+  describe('persistReExecSafePermissions (IO leg)', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'psu-reexec-perms-'));
+    });
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('writes permissions into the isolated CLAUDE_CONFIG_DIR settings.json', () => {
+      const ok = persistReExecSafePermissions({
+        env: { CLAUDE_CONFIG_DIR: dir },
+        args: ['--dangerously-skip-permissions', NO_SUBAGENTS_DENY_FLAG],
+      });
+      expect(ok).toBe(true);
+      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+      expect(written.permissions.defaultMode).toBe('bypassPermissions');
+      expect(written.permissions.deny).toContain('Workflow');
+    });
+
+    it('preserves unrelated settings keys and UNIONS an existing deny (never removes)', () => {
+      writeFileSync(
+        join(dir, 'settings.json'),
+        JSON.stringify({ statusLine: { type: 'command', command: 'x' }, permissions: { deny: ['HandEdit'] } }),
+      );
+      const ok = persistReExecSafePermissions({
+        env: { CLAUDE_CONFIG_DIR: dir },
+        args: [NATIVE_SCHEDULER_DENY_FLAG],
+      });
+      expect(ok).toBe(true);
+      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+      expect(written.statusLine).toEqual({ type: 'command', command: 'x' });
+      expect(written.permissions.deny).toContain('HandEdit'); // pre-existing human entry kept
+      expect(written.permissions.deny).toContain('CronCreate');
+    });
+
+    it('NEVER writes without an isolated config dir (no bleed into shared ~/.claude)', () => {
+      const ok = persistReExecSafePermissions({
+        env: {},
+        args: ['--dangerously-skip-permissions'],
+      });
+      expect(ok).toBe(false);
+    });
+
+    it('no-ops (false) when the argv expresses no permissions', () => {
+      const ok = persistReExecSafePermissions({ env: { CLAUDE_CONFIG_DIR: dir }, args: [] });
+      expect(ok).toBe(false);
+      expect(existsSync(join(dir, 'settings.json'))).toBe(false);
+    });
+
+    it('fail-open: unwritable dir warns and returns false, never throws', () => {
+      const logs: string[] = [];
+      const ok = persistReExecSafePermissions({
+        env: { CLAUDE_CONFIG_DIR: join(dir, 'nope', 'deeper') },
+        args: ['--dangerously-skip-permissions'],
+        log: (m: string) => logs.push(m),
+      });
+      expect(ok).toBe(false);
+      expect(logs.join('')).toContain('re-exec-safe permissions');
+    });
+  });
+});
