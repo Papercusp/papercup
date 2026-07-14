@@ -291,12 +291,353 @@ export async function checkMcpDark(
   }
 }
 
+// ═══ Interactive-session transport-death sweep + heal ladder ═══════════════════
+// (mcp-transport-resilience P-005, 2026-07-13 — [owner:Avi 2026-07-13]: "I'd
+// rather just have /mcp inject — that's better than having my session suddenly
+// die on me"; kill+resume is acceptable for HEADLESS sessions only.)
+//
+// The bee sweep above structurally cannot see the class that produced the
+// su-39f07 incident (a 5h-dark INTERACTIVE session): (1) interactive psu
+// sessions have no spawned_agents row; (2) its darkness test is pinned to
+// restartAt = OPERATOR boot, but a CLIENT-side transport death (a Claude Code
+// self-re-exec: auto-update relaunch / TUI fullscreen switch) happens hours
+// later with presence ≥ restartAt; (3) its actively-generating gate never
+// matches a headed session idling at its prompt between loop wakes.
+//
+// THE SIGNAL here is the same two-heartbeat decoupling, re-based per session:
+// the psu-pty host discovery file is the process-alive beat (FS, transport-
+// independent), while coord_presence.heartbeat_at is TOOL-CALL-COUPLED — a
+// severed transport freezes it while the host stays live. An ARMED LOOP
+// (harness_shared.routines loop-<owner>, active) makes the expected MCP cadence
+// known (≈ its interval), so staleness is judged against it; without a loop,
+// fresh pty activity + a long-stale presence beat is the (weaker) signal.
+//
+// THE HEAL is in-place, not kill+resume: inject mode:'mcp-reconnect' into the
+// session's own pty host (the /mcp dialog macro, psu-pty-host P-003) —
+// rate-capped, judged ONLY by transport truth (the presence beat advancing on a
+// later pass, never the socket write), and falling back to the notify posture
+// when the host is old/absent or the cap is exhausted. A misfire is benign by
+// construction: the macro is prompt-gated and Esc's out of an all-connected
+// dialog. On a confirmed heal, ONE follow-up wake turn tells the agent to
+// re-arm (its events:await registrations died with the old transport) and
+// re-park state.
+
+/** Distinct escalation prefix — 'mcp-dark:%' (bee) does NOT match this, so the
+ *  bee pass's recovery sweep never clears interactive claims (and vice versa). */
+const INTERACTIVE_PHASE_PREFIX = 'mcp-dark-int:';
+
+/** Heal attempts per owner per rolling hour before falling back to notify. */
+const DEFAULT_HEAL_MAX_ATTEMPTS = 2;
+const HEAL_ATTEMPT_WINDOW_MS = 60 * 60_000;
+/** Ignore hosts younger than this — a fresh session hasn't tool-called yet. */
+const DEFAULT_INTERACTIVE_GRACE_MS = 10 * 60_000;
+/** No-loop clause: pty activity fresher than this counts as "session in use". */
+const DEFAULT_PTY_FRESH_MS = 10 * 60_000;
+/** No-loop clause: presence beat staler than this while the pty is in use. */
+const DEFAULT_NO_LOOP_STALE_MS = 30 * 60_000;
+/** Armed-loop clause floor (beats 3× a short loop interval). */
+const DEFAULT_LOOP_STALE_FLOOR_MS = 20 * 60_000;
+
+export interface InteractiveDarkSnapshot {
+  ownerId: string;
+  /** psu-pty discovery file: host start + freshest pty stream activity (epoch ms). */
+  hostStartedMs: number | null;
+  hostLastActivityMs: number | null;
+  /** coord_presence.heartbeat_at — the TOOL-CALL-COUPLED beat (epoch ms). */
+  presenceHeartbeatMs: number | null;
+  /** An ACTIVE loop routine (harness_shared.routines loop-<owner>) + its interval. */
+  loopActive: boolean;
+  loopIntervalSec: number | null;
+}
+
+export interface InteractiveDarkThresholds {
+  graceMs?: number;
+  ptyFreshMs?: number;
+  noLoopStaleMs?: number;
+  loopStaleFloorMs?: number;
+}
+
+/**
+ * Pure: is this live interactive session's MCP transport dead? NOT pinned to any
+ * restart — the staleness is judged against the session's own expected cadence.
+ * Exported for unit testing; the FS/DB wiring is in checkInteractiveMcpDark.
+ */
+export function evaluateInteractiveMcpDark(
+  s: InteractiveDarkSnapshot,
+  nowMs: number,
+  opts: InteractiveDarkThresholds = {},
+): McpDarkVerdict {
+  const graceMs = opts.graceMs ?? DEFAULT_INTERACTIVE_GRACE_MS;
+  const ptyFreshMs = opts.ptyFreshMs ?? DEFAULT_PTY_FRESH_MS;
+  const noLoopStaleMs = opts.noLoopStaleMs ?? DEFAULT_NO_LOOP_STALE_MS;
+  const loopStaleFloorMs = opts.loopStaleFloorMs ?? DEFAULT_LOOP_STALE_FLOOR_MS;
+
+  // Host too young (or unknown age): the session may simply not have tool-called yet.
+  if (s.hostStartedMs == null || nowMs - s.hostStartedMs < graceMs) return { dark: false, reason: null };
+  // Presence never seen ⇒ measure staleness from host start (it SHOULD have called by now).
+  const staleMs = s.presenceHeartbeatMs == null ? nowMs - s.hostStartedMs : nowMs - s.presenceHeartbeatMs;
+
+  if (s.loopActive) {
+    // An armed loop pins the expected MCP cadence: every wake makes tool calls,
+    // so a beat older than 3 intervals (floored) is a dead transport, not idleness.
+    const intervalMs = Math.max(1, s.loopIntervalSec ?? 600) * 1000;
+    const threshold = Math.max(3 * intervalMs, loopStaleFloorMs);
+    if (staleMs <= threshold) return { dark: false, reason: null };
+    return {
+      dark: true,
+      reason:
+        `interactive session with an ARMED loop (interval ~${Math.round(intervalMs / 1000)}s) whose ` +
+        `tool-call-coupled presence beat is ~${mins(staleMs)}m stale (> ${mins(threshold)}m) while its ` +
+        `pty host is live — the MCP transport is severed (loop wakes cannot re-register either).`,
+    };
+  }
+
+  // No loop: only a session actively IN USE (fresh pty bytes) with a long-stale
+  // beat is suspect — an idle headed session legitimately makes no calls.
+  const inUse = s.hostLastActivityMs != null && nowMs - s.hostLastActivityMs < ptyFreshMs;
+  if (!inUse || staleMs <= noLoopStaleMs) return { dark: false, reason: null };
+  return {
+    dark: true,
+    reason:
+      `interactive session in active use (pty activity ~${mins(nowMs - (s.hostLastActivityMs ?? nowMs))}m ago) ` +
+      `whose last MCP tool call was ~${mins(staleMs)}m ago — the transport is severed while the session works on dark ` +
+      `(local tools only).`,
+  };
+}
+
+export type InteractiveHealAction = 'heal' | 'notify' | 'announce-healed' | 'none';
+
+interface OwnerHealState {
+  attemptsMs: number[];
+  notified: boolean;
+}
+
+/**
+ * Pure cross-pass planner: given each live owner's dark verdict + the in-memory
+ * heal state, decide this pass's action per owner. The ladder [owner-mandated]:
+ * dark + attempts left ⇒ 'heal' (fire the /mcp macro, judge NOTHING yet); dark +
+ * attempts exhausted ⇒ 'notify' (once); no longer dark after a recent attempt ⇒
+ * 'announce-healed' (one follow-up wake: re-arm + re-park). State mutates in
+ * place (attempt stamps, notified latch, healed cleanup). Exported for tests.
+ */
+export function planInteractiveHeal(
+  state: Map<string, OwnerHealState>,
+  verdicts: Array<{ ownerId: string; dark: boolean }>,
+  nowMs: number,
+  maxAttempts = DEFAULT_HEAL_MAX_ATTEMPTS,
+): Array<{ ownerId: string; action: InteractiveHealAction }> {
+  const out: Array<{ ownerId: string; action: InteractiveHealAction }> = [];
+  for (const v of verdicts) {
+    const st = state.get(v.ownerId);
+    if (!v.dark) {
+      // Recovered (or never dark). A recent attempt on record ⇒ the heal worked.
+      if (st && st.attemptsMs.length > 0) {
+        state.delete(v.ownerId);
+        out.push({ ownerId: v.ownerId, action: 'announce-healed' });
+      } else {
+        if (st) state.delete(v.ownerId);
+        out.push({ ownerId: v.ownerId, action: 'none' });
+      }
+      continue;
+    }
+    const cur = st ?? { attemptsMs: [], notified: false };
+    cur.attemptsMs = cur.attemptsMs.filter((t) => nowMs - t < HEAL_ATTEMPT_WINDOW_MS);
+    if (cur.attemptsMs.length < maxAttempts) {
+      cur.attemptsMs.push(nowMs);
+      state.set(v.ownerId, cur);
+      out.push({ ownerId: v.ownerId, action: 'heal' });
+    } else if (!cur.notified) {
+      cur.notified = true;
+      state.set(v.ownerId, cur);
+      out.push({ ownerId: v.ownerId, action: 'notify' });
+    } else {
+      state.set(v.ownerId, cur);
+      out.push({ ownerId: v.ownerId, action: 'none' });
+    }
+  }
+  return out;
+}
+
+/** The one follow-up wake a healed session gets (exported for tests). */
+export function healedWakeText(ownerId: string, staleMins: number): string {
+  return (
+    `⚠ MCP transport auto-heal (mcp-dark-watchdog P-005): your papercusp-su MCP transport was DEAD ` +
+    `(last successful tool call ~${staleMins}m before the heal) and was just reconnected in place via ` +
+    `your host's /mcp macro — your terminal and context are intact. Everything registered on the OLD ` +
+    `transport died with it, so NOW: (1) loop:status — if your loop is not active, re-arm it; ` +
+    `(2) re-park unflushed state (loop:checkpoint / work_items:checkpoint / facts:assert); ` +
+    `(3) resume what you were doing. If tools still fail, tell the owner to run /mcp in this window.`
+  );
+}
+
+const interactiveHealState = new Map<string, OwnerHealState>();
+
+export interface InteractiveMcpDarkResult {
+  darkOwners: string[];
+  healed: string[];
+  healSent: string[];
+  notified: string[];
+}
+
+/**
+ * One interactive-sweep pass: live psu-pty hosts (FS discovery) × presence beat ×
+ * armed-loop routines → verdicts → the heal ladder. Never throws. The psu-pty
+ * modules are imported lazily so a box with no interactive infra (or a test
+ * without the FS layout) degrades to a no-op sweep.
+ */
+export async function checkInteractiveMcpDark(
+  sql: Sql,
+  opts: InteractiveDarkThresholds & { maxAttempts?: number } = {},
+): Promise<InteractiveMcpDarkResult> {
+  const out: InteractiveMcpDarkResult = { darkOwners: [], healed: [], healSent: [], notified: [] };
+  try {
+    const discovery = await import('../events/await/psu-pty-discovery');
+    const hosts = discovery.listLiveHosts();
+    if (hosts.length === 0) return out;
+    const owners = hosts.map((h) => h.ownerId);
+
+    const presenceRows = await sql<{ owner_id: string; presence_ms: string | number | null }[]>`
+      SELECT owner_id, extract(epoch from heartbeat_at) * 1000 AS presence_ms
+        FROM harness_shared.coord_presence
+       WHERE owner_id = ANY(${owners})`;
+    const loopRows = await sql<
+      { target_owner_id: string; reschedule_interval_sec: string | number | null }[]
+    >`
+      SELECT target_owner_id, reschedule_interval_sec
+        FROM harness_shared.routines
+       WHERE active
+         AND reschedule_interval_sec IS NOT NULL
+         AND name LIKE 'loop-%'
+         AND target_owner_id = ANY(${owners})`;
+    const presenceBy = new Map(presenceRows.map((r) => [r.owner_id, r.presence_ms != null ? Number(r.presence_ms) : null]));
+    const loopBy = new Map(
+      loopRows.map((r) => [r.target_owner_id, r.reschedule_interval_sec != null ? Number(r.reschedule_interval_sec) : null]),
+    );
+
+    const now = Date.now();
+    const verdictByOwner = new Map<string, { dark: boolean; reason: string | null; staleMins: number }>();
+    for (const h of hosts) {
+      const presenceMs = presenceBy.get(h.ownerId) ?? null;
+      const verdict = evaluateInteractiveMcpDark(
+        {
+          ownerId: h.ownerId,
+          hostStartedMs: h.startedAt ?? null,
+          hostLastActivityMs: h.lastActivityAt ?? null,
+          presenceHeartbeatMs: presenceMs,
+          loopActive: loopBy.has(h.ownerId),
+          loopIntervalSec: loopBy.get(h.ownerId) ?? null,
+        },
+        now,
+        opts,
+      );
+      verdictByOwner.set(h.ownerId, {
+        dark: verdict.dark,
+        reason: verdict.reason,
+        staleMins: mins(now - (presenceMs ?? h.startedAt ?? now)),
+      });
+    }
+    out.darkOwners = [...verdictByOwner.entries()].filter(([, v]) => v.dark).map(([o]) => o);
+
+    const plan = planInteractiveHeal(
+      interactiveHealState,
+      [...verdictByOwner.entries()].map(([ownerId, v]) => ({ ownerId, dark: v.dark })),
+      now,
+      opts.maxAttempts ?? DEFAULT_HEAL_MAX_ATTEMPTS,
+    );
+
+    for (const step of plan) {
+      const v = verdictByOwner.get(step.ownerId);
+      if (step.action === 'heal') {
+        const sent = await discovery.mcpReconnectViaPty(step.ownerId);
+        console.warn(`[mcp-dark-watchdog] interactive DARK ${step.ownerId} — heal ${sent}: ${v?.reason ?? ''}`);
+        if (sent === 'sent') out.healSent.push(step.ownerId);
+        else {
+          // No injectable host / old host / write failure ⇒ no heal will ever land
+          // this way — skip straight to the notify posture on this same pass.
+          const st = interactiveHealState.get(step.ownerId);
+          if (st && !st.notified) {
+            st.notified = true;
+            await notifyInteractiveDark(sql, step.ownerId, v?.reason ?? 'transport dead', `heal unavailable (${sent})`);
+            out.notified.push(step.ownerId);
+          }
+        }
+      } else if (step.action === 'notify') {
+        await notifyInteractiveDark(sql, step.ownerId, v?.reason ?? 'transport dead', 'heal attempts exhausted');
+        out.notified.push(step.ownerId);
+      } else if (step.action === 'announce-healed') {
+        out.healed.push(step.ownerId);
+        // Transport truth says the beat advanced — tell the session ONCE to re-arm.
+        const host = discovery.findLiveHost(step.ownerId);
+        if (host) {
+          await discovery.injectIntoHost(host.sock, {
+            mode: 'turn',
+            data: healedWakeText(step.ownerId, v?.staleMins ?? 0),
+          });
+        }
+        // Clear any standing escalation row (idempotent).
+        await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = NULL, mtime_ms = ${now}
+           WHERE phase = ${INTERACTIVE_PHASE_PREFIX + step.ownerId} AND escalation IS NOT NULL`;
+        console.warn(`[mcp-dark-watchdog] interactive HEALED ${step.ownerId} — follow-up wake injected`);
+      }
+    }
+    return out;
+  } catch (e) {
+    console.warn(
+      `[mcp-dark-watchdog] interactive pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return out;
+  }
+}
+
+/** Claim + notify for one interactive dark owner (owner-actionable copy: the fix
+ *  is literally typing /mcp in that window; a peer cannot do it). */
+async function notifyInteractiveDark(sql: Sql, ownerId: string, reason: string, cause: string): Promise<void> {
+  const now = Date.now();
+  const claimed = await sql`
+    INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+    VALUES ('papercusp', ${INTERACTIVE_PHASE_PREFIX + ownerId}, ${JSON.stringify({
+      kind: 'mcp-dark-watchdog-interactive',
+      owner_id: ownerId,
+      emitted_at: now,
+      detail: `Interactive session ${ownerId} is MCP-dark (${cause}): ${reason}`,
+    })}, ${now}, NULL)
+    ON CONFLICT (harness_slug, phase) DO NOTHING
+    RETURNING phase`;
+  if (claimed.length !== 1) return; // already claimed — cross-process exactly-once
+  try {
+    const { notifyAttention } = await import('../attention-notify');
+    await notifyAttention({
+      kind: 'intervention',
+      title: `Interactive session ${ownerId.slice(0, 12)}… is MCP-dark (auto-heal ${cause})`,
+      body:
+        `${reason}\n\nThe in-place /mcp auto-heal did not land (${cause}). Fix: type /mcp in that session's ` +
+        `terminal and reconnect papercusp-su — the session keeps its context. If the window is gone, resume it ` +
+        `(psu --resume) and the transport re-initializes at launch.`,
+      importance: 'high',
+      data: { ownerId, cause },
+    });
+  } catch (e) {
+    console.warn(`[mcp-dark-watchdog] interactive notify failed: ${e instanceof Error ? e.message : e}`);
+  }
+  await broadcastSevereEvent({
+    summary: `Interactive session ${ownerId} MCP-dark — in-place heal ${cause}; owner action needed (/mcp in its terminal).`,
+    body:
+      `${reason}\n\nIts pty host is alive, so the session is NOT dead — only its MCP transport is. It cannot read ` +
+      `its own inbox (that needs MCP). Do not kill it: the owner types /mcp in that window, or resumes it if closed.`,
+    category: 'severe-event',
+  });
+}
+
 let watchdogTimer: ManagedHandle | null = null;
 let restartAtMs: number | null = null;
 
 /**
  * Start the watchdog: a grace-delayed boot check + a recurring process-level sweep. restartAt is
  * pinned to this call (== operator boot). Idempotent. Kill-switch: PAPERCUSP_MCP_DARK_WATCHDOG='0'.
+ * The interactive transport-death sweep (P-005) rides the same timer; its own kill-switch is
+ * PAPERCUSP_MCP_DARK_INTERACTIVE='0'.
  */
 export function startMcpDarkWatchdog(
   sql: Sql,
@@ -313,6 +654,9 @@ export function startMcpDarkWatchdog(
         console.warn(`[mcp-dark-watchdog] alarmed on: ${r.alarmed.join(', ')} (host ${os.hostname()})`);
       }
     });
+    if (process.env.PAPERCUSP_MCP_DARK_INTERACTIVE !== '0') {
+      void checkInteractiveMcpDark(sql);
+    }
   };
 
   if (watchdogTimer) watchdogTimer.stop();

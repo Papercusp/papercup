@@ -5,7 +5,14 @@
  * injected so no real time is involved.
  */
 import { describe, expect, it } from 'vitest';
-import { evaluateMcpDark, type McpDarkSnapshot } from './mcp-dark-watchdog';
+import {
+  evaluateMcpDark,
+  evaluateInteractiveMcpDark,
+  planInteractiveHeal,
+  healedWakeText,
+  type McpDarkSnapshot,
+  type InteractiveDarkSnapshot,
+} from './mcp-dark-watchdog';
 
 const RESTART = 1_000_000_000_000; // fixed operator-boot epoch ms
 const M = 60_000;
@@ -67,5 +74,118 @@ describe('evaluateMcpDark', () => {
     const soon = RESTART + 2 * M;
     // default 5-min grace ⇒ not dark; a 1-min grace ⇒ dark (all other gates hold).
     expect(evaluateMcpDark(darkSnapshot(), RESTART, soon, { graceMs: 1 * M }).dark).toBe(true);
+  });
+});
+
+// ═══ Interactive-session sweep (mcp-transport-resilience P-005, 2026-07-13) ═══
+
+const INOW = 2_000_000_000_000;
+
+/** A snapshot that IS dark under the armed-loop clause: host old, loop armed
+ *  (600s), presence beat 45 min stale (> max(3×600s, 20m) = 30m). Mirrors the
+ *  su-39f07 incident shape. */
+function interactiveDark(over: Partial<InteractiveDarkSnapshot> = {}): InteractiveDarkSnapshot {
+  return {
+    ownerId: 'su-39f07',
+    hostStartedMs: INOW - 6 * 60 * M,
+    hostLastActivityMs: INOW - 1 * M,
+    presenceHeartbeatMs: INOW - 45 * M,
+    loopActive: true,
+    loopIntervalSec: 600,
+    ...over,
+  };
+}
+
+describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)', () => {
+  it('detects the su-39f07 shape: armed loop + presence beat past 3× interval', () => {
+    const v = evaluateInteractiveMcpDark(interactiveDark(), INOW);
+    expect(v.dark).toBe(true);
+    expect(v.reason).toContain('ARMED loop');
+  });
+
+  it('grace: a young host is never dark (session may not have tool-called yet)', () => {
+    const v = evaluateInteractiveMcpDark(interactiveDark({ hostStartedMs: INOW - 5 * M }), INOW);
+    expect(v.dark).toBe(false);
+  });
+
+  it('armed loop within cadence is healthy (beat 10m stale, threshold 30m)', () => {
+    const v = evaluateInteractiveMcpDark(interactiveDark({ presenceHeartbeatMs: INOW - 10 * M }), INOW);
+    expect(v.dark).toBe(false);
+  });
+
+  it('a LONG loop interval raises the threshold (3× interval beats the floor)', () => {
+    // interval 30 min ⇒ threshold 90 min; a 45-min-stale beat is fine.
+    const v = evaluateInteractiveMcpDark(
+      interactiveDark({ loopIntervalSec: 1800, presenceHeartbeatMs: INOW - 45 * M }),
+      INOW,
+    );
+    expect(v.dark).toBe(false);
+  });
+
+  it('no loop: dark only when the pty is IN USE and the beat is very stale', () => {
+    const base = interactiveDark({ loopActive: false, loopIntervalSec: null });
+    // in use (pty 1m ago) + beat 45m stale > 30m ⇒ dark
+    expect(evaluateInteractiveMcpDark(base, INOW).dark).toBe(true);
+    // idle session (pty 20m ago) ⇒ never dark, however stale the beat
+    expect(
+      evaluateInteractiveMcpDark({ ...base, hostLastActivityMs: INOW - 20 * M }, INOW).dark,
+    ).toBe(false);
+    // in use but beat only 20m stale ⇒ not dark
+    expect(
+      evaluateInteractiveMcpDark({ ...base, presenceHeartbeatMs: INOW - 20 * M }, INOW).dark,
+    ).toBe(false);
+  });
+
+  it('presence NEVER seen: staleness measured from host start', () => {
+    const v = evaluateInteractiveMcpDark(interactiveDark({ presenceHeartbeatMs: null }), INOW);
+    expect(v.dark).toBe(true);
+  });
+});
+
+describe('planInteractiveHeal (the cross-pass heal ladder)', () => {
+  it('dark → heal, heal, then notify ONCE, then none', () => {
+    const state = new Map();
+    const dark = [{ ownerId: 'su-x', dark: true }];
+    expect(planInteractiveHeal(state, dark, INOW)).toEqual([{ ownerId: 'su-x', action: 'heal' }]);
+    expect(planInteractiveHeal(state, dark, INOW + 5 * M)).toEqual([{ ownerId: 'su-x', action: 'heal' }]);
+    expect(planInteractiveHeal(state, dark, INOW + 10 * M)).toEqual([{ ownerId: 'su-x', action: 'notify' }]);
+    expect(planInteractiveHeal(state, dark, INOW + 15 * M)).toEqual([{ ownerId: 'su-x', action: 'none' }]);
+  });
+
+  it('recovery after an attempt → announce-healed exactly once, state cleared', () => {
+    const state = new Map();
+    planInteractiveHeal(state, [{ ownerId: 'su-x', dark: true }], INOW);
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: false }], INOW + 5 * M)).toEqual([
+      { ownerId: 'su-x', action: 'announce-healed' },
+    ]);
+    // next pass: nothing on record ⇒ none
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-x', dark: false }], INOW + 10 * M)).toEqual([
+      { ownerId: 'su-x', action: 'none' },
+    ]);
+  });
+
+  it('never-dark owners never act (no announce without a recorded attempt)', () => {
+    const state = new Map();
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-y', dark: false }], INOW)).toEqual([
+      { ownerId: 'su-y', action: 'none' },
+    ]);
+  });
+
+  it('the attempt window rolls: old attempts age out and healing resumes', () => {
+    const state = new Map();
+    const dark = [{ ownerId: 'su-x', dark: true }];
+    planInteractiveHeal(state, dark, INOW);
+    planInteractiveHeal(state, dark, INOW + 1 * M);
+    // 2h later: both attempts aged out of the 1h window ⇒ heal again
+    expect(planInteractiveHeal(state, dark, INOW + 120 * M)).toEqual([{ ownerId: 'su-x', action: 'heal' }]);
+  });
+});
+
+describe('healedWakeText', () => {
+  it('tells the healed session to re-arm its loop and re-park state', () => {
+    const text = healedWakeText('su-x', 45);
+    expect(text).toContain('loop:status');
+    expect(text).toContain('re-park');
+    expect(text).toContain('~45m');
   });
 });
