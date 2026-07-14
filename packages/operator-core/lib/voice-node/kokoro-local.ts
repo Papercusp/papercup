@@ -80,10 +80,20 @@ export async function isKokoroLocalProvisioned(home?: string): Promise<boolean> 
 
 async function defaultLoadEngine(cacheDir: string): Promise<KokoroEngineLike> {
   // Dynamic import keeps onnxruntime-node's native load OFF the operator boot path — the
-  // engine only materializes on first provision/synth. The vendored port (./kokoro/kokoro-tts)
-  // binds to the repo's own @huggingface/transformers 4.2.0 (see its header for why not the
-  // kokoro-js npm package).
-  const { KokoroTts } = await import('./kokoro/kokoro-tts');
+  // engine only materializes on first provision/synth. @papercusp/kokoro-tts (WI-4470,
+  // extracted from the formerly-vendored ./kokoro/kokoro-tts) carries zero transformers
+  // coupling of its own — we wire the repo's own @huggingface/transformers 4.2.0 in via its
+  // configureKokoroTts() host seam (see its header for why not the kokoro-js npm package,
+  // and config.ts for why injection instead of a direct dependency).
+  const [{ KokoroTts, configureKokoroTts }, transformers] = await Promise.all([
+    import('@papercusp/kokoro-tts'),
+    import('@huggingface/transformers'),
+  ]);
+  configureKokoroTts({
+    StyleTextToSpeech2Model: transformers.StyleTextToSpeech2Model,
+    AutoTokenizer: transformers.AutoTokenizer,
+    Tensor: transformers.Tensor,
+  });
   return KokoroTts.from_pretrained(KOKORO_LOCAL_MODEL_ID, {
     dtype: KOKORO_LOCAL_DTYPE,
     device: 'cpu',

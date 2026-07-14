@@ -34,6 +34,7 @@
     "@papercusp/event-reaction": "*",
     "@papercusp/failure-detector": "*",
     "@papercusp/flags": "*",
+    "@papercusp/kokoro-tts": "*",
     "@papercusp/locks-core": "*",
     "@papercusp/memory": "*",
     "@papercusp/model-pricing": "*",

@@ -16,6 +16,7 @@
     "libs/generic/git-graph",
     "libs/generic/ui-primitives",
     "libs/generic/dock-workbench",
+    "libs/generic/kokoro-tts",
     "libs/marketplace-public-ui",
     "libs/papercusp-db",
     "libs/papercusp-shared",
