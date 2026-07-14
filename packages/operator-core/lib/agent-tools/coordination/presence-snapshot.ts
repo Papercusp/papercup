@@ -355,7 +355,11 @@ export async function assemblePresenceSnapshot(
     // 30-minute ceiling. `=== false` only: `null` (remote host / no pid /
     // EPERM) is inconclusive and must never force `ended`.
     const pidConfirmedDead = probeProcessLiveness({ host: r.host, pid: r.pid }) === false;
-    const claimsHeld = (r.claimedItems?.length ?? 0) > 0 || (r.workItemClaims?.length ?? 0) > 0;
+    // Tier-1 adds this join only for state derivation; it is deliberately not
+    // part of the emitted RosterRow payload.
+    const claimsHeld =
+      (r.claimedItems?.length ?? 0) > 0 ||
+      (((r as RosterRow & { workItemClaims?: string[] }).workItemClaims?.length ?? 0) > 0);
     const sessionState: RosterRow['sessionState'] = recordedLiveOnly
       ? 'recorded'
       : deriveSessionState({

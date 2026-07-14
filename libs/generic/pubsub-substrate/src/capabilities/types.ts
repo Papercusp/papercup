@@ -78,6 +78,10 @@ export interface SubscriptionRow {
   created_ts: string;
   /** ISO-8601 expiry, or null for a standing subscription. */
   expires_ts: string | null;
+  /** WI-4119: direct work-item subscriptions may follow one blocker hop. */
+  follow_blockers?: boolean;
+  /** WI-4119: non-null only for a generated blocker subscription. */
+  derived_from?: ObjectRef | null;
 }
 
 export interface SubscribeInput {
@@ -89,6 +93,8 @@ export interface SubscribeInput {
   /** ISO-8601 create time (host clock). */
   created_ts: string;
   expires_ts?: string | null;
+  /** WI-4119: opt a direct work-item subscription into one-hop blocker follows. */
+  follow_blockers?: boolean;
 }
 
 export interface SubscribableStore {

@@ -79,9 +79,6 @@ export type RosterRow = UnifiedPresenceRecord &
       sessionState: SessionState | null;
       /** P-001: a live inbox-wake await exists → a wake will be delivered. */
       wakeable: boolean | null;
-      /** Internal Tier-1 claim join used to distinguish suspect dead owners;
-       *  deliberately dropped from the compact payload. */
-      workItemClaims: string[];
       /** P-007 (fleet-deltas-leader-primitives-2026-07-10): the coarse per-member
        *  context-pressure bucket (ok|high|critical), derived from the SAME watchdog-
        *  cached (context_tokens, compaction_limit) the ambient gauge bands on — a
@@ -186,7 +183,6 @@ export const PRESENCE_DROPPED_FIELDS = [
   'heartbeatAt',
   'lastActiveAt',
   'capabilityTags',
-  'workItemClaims',
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /** The delta-eligible field set (D-005 lane 1) = IDENTITY ∪ STATE. A change in

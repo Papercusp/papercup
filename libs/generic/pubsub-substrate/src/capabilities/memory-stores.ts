@@ -91,6 +91,7 @@ export class InMemoryEntitySubscriptionStore implements SubscribableStore {
     if (active) {
       active.delivery_mode = mode;
       active.expires_ts = input.expires_ts ?? null;
+      if (input.follow_blockers !== undefined) active.follow_blockers = input.follow_blockers;
       return stripCancelled(active);
     }
     const row: SubMem = {
@@ -101,6 +102,7 @@ export class InMemoryEntitySubscriptionStore implements SubscribableStore {
       delivery_mode: mode,
       created_ts: input.created_ts,
       expires_ts: input.expires_ts ?? null,
+      follow_blockers: input.follow_blockers ?? false,
       cancelled: false,
     };
     this.rows.push(row);
