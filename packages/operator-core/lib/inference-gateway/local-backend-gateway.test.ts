@@ -470,3 +470,30 @@ test('GET /maintenance/backend-context — /props with no usable n_ctx → 502 (
   const json = (await res.json()) as { error: { message: string } };
   assert.match(json.error.message, /no usable n_ctx/);
 });
+
+test('slot affinity (P-028): an identified owner sticks to its warm backend while a fresh owner load-balances; /admin exposes the counters', async () => {
+  const b1 = await startFakeBackend('aff-a', okJsonReply({ id: 'from-a' }));
+  const b2 = await startFakeBackend('aff-b', okJsonReply({ id: 'from-b' }));
+  backends = [b1, b2];
+  await boot([
+    { id: 'aff-a', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['ornith-35b'], maxConcurrent: 4, enabled: true },
+    { id: 'aff-b', kind: 'llama-server', baseUrl: b2.baseUrl, models: ['ornith-35b'], maxConcurrent: 4, enabled: true },
+  ]);
+
+  // First hop: cold assignment lands on 'aff-a' (deterministic id tie-break).
+  assert.equal(((await (await chatCompletionsAs('owner-aff', { model: 'ornith-35b', messages: [] })).json()) as { id: string }).id, 'from-a');
+  // Make 'aff-a' the BUSIER backend — pure least-loaded would now route to 'aff-b'.
+  pool.recordStart('aff-a');
+  pool.recordStart('aff-a');
+  // Sticky owner stays on its warm backend; a fresh owner gets the idle sibling.
+  assert.equal(((await (await chatCompletionsAs('owner-aff', { model: 'ornith-35b', messages: [] })).json()) as { id: string }).id, 'from-a');
+  assert.equal(((await (await chatCompletionsAs('owner-new', { model: 'ornith-35b', messages: [] })).json()) as { id: string }).id, 'from-b');
+
+  const admin = (await (await fetch(`http://127.0.0.1:${port}/admin/local-backends`)).json()) as {
+    affinity: { hits: number; switches: number; cold: number; trackedOwners: number };
+  };
+  assert.equal(admin.affinity.hits, 1);
+  assert.equal(admin.affinity.cold, 2);
+  assert.equal(admin.affinity.switches, 0);
+  assert.equal(admin.affinity.trackedOwners, 2);
+});

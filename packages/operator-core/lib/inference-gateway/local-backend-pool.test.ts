@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  AFFINITY_MAX_OWNERS,
+  AFFINITY_TTL_MS,
   createLocalBackendPool,
   HEALTH_FAIL_THRESHOLD,
   isSaturatedFor,
   nextHealthState,
   pickLeastLoaded,
+  pickWithAffinity,
   type LocalBackend,
   type LocalBackendCandidate,
 } from './local-backend-pool';
