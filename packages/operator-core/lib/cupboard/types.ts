@@ -69,6 +69,18 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  *                              GUIDE.md; installing drops the dir into the user
  *                              template store the materializer reads, cf.
  *                              cupboard-full-dogfood-2026-07-10 P-003)
+ *   app           → download  (STANDALONE) | install (BUNDLE) — a whole
+ *                              distributable application (cupboard-app-distribution
+ *                              -2026-07-14 [owner:Avi 2026-07-14]). The
+ *                              `delivery_type` field discriminates the two models:
+ *                              a `'standalone'` app is a separate downloadable
+ *                              product (e.g. Oddsmith, a Tauri desktop app built on
+ *                              the papercusp platform) — "install" = DOWNLOAD the
+ *                              platform installer from its GitHub release via
+ *                              `latest_json_url` (the Cupboard never re-hosts the
+ *                              binary); a `'bundle'` app is a papercusp-native
+ *                              composition (datatypes + plugins + blueprint) that
+ *                              installs into your workspace (Phase 2, deferred).
  *
  * The `snapshot` kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005):
  * the Cupboard distributes RECIPES (blueprints), not binary tarballs; the
@@ -78,14 +90,28 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  * publish PENDING and surface publicly only after operator approval — see
  * `review_status` on the row + `isPendingReview()`.
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template', 'app'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
+
+/**
+ * The delivery model for a `listing_kind: 'app'` row (cupboard-app-distribution
+ * -2026-07-14 D-001 [owner:Avi 2026-07-14]):
+ *   standalone → a separate downloadable product (own installer/binary), e.g. the
+ *                Oddsmith Tauri desktop app. "Install" = download the platform
+ *                installer from the app's GitHub release; the Cupboard hands off a
+ *                download link and never re-hosts the binary.
+ *   bundle     → a papercusp-native composition (datatypes + plugins + blueprint)
+ *                that installs INTO the user's workspace (Phase 2, deferred).
+ * Only meaningful when `listing_kind === 'app'`; absent on every other kind.
+ */
+export const APP_DELIVERY_TYPES = ['standalone', 'bundle'] as const;
+export type AppDeliveryType = (typeof APP_DELIVERY_TYPES)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
   return typeof v === 'string' && (LISTING_KINDS as readonly string[]).includes(v);
 }
 
-export type ListingAction = 'view-hive' | 'install';
+export type ListingAction = 'view-hive' | 'install' | 'download';
 
 /**
  * The consumer action for a listing ROW (comb-retire-per-harness-sharing
@@ -93,6 +119,13 @@ export type ListingAction = 'view-hive' | 'install';
  * repo→Hive lookup index (worker mig 007), not a joinable unit — hive-bound
  * rows point at the per-Hive rollup; legacy rows (no `hive_pubkey`) have no
  * primary action (`null`). blueprint + plugin/pack → install (clone the listing).
+ *
+ * An `app` row's action forks on `delivery_type` (cupboard-app-distribution
+ * D-001 [owner:Avi 2026-07-14]): a STANDALONE app → 'download' (hand off the
+ * platform installer link — v1 is download-link handoff only); a BUNDLE app →
+ * 'install' (compose it into the workspace, Phase 2). A standalone app row with
+ * `delivery_type` absent still defaults to 'download' — the safe, no-side-effect
+ * action for a distributed executable.
  */
 export function listingActionFor(l: HarnessListing): ListingAction | null {
   switch (listingKindOf(l)) {
@@ -104,14 +137,18 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'knowledge-pack':
     case 'template':
       return 'install';
+    case 'app':
+      return l.delivery_type === 'bundle' ? 'install' : 'download';
   }
 }
 
 /** Human label for a kind's action button. */
 export const LISTING_ACTION_LABEL: Record<ListingAction, string> = {
   'view-hive': 'View Hive',
-  // blueprint + plugin + pack + knowledge-pack all → 'install' (clone the listing).
+  // blueprint + plugin + pack + knowledge-pack + bundle-app all → 'install' (clone the listing).
   install: 'Install',
+  // standalone-app → 'download' (hand off the platform installer link).
+  download: 'Download',
 };
 
 // ── Display helpers ──────────────────────────────────────────────────────────
@@ -326,9 +363,11 @@ export interface HarnessListing {
   // they are optional. `listing_kind` drives the per-kind consumer action
   // (join/fork/install); `project_ref`/`listing_ref` carry the project-centric
   // 1:N identity (D-008). See `listingAction()`.
-  /** harness | blueprint | plugin | pack | knowledge-pack | template. Absent ⇒
-   *  treat as 'harness'; the interim 'tool-pack' wire value (mig 008) normalizes
-   *  to 'pack' via listingKindOf (cupboard-public-release P-003). */
+  /** harness | blueprint | plugin | pack | knowledge-pack | template | app.
+   *  Absent ⇒ treat as 'harness'; the interim 'tool-pack' wire value (mig 008)
+   *  normalizes to 'pack' via listingKindOf (cupboard-public-release P-003).
+   *  'app' (worker migration 014 / cupboard-app-distribution) carries the
+   *  `delivery_type` + app-distribution fields below. */
   listing_kind?: ListingKind | 'tool-pack';
   /** Papercupai project remote this listing belongs to (D-008); null = legacy/standalone. */
   project_ref?: string | null;
@@ -338,6 +377,47 @@ export interface HarnessListing {
    *  template) | 'harness'. Absent/null for non-blueprint listings + pre-009 rows
    *  (Cupboard migration 009 / hive-blueprint-generalization P-018). Drives the Hives tab. */
   blueprint_kind?: 'pot' | 'hive' | 'harness' | null;
+
+  // ── App-distribution fields (Cupboard worker migration 014 /
+  // cupboard-app-distribution-2026-07-14 P-001 [owner:Avi 2026-07-14]). Present
+  // only for `listing_kind: 'app'` rows; absent/null on every other kind.
+  // A STANDALONE app is distributed by download-link handoff (v1): the Cupboard
+  // points at the app's own GitHub release, it never re-hosts the binary. ──
+  /**
+   * Which app delivery model this row uses (only for `listing_kind: 'app'`):
+   * 'standalone' (a separate downloadable product) | 'bundle' (a papercusp-native
+   * composition, Phase 2). Absent on an app row ⇒ treat as 'standalone' (the safe
+   * download-handoff default). Drives `listingActionFor` → 'download' vs 'install'.
+   */
+  delivery_type?: AppDeliveryType | null;
+  /**
+   * STANDALONE only: URL of the app's signed `latest.json` updater manifest
+   * (`@papercusp/tauri-release-kit` `buildLatestManifest` output —
+   * `{ version, platforms: { <os>: { signature, url } }, notes?, pub_date? }`).
+   * The download flow fetches this to resolve the platform-specific installer
+   * URL. Null ⇒ no release manifest published yet.
+   */
+  latest_json_url?: string | null;
+  /**
+   * STANDALONE only: `<owner>/<repo>` of the GitHub repository whose Releases
+   * host the app's installers (the download target). Distinct from `github_repo`
+   * (the source repo) for apps whose releases live in a dedicated repo. Null ⇒
+   * fall back to `github_repo`.
+   */
+  release_repo?: string | null;
+  /**
+   * App icon URL for the storefront card/detail (an app is a whole product, so it
+   * gets a real icon rather than a kind glyph). Null ⇒ render the default app icon.
+   */
+  icon_url?: string | null;
+  /**
+   * Denormalized platform availability for the listing card, JSON-encoded
+   * string[] of OS keys present in `latest.json` (e.g. `["darwin-aarch64",
+   * "linux-x86_64","windows-x86_64"]`) — lets the card show "macOS · Linux ·
+   * Windows" without fetching the manifest. Null ⇒ platforms unknown until the
+   * manifest is fetched.
+   */
+  platforms?: string | null;
 
   // ── Repo→Hive binding fields (Cupboard worker migration 007 /
   // hive-from-github-url-2026-06-11 P-004, D-004 HYBRID ratified per D-008).

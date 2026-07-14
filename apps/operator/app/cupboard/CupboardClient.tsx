@@ -28,7 +28,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate, AppWindow, Download } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import type { HarnessListing, ListingKind, HiveBrowseGroup } from '@papercusp/operator-core/lib/cupboard/types';
@@ -84,15 +84,19 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
     case 'pack': return <Box size={size} />;
     case 'knowledge-pack': return <Brain size={size} />;
     case 'template': return <LayoutTemplate size={size} />;
+    // an app is a whole distributable application (cupboard-app-distribution).
+    case 'app': return <AppWindow size={size} />;
     default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
   }
 }
 
-/** Icon for a listing's action button (view-hive/install). */
+/** Icon for a listing's action button (view-hive/install/download). */
 function ActionIcon({ action, size = 13 }: { action: ListingAction; size?: number }) {
   switch (action) {
     case 'view-hive': return <Hexagon size={size} />;
     case 'install': return <Plug size={size} />;
+    // standalone app → download the platform installer (link handoff).
+    case 'download': return <Download size={size} />;
   }
 }
 

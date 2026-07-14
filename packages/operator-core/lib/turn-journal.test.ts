@@ -121,6 +121,63 @@ describe('detectClaimLedgerMismatch (note says pass, ledger says exit 1; ledger 
     );
     expect(t!.evidence).toHaveLength(3);
   });
+
+  it('tags the tripped domain (P-029 taxonomy)', () => {
+    expect(detectClaimLedgerMismatch('all tests pass', [failedBash])!.domain).toBe('tests');
+  });
+});
+
+describe('detectClaimLedgerMismatch — P-029 domains (deploy / commit) + isolation', () => {
+  const failedDeploy = { toolName: 'deploy:harness', status: 'error', summary: 'deploy failed: gate red' };
+  const okDeploy = { toolName: 'deploy:harness', status: 'ok', summary: 'deployed fence 65' };
+  const failedRelease = { toolName: 'release:cut', status: 'error', summary: 'release aborted' };
+  const failedGit = { toolName: 'git-sync:run', status: 'error', summary: 'push rejected' };
+  const okGit = { toolName: 'capability:git', status: 'ok', summary: 'pushed 1 commit' };
+  const failedBash = { toolName: 'Bash', status: 'error', summary: '$ npx vitest run' };
+
+  it('deploy claim contradicted by a failed deploy tool trips, domain=deploy', () => {
+    const t = detectClaimLedgerMismatch('Deployed to staging; :3170 is live.', [failedDeploy]);
+    expect(t).not.toBeNull();
+    expect(t!.domain).toBe('deploy');
+    expect(t!.evidence).toEqual([failedDeploy]);
+  });
+
+  it('a release claim matches the deploy domain (release:* attests)', () => {
+    expect(detectClaimLedgerMismatch('Cut a release.', [failedRelease])!.domain).toBe('deploy');
+  });
+
+  it('a successful deploy never trips the deploy claim', () => {
+    expect(detectClaimLedgerMismatch('deployed to prod', [okDeploy])).toBeNull();
+  });
+
+  it('honest disclosure alongside a deploy claim is never tripwired', () => {
+    expect(detectClaimLedgerMismatch('deployed, but the rollout failed', [failedDeploy])).toBeNull();
+  });
+
+  it('commit claim contradicted by a failed git op trips, domain=commit', () => {
+    const t = detectClaimLedgerMismatch('Committed and pushed the fix.', [failedGit]);
+    expect(t!.domain).toBe('commit');
+    expect(t!.evidence).toEqual([failedGit]);
+  });
+
+  it('a successful push never trips the commit claim', () => {
+    expect(detectClaimLedgerMismatch('pushed the branch', [okGit])).toBeNull();
+  });
+
+  // The soundness property of the taxonomy: each claim is diffed ONLY against
+  // its own domain's ledger truth — foreign-domain failures are invisible.
+  it('cross-domain isolation: a failed TEST never contradicts a DEPLOY claim', () => {
+    expect(detectClaimLedgerMismatch('deployed to staging', [failedBash])).toBeNull();
+  });
+
+  it('cross-domain isolation: a failed DEPLOY never contradicts a COMMIT claim', () => {
+    expect(detectClaimLedgerMismatch('pushed the release branch', [failedDeploy])).toBeNull();
+  });
+
+  it('priority: when tests AND deploy are both claimed and both failed, tests wins the slot', () => {
+    const t = detectClaimLedgerMismatch('All tests pass and deployed to staging.', [failedDeploy, failedBash]);
+    expect(t!.domain).toBe('tests');
+  });
 });
 
 describe('readLastAssistantTurn / resolveTranscriptPath', () => {

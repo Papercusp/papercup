@@ -436,8 +436,8 @@ describe('groupHarnessRowsByHive (hive-first browse, comb-hive-native-sharing P-
 });
 
 describe('isListingKind / listingKindOf — kind resolution', () => {
-  it('isListingKind accepts the 6 canonical kinds, rejects everything else', () => {
-    for (const k of ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template']) {
+  it('isListingKind accepts the 7 canonical kinds, rejects everything else', () => {
+    for (const k of ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template', 'app']) {
       expect(isListingKind(k)).toBe(true);
     }
     expect(isListingKind('tool-pack')).toBe(false); // interim alias is NOT a canonical kind (mig 010)

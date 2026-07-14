@@ -285,6 +285,11 @@ export const CUPBOARD_LISTING_KIND_TONE: Record<string, CategoryTone> = {
   // Without this entry KindBadge/ListingCard crash on `tone.fg` for a template
   // row (cupboard-public-release-2026-07-12 P-002).
   template: { fg: 'var(--rose-400)', bg: 'color-mix(in srgb, var(--rose-400), transparent 86%)', border: 'color-mix(in srgb, var(--rose-400), transparent 74%)' },
+  // app: a whole distributable application (cupboard-app-distribution-2026-07-14).
+  // A gold hue reads as a premium "whole product" — distinct from blueprint
+  // (good/green), pack (accent-cool), knowledge-pack (warn), template (rose).
+  // Without this entry KindBadge/ListingCard crash on `tone.fg` for an app row.
+  app: { fg: 'var(--gold-400)', bg: 'color-mix(in srgb, var(--gold-400), transparent 86%)', border: 'color-mix(in srgb, var(--gold-400), transparent 74%)' },
 };
 
 // Memory-kind chip hues (settings/user/memory). Categorical, not status —

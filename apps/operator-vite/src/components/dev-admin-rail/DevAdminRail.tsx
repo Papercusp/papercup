@@ -30,7 +30,7 @@ import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-re
 import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
-import { isChromelessPath } from '../../lib/chromeless-routes';
+import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import {
   Flag,

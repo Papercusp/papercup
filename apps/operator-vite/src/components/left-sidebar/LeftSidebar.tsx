@@ -27,7 +27,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
-import { isChromelessPath } from '../../lib/chromeless-routes';
+import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
 import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';

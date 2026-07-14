@@ -15,6 +15,12 @@
  * LeftSidebar / DevAdminRail self-suppress on it. Previously each of those
  * carried its own private `CHROMELESS_PREFIXES` copy AND ChromeShell / the env
  * bar had none — so `/quick-panel` still rendered the full app inside the popup.
+ *
+ * Home: this lives in `operator-core` (not the operator-vite SPA) because the
+ * Quick Panel WINDOW-SANDBOX guard in `client-navigation.ts` — a lower layer the
+ * SPA depends on — also needs to know "is this a chromeless route" to decide
+ * whether a navigation is LEAVING the panel's sandbox (WI-4827). The SPA imports
+ * this same module, so there is exactly one list.
  */
 export const CHROMELESS_PREFIXES = ['/pi', '/project-docs', '/el-min', '/quick-panel'] as const;
 

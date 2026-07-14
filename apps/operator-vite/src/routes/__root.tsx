@@ -50,7 +50,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
 import ChromeShell from '@/app/_components/ChromeShell';
 import { usePathname } from '@/lib/router-compat/navigation';
-import { isChromelessPath } from '../lib/chromeless-routes';
+import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
 // (desktop UI part A). Mounted here — inside RootSyncProvider, at the router
 // root — so it can read the `hiveFromRepo.progress` sync rows and overlay EVERY

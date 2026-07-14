@@ -72,19 +72,36 @@ describe('listingActionFor (row → consumer verb, comb-retire D-001/D-003)', ()
     expect(listingActionFor(makeListing({ listing_kind: 'pack' }))).toBe('install');
   });
 
+  // ── app kind (cupboard-app-distribution-2026-07-14 D-001 [owner:Avi 2026-07-14]) ──
+  it('standalone app → download (hand off the installer link — v1 is download-handoff)', () => {
+    expect(
+      listingActionFor(makeListing({ listing_kind: 'app', delivery_type: 'standalone' })),
+    ).toBe('download');
+  });
+  it('bundle app → install (composes into the workspace, Phase 2)', () => {
+    expect(
+      listingActionFor(makeListing({ listing_kind: 'app', delivery_type: 'bundle' })),
+    ).toBe('install');
+  });
+  it('app with absent delivery_type → download (safe no-side-effect default for an executable)', () => {
+    expect(listingActionFor(makeListing({ listing_kind: 'app' }))).toBe('download');
+    expect(listingActionFor(makeListing({ listing_kind: 'app', delivery_type: null }))).toBe('download');
+  });
+
   it('maps every declared kind to a labelled action or null (no kind falls through)', () => {
     for (const kind of LISTING_KINDS) {
       const action = listingActionFor(makeListing({ listing_kind: kind, hive_pubkey: 'k' }));
-      expect(['view-hive', 'install']).toContain(action);
+      expect(['view-hive', 'install', 'download']).toContain(action);
       // and the action has a human label for the button
       expect(typeof LISTING_ACTION_LABEL[action!]).toBe('string');
       expect(LISTING_ACTION_LABEL[action!].length).toBeGreaterThan(0);
     }
   });
 
-  it('the label map is action-complete (View Hive / Install)', () => {
+  it('the label map is action-complete (View Hive / Install / Download)', () => {
     expect(LISTING_ACTION_LABEL['view-hive']).toBe('View Hive');
     expect(LISTING_ACTION_LABEL.install).toBe('Install');
+    expect(LISTING_ACTION_LABEL.download).toBe('Download');
   });
 });
 
@@ -118,6 +135,7 @@ describe('listingKindOf (row → kind, defaulting to harness)', () => {
     expect(listingKindOf(makeListing({ listing_kind: 'tool-pack' }))).toBe('pack');
     expect(listingKindOf(makeListing({ listing_kind: 'blueprint' }))).toBe('blueprint');
     expect(listingKindOf(makeListing({ listing_kind: 'harness' }))).toBe('harness');
+    expect(listingKindOf(makeListing({ listing_kind: 'app' }))).toBe('app');
   });
 
   it('defaults an ABSENT listing_kind to harness (pre-004 / aspirational row)', () => {
