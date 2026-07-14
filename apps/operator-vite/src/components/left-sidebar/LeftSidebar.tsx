@@ -239,8 +239,22 @@ export default function LeftSidebar() {
           style={{ width: renderedWidth }}
           aria-label={`${t('fleet')} sidebar`}
         >
-        {/* Collapsed: the three tab icons — click one to expand into it. */}
+        {/* Collapsed: the expand control on TOP — the mirror of the collapse
+            chevron (re-expands to the LAST pane, no tab switch; owner ask
+            2026-07-14) — then the tab icons, each of which expands straight
+            INTO its own tab. */}
         <div className="pclsb__expand-rail" aria-hidden={open}>
+          <Tooltip label="Expand sidebar" side="right">
+            <button
+              type="button"
+              className="pclsb__rail-btn pclsb__rail-btn--expand"
+              data-testid="left-sidebar-rail-expand"
+              onClick={() => setOpen(true)}
+              aria-label="Expand sidebar"
+            >
+              <PanelLeftOpen size={17} aria-hidden="true" />
+            </button>
+          </Tooltip>
           {visibleTabs.map((x) => {
             const Icon = x.icon;
             return (
@@ -256,14 +270,6 @@ export default function LeftSidebar() {
               </button>
             );
           })}
-          <button
-            type="button"
-            className="pclsb__rail-btn pclsb__rail-btn--expand"
-            onClick={() => setOpen(true)}
-            aria-label="Expand sidebar"
-          >
-            <PanelLeftOpen size={17} aria-hidden="true" />
-          </button>
         </div>
 
         <div className="pclsb__expanded-shell" aria-hidden={!open}>

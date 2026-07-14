@@ -144,6 +144,25 @@ describe('<LeftSidebar> shell', () => {
     expect(await screen.findByTestId('panel-voice')).toBeTruthy();
   });
 
+  it('the expand control is the TOPMOST collapsed-rail button and re-expands to the last pane without switching tabs (WI-4800)', async () => {
+    renderRail('?lsb=false&lst=swarm');
+    const rail = screen.getByTestId('left-sidebar');
+    expect(rail.getAttribute('data-collapsed')).toBe('true');
+    expect(rail.getAttribute('data-tab')).toBe('swarm');
+    // The expand control is the FIRST button in the collapsed rail (topmost) —
+    // the mirror of the collapse chevron, not buried under the tab icons.
+    const railEl = document.querySelector('.pclsb__expand-rail');
+    const firstBtn = railEl!.querySelector('button');
+    expect(firstBtn?.getAttribute('aria-label')).toBe('Expand sidebar');
+    expect(firstBtn?.getAttribute('data-testid')).toBe('left-sidebar-rail-expand');
+    // Clicking it re-expands to the SAME (last) pane — no tab switch.
+    fireEvent.click(screen.getByTestId('left-sidebar-rail-expand'));
+    await waitFor(() => {
+      expect(rail.getAttribute('data-collapsed')).toBe('false');
+    });
+    expect(rail.getAttribute('data-tab')).toBe('swarm');
+  });
+
   it('hides the Overwatch tab while the OVERWATCH flag is off', () => {
     H.overwatchOn = false;
     renderRail();

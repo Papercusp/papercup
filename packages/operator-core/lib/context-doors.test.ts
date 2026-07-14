@@ -3,6 +3,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   capInjectionText,
+  COMPACTION_OVERHEAD_TOKENS,
+  computeCompactionThresholds,
   computeMaxTurn,
   computeTurnDoors,
   DOOR_SPLIT,
@@ -49,6 +51,29 @@ describe('computeTurnDoors (proportional split inside maxTurn)', () => {
   it('the split proportions sum to exactly 1 (a drifted constant fails HERE, not in production)', () => {
     expect(DOOR_SPLIT.output + DOOR_SPLIT.resultSlots * DOOR_SPLIT.resultEach + DOOR_SPLIT.injections).toBe(1);
     expect(MAX_TURN_FLOOR_TOKENS).toBeLessThan(MAX_TURN_CAP_TOKENS);
+  });
+});
+
+describe('computeCompactionThresholds (P-007: soft = w − (2×maxTurn + overhead), hard = w − maxTurn)', () => {
+  it("reproduces the plan's decided Ornith operating point: soft ~90% / hard ~96% of 204,800", () => {
+    const t = computeCompactionThresholds(204_800); // maxTurn = 8000 (floor)
+    expect(t).toEqual({ softTokens: 184_800, hardTokens: 196_800, softPct: 90, hardPct: 96 });
+  });
+
+  it("reproduces the plan's 400K operating point: soft ~91.5% / hard ~96.25%", () => {
+    const t = computeCompactionThresholds(400_000); // maxTurn = 15000 (cap)
+    expect(t).toEqual({ softTokens: 366_000, hardTokens: 385_000, softPct: 91, hardPct: 96 });
+  });
+
+  it('the overhead constant is exactly what those operating points assume', () => {
+    expect(COMPACTION_OVERHEAD_TOKENS).toBe(4_000);
+  });
+
+  it('degenerate input never yields negative or inverted thresholds', () => {
+    const t = computeCompactionThresholds(0);
+    expect(t.softTokens).toBeGreaterThanOrEqual(0);
+    expect(t.hardTokens).toBeGreaterThanOrEqual(t.softTokens);
+    expect(t.hardPct).toBeGreaterThanOrEqual(t.softPct);
   });
 });
 

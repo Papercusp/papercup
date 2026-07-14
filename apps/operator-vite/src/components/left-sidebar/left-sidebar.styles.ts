@@ -142,6 +142,32 @@ body.has-left-sidebar .pc-header {
 .pclsb__tab--swarm {
   --pclsb-tab-accent: var(--good, #4ade80);
 }
+/* WI-4800 (owner ask 2026-07-14): the expand control is the TOPMOST rail
+   button and the mirror of the collapse chevron — so it wears the muted
+   .pclsb__collapse-btn treatment (neutral, not an accent tab) and is set off
+   from the tab icons below by a hairline, reading as the pane toggle. */
+.pclsb__rail-btn--expand {
+  border-color: var(--border, rgba(125, 211, 252, 0.22));
+  background: var(--bg-3, rgba(255, 255, 255, 0.05));
+  color: var(--fg-mute, #7f9bb4);
+  margin-bottom: 6px;
+  position: relative;
+}
+.pclsb__rail-btn--expand::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  transform: translateX(-50%);
+  width: 22px;
+  height: 1px;
+  background: color-mix(in oklab, var(--border, rgba(125, 211, 252, 0.3)), transparent 15%);
+}
+.pclsb__rail-btn--expand:hover {
+  color: var(--fg, #e7f7ff);
+  border-color: var(--accent, #38bdf8);
+  background: color-mix(in srgb, var(--accent, #38bdf8) 16%, transparent);
+}
 
 /* Header */
 .pclsb__header {

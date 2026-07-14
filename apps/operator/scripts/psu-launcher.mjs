@@ -1680,6 +1680,19 @@ export function computeMaxTurnTokens(effectiveWindow) {
 export function computeOutputDoorTokens(effectiveWindow) {
   return Math.floor(computeMaxTurnTokens(effectiveWindow) * 0.5);
 }
+/** P-007 two-tier thresholds — MIRROR of operator-core context-doors.ts
+ *  computeCompactionThresholds (same lockstep rule as computeMaxTurnTokens above).
+ *  soft = w − (2×maxTurn + 4000 overhead) → nudge tier; hard = w − maxTurn → the mechanical
+ *  tier (shake), holding one full doored hop of headroom by construction.
+ *  Ornith 204,800 → soft 90 / hard 96; 400K → soft 91 / hard 96. */
+export function computeCompactionThresholdPercents(effectiveWindow) {
+  const maxTurn = computeMaxTurnTokens(effectiveWindow);
+  const w = Number(effectiveWindow);
+  const window = Number.isFinite(w) && w > 0 ? w : maxTurn * 4;
+  const softTokens = Math.max(0, window - (2 * maxTurn + 4000));
+  const hardTokens = Math.max(softTokens, window - maxTurn);
+  return { softPct: Math.floor((softTokens / window) * 100), hardPct: Math.floor((hardTokens / window) * 100) };
+}
 
 /** The [start,end) span of `bareId`'s list entry in a models.yml: from its `- id:` line up to the
  *  next `- `-prefixed line at the same indent or any dedent past the entry's own indentation. */
@@ -1911,7 +1924,31 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
         .replace(/^compaction:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '')
         .replace(/^compaction\.[A-Za-z.]+:.*\n?/gm, '');
       if (!cfg.endsWith('\n')) cfg += '\n';
-      cfg += 'compaction:\n  strategy: shake\n  thresholdPercent: 70\n' + remoteEndpointLine;
+      // Threshold (P-007): when the LIVE backend window was probed (P-005), shake fires at the
+      // DERIVED hard tier — window − maxTurn, one full doored hop of headroom by construction
+      // (Ornith → 96; the P-006 doors bound what a hop can add, and omp ≥16.3.3's pre-flight
+      // guard fail-louds a doomed send as the wall backstop). Derived from the SAME
+      // effectiveWindow = min(configured, backend) the registry copy below clamps to — omp
+      // measures its % against that clamped contextWindow, so a percent from the raw probe
+      // would under-reserve when the configured limit is deliberately smaller. No probe
+      // (gateway down / hosted sibling) → the conservative pre-P-007 constant 70, since
+      // nothing then bounds the hop.
+      let shakePct = 70;
+      const shakeBw = Number(backendWindow);
+      if (Number.isFinite(shakeBw) && shakeBw > 0) {
+        let shakeWindow = shakeBw;
+        try {
+          const srcYml = join(srcAgent, 'models.yml');
+          const configured = existsSync(srcYml)
+            ? readModelsYmlContextWindow(readFileSync(srcYml, 'utf8'), bareOmpModelId(effModel || ''))
+            : null;
+          if (configured) shakeWindow = Math.min(configured, shakeBw);
+        } catch {
+          /* fail-soft: the raw probed window still yields a sane hard tier */
+        }
+        shakePct = computeCompactionThresholdPercents(shakeWindow).hardPct;
+      }
+      cfg += `compaction:\n  strategy: shake\n  thresholdPercent: ${shakePct}\n` + remoteEndpointLine;
     } else if (String(effModel || '').trim().toLowerCase().startsWith('papercusp-gateway/')) {
       // Gateway-routed hosted model: inject the endpoint ONLY, preserving whatever
       // compaction settings the copied config carries — never force shake on a hosted

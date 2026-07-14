@@ -78,6 +78,39 @@ export function computeTurnDoors(effectiveWindow: number): TurnDoors {
   };
 }
 
+/** Fixed per-hop overhead reserve for the compaction thresholds (P-007): request envelope,
+ *  system-prompt growth, tokenizer estimate error — the slack between "one more maxTurn hop
+ *  fits" and reality. 4000 reproduces the plan's decided operating points exactly:
+ *  Ornith 204.8K → soft ~90.2% / hard ~96.1%; 400K → soft 91.5% / hard 96.25%. */
+export const COMPACTION_OVERHEAD_TOKENS = 4_000;
+
+export interface CompactionThresholds {
+  /** soft = window − (2×maxTurn + overhead): nudge self-compaction — two full hops of headroom
+   *  remain, so a clean deliberate compaction still fits. */
+  softTokens: number;
+  /** hard = window − maxTurn: the mechanical tier (shake / forced backstop, no model call) —
+   *  exactly one maxTurn hop of headroom, held by CONSTRUCTION via the P-006 doors. */
+  hardTokens: number;
+  softPct: number;
+  hardPct: number;
+}
+
+/** Two-tier compaction thresholds derived from the effective window + the decided maxTurn
+ *  formula (P-007, D-001: limits + enforced constants only — never history/telemetry). */
+export function computeCompactionThresholds(effectiveWindow: number): CompactionThresholds {
+  const w = Number(effectiveWindow);
+  const maxTurn = computeMaxTurn(w);
+  const window = Number.isFinite(w) && w > 0 ? w : maxTurn * 4; // degenerate input: still return sane, low thresholds
+  const softTokens = Math.max(0, window - (2 * maxTurn + COMPACTION_OVERHEAD_TOKENS));
+  const hardTokens = Math.max(softTokens, window - maxTurn);
+  return {
+    softTokens,
+    hardTokens,
+    softPct: Math.floor((softTokens / window) * 100),
+    hardPct: Math.floor((hardTokens / window) * 100),
+  };
+}
+
 /** Conservative chars→tokens estimate for door enforcement at seams with no tokenizer.
  *  4 chars/token over-counts most English prose slightly (real ratios run ~3.5–4.5), i.e.
  *  the door errs PERMISSIVE — enforcement here is a budget rail, not an exact meter. */
