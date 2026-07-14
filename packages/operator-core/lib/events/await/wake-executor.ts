@@ -38,13 +38,17 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  mkdirSync,
   openSync,
   readSync,
   readdirSync,
   statSync,
+  writeFileSync,
   type Dirent,
 } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { capInjectionText, computeTurnDoors } from '../../context-doors';
 import {
   sessionClaudeConfigDir,
   sessionMcpJsonPath,

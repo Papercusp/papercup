@@ -77,3 +77,21 @@ export function computeTurnDoors(effectiveWindow: number): TurnDoors {
     injections: Math.floor(maxTurn * DOOR_SPLIT.injections),
   };
 }
+
+/** Conservative chars→tokens estimate for door enforcement at seams with no tokenizer.
+ *  4 chars/token over-counts most English prose slightly (real ratios run ~3.5–4.5), i.e.
+ *  the door errs PERMISSIVE — enforcement here is a budget rail, not an exact meter. */
+export const CHARS_PER_TOKEN_ESTIMATE = 4;
+
+/** Split `text` at an injection door of `doorTokens`: `kept` is the head that fits the
+ *  budget (cut at a line boundary where one exists in the final 20% of the window, so a
+ *  sentence isn't sheared mid-word), `overflow` is the remainder (null when everything
+ *  fits). Pure — the caller owns the spill file and the pointer line. */
+export function capInjectionText(text: string, doorTokens: number): { kept: string; overflow: string | null } {
+  const budgetChars = Math.max(1, Math.floor(doorTokens * CHARS_PER_TOKEN_ESTIMATE));
+  if (text.length <= budgetChars) return { kept: text, overflow: null };
+  const window = text.slice(0, budgetChars);
+  const lastBreak = Math.max(window.lastIndexOf('\n'), window.lastIndexOf(' '));
+  const cut = lastBreak > budgetChars * 0.8 ? lastBreak : budgetChars;
+  return { kept: text.slice(0, cut), overflow: text.slice(cut) };
+}
