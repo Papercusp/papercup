@@ -27145,32 +27145,40 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   flex-wrap: wrap;
   gap: 6px;
   padding: 9px 14px;
-  border-bottom: 1px solid rgb(from var(--accent-soft) r g b / 0.09);
+  border-bottom: 1px solid var(--border);
 }
 
+/* Digest chips — the app's flat pill idiom (design docs § buttons: solid or
+   color-mix-tinted fill, 1px border, readable text; status = a token-tinted
+   fill, never an outline-only glow). */
 .op-ph-chip {
   font-size: 10px;
-  border-radius: 999px;
-  padding: 1px 8px;
-  border: 1px solid color-mix(in srgb, var(--fg-mute), transparent 55%);
-  color: var(--fg-mute);
+  font-weight: 650;
+  border-radius: 7px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--fg-dim);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
 .op-ph-chip.ok {
   color: var(--good);
-  border-color: color-mix(in srgb, var(--good), transparent 45%);
+  background: color-mix(in oklab, var(--good), transparent 88%);
+  border-color: color-mix(in oklab, var(--good), transparent 65%);
 }
 
 .op-ph-chip.warn {
   color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn), transparent 45%);
+  background: color-mix(in oklab, var(--warn), transparent 88%);
+  border-color: color-mix(in oklab, var(--warn), transparent 65%);
 }
 
 .op-ph-chip.bad {
-  color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad), transparent 45%);
+  color: color-mix(in oklab, var(--bad), var(--fg) 25%);
+  background: color-mix(in oklab, var(--bad), transparent 88%);
+  border-color: color-mix(in oklab, var(--bad), transparent 65%);
 }
 
 /* The one full-height scroll. */
@@ -27212,12 +27220,13 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   font-size: 10px;
 }
 
-/* Decision-input cards — hairline card with a 3px section-hue left rail. */
+/* Decision-input cards — the shared hairline-card idiom (var(--border), a
+   flat translucent surface) with a 3px section-hue left rail. */
 .op-ph-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  border: 1px solid rgb(from var(--accent-soft) r g b / 0.10);
+  border: 1px solid var(--border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--bg-raised), transparent 40%);
   padding: 8px 10px;

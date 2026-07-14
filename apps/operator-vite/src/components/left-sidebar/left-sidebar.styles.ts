@@ -40,8 +40,13 @@ export const LEFT_SIDEBAR_CSS = `
 .pclsb[data-tab="overwatch"] {
   --pclsb-current-accent: #f87171;
 }
+/* WI-4789 (owner: the Fleet tab "looks off"): the PANEL CONTENT accent stays
+   the app's blue-frost accent — the old green content tint made the whole
+   fleet panel sit apart from the rest of the side matter. The tab CHIP keeps
+   its green wayfinding accent (nav carve-out) via --pclsb-tab-accent below;
+   fleet SECTION colors still arrive inline from the roster data. */
 .pclsb[data-tab="swarm"] {
-  --pclsb-current-accent: var(--good, #4ade80);
+  --pclsb-current-accent: var(--accent, #38bdf8);
 }
 .pclsb[data-tab="voice"] {
   --pclsb-current-accent: var(--accent, #38bdf8);
@@ -219,6 +224,10 @@ body.has-left-sidebar .pc-header {
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
   background: color-mix(in srgb, var(--bg-deep, #050d18), transparent 18%);
 }
+/* Flat tab chips (WI-4789 — design docs § buttons): a uniform-radius tinted
+   fill + 1px border. The old physical-tab shape (mixed 8/6 radius + a colored
+   cap bar on EVERY tab) read as raised 3D tabs; the accent cap now marks only
+   the ACTIVE tab. Per-tab accent colors stay (nav wayfinding carve-out). */
 .pclsb__tab {
   --pclsb-tab-accent: var(--accent, #38bdf8);
   position: relative;
@@ -230,22 +239,14 @@ body.has-left-sidebar .pc-header {
   min-height: 32px;
   padding: 7px 7px 6px;
   overflow: hidden;
-  border-radius: 8px 8px 6px 6px;
+  border-radius: 8px;
   border: 1px solid color-mix(in oklab, var(--pclsb-tab-accent), transparent 70%);
-  border-bottom-color: color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.18)), transparent 12%);
   background: color-mix(in oklab, var(--pclsb-tab-accent), var(--bg-2, #0b1220) 92%);
   color: var(--fg-dim, #b9d4e8);
   font-size: 11.5px;
   font-weight: 720;
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
-}
-.pclsb__tab::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 3px;
-  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 18%);
 }
 .pclsb__tab:hover {
   border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 44%);
@@ -254,12 +255,14 @@ body.has-left-sidebar .pc-header {
 }
 .pclsb__tab.is-active {
   border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 28%);
-  border-bottom-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 36%);
   background: color-mix(in oklab, var(--pclsb-tab-accent), var(--bg-2, #0b1220) 76%);
   color: var(--fg, #e7f7ff);
 }
 .pclsb__tab.is-active::before {
-  height: 4px;
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
   background: var(--pclsb-tab-accent);
 }
 .pclsb__tab-icon {
@@ -297,11 +300,8 @@ body.has-left-sidebar .pc-header {
   touch-action: none;
 }
 .pclsb__resize-handle:hover {
-  background: linear-gradient(
-    270deg,
-    color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 78%),
-    transparent
-  );
+  /* Flat drag-affordance tint (WI-4789 — no gradient). */
+  background: color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 84%);
 }
 .pclsb[data-collapsed="true"] .pclsb__resize-handle {
   display: none;
@@ -417,10 +417,11 @@ body.has-left-sidebar .pc-header {
   border-color: color-mix(in oklab, var(--pclsb-current-accent), transparent 58%);
   background: color-mix(in oklab, var(--pclsb-current-accent), transparent 92%);
 }
+/* Selected = tinted fill + stronger border (flat — design docs § buttons; the
+   old inset accent stripe read as an embossed edge, WI-4789). */
 .pclsb-row.is-selected {
   border-color: color-mix(in oklab, var(--pclsb-current-accent), transparent 36%);
   background: color-mix(in oklab, var(--pclsb-current-accent), transparent 86%);
-  box-shadow: inset 3px 0 0 var(--pclsb-current-accent);
 }
 .pclsb-row__main {
   flex: 1;
@@ -455,9 +456,10 @@ body.has-left-sidebar .pc-header {
   border-radius: 50%;
   background: var(--fg-mute, #7f9bb4);
 }
+/* Flat liveness dot — solid status fill, no halo (design docs § buttons:
+   glows read as 3D; WI-4789). */
 .pclsb-dot.is-up {
   background: var(--good, #4ade80);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--good, #4ade80), transparent 82%);
 }
 .pclsb-dot.is-down {
   background: var(--bad, #f87171);

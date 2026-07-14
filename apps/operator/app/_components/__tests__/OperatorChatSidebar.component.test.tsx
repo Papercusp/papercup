@@ -212,6 +212,33 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(document.querySelector('.op-chat-header-mark')).toBeNull();
   });
 
+  it('the ambient Mug/Kettle status strip is GONE — the 🫖 toggle is the one entry (WI-4789)', async () => {
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    // The old strip rendered a "Pot status — …" button under the header; the
+    // owner asked for it removed once the toggle moved beside the identity.
+    expect(screen.queryByRole('button', { name: /^Pot status/ })).toBeNull();
+    expect(document.querySelector('.op-pot-status')).toBeNull();
+  });
+
+  it('the 🫖 toggle carries its own "Pot Health" wordmark-style label beside the Papercup identity (WI-4789)', async () => {
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    const toggle = screen.getByRole('button', { name: 'Show pot health' });
+    const label = toggle.querySelector('.op-chat-pot-toggle-label');
+    expect(label?.textContent).toBe('Pot Health');
+    // Still a DIRECT sibling right of the wordmark on the single header row.
+    const main = document.querySelector('.op-chat-header-main');
+    const kids = Array.from(main!.children).map((c) => String(c.className));
+    const wordmarkIdx = kids.findIndex((c) => c.includes('op-chat-wordmark'));
+    const toggleIdx = kids.findIndex((c) => c.includes('op-chat-pot-toggle'));
+    expect(toggleIdx).toBe(wordmarkIdx + 1);
+  });
+
   it('the 🫖 toggle swaps the chat body for the full-height Pot Health view and back (WI-4778)', async () => {
     render(<OperatorChatSidebar />);
     await waitFor(() => {
