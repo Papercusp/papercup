@@ -66,6 +66,7 @@ const MAXIMAL_ROW: RosterRow = {
   stale: false,
   sessionState: 'live',
   wakeable: true,
+  confirmLiveness: false,
   onDesktop: true,
   viewerAttached: true,
   contextPressure: 'ok',
@@ -112,7 +113,7 @@ describe('partitionPresenceRow', () => {
     const { identity, state, liveness } = partitionPresenceRow(MAXIMAL_ROW);
     expect(identity).toMatchObject({ ownerId: 'su-x', model: 'opus', potSlug: 'papercup-hive' });
     expect(state).toMatchObject({ intent: 'doing things', claimedItems: ['P-001'], wakeMode: 'auto' });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, onDesktop: true, viewerAttached: true, contextPressure: 'ok' });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, onDesktop: true, viewerAttached: true, contextPressure: 'ok' });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');
@@ -189,6 +190,7 @@ describe('byte-stability (D-006)', () => {
     // P-001 wakeability signals are always emitted (null when un-derived).
     expect(emitted).toHaveProperty('sessionState');
     expect(emitted).toHaveProperty('wakeable');
+    expect(emitted).toHaveProperty('confirmLiveness');
     // on-desktop is always emitted (null when un-derived, e.g. a federated row).
     expect(emitted).toHaveProperty('onDesktop');
     // viewer-attached (PTY panel) is likewise always emitted.

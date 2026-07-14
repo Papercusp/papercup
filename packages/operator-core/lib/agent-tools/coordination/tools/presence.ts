@@ -31,9 +31,9 @@ import { buildParkedOnMap } from '../../fleet/assignments';
 export default defineTool({
   name: 'coord:presence',
   description:
-    'List coordination agents and whether each can take work now. Active rows are the actionable roster; ended rows are excluded except in an owner-targeted lookup. Read summary.wakeable plus each row\'s sessionState (live|parked|draining|suspect|ended|recorded) and wakeable before dispatching. Defaults to your hive; admins/queen may widen scope. Re-poll cheaply with since:<etag>.',
+    'List coordination agents and whether each can take work now. Active rows are the actionable roster; ended rows are excluded except in an owner-targeted lookup. Read summary.wakeable plus each row\'s sessionState (live|parked|draining|suspect|ended|recorded) and wakeable before dispatching. When confirmLiveness:true (draining/suspect), send coord:send { wake:\'required\' } and inspect woken/recipient_absent before assuming the owner is dead or alive. Defaults to your hive; admins/queen may widen scope. Re-poll cheaply with since:<etag>.',
   guidance: {
-    when: 'Use before dispatch or handoff to see who is live, parked, draining, suspect, wakeable, and already occupied. Parked + wakeable is the normal dispatch target; draining/suspect need reconciliation; ended needs relaunch. Pass owner:<id> for one specific agent.',
+    when: 'Use before dispatch or handoff to see who is live, parked, draining, suspect, wakeable, and already occupied. Parked + wakeable is the normal dispatch target; draining/suspect set confirmLiveness:true and need a fresh coord:send { wake:\'required\' } result before takeover; ended needs relaunch. Pass owner:<id> for one specific agent.',
     notWhen: 'Not for file freedom (locks:queue), not as a default every-turn poll when coord deltas already cover changes, and not for a full historical ended-agent dump. Presence is liveness truth, NOT edit-activity: fleet labels persist while parked and a declared intent can be hours stale (the [idle 2h41m] prefix + intentStale mark this) — to check whether anyone is ACTUALLY editing files, read locks:list + git status + file mtimes instead.',
     chaining:
       'Read once, then follow coord deltas. If you must re-poll, pass since:<etag>; unchanged state returns a tiny stub instead of the full roster.',

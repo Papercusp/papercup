@@ -27,6 +27,7 @@ import {
   fetchWakeability,
   deriveSessionState,
   isHardStale,
+  needsLivenessConfirmation,
   type SessionState,
   type WakeabilitySignals,
 } from '../agent-tools/coordination/presence-wakeability';
@@ -89,6 +90,9 @@ export interface FleetRosterEntry extends AgentAssignment {
    *  longer masks an `ended` (dead) session behind a still-warm heartbeat. null for a
    *  federated peer / when the wakeability read is unavailable (state unknown). */
   sessionState: SessionState | null;
+  /** WI-4400: draining/suspect rows need a required wake confirmation before
+   * a coordinator assumes the owner is dead or alive. */
+  confirmLiveness: boolean | null;
   // ── Tier-1 (P-003) — populated for local agents; null/empty for federated peers
   lastActiveSecAgo: number | null;
   claimedItems: string[];
@@ -197,6 +201,7 @@ export function foldFleetRoster(
       ...base,
       alive,
       sessionState,
+      confirmLiveness: needsLivenessConfirmation(sessionState),
       ownerLabel: p?.ownerLabel ?? base.label,
       source: p?.source ?? null,
       host: p?.host ?? null,

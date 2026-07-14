@@ -79,6 +79,9 @@ export type RosterRow = UnifiedPresenceRecord &
       sessionState: SessionState | null;
       /** P-001: a live inbox-wake await exists → a wake will be delivered. */
       wakeable: boolean | null;
+      /** WI-4400: stale-ish takeover read — verify with coord:send wake:'required'
+       * before assuming the owner is dead or alive. null = liveness unknown. */
+      confirmLiveness: boolean | null;
       /** P-007 (fleet-deltas-leader-primitives-2026-07-10): the coarse per-member
        *  context-pressure bucket (ok|high|critical), derived from the SAME watchdog-
        *  cached (context_tokens, compaction_limit) the ambient gauge bands on — a
@@ -160,6 +163,7 @@ export const PRESENCE_LIVENESS_FIELDS = [
   'stale',
   'sessionState',
   'wakeable',
+  'confirmLiveness',
   // P-007: derived every read from the watchdog-cached tokens/limit — continuous,
   // same lane as sessionState/wakeable, never a [coord+N] delta.
   'contextPressure',
@@ -266,6 +270,10 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // field is always present for a reader.
     sessionState: (liveness.sessionState as SessionState | null | undefined) ?? null,
     wakeable: (liveness.wakeable as boolean | null | undefined) ?? null,
+    // WI-4400: this is intentionally a liveness-lane field, not a durable state
+    // transition. Readers must confirm a draining/suspect candidate by sending
+    // coord:send { wake:'required' } and inspecting its wake result.
+    confirmLiveness: (liveness.confirmLiveness as boolean | null | undefined) ?? null,
     // P-007: always present for a reader (null = unknown), like sessionState/wakeable.
     contextPressure: (liveness.contextPressure as ContextPressureBucket | null | undefined) ?? null,
     // "On the desktop right now" — always emitted (null when un-derived, e.g. a

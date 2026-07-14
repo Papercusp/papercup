@@ -19,6 +19,7 @@ import {
   fetchWakeability,
   deriveSessionState,
   isHardStale,
+  needsLivenessConfirmation,
   type SessionState,
   type WakeabilitySignals,
 } from '../coordination/presence-wakeability';
@@ -120,7 +121,7 @@ export function filterActiveCoverage(
  * wakeability fetcher — no PG needed. Mutates `agents` in place and returns them;
  * a `fetchWakeabilityFn` rejection propagates — the caller decides best-effort.
  */
-export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null }>(
+export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null }>(
   agents: T[],
   fetchWakeabilityFn: (ownerIds: string[]) => Promise<Map<string, WakeabilitySignals>> = fetchWakeability,
   fetchRecordedLiveFn: (ownerIds: string[]) => Promise<Set<string>> = recordedLiveOwnerIds,
@@ -147,6 +148,9 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
             claimsHeld: a.load > 0,
           });
     a.sessionState = sessionState;
+    // WI-4400: the read is stale-ish when draining/suspect; expose the explicit
+    // confirmation nudge through fleet:assignments (and coord:orient's me fold).
+    a.confirmLiveness = needsLivenessConfirmation(sessionState);
     if (sessionState === 'recorded') a.alive = true;
     if (sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining') a.alive = false;
   }

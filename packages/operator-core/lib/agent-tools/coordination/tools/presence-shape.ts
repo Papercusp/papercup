@@ -40,6 +40,9 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       role: r.agentRole ?? null,
       state: r.sessionState ?? null,
       wakeable: r.wakeable ?? null,
+      // WI-4400: before taking over a draining/suspect row, send
+      // coord:send { wake:'required' } and inspect woken/recipient_absent.
+      confirmLiveness: r.confirmLiveness ?? null,
       // P-007: coarse context-pressure bucket (ok|high|critical|null) — cheap
       // enough (one short string) to keep at every tier, like state/wakeable.
       contextPressure: r.contextPressure ?? null,

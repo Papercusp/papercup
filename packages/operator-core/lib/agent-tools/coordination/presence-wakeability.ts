@@ -60,6 +60,20 @@ import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
  */
 export type SessionState = 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded';
 
+/**
+ * PURE: whether a liveness read is too ambiguous to use for a takeover.
+ * Draining means the heartbeat is stale while an inbox wake is still armed;
+ * suspect means the process signal is gone while claims may still need
+ * reconciliation. Both need a fresh required wake before a coordinator
+ * assumes the owner is dead or alive. null means liveness was not derived.
+ */
+export function needsLivenessConfirmation(
+  sessionState: SessionState | null | undefined,
+): boolean | null {
+  if (sessionState == null) return null;
+  return sessionState === 'draining' || sessionState === 'suspect';
+}
+
 /** The raw per-agent signals `deriveSessionState` consumes. */
 export interface WakeabilitySignals {
   /** A live `coord:inbox-wake:<id>` standing await exists → emit will deliver a wake. */

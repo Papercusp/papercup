@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   evaluateLivenessAlarm,
+  diagnoseHealthTickStall,
   runLivenessAlarmTick,
   deriveSignatureFromSummary,
   livenessSignatureOf,
@@ -43,6 +44,39 @@ describe('evaluateLivenessAlarm (pure)', () => {
     const sigs = evaluateLivenessAlarm(mkHealth(), 10 * 60_000, { snapshotStaleMs: 6 * 60_000 });
     expect(sigs.map((s) => s.key)).toContain('health-tick-stale');
     expect(sigs.find((s) => s.key === 'health-tick-stale')?.severity).toBe('blocker');
+  });
+
+  it('EI-11841 attaches typed pool evidence and timing to a stale-tick signal', () => {
+    const lastSnapshotAtMs = 1_000_000;
+    const observedAtMs = lastSnapshotAtMs + 8 * 60_000;
+    const diagnosis = diagnoseHealthTickStall(
+      mkHealth({
+        panels: {
+          infra: { data: { pg: { total: 20, active: 20 }, pool: { probeMs: 4_500, band: 'critical' } } },
+          workFeed: { data: { deadRoutines: 2, deadRoutineNames: ['git-sync', 'hive-wake'] } },
+        },
+      }),
+      observedAtMs - lastSnapshotAtMs,
+      observedAtMs,
+      lastSnapshotAtMs,
+    );
+    expect(diagnosis.cause).toBe('pg-pool-starvation');
+    expect(diagnosis.evidence[0]).toContain('pg acquire probe 4500ms');
+
+    const signal = evaluateLivenessAlarm(mkHealth(), diagnosis.snapshotAgeMs, {
+      snapshotStaleMs: 6 * 60_000,
+      stallDiagnosis: diagnosis,
+    }).find((s) => s.key === 'health-tick-stale');
+    expect(signal?.diagnosis).toEqual(diagnosis);
+    expect(signal?.summary).toContain('Root cause: pg-pool-starvation');
+    expect(signal?.summary).toContain(new Date(lastSnapshotAtMs).toISOString());
+    expect(signal?.summary).toContain(new Date(observedAtMs).toISOString());
+  });
+
+  it('EI-11841 labels a stale tick with no readable corroboration instead of guessing', () => {
+    const diagnosis = diagnoseHealthTickStall(mkHealth(), 8 * 60_000, 2_000_000, 1_520_000);
+    expect(diagnosis.cause).toBe('unattributed-stale-tick');
+    expect(diagnosis.evidence).toEqual(['no corroborating pool, loop, routine, or PG evidence was readable']);
   });
 
   it('a fresh snapshot under the stale window → NO stale signal', () => {

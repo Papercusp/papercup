@@ -30,6 +30,7 @@ import {
   fetchWakeability,
   deriveSessionState,
   isHardStale,
+  needsLivenessConfirmation,
   overrideIntentStaleForSessionState,
   type WakeabilitySignals,
 } from './presence-wakeability';
@@ -374,6 +375,10 @@ export async function assemblePresenceSnapshot(
       ...r,
       wakeable: w.wakeable,
       sessionState,
+      // WI-4400: a draining/suspect row is not safe to classify from one stale
+      // read. Expose the confirmation nudge on the shared snapshot so
+      // coord:presence and coord:inbox re-bootstrap agree.
+      confirmLiveness: needsLivenessConfirmation(sessionState),
       // EI-9262: sessionState (wakeability + activity end-marker) converges to
       // parked/ended far faster than the 30-minute intentStale activity clock —
       // the instant it does, the declared intent must read as unreliable too, so

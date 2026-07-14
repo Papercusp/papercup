@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   deriveSessionState,
+  needsLivenessConfirmation,
   isHardStale,
   overrideIntentStaleForSessionState,
   PRESENCE_DEAD_MS,
@@ -86,6 +87,21 @@ describe('deriveSessionState', () => {
     ).toBe('live');
     // omitted pidConfirmedDead defaults to undefined (falsy) — no behavior change.
     expect(deriveSessionState({ stale: false, wakeable: true, liveTurn: true })).toBe('live');
+  });
+});
+
+describe('needsLivenessConfirmation (WI-4400)', () => {
+  it('flags draining and suspect takeover reads', () => {
+    expect(needsLivenessConfirmation('draining')).toBe(true);
+    expect(needsLivenessConfirmation('suspect')).toBe(true);
+  });
+
+  it('does not flag decisive states and preserves unknown as null', () => {
+    for (const state of ['live', 'parked', 'ended', 'recorded'] as const) {
+      expect(needsLivenessConfirmation(state)).toBe(false);
+    }
+    expect(needsLivenessConfirmation(null)).toBeNull();
+    expect(needsLivenessConfirmation(undefined)).toBeNull();
   });
 });
 

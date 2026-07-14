@@ -57,6 +57,9 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // "really runnable" from "just looks alive" without a second coord:presence
       // call. null when the wakeability read was unavailable (state unknown).
       sessionState: typeof r.sessionState === "string" ? r.sessionState : null,
+      // WI-4400: before taking over a draining/suspect row, send
+      // coord:send { wake:'required' } and inspect woken/recipient_absent.
+      confirmLiveness: typeof r.confirmLiveness === "boolean" ? r.confirmLiveness : null,
       // EI-8995: the single derived lifecycle verdict (booted|joined|first-turn-
       // done|speaking|stalled|dead) + the member's wake mode (a MANUAL member
       // silently stages directed wakes) — the leader's relaunch/re-steer read,
