@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Shared inputs for the plain-node esbuild recipes used by the development host
+# and the packaged desktop sidecar. Callers retain their output paths,
+# platform externals, and native-package copy strategy.
+
+if [[ "${PAPERCUSP_BUNDLE_HOST_COMMON_LOADED:-}" == "1" ]]; then
+  return 0
+fi
+PAPERCUSP_BUNDLE_HOST_COMMON_LOADED=1
+
+# ESM output needs Node's CJS compatibility bindings. The dummy module keeps
+# library CLI guards (`require.main === module`) from firing inside a bundle.
+HOST_BANNER="import{createRequire as __pcr}from'module';import{fileURLToPath as __pftu}from'url';import{dirname as __pdn}from'path';const require=__pcr(import.meta.url);const __filename=__pftu(import.meta.url);const __dirname=__pdn(__filename);const module={exports:{}};const exports=module.exports;"
+
+# Packages with native addons, platform binaries, or runtime template imports
+# that esbuild cannot safely inline. The desktop sidecar closure-copies these;
+# the development host resolves them from workspace node_modules.
+NATIVE_PKGS=(
+  sodium-native udx-native rocksdb-native quickbit-native rabin-native
+  simdle-native fs-native-extensions
+  bare-fs bare-os bare-url bare-inspect bare-type
+  better-sqlite3
+  ssh2
+  onnxruntime-node
+  onnxruntime-web
+  "@huggingface/transformers"
+  sharp
+)
+
+# Shared optional/runtime-only externals. Callers append platform-specific
+# packages (notably embedded-postgres) before invoking esbuild.
+HOST_COMMON_EXTERNALS=(
+  --external:@lydell/*
+  --external:bufferutil
+  --external:utf-8-validate
+  --external:fsevents
+  --external:cpu-features
+  --external:@opentelemetry/context-async-hooks
+  --external:@opentelemetry/core
+  --external:@opentelemetry/resources
+  --external:@opentelemetry/sdk-trace-base
+  --external:@opentelemetry/sdk-trace-node
+  --external:@opentelemetry/sdk-logs
+  --external:@opentelemetry/sdk-metrics
+  --external:@opentelemetry/exporter-trace-otlp-proto
+  --external:@opentelemetry/exporter-logs-otlp-proto
+  --external:@opentelemetry/exporter-metrics-otlp-proto
+)

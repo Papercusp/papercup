@@ -15,13 +15,8 @@
 # RECIPE PROVENANCE: this is the PROVEN sidecar recipe from
 # papercusp-desktop/bin/build-desktop-sidecar.sh ("esbuild-bundling the serve
 # entry") — same banner, same native/externals list, same define — pointed at
-# an arbitrary entry. The packaged desktop app has shipped the full
-# host-handler/host-bootstrap graph this way for weeks, so the graph is known
-# bundle-safe. If you change the banner/externals here, check whether
-# build-desktop-sidecar.sh needs the same change (and vice versa); unifying the
-# two into one shared script is a welcome follow-up (the sidecar side is
-# release-critical and needs a full packaged-build verify, so it was not churned
-# in the WI-3336 pass).
+# an arbitrary entry. Shared inputs are sourced from bundle-host-common.sh;
+# callers retain only their output- and platform-specific steps.
 #
 # Usage:
 #   apps/operator/bin/bundle-host.sh [entry] [outfile]
@@ -46,37 +41,14 @@ OUTFILE="${2:-dist-host/hono-host.mjs}"
 # them. The dummy `module`/`exports` neutralise the CJS
 # `if (require.main === module)` CLI-guard idiom inside bundled files (always
 # false → guard body skipped, correct: they are not the entrypoint).
-HOST_BANNER="import{createRequire as __pcr}from'module';import{fileURLToPath as __pftu}from'url';import{dirname as __pdn}from'path';const require=__pcr(import.meta.url);const __filename=__pftu(import.meta.url);const __dirname=__pdn(__filename);const module={exports:{}};const exports=module.exports;"
+source "$(dirname "${BASH_SOURCE[0]}")/bundle-host-common.sh"
 
 # Native (.node-addon) packages esbuild cannot inline — they resolve platform
 # binaries relative to their real package dir. On the dev host they resolve
 # from the tree's node_modules at runtime (bare-specifier imports stay
 # external). Same list as build-desktop-sidecar.sh.
-NATIVE_PKGS=(
-  sodium-native udx-native rocksdb-native quickbit-native rabin-native
-  simdle-native fs-native-extensions
-  bare-fs bare-os bare-url bare-inspect bare-type
-  better-sqlite3
-  ssh2
-  # ONNX / local-voice stack (P-009): voice-node/kokoro-local dynamic-imports
-  # @huggingface/transformers, which require()s onnxruntime-node's per-platform
-  # `.node` addon via a TEMPLATE specifier (`../bin/napi-v6/${process.platform}/...`).
-  # esbuild follows that into all 5 platform binaries and dies with "No loader is
-  # configured for .node files" — which broke the host bundle outright (:3170 down,
-  # and the release deploy with it). These MUST stay external and resolve from
-  # node_modules at runtime. onnxruntime-web is never used on the node path but is
-  # a transformers dep, so keep it out of the graph too.
-  onnxruntime-node
-  onnxruntime-web
-  "@huggingface/transformers"
-  sharp
-)
 HOST_EXTERNALS=(
-  --external:@lydell/*
-  --external:bufferutil
-  --external:utf-8-validate
-  --external:fsevents
-  --external:cpu-features
+  "${HOST_COMMON_EXTERNALS[@]}"
   # embedded-postgres platform packages: only the host platform is installed,
   # the rest are unresolvable dynamic imports.
   --external:@embedded-postgres/darwin-arm64

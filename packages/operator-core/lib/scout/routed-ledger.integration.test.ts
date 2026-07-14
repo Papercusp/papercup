@@ -90,6 +90,41 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     expect(rows.find((r) => r.ideaId === 'i2')!.addressesPatternRefs).toBeUndefined();
   });
 
+  it('projects typed issue→revises→original edges as feedback revision lineage', async () => {
+    await recordRoutedIdea({
+      ideaId: 'i-feedback-original',
+      lens: 'risk-first',
+      rail: 'improvement',
+      routedRef: 'wi:EI-FEEDBACK-ORIGINAL',
+      harnessSlug: HARNESS,
+      workspaceId: WS,
+      origin: 'su-ideate',
+      createdBy: 'su-originator',
+    });
+    const revisedAt = new Date('2026-07-13T13:05:00.000Z');
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
+         created_by, created_at, updated_at)
+      VALUES
+        (${WS}, ${HARNESS}, 'EI-FEEDBACK-REVISION', 'feedback revision', '', 'open', 'change',
+         'su-originator', ${revisedAt}, ${revisedAt})`;
+    await db.adminSql`
+      INSERT INTO harness_shared.coord_links
+        (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at)
+      VALUES
+        ('default', 'issue', 'EI-FEEDBACK-REVISION', 'issue', 'EI-FEEDBACK-ORIGINAL',
+         'revises', 'su-originator', ${revisedAt})`;
+
+    const original = (await readRoutedIdeas({ workspaceId: WS, origin: 'su-ideate' }))
+      .find((row) => row.ideaId === 'i-feedback-original')!;
+    expect(original.feedbackRevisions).toEqual([{
+      revisionRef: 'EI-FEEDBACK-REVISION',
+      createdBy: 'su-originator',
+      revisedAt: revisedAt.toISOString(),
+    }]);
+  });
+
   it('upserts by ideaId (re-routing overwrites, no duplicate row)', async () => {
     await recordRoutedIdea({ ideaId: 'i1', lens: 'analogical', rail: 'gym', routedRef: 'gym:sp-1', harnessSlug: HARNESS, cycleId: 'c1', title: 'win idea (re-routed)', workspaceId: WS });
     const rows = await readRoutedIdeas({ workspaceId: WS });

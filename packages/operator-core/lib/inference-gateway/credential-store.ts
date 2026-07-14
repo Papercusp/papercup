@@ -28,6 +28,8 @@ import { listClaudeKeychainCredentialItems, writeClaudeKeychainOAuthBundle } fro
 
 /** The OAuth beta flag a subscription (non-API-key) request must carry. */
 export const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
+/** The Anthropic beta that enables the 1M context window for marked models. */
+export const CLAUDE_CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 /** Refresh this far before the access token's expiry (mirrors getOAuthToken's window). */
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
@@ -569,7 +571,7 @@ export function makeBearerCredentialResolver(credentialRef: string): CredentialR
  * Build the `anthropic-beta` header to send upstream on an OAuth (subscription) request: the
  * client's existing beta flags PLUS the required `oauth-2025-04-20`, de-duplicated.
  */
-export function withOAuthBeta(incoming: string | null | undefined): string {
+export function withOAuthBeta(incoming: string | null | undefined, context1m = false): string {
   const flags = new Set(
     (incoming ?? '')
       .split(',')
@@ -577,5 +579,6 @@ export function withOAuthBeta(incoming: string | null | undefined): string {
       .filter(Boolean),
   );
   flags.add(CLAUDE_OAUTH_BETA);
+  if (context1m) flags.add(CLAUDE_CONTEXT_1M_BETA);
   return [...flags].join(',');
 }

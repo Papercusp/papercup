@@ -69,6 +69,8 @@ import {
   shouldWarnOnStallClearMiss,
   annotateFailingTestsWithFlakeStats,
   releaseToolingStatus,
+  DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX,
+  resolveGreenCheckpointDbPoolMax,
   RELEASE_FIXER_DEDUP_MS,
   recordCheckpointVerdict,
   buildCheckpointDetail,
@@ -723,6 +725,24 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(appendPipelineEvent).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'green_checkpoint', status: 'up-to-date' }),
     );
+  });
+
+  it('WI-4310: checkpoint child receives a bounded dedicated DB pool override', async () => {
+    delete process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    const opts = spawnMock.mock.calls[0]![2] as { env?: Record<string, string> };
+    expect(opts.env?.PAPERCUSP_DB_POOL_MAX).toBe(String(DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX));
+  });
+
+  it('WI-4310: checkpoint pool cap is hot-tunable and clamped to one connection', () => {
+    process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX = '3.9';
+    expect(resolveGreenCheckpointDbPoolMax()).toBe(3);
+    process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX = '0';
+    expect(resolveGreenCheckpointDbPoolMax()).toBe(DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX);
+    process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX = '-2';
+    expect(resolveGreenCheckpointDbPoolMax()).toBe(DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX);
+    delete process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX;
   });
 
   it('falls back to a DIRECT spawn when the scope cannot launch (no user bus) — the gate never red-pins on infra', async () => {

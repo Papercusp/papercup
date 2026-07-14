@@ -211,6 +211,23 @@ function runScript(
 export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 120 * 60_000;
 
 /**
+ * Keep the checkpoint runner's postgres.js pools separate from the host's generic
+ * operator pool sizing. The suite is already process/cgroup-isolated, but inheriting
+ * a large host pool lets its test workers consume the same finite PG connection
+ * budget as routinesTick. Two suite forks need only a small per-process pool; this
+ * default leaves headroom for the scheduler and remains hot-tunable for a box with
+ * a different measured connection budget.
+ */
+export const DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX = 2;
+
+export function resolveGreenCheckpointDbPoolMax(): number {
+  const configured = Number(process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(1, Math.floor(configured))
+    : DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX;
+}
+
+/**
  * A green-checkpoint run's result, as the CLI reports it on its result-marker line.
  * (Structural mirror of green-checkpoint.ts's `CheckpointResult` — operator-core must not import
  * from apps/operator, so the shape is restated here, same convention as the result MARKERs above.)
@@ -328,7 +345,14 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // verdict is the thing that records it (see release/gate-verdict-target.ts). A CLI old enough
     // not to know the env simply ignores it and never sets `recorded` — we then record below,
     // exactly as before. The env is what makes that skew safe in both directions.
-    { ...routing.extraEnv, ...gateVerdictEnv({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug }) },
+    {
+      ...routing.extraEnv,
+      ...gateVerdictEnv({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug }),
+      // WI-4310: the suite's child process must not inherit a large host pool and
+      // starve routinesTick's shared org-admin pool. The checkpoint-specific knob
+      // is intentionally translated to the db package's standard pool override.
+      PAPERCUSP_DB_POOL_MAX: String(resolveGreenCheckpointDbPoolMax()),
+    },
     // Isolate the multi-GB suite in its own transient scope/cgroup so its memory
     // never counts against (or OOM-kills) the bg-host cage that runs the hive loop.
     { memoryMaxG: CHECKPOINT_SCOPE_MEMORY_MAX_G },
