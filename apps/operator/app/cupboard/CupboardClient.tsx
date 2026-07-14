@@ -28,7 +28,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate, AppWindow, Download } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate, AppWindow, Download, MonitorDown } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import type { HarnessListing, ListingKind, HiveBrowseGroup } from '@papercusp/operator-core/lib/cupboard/types';
@@ -68,7 +68,7 @@ type KindFilter = 'all' | ListingKind;
  *  app/aspect templates.) */
 type ViewFilter = KindFilter | 'tools';
 
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'app', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'tools'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -98,6 +98,50 @@ function ActionIcon({ action, size = 13 }: { action: ListingAction; size?: numbe
     // standalone app → download the platform installer (link handoff).
     case 'download': return <Download size={size} />;
   }
+}
+
+/** Map an updater platform key (linux-x86_64, darwin-aarch64, windows-x86_64) to
+ *  a friendly OS family. Unknown keys pass through unchanged. */
+function platformOsFamily(key: string): string {
+  if (key.startsWith('darwin') || key.startsWith('macos')) return 'macOS';
+  if (key.startsWith('windows')) return 'Windows';
+  if (key.startsWith('linux')) return 'Linux';
+  return key;
+}
+
+/** The distinct OS families a standalone app advertises, parsed from the
+ *  denormalized `platforms` JSON string[] on the listing (P-003). Returns [] when
+ *  absent/unparseable — e.g. a legacy row, or an app whose manifest never
+ *  resolved. */
+function appPlatformFamilies(platformsJson: string | null | undefined): string[] {
+  if (!platformsJson) return [];
+  let keys: unknown;
+  try {
+    keys = JSON.parse(platformsJson);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(keys)) return [];
+  const families: string[] = [];
+  for (const k of keys) {
+    if (typeof k !== 'string') continue;
+    const fam = platformOsFamily(k);
+    if (!families.includes(fam)) families.push(fam);
+  }
+  return families;
+}
+
+/** Best-effort viewer OS family, to make a standalone app's download CTA
+ *  platform-aware ("Get for macOS"). null when undetectable (SSR / unknown) — the
+ *  caller falls back to the plain "Download" label. */
+function viewerOsFamily(): string | null {
+  if (typeof navigator === 'undefined') return null;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const s = `${nav.userAgentData?.platform ?? ''} ${nav.userAgent} ${nav.platform}`.toLowerCase();
+  if (s.includes('mac')) return 'macOS';
+  if (s.includes('win')) return 'Windows';
+  if (s.includes('linux') || s.includes('x11')) return 'Linux';
+  return null;
 }
 
 const filterButtonStyle = (active: boolean): React.CSSProperties => ({
@@ -289,6 +333,11 @@ export default function CupboardClient() {
       k === 'all' ||
       k === 'tools' ||
       k === 'harness' ||
+      // The Apps tab is ALWAYS visible [owner:Avi 2026-07-14 "1. yes" — Apps tab
+      // always-shown], with an empty state until the first app is published —
+      // apps are a headline distribution surface (Oddsmith), so a fresh install
+      // must advertise it rather than hide it until someone publishes one.
+      k === 'app' ||
       k === kindFilter ||
       (kindCounts.get(k as ListingKind) ?? 0) > 0,
   );
@@ -788,6 +837,18 @@ export function ListingCard({
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
   const tone = CUPBOARD_LISTING_KIND_TONE[kind];
+  // App distribution (P-004): a standalone app advertises the OS families its
+  // latest.json carries; its download CTA is platform-aware ("Get for macOS")
+  // when the viewer's OS is one of them, else a plain "Download". (The actual
+  // OS-specific installer resolution is the detail page's job — P-005.)
+  const appFamilies = kind === 'app' ? appPlatformFamilies(listing.platforms) : [];
+  const appDownloadLabel =
+    kind === 'app' && action === 'download'
+      ? (() => {
+          const os = viewerOsFamily();
+          return os && appFamilies.includes(os) ? `Get for ${os}` : LISTING_ACTION_LABEL.download;
+        })()
+      : null;
   return (
     <div
       className="pc-card"
@@ -875,6 +936,31 @@ export function ListingCard({
         )}
       </div>
 
+      {/* App platform availability (P-004): the OS families the standalone app's
+          latest.json advertises, so the card shows reach without a manifest fetch. */}
+      {kind === 'app' && appFamilies.length > 0 && (
+        <div
+          data-testid="cupboard-app-platforms"
+          style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}
+        >
+          {appFamilies.map((fam) => (
+            <span
+              key={fam}
+              data-platform={fam}
+              className="pc-badge"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 3,
+                background: tone.bg,
+                border: `1px solid ${tone.border}`,
+                color: tone.fg,
+              }}
+            >
+              <MonitorDown size={10} /> {fam}
+            </span>
+          ))}
+        </div>
+      )}
+
       <PublisherSignal permission={listing.publisher_permission} />
 
       {/* Hive chip — enters the per-Hive rollup (D-005). Hidden when ungroupable
@@ -914,7 +1000,7 @@ export function ListingCard({
           data-action={action}
           style={{ flex: 1 }}
         >
-          <ActionIcon action={action} /> {action === 'view-hive' ? `View ${t('pot')}` : LISTING_ACTION_LABEL[action]}
+          <ActionIcon action={action} /> {action === 'view-hive' ? `View ${t('pot')}` : (appDownloadLabel ?? LISTING_ACTION_LABEL[action])}
         </Button>
         )}
         {repoSlug && (

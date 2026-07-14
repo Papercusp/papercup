@@ -184,6 +184,35 @@ async function defaultGetPlanItems(ownerId: string, workspaceId: string): Promis
   }
 }
 
+/** Read the caller's still-OPEN questions (the P-015 typed ask slot — a question
+ *  the owner/peers were asked and hasn't been answered). A successor must not
+ *  silently self-answer one. Both coord:ask-owner and knowledge-first coord:ask
+ *  land as kind='question' conversations with no stored owner-vs-peer flag, so
+ *  v1 surfaces every open question THIS owner asked (asker_id === ownerId); the
+ *  owner-directed refinement is a later leg. The conversation store scopes reads
+ *  by the ambient request workspace, so pin the caller's workspace for the read.
+ *  Best-effort: a throwing read yields no asks, never a failed document. */
+async function defaultGetAsks(ownerId: string, workspaceId: string): Promise<CarryDocAsk[]> {
+  try {
+    const [{ listConversations }, { runWithWorkspaceIfConcrete }] = await Promise.all([
+      import('./agent-tools/coordination/conversations'),
+      import('./workspace-als'),
+    ]);
+    const rows = await runWithWorkspaceIfConcrete(workspaceId, () =>
+      listConversations({ kind: 'question', state: 'open', limit: CARRY_DOC_MAX_ASKS * 4 }),
+    );
+    return rows
+      .filter((r) => r.asker_id === ownerId)
+      .map((r) => ({
+        id: r.id,
+        question: r.title ?? r.body,
+        askedAtMs: r.created_ts ? Date.parse(r.created_ts) : null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 /** Read the verbatim tail from the caller's transcript, mapped to tail turns.
  *  No-ops (empty) when no transcript path is supplied; best-effort otherwise. */
 async function defaultGetTail(opts: BuildCarryDocOpts): Promise<CarryDocTailTurn[]> {
