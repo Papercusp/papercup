@@ -52,7 +52,7 @@ describe('deriveSessionState', () => {
   it('hardStale:false preserves resumability while exposing stale wind-down', () => {
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: false })).toBe('draining');
     // omitted hardStale defaults to false
-    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
+    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('draining');
   });
 
   // WI-3898 P1 (coord:presence liveness parity): a local kill(pid, 0) probe
