@@ -38,6 +38,8 @@ import {
   updatePromptNodeById,
   movePromptNodes,
   removePromptNodeById,
+  archivePromptSubtree,
+  unarchivePromptNodes,
   recordPromptUse,
   type MovePromptNodeAssignment,
   type PromptScope,
@@ -247,6 +249,46 @@ const nodeRemove = defineTool({
   },
 });
 
+// WI-4840 D-004: the outline's delete is an UNDOABLE archive of the whole
+// subtree — the returned ids are the client's undo set for /node/unarchive.
+// The by-name hard delete above stays for the settings surface.
+const nodeArchive = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/saved-prompts/node/archive',
+  auth: 'loopback',
+  async handler(req) {
+    const body = (await req.json().catch(() => ({}))) as { harness?: string | null; id?: string };
+    const id = (body.id ?? '').trim();
+    if (!id) return Response.json({ error: 'missing_id' }, { status: 400 });
+    const ws = activeWorkspaceId();
+    const scope = scopeFromHarness(body.harness?.trim() || null);
+    const archivedIds = await archivePromptSubtree(getOrgPg().sql, ws, id);
+    await rematerialize(ws, scope);
+    await invalidateScope(scope);
+    return Response.json({ archivedIds });
+  },
+});
+
+const nodeUnarchive = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/saved-prompts/node/unarchive',
+  auth: 'loopback',
+  async handler(req) {
+    const body = (await req.json().catch(() => ({}))) as {
+      harness?: string | null;
+      ids?: string[];
+    };
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === 'string' && x) : [];
+    if (ids.length === 0) return Response.json({ error: 'missing_ids' }, { status: 400 });
+    const ws = activeWorkspaceId();
+    const scope = scopeFromHarness(body.harness?.trim() || null);
+    const restored = await unarchivePromptNodes(getOrgPg().sql, ws, ids);
+    await rematerialize(ws, scope);
+    await invalidateScope(scope);
+    return Response.json({ restored });
+  },
+});
+
 const nodeUse = defineTool({
   method: 'POST',
   path: '/agent-mcp/saved-prompts/node/use',
@@ -263,4 +305,15 @@ const nodeUse = defineTool({
   },
 });
 
-export default [get, upsert, remove, nodeCreate, nodeUpdate, nodeMove, nodeRemove, nodeUse];
+export default [
+  get,
+  upsert,
+  remove,
+  nodeCreate,
+  nodeUpdate,
+  nodeMove,
+  nodeRemove,
+  nodeArchive,
+  nodeUnarchive,
+  nodeUse,
+];

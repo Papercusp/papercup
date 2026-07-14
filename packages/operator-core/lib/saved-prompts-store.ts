@@ -35,6 +35,8 @@ export interface SavedPromptRow {
   usageCount: number;
   lastUsedAt: string | null;
   archivedAt: string | null;
+  /** Workflowy-style checkoff (migration 606); NULL = active. Visual only — see D-003. */
+  completedAt: string | null;
 }
 
 export interface UpsertSavedPromptInput {
@@ -64,6 +66,7 @@ type DbRow = {
   usage_count: number;
   last_used_at: Date | string | null;
   archived_at: Date | string | null;
+  completed_at: Date | string | null;
 };
 
 const asIso = (v: Date | string): string => (typeof v === 'string' ? v : v.toISOString());
@@ -88,6 +91,7 @@ function mapRow(r: DbRow): SavedPromptRow {
     usageCount: r.usage_count,
     lastUsedAt: asIsoOrNull(r.last_used_at),
     archivedAt: asIsoOrNull(r.archived_at),
+    completedAt: asIsoOrNull(r.completed_at),
   };
 }
 
@@ -204,6 +208,8 @@ export interface UpdatePromptNodePatch {
   argHint?: string | null;
   collapsed?: boolean;
   pinned?: boolean;
+  /** true checks the node off (keeps an existing timestamp); false clears it. */
+  completed?: boolean;
 }
 
 /** Patch a node's editable fields by id (scoped to the workspace). Null when unknown. */
@@ -221,6 +227,13 @@ export async function updatePromptNodeById(
       arg_hint    = ${patch.argHint !== undefined ? patch.argHint : sql`arg_hint`},
       collapsed   = COALESCE(${patch.collapsed ?? null}, collapsed),
       pinned      = COALESCE(${patch.pinned ?? null}, pinned),
+      completed_at = ${
+        patch.completed === undefined
+          ? sql`completed_at`
+          : patch.completed
+            ? sql`COALESCE(completed_at, now())`
+            : null
+      },
       updated_at  = now()
     WHERE workspace_id = ${workspaceId} AND id = ${id}
     RETURNING *`;
@@ -251,6 +264,48 @@ export async function movePromptNodes(
     }
   });
   return updated;
+}
+
+/**
+ * Archive a node AND its whole subtree (Workflowy-undoable delete, D-004).
+ * Only rows not already archived are stamped, and exactly those ids are
+ * returned — the caller holds them as the undo set for unarchivePromptNodes.
+ */
+export async function archivePromptSubtree(
+  sql: postgres.Sql,
+  workspaceId: string,
+  id: string,
+): Promise<string[]> {
+  const rows = await sql<{ id: string }[]>`
+    WITH RECURSIVE subtree AS (
+      SELECT id FROM harness_shared.saved_prompts
+       WHERE workspace_id = ${workspaceId} AND id = ${id}
+      UNION ALL
+      SELECT c.id FROM harness_shared.saved_prompts c
+        JOIN subtree s ON c.parent_id = s.id
+       WHERE c.workspace_id = ${workspaceId}
+    )
+    UPDATE harness_shared.saved_prompts p
+       SET archived_at = now(), updated_at = now()
+      FROM subtree s
+     WHERE p.id = s.id AND p.archived_at IS NULL
+    RETURNING p.id`;
+  return rows.map((r) => r.id);
+}
+
+/** Restore archived nodes by id (the undo of archivePromptSubtree). */
+export async function unarchivePromptNodes(
+  sql: postgres.Sql,
+  workspaceId: string,
+  ids: string[],
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  const res = await sql`
+    UPDATE harness_shared.saved_prompts
+       SET archived_at = NULL, updated_at = now()
+     WHERE workspace_id = ${workspaceId} AND id = ANY(${ids}::uuid[])
+       AND archived_at IS NOT NULL`;
+  return res.count;
 }
 
 /** Delete a node by id; the parent_id FK cascades to the whole subtree. */

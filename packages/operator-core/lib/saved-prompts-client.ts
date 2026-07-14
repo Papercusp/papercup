@@ -46,6 +46,8 @@ export interface SavedPrompt {
   usageCount: number;
   lastUsedAt: string | null;
   archivedAt: string | null;
+  /** Workflowy-style checkoff (migration 606); NULL = active. */
+  completedAt: string | null;
 }
 
 export interface SavePromptInput {
@@ -112,6 +114,8 @@ export interface PromptNodeClientPatch {
   argHint?: string | null;
   collapsed?: boolean;
   pinned?: boolean;
+  /** true checks the node off; false clears the checkoff. */
+  completed?: boolean;
 }
 
 export interface PromptMoveAssignment {
@@ -164,6 +168,33 @@ export async function movePromptNodes(
 
 export async function deletePromptNode(id: string, harness?: string | null): Promise<void> {
   await simplePost<{ removed: boolean }>('/node/remove', { id, harness: harness ?? null });
+}
+
+/**
+ * Undoable outline delete (WI-4840 D-004): archives the node + its whole
+ * subtree and returns the archived ids — keep them as the undo set.
+ */
+export async function archivePromptNode(
+  id: string,
+  harness?: string | null,
+): Promise<string[]> {
+  const json = await simplePost<{ archivedIds: string[] }>('/node/archive', {
+    id,
+    harness: harness ?? null,
+  });
+  return json.archivedIds;
+}
+
+/** Restore archived nodes (the undo of archivePromptNode). */
+export async function unarchivePromptNodes(
+  ids: string[],
+  harness?: string | null,
+): Promise<number> {
+  const json = await simplePost<{ restored: number }>('/node/unarchive', {
+    ids,
+    harness: harness ?? null,
+  });
+  return json.restored;
 }
 
 export async function recordPromptUse(id: string, harness?: string | null): Promise<void> {

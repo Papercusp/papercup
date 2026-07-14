@@ -31,6 +31,8 @@ export interface ProjectablePrompt {
   body: string;
   description?: string | null;
   argHint?: string | null;
+  /** Archived (outline-deleted) rows never materialize; their files get pruned. */
+  archivedAt?: string | null;
 }
 
 /**
@@ -146,8 +148,10 @@ function writeCommands(
     // Pure FOLDER nodes (empty body — Quick Panel outline organizer rows,
     // migration 598) never materialize as slash commands. Deliberately NOT
     // added to the keep-set: a prompt emptied into a folder gets its stale
-    // managed file pruned.
-    if (p.body.trim().length === 0) {
+    // managed file pruned. ARCHIVED rows (outline delete, WI-4840 D-004) are
+    // treated the same way — skipped and pruned, so an archived prompt's
+    // slash command disappears with it and an unarchive brings it back.
+    if (p.body.trim().length === 0 || (p.archivedAt !== undefined && p.archivedAt !== null)) {
       skipped++;
       continue;
     }

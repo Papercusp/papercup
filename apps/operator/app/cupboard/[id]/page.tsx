@@ -44,7 +44,6 @@ import {
   installersFromManifest,
   resolveInstallerForViewer,
   type LatestManifest,
-  type ResolvedInstaller,
 } from '../app-download';
 import {
   listingActionFor,
@@ -671,6 +670,203 @@ export default function CupboardDetailPage() {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * AppDownloadPanel — the standalone-app download handoff
+ * (cupboard-app-distribution-2026-07-14 P-005 [owner:Avi 2026-07-14]).
+ *
+ * A standalone app is a separate downloadable product; the Cupboard never
+ * re-hosts the binary. At publish time the gate proved the app's `latest.json`
+ * resolves (validate-app-manifest), and stored its URL on the listing. Here we
+ * FETCH that manifest, resolve the viewer-OS installer entry
+ * (`platforms[<os>].url`), and hand off the download link — v1 is a
+ * download-link handoff only (no in-shell install / auto-update registration;
+ * that's a fast-follow, not v1). We surface the version, release notes, and the
+ * signature for transparency (WI-4839).
+ *
+ * FAIL-SOFT: if the manifest can't be fetched or parsed at view time (a network
+ * miss, a since-broken release), we degrade to the denormalized platform-family
+ * availability + a "View the release on GitHub" link, never an error wall — the
+ * card already showed the app is available; the detail page must not dead-end it.
+ */
+function AppDownloadPanel({ listing }: { listing: HarnessListing }) {
+  const [manifest, setManifest] = useState<LatestManifest | null>(null);
+  // 'loading' only while a fetch is genuinely in flight; a listing with no
+  // manifest url is 'unavailable' from the first paint (no spinner flash).
+  const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>(
+    listing.latest_json_url ? 'loading' : 'unavailable',
+  );
+
+  useEffect(() => {
+    const url = listing.latest_json_url;
+    if (!url) {
+      setState('unavailable');
+      return;
+    }
+    let cancelled = false;
+    setState('loading');
+    setManifest(null);
+    (async () => {
+      try {
+        const r = await fetch(url, { headers: { Accept: 'application/json' } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const parsed = parseLatestManifest(await r.text());
+        if (cancelled) return;
+        if (parsed) {
+          setManifest(parsed);
+          setState('ready');
+        } else {
+          setState('unavailable');
+        }
+      } catch {
+        if (!cancelled) setState('unavailable');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [listing.latest_json_url]);
+
+  // Availability fallback from the denormalized `platforms` column (P-003) —
+  // shown when the live manifest can't be resolved, so the page still tells the
+  // viewer which OSes the app ships for.
+  const families = appPlatformFamilies(listing.platforms);
+  // The release page to link when a direct installer can't be resolved.
+  const releaseSlug = listing.release_repo || listingRepoSlug(listing) || null;
+
+  const installers = manifest ? installersFromManifest(manifest) : [];
+  const primary = manifest ? resolveInstallerForViewer(manifest, viewerOsFamily()) : null;
+  // The non-primary platforms (everything but the viewer's own OS build).
+  const others = installers.filter((i) => i.platformKey !== primary?.platformKey);
+
+  return (
+    <div
+      data-testid="cupboard-app-download"
+      data-state={state}
+      style={{
+        marginTop: SIZES.md,
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: RADIUS.lg,
+        padding: SIZES.md,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: FONTS.ui, fontSize: SIZES.sm, fontWeight: 600, color: COLORS.text }}>
+        <Download size={14} /> Download
+        {manifest && (
+          <span data-testid="cupboard-app-version" style={{ fontFamily: FONTS.mono, fontSize: 12, color: COLORS.textMuted, fontWeight: 400 }}>
+            v{manifest.version}
+          </span>
+        )}
+        {manifest?.pub_date && (
+          <span style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, fontWeight: 400 }}>
+            · {new Date(manifest.pub_date).toLocaleDateString()}
+          </span>
+        )}
+      </div>
+
+      {state === 'loading' && (
+        <p style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, margin: '8px 0 0' }}>
+          <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Resolving the latest release…
+        </p>
+      )}
+
+      {state === 'ready' && manifest && (
+        <>
+          <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {primary ? (
+              <Button asChild size="lg" variant="primary">
+                <a
+                  href={primary.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  download
+                  data-testid="cupboard-app-download-primary"
+                  data-platform-key={primary.platformKey}
+                >
+                  <Download size={14} /> Get for {primary.osFamily}
+                </a>
+              </Button>
+            ) : (
+              // Viewer OS undetectable or no build for it — no single primary;
+              // every platform is offered below as an equal option instead.
+              <span data-testid="cupboard-app-download-no-primary" style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
+                Choose your platform to download:
+              </span>
+            )}
+          </div>
+
+          {(primary ? others : installers).length > 0 && (
+            <div
+              data-testid="cupboard-app-download-options"
+              style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}
+            >
+              {(primary ? others : installers).map((inst) => (
+                <Button key={inst.platformKey} asChild size="sm" variant="accent">
+                  <a
+                    href={inst.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    download
+                    data-testid="cupboard-app-download-option"
+                    data-platform-key={inst.platformKey}
+                    data-os-family={inst.osFamily}
+                  >
+                    <MonitorDown size={13} /> {inst.osFamily}
+                  </a>
+                </Button>
+              ))}
+            </div>
+          )}
+
+          {manifest.notes && (
+            <details data-testid="cupboard-app-notes" style={{ marginTop: 10 }}>
+              <summary style={{ cursor: 'pointer', fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
+                Release notes
+              </summary>
+              <pre style={{ whiteSpace: 'pre-wrap', fontFamily: FONTS.mono, fontSize: 11.5, color: COLORS.textMuted, margin: '6px 0 0' }}>
+                {manifest.notes}
+              </pre>
+            </details>
+          )}
+
+          <p style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, margin: '10px 0 0' }}>
+            This is a standalone app — the download comes straight from the publisher&rsquo;s release, not the {' '}
+            {/* honest about the trust model: the Cupboard is an index, not a mirror */}
+            Cupboard. Verify the source before running an installer.
+          </p>
+        </>
+      )}
+
+      {state === 'unavailable' && (
+        <div data-testid="cupboard-app-download-unavailable" style={{ marginTop: 8 }}>
+          <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, margin: 0 }}>
+            {families.length > 0 ? (
+              <>Available for <strong>{families.join(', ')}</strong>, but the latest release couldn&rsquo;t be resolved right now.</>
+            ) : (
+              <>The latest release couldn&rsquo;t be resolved right now.</>
+            )}
+            {releaseSlug ? ' Grab it from the publisher&rsquo;s releases:' : ''}
+          </p>
+          {releaseSlug && (
+            <div style={{ marginTop: 8 }}>
+              <Button asChild size="lg" variant="primary">
+                <a
+                  href={`https://github.com/${releaseSlug}/releases`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="cupboard-app-download-github"
+                >
+                  <ExternalLink size={13} /> View releases on GitHub
+                </a>
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
