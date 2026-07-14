@@ -361,12 +361,18 @@ const sessionTurn: SearchSource = {
   name: 'session_turn',
   async bm25(p: SearchSourceParams): Promise<Listing> {
     const f = sessionTurnFilterSql(p);
+    // WI-4734: under the engine's highlight-deferral (wantHighlight === false)
+    // skip ts_headline entirely — it costs ~1.4ms/row and the engine hydrates
+    // the final top-N via hydrateHighlights below instead of paying it for the
+    // whole limit*3 over-fetch pool.
     const rows = (await p.sql`
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
              ts_rank_cd(text_tsv, plainto_tsquery('english', ${p.query})) AS rank,
-             ts_headline('english', left(text, 4000),
-               plainto_tsquery('english', ${p.query}),
-               ${HEADLINE_OPTS}) AS highlight
+             ${p.wantHighlight === false
+               ? p.sql`''`
+               : p.sql`ts_headline('english', left(text, 4000),
+                   plainto_tsquery('english', ${p.query}),
+                   ${HEADLINE_OPTS})`} AS highlight
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
          AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
@@ -401,9 +407,11 @@ const sessionTurn: SearchSource = {
     const rows = (await p.sql`
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
              1 - (text_embedding <=> ${p.qVec}::vector) AS sim,
-             ts_headline('english', left(text, 4000),
-               plainto_tsquery('english', ${p.query}),
-               ${HEADLINE_OPTS}) AS highlight
+             ${p.wantHighlight === false
+               ? p.sql`''`
+               : p.sql`ts_headline('english', left(text, 4000),
+                   plainto_tsquery('english', ${p.query}),
+                   ${HEADLINE_OPTS})`} AS highlight
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
          AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
