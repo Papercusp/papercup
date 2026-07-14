@@ -96,7 +96,7 @@ export const DEFAULT_HYSTERESIS_PARAMS: HysteresisParams = {
 export function validateHysteresisParams(p: HysteresisParams): string[] {
   const w: string[] = [];
   if (p.exitThreshold > p.enterThreshold) w.push('exitThreshold should be ≤ enterThreshold (no hysteresis gap ⇒ flapping)');
-  if (p.exitDwell < p.enterDwell) w.push('exitDwell should be ≥ enterDwell (symmetric/faster exit ⇒ flapping)');
+  if (p.exitDwell < p.enterDwell) w.push('exitDwell should be ≥ enterDwell (asymmetric dwell prevents flapping)');
   if (p.maxAutoSubscriptions < 1) w.push('maxAutoSubscriptions must be ≥ 1');
   if (p.enterDwell < 1) w.push('enterDwell must be ≥ 1');
   if (p.exitDwell < 1) w.push('exitDwell must be ≥ 1');
@@ -237,7 +237,10 @@ export function hysteresisTick(input: HysteresisTickInput): HysteresisTickResult
   //     Manual topics are always kept (deliberate).
   const kept: TopicSubscription[] = [];
   for (const s of next.values()) {
-    const deadAuto = s.provenance === 'auto' && !s.subscribed && s.lastRelevance === 0 && s.aboveEnterStreak === 0 && s.belowExitStreak >= params.exitDwell;
+    // A zero-overlap, unsubscribed auto candidate with no enter-streak is dead —
+    // drop it immediately (re-subscription on re-approach is cheap, D-009 §5).
+    // Keep it while it still carries ANY relevance or is climbing toward enter.
+    const deadAuto = s.provenance === 'auto' && !s.subscribed && s.lastRelevance === 0 && s.aboveEnterStreak === 0;
     if (!deadAuto) kept.push(s);
   }
   kept.sort((a, b) => a.topic.localeCompare(b.topic));

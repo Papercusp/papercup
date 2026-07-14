@@ -2357,7 +2357,21 @@ function processSynthQueue(): void {
   // we go straight to the adapter route). Previously we always used
   // speechSynthesis when available, ignoring the user's engine choice —
   // so picking Kokoro in settings still produced robotic OS voices.
-  const cachedEngine = adapterEngineCache; // sync read; populated by prior fetch
+  // WI-4873: resolve the engine SYNCHRONOUSLY before the browser-vs-adapter
+  // decision so the FIRST utterance (cold cache — e.g. right after a page load
+  // or an operator restart) already honors the user's SELECTED engine (kokoro)
+  // instead of falling through to browser Web Speech, which EXISTS but is
+  // SILENT in the WebKitGTK desktop shell — so the first spoken reply produced
+  // no audio at all (owner-reported PTT "no response"). Only an EXPLICIT
+  // 'browser' pref uses Web Speech now; every adapter engine is honored on
+  // utterance #1, not just from the second reply once the async cache warmed.
+  if (adapterEngineCache === null) {
+    try {
+      adapterEngineCache = loadVoicePrefsClient().ttsEngine ?? 'kokoro';
+      adapterEngineCacheAt = Date.now();
+    } catch { /* prefs unreadable → keep null, old fallback applies */ }
+  }
+  const cachedEngine = adapterEngineCache; // sync read; resolved above / by prior fetch
   const useBrowser =
     cachedEngine === 'browser' ||
     (cachedEngine === null && window.speechSynthesis && state.hasWebSpeechTTS);

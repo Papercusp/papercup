@@ -142,6 +142,34 @@ describe('voice-mode', () => {
     mod.setVoiceOutputMuted(false);
     expect(mod.isVoiceOutputMuted()).toBe(false);
   });
+
+  it('WI-4873: a cold engine cache routes the first spoken reply to the selected adapter (kokoro), not silent WebKitGTK Web Speech', async () => {
+    vi.resetModules();
+    // synthViaAdapter uses fetch → blob → URL.createObjectURL → new Audio().play()
+    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => ({}) }) as any);
+    (globalThis as any).fetch = fetchSpy;
+    (globalThis as any).URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
+    (globalThis as any).Audio = class {
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      src = '';
+      constructor(u: string) { this.src = u; }
+      play() { this.onended?.(); return Promise.resolve(); }
+      pause() {}
+    };
+    const mod = await import('./voice-mode');
+    mod.initVoiceMode();
+    // localStorage empty → loadVoicePrefsClient defaults ttsEngine to 'kokoro'.
+    // force:true bypasses the mode/mute/leader gates so we isolate ENGINE ROUTING.
+    mod.speak('the harness is green', 'system:operator', 'polite', { force: true });
+    await new Promise((r) => setTimeout(r, 0)); // let the async adapter path reach fetch()
+    // Regression: the FIRST utterance must NOT use the silent WebKitGTK Web Speech path…
+    expect((globalThis as any).window.speechSynthesis.speak).not.toHaveBeenCalled();
+    // …and MUST synthesize through the server adapter with the selected engine.
+    const ttsCall = fetchSpy.mock.calls.find((c) => String(c[0]).includes('operator-tts-preview'));
+    expect(ttsCall).toBeTruthy();
+    expect(String((ttsCall![1] as any).body)).toContain('kokoro');
+  });
 });
 
 // Always-on wake-phrase gate (voice-public-release-readiness-2026-07-12 P-004).
