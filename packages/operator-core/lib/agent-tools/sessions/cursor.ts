@@ -10,6 +10,12 @@ export interface SessionCursorBounds {
   until?: string;
 }
 
+export interface SessionCursorAuthority {
+  workspaceId: string;
+  selfOwnerId?: string;
+  selfSessionId?: string;
+}
+
 interface SessionCursorPayload {
   v: number;
   tool: SessionCursorTool;
@@ -29,9 +35,19 @@ const stableValue = (value: unknown): unknown => {
   );
 };
 
-/** Bind a cursor to the query/filter contract while allowing the page size to change. */
-export function sessionCursorFingerprint(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(stableValue(value))).digest('hex').slice(0, 24);
+/** Bind a cursor to the query/filter and resolved authority while allowing the page size to change. */
+export function sessionCursorFingerprint(value: unknown, authority?: SessionCursorAuthority): string {
+  const fingerprintValue = authority
+    ? {
+        query: value,
+        authority: {
+          workspace_id: authority.workspaceId,
+          self_owner_id: authority.selfOwnerId,
+          self_session_id: authority.selfSessionId,
+        },
+      }
+    : value;
+  return createHash('sha256').update(JSON.stringify(stableValue(fingerprintValue))).digest('hex').slice(0, 24);
 }
 
 export function encodeSessionCursor(

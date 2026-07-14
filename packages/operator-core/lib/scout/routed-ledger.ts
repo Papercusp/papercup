@@ -420,9 +420,8 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
                wi.created_by,
                wi.created_at AS revised_at
           FROM harness_shared.coord_links l
-          JOIN harness_shared.work_items wi
-            ON wi.feature_id = l.src_ref
-           AND wi.item_kind IN ('bug', 'change', 'task')
+          JOIN harness_shared.engineer_issues wi
+            ON wi.issue_id = l.src_ref
          WHERE l.src_kind = 'issue'
            AND l.dst_kind = 'issue'
            AND l.rel = 'revises'

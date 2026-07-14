@@ -72,11 +72,13 @@ export default defineTool({
     const limit = args.limit ?? 30;
     const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : (args.owner ?? null);
     const fingerprint = sessionCursorFingerprint({
-      workspace_id: workspaceId,
-      owner,
+      owner: args.owner ?? null,
       source_kind: args.source_kind ?? null,
       cwd_contains: args.cwd_contains ?? null,
       since: args.since ?? null,
+    }, {
+      workspaceId,
+      selfOwnerId: args.owner === 'self' ? owner ?? undefined : undefined,
     });
     const cursor = decodeSessionCursor(args.cursor, 'sessions:list', fingerprint);
     if (!cursor.ok) {

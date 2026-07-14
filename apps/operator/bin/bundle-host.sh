@@ -59,23 +59,9 @@ HOST_EXTERNALS=(
   --external:@embedded-postgres/linux-ppc64
   --external:@embedded-postgres/windows-x64
   --external:@papercusp/embedded-postgres-server
-  # @opentelemetry/* SDK packages — @dbos-inc/dbos-sdk lazily require()s these
-  # only behind tracingEnabled (never enabled here); they are not installed.
-  --external:@opentelemetry/context-async-hooks
-  --external:@opentelemetry/core
-  --external:@opentelemetry/resources
-  --external:@opentelemetry/sdk-trace-base
-  --external:@opentelemetry/sdk-trace-node
-  --external:@opentelemetry/sdk-logs
-  --external:@opentelemetry/sdk-metrics
-  --external:@opentelemetry/exporter-trace-otlp-proto
-  --external:@opentelemetry/exporter-logs-otlp-proto
-  --external:@opentelemetry/exporter-metrics-otlp-proto
 )
 for np in "${NATIVE_PKGS[@]}"; do HOST_EXTERNALS+=( "--external:$np" ); done
 
-# __PAPERCUSP_BUNDLED_SIDECAR__: every inlined module shares ONE
-# import.meta.url (the bundle's own, == process.argv[1]), so library-CLI ESM
 # self-exec guards would all fire at boot. isCliEntry()
 # (operator-core/lib/util/cli-entry.ts) returns false under this define — its
 # ONLY consumer (verified 2026-07-07). Unlike the sidecar build we bake NO

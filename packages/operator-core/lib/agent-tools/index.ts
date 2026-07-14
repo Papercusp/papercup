@@ -531,6 +531,7 @@ import './fleet_registry/wind-down';
 import './fleet_registry/resume';
 import './fleet_registry/pause';
 import './fleet_registry/launch-on-plan';
+import './fleet_registry/headcount-target';
 import './fleet_registry/request-remote-spawn';
 import './fleet_registry/recolor';
 

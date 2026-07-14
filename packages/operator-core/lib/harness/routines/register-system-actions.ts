@@ -209,6 +209,7 @@ import './plan-run-action';
 // + B-07's started bit; fully inert until the flag flips (B-12).
 import '../../overwatch/loop';
 import './release-actions';
+import './fleet-headcount-action';
 import './improvement-actions';
 import './p2p-perf-actions';
 // (scout's bespoke system:scout-cycle action is RETIRED — P-130; scout runs via the

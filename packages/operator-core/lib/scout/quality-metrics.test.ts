@@ -243,19 +243,19 @@ describe('computeScoutQualityReport', () => {
   // folded into the 'no-capacity' bucket, NOT counted as a genuine error. Without
   // this the "error rate < 5%" bar stays red on legacy rows for ~10 days until they
   // age out of the window, judging a fixed condition on stale data.
-  it('re-classifies a capacity-message error tick as no-capacity, not a genuine error', () => {
+  it('re-classifies a typed capacity denial as no-capacity, not a genuine error', () => {
     const r = computeScoutQualityReport(
       inputs({
         ticks: [
           tick({ status: 'ran' }),
           // a genuine failure — stays an error
           tick({ status: 'error', detail: { error: 'ideator transport death: 401 unauthorized' } }),
-          // legacy capacity failures (pre-reclassification write) — fold into no-capacity
-          tick({ status: 'error', detail: { error: 'rate-limit pause exceeds maxWait' } }),
-          tick({ status: 'error', detail: { error: 'scout: all 1 ideator LLM call(s) failed — transport death (0 ideas, $0 spent): 429 {"type":"error","error":{"type":"rate_limit_error"}}' } }),
+          // typed capacity failures — fold into no-capacity
+          tick({ status: 'error', detail: { error: 'opaque admission failure', admissionDenial: { reason: 'all-accounts-paused', pausedAccounts: 3, freeSlots: 0 } } }),
+          tick({ status: 'error', detail: { error: 'opaque provider failure', admissionDenial: { reason: 'provider-429' } } }),
           // a LIVE capacity failure (post-reclassification write) already arrives gated —
           // it must land in the SAME bucket, and each tick is counted exactly once.
-          tick({ status: 'gated', gate: 'no-capacity', detail: { error: 'rate-limit pause exceeds maxWait' } }),
+          tick({ status: 'gated', gate: 'no-capacity', detail: { error: 'opaque admission failure', admissionDenial: { reason: 'all-accounts-paused' } } }),
         ],
       }),
     );

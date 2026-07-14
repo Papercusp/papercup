@@ -23,7 +23,11 @@ import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
   getFleet,
+  claimFleetHeadcountAttempt,
+  listFleetHeadcountTargets,
+  recordFleetHeadcountAttempt,
   releaseFleetLaunchSlot,
+  setFleetHeadcountTarget,
   setFleetControlState,
 } from './agent-fleets-store';
 
@@ -74,6 +78,11 @@ beforeAll(async () => {
       updated_at        bigint DEFAULT 0 NOT NULL,
       last_launch_at    bigint,
       last_launch_count integer,
+      headcount_target integer,
+      headcount_config jsonb,
+      headcount_next_attempt_at bigint,
+      headcount_backoff_ms bigint DEFAULT 0 NOT NULL,
+      headcount_last_error text,
       CONSTRAINT agent_fleets_pkey PRIMARY KEY (workspace_id, fleet_slug)
     )
   `);
@@ -209,5 +218,31 @@ describe('releaseFleetLaunchSlot (all-spawns-failed retry path)', () => {
       workspaceId: WS, fleetSlug: 'stale-release', count: 1, windowMs: WINDOW, now: t0 + 1_000, sql: rootSql,
     });
     expect(refire.won).toBe(false);
+  });
+});
+
+describe('fleet headcount target (WI-2479)', () => {
+  const config = { plan: 'drain', harness: 'papercusp', agent: 'claude' as const };
+
+  it('persists a target recipe and grants only one concurrent retry lease', async () => {
+    await insertFleet('headcount-fleet');
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-fleet', target: 3, config, sql: rootSql });
+    expect(await listFleetHeadcountTargets(WS, rootSql)).toMatchObject([{ fleetSlug: 'headcount-fleet', target: 3, config }]);
+    const first = await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-fleet', now: 8_000_000, sql: rootSql });
+    expect(first).toMatchObject({ fleetSlug: 'headcount-fleet', target: 3, claimedAt: 8_000_000 });
+    expect(await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-fleet', now: 8_000_001, sql: rootSql })).toBeNull();
+  });
+
+  it('resets on success and doubles a failed retry delay with a cap', async () => {
+    await insertFleet('headcount-backoff');
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-backoff', target: 2, config, sql: rootSql });
+    await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', now: 9_000_000, sql: rootSql });
+    await recordFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', succeeded: false, error: 'spawn failed', now: 9_100_000, sql: rootSql });
+    expect((await listFleetHeadcountTargets(WS, rootSql))[0]).toMatchObject({ backoffMs: 60_000, lastError: 'spawn failed' });
+    await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', now: 9_200_000, sql: rootSql });
+    await recordFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', succeeded: false, error: 'spawn failed again', now: 9_300_000, sql: rootSql });
+    expect((await listFleetHeadcountTargets(WS, rootSql))[0]).toMatchObject({ backoffMs: 120_000, lastError: 'spawn failed again' });
+    await recordFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', succeeded: true, now: 9_500_000, sql: rootSql });
+    expect((await listFleetHeadcountTargets(WS, rootSql))[0]).toMatchObject({ backoffMs: 0, nextAttemptAt: null, lastError: null });
   });
 });

@@ -103,12 +103,14 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     });
     const revisedAt = new Date('2026-07-13T13:05:00.000Z');
     await db.adminSql`
-      INSERT INTO harness_shared.work_items
-        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
-         created_by, created_at, updated_at)
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, kind, scope, title, body, severity, source, state,
+         assignee, assigned_by, assigned_at, payload, found_during, created_by,
+         signal_origin, created_at, updated_at)
       VALUES
-        (${WS}, ${HARNESS}, 'EI-FEEDBACK-REVISION', 'feedback revision', '', 'open', 'change',
-         'su-originator', ${revisedAt}, ${revisedAt})`;
+        (${WS}, 'EI-FEEDBACK-REVISION', 'change', ${`harness:${HARNESS}`},
+         'feedback revision', '', 'minor', 'engineer', 'open', NULL, NULL, NULL,
+         '{}'::jsonb, NULL, 'su-originator', 'organic', ${revisedAt}, ${revisedAt})`;
     await db.adminSql`
       INSERT INTO harness_shared.coord_links
         (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at)

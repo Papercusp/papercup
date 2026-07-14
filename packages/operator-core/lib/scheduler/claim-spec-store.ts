@@ -159,6 +159,9 @@ export function fleetSpecBeeKey(fleetSlug: string): string {
  * N per-bee specs: fresh ownerIds inherit the lane the moment they join the fleet.
  * Resolution order: bee spec → fleet spec → DEFAULT_CLAIM_SPEC. A per-bee spec always
  * WINS over the fleet spec (the leader's targeted re-steer of one member sticks).
+ * The record-returning resolver retains fleet membership when the fleet sentinel is
+ * missing so get_next can fail closed during a membership transition; the bare spec
+ * helper keeps its historical DEFAULT_CLAIM_SPEC contract for read-only callers.
  */
 export async function getClaimSpec(
   args: { cupId: string; workspaceId?: string },
@@ -227,9 +230,16 @@ export async function getNextForBee(args: {
   // owner-deferred work (e.g. a paused/de-scoped category) a curated spec would exclude.
   // scheduler:get_next surfaces this as an advisory `warning` so a self-pulling agent with
   // no spec learns to set one, instead of claimHold-parking deferred rows one at a time.
+  const resolvedRecord = await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId });
+  // WI-4770: membership changes are not an authorization to widen into the
+  // default backlog. A fleet/leader transition can briefly have no valid
+  // inherited sentinel while the leader rebinds the intended lane. Keep that
+  // window fail-closed even when the scheduler kill-switch asks us to ignore
+  // stored specs; only an explicit per-bee or valid fleet spec may pull.
+  if (resolvedRecord.source === 'default' && resolvedRecord.fleetSlug) return null;
   const record = args.ignoreStoredSpec
     ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
-    : await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId });
+    : resolvedRecord;
 
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
   // edges + the coarse plan-WIDE reserved-lane floor, but nothing checks a linked
@@ -310,7 +320,12 @@ export interface ClaimSpecRecord {
   updatedAt: string | null;
   /** The federation hive scope the row rides (null ⇒ operator-scope/local-only). Absent on 'default'. */
   harnessSlug?: string | null;
-  /** Set when `source === 'fleet'`: the fleet slug whose spec this bee inherited. */
+  /**
+   * Set when `source === 'fleet'`: the fleet slug whose spec this bee inherited.
+   * Also set on a default record when the bee is in (or is transitioning out of)
+   * a fleet whose sentinel is missing. That marker is a fail-closed transition
+   * guard; it is not permission to use DEFAULT_CLAIM_SPEC.
+   */
   fleetSlug?: string;
 }
 
@@ -349,10 +364,14 @@ export async function getClaimSpecRecord(
     };
   }
   // No per-bee row — try the fleet the bee belongs to (same inheritance getClaimSpec applies).
+  // Keep the membership slug even when its sentinel is absent/invalid: a caller
+  // must not turn that transition window into a generic-backlog claim.
+  let transitionFleetSlug: string | undefined;
   try {
     const { latestFleetMembership } = await import('../fleet-membership-store');
     const membership = await latestFleetMembership(ws, args.cupId);
     if (membership?.fleetSlug) {
+      transitionFleetSlug = membership.fleetSlug;
       const frows = (await sql`
         SELECT spec, revision, updated_by, updated_at, harness_slug
           FROM harness_shared.cup_claim_specs
@@ -378,11 +397,31 @@ export async function getClaimSpecRecord(
           };
         }
       }
+    } else if (membership) {
+      // A leave event still represents a membership transition. Preserve the
+      // last named fleet as provenance until the caller explicitly rebinds a
+      // per-bee spec; otherwise the next pull could fall through to DEFAULT.
+      const prior = (await sql`
+        SELECT fleet_slug
+          FROM harness_shared.fleet_membership_events
+         WHERE workspace_id = ${ws}
+           AND owner_id = ${args.cupId}
+           AND fleet_slug IS NOT NULL
+         ORDER BY id DESC
+         LIMIT 1`) as Array<{ fleet_slug: string }>;
+      transitionFleetSlug = prior[0]?.fleet_slug;
     }
   } catch {
     /* fall through to the default */
   }
-  return { source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null };
+  return {
+    source: 'default',
+    spec: DEFAULT_CLAIM_SPEC,
+    revision: null,
+    updatedBy: null,
+    updatedAt: null,
+    ...(transitionFleetSlug ? { fleetSlug: transitionFleetSlug } : {}),
+  };
 }
 
 /** The claim-spec head (specId@revision) a bee is running under — the live-execution view's

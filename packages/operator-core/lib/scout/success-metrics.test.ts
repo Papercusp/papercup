@@ -412,17 +412,12 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
 });
 
 describe('isCapacityError — the no-capacity classifier (scheduler)', () => {
-  it('classifies the LIVE rate-limit signatures as capacity, not failure', () => {
-    // Every string below was taken verbatim from real error ticks (2026-07-12 window).
-    expect(isCapacityError('rate-limit pause exceeds maxWait')).toBe(true);
-    expect(
-      isCapacityError(
-        'scout: all 1 ideator LLM call(s) failed — transport death (0 ideas, $0 spent): rate-limit pause exceeds maxWait',
-      ),
-    ).toBe(true);
-    expect(
-      isCapacityError('scout: all 1 ideator LLM call(s) failed — transport death: 429 {"type":"error","error":{"type":"rate_limit_error"'),
-    ).toBe(true);
+  it('classifies typed admission denials as capacity, not failure', () => {
+    expect(isCapacityError({ admissionDenial: { reason: 'all-accounts-paused' } })).toBe(true);
+    expect(isCapacityError({ admissionDenial: { reason: 'provider-429' } })).toBe(true);
+    expect(isCapacityError({ admissionDenial: { reason: 'no-free-slot', freeSlots: 0 } })).toBe(false);
+    // Provider prose alone is intentionally not authoritative.
+    expect(isCapacityError('rate-limit pause exceeds maxWait')).toBe(false);
   });
 
   it('does NOT swallow genuine failures — the whole point of keeping it narrow', () => {

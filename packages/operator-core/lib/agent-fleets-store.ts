@@ -64,6 +64,37 @@ export interface CreateFleetInput {
   colorScheme?: string | null;
 }
 
+/** Validated launch recipe persisted for the headcount governor. */
+export interface FleetHeadcountConfig {
+  plan: string;
+  harness: string;
+  agent: 'claude' | 'omp' | 'codex';
+  model?: string;
+  account?: string;
+  role?: string;
+  launchContext?: string;
+  contextSize?: 'full' | 'trimmed';
+  carry?: 'warm' | 'cold';
+  extraArgs?: string[];
+}
+
+export interface FleetHeadcountTarget {
+  workspaceId: string;
+  fleetSlug: string;
+  target: number;
+  config: FleetHeadcountConfig;
+  nextAttemptAt: number | null;
+  backoffMs: number;
+  lastError: string | null;
+}
+
+export interface FleetHeadcountAttempt extends FleetHeadcountTarget {
+  claimedAt: number;
+}
+
+const HEADCOUNT_INITIAL_BACKOFF_MS = 60_000;
+const HEADCOUNT_MAX_BACKOFF_MS = 15 * 60_000;
+
 interface FleetRow {
   workspace_id: string;
   fleet_slug: string;
@@ -440,5 +471,130 @@ export async function releaseFleetLaunchSlot(opts: {
         SET last_launch_at = NULL, last_launch_count = NULL
       WHERE workspace_id = $1 AND fleet_slug = $2 AND last_launch_at = $3`,
     [opts.workspaceId, opts.fleetSlug, opts.at],
+  );
+}
+
+/** Persist or clear the target recipe. This is intentionally separate from COLS so
+ * legacy fleet reads remain compatible with pre-600 test schemas. */
+export async function setFleetHeadcountTarget(opts: {
+  workspaceId: string;
+  fleetSlug: string;
+  target: number | null;
+  config?: FleetHeadcountConfig;
+  sql?: Sql;
+}): Promise<void> {
+  const s = pg(opts.sql);
+  if (opts.target == null) {
+    await s.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET headcount_target = NULL, headcount_config = NULL,
+              headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
+              headcount_last_error = NULL, updated_at = $3
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [opts.workspaceId, opts.fleetSlug, Date.now()],
+    );
+    return;
+  }
+  if (!opts.config) throw new Error('headcount target requires a launch configuration');
+  await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET headcount_target = $3, headcount_config = $4::jsonb,
+            headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
+            headcount_last_error = NULL, updated_at = $5
+      WHERE workspace_id = $1 AND fleet_slug = $2`,
+    [opts.workspaceId, opts.fleetSlug, opts.target, JSON.stringify(opts.config), Date.now()],
+  );
+}
+
+function headcountRowToTarget(r: {
+  workspace_id: string;
+  fleet_slug: string;
+  headcount_target: number;
+  headcount_config: FleetHeadcountConfig;
+  headcount_next_attempt_at: string | number | null;
+  headcount_backoff_ms: string | number | null;
+  headcount_last_error: string | null;
+}): FleetHeadcountTarget {
+  const config = typeof r.headcount_config === 'string' ? JSON.parse(r.headcount_config) : r.headcount_config;
+  return {
+    workspaceId: r.workspace_id,
+    fleetSlug: r.fleet_slug,
+    target: Number(r.headcount_target),
+    config,
+    nextAttemptAt: r.headcount_next_attempt_at == null ? null : Number(r.headcount_next_attempt_at),
+    backoffMs: Number(r.headcount_backoff_ms ?? 0),
+    lastError: r.headcount_last_error ?? null,
+  };
+}
+
+const HEADCOUNT_COLS = `workspace_id, fleet_slug, headcount_target, headcount_config,
+  headcount_next_attempt_at, headcount_backoff_ms, headcount_last_error`;
+
+/** Read all enabled targets in one workspace. */
+export async function listFleetHeadcountTargets(workspaceId: string, sql?: Sql): Promise<FleetHeadcountTarget[]> {
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `SELECT ${HEADCOUNT_COLS} FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1 AND headcount_target IS NOT NULL AND headcount_config IS NOT NULL
+      ORDER BY updated_at ASC`,
+    [workspaceId],
+  )) as unknown as Parameters<typeof headcountRowToTarget>[0][];
+  return rows.map(headcountRowToTarget);
+}
+
+/** Claim one retry lease. The lease is the duplicate-suppression barrier between ticks. */
+export async function claimFleetHeadcountAttempt(opts: {
+  workspaceId: string;
+  fleetSlug: string;
+  now?: number;
+  leaseMs?: number;
+  sql?: Sql;
+}): Promise<FleetHeadcountAttempt | null> {
+  const s = pg(opts.sql);
+  const now = opts.now ?? Date.now();
+  const leaseMs = opts.leaseMs ?? HEADCOUNT_INITIAL_BACKOFF_MS;
+  const rows = (await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET headcount_next_attempt_at = $3 + $4, updated_at = $3
+      WHERE workspace_id = $1 AND fleet_slug = $2
+        AND headcount_target IS NOT NULL AND headcount_config IS NOT NULL
+        AND (headcount_next_attempt_at IS NULL OR headcount_next_attempt_at <= $3)
+      RETURNING ${HEADCOUNT_COLS}`,
+    [opts.workspaceId, opts.fleetSlug, now, leaseMs],
+  )) as unknown as Parameters<typeof headcountRowToTarget>[0][];
+  if (!rows[0]) return null;
+  return { ...headcountRowToTarget(rows[0]), claimedAt: now };
+}
+
+/** Record a completed top-up attempt and advance/reset exponential backoff. */
+export async function recordFleetHeadcountAttempt(opts: {
+  workspaceId: string;
+  fleetSlug: string;
+  succeeded: boolean;
+  error?: string | null;
+  now?: number;
+  sql?: Sql;
+}): Promise<void> {
+  const s = pg(opts.sql);
+  const now = opts.now ?? Date.now();
+  if (opts.succeeded) {
+    await s.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
+              headcount_last_error = NULL, updated_at = $3
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [opts.workspaceId, opts.fleetSlug, now],
+    );
+    return;
+  }
+  await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET headcount_backoff_ms = LEAST(${HEADCOUNT_MAX_BACKOFF_MS},
+              GREATEST(${HEADCOUNT_INITIAL_BACKOFF_MS}, headcount_backoff_ms * 2)),
+            headcount_next_attempt_at = $3 + LEAST(${HEADCOUNT_MAX_BACKOFF_MS},
+              GREATEST(${HEADCOUNT_INITIAL_BACKOFF_MS}, headcount_backoff_ms * 2)),
+            headcount_last_error = $4, updated_at = $3
+      WHERE workspace_id = $1 AND fleet_slug = $2`,
+    [opts.workspaceId, opts.fleetSlug, now, (opts.error ?? 'top-up failed').slice(0, 500)],
   );
 }

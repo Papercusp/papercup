@@ -63,18 +63,21 @@ export default defineTool({
     const mode = args.mode ?? 'hybrid';
     const workspaceId = ctx.workspaceId ?? '';
     const callerOwnerId = resolveAgentIdentity(ctx).ownerId ?? '';
-    const fingerprintArgs = {
-      ...args,
-      cursor: undefined,
-      limit: undefined,
-      workspace_id: workspaceId,
-      // Bind the syntactic `self` sugar to the authority that resolved it.
-      // Otherwise another caller can replay the same opaque cursor against a
-      // different owner/session result set while retaining the same literal
-      // query fingerprint.
-      self_owner_id: args.owner === 'self' || args.session === 'self' ? callerOwnerId : undefined,
-    };
-    const fingerprint = sessionCursorFingerprint(fingerprintArgs);
+    const selfSession = args.session === 'self'
+      ? await (await import('../../search/self-session')).resolveSelfSession(callerOwnerId)
+      : null;
+    const fingerprint = sessionCursorFingerprint(
+      { ...args, cursor: undefined, limit: undefined },
+      {
+        workspaceId,
+        // Bind the syntactic `self` sugar to the authority that resolved it.
+        // Otherwise another caller can replay the same opaque cursor against a
+        // different owner/session result set while retaining the same literal
+        // query fingerprint.
+        selfOwnerId: args.owner === 'self' || args.session === 'self' ? callerOwnerId : undefined,
+        selfSessionId: selfSession?.sessionId,
+      },
+    );
     const cursor = decodeSessionCursor(args.cursor, 'sessions:search', fingerprint);
     if (!cursor.ok) {
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };
@@ -83,7 +86,7 @@ export default defineTool({
     const snapshotUntil = args.until ?? cursor.bounds.until ?? new Date().toISOString();
     const effectiveArgs = { ...args, until: snapshotUntil };
 
-    const { filters, selfSession } = await resolveSearchFilters(
+    const { filters, selfSession: resolvedSelfSession } = await resolveSearchFilters(
       ctx.tx, effectiveArgs, callerOwnerId, { workspaceId },
     );
     await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
@@ -203,8 +206,8 @@ export default defineTool({
           hasMore,
           window: { until: snapshotUntil },
           ...(nextCursor ? { nextCursor } : {}),
-          ...(selfSession ? { self_session: { source_kind: selfSession.sourceKind, session_id: selfSession.sessionId } } : {}),
-          ...(args.session === 'self' && !selfSession
+          ...(resolvedSelfSession ? { self_session: { source_kind: resolvedSelfSession.sourceKind, session_id: resolvedSelfSession.sessionId } } : {}),
+          ...(args.session === 'self' && !resolvedSelfSession
             ? { note: "session:'self' could not be pinned to a live transcript — degraded to an owner-filtered search." }
             : {}),
           results: out,

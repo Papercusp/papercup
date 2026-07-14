@@ -100,14 +100,10 @@ export default defineTool({
     const limit = args.limit ?? 100;
     const kinds = args.kinds?.length ? args.kinds : null;
     const includeAuto = args.include_auto ?? false;
-    const fingerprintArgs = {
-      ...args,
-      owner,
-      cursor: undefined,
-      limit: undefined,
-      workspace_id: workspaceId,
-    };
-    const fingerprint = sessionCursorFingerprint(fingerprintArgs);
+    const fingerprint = sessionCursorFingerprint(
+      { ...args, cursor: undefined, limit: undefined },
+      { workspaceId, selfOwnerId: args.owner === 'self' ? owner : undefined },
+    );
     const cursor = decodeSessionCursor(args.cursor, 'sessions:timeline', fingerprint);
     if (!cursor.ok) {
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...cursor }) }] };

@@ -43,4 +43,28 @@ describe('sessions cursor contract', () => {
       fingerprint,
     )).toMatchObject({ ok: false, error: 'invalid_cursor' });
   });
+
+  it('rejects an owner:self cursor replayed by another caller or workspace', () => {
+    const query = { owner: 'self', include_auto: true };
+    const ownerAFingerprint = sessionCursorFingerprint(query, {
+      workspaceId: 'workspace-a',
+      selfOwnerId: 'su-a',
+      selfSessionId: 'session-a',
+    });
+    const cursor = encodeSessionCursor('sessions:timeline', 1, ownerAFingerprint, {
+      since: '2026-07-13T03:00:00.000Z',
+      until: '2026-07-14T03:00:00.000Z',
+    });
+
+    expect(decodeSessionCursor(cursor, 'sessions:timeline', sessionCursorFingerprint(query, {
+      workspaceId: 'workspace-a',
+      selfOwnerId: 'su-crossidentity-probe',
+      selfSessionId: 'session-probe',
+    }))).toMatchObject({ ok: false, error: 'invalid_cursor' });
+    expect(decodeSessionCursor(cursor, 'sessions:timeline', sessionCursorFingerprint(query, {
+      workspaceId: 'workspace-b',
+      selfOwnerId: 'su-a',
+      selfSessionId: 'session-a',
+    }))).toMatchObject({ ok: false, error: 'invalid_cursor' });
+  });
 });
