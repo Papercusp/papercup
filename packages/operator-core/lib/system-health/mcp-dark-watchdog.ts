@@ -337,6 +337,10 @@ const DEFAULT_PTY_FRESH_MS = 10 * 60_000;
 const DEFAULT_NO_LOOP_STALE_MS = 30 * 60_000;
 /** Armed-loop clause floor (beats 3× a short loop interval). */
 const DEFAULT_LOOP_STALE_FLOOR_MS = 20 * 60_000;
+/** Positive-evidence recovery: a tool-call-coupled beat fresher than this means
+ *  tools are demonstrably flowing NOW (2026-07-14 false-heal fix — recovery is
+ *  never inferred from ¬dark). */
+const RECOVERED_FRESH_MS = 5 * 60_000;
 
 export interface InteractiveDarkSnapshot {
   ownerId: string;
@@ -591,42 +595,15 @@ export async function checkInteractiveMcpDark(
 
     for (const step of plan) {
       const v = verdictByOwner.get(step.ownerId);
-      if (step.action === 'heal') {
-        const sent = await discovery.mcpReconnectViaPty(step.ownerId);
-        console.warn(`[mcp-dark-watchdog] interactive DARK ${step.ownerId} — heal ${sent}: ${v?.reason ?? ''}`);
-        if (sent === 'sent') {
-          out.healSent.push(step.ownerId);
-          // Only LANDED envelopes may later justify an announce (false-heal bug #3).
-          markHealSent(interactiveHealState, step.ownerId);
-        } else {
-          // No injectable host / old host / write failure ⇒ no heal will ever land
-          // this way — skip straight to the notify posture on this same pass.
-          const st = interactiveHealState.get(step.ownerId);
-          if (st && !st.notified) {
-            st.notified = true;
-            await notifyInteractiveDark(sql, step.ownerId, v?.reason ?? 'transport dead', `heal unavailable (${sent})`);
-            out.notified.push(step.ownerId);
-          }
-        }
-      } else if (step.action === 'notify') {
-        await notifyInteractiveDark(sql, step.ownerId, v?.reason ?? 'transport dead', 'heal attempts exhausted');
-        out.notified.push(step.ownerId);
-      } else if (step.action === 'announce-healed') {
-        out.healed.push(step.ownerId);
-        // Transport truth says the beat advanced — tell the session ONCE to re-arm.
-        const host = discovery.findLiveHost(step.ownerId);
-        if (host) {
-          await discovery.injectIntoHost(host.sock, {
-            mode: 'turn',
-            data: healedWakeText(step.ownerId, v?.staleMins ?? 0),
-          });
-        }
-        // Clear any standing escalation row (idempotent).
-        await sql`
-          UPDATE harness_shared.harness_escalations
-             SET escalation = NULL, mtime_ms = ${now}
-           WHERE phase = ${INTERACTIVE_PHASE_PREFIX + step.ownerId} AND escalation IS NOT NULL`;
-        console.warn(`[mcp-dark-watchdog] interactive HEALED ${step.ownerId} — follow-up wake injected`);
+      try {
+        await runInteractiveHealStep(step, v, { sql, discovery, out, now });
+      } catch (e) {
+        // One owner's failure must not abort the rest of the pass (live incident
+        // 2026-07-14: the workspace_id NOT NULL crash killed every later step).
+        console.warn(
+          `[mcp-dark-watchdog] interactive step ${step.action} failed for ${step.ownerId} (non-fatal): ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
     return out;
@@ -638,10 +615,69 @@ export async function checkInteractiveMcpDark(
   }
 }
 
+/** One planned action for one owner — factored out so the pass loop can isolate
+ *  failures per owner (2026-07-14). */
+async function runInteractiveHealStep(
+  step: { ownerId: string; action: InteractiveHealAction },
+  v: { dark: boolean; recovered: boolean; reason: string | null; staleMins: number } | undefined,
+  ctx: {
+    sql: Sql;
+    discovery: typeof import('../events/await/psu-pty-discovery');
+    out: InteractiveMcpDarkResult;
+    now: number;
+  },
+): Promise<void> {
+  const { sql, discovery, out, now } = ctx;
+  if (step.action === 'heal') {
+    const sent = await discovery.mcpReconnectViaPty(step.ownerId);
+    console.warn(`[mcp-dark-watchdog] interactive DARK ${step.ownerId} — heal ${sent}: ${v?.reason ?? ''}`);
+    if (sent === 'sent') {
+      out.healSent.push(step.ownerId);
+      // Only LANDED envelopes may later justify an announce (false-heal bug #3).
+      markHealSent(interactiveHealState, step.ownerId);
+    } else {
+      // No injectable host / old host / write failure ⇒ no heal will ever land
+      // this way — skip straight to the notify posture on this same pass.
+      const st = interactiveHealState.get(step.ownerId);
+      if (st && !st.notified) {
+        st.notified = true;
+        await notifyInteractiveDark(sql, step.ownerId, v?.reason ?? 'transport dead', `heal unavailable (${sent})`);
+        out.notified.push(step.ownerId);
+      }
+    }
+  } else if (step.action === 'notify') {
+    await notifyInteractiveDark(sql, step.ownerId, v?.reason ?? 'transport dead', 'heal attempts exhausted');
+    out.notified.push(step.ownerId);
+  } else if (step.action === 'announce-healed') {
+    out.healed.push(step.ownerId);
+    // POSITIVE transport truth (fresh beat after a SENT envelope) — tell the
+    // session ONCE to re-arm.
+    const host = discovery.findLiveHost(step.ownerId);
+    if (host) {
+      await discovery.injectIntoHost(host.sock, {
+        mode: 'turn',
+        data: healedWakeText(step.ownerId, v?.staleMins ?? 0),
+      });
+    }
+    // Clear any standing escalation row (idempotent).
+    await sql`
+      UPDATE harness_shared.harness_escalations
+         SET escalation = NULL, mtime_ms = ${now}
+       WHERE phase = ${INTERACTIVE_PHASE_PREFIX + step.ownerId} AND escalation IS NOT NULL`;
+    console.warn(`[mcp-dark-watchdog] interactive HEALED ${step.ownerId} — follow-up wake injected`);
+  }
+}
+
 /** Claim + notify for one interactive dark owner (owner-actionable copy: the fix
  *  is literally typing /mcp in that window; a peer cannot do it). */
 async function notifyInteractiveDark(sql: Sql, ownerId: string, reason: string, cause: string): Promise<void> {
   const now = Date.now();
+  // workspace_id is NOT NULL on harness_escalations (live crash 2026-07-14:
+  // "null value in column workspace_id … violates not-null constraint" — the
+  // notify never landed AND the thrown error aborted the rest of the pass).
+  // Interactive hosts don't carry a workspace, so use the active one.
+  const { activeWorkspaceId } = await import('../workspace-registry');
+  const workspaceId = activeWorkspaceId();
   const claimed = await sql`
     INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
     VALUES ('papercusp', ${INTERACTIVE_PHASE_PREFIX + ownerId}, ${JSON.stringify({
@@ -649,7 +685,7 @@ async function notifyInteractiveDark(sql: Sql, ownerId: string, reason: string, 
       owner_id: ownerId,
       emitted_at: now,
       detail: `Interactive session ${ownerId} is MCP-dark (${cause}): ${reason}`,
-    })}, ${now}, NULL)
+    })}, ${now}, ${workspaceId})
     ON CONFLICT (harness_slug, phase) DO NOTHING
     RETURNING phase`;
   if (claimed.length !== 1) return; // already claimed — cross-process exactly-once

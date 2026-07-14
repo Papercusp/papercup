@@ -192,6 +192,45 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(active?.createdBy).toBe('author-a');
   });
 
+  it('propose + ratify EACH record a plan_revisions audit row (EI-10443 — rubric writes were unauditable)', async () => {
+    // Before EI-10443 the rubric write path went through withPlanLock with NO afterWrite,
+    // so the plan revision spine had ZERO rows for every rubric plan — the destructive
+    // loss-guard strip that filed this bug left no audit trail (couldn't be detected or
+    // recovered via plans:revisions). propose then ratify must EACH append one revision,
+    // attributed to the right actor, with the flip captured in the snapshot.
+    await rubrics.proposeRubric({
+      rubricId: 'audited-rubric',
+      characteristic: 'hive-coordination',
+      title: 'Audited',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
+    const afterPropose = await db.adminSql<
+      { seq: number; author_id: string; author_kind: string; rationale: string | null; content_snapshot: string }[]
+    >`
+      SELECT seq, author_id, author_kind, rationale, content_snapshot
+        FROM harness_shared.plan_revisions
+       WHERE plan_slug = 'audited-rubric' ORDER BY seq ASC`;
+    expect(afterPropose).toHaveLength(1); // the bug: this was 0
+    expect(afterPropose[0].author_id).toBe('author-a'); // the proposer of record
+    expect(afterPropose[0].author_kind).toBe('agent'); // a rubric write is an agent/Queen action
+    expect(afterPropose[0].rationale).toContain('propose');
+    expect(afterPropose[0].content_snapshot).toMatch(/status:\s*draft/); // proposed → draft plan
+
+    await rubrics.ratifyRubric('audited-rubric', 'queen-1');
+    const afterRatify = await db.adminSql<
+      { seq: number; author_id: string; rationale: string | null; content_snapshot: string }[]
+    >`
+      SELECT seq, author_id, rationale, content_snapshot
+        FROM harness_shared.plan_revisions
+       WHERE plan_slug = 'audited-rubric' ORDER BY seq ASC`;
+    expect(afterRatify).toHaveLength(2); // a SECOND revision — the status-flip is now audited
+    const ratifyRev = afterRatify[1];
+    expect(ratifyRev.author_id).toBe('queen-1'); // the ratifier, not the author
+    expect(ratifyRev.rationale).toContain('ratify');
+    expect(ratifyRev.content_snapshot).toMatch(/status:\s*active/); // the destructive-class flip is captured
+  });
+
   it('D-012 enforced on persisted provenance: the proposer cannot ratify their own proposal', async () => {
     await rubrics.proposeRubric({ rubricId: 'selfy', characteristic: 'c', title: 'S', criteria: sampleCriteria, by: 'author-a' });
     await expect(rubrics.ratifyRubric('selfy', 'author-a')).rejects.toThrow(/author ≠ ratifier|cannot ratify their own/i);
