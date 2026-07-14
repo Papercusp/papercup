@@ -133,6 +133,8 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     spawnDetached: vi.fn(() => 1234),
     presence: vi.fn(async () => livePresence) as never,
     alive: vi.fn(() => true),
+    isLoopArmed: vi.fn(async () => false),
+    forceResume: vi.fn(async () => false),
     resumePlanRun: vi.fn(async () => ({ ok: true as const })),
     // Hermetic by default: no live psu-pty host (don't read the real ~/.papercusp).
     findPsuHost: vi.fn(() => null) as never,
@@ -490,6 +492,38 @@ describe('executeWake — the liveness ladder', () => {
     const out = await executeWake(work({ wakeHandle: advHandle() }), deps());
     expect(out).toMatchObject({ kind: 'park' });
     expect((out as { reason: string }).reason).toContain('alive');
+  });
+
+  it('WI-666: active resumable loop owner gets bounded force-resume, then the normal headless resume', async () => {
+    const forceResume = vi.fn(async () => true);
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        isLoopArmed: vi.fn(async () => true),
+        forceResume,
+        spawnDetached,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(forceResume).toHaveBeenCalledWith(9999);
+    expect(spawnDetached).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-666: force-resume timeout keeps the alive loop owner safely parked', async () => {
+    const forceResume = vi.fn(async () => false);
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        isLoopArmed: vi.fn(async () => true),
+        forceResume,
+        spawnDetached,
+      }),
+    );
+    expect(out).toMatchObject({ kind: 'park' });
+    expect((out as { reason: string }).reason).toContain('bounded force-resume');
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 
   it('live psu-pty host → inject the wake turn into its control socket (channel psu-socket-inject)', async () => {

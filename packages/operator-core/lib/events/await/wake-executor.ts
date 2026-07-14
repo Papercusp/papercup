@@ -77,6 +77,7 @@ import {
   type ColdWakeDecision,
 } from '../../su-cold-loop';
 import { getLoopCarryNote } from '../../carry-note';
+import { getLoopStatus } from '../../harness/routines/loop';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeOutcome } from './types';
@@ -85,6 +86,71 @@ import type { DeliveryWork, WakeOutcome } from './types';
  *  API errors (incl. the 429 / usage-limit lines) to STDOUT; the dying turn's error
  *  is at the END of its output, so a tail is enough to classify it. */
 const RESUME_OUTPUT_TAIL_BYTES = Number(process.env.PAPERCUSP_RESUME_OUTPUT_TAIL_BYTES) || 8192;
+
+/** WI-666: bound the attended-loop recovery leg. A resumable loop owner may be
+ * alive in a terminal the operator cannot inject, so send SIGINT and wait only
+ * briefly for the current process to exit before falling back to the safe park.
+ * The loop marker is the safety boundary: ordinary interactive sessions are
+ * never force-interrupted by the wake pump. */
+export const FORCE_RESUME_EXIT_TIMEOUT_MS =
+  Number(process.env.PAPERCUSP_WAKE_FORCE_RESUME_TIMEOUT_MS) || 2_000;
+const FORCE_RESUME_POLL_MS = 50;
+
+export function waitForProcessExit(
+  pid: number,
+  alive: (pid: number | null) => boolean,
+  timeoutMs = FORCE_RESUME_EXIT_TIMEOUT_MS,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let pollTimer: NodeJS.Timeout | null = null;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      resolve(exited);
+    };
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    const poll = () => {
+      let stillAlive = true;
+      try {
+        stillAlive = alive(pid);
+      } catch {
+        stillAlive = true;
+      }
+      if (!stillAlive) {
+        finish(true);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        finish(false);
+        return;
+      }
+      pollTimer = setTimeout(poll, FORCE_RESUME_POLL_MS);
+      pollTimer.unref?.();
+    };
+    poll();
+  });
+}
+
+async function defaultForceResume(
+  pid: number,
+  alive: (pid: number | null) => boolean,
+): Promise<boolean> {
+  try {
+    // SIGINT ends the current CLI turn while preserving the native session for
+    // the normal headless resume leg below. It is intentionally not SIGTERM.
+    process.kill(pid, 'SIGINT');
+  } catch {
+    // A race with natural exit is already a successful force-resume boundary.
+    try {
+      return !alive(pid);
+    } catch {
+      return false;
+    }
+  }
+  return waitForProcessExit(pid, alive);
+}
 
 /** A growing-but-bounded byte tail — keeps only the last `maxBytes`, so an observed
  *  resume turn that prints megabytes never accumulates more than the tail in memory. */
@@ -724,6 +790,11 @@ export interface ExecuteWakeDeps {
   kill?: typeof killPty;
   presence?: typeof getPresence;
   alive?: (pid: number | null) => boolean;
+  /** WI-666: whether this owner has an active engine loop. Only loop owners
+   *  are eligible for the bounded alive-but-uninjectable recovery leg. */
+  isLoopArmed?: (ownerId: string) => Promise<boolean>;
+  /** WI-666: injected force-resume seam for hermetic tests. */
+  forceResume?: (pid: number) => Promise<boolean>;
   /** P-001 (wake-delivery-degradation-fix-2026-07-09): the coord-message send
    *  used to degrade a would-be DROP into a durable inbox notification.
    *  Injected for tests; defaults to the real sendMessage. */
@@ -916,6 +987,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const kill = deps.kill ?? killPty;
   const presence = deps.presence ?? getPresence;
   const alive = deps.alive ?? pidAlive;
+  const isLoopArmed =
+    deps.isLoopArmed ??
+    (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
+  const forceResume = deps.forceResume ?? ((pid: number) => defaultForceResume(pid, alive));
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
@@ -1025,10 +1100,44 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           return { kind: 'delivered', channel: 'pty-inject' };
         }
       }
+      // WI-666: a warm engine-loop owner is explicitly unattended and its
+      // native session is resumable. If its process is alive but no longer
+      // injectable (the detached-terminal / curl dead zone), end this turn
+      // with a bounded SIGINT and continue through the normal resume leg once
+      // the process exits. Ordinary interactive sessions stay parked: without
+      // the active loop marker, forcing a live terminal would be unsafe.
+      const resumable = Boolean(
+        (handle.agent === 'claude' && (fresh?.sessionId ?? handle.sessionId)) ||
+          (handle.agent === 'omp' && (fresh?.ompThreadId ?? handle.ompThreadId)) ||
+          (handle.agent === 'codex' && (fresh?.sessionId ?? handle.sessionId)),
+      );
+      const loopArmed = resumable
+        ? await withWakeTimeout(
+            isLoopArmed(d.subscriberId),
+            `loop status/${d.subscriberId}`,
+            1_000,
+          )
+        : false;
+      if (loopArmed === true) {
+        const exited = await forceResume(pid).catch(() => false);
+        if (exited) {
+          isAlive = false;
+        } else {
+          return {
+            kind: 'park',
+            reason: `loop owner pid ${pid} stayed alive after bounded force-resume; parked safely for a later retry`,
+          };
+        }
+      }
+      if (!isAlive) {
+        // The bounded force leg ended the old turn; continue to Channel 2
+        // below instead of attempting a keystroke against a dead process.
+      } else {
       // Channel 3: alive in a terminal we don't own, OR the live managed pty at
       // this pid belongs to a different agent (recycled pid, EI-151) — either
       // way not an injectable pty for THIS subscriber → park (+ inbox nudge).
       return { kind: 'park', reason: `session pid ${pid} alive but not an injectable managed pty for this subscriber` };
+      }
     }
     if (isAlive) {
       // No pid recorded but presence is fresh — the session is (very likely)
