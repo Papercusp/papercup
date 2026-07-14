@@ -236,6 +236,43 @@ describe('scanMobileArtifacts — the phone builds live in a SEPARATE repo, unve
   });
 });
 
+describe('scanMobileArtifactSources — the src↔published-name pairs the UPLOADER consumes', () => {
+  it('returns nothing for a null/absent root, like the artifact scan', () => {
+    expect(scanMobileArtifactSources(null, '0.0.9')).toEqual([]);
+    expect(scanMobileArtifactSources('/no/such/mobile/root', '0.0.9')).toEqual([]);
+  });
+
+  it('maps the real on-disk file to the synthesized name (bytes at src, name for the object key)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
+    const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
+    const ipaDir = path.join(root, 'ios/build/export');
+    fs.mkdirSync(apkDir, { recursive: true });
+    fs.mkdirSync(ipaDir, { recursive: true });
+    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), 'apk-bytes');
+    fs.writeFileSync(path.join(ipaDir, 'Papercup.ipa'), 'ipa-bytes');
+
+    const pairs = scanMobileArtifactSources(root, '0.0.9');
+    expect(pairs).toEqual([
+      { src: path.join(apkDir, 'app-debug.apk'), outName: 'Papercusp_0.0.9_android.apk' },
+      { src: path.join(ipaDir, 'Papercup.ipa'), outName: 'Papercusp_0.0.9_ios.ipa' },
+    ]);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('release APK claims the name — debug src never appears once release exists', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
+    fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/release'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/debug'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/release/app-release.apk'), 'RELEASE');
+    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/debug/app-debug.apk'), 'debug-bytes');
+
+    const apkPairs = scanMobileArtifactSources(root, '0.0.9').filter((p) => p.outName.endsWith('.apk'));
+    expect(apkPairs).toHaveLength(1);
+    expect(apkPairs[0].src).toContain('app-release.apk');
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
 describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
   // main() once computed `mobileRoot` and then FORGOT to put it in the run({...})
   // object, so scanMobileArtifacts got `undefined` and silently recorded NO mobile
