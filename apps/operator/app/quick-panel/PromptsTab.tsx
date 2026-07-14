@@ -578,13 +578,13 @@ function OutlineRow({
         type="button"
         className="pc-qp__bulletbtn"
         aria-label={`Zoom into ${displayTitle(row)} (drag to move)`}
+        {...listeners}
+        {...attributes}
         tabIndex={-1}
         onClick={(e) => {
           e.stopPropagation();
           onZoom();
         }}
-        {...listeners}
-        {...attributes}
       >
         <span className="pc-qp__bullet" aria-hidden />
       </button>

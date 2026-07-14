@@ -89,7 +89,7 @@ const SEAMED = [
   ['libs/host-platform',      'The host-boundary interface — the ~10% that is genuinely host-specific (fs, PG-DSN resolution).'],
 ];
 
-const CATEGORY_ORDER = ['Pure utilities & infra', 'Search & retrieval', 'IPC, transport & sync', 'UI components', 'Build & release', 'Testing & QA'];
+const CATEGORY_ORDER = ['Pure utilities & infra', 'Search & retrieval', 'IPC, transport & sync', 'Audio & media', 'UI components', 'Build & release', 'Testing & QA'];
 
 function parseGitmodules() {
   const map = {};

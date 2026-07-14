@@ -21,7 +21,12 @@ export function OperatorWordmarkLockup({
   leading,
 }: Props) {
   const packId = useLexiconPackId();
-  const resolvedTitle = title ?? (packId === 'the-hive' ? 'The Swarm' : 'Papercup');
+  // Product wordmark default. WI-4478 D-001: the product/window identity is
+  // "Papercusp" (matches the Tauri window title + productName); the assistant
+  // PERSONA stays "Papercup" in chat/voice surfaces, which pass an explicit
+  // `title="Papercup"` override (see OperatorChatSidebar) rather than relying
+  // on this default.
+  const resolvedTitle = title ?? (packId === 'the-hive' ? 'The Swarm' : 'Papercusp');
   const resolvedSubtitle = subtitle ?? (packId === 'the-hive' ? 'Hive console' : 'mission console');
 
   return (

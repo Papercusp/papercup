@@ -73,6 +73,14 @@ it here.
 | `@papercusp/tooldef-http` | HTTP transport adapter for @papercusp/tooldef — resolve an inbound request to a projected tool, build the context from headers/query (host-injected principal + harness-path resolution), and dispatch. Framework-neutral; Next.js/Hono/Express are thin shims on top. | [Papercusp/tooldef-http](https://github.com/Papercusp/tooldef-http.git) |
 | `@papercusp/tooldef` | Function-as-truth tool framework: write one typed (input, ctx) => result function and project it onto HTTP, MCP, IPC, and in-process transports with uniform auth/role/quota/telemetry/streaming. Schema-agnostic (Standard Schema), host-agnostic (all I/O injected). | [Papercusp/tooldef](https://github.com/Papercusp/tooldef.git) |
 
+## Audio & media
+
+| Package | What it is | Source |
+|---|---|---|
+| `@papercusp/audio-dsp` | Generic real-time audio DSP cores: NLMS acoustic echo cancellation with bulk-delay estimation + double-talk detection, gain, and the noise-suppressor seam. Pure algorithms on PCM16 frames — zero runtime deps; engine bindings (e.g. RNNoise WASM) are host-injected. | in-repo · `libs/generic/audio-dsp` |
+| `@papercusp/kokoro-tts` | Generic, domain-free port of kokoro-js@1.2.1's glue (text normalization + phonemization chain, voice-style table + HF voices-bin loader, StyleTextToSpeech2Model wrapper) — Apache-2.0-attributed, upstream https://github.com/hexgrad/kokoro. Zero @huggingface/transformers runtime dependency: the model/tokenizer/tensor primitives are host-injected via configureKokoroTts() (WI-4470), so this package never pins a transformers version and can't create the nested-dependency duplicate that vendoring originally worked around (see WI-4449/WI-4471). The tiny `phonemizer` package is a real dependency (no injection needed). | in-repo · `libs/generic/kokoro-tts` |
+| `@papercusp/p2p-voice` | Generic P2P voice-channel core: channel join/leave over an injected swarm, per-peer control+audio framing, codec seam, N-peer mixing, per-peer tap. Pure algorithm — swarm and codec are host-injected; zero runtime deps. | in-repo · `libs/generic/p2p-voice` |
+
 ## UI components
 
 | Package | What it is | Source |

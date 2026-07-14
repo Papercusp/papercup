@@ -1,6 +1,7 @@
 /**
  * Quick Panel — styles for the global-shortcut popup's tabbed body
- * (quick-panel-saved-prompts-2026-07-13 P-005/P-006).
+ * (quick-panel-saved-prompts-2026-07-13 P-005/P-006; single-pane Workflowy
+ * outline: quick-panel-workflowy-clone-2026-07-14).
  *
  * Design notes: consumes the app's semantic tokens (--bg*, --fg*, --border,
  * --accent*) so both themes come for free; every control is FLAT (design hard
@@ -203,7 +204,10 @@ body.has-op-chat:has(.pc-qp) {
   min-height: 0;
 }
 
-/* ----------------------------------------------------------- prompts tab */
+/* ----------------------------------------------------------- prompts tab
+   Single-pane Workflowy outline (quick-panel-workflowy-clone-2026-07-14):
+   the old preview column is gone — notes, affordances and variable fill all
+   render inline under their bullet. */
 
 .pc-qp__prompts {
   display: flex;
@@ -214,20 +218,9 @@ body.has-op-chat:has(.pc-qp) {
 .pc-qp__outlinecol {
   display: flex;
   flex-direction: column;
-  flex: 0 0 54%;
+  flex: 1;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border);
-}
-
-.pc-qp__previewcol {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 46%;
-  min-width: 0;
-  min-height: 0;
-  overflow-y: auto;
-  background: var(--bg-1);
 }
 
 /* toolbar */
@@ -340,6 +333,56 @@ body.has-op-chat:has(.pc-qp) {
   outline-offset: 1px;
 }
 
+/* zoom breadcrumbs (Home › parent › …) */
+
+.pc-qp__crumbbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 10px 0;
+  font-size: 11px;
+  color: var(--fg-mute);
+  flex: none;
+  min-width: 0;
+}
+
+.pc-qp__crumbseg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pc-qp__crumbsep {
+  color: var(--fg-mute);
+  flex: none;
+}
+
+.pc-qp__crumb {
+  border: none;
+  background: none;
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  max-width: 22ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pc-qp__crumb:hover {
+  color: var(--accent-strong);
+  background: var(--bg-1);
+}
+
+.pc-qp__crumb:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
 /* pinned strip */
 
 .pc-qp__pins {
@@ -393,7 +436,37 @@ body.has-op-chat:has(.pc-qp) {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* zoomed-node header — the hoisted node's title + note, Workflowy-style */
+
+.pc-qp__zoomhead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px 4px;
+}
+
+.pc-qp__zoomtitle {
+  width: 100%;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+}
+
+.pc-qp__zoomtitle::placeholder {
+  color: color-mix(in srgb, var(--fg-dim), transparent 45%);
+}
+
+.pc-qp__rowgroup {
+  min-width: 0;
+}
+
 .pc-qp__node {
+  position: relative; /* anchors the drop indicator */
   display: flex;
   align-items: center;
   gap: 4px;
@@ -418,6 +491,39 @@ body.has-op-chat:has(.pc-qp) {
   font-weight: 600;
 }
 
+.pc-qp__node.done .pc-qp__nodetitle {
+  text-decoration: line-through;
+  color: var(--fg-mute);
+}
+
+.pc-qp__node.done .pc-qp__bullet {
+  opacity: 0.45;
+}
+
+/* while a row is the drag source it stays in place, dimmed */
+.pc-qp__node.dragsrc {
+  opacity: 0.35;
+}
+
+/* projected drop position — a 2px accent line at the target depth */
+.pc-qp__dropline {
+  position: absolute;
+  right: 8px;
+  height: 2px;
+  background: var(--accent-strong);
+  border-radius: 1px;
+  pointer-events: none;
+  /* `left` is set inline to the projected indent */
+}
+
+.pc-qp__dropline.above {
+  top: -1px;
+}
+
+.pc-qp__dropline.below {
+  bottom: -1px;
+}
+
 .pc-qp__caret {
   display: inline-flex;
   align-items: center;
@@ -440,6 +546,37 @@ body.has-op-chat:has(.pc-qp) {
 
 .pc-qp__caret.leaf {
   visibility: hidden;
+}
+
+/* The bullet is a real control now (Workflowy grammar: click = zoom,
+   drag = move). Flat halo on hover; touch-action none so dnd-kit's
+   PointerSensor owns the gesture. */
+.pc-qp__bulletbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  padding: 0;
+  cursor: grab;
+  flex: none;
+  touch-action: none;
+}
+
+.pc-qp__bulletbtn:hover {
+  background: var(--bg-2);
+}
+
+.pc-qp__bulletbtn:active {
+  cursor: grabbing;
+}
+
+.pc-qp__bulletbtn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .pc-qp__bullet {
@@ -477,6 +614,31 @@ body.has-op-chat:has(.pc-qp) {
   color: color-mix(in srgb, var(--fg-dim), transparent 45%);
 }
 
+/* #tag / @tag chips parsed from the title — click filters the outline */
+
+.pc-qp__tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.pc-qp__tag {
+  border: none;
+  padding: 0 5px;
+  font-size: 10px;
+  color: var(--accent-strong);
+  background: var(--accent-soft, var(--bg-2));
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pc-qp__tag:hover {
+  color: var(--accent-ink, var(--fg));
+  background: var(--accent);
+}
+
 .pc-qp__nodepin {
   color: var(--accent-strong);
   flex: none;
@@ -491,63 +653,82 @@ body.has-op-chat:has(.pc-qp) {
   flex: none;
 }
 
-/* keyboard hints */
+/* floating copy of the dragged row under the pointer (DragOverlay) */
 
-.pc-qp__hints {
-  display: flex;
-  gap: 10px;
-  padding: 4px 10px;
-  border-top: 1px solid var(--border);
-  color: var(--fg-mute);
-  font-size: 10.5px;
-  flex: none;
-}
-
-.pc-qp__hints kbd {
-  font-family: inherit;
-  font-size: 10px;
-  padding: 0 3px;
+.pc-qp__dragghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg-2);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--bg-1);
-  color: var(--fg-dim);
-}
-
-/* ----------------------------------------------------------- preview pane */
-
-.pc-qp__preview {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-}
-
-.pc-qp__crumbs {
-  font-size: 11px;
-  color: var(--fg-mute);
+  border-radius: 4px;
   white-space: nowrap;
+  max-width: 40ch;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.pc-qp__titlerow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+/* inline note (the prompt BODY, Workflowy-style): bare dim textarea under the
+   title. Unfocused it clamps to one line (the component zeroes its inline
+   height on blur); focused it auto-grows via scrollHeight. */
 
-.pc-qp__titleinput {
-  flex: 1;
+.pc-qp__notewrap {
+  padding-right: 8px;
   min-width: 0;
-  font-weight: 600;
 }
 
-.pc-qp__meta {
+.pc-qp__note {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 0 0 2px;
+  resize: none;
+  outline: none;
+  overflow: hidden;
+}
+
+.pc-qp__note:not(:focus) {
+  max-height: 1.5em;
+}
+
+.pc-qp__note::placeholder {
+  color: color-mix(in srgb, var(--fg-mute), transparent 40%);
+}
+
+/* inline affordances under the selected bullet (complete / pin / copy /
+   /name / usage / delete) — the superpowers the retired preview pane hosted */
+
+.pc-qp__affordwrap {
+  padding-right: 8px;
+  min-width: 0;
+}
+
+.pc-qp__afford {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.pc-qp__affordspacer {
+  flex: 1;
+}
+
+.pc-qp__usemeta {
   font-size: 11px;
   color: var(--fg-mute);
+  white-space: nowrap;
 }
 
 .pc-qp__name {
@@ -558,55 +739,7 @@ body.has-op-chat:has(.pc-qp) {
   padding: 1px 5px;
 }
 
-/* body view / editor */
-
-.pc-qp__bodyview {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--fg);
-  padding: 8px;
-  cursor: text;
-  min-height: 72px;
-}
-
-.pc-qp__bodyview:hover {
-  border-color: var(--accent);
-}
-
-.pc-qp__bodyempty {
-  color: var(--fg-mute);
-  font-size: 12px;
-}
-
-.pc-qp__bodyeditor {
-  width: 100%;
-  min-height: 140px;
-  resize: vertical;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-}
-
-.pc-qp__varpreview {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.pc-qp__var {
-  color: var(--accent-strong);
-  background: var(--accent-soft, var(--bg-2));
-  border-radius: 3px;
-  padding: 0 2px;
-}
-
-/* fill-on-copy variables */
+/* fill-on-copy variables (renders inside the afford row; full-width wrap) */
 
 .pc-qp__vars {
   display: flex;
@@ -616,6 +749,7 @@ body.has-op-chat:has(.pc-qp) {
   padding: 6px 8px;
   border: 1px dashed var(--border);
   border-radius: 4px;
+  flex-basis: 100%;
 }
 
 .pc-qp__varslabel {
@@ -651,28 +785,25 @@ body.has-op-chat:has(.pc-qp) {
   border-color: var(--accent);
 }
 
-/* actions row */
+/* keyboard hints */
 
-.pc-qp__actions {
+.pc-qp__hints {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-}
-
-.pc-qp__movegroup {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px;
-}
-
-.pc-qp__spacer {
-  flex: 1;
-}
-
-.pc-qp__previewempty svg {
+  gap: 10px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
   color: var(--fg-mute);
+  font-size: 10.5px;
+  flex: none;
+}
+
+.pc-qp__hints kbd {
+  font-family: inherit;
+  font-size: 10px;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-1);
+  color: var(--fg-dim);
 }

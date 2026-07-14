@@ -235,6 +235,14 @@ const ALLOWLIST: Record<string, Classification> = {
       "fleet/plan/harness slug (or null for scopeKind='global'), never a current-holder claim a presence-tied " +
       'reaper/reader keys on — no rebind needed.',
   },
+  'session_turn_journal.owner_id': {
+    status: 'exempt',
+    reason:
+      'deterministic-context-carry-2026-07-14 P-012 (migration 605): one append-only row inserted per turn end ' +
+      '(recordTurnJournal), never updated — owner_id is attribution of who wrote the journal note, read back via ' +
+      'journal:recent filters, not a current-holder claim any presence-tied reaper acts on. Same class as ' +
+      'session_turns.owner / agent_activity.owner_id.',
+  },
 };
 
 /** Column-name patterns that mean "this stores a CURRENT holder/owner

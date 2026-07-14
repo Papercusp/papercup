@@ -34,6 +34,7 @@ import { useShortcutAction } from '@/lib/hotkeys';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
+import { useLexiconPackId } from '@/lib/useLexicon';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
 import { AudienceModeSelector } from './AudienceModeSelector';
@@ -299,6 +300,7 @@ export function OperatorChatSidebar() {
                   className="op-chat-wordmark"
                   titleClassName="op-chat-wordmark-title"
                   subtitleClassName="op-chat-wordmark-subtitle"
+                  title="Papercup"
                   subtitle=""
                 />
               </button>
