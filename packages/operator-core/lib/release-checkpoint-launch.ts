@@ -125,9 +125,15 @@ export interface ActiveCheckpointCheck {
   quiet_cut_sec?: number | null;
   /** ISO timestamp the unit actually started running (systemd ExecMainStartTimestamp). */
   started_at?: string | null;
+  /** Seconds since the unit started — null when systemd did not report a start timestamp. */
+  elapsed_sec?: number | null;
   /** Seconds remaining before the systemd backstop (CHECKPOINT_MAX_RUNTIME_SEC)
    *  would kill it — a rough "how much longer" estimate, not a promise. */
   eta_sec?: number | null;
+  /** EI-11667: set when a `replaceStale:true` request found the run stale but YOUNGER than
+   *  REPLACE_STALE_MIN_AGE_SEC — the stop was refused (a young stale run is healthy-in-progress
+   *  on a busy tree, not wedged; see the constant's doc for the 2026-07-13 replace-storm). */
+  replace_refused_young?: boolean;
 }
 
 /** Minimal shape of a `child_process.spawnSync` result — injectable so
@@ -288,9 +294,20 @@ export function checkActiveCheckpointRun(
     ...current,
     candidate_stale: Boolean(candidate && current.current_candidate && !shaMatches(candidate, current.current_candidate)),
     started_at: startedAt,
+    elapsed_sec: elapsedSec,
     eta_sec: etaSec,
   };
 }
+
+/** EI-11667 replace-storm guard: an in-flight run judging a "stale" candidate is the NORMAL
+ *  state of a HEALTHY young run on a busy tree — the suite needs ~20-55 min while the tip moves
+ *  every few minutes, so `candidate_stale` alone is not evidence of a wedged run. On 2026-07-13
+ *  four sus each followed the "pass replaceStale:true" nudge and serially killed each other's
+ *  runs (21:25→22:02); no verdict landed and the green pin froze for 2h. replaceStale therefore
+ *  only unlocks once the run is old enough that it plausibly SHOULD have verdicted already (the
+ *  true EI-9672 wedged-salvage case); younger runs — and runs whose age systemd cannot report —
+ *  are refused with `replace_refused_young` so callers wait for the verdict instead. */
+export const REPLACE_STALE_MIN_AGE_SEC = 20 * 60;
 
 /** Pure: the full `systemd-run` argv for the detached green-checkpoint suite. Mirrors
  *  release-deploy-launch.ts's buildSystemdRunArgv (PATH passthrough so the unit doesn't depend
@@ -435,6 +452,21 @@ export function launchDetachedCheckpoint(
       // superseded candidate) can be replaced instead of refused. Deliberately narrow: a
       // run judging the CURRENT candidate is never touched, replaceStale or not.
       if (opts.replaceStale && active.candidate_stale) {
+        // EI-11667: only a run OLD enough to plausibly be wedged (past the fastest full-suite
+        // duration) may be replaced. A young stale run is healthy-in-progress on a busy tree;
+        // stopping it is how the 2026-07-13 replace-storm starved the gate of every verdict.
+        const oldEnough =
+          typeof active.elapsed_sec === 'number' && active.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC;
+        if (!oldEnough) {
+          return Promise.resolve({
+            launched: false,
+            unit,
+            argv: [],
+            logPath,
+            reason: 'already_running',
+            alreadyRunning: { ...active, replace_refused_young: true },
+          });
+        }
         const stop = stopActiveCheckpointUnit(unit, execFn);
         if (stop.stopped) {
           // Re-check right before launching — a race where the run finished/advanced

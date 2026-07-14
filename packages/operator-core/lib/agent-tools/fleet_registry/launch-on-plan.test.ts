@@ -27,7 +27,7 @@ import launchOnPlan, {
   renderMemberBaseline,
   type MemberLaunchOpts,
 } from './launch-on-plan';
-import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
 
 const base: MemberLaunchOpts = {
   fleetSlug: 'atlas-fleet',
@@ -422,6 +422,41 @@ describe('mergeKindIntoClaimSpec (EI-10409 — merge, never discard, a leader-au
     expect(merged.specId).toBe('my-custom-wave');
     expect(merged.rank).toEqual(existing.rank);
     expect(merged.limits).toEqual(existing.limits);
+  });
+
+  it('flattens an existing conjunction so a fixed issue-ID cohort remains scheduler-claimable (WI-4756)', () => {
+    const existing: ClaimSpec = {
+      specVersion: '1.0',
+      specId: 'nonp2p-fixed-cohort',
+      revision: 2,
+      view: {
+        filter: {
+          all: [
+            {
+              all: [
+                { field: 'kind', op: '=', value: 'bug' },
+                { field: 'id', op: 'in', value: ['WI-4674', 'WI-4664'] },
+              ],
+            },
+            { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+          ],
+        },
+      },
+      rank: DEFAULT_CLAIM_SPEC.rank,
+      limits: DEFAULT_CLAIM_SPEC.limits,
+    };
+
+    const merged = mergeKindIntoClaimSpec(existing, ['bug']) as ClaimSpec;
+
+    expect(merged.view.filter).toEqual({
+      all: [
+        { field: 'kind', op: '=', value: 'bug' },
+        { field: 'id', op: 'in', value: ['WI-4674', 'WI-4664'] },
+        { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+        { field: 'kind', op: 'in', value: ['bug'] },
+      ],
+    });
+    expect(positiveIdCohortIds(merged.view.filter)).toEqual(['WI-4674', 'WI-4664']);
   });
 });
 

@@ -674,9 +674,19 @@ export function mergeKindIntoClaimSpec(
 ): Record<string, unknown> {
   const kindLeaf = { field: 'kind', op: 'in', value: [...kinds] };
   const existingFilter = existing.view?.filter;
+
+  // Keep conjunctions canonical. In particular, the issue-family fallback's
+  // positiveIdCohortIds extractor deliberately recognizes positive ID leaves only
+  // when they are direct members of the top-level `all`. Wrapping an existing
+  // `{ all: [...] }` as `{ all: [existingFilter, kindLeaf] }` hides that cohort and
+  // makes an otherwise-valid fixed bug wave falsely report windDown=true. Flatten
+  // recursively so a relaunch also repairs specs persisted by the old merge shape.
+  type ClaimFilter = NonNullable<ClaimSpec['view']['filter']>;
+  const flattenAll = (filter: ClaimFilter): ClaimFilter[] =>
+    'all' in filter ? filter.all.flatMap(flattenAll) : [filter];
   const filter =
     existingFilter && Object.keys(existingFilter).length > 0
-      ? { all: [existingFilter, kindLeaf] }
+      ? { all: [...flattenAll(existingFilter), kindLeaf] }
       : kindLeaf;
   return {
     ...existing,

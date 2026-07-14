@@ -25,7 +25,7 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { launchDetachedCheckpoint } from '../../release-checkpoint-launch';
+import { launchDetachedCheckpoint, REPLACE_STALE_MIN_AGE_SEC } from '../../release-checkpoint-launch';
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -67,7 +67,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'EI-9672: when the active run is CONFIRMED stale (candidate_stale:true in a prior already_running reply — it is judging an older candidate than current staging, e.g. mid post-verdict salvage/refire on a superseded commit), stop that run and launch a fresh one. Unlike force, this actually frees the singleton — but ONLY for the stale case; a run judging the current candidate is never stopped.',
+        'EI-9672: when the active run is CONFIRMED stale (candidate_stale:true in a prior already_running reply) AND ≥20 min old (EI-11667: a YOUNG stale run is normal on a busy tree and is refused, not stopped — serial replacement starves the gate of every verdict), stop that run and launch a fresh one. Unlike force, this actually frees the singleton; a run judging the current candidate is never stopped.',
       ),
   }),
   async handler(args, _ctx) {
@@ -91,9 +91,12 @@ export default defineTool({
               candidate_stale: a.candidate_stale ?? false,
               quiet_cut_sec: a.quiet_cut_sec ?? null,
               started_at: a.started_at ?? null,
-              eta_sec: a.eta_sec ?? null,
+              elapsed_sec: a.elapsed_sec ?? null,
+              replace_refused_young: a.replace_refused_young ?? false,
               note: a.candidate_stale
-                ? 'A checkpoint run for this root is already in flight, but it is judging an older candidate than the current quiet-cut-eligible staging state (EI-9672: likely deep in post-verdict salvage/refire on a superseded commit). Pass replaceStale:true to stop that stale run and launch a fresh one for the current candidate — force:true alone will NOT help here (systemd still refuses the collision).'
+                ? typeof a.elapsed_sec === 'number' && a.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC
+                  ? 'A checkpoint run for this root is already in flight, judging an older candidate than current staging, and it is OLD enough that it should have verdicted by now (EI-9672: likely wedged in post-verdict salvage/refire on a superseded commit). Pass replaceStale:true to stop it and launch a fresh run for the current candidate — force:true alone will NOT help (systemd still refuses the collision).'
+                  : 'A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Wait for its verdict (see eta_sec); replaceStale only unlocks once the run is ≥20 min old.'
                 : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
             }),
           },

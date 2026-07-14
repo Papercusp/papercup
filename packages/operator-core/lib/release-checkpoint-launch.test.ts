@@ -17,6 +17,7 @@ import {
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
+  REPLACE_STALE_MIN_AGE_SEC,
 } from './release-checkpoint-launch';
 
 // 2026-07-10: every run wrote to /tmp/<unit>.log, so the natural response to a red —
@@ -384,9 +385,10 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
   /** execFn that reports an ACTIVE run judging `oldCandidate`, while the current quiet-cut
    *  candidate is `freshCandidate` (i.e. candidate_stale:true) — mirrors the
    *  "candidate_stale" checkActiveCheckpointRun test above, plus responds to the
-   *  `systemctl --user stop` call this describe block exercises. */
-  function staleActiveExecFn(stopStatus = 0) {
-    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+   *  `systemctl --user stop` call this describe block exercises. Defaults to a run OLD
+   *  enough to pass the EI-11667 min-age guard (45 min — the wedged-salvage case). */
+  function staleActiveExecFn(stopStatus = 0, ageMinutes = 45) {
+    const startedAt = new Date(Date.now() - ageMinutes * 60_000).toISOString();
     const oldCandidate = '1111111111111111111111111111111111111111';
     const currentHead = '3333333333333333333333333333333333333333';
     const quietCandidate = '2222222222222222222222222222222222222222';
@@ -401,10 +403,10 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     });
   }
 
-  it('a STALE active run is stopped, then a fresh run launches (replaceStale:true)', async () => {
+  it('a STALE active run OLD enough to be wedged is stopped, then a fresh run launches (replaceStale:true)', async () => {
     const child = fakeChild();
     const spawnFn = vi.fn(() => child) as never;
-    const execFn = staleActiveExecFn();
+    const execFn = staleActiveExecFn(0, 45);
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
 
     const p = launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn, execFn, readLogHead);
@@ -415,6 +417,51 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(spawnFn).toHaveBeenCalled();
     expect(r.launched).toBe(true);
     expect(r.replacedStale).toMatchObject({ active: true, candidate_stale: true, candidate: '11111111' });
+  });
+
+  it('a YOUNG stale run is REFUSED, not stopped — the EI-11667 replace-storm guard (stale is normal for a healthy young run on a busy tree)', async () => {
+    const spawnFn = vi.fn();
+    const execFn = staleActiveExecFn(0, 5); // 5 min old — well under REPLACE_STALE_MIN_AGE_SEC
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+
+    const r = await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead);
+
+    // The unit was never stopped and nothing launched: the caller must wait for the verdict.
+    expect(execFn).not.toHaveBeenCalledWith('systemctl', ['--user', 'stop', `${checkpointUnitForRoot('/tree')}.service`]);
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(r.launched).toBe(false);
+    expect(r.reason).toBe('already_running');
+    expect(r.alreadyRunning).toMatchObject({ candidate_stale: true, replace_refused_young: true });
+    expect(typeof r.alreadyRunning?.elapsed_sec).toBe('number');
+    expect(r.alreadyRunning?.elapsed_sec).toBeLessThan(REPLACE_STALE_MIN_AGE_SEC);
+  });
+
+  it('a stale run with UNKNOWN age is refused too (cannot prove it is wedged — never kill a possibly-healthy verdict)', async () => {
+    const oldCandidate = '1111111111111111111111111111111111111111';
+    const currentHead = '3333333333333333333333333333333333333333';
+    const quietCandidate = '2222222222222222222222222222222222222222';
+    const spawnFn = vi.fn();
+    const stopCall = vi.fn();
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl' && args[1] === 'stop') {
+        stopCall();
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      // ActiveState reported, but NO ExecMainStartTimestamp → elapsed_sec null.
+      if (cmd === 'systemctl' && args[1] === 'show') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: '' });
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct')) return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
+      if (cmd === 'git' && args.includes('rev-list')) return { status: 0, stdout: `${quietCandidate}\n`, stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    const readLogHead = vi.fn(() => `[green-checkpoint] checkpointing candidate ${oldCandidate.slice(0, 8)} (base def)\n`);
+
+    const r = await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead);
+
+    expect(stopCall).not.toHaveBeenCalled();
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(r.launched).toBe(false);
+    expect(r.alreadyRunning).toMatchObject({ replace_refused_young: true });
   });
 
   it('a NOT-stale active run is never stopped, even with replaceStale:true (the critical-danger guard)', async () => {
