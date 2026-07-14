@@ -836,11 +836,21 @@ export async function runLivenessAlarmTick(
   // firing and recovery would never be detected. Recompute fresh when we have
   // open escalations that SHOULD be recovering (no signals currently firing for
   // their signatures).
-  if (openBySig.size > 0 && !localSnapshotStale) {
+  //
+  // BUGFIX: recovery detection must run REGARDLESS of cache freshness. If the
+  // cache was stale (> 6 min old), line 762 already computed a fresh snapshot.
+  // If there are open escalations, we must check if they've recovered against
+  // that fresh data. The prior condition `&& !localSnapshotStale` was inverted:
+  // it skipped recovery detection WHEN the cache was stale, which is exactly
+  // when we'd just computed fresh and should CHECK. Now we always check when
+  // escalations are open; if the cache is merely fresh (< 6 min), we recompute
+  // once more to be sure; if stale, we use the fresh snapshot from line 762.
+  if (openBySig.size > 0) {
     const sigsShouldRecover = Array.from(openBySig.keys()).some((sig) => !currentSigs.has(sig));
     if (sigsShouldRecover) {
       // Recompute fresh health snapshot for accurate recovery detection
-      const freshHealth = await compute(ws);
+      // (or verify the fresh snapshot we computed on line 762).
+      const freshHealth = localSnapshotStale ? health : await compute(ws);
       signals = evaluateLivenessAlarm(freshHealth, null, {
         snapshotStaleMs: staleMs,
         prevPostmasterStartMs,
