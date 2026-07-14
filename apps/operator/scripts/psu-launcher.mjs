@@ -1644,24 +1644,41 @@ export async function probeOmpBackendContextWindow(modelId, env = process.env, f
   }
 }
 
-/** The `contextWindow` a models.yml carries for `bareId`, or null. Scans the id's entry only
+/** A numeric field a models.yml carries for `bareId`, or null. Scans the id's entry only
  *  (from its `- id:` line to the next `- id:`/dedent) so sibling models are never misread.
  *  Exported for tests. */
-export function readModelsYmlContextWindow(ymlText, bareId) {
+export function readModelsYmlField(ymlText, bareId, field) {
   const entry = modelsYmlEntrySpan(ymlText, bareId);
   if (!entry) return null;
-  const m = entry.text.match(/^[ \t]*contextWindow:[ \t]*(\d+)/m);
+  const m = entry.text.match(new RegExp(`^[ \\t]*${field}:[ \\t]*(\\d+)`, 'm'));
   return m ? Number(m[1]) : null;
 }
+export const readModelsYmlContextWindow = (ymlText, bareId) => readModelsYmlField(ymlText, bareId, 'contextWindow');
 
-/** Rewrite `contextWindow` to `newWindow` inside `bareId`'s models.yml entry (only that entry —
+/** Rewrite a numeric `field` to `value` inside `bareId`'s models.yml entry (only that entry —
  *  hosted siblings in the same registry are untouched). Returns the input unchanged when the
- *  entry or its contextWindow line is absent. Exported for tests. */
-export function rewriteModelsYmlContextWindow(ymlText, bareId, newWindow) {
+ *  entry or the field line is absent. Exported for tests. */
+export function rewriteModelsYmlField(ymlText, bareId, field, value) {
   const entry = modelsYmlEntrySpan(ymlText, bareId);
   if (!entry) return ymlText;
-  const rewritten = entry.text.replace(/^([ \t]*contextWindow:[ \t]*)\d+/m, `$1${newWindow}`);
+  const rewritten = entry.text.replace(new RegExp(`^([ \\t]*${field}:[ \\t]*)\\d+`, 'm'), `$1${value}`);
   return ymlText.slice(0, entry.start) + rewritten + ymlText.slice(entry.end);
+}
+export const rewriteModelsYmlContextWindow = (ymlText, bareId, newWindow) => rewriteModelsYmlField(ymlText, bareId, 'contextWindow', newWindow);
+
+/** Per-hop context doors MIRROR (deterministic-context-carry P-006, plan D-007) — canonical
+ *  TS lives in packages/operator-core/lib/context-doors.ts (plain .mjs cannot import it; same
+ *  lockstep rule as OMP_LOCAL_MODEL_PREFIXES / MAINTENANCE_SUMMARIZE_PATH). Only the two
+ *  pieces the launcher consumes are mirrored: maxTurn and the OUTPUT door (the max_tokens
+ *  request param — enforcement leg (a); the results/injections doors are operator-core's).
+ *  Exported for tests. */
+export function computeMaxTurnTokens(effectiveWindow) {
+  const w = Number(effectiveWindow);
+  if (!Number.isFinite(w) || w <= 0) return 8000;
+  return Math.min(15000, Math.max(8000, Math.floor(w / 26)));
+}
+export function computeOutputDoorTokens(effectiveWindow) {
+  return Math.floor(computeMaxTurnTokens(effectiveWindow) * 0.5);
 }
 
 /** The [start,end) span of `bareId`'s list entry in a models.yml: from its `- id:` line up to the
@@ -1691,10 +1708,11 @@ function modelsYmlEntrySpan(ymlText, bareId) {
   return null;
 }
 
-/** Set `contextWindow` to `newWindow` on every models.json record whose `id` is `bareId`
- *  (a JSON parse/stringify — models.json is machine-written; no comment/format concerns).
- *  Returns the input unchanged on any parse failure. Exported for tests. */
-export function rewriteModelsJsonContextWindow(jsonText, bareId, newWindow) {
+/** Set numeric `fields` on every models.json record whose `id` is `bareId` (a JSON
+ *  parse/stringify — models.json is machine-written; no comment/format concerns). Only fields
+ *  the record already carries as numbers are touched. Returns the input unchanged on any
+ *  parse failure. Exported for tests. */
+export function rewriteModelsJsonFields(jsonText, bareId, fields) {
   try {
     const root = JSON.parse(jsonText);
     let touched = false;
@@ -1702,9 +1720,13 @@ export function rewriteModelsJsonContextWindow(jsonText, bareId, newWindow) {
       if (Array.isArray(node)) {
         for (const v of node) walk(v);
       } else if (node && typeof node === 'object') {
-        if (node.id === bareId && typeof node.contextWindow === 'number') {
-          node.contextWindow = newWindow;
-          touched = true;
+        if (node.id === bareId) {
+          for (const [k, v] of Object.entries(fields)) {
+            if (typeof node[k] === 'number' && typeof v === 'number') {
+              node[k] = v;
+              touched = true;
+            }
+          }
         }
         for (const v of Object.values(node)) walk(v);
       }
@@ -1715,6 +1737,7 @@ export function rewriteModelsJsonContextWindow(jsonText, bareId, newWindow) {
     return jsonText;
   }
 }
+export const rewriteModelsJsonContextWindow = (jsonText, bareId, newWindow) => rewriteModelsJsonFields(jsonText, bareId, { contextWindow: newWindow });
 
 /** The OMP session's DEFAULT model id (config.yml `modelRoles.default`), or null. Used to
  *  compute the model tier when the launch didn't pass an explicit --model. Exported for tests. */
@@ -1921,6 +1944,7 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     const bwNum = Number(backendWindow);
     const clampBare = Number.isFinite(bwNum) && bwNum > 0 && effModel ? bareOmpModelId(effModel) : '';
     let effectiveWindow = null;
+    let effectiveMaxTokens = null;
     for (const f of ['models.yml', 'models.json', 'models.db', 'auth.json', 'claude-bridge.json', 'config.json', 'SYSTEM.md']) {
       const s = join(srcAgent, f);
       if (!existsSync(s)) continue;
@@ -1935,11 +1959,21 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
           );
         }
         text = rewriteModelsYmlContextWindow(text, clampBare, effectiveWindow);
+        // Output door (P-006 enforcement leg (a)): maxTokens = the max_tokens request param
+        // omp sends per hop. min(existing, door) — the door only ever TIGHTENS a registry
+        // value, never raises one a smaller model deliberately set low.
+        const outputDoor = computeOutputDoorTokens(effectiveWindow);
+        const configuredMax = readModelsYmlField(text, clampBare, 'maxTokens');
+        effectiveMaxTokens = configuredMax ? Math.min(configuredMax, outputDoor) : outputDoor;
+        text = rewriteModelsYmlField(text, clampBare, 'maxTokens', effectiveMaxTokens);
+        console.error(`psu: per-hop doors for ${clampBare}: maxTurn ${computeMaxTurnTokens(effectiveWindow)} → output door (max_tokens) ${effectiveMaxTokens} at effectiveWindow ${effectiveWindow}.`);
         writeFileSync(join(dstAgent, f), text, { mode: 0o600 });
         continue;
       }
       if (clampBare && f === 'models.json' && effectiveWindow) {
-        const text = rewriteModelsJsonContextWindow(readFileSync(s, 'utf8'), clampBare, effectiveWindow);
+        const fields = { contextWindow: effectiveWindow };
+        if (effectiveMaxTokens) fields.maxTokens = effectiveMaxTokens;
+        const text = rewriteModelsJsonFields(readFileSync(s, 'utf8'), clampBare, fields);
         writeFileSync(join(dstAgent, f), text, { mode: 0o600 });
         continue;
       }
