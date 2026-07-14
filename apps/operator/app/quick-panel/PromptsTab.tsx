@@ -510,7 +510,6 @@ function NodeTitleInput({
 // ---------------------------------------------------------------------------
 
 function OutlineRow({
-  visible,
   row,
   depth,
   hasKids,
@@ -518,11 +517,11 @@ function OutlineRow({
   dragging,
   dropLine,
   canDrag,
+  onSelect,
   onToggleCollapse,
   onZoom,
   children,
 }: {
-  visible: boolean;
   row: Row;
   depth: number;
   hasKids: boolean;
@@ -530,11 +529,12 @@ function OutlineRow({
   dragging: boolean;
   dropLine: { depth: number; edge: 'above' | 'below' } | null;
   canDrag: boolean;
+  onSelect: () => void;
   onToggleCollapse: () => void;
   onZoom: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
-  const { setNodeRef: setDropRef } = useDroppable({ id: row.id, disabled: !visible });
+  const { setNodeRef: setDropRef } = useDroppable({ id: row.id });
   const {
     setNodeRef: setDragRef,
     listeners,
@@ -552,6 +552,7 @@ function OutlineRow({
         done ? ' done' : ''
       }${dragging ? ' dragsrc' : ''}`}
       style={{ paddingLeft: ROW_BASE_PX + depth * INDENT_PX }}
+      onClick={onSelect}
     >
       {dropLine && (
         <span
@@ -1130,8 +1131,8 @@ export default function PromptsTab() {
             {zoomRow && (
               <div className="pc-qp__zoomhead">
                 <input
+                  key={zoomRow.id}
                   className="pc-qp__zoomtitle"
-                  value={undefined}
                   defaultValue={zoomRow.title ?? ''}
                   placeholder={zoomRow.name}
                   aria-label="Zoomed node title"
@@ -1154,6 +1155,7 @@ export default function PromptsTab() {
                     row={zoomRow}
                     autoFocus={pendingFocus?.id === `note:${zoomRow.id}`}
                     onFocused={clearPendingFocus}
+                    onOpen={() => setNoteOpen(zoomRow.id)}
                     onSave={(next) => saveBody(zoomRow, next)}
                     onEscape={() => setNoteOpen(null)}
                   />
@@ -1184,7 +1186,6 @@ export default function PromptsTab() {
               return (
                 <div key={row.id} className="pc-qp__rowgroup">
                   <OutlineRow
-                    visible
                     row={row}
                     depth={depth}
                     hasKids={hasKids}
@@ -1192,6 +1193,7 @@ export default function PromptsTab() {
                     dragging={dragActive === row.id}
                     dropLine={dropLine}
                     canDrag={canDrag}
+                    onSelect={() => void setSel(row.id)}
                     onToggleCollapse={() => toggleCollapse(row)}
                     onZoom={() => zoomIn(row.id)}
                   >
@@ -1248,6 +1250,7 @@ export default function PromptsTab() {
                         row={row}
                         autoFocus={pendingFocus?.id === `note:${row.id}`}
                         onFocused={clearPendingFocus}
+                        onOpen={() => setNoteOpen(row.id)}
                         onSave={(next) => saveBody(row, next)}
                         onEscape={() => {
                           setNoteOpen(null);
