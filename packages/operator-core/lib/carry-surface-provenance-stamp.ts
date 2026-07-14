@@ -98,6 +98,9 @@ export async function stampCarrySurfaceProvenance(
  *  stamp. Both absent on the common clean case. */
 export interface CarryProvenanceFields {
   provenanceLint?: NonNullable<CarryProvenanceStamp['lint']>;
+  /** P-015: owner-blocking-question prose that should be a coord:ask-owner
+   *  record cited as [ask:<conversation_id>]. */
+  typedSlotLint?: NonNullable<CarryProvenanceStamp['slotLint']>;
   turnProvenance?: {
     refs?: TurnRefVerdict[];
     writtenDuring?: CurrentTurnStamp;
@@ -112,6 +115,7 @@ export async function carryProvenanceFields(
   if (!stamp) return {};
   const out: CarryProvenanceFields = {};
   if (stamp.lint) out.provenanceLint = stamp.lint;
+  if (stamp.slotLint) out.typedSlotLint = stamp.slotLint;
   if (stamp.refs || stamp.writtenDuring) {
     out.turnProvenance = {
       ...(stamp.refs ? { refs: stamp.refs } : {}),

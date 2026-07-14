@@ -44,6 +44,27 @@ export function truncationField(
   };
 }
 
+/**
+ * P-015 (deterministic-context-carry) — the DEAD-END fact slot. A tried-and-
+ * failed approach recorded as ordinary prose ("the FS-watch route didn't work")
+ * reads as narrative and gets re-tried by successors; typed as a dead-end slot
+ * it is machine-greppable (key LIKE 'dead-end:%') and renders unmistakably in
+ * every fold. Deliberately encoded in the key + body (no schema change): every
+ * existing delivery surface (orient/brief/dossier fact folds) renders it
+ * correctly with zero renderer changes.
+ */
+export const DEAD_END_KEY_PREFIX = 'dead-end:';
+export const DEAD_END_BODY_PREFIX = '⛔ DEAD END — do not retry: ';
+
+/** PURE: normalize a slot:'dead-end' assert's key/body onto the slot encoding.
+ *  Idempotent — an already-prefixed key/body is left alone (a re-assert of the
+ *  same fact must hit the same upsert key and not stack markers). */
+export function normalizeDeadEndSlot(key: string, body: string): { key: string; body: string } {
+  const k = key.toLowerCase().startsWith(DEAD_END_KEY_PREFIX) ? key : `${DEAD_END_KEY_PREFIX}${key}`;
+  const b = body.startsWith(DEAD_END_BODY_PREFIX) ? body : `${DEAD_END_BODY_PREFIX}${body}`;
+  return { key: k, body: b };
+}
+
 export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
@@ -73,6 +94,7 @@ export default defineTool({
     // write 7×/14d; truncate-not-reject preserves the fact, '…' makes it visible).
     body: z.string().min(1).max(4000).describe(`The conclusion — stored truncated to ${FACT_BODY_MAX_CHARS} chars (write tight conclusions, not documents).`),
     sourceRef: z.string().max(200).optional().describe('Anchor that proved it. A TYPED ref — msg:<id>, wi:<id>/WI-/EI- id, or "owner-turn" (the human turn you are answering) — is PLATFORM-VERIFIED at assert time and folds with the verified verbatim quote; anything else (plan slug, prose) stays a plain anchor.'),
+    slot: z.enum(['dead-end']).optional().describe("Typed slot (P-015). 'dead-end' = a tried-and-failed approach, recorded so successors never re-try it: the key is normalized under 'dead-end:' and the body rendered with the ⛔ DEAD END marker in every future fold. State the approach AND why it failed; pair with sourceRef to anchor the evidence."),
     audienceScope: z.string().max(160).optional().describe('Restrict WHO receives this fact in folds (v1 grammar: "fleet:<slug>") — it then folds ONLY into orients of that fleet\'s members. Omit = every reader of the scope. Orthogonal to `scope` (what the fact is about). facts:list still shows it to everyone (delivery relevance, not secrecy).'),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
@@ -111,11 +133,14 @@ export default defineTool({
         sourceProvenance = null;
       }
     }
+    // P-015 dead-end slot: normalize key/body onto the slot encoding (idempotent).
+    const slotted =
+      args.slot === 'dead-end' ? normalizeDeadEndSlot(args.key, args.body) : { key: args.key, body: args.body };
     const fact = await assertFact({
       scope: args.scope,
       scopeRef: scopeRef ?? null,
-      key: args.key,
-      body: args.body,
+      key: slotted.key,
+      body: slotted.body,
       sourceRef: args.sourceRef ?? null,
       audienceScope: args.audienceScope ?? null,
       sourceProvenance,
@@ -126,7 +151,7 @@ export default defineTool({
     });
     // WI-3801 lint + P-014 turn-ref verification/origin stamp — warn-only,
     // no fields on the common clean case.
-    const provenanceFields = await carryProvenanceFields(args.body, identity.ownerId);
+    const provenanceFields = await carryProvenanceFields(slotted.body, identity.ownerId);
     // EI-10952: a body over the cap is TRUNCATED, not rejected (P-007 — the hard
     // reject cost 7 whole facts in 14d, so truncate-not-reject stays). But the
     // caller was never TOLD: the response was a clean `ok:true` and the fact
@@ -134,7 +159,7 @@ export default defineTool({
     // are BINDING context, so a silently-truncated fact is not a clipped note —
     // it is a mid-sentence INSTRUCTION presented as complete, to every future
     // agent, until someone retracts it. Keep the write; stop calling it clean.
-    const truncation = truncationField(args.body, fact.body);
+    const truncation = truncationField(slotted.body, fact.body);
     return {
       content: [
         {
