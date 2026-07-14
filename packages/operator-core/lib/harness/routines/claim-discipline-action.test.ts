@@ -8,6 +8,7 @@ import {
   filterStoreBackedTargets,
   filterParkedTargets,
   filterHealthyLoopTargets,
+  filterDrainedTargets,
   storeExistsKey,
 } from './claim-discipline-action';
 import type { PresenceRecord } from '@papercusp/coordination/presence';
@@ -227,5 +228,39 @@ describe('filterHealthyLoopTargets — P-010 agent-operability (EI-11402)', () =
     const { keep, skippedLoopOwned } = filterHealthyLoopTargets([t('a1')], new Set());
     expect(keep).toHaveLength(1);
     expect(skippedLoopOwned).toEqual([]);
+  });
+});
+
+describe('filterDrainedTargets — EI-11881 claim-discipline recurrence guard', () => {
+  const now = Date.parse('2026-07-14T04:00:00.000Z');
+  const t = (agentId: string) => ({ agentId, declaredPlanSlug: 'plan-a' });
+
+  it('suppresses a member after a recent authoritative drain, but re-opens after the signal ages out', () => {
+    const targets = [t('drained'), t('ordinary')];
+    const drainedAt = new Map([['drained', '2026-07-14T03:58:00.000Z']]);
+    const declaredAt = new Map([
+      ['drained', '2026-07-14T03:50:00.000Z'],
+      ['ordinary', '2026-07-14T03:50:00.000Z'],
+    ]);
+
+    const recent = filterDrainedTargets(targets, drainedAt, declaredAt, now);
+    expect(recent.keep.map((x) => x.agentId)).toEqual(['ordinary']);
+    expect(recent.skippedDrained).toEqual(['drained']);
+
+    const agedOut = filterDrainedTargets(targets, new Map([['drained', '2026-07-14T03:49:00.000Z']]), declaredAt, now);
+    expect(agedOut.keep.map((x) => x.agentId)).toEqual(['drained', 'ordinary']);
+    expect(agedOut.skippedDrained).toEqual([]);
+  });
+
+  it('does not suppress a new declaration made after an older drain, and fails open on missing timestamps', () => {
+    const targets = [t('new-wave'), t('unknown')];
+    const drainedAt = new Map([['new-wave', '2026-07-14T03:55:00.000Z']]);
+    const declaredAt = new Map([
+      ['new-wave', '2026-07-14T03:59:00.000Z'],
+      ['unknown', null],
+    ]);
+    const result = filterDrainedTargets(targets, drainedAt, declaredAt, now);
+    expect(result.keep.map((x) => x.agentId)).toEqual(['new-wave', 'unknown']);
+    expect(result.skippedDrained).toEqual([]);
   });
 });

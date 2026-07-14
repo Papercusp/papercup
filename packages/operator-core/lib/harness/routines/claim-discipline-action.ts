@@ -28,7 +28,7 @@ import { listPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { planSlugExistsInWorkspace } from '../../agent-tools/plans/source';
-import { listParkedAwaitsForSubscribers } from '../../events/await/store';
+import { inspectEventKey, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { getLoopStatuses } from './loop';
 
 export const CLAIM_WATCH_OWNER = 'claim-discipline-watch';
@@ -41,6 +41,10 @@ const WATCH_IDENTITY: AgentIdentity = {
 };
 
 export const DEFAULT_THROTTLE_MS = 60 * 60 * 1000; // 1h between nudges per agent
+/** A fleet-drained event is a transition signal, not permanent proof that a
+ * declaration is stale. Keep the suppression bounded to the liveness window;
+ * a later plan wave with the same slug must be eligible for a real nudge. */
+export const DRAIN_SIGNAL_FRESH_MS = STALE_MS;
 
 /**
  * Select live presence rows that are ALIVE and have a DECLARED PLAN.
@@ -178,6 +182,48 @@ export function filterHealthyLoopTargets<T extends { agentId: string }>(
   return { keep, skippedLoopOwned };
 }
 
+/**
+ * EI-11881: a fleet member can legitimately finish its last scoped item, get a
+ * windDown miss, and retain its plan declaration until its next turn clears it.
+ * The claim watch must not call that authoritative drained state a discipline
+ * miss. Suppress only a RECENT drain emitted after the declaration; fail open
+ * for missing/unparseable timestamps so a datastore/read race never hides a
+ * genuine nudge. The pure boundary is recurrence-tested below.
+ */
+export function filterDrainedTargets<T extends { agentId: string }>(
+  targets: readonly T[],
+  drainedAtByAgent: ReadonlyMap<string, string>,
+  intentDeclaredAtByAgent: ReadonlyMap<string, string | null>,
+  nowMs: number = Date.now(),
+): { keep: T[]; skippedDrained: string[] } {
+  const keep: T[] = [];
+  const skippedDrained: string[] = [];
+  for (const target of targets) {
+    const drainedAt = drainedAtByAgent.get(target.agentId);
+    const drainedMs = drainedAt ? Date.parse(drainedAt) : NaN;
+    const declaredAt = intentDeclaredAtByAgent.get(target.agentId);
+    const declaredMs = declaredAt ? Date.parse(declaredAt) : NaN;
+    const isRecentDrain = Number.isFinite(drainedMs) && nowMs >= drainedMs && nowMs - drainedMs <= DRAIN_SIGNAL_FRESH_MS;
+    const drainFollowsDeclaration = Number.isFinite(declaredMs) && drainedMs >= declaredMs;
+    if (isRecentDrain && drainFollowsDeclaration) {
+      skippedDrained.push(target.agentId);
+      continue;
+    }
+    keep.push(target);
+  }
+  return { keep, skippedDrained };
+}
+
+function latestEventFireAt(history: Awaited<ReturnType<typeof inspectEventKey>>): string | null {
+  const candidates = [
+    ...history.announcements.map((row) => row.firedAt),
+    ...history.waiters.map((row) => row.firedAt),
+    ...history.deliveries.map((row) => row.createdAt),
+  ].filter((value): value is string => !!value);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((latest, value) => (Date.parse(value) > Date.parse(latest) ? value : latest));
+}
+
 /** The stable summary prefix — also the outbox-throttle marker. */
 export const NUDGE_PREFIX = 'claim-discipline:';
 
@@ -269,12 +315,54 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     existsByKey,
   );
 
+  // EI-11881: scheduler:get_next emits fleet:drained:<slug> after a scoped
+  // miss when the fleet is genuinely idle. Read that durable event history and
+  // suppress only targets whose current declaration predates a fresh signal.
+  // Missing history or a read failure is deliberately fail-open.
+  const fleetByAgent = new Map<string, string>();
+  for (const row of assignmentRows) {
+    if (row.agentId && row.fleetSlug && !fleetByAgent.has(row.agentId)) {
+      fleetByAgent.set(row.agentId, row.fleetSlug);
+    }
+  }
+  const drainedAtByFleet = new Map<string, string>();
+  const fleetSlugs = new Set(
+    storeBacked.flatMap((target) => {
+      const fleet = fleetByAgent.get(target.agentId);
+      return fleet ? [fleet] : [];
+    }),
+  );
+  await Promise.all(
+    Array.from(fleetSlugs).map(async (fleetSlug) => {
+      try {
+        const firedAt = latestEventFireAt(await inspectEventKey(`fleet:drained:${fleetSlug}`));
+        if (firedAt) drainedAtByFleet.set(fleetSlug, firedAt);
+      } catch {
+        // Fail-open: event history is a detector hint, never a reason to hide a nudge.
+      }
+    }),
+  );
+  const drainedAtByAgent = new Map<string, string>();
+  for (const target of storeBacked) {
+    const fleet = fleetByAgent.get(target.agentId);
+    const drainedAt = fleet ? drainedAtByFleet.get(fleet) : undefined;
+    if (drainedAt) drainedAtByAgent.set(target.agentId, drainedAt);
+  }
+  const intentDeclaredAtByAgent = new Map(
+    presenceRows.map((row) => [row.ownerId, row.intentDeclaredAt] as const),
+  );
+  const { keep: notDrained, skippedDrained } = filterDrainedTargets(
+    storeBacked,
+    drainedAtByAgent,
+    intentDeclaredAtByAgent,
+  );
+
   // P-002 (fleet-member-dx, EI-9014): drop targets deliberately PARKED on a real
   // events:await — their unclaimed state is a bench, not a discipline miss. A
   // failed read yields an empty map = nobody suppressed (fail-open to nudging).
   let parkedKeysByAgent = new Map<string, string[]>();
   try {
-    const parkedRows = await listParkedAwaitsForSubscribers(storeBacked.map((t) => t.agentId));
+    const parkedRows = await listParkedAwaitsForSubscribers(notDrained.map((t) => t.agentId));
     for (const r of parkedRows) {
       const list = parkedKeysByAgent.get(r.subscriberId) ?? [];
       list.push(r.eventKey);
@@ -283,7 +371,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   } catch {
     parkedKeysByAgent = new Map();
   }
-  const { keep: notParked, skippedParked } = filterParkedTargets(storeBacked, parkedKeysByAgent);
+  const { keep: notParked, skippedParked } = filterParkedTargets(notDrained, parkedKeysByAgent);
 
   // P-010: suppress the second legitimate-idle shape — an active, healthy
   // loop-owned monitor between wakes. One batch query covers all candidates;
@@ -320,6 +408,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
             .map((s) => `${s.agentId.slice(0, 8)}→${s.parkedOn}`)
             .join(', ')})`
         : '') +
+      (skippedDrained.length ? `, ${skippedDrained.length} skipped (recent fleet-drained signal)` : '') +
       (skippedLoopOwned.length
         ? `, ${skippedLoopOwned.length} skipped (healthy loop-owned monitor)`
         : '') +
