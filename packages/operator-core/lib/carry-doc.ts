@@ -417,6 +417,77 @@ export function gateOpenOwnerQuestion(cont: CarryDocContinuation): OpenOwnerQues
   };
 }
 
+// ── Constant budget B + aging ladder (P-010's sibling, P-011; plan D-004/D-001) ──
+
+/**
+ * The carry document's total budget is a CONSTANT fraction of the window
+ * (~10%, plan P-011) — the whole point is that it is INVARIANT IN N: it never
+ * grows with the number of turns/hops/session length. It can be, because every
+ * slot is individually bounded by a constant (a snapshot is O(1); a sliding
+ * window and a top-K store are O(K)); no slot is append-only-in-context, so the
+ * SUM is O(constant). The fraction, not a fixed char count, honors D-001 (derive
+ * from the actual limit, never adapt from history).
+ */
+export const CARRY_DOC_BUDGET_FRACTION = 0.1;
+
+/**
+ * The budget B in CHARACTERS for an effective window (in TOKENS). Floored at one
+ * coherent verbatim tail so a small window never trims below a usable handoff;
+ * degenerate input falls back to that same floor. Depends only on the window —
+ * invariant in N by construction.
+ */
+export function carryDocBudgetChars(effectiveWindowTokens: number): number {
+  const floor = CARRY_DOC_MAX_TAIL_TURNS * TAIL_TURN_CAP;
+  const w = Number(effectiveWindowTokens);
+  if (!Number.isFinite(w) || w <= 0) return floor;
+  return Math.max(floor, Math.floor(w * CARRY_DOC_BUDGET_FRACTION * CHARS_PER_TOKEN_ESTIMATE));
+}
+
+/** The three admissible bound-kinds for a carry slot (plus 'derived', a function
+ *  of another bounded slot). The audit's whole job is that EVERY slot maps to one
+ *  of these — never 'append-only-in-context' (unbounded growth with N). */
+export type CarryDocSlotKind = 'snapshot' | 'sliding-window' | 'top-k' | 'derived';
+
+export interface CarryDocSlotAudit {
+  slot: string;
+  kind: CarryDocSlotKind;
+  /** The constant that bounds it — the audit evidence. */
+  boundedBy: string;
+}
+
+/**
+ * The executable slot audit (P-011): every carry slot classified by its bound.
+ * A test iterates this and asserts each `kind` is one of the admissible bounded
+ * kinds — so "reject anything append-only-in-context" is enforced by construction,
+ * not by review. The embedded standing brief carries carry-brief's own top-K legs
+ * (held items ≤6, facts ≤8, awaits ≤8, bounded directives/walls); its only
+ * unbounded dimension is per-ITEM verbatim text (a held checkpoint is large), which
+ * the budget fit below drops-to-pointer — and those checkpoints are re-injected
+ * mechanically on the next wake/pickup, so the pointer loses nothing.
+ */
+export const CARRY_DOC_SLOTS: readonly CarryDocSlotAudit[] = Object.freeze([
+  { slot: 'identity', kind: 'snapshot', boundedBy: 'fixed identity fields' },
+  { slot: 'sessionMode', kind: 'snapshot', boundedBy: 'active modes + loop flags' },
+  { slot: 'planItems', kind: 'top-k', boundedBy: `CARRY_DOC_MAX_PLAN_ITEMS=${CARRY_DOC_MAX_PLAN_ITEMS}` },
+  { slot: 'asks', kind: 'top-k', boundedBy: `CARRY_DOC_MAX_ASKS=${CARRY_DOC_MAX_ASKS}` },
+  { slot: 'tail', kind: 'sliding-window', boundedBy: `last ${CARRY_DOC_MAX_TAIL_TURNS} turns × ${TAIL_TURN_CAP} chars` },
+  { slot: 'continuation', kind: 'derived', boundedBy: 'derived from the tail (preview capped)' },
+  { slot: 'brief', kind: 'top-k', boundedBy: 'carry-brief top-K legs; per-item text bounded by the budget fit' },
+]);
+
+/**
+ * The AGING LADDER (P-011). When the assembled document exceeds B, sheddable
+ * sections drop-to-pointer (D-004 — never abstractive summary) in a fixed order.
+ * `keep` is the SPEND order (most load-bearing gets budget first); `shed` is its
+ * reverse. Ordering rationale: the standing brief sheds FIRST because its held
+ * checkpoints/facts/walls are re-injected mechanically on the next wake/pickup —
+ * a pointer there loses the least; the tail then ages (oldest turns drop first)
+ * before it too becomes a pointer; the small, high-value asks/plan-state slots
+ * spend first and almost always survive. The always-keep head/continuation/
+ * self-recall are the successor's minimum viable orientation and never shed.
+ */
+export const CARRY_DOC_SHED_LADDER = Object.freeze(['brief', 'tail', 'planState', 'asks'] as const);
+
 // ── Render (pure) ──────────────────────────────────────────────────────────────
 
 function cap(s: string, max: number): string {
@@ -539,31 +610,122 @@ function renderTail(tail: CarryDocTailTurn[], cont: CarryDocContinuation): strin
   return `## Verbatim tail (most recent turns; tool outputs are pointers)\n${blocks.join('\n\n')}`;
 }
 
+export interface RenderCarryDocOpts {
+  /** Hard char budget for the whole document (the P-011 constant budget B). When
+   *  set AND the full render exceeds it, the aging ladder ({@link CARRY_DOC_SHED_LADDER})
+   *  sheds sections drop-to-pointer (D-004 — never abstractive summary): the tail
+   *  ages oldest-turn-first, the standing brief and other sheddable slots become
+   *  one-line pointers, until the document fits. Omitted ⇒ full render (unchanged).
+   *  Derive it from the effective window with {@link carryDocBudgetChars}. */
+  budgetChars?: number;
+}
+
+const SECTION_SEP = '\n\n';
+
+/** The drop-to-pointer stand-ins the aging ladder swaps a full section for. Each
+ *  keeps its section HEADER (so the successor sees the slot existed) + a one-line
+ *  recovery route — the shed content is never summarized, only pointered (D-004). */
+const SHED_POINTERS = Object.freeze({
+  brief:
+    '## Standing carry\n(dropped to fit the carry budget — your held checkpoints, facts, walls and ' +
+    'directives are re-injected mechanically on your next wake/pickup; recover the rest via the self-recall pointer below.)',
+  tail:
+    '## Verbatim tail (most recent turns; tool outputs are pointers)\n(dropped to fit the carry budget — ' +
+    'recover recent turns via the self-recall pointer below.)',
+  planState:
+    '## Plan state (your claimed / in-flight items)\n(dropped to fit the carry budget — re-read via coord:orient { afterCompaction: true }.)',
+  asks:
+    '## Open owner asks (BLOCKING — do not self-answer)\n(dropped to fit the carry budget — re-read open asks via coord:orient.)',
+});
+
 /**
- * Render the full deterministic carry document as text. Pure — every input is
- * already assembled + bounded by {@link buildCarryDoc}. Ordered most-load-bearing
+ * Render the deterministic carry document as text. Pure — every input is already
+ * assembled + bounded by {@link buildCarryDoc}. Fixed order, most-load-bearing
  * first: re-orient banner → identity → session mode → the standing brief → plan
  * state → asks → continuation (last-turn handling) → verbatim tail → self-recall.
  * The tail sits at the document END (P-010) — most recent turns closest to where
  * the successor begins — with the continuation block just before it framing how to
  * read it, and the self-recall pointer as the trailing one-line recovery hint.
+ *
+ * With `opts.budgetChars` (P-011) the render is held to a constant budget B by the
+ * aging ladder; without it, the full document is returned unchanged.
  */
-export function renderCarryDoc(doc: CarryDoc, now: number = Date.now()): string {
-  const sections: string[] = [
+export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: RenderCarryDocOpts = {}): string {
+  const head = [
     '# Carry document (deterministic — assembled from the DB, no LLM)',
     `> ${REORIENT_BANNER}`,
     renderIdentity(doc.identity),
     renderSessionMode(doc.sessionMode),
   ];
   const briefBody = renderCarryBriefText(doc.brief, now).trim();
-  if (briefBody) sections.push(`## Standing carry\n${briefBody}`);
-  const plan = renderPlanState(doc.planItems);
-  if (plan) sections.push(plan);
-  const asks = renderAsks(doc.asks);
-  if (asks) sections.push(asks);
-  sections.push(renderContinuation(doc.continuation));
-  const tail = renderTail(doc.tail, doc.continuation);
-  if (tail) sections.push(tail);
-  sections.push(`## Self-recall\n${SELF_RECALL_POINTER}`);
-  return sections.join('\n\n');
+  const briefText = briefBody ? `## Standing carry\n${briefBody}` : null;
+  const planText = renderPlanState(doc.planItems);
+  const asksText = renderAsks(doc.asks);
+  const continuationText = renderContinuation(doc.continuation);
+  const selfRecall = `## Self-recall\n${SELF_RECALL_POINTER}`;
+
+  // Fixed render order; a null slot is simply omitted. The always-keep sections
+  // (head, continuation, self-recall) are the successor's minimum viable
+  // orientation and are never shed.
+  const assemble = (brief: string | null, plan: string | null, asks: string | null, tail: string | null): string => {
+    const s = [...head];
+    if (brief) s.push(brief);
+    if (plan) s.push(plan);
+    if (asks) s.push(asks);
+    s.push(continuationText);
+    if (tail) s.push(tail);
+    s.push(selfRecall);
+    return s.join(SECTION_SEP);
+  };
+
+  const fullTail = renderTail(doc.tail, doc.continuation);
+  const full = assemble(briefText, planText, asksText, fullTail);
+  if (!opts.budgetChars || full.length <= opts.budgetChars) return full;
+
+  // Over budget: spend B across the sheddable slots in KEEP order (the reverse of
+  // the shed ladder — most load-bearing gets budget first), charging each included
+  // section its separator + length. The tail ages (newest turns kept) before it too
+  // drops to a pointer.
+  const alwaysLen = [...head, continuationText, selfRecall].join(SECTION_SEP).length;
+  let remaining = opts.budgetChars - alwaysLen;
+
+  const chargeOrPointer = (text: string | null, pointer: string): string | null => {
+    if (text == null) return null;
+    if (SECTION_SEP.length + text.length <= remaining) {
+      remaining -= SECTION_SEP.length + text.length;
+      return text;
+    }
+    if (SECTION_SEP.length + pointer.length <= remaining) {
+      remaining -= SECTION_SEP.length + pointer.length;
+      return pointer;
+    }
+    return null;
+  };
+
+  // Spend order: asks, plan-state, tail, brief (brief last ⇒ it sheds first).
+  const asksOut = chargeOrPointer(asksText, SHED_POINTERS.asks);
+  const planOut = chargeOrPointer(planText, SHED_POINTERS.planState);
+
+  let tailOut: string | null = null;
+  if (fullTail) {
+    if (SECTION_SEP.length + fullTail.length <= remaining) {
+      remaining -= SECTION_SEP.length + fullTail.length;
+      tailOut = fullTail;
+    } else {
+      // Age the sliding window: keep the NEWEST turns that fit.
+      for (let k = doc.tail.length - 1; k >= 1; k -= 1) {
+        const aged = renderTail(doc.tail.slice(-k), doc.continuation);
+        if (aged && SECTION_SEP.length + aged.length <= remaining) {
+          remaining -= SECTION_SEP.length + aged.length;
+          tailOut = aged;
+          break;
+        }
+      }
+      if (!tailOut) tailOut = chargeOrPointer(SHED_POINTERS.tail, SHED_POINTERS.tail);
+    }
+  }
+
+  const briefOut = chargeOrPointer(briefText, SHED_POINTERS.brief);
+
+  return assemble(briefOut, planOut, asksOut, tailOut);
 }

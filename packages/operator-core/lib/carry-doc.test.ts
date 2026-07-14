@@ -11,6 +11,10 @@ import {
   renderCarryDoc,
   deriveContinuation,
   gateOpenOwnerQuestion,
+  carryDocBudgetChars,
+  CARRY_DOC_BUDGET_FRACTION,
+  CARRY_DOC_SLOTS,
+  CARRY_DOC_SHED_LADDER,
   SELF_RECALL_POINTER,
   REORIENT_BANNER,
   CARRY_DOC_MAX_TAIL_TURNS,
@@ -20,6 +24,7 @@ import {
   type CarryDocAsk,
   type CarryDocTailTurn,
   type CarryDocContinuation,
+  type CarryDocSlotKind,
 } from './carry-doc';
 
 const NOW = 1_800_000_000_000;
