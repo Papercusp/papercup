@@ -258,6 +258,10 @@ export async function runBlenderRubricDrill(args: {
     createdBy: DRILL_ACTOR,
     signalOrigin: 'drill',
     payload: {
+      // D-005: synthetic scorecards are observations, never generic work-queue items.
+      // Keep the lane marker alongside the rubric payload so scheduler self-selectors
+      // cannot pick the drill artifact as a bug.
+      lane: 'observation',
       observation: {
         rubricRef: DRILL_RUBRIC_REF,
         sourceHive,

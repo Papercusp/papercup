@@ -24,7 +24,7 @@ describe('release:checkpoint-run', () => {
       argv: [],
       logPath: '/tmp/papercup-green-checkpoint-manual.log',
     }));
-    vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
 
     const { default: tool } = await import('./checkpoint-run');
     const result = await tool.handler({}, MAKE_CTX());
@@ -41,7 +41,7 @@ describe('release:checkpoint-run', () => {
       logPath: '/tmp/papercup-green-checkpoint-manual.log',
       reason: 'systemd-run exited 1 (a manual checkpoint may already be running)',
     }));
-    vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
 
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
@@ -64,7 +64,7 @@ describe('release:checkpoint-run', () => {
         argv: [],
         logPath: '/tmp/papercup-green-checkpoint-manual.log',
       }));
-      vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
+      vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
 
       const { default: tool } = await import('./checkpoint-run');
       const b = parse((await tool.handler({}, MAKE_CTX(role))) as never);
@@ -102,10 +102,14 @@ describe('release:checkpoint-run', () => {
         candidate_stale: true,
         quiet_cut_sec: 240,
         started_at: '2026-07-02T10:44:43Z',
+        elapsed_sec: 8700, // OLD run (≫ REPLACE_STALE_MIN_AGE_SEC) — the EI-9672 wedged case
         eta_sec: 2100,
       },
     }));
-    vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+    }));
 
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
@@ -121,9 +125,47 @@ describe('release:checkpoint-run', () => {
       candidate_stale: true,
       quiet_cut_sec: 240,
       started_at: '2026-07-02T10:44:43Z',
+      elapsed_sec: 8700,
       eta_sec: 2100,
     });
-    expect(String(b.note)).toMatch(/older candidate|force:true/i);
+    expect(String(b.note)).toMatch(/replaceStale:true/);
+  });
+
+  // EI-11667 recurrence guard: a YOUNG stale run's note must NOT recommend replaceStale —
+  // that recommendation is exactly what induced the 2026-07-13 fleet replace-storm (four sus
+  // serially killing each other's runs; no verdict for 2h). Young-stale is NORMAL, not wedged.
+  it('a YOUNG stale run gets a wait-for-verdict note, never a replaceStale recommendation (EI-11667)', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: false,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      reason: 'already_running',
+      alreadyRunning: {
+        active: true,
+        unit: 'papercup-green-checkpoint-manual-1fxzuva',
+        candidate: '98817077fd79af9dfee00076a1c6e90445d268af',
+        current_head: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        current_candidate: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        candidate_stale: true,
+        quiet_cut_sec: 240,
+        started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+        elapsed_sec: 300, // 5 min — a healthy in-progress run on a busy tree
+        eta_sec: 10500,
+        replace_refused_young: true,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ replaceStale: true }, MAKE_CTX())) as never);
+
+    expect(b).toMatchObject({ ok: false, already_running: true, candidate_stale: true, replace_refused_young: true, elapsed_sec: 300 });
+    expect(String(b.note)).not.toMatch(/Pass replaceStale:true/);
+    expect(String(b.note)).toMatch(/Do NOT replace/i);
   });
 
   it('passes force:true through to the launch primitive', async () => {
@@ -133,7 +175,7 @@ describe('release:checkpoint-run', () => {
       argv: [],
       logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
     }));
-    vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
 
     const { default: tool } = await import('./checkpoint-run');
     await tool.handler({ force: true }, MAKE_CTX());

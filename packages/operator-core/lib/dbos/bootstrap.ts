@@ -350,6 +350,13 @@ export async function startDbos(): Promise<void> {
     // proxy). Kill-switch: PAPERCUSP_MCP_DARK_WATCHDOG='0'.
     const { startMcpDarkWatchdog } = await import('../system-health/mcp-dark-watchdog');
     startMcpDarkWatchdog(getOrgPg().sql);
+    // WI-4663: Codex 0.144+ can keep a live process + history.jsonl fresh while
+    // its rollout JSONL stops appending. Detect that silent transcript loss
+    // outside DBOS so a scheduler wedge cannot hide the alarm.
+    const { startCodexRolloutPersistenceWatchdog } = await import(
+      '../system-health/codex-rollout-persistence-watchdog'
+    );
+    startCodexRolloutPersistenceWatchdog(getOrgPg().sql);
     // Sibling (agent-managed-compaction P-009): caches each limit-setting session's
     // context-size estimate on coord_presence (feeds the coord:inbox usage signal, P-007)
     // and logs sessions that ran past their own compaction_limit. Kill-switch:

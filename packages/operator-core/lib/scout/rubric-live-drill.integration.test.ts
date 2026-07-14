@@ -75,5 +75,12 @@ describe('runBlenderRubricDrill — deployed production entry', () => {
     });
     expect(result.organicAfter).toEqual(result.organicBefore);
     expect(result.routedRefs[0]).toMatch(/^wi:EI-/);
+
+    const [scorecard] = await db.adminSql<{ lane: string | null }[]>`
+      SELECT payload->>'lane' AS lane
+        FROM harness_shared.work_items
+       WHERE feature_id = ${result.scorecardId}
+    `;
+    expect(scorecard?.lane).toBe('observation');
   }, 180_000);
 });

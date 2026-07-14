@@ -122,6 +122,11 @@ function collectArgs(
       const rec = asRecord(row);
       if (!rec) continue;
       add(out.items, rec.item ?? rec.itemId ?? rec.item_id ?? rec.id);
+      add(out.workspaces, rec.workspace ?? rec.workspaceId ?? rec.workspace_id);
+      add(out.fleets, rec.fleet ?? rec.fleetSlug ?? rec.fleet_slug);
+      add(out.plans, rec.plan ?? rec.planSlug ?? rec.plan_slug ?? rec.slug);
+      add(out.harnesses, rec.harness ?? rec.harnessSlug ?? rec.harness_slug);
+      add(out.resources, rec.resource ?? rec.resourceId ?? rec.resource_id ?? rec.name);
     }
   }
 }
@@ -238,6 +243,22 @@ export function recipeAuthorityMatches(
   );
 }
 
+/**
+ * Revalidate the bound set-valued identities against authoritative live state.
+ * The recommendation proof is caller-carried and therefore cannot itself prove
+ * that a plan/item/resource is still held by the reuser at execution time.
+ */
+export function recipeAuthorityMatchesLiveRefs(
+  descriptor: RecipeAuthorityDescriptor,
+  liveRefs: Partial<RecipeAuthorityRefs>,
+): boolean {
+  return (
+    hasAll(descriptor.refs.plans, liveRefs.plans ?? []) &&
+    hasAll(descriptor.refs.items, liveRefs.items ?? []) &&
+    hasAll(descriptor.refs.resources, liveRefs.resources ?? [])
+  );
+}
+
 export function recipeRevision(script: string, updatedAt: string): string {
   return createHash('sha256').update(updatedAt).update('\0').update(script).digest('hex');
 }
@@ -276,12 +297,25 @@ export async function validateRecipeAuthorityProof(input: {
   if (input.proof.revision !== recipeRevision(input.script, input.updatedAt)) {
     return { ok: false, error: 'authority_stale_revision' };
   }
-  const context = normalizeRecipeAuthorityContext({
-    ...input.proof.context,
-    ...(input.liveContext?.workspace ? { workspace: input.liveContext.workspace } : {}),
-    ...(input.liveContext?.fleet ? { fleet: input.liveContext.fleet } : {}),
-    ...(input.liveContext?.harness ? { harness: input.liveContext.harness } : {}),
-  });
-  if (!recipeAuthorityMatches(descriptor, context)) return { ok: false, error: 'authority_entity_mismatch' };
+  if (!recipeAuthorityMatches(descriptor, input.proof.context)) {
+    return { ok: false, error: 'authority_entity_mismatch' };
+  }
+  if (input.liveContext) {
+    // workspace/fleet/harness come from the dispatch context/presence store.
+    // Never fall back to the caller-carried proof when one is absent live: a
+    // fabricated fleet in a valid-looking proof must fail closed.
+    const scalarDescriptor: RecipeAuthorityDescriptor = {
+      ...descriptor,
+      refs: {
+        ...descriptor.refs,
+        plans: [],
+        items: [],
+        resources: [],
+      },
+    };
+    if (!recipeAuthorityMatches(scalarDescriptor, input.liveContext)) {
+      return { ok: false, error: 'authority_entity_mismatch' };
+    }
+  }
   return { ok: true, descriptor };
 }

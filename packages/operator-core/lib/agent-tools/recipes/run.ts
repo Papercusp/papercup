@@ -40,17 +40,59 @@ import { getRecipe, recordRecipeRun } from '../../code-recipes-store';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import {
+  recipeAuthorityMatchesLiveRefs,
   validateRecipeAuthorityProof,
+  type RecipeAuthorityRefs,
   type RecipeAuthorityProof,
 } from '../../recipe-authority';
-import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
+import { deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
+import { getTxPool } from '../locks/su-lock-store';
+import { readIdentity } from '../locks/identity';
 
 interface RunItem {
   id: string;
   dryRun?: boolean;
   timeoutSec?: number;
   authority?: RecipeAuthorityProof;
+}
+
+type LiveClaimRow = { plan_slug: string; harness_slug: string; item_id: string };
+type LiveWorkItemRow = { harness_slug: string; item_id: string };
+type LiveResourceRow = { resource: string };
+
+async function resolveLiveBoundRefs(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  ownerId: string,
+  coordinationDomain: string,
+): Promise<RecipeAuthorityRefs> {
+  const [claims, workItems, resources] = await Promise.all([
+    sql<LiveClaimRow[]>`
+      SELECT DISTINCT plan_slug, harness_slug, item_id
+        FROM harness_shared.plan_item_claims
+       WHERE owner = ${ownerId} AND expires_ts > clock_timestamp()`,
+    sql<LiveWorkItemRow[]>`
+      SELECT DISTINCT harness_slug, feature_id AS item_id
+        FROM harness_shared.work_items
+       WHERE taken_by = ${ownerId}
+         AND status <> ALL(ARRAY['done','resolved','deprecated','closed']::text[])`,
+    getTxPool()<LiveResourceRow[]>`
+      SELECT DISTINCT resource
+        FROM agent_resource_locks
+       WHERE coordination_domain = ${coordinationDomain}
+         AND owner = ${ownerId}
+         AND status = 'held'
+         AND expires_ts > clock_timestamp()`,
+  ]);
+  const unique = (values: string[]): string[] => [...new Set(values.filter(Boolean))].sort();
+  return {
+    workspaces: [],
+    fleets: [],
+    plans: unique(claims.map((row) => row.plan_slug)),
+    harnesses: unique([...claims, ...workItems].map((row) => row.harness_slug)),
+    items: unique([...claims, ...workItems].map((row) => row.item_id)),
+    resources: unique(resources.map((row) => row.resource)),
+  };
 }
 
 const authorityContextSchema = z.object({
@@ -146,10 +188,14 @@ export default defineTool({
     // Resolve the REUSER's identity ONCE (used by every per-recipe run-record).
     // Best-effort: a recipe run does not require an identity to execute.
     let ownerId: string | null = null;
+    let coordinationDomain: string | null = null;
     try {
-      ownerId = resolveAgentIdentity(ctx).ownerId;
+      const identity = readIdentity(ctx);
+      ownerId = identity.ownerId;
+      coordinationDomain = identity.coordinationDomain;
     } catch {
       ownerId = null;
+      coordinationDomain = null;
     }
     let liveFleet: string | null = null;
     try {
@@ -161,6 +207,12 @@ export default defineTool({
       workspace: workspaceId,
       ...(liveFleet ? { fleet: liveFleet } : {}),
       ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+    };
+    let liveBoundRefsPromise: Promise<RecipeAuthorityRefs> | null = null;
+    const liveBoundRefs = (): Promise<RecipeAuthorityRefs> | null => {
+      if (!ownerId || !coordinationDomain) return null;
+      liveBoundRefsPromise ??= resolveLiveBoundRefs(sql, ownerId, coordinationDomain);
+      return liveBoundRefsPromise;
     };
 
     const all = listAllProjectedTools();
@@ -186,6 +238,23 @@ export default defineTool({
         });
         if (!authority.ok) {
           return { ok: false, id: it.id, error: authority.error };
+        }
+        const needsLiveRefs =
+          authority.descriptor.refs.plans.length > 0 ||
+          authority.descriptor.refs.items.length > 0 ||
+          authority.descriptor.refs.resources.length > 0;
+        if (needsLiveRefs) {
+          const pendingRefs = liveBoundRefs();
+          if (!pendingRefs) return { ok: false, id: it.id, error: 'authority_live_context_unavailable' };
+          let refs: RecipeAuthorityRefs;
+          try {
+            refs = await pendingRefs;
+          } catch {
+            return { ok: false, id: it.id, error: 'authority_live_context_unavailable' };
+          }
+          if (!recipeAuthorityMatchesLiveRefs(authority.descriptor, refs)) {
+            return { ok: false, id: it.id, error: 'authority_entity_mismatch' };
+          }
         }
         const dryRun = it.dryRun ?? false;
         const result = await runToolOrchestration(recipe.script, {

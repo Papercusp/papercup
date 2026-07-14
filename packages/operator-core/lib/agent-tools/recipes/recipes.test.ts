@@ -22,15 +22,21 @@ import { recipeRevision } from '../../recipe-authority';
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
 // we can capture the `allowed` set the handler builds for the facade.
-const { getRecipeMock, recordRecipeRunMock, runOrchestrationMock } = vi.hoisted(() => ({
+const { getRecipeMock, recordRecipeRunMock, runOrchestrationMock, orgSqlMock, resourceSqlMock } = vi.hoisted(() => ({
   getRecipeMock: vi.fn(),
   recordRecipeRunMock: vi.fn(async () => {}),
   runOrchestrationMock: vi.fn(async () => ({ ok: true, summary: { done: true }, logs: [], dryRun: false, plannedMutations: [] })),
+  orgSqlMock: vi.fn(),
+  resourceSqlMock: vi.fn(),
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  getOrgPg: () => ({ sql: {} }),
+  getOrgPg: () => ({ sql: orgSqlMock }),
+}));
+vi.mock('../locks/su-lock-store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getTxPool: () => resourceSqlMock,
 }));
 vi.mock('../../code-recipes-store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -107,6 +113,17 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     getRecipeMock.mockReset();
     recordRecipeRunMock.mockClear();
     runOrchestrationMock.mockClear();
+    orgSqlMock.mockReset();
+    resourceSqlMock.mockReset();
+    orgSqlMock.mockImplementation(async (parts: TemplateStringsArray) => {
+      const query = parts.join(' ');
+      if (query.includes('plan_item_claims')) return [];
+      if (query.includes('harness_shared.work_items')) {
+        return [{ harness_slug: 'alpha', item_id: 'WI-bound' }];
+      }
+      return [];
+    });
+    resourceSqlMock.mockResolvedValue([]);
   });
 
   const mkCtx = (role: string) =>
@@ -254,6 +271,16 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     const acceptedBody = JSON.parse((accepted as { content: { text: string }[] }).content[0].text);
     expect(acceptedBody.results[0]).toMatchObject({ ok: true, id: 'bound' });
     expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
+
+    orgSqlMock.mockImplementation(async (parts: TemplateStringsArray) => {
+      const query = parts.join(' ');
+      if (query.includes('plan_item_claims')) return [];
+      if (query.includes('harness_shared.work_items')) return [];
+      return [];
+    });
+    const mismatched = await findTool('recipes:run').fn({ id: 'bound', authority }, mkCtx('worker'));
+    const mismatchedBody = JSON.parse((mismatched as { content: { text: string }[] }).content[0].text);
+    expect(mismatchedBody.results[0]).toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
 
     const stale = await findTool('recipes:run').fn({
       id: 'bound',

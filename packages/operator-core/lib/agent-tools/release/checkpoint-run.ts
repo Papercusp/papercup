@@ -92,6 +92,7 @@ export default defineTool({
               quiet_cut_sec: a.quiet_cut_sec ?? null,
               started_at: a.started_at ?? null,
               elapsed_sec: a.elapsed_sec ?? null,
+              eta_sec: a.eta_sec ?? null,
               replace_refused_young: a.replace_refused_young ?? false,
               note: a.candidate_stale
                 ? typeof a.elapsed_sec === 'number' && a.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC
