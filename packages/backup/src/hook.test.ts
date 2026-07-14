@@ -22,10 +22,12 @@ const h = vi.hoisted(() => ({
   closeCodes: { pg_dump: 0, gzip: 0 } as Record<string, number>,
   stdinWrites: [] as string[],
   renameCalls: [] as Array<{ from: string; to: string }>,
+  unlinkCalls: [] as string[],
   logLines: [] as string[],
   // When true, the gzip child's stdin emits an EPIPE 'error' before close —
   // the mid-dump broken-pipe crash regression (gz dies while pg_dump streams).
   gzipStdinError: false,
+  availableBlocks: 100_000_000,
 }));
 
 // Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
@@ -76,13 +78,14 @@ vi.mock('node:fs', () => ({
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn(async () => {}),
   stat: vi.fn(async () => ({ size: h.dumpSize })),
+  statfs: vi.fn(async () => ({ bsize: 4096, bavail: h.availableBlocks, blocks: 200_000_000 })),
   appendFile: vi.fn(async (_p: string, line: string) => {
     h.logLines.push(line);
   }),
   rename: vi.fn(async (from: string, to: string) => {
     h.renameCalls.push({ from, to });
   }),
-  unlink: vi.fn(async () => {}),
+  unlink: vi.fn(async (path: string) => { h.unlinkCalls.push(path); }),
 }));
 
 vi.mock('./config', () => ({
@@ -100,8 +103,10 @@ beforeEach(() => {
   h.closeCodes = { pg_dump: 0, gzip: 0 };
   h.stdinWrites = [];
   h.renameCalls = [];
+  h.unlinkCalls = [];
   h.logLines = [];
   h.gzipStdinError = false;
+  h.availableBlocks = 100_000_000;
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -173,6 +178,16 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
 });
 
 describe('runPreSnapshotHook outcome logging', () => {
+  it('does not spawn a dump when the workspace filesystem is below its emergency reserve', async () => {
+    h.availableBlocks = 1;
+    await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/insufficient free space/),
+    });
+    expect(h.spawnCalls).toHaveLength(0);
+    expect(h.logLines.join('')).toMatch(/SKIP: insufficient free space/);
+  });
+
   it('renames the temp dump into place and logs ok on a non-trivial dump', async () => {
     h.dumpSize = 16_384;
     await runPreSnapshotHook(ctx);
@@ -214,13 +229,14 @@ describe('runPreSnapshotHook broken-pipe resilience (deploy-crash regression 202
   // instead degrade: abandon the dump, resolve, let the snapshot proceed.
   it('does NOT crash (resolves) when the gzip stdin pipe emits EPIPE mid-dump', async () => {
     h.gzipStdinError = true;
-    await expect(runPreSnapshotHook(ctx)).resolves.toBeUndefined();
+    await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({ ok: false });
   });
 
   it('degrades to no-rename and logs the pipe failure on a stdin EPIPE', async () => {
     h.gzipStdinError = true;
     await runPreSnapshotHook(ctx);
     expect(h.renameCalls).toHaveLength(0);
+    expect(h.unlinkCalls.filter((p) => p.endsWith('.tmp')).length).toBeGreaterThanOrEqual(2);
     expect(h.logLines.join('')).toMatch(/gzip stdin pipe failed: write EPIPE/);
   });
 });

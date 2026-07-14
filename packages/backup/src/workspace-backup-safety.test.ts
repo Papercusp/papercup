@@ -210,6 +210,15 @@ describe('parseKopiaSnapshotJson (Gap 3)', () => {
     });
   });
 
+  it('(b3) reads the addedSize/totalSize fields emitted by current Kopia', () => {
+    const stdout = JSON.stringify({ id: 'k3', stats: { addedSize: 123, totalSize: 456 } });
+    expect(parseKopiaSnapshotJson(stdout)).toEqual({
+      snapshotId: 'k3',
+      bytesAdded: 123,
+      bytesTotal: 456,
+    });
+  });
+
   it('(c) no JSON at all → throws /no JSON/', () => {
     expect(() => parseKopiaSnapshotJson('uploading...\nall done, no json here\n')).toThrow(/no JSON/);
   });

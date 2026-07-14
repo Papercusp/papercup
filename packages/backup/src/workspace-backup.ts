@@ -233,7 +233,7 @@ export class WorkspaceBackup {
       runPreSnapshotHook({
         workspaceId: this.workspaceId,
         workspaceRoot: this.workspaceRoot,
-      }).then(() => this.event(snapshotRowId, 'hook_pg_dump', { ok: true }))
+      }).then((result) => this.event(snapshotRowId, 'hook_pg_dump', result))
         .catch((err) => {
           // eslint-disable-next-line no-console
           console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
@@ -980,14 +980,21 @@ export function parseKopiaSnapshotJson(stdout: string): {
   const obj = JSON.parse(lines[lines.length - 1]!) as {
     id?: string;
     rootEntry?: { summ?: { size?: number; numFailedEntries?: number } };
-    stats?: { totalBytes?: number; uploadedBytes?: number };
+    stats?: {
+      totalBytes?: number;
+      uploadedBytes?: number;
+      totalSize?: number;
+      addedSize?: number;
+    };
   };
   if (!obj.id) {
     throw new Error(`kopia snapshot create missing id: ${JSON.stringify(obj).slice(0, 200)}`);
   }
   return {
     snapshotId: obj.id,
-    bytesAdded: obj.stats?.uploadedBytes ?? 0,
-    bytesTotal: obj.stats?.totalBytes ?? obj.rootEntry?.summ?.size ?? 0,
+    // Current Kopia uses addedSize/totalSize. Keep the former field names for
+    // repositories produced by older installed clients.
+    bytesAdded: obj.stats?.addedSize ?? obj.stats?.uploadedBytes ?? 0,
+    bytesTotal: obj.stats?.totalSize ?? obj.stats?.totalBytes ?? obj.rootEntry?.summ?.size ?? 0,
   };
 }

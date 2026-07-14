@@ -35,7 +35,12 @@ export const IGNORE_PATTERNS = [
   'coverage', '.nyc_output',
   '__pycache__', '*.pyc', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
   '.gradle', '.terraform',
-  'tmp', '.tmp', '*.swp', '*.swo', '.DS_Store', 'Thumbs.db',
+  // Transactional writers use a `.tmp` suffix until an artifact is complete.
+  // Never snapshot one: a failed PG dump used to leave a ~1GB
+  // `pg-embedded.sql.gz.tmp` behind on every cadence tick, and Kopia dutifully
+  // versioned each incomplete file because only directories named `tmp` were
+  // ignored.
+  'tmp', '.tmp', '*.tmp', '*.swp', '*.swo', '.DS_Store', 'Thumbs.db',
   'proc-macro-srv*', '*.log',
   // Self-exclude — see the module comment above. Don't remove.
   ...SELF_EXCLUSION_RULES,

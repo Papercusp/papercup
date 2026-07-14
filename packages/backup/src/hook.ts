@@ -20,7 +20,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, stat, statfs, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createWriteStream } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
@@ -69,6 +69,28 @@ const EXCLUDED_TABLE_DATA = [
 ] as const;
 
 const MIN_RESTORABLE_DUMP_BYTES = 10_000;
+const PG_DUMP_TIMEOUT_MS = 15 * 60_000;
+const GIB = 1024n * 1024n * 1024n;
+
+export interface PreSnapshotHookResult {
+  ok: boolean;
+  bytes?: number;
+  error?: string;
+}
+
+/**
+ * Keep enough space to finish a dump and leave the host recoverable. The
+ * percentage keeps this usable on smaller desktop disks; the 100GiB ceiling
+ * prevents an unnecessarily large reserve on workstation volumes.
+ */
+function requiredFreeBytes(totalBytes: bigint): bigint {
+  const tenPercent = totalBytes / 10n;
+  return tenPercent < 10n * GIB
+    ? 10n * GIB
+    : tenPercent > 100n * GIB
+      ? 100n * GIB
+      : tenPercent;
+}
 
 /**
  * gzip args for the PG dump. `--rsyncable` inserts periodic flush
@@ -95,7 +117,19 @@ function gzipArgs(): string[] {
   return _gzipRsyncable ? ['-1', '--rsyncable'] : ['-1'];
 }
 
-export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
+// Every workspace currently draws from the same harness_shared database.
+// Serialize dump pipelines process-wide so multiple due workspaces cannot each
+// drive pg_dump+gzip against the host at once. The tail always recovers, so one
+// degraded dump cannot poison future work.
+let dumpQueue: Promise<void> = Promise.resolve();
+
+export function runPreSnapshotHook(ctx: HookContext): Promise<PreSnapshotHookResult> {
+  const run = dumpQueue.then(() => runPreSnapshotHookNow(ctx));
+  dumpQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookResult> {
   const dumpDir = join(ctx.workspaceRoot, 'db-dumps');
   await mkdir(dumpDir, { recursive: true });
   const logPath = join(dumpDir, 'hook.log');
@@ -104,11 +138,33 @@ export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
     await appendFile(logPath, `[${new Date().toISOString()}] ${msg}\n`).catch(() => {});
   };
 
+  // The dump is written beside the workspace, not in the Kopia repository.
+  // Refuse before spawning pg_dump when that filesystem is already in its
+  // emergency reserve. This prevents backup work from turning low space into
+  // an unrecoverable ENOSPC incident.
+  try {
+    const fs = await statfs(ctx.workspaceRoot);
+    const blockSize = BigInt(fs.bsize);
+    const freeBytes = blockSize * BigInt(fs.bavail);
+    const totalBytes = blockSize * BigInt(fs.blocks);
+    const reserveBytes = requiredFreeBytes(totalBytes);
+    if (freeBytes < reserveBytes) {
+      const error = `insufficient free space (${freeBytes} available; ${reserveBytes} reserve)`;
+      await log(`pg SKIP: ${error}`);
+      await log('hook done (degraded)');
+      return { ok: false, error };
+    }
+  } catch (err) {
+    // A statfs failure should not disable backups on an unusual filesystem;
+    // dumpPg still handles ENOSPC and cleans its transaction file.
+    await log(`free-space probe unavailable: ${String(err)}`);
+  }
+
   // --- embedded-pg (port discovered at runtime) ---
   const { url, source } = backupHost().getHarnessAdminUrl();
   await log(`embedded-pg URL source: ${source}`);
   const parsed = new URL(url);
-  await dumpPg({
+  const result = await dumpPg({
     host: parsed.hostname,
     port: Number(parsed.port) || 5432,
     user: parsed.username || 'postgres',
@@ -118,7 +174,8 @@ export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
     log,
   });
 
-  await log('hook done');
+  await log(`hook done (${result.ok ? 'ok' : 'degraded'})`);
+  return result;
 }
 
 async function dumpPg(opts: {
@@ -129,14 +186,17 @@ async function dumpPg(opts: {
   database: string;
   outPath: string;
   log: (msg: string) => Promise<void>;
-}): Promise<void> {
+}): Promise<PreSnapshotHookResult> {
   const tmp = `${opts.outPath}.tmp`;
+  // A crash/timeout from an earlier attempt must not become the next
+  // snapshot's input. This is paired with the `*.tmp` Kopia policy rule.
+  await unlink(tmp).catch(() => {});
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PGPASSWORD: opts.password,
     PGCONNECT_TIMEOUT: '5',
   };
-  await new Promise<void>((resolve) => {
+  return new Promise<PreSnapshotHookResult>((resolve) => {
     const dump = spawn('pg_dump', [
       '-h', opts.host,
       '-p', String(opts.port),
@@ -158,29 +218,45 @@ async function dumpPg(opts: {
     dump.stderr.on('data', (d) => { stderr += d.toString(); });
     gz.stderr.on('data', (d) => { stderr += d.toString(); });
 
-    const t = setTimeout(() => { dump.kill('SIGKILL'); gz.kill('SIGKILL'); }, 60_000);
+    const t = setTimeout(() => {
+      stderr += `pg dump timed out after ${PG_DUMP_TIMEOUT_MS}ms\n`;
+      dump.kill('SIGKILL');
+      gz.kill('SIGKILL');
+    }, PG_DUMP_TIMEOUT_MS);
     let settled = false;
     const finalize = async (ok: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(t);
       if (!out.destroyed) out.end();
+      let result: PreSnapshotHookResult;
       if (ok) {
         try {
           const s = await stat(tmp);
           if (s.size >= MIN_RESTORABLE_DUMP_BYTES) {
             await renameAtomic(tmp, opts.outPath);
             await opts.log(`pg ${opts.host}:${opts.port} ok (${s.size} bytes)`);
+            result = { ok: true, bytes: s.size };
           } else {
-            await opts.log(`pg ${opts.host}:${opts.port} SKIP (empty dump): ${stderr.trim().slice(0, 200)}`);
+            const detail = stderr.trim().slice(0, 200);
+            const error = `empty dump${detail ? `: ${detail}` : ''}`;
+            await unlink(tmp).catch(() => {});
+            await opts.log(`pg ${opts.host}:${opts.port} SKIP (empty dump)${detail ? `: ${detail}` : ''}`);
+            result = { ok: false, error };
           }
         } catch (e) {
-          await opts.log(`pg ${opts.host}:${opts.port} FAIL stat: ${String(e)}`);
+          const error = `stat: ${String(e)}`;
+          await unlink(tmp).catch(() => {});
+          await opts.log(`pg ${opts.host}:${opts.port} FAIL ${error}`);
+          result = { ok: false, error };
         }
       } else {
-        await opts.log(`pg ${opts.host}:${opts.port} FAIL: ${stderr.trim().slice(0, 200)}`);
+        const error = stderr.trim().slice(0, 200) || 'dump pipeline failed';
+        await unlink(tmp).catch(() => {});
+        await opts.log(`pg ${opts.host}:${opts.port} FAIL: ${error}`);
+        result = { ok: false, error };
       }
-      resolve();
+      resolve(result!);
     };
 
     // A missing binary (pg_dump / gzip) makes Node emit an 'error'

@@ -78,6 +78,7 @@ describe.skipIf(!kopiaAvailable)('backup self-exclusion', () => {
     // the snapshot; point-in-time DB restore depends on it.
     await mkdir(join(workspaceRoot, 'db-dumps'), { recursive: true });
     await writeFile(join(workspaceRoot, 'db-dumps', 'pg-embedded.sql.gz'), 'fake dump\n');
+    await writeFile(join(workspaceRoot, 'db-dumps', 'pg-embedded.sql.gz.tmp'), 'incomplete dump\n');
 
     await kopiaOk(['repository', 'create', 'filesystem', '--path', repoPath], env);
     await kopiaOk(
@@ -111,6 +112,13 @@ describe.skipIf(!kopiaAvailable)('backup self-exclusion', () => {
     expect(names).toContain('db-dumps');
     // backups/ (the kopia repo itself) is NOT — that's the recursion guard.
     expect(names).not.toContain('backups');
+
+    const dumpLsRaw = await kopiaOk(['ls', `${last.id}/db-dumps`], env);
+    const dumpNames = dumpLsRaw.trim().split('\n').filter(Boolean).map((line) =>
+      (line.split(/\s+/).pop() ?? '').replace(/\/$/, ''),
+    );
+    expect(dumpNames).toContain('pg-embedded.sql.gz');
+    expect(dumpNames).not.toContain('pg-embedded.sql.gz.tmp');
   }, 60_000);
 
   it('does not balloon when snapshotted repeatedly (recursive-inclusion regression)', async () => {

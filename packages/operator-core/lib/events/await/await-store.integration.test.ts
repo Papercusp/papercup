@@ -132,6 +132,43 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(recent[0]).toMatchObject({ status: 'dead', lastError: 'e2' });
   });
 
+  it('reopens an optimistically delivered resume after its detached turn dies', async () => {
+    const fired = await store
+      .registerAwait({ subscriberId: 'su-resume-death', eventKey: 'resume:dies' })
+      .then(() => store.fireAwaitsForKey({ eventKey: 'resume:dies' }));
+    await store.insertDeliveries({ awaits: fired });
+    const [w] = (await store.claimDueDeliveries({ limit: 5 })).filter(
+      (row) => row.subscriberId === 'su-resume-death',
+    );
+    await store.markDeliveryDelivered(w.id, 'resume-headless');
+
+    expect(
+      await store.reopenDeliveredAfterResumeDeath({
+        id: w.id,
+        error: 'resume-turn-death:rate_limited',
+        maxAttempts: 8,
+        backoffMs: 1,
+      }),
+    ).toBe('retrying');
+    const recent = await store.listRecentDeliveries('su-resume-death');
+    expect(recent[0]).toMatchObject({
+      status: 'pending',
+      channel: null,
+      deliveredAt: null,
+      lastError: 'resume-turn-death:rate_limited',
+    });
+
+    // A stale duplicate exit callback cannot revise the row a second time.
+    expect(
+      await store.reopenDeliveredAfterResumeDeath({
+        id: w.id,
+        error: 'duplicate',
+        maxAttempts: 8,
+        backoffMs: 1,
+      }),
+    ).toBe('ignored');
+  });
+
   it('parked rows wait out their recheck window; dropped rows are terminal + visible', async () => {
     const fired = await store
       .registerAwait({ subscriberId: 'su-8', eventKey: 'park:k' })
