@@ -2,16 +2,30 @@
 Description=Run the Papercusp DB-backup health probe hourly (EI-10733)
 
 [Timer]
-OnBootSec=10min
-# OnUnitInactiveSec (NOT OnUnitActiveSec) — schedules from when the run FINISHES, so the
-# interval is a real gap BETWEEN runs. OnUnitActiveSec schedules from run START, and if a
-# unit's runtime ever exceeds its interval systemd releases the queued start the instant it
-# deactivates => a silent back-to-back HOT LOOP. That is exactly the bug that made
-# kopia-snapshots run continuously (EI-10730), pinning pg_dump locks and wedging the release
-# pipeline for 9h. This probe is fast, but it uses the safe directive on principle.
-OnUnitInactiveSec=1h
-AccuracySec=1min
+# Hourly. Fast probe; asserts dump-content freshness from STATUS.json.
+#
+# WHY OnCalendar, not OnUnitInactiveSec (EI-10733 follow-up, su-a1a71
+# 2026-07-14): OnUnitInactiveSec measures from the service's last DEACTIVATION,
+# but that reference is NOT persisted across a systemd *user-manager* restart.
+# On 2026-07-14 the user manager restarted at 04:39 and this timer's Trigger
+# went n/a — the probe silently stopped (LAST run 07-13 13:38), so the very
+# monitor that guards the backups went dark alongside them. Persistent=true is a
+# NO-OP for OnUnitInactiveSec; it only functions with OnCalendar.
+# OnCalendar=hourly + Persistent survives manager restarts and catches up a run
+# missed while the system was down.
+#
+# The EI-10730 hot-loop (OnUnitActiveSec measures from run START, so a run that
+# overruns its interval releases the queued start the instant it deactivates =>
+# a silent back-to-back HOT LOOP — the bug that made kopia-snapshots run
+# continuously and wedged the release pipeline 9h) does NOT apply to OnCalendar:
+# systemd never QUEUES a start for an already-active oneshot, it simply picks
+# the next wall-clock boundary once the unit is idle. And this probe is fast
+# regardless.
+OnCalendar=hourly
 Persistent=true
+RandomizedDelaySec=60
+AccuracySec=1min
+OnBootSec=10min
 Unit=papercup-backup-health.service
 
 [Install]
