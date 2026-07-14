@@ -26,6 +26,7 @@ import {
   rewriteModelsJsonFields,
   computeMaxTurnTokens,
   computeOutputDoorTokens,
+  computeCompactionThresholdPercents,
   OMP_CORE_MCP_TOOL_NAMES,
   SU_CONTEXT_CHOICES,
   SU_CONTEXT_DEFAULT,
@@ -4265,6 +4266,43 @@ describe('effectiveWindow derivation (deterministic-context-carry P-005 — live
       expect(read('models.yml')).toBe(ORNITH_YML);
       expect(read('models.json')).toBe(ORNITH_JSON);
     });
+
+    it('P-007: shake thresholdPercent is DERIVED from the effective window when the backend was probed (hard tier = w − maxTurn)', () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // informational door line
+      try {
+        writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 204800 }, home);
+        // effective = min(configured 200000, backend 204800) = 200000; maxTurn 8000 → (200000−8000)/200000 = 96%
+        expect(read('config.yml')).toMatch(/\n\s+thresholdPercent:\s*96\b/);
+      } finally {
+        err.mockRestore();
+      }
+    });
+
+    it('P-007: a deliberately smaller configured window drives the tier (percent from the min, not the raw probe)', () => {
+      const smallYml = ORNITH_YML.replace('        contextWindow: 200000\n        maxTokens: 8192', '        contextWindow: 57344\n        maxTokens: 8192');
+      writeFileSync(join(home, '.omp', 'agent', 'models.yml'), smallYml);
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 204800 }, home);
+        // effective = 57344; maxTurn 8000 → (57344−8000)/57344 = 86.05 → 86
+        expect(read('config.yml')).toMatch(/\n\s+thresholdPercent:\s*86\b/);
+      } finally {
+        err.mockRestore();
+      }
+    });
+
+    it('P-007: no probe → the conservative pre-P-007 constant 70 (nothing bounds the hop without the P-005/P-006 chain)', () => {
+      writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
+      expect(read('config.yml')).toMatch(/\n\s+thresholdPercent:\s*70\b/);
+    });
+  });
+
+  it('computeCompactionThresholdPercents mirrors the canonical two-tier math (lockstep with context-doors.ts)', () => {
+    expect(computeCompactionThresholdPercents(204_800)).toEqual({ softPct: 90, hardPct: 96 });
+    expect(computeCompactionThresholdPercents(400_000)).toEqual({ softPct: 91, hardPct: 96 });
+    const d = computeCompactionThresholdPercents(0); // degenerate: sane, never NaN/negative
+    expect(d.hardPct).toBeGreaterThanOrEqual(d.softPct);
+    expect(d.softPct).toBeGreaterThanOrEqual(0);
   });
 });
 
