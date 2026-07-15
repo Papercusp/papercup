@@ -46,7 +46,12 @@ export default defineTool({
     }
     const hr = await fetchGatewayHeadroom({ timeoutMs: 1500 });
     const tierMap = parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP);
-    const report = buildCapacityReport(hr, { clampArmed, headroom: args.headroom, tierMap });
+    // EI-12282: cross-check the gateway's queue-slot dispatchBudget against REAL account-pool availability
+    // (accounts:status). The gateway's own `healthyAccounts` can be split-brain-stale and report spare bee
+    // slots while every claude account is usage-walled/edge-throttled — a false-green that kills fresh cups
+    // on their first inference call. Best-effort: any read failure ⇒ skip the cross-check (fail-safe).
+    const accountAvailability = await readBeeProviderAvailability();
+    const report = buildCapacityReport(hr, { clampArmed, headroom: args.headroom, tierMap, accountAvailability });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...report }) }] };
   },
 });

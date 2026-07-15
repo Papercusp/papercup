@@ -271,6 +271,16 @@ export interface CapacityReport {
   beeTier: number;
   /** Spare bee-tier slots right now = cap − inFlight − queued (D-001). null when the tier layer is off. */
   dispatchBudget: number | null;
+  /** Real usable accounts for the bee provider from the account-pool projection (accounts:status), when
+   *  supplied — the count that is `available` AND not edge-throttled. null when no cross-check was passed. */
+  usableAccounts: number | null;
+  /** Real available accounts (`available`, ignoring edge-throttle) from the account-pool projection, when
+   *  supplied. null when no cross-check was passed. */
+  availableAccounts: number | null;
+  /** LOUD contradiction flag (EI-12282): the gateway reports spare bee slots (dispatchBudget > 0) while the
+   *  real account pool has ZERO usable accounts for the provider — a fresh spawn will die on its first call.
+   *  When true, `factor` is forced to 0, `recommendedHeadroom` to the floor, and `advice` is the loud hold. */
+  poolExhausted: boolean;
   capByTier: { tier: number; cap: number | null; inFlight: number; queued: number }[] | null;
   inFlight: number | null;
   queueDepth: number | null;
@@ -305,6 +315,9 @@ export function buildCapacityReport(
     headroom?: number;
     config?: CapacityDispatchConfig;
     tierMap?: PriorityTierMap;
+    /** Real account-pool availability (accounts:status) for the bee provider — cross-checks the gateway's
+     *  queue-slot dispatchBudget against actual serve-ability (EI-12282). Omit to skip the cross-check. */
+    accountAvailability?: AccountPoolAvailability;
   },
 ): CapacityReport {
   const config = opts.config ?? resolveCapacityConfig();
@@ -326,7 +339,11 @@ export function buildCapacityReport(
       reachable: false, tierLayer: false, clampArmed: opts.clampArmed,
       utilization: null, utilizationPct: null, paused: false, rejected: false, resetInSec: null,
       healthyAccounts: null, tier1Reserve: null, beeTier,
-      dispatchBudget: null, capByTier: null, inFlight: null, queueDepth: null,
+      dispatchBudget: null,
+      usableAccounts: opts.accountAvailability?.usable ?? null,
+      availableAccounts: opts.accountAvailability?.available ?? null,
+      poolExhausted: false,
+      capByTier: null, inFlight: null, queueDepth: null,
       processUptimeMs: null, restartRecovering: false,
       factor: 1, recommendedHeadroom: opts.headroom ?? null, throttled: opts.headroom != null ? false : null,
       advice: 'gateway unreachable → place at your normal ceiling (fail-safe, no capacity clamp)',
@@ -339,8 +356,19 @@ export function buildCapacityReport(
   const dispatchBudget = beeRow && beeRow.cap != null ? Math.max(0, beeRow.cap - beeRow.inFlight - beeRow.queued) : null;
   signal.healthyAccounts = pt?.healthyAccounts ?? null;
   signal.dispatchBudget = dispatchBudget;
-  const factor = capacityFactor(signal, config);
+  let factor = capacityFactor(signal, config);
   const restartRecovering = isFreshGatewayRestart(signal, config);
+  // EI-12282: the gateway's queue-slot `dispatchBudget` (and its in-memory `healthyAccounts`) can report
+  // spare capacity while the REAL account pool (accounts:status) has zero usable accounts — a split-brain
+  // that produces a false-green ("tightening → place broadly; ~13 slots free") so a caller spawns cups that
+  // die on their first inference call. When a cross-check is supplied and shows ZERO usable provider
+  // accounts while the gateway still claims spare slots, trust the more-conservative usage-wall-aware store.
+  // Suppressed during the fresh-restart grace (the store may not be the cause, and restart-recovery already
+  // means "place at ceiling, re-check next wake").
+  const acct = opts.accountAvailability;
+  const poolExhausted =
+    !restartRecovering && acct != null && acct.total > 0 && acct.usable <= 0 && (dispatchBudget ?? 0) > 0;
+  if (poolExhausted) factor = 0;
   const tieredSpareCapacity = hasTieredBeeCapacity(signal);
   // A weekly-capped account reports BOTH paused:true and rejected:true; trust the tier oracle
   // (healthy accounts + bee-tier spare slots) over the bound-account block — same rationale as
@@ -351,13 +379,23 @@ export function buildCapacityReport(
   let recommendedHeadroom: number | null = null;
   let throttled: boolean | null = null;
   if (opts.headroom != null) {
-    const decision = computeCapacityHeadroom(opts.headroom, signal, config);
-    recommendedHeadroom = decision.headroom;
-    throttled = decision.throttled;
+    if (poolExhausted) {
+      // Real pool has zero usable accounts → clamp to the floor regardless of the gateway's queue-slot
+      // signal (the floor still lets top-ranked tier-1 work attempt; broad placement is held).
+      const floor = Math.max(0, Math.floor(config.minHeadroom));
+      recommendedHeadroom = Math.min(opts.headroom, floor);
+      throttled = recommendedHeadroom < opts.headroom;
+    } else {
+      const decision = computeCapacityHeadroom(opts.headroom, signal, config);
+      recommendedHeadroom = decision.headroom;
+      throttled = decision.throttled;
+    }
   }
 
   const advice = restartRecovering
     ? `gateway restarting (uptime ${Math.round((hr.processUptimeMs ?? 0) / 1000)}s) → startup capacity snapshot is recovering; place at normal ceiling and re-check next wake`
+    : poolExhausted
+    ? `pool EXHAUSTED: gateway reports ~${dispatchBudget ?? 0} bee slots but ${acct!.usable}/${acct!.total} ${acct!.provider ?? 'claude'} accounts are usable (rest walled/rate-paused/edge-throttled) → HOLD placements; dispatchBudget is a QUEUE figure, not real inference capacity (fresh spawns will die on their first call)`
     : poolBlocked
     ? 'pool SATURATED (paused/rejected) → place ONLY top-ranked tier-1 work; hold bee batch until it recovers'
     : factor <= 0.25
@@ -379,6 +417,9 @@ export function buildCapacityReport(
     tier1Reserve: pt?.tier1Reserve ?? null,
     beeTier,
     dispatchBudget,
+    usableAccounts: acct?.usable ?? null,
+    availableAccounts: acct?.available ?? null,
+    poolExhausted,
     capByTier,
     inFlight: hr.inFlight ?? null,
     queueDepth: hr.queueDepth ?? null,

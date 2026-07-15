@@ -165,9 +165,12 @@ export function capabilitySrtSettingsPathForCwd(cwd: string): string {
   // any tool that needs a well-known /tmp path ignoring TMPDIR (X11's
   // `/tmp/.X11-unix` sockets are hardcoded by the X11 protocol, so relocating
   // TMPDIR — the workaround the reporting cup already tried — can't help them).
-  // Add the real tmpdir() to srt's allowWrite so capability:bash's srt path is
-  // consistent with its own bwrap fallback.
-  settings.filesystem.allowWrite = [...settings.filesystem.allowWrite, tmpdir()];
+  // Add the LITERAL '/tmp' (not `tmpdir()` — that resolves the `TMPDIR` env var,
+  // which can point elsewhere, e.g. a test harness setting TMPDIR=/tmp/pcv; the
+  // whole point is covering the real /tmp regardless of TMPDIR) to srt's
+  // allowWrite so capability:bash's srt path is consistent with its own bwrap
+  // fallback.
+  settings.filesystem.allowWrite = [...settings.filesystem.allowWrite, '/tmp'];
   writeFileSync(path, JSON.stringify(settings), { mode: 0o600 });
   _srtSettingsByCwd.set(cwd, path);
   return path;

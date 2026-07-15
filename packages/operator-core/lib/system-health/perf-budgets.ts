@@ -148,6 +148,12 @@ export interface PerfVerdict {
   sessionDirs: { claudeOwnerDirs: number | null; codexHomes: number | null } | null;
   ageMs: number | null;
   stale: boolean;
+  /** Reasons that WOULD have been crit/warn but were downgraded/suppressed given
+   *  context the caller passed in (currently: `deployInProgress` suppresses the
+   *  operator-unreachable crit during a known, sanctioned restart window). Always
+   *  present (possibly empty) so a caller can surface "N false-positive(s) suppressed"
+   *  instead of the suppression being silently invisible. */
+  suppressedReasons: string[];
 }
 
 function lagP95(s: PerfSignalsV1['signals']): number | null {
@@ -166,6 +172,13 @@ export function evaluatePerfSignals(
   signals: PerfSignalsV1 | null | undefined,
   nowMs: number,
   budgets: PerfBudgets = PERF_BUDGETS,
+  /** EI-12302: true when the caller has confirmed a sanctioned deploy restart is
+   *  (or was, at capture time) in progress — e.g. the 'dev-server' resource lock is
+   *  held exclusive. Suppresses ONLY the `operator :3070 unreachable` crit (a deploy
+   *  restart legitimately makes the operator briefly unreachable); every other
+   *  per-thread wedge signal (event-loop lag, CLOSE_WAIT, PSI, inotify) is unaffected
+   *  — those are never expected during a routine restart, so they still page. */
+  deployInProgress = false,
 ): PerfVerdict {
   const base: PerfVerdict = {
     status: 'unknown', degraded: false, reasons: [], hostState: null,
@@ -173,7 +186,7 @@ export function evaluatePerfSignals(
     eventLoopLagP95Ms: null, operatorReachable: null,
     inotifyTotalWatches: null, inotifyMaxPerProc: null, psiCpuSome60: null,
     sessionDirs: null,
-    ageMs: null, stale: false,
+    ageMs: null, stale: false, suppressedReasons: [],
   };
   if (!signals || signals.schemaVersion !== 'perf-signals-v1') return base;
   const s = signals.signals ?? ({} as PerfSignalsV1['signals']);
@@ -226,7 +239,17 @@ export function evaluatePerfSignals(
 
   // ── CRIT: definitive per-thread wedge (NOT loadavg — see the file header) ──────
   const crit: string[] = [];
-  if (reachable === false) crit.push('operator :3070 unreachable');
+  const suppressed: string[] = [];
+  if (reachable === false) {
+    if (deployInProgress) {
+      // EI-12302: a sanctioned deploy restart holds 'dev-server' exclusive for the
+      // whole drain→restart→health-probe window — the operator is EXPECTED to be
+      // briefly unreachable then. Downgrade this one reason instead of paging.
+      suppressed.push('operator :3070 unreachable (deploy-in-progress, suppressed)');
+    } else {
+      crit.push('operator :3070 unreachable');
+    }
+  }
   if (signals.hostState === 'wedge-active') crit.push('hostState=wedge-active (live wedge captured)');
   if (lag !== null && lag >= budgets.eventLoopLagP95CritMs) crit.push(`event-loop lag p95 ${lag}ms ≥ ${budgets.eventLoopLagP95CritMs}ms`);
   if (closeWait !== null && closeWait >= budgets.closeWaitCrit) crit.push(`:3070 CLOSE_WAIT ${closeWait} ≥ ${budgets.closeWaitCrit} (event-loop peg)`);
@@ -234,7 +257,7 @@ export function evaluatePerfSignals(
     crit.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitCritFrac * 100)}% of max_user_watches ${inotifyLimit} — ENOSPC imminent, fs.watch boots will fail fleet-wide`);
   }
   if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeCrit) crit.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeCrit} — tasks starved for CPU (host saturation)`);
-  if (crit.length) return { ...v, status: 'crit', degraded: true, reasons: crit };
+  if (crit.length) return { ...v, status: 'crit', degraded: true, reasons: crit, suppressedReasons: suppressed };
 
   // ── WARN: hot-but-not-fatal ────────────────────────────────────────────────────
   const warn: string[] = [];
@@ -260,8 +283,8 @@ export function evaluatePerfSignals(
     }
   }
   if (s.gateway_8788_reachable === false) warn.push('inference gateway :8788 unreachable');
-  if (warn.length) return { ...v, status: 'warn', reasons: warn };
-  return { ...v, status: 'ok', reasons: [] };
+  if (warn.length) return { ...v, status: 'warn', reasons: warn, suppressedReasons: suppressed };
+  return { ...v, status: 'ok', reasons: [], suppressedReasons: suppressed };
 }
 
 export const PERF_BASELINES_DIR = join(homedir(), '.papercusp', 'perf-baselines');

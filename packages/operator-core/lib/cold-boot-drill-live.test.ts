@@ -3,6 +3,9 @@ import {
   gradeColdBootDrill,
   reportColdBootDrills,
   startColdBootDrill,
+  terminalOutcomesFromLedger,
+  verifyColdBootDrill,
+  type ColdBootDrillHostEvent,
   type ColdBootDrillLedgerEvent,
 } from './cold-boot-drill-live';
 import type { RespawnLaunchSpec } from './carry-respawn';
@@ -230,5 +233,130 @@ describe('reportColdBootDrills', () => {
     const report = await reportColdBootDrills(async () => rows);
     expect(report.perClass[0]).toMatchObject({ drills: 1, gaps: 0, surfacingGaps: 0, sufficient: true });
     expect(report.sufficientClasses).toEqual(['claude-su']);
+  });
+
+  it('surfaces host-mirrored terminal outcomes so an all-dropped class is visible, not an empty report (EI-12655)', async () => {
+    const rows: ColdBootDrillLedgerEvent[] = [
+      { ts: new Date(NOW).toISOString(), kind: 'carry-drill-requested', drillId: 'd-1', ownerId: 'su-1', sessionClass: 'gateway-claude-headless' },
+      { ts: new Date(NOW + 1).toISOString(), kind: 'carry-drill-queued', drillId: 'd-1', ownerId: 'su-1', sessionClass: 'gateway-claude-headless' },
+      { ts: new Date(NOW + 2).toISOString(), kind: 'carry-drill-respawned', drillId: 'd-1', ownerId: 'su-1', sessionClass: 'gateway-claude-headless', nativeId: 'n-1' },
+      { ts: new Date(NOW + 3).toISOString(), kind: 'carry-drill-carry-dropped', drillId: 'd-1', ownerId: 'su-1', sessionClass: 'gateway-claude-headless', reason: 'never-settled' },
+      { ts: new Date(NOW + 4).toISOString(), kind: 'carry-drill-carry-dropped', drillId: 'd-2', ownerId: 'su-2', sessionClass: 'gateway-claude-headless', reason: 'busy-gate-expired' },
+      { ts: new Date(NOW + 5).toISOString(), kind: 'carry-drill-carry-delivered', drillId: 'd-3', ownerId: 'su-3', sessionClass: 'claude-su' },
+    ];
+    // A duplicated mirror row must not double-count the drill.
+    rows.push({ ...rows[3], ts: new Date(NOW + 9).toISOString() });
+    const report = await reportColdBootDrills(async () => rows);
+    // Nothing graded → sufficiency stays empty; terminal outcomes still tell the story.
+    expect(report.perClass).toEqual([]);
+    const headless = report.terminalOutcomes.find((c) => c.sessionClass === 'gateway-claude-headless');
+    expect(headless).toMatchObject({ respawned: 1, delivered: 0, dropped: 2 });
+    expect(headless?.dropReasons).toEqual({ 'never-settled': 1, 'busy-gate-expired': 1 });
+    const su = report.terminalOutcomes.find((c) => c.sessionClass === 'claude-su');
+    expect(su).toMatchObject({ delivered: 1, dropped: 0 });
+  });
+
+  it('terminalOutcomesFromLedger buckets a class-less mirrored row under unknown', () => {
+    const outcomes = terminalOutcomesFromLedger([
+      { ts: new Date(NOW).toISOString(), kind: 'carry-drill-respawn-failed', drillId: 'd-9', ownerId: 'su-9', sessionClass: '', reason: 'spawn-failed' },
+    ]);
+    expect(outcomes).toEqual([
+      { sessionClass: 'unknown', respawned: 0, respawnFailed: 1, delivered: 0, dropped: 0, dropReasons: {} },
+    ]);
+  });
+});
+
+describe('verifyColdBootDrill — post-start lifecycle self-check (EI-12655 fix c)', () => {
+  const LEDGER: ColdBootDrillLedgerEvent[] = [
+    { ts: new Date(NOW).toISOString(), kind: 'carry-drill-requested', drillId: 'd-1', ownerId: 'su-1', sessionClass: 'gateway-claude-headless' },
+    { ts: new Date(NOW + 1).toISOString(), kind: 'carry-drill-queued', drillId: 'd-1', ownerId: 'su-1', sessionClass: 'gateway-claude-headless' },
+  ];
+  const HOST_EVENTS: ColdBootDrillHostEvent[] = [
+    { ts: new Date(NOW + 2).toISOString(), kind: 'carry-drill-respawned', drillId: 'd-1', sessionClass: 'gateway-claude-headless', nativeId: 'n-1' },
+    { ts: new Date(NOW + 3).toISOString(), kind: 'carry-drill-carry-delivered', drillId: 'd-1', sessionClass: 'gateway-claude-headless' },
+  ];
+
+  it('passes all four assertions for a fully-recorded drill', async () => {
+    const result = await verifyColdBootDrill('su-1', { drillId: 'd-1' }, {
+      readLedger: async () => LEDGER,
+      readHostEvents: async () => HOST_EVENTS,
+      socketExists: async () => true,
+    });
+    expect(result).toMatchObject({ ok: true, drillId: 'd-1', sessionClass: 'gateway-claude-headless', pass: true });
+    if (result.ok) expect(result.assertions.map((a) => [a.name, a.pass])).toEqual([
+      ['ledger-registered', true],
+      ['host-respawned', true],
+      ['terminal-outcome', true],
+      ['owner-socket-live', true],
+    ]);
+  });
+
+  it('fails host-respawned + terminal-outcome for the silent-vanish class (queued row only, dead host)', async () => {
+    const result = await verifyColdBootDrill('su-1', {}, {
+      readLedger: async () => LEDGER,
+      readHostEvents: async () => [],
+      socketExists: async () => false,
+    });
+    expect(result).toMatchObject({ ok: true, drillId: 'd-1', pass: false });
+    if (result.ok) {
+      const byName = Object.fromEntries(result.assertions.map((a) => [a.name, a.pass]));
+      expect(byName).toEqual({
+        'ledger-registered': true,
+        'host-respawned': false,
+        'terminal-outcome': false,
+        'owner-socket-live': false,
+      });
+    }
+  });
+
+  it('accepts a host-mirrored terminal row from the SHARED ledger when the per-owner log is gone', async () => {
+    const mirrored: ColdBootDrillLedgerEvent[] = [
+      ...LEDGER,
+      { ts: new Date(NOW + 2).toISOString(), kind: 'carry-drill-respawned', drillId: 'd-1', ownerId: 'su-1', sessionClass: 'gateway-claude-headless', nativeId: 'n-1' },
+      { ts: new Date(NOW + 3).toISOString(), kind: 'carry-drill-carry-dropped', drillId: 'd-1', ownerId: 'su-1', sessionClass: 'gateway-claude-headless', reason: 'busy-gate-expired' },
+    ];
+    const result = await verifyColdBootDrill('su-1', { drillId: 'd-1' }, {
+      readLedger: async () => mirrored,
+      readHostEvents: async () => [],
+      socketExists: async () => true,
+    });
+    expect(result).toMatchObject({ ok: true, pass: true });
+    if (result.ok) {
+      expect(result.assertions.find((a) => a.name === 'terminal-outcome')?.detail).toContain('busy-gate-expired');
+    }
+  });
+
+  it('resolves the latest drill for the owner when drillId is omitted, filtered by sessionClass', async () => {
+    const two: ColdBootDrillLedgerEvent[] = [
+      ...LEDGER,
+      { ts: new Date(NOW + 10).toISOString(), kind: 'carry-drill-requested', drillId: 'd-2', ownerId: 'su-1', sessionClass: 'claude-su' },
+    ];
+    const latest = await verifyColdBootDrill('su-1', {}, {
+      readLedger: async () => two,
+      readHostEvents: async () => [],
+      socketExists: async () => true,
+    });
+    expect(latest.ok && latest.drillId).toBe('d-2');
+    const filtered = await verifyColdBootDrill('su-1', { sessionClass: 'gateway-claude-headless' }, {
+      readLedger: async () => two,
+      readHostEvents: async () => [],
+      socketExists: async () => true,
+    });
+    expect(filtered.ok && filtered.drillId).toBe('d-1');
+  });
+
+  it('is loud on an unknown explicit drillId and on an owner with no drills', async () => {
+    const unknown = await verifyColdBootDrill('su-1', { drillId: 'nope' }, {
+      readLedger: async () => LEDGER,
+      readHostEvents: async () => [],
+      socketExists: async () => true,
+    });
+    expect(unknown).toMatchObject({ ok: false, error: 'unknown_drill' });
+    const none = await verifyColdBootDrill('su-none', {}, {
+      readLedger: async () => LEDGER,
+      readHostEvents: async () => [],
+      socketExists: async () => true,
+    });
+    expect(none).toMatchObject({ ok: false, error: 'no_drill_found' });
   });
 });

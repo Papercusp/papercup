@@ -16,7 +16,15 @@ vi.mock('../fleet/assignments', async (importOriginal) => {
 });
 vi.mock('./claim-spec-store', () => ({ getClaimSpecHeadsForBees: vi.fn() }));
 
-import { idleReason, toBeeRun, summarizeBeeRuns, listBeeRuns, type BeeRun, type RunningSpecHead } from './bee-runs';
+import {
+  idleReason,
+  toBeeRun,
+  summarizeBeeRuns,
+  listBeeRuns,
+  applyHealthyLoopExemption,
+  type BeeRun,
+  type RunningSpecHead,
+} from './bee-runs';
 import { listFleetAssignments } from '../fleet/assignments';
 import { getClaimSpecHeadsForBees } from './claim-spec-store';
 import type { FleetAssignmentRow } from '../fleet/assignments';
@@ -112,6 +120,51 @@ describe('summarizeBeeRuns', () => {
 
   it('an empty run set rolls up to all-zero', () => {
     expect(summarizeBeeRuns([])).toEqual({ total: 0, progressing: 0, idle: 0, stalled: 0, dead: 0 });
+  });
+});
+
+describe('applyHealthyLoopExemption (EI-12359 — parity with fleet:assignments\' loop-monitor exemption)', () => {
+  const mk = (activity: ItemActivity, bee = 'su-bee'): BeeRun => ({ ...toBeeRun(row({ agentId: bee })), activity });
+
+  it('downgrades a stalled run to alive when its bee is in the healthy-monitor set', () => {
+    const runs = [mk('stalled', 'su-batch')];
+    const out = applyHealthyLoopExemption(runs, new Set(['su-batch']));
+    expect(out[0].activity).toBe('alive');
+    expect(out[0].idleReason).toMatch(/grace window/); // re-derived via idleReason('alive')
+  });
+
+  it('leaves a stalled run alone when its bee is NOT in the healthy-monitor set', () => {
+    const runs = [mk('stalled', 'su-lonely')];
+    const out = applyHealthyLoopExemption(runs, new Set(['su-other']));
+    expect(out[0].activity).toBe('stalled');
+    expect(out[0].idleReason).toBe(runs[0].idleReason);
+  });
+
+  it('never touches a non-stalled run, even for a healthy-monitor bee (progressing/alive/reserved/dead pass through unchanged)', () => {
+    const runs = [mk('progressing', 'su-batch'), mk('alive', 'su-batch'), mk('reserved', 'su-batch'), mk('dead', 'su-batch')];
+    const out = applyHealthyLoopExemption(runs, new Set(['su-batch']));
+    expect(out).toEqual(runs);
+  });
+
+  it('a bee holding many items (batch claim): only the stalled ones flip, and only for a healthy bee', () => {
+    const runs = [
+      mk('stalled', 'su-batch'), // item 1: not yet touched — false-alarm stalled
+      mk('progressing', 'su-batch'), // item 2: the one actively being worked
+      mk('stalled', 'su-cold'), // a different, genuinely-idle bee (not in the healthy set)
+    ];
+    const out = applyHealthyLoopExemption(runs, new Set(['su-batch']));
+    expect(out.map((r) => r.activity)).toEqual(['alive', 'progressing', 'stalled']);
+  });
+
+  it('an empty healthy-monitor set is a no-op', () => {
+    const runs = [mk('stalled')];
+    expect(applyHealthyLoopExemption(runs, new Set())).toEqual(runs);
+  });
+
+  it('a run with no bee id is never matched, even against an all-inclusive-looking set', () => {
+    const runs = [mk('stalled', '')];
+    const out = applyHealthyLoopExemption(runs, new Set(['']));
+    expect(out[0].activity).toBe('stalled'); // falsy bee id guard — never exempted
   });
 });
 

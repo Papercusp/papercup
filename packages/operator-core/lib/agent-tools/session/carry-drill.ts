@@ -33,7 +33,7 @@ const argsSchema = z.discriminatedUnion('op', [
 export default defineTool({
   name: 'session:carry-drill',
   description:
-    'Opt-in cold-boot chaos drill for THIS session: force a clean-boundary deterministic carry-respawn, mechanically grade what the successor searched for, or report per-class sufficiency. Destructive start is default-off and rate-limited.',
+    'Opt-in cold-boot chaos drill for THIS session: force a clean-boundary deterministic carry-respawn, mechanically grade what the successor searched for, verify a drill left every durable lifecycle leg, or report per-class sufficiency + terminal outcomes. Destructive start is default-off and rate-limited.',
   capability: 'coord:write',
   guidance: {
     when:
@@ -59,7 +59,12 @@ export default defineTool({
           })
         : args.op === 'grade'
           ? await gradeColdBootDrill(identity.ownerId, args.drillId)
-          : await reportColdBootDrills();
+          : args.op === 'verify'
+            ? await verifyColdBootDrill(identity.ownerId, {
+                drillId: args.drillId,
+                sessionClass: args.sessionClass,
+              })
+            : await reportColdBootDrills();
     const failed = 'ok' in result && result.ok === false;
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result) }],
