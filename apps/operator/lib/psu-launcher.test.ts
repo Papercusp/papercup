@@ -65,6 +65,7 @@ import {
   recoverSessionOwner,
   nativeSessionIdFromLaunchArgs,
   mintRecycleArgs,
+  mintCarryRespawnArgs,
   claudeStoreHasSession,
   sessionHasTranscript,
   sessionIsResumable,
@@ -2905,6 +2906,46 @@ describe('mintRecycleArgs (WI-1980 — a cold-loop RECYCLE respawn gets a FRESH 
   it('tolerates empty / missing argv', () => {
     expect(mintRecycleArgs([], { mintId })).toEqual({ args: [], nativeId: null });
     expect(mintRecycleArgs(undefined, { mintId })).toEqual({ args: [], nativeId: null });
+  });
+});
+
+describe('mintCarryRespawnArgs (P-018 deterministic successor launch context)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
+  let home = '';
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-carry-respawn-')); });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  it('rotates the native id and layers one 0600 owner-scoped carry file', () => {
+    const out = mintCarryRespawnArgs(['claude', '--session-id', UUID, '--foo'], {
+      systemPromptAddendum: 'deterministic carry body',
+      ownerId: 'su/test owner',
+      mintId: () => FRESH,
+      home,
+    });
+    expect(out.nativeId).toBe(FRESH);
+    expect(out.launchContextPath).toBe(join(home, '.papercusp', 'launch-context', 'carry-su_test_owner.md'));
+    expect(out.args).toEqual([
+      'claude', '--session-id', FRESH, '--foo',
+      '--append-system-prompt-file', out.launchContextPath,
+    ]);
+    expect(readFileSync(out.launchContextPath, 'utf8')).toBe('deterministic carry body\n');
+    expect(statSync(out.launchContextPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('fails before any respawn when the carry is empty or argv is not Claude-session-shaped', () => {
+    expect(() =>
+      mintCarryRespawnArgs(['claude', '--session-id', UUID], {
+        systemPromptAddendum: '  ',
+        home,
+      }),
+    ).toThrow(/non-empty/);
+    expect(() =>
+      mintCarryRespawnArgs(['omp'], {
+        systemPromptAddendum: 'carry',
+        home,
+      }),
+    ).toThrow(/--session-id/);
   });
 });
 

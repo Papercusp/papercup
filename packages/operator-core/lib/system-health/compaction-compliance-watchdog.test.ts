@@ -26,6 +26,9 @@ const {
   findLiveHostMock,
   hostSupportsMock,
   injectMock,
+  findTranscriptMock,
+  newestTranscriptMock,
+  buildOwnerRespawnMock,
 } = vi.hoisted(() => ({
   estimateMock: vi.fn(),
   specMock: vi.fn(),
@@ -42,6 +45,14 @@ const {
   findLiveHostMock: vi.fn((_ownerId: string) => null as null | { sock: string; caps?: string[] }),
   hostSupportsMock: vi.fn((_host: unknown, _cap: string) => false),
   injectMock: vi.fn(async () => true),
+  findTranscriptMock: vi.fn(async () => '/tmp/live-session.jsonl' as string | null),
+  newestTranscriptMock: vi.fn((_ownerId: string) => null as string | null),
+  buildOwnerRespawnMock: vi.fn(async () => ({
+    systemPromptAddendum: 'deterministic carry',
+    firstPrompt: null as string | null,
+    budgetChars: 32_000,
+    openOwnerQuestion: { crossesOpenOwnerMessage: false },
+  })),
 }));
 vi.mock('../compaction-usage', () => ({
   estimateContextTokensForOwner: estimateMock,
@@ -56,18 +67,26 @@ vi.mock('../agent-tools/coordination/presence', () => ({
 vi.mock('../agent-tools/coordination/escalations', () => ({
   openEscalation: openEscalationMock,
 }));
-// P-012: the force-compact rung's deps. FLAGS is stubbed to the one key the watchdog reads.
+// P-012/P-018: force-compact + deterministic carry-respawn rollout deps.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagMock }));
 vi.mock('@papercusp/flags', () => ({
   FLAGS: {
     COMPACTION_WATCHDOG_FORCE_COMPACT: 'papercusp-compaction-watchdog-force-compact',
     CONTEXT_GAUGE: 'papercusp-context-gauge',
+    GATEWAY_MAINTENANCE_CARRY: 'papercusp-gateway-maintenance-carry',
   },
 }));
 vi.mock('../events/await/psu-pty-discovery', () => ({
   findLiveHost: findLiveHostMock,
   hostSupports: hostSupportsMock,
   injectIntoHost: injectMock,
+}));
+vi.mock('../claude-sessions', () => ({
+  findSessionTranscript: findTranscriptMock,
+  newestTranscriptUnderOwner: newestTranscriptMock,
+}));
+vi.mock('../carry-respawn', () => ({
+  buildOwnerRespawnLaunchSpec: buildOwnerRespawnMock,
 }));
 // The spawn-record honor leg lazily imports the tier menu — pin a small one so
 // the test never reads the real workspace agent-config.
@@ -83,6 +102,7 @@ vi.mock('../fleet/model-tiers', () => ({
 import {
   checkCompactionCompliance,
   resetContextDeathEscalationsForTests,
+  resetCarryRespawnForTests,
   resetForceCompactedForTests,
   resetBootConfigAssertForTests,
   resetNoHostWarnedForTests,
@@ -102,6 +122,7 @@ function fakeSql(opts: {
   seeded?: Array<{
     owner_id: string;
     owner_label: string;
+    workspace_id?: string;
     compaction_limit: number;
     fleet_slug?: string | null;
     fleet_role?: string | null;
@@ -129,12 +150,24 @@ function fakeSql(opts: {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // clearAllMocks wipes implementations too — restore the P-012 defaults (flag ON,
-  // no live host, inject succeeds) so unrelated over-limit tests stay no-op.
-  getFlagMock.mockResolvedValue(true);
+  // Keep the existing gauge + force rung ON, but the shared P-017/P-018 cutover
+  // OFF by default. Individual carry tests opt in explicitly.
+  getFlagMock.mockImplementation(
+    async (key: string) => key !== 'papercusp-gateway-maintenance-carry',
+  );
   findLiveHostMock.mockReturnValue(null);
   hostSupportsMock.mockReturnValue(false);
   injectMock.mockResolvedValue(true);
+  findTranscriptMock.mockResolvedValue('/tmp/live-session.jsonl');
+  newestTranscriptMock.mockReturnValue(null);
+  resolveSessionRefMock.mockResolvedValue(null);
+  buildOwnerRespawnMock.mockResolvedValue({
+    systemPromptAddendum: 'deterministic carry',
+    firstPrompt: null,
+    budgetChars: 32_000,
+    openOwnerQuestion: { crossesOpenOwnerMessage: false },
+  });
+  resetCarryRespawnForTests();
   resetForceCompactedForTests();
   resetNoHostWarnedForTests(); // EI-9982 no-live-host diagnostic dedup
   resetBootConfigAssertForTests(); // P-018 boot self-assert dedup + streak
@@ -273,6 +306,121 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
     );
     expect(out.overLimit).toEqual([]);
     expect(out.unflushedClaims).toEqual([]); // under limit ⇒ the claim read never runs
+  });
+});
+
+describe('deterministic carry-respawn cutover (P-018)', () => {
+  const seeded = [
+    {
+      owner_id: 'hot',
+      owner_label: 'su · hot',
+      workspace_id: 'ws-1',
+      compaction_limit: 158_000,
+    },
+  ];
+
+  it('queues a deterministic successor at the soft threshold on a capable Claude host', async () => {
+    estimateMock.mockResolvedValue(170_000);
+    specMock.mockResolvedValue('sonnet');
+    getFlagMock.mockResolvedValue(true);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-1' });
+    findLiveHostMock.mockReturnValue({
+      sock: '/tmp/hot.sock',
+      caps: ['carry-respawn', 'compact'],
+    });
+    hostSupportsMock.mockImplementation(
+      (host: { caps?: string[] }, cap: string) => host.caps?.includes(cap) ?? false,
+    );
+    buildOwnerRespawnMock.mockResolvedValue({
+      systemPromptAddendum: 'deterministic carry',
+      firstPrompt: 'answer the open owner message',
+      budgetChars: 32_000,
+      openOwnerQuestion: { crossesOpenOwnerMessage: false },
+    });
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.overLimit).toEqual(['hot']);
+    expect(out.carryRespawned).toEqual(['hot']);
+    expect(out.forceCompacted).toEqual([]);
+    expect(findTranscriptMock).toHaveBeenCalledWith('native-1', { owner: 'hot' });
+    expect(buildOwnerRespawnMock).toHaveBeenCalledWith(
+      'hot',
+      expect.objectContaining({
+        effectiveWindowTokens: 200_000,
+        buildOpts: expect.objectContaining({
+          workspaceId: 'ws-1',
+          ownerLabel: 'su · hot',
+          transcriptPath: '/tmp/live-session.jsonl',
+          transcriptSourceKind: 'claude',
+          boundaryDeliberate: true,
+        }),
+      }),
+    );
+    expect(injectMock).toHaveBeenCalledWith('/tmp/hot.sock', {
+      mode: 'carry-respawn',
+      data: 'answer the open owner message',
+      systemPromptAddendum: 'deterministic carry',
+    });
+  });
+
+  it('is byte-identical to the prior grace-band behavior while the cutover flag is OFF', async () => {
+    estimateMock.mockResolvedValue(170_000);
+    specMock.mockResolvedValue('sonnet');
+    findLiveHostMock.mockReturnValue({
+      sock: '/tmp/hot.sock',
+      caps: ['carry-respawn', 'compact'],
+    });
+    hostSupportsMock.mockReturnValue(true);
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.overLimit).toEqual(['hot']);
+    expect(out.carryRespawned).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(buildOwnerRespawnMock).not.toHaveBeenCalled();
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a deliberate cut that would cross an unanswered owner message', async () => {
+    estimateMock.mockResolvedValue(170_000);
+    specMock.mockResolvedValue('sonnet');
+    getFlagMock.mockResolvedValue(true);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-1' });
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+    buildOwnerRespawnMock.mockResolvedValue({
+      systemPromptAddendum: 'deterministic carry',
+      firstPrompt: null,
+      budgetChars: 32_000,
+      openOwnerQuestion: { crossesOpenOwnerMessage: true },
+    });
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.carryRespawned).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it('falls through to the existing hard backstop when the live host lacks carry-respawn', async () => {
+    estimateMock.mockResolvedValue(195_000);
+    specMock.mockResolvedValue('sonnet');
+    getFlagMock.mockResolvedValue(true);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-1' });
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
+    hostSupportsMock.mockImplementation(
+      (host: { caps?: string[] }, cap: string) => host.caps?.includes(cap) ?? false,
+    );
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.carryRespawned).toEqual([]);
+    expect(out.forceCompacted).toEqual(['hot']);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+    expect(injectMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ mode: 'compact' }),
+    );
   });
 });
 

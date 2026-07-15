@@ -359,6 +359,25 @@ describe('injectIntoHost — compact envelope (WI-1804 auto-continuation)', () =
   });
 });
 
+describe('injectIntoHost — deterministic carry-respawn envelope (P-018)', () => {
+  it('keeps the successor first prompt and system-prompt addendum distinct', async () => {
+    const dir = tmpDir();
+    const { sock, received } = startSocket(dir, 'su-carry-respawn');
+    const ok = await injectIntoHost(sock, {
+      mode: 'carry-respawn',
+      data: 'the unanswered owner message',
+      systemPromptAddendum: 'bounded deterministic carry document',
+    });
+    expect(ok).toBe(true);
+    expect(JSON.parse(await received)).toEqual({
+      v: 1,
+      mode: 'carry-respawn',
+      data: 'the unanswered owner message',
+      systemPromptAddendum: 'bounded deterministic carry document',
+    });
+  });
+});
+
 describe('hostSupports (WI-1804 rollout gate)', () => {
   const hostWith = (caps: string[] | null | undefined): PsuPtyHost =>
     ({

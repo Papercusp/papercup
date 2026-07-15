@@ -116,6 +116,22 @@ describe('control wire protocol (v1)', () => {
     const d = decodeControl(encodeControl({ mode: 'recycle', data: 'carry-note body' }));
     expect(d).toEqual({ mode: 'recycle', data: 'carry-note body', gated: true });
   });
+  it('carry-respawn envelope → GATED lifecycle verb with distinct launch context', () => {
+    const d = decodeControl(
+      JSON.stringify({
+        v: 1,
+        mode: 'carry-respawn',
+        data: 'successor first prompt',
+        systemPromptAddendum: 'deterministic carry',
+      }),
+    );
+    expect(d).toEqual({
+      mode: 'carry-respawn',
+      data: 'successor first prompt',
+      systemPromptAddendum: 'deterministic carry',
+      gated: true,
+    });
+  });
   it('reset/recycle with no data → gated verb with an empty carry (bare reset)', () => {
     expect(decodeControl(encodeControl({ mode: 'reset' }))).toEqual({ mode: 'reset', data: '', gated: true });
     expect(decodeControl(encodeControl({ mode: 'recycle' }))).toEqual({ mode: 'recycle', data: '', gated: true });

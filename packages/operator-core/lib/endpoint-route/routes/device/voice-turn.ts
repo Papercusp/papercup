@@ -56,6 +56,10 @@ import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
 import { loadVoicePrefs } from '../../../voice-prefs';
 import { createSentenceExtractor } from '../../../voice-turn-sentences';
 import { stripNonSpeechAnnotations } from './voice-transcript-normalize';
+import {
+  createVoiceBrainFirstEventDeadline,
+  VOICE_BRAIN_TIMEOUT_MESSAGE,
+} from '../../../voice-turn-deadline';
 
 /** How many recent turns feed the brain — same as the device text path. */
 const HISTORY_CONTEXT_TURNS = 24;
@@ -242,11 +246,16 @@ const voiceTurn = defineTool({
           });
         };
 
+        // The shared converse tool supports long, tool-using text turns and
+        // therefore carries a 600s ceiling. Mobile voice is different: a
+        // silent brain must fail promptly instead of pinning the FAB for ten
+        // minutes and eventually leaking the framework timeout string.
+        const brainDeadline = createVoiceBrainFirstEventDeadline(ctrl.signal);
         const ctxBase: UnifiedToolContext = {
           log: (msg) => {
             console.log(`[${toolName}][voice-turn] ${msg}`);
           },
-          signal: ctrl.signal,
+          signal: brainDeadline.signal,
           progress: () => {},
           emit: () => {
             /* installed by dispatchProjectedToolStream */
@@ -276,6 +285,7 @@ const voiceTurn = defineTool({
             ctxBase,
             {},
           )) {
+            brainDeadline.observeEvent();
             if (ctrl.signal.aborted) break;
             if (ev.kind === 'event') {
               emitToSseSink(sink, tool, ev.name, ev.data);
@@ -295,11 +305,27 @@ const voiceTurn = defineTool({
                 console.warn('[device/voice-turn] tool result parse failed:', e);
               }
             } else if (ev.kind === 'error') {
-              if (!ctrl.signal.aborted) sink.event('error', { stage: 'brain', message: ev.error.message });
+              if (!ctrl.signal.aborted) {
+                sink.event('error', {
+                  stage: 'brain',
+                  message: brainDeadline.didTimeout()
+                    ? VOICE_BRAIN_TIMEOUT_MESSAGE
+                    : ev.error.message,
+                });
+              }
               await ttsChain.catch(() => {});
               sink.close();
               return;
             }
+          }
+
+          // Defensive parity for a backend that observes abort but returns an
+          // empty successful result instead of a dispatcher error.
+          if (brainDeadline.didTimeout()) {
+            sink.event('error', { stage: 'brain', message: VOICE_BRAIN_TIMEOUT_MESSAGE });
+            await ttsChain.catch(() => {});
+            sink.close();
+            return;
           }
 
           for (const sentence of extractor.flush()) speak(sentence);
@@ -332,10 +358,16 @@ const voiceTurn = defineTool({
           if (!ctrl.signal.aborted) {
             sink.event('error', {
               stage: 'brain',
-              message: err instanceof Error ? err.message : String(err),
+              message: brainDeadline.didTimeout()
+                ? VOICE_BRAIN_TIMEOUT_MESSAGE
+                : err instanceof Error
+                  ? err.message
+                  : String(err),
             });
           }
           sink.close();
+        } finally {
+          brainDeadline.dispose();
         }
       },
     });

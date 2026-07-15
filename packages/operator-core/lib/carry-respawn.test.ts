@@ -8,10 +8,15 @@ import {
   renderCarryDoc,
   carryDocBudgetChars,
   gateOpenOwnerQuestion,
+  type BuildCarryDocOpts,
   type CarryDoc,
   type CarryDocContinuation,
 } from './carry-doc';
-import { buildRespawnLaunchSpec, deriveRespawnFirstPrompt } from './carry-respawn';
+import {
+  buildOwnerRespawnLaunchSpec,
+  buildRespawnLaunchSpec,
+  deriveRespawnFirstPrompt,
+} from './carry-respawn';
 
 const NOW = 1_800_000_000_000;
 
@@ -175,5 +180,49 @@ describe('deriveRespawnFirstPrompt (pure branch)', () => {
     const out = deriveRespawnFirstPrompt(doc(OPEN_DELIBERATE), false, { slug: 'p', harness: 'papercusp' });
     expect(out).toContain('ship the release when the gate is green');
     expect(out).toContain('plans:get');
+  });
+});
+
+describe('buildOwnerRespawnLaunchSpec — live fail-soft adapter', () => {
+  it('builds with a deliberate threshold boundary by default', async () => {
+    const buildFn = async (_ownerId: string, opts?: BuildCarryDocOpts) => {
+      expect(opts?.boundaryDeliberate).toBe(true);
+      return doc(NO_OWNER);
+    };
+    const out = await buildOwnerRespawnLaunchSpec('su-1', {
+      effectiveWindowTokens: 400_000,
+      buildFn,
+    });
+    expect(out?.systemPromptAddendum).toContain('Carry document (deterministic');
+  });
+
+  it('lets the live caller explicitly mark a forced boundary', async () => {
+    const buildFn = async (_ownerId: string, opts?: BuildCarryDocOpts) => {
+      expect(opts?.boundaryDeliberate).toBe(false);
+      return doc(OPEN_FORCED);
+    };
+    const out = await buildOwnerRespawnLaunchSpec('su-1', {
+      effectiveWindowTokens: 400_000,
+      buildOpts: { boundaryDeliberate: false },
+      buildFn,
+    });
+    expect(out?.openOwnerQuestion.crossesOpenOwnerMessage).toBe(false);
+  });
+
+  it('returns null for a blank owner or any builder failure', async () => {
+    expect(
+      await buildOwnerRespawnLaunchSpec('  ', {
+        effectiveWindowTokens: 400_000,
+        buildFn: async () => doc(NO_OWNER),
+      }),
+    ).toBeNull();
+    expect(
+      await buildOwnerRespawnLaunchSpec('su-1', {
+        effectiveWindowTokens: 400_000,
+        buildFn: async () => {
+          throw new Error('db unavailable');
+        },
+      }),
+    ).toBeNull();
   });
 });

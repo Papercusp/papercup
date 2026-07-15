@@ -112,6 +112,11 @@ const contextDeathEscalated = new Set<string>();
  *  limit. A failed inject is NOT recorded, so it retries next pass. */
 const forceCompactedAt = new Map<string, number>();
 
+/** P-018 deterministic successor dedup. A socket ACK means the clean-boundary
+ * lifecycle verb is queued in the host; suppress both duplicate respawns and the
+ * older force-compact rung while that cut has a chance to land. */
+const carryRespawnRequestedAt = new Map<string, number>();
+
 /** EI-9982 diagnostic dedup: warn ONCE per owner when findLiveHost() returns null on the
  *  force-compact path. Before this, a no-live-host miss was completely silent — indistinguishable
  *  from (a) the flag being off, (b) the FORCE_RETRY_GRACE_MS suppression window, or (c)
@@ -157,6 +162,11 @@ export function resetContextDeathEscalationsForTests(): void {
 /** Test seam (P-012 / EI-9982). */
 export function resetForceCompactedForTests(): void {
   forceCompactedAt.clear();
+}
+
+/** Test seam (P-018 live carry-respawn). */
+export function resetCarryRespawnForTests(): void {
+  carryRespawnRequestedAt.clear();
 }
 
 /** Test seam (EI-9982 diagnostic). */
@@ -316,6 +326,85 @@ function forceCompactContinueNote(est: number, limit: number, forceAt: number, b
     `compacted context: first re-run coord:orient to reconcile live fleet/claim/inbox state, then ` +
     `resume your current unit of work.`
   );
+}
+
+/**
+ * P-018 live actuation: at the session's soft threshold, ask a capable managed
+ * psu host to replace the settled Claude child with a fresh successor carrying
+ * the deterministic launch-context document. The shared P-017/P-018 cutover flag
+ * stays OFF until P-020 drills pass. Every miss is fail-soft: the current child
+ * remains alive with native auto-compact, and the older force-compact rung below
+ * remains the hard safety backstop.
+ */
+async function maybeCarryRespawn(
+  ownerId: string,
+  ownerLabel: string,
+  workspaceId: string,
+  effectiveWindowTokens: number,
+): Promise<boolean> {
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    if (!(await getFlag(FLAGS.GATEWAY_MAINTENANCE_CARRY, 'system'))) return false;
+  } catch {
+    return false;
+  }
+  try {
+    const { findLiveHost, hostSupports, injectIntoHost } = await import(
+      '../events/await/psu-pty-discovery'
+    );
+    const host = findLiveHost(ownerId);
+    if (!host || !hostSupports(host, 'carry-respawn')) return false;
+
+    const ref = await resolveSessionRef(ownerId);
+    if (!ref || (ref.agent != null && ref.agent !== 'claude')) return false;
+    const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
+    const transcriptPath =
+      (ref.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
+      newestTranscriptUnderOwner(ownerId);
+    if (!transcriptPath) return false;
+
+    const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
+    const spec = await buildOwnerRespawnLaunchSpec(ownerId, {
+      effectiveWindowTokens,
+      buildOpts: {
+        workspaceId,
+        ownerLabel,
+        transcriptPath,
+        transcriptSourceKind: 'claude',
+        boundaryDeliberate: true,
+      },
+    });
+    if (!spec) return false;
+    if (spec.openOwnerQuestion.crossesOpenOwnerMessage) {
+      console.warn(
+        `[compaction-watchdog] ${ownerLabel} (${ownerId}) reached the deterministic carry threshold ` +
+          `with an unanswered owner message; refusing this deliberate cut once (P-010/P-018).`,
+      );
+      return false;
+    }
+    const ok = await injectIntoHost(host.sock, {
+      mode: 'carry-respawn',
+      data: spec.firstPrompt ?? '',
+      systemPromptAddendum: spec.systemPromptAddendum,
+    });
+    if (ok) {
+      console.warn(
+        `[compaction-watchdog] CARRY-RESPAWN queued for ${ownerLabel} (${ownerId}) at the soft ` +
+          `threshold — fresh Claude successor will inherit the deterministic carry; native ` +
+          `auto-compact is disabled only on that successor (P-018).`,
+      );
+    }
+    return ok;
+  } catch (e) {
+    console.warn(
+      `[compaction-watchdog] carry-respawn build/inject failed; retaining native backstop: ` +
+        `${e instanceof Error ? e.message : String(e)}`,
+    );
+    return false;
+  }
 }
 
 /**
@@ -495,6 +584,9 @@ export interface CompactionComplianceResult {
    *  inside the FORCE_COMPACT_FRACTION grace band, with no live host, an
    *  already-in-flight force (deduped), or the flag OFF. */
   forceCompacted: string[];
+  /** P-018: owners whose capable psu host accepted a deterministic carry-respawn
+   *  lifecycle verb this pass. Subset of overLimit; gated by the Phase-7 cutover. */
+  carryRespawned: string[];
   /** P-017: running sessions whose STALE-above-cap compaction_limit was lowered to
    *  the current shaped default this pass (a policy change reaching a live session
    *  without a relaunch). */
@@ -526,7 +618,7 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [], implausibleReadings: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], carryRespawned: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [], implausibleReadings: [] };
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
   // hiccup leaves the previous value untouched (fail to the default-ON gauge).
@@ -604,11 +696,12 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         owner_id: string;
         owner_label: string;
         compaction_limit: number;
+        workspace_id: string;
         fleet_slug: string | null;
         fleet_role: string | null;
       }[]
     >`
-      SELECT owner_id, owner_label, compaction_limit, fleet_slug, fleet_role
+      SELECT owner_id, owner_label, workspace_id, compaction_limit, fleet_slug, fleet_role
         FROM harness_shared.coord_presence
        WHERE compaction_limit IS NOT NULL
          AND heartbeat_at > now() - interval '10 minutes'
@@ -751,6 +844,44 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
               `should have called session:request_compaction.${flushNote}`,
           );
         }
+        // Resolve the live effective window once for BOTH the P-018 soft cut and
+        // the P-012 hard backstop. A contradicted resolution is never trusted.
+        let window = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
+        if (window != null && est >= window * WINDOW_CONTRADICTED_FACTOR) {
+          console.warn(
+            `[compaction-watchdog] ${r.owner_label} (${r.owner_id}): resolved window ${window} is ` +
+              `CONTRADICTED by a live ~${est}-token estimate (≥${WINDOW_CONTRADICTED_FACTOR}×) — ` +
+              `stale/shared model-spec input (EI-7632); treating the window as unknown.`,
+          );
+          window = null;
+        }
+
+        // P-018 deterministic SOFT cut. A recent socket ACK means the lifecycle
+        // verb is already queued behind the host's clean-boundary gate; suppress
+        // both duplicate respawns and the older force-compact rung during the
+        // shared grace. A failed/unsupported/flag-off attempt falls straight
+        // through to the unchanged P-012 hard backstop below.
+        const lastCarryAt = carryRespawnRequestedAt.get(r.owner_id);
+        const carryRecently =
+          lastCarryAt != null && Date.now() - lastCarryAt < FORCE_RETRY_GRACE_MS;
+        if (carryRecently) continue;
+        const carryWindow = Math.min(
+          MODEL_WINDOW_1M,
+          Math.max(1, window ?? Math.max(r.compaction_limit, est)),
+        );
+        if (
+          await maybeCarryRespawn(
+            r.owner_id,
+            r.owner_label,
+            r.workspace_id,
+            carryWindow,
+          )
+        ) {
+          carryRespawnRequestedAt.set(r.owner_id, Date.now());
+          out.carryRespawned.push(r.owner_id);
+          continue;
+        }
+
         // P-012 L2 mechanical backstop — but only past the FORCE grace band
         // (owner 2026-07-04): warned at 100%, forced at min(limit × 1.3,
         // window − margin). Deduped per crossing; a failed/hostless/under-band
@@ -764,15 +895,6 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         const forcedRecently =
           lastForcedAt != null && Date.now() - lastForcedAt < FORCE_RETRY_GRACE_MS;
         if (!forcedRecently) {
-          let window = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
-          if (window != null && est >= window * WINDOW_CONTRADICTED_FACTOR) {
-            console.warn(
-              `[compaction-watchdog] ${r.owner_label} (${r.owner_id}): resolved window ${window} is ` +
-                `CONTRADICTED by a live ~${est}-token estimate (≥${WINDOW_CONTRADICTED_FACTOR}×) — ` +
-                `stale/shared model-spec input (EI-7632); treating the window as unknown.`,
-            );
-            window = null;
-          }
           const fractionAt = r.compaction_limit * FORCE_COMPACT_FRACTION;
           const capAt =
             window != null
@@ -792,6 +914,7 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       } else {
         overLimitOwners.delete(r.owner_id); // recovered (compacted / back under limit)
         forceCompactedAt.delete(r.owner_id); // re-arm the force for a future crossing
+        carryRespawnRequestedAt.delete(r.owner_id); // re-arm the deterministic cut
         noHostWarned.delete(r.owner_id); // re-arm the EI-9982 diagnostic for a future crossing
       }
     }
