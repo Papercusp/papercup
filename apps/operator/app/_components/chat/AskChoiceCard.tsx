@@ -66,6 +66,7 @@ export interface AskChoiceArgs {
  */
 export interface AskChoiceAnswered {
   picks: Array<{ option_id: string; label: string }>;
+  declined?: boolean;
   at: number;
 }
 
@@ -164,6 +165,9 @@ export function AskChoiceCard({
 
   const renderPickedSummary = (): ReactNode => {
     if (!isAnswered) return null;
+    if (answered.declined) {
+      return <p className="ask-choice-picked">Skipped</p>;
+    }
     const labels = answered.picks.map((p) => p.label).join(' · ');
     return (
       <p className="ask-choice-picked">

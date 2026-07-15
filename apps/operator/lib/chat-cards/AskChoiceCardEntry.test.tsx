@@ -17,19 +17,28 @@ vi.mock('@/app/_components/chat/AskChoiceCard', () => ({
   AskChoiceCard: ({
     args,
     answered,
-    onAnswer,
+    onResponse,
   }: {
     args: { question: string };
-    answered?: { picks: unknown[] };
-    onAnswer: (commit: { picks: Array<{ option_id: string; label: string }> }) => void;
+    answered?: { picks: unknown[]; declined?: boolean };
+    onResponse: (response:
+      | { action: 'submit'; picks: Array<{ option_id: string; label: string }> }
+      | { action: 'decline' }
+    ) => void;
   }) => (
-    <button
-      data-testid="card"
-      data-answered={answered ? 'true' : 'false'}
-      onClick={() => onAnswer({ picks: [{ option_id: 'a', label: 'A' }] })}
-    >
+    <div data-testid="card" data-answered={answered ? 'true' : 'false'}>
       {args.question}
-    </button>
+      <button
+        data-testid="submit"
+        onClick={() => onResponse({
+          action: 'submit',
+          picks: [{ option_id: 'a', label: 'A' }],
+        })}
+      >submit</button>
+      <button data-testid="decline" onClick={() => onResponse({ action: 'decline' })}>
+        decline
+      </button>
+    </div>
   ),
 }));
 
@@ -94,7 +103,18 @@ describe('AskChoiceCardEntry (chat:ask_choice registry glue)', () => {
     renderResult(node);
     const card = screen.getByTestId('card');
     expect(card.getAttribute('data-answered')).toBe('true');
-    fireEvent.click(card);
+    fireEvent.click(screen.getByTestId('submit'));
     expect(onAnswer).toHaveBeenCalledWith({ picks: [{ option_id: 'a', label: 'A' }] });
+  });
+
+  it('bridges Skip/decline to a persisted declined answer payload (WI-4976)', () => {
+    const onAnswer = vi.fn();
+    const node = renderCard('chat:ask_choice', {
+      args: { question: 'Q', options: [{ id: 'a', label: 'A' }] },
+      onAnswer,
+    });
+    renderResult(node);
+    fireEvent.click(screen.getByTestId('decline'));
+    expect(onAnswer).toHaveBeenCalledWith({ picks: [], declined: true });
   });
 });

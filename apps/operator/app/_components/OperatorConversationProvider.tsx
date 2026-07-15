@@ -683,6 +683,7 @@ interface OperatorConversationContextValue {
     assistantSeq: number;
     toolIndex: number;
     picks: Array<{ option_id: string; label: string }>;
+    declined?: boolean;
   }) => Promise<void>;
 
   /**
@@ -2178,6 +2179,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       assistantSeq: number;
       toolIndex: number;
       picks: Array<{ option_id: string; label: string }>;
+      declined?: boolean;
     }): Promise<void> => {
       const id = conversationIdRef.current;
       if (!id) throw new Error('answerChoice: no active conversation');
@@ -2200,7 +2202,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       if (existing?.tools && existing.tools[input.toolIndex]) {
         const nextTools = existing.tools.map((tool, index) =>
           index === input.toolIndex
-            ? { ...tool, answered: { picks: input.picks, at: answeredAt } }
+            ? {
+                ...tool,
+                answered: {
+                  picks: input.picks,
+                  ...(input.declined ? { declined: true } : {}),
+                  at: answeredAt,
+                },
+              }
             : tool,
         );
         dispatch({ type: 'update_message_tools', seq: input.assistantSeq, tools: nextTools });
@@ -2209,7 +2218,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         );
       }
 
-      const joined = input.picks.map((p) => p.label).join(' · ');
+      const joined = input.declined
+        ? 'Skipped'
+        : input.picks.map((p) => p.label).join(' · ');
       const optimisticId = `opt-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
       const userMsg: ChatMessage = { role: 'user', content: joined, id: optimisticId };
       dispatch({ type: 'append_message', message: userMsg });

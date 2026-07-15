@@ -210,6 +210,31 @@ describe('chat:ask_choice card e2e', () => {
     expect(rows[1]).toMatch(/^Feature A · Feature C\|/);
   });
 
+  itLive('decline: persists answered.declined and a Skipped user turn', async () => {
+    const ins = await jsonPOST(`/api/operator/conversations/${convId}/turns`, {
+      role: 'assistant', text: '', source: 'text_typed',
+      tools: [{
+        name: 'chat:ask_choice',
+        input: { question: 'Skip this?', options: [{ id: 'a', label: 'A' }] },
+      }],
+    });
+    const declineSeq: number = ins.json?.turn?.seq;
+    insertedSeqs.push(declineSeq);
+    const ans = await jsonPOST(`/api/operator/conversations/${convId}/turn-answer`, {
+      assistantSeq: declineSeq,
+      toolIndex: 0,
+      picks: [],
+      declined: true,
+    });
+    expect(ans.status).toBe(200);
+    insertedSeqs.push(ans.json?.userSeq);
+    const rows = pgQuery(
+      `SELECT seq||'|'||role||'|'||text||'|'||source||'|'||COALESCE(tools->0->'answered'->>'declined', '') FROM harness_shared.operator_turns WHERE conversation_id='${convId}' AND seq IN (${declineSeq}, ${ans.json?.userSeq}) ORDER BY seq`,
+    ).split('\n');
+    expect(rows[0]).toContain(`${declineSeq}|assistant||text_typed|true`);
+    expect(rows[1]).toMatch(/^\d+\|user\|Skipped\|card_pick\|/);
+  });
+
   itLive('validation: empty/overcap/unknown/bad-index/missing-fields → 400', async () => {
     const ins = await jsonPOST(`/api/operator/conversations/${convId}/turns`, {
       role: 'assistant', text: '', source: 'text_typed',

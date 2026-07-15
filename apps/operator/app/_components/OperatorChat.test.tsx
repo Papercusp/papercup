@@ -17,6 +17,7 @@ import type { ReactNode } from 'react';
 // controllable surface: the empty-state body, the banner, the composer extra,
 // and an input wired to onInputChange/onSubmit so we can drive submit().
 let lastProps: Record<string, any> = {};
+let lastCardProps: Record<string, any> = {};
 vi.mock('./chat/ChatConversation', () => ({
   ChatConversation: (props: Record<string, any>) => {
     lastProps = props;
@@ -42,7 +43,12 @@ vi.mock('./chat/PendingCardsBar', () => ({
     <div data-testid="pending-cards" data-conv={conversationId} />
   ),
 }));
-vi.mock('@/lib/chat-cards', () => ({ renderCard: () => null }));
+vi.mock('@/lib/chat-cards', () => ({
+  renderCard: (_name: string, props: Record<string, any>) => {
+    lastCardProps = props;
+    return null;
+  },
+}));
 vi.mock('./OperatorLogoMark', () => ({ OperatorLogoMark: () => null }));
 vi.mock('../harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -56,6 +62,7 @@ function baseProps(over: Record<string, any> = {}) {
 
 afterEach(() => {
   lastProps = {};
+  lastCardProps = {};
   cleanup();
 });
 
@@ -117,5 +124,22 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
     rerender(<OperatorChat {...baseProps({ conversationId: 'c1', workspaceId: 'w1' })} />);
     const bar = screen.getByTestId('pending-cards');
     expect(bar.getAttribute('data-conv')).toBe('c1');
+  });
+
+  it('forwards a persisted card decline to answerChoice (WI-4976)', () => {
+    const onAnswerChoice = vi.fn();
+    render(<OperatorChat {...baseProps({ onAnswerChoice })} />);
+    lastProps.renderToolCard(
+      { name: 'chat:ask_choice', input: { question: 'Q', options: [] } },
+      { role: 'assistant', content: '', seq: 42 },
+      0,
+    );
+    lastCardProps.onAnswer({ picks: [], declined: true });
+    expect(onAnswerChoice).toHaveBeenCalledWith({
+      assistantSeq: 42,
+      toolIndex: 0,
+      picks: [],
+      declined: true,
+    });
   });
 });

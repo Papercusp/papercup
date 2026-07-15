@@ -132,6 +132,19 @@ describe('AskChoiceCard', () => {
     expect(onResponse).not.toHaveBeenCalled();
   });
 
+  it('declined answered state renders Skipped and disables every option', () => {
+    render(
+      <AskChoiceCard
+        args={args}
+        answered={{ picks: [], declined: true, at: 0 }}
+        onResponse={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Skipped')).toBeTruthy();
+    expect((optButton('Option A') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: /Skip/i })).toBeNull();
+  });
+
   it('answered + disableWhenAnswered=false keeps onResponse callable (replay mode)', () => {
     const onResponse = vi.fn();
     render(

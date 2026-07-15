@@ -15,7 +15,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 interface Body {
   assistantSeq: number;
   toolIndex: number;
-  picks: Array<{ option_id: string; label: string }>;
+  picks?: Array<{ option_id: string; label: string }>;
+  declined?: boolean;
 }
 
 export default defineTool({
@@ -25,27 +26,30 @@ export default defineTool({
   async handler(req, ctx) {
     const conversationId = ctx.params.id as string;
     const body = (await req.json().catch(() => null)) as Body | null;
-    if (
-      !body ||
-      typeof body.assistantSeq !== 'number' ||
-      typeof body.toolIndex !== 'number' ||
-      body.toolIndex < 0 ||
-      !Array.isArray(body.picks) ||
-      body.picks.length === 0 ||
-      body.picks.length > 6 ||
-      !body.picks.every(
+    const picks = Array.isArray(body?.picks) ? body.picks : [];
+    const declined = body?.declined === true;
+    const validPicks =
+      picks.length >= 1 &&
+      picks.length <= 6 &&
+      picks.every(
         (p) =>
           p &&
           typeof p.option_id === 'string' &&
           p.option_id.length > 0 &&
           typeof p.label === 'string' &&
           p.label.length > 0,
-      )
+      );
+    if (
+      !body ||
+      typeof body.assistantSeq !== 'number' ||
+      typeof body.toolIndex !== 'number' ||
+      body.toolIndex < 0 ||
+      (declined ? picks.length !== 0 : !validPicks)
     ) {
       return Response.json(
         {
           error:
-            'assistantSeq:number, toolIndex:number, picks:[{option_id, label}, ...] (1..6) required',
+            'assistantSeq:number, toolIndex:number, and either picks:[{option_id, label}, ...] (1..6) or declined:true required',
         },
         { status: 400 },
       );
@@ -53,8 +57,12 @@ export default defineTool({
 
     const { sql } = getOrgPg();
     const now = Date.now();
-    const answeredJson = JSON.stringify({ picks: body.picks, at: now });
-    const joinedLabels = body.picks.map((p) => p.label).join(' · ');
+    const answeredJson = JSON.stringify({
+      picks,
+      ...(declined ? { declined: true } : {}),
+      at: now,
+    });
+    const joinedLabels = declined ? 'Skipped' : picks.map((p) => p.label).join(' · ');
 
     try {
       const result = await sql.begin(async (tx) => {
@@ -82,7 +90,7 @@ export default defineTool({
           (args?.options ?? []).map((o) => o?.id).filter((s): s is string => !!s),
         );
         if (knownIds.size > 0) {
-          const unknown = body.picks.filter((p) => !knownIds.has(p.option_id)).map((p) => p.option_id);
+          const unknown = picks.filter((p) => !knownIds.has(p.option_id)).map((p) => p.option_id);
           if (unknown.length > 0) {
             return { kind: 'unknown_option' as const, validIds: [...knownIds], unknownIds: unknown };
           }

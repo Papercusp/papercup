@@ -13,7 +13,10 @@
 import { AskChoiceCard, type AskChoiceArgs, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
 import { registerCard } from './registry';
 
-type AskChoicePayload = { picks: Array<{ option_id: string; label: string }> };
+type AskChoicePayload = {
+  picks: Array<{ option_id: string; label: string }>;
+  declined?: boolean;
+};
 
 registerCard<AskChoiceArgs>('chat:ask_choice', ({ args, answered, onAnswer }) => {
   if (!args || typeof args !== 'object') return null;
@@ -25,7 +28,13 @@ registerCard<AskChoiceArgs>('chat:ask_choice', ({ args, answered, onAnswer }) =>
     <AskChoiceCard
       args={args}
       answered={answered as AskChoiceAnswered | undefined}
-      onAnswer={(commit: AskChoicePayload) => onAnswer(commit)}
+      onResponse={(response) => {
+        if (response.action === 'submit') {
+          onAnswer({ picks: response.picks } satisfies AskChoicePayload);
+        } else if (response.action === 'decline') {
+          onAnswer({ picks: [], declined: true } satisfies AskChoicePayload);
+        }
+      }}
     />
   );
 });

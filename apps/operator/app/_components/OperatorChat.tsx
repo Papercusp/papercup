@@ -65,6 +65,7 @@ interface Props {
     assistantSeq: number;
     toolIndex: number;
     picks: Array<{ option_id: string; label: string }>;
+    declined?: boolean;
   }) => Promise<void> | void;
 
   /**
@@ -120,7 +121,10 @@ export function OperatorChat({
         answered: t.answered,
         onAnswer: (payload) => {
           if (typeof msg.seq !== 'number' || !onAnswerChoice) return;
-          const { picks } = payload as { picks: Array<{ option_id: string; label: string }> };
+          const { picks, declined } = payload as {
+            picks: Array<{ option_id: string; label: string }>;
+            declined?: boolean;
+          };
           // Fire-and-forget — server-side atomicity guarantees the
           // assistant-answered + user-turn rows land together. The
           // live-tail picks them up; we don't optimistically dispatch.
@@ -129,6 +133,7 @@ export function OperatorChat({
               assistantSeq: msg.seq,
               toolIndex: ti,
               picks,
+              ...(declined ? { declined: true } : {}),
             }),
           ).catch((err) => {
             // eslint-disable-next-line no-console

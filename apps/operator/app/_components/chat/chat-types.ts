@@ -26,6 +26,8 @@ export interface ChatToolCall {
    */
   answered?: {
     picks: Array<{ option_id: string; label: string }>;
+    /** True when the user used the card's Skip affordance. */
+    declined?: boolean;
     at: number;
   };
 }
