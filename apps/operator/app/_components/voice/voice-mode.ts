@@ -2277,6 +2277,11 @@ if (
   (window as unknown as { __pcVoiceTest?: unknown }).__pcVoiceTest = {
     simulate: (t: string) => __simulateUtterance(t),
     lastSpoken: () => __lastSpokenForTest,
+    // Voice mode gates the whole utterance dispatch (VoiceAppBridge returns
+    // when mode is 'off'), and the UI toggle is the only production way to
+    // flip it — headless verification needs this seam (WI-4838 live-verify).
+    setMode: (m: VoiceMode) => setVoiceMode(m),
+    getState: () => getVoiceState(),
   };
 }
 
