@@ -293,6 +293,31 @@ export function appendPosition<R extends PromptNodeFields>(
   return generateKeyBetween(last, null);
 }
 
+/** A create placement: where a new node goes + any normalization assignments. */
+export interface InsertPlacement {
+  parentId: string | null;
+  position: string;
+  assignments: MoveAssignment[];
+}
+
+/**
+ * Placement for a new node as `id`'s NEXT SIBLING, unconditionally (duplicate,
+ * split-below-a-collapsed-node). Null for an unknown id.
+ */
+export function siblingAfterPlacement<R extends PromptNodeFields>(
+  model: PromptTreeModel<R>,
+  id: string,
+): InsertPlacement | null {
+  const ctx = siblingListOf(model, id);
+  if (!ctx) return null;
+  const i = ctx.siblings.findIndex((s) => s.row.id === id);
+  if (i === -1) return null;
+  const parentId = ctx.parent?.row.id ?? null;
+  const { positions, assignments } = effectiveSequence(ctx.siblings, parentId);
+  const after = i + 1 < positions.length ? positions[i + 1] : null;
+  return { parentId, position: generateKeyBetween(positions[i], after), assignments };
+}
+
 /**
  * Placement for a node created "on Enter" from `id` — Workflowy semantics: an
  * EXPANDED node with children gets the new node as its FIRST CHILD (visually
@@ -303,7 +328,7 @@ export function appendPosition<R extends PromptNodeFields>(
 export function insertAfter<R extends PromptNodeFields>(
   model: PromptTreeModel<R>,
   id: string,
-): { parentId: string | null; position: string; assignments: MoveAssignment[] } | null {
+): InsertPlacement | null {
   const entry = model.byId.get(id);
   if (!entry) return null;
   const { node } = entry;
@@ -315,14 +340,98 @@ export function insertAfter<R extends PromptNodeFields>(
       assignments,
     };
   }
+  return siblingAfterPlacement(model, id);
+}
+
+/**
+ * Placement for a new node as `id`'s PREVIOUS SIBLING — Workflowy's Enter at
+ * the start of a bullet: an empty bullet appears ABOVE and the caret stays in
+ * the current text. Null for an unknown id.
+ */
+export function insertBefore<R extends PromptNodeFields>(
+  model: PromptTreeModel<R>,
+  id: string,
+): InsertPlacement | null {
   const ctx = siblingListOf(model, id);
   if (!ctx) return null;
   const i = ctx.siblings.findIndex((s) => s.row.id === id);
   if (i === -1) return null;
   const parentId = ctx.parent?.row.id ?? null;
   const { positions, assignments } = effectiveSequence(ctx.siblings, parentId);
-  const after = i + 1 < positions.length ? positions[i + 1] : null;
-  return { parentId, position: generateKeyBetween(positions[i], after), assignments };
+  const before = i > 0 ? positions[i - 1] : null;
+  return { parentId, position: generateKeyBetween(before, positions[i]), assignments };
+}
+
+/**
+ * Creation plan for duplicating `id`'s whole subtree (Workflowy Alt+Shift+D):
+ * the copy lands as the original's NEXT SIBLING at the same level. `nodes` are
+ * create-specs in creation order — `parentKey` points at the INDEX of the
+ * copied parent within `nodes` (null = the plan root, whose parent is
+ * `placement.parentId`). Children reuse the original position keys (the copy's
+ * child list contains only copies, so the original keys stay valid and keep
+ * order); legacy NULL positions get fresh appended keys. Null for unknown ids.
+ */
+export function duplicateSubtreePlan<R extends PromptNodeFields>(
+  model: PromptTreeModel<R>,
+  id: string,
+): {
+  placement: InsertPlacement;
+  nodes: Array<{ parentKey: number | null; title: string | null; body: string; position: string }>;
+} | null {
+  const entry = model.byId.get(id);
+  const placement = siblingAfterPlacement(model, id);
+  if (!entry || !placement) return null;
+  const nodes: Array<{
+    parentKey: number | null;
+    title: string | null;
+    body: string;
+    position: string;
+  }> = [];
+  const walk = (n: PromptTreeNode<R>, parentKey: number | null, position: string) => {
+    nodes.push({ parentKey, title: n.row.title, body: n.row.body, position });
+    const myKey = nodes.length - 1;
+    let lastKey: string | null = null;
+    for (const c of n.children) {
+      const pos = c.row.position !== null && (lastKey === null || c.row.position > lastKey)
+        ? c.row.position
+        : generateKeyBetween(lastKey, null);
+      lastKey = pos;
+      walk(c, myKey, pos);
+    }
+  };
+  walk(entry.node, null, placement.position);
+  return { placement, nodes };
+}
+
+/**
+ * Parse pasted multi-line text into outline rows (Workflowy paste): one bullet
+ * per non-empty line, RELATIVE depth from leading indentation (a tab or every
+ * two spaces = one level, rebased so the shallowest line is depth 0 and a
+ * child is never more than one level below its parent), common bullet markers
+ * (`- ` / `* ` / `• `) stripped. Single-line text returns one depth-0 row.
+ */
+export function parsePastedOutline(text: string): Array<{ title: string; depth: number }> {
+  const lines = text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((raw) => {
+      const indentMatch = raw.match(/^[\t ]*/);
+      const ws = indentMatch ? indentMatch[0] : '';
+      const level = [...ws].reduce((n, ch) => n + (ch === '\t' ? 2 : 1), 0);
+      const title = raw.slice(ws.length).replace(/^([-*•]|\d+[.)])\s+/, '').trimEnd();
+      return { title, level: Math.floor(level / 2) };
+    })
+    .filter((l) => l.title.length > 0);
+  if (lines.length === 0) return [];
+  const min = Math.min(...lines.map((l) => l.level));
+  const out: Array<{ title: string; depth: number }> = [];
+  let prevDepth = -1;
+  for (const l of lines) {
+    const depth = Math.max(0, Math.min(l.level - min, prevDepth + 1));
+    out.push({ title: l.title, depth });
+    prevDepth = depth;
+  }
+  return out;
 }
 
 /** Swap with the previous sibling. Null when already first (or unknown id). */
