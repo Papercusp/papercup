@@ -150,6 +150,12 @@ d('exec-sandbox — REAL bwrap exec (host is bwrap-capable)', () => {
       },
     );
     try {
+      if (r.status !== 0) {
+        // eslint-disable-next-line no-console
+        console.error('DEBUG settingsPath', settingsPath, require('node:fs').readFileSync(settingsPath, 'utf8'));
+        // eslint-disable-next-line no-console
+        console.error('DEBUG out', out, 'status', r.status);
+      }
       expect(decision.mode).toBe('srt');
       expect(r.status).toBe(0);
       expect(out).toContain('TMP_WRITE_OK');

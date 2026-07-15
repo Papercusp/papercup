@@ -6,6 +6,7 @@ import {
   gradeColdBootDrill,
   reportColdBootDrills,
   startColdBootDrill,
+  verifyColdBootDrill,
 } from '../../cold-boot-drill-live';
 
 const argsSchema = z.discriminatedUnion('op', [
@@ -19,6 +20,14 @@ const argsSchema = z.discriminatedUnion('op', [
     drillId: z.string().trim().min(1).max(200),
   }),
   z.object({ op: z.literal('report') }),
+  // EI-12655 fix (c): post-start lifecycle self-check — assert the drill left
+  // every durable leg (ledger row, host respawn event, a TERMINAL outcome, a
+  // live owner socket) instead of discovering a silent vanish at grade time.
+  z.object({
+    op: z.literal('verify'),
+    drillId: z.string().trim().min(1).max(200).optional(),
+    sessionClass: z.string().trim().min(1).max(120).optional(),
+  }),
 ]);
 
 export default defineTool({

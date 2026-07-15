@@ -379,6 +379,51 @@ function reportFromLedger(events: readonly ColdBootDrillLedgerEvent[]): CarrySuf
   return gradeColdBootDrills([...samples.values()], DEFAULT_SUFFICIENCY_PARAMS);
 }
 
+/** Per-class roll-up of the host-mirrored TERMINAL drill outcomes (EI-12655).
+ *  Counts drills (unique drillIds), not raw rows — a retried mirror write can
+ *  duplicate a row, and one drill must never count twice. */
+export interface ClassTerminalOutcomes {
+  sessionClass: string;
+  respawned: number;
+  respawnFailed: number;
+  delivered: number;
+  dropped: number;
+  /** dropped-drill count per drop reason (busy-gate-expired / never-settled /
+   *  no-startup-ready-marker / no-first-prompt / superseded / ...). */
+  dropReasons: Record<string, number>;
+}
+
+export function terminalOutcomesFromLedger(
+  events: readonly ColdBootDrillLedgerEvent[],
+): ClassTerminalOutcomes[] {
+  const KIND_TO_FIELD: Partial<Record<ColdBootDrillLedgerKind, keyof Omit<ClassTerminalOutcomes, 'sessionClass' | 'dropReasons'>>> = {
+    'carry-drill-respawned': 'respawned',
+    'carry-drill-respawn-failed': 'respawnFailed',
+    'carry-drill-carry-delivered': 'delivered',
+    'carry-drill-carry-dropped': 'dropped',
+  };
+  const byClass = new Map<string, ClassTerminalOutcomes>();
+  const seen = new Set<string>();
+  for (const event of events) {
+    const field = KIND_TO_FIELD[event.kind];
+    if (!field || !event.drillId) continue;
+    const dedupeKey = `${event.drillId} ${event.kind}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const sessionClass = event.sessionClass || 'unknown';
+    const agg =
+      byClass.get(sessionClass) ??
+      ({ sessionClass, respawned: 0, respawnFailed: 0, delivered: 0, dropped: 0, dropReasons: {} } satisfies ClassTerminalOutcomes);
+    agg[field] += 1;
+    if (field === 'dropped') {
+      const reason = event.reason || 'unknown';
+      agg.dropReasons[reason] = (agg.dropReasons[reason] ?? 0) + 1;
+    }
+    byClass.set(sessionClass, agg);
+  }
+  return [...byClass.values()];
+}
+
 async function safeReadCarry(path: string, root: string = CARRY_ROOT): Promise<string | null> {
   try {
     const [realRoot, realPath] = await Promise.all([fs.realpath(root), fs.realpath(path)]);
@@ -519,8 +564,136 @@ export async function gradeColdBootDrill(
   };
 }
 
+/** The op:'report' shape: graded per-class sufficiency PLUS the host-mirrored
+ *  terminal outcomes (EI-12655) — so a class whose drills all DROP (perClass
+ *  empty because nothing was ever graded) is visible as dropped counts instead
+ *  of an empty report. */
+export type ColdBootDrillReport = CarrySufficiencyReport & {
+  terminalOutcomes: ClassTerminalOutcomes[];
+};
+
 export async function reportColdBootDrills(
   readLedger: () => Promise<ColdBootDrillLedgerEvent[]> = readColdBootDrillLedger,
-): Promise<CarrySufficiencyReport> {
-  return reportFromLedger(await readLedger());
+): Promise<ColdBootDrillReport> {
+  const events = await readLedger();
+  return { ...reportFromLedger(events), terminalOutcomes: terminalOutcomesFromLedger(events) };
+}
+
+// ── op:'verify' — the silent-vanish recurrence guard (EI-12655 fix c) ─────────
+// 2/2 first-generation drills failed with NO caller-visible trace: `start`
+// returned ok/queued and everything after was fire-and-forget. verify makes the
+// post-start lifecycle assertable: given a drillId (or the owner's latest),
+// check each durable leg the drill MUST have left behind and report
+// per-assertion pass/fail instead of an opaque "grade found nothing".
+
+export interface VerifyColdBootDrillDeps {
+  readLedger: () => Promise<ColdBootDrillLedgerEvent[]>;
+  readHostEvents: (ownerId: string) => Promise<ColdBootDrillHostEvent[]>;
+  socketExists: (ownerId: string) => Promise<boolean>;
+}
+
+function verifyDeps(overrides: Partial<VerifyColdBootDrillDeps>): VerifyColdBootDrillDeps {
+  return {
+    readLedger: readColdBootDrillLedger,
+    readHostEvents: readOwnerHostEvents,
+    socketExists: async (ownerId) => {
+      try {
+        return (await fs.stat(join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`))).isSocket();
+      } catch {
+        return false;
+      }
+    },
+    ...overrides,
+  };
+}
+
+export interface VerifyAssertion {
+  name: 'ledger-registered' | 'host-respawned' | 'terminal-outcome' | 'owner-socket-live';
+  pass: boolean;
+  detail: string;
+}
+
+export type VerifyColdBootDrillResult =
+  | { ok: true; drillId: string; sessionClass: string; pass: boolean; assertions: VerifyAssertion[] }
+  | { ok: false; error: string; note: string };
+
+export async function verifyColdBootDrill(
+  ownerId: string,
+  input: { drillId?: string; sessionClass?: string } = {},
+  overrides: Partial<VerifyColdBootDrillDeps> = {},
+): Promise<VerifyColdBootDrillResult> {
+  const deps = verifyDeps(overrides);
+  const ledger = await deps.readLedger();
+  const mine = ledger.filter((event) => event.ownerId === ownerId);
+  let drillId = input.drillId?.trim() || '';
+  if (!drillId) {
+    for (let i = mine.length - 1; i >= 0; i -= 1) {
+      const event = mine[i];
+      if (event.kind !== 'carry-drill-requested') continue;
+      if (input.sessionClass && event.sessionClass !== input.sessionClass) continue;
+      drillId = event.drillId;
+      break;
+    }
+    if (!drillId) {
+      return {
+        ok: false,
+        error: 'no_drill_found',
+        note: 'No drill request is registered for this owner (and session class) in the shared ledger.',
+      };
+    }
+  }
+  const rows = mine.filter((event) => event.drillId === drillId);
+  const registered = rows.find(
+    (event) => event.kind === 'carry-drill-requested' || event.kind === 'carry-drill-queued',
+  );
+  if (!registered && input.drillId) {
+    return { ok: false, error: 'unknown_drill', note: 'No durable drill request matches this owner and id.' };
+  }
+  const hostEvents = (await deps.readHostEvents(ownerId)).filter((event) => event.drillId === drillId);
+  const respawned =
+    hostEvents.some((event) => event.kind === 'carry-drill-respawned') ||
+    rows.some((event) => event.kind === 'carry-drill-respawned');
+  const TERMINAL_KINDS = new Set([
+    'carry-drill-carry-delivered',
+    'carry-drill-carry-dropped',
+    'carry-drill-respawn-failed',
+    'carry-drill-request-failed',
+    'carry-drill-graded',
+  ]);
+  const terminal =
+    hostEvents.find((event) => TERMINAL_KINDS.has(event.kind ?? '')) ??
+    [...rows].reverse().find((event) => TERMINAL_KINDS.has(event.kind));
+  const socketLive = await deps.socketExists(ownerId);
+  const assertions: VerifyAssertion[] = [
+    {
+      name: 'ledger-registered',
+      pass: Boolean(registered),
+      detail: registered
+        ? `requested/queued at ${registered.ts} (class ${registered.sessionClass || 'unknown'})`
+        : 'no requested/queued row in the shared drill ledger',
+    },
+    {
+      name: 'host-respawned',
+      pass: respawned,
+      detail: respawned
+        ? 'the host durably recorded the successor cut (carry-drill-respawned)'
+        : 'no carry-drill-respawned event in the host log or shared ledger — the cut never happened or the host died before recording it',
+    },
+    {
+      name: 'terminal-outcome',
+      pass: Boolean(terminal),
+      detail: terminal
+        ? `${terminal.kind}${terminal.reason ? ` (${terminal.reason})` : ''} at ${terminal.ts ?? 'unknown ts'}`
+        : 'no terminal event (delivered/dropped/failed/graded) — the drill is pending or vanished silently (the EI-12655 class)',
+    },
+    {
+      name: 'owner-socket-live',
+      pass: socketLive,
+      detail: socketLive
+        ? 'the owner control socket exists (host alive and injectable)'
+        : 'the owner control socket is missing — the host is down; nothing can be injected',
+    },
+  ];
+  const sessionClass = registered?.sessionClass || rows[0]?.sessionClass || input.sessionClass || 'unknown';
+  return { ok: true, drillId, sessionClass, pass: assertions.every((a) => a.pass), assertions };
 }

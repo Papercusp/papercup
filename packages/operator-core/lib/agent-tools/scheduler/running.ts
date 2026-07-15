@@ -19,7 +19,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { listBeeRuns, summarizeBeeRuns } from '../../scheduler/bee-runs';
+import { listBeeRuns, summarizeBeeRuns, applyHealthyLoopExemption } from '../../scheduler/bee-runs';
+import { getLoopStatuses } from '../../harness/routines/loop';
+import { deriveLoopMonitorState } from '../fleet/assignments';
 
 export default defineTool({
   name: 'scheduler:running',
@@ -56,7 +58,20 @@ export default defineTool({
       actorWorkspace = null;
     }
     const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
-    const runs = await listBeeRuns({ harness: args.harness, bee: args.cup, workspaceId });
+    const runs0 = await listBeeRuns({ harness: args.harness, bee: args.cup, workspaceId });
+    // EI-12359: give `stalled` bee runs the SAME healthy-loop exemption fleet:assignments
+    // already applies (decorateLoopMonitorStates) — a batch-claiming bee whose engine loop
+    // is actively monitored is not "abandoned" just because it hasn't checkpointed every
+    // held item. Presentation-layer only; the underlying `stalled` SQL truth is untouched.
+    const stalledBees = [...new Set(runs0.filter((r) => r.activity === 'stalled').map((r) => r.bee).filter(Boolean))];
+    let runs = runs0;
+    if (stalledBees.length > 0) {
+      const loopStatuses = await getLoopStatuses(stalledBees);
+      const hasHealthyMonitor = new Set(
+        stalledBees.filter((b) => deriveLoopMonitorState(loopStatuses.get(b) ?? null, []) !== null),
+      );
+      if (hasHealthyMonitor.size > 0) runs = applyHealthyLoopExemption(runs0, hasHealthyMonitor);
+    }
     return {
       content: [
         { type: 'text' as const, text: JSON.stringify({ ok: true, summary: summarizeBeeRuns(runs), runs: runs.map(({ bee, ...rest }) => ({ cup: bee, ...rest })) }) },

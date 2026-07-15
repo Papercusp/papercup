@@ -124,6 +124,39 @@ export function summarizeBeeRuns(runs: BeeRun[]): {
   };
 }
 
+/**
+ * EI-12359: downgrade a `stalled` bee run to `alive` when its bee has a HEALTHY,
+ * actively-monitored engine loop. This is a PRESENTATION-layer exemption only — the
+ * underlying `stalled` SQL truth (agent-activity-liveness-truth P-002, D-001: "a
+ * claim is not progress") is never touched, and RECLAIM_STALLED (the actual reclaim
+ * gate, default OFF, owner-authority-gated per EI-7685) reads that SQL column
+ * directly, so this can never affect what gets reclaimed — only what a READER sees.
+ *
+ * WHY: a bee holding many items in one batch claim (e.g. a large multi-item plan
+ * lane) only calls `work_items:checkpoint` against the ONE item it is actively
+ * touching — the other held items' `last_progress_at` legitimately ages past the
+ * 10-minute staleness window even though the bee is demonstrably alive and working.
+ * Reading EVERY held item as "no item progress — reclaimable" in that case is a
+ * false alarm (observed live: a bee with a fresh heartbeat AND a real `apply_patch`
+ * tool call ~90s prior still showed 100% of its 14 held items, including the one it
+ * was actively editing, as `stalled`).
+ *
+ * Mirrors `agent-tools/fleet/assignments.ts`'s `decorateLoopMonitorStates` (the SAME
+ * exemption fleet:assignments already applies) — this closes the parity gap:
+ * scheduler:running had NO such exemption at all before this fix, so the two "who's
+ * doing what" surfaces the report cites disagreed on nothing else but this.
+ *
+ * PURE: `hasHealthyMonitor` is a precomputed bee → healthy-monitor set (the loop-
+ * engine lookup happens at the I/O layer, e.g. scheduler:running's handler), so this
+ * unit-tests hermetically with no DB.
+ */
+export function applyHealthyLoopExemption(runs: BeeRun[], hasHealthyMonitor: ReadonlySet<string>): BeeRun[] {
+  return runs.map((r) => {
+    if (r.activity !== 'stalled' || !r.bee || !hasHealthyMonitor.has(r.bee)) return r;
+    return { ...r, activity: 'alive' as const, idleReason: idleReason('alive') };
+  });
+}
+
 export interface ListBeeRunsOpts {
   /** Scope to one harness (the bee runs executing there). */
   harness?: string;

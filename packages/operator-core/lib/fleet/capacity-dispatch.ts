@@ -40,6 +40,25 @@ export interface CapacitySignal {
   dispatchBudget?: number | null;
 }
 
+/**
+ * Real per-provider account-pool availability — the persisted `accounts:status` projection (usage walls
+ * / rate pauses / edge throttles). The gateway's OWN `priorityTiers.healthyAccounts` count can DISAGREE
+ * with this: the gateway keeps an in-memory healthy/pause map that lags the store's usage-wall projection
+ * (split-brain — see observability.readmitGatewayAccounts). Cross-checking the gateway's queue-slot
+ * `dispatchBudget` against this catches the false-green where the gateway reports spare bee slots while
+ * every real account is walled/throttled, so spawns die on their first inference call (EI-12282).
+ */
+export interface AccountPoolAvailability {
+  /** Provider these counts are for (e.g. 'claude'). Surfaced in the exhausted advice. */
+  provider?: string;
+  /** Accounts that can serve right now (`available` = not rate-paused AND not usage-walled). */
+  available: number;
+  /** Accounts that can serve AND are not edge-throttled — the truly-usable count for a fresh spawn. */
+  usable: number;
+  /** Total accounts considered for the provider. */
+  total: number;
+}
+
 export interface CapacityDispatchConfig {
   /** Floor — always allow at least this many FRESH spawns so high-priority work still flows (the gateway
    *  tiers then prioritize it); prevents a full placement stall under total exhaustion. Env:
