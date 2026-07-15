@@ -52,16 +52,16 @@ describe('gradeColdBootDrills — per-class sufficiency', () => {
   const cleanDrills = (cls: string, n: number): DrillSample[] =>
     Array.from({ length: n }, () => ({ sessionClass: cls, lookups: [] as RecoveryLookup[] }));
 
-  it('a class with ≥minDrills clean drills is sufficient', () => {
-    const rep = gradeColdBootDrills(cleanDrills('claude-interactive', 10));
+  it('one clean class smoke is sufficient under the owner-shortened release gate', () => {
+    const rep = gradeColdBootDrills(cleanDrills('claude-interactive', 1));
     const c = rep.perClass[0];
-    expect(c).toMatchObject({ drills: 10, gaps: 0, surfacingGaps: 0, gapsPerDrill: 0, sufficient: true });
+    expect(c).toMatchObject({ drills: 1, gaps: 0, surfacingGaps: 0, gapsPerDrill: 0, sufficient: true });
     expect(rep.sufficientClasses).toEqual(['claude-interactive']);
   });
 
-  it('is NOT sufficient below minDrills even with zero gaps', () => {
-    const rep = gradeColdBootDrills(cleanDrills('claude-interactive', 9));
-    expect(rep.perClass[0].sufficient).toBe(false);
+  it('is NOT sufficient with no drill evidence', () => {
+    const rep = gradeColdBootDrills([]);
+    expect(rep.perClass).toEqual([]);
     expect(rep.sufficientClasses).toEqual([]);
   });
 
@@ -126,7 +126,7 @@ describe('gradeColdBootDrills — per-class sufficiency', () => {
   });
 
   it('exposes the documented default sufficiency params', () => {
-    expect(DEFAULT_SUFFICIENCY_PARAMS).toEqual({ maxGapsPerDrill: 0, minDrills: 10, countSurfacingGaps: true });
+    expect(DEFAULT_SUFFICIENCY_PARAMS).toEqual({ maxGapsPerDrill: 0, minDrills: 1, countSurfacingGaps: true });
   });
 });
 

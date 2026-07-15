@@ -276,7 +276,9 @@ export interface CarrySufficiencyParams {
 
 export const DEFAULT_SUFFICIENCY_PARAMS: CarrySufficiencyParams = {
   maxGapsPerDrill: 0,
-  minDrills: 10,
+  // Owner-directed release acceleration 2026-07-15: one CLEAN smoke per class
+  // replaces the former ten-drill pre-cutover campaign. Zero gaps remains strict.
+  minDrills: 1,
   countSurfacingGaps: true,
 };
 

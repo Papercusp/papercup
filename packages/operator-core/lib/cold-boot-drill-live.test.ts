@@ -217,8 +217,8 @@ describe('gradeColdBootDrill — host event + successor transcript', () => {
 });
 
 describe('reportColdBootDrills', () => {
-  it('deduplicates drill ids and requires the pinned ten clean samples', async () => {
-    const rows: ColdBootDrillLedgerEvent[] = Array.from({ length: 10 }, (_, i) => ({
+  it('deduplicates drill ids and accepts the owner-shortened one-clean-smoke gate', async () => {
+    const rows: ColdBootDrillLedgerEvent[] = Array.from({ length: 1 }, (_, i) => ({
       ts: new Date(NOW + i).toISOString(),
       kind: 'carry-drill-graded',
       drillId: `d-${i}`,
@@ -228,7 +228,7 @@ describe('reportColdBootDrills', () => {
     }));
     rows.push({ ...rows[0], ts: new Date(NOW + 99).toISOString() });
     const report = await reportColdBootDrills(async () => rows);
-    expect(report.perClass[0]).toMatchObject({ drills: 10, gaps: 0, surfacingGaps: 0, sufficient: true });
+    expect(report.perClass[0]).toMatchObject({ drills: 1, gaps: 0, surfacingGaps: 0, sufficient: true });
     expect(report.sufficientClasses).toEqual(['claude-su']);
   });
 });

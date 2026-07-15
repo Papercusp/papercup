@@ -332,7 +332,8 @@ function forceCompactContinueNote(est: number, limit: number, forceAt: number, b
  * P-018 live actuation: at the session's soft threshold, ask a capable managed
  * psu host to replace the settled Claude child with a fresh successor carrying
  * the deterministic launch-context document. The shared P-017/P-018 cutover flag
- * stays OFF until P-020 drills pass. Every miss is fail-soft: the current child
+ * defaults ON by owner release direction (2026-07-15); OFF remains the emergency
+ * kill-switch. Every miss is fail-soft: the current child
  * remains alive with native auto-compact, and the older force-compact rung below
  * remains the hard safety backstop.
  */

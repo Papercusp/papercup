@@ -650,14 +650,27 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).not.toContain('strategy: shake'); // hosted model keeps its native strategy (P-001)
   });
 
-  it('carry DEFAULT-OFF is byte-identical: no params, shake preserved, clientId or not', () => {
+  it('carry defaults ON for an owned session: params are present and weak-model strategy reaches the carry endpoint', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
     writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-3', backendWindow: 204800 }, home);
     err.mockRestore();
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
-    expect(written).not.toContain('carryOwner');
-    expect(written).toMatch(/\n\s+strategy:\s*shake/);
+    expect(written).toContain('/maintenance/summarize?carryOwner=su-carry-3&carryWindow=204800');
+    expect(written).toMatch(/\n\s+strategy:\s*context-full/);
+  });
+
+  it('PAPERCUSP_OMP_CARRY_COMPACTION=0 is the emergency opt-out: no params and shake preserved', () => {
+    const saved = process.env.PAPERCUSP_OMP_CARRY_COMPACTION;
+    try {
+      process.env.PAPERCUSP_OMP_CARRY_COMPACTION = '0';
+      writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-off', backendWindow: 204800 }, home);
+      const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+      expect(written).not.toContain('carryOwner');
+      expect(written).toMatch(/\n\s+strategy:\s*shake/);
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_OMP_CARRY_COMPACTION;
+      else process.env.PAPERCUSP_OMP_CARRY_COMPACTION = saved;
+    }
   });
 
   it('falls back to the config.yml modelRoles.default when no model opt is passed', () => {

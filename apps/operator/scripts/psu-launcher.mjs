@@ -1921,9 +1921,10 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     model = null,
     clientId = null,
     backendWindow = null,
-    // DETERMINISTIC CARRY opt-in (deterministic-context-carry P-017, WI-4845) —
-    // env-gated DEFAULT-OFF; tests override via opts.
-    carryCompaction = process.env.PAPERCUSP_OMP_CARRY_COMPACTION === '1',
+    // DETERMINISTIC CARRY cutover (deterministic-context-carry P-017, WI-4845) —
+    // DEFAULT-ON by explicit owner release direction 2026-07-15. The env is now
+    // an emergency opt-OUT; tests can still override directly via opts.
+    carryCompaction = process.env.PAPERCUSP_OMP_CARRY_COMPACTION !== '0',
   } = opts;
   try {
     if (!sessionId) return null;
@@ -1971,8 +1972,9 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     // alternative is worse (a weak local model summarizing on its own saturated slot).
     const gwp = Number(process.env.PAPERCUSP_GATEWAY_PORT);
     const gwPort = Number.isFinite(gwp) && gwp > 0 ? gwp : 8788;
-    // DETERMINISTIC CARRY opt-in (deterministic-context-carry P-017, WI-4845; env-gated
-    // DEFAULT-OFF via PAPERCUSP_OMP_CARRY_COMPACTION=1): append ?carryOwner=<coord ownerId>
+    // DETERMINISTIC CARRY cutover (deterministic-context-carry P-017, WI-4845;
+    // DEFAULT-ON, PAPERCUSP_OMP_CARRY_COMPACTION=0 is the emergency opt-out): append
+    // ?carryOwner=<coord ownerId>
     // [&carryWindow=<probed backend tokens>] so the gateway answers the compaction from the
     // deterministic carry-doc builder instead of the LLM oneshot. Needs BOTH sides live —
     // the gateway must carry the query-param route AND FLAGS.GATEWAY_MAINTENANCE_CARRY ON
@@ -1980,7 +1982,7 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     // local fallback, so the gateway leg deploys first; a flag-OFF current gateway just
     // ignores the params — plain LLM lane). Requires the per-session coord ownerId
     // (opts.clientId): without it there is no owner to build a carry doc for, so the
-    // opt-in stays inert.
+    // cutover stays inert.
     const carryOptIn = !!(carryCompaction && clientId);
     const carryBw = Number(backendWindow);
     const carryParams = carryOptIn

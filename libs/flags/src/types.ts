@@ -1420,14 +1420,12 @@ export const FLAGS = {
   // deterministic-context-carry-2026-07-14 P-017 (WI-4845): gates the gateway's
   // DETERMINISTIC maintenance-carry branch — POST /maintenance/summarize?carryOwner=<id>
   // answers from buildMaintenanceCarrySummary (the PG carry-doc builder) instead of the
-  // LLM oneshot, falling through to the LLM lane on any miss (fail-soft). DEFAULT OFF —
-  // staged CUTOVER of the compaction summarizer: (1) deploy ordering — an opted-in
-  // psu-launcher appends ?carryOwner to omp's compaction.remoteEndpoint URL and an older
-  // gateway 404s that POST, and omp THROWS on a remoteEndpoint failure with no local
-  // fallback (dead session), so every gateway must carry the query-param route before any
-  // launcher opts in; (2) the flip is gated on the P-020 cold-boot drills proving carry
-  // sufficiency. OFF ⇒ the carry query params are ignored and the LLM lane serves every
-  // summarize (byte-identical). KNOWN_DARK_FLAGS.
+  // LLM oneshot, falling through to the LLM lane on any miss (fail-soft). DEFAULT ON —
+  // owner-directed release cutover 2026-07-15: ship the deterministic consumer live and
+  // shorten P-020's pre-cutover campaign to one clean smoke per affected class. Deploy
+  // ordering is enforced by the release pipeline (gateway reader lands before a launcher
+  // carrying ?carryOwner is distributed). OFF remains the emergency kill-switch: the
+  // gateway ignores carry params and uses the reserved LLM maintenance lane.
   GATEWAY_MAINTENANCE_CARRY: "papercusp-gateway-maintenance-carry",
   // autonomous-spawn-gateway-dispatch-gate-2026-07-04 (WI-2376): before an
   // AUTONOMOUS durable spawn posts /invoke, read the inference-gateway health
@@ -1787,7 +1785,10 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // enabled AND a repo is configured, so hives without per-hive git stay byte-identical.
     // cutover — the flip needs every peer on the new wire first
     [FLAGS.PRESENCE_GOSSIP, { case: 'cutover', reason: 'presence moves off the peer-log onto ephemeral gossip (P-004, cross-machine-coord-parity). A gossip-only announcer is INVISIBLE to a log-only reader, so every hive peer must carry the reader before a writer flips. Owner flips after both dogfood machines update + a 2-machine presence-federation verify.' }],
-    [FLAGS.GATEWAY_MAINTENANCE_CARRY, { case: 'cutover', reason: 'deterministic-context-carry-2026-07-14 P-017/P-018 (WI-4845/WI-4837): one Phase-7 cutover for deterministic carry consumers. OMP swaps the LLM compaction summary for /maintenance/summarize?carryOwner=…; Claude swaps native auto-compaction at the soft threshold for a managed-PTY successor carrying the same deterministic document. Ships dark because (1) deploy-skew: an older gateway 404s OMP\'s query-param route with no local fallback; (2) P-018 requires a carry-respawn-capable psu host before native auto-compact may be disabled; (3) P-020 cold-boot drills must prove carry sufficiency. OFF ⇒ OMP stays on the LLM summarizer and Claude stays on native/watchdog compaction, byte-identical.' }],
+    // GATEWAY_MAINTENANCE_CARRY graduated 2026-07-15 by explicit owner release
+    // direction: behavioral cutover defaults ON; one clean post-deploy smoke per
+    // affected class replaces the former ten-drill pre-cutover campaign. OFF remains
+    // a reversible operational kill-switch, so it no longer belongs in DARK_FLAGS.
     // MUG_WARM_SESSION graduated 2026-07-02 (owner flip directive): default ON —
     // queen wakes prefer the wake-executor warm resume with deterministic rebirth.
     // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
