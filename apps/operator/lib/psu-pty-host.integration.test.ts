@@ -6,7 +6,7 @@
  * assert the socket + discovery file are created on start and cleaned up on exit.
  * Spawns a real @lydell/node-pty subprocess, so it's an integration test.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -133,6 +133,74 @@ describe('session-port managed seed + native persistence helpers', () => {
 });
 
 describe('hostThroughPty real round-trip', () => {
+  it(
+    'acknowledges a managed session-port seed only after the target-native transcript persists its exact marker',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-port-host-'));
+      const agentDir = join(root, 'omp-agent');
+      const sessionsDir = join(agentDir, 'sessions', 'project');
+      mkdirSync(sessionsDir, { recursive: true });
+      const nativeFile = join(sessionsDir, 'thread.jsonl');
+      const hash = 'c'.repeat(64);
+      const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${hash}]`;
+      const seed = join(root, 'seed.md');
+      writeFileSync(seed, `ported history\n${marker}\n`, { mode: 0o600 });
+      chmodSync(seed, 0o600);
+      const ownerId = `su-port-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const { io } = fakeIo();
+      const onKickoffPersisted = vi.fn(async () => undefined);
+      const childCode = [
+        "const fs=require('fs'),path=require('path');",
+        "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+        "process.stdout.write('READY\\n');let b='';let wrote=false;",
+        "process.stdin.on('data',d=>{b+=d;if(!wrote&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){wrote=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',text:process.env.PORT_MARKER})+'\\n');process.stdout.write('WORKING\\n');setTimeout(()=>process.exit(0),1200);}});",
+        "setTimeout(()=>process.exit(2),10000);",
+      ].join('');
+      try {
+        const done = hostThroughPty({
+          command: execPath,
+          args: ['-e', childCode],
+          cwd: root,
+          env: {
+            ...process.env,
+            PAPERCUSP_SID: ownerId,
+            PAPERCUSP_AGENT: 'omp',
+            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+            PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000',
+            PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+            PI_CODING_AGENT_DIR: agentDir,
+            PORT_MARKER: marker,
+            PORT_NATIVE_FILE: nativeFile,
+            TERM: 'xterm-256color',
+          },
+          ownerId,
+          advSessionId: 999,
+          io,
+          bridgeTty: false,
+          kickoffFile: seed,
+          sessionPort: { renderedHash: hash },
+          onKickoffPersisted,
+          nativePersistenceTimeoutMs: 3000,
+          onExit: () => undefined,
+        });
+        const deadline = Date.now() + 5000;
+        while (onKickoffPersisted.mock.calls.length === 0 && Date.now() < deadline) await sleep(25);
+        expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
+        expect(onKickoffPersisted.mock.calls[0]?.[0]).toEqual({
+          persisted: true,
+          renderedHash: hash,
+          nativeRef: nativeFile,
+        });
+        await done;
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
   it(
     'creates socket+meta on start, injects into the live child, cleans up on exit',
     async () => {
