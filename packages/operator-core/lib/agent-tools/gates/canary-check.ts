@@ -46,14 +46,42 @@ export default defineTool({
     const workspaceId = identity.workspaceId ?? activeWorkspaceId();
     const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const ctxHarness = typeof ctxHarnessRaw === 'string' && ctxHarnessRaw ? ctxHarnessRaw : undefined;
-    const harnessSlug = args.harnessSlug ?? ctxHarness;
+    const resolved = args.harnessSlug ?? ctxHarness;
+
+    // '*' is a workspace SCOPE SELECTOR, not a concrete harness — it must NEVER
+    // reach the fed-probe stamping apparatus. stampProbe correctly rejects '*'
+    // as invalid_harness_slug, and the canary would then mislabel that
+    // self-inflicted refusal as the most-severe 'gate-broken' verdict on a
+    // perfectly healthy gate (EI-11574). An argless canary in a workspace-
+    // scoped (superuser) session resolves ctx.harnessSlug to '*', so this is
+    // the natural first call. A missing / wildcard / ambiguous harness is
+    // canary-INDETERMINATE (verdict 'unknown'), never 'gate-broken'.
+    const harnessSlug = resolved && resolved !== '*' ? resolved : undefined;
 
     if (!harnessSlug) {
+      const canaryDetail =
+        resolved === '*'
+          ? "harness resolved to the scope-selector '*', not a concrete harness — pass a concrete harnessSlug to canary-check"
+          : 'no concrete session harness to canary-check — pass harnessSlug';
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ ok: false, error: 'no_harness', message: 'Pass harnessSlug — no session harness to default to.' }),
+            text: JSON.stringify({
+              ok: true,
+              id: 'federation-probe:(no-concrete-harness)',
+              ranAt: new Date().toISOString(),
+              canaryOk: null,
+              canaryDetail,
+              // Indeterminate, NOT gate-broken: the canary could not even run
+              // (no concrete target), so it is not evidence the gate apparatus
+              // is broken — do not manufacture a critical false alarm.
+              verdict: 'unknown' as const,
+              alarm: 'none' as const,
+              detail:
+                'canary indeterminate: no concrete harness resolved to check — this is NOT a gate failure. ' +
+                "Pass harnessSlug (a concrete slug, not the '*' scope selector).",
+            }),
           },
         ],
       };

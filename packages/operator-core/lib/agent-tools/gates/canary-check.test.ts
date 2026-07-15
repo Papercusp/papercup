@@ -53,10 +53,37 @@ describe('gates:canary-check', () => {
     expect(isRegisteredHiveMock).toHaveBeenCalledWith('ws-x', 'explicit-hive');
   });
 
-  it('no harness at all (no arg, no ctx) refuses cleanly rather than probing garbage', async () => {
+  it('no harness at all (no arg, no ctx) is canary-INDETERMINATE, never gate-broken', async () => {
     const out = await call({}, {});
-    expect(out.ok).toBe(false);
-    expect(out.error).toBe('no_harness');
+    expect(out.canaryOk).toBe(null);
+    expect(out.verdict).toBe('unknown');
+    expect(out.verdict).not.toBe('gate-broken');
+    // never probe garbage — the fed-probe apparatus is not touched
     expect(isRegisteredHiveMock).not.toHaveBeenCalled();
+    expect(insertProbeMock).not.toHaveBeenCalled();
+  });
+
+  // EI-11574 regression: an argless canary in a workspace-scoped (superuser)
+  // session resolves ctx.harnessSlug to the literal '*' scope selector. That
+  // must NOT reach the fed-probe apparatus (which rejects '*' as
+  // invalid_harness_slug) and must NOT be mislabeled the critical 'gate-broken'
+  // verdict on a healthy gate — it is canary-indeterminate (verdict 'unknown').
+  it("argless canary with ctx.harnessSlug '*' does not emit a false gate-broken (EI-11574)", async () => {
+    const out = await call({}, { harnessSlug: '*' });
+    expect(out.verdict).toBe('unknown');
+    expect(out.verdict).not.toBe('gate-broken');
+    expect(out.alarm).not.toBe('gate');
+    expect(out.canaryOk).toBe(null);
+    // '*' is never passed downstream as a concrete harness
+    expect(isRegisteredHiveMock).not.toHaveBeenCalled();
+    expect(insertProbeMock).not.toHaveBeenCalled();
+  });
+
+  it("an explicit args.harnessSlug of '*' is also treated as indeterminate, not gate-broken", async () => {
+    const out = await call({ harnessSlug: '*' }, { harnessSlug: 'my-hive' });
+    expect(out.verdict).toBe('unknown');
+    expect(out.verdict).not.toBe('gate-broken');
+    expect(isRegisteredHiveMock).not.toHaveBeenCalled();
+    expect(insertProbeMock).not.toHaveBeenCalled();
   });
 });
