@@ -123,6 +123,27 @@ export default defineTool({
       });
     }
 
+    // P-001 (ambient-semantic-push) turn-end lexical cursor: rebuild this
+    // session's recency-decayed sparse term-weight cursor from its recent
+    // journal notes (echo-guarded to the agent's OWN notes) and upsert it —
+    // the join surface P-002/P-004 read. DEFAULT-OFF behind
+    // PAPERCUSP_AMBIENT_CURSOR (the env check gates BEFORE the dynamic import,
+    // so the off path never loads the cursor code); bounded + fail-soft like
+    // the sweeps above. Only on a fresh (non-deduped) journal row.
+    let cursorPersisted = false;
+    if (!deduped) {
+      const v = process.env.PAPERCUSP_AMBIENT_CURSOR;
+      if (v === '1' || v === 'true') {
+        const { boundedBuildAndPersistCursor } = await import('../../session-cursor-io');
+        cursorPersisted = await boundedBuildAndPersistCursor({
+          sessionId: args.session_id,
+          ownerId,
+          harnessSlug: args.harness ?? null,
+          turnTs: turn.ts,
+        });
+      }
+    }
+
     return {
       data: {
         ok: true,
