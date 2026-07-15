@@ -15,7 +15,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Corestore from 'corestore';
 import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import { createCorestoreSeedProvider, CORESTORE_SEED_KIND } from './seed-provider-corestore';
@@ -310,8 +310,11 @@ describe('corestore seed provider', () => {
     const dbDir = join(stagingDir, 'db');
     expect(statSync(dbDir).isDirectory()).toBe(true);
 
-    // (a) a store re-open regenerated LOG — it leaks the build box's identity
-    writeFileSync(join(dbDir, 'LOG'), 'Host name (Env): SOME-BUILD-BOX\n/home/someone/abs/path\n');
+    // (a) a store re-open regenerated LOG — it leaks the build box's identity.
+    // Derive the identity strings at runtime (never a literal in tracked source —
+    // WI-4776) so the fixture faithfully mimics a real RocksDB LOG without shipping
+    // one developer's home path inside the release source drop.
+    writeFileSync(join(dbDir, 'LOG'), `Host name (Env): ${hostname()}\n${homedir()}/abs/path\n`);
     expect(await provider.verify(entry, payload)).toEqual({ ok: true });
 
     // (b) plus a rotated LOG.old.<ts>
