@@ -162,7 +162,7 @@ describe("checkpoint:await sugar", () => {
         eventKey: i.eventKey,
         expiresTs: "2030-01-01",
         timeoutBehavior: i.timeoutBehavior,
-      };
+      } as never;
     });
 
     const out = await call({ candidateSha: "94c1234567" });
