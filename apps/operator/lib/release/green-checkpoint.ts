@@ -1411,8 +1411,16 @@ async function tryLongestGreenPrefix(
   {
     const prefixSummary = `${cfg.releaseRef} advanced to ${prefixTip!.slice(0, 8)} (longest green prefix; tip ${candidate.slice(0, 8)} held red)`;
     const payload = { sha: prefixTip, from: adv.from, partial: true, redTip: candidate };
+    const pipeline = pipelineName(cfg.integrationRoot);
     try {
-      await deps.emitEvent?.({ key: 'release:green', summary: prefixSummary, payload });
+      await deps.emitEvent?.({
+        key: 'release:green',
+        summary: prefixSummary,
+        payload,
+        // EI-12457: this candidate resolved green (partial) — a subscriber's still-
+        // pending red await for this pipeline can now never legitimately fire.
+        cancelSiblingKeysFor: ['green-checkpoint:red', `green-checkpoint:red:${pipeline}`],
+      });
     } catch (e) {
       deps.log(`warn: release:green (partial) emit failed: ${e instanceof Error ? e.message : e}`);
     }
@@ -1584,9 +1592,12 @@ export async function runGreenCheckpoint(
       const redSummary = `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
       const pipeline = pipelineName(cfg.integrationRoot);
       const payload = { sha: candidate, from: lastReady ?? null, pipeline, summary: summary + alreadyFixedNote + historicalFlakeNote };
+      // EI-12457: this candidate resolved red — a subscriber's still-pending green
+      // await for this pipeline can now never legitimately fire.
+      const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
       try {
-        await deps.emitEvent?.({ key: 'green-checkpoint:red', summary: redSummary, payload });
-        await deps.emitEvent?.({ key: `green-checkpoint:red:${pipeline}`, summary: redSummary, payload });
+        await deps.emitEvent?.({ key: 'green-checkpoint:red', summary: redSummary, payload, cancelSiblingKeysFor });
+        await deps.emitEvent?.({ key: `green-checkpoint:red:${pipeline}`, summary: redSummary, payload, cancelSiblingKeysFor });
       } catch (e) {
         deps.log(`warn: green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`);
       }
@@ -1787,9 +1798,12 @@ export async function runGreenCheckpoint(
     const greenSummary = `${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
     const pipeline = pipelineName(cfg.integrationRoot);
     const payload = { sha: candidate, from: adv.from, pipeline };
+    // EI-12457: this candidate resolved green — a subscriber's still-pending red
+    // await for this pipeline can now never legitimately fire.
+    const cancelSiblingKeysFor = ['green-checkpoint:red', `green-checkpoint:red:${pipeline}`];
     try {
-      await deps.emitEvent?.({ key: 'release:green', summary: greenSummary, payload });
-      await deps.emitEvent?.({ key: `release:green:${pipeline}`, summary: greenSummary, payload });
+      await deps.emitEvent?.({ key: 'release:green', summary: greenSummary, payload, cancelSiblingKeysFor });
+      await deps.emitEvent?.({ key: `release:green:${pipeline}`, summary: greenSummary, payload, cancelSiblingKeysFor });
     } catch (e) {
       deps.log(`warn: release:green emit failed: ${e instanceof Error ? e.message : e}`);
     }
@@ -1935,9 +1949,9 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
     // full-advance one raced the process teardown and never woke a `release:green:<pipeline>`
     // awaiter. Awaiting couples the emit's fireAwaitsForKey/insertDeliveries to the caller's
     // lifetime (the caller stays alive to record the pipeline_event, so the fire is durable).
-    async emitEvent({ key, summary, payload }) {
+    async emitEvent({ key, summary, payload, cancelSiblingKeysFor }) {
       const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
-      await emitAwaitedEvent({ key, summary, payload, source: 'green-checkpoint' });
+      await emitAwaitedEvent({ key, summary, payload, source: 'green-checkpoint', cancelSiblingKeysFor });
     },
     async setupTree(ref) {
       // P-019: the SCRIPT lives in the TOOLING tree (papercusp), not cfg.integrationRoot

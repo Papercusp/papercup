@@ -1845,6 +1845,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // a thin proxy — the coordinator owns the confirm-wait-wake state).
   interface StallEvent { ownerId: string; accountId: string; soonestResetAt: number; at: number; }
   const STALL_BUFFER_MAX = 256;
+  // WI-4994: the buffer was bounded only by COUNT, never by AGE — on a low-stall-volume box a
+  // handful of entries can sit well under STALL_BUFFER_MAX for many hours, so a `since=0` read
+  // (a fresh stall-waker instance, or a diagnostic curl) kept replaying hours-old stalls for
+  // owners long gone. `recentStalls` (below) is filtered by BOTH `since` and this age at read
+  // time — generous vs the stall-waker's own 2h pendingTtlMs give-up window, since this buffer's
+  // job is only "don't serve stale diagnostic noise", not the waker's give-up business logic.
+  const STALL_MAX_AGE_MS = 4 * 60 * 60_000;
   const recentStalls: StallEvent[] = [];
   let stallsRecorded = 0;
   function recordStall(ownerId: string | undefined, accountId: string, soonestResetAt: number): void {
@@ -1852,6 +1859,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stallsRecorded++;
     recentStalls.push({ ownerId, accountId, soonestResetAt, at: Date.now() });
     if (recentStalls.length > STALL_BUFFER_MAX) recentStalls.splice(0, recentStalls.length - STALL_BUFFER_MAX);
+    // Opportunistic age-based prune (belt-and-suspenders alongside the read-time filter below) —
+    // keeps the array itself from carrying long-dead entries between stalls, not just hiding them.
+    const cutoff = Date.now() - STALL_MAX_AGE_MS;
+    while (recentStalls.length && recentStalls[0].at < cutoff) recentStalls.shift();
     recordOwnerOutcome(ownerId, 'stall', { account: accountId });
   }
 
@@ -4245,8 +4256,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (req.method === 'GET' && (url === '/admin/stalls' || url.startsWith('/admin/stalls?'))) {
       // P-002: recent rate-limit stall candidates for the stall-waker (gateway-rate-limit-stall-autowake).
       // `?since=<epochMs>` returns only events after that watermark (the waker passes its last-seen `now`).
+      // WI-4994: also drop anything past STALL_MAX_AGE_MS regardless of `since` — a `since=0` read
+      // (a fresh waker instance, or a diagnostic curl) must not replay hours-old stalls for owners
+      // long gone (recordStall's own opportunistic prune only runs on the NEXT write, which never
+      // comes on a quiet box).
       const since = Number(url.match(/[?&]since=(\d+)/)?.[1] ?? 0);
-      sendJson(res, 200, { ok: true, now: Date.now(), stalls: recentStalls.filter((s) => s.at > since) });
+      const ageCutoff = Date.now() - STALL_MAX_AGE_MS;
+      sendJson(res, 200, { ok: true, now: Date.now(), stalls: recentStalls.filter((s) => s.at > since && s.at > ageCutoff) });
       return;
     }
     if (req.method === 'GET' && url.startsWith('/admin/route')) {
