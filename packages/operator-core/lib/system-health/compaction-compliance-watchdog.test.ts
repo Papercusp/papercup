@@ -150,6 +150,12 @@ function fakeSql(opts: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  estimateMock.mockResolvedValue(null);
+  specMock.mockResolvedValue(null);
+  setEstimateMock.mockResolvedValue(undefined);
+  setLimitMock.mockResolvedValue(undefined);
+  deathMock.mockResolvedValue(false);
+  openEscalationMock.mockResolvedValue({ msg_id: 'esc-1' });
   // Keep the existing gauge + force rung ON, but the shared P-017/P-018 cutover
   // OFF by default. Individual carry tests opt in explicitly.
   getFlagMock.mockImplementation(
