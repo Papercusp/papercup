@@ -618,6 +618,43 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     }
   });
 
+  it('carry opt-in appends ?carryOwner=<clientId>&carryWindow=<backendWindow> + flips the weak-model strategy to context-full (deterministic-context-carry P-017, WI-4845)', () => {
+    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-1', backendWindow: 204800, carryCompaction: true }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toMatch(
+      /\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize\?carryOwner=su-carry-1&carryWindow=204800"/,
+    );
+    // The mechanical shake never calls remoteEndpoint — an opted-in session must run an
+    // LLM-capable strategy so the compaction actually reaches the gateway's carry branch.
+    expect(written).toMatch(/\n\s+strategy:\s*context-full/);
+    expect(written).not.toContain('strategy: shake');
+    expect(written).toMatch(/\n\s+thresholdPercent:\s*\d+/); // threshold seeding unchanged
+  });
+
+  it('carry opt-in without a clientId stays INERT — no owner to build a carry doc for', () => {
+    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', carryCompaction: true }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
+    expect(written).not.toContain('carryOwner');
+    expect(written).toMatch(/\n\s+strategy:\s*shake/); // weak-model default preserved
+  });
+
+  it('carry opt-in on a gateway-routed hosted model appends the params and PRESERVES the native strategy (no probed window ⇒ no carryWindow)', () => {
+    writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6', clientId: 'su-carry-2', carryCompaction: true }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize\?carryOwner=su-carry-2"/);
+    expect(written).not.toContain('carryWindow');
+    expect(written).not.toContain('strategy: shake'); // hosted model keeps its native strategy (P-001)
+  });
+
+  it('carry DEFAULT-OFF is byte-identical: no params, shake preserved, clientId or not', () => {
+    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-3', backendWindow: 204800 }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
+    expect(written).not.toContain('carryOwner');
+    expect(written).toMatch(/\n\s+strategy:\s*shake/);
+  });
+
   it('falls back to the config.yml modelRoles.default when no model opt is passed', () => {
     // AGENT_CFG's default is a gateway-routed hosted model → endpoint-only seeding (P-002)…
     writeOmpSessionConfigDir('sess1', {}, home);

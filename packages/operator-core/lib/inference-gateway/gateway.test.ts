@@ -3563,7 +3563,7 @@ test('POST /maintenance/summarize — omp remote-compaction wire: {systemPrompt,
   // The loopback tagged itself into the maintenance lane (tier 1 under the tier layer).
   assert.equal(upstream.last.headers['x-papercusp-priority'], 'maintenance');
   const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number } };
-  assert.deepEqual(s.maintenance, { requests: 1, errors: 0 });
+  assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 0 });
 });
 
 test('POST /maintenance/summarize — missing prompt → 400, counted as neither request nor error', async () => {
@@ -3580,7 +3580,7 @@ test('POST /maintenance/summarize — missing prompt → 400, counted as neither
   const body = (await res.json()) as { error?: { message?: string } };
   assert.match(body.error?.message ?? '', /prompt/, 'names the missing field');
   const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number } };
-  assert.deepEqual(s.maintenance, { requests: 0, errors: 0 });
+  assert.deepEqual(s.maintenance, { requests: 0, errors: 0, carried: 0 });
 });
 
 test('POST /maintenance/summarize — model-call failure surfaces a structured error (no summary), counted in maintenance.errors', async () => {
@@ -3601,7 +3601,159 @@ test('POST /maintenance/summarize — model-call failure surfaces a structured e
   assert.equal(body.summary, undefined, 'a failure NEVER fabricates a summary field');
   assert.match(body.error?.message ?? '', /model call failed/);
   const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number } };
-  assert.deepEqual(s.maintenance, { requests: 1, errors: 1 });
+  assert.deepEqual(s.maintenance, { requests: 1, errors: 1, carried: 0 });
+});
+
+// ── DETERMINISTIC maintenance carry (deterministic-context-carry P-017, WI-4845) ──────────────────
+
+test('POST /maintenance/summarize?carryOwner=… — the injected carry builder answers deterministically; the LLM lane never runs', async () => {
+  let llmHits = 0;
+  const calls: Array<{ ownerId: string; opts: { effectiveWindowTokens?: number; workspaceId?: string } }> = [];
+  await boot(
+    (_req, res) => {
+      llmHits++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'LLM SUMMARY' }] }));
+    },
+    {
+      maintenanceCarry: async (ownerId, opts) => {
+        calls.push({ ownerId, opts });
+        return { summary: 'CARRY DOC', deterministic: true, budgetChars: 9000 };
+      },
+    },
+  );
+  const res = await ask('/maintenance/summarize?carryOwner=su-abc123&carryWs=ws-1&carryWindow=120000', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Summarize this conversation.' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { summary?: string; deterministic?: boolean; budgetChars?: number };
+  assert.equal(body.summary, 'CARRY DOC', 'the deterministic carry serves .summary — the exact field omp Gm reads');
+  assert.equal(body.deterministic, true, 'tagged so telemetry (and drills) can tell a carry from an LLM summary');
+  assert.equal(body.budgetChars, 9000);
+  assert.equal(llmHits, 0, 'the LLM lane NEVER ran on a carry hit');
+  assert.deepEqual(
+    calls,
+    [{ ownerId: 'su-abc123', opts: { effectiveWindowTokens: 120000, workspaceId: 'ws-1' } }],
+    'carryOwner/carryWs/carryWindow thread through to the builder',
+  );
+  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 1 });
+});
+
+test('carry miss (null) falls through to the LLM lane — a carry fault never strands a live compaction', async () => {
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'LLM FALLBACK' }] }));
+    },
+    { maintenanceModel: 'maint-model-test', maintenanceCarry: async () => null },
+  );
+  const res = await ask('/maintenance/summarize?carryOwner=su-abc123', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Summarize.' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { summary?: string; deterministic?: boolean };
+  assert.equal(body.summary, 'LLM FALLBACK');
+  assert.equal(body.deterministic, undefined, 'an LLM fallback is never mislabelled deterministic');
+  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 0 });
+});
+
+test('carry THROW falls through to the LLM lane (the gateway guards even beyond the builder fail-soft contract)', async () => {
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'LLM FALLBACK' }] }));
+    },
+    {
+      maintenanceCarry: async () => {
+        throw new Error('carry builder blew up');
+      },
+    },
+  );
+  const res = await ask('/maintenance/summarize?carryOwner=su-abc123', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Summarize.' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { summary?: string };
+  assert.equal(body.summary, 'LLM FALLBACK');
+  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 0 }, 'a swallowed carry throw is not an LLM-lane error');
+});
+
+test('no carryOwner param ⇒ the injected builder is NOT consulted (params-absent contract)', async () => {
+  let builderCalls = 0;
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'LLM SUMMARY' }] }));
+    },
+    {
+      maintenanceCarry: async () => {
+        builderCalls++;
+        return { summary: 'CARRY DOC', deterministic: true, budgetChars: 9000 };
+      },
+    },
+  );
+  const res = await ask('/maintenance/summarize', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Summarize.' }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(((await res.json()) as { summary?: string }).summary, 'LLM SUMMARY');
+  assert.equal(builderCalls, 0, 'without ?carryOwner the carry branch never engages');
+});
+
+test('carryOwner param WITHOUT an injected builder (flag OFF) ⇒ the LLM lane serves it (byte-identical)', async () => {
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ content: [{ type: 'text', text: 'LLM SUMMARY' }] }));
+  });
+  // Also proves the route MATCHES a query-string URL — pre-P-017 the exact-equality match
+  // would have 404'd this POST (and omp throws on a remoteEndpoint failure).
+  const res = await ask('/maintenance/summarize?carryOwner=su-abc123&carryWindow=9000', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Summarize.' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { summary?: string; deterministic?: boolean };
+  assert.equal(body.summary, 'LLM SUMMARY');
+  assert.equal(body.deterministic, undefined);
+  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 0 });
+});
+
+test('missing prompt with carryOwner still 400s — the wire contract is validated before the carry branch', async () => {
+  let builderCalls = 0;
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    {
+      maintenanceCarry: async () => {
+        builderCalls++;
+        return { summary: 'CARRY DOC', deterministic: true, budgetChars: 9000 };
+      },
+    },
+  );
+  const res = await ask('/maintenance/summarize?carryOwner=su-abc123', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 400);
+  assert.equal(builderCalls, 0, 'a wire-invalid request never reaches the builder');
+  const s = (await (await ask('/stats')).json()) as { maintenance?: { requests: number; errors: number; carried: number } };
+  assert.deepEqual(s.maintenance, { requests: 0, errors: 0, carried: 0 });
 });
 
 test('maintenance label rides tier 1 when the tier layer is on (never AIMD-shed, reserved floor)', async () => {

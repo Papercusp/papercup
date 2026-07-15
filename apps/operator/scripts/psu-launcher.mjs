@@ -1937,7 +1937,22 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     // alternative is worse (a weak local model summarizing on its own saturated slot).
     const gwp = Number(process.env.PAPERCUSP_GATEWAY_PORT);
     const gwPort = Number.isFinite(gwp) && gwp > 0 ? gwp : 8788;
-    const remoteEndpointLine = `  remoteEndpoint: "http://127.0.0.1:${gwPort}/maintenance/summarize"\n`;
+    // DETERMINISTIC CARRY opt-in (deterministic-context-carry P-017, WI-4845; env-gated
+    // DEFAULT-OFF via PAPERCUSP_OMP_CARRY_COMPACTION=1): append ?carryOwner=<coord ownerId>
+    // [&carryWindow=<probed backend tokens>] so the gateway answers the compaction from the
+    // deterministic carry-doc builder instead of the LLM oneshot. Needs BOTH sides live —
+    // the gateway must carry the query-param route AND FLAGS.GATEWAY_MAINTENANCE_CARRY ON
+    // (an OLDER gateway 404s this POST and omp THROWS on a remoteEndpoint failure with no
+    // local fallback, so the gateway leg deploys first; a flag-OFF current gateway just
+    // ignores the params — plain LLM lane). Requires the per-session coord ownerId
+    // (opts.clientId): without it there is no owner to build a carry doc for, so the
+    // opt-in stays inert.
+    const carryOptIn = !!(carryCompaction && clientId);
+    const carryBw = Number(backendWindow);
+    const carryParams = carryOptIn
+      ? `?carryOwner=${encodeURIComponent(clientId)}${Number.isFinite(carryBw) && carryBw > 0 ? `&carryWindow=${carryBw}` : ''}`
+      : '';
+    const remoteEndpointLine = `  remoteEndpoint: "http://127.0.0.1:${gwPort}/maintenance/summarize${carryParams}"\n`;
     if (isWeakOmpModel(effModel)) {
       cfg = cfg
         .replace(/^compaction:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '')
@@ -1967,7 +1982,10 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
         }
         shakePct = computeCompactionThresholdPercents(shakeWindow).hardPct;
       }
-      cfg += `compaction:\n  strategy: shake\n  thresholdPercent: ${shakePct}\n` + remoteEndpointLine;
+      // Opted-in carry sessions run `context-full` (an LLM-capable strategy) instead of the
+      // mechanical `shake` so the compaction actually exercises remoteEndpoint — where the
+      // gateway answers deterministically (P-017). Default stays shake (P-001, byte-identical).
+      cfg += `compaction:\n  strategy: ${carryOptIn ? 'context-full' : 'shake'}\n  thresholdPercent: ${shakePct}\n` + remoteEndpointLine;
     } else if (String(effModel || '').trim().toLowerCase().startsWith('papercusp-gateway/')) {
       // Gateway-routed hosted model: inject the endpoint ONLY, preserving whatever
       // compaction settings the copied config carries — never force shake on a hosted
