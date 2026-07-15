@@ -101,6 +101,33 @@ export async function decompressArchiveBlob(row: Pick<ArchiveFileRow, 'codec' | 
   return row.codec === 'zstd' ? zstdDecompress(row.blob) : row.blob;
 }
 
+/** Port/read-path decompression with admission checks BEFORE expansion. The
+ * manifest's raw length is authenticated later by sha, but it is the only
+ * cheap pre-decompression bound; `maxOutputLength` also makes zlib abort if a
+ * corrupt frame expands past the admitted size. */
+export async function decompressArchiveBlobBounded(
+  row: Pick<ArchiveFileRow, 'codec' | 'blob' | 'bytes_raw'>,
+  maxRawBytes: number,
+): Promise<Buffer> {
+  if (row.bytes_raw < 0 || row.bytes_raw > maxRawBytes) {
+    throw new Error(`archive raw payload ${row.bytes_raw} exceeds ${maxRawBytes} byte cap`);
+  }
+  if (row.blob.length > maxRawBytes) {
+    throw new Error(`archive stored payload ${row.blob.length} exceeds ${maxRawBytes} byte cap`);
+  }
+  if (row.codec !== 'zstd') return row.blob;
+  const fn = zl.zstdDecompress as unknown as (
+    buf: Buffer,
+    opts: { maxOutputLength: number },
+    cb: (err: Error | null, out: Buffer) => void,
+  ) => void;
+  const raw = await promisify(fn)(row.blob, { maxOutputLength: maxRawBytes });
+  if (raw.length !== row.bytes_raw || raw.length > maxRawBytes) {
+    throw new Error(`archive raw length mismatch: manifest=${row.bytes_raw} actual=${raw.length}`);
+  }
+  return raw;
+}
+
 // ── types ────────────────────────────────────────────────────────────────────
 
 export type ArchiveSourceKind = 'claude' | 'omp' | 'codex';

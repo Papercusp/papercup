@@ -50,6 +50,13 @@ export interface PushDeliveryRow {
   acted_at: string | null;
 }
 
+/** postgres-js returns a bigint column as a STRING (precision-safe) — coerce the
+ *  `id` back to a number so it survives the object-identity id correlation in the
+ *  delivery pipeline and the Number.isFinite guards in recordDelivered/-Dropped. */
+function normalizeRow(r: PushDeliveryRow): PushDeliveryRow {
+  return { ...r, id: Number(r.id), score: Number(r.score) };
+}
+
 export interface EnqueuePushInput {
   targetOwnerId: string;
   targetSessionId?: string | null;
@@ -106,7 +113,7 @@ export async function pendingPushes(
     ORDER BY enqueued_at ASC
     LIMIT ${cap}
   `;
-  return rows;
+  return rows.map(normalizeRow);
 }
 
 /**
@@ -230,7 +237,7 @@ export async function recentDeliveries(filter: {
     ORDER BY enqueued_at DESC
     LIMIT ${cap}
   `;
-  return rows;
+  return rows.map(normalizeRow);
 }
 
 /**
