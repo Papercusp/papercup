@@ -1065,25 +1065,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
     try {
       const { readLatestPerfSignals, evaluatePerfSignals } = await import('./perf-budgets');
       const sig = await readLatestPerfSignals();
-      if (sig) {
-        // EI-12302: suppress the operator-unreachable crit when it's a sanctioned
-        // deploy restart, not a real wedge — deploy.ts's withDrain holds the
-        // 'dev-server' resource lock exclusive for the whole restart window, so
-        // "currently held" IS the deploy-in-progress signal (reuse, don't invent a
-        // new deploy-state marker). Fail-soft: an unreadable lock store just means
-        // no suppression (the crit still pages — never silently swallow a real one).
-        let deployInProgress = false;
-        try {
-          const { getTxPool, readResourceQueue } = await import('../agent-tools/locks/su-lock-store');
-          const { lockCoordinationDomain } = await import('../agent-tools/locks/coordination-domain');
-          const { holders } = await readResourceQueue(getTxPool(), {
-            coordinationDomain: lockCoordinationDomain(),
-            resource: 'dev-server',
-          });
-          deployInProgress = holders.some((h) => h.mode === 'exclusive');
-        } catch { /* lock store unreadable — do not suppress */ }
-        perf = evaluatePerfSignals(sig, ctx.now, undefined, deployInProgress);
-      }
+      if (sig) perf = evaluatePerfSignals(sig, ctx.now);
     } catch { /* perf-signals unreadable — leave null */ }
     // MCP tool-call-transport SLO (W8/P-008): read the resilient MCP proxy's failure
     // ledger tail and summarize the windowed hard/soft failure counts. Fail-soft — an
