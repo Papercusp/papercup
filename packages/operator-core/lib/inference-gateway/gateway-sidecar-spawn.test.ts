@@ -7,7 +7,7 @@
  * forks a real child process, so it is exercised by the Mac-VM / desktop E2E smoke,
  * not unit tests.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import {
@@ -137,9 +137,108 @@ describe('ensureGatewaySidecar', () => {
     process.env.PAPERCUSP_GATEWAY_PORT = String(port);
     try {
       await expect(ensureGatewaySidecar()).resolves.toBe('adopted-external');
-      expect(_gatewaySidecarStateForTests()).toMatchObject({ running: false, adoptedExternal: true });
+      expect(_gatewaySidecarStateForTests()).toMatchObject({ running: false, adoptedExternal: true, reprobeArmed: true });
     } finally {
       await closeServer(server);
+    }
+  });
+
+  it('arms the periodic reprobe timer as a side effect (SPOF 2 d+e)', async () => {
+    process.env.PAPERCUSP_GATEWAY_SUPERVISE = '0';
+    await ensureGatewaySidecar();
+    // The kill-switch path returns before arming anything.
+    expect(_gatewaySidecarStateForTests().reprobeArmed).toBe(false);
+  });
+});
+
+describe('gatewayReprobeIntervalSec', () => {
+  it('defaults to 60s and honors the env override / kill switch', () => {
+    expect(gatewayReprobeIntervalSec()).toBe(60);
+    process.env.PAPERCUSP_GATEWAY_REPROBE_SEC = '10';
+    expect(gatewayReprobeIntervalSec()).toBe(10);
+    process.env.PAPERCUSP_GATEWAY_REPROBE_SEC = '0';
+    expect(gatewayReprobeIntervalSec()).toBe(0);
+  });
+});
+
+describe('gatewayReprobeTick — SPOF 2 (d) budget-exhaustion re-arm + (e) adopted-external death', () => {
+  it('(e) adopted-external + port now DEAD → drops the adoption and spawns our own child', async () => {
+    const { server, port } = await listenEphemeral();
+    process.env.PAPERCUSP_GATEWAY_PORT = String(port);
+    await ensureGatewaySidecar(); // adopts
+    expect(_gatewaySidecarStateForTests().adoptedExternal).toBe(true);
+    await closeServer(server); // the external gateway dies, nothing restarts it
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spawnGatewayChild = vi.fn(async () => undefined);
+    await gatewayReprobeTick(port, { spawnGatewayChild });
+    warn.mockRestore();
+
+    expect(spawnGatewayChild).toHaveBeenCalledWith(port);
+    expect(_gatewaySidecarStateForTests().adoptedExternal).toBe(false);
+  });
+
+  it('(e) adopted-external + port still LIVE → no-op (healthy, no spawn)', async () => {
+    const { server, port } = await listenEphemeral();
+    try {
+      process.env.PAPERCUSP_GATEWAY_PORT = String(port);
+      await ensureGatewaySidecar(); // adopts
+      const spawnGatewayChild = vi.fn(async () => undefined);
+      await gatewayReprobeTick(port, { spawnGatewayChild });
+      expect(spawnGatewayChild).not.toHaveBeenCalled();
+      expect(_gatewaySidecarStateForTests().adoptedExternal).toBe(true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('(d) respawn budget exhausted + port still DOWN → re-arms with a fresh window and retries the spawn', async () => {
+    const port = 39997; // nothing listening
+    _setRespawnGivenUpForTests(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spawnGatewayChild = vi.fn(async () => undefined);
+    await gatewayReprobeTick(port, { spawnGatewayChild });
+    warn.mockRestore();
+    expect(spawnGatewayChild).toHaveBeenCalledWith(port);
+    expect(_gatewaySidecarStateForTests()).toMatchObject({ respawnGivenUp: false, attemptsInWindow: 0 });
+  });
+
+  it('(d) respawn budget exhausted + port now LIVE externally → adopts instead of spawning', async () => {
+    const { server, port } = await listenEphemeral();
+    try {
+      _setRespawnGivenUpForTests(true);
+      const spawnGatewayChild = vi.fn(async () => undefined);
+      await gatewayReprobeTick(port, { spawnGatewayChild });
+      expect(spawnGatewayChild).not.toHaveBeenCalled();
+      expect(_gatewaySidecarStateForTests()).toMatchObject({ adoptedExternal: true, respawnGivenUp: false });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('healthy steady state (not adopted-external, budget not exhausted) → no-op', async () => {
+    const port = 39998;
+    const spawnGatewayChild = vi.fn(async () => undefined);
+    await gatewayReprobeTick(port, { spawnGatewayChild });
+    expect(spawnGatewayChild).not.toHaveBeenCalled();
+  });
+
+  it('is fail-soft — a probe/spawn error never throws out of the tick', async () => {
+    _setRespawnGivenUpForTests(true);
+    const spawnGatewayChild = vi.fn(async () => {
+      throw new Error('spawn failed');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(gatewayReprobeTick(39996, { spawnGatewayChild })).resolves.toBeUndefined();
+    } finally {
+      // The failed spawn falls through to scheduleRespawn, which arms a REAL setTimeout
+      // for its own backoff retry (against the real, unmocked spawnGatewayChild) —
+      // clear it immediately so this unit test never actually forks a child process.
+      _resetGatewaySidecarStateForTests();
+      warn.mockRestore();
+      error.mockRestore();
     }
   });
 });
