@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // @ts-expect-error Canonical runtime module is plain ESM so the raw-node PSU launcher can share it.
-import { buildContextBudget, resolveModelContextWindow } from './model-context-budget.mjs';
+import {
+  buildContextBudget,
+  formatCodexLaunchContextSection,
+  readLaunchContextText,
+  resolveModelContextWindow,
+} from './model-context-budget.mjs';
 
 describe('model-context-budget', () => {
   it('reads the selected Codex model window from the installed cache', () => {
@@ -34,6 +39,35 @@ describe('model-context-budget', () => {
       window: 180_000,
       source: 'declared-live-min',
     });
+  });
+
+  it('reads a YAML-only OMP registry record through end-of-file', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-budget-omp-yaml-'));
+    mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+    writeFileSync(
+      join(home, '.omp', 'agent', 'models.yml'),
+      ['- id: first', '  contextWindow: 64000', '- id: target-last', '  contextWindow: 131072', ''].join('\n'),
+    );
+    expect(resolveModelContextWindow({ agent: 'omp', model: 'target-last', home })).toEqual({
+      window: 131_072,
+      source: 'omp-models-yml',
+    });
+  });
+
+  it('counts the exact bounded launch-context bytes in the shared budget', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-budget-context-'));
+    const path = join(home, 'brief.md');
+    writeFileSync(path, 'mission context');
+    const context = readLaunchContextText(path);
+    const without = buildContextBudget({ agent: 'codex', promptText: 'base', declaredWindow: 200_000 });
+    const withContext = buildContextBudget({
+      agent: 'codex',
+      promptText: 'base',
+      additionalPromptText: formatCodexLaunchContextSection(context),
+      declaredWindow: 200_000,
+    });
+    expect(withContext.promptTokens).toBeGreaterThan(without.promptTokens);
+    expect(withContext.availableInputTokens).toBeLessThan(without.availableInputTokens);
   });
 
   it('returns one versioned budget used by bootstrap, preflight, and port fitting', () => {

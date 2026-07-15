@@ -113,6 +113,21 @@ export interface PortableSessionPort {
   warnings: string[];
 }
 
+/** Durable, content-free projection of a portable contract. The full contract
+ * (especially `turns`) exists only while rendering the short-lived 0600 seed
+ * artifact and must never be copied into session_ports.metadata. */
+export interface SessionPortContractSummary {
+  protocolVersion: typeof SESSION_PORT_PROTOCOL_VERSION;
+  source: Pick<PortableSessionPort['source'], 'backend' | 'workspaceId' | 'advSessionId' | 'nativeSessionId' | 'snapshot'>;
+  target: PortableSessionPort['target'];
+  fidelity: PortableSessionPort['fidelity'];
+  versions: PortableSessionPort['versions'];
+  hashes: PortableSessionPort['hashes'];
+  stats: PortableSessionPort['stats'];
+  summary: PortableSessionPort['summary'];
+  warnings: string[];
+}
+
 export interface ClaudeAdaptResult {
   turns: PortableTurn[];
   stats: PortableSessionPort['stats'];

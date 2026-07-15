@@ -4,13 +4,14 @@
  * provide facts (model/backend/live override), then consume the returned
  * versioned budget instead of independently guessing 200k vs 1M.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export const MODEL_CONTEXT_BUDGET_VERSION = 1;
 export const RUNTIME_OVERHEAD_TOKENS = Object.freeze({ full: 152_000, trimmed: 50_000 });
 export const DEFAULT_CONTEXT_WINDOWS = Object.freeze({ claude: 200_000, codex: 272_000, omp: 200_000 });
+export const MAX_LAUNCH_CONTEXT_BYTES = 1024 * 1024;
 
 const POSITIVE = (v) => {
   const n = Number(v);
@@ -78,6 +79,26 @@ function ompDefaultModel(home) {
   }
 }
 
+/** Read the exact target-only launch context that the backend CLI will append.
+ * A shared bounded reader keeps preview and bootstrap on the same bytes. */
+export function readLaunchContextText(path) {
+  if (!path) return '';
+  const bytes = readFileSync(path);
+  if (bytes.byteLength > MAX_LAUNCH_CONTEXT_BYTES) {
+    throw new Error(`launch_context exceeds ${MAX_LAUNCH_CONTEXT_BYTES} byte cap`);
+  }
+  const text = bytes.toString('utf8');
+  if (text.includes('\uFFFD')) throw new Error('launch_context is not valid UTF-8');
+  return text.trim();
+}
+
+/** Codex has no append-system-prompt-file flag, so bootstrap folds the same
+ * bytes into AGENTS.md using this exact framing. Preview uses it too. */
+export function formatCodexLaunchContextSection(text) {
+  const normalized = String(text ?? '').trim();
+  return normalized ? `\n\n---\n## Launch Context\n\n${normalized}\n` : '';
+}
+
 export function installedModelContextWindow({ agent, model, home = homedir() }) {
   const backend = String(agent ?? '').toLowerCase();
   if (backend === 'codex') {
@@ -97,10 +118,11 @@ export function installedModelContextWindow({ agent, model, home = homedir() }) 
       try {
         const yml = readFileSync(join(home, '.omp', 'agent', 'models.yml'), 'utf8');
         const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const match = yml.match(
-          new RegExp(`^[ \\t]*-[ \\t]+id:[ \\t]*["']?${escaped}["']?[ \\t]*$([\\s\\S]*?)(?=^[ \\t]*-[ \\t]+id:|\\z)`, 'm'),
-        );
-        const n = POSITIVE(match?.[1]?.match(/^[ \t]*contextWindow:[ \t]*(\d+)/m)?.[1]);
+        const start = new RegExp(`^[ \\t]*-[ \\t]+id:[ \\t]*["']?${escaped}["']?[ \\t]*$`, 'm').exec(yml);
+        const tail = start ? yml.slice(start.index + start[0].length) : '';
+        const next = /^[ \t]*-[ \t]+id:/m.exec(tail);
+        const block = tail.slice(0, next?.index ?? tail.length);
+        const n = POSITIVE(block.match(/^[ \t]*contextWindow:[ \t]*(\d+)/m)?.[1]);
         if (n) return { window: n, source: 'omp-models-yml' };
       } catch {
         /* registry is optional */
@@ -142,13 +164,16 @@ export function buildContextBudget({
   home = homedir(),
   contextSize,
   promptText,
+  additionalPromptText,
   estimatedPromptTokens,
   declaredWindow,
   liveWindow,
 } = {}) {
   const resolved = resolveModelContextWindow({ agent, model, home, declaredWindow, liveWindow });
   const variant = contextSize === 'full' ? 'full' : 'trimmed';
-  const promptTokens = POSITIVE(estimatedPromptTokens) ?? estimatePromptTokens(promptText);
+  const promptTokens = POSITIVE(estimatedPromptTokens) ?? estimatePromptTokens(
+    `${String(promptText ?? '')}${String(additionalPromptText ?? '')}`,
+  );
   const runtimeOverheadTokens = RUNTIME_OVERHEAD_TOKENS[variant];
   const baselineTokens = promptTokens + runtimeOverheadTokens;
   const reserveTokens = Math.min(15_000, Math.max(8_000, Math.floor(resolved.window / 26)));

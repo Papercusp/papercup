@@ -87,8 +87,12 @@ describe('session-port preparation service', () => {
       findExisting: async () => null,
       createPrepared,
     });
-    expect(out.contract.hashes.source).toBe(inspection.source.sha256);
-    expect(JSON.stringify(out.contract)).not.toContain('sk-ant-');
+    expect(out.summary.hashes.source).toBe(inspection.source.sha256);
+    expect(JSON.stringify(out.summary)).not.toContain('sk-ant-');
+    const persisted = createPrepared.mock.calls[0][0];
+    expect(persisted.metadata).not.toHaveProperty('contract');
+    expect(JSON.stringify(persisted.metadata)).not.toContain('history');
+    expect(JSON.stringify(persisted.metadata)).not.toContain('done');
     expect(out.port.id).toBe(out.token.split('.')[0]);
     expect(createPrepared).toHaveBeenCalledTimes(1);
   });
@@ -112,7 +116,22 @@ describe('session-port preparation service', () => {
       renderedHash: 'b'.repeat(64),
       tokenHash: 'c'.repeat(64),
       artifactPath: '/managed/path',
-      metadata: { contract: { protocolVersion: 1 } },
+      metadata: {
+        summary: {
+          protocolVersion: 1,
+          source: {
+            backend: 'claude', workspaceId: 'ws', advSessionId: 41, nativeSessionId: row.sessionId,
+            snapshot: { kind: 'live-jsonl', highWaterBytes: 1, completeBytes: 1, sha256: inspection.source.sha256, archiveRelpath: null },
+          },
+          target,
+          fidelity: 'full',
+          versions: { adapter: 1, transform: 1, renderer: 1, summaryPrompt: null },
+          hashes: { source: inspection.source.sha256, normalized: inspection.internal.normalizedHash, rendered: 'b'.repeat(64) },
+          stats: inspection.stats,
+          summary: null,
+          warnings: [],
+        },
+      },
       error: null,
       expiresAt: '2099-01-01T00:00:00.000Z',
     };

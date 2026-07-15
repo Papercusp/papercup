@@ -35,6 +35,7 @@ import {
   SESSION_PORT_SCHEMA,
   type PortableBlock,
   type PortableSessionPort,
+  type SessionPortContractSummary,
   type PortableTurn,
   type SessionBackend,
 } from './types';
@@ -244,6 +245,26 @@ export function deriveSessionPortIdempotencyKey(inspection: SessionPortInspectio
   }));
 }
 
+export function summarizePortableSessionPort(contract: PortableSessionPort): SessionPortContractSummary {
+  return {
+    protocolVersion: contract.protocolVersion,
+    source: {
+      backend: contract.source.backend,
+      workspaceId: contract.source.workspaceId,
+      advSessionId: contract.source.advSessionId,
+      nativeSessionId: contract.source.nativeSessionId,
+      snapshot: contract.source.snapshot,
+    },
+    target: contract.target,
+    fidelity: contract.fidelity,
+    versions: contract.versions,
+    hashes: contract.hashes,
+    stats: contract.stats,
+    summary: contract.summary,
+    warnings: contract.warnings,
+  };
+}
+
 export async function prepareInspectedSessionPort(input: {
   inspection: SessionPortInspection;
   expectedSourceHash: string;
@@ -257,7 +278,7 @@ export async function prepareInspectedSessionPort(input: {
   port: SessionPortRow;
   token: string;
   reused: boolean;
-  contract: PortableSessionPort;
+  summary: SessionPortContractSummary;
 }> {
   const inspection = input.inspection;
   if (inspection.source.sha256 !== input.expectedSourceHash) throw new Error('source snapshot changed; inspect again before egress');
@@ -270,11 +291,15 @@ export async function prepareInspectedSessionPort(input: {
       throw new Error(`existing idempotent session port is ${existing.status}: ${existing.error ?? 'retry requires a new source snapshot/target'}`);
     }
     const secret = createHmac('sha256', input.tokenKey).update(`${existing.id}:${idempotencyKey}`).digest('hex');
+    const summary = existing.metadata.summary as SessionPortContractSummary | undefined;
+    if (!summary || summary.protocolVersion !== SESSION_PORT_PROTOCOL_VERSION) {
+      throw new Error('existing idempotent session port predates the content-free metadata contract; expire it and inspect again');
+    }
     return {
       port: existing,
       token: `${existing.id}.${secret}`,
       reused: true,
-      contract: existing.metadata.contract as unknown as PortableSessionPort,
+      summary,
     };
   }
 
@@ -338,6 +363,7 @@ export async function prepareInspectedSessionPort(input: {
     summary: fitted.summary ?? null,
     warnings: inspection.warnings,
   };
+  const summary = summarizePortableSessionPort(contract);
   const secret = createHmac('sha256', input.tokenKey).update(`${portId}:${idempotencyKey}`).digest('hex');
   const artifact = await writeSessionPortArtifact({
     seed: rendered.seed,
@@ -362,7 +388,7 @@ export async function prepareInspectedSessionPort(input: {
       tokenHash: artifact.tokenHash,
       artifactPath: artifact.path,
       metadata: {
-        contract,
+        summary,
         disclosure: inspection.disclosure,
         estimatedTokens: fitted.estimatedTokens,
         artifactBytes: Buffer.byteLength(rendered.seed, 'utf8'),
@@ -372,9 +398,13 @@ export async function prepareInspectedSessionPort(input: {
     if (port.id !== portId) {
       await deleteSessionPortArtifact(artifact.path);
       const existingSecret = createHmac('sha256', input.tokenKey).update(`${port.id}:${idempotencyKey}`).digest('hex');
-      return { port, token: `${port.id}.${existingSecret}`, reused: true, contract: port.metadata.contract as unknown as PortableSessionPort };
+      const existingSummary = port.metadata.summary as SessionPortContractSummary | undefined;
+      if (!existingSummary || existingSummary.protocolVersion !== SESSION_PORT_PROTOCOL_VERSION) {
+        throw new Error('idempotency winner lacks a content-free session-port summary');
+      }
+      return { port, token: `${port.id}.${existingSecret}`, reused: true, summary: existingSummary };
     }
-    return { port, token: artifact.token, reused: false, contract };
+    return { port, token: artifact.token, reused: false, summary };
   } catch (error) {
     await deleteSessionPortArtifact(artifact.path).catch(() => false);
     throw error;
