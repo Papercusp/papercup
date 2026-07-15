@@ -38,6 +38,31 @@ describe('git-sync:run', () => {
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
   });
 
+  // WI-4940: the trailing `git rev-parse HEAD` (headSha, called unconditionally after
+  // fireGitSyncNow resolves — the exact spot the reporter's 120s hang landed in, AFTER
+  // the commit had already succeeded) must be bounded, not a bare unbounded execFile.
+  it('bounds the HEAD-delta execFile call with a timeout so a hung git process cannot hang the whole tool call', async () => {
+    const execFileMock = vi.fn((_file: string, _args: string[], opts: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+      // Simulate node's own timeout-kill behavior: execFile with `timeout` set rejects
+      // with a killed error instead of ever resolving — assert the fix actually wires
+      // a bounded `timeout` through, and that the handler still resolves cleanly.
+      expect(opts).toMatchObject({ timeout: expect.any(Number) });
+      expect((opts.timeout as number) > 0).toBe(true);
+      cb(Object.assign(new Error('killed'), { killed: true }));
+    });
+    vi.doMock('node:child_process', () => ({ execFile: execFileMock }));
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => '/repo' }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => undefined) }));
+
+    const { default: tool } = await import('./run');
+    const result = await tool.handler({}, MAKE_CTX());
+
+    expect(execFileMock).toHaveBeenCalled();
+    expect(parse(result as never)).toMatchObject({ ok: true, fired: true, head_before: null, head_after: null });
+  });
+
   it('rejects a non-operator role', async () => {
     vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn() }));
     const { default: tool } = await import('./run');
