@@ -391,7 +391,13 @@ let recognition: any = null;
 // from a stuck TTS engine + a chatty caller — e.g. background scanner
 // fires while playback is hung). Hard cap drops oldest items beyond MAX.
 const SYNTH_QUEUE_MAX = 8;
-let synthQueue: Array<{ text: string; role: string }> = [];
+let synthQueue: Array<{
+  text: string;
+  role: string;
+  /** A short local acknowledgement is not the agent's substantive reply.
+   * Keep the response deadline armed until the real reply starts. */
+  preserveAwaitingResponse: boolean;
+}> = [];
 let isSynthSpeaking = false;
 
 function notify() {
@@ -2304,7 +2310,11 @@ export function speak(
   text: string,
   role = 'system:operator',
   priority: 'polite' | 'assertive' = 'polite',
-  options: { force?: boolean; allowDuringRealtime?: boolean } = {},
+  options: {
+    force?: boolean;
+    allowDuringRealtime?: boolean;
+    preserveAwaitingResponse?: boolean;
+  } = {},
 ): void {
   // Dev test seam: record the reply text regardless of the gates below (we want
   // the brain's reply even on a tab that won't emit TTS). See __lastSpokenForTest.
@@ -2344,7 +2354,11 @@ export function speak(
     const leader = getVoiceLeaderState();
     if (leader.available && !leader.isLeader && !options.force) return;
   } catch { /* leader module not yet loaded — fall through and speak */ }
-  synthQueue.push({ text, role });
+  synthQueue.push({
+    text,
+    role,
+    preserveAwaitingResponse: options.preserveAwaitingResponse === true,
+  });
   // Cap queue depth: drop the oldest items beyond MAX so newer (more
   // relevant) utterances win. Critical when a stuck TTS engine + a
   // chatty caller (background scanner during always-on voice) would
@@ -2365,7 +2379,7 @@ function processSynthQueue(): void {
     return;
   }
   isSynthSpeaking = true;
-  endAwaitingResponse();
+  if (!next.preserveAwaitingResponse) endAwaitingResponse();
   setState({ status: 'speaking', speakingRole: next.role });
 
   // Engine routing: only use Web Speech if the user explicitly picked it,

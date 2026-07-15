@@ -30,6 +30,8 @@
  * drills pass) and P-026 (retire the hole-patch auto-recall fold) consume.
  */
 
+import type { ReplayTurn } from './replay/types';
+
 /** Carry slots the deterministic builder (P-009/P-010/P-011) is RESPONSIBLE for.
  *  A cold successor searching back for one of these is a candidate builder gap. */
 export type CarryClass =
@@ -114,6 +116,147 @@ export function classifyRecoveryLookup(lookup: RecoveryLookup): GapVerdict {
   // self-search / self-read / reread-state / other: a carry-class target is a gap.
   if (!isCarryClass) return 'orthogonal';
   return lookup.recoveredInCarry === true ? 'surfacing-gap' : 'gap';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live successor trace extraction (tool trajectory → RecoveryLookup[])
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Tool-name normalization across MCP (`mcp__server__verb`), colon, underscore,
+ * and dash spellings. Suffix matching below deliberately ignores the server name. */
+function toolKey(name: string | undefined): string {
+  return (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function parsedArgs(text: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function argsText(turn: ReplayTurn): string {
+  const parsed = parsedArgs(turn.text);
+  return parsed ? JSON.stringify(parsed) : turn.text;
+}
+
+/** Infer which deterministic carry slot a recovery lookup was trying to refill.
+ * Ordered from the most specific vocabulary to the broad recent-tail fallback. */
+export function inferRecoveryCarryClass(text: string): CarryClass | null {
+  const s = text.toLowerCase();
+  if (/\b(owner[- ]?directive|owner ask|owner message|user request|instruction)\b/.test(s)) return 'owner-directive';
+  if (/\b(waiting on owner|needs[_ -]?human|owner[- ]?gated|wall|unblock)\b/.test(s)) return 'walls';
+  if (/\b(work[_ -]?item|wi-\d+|held item|claim|checkpoint)\b/.test(s)) return 'held-wi';
+  if (/\b(loop|carry[- ]?note|auto[- ]?wake|wake cadence)\b/.test(s)) return 'loop-note';
+  if (/\b(facts?|standing conclusions?)\b/.test(s)) return 'facts';
+  if (/\b(plan|p-\d+|decision)\b/.test(s)) return 'plan-state';
+  if (/\b(identity|owner[_ -]?id|role|fleet|harness|workspace)\b/.test(s)) return 'identity';
+  if (/\b(recent|tail|transcript|session|turn|where .*left|previous)\b/.test(s)) return 'recent-tail';
+  return null;
+}
+
+/** Did the deterministic carry already contain the state a lookup named? Exact
+ * identifiers win; otherwise use the typed section marker. This intentionally
+ * distinguishes a hard omission from a carried-but-not-salient lookup. */
+function recoveredInCarry(targetClass: CarryClass, lookupText: string, carryText: string): boolean {
+  const carry = carryText.toLowerCase();
+  const refs = lookupText.match(/\b(?:wi-\d+|f-\d+|p-\d+|[a-z0-9]+(?:-[a-z0-9]+){2,})\b/gi) ?? [];
+  const meaningfulRefs = refs.filter((ref) => !['recent-tail', 'owner-directive', 'plan-state'].includes(ref.toLowerCase()));
+  if (meaningfulRefs.length > 0) return meaningfulRefs.some((ref) => carry.includes(ref.toLowerCase()));
+  switch (targetClass) {
+    case 'identity': return carry.includes('## identity');
+    case 'held-wi': return /\bwi-\d+\b/i.test(carryText) || carry.includes('held work');
+    case 'loop-note': return carry.includes('loop') || carry.includes('carry-note');
+    case 'facts': return carry.includes('fact');
+    case 'walls': return carry.includes('wall') || carry.includes('waiting on owner') || carry.includes('needs_human');
+    case 'plan-state': return carry.includes('## plan state');
+    case 'recent-tail': return carry.includes('## verbatim tail');
+    case 'owner-directive': return carry.includes('## open owner asks') || carry.includes("owner's final message");
+  }
+}
+
+function lookupFor(
+  kind: RecoveryKind,
+  targetClass: CarryClass | null,
+  lookupText: string,
+  carryText: string,
+): RecoveryLookup {
+  return {
+    kind,
+    targetClass,
+    ...(targetClass ? { recoveredInCarry: recoveredInCarry(targetClass, lookupText, carryText) } : {}),
+  };
+}
+
+/** Extract cosine-like scores from the result immediately following a post-cold
+ * `coord:orient`. The result shape has evolved, so this is deliberately tolerant:
+ * it recognizes JSON-ish `similarity` / `score` fields without requiring a schema. */
+function orientRecallLookups(resultText: string): RecoveryLookup[] {
+  const out: RecoveryLookup[] = [];
+  const score = /["']?(?:similarity|score)["']?\s*[:=]\s*(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)/gi;
+  for (let match = score.exec(resultText); match; match = score.exec(resultText)) {
+    const similarity = Number(match[1]);
+    if (!Number.isFinite(similarity)) continue;
+    const around = resultText.slice(Math.max(0, match.index - 240), Math.min(resultText.length, match.index + 240));
+    out.push({ kind: 'orient-recall-fold', targetClass: inferRecoveryCarryClass(around), similarity });
+  }
+  return out;
+}
+
+/**
+ * Convert a cold successor's FIRST-WINDOW tool trajectory into recovery lookups.
+ * The caller owns the window cut (marker → grade call). Ordinary source reads are
+ * intentionally ignored: re-reading code is normal work, not evidence that carry
+ * failed. Only explicit state-recovery surfaces count.
+ */
+export function extractRecoveryLookups(turns: readonly ReplayTurn[], carryText: string): RecoveryLookup[] {
+  const lookups: RecoveryLookup[] = [];
+  for (let i = 0; i < turns.length; i += 1) {
+    const turn = turns[i];
+    if (turn.role !== 'tool_use') continue;
+    const key = toolKey(turn.toolName);
+    const text = argsText(turn);
+
+    if (key.endsWith('sessioncarrydrill')) break; // grading call is the window terminus
+
+    if (key.endsWith('sessionssearch') || key.endsWith('sessionsread')) {
+      // Only self-history is a carry-recovery lookup. Reading another session is
+      // genuine cross-session work and therefore orthogonal to this drill.
+      if (!/\bself\b/i.test(text)) continue;
+      const target = inferRecoveryCarryClass(text) ?? 'recent-tail';
+      lookups.push(lookupFor(key.endsWith('sessionssearch') ? 'self-search' : 'self-read', target, text, carryText));
+      continue;
+    }
+    if (key.endsWith('memorysearch')) {
+      lookups.push({ kind: 'mem0-search', targetClass: inferRecoveryCarryClass(text) });
+      continue;
+    }
+    if (key.endsWith('workitemsget') || key.endsWith('workitemslist')) {
+      lookups.push(lookupFor('reread-state', 'held-wi', text, carryText));
+      continue;
+    }
+    if (key.endsWith('plansget') || key.endsWith('plansitems') || key.endsWith('planslist')) {
+      lookups.push(lookupFor('reread-state', 'plan-state', text, carryText));
+      continue;
+    }
+    if (key.endsWith('factslist')) {
+      lookups.push(lookupFor('reread-state', 'facts', text, carryText));
+      continue;
+    }
+    if (key.endsWith('loopstatus')) {
+      lookups.push(lookupFor('reread-state', 'loop-note', text, carryText));
+      continue;
+    }
+    if (key.endsWith('coordorient')) {
+      const result = turns.slice(i + 1).find((candidate) => candidate.role === 'tool_result');
+      if (result) lookups.push(...orientRecallLookups(result.text));
+    }
+  }
+  return lookups;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

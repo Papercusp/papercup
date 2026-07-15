@@ -35,6 +35,7 @@ import {
   subscribeVoiceState,
   cancelAllSpeech,
   getVoiceState,
+  speak,
   type VoiceState,
 } from './voice-mode';
 import { routeVoiceToSentinelPane, drainSentinelOutput } from './voice-sentinel-bridge';
@@ -288,12 +289,21 @@ export function VoiceAppBridge(): null {
           // heard them. Speaking also flips status → 'speaking', which clears
           // the awaitingResponse timeout window; the real reply lands via the
           // drainSentinelOutput poll below.
-          const { speak } = await import('./voice-mode');
-          speak('On it.', 'system:operator', 'polite');
+          speak('On it.', 'system:operator', 'polite', {
+            preserveAwaitingResponse: true,
+          });
           return;
         }
       }
-      if (!submitVoiceTurn(text)) {
+      if (submitVoiceTurn(text)) {
+        // The shipped converse brain commonly needs 15–24s before its first
+        // substantive word. Acknowledge immediately so the voice turn feels
+        // accepted, but DO NOT clear the response deadline: if the brain never
+        // replies, the audible timeout still fires 45s after the transcript.
+        speak('On it.', 'system:operator', 'polite', {
+          preserveAwaitingResponse: true,
+        });
+      } else {
         // No conversation provider available (should not happen in the desktop
         // app — the provider mounts with the shell). The turn is dropped; the
         // awaitingResponse window will surface the miss.

@@ -7,10 +7,13 @@ import {
   RECALL_NOISE_FLOOR,
   DEFAULT_SUFFICIENCY_PARAMS,
   classifyRecoveryLookup,
+  extractRecoveryLookups,
+  inferRecoveryCarryClass,
   gradeColdBootDrills,
   type RecoveryLookup,
   type DrillSample,
 } from './cold-boot-drill';
+import type { ReplayTurn } from './replay/types';
 
 describe('classifyRecoveryLookup — pure', () => {
   it('mem0-search is orthogonal even when it targets a carry class (mem0 ⟂ compaction)', () => {
@@ -124,5 +127,65 @@ describe('gradeColdBootDrills — per-class sufficiency', () => {
 
   it('exposes the documented default sufficiency params', () => {
     expect(DEFAULT_SUFFICIENCY_PARAMS).toEqual({ maxGapsPerDrill: 0, minDrills: 10, countSurfacingGaps: true });
+  });
+});
+
+describe('extractRecoveryLookups — successor first-window trace', () => {
+  const turn = (index: number, toolName: string, input: unknown): ReplayTurn => ({
+    index,
+    role: 'tool_use',
+    toolName,
+    text: JSON.stringify(input),
+  });
+  const carry = [
+    '## Identity',
+    'ownerId: su-1',
+    '## Plan state (your claimed / in-flight items)',
+    'WI-4852 — cold-boot drills',
+    '## Verbatim tail (most recent turns; tool outputs are pointers)',
+    'continue P-020',
+  ].join('\n');
+
+  it('recognizes carry classes from recovery intent', () => {
+    expect(inferRecoveryCarryClass('recover WI-4852 checkpoint')).toBe('held-wi');
+    expect(inferRecoveryCarryClass('what was the owner directive?')).toBe('owner-directive');
+    expect(inferRecoveryCarryClass('read the prior transcript tail')).toBe('recent-tail');
+    expect(inferRecoveryCarryClass('ordinary source code')).toBeNull();
+  });
+
+  it('classifies explicit self-history and state rereads, including surfacing vs hard gaps', () => {
+    const out = extractRecoveryLookups([
+      turn(0, 'mcp__papercusp-su__sessions_search', { session: 'self', query: 'recent transcript tail' }),
+      turn(1, 'work_items:get', { id: 'WI-4852' }),
+      turn(2, 'plans:get', { slug: 'missing-plan-slug' }),
+      turn(3, 'functions.exec', { cmd: 'sed -n 1,40p source.ts' }), // normal work: ignored
+    ], carry);
+    expect(out).toEqual([
+      { kind: 'self-search', targetClass: 'recent-tail', recoveredInCarry: true },
+      { kind: 'reread-state', targetClass: 'held-wi', recoveredInCarry: true },
+      { kind: 'reread-state', targetClass: 'plan-state', recoveredInCarry: false },
+    ]);
+    expect(out.map(classifyRecoveryLookup)).toEqual(['surfacing-gap', 'surfacing-gap', 'gap']);
+  });
+
+  it('keeps mem0 orthogonal, ignores other-session reads, and stops at its own grade call', () => {
+    const out = extractRecoveryLookups([
+      turn(0, 'sessions:read', { session: 'someone-else' }),
+      turn(1, 'memory:search', { query: 'facts from last month' }),
+      turn(2, 'session:carry-drill', { op: 'grade', drillId: 'd1' }),
+      turn(3, 'sessions:search', { session: 'self', query: 'tail' }),
+    ], carry);
+    expect(out).toEqual([{ kind: 'mem0-search', targetClass: 'facts' }]);
+    expect(classifyRecoveryLookup(out[0])).toBe('orthogonal');
+  });
+
+  it('extracts orient recall scores and applies the P-026 noise floor', () => {
+    const turns: ReplayTurn[] = [
+      turn(0, 'coord:orient', { afterCompaction: true }),
+      { index: 1, role: 'tool_result', text: '{"recall":[{"text":"held WI checkpoint","similarity":0.03},{"text":"plan state","score":0.22}]}' },
+    ];
+    const out = extractRecoveryLookups(turns, carry);
+    expect(out).toHaveLength(2);
+    expect(out.map(classifyRecoveryLookup)).toEqual(['noise', 'gap']);
   });
 });
