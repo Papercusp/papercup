@@ -28,6 +28,7 @@ import { admitSpawn } from '../../fleet/governor';
 import { activeWorkspaceId, backgroundWorkspaceIds } from '../../workspace-registry';
 import { runWithWorkspace } from '../../workspace-als';
 import {
+  cancelAwaitsForSubscribersOnKeys,
   claimDueDeliveries,
   claimSpecificOnceAwaits,
   expireLapsedAwaits,
@@ -145,6 +146,15 @@ export interface EmitAwaitedEventOpts {
    *  queues (a human message, an escalation, a hard deadline). */
   urgent?: boolean;
   workspaceId?: string;
+  /** EI-12457: exact event key(s) that are the MUTUALLY-EXCLUSIVE opposite outcome of
+   *  this one (e.g. emitting `release:green:<pipeline>` names
+   *  `green-checkpoint:red:<pipeline>` here). For every subscriber this emit actually
+   *  WAKES (matched key + any payload_filter), their still-pending awaits on these
+   *  sibling keys are atomically cancelled — the resolved candidate can never
+   *  legitimately fire the opposite outcome, so the dead registration is retired now
+   *  instead of living until its own timeout. Best-effort/fail-soft: never breaks the
+   *  emit. Omitted ⇒ today's behaviour (no sibling cancellation). */
+  cancelSiblingKeysFor?: string[];
 }
 
 export interface EmitResult {
@@ -213,6 +223,23 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       setImmediate(() => {
         void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
       });
+    }
+  }
+
+  // 1b. EI-12457: sibling cancellation — for every subscriber THIS emit actually woke
+  // (matched key + any payload_filter), retire their still-pending awaits on the
+  // named opposite-outcome key(s). The resolved candidate can never fire those now;
+  // without this they live until their own (possibly long) timeout, accumulating as
+  // dead registrations. Scoped to subscribers actually woken, never every registrant
+  // on the sibling key (a peer awaiting a DIFFERENT candidate must not be touched).
+  if (opts.cancelSiblingKeysFor && opts.cancelSiblingKeysFor.length > 0 && wakes.length > 0) {
+    try {
+      await cancelAwaitsForSubscribersOnKeys(
+        [...new Set(wakes.map((a) => a.subscriberId))],
+        opts.cancelSiblingKeysFor,
+      );
+    } catch (e) {
+      log(`sibling-await cancellation failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
     }
   }
 

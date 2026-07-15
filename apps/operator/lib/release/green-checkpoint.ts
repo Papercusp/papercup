@@ -147,8 +147,14 @@ export interface CheckpointDeps {
    *  saved only incidentally by a trailing `await deps.escalate` — fired normally. Optional +
    *  injected like the other effects here (existing stubs need not provide it) AND — the point —
    *  the emit is finally UNIT-TESTABLE; the hard dynamic import is exactly what hid this for 8
-   *  days. realCheckpointDeps wires it to emitAwaitedEvent(source:'green-checkpoint'). */
-  emitEvent?(input: { key: string; summary: string; payload: unknown }): Promise<void>;
+   *  days. realCheckpointDeps wires it to emitAwaitedEvent(source:'green-checkpoint').
+   *
+   *  EI-12457: `cancelSiblingKeysFor` names the MUTUALLY-EXCLUSIVE opposite-outcome key(s)
+   *  (a green emit names the red keys and vice versa) — threaded to
+   *  emitAwaitedEvent's cancelSiblingKeysFor so a subscriber's now-dead wait on the
+   *  opposite outcome is retired the instant this candidate resolves, instead of
+   *  living until its own timeout. */
+  emitEvent?(input: { key: string; summary: string; payload: unknown; cancelSiblingKeysFor?: string[] }): Promise<void>;
   log(s: string): void;
 }
 

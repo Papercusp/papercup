@@ -99,6 +99,44 @@ export interface RuntimeOwnership {
 }
 
 const RUNTIME_OWNERS: { match: RegExp; own: RuntimeOwnership }[] = [
+  // WI-4996: these three `*-sidecar-spawn.ts` supervisor modules live under a
+  // directory that (correctly, for most of its files) maps to the sidecar they
+  // supervise — but the SUPERVISOR itself runs in the SUPERVISING process, not
+  // the sidecar it spawns/adopts. All three are called ONLY from
+  // apps/operator/bin/host-bootstrap.ts, gated on `backgroundWorkers &&
+  // !utilityHost` (i.e. exclusively bg-host boot code) — confirmed by tracing
+  // every import site, not by directory heuristic. Must be listed BEFORE the
+  // broader `inference-gateway/` rule below so the specific match wins.
+  {
+    match: /^packages\/operator-core\/lib\/inference-gateway\/gateway-sidecar-spawn\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This is the BG-HOST supervisor that spawns/adopts the gateway sidecar (ensureGatewaySidecar/registerGatewaySidecarShutdownHooks are called ONLY from apps/operator/bin/host-bootstrap.ts, gated on backgroundWorkers && !utilityHost) — it runs INSIDE bg-host, NOT inside the :8788 gateway process itself (WI-4996). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. Restarting "gateway" restarts the wrong — and far more disruptive, fleet-wide LLM-egress — process; it will NOT load this edit.',
+    },
+  },
+  {
+    match: /^packages\/operator-core\/lib\/fleet\/spawner-sidecar-spawn\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This is the BG-HOST supervisor that spawns/adopts the fleet spawner sidecar (spawnSpawnerSidecar is called from apps/operator/bin/host-bootstrap.ts — gated on backgroundWorkers && !utilityHost — plus git-sync/orchestrator-runner, both bg-host-side) — it runs INSIDE bg-host, not a separate process (WI-4996). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }.',
+    },
+  },
+  {
+    match: /^packages\/operator-core\/lib\/sync\/hyperbee\/substrate-sidecar-spawn\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This is the BG-HOST supervisor that spawns/adopts the hyperbee substrate sidecar (wired via substrate-boot-wrapper, called ONLY from apps/operator/bin/host-bootstrap.ts, gated on backgroundWorkers && !utilityHost) — it runs INSIDE bg-host, not a separate process (WI-4996). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }.',
+    },
+  },
   {
     match: /^packages\/operator-core\/lib\/inference-gateway\//,
     own: {

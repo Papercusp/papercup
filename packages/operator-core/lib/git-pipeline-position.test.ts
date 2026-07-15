@@ -304,6 +304,30 @@ describe('runtime-owner map (EI-10895)', () => {
     expect(own.activation).toMatch(/dev:restart/);
   });
 
+  it.each([
+    ['packages/operator-core/lib/inference-gateway/gateway-sidecar-spawn.ts'],
+    ['packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts'],
+    ['packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts'],
+  ])(
+    'WI-4996: %s is the BG-HOST supervisor that spawns its sidecar — NOT the sidecar itself, despite living under a sidecar-named directory',
+    (p) => {
+      const own = classifyRuntimeOwner(p)!;
+      expect(own.host).toBe('bg-host');
+      expect(own.releasePipelineApplies).toBe(false);
+      expect(own.restartTarget).toBe('bg-host');
+      // The activation text must not steer an agent toward restarting the
+      // (wrong, more disruptive) sidecar it supervises.
+      expect(own.activation).toMatch(/dev:restart.*bg-host/s);
+      expect(own.activation).not.toMatch(/target: "gateway"/);
+    },
+  );
+
+  it('WI-4996: a non-spawn file under inference-gateway/ still classifies as the gateway host (no over-correction)', () => {
+    const own = classifyRuntimeOwner(gatewayPath)!;
+    expect(own.host).toBe('gateway');
+    expect(own.restartTarget).toBe('gateway');
+  });
+
   it('the Tauri shell is carried by NEITHER a deploy nor a dev:restart — it is compiled', () => {
     const own = classifyRuntimeOwner('papercusp-desktop/src-tauri/src/main.rs')!;
     expect(own.host).toBe('tauri-desktop');

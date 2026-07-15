@@ -212,7 +212,23 @@ export async function performInterrupt(input: InterruptInput, deps: InterruptDep
     await audit('turn.interrupt_force', input.owner, { reason: input.reason, channel, critical, held: critical ? held : undefined }, input.workspaceId, input.actor);
     return { ok: true, mode: 'force', channel, ...(warn ? { critical_warning: warn } : {}) };
   }
-  await audit('turn.interrupt_failed', input.owner, { mode: 'force', error: err, critical }, input.workspaceId, input.actor);
+  // WI-4994: `no_live_session` is an EXPECTED non-event (the target is idle or already ended its
+  // turn — not actually wedged), not a genuine failure. The stall-waker's own `unwedge` caller
+  // already treats it as `expected` and stays quiet on its console — but this audit call used to
+  // fire `turn.interrupt_failed` unconditionally underneath that, so a permanently-dead owner
+  // whose stall stays pending (soonestResetAt not yet reached / capacity still walled) produced a
+  // steady stream of misleading "failed" audit rows every unwedge cooldown (once/45s, for up to
+  // pendingTtlMs=2h per owner) — audit-noise that reads as a real failure in recent-activity.
+  // Audit it under a DISTINCT, non-alarming action instead of silently dropping it (still
+  // traceable), so a genuine force-interrupt failure (SIGINT-failed, pty refused, etc.) keeps the
+  // `turn.interrupt_failed` name and stays easy to find.
+  await audit(
+    noLiveSession ? 'turn.interrupt_no_live_session' : 'turn.interrupt_failed',
+    input.owner,
+    { mode: 'force', error: err, critical },
+    input.workspaceId,
+    input.actor,
+  );
   return {
     ok: false,
     mode: 'force',
