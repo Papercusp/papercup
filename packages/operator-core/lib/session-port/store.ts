@@ -117,7 +117,10 @@ export async function findSessionPortByIdempotency(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-export async function createPreparedSessionPort(input: Omit<SessionPortRow, 'status' | 'targetAdvSessionId' | 'error'>): Promise<SessionPortRow> {
+export async function createPreparedSessionPort(input: Omit<
+  SessionPortRow,
+  'status' | 'targetAdvSessionId' | 'error' | 'preparedAt' | 'pendingAt' | 'deliveredAt' | 'failedAt'
+>): Promise<SessionPortRow> {
   const { sql } = getOrgPg();
   const rows = await sql<any[]>`
     INSERT INTO harness_shared.session_ports
