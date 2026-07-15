@@ -34,7 +34,10 @@ export const S10_ASK_CHOICE: Scenario = {
     },
   },
   goal: { kind: 'card_emitted', cardKind: 'choice' },
-  caps: { maxTurns: 1, maxWallSecs: 60, maxCostUsd: 0.6 },
+  // The live operator target allows up to 90s before its first SSE event;
+  // keep the scenario wall above that transport budget so a cold turn is
+  // judged on behavior instead of becoming a zero-turn false failure.
+  caps: { maxTurns: 1, maxWallSecs: 120, maxCostUsd: 0.6 },
   runMatrix: { repeat: 5, variancePolicy: 'flag-if-disagreement' },
   triggers: [{
     on: 'after_turn',
