@@ -457,3 +457,40 @@ describe('capability:terminal WI-4272 display (demo-stage) override', () => {
     expect(text).toMatch(/WI-4272/);
   });
 });
+
+// ── EI-11543: capability:terminal must reliably RUN the command ────────────────
+// A visible client-server terminal (gnome-terminal → gnome-terminal-server via the
+// D-Bus factory) opened a window on the owner's seat but silently did NOT run the
+// arbitrary command — the factory dropped the `-- CMD` handoff (the same server-side
+// client-server fragility EI-11578 hit for resumed psu sessions). Process-per-window
+// emulators (xterm/alacritty/…) bind DISPLAY and exec the command directly, so
+// capability:terminal forces that ordering via spawnConsole's `preferProcessPerWindow`
+// — exactly the reliability knob capability:launch-agent's resume/fork path uses.
+// If this regresses (the flag stops being passed), an arbitrary command can once
+// again land in a window that never runs it.
+describe('capability:terminal EI-11543: forces the reliable process-per-window terminal', () => {
+  it('single command → spawnConsole is called with preferProcessPerWindow: true', async () => {
+    await terminalTool.handler({ command: 'echo capterm-alive > /tmp/x' }, baseCtx);
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.objectContaining({ preferProcessPerWindow: true }),
+    );
+  });
+
+  it('every terminal in a bulk call gets preferProcessPerWindow: true', async () => {
+    await terminalTool.handler(
+      { terminals: [{ command: 'npm run dev' }, { command: 'tail -f log' }] },
+      baseCtx,
+    );
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    for (const call of spawnMock.mock.calls) {
+      expect((call as unknown[])[0]).toMatchObject({ preferProcessPerWindow: true });
+    }
+  });
+
+  it('still forces process-per-window even on a demo-stage `display` override', async () => {
+    await terminalTool.handler({ command: 'echo hi', display: ':110' }, baseCtx);
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.objectContaining({ preferProcessPerWindow: true, displayOverride: ':110' }),
+    );
+  });
+});

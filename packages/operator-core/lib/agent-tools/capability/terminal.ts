@@ -251,6 +251,24 @@ export default defineTool({
           // WI-3289: on a Windows desktop host, relay to the desktop shell's
           // Tauri console_launch instead of hard-501ing the agent.
           allowDesktopBridge: true,
+          // EI-11543: capability:terminal's WHOLE CONTRACT is to RELIABLY RUN an
+          // arbitrary command in a visible window. On a real desktop box the
+          // server-side CLIENT-SERVER terminal (gnome-terminal → gnome-terminal-
+          // server via the D-Bus factory) is UNRELIABLE at exactly that: a plain
+          // `echo … > /tmp/x` opened a gnome-terminal window on the seat but never
+          // ran (the factory dropped the command); the same fragility surfaced in
+          // EI-11578 (a resumed psu managed-pty host dies under gnome-terminal-
+          // server's pty/env handoff). PROCESS-PER-WINDOW emulators
+          // (xterm/alacritty/kitty/wezterm) bind DISPLAY directly and exec the
+          // command themselves — no factory, no bus, no pty handoff — so they
+          // reliably run it (proven: the reporter's own xterm fallback worked, and
+          // capability:launch-agent's resume/fork path already forces this exact
+          // ordering, launch-agent.ts `preferProcessPerWindow: isResume`). Force
+          // it here so an arbitrary command always lands in a terminal that runs
+          // it, instead of a client-server window that may silently swallow it.
+          // (The window is still visible on the owner's seat with fleet colors —
+          // the OSC prelude works in xterm/alacritty exactly the same.)
+          preferProcessPerWindow: true,
           // WI-4272: caller-pinned demo-stage display (skips seat resolution).
           displayOverride: args.display,
         });
