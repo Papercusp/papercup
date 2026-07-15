@@ -213,6 +213,60 @@ describe('response timeout', () => {
       vi.useRealTimers();
     }
   });
+
+  it('allows the timeout notice through while a full-agent realtime session is attached', async () => {
+    vi.useFakeTimers();
+    const g = globalThis as any;
+    g.RTCPeerConnection = class {};
+    g.window.__PAPERCUSP_DEV_WRAPPER__ = true;
+    const runtime = {
+      stop: vi.fn(async () => {}),
+      control: vi.fn(),
+      setDeafened: vi.fn(),
+      isDeafened: vi.fn(() => false),
+      isElected: vi.fn(() => true),
+    };
+    vi.doMock('./operator-voice-runtime', () => ({
+      startDesktopOperatorVoice: vi.fn(async (options: any) => {
+        options.onState({ status: 'idle', muted: false, mode: 'always-on' });
+        return runtime;
+      }),
+    }));
+
+    try {
+      const prefs = await import('./voice-prefs-client');
+      prefs.setVoicePrefsClient({
+        ...prefs.loadVoicePrefsClient(),
+        ttsEngine: 'browser',
+        fullAgentEngine: 'elevenlabs-conv',
+        voicePrivacyMode: 'always-on',
+      });
+      const mod = await loadVoiceMode();
+      mod.setVoiceMode('always-on');
+      // Let the single-tab voice-leader election settle. A follower must stay
+      // silent; this test exercises the elected full-agent tab.
+      await vi.advanceTimersByTimeAsync(300);
+      expect(mod.getOperatorVoiceSessionUiState().active).toBe(true);
+      expect(mod.getVoiceState().mode).toBe('always-on');
+      expect(mod.isVoiceOutputMuted()).toBe(false);
+
+      mod.speak(mod.RESPONSE_TIMEOUT_SPOKEN_NOTICE, 'system:operator', 'assertive', {
+        allowDuringRealtime: true,
+      });
+      expect(g.window.__pcVoiceTest.lastSpoken().text).toBe(mod.RESPONSE_TIMEOUT_SPOKEN_NOTICE);
+
+      const synth = g.window.speechSynthesis.speak;
+      expect(synth).toHaveBeenCalledTimes(1);
+      expect(synth.mock.calls[0][0].text).toBe(mod.RESPONSE_TIMEOUT_SPOKEN_NOTICE);
+      mod.setVoiceMode('off');
+    } finally {
+      delete g.RTCPeerConnection;
+      delete g.window.__PAPERCUSP_DEV_WRAPPER__;
+      delete g.window.__pcVoiceTest;
+      vi.doUnmock('./operator-voice-runtime');
+      vi.useRealTimers();
+    }
+  });
 });
 
 // voice-convergence-additive-wins-2026-07-10 P-001: both transport paths relay
