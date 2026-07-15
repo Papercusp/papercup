@@ -45,9 +45,17 @@ const OPERATOR_ROOT = resolve(__dirname, '../..');
 const APPS_ROOT = resolve(OPERATOR_ROOT, '..');
 const CSS_ROOTS = [join(OPERATOR_ROOT, 'app'), join(APPS_ROOT, 'operator-vite/src')];
 
-/** Token sources: the palette tier + the :root base, then each theme's overlay. */
+/**
+ * Token sources: the palette tier, the :root semantic base, and globals.css's
+ * one-off :root aliases — then each theme's overlay. globals.css is NOT
+ * optional: it is where aliases like `--accent-bg: var(--accent-soft)` live, and
+ * WI-4834's bug was written against exactly that alias. Omitting it makes those
+ * tokens unresolvable, which silently SKIPS the pair rather than failing it —
+ * i.e. the lint would vacuously pass on the very bug it exists to catch.
+ */
 const PALETTE = 'app/_brand-primitives.css';
 const BASE = 'app/_semantic.css';
+const GLOBAL_ALIASES = 'app/globals.css';
 const THEME_FILES: Readonly<Record<string, string | null>> = {
   default: null, // :root base only
   frost: 'app/_semantic.frost.css',
@@ -83,7 +91,11 @@ function readBlocks(rel: string): Map<string, string> {
 }
 
 function tableFor(theme: string): Map<string, string> {
-  const t = new Map<string, string>([...readBlocks(PALETTE), ...readBlocks(BASE)]);
+  const t = new Map<string, string>([
+    ...readBlocks(PALETTE),
+    ...readBlocks(BASE),
+    ...readBlocks(GLOBAL_ALIASES),
+  ]);
   const overlay = THEME_FILES[theme];
   if (overlay) for (const [k, v] of readBlocks(overlay)) t.set(k, v);
   return t;

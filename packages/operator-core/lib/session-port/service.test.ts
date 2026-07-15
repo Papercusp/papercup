@@ -78,6 +78,10 @@ describe('session-port preparation service', () => {
       status: 'prepared',
       targetAdvSessionId: null,
       error: null,
+      preparedAt: '2026-07-14T00:00:00.000Z',
+      pendingAt: null,
+      deliveredAt: null,
+      failedAt: null,
     }));
     const out = await prepareInspectedSessionPort({
       inspection,
@@ -133,6 +137,10 @@ describe('session-port preparation service', () => {
         },
       },
       error: null,
+      preparedAt: '2026-07-14T00:00:00.000Z',
+      pendingAt: null,
+      deliveredAt: null,
+      failedAt: null,
       expiresAt: '2099-01-01T00:00:00.000Z',
     };
     const a = await prepareInspectedSessionPort({

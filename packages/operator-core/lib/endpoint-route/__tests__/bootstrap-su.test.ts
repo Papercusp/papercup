@@ -49,6 +49,7 @@ const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
 const getSessionPortMock = vi.fn(async () => null as any);
 const transitionSessionPortMock = vi.fn(async (_id: string, _ws: string, _to: string, _fields: unknown) => ({ status: 'pending' }));
 const readSessionPortArtifactMock = vi.fn(async () => 'ported history\n[PAPERCUSP SESSION PORT CHECKSUM rendered-hash]');
+const recordSessionPortTelemetryMock = vi.fn(async () => true);
 
 vi.mock('../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -91,8 +92,12 @@ vi.mock('../../adv-sessions', () => ({
   reactivateAdvSession: vi.fn(async () => {}),
 }));
 vi.mock('../../session-port/store', () => ({
+  assertSessionPortStorageReady: vi.fn(async () => undefined),
   getSessionPort: (...a: unknown[]) => getSessionPortMock(...(a as [any, any])),
   transitionSessionPort: (...a: unknown[]) => transitionSessionPortMock(...(a as [any, any, any, any])),
+}));
+vi.mock('../../session-port/telemetry', () => ({
+  recordSessionPortTelemetry: (...a: unknown[]) => recordSessionPortTelemetryMock(...(a as [any])),
 }));
 vi.mock('../../session-port/artifact', () => ({
   parsePortToken: (token: string) => token.startsWith('22222222-2222-4222-8222-222222222222.')
@@ -363,6 +368,7 @@ describe('bootstrap-su', () => {
       agent: 'codex',
       model: 'gpt-5.5',
       session_port_protocol: 2,
+      session_port_transform_version: 1,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
     expect(res.status).toBe(426);
@@ -385,12 +391,24 @@ describe('bootstrap-su', () => {
       sourceHash: 'source-hash',
       normalizedHash: 'normalized-hash',
       renderedHash: 'rendered-hash',
-      metadata: { estimatedTokens: 10, contract: { target: { account: 'default' } } },
+      preparedAt: '2026-07-14T00:00:00.000Z',
+      metadata: {
+        estimatedTokens: 10,
+        summary: {
+          protocolVersion: 1,
+          target: { account: 'default', provider: 'openai' },
+          fidelity: 'full',
+          versions: { transform: 1, summaryPrompt: null },
+          stats: { omittedAttachments: 0, unsupportedBlocks: 0, redactions: 0 },
+          summary: null,
+        },
+      },
     });
     const res = await callPost({
       agent: 'codex',
       model: 'gpt-5.5',
       session_port_protocol: 1,
+      session_port_transform_version: 1,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
     expect(res.status).toBe(200);
@@ -410,6 +428,22 @@ describe('bootstrap-su', () => {
       'pending',
       expect.objectContaining({ targetAdvSessionId: 42 }),
     );
+    expect(recordSessionPortTelemetryMock).toHaveBeenCalledWith(expect.objectContaining({
+      stage: 'pending',
+      portId: '22222222-2222-4222-8222-222222222222',
+      targetAdvSessionId: 42,
+    }));
+  });
+
+  it('refuses an old launcher missing the transform handshake before creating a target row', async () => {
+    const res = await callPost({
+      agent: 'codex',
+      model: 'gpt-5.5',
+      session_port_protocol: 1,
+      session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
+    });
+    expect(res.status).toBe(426);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
   it('launch-wakeability: arms the standing inbox-wake at launch for the minted sid (parked before first turn)', async () => {

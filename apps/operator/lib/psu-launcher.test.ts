@@ -2273,12 +2273,13 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
         port: { status: 'delivered', targetAdvSessionId: 99 },
       }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const result = await reportSessionPortDelivery(
-      { protocolVersion: 1, portId: '22222222-2222-4222-8222-222222222222', targetAdvSessionId: 99, workspace: 'papercusp-workspace' },
+      { protocolVersion: 1, transformVersion: 1, portId: '22222222-2222-4222-8222-222222222222', targetAdvSessionId: 99, workspace: 'papercusp-workspace' },
       { persisted: true, renderedHash: 'a'.repeat(64), nativeRef: '/native/rollout.jsonl' },
       { fetchImpl, operatorUrl: 'http://operator', token: 'token' },
     );
     expect(result.port.status).toBe('delivered');
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({ protocolVersion: 1, transformVersion: 1 });
   });
 });
 
