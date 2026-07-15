@@ -211,6 +211,7 @@ describe('surveyWorkspace — the cross-pot ranked backlog (P-003 Phase B / D-00
                 frontierRow({ feature_id: 'WI-A', harness_slug: 'real-proj' }),
                 frontierRow({ feature_id: 'WI-B', harness_slug: 'loose-proj' }),
               ],
+        fetchEscalatedIssues: async () => [],
         fetchBlockGraph: async () => noBlockers,
         fetchQuarantinedCount: async () => 0,
       },

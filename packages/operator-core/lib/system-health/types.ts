@@ -459,6 +459,11 @@ export interface McpProxyHealth {
    *  explicitly separated so it can never inflate hardFailures/otherNon2xx or any alarm.
    *  Informational only. */
   benign: number;
+  /** EI-12102/EI-12211: records from a NON-instance source (`listenPort: 0` — never a real
+   *  listening proxy any client could route through; the desktop-sidecar-startup-race
+   *  signature) — excluded from every alarm class above, counted here for forensic
+   *  visibility only. Never alarming. */
+  nonInstance: number;
   /** Count by raw `kind` (recovered | upstream_non2xx | exhausted_refused | upstream_error
    *  | post_connect_retry). */
   byKind: Record<string, number>;

@@ -146,3 +146,23 @@ describe.skipIf(!existsSync(OPERATOR_DIR) || !TSX_CLI || !CAN_BIND_UNIX_SOCKET)(
     );
   }
 });
+
+// EI-12473 regression: the unix-socket probe is what keeps the guard from
+// false-alarming in a socket-hostile sandbox. It must (a) NEVER throw — so
+// describe.skipIf always receives a clean boolean instead of the collection
+// phase crashing, and (b) return false on an unbindable path (the sandbox
+// case → guard skips) yet true where sockets work (the dev box / green gate →
+// guard runs for real).
+describe('unix-socket bind probe (EI-12473 regression)', () => {
+  it('returns false without throwing for an unbindable socket path', async () => {
+    // A path under a directory that does not exist can never be bound; the
+    // probe must swallow the error and resolve `false`, not reject.
+    const bad = resolve(tmpdir(), `ei12473-nonexistent-${process.pid}-${Date.now()}`, 'x.pipe');
+    await expect(probeUnixSocketBindable(bad)).resolves.toBe(false);
+  });
+
+  it.skipIf(!CAN_BIND_UNIX_SOCKET)('returns true where tmpdir supports unix sockets', async () => {
+    const ok = resolve(tmpdir(), `ei12473-probe-ok-${process.pid}-${Date.now()}.pipe`);
+    await expect(probeUnixSocketBindable(ok)).resolves.toBe(true);
+  });
+});

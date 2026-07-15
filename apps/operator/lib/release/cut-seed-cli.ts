@@ -688,7 +688,13 @@ async function main(): Promise<void> {
             'live sparse cut trims with no quiesce. See WI-4487.',
         );
       }
-      store = new Corestore(storeDir, { readOnly: true });
+      // `wait: false` is load-bearing, not decoration. hypercore-storage:496 reads
+      //   if ((this.bootstrap && !this.readOnly && !this.allowBackup) || this.wait)
+      // — the `|| this.wait` binds AFTER the whole readOnly clause, so a truthy `wait`
+      // re-arms the very DeviceFile lock readOnly is here to avoid, and it fails with an
+      // error identical to the one we just caught. Pin it explicitly so this cannot
+      // regress silently if a default changes upstream.
+      store = new Corestore(storeDir, { readOnly: true, wait: false });
       try {
         await store.ready();
       } catch (roErr) {
