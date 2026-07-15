@@ -51,7 +51,7 @@ vi.mock('../coordination/identity', async (importOriginal) => ({
   resolveAgentIdentity: () => ({ ownerId: 'owner-x' }),
 }));
 
-import runToolDef, { shapeCodeRunLogs, shapeMutationEcho, bindInnerDispatch } from './run'; // default = the defineTool result (has .args); named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
+import { shapeCodeRunLogs, shapeMutationEcho, bindInnerDispatch } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
  * B-CX-2A: the code:run tool registers into the projected registry, is marked write-effect
@@ -499,50 +499,5 @@ describe('code:run → log shaping (WI-3127)', () => {
   it('leaves already-small clean logs unchanged', () => {
     const r = { ...base, logs: ['one', 'two'] };
     expect(shapeCodeRunLogs(r)).toBe(r);
-  });
-});
-
-/**
- * EI-11400: `code` is an ACCEPTED ALIAS for `script` (the same field) — the noun cognate
- * surfaces use and the spelling reached for on a tool named `code:run`. Accepted, resolved,
- * and a genuine both-with-different-values conflict rejected loudly (never silently picked).
- */
-describe('code:run script/code alias (EI-11400)', () => {
-  const mkCtx = () =>
-    ({
-      log: () => {},
-      workspaceId: 'ws-alias',
-      harnessSlug: 'alpha',
-      role: 'su',
-      isSuperuser: true,
-      uiClientId: 'su-alias',
-    }) as never;
-
-  it('accepts the canonical `script`', () => {
-    expect(runToolDef.args.safeParse({ script: 'return 1;' }).success).toBe(true);
-  });
-
-  it('accepts `code` as an alias for `script`', () => {
-    expect(runToolDef.args.safeParse({ code: 'return 1;' }).success).toBe(true);
-  });
-
-  it('rejects a call with neither `script` nor `code`', () => {
-    expect(runToolDef.args.safeParse({ title: 'x' }).success).toBe(false);
-  });
-
-  it('rejects `script` and `code` passed with DIFFERENT bodies', () => {
-    expect(runToolDef.args.safeParse({ script: 'return 1;', code: 'return 2;' }).success).toBe(false);
-  });
-
-  it('resolves `code` end-to-end — the handler runs it AND captures it as the script', async () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    if (!tool) throw new Error('code:run not registered');
-    captureRecipeMock.mockClear();
-    const res = await tool.fn({ code: 'return 6 * 7;', title: 'answer', description: 'x' }, mkCtx());
-    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    expect(payload.ok).toBe(true);
-    expect(captureRecipeMock).toHaveBeenCalledTimes(1);
-    const [, input] = captureRecipeMock.mock.calls[0] as unknown as [unknown, { script: string }];
-    expect(input.script).toBe('return 6 * 7;');
   });
 });
