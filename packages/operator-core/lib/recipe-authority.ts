@@ -101,6 +101,11 @@ function collectArgs(
   add(out.harnesses, normalized.get('harness') ?? normalized.get('harnessslug'));
   add(out.items, normalized.get('item') ?? normalized.get('itemid'));
   add(out.items, normalized.get('itemids'));
+  // `planItems` is the plan-lane claim carried by coord:orient / coord:declare-intent — a
+  // recipe that passes it CLAIMS those items. Capture them as authority refs so the recommender
+  // only surfaces such a recipe to a caller who ALREADY holds that exact lane, instead of one on
+  // the same plan but a different item (EI-12213: else running the recipe steals another lane).
+  add(out.items, normalized.get('planitems'));
   add(out.resources, normalized.get('resource') ?? normalized.get('resourceid'));
   add(out.resources, normalized.get('resources'));
 

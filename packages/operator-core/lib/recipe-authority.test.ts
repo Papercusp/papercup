@@ -107,6 +107,43 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it('captures a coord:orient planItems plan-lane claim as an item authority ref (EI-12213)', async () => {
+    // A "monitor" recipe whose script claims a plan lane via coord:orient({ planSlug, planItems })
+    // must record BOTH the plan AND the item so the recommendation filter requires the caller to
+    // already hold that exact lane. Before this fix `planItems` was not in collectArgs' item-key
+    // set, so only the plan ref was captured — and the recipe was recommended to any caller on the
+    // plan (regardless of item), so running it re-declared their lane and claimed another agent's
+    // item (the "surfaced a monitor recipe that would claim another plan lane" bug).
+    const claimScript = `
+      return await tools.coord.orient({
+        intent: 'Monitor release readiness',
+        mode: 'monitor',
+        planSlug: 'blender-public-release-readiness-drive-2026-07-14',
+        planItems: ['P-006'],
+      });
+    `;
+    const descriptor = await deriveRecipeAuthority(claimScript);
+    expect(descriptor.refs).toMatchObject({
+      plans: ['blender-public-release-readiness-drive-2026-07-14'],
+      items: ['P-006'],
+    });
+
+    // A caller ON the plan but NOT already holding P-006 must NOT get the recipe recommended —
+    // the item-lane ref is now part of the authority contract, closing the lane-theft gap.
+    await expect(buildRecipeAuthorityRecommendation({
+      script: claimScript,
+      updatedAt: '2026-07-14T12:00:00.000Z',
+      context: { plan: 'blender-public-release-readiness-drive-2026-07-14', items: ['P-010'] },
+    })).resolves.toBeNull();
+
+    // A caller already declaring P-006 as their own lane may reuse it (re-declaring is a no-op).
+    await expect(buildRecipeAuthorityRecommendation({
+      script: claimScript,
+      updatedAt: '2026-07-14T12:00:00.000Z',
+      context: { plan: 'blender-public-release-readiness-drive-2026-07-14', items: ['P-006'] },
+    })).resolves.toMatchObject({ proof: { version: 1 }, refs: { items: ['P-006'] } });
+  });
+
   it('allows truly generic recipes without an authority proof', async () => {
     await expect(validateRecipeAuthorityProof({
       script: `return await tools.gateway.status({});`,

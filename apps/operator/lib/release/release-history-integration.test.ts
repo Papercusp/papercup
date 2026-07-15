@@ -60,6 +60,25 @@ describe('release-history end-to-end data flow', () => {
           size: 3_500_000_000,
           sha256: 'xyz789abc123',
         },
+        // Updater-swappable artifacts (WI-5008): `installable` now means "the
+        // Tauri updater can revert onto this" — a .deb/.dmg is downloadable by
+        // a human but not swappable, so each platform needs its updater format.
+        {
+          product: 'gui',
+          platform: 'linux-x86_64',
+          name: 'papercusp_0.0.9_amd64.AppImage',
+          url: 'desktop-v0.0.9-alpha/papercusp_0.0.9_amd64.AppImage',
+          size: 4_100_000_000,
+          sha256: 'appimg456',
+        },
+        {
+          product: 'gui',
+          platform: 'darwin-universal',
+          name: 'papercusp_0.0.9_universal.app.tar.gz',
+          url: 'desktop-v0.0.9-alpha/papercusp_0.0.9_universal.app.tar.gz',
+          size: 3_400_000_000,
+          sha256: 'apptar789',
+        },
       ],
       gitSha: 'deadbeef1234',
       cutBy: 'agent-release',
@@ -102,7 +121,7 @@ describe('release-history end-to-end data flow', () => {
     expect(rel.prerelease).toBe(true);
     expect(rel.notes).toContain('Fixed auto-update');
     expect(Array.isArray(rel.artifacts)).toBe(true);
-    expect(rel.artifacts).toHaveLength(2);
+    expect(rel.artifacts).toHaveLength(4);
 
     // Verify artifact structure
     const deb = rel.artifacts.find((a) => a.name.endsWith('.deb'));
@@ -134,7 +153,10 @@ describe('release-history end-to-end data flow', () => {
     });
 
     expect(entries.length).toBeGreaterThan(0);
-    expect(entries[0].version).toBe('0.0.9-alpha'); // includes channel
+    // The feed's stamped `version` — the string the app reports as
+    // current_version and the footer chip shows (WI-5007) — not the
+    // tag-derived `0.0.9-alpha` form the running app never reports.
+    expect(entries[0].version).toBe('0.0.9');
     expect(entries[0].channel).toBe('alpha');
     expect(entries[0].prerelease).toBe(true);
     expect(entries[0].notes).toContain('Fixed auto-update');
