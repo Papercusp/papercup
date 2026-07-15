@@ -66,6 +66,10 @@ beforeEach(() => {
         // supposedly PG/FS-confined unit test dirties .papercusp on every successful run.
         return {} as ReturnType<typeof actual.operatorResolveExtends>;
       },
+      // The wrong-kind assertion only needs a discoverable pot id. The real scanner
+      // materializes whichever blueprint it inspects into .papercusp, another forbidden
+      // repository-root side effect for this focused unit test.
+      availableHiveBlueprintIds: () => ['work'],
     };
   });
   // Keep the real export surface so transitive imports added elsewhere cannot break
