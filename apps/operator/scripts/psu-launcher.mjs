@@ -3998,6 +3998,70 @@ export async function reportSessionResumed(
   }
 }
 
+/** Critical (not best-effort) session-port disposition. The server accepts a
+ * delivery only when `proof.nativeRef` names the target backend's own persisted
+ * transcript containing the exact rendered hash. If the POST response is lost,
+ * reconcile through the status route before deciding whether acknowledgement
+ * failed; killing a successfully-delivered target on a network ambiguity would
+ * be as wrong as accepting PTY output as persistence. */
+export async function reportSessionPortDelivery(
+  sessionPort,
+  proof,
+  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 10_000 } = {},
+) {
+  if (!sessionPort?.portId || !sessionPort?.targetAdvSessionId) {
+    throw new Error('session-port disposition is missing port/target identity');
+  }
+  const tok = token ?? readToken();
+  const status = proof?.persisted === true ? 'delivered' : 'failed';
+  const headers = {
+    'content-type': 'application/json',
+    ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+  };
+  let responseBody = null;
+  try {
+    const response = await fetchImpl(operatorUrl + '/api/adv/sessions/port/delivery', {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers,
+      body: JSON.stringify({
+        protocolVersion: sessionPort.protocolVersion,
+        workspace: sessionPort.workspace,
+        portId: sessionPort.portId,
+        targetAdvSessionId: Number(sessionPort.targetAdvSessionId),
+        status,
+        ...(status === 'delivered'
+          ? { proof: { persisted: true, renderedHash: proof.renderedHash, nativeRef: proof.nativeRef } }
+          : { error: proof?.error ?? 'native persistence verification failed' }),
+      }),
+    });
+    responseBody = await response.json().catch(() => null);
+    if (response.ok && responseBody?.ok && responseBody.status === status) return responseBody;
+  } catch {
+    /* reconcile below — the server may have committed before the response was lost */
+  }
+  try {
+    const query = new URLSearchParams({ id: sessionPort.portId });
+    if (sessionPort.workspace) query.set('workspace', sessionPort.workspace);
+    const response = await fetchImpl(`${operatorUrl}/api/adv/sessions/port/status?${query}`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers,
+    });
+    const body = await response.json().catch(() => null);
+    if (
+      response.ok && body?.ok && body.port?.status === status &&
+      Number(body.port?.targetAdvSessionId) === Number(sessionPort.targetAdvSessionId)
+    ) return body;
+  } catch {
+    /* the disposition remains unacknowledged */
+  }
+  throw new Error(
+    `operator did not acknowledge session port ${sessionPort.portId} as ${status}` +
+      (responseBody?.error ? `: ${responseBody.error}` : ''),
+  );
+}
+
 /** EI-8868/EI-8877: strip inherited `npm run`-lifecycle env pollution before it
  *  reaches an agent child. This box's long-lived gnome-terminal-server (every
  *  terminal window is forked from ONE persistent daemon, inheriting whatever
@@ -4252,7 +4316,16 @@ function repoCwdOrRedirect(cwd) {
   return cwd; // no better answer — do not invent one
 }
 
-function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null, preserveCwd = false }) {
+function runWrapper({
+  wrapperBin,
+  args = [],
+  cwd,
+  envelopeEnv,
+  kickoff = null,
+  kickoffFile = null,
+  sessionPort = null,
+  preserveCwd = false,
+}) {
   // EI-10938's `.papercusp` state-dir → checkout redirect is correct for a FRESH
   // launch, but a RESUME/FORK MUST keep the recorded cwd: `claude --resume` /
   // `--fork` locate the transcript under the cwd-derived projects dir
@@ -4378,6 +4451,12 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null, p
         // reaped when it died. The host owns the pty, so it seeds the turn itself once
         // the child settles at its prompt.
         kickoff,
+        // Session-port seeds use a separate server-owned file channel. The PTY
+        // host does not acknowledge it until the exact checksum is visible in
+        // the target backend's native transcript.
+        kickoffFile,
+        sessionPort,
+        onKickoffPersisted: (proof) => reportSessionPortDelivery(sessionPort, proof),
         onRespawn: (freshId) =>
           recordSessionOwner(freshId, ownerId, { advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null }),
         onExit: (code) => {
@@ -4389,7 +4468,14 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null, p
         // The pty was already spawned (the promise only rejects on an unforeseen
         // bridge error); don't double-spawn — surface + exit non-zero.
         process.stderr.write(`psu: managed-pty host error: ${e?.message ?? e}\n`);
-        process.exit(1);
+        const finish = kickoffFile && sessionPort
+          ? reportSessionPortDelivery(sessionPort, {
+              persisted: false,
+              renderedHash: sessionPort.renderedHash,
+              error: `managed-pty host failed: ${e?.message ?? e}`,
+            }).catch(() => undefined)
+          : Promise.resolve();
+        void finish.finally(() => process.exit(1));
       });
       return;
     } catch (e) {
@@ -4405,6 +4491,20 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null, p
   // turn once the child settles at its prompt). If we got here with one pending,
   // the pty path was unavailable — say so LOUDLY rather than launching a session
   // that silently sits idle forever waiting for a first turn that never comes.
+  if (kickoffFile) {
+    process.stderr.write(
+      `psu: session-port launch refused: a managed pty is required to deliver and verify the seed.\n`,
+    );
+    process.exitCode = 1;
+    if (sessionPort) {
+      void reportSessionPortDelivery(sessionPort, {
+        persisted: false,
+        renderedHash: sessionPort.renderedHash,
+        error: 'managed pty unavailable before session-port seed delivery',
+      }).catch(() => undefined);
+    }
+    return;
+  }
   if (kickoff) {
     process.stderr.write(
       `psu: ⚠ a kickoff was requested but this launch has NO managed pty (no coord id, ` +
@@ -4647,7 +4747,9 @@ export function assertFleetJoined(requestedFleet, res) {
  * exported for tests.
  */
 export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
-  const argv = ['psu', '--no-picker', `--agent=${selections.agent}`];
+  const argv = args.sessionPortSourceAdvSessionId
+    ? ['psu', '--no-picker', `--resume=${args.sessionPortSourceAdvSessionId}`, `--agent=${selections.agent}`]
+    : ['psu', '--no-picker', `--agent=${selections.agent}`];
   if (selections.workspace) argv.push(`--workspace=${selections.workspace}`);
   if (selections.harness) argv.push(`--harness=${selections.harness}`);
   argv.push(selections.plan ? `--plan=${selections.plan}` : '--no-plan');
@@ -4714,7 +4816,14 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     // solo-launch-provenance: who launched this session — bootstrap-su bakes it
     // into the system prompt + PAPERCUSP_LAUNCHED_BY + an owner-scoped standing fact.
     ...(args.launchedBy ? { launched_by: args.launchedBy } : {}),
-    cwd: process.cwd(),
+    // A port's fresh target starts in the source's exact recorded cwd. This is
+    // data provenance, not a harness-derived relocation, and is included in the
+    // inspected source hash/contract.
+    cwd: args.sessionPortSourceCwd || process.cwd(),
+    ...(args.sessionPortToken ? {
+      session_port_protocol: args.sessionPortProtocol,
+      session_port_token: args.sessionPortToken,
+    } : {}),
   };
 }
 

@@ -40,7 +40,7 @@
 
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import {
@@ -53,6 +53,11 @@ import {
   chmodSync,
   renameSync,
   appendFileSync,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
   statSync,
 } from 'node:fs';
 import net from 'node:net';
@@ -88,6 +93,124 @@ export const MAX_CONTROL_PAYLOAD_BYTES = 8 * 1024 * 1024;
 export function controlPayloadWithinLimit(payload, maxBytes = MAX_CONTROL_PAYLOAD_BYTES) {
   const bytes = Buffer.isBuffer(payload) ? payload.length : Buffer.byteLength(String(payload), 'utf8');
   return bytes <= maxBytes;
+}
+
+/** Read a server-owned session-port seed without following a same-UID symlink.
+ * The file is deliberately kept until the operator accepts native-persistence
+ * proof; reading it is not delivery and therefore never consumes it. */
+export function readManagedKickoffFile(path, expectedRenderedHash) {
+  if (!path || !/^[0-9a-f]{64}$/i.test(String(expectedRenderedHash ?? ''))) {
+    throw new Error('managed kickoff requires a file and rendered hash');
+  }
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error('managed kickoff is not a regular file');
+  if ((before.mode & 0o077) !== 0) throw new Error('managed kickoff permissions are broader than 0600');
+  if (before.size <= 0 || before.size > MAX_CONTROL_PAYLOAD_BYTES) {
+    throw new Error(`managed kickoff exceeds ${MAX_CONTROL_PAYLOAD_BYTES} byte cap`);
+  }
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+      throw new Error('managed kickoff changed during secure open');
+    }
+    const bytes = readFileSync(fd);
+    if (bytes.length !== opened.size || bytes.length > MAX_CONTROL_PAYLOAD_BYTES) {
+      throw new Error('managed kickoff changed size during read');
+    }
+    const text = bytes.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(bytes)) throw new Error('managed kickoff is not valid UTF-8');
+    const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${expectedRenderedHash}]`;
+    if (!text.includes(marker)) throw new Error('managed kickoff checksum marker mismatch');
+    return { text, marker, renderedHash: expectedRenderedHash, bytes: bytes.length };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Chunk a large paste without splitting a UTF-16 surrogate pair. 16k code
+ * units is at most 64 KiB of UTF-8, keeping node-pty writes bounded while the
+ * concatenated stream remains byte-identical. */
+export function ptyWriteChunks(value, maxCodeUnits = 16 * 1024) {
+  const text = String(value ?? '');
+  if (!text) return [];
+  const chunks = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(text.length, start + maxCodeUnits);
+    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+    if (end <= start) end = Math.min(text.length, start + 2);
+    chunks.push(text.slice(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
+function nativeTranscriptRoot(agent, env, home) {
+  if (agent === 'codex') {
+    const root = env.CODEX_HOME ? String(env.CODEX_HOME) : join(home, '.codex');
+    return join(root, 'sessions');
+  }
+  if (agent === 'omp') {
+    if (env.PI_CODING_AGENT_DIR) return join(String(env.PI_CODING_AGENT_DIR), 'sessions');
+    const configured = String(env.PI_CONFIG_DIR || '.omp');
+    const root = isAbsolute(configured) ? configured : join(home, configured);
+    return join(root, 'agent', 'sessions');
+  }
+  return null;
+}
+
+/** Find the exact port marker in a recently-written target-native JSONL. This
+ * is the delivery authority: PTY output/activity is intentionally insufficient. */
+export function findNativeTranscriptMarker({ agent, env = process.env, marker, sinceMs, home = homedir() }) {
+  const root = nativeTranscriptRoot(agent, env, home);
+  if (!root || !existsSync(root) || !marker) return null;
+  const markerBytes = Buffer.from(marker, 'utf8');
+  const stack = [{ path: root, depth: 0 }];
+  let visited = 0;
+  while (stack.length && visited < 4096) {
+    const current = stack.pop();
+    let entries;
+    try { entries = readdirSync(current.path, { withFileTypes: true }); }
+    catch { continue; }
+    for (const entry of entries) {
+      if (++visited > 4096) break;
+      const path = join(current.path, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (current.depth < 10) stack.push({ path, depth: current.depth + 1 });
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      try {
+        const st = statSync(path);
+        if (st.mtimeMs < sinceMs - 5_000 || st.size < markerBytes.length || st.size > 64 * 1024 * 1024) continue;
+        if (readFileSync(path).includes(markerBytes)) return path;
+      } catch {
+        /* a concurrently-rotated transcript is simply not proof yet */
+      }
+    }
+  }
+  return null;
+}
+
+export async function waitForNativeTranscriptMarker({
+  agent,
+  env = process.env,
+  marker,
+  sinceMs,
+  home = homedir(),
+  timeoutMs = 30_000,
+  pollMs = 250,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const nativeRef = findNativeTranscriptMarker({ agent, env, marker, sinceMs, home });
+    if (nativeRef) return { persisted: true, nativeRef };
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  } while (true);
+  return { persisted: false, nativeRef: null };
 }
 
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
@@ -1256,6 +1379,9 @@ export function injectTurn(sock, text) {
  * @param {object} [o.io]               { stdin, stdout } override (tests); default process.*
  * @param {(code:number)=>void} [o.onExit]  exit handler; default process.exit
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
+ * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
+ * @param {object} [o.sessionPort]      { renderedHash } for the managed seed
+ * @param {(proof:object)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
  */
 export function hostThroughPty(o) {
   const {
@@ -1283,7 +1409,16 @@ export function hostThroughPty(o) {
     // resume/fork (the fresh-launch path seeds its kickoff as a CLI positional
     // instead). null ⇒ the session opens idle, exactly as before.
     kickoff = null,
+    kickoffFile = null,
+    sessionPort = null,
+    onKickoffPersisted = async () => {},
+    nativePersistenceTimeoutMs = Number(env.PAPERCUSP_SESSION_PORT_PERSIST_TIMEOUT_MS) || 30_000,
   } = o;
+  if (kickoff && kickoffFile) throw new Error('plain kickoff and managed kickoff file are mutually exclusive');
+  const managedKickoff = kickoffFile
+    ? readManagedKickoffFile(kickoffFile, sessionPort?.renderedHash)
+    : null;
+  const nativeCaptureAfterMs = Date.now();
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
   const onExit = o.onExit ?? ((code) => process.exit(code ?? 0));
@@ -1596,10 +1731,14 @@ export function hostThroughPty(o) {
           for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
-            try {
-              child.write(step.data);
-            } catch {
-              /* the child may have exited under us */
+            const chunks = ptyWriteChunks(step.data);
+            for (let i = 0; i < chunks.length; i++) {
+              try {
+                child.write(chunks[i]);
+              } catch {
+                /* the child may have exited under us */
+              }
+              if (i + 1 < chunks.length) await new Promise((r) => setTimeout(r, 0));
             }
           }
           if (child === injectChild) await verifySubmitted(label);
@@ -1637,15 +1776,65 @@ export function hostThroughPty(o) {
   // (kickoffPositionalArgs); a resume has no such seam, which is exactly the gap
   // this closes. Fire-and-forget: the session is usable while we wait for its
   // prompt, and a failure is loud (above), never silent.
-  if (kickoff) {
-    void injectTurnAtPrompt({ text: kickoff, label: 'launch kickoff' }).then((r) => {
-      if (!r.delivered) return;
-      try {
-        process.stderr.write(`psu: kickoff delivered — the resumed session is working its first turn.\n`);
-      } catch {
-        /* diagnostics are best-effort */
+  const launchKickoff = managedKickoff?.text ?? kickoff;
+  if (launchKickoff) {
+    void (async () => {
+      const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
+      const r = await injectTurnAtPrompt({ text: launchKickoff, label });
+      if (!managedKickoff) {
+        if (!r.delivered) return;
+        try {
+          process.stderr.write(`psu: kickoff delivered — the resumed session is working its first turn.\n`);
+        } catch {
+          /* diagnostics are best-effort */
+        }
+        return;
       }
-    });
+      if (!r.delivered) {
+        try {
+          await onKickoffPersisted({
+            persisted: false,
+            renderedHash: managedKickoff.renderedHash,
+            error: `session-port seed was not submitted (${r.reason ?? 'unknown'})`,
+          });
+        } finally {
+          try { child.kill(); } catch { /* already exited */ }
+        }
+        return;
+      }
+      const proof = await waitForNativeTranscriptMarker({
+        agent: env.PAPERCUSP_AGENT,
+        env,
+        marker: managedKickoff.marker,
+        sinceMs: nativeCaptureAfterMs,
+        timeoutMs: nativePersistenceTimeoutMs,
+      });
+      if (!proof.persisted) {
+        try {
+          await onKickoffPersisted({
+            persisted: false,
+            renderedHash: managedKickoff.renderedHash,
+            error: `session-port seed was submitted but not found in the ${env.PAPERCUSP_AGENT} native transcript`,
+          });
+        } finally {
+          try { child.kill(); } catch { /* already exited */ }
+        }
+        return;
+      }
+      try {
+        await onKickoffPersisted({
+          persisted: true,
+          renderedHash: managedKickoff.renderedHash,
+          nativeRef: proof.nativeRef,
+        });
+        process.stderr.write(
+          `psu: session port delivered — verified the exact seed checksum in the target native transcript.\n`,
+        );
+      } catch (error) {
+        process.stderr.write(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
+        try { child.kill(); } catch { /* already exited */ }
+      }
+    })();
   }
 
   // P-001a (compaction-continuity-hardening): fold duplicate same-source turn
