@@ -75,12 +75,14 @@ function build(over: Partial<Parameters<typeof buildScoutCycleDeps>[0]> = {}) {
 describe('buildScoutCycleDeps — assembly', () => {
   it('returns deps with every port + passthrough llmCall / limits / cycleId', () => {
     const onPhase = () => {};
-    const { deps } = build({ limits: { maxIdeators: 2, maxCostUsd: 1 }, onPhase });
+    const deadlineMs = 1_700_001_200_000;
+    const { deps } = build({ limits: { maxIdeators: 2, maxCostUsd: 1 }, deadlineMs, onPhase });
     for (const port of ['readCorpus', 'readNoveltyCorpus', 'ideate', 'critique', 'recombine', 'route'] as const) {
       expect(typeof deps[port]).toBe('function');
     }
     expect(deps.cycleId).toBe('cyc-deps-1');
     expect(deps.limits).toEqual({ maxIdeators: 2, maxCostUsd: 1 });
+    expect(deps.deadlineMs).toBe(deadlineMs);
     expect(deps.onPhase).toBe(onPhase);
     expect(typeof deps.llmCall).toBe('function');
   });

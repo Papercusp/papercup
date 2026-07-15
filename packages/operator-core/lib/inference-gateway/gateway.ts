@@ -1439,15 +1439,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return g;
   };
 
+  // The SINGLE pool-wide serviceability count (EI-11511): accounts that can SERVE a request right now — in
+  // rotation (no hard-429 / transport-circuit pause `active()` round-robins over) AND whose governor for the
+  // representative model (SERVICEABLE_CLAMP_MODEL) isn't predictively paused (near its rolling cap — e.g. a
+  // weekly 5h/7d usage wall at util≈1.0, which sets a bounded re-probe pause). Both the serviceable-admission
+  // clamp AND `/stats.healthyAccounts` derive from THIS, so the capacity oracle (fleet:capacity, WI-390 spawn-
+  // readiness) counts accounts ACTUALLY usable now — not merely "not circuit-paused". Before EI-11511 `/stats`
+  // reported the un-narrowed `pool.healthyCount()`, so it read healthyAccounts:7/abundant while 6 of 7 were
+  // weekly-usage-walled (util7d=1.0) — fleet:capacity then advised placing broadly into a days-walled pool.
+  // `null` when the pool exposes no healthyCount (single-account pool) → the callers report 1.
+  const serviceableHealthyCount = (): number | null => {
+    if (!pool.healthyCount) return null;
+    const now = Date.now();
+    return pool.healthyCount((id) => governorForAccount(SERVICEABLE_CLAMP_MODEL, id).state.pausedUntil <= now);
+  };
+
   // Fix 2 (serviceable-count admission clamp): now that `pool` + `governorForAccount` exist, give the clamp its
   // real implementation + start the periodic re-clamp. An account is SERVICEABLE iff the pool has it in rotation
   // (no hard-429 / transport-circuit pause — what `active()` round-robins over) AND its governor for the
   // representative model isn't predictively paused (near its rolling cap). Conservative by design: a tighter
   // count → a tighter clamp → safer under a storm; the MIN floor still lets the pool probe its way back.
   serviceableAdmissionCapFn = () => {
-    if (!SERVICEABLE_CLAMP_ON || !pool.healthyCount) return Number.POSITIVE_INFINITY;
-    const now = Date.now();
-    const serviceable = pool.healthyCount((id) => governorForAccount(SERVICEABLE_CLAMP_MODEL, id).state.pausedUntil <= now);
+    const serviceable = serviceableHealthyCount();
+    if (!SERVICEABLE_CLAMP_ON || serviceable == null) return Number.POSITIVE_INFINITY;
     return Math.max(MIN_SERVICEABLE_ADMISSION, serviceable * PER_ACCOUNT_ADMISSION);
   };
   // Apply the clamp ONCE, NOW that it has its real implementation. Previously the first application waited

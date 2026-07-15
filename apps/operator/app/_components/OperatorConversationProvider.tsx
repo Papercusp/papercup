@@ -1012,9 +1012,17 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     writeOperatorMessagesToSession(state.messages);
   }, [state.messages]);
 
-  // Fire-and-forget PG turn write. Called from sendUserMessage and from
-  // runGeneration once the assistant turn is parsed. We don't block the
-  // UI on the network — the optimistic React state has already updated.
+  // PG turn write. Called from sendUserMessage and from runGeneration once
+  // the assistant turn is parsed. We don't block the UI on the network — the
+  // optimistic React state has already updated — but the write itself must
+  // never silently skip (WI-4838: a spoken reply was heard while BOTH sides
+  // of the exchange vanished because conversationIdRef was still null and
+  // the old code returned early, and any fetch failure was swallowed).
+  //   - No conversation id yet → POST to the literal `active` id; the server
+  //     resolves the window's active conversation and we ADOPT the returned
+  //     id so later writes (and the turns hydration) use it directly.
+  //   - Transient failure → bounded retry; exhausted → surface on the chat
+  //     error banner instead of dropping the turn invisibly.
   const persistTurn = useCallback(
     (
       role: 'user' | 'assistant',
@@ -1024,8 +1032,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       tools?: ChatToolCall[],
       report?: ParsedReport | null,
     ) => {
-      const id = conversationIdRef.current;
-      if (!id) return;
       // After insert: bump cursor (seq dedup) AND swap optimistic uuid
       // for the real PG id (G19 id dedup). Either one alone has a race
       // window where the Zero push could double-render the optimistic
@@ -1035,26 +1041,61 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       const body: Record<string, unknown> = { role, text, source };
       if (tools && tools.length > 0) body.tools = tools;
       if (report) body.report = report;
-      void fetch(`/api/operator/conversations/${id}/turns`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j: { turn?: { id?: string; seq?: number } } | null) => {
-          const seq = j?.turn?.seq;
-          const realId = j?.turn?.id;
-          if (typeof seq === 'number') {
-            if (newestLoadedSeqRef.current === null || seq > newestLoadedSeqRef.current) {
-              newestLoadedSeqRef.current = seq;
+      const payload = JSON.stringify(body);
+
+      const attempt = async (): Promise<void> => {
+        const MAX_TRIES = 3;
+        for (let i = 1; i <= MAX_TRIES; i++) {
+          // Re-read per try — an earlier try (or the sync query) may have
+          // resolved the id in the meantime.
+          const target = conversationIdRef.current ?? 'active';
+          try {
+            const r = await fetch(`/api/operator/conversations/${target}/turns`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: payload,
+            });
+            if (!r.ok) throw new Error(`persist ${r.status}`);
+            const j = (await r.json()) as {
+              turn?: { id?: string; seq?: number };
+              conversationId?: string;
+            };
+            // Adopt the server-resolved conversation when we posted to
+            // `active` (the sync-query effect's `=== current` guard makes
+            // the later sync delivery of the same id a no-op).
+            if (target === 'active' && typeof j.conversationId === 'string' && !conversationIdRef.current) {
+              conversationIdRef.current = j.conversationId;
+              setConvId(j.conversationId);
             }
-            if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = seq;
+            const seq = j?.turn?.seq;
+            const realId = j?.turn?.id;
+            if (typeof seq === 'number') {
+              if (newestLoadedSeqRef.current === null || seq > newestLoadedSeqRef.current) {
+                newestLoadedSeqRef.current = seq;
+              }
+              if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = seq;
+            }
+            if (optimisticId && typeof realId === 'string') {
+              dispatch({ type: 'replace_message_id', oldId: optimisticId, newId: realId });
+            }
+            return;
+          } catch (err) {
+            if (i === MAX_TRIES) {
+              // The turn is still visible locally (optimistic state +
+              // sessionStorage cache) but did NOT reach the shared thread —
+              // other windows/devices won't see it. Say so.
+              console.warn('[conversation] persist failed after retries:', err);
+              dispatch({
+                type: 'set_error',
+                error: 'A message could not be saved to the conversation — it may be missing on other windows.',
+              });
+              return;
+            }
+            await new Promise((res) => setTimeout(res, 300 * i));
           }
-          if (optimisticId && typeof realId === 'string') {
-            dispatch({ type: 'replace_message_id', oldId: optimisticId, newId: realId });
-          }
-        })
-        .catch(() => { /* swallow — sessionStorage cache covers refresh */ });
+        }
+      };
+      void attempt();
     },
     [],
   );

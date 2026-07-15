@@ -64,6 +64,12 @@ export interface BuildScoutCycleDepsOptions {
   limits?: ScoutCycleLimits;
   /** Opaque cycle id (provenance grouping). */
   cycleId?: string;
+  /**
+   * WI-4644 — absolute epoch-ms deadline imposed by the owning Scout scheduler.
+   * Preserve it on the assembled cycle deps so runScoutCycle can bound every
+   * governor admission wait and the ideator can reserve its generation budget.
+   */
+  deadlineMs?: number;
   /** Best-effort phase reporter used by scheduler timeout diagnostics. */
   onPhase?: ScoutCycleDeps['onPhase'];
   /** Override the state-of-Hive digest readers (tests). Default: prod `buildStateOfHiveReaders()`. */
@@ -383,6 +389,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     llmCall: opts.llmCall,
     limits: opts.limits,
     cycleId: opts.cycleId,
+    ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}),
     ...(opts.onPhase ? { onPhase: opts.onPhase } : {}),
     readCorpus: async () => {
       const federatedPriming = await readFederatedPriming();

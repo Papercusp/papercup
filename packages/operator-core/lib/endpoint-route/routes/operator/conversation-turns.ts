@@ -2,10 +2,19 @@
  * GET  /api/operator/conversations/:id/turns?beforeSeq=N&limit=M
  * POST /api/operator/conversations/:id/turns  — append a turn
  *
+ * `:id` accepts the literal `active` (WI-4838): it resolves the ACTIVE
+ * conversation server-side (per the request's workspace) instead of trusting
+ * the client to know the id. This is the no-silent-skip seam — a window whose
+ * `operatorConversations.current` sync read hasn't resolved (degraded sync,
+ * boot race) can still persist a turn; the response carries the resolved
+ * `conversationId` so the client adopts it. Conversation ids are uuids, so
+ * the literal can never shadow a real id.
+ *
  * Ported from app/api/operator/conversations/[id]/turns/route.ts. `auth: 'public'`.
  */
 import {
   appendTurn,
+  getOrCreateActiveConversation,
   listTurnsRecent,
   type TurnRole,
   type TurnSource,
@@ -29,7 +38,8 @@ const get = defineTool({
   path: '/operator/conversations/:id/turns',
   auth: 'public',
   async handler(req, ctx) {
-    const id = ctx.params.id as string;
+    const raw = ctx.params.id as string;
+    const id = raw === 'active' ? (await getOrCreateActiveConversation()).id : raw;
     const url = new URL(req.url);
     const beforeRaw = url.searchParams.get('beforeSeq');
     const limitRaw = url.searchParams.get('limit');
@@ -48,7 +58,8 @@ const post = defineTool({
   path: '/operator/conversations/:id/turns',
   auth: 'loopback',
   async handler(req, ctx) {
-    const id = ctx.params.id as string;
+    const raw = ctx.params.id as string;
+    const id = raw === 'active' ? (await getOrCreateActiveConversation()).id : raw;
     const body = (await req.json()) as Body;
     if (!body || typeof body.text !== 'string' || !body.role) {
       return Response.json({ error: 'role and text required' }, { status: 400 });
@@ -68,7 +79,8 @@ const post = defineTool({
     });
     void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: id })
       .catch(() => { /* best-effort */ });
-    return Response.json({ turn });
+    // conversationId lets an `active` caller adopt the resolved id.
+    return Response.json({ turn, conversationId: id });
   },
 });
 
