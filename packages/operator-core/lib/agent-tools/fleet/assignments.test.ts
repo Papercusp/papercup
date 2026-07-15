@@ -312,6 +312,7 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     expect(out.declaredUnclaimed).toBe(false);
     expect(out.stalled).toBe(false);
     expect(out.claims[0].activity).toBe('alive');
+    expect(out.queued[0].activity).toBe('alive');
     expect(out.doing?.activity).toBe('alive');
   });
 });
