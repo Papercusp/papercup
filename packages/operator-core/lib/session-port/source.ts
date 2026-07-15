@@ -1,6 +1,6 @@
 import { constants as fsConstants } from 'node:fs';
-import { open } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { lstat, open, readdir } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import {
   decompressArchiveBlobBounded,
   sha256Hex,
@@ -16,6 +16,28 @@ export interface StableSource {
   completeBytes: number;
   source: 'live-jsonl' | 'archive-manifest';
   relpath: string | null;
+}
+
+/** Resolve exactly one `<config>/projects/<cwd-key>/<session>.jsonl` without
+ * following symlinked project directories or files. Multiple matches are a
+ * hard ambiguity; choosing the newest would silently select a branch/cwd. */
+export async function findCanonicalClaudeLiveJsonl(
+  claudeConfigDir: string,
+  sessionId: string,
+): Promise<string> {
+  const projects = join(claudeConfigDir, 'projects');
+  const entries = await readdir(projects, { withFileTypes: true }).catch(() => []);
+  const matches: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const candidate = join(projects, entry.name, `${sessionId}.jsonl`);
+    const stat = await lstat(candidate).catch(() => null);
+    if (stat?.isFile() && !stat.isSymbolicLink()) matches.push(candidate);
+  }
+  if (matches.length !== 1) {
+    throw new Error(`canonical live Claude JSONL is ${matches.length ? 'ambiguous' : 'missing'}`);
+  }
+  return matches[0];
 }
 
 /** Snapshot an append-only JSONL at one byte high-water. O_NOFOLLOW rejects a

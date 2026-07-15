@@ -57,26 +57,35 @@ const mapRow = (r: any): SessionPortRow => ({
   expiresAt: new Date(r.expires_at).toISOString(),
 });
 
-export async function createPreparedSessionPort(input: Omit<SessionPortRow, 'id' | 'status' | 'targetAdvSessionId' | 'error'>): Promise<SessionPortRow> {
+export async function findSessionPortByIdempotency(
+  workspaceId: string,
+  idempotencyKey: string,
+): Promise<SessionPortRow | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<any[]>`
+    SELECT * FROM harness_shared.session_ports
+     WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+export async function createPreparedSessionPort(input: Omit<SessionPortRow, 'status' | 'targetAdvSessionId' | 'error'>): Promise<SessionPortRow> {
   const { sql } = getOrgPg();
   const rows = await sql<any[]>`
     INSERT INTO harness_shared.session_ports
-      (workspace_id, idempotency_key, protocol_version, source_adv_session_id,
+      (id, workspace_id, idempotency_key, protocol_version, source_adv_session_id,
        source_backend, target_backend, target_model, source_hash, normalized_hash,
        rendered_hash, token_hash, artifact_path, metadata, expires_at)
     VALUES
-      (${input.workspaceId}, ${input.idempotencyKey}, ${input.protocolVersion}, ${input.sourceAdvSessionId},
+      (${input.id}, ${input.workspaceId}, ${input.idempotencyKey}, ${input.protocolVersion}, ${input.sourceAdvSessionId},
        ${input.sourceBackend}, ${input.targetBackend}, ${input.targetModel}, ${input.sourceHash},
        ${input.normalizedHash}, ${input.renderedHash}, ${input.tokenHash}, ${input.artifactPath},
        ${JSON.stringify(input.metadata)}::jsonb, ${input.expiresAt})
     ON CONFLICT (workspace_id, idempotency_key) DO NOTHING
     RETURNING *`;
   if (rows[0]) return mapRow(rows[0]);
-  const existing = await sql<any[]>`
-    SELECT * FROM harness_shared.session_ports
-     WHERE workspace_id = ${input.workspaceId} AND idempotency_key = ${input.idempotencyKey}`;
-  if (!existing[0]) throw new Error('session-port idempotency conflict lost its row');
-  return mapRow(existing[0]);
+  const existing = await findSessionPortByIdempotency(input.workspaceId, input.idempotencyKey);
+  if (!existing) throw new Error('session-port idempotency conflict lost its row');
+  return existing;
 }
 
 export async function getSessionPort(id: string, workspaceId: string): Promise<SessionPortRow | null> {
