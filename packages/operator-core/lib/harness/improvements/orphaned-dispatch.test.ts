@@ -621,6 +621,7 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     });
 
     it('a close failure for one issue is best-effort and never breaks the sweep', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.mocked(readRecentDispatches).mockResolvedValue([
         row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 }),
         row({ id: 'd2', itemId: 'EI-1', outcome: 'fixed', resolvedAt: hoursAgo(1), attempt: 2, firedAt: hoursAgo(1) }),
@@ -637,6 +638,8 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
         }),
       ).resolves.toBeDefined();
       expect(resolve).not.toHaveBeenCalled(); // this issue's close failed before resolve
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/supersession close failed/), expect.anything());
+      warn.mockRestore();
     });
   });
 });

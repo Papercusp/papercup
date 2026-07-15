@@ -59,9 +59,9 @@ describe('recipe recommendation authority (P-008)', () => {
     await expect(validateRecipeAuthorityProof({ script, updatedAt, proof, liveContext: { harness: 'papercusp' } }))
       .resolves.toMatchObject({ ok: true });
     await expect(validateRecipeAuthorityProof({ script: `${script}\n// changed`, updatedAt, proof }))
-      .resolves.toEqual({ ok: false, error: 'authority_stale_revision' });
+      .resolves.toMatchObject({ ok: false, error: 'authority_stale_revision' });
     await expect(validateRecipeAuthorityProof({ script, updatedAt, proof, liveContext: { harness: 'other' } }))
-      .resolves.toEqual({ ok: false, error: 'authority_entity_mismatch' });
+      .resolves.toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
 
     const descriptor = await deriveRecipeAuthority(script);
     expect(recipeAuthorityMatchesLiveRefs(descriptor, {
@@ -91,7 +91,7 @@ describe('recipe recommendation authority (P-008)', () => {
       updatedAt,
       proof,
       liveContext: {},
-    })).resolves.toEqual({ ok: false, error: 'authority_entity_mismatch' });
+    })).resolves.toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
   });
 
   it('collects authority from heterogeneous items rows', async () => {

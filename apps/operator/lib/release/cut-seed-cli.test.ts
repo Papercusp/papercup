@@ -17,6 +17,8 @@ import {
   graftCorestoreEntry,
   refreshCorestoreStateForSeed,
   readReusableCorestore,
+  isCorestoreLockedError,
+  waitForOperatorDrain,
 } from './cut-seed-cli';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 
@@ -318,5 +320,68 @@ describe('readReusableCorestore (WI-3232 --reuse-corestore)', () => {
     const readManifest = vi.fn(async () => JSON.stringify(manifest([GIT_ENTRY, CORESTORE_ENTRY])));
     const exists = (p: string) => !p.endsWith('corestore');
     await expect(readReusableCorestore('/seed', { readManifest, exists })).rejects.toThrow(/is missing on disk/);
+  });
+});
+
+describe('isCorestoreLockedError (WI-4487)', () => {
+  it('recognises the real fd-lock message a live operator produces', () => {
+    // The exact string fd-lock throws (fd-lock/index.js) when the operator holds the
+    // CORESTORE device file — the signature that we must fall back to a read-only open.
+    expect(isCorestoreLockedError(new Error('File descriptor could not be locked'))).toBe(true);
+  });
+
+  it('does NOT swallow unrelated open failures (they must keep propagating)', () => {
+    expect(isCorestoreLockedError(new Error('ENOSPC: no space left on device'))).toBe(false);
+    expect(isCorestoreLockedError(new Error('Unsupported version: 3'))).toBe(false);
+  });
+});
+
+describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', () => {
+  const base = { workspaceId: 'ws-1', hive: 'papercusp' };
+
+  /** Minimal postgres.Sql stand-in: each call returns the next queued undrained count. */
+  const pgReturning = (counts: number[]) => {
+    const calls = { n: 0 };
+    const sql = (async () => [{ undrained: counts[Math.min(calls.n++, counts.length - 1)] }]) as never;
+    return { sql, calls };
+  };
+
+  it('returns immediately when the operator has already drained to zero', async () => {
+    const { sql, calls } = pgReturning([0]);
+    const res = await waitForOperatorDrain({ ...base, pg: sql, warn: () => {} });
+    expect(res.undrained).toBe(0);
+    expect(calls.n).toBe(1);
+  });
+
+  it('waits for the live operator to drain the rows backfill enqueued, then proceeds', async () => {
+    const { sql, calls } = pgReturning([7, 3, 0]);
+    const sleep = vi.fn(async () => {});
+    const res = await waitForOperatorDrain({ ...base, pg: sql, sleep, warn: () => {} });
+    expect(res.undrained).toBe(0);
+    expect(calls.n).toBe(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('REFUSES to cut a seed that would silently omit undrained rows, rather than shipping it', async () => {
+    const { sql } = pgReturning([5]);
+    let t = 0;
+    await expect(
+      waitForOperatorDrain({
+        ...base,
+        pg: sql,
+        timeoutMs: 1_000,
+        now: () => (t += 600), // trip the deadline on the 2nd poll
+        sleep: async () => {},
+        warn: () => {},
+      }),
+    ).rejects.toThrow(/has not drained 5 outbox row\(s\).*refusing to cut/s);
+  });
+
+  it('explains that the cut cannot drain on the operator’s behalf (the data-loss trap)', async () => {
+    const { sql } = pgReturning([2]);
+    let t = 0;
+    await expect(
+      waitForOperatorDrain({ ...base, pg: sql, timeoutMs: 10, now: () => (t += 100), sleep: async () => {}, warn: () => {} }),
+    ).rejects.toThrow(/cannot drain on its behalf without corrupting delivery state/);
   });
 });
