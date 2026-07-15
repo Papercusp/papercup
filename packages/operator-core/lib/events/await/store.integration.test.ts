@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes } =
   await import('./store');
 
 let rootSql: postgres.Sql;
@@ -195,6 +195,40 @@ describe('await-event store (PG)', () => {
 
     expect((await listActiveAwaits('sub-1')).map((r) => r.eventKey)).toEqual(['lock:grant:xyz']); // unrelated await kept
     expect((await listActiveAwaits('sub-2')).map((r) => r.eventKey)).toEqual(['work-item:claimable']); // peer's kept
+  });
+
+  // EI-12457: cancelAwaitsForSubscribersOnKeys — the shared primitive behind sibling-
+  // outcome cancellation (checkpoint:await's dual green/red arm) and superseded-wait
+  // retirement (re-arming for a moved-on candidate).
+  it('cancelAwaitsForSubscribersOnKeys cancels only the named subscribers\' PENDING rows on the named keys', async () => {
+    const green = await registerAwait({ subscriberId: 'sub-a', eventKey: 'release:green:papercusp' });
+    await registerAwait({ subscriberId: 'sub-a', eventKey: 'green-checkpoint:red:papercusp' });
+    const unrelated = await registerAwait({ subscriberId: 'sub-a', eventKey: 'lock:grant:xyz' });
+    const peerRed = await registerAwait({ subscriberId: 'sub-b', eventKey: 'green-checkpoint:red:papercusp' });
+
+    const cancelled = await cancelAwaitsForSubscribersOnKeys(
+      ['sub-a'],
+      ['green-checkpoint:red:papercusp', 'green-checkpoint:red'],
+    );
+    expect(cancelled).toBe(1); // only sub-a's red row
+
+    const subA = await listActiveAwaits('sub-a');
+    expect(subA.map((r) => r.id).sort()).toEqual([green.id, unrelated.id].sort()); // green + unrelated survive
+    expect((await listActiveAwaits('sub-b')).map((r) => r.id)).toEqual([peerRed.id]); // peer untouched
+
+    // idempotent: nothing left to cancel for sub-a on that key
+    expect(await cancelAwaitsForSubscribersOnKeys(['sub-a'], ['green-checkpoint:red:papercusp'])).toBe(0);
+    // empty inputs are a no-op, not a query
+    expect(await cancelAwaitsForSubscribersOnKeys([], ['green-checkpoint:red:papercusp'])).toBe(0);
+    expect(await cancelAwaitsForSubscribersOnKeys(['sub-a'], [])).toBe(0);
+  });
+
+  it('cancelAwaitsForSubscribersOnKeys never touches an already-fired row (fire wins the race)', async () => {
+    await registerAwait({ subscriberId: 'sub-c', eventKey: 'green-checkpoint:red:papercusp' });
+    const fired = await fireAwaitsForKey({ eventKey: 'green-checkpoint:red:papercusp' });
+    expect(fired).toHaveLength(1);
+    // the row is now fired, not pending — the sibling-cancel pass must be a no-op on it
+    expect(await cancelAwaitsForSubscribersOnKeys(['sub-c'], ['green-checkpoint:red:papercusp'])).toBe(0);
   });
 
   // ── P-001 (fleet-member-dx-improvements-2026-07-10): parked-on-event read ──
