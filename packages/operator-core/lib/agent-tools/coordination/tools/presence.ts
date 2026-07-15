@@ -27,6 +27,7 @@ import {
 } from '../inbox-read-freshness';
 import { listParkedAwaitsForSubscribers } from '../../../events/await/store';
 import { buildParkedOnMap } from '../../fleet/assignments';
+import { overlayPresenceCursors } from '../presence-cursor-overlay';
 
 export default defineTool({
   name: 'coord:presence',
@@ -90,6 +91,10 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('P-011 Tier-2/3 detail: add each agent\'s `heldFiles` (its live file-lock nodes, read from the separate papercusp_su lock DB — opt-in + fail-soft). Off by default; the lean roster already carries the Tier-1 scalars.'),
+    include_cursor: z
+      .boolean()
+      .optional()
+      .describe('ambient-semantic-push P-002: add each active agent\'s `cursor` — the top terms of its current lexical cursor (what it is working on, mined from its own journal), data-not-directive. Opt-in + fail-soft + snapshot-only (never a [coord+N] delta). DEFAULT-OFF and additionally gated by the PAPERCUSP_AMBIENT_CURSOR feature flag; absent unless both are on.'),
     since: z
       .string()
       .optional()
