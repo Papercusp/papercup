@@ -690,7 +690,11 @@ export interface ScorecardTrendFilter {
  * binds — a mention mid-prose is not a binding, so a criterion that merely discusses
  * instrument keys does not accidentally acquire one.
  */
-export function parseCriterionInstrumentKey(model: string | null | undefined): string | null {
+export function parseCriterionInstrumentKey(
+  model: string | null | undefined,
+  instrumentKey?: string | null,
+): string | null {
+  if (instrumentKey?.trim()) return instrumentKey.trim();
   const m = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(model ?? '');
   return m ? m[1] : null;
 }
@@ -722,7 +726,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // view can show which instrument grades each criterion.
   const instrumentKeyByCriterion = new Map<string, string>();
   for (const c of trendRubric?.criteria ?? []) {
-    const key = parseCriterionInstrumentKey(c.model);
+    const key = parseCriterionInstrumentKey(c.model, c.instrumentKey);
     if (key) instrumentKeyByCriterion.set(c.key, key);
   }
 

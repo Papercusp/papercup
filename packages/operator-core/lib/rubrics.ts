@@ -77,6 +77,8 @@ export interface RubricCriterion {
    *  from being silently dropped on re-propose, and rubricCompleteness reports criteria
    *  still lacking one. */
   replication?: string;
+  /** Stable machine-readable instrument binding. `none` means explicitly manual. */
+  instrumentKey?: string;
   /** The criterion's STRUCTURED evidence window (EI-12146) — resolve via
    *  resolveCriterionWindow() instead of re-hardcoding a look-back in prose. Omitted =
    *  the consumer's default (48h rolling). */
@@ -232,6 +234,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
       driftMarkers: c.driftMarkers,
       ...(c.ratingScale ? { ratingScale: c.ratingScale } : {}),
       ...(c.replication ? { replication: c.replication } : {}),
+      ...(c.instrumentKey ? { instrumentKey: c.instrumentKey } : {}),
       ...(c.window ? { window: c.window } : {}),
     })),
     ratingScale: d.ratingScale,
@@ -587,10 +590,23 @@ export interface RubricCompleteness {
   criteriaWithoutReplication: string[];
   /** True when the rubric has no methodRef (the ONE main long-form procedure). */
   methodRefMissing: boolean;
-  /** True when every criterion carries a procedure AND methodRef is set. */
+  /** Release-gating criterion keys with no structured/legacy instrument binding. */
+  criteriaWithoutInstrument: string[];
+  /** Real instrument keys bound by more than one release criterion. */
+  duplicateInstrumentKeys: string[];
+  /** True when procedures, methodRef, and release instrumentation are complete. */
   complete: boolean;
   /** Human-readable gap summary; absent when complete. */
   note?: string;
+}
+
+/** Backward-compatible instrument binding: structured field first, then legacy token. */
+export function effectiveCriterionInstrumentKey(
+  criterion: Pick<RubricCriterion, 'model' | 'instrumentKey'>,
+): string | null {
+  if (criterion.instrumentKey?.trim()) return criterion.instrumentKey.trim();
+  const match = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(criterion.model);
+  return match?.[1] ?? null;
 }
 
 /**
@@ -604,7 +620,27 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
     .filter((c) => !(c.replication ?? '').trim() && !c.method.includes(REPLICATION_DRILL_MARKER))
     .map((c) => c.key);
   const methodRefMissing = !rubric.methodRef;
-  const complete = criteriaWithoutReplication.length === 0 && !methodRefMissing;
+  const bindings = rubric.criteria.map((criterion) => ({
+    key: criterion.key,
+    instrumentKey: effectiveCriterionInstrumentKey(criterion),
+  }));
+  const criteriaWithoutInstrument = rubric.releaseGating
+    ? bindings.filter((binding) => !binding.instrumentKey).map((binding) => binding.key)
+    : [];
+  const seen = new Set<string>();
+  const duplicateInstrumentKeys = rubric.releaseGating
+    ? [...new Set(
+        bindings
+          .map((binding) => binding.instrumentKey)
+          .filter((key): key is string => Boolean(key) && key !== 'none')
+          .filter((key) => (seen.has(key) ? true : (seen.add(key), false))),
+      )]
+    : [];
+  const complete =
+    criteriaWithoutReplication.length === 0 &&
+    !methodRefMissing &&
+    criteriaWithoutInstrument.length === 0 &&
+    duplicateInstrumentKeys.length === 0;
   const parts: string[] = [];
   if (criteriaWithoutReplication.length > 0) {
     parts.push(
@@ -614,9 +650,19 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
   if (methodRefMissing) {
     parts.push('rubric methodRef is unset (the ONE main long-form procedure runbook for the whole rubric)');
   }
+  if (criteriaWithoutInstrument.length > 0) {
+    parts.push(
+      `release-gating criteria lack instrument bindings: ${criteriaWithoutInstrument.join(', ')} (set criterion.instrumentKey; legacy trailing model tokens remain readable)`,
+    );
+  }
+  if (duplicateInstrumentKeys.length > 0) {
+    parts.push(`release-gating instrument keys are duplicated: ${duplicateInstrumentKeys.join(', ')}`);
+  }
   return {
     criteriaWithoutReplication,
     methodRefMissing,
+    criteriaWithoutInstrument,
+    duplicateInstrumentKeys,
     complete,
     ...(parts.length > 0 ? { note: parts.join('; ') } : {}),
   };
@@ -953,6 +999,15 @@ async function readRawRubricTemplateData(rubricId: string): Promise<Record<strin
 export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubric | null> {
   const existing = await getRubric(rubricId);
   if (!existing) return null;
+  const completeness = rubricCompleteness(existing);
+  if (
+    existing.releaseGating &&
+    (completeness.criteriaWithoutInstrument.length > 0 || completeness.duplicateInstrumentKeys.length > 0)
+  ) {
+    throw new Error(
+      `invalid_args: ratifyRubric: release-gating rubric '${rubricId}' has an invalid instrument contract — ${completeness.note ?? 'instrument mapping incomplete'}`,
+    );
+  }
   const scope = await resolveRubricWriteScope(rubricId);
   // Merge base read just before the locked write; plan writes serialize on the advisory
   // lock, so the window is a propose racing this exact ratify — a governance conflict

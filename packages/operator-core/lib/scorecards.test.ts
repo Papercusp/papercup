@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
 import type { CriterionTrend } from './scorecards';
 
 // EI-12147: the graded-generation stamp's read-side validator — a scorecard row must
@@ -44,6 +44,9 @@ describe('parseGradedGeneration (EI-12147)', () => {
 
 // WI-4607: the criterion→instrument binding is a trailing token on the model prose.
 describe('parseCriterionInstrumentKey (WI-4607)', () => {
+  it('prefers the structured instrumentKey over the legacy model token', () => {
+    expect(parseCriterionInstrumentKey('x [instrumentKey: old]', 'new')).toBe('new');
+  });
   it('parses a trailing [instrumentKey: <key>] token', () => {
     expect(parseCriterionInstrumentKey('work flows and lands [instrumentKey: placement-count]')).toBe('placement-count');
   });
@@ -66,6 +69,44 @@ describe('parseCriterionInstrumentKey (WI-4607)', () => {
   });
   it('rejects a malformed token (uppercase / spaces in the key)', () => {
     expect(parseCriterionInstrumentKey('x [instrumentKey: Not Valid]')).toBeNull();
+  });
+});
+
+describe('scorecardEvidenceFingerprint (EI-12459)', () => {
+  it('is stable across object/key insertion order', () => {
+    const a = scorecardEvidenceFingerprint({
+      rubricRef: 'r',
+      ratings: {
+        b: { rating: 'FAIL', evidence: 'b' },
+        a: { rating: 'PASS', evidence: 'a' },
+      },
+      instrumentSnapshots: {
+        z: { verdict: 'fail', measuredAt: '2026-07-15T00:00:00Z', value: { y: 2, x: 1 } },
+      },
+    });
+    const b = scorecardEvidenceFingerprint({
+      rubricRef: 'r',
+      ratings: {
+        a: { evidence: 'a', rating: 'PASS' },
+        b: { evidence: 'b', rating: 'FAIL' },
+      },
+      instrumentSnapshots: {
+        z: { measuredAt: '2026-07-15T00:00:00Z', value: { x: 1, y: 2 }, verdict: 'fail' },
+      },
+    });
+    expect(a).toBe(b);
+  });
+
+  it('changes when evidence changes', () => {
+    const before = scorecardEvidenceFingerprint({
+      rubricRef: 'r',
+      ratings: { a: { rating: 'PASS', evidence: 'n=1' } },
+    });
+    const after = scorecardEvidenceFingerprint({
+      rubricRef: 'r',
+      ratings: { a: { rating: 'PASS', evidence: 'n=2' } },
+    });
+    expect(after).not.toBe(before);
   });
 });
 

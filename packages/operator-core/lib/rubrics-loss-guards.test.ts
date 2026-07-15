@@ -186,6 +186,21 @@ describe('rubricCompleteness (WI-4287 per-aspect procedure report)', () => {
     expect(c.note).toMatch(/bare/);
     expect(c.note).toMatch(/methodRef/);
   });
+
+  it('release-gating rubrics report missing and duplicate instrument bindings', () => {
+    const r = rubric(
+      [
+        crit({ key: 'missing' }),
+        crit({ key: 'a', instrumentKey: 'shared' }),
+        crit({ key: 'b', model: 'legacy binding [instrumentKey: shared]' }),
+      ],
+      { releaseGating: true },
+    );
+    const c = rubricCompleteness(r);
+    expect(c.criteriaWithoutInstrument).toEqual(['missing']);
+    expect(c.duplicateInstrumentKeys).toEqual(['shared']);
+    expect(c.complete).toBe(false);
+  });
 });
 
 describe('criterion `replication` field end-to-end (schema + plan-row mapping)', () => {
@@ -202,6 +217,11 @@ describe('criterion `replication` field end-to-end (schema + plan-row mapping)',
     expect(rubricCriterionSchema.safeParse(baseCrit).success).toBe(true);
     expect(rubricCriterionSchema.safeParse({ ...baseCrit, replication: '' }).success).toBe(false);
     expect(rubricCriterionSchema.safeParse({ ...baseCrit, replicatoin: 'typo' }).success).toBe(false);
+  });
+
+  it('rubricCriterionSchema accepts a structured instrumentKey', () => {
+    expect(rubricCriterionSchema.safeParse({ ...baseCrit, instrumentKey: 'blender:success-metrics.cycleErrorRate' }).success).toBe(true);
+    expect(rubricCriterionSchema.safeParse({ ...baseCrit, instrumentKey: '' }).success).toBe(false);
   });
 
   it('planRowToRubric passes replication through (and omits it when absent)', () => {

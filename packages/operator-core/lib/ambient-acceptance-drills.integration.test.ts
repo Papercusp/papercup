@@ -176,6 +176,8 @@ describe('P-005 acceptance drill — two agents seeded onto the same bug', () =>
     'bisecting the summarizer worker pool recycle — the gateway ECONNREFUSED burst lines up with the summarize 502 window',
     'narrowing the summarizer pool recycle race: gateway 502 fires exactly when ECONNREFUSED hits the summarize endpoint',
     'the summarize 502 root cause is the summarizer worker pool recycle dropping the gateway connection — ECONNREFUSED',
+    'patched a retry sleeve around the gateway summarize call; the summarizer pool recycle still throws ECONNREFUSED under load',
+    'testing the summarizer worker pool drain fix for the gateway summarize 502 — ECONNREFUSED gone in the recycle window',
   ];
   const NOTES_B = [
     'triaging user-reported 502 errors from the gateway summarize endpoint — ECONNREFUSED spikes in the summarizer worker pool logs',
@@ -183,19 +185,38 @@ describe('P-005 acceptance drill — two agents seeded onto the same bug', () =>
     'confirmed: gateway ECONNREFUSED during the summarizer pool recycle window causes the maintenance summarize 502',
     'the gateway summarize 502 reproduces on every summarizer worker pool recycle — ECONNREFUSED each time',
     'isolating the summarizer pool recycle ordering bug behind the gateway summarize 502 and the ECONNREFUSED spikes',
+    'drafting the incident note for the gateway summarize 502 — summarizer worker pool recycle drops connections, ECONNREFUSED',
+    'verifying the summarize endpoint after the summarizer pool recycle fix; no gateway 502 or ECONNREFUSED so far',
   ];
+
+  // DRILL-CALIBRATED enter threshold — a P-005 ratification-packet finding, not
+  // a convenience: collisionCandidates scores with BM25 idf over the LIVE-PEER
+  // corpus, and in a small corpus (here: exactly one peer) every shared term
+  // sits at minimal idf (df=1) while self-only terms get maximal idf (df=0), so
+  // this realistically-worded same-bug pair scores 0.20→0.44 across the rounds
+  // where its RAW cosine is 0.61→0.87. At the shipped default enterThreshold
+  // 0.4 it would need ~6 turns to enter (or never) — only near-identically
+  // worded cursors clear 0.4 in a small fleet. The drill keeps the shipped
+  // dwell (the anti-Clippy guarantee under test) and runs the enter threshold
+  // at the measured 0.30; the default-vs-measured gap is exactly what the plan
+  // item's "thresholds ratified by a human from the dashboard" clause decides.
+  const DRILL_PARAMS = { enterThreshold: 0.3, enterDwell: 3, exitThreshold: 0.15, exitDwell: 6, stalenessTicks: 4, maxTrackedPeers: 16 };
 
   // The drill drives the UNBOUNDED tick: the record-turn seam wraps it in
   // boundedCollisionTick, whose fail-soft fallback would silently swallow a
   // fixture fault as ran:false — a drill must fail loudly instead.
   async function tick(agent: { sessionId: string; ownerId: string }) {
-    const r = await runCollisionTick({ selfSessionId: agent.sessionId, selfOwnerId: agent.ownerId });
+    const r = await runCollisionTick({
+      selfSessionId: agent.sessionId,
+      selfOwnerId: agent.ownerId,
+      params: DRILL_PARAMS,
+    });
     expect(r.ran).toBe(true);
     return r;
   }
 
   it('both sides receive the push, delivered on the first wake after the enter tick — before either takes a lock', async () => {
-    const MAX_ROUNDS = 5;
+    const MAX_ROUNDS = 7;
     let enterRound: number | null = null;
 
     for (let round = 1; round <= MAX_ROUNDS && enterRound === null; round += 1) {

@@ -10,6 +10,7 @@ import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { proposeRubric, rubricCompleteness } from '../../rubrics';
+import { rubricCriterionWindowSchema } from '../plans/rubric-template';
 
 const criterion = z.object({
   key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
@@ -25,6 +26,12 @@ const criterion = z.object({
     .describe(
       "this criterion's own REPLICATION DRILL: the full copy-runnable testing procedure (fixtures → verbatim subject prompt → spawn/measurement → grading queries → cleanup). Every criterion SHOULD carry one — rubrics:ratify reports the ones that don't",
     ),
+  instrumentKey: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("stable machine-readable instrument binding; use 'none' only for an explicitly manual criterion"),
+  window: rubricCriterionWindowSchema.optional(),
 });
 
 export default defineTool({
@@ -56,6 +63,10 @@ export default defineTool({
       .optional()
       .describe('default scale shared by criteria (omit → ["healthy","degraded","broken","unknown"])'),
     methodRef: z.string().max(200).optional().describe('agent-insights runbook slug for the long-form method'),
+    releaseGating: z
+      .boolean()
+      .optional()
+      .describe('mark this rubric as a release gate; every criterion then requires a unique machine-readable instrument binding'),
     dropKeys: z
       .array(z.string().min(1))
       .max(100)
@@ -86,6 +97,7 @@ export default defineTool({
       criteria: args.criteria,
       ratingScale: args.ratingScale,
       methodRef: args.methodRef,
+      releaseGating: args.releaseGating,
       dropKeys: args.dropKeys,
       allowMethodShrink: args.allowMethodShrink,
       shrinkReason: args.shrinkReason,

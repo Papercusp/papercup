@@ -24,7 +24,7 @@ export default defineTool({
   guidance: {
     when: 'You want to know whether the Kettle is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete pot-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.',
     notWhen:
-      'You want the scorecard ROWS + their ratings — scorecards:list. You want a criterion\'s rating TREND over time — rubrics:trend. You are FILING a scorecard — improvements:capture { lane: "observation", observation: { rubricRef, ratings } }.',
+      'You want the scorecard ROWS + their ratings — scorecards:list. You want a criterion\'s rating TREND over time — rubrics:trend. You are FILING a scorecard — scorecards:emit.',
     chaining:
       'scorecards:freshness { rubricRef: "pot-coordination-health", since } → status stale/partial-only ⇒ the Kettle missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped.',
     seeAlso: [

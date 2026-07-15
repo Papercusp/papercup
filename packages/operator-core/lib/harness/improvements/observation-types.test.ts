@@ -9,6 +9,8 @@ import {
   validateObservationRatings,
   validateScorecardCompleteness,
   validateScorecardRatingValues,
+  canonicalScorecardRating,
+  normalizeScorecardRatings,
   asStructuredObservation,
   ObservationEvidenceError,
   OBSERVATION_RATING_SCALE,
@@ -178,14 +180,18 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       sourceHive: 'papercusp',
       targetHive: 'shared-hive-test',
       rubricRef: 'pot-coordination-health',
-      ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'e1' } },
+      ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'e1', suggestion: 'keep it' } },
+      evidenceFingerprint: 'abc123',
+      instrumentSnapshots: { flow: { verdict: 'pass' } },
     });
     expect(out).toBeDefined();
     expect(out?.kind).toBe('friction');
     expect(out?.sourceHive).toBe('papercusp');
     expect(out?.targetHive).toBe('shared-hive-test');
     expect(out?.rubricRef).toBe('pot-coordination-health');
-    expect(out?.ratings?.['end-to-end-flow']).toEqual({ rating: 'healthy', evidence: 'e1' });
+    expect(out?.ratings?.['end-to-end-flow']).toEqual({ rating: 'healthy', evidence: 'e1', suggestion: 'keep it' });
+    expect(out?.evidenceFingerprint).toBe('abc123');
+    expect(out?.instrumentSnapshots).toEqual({ flow: { verdict: 'pass' } });
     expect(out?.refs).toEqual(['tool:pot:survey', 'WI-1']);
   });
 
@@ -210,6 +216,37 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(asStructuredObservation('x')).toBeUndefined();
     expect(asStructuredObservation({})).toBeUndefined();
     expect(asStructuredObservation({ unknownOnly: 1 })).toBeUndefined();
+  });
+});
+
+describe('canonical scorecard ratings (EI-12458)', () => {
+  const rubric = {
+    ratingScale: ['PASS', 'AT-RISK', 'FAIL', 'UNKNOWN'],
+    criteria: [
+      { key: 'a' },
+      { key: 'b', ratingScale: ['healthy', 'degraded', 'broken', 'unknown'] },
+    ],
+  };
+
+  it('resolves case-insensitively to the exact rubric spelling', () => {
+    expect(canonicalScorecardRating('pass', rubric.ratingScale)).toBe('PASS');
+    expect(canonicalScorecardRating(' At-Risk ', rubric.ratingScale)).toBe('AT-RISK');
+    expect(canonicalScorecardRating('unknown', ['PASS', 'FAIL'])).toBe('unknown');
+  });
+
+  it('normalizes every entry without losing evidence or suggestions', () => {
+    expect(
+      normalizeScorecardRatings(
+        {
+          a: { rating: 'pass', evidence: 'metric=1', suggestion: 'retain' },
+          b: { rating: 'HEALTHY', evidence: 'metric=2' },
+        },
+        rubric,
+      ),
+    ).toEqual({
+      a: { rating: 'PASS', evidence: 'metric=1', suggestion: 'retain' },
+      b: { rating: 'healthy', evidence: 'metric=2' },
+    });
   });
 });
 
