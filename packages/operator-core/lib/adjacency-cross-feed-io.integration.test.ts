@@ -107,6 +107,7 @@ beforeAll(async () => {
   `);
   for (const m of [
     '123-coordination-substrate.sql',
+    '602-work-item-follow-blockers.sql', // adds follow_blockers/derived_from_* the sub store writes
     '609-session-cursor.sql',
     '610-push-delivery.sql',
     '612-collision-hysteresis.sql',

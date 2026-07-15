@@ -58,7 +58,9 @@ async function withMocks(opts: {
   const enqueuePush = vi.fn<(input: EnqueuePushInput) => Promise<number>>(async () => 1);
   const saveAdjacencyState = vi.fn<(input: SaveAdjacencyStateInput) => Promise<void>>(async () => {});
   const loadAdjacencyState = vi.fn(async () => opts.carry ?? { tick: 0, states: [], topics: {} });
-  const ensureTopicFor = vi.fn(async () => ({}) as never);
+  const ensureTopicFor = vi.fn(
+    async (_input: { slug: string; title?: string; description: string; createdBy?: string | null }) => ({}) as never,
+  );
   const subscribeTopicFor = vi.fn(opts.subscribeImpl ?? (async () => {}));
   const unsubscribeTopicFor = vi.fn(async () => {});
 
