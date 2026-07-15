@@ -429,18 +429,28 @@ export async function waitForOperatorDrain(inp: {
   readonly pg: postgres.Sql;
   readonly workspaceId: string;
   readonly hive: string;
-  readonly timeoutMs?: number;
+  /** Fail after this long with NO progress (default 120s). Not a total budget — see below. */
+  readonly stallMs?: number;
   readonly pollMs?: number;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly warn?: (msg: string) => void;
 }): Promise<{ undrained: number; waitedMs: number }> {
-  const timeoutMs = inp.timeoutMs ?? 120_000;
+  const stallMs = inp.stallMs ?? 120_000;
   const pollMs = inp.pollMs ?? 500;
   const now = inp.now ?? (() => Date.now());
   const sleep = inp.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const warn = inp.warn ?? ((m: string) => console.warn(m));
   const started = now();
+
+  // Deadline on STALL, not on total elapsed time. A force-backfill legitimately enqueues
+  // the whole projection — measured ~8k rows draining at ~55 rows/s ≈ 145s on this box —
+  // so any fixed total budget either fails a perfectly healthy cut or is so large it stops
+  // catching a genuinely wedged operator. Progress is the real health signal: as long as
+  // the backlog keeps shrinking we wait, however long it takes.
+  let lastUndrained = Number.POSITIVE_INFINITY;
+  let lastProgressAt = now();
+  let lastWarnAt = 0;
 
   for (;;) {
     const [{ undrained }] = await inp.pg<{ undrained: number }[]>`
@@ -452,16 +462,23 @@ export async function waitForOperatorDrain(inp: {
     `;
     if (undrained === 0) return { undrained: 0, waitedMs: now() - started };
 
-    const waited = now() - started;
-    if (waited >= timeoutMs) {
+    if (undrained < lastUndrained) {
+      lastProgressAt = now();
+      lastUndrained = undrained;
+    }
+    const stalledFor = now() - lastProgressAt;
+    if (stalledFor >= stallMs) {
       throw new Error(
-        `[cut-seed] the running operator has not drained ${undrained} outbox row(s) for ` +
-          `${inp.workspaceId}::${inp.hive} after ${Math.round(waited / 1000)}s — refusing to cut a seed that ` +
+        `[cut-seed] the running operator has made NO progress draining ${undrained} outbox row(s) for ` +
+          `${inp.workspaceId}::${inp.hive} in ${Math.round(stalledFor / 1000)}s — refusing to cut a seed that ` +
           'would silently omit them. Check the operator is healthy and draining (it owns the own-log ' +
           'append; this cut cannot drain on its behalf without corrupting delivery state), then retry.',
       );
     }
-    if (waited === 0 || waited >= 5_000) warn(`[cut-seed] waiting for the operator to drain ${undrained} outbox row(s)…`);
+    if (now() - lastWarnAt >= 5_000) {
+      lastWarnAt = now();
+      warn(`[cut-seed] waiting for the operator to drain ${undrained} outbox row(s)…`);
+    }
     await sleep(pollMs);
   }
 }

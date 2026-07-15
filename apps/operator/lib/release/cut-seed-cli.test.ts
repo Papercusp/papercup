@@ -362,26 +362,42 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     expect(sleep).toHaveBeenCalledTimes(2);
   });
 
-  it('REFUSES to cut a seed that would silently omit undrained rows, rather than shipping it', async () => {
-    const { sql } = pgReturning([5]);
+  it('keeps waiting while the backlog SHRINKS, however long it takes (a real backfill is ~8k rows)', async () => {
+    // Regression: a fixed total budget failed a perfectly healthy cut. ~8k rows drain at
+    // ~55 rows/s ≈ 145s live, so elapsed time alone must never end the wait.
+    const { sql } = pgReturning([8000, 6000, 4000, 2000, 0]);
+    let t = 0;
+    const res = await waitForOperatorDrain({
+      ...base,
+      pg: sql,
+      stallMs: 120_000,
+      now: () => (t += 60_000), // 60s per poll => 240s total elapsed, far past any fixed budget
+      sleep: async () => {},
+      warn: () => {},
+    });
+    expect(res.undrained).toBe(0); // progress, so we waited it out rather than falsely failing
+  });
+
+  it('REFUSES to cut a seed that would silently omit rows when the operator STALLS', async () => {
+    const { sql } = pgReturning([5]); // stuck at 5 — no progress
     let t = 0;
     await expect(
       waitForOperatorDrain({
         ...base,
         pg: sql,
-        timeoutMs: 1_000,
-        now: () => (t += 600), // trip the deadline on the 2nd poll
+        stallMs: 1_000,
+        now: () => (t += 600),
         sleep: async () => {},
         warn: () => {},
       }),
-    ).rejects.toThrow(/has not drained 5 outbox row\(s\).*refusing to cut/s);
+    ).rejects.toThrow(/NO progress draining 5 outbox row\(s\).*refusing to cut/s);
   });
 
-  it('explains that the cut cannot drain on the operator’s behalf (the data-loss trap)', async () => {
+  it('explains that the cut cannot drain on the operator\u2019s behalf (the data-loss trap)', async () => {
     const { sql } = pgReturning([2]);
     let t = 0;
     await expect(
-      waitForOperatorDrain({ ...base, pg: sql, timeoutMs: 10, now: () => (t += 100), sleep: async () => {}, warn: () => {} }),
+      waitForOperatorDrain({ ...base, pg: sql, stallMs: 10, now: () => (t += 100), sleep: async () => {}, warn: () => {} }),
     ).rejects.toThrow(/cannot drain on its behalf without corrupting delivery state/);
   });
 });

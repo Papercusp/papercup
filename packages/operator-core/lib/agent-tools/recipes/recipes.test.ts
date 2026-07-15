@@ -274,6 +274,10 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     const missing = await findTool('recipes:run').fn({ id: 'bound' }, mkCtx('worker'));
     const missingBody = JSON.parse((missing as { content: { text: string }[] }).content[0].text);
     expect(missingBody.results[0]).toMatchObject({ ok: false, id: 'bound', error: 'authority_required' });
+    // EI-12057: `reason` is threaded through to the tool result so a caller (including one
+    // hitting this via a NESTED tools.recipes.run(...) composition) can tell "get a proof
+    // first" (fixable) apart from a permanent authority_unresolved (opaque script) failure.
+    expect(missingBody.results[0].reason).toMatch(/recipes:search/);
     expect(runOrchestrationMock).not.toHaveBeenCalled();
 
     const authority = {
