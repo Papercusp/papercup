@@ -7,8 +7,10 @@ describe("OperatorSayStreamProjector", () => {
 
     expect(projector.push("  <sa")).toBe("");
     expect(projector.push("y>Hello")).toBe("Hello");
-    expect(projector.push(", Avi.")).toBe(", Avi.");
-    expect(projector.text).toBe("Hello, Avi.");
+    // NB fixture name must not match the build box's git user name — the release
+    // bundle audit hunts build-identity literals in the shipped source tar (WI-4419).
+    expect(projector.push(", friend.")).toBe(", friend.");
+    expect(projector.text).toBe("Hello, friend.");
     expect(projector.complete).toBe(false);
   });
 
