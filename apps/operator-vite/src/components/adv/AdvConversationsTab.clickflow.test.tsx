@@ -147,3 +147,50 @@ describe('curated Conversations — a row click reaches the main pane (WI-4216)'
     expect(screen.queryByText('Select a thread')).toBeNull();
   });
 });
+
+// WI-4142: production Conversations flashing. createUsePollingQuery sets
+// `placeholderData: keepPreviousData` (libs/generic/sync usePollingQuery.ts) on
+// EVERY useSyncQuery, including id-scoped DETAIL queries — so react-query hands
+// back the PREVIOUSLY-selected entity's full detail row as the "data" for a
+// brand-new selection's query key until that new id's own fetch resolves. This
+// suite's sync mock doesn't reproduce react-query's internals, so it simulates
+// the exact observable shape of that placeholder window directly: the detail
+// query for the NEWLY selected id resolves to a row whose OWN `id` still belongs
+// to the PREVIOUS selection (precisely what keepPreviousData serves up mid-flight).
+const OTHER_THREAD_TITLE = 'why did the deploy pipeline stall for an hour?';
+
+describe('curated Conversations — a cross-id keepPreviousData placeholder never renders as the current detail (WI-4142)', () => {
+  it('does not show the previous thread\'s stale detail while a new thread is loading', async () => {
+    syncResults['conversations.questionsList'] = ready([
+      {
+        id: 'c-1', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
+        title: THREAD_TITLE, asker_id: 'oracle', topics: ['infra'], promoted_issue_id: null,
+        created_ts: new Date(Date.now() - 180_000).toISOString(), updated_ts: new Date(Date.now() - 180_000).toISOString(),
+      },
+      {
+        id: 'c-2', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
+        title: OTHER_THREAD_TITLE, asker_id: 'oracle', topics: ['deploy'], promoted_issue_id: null,
+        created_ts: new Date(Date.now() - 60_000).toISOString(), updated_ts: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ]);
+    // The c-2 detail query is still "in flight": the mock answers with c-1's row
+    // (id: 'c-1') under the { id: 'c-2' } args key — the keepPreviousData shape.
+    syncResults[syncKey('conversations.questionDetail', { id: 'c-2' })] = ready([{
+      id: 'c-1', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
+      title: THREAD_TITLE, asker_id: 'oracle', subscriber_count: 2, topics: ['infra'],
+      body: 'the host keeps recycling every few minutes', accepted_answer: null, promoted_issue_id: null, posts: [],
+    }]);
+    render(<AdvConversationsTab />);
+
+    fireEvent.click(screen.getByRole('button', { name: `Open ${OTHER_THREAD_TITLE}` }));
+    expect(store.conv).toBe('threads');
+    expect(store.conversation).toBe('c-2');
+
+    // The stale c-1 detail body must never render as if it were c-2's content —
+    // that flash of wrong content, then a snap to the right one, is WI-4142.
+    expect(screen.queryByText('the host keeps recycling every few minutes')).toBeNull();
+    // The anchor (from the already-cached list row) keeps the correct title
+    // visible immediately, even while the true c-2 detail is still loading.
+    expect(await screen.findByRole('heading', { level: 2, name: OTHER_THREAD_TITLE })).toBeTruthy();
+  });
+});
