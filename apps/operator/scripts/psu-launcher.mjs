@@ -5076,7 +5076,7 @@ export function composeResumeModelSpec(model, effort) {
 
 /** Content-free lineage shown in the resume picker for ported target sessions. */
 export function resumeSessionLineageLabel(session) {
-  if (!Number.isSafeInteger(Number(session?.portSourceAdvSessionId))) return null;
+  if (session?.portSourceAdvSessionId == null || !Number.isSafeInteger(Number(session.portSourceAdvSessionId))) return null;
   const status = typeof session?.portStatus === 'string' && session.portStatus
     ? session.portStatus
     : 'delivered';

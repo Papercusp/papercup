@@ -162,8 +162,8 @@ psu --resume            # picker: list recent tracked sessions, resume one
 psu --resume=<id>       # or: psu --resume <id>  (direct, skip the picker)
 ```
 
-`psu --resume` reads your recent tracked sessions, `cd`s to each one's
-recorded cwd, and execs the **raw** CLI's resume command there — no wrapper:
+`psu --resume` reads your recent tracked sessions. A same-backend selection
+`cd`s to the recorded cwd and execs the **raw** CLI's native resume command:
 
 - `claude --resume <native-uuid>` — every modern psu claude launch forces +
   records a native session id (`adv_sessions.session_id`), so resume
@@ -179,6 +179,47 @@ A fresh `PAPERCUSP_SID` is minted for the resumed process. MCP + claude lock
 hooks are user-level, so they survive the raw resume. You can also resume
 directly (`claude --resume <uuid>` from the launch dir) or from the `/adv`
 Sessions tab, which knows the cwd.
+
+### Switching backends: a session port
+
+A tracked Claude session can instead continue as a fresh Codex or OMP session:
+
+```bash
+psu --resume=<tracked-adv-id> --agent=codex --no-picker --yes
+psu --resume=<tracked-adv-id> --agent=omp   --no-picker --yes
+```
+
+In the interactive picker, selecting a model from another backend triggers the
+same flow. This is a **port**, not a native resume: Claude, Codex, and OMP have
+mutually incompatible transcript stores. `psu` snapshots the Claude source,
+normalizes it into the versioned session-port contract, previews the exact
+fidelity and egress target, and asks for confirmation before it creates anything.
+It then creates a new target session and delivers a managed seed after the native
+CLI reaches its prompt.
+
+- A source that fits is carried in full. An oversized source becomes a
+  deterministic **summary + recent verbatim tail**; the target model's real
+  context budget includes the engineer prompt, managed seed framing, kickoff,
+  and `--launch-context` file.
+- Tool-result pairs and text attachments are normalized; unsupported binary
+  attachments are represented by content-free omission markers. Prompt/terminal
+  control sequences and secret-shaped values are neutralized before rendering.
+- The carried history is inert conversation context. It does **not** import the
+  source session's AUTO/DRAIN state, fleet role, claims, locks, or authority.
+- The port becomes `delivered` only after the target CLI has durably written the
+  seed to its own native transcript. Only then is the one-use seed deleted. A
+  failed or interrupted delivery is retryable by the same idempotency key.
+- The source session is never mutated. Ported targets appear in the resume picker
+  as `ported from #<source-id>` and subsequently resume through their backend's
+  normal native path.
+
+Protocol V1 intentionally supports **tracked plain Claude sources only** and
+targets Codex or OMP. Raw/untracked sessions remain same-backend. `--fork` is a
+native same-backend operation and is rejected with a port. Scripted OMP ports
+must pass `--agent=omp`; a bare non-UUID resume id still means an OMP thread.
+Launcher and operator protocol/transform versions must match, and migration 611
+must be applied; skew fails loudly with upgrade instructions rather than falling
+back to a context-less target.
 
 ### Resuming a session psu didn't start
 
