@@ -18,7 +18,7 @@ describe('createVoiceBrainFirstEventDeadline', () => {
     expect(deadline.signal.reason).toMatchObject({ name: 'TimeoutError' });
     expect(deadline.didTimeout()).toBe(true);
     expect(VOICE_BRAIN_TIMEOUT_MESSAGE).toBe(
-      'The voice response took too long. Please try again.',
+      'The voice response took too long — please try again',
     );
     deadline.dispose();
   });

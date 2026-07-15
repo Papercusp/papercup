@@ -6,7 +6,7 @@
 export const VOICE_BRAIN_FIRST_EVENT_TIMEOUT_MS = 45_000;
 
 export const VOICE_BRAIN_TIMEOUT_MESSAGE =
-  'The voice response took too long. Please try again.';
+  'The voice response took too long — please try again';
 
 export interface VoiceBrainFirstEventDeadline {
   signal: AbortSignal;
