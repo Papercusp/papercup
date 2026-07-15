@@ -262,6 +262,10 @@ export interface FrontierRow {
   /** Feature payload (including external blockers). Optional so callers that build
    *  a FrontierRow without payload still compile. */
   payload?: unknown;
+  /** Issue-family severity (bug/change/task rows only — EI-12275), sourced from
+   *  `payload->'_ei'->>'severity'` by {@link fetchEscalatedIssueFrontierRows}. Absent
+   *  for ordinary feature/chunk rows, which carry no severity prior. */
+  severity?: 'critical' | 'major' | 'minor' | 'nit' | null;
 }
 
 /** An unplaced work-item row → a placement candidate (FRONTIER view). */
@@ -276,6 +280,10 @@ export function frontierRowToCandidate(row: FrontierRow, now: number): Placement
     importance: 'normal',
     ageDays: daysSince(row.created_ts, now),
     opPriority: row.feature_order,
+    // EI-12275: carry severity through so the ranker's blocking-impact feature
+    // (which already weights severity) actually scores it — previously every
+    // frontier candidate scored severity=0 regardless of kind.
+    ...(row.severity ? { severity: row.severity } : {}),
   };
 }
 
@@ -481,6 +489,66 @@ export async function fetchFrontierRows(
        ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
        AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}
      ORDER BY created_ts ASC
+     LIMIT ${limit}`;
+  return rows;
+}
+
+/**
+ * The escalated-ISSUE slice of the frontier (EI-12275). `frontierPlacementKindClause`
+ * — and the `harness_features_consolidated` view it's applied to — deliberately
+ * restrict {@link fetchFrontierRows} to the feature-family kinds ('feature'/'chunk'
+ * + opted-in generic-kind datatypes): issue-family work-items (bug/change/task) are
+ * dispatched through a wholly separate tier-3 claim pool (SCHEDULER_ISSUES_CLAIMABLE
+ * / `claimNextIssueWorkItem`), not the Mug's proactive new-cup-spawn frontier — by
+ * design, not oversight (work-items.ts's D-006 comment).
+ *
+ * But that split had a real gap: a release-blocking issue-family item (severity
+ * major/critical) that ISN'T picked up promptly by an idle bee pulling the tier-3
+ * pool was **structurally invisible** to the Mug's ranked survey too — it could never
+ * appear in `frontier` no matter how many open escalations were attached, because it
+ * was excluded from the query before `rankPlacements` (and its escalation-pressure /
+ * severity weights) ever ran. EI-12220 sat unplaced ~2h despite three open
+ * blocker-severity escalations before a human manually intervened.
+ *
+ * Fix: surface ONLY the high-bar subset (severity critical/major) as additional
+ * `FrontierRow`s, carrying `severity` so the existing blocking-impact feature
+ * (severity prior: critical=10, major=6) finally scores them — and pass them through
+ * the SAME readiness/G2-admission/cursed/scope machinery as the feature frontier
+ * (concatenated before {@link filterReadyFrontier} in `surveyPot`), so a blocked or
+ * quarantined escalated issue is excluded exactly like a blocked feature would be.
+ * Deliberately narrow (severity gate, not "every open bug") — the tier-3 claim pool
+ * stays the primary issue-dispatch path; this only ensures a genuinely urgent one is
+ * never silently invisible to the Mug's own placement decision.
+ */
+export async function fetchEscalatedIssueFrontierRows(
+  sql: postgres.Sql,
+  workspaceId: string,
+  surveySlugs: readonly string[],
+  limit = 10,
+): Promise<FrontierRow[]> {
+  const breakerThreshold = placementConfig().breakerThreshold;
+  const rows = await sql<FrontierRow[]>`
+    SELECT feature_id, harness_slug, title, item_kind, created_ts, feature_order,
+           source_plan_slug AS plan_slug, payload,
+           COALESCE(payload -> '_ei' ->> 'severity', 'minor') AS severity
+      FROM harness_shared.work_items f
+     WHERE workspace_id = ${workspaceId}
+       AND item_kind IN ('bug', 'change', 'task')
+       AND status = 'todo'
+       AND (taken_by IS NULL OR taken_by = '')
+       AND COALESCE(payload -> '_ei' ->> 'severity', 'minor') IN ('critical', 'major')
+       AND ${autoPickableWhereSql(sql, workspaceId)}
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.pot_placements p
+          WHERE p.workspace_id = f.workspace_id
+            AND p.work_item_id = f.feature_id
+            AND p.status = 'cursed'
+            AND p.fail_count >= ${breakerThreshold}
+            ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
+       )
+       ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
+       AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}
+     ORDER BY (COALESCE(payload -> '_ei' ->> 'severity', 'minor') = 'critical') DESC, created_ts ASC
      LIMIT ${limit}`;
   return rows;
 }

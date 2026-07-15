@@ -40,7 +40,14 @@ import {
   type DispatchOutcome,
   type ImprovementDispatchRow,
 } from './dispatch-ledger';
-import { releaseIssue, mergeIssuePayload } from '../../issues-engineer';
+import {
+  releaseIssue,
+  mergeIssuePayload,
+  findIssuesByWatchdogKeys,
+  commentIssue,
+  setIssueState,
+  type EngineerIssue,
+} from '../../issues-engineer';
 
 /**
  * This process's boot time (ms). `process.uptime()` is import-timing-independent
@@ -201,6 +208,33 @@ function stallSuperseded(
     if (laterResolved) superseded.add(itemId);
   }
   return superseded;
+}
+
+/**
+ * Pure (EI-11986 class root cause, 2026-07-15): item ids that have BOTH an orphaned
+ * dispatch row AND a LATER (higher-attempt) dispatch that reached a genuine resolved
+ * outcome — i.e. the auto-implement lane recovered the item on retry after the
+ * orphan. `stallSuperseded` already computed this per-tick to stop a NEW signal from
+ * firing on stale evidence (EI-7795), but nothing used it to reconcile a bug ALREADY
+ * FILED on the earlier (now-stale) evidence — so a transient env/gateway hiccup that
+ * self-healed on the very next retry left a permanently open "orphaned worker died —
+ * investigate" bug for the lane. Root-caused live: 6 duplicate EIs
+ * (EI-11986/11988/12041/12503/12511/12530) each superseded within 1-3h by a
+ * successful retry (`outcome: 'fixed'` on attempt+1/+2), yet all sat open — the
+ * collector's own supersession logic never reached back to close them. Computed over
+ * the FULL recent-dispatch read (not the windowed signal evidence), so it reconciles
+ * even after the bug's original orphan evidence has aged out of
+ * {@link ORPHAN_EVIDENCE_WINDOW_MS}.
+ */
+export function supersededOrphanItemIds(rows: readonly ImprovementDispatchRow[]): Set<string> {
+  const orphanedByItem = new Map<string, ImprovementDispatchRow[]>();
+  for (const r of rows) {
+    if (r.outcome !== 'orphaned') continue;
+    const list = orphanedByItem.get(r.itemId) ?? [];
+    list.push(r);
+    orphanedByItem.set(r.itemId, list);
+  }
+  return stallSuperseded(orphanedByItem, rows);
 }
 
 /**
@@ -475,6 +509,79 @@ const defaultRecover: OrphanRecoverDeps = {
   rollbackAttempt: (id, attempts) => mergeIssuePayload(id, { implementAttempts: attempts }),
   escalateThrash: (id) => mergeIssuePayload(id, { needsHuman: true }),
 };
+
+/**
+ * The supersession-close seam (EI-11986 class root fix) — injectable so the glue is
+ * unit-testable without PG. Default wires the real issue back-edges: find every OPEN
+ * issue carrying one of the given `orphaned-dispatch:<itemId>` watchdogKeys (the
+ * SAME indexed dedup query the watchdog capture path already uses), comment with the
+ * recovering evidence, then resolve — mirroring auto-close.ts's absence-based dedup
+ * close (`skipCompletionGate: true`: this is a reconciliation of a now-stale signal,
+ * not a genuine completion).
+ */
+export interface OrphanCloseDeps {
+  findOpenByWatchdogKeys: (keys: string[]) => Promise<EngineerIssue[]>;
+  comment: (id: string, body: string, by: string) => Promise<unknown>;
+  resolve: (id: string, by: string) => Promise<unknown>;
+}
+
+function watchdogKeyOf(issue: EngineerIssue): string {
+  const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
+  return typeof p.watchdogKey === 'string' ? p.watchdogKey : '';
+}
+
+const ORPHAN_WATCHDOG_KEY_PREFIX = 'orphaned-dispatch:';
+
+const defaultOrphanClose: OrphanCloseDeps = {
+  findOpenByWatchdogKeys: async (keys) => (await findIssuesByWatchdogKeys(keys)).filter((i) => i.state === 'open'),
+  comment: (id, body, by) => commentIssue(id, body, by),
+  resolve: (id, by) => setIssueState(id, 'resolved', by, undefined, { skipCompletionGate: true }),
+};
+
+/**
+ * Reconcile: auto-resolve any already-filed per-item orphan bug whose item recovered
+ * on a later dispatch attempt (see {@link supersededOrphanItemIds}). Best-effort per
+ * issue + as a whole — a reconciliation failure must never break the collector sweep
+ * (the signals above already ran). Returns how many bugs it closed.
+ */
+async function reconcileSupersededOrphanIssues(
+  rows: readonly ImprovementDispatchRow[],
+  close: OrphanCloseDeps,
+): Promise<number> {
+  const superseded = supersededOrphanItemIds(rows);
+  if (superseded.size === 0) return 0;
+  let closed = 0;
+  try {
+    const keys = [...superseded].map((id) => `${ORPHAN_WATCHDOG_KEY_PREFIX}${id}`);
+    const open = await close.findOpenByWatchdogKeys(keys);
+    for (const issue of open) {
+      const watchdogKey = watchdogKeyOf(issue);
+      if (!watchdogKey.startsWith(ORPHAN_WATCHDOG_KEY_PREFIX)) continue;
+      const itemId = watchdogKey.slice(ORPHAN_WATCHDOG_KEY_PREFIX.length);
+      const resolvedRow = rows
+        .filter((r) => r.itemId === itemId && r.outcome != null && RESOLVED_DISPATCH_OUTCOMES.has(r.outcome))
+        .sort((a, b) => (b.attempt ?? 0) - (a.attempt ?? 0))[0];
+      const evidenceNote = resolvedRow
+        ? `a later dispatch (attempt ${resolvedRow.attempt}, outcome '${resolvedRow.outcome}', resolved ${resolvedRow.resolvedAt}) closed the loop for \`${itemId}\``
+        : `a later dispatch attempt for \`${itemId}\` reached a genuine resolved outcome`;
+      try {
+        await close.comment(
+          issue.id,
+          `🟢 Auto-resolved: ${evidenceNote} — this orphan report is superseded (the implement lane ` +
+            `recovered on retry, not broken). Re-files automatically if a genuine orphan recurs. (orphaned-dispatch reconciliation)`,
+          'watchdog-orphan-superseded',
+        );
+        await close.resolve(issue.id, 'watchdog-orphan-superseded');
+        closed += 1;
+      } catch (e) {
+        console.warn(`[orphaned-dispatch] supersession close failed for ${issue.id}:`, e instanceof Error ? e.message : e);
+      }
+    }
+  } catch (e) {
+    console.warn('[orphaned-dispatch] supersession reconciliation failed:', e instanceof Error ? e.message : e);
+  }
+  return closed;
+}
 
 /**
  * Thin PG glue: read recent ledger rows, drive overdue OPEN rows terminal
