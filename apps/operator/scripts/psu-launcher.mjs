@@ -26,6 +26,10 @@ import { homedir, hostname } from 'node:os';
 import { join, dirname, delimiter, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { hostThroughPty, fleetOscFromEnv, findLiveHostFor } from './psu-pty-host.mjs';
+import {
+  RUNTIME_OVERHEAD_TOKENS,
+  buildContextBudget,
+} from '../../../packages/operator-core/lib/model-context-budget.mjs';
 
 export const AGENTS = ['claude', 'omp', 'codex'];
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
@@ -2816,7 +2820,7 @@ export const SU_CONTEXT_DEFAULT = 'trimmed';
  *  conservative). Assumes ToolSearch deferral is ON (the launch tail forces
  *  ENABLE_TOOL_SEARCH=true for non-full launches — without it a gateway-routed
  *  member boots ~46k heavier, P-031 gap 3). */
-export const SU_BASELINE_NON_PERSONA_TOKENS = { full: 152_000, trimmed: 50_000 };
+export const SU_BASELINE_NON_PERSONA_TOKENS = RUNTIME_OVERHEAD_TOKENS;
 
 /**
  * P-016 persona-append assertion: with the $HOME AGENTS.md mirrors gone
@@ -3090,21 +3094,28 @@ export function validateModelSpec(spec) {
  *   - ≥35% → warn loudly, proceed.
  * Pure + exported for tests; the caller decides how to surface it.
  */
-export function preflightWindowGuard({ personaBytes, contextSize, model }) {
-  const spec = String(model ?? '');
-  const window = /\[1m\]/i.test(spec) || DEFAULT_1M_FAMILY_RE.test(spec) ? 1_000_000 : 200_000;
-  const personaTokens = Math.round((personaBytes ?? 0) / 3.7);
-  const variant = contextSize === 'full' ? 'full' : 'trimmed';
-  const estTokens = personaTokens + SU_BASELINE_NON_PERSONA_TOKENS[variant];
-  const pct = estTokens / window;
-  const level = pct >= 0.6 ? 'refuse' : pct >= 0.35 ? 'warn' : 'ok';
-  return { level, pct, estTokens, window };
+export function preflightWindowGuard({ personaBytes, contextSize, model, agent = 'claude', budget = null }) {
+  const shared = budget?.version === 1
+    ? budget
+    : buildContextBudget({
+        agent,
+        model,
+        contextSize,
+        estimatedPromptTokens: Math.round((personaBytes ?? 0) / 3.7),
+      });
+  return {
+    level: shared.level,
+    pct: shared.pct,
+    estTokens: shared.baselineTokens,
+    window: shared.window,
+    budget: shared,
+  };
 }
 
 /** Run both preflight guards before a launch; exits/throws per policy. */
-export function runLaunchPreflight({ promptFile, contextSize, model, force }) {
+export function runLaunchPreflight({ promptFile, contextSize, model, agent = 'claude', budget = null, force }) {
   const personaBytes = assertLaunchPersona(promptFile);
-  const guard = preflightWindowGuard({ personaBytes, contextSize, model });
+  const guard = preflightWindowGuard({ personaBytes, contextSize, model, agent, budget });
   if (guard.level === 'refuse' && !force) {
     throw new Error(
       `psu: estimated baseline context ~${Math.round(guard.estTokens / 1000)}k tokens is ${Math.round(guard.pct * 100)}% of the ${Math.round(guard.window / 1000)}k model window — the session would die mid-task ("Prompt is too long"). Use --context-size=trimmed / a wider-window model, or --force to launch anyway (context-trimming-tiers P-018).`,
@@ -5294,7 +5305,7 @@ async function roleFlow(args, role, rolesMeta) {
   // Launch preflight (context-trimming-tiers P-016/P-018): persona-append
   // assertion + window guard — fail loud BEFORE spawning a doomed session.
   try {
-    runLaunchPreflight({ promptFile: res.promptFile, contextSize: args.contextSize, model: args.model, force: args.force });
+    runLaunchPreflight({ promptFile: res.promptFile, contextSize: args.contextSize, model: args.model, agent: res.agent, budget: res.contextBudget, force: args.force });
   } catch (e) {
     console.error(e?.message ?? String(e));
     process.exit(1);
@@ -5719,7 +5730,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // Launch preflight (context-trimming-tiers P-016/P-018): persona-append
   // assertion + window guard — fail loud BEFORE spawning a doomed session.
   try {
-    runLaunchPreflight({ promptFile: res.promptFile, contextSize: args.contextSize, model: args.model, force: args.force });
+    runLaunchPreflight({ promptFile: res.promptFile, contextSize: args.contextSize, model: args.model, agent: res.agent, budget: res.contextBudget, force: args.force });
   } catch (e) {
     console.error(e?.message ?? String(e));
     process.exit(1);

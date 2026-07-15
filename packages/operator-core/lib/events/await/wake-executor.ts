@@ -914,6 +914,12 @@ export interface ExecuteWakeDeps {
     ownerId: string,
     opts?: { workspaceId?: string },
   ) => Promise<import('../../carry-brief').CarryBrief>;
+  /** ambient-semantic-push P-003: prepare + record the ambient teaser block that
+   *  rides this wake's injection (default: real prepareAmbientPushBlock, imported
+   *  lazily and ONLY when PAPERCUSP_AMBIENT_CURSOR is on). Inject a stub for tests;
+   *  pass `null` to force-disable even with the flag on (hermetic tests that must
+   *  not touch the ambient store). */
+  prepareAmbientPushBlock?: ((input: { ownerId: string }) => Promise<string>) | null;
 }
 
 /**
@@ -1057,6 +1063,25 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const rematerializeTimeoutMs = deps.rematerializeTimeoutMs ?? REMATERIALIZE_TIMEOUT_MS;
 
   try {
+    // Ambient-push delivery rail (ambient-semantic-push P-003) — DEFAULT-OFF behind
+    // PAPERCUSP_AMBIENT_CURSOR. Best-effort: prepare + record the teaser block that
+    // rides THIS wake's injection (capped by applyInjectionDoor below — the injection
+    // door tally). The env check is BEFORE the dynamic import so the off-path loads no
+    // ambient code, and the whole thing is fail-soft — an ambient fault never blocks a
+    // wake. Skipped for a deps-overridden test harness that opts out.
+    const ambientFlag = process.env.PAPERCUSP_AMBIENT_CURSOR;
+    if ((ambientFlag === '1' || ambientFlag === 'true') && deps.prepareAmbientPushBlock !== null) {
+      try {
+        const prepare =
+          deps.prepareAmbientPushBlock ??
+          (await import('../../ambient-push-delivery')).prepareAmbientPushBlock;
+        const block = await prepare({ ownerId: d.subscriberId });
+        if (block) d.ambientPushBlock = block;
+      } catch {
+        /* ambient delivery must never break a wake */
+      }
+    }
+
     const handle = d.wakeHandle;
     if (!handle) {
       // Registered without a resumable session (warned at registration). BUT a

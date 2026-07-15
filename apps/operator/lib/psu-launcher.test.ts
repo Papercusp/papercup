@@ -4010,6 +4010,26 @@ describe('launch preflight guards (context-trimming-tiers P-016 / P-018)', () =>
     expect(preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'claude-sonnet-4-6:high' }).window).toBe(200_000);
   });
 
+  it('preflightWindowGuard consumes the bootstrap budget verbatim', () => {
+    const budget = {
+      version: 1,
+      window: 272_000,
+      windowSource: 'codex-model-cache',
+      baselineTokens: 68_000,
+      pct: 0.25,
+      level: 'ok',
+    };
+    const guard = preflightWindowGuard({
+      personaBytes: 999_999,
+      contextSize: 'full',
+      model: 'ignored',
+      agent: 'codex',
+      budget,
+    });
+    expect(guard).toMatchObject({ window: 272_000, estTokens: 68_000, pct: 0.25, level: 'ok' });
+    expect(guard.budget).toBe(budget);
+  });
+
   it('runLaunchPreflight: refuse throws with the --force pointer; force downgrades to a warning', () => {
     const dir = mkdtempSync(join(tmpdir(), 'psu-p018-'));
     const persona = join(dir, 'persona.md');

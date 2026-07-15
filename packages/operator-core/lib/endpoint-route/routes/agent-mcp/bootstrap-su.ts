@@ -160,6 +160,25 @@ export interface BootstrapSuResult {
    * interactive human picker launch still opens at an empty prompt.
    */
   kickoffPrompt?: string | null;
+  /** Versioned source-of-truth model budget. The launcher preflight and
+   * session-port preview consume this exact shape instead of re-deriving a
+   * backend window from model-name heuristics. */
+  contextBudget?: {
+    version: number;
+    agent: string;
+    model: string | null;
+    window: number;
+    windowSource: string;
+    variant: string;
+    promptTokens: number;
+    runtimeOverheadTokens: number;
+    baselineTokens: number;
+    reserveTokens: number;
+    availableInputTokens: number;
+    level: 'ok' | 'warn' | 'refuse';
+    pct: number;
+    estimator: string;
+  };
 }
 
 const options = defineTool({
@@ -1538,6 +1557,20 @@ const post = defineTool({
     // ./launch-prompt, so the two never drift.
     const kickoffPrompt = deriveKickoffPrompt({ planSlug, harnessSlug, autoMode, launchContextPath, drainMode });
 
+    // Shared budget contract (PSU cross-backend port P-017): bootstrap owns
+    // the rendered prompt and has access to the installed backend registries,
+    // so it computes the authoritative launch budget once. The raw-node PSU
+    // launcher imports this same .mjs module for role/fallback preflights.
+    // @ts-expect-error Plain ESM is intentional: psu-launcher.mjs must consume it without tsx.
+    const { buildContextBudget } = await import('../../../model-context-budget.mjs');
+    const contextBudget = buildContextBudget({
+      agent,
+      model,
+      contextSize,
+      promptText: readFileSync(promptFile, 'utf8'),
+      home: homedir(),
+    });
+
     const result: BootstrapSuResult = {
       status: 'ok',
       sessionId,
@@ -1557,6 +1590,7 @@ const post = defineTool({
       fleetSlug: fleetPin.fleetSlug,
       fleetRole: fleetPin.fleetRole,
       kickoffPrompt,
+      contextBudget,
     };
     return jsonRes(result);
   },
