@@ -510,8 +510,11 @@ function NodeTitleInput({
   }, [autoFocus, caretTo, presetText, onFocused]);
 
   const onKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLInputElement>) => {
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
       const mod = e.ctrlKey || e.metaKey;
+      const selStart = ref.current?.selectionStart ?? text.length;
+      const selEnd = ref.current?.selectionEnd ?? selStart;
+      const collapsed = selStart === selEnd;
       if (e.key === 'Enter' && mod) {
         e.preventDefault();
         onToggleComplete();
@@ -519,29 +522,81 @@ function NodeTitleInput({
         e.preventDefault();
         void flush().then(onOpenNote);
       } else if (e.key === 'Enter') {
+        // Workflowy Enter: at the start of non-empty text an empty bullet
+        // appears ABOVE; at the end a new bullet after; mid-text SPLITS the
+        // bullet at the caret (a selection is consumed by the split).
         e.preventDefault();
-        void flush().then(onCreateAfter);
+        if (collapsed && selStart === 0 && text.length > 0) {
+          void flush().then(onInsertAbove);
+        } else if (collapsed && selEnd >= text.length) {
+          void flush().then(onCreateAfter);
+        } else {
+          // The split consumes this text server-side (patch + create); a late
+          // debounce/blur flush must not also write it — same discipline as
+          // the backspace merge below.
+          consumedRef.current = true;
+          cancel();
+          const before = text.slice(0, selStart);
+          setText(before);
+          onSplit(before, text.slice(selEnd));
+        }
       } else if (e.key === 'Tab') {
         e.preventDefault();
         onMove(e.shiftKey ? 'outdent' : 'indent');
+      } else if (e.shiftKey && (e.altKey || mod) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        // Workflowy move: Alt+Shift+↑/↓ (also Ctrl+Shift+↑/↓).
+        e.preventDefault();
+        onMove(e.key === 'ArrowUp' ? 'up' : 'down');
       } else if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         e.preventDefault();
         onMove(e.key === 'ArrowUp' ? 'up' : 'down');
-      } else if ((e.altKey && e.key === 'ArrowRight') || (mod && e.key === ']')) {
+      } else if (mod && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        // Workflowy expand/collapse: Ctrl+↑ collapses, Ctrl+↓ expands.
+        e.preventDefault();
+        onCollapse(e.key === 'ArrowUp' ? 'collapse' : 'expand');
+      } else if (
+        (e.altKey && e.key === 'ArrowRight') ||
+        (mod && e.key === ']') ||
+        (e.altKey && e.key === '.')
+      ) {
         e.preventDefault();
         void flush().then(onZoomIn);
-      } else if ((e.altKey && e.key === 'ArrowLeft') || (mod && e.key === '[')) {
+      } else if (
+        (e.altKey && e.key === 'ArrowLeft') ||
+        (mod && e.key === '[') ||
+        (e.altKey && e.key === ',')
+      ) {
         e.preventDefault();
         void flush().then(onZoomOut);
-      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      } else if (mod && e.shiftKey && e.key === 'Backspace') {
+        // Workflowy delete item (undoable archive of the subtree).
         e.preventDefault();
-        onNav(e.key === 'ArrowDown' ? 1 : -1);
-      } else if (
-        e.key === 'Backspace' &&
-        ref.current?.selectionStart === 0 &&
-        ref.current?.selectionEnd === 0 &&
-        !hasChildren
-      ) {
+        consumedRef.current = true;
+        cancel();
+        onDeleteSubtree();
+      } else if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault();
+        void flush().then(onDuplicate);
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        // Bullets wrap: move within the wrapped lines, hop bullets only from
+        // the first/last visual line (Workflowy).
+        if (!ref.current) return;
+        const { line, lastLine } = caretLineInfo(ref.current);
+        if (e.key === 'ArrowUp' && line === 0) {
+          e.preventDefault();
+          onNav(-1, null);
+        } else if (e.key === 'ArrowDown' && line === lastLine) {
+          e.preventDefault();
+          onNav(1, 0);
+        }
+      } else if (e.key === 'ArrowLeft' && collapsed && selStart === 0 && !mod && !e.altKey && !e.shiftKey) {
+        // Caret flows across bullets at the text edges (Workflowy).
+        e.preventDefault();
+        onNav(-1, null);
+      } else if (e.key === 'ArrowRight' && collapsed && selStart >= text.length && !mod && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        onNav(1, 0);
+      } else if (e.key === 'Backspace' && selStart === 0 && selEnd === 0 && !hasChildren) {
         // Workflowy: backspace at the start of a childless bullet merges it
         // into the bullet above; a truly empty leaf just disappears. The
         // pending debounced title-save must be DISCARDED, not flushed — the
@@ -553,6 +608,12 @@ function NodeTitleInput({
         cancel();
         if (text.length === 0 && isFolder(row)) onDeleteEmpty();
         else onMergeUp(text);
+      } else if (e.key === 'Delete' && collapsed && selStart >= text.length) {
+        // Workflowy: Delete at the end pulls the NEXT bullet into this one.
+        e.preventDefault();
+        consumedRef.current = true;
+        cancel();
+        onMergeForward(text);
       } else if (e.key === 'Escape') {
         ref.current?.blur();
       }
@@ -561,10 +622,16 @@ function NodeTitleInput({
       flush,
       cancel,
       onCreateAfter,
+      onInsertAbove,
+      onSplit,
       onMove,
+      onCollapse,
       onNav,
       onDeleteEmpty,
+      onDeleteSubtree,
+      onDuplicate,
       onMergeUp,
+      onMergeForward,
       onOpenNote,
       onToggleComplete,
       onZoomIn,
@@ -575,28 +642,61 @@ function NodeTitleInput({
     ],
   );
 
-  return (
-    <input
-      ref={ref}
-      className="pc-qp__nodetitle"
-      value={text}
-      placeholder={isFolder(row) && !hasChildren ? 'New prompt…' : row.name}
-      aria-label={`Title of ${displayTitle(row)}`}
-      onChange={(e) => {
+  const onPaste = useCallback(
+    (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      const raw = e.clipboardData.getData('text/plain');
+      if (!raw.includes('\n') && !raw.includes('\r')) return; // plain inline paste
+      e.preventDefault();
+      const lines = parsePastedOutline(raw);
+      if (lines.length === 0) return;
+      const selStart = ref.current?.selectionStart ?? text.length;
+      const selEnd = ref.current?.selectionEnd ?? selStart;
+      const merged = text.slice(0, selStart) + lines[0].title;
+      const tail = text.slice(selEnd);
+      if (lines.length === 1) {
+        // One content line — behave like an inline paste of that line.
         consumedRef.current = false;
-        setText(e.target.value);
-      }}
-      onFocus={() => {
-        focusedRef.current = true;
-        onFocusRow();
-      }}
-      onBlur={() => {
-        focusedRef.current = false;
-        void flush();
-        setText((t) => (t.trim() ? t : (row.title ?? '')));
-      }}
-      onKeyDown={onKeyDown}
-    />
+        setText(merged + tail);
+        return;
+      }
+      // Workflowy paste: line 1 joins this bullet at the caret; the remaining
+      // lines become bullets after it, nested by their indentation.
+      consumedRef.current = true;
+      cancel();
+      setText(merged);
+      onPasteOutline(merged, tail, lines.slice(1));
+    },
+    [text, cancel, onPasteOutline],
+  );
+
+  return (
+    <div className="pc-qp__titlegrow" data-rv={text}>
+      <textarea
+        ref={ref}
+        rows={1}
+        className="pc-qp__nodetitle"
+        value={text}
+        placeholder={isFolder(row) && !hasChildren ? 'New prompt…' : row.name}
+        aria-label={`Title of ${displayTitle(row)}`}
+        onChange={(e) => {
+          consumedRef.current = false;
+          // Titles are single logical lines — Enter is intercepted, so a
+          // newline can only arrive via odd input paths; flatten it.
+          setText(e.target.value.replace(/[\r\n]+/g, ' '));
+        }}
+        onFocus={() => {
+          focusedRef.current = true;
+          onFocusRow();
+        }}
+        onBlur={() => {
+          focusedRef.current = false;
+          void flush();
+          setText((t) => (t.trim() ? t : (row.title ?? '')));
+        }}
+        onKeyDown={onKeyDown}
+        onPaste={onPaste}
+      />
+    </div>
   );
 }
 
@@ -904,7 +1004,10 @@ export default function PromptsTab() {
         const ids = await archivePromptNode(id);
         pushUndo({ kind: 'archive', rootId: id, ids });
         invalidate();
-        if (sel === id) void setSel(prev ?? '');
+        if (sel === id) {
+          void setSel(prev ?? '');
+          if (prev) setPendingFocus({ id: prev, caret: null });
+        }
         if (!opts?.silent) {
           toast.success(ids.length > 1 ? `Deleted ${ids.length} items` : 'Deleted', {
             action: {
@@ -929,6 +1032,174 @@ export default function PromptsTab() {
       if (prev) setPendingFocus({ id: prev, caret: null });
     },
     [visible, archiveNode],
+  );
+
+  /** Enter at the start of a non-empty bullet: empty bullet ABOVE, caret stays put. */
+  const insertAbove = useCallback(
+    async (id: string) => {
+      const placement = insertBeforeOp(model, id);
+      if (!placement) return;
+      try {
+        if (placement.assignments.length > 0) await movePromptNodes(placement.assignments);
+        const created = await createPromptNode({
+          title: '',
+          body: '',
+          parentId: placement.parentId,
+          position: placement.position,
+        });
+        pushUndo({ kind: 'create', id: created.id });
+        invalidate();
+        setPendingFocus({ id, caret: 0 });
+      } catch (err) {
+        toast.error(`Create failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [model, pushUndo, invalidate],
+  );
+
+  /** Enter mid-text: split the bullet at the caret (Workflowy). */
+  const splitNode = useCallback(
+    async (row: Row, before: string, after: string) => {
+      const placement = insertAfterOp(model, row.id);
+      if (!placement) return;
+      try {
+        const entries: UndoEntry[] = [];
+        entries.push({
+          kind: 'patch',
+          id: row.id,
+          before: { title: row.title ?? '' },
+          after: { title: before },
+        });
+        await updatePromptNode(row.id, { title: before });
+        if (placement.assignments.length > 0) await movePromptNodes(placement.assignments);
+        const created = await createPromptNode({
+          title: after,
+          body: '',
+          parentId: placement.parentId,
+          position: placement.position,
+        });
+        entries.push({ kind: 'create', id: created.id });
+        pushUndo({ kind: 'batch', entries });
+        invalidate();
+        void setSel(created.id);
+        setPendingFocus({ id: created.id, caret: 0, text: after });
+      } catch (err) {
+        toast.error(`Split failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [model, pushUndo, invalidate, setSel],
+  );
+
+  /** Delete at the end of the text: pull the next visible childless bullet in. */
+  const mergeForward = useCallback(
+    async (id: string, currentText: string) => {
+      const idx = visible.findIndex((v) => v.node.row.id === id);
+      if (idx === -1 || idx + 1 >= visible.length) return;
+      const next = visible[idx + 1].node;
+      if (next.children.length > 0) return;
+      const row = model.byId.get(id)?.node.row;
+      if (!row) return;
+      const mergedTitle = `${currentText}${next.row.title ?? ''}`;
+      const caret = currentText.length;
+      const bodyPatch =
+        next.row.body.trim().length > 0
+          ? { body: row.body.trim().length > 0 ? `${row.body}\n\n${next.row.body}` : next.row.body }
+          : {};
+      try {
+        const entries: UndoEntry[] = [];
+        entries.push({
+          kind: 'patch',
+          id,
+          before: { title: row.title ?? '', body: row.body },
+          after: { title: mergedTitle, ...bodyPatch },
+        });
+        await updatePromptNode(id, { title: mergedTitle, ...bodyPatch });
+        const ids = await archivePromptNode(next.row.id);
+        entries.push({ kind: 'archive', rootId: next.row.id, ids });
+        pushUndo({ kind: 'batch', entries });
+        invalidate();
+        void setSel(id);
+        setPendingFocus({ id, caret, text: mergedTitle });
+      } catch (err) {
+        toast.error(`Merge failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [visible, model, pushUndo, invalidate, setSel],
+  );
+
+  /** Alt+Shift+D: duplicate the whole subtree; the copy lands right after. */
+  const duplicateNode = useCallback(
+    async (id: string) => {
+      const plan = duplicateSubtreePlan(model, id);
+      if (!plan) return;
+      try {
+        if (plan.placement.assignments.length > 0) await movePromptNodes(plan.placement.assignments);
+        const createdIds: string[] = [];
+        const entries: UndoEntry[] = [];
+        for (const spec of plan.nodes) {
+          const created = await createPromptNode({
+            title: spec.title ?? '',
+            body: spec.body,
+            parentId: spec.parentKey === null ? plan.placement.parentId : createdIds[spec.parentKey],
+            position: spec.position,
+          });
+          createdIds.push(created.id);
+          entries.push({ kind: 'create', id: created.id });
+        }
+        pushUndo({ kind: 'batch', entries });
+        invalidate();
+        if (createdIds[0]) {
+          void setSel(createdIds[0]);
+          setPendingFocus({ id: createdIds[0], caret: null });
+        }
+        toast.success(plan.nodes.length > 1 ? `Duplicated ${plan.nodes.length} items` : 'Duplicated');
+      } catch (err) {
+        toast.error(`Duplicate failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [model, pushUndo, invalidate, setSel],
+  );
+
+  /** Multi-line paste (Workflowy): lines become bullets, nested by indentation. */
+  const pasteOutline = useCallback(
+    async (row: Row, merged: string, tail: string, rest: Array<{ title: string; depth: number }>) => {
+      const plan = pasteOutlinePlan(model, row.id, rest);
+      if (!plan) return;
+      try {
+        const entries: UndoEntry[] = [];
+        entries.push({
+          kind: 'patch',
+          id: row.id,
+          before: { title: row.title ?? '' },
+          after: { title: merged },
+        });
+        await updatePromptNode(row.id, { title: merged });
+        if (plan.assignments.length > 0) await movePromptNodes(plan.assignments);
+        const createdIds: string[] = [];
+        for (const spec of plan.creates) {
+          const isLast = createdIds.length === plan.creates.length - 1;
+          const created = await createPromptNode({
+            // Text that sat after the caret lands at the end of the LAST line.
+            title: isLast && tail ? `${spec.title}${tail}` : spec.title,
+            body: '',
+            parentId: spec.parentKey === null ? spec.parentId : createdIds[spec.parentKey],
+            position: spec.position,
+          });
+          createdIds.push(created.id);
+          entries.push({ kind: 'create', id: created.id });
+        }
+        pushUndo({ kind: 'batch', entries });
+        invalidate();
+        const last = createdIds[createdIds.length - 1];
+        if (last) {
+          void setSel(last);
+          setPendingFocus({ id: last, caret: null });
+        }
+      } catch (err) {
+        toast.error(`Paste failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [model, pushUndo, invalidate, setSel],
   );
 
   /** Backspace at start of a childless bullet: merge it into the bullet above. */
@@ -1003,16 +1274,26 @@ export default function PromptsTab() {
     }
   }, []);
 
-  /** ↑/↓ from an inline input: hop the caret to the adjacent visible bullet. */
+  /** ↑/↓/←/→ from an inline input: hop the caret to the adjacent visible bullet. */
   const navFrom = useCallback(
-    (id: string, delta: 1 | -1) => {
+    (id: string, delta: 1 | -1, caret: number | null = null) => {
       const idx = visible.findIndex((v) => v.node.row.id === id);
       if (idx === -1) return;
       const target = visible[Math.max(0, Math.min(visible.length - 1, idx + delta))];
       void setSel(target.node.row.id);
-      setPendingFocus({ id: target.node.row.id, caret: null });
+      setPendingFocus({ id: target.node.row.id, caret });
     },
     [visible, setSel],
+  );
+
+  /** Ctrl+↑/↓ (Workflowy): collapse/expand the node under the caret. */
+  const collapseFrom = useCallback(
+    (row: Row, dir: 'collapse' | 'expand') => {
+      const hasKids = (model.byId.get(row.id)?.node.children.length ?? 0) > 0;
+      if (!hasKids) return;
+      if ((dir === 'collapse') !== row.collapsed) toggleCollapse(row);
+    },
+    [model, toggleCollapse],
   );
 
   const zoomIn = useCallback(
@@ -1112,6 +1393,12 @@ export default function PromptsTab() {
         runUndoRedo('redo');
         return;
       }
+      // Workflowy Ctrl+O: show/hide completed (works while editing too).
+      if (mod && (e.key === 'o' || e.key === 'O')) {
+        e.preventDefault();
+        void setDoneVis(hideCompleted ? 'show' : 'hide');
+        return;
+      }
       if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') {
         return;
       }
@@ -1141,7 +1428,7 @@ export default function PromptsTab() {
         zoomOut();
       }
     },
-    [visible, sel, setSel, move, runUndoRedo, zoomIn, zoomOut],
+    [visible, sel, setSel, move, runUndoRedo, zoomIn, zoomOut, hideCompleted, setDoneVis],
   );
 
   const loading = data === undefined;
@@ -1308,13 +1595,20 @@ export default function PromptsTab() {
                       onFocused={clearPendingFocus}
                       onFocusRow={() => void setSel(row.id)}
                       onCreateAfter={() => void addNodeAfter(row.id)}
+                      onInsertAbove={() => void insertAbove(row.id)}
+                      onSplit={(before, after) => void splitNode(row, before, after)}
                       onMove={(dir) => {
                         move(dir, row.id);
                         setPendingFocus({ id: row.id, caret: null });
                       }}
-                      onNav={(delta) => navFrom(row.id, delta)}
+                      onCollapse={(dir) => collapseFrom(row, dir)}
+                      onNav={(delta, caret) => navFrom(row.id, delta, caret)}
                       onDeleteEmpty={() => void deleteEmptyNode(row.id)}
+                      onDeleteSubtree={() => void archiveNode(row.id)}
+                      onDuplicate={() => void duplicateNode(row.id)}
                       onMergeUp={(text) => void mergeUp(row.id, text)}
+                      onMergeForward={(text) => void mergeForward(row.id, text)}
+                      onPasteOutline={(merged, tail, rest) => void pasteOutline(row, merged, tail, rest)}
                       onOpenNote={() => {
                         setNoteOpen(row.id);
                         setPendingFocus({ id: `note:${row.id}`, caret: null });
