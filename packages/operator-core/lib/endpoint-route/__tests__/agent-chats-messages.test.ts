@@ -143,7 +143,10 @@ async function agentChatsMessagesHandler(
   vi.doMock('../../agent-tools', () => ({}));
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
   vi.doMock('../../memory/injection', () => ({ buildMemoryContextBlock: vi.fn(async () => null) }));
-  vi.doMock('../../harness-registry', () => ({ loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) }));
+  vi.doMock('../../harness-registry', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../harness-registry')>();
+    return { ...actual, loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) };
+  });
   vi.doMock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
   vi.doMock('../../operator-notes', () => ({ projectDirForSlug: vi.fn(async () => '/tmp/proj') }));
   vi.doMock('@papercusp/orchestrator/role-prompt', () => ({
