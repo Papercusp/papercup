@@ -137,6 +137,11 @@ export interface PrepareAmbientPushBlockInput {
   onVolumeReport?: (report: VolumeReport) => void;
 }
 
+/** P-012: at most this many peer briefs auto-inject per pass (strongest
+ *  collision first) — a confirmed collision earns ONE brief, not a digest of
+ *  every neighbor; the rest stay pull (journal:peer-brief on the handle). */
+export const MAX_AUTO_INJECT_BRIEFS = 1;
+
 /** The default P-009 sink: silent while the class contract holds; one loud
  *  console line when the independent re-count finds the delivered feed broke it
  *  (over budget / disallowed severity / below-floor) — a selectPushes regression
@@ -231,7 +236,35 @@ export async function prepareAmbientPushBlock(input: PrepareAmbientPushBlockInpu
     await recordDropped(droppedItems);
 
     if (result.selected.length === 0) return '';
-    const block = renderPushBlock(result.selected);
+    let block = renderPushBlock(result.selected);
+
+    // P-012 auto-inject: a selected CONFIRMED collision (critical severity —
+    // briefDeliveryMode('critical') === 'auto-inject'; weaker signals stay
+    // pull-first on the handle) carries its peer brief in the same block, so it
+    // rides the injection-door cap below (the "tallied against the injection
+    // door" contract) and the wake's own door downstream. Dynamic import keeps
+    // the non-collision path free of the fetch seam; the whole leg is fail-soft
+    // — a brief fault ships the block without a brief.
+    try {
+      const briefTargets = result.selected
+        .filter((p) => p.severity === 'critical' && p.matcherKind === 'collision' && p.handle.kind === 'session')
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_AUTO_INJECT_BRIEFS);
+      if (briefTargets.length > 0) {
+        const { resolveLivePeerBrief, renderPeerBrief } = await import('./peer-surface-source');
+        for (const push of briefTargets) {
+          const brief = await resolveLivePeerBrief({
+            peerSessionId: push.handle.ref,
+            readerOwnerId: input.ownerId,
+          });
+          const rendered = brief ? renderPeerBrief(brief) : '';
+          if (rendered) block = `${block}\n${rendered}`;
+        }
+      }
+    } catch {
+      /* the brief is an enrichment — never the reason a push block fails */
+    }
+
     return applyPushInjectionDoor(block, input.ownerId);
   } catch {
     return ''; // ambient delivery must never break the host turn
