@@ -619,7 +619,9 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
   });
 
   it('carry opt-in appends ?carryOwner=<clientId>&carryWindow=<backendWindow> + flips the weak-model strategy to context-full (deterministic-context-carry P-017, WI-4845)', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
     writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-1', backendWindow: 204800, carryCompaction: true }, home);
+    err.mockRestore();
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
     expect(written).toMatch(
       /\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize\?carryOwner=su-carry-1&carryWindow=204800"/,

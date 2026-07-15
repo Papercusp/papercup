@@ -904,8 +904,10 @@ export interface GatewayStats {
    *  A consumer must treat its absence as "unknown", never as "not clamped". */
   clamp?: { mode: ServiceableClampMode; recommendation: number | null; applied: number; overridden: boolean };
   /** MAINTENANCE summarize lane (deterministic-context-carry P-002): compaction summaries served /
-   *  failed via POST /maintenance/summarize. Optional for deploy-skew readers of older gateways. */
-  maintenance?: { requests: number; errors: number };
+   *  failed via POST /maintenance/summarize. Optional for deploy-skew readers of older gateways.
+   *  `carried` (P-017) = requests answered by the DETERMINISTIC carry branch instead of the LLM
+   *  oneshot — optional for the same deploy-skew reason (pre-P-017 gateways omit it). */
+  maintenance?: { requests: number; errors: number; carried?: number };
   /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
   failovers: number;
   upstreamErrors: number;

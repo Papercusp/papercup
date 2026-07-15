@@ -83,6 +83,19 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
     expect(systemPromptText).toMatch(/underscores, never colons/i);
   });
 
+  it('makes choice cards mandatory for enumerated pick-one questions (WI-4950)', async () => {
+    const { userPromptText } = await buildOperatorPrompt(
+      {
+        messages: [{ role: 'user', content: 'Give me a few options to pick from.' }],
+        trigger: 'user_message',
+      },
+      null,
+    );
+    expect(userPromptText).toContain('PICK-ONE RULE');
+    expect(userPromptText).toContain('MUST CALL chat_ask_choice');
+    expect(userPromptText).toContain('Never enumerate choices in prose');
+  });
+
   it('falls back to a discovery hint when a TUI turn carries no client_id', async () => {
     const tui = await buildOperatorPrompt(
       { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message', surface: 'tui' },

@@ -1,8 +1,7 @@
 /**
  * S10 — ask-choice
  *
- * Persona: vague admin asking an ambiguous question.
- *          ("I want to do something about the issues — what should I work on first?")
+ * Persona: admin explicitly asking for concrete options to pick from.
  *
  * Goal: push the operator to emit a `chat:ask_choice` card (or a
  *       bespoke `ctx.askUser` card) rather than guessing a single
@@ -17,10 +16,10 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S10_ASK_CHOICE: Scenario = {
   id: 'op-S10-ask-choice',
-  version: 1,
+  version: 2,
   target: 'operator',
   description:
-    'A user asks an ambiguous question with multiple reasonable answers. The operator should emit a choice card (chat:ask_choice or a bespoke askUser card) rather than guessing or asking via free-text question.',
+    'The user explicitly asks for several concrete options to pick from. The operator must call chat:ask_choice instead of returning an enumerated prose list ending in a free-text pick-one question.',
   persona: {
     id: 'vague-prompter',
     description: 'User asks intentionally ambiguous prompts to push for card-based clarification.',
@@ -35,8 +34,14 @@ export const S10_ASK_CHOICE: Scenario = {
     },
   },
   goal: { kind: 'card_emitted', cardKind: 'choice' },
-  caps: { maxTurns: 4, maxWallSecs: 60, maxCostUsd: 0.6 },
+  caps: { maxTurns: 1, maxWallSecs: 60, maxCostUsd: 0.6 },
   runMatrix: { repeat: 5, variancePolicy: 'flag-if-disagreement' },
+  triggers: [{
+    on: 'after_turn',
+    fire: 'user_message',
+    param: 0,
+    text: 'What should I focus on next? Give me a few concrete options to pick from.',
+  }],
   asserts: [
     // Either a 'choice'-kind card or any voice-answerable card — both
     // satisfy the "use a card, don't free-text-ask" expectation.
