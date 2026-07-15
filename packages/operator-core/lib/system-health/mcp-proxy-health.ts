@@ -59,6 +59,33 @@ export interface McpProxyFailureRecord {
 }
 
 /**
+ * EI-12102/EI-12211 root cause: the shared ledger is written by EVERY proxy instance on the
+ * box, not just the one long-lived fleet-facing proxy (:9071) agents actually route through.
+ * Forensic read of the live ledger (2026-07-15) found a recurring ~5-60min cadence of
+ * `exhausted_refused`/`upstream_error` PAIRS against a bare `POST /api/mcp` (no `?client=…
+ * &tools=…&role=…` — every real agent request carries that query string), each from a
+ * DISTINCT, short-lived pid with `listenPort: 0` and a RANDOM high target port that changes
+ * every time — the signature of a desktop-app sidecar's in-process fallback proxy
+ * (host-bootstrap.ts / the Tauri sidecar's `serve.mjs`) racing its own companion Hono host's
+ * startup on a fresh, ephemeral, per-launch port. `listenPort: 0` never happens for a REAL
+ * listening instance (Node's `server.listen(0, …)` binds an OS-random port instead of the
+ * configured one — no genuine deployment does this; only a mis-templated
+ * `PAPERCUSP_MCP_PROXY_PORT=""` env produces it via `Number('') === 0`). The LIVE fleet-facing
+ * proxy (a fixed, nonzero `listenPort`, e.g. 9071) recorded ZERO hard failures in the same
+ * window — so this class of ledger row demonstrably never touched live agent traffic, yet was
+ * inflating the "hard tool-call failures" SLO the infra-liveness alarm pages on.
+ *
+ * Exclude any record whose `listenPort` is falsy/zero from the alarm-relevant classes
+ * (hardFailures / otherNon2xx / benign) — it did not come from an instance any client could
+ * actually be routed through. Legacy pre-P-006 rows (no `listenPort` field at all) predate
+ * this signature and are NOT excluded (kept counting as before) to avoid silently blinding the
+ * SLO to genuine historical evidence; only an EXPLICIT `0` is the mis-launch signature.
+ */
+export function isNonInstanceRecord(r: Pick<McpProxyFailureRecord, 'listenPort'>): boolean {
+  return r.listenPort === 0;
+}
+
+/**
  * P-006: a forwarded non-2xx that is BENIGN probe/heartbeat traffic, NOT an agent-facing
  * tool failure — so it must never count toward the SLO. The two measured classes:
  *  - a 408 Request Timeout (a keep-alive heartbeat the upstream let lapse), and
@@ -171,6 +198,7 @@ export function summarizeMcpProxyHealth(
   let recovered = 0;
   let otherNon2xx = 0;
   let benign = 0;
+  let nonInstance = 0;
   let newestAt: number | null = null;
   for (const r of records) {
     const t = Date.parse(r.ts);
@@ -179,6 +207,13 @@ export function summarizeMcpProxyHealth(
     total += 1;
     byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
     if (newestAt === null || t > newestAt) newestAt = t;
+    // EI-12102/EI-12211: a record from a non-instance (listenPort:0) source never touched
+    // live agent traffic — count it for forensic visibility (byKind/nonInstance) but keep it
+    // OUT of every alarm-relevant class below (see isNonInstanceRecord's doc for why).
+    if (isNonInstanceRecord(r)) {
+      nonInstance += 1;
+      continue;
+    }
     if (r.kind === 'recovered') {
       recovered += 1;
     } else if (r.kind === 'exhausted_refused' || r.kind === 'upstream_error') {
@@ -191,5 +226,5 @@ export function summarizeMcpProxyHealth(
       else otherNon2xx += 1;
     }
   }
-  return { windowMs, total, hardFailures, recovered, otherNon2xx, benign, byKind, newestAt };
+  return { windowMs, total, hardFailures, recovered, otherNon2xx, benign, nonInstance, byKind, newestAt };
 }

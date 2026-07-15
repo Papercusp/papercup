@@ -100,6 +100,7 @@ function depsForPots(
     now: () => NOW,
     fetchBlockGraph: async () => noBlockers,
     fetchQuarantinedCount: async () => 0,
+    fetchEscalatedIssues: async () => [],
     loadRegistry: async () => ({ projects: allProjects }),
     listPlanRows: async (slug) => {
       for (const { member, plans } of Object.values(hives)) {

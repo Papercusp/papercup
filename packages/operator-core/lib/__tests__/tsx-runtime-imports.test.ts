@@ -23,13 +23,57 @@
  * provide an export named …" line names the culprit directly).
  */
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 const execFileP = promisify(execFile);
+
+// EI-12473: the guard spawns tsx, and tsx opens an IPC UNIX DOMAIN SOCKET under
+// os.tmpdir() (`$TMPDIR/tsx-<uid>/<pid>.pipe`) via its own createIpcServer.
+// Some sandboxes — notably the cup capability_bash sandbox, whose writable tmp
+// is /tmp/claude — reject `listen()`/`bind()` on AF_UNIX sockets ANYWHERE with
+// EPERM (the WI-4439 class: a third-party tmp assumption vs a locked-down
+// sandbox tmp). tsx then dies with `listen EPERM … .pipe` BEFORE it imports the
+// guarded module, so every subtest fails with an ENVIRONMENT error, not a real
+// D-007 export break — a false boot alarm. No TMPDIR helps (every dir EPERMs),
+// so — exactly like the OPERATOR_DIR/TSX_CLI absence skips below — the faithful
+// move is to recognize the environment as unable to run the guard and skip.
+//
+// Probe (never throws → skipIf always gets a clean boolean): try to bind+close
+// a unix socket. Returns false on any error, true on a clean listen.
+function probeUnixSocketBindable(sockPath: string): Promise<boolean> {
+  return new Promise<boolean>((resolveProbe) => {
+    const server = createServer();
+    const finish = (ok: boolean) => {
+      try {
+        server.close();
+      } catch {
+        /* noop */
+      }
+      try {
+        unlinkSync(sockPath);
+      } catch {
+        /* noop */
+      }
+      resolveProbe(ok);
+    };
+    server.once('error', () => finish(false));
+    try {
+      server.listen(sockPath, () => finish(true));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+const CAN_BIND_UNIX_SOCKET = await probeUnixSocketBindable(
+  resolve(tmpdir(), `tsx-guard-probe-${process.pid}-${Date.now()}.pipe`),
+);
 
 // Resolve the tsx CLI entry directly, rather than shelling out to `npx tsx`.
 // `npx` is an npm wrapper and a PACKAGED install ships no npm/npx by design —
@@ -73,7 +117,9 @@ const GUARDED_MODULES = [
 const OPERATOR_DIR = resolve(process.cwd(), '../../apps/operator');
 const PER_MODULE_TIMEOUT_MS = 60_000;
 
-describe.skipIf(!existsSync(OPERATOR_DIR) || !TSX_CLI)('tsx-runtime imports (D-007 guard)', () => {
+describe.skipIf(!existsSync(OPERATOR_DIR) || !TSX_CLI || !CAN_BIND_UNIX_SOCKET)(
+  'tsx-runtime imports (D-007 guard)',
+  () => {
   for (const mod of GUARDED_MODULES) {
     it(
       `loads ${mod} under the real tsx runtime`,

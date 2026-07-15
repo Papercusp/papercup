@@ -226,7 +226,7 @@ function stallSuperseded(
  * even after the bug's original orphan evidence has aged out of
  * {@link ORPHAN_EVIDENCE_WINDOW_MS}.
  */
-export function supersededOrphanItemIds(rows: readonly ImprovementDispatchRow[]): Set<string> {
+export function supersededOrphanItemIds(rows: ImprovementDispatchRow[]): Set<string> {
   const orphanedByItem = new Map<string, ImprovementDispatchRow[]>();
   for (const r of rows) {
     if (r.outcome !== 'orphaned') continue;
@@ -545,7 +545,7 @@ const defaultOrphanClose: OrphanCloseDeps = {
  * (the signals above already ran). Returns how many bugs it closed.
  */
 async function reconcileSupersededOrphanIssues(
-  rows: readonly ImprovementDispatchRow[],
+  rows: ImprovementDispatchRow[],
   close: OrphanCloseDeps,
 ): Promise<number> {
   const superseded = supersededOrphanItemIds(rows);
