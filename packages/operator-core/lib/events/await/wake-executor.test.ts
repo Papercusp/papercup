@@ -169,6 +169,50 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
   };
 }
 
+describe('executeWake ambient-push seam (P-003, DEFAULT-OFF)', () => {
+  const OLD_FLAG = process.env.PAPERCUSP_AMBIENT_CURSOR;
+  afterEach(() => {
+    if (OLD_FLAG === undefined) delete process.env.PAPERCUSP_AMBIENT_CURSOR;
+    else process.env.PAPERCUSP_AMBIENT_CURSOR = OLD_FLAG;
+  });
+
+  // Handle-less path with no psu host + stale presence → degrade-to-inbox; the
+  // ambient prep runs at the top of executeWake regardless of the outcome path.
+  it('invokes prepareAmbientPushBlock (keyed by ownerId) when the flag is ON', async () => {
+    process.env.PAPERCUSP_AMBIENT_CURSOR = '1';
+    const prep = vi.fn(async () => '⟦ambient⟧ ‼ x — pull: session:su-y');
+    await executeWake(
+      work({ wakeHandle: null }),
+      deps({ prepareAmbientPushBlock: prep, presence: vi.fn(async () => stalePresence) as never }),
+    );
+    expect(prep).toHaveBeenCalledWith({ ownerId: 'su-abc' });
+  });
+
+  it('does NOT invoke prepareAmbientPushBlock when the flag is OFF (DEFAULT-OFF)', async () => {
+    delete process.env.PAPERCUSP_AMBIENT_CURSOR;
+    const prep = vi.fn(async () => 'x');
+    await executeWake(
+      work({ wakeHandle: null }),
+      deps({ prepareAmbientPushBlock: prep, presence: vi.fn(async () => stalePresence) as never }),
+    );
+    expect(prep).not.toHaveBeenCalled();
+  });
+
+  it('an ambient-prep throw never breaks the wake (fail-soft)', async () => {
+    process.env.PAPERCUSP_AMBIENT_CURSOR = '1';
+    const prep = vi.fn(async () => {
+      throw new Error('store down');
+    });
+    // stale presence + no psu host → the wake still degrades to inbox, not a throw.
+    const out = await executeWake(
+      work({ wakeHandle: null }),
+      deps({ prepareAmbientPushBlock: prep, presence: vi.fn(async () => stalePresence) as never }),
+    );
+    expect(prep).toHaveBeenCalled();
+    expect(out.kind).not.toBe('error');
+  });
+});
+
 describe('wakeTurnText', () => {
   it('carries the key, summary, note and a bounded payload on one line', () => {
     const t = wakeTurnText(work({ payload: { x: 'y'.repeat(1000) } }));
@@ -183,6 +227,25 @@ describe('wakeTurnText', () => {
     const t = wakeTurnText(work({ payload: { timeout: true } }));
     expect(t).toContain('TIMEOUT');
     expect(t).toContain('did NOT fire');
+  });
+
+  // ambient-semantic-push P-003 seam: a prepared ambient push block rides the wake
+  // injection when present (appended after the base line-collapse, keeping its own
+  // formatting), and the default path is byte-identical.
+  it('appends the ambient push block when present, on its own lines', () => {
+    const block = '⟦ambient⟧\n‼ peer converging — pull: session:su-x [foo, bar]';
+    const t = wakeTurnText(work({ ambientPushBlock: block }));
+    expect(t).toContain('lock:grant:t-1'); // base wake still present
+    expect(t).toContain('⟦ambient⟧');
+    expect(t).toContain('pull: session:su-x');
+    expect(t.endsWith(block)).toBe(true); // block is the tail, un-collapsed
+  });
+
+  it('is byte-identical to the base wake when no ambient block is set (DEFAULT-OFF)', () => {
+    const base = wakeTurnText(work());
+    const withUndef = wakeTurnText(work({ ambientPushBlock: undefined }));
+    expect(withUndef).toBe(base);
+    expect(base).not.toContain('⟦ambient⟧');
   });
 
   // GAP 1 (likely bug): a timeout-fire payload `{timeout:true}` coalesced with a

@@ -1,0 +1,59 @@
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { adaptClaudeJsonl } from './claude-adapter';
+
+const fixture = readFileSync(join(import.meta.dirname, '__fixtures__', 'claude-structural.jsonl'), 'utf8');
+
+describe('adaptClaudeJsonl', () => {
+  it('reconstructs the active path, drops sidechains, and de-duplicates compacted ancestors', () => {
+    const out = adaptClaudeJsonl(fixture);
+    expect(out.activeLeafId).toBe('a-leaf');
+    expect(out.turns.map((turn) => turn.id)).toEqual([
+      'u-summary',
+      's-boundary',
+      'a-after-compact',
+      'u-attachment',
+      'a-leaf',
+    ]);
+    expect(out.turns[0]).toMatchObject({ compactSummary: true, role: 'user' });
+    expect(out.stats).toMatchObject({
+      sourceRecords: 12,
+      activePathRecords: 5,
+      malformedRecords: 0,
+      sidechainRecords: 2,
+      compactedAncestors: 4,
+      omittedAttachments: 1,
+      unsupportedBlocks: 1,
+    });
+  });
+
+  it('preserves tool call/result pairs when no compaction supersedes them', () => {
+    const preCompact = fixture.split('\n').slice(0, 4).join('\n');
+    const out = adaptClaudeJsonl(preCompact);
+    expect(out.stats).toMatchObject({ toolCalls: 1, toolResults: 1 });
+    expect(out.turns[1].blocks).toContainEqual({
+      type: 'tool_call',
+      id: 'tool-1',
+      name: 'Read',
+      input: { file_path: '/workspace/example.ts' },
+    });
+    expect(out.turns[2].blocks).toContainEqual({
+      type: 'tool_result',
+      toolCallId: 'tool-1',
+      content: 'export const answer = 42;',
+      isError: false,
+    });
+  });
+
+  it('fails boundedly on malformed lines and broken/cyclic parents', () => {
+    const malformed = [
+      '{not json',
+      JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: 'missing', message: { role: 'user', content: 'x' } }),
+    ].join('\n');
+    const out = adaptClaudeJsonl(malformed);
+    expect(out.turns).toHaveLength(1);
+    expect(out.stats.malformedRecords).toBe(1);
+    expect(out.warnings.join('\n')).toMatch(/malformed|missing parent/);
+  });
+});
