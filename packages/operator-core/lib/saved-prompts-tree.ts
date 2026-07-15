@@ -392,9 +392,10 @@ export function duplicateSubtreePlan<R extends PromptNodeFields>(
     const myKey = nodes.length - 1;
     let lastKey: string | null = null;
     for (const c of n.children) {
-      const pos = c.row.position !== null && (lastKey === null || c.row.position > lastKey)
-        ? c.row.position
-        : generateKeyBetween(lastKey, null);
+      const pos: string =
+        c.row.position !== null && (lastKey === null || c.row.position > lastKey)
+          ? c.row.position
+          : generateKeyBetween(lastKey, null);
       lastKey = pos;
       walk(c, myKey, pos);
     }

@@ -448,8 +448,10 @@ body.has-op-chat:has(.pc-qp) {
   padding: 10px 12px 4px;
 }
 
-/* Wrapping auto-grow variant of the title editor (see .pc-qp__titlegrow). */
-.pc-qp__zoomgrow {
+/* Wrapping auto-grow variant of the title editor (see .pc-qp__titlegrow).
+   Double class: .pc-qp__titlegrow is defined LATER with the same specificity,
+   and these font metrics must win over its 12.5px. */
+.pc-qp__titlegrow.pc-qp__zoomgrow {
   font-size: 15px;
   font-weight: 600;
   line-height: 1.35;
