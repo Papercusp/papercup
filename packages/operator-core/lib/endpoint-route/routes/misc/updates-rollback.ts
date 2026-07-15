@@ -14,6 +14,16 @@
  * `auth: 'public'` — same loopback posture as the manifest / history / download
  * routes; the private release repo is reached with a server-resolved GitHub token.
  *
+ * SOURCE PRECEDENCE (WI-5008) — the static release host FIRST, GitHub as fallback,
+ * mirroring the manifest + history routes exactly. Releases stopped going to GitHub
+ * on 2026-07-08 (local-only rail), so a GitHub-only rollback could not resolve ANY
+ * release the Update Center's history list (static-first since WI-4446) was offering
+ * Revert buttons for — every revert onto 0.0.8+ died with unknown_tag. The static
+ * path resolves the tag from `<host>/history.json`, picks the updater-installable
+ * artifact for this platform/product, and inlines the minisign signature fetched
+ * from `<host>/<artifact>.sig` (uploaded next to every artifact by the cut).
+ * GitHub remains the fallback for pre-rail tags (≤ 0.0.7).
+ *
  * Query:
  *   - `tag` (required) — the release to roll back to, either the full git tag
  *     (`desktop-v0.0.6-alpha`) or its normalized version (`0.0.6-alpha`).
@@ -50,6 +60,13 @@ import {
   type Channel,
   type GhRelease,
 } from './updates-manifest';
+import {
+  artifactMatches,
+  fetchStaticHistory,
+  updaterInstallableStaticArtifact,
+  type StaticHistoryArtifact,
+  type StaticHistoryRelease,
+} from './updates-history';
 
 type Product = 'gui' | 'server';
 

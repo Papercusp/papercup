@@ -72,6 +72,26 @@ describe('buildHistory — Update Center release list (pure)', () => {
     expect(h.filter((e) => e.is_current).length).toBe(1);
   });
 
+  it("marks the suffixed release current from the app's BARE version (WI-5007)", () => {
+    // The running app reports CARGO_PKG_VERSION — `0.0.7`, no channel suffix —
+    // while the tag normalizes to `0.0.7-alpha`. Strict equality never matched,
+    // so the Update Center never showed "● Current" on the real rail.
+    const h = buildHistory(RELEASES, { ...baseOpts, channel: 'alpha', currentVersion: '0.0.7' });
+    const cur = h.find((e) => e.is_current);
+    expect(cur?.tag).toBe('desktop-v0.0.7-alpha');
+    expect(h.filter((e) => e.is_current).length).toBe(1);
+  });
+
+  it('base-version fallback marks only the NEWEST match (the 0.0.2-alpha.1..4 era)', () => {
+    const dupes = [
+      rel('desktop-v0.0.2-alpha.4', '2026-06-27T00:00:00Z'),
+      rel('desktop-v0.0.2-alpha.3', '2026-06-26T00:00:00Z'),
+      rel('desktop-v0.0.2-alpha', '2026-06-11T00:00:00Z'),
+    ];
+    const h = buildHistory(dupes, { ...baseOpts, channel: 'alpha', currentVersion: '0.0.2' });
+    expect(h.filter((e) => e.is_current).map((e) => e.tag)).toEqual(['desktop-v0.0.2-alpha.4']);
+  });
+
   it('installable reflects whether an asset matches this target/arch/product', () => {
     const h = buildHistory(RELEASES, { ...baseOpts, channel: 'alpha' });
     // 0.0.7 has a windows gui setup.exe → installable; the others have no assets.
@@ -109,9 +129,17 @@ describe('buildHistoryFromStatic — the local-only rail', () => {
           },
           {
             product: 'gui',
+            platform: 'linux-x86_64',
+            name: 'Papercusp_GUI_0.0.9_amd64.AppImage',
+            url: 'desktop-v0.0.9-alpha/Papercusp_GUI_0.0.9_amd64.AppImage',
+            size: 1,
+            sha256: 'a2',
+          },
+          {
+            product: 'gui',
             platform: 'darwin-universal',
-            name: 'gui.dmg',
-            url: 'desktop-v0.0.9-alpha/gui.dmg',
+            name: 'gui.app.tar.gz',
+            url: 'desktop-v0.0.9-alpha/gui.app.tar.gz',
             size: 1,
             sha256: 'b',
           },
@@ -140,26 +168,59 @@ describe('buildHistoryFromStatic — the local-only rail', () => {
 
   it('lists the releases newest-first and marks what this machine can install', () => {
     const h = buildHistoryFromStatic(history, opts);
-    // Semver, prerelease tag included — the same normalization the updater compares
-    // against, so the list and the update check can never disagree about a version.
-    expect(h.map((r) => r.version)).toEqual(['0.0.9-alpha', '0.0.8-alpha']);
+    // The feed's own `version` — the string the cut stamped into the app binary
+    // and the footer chip displays — NOT the tag-derived `0.0.9-alpha` form,
+    // which the running app never reports (WI-5007).
+    expect(h.map((r) => r.version)).toEqual(['0.0.9', '0.0.8']);
     expect(h[0].installable).toBe(true);
     // 0.0.8's installers were never uploaded — offering "Install" would 404.
     expect(h[1].installable).toBe(false);
   });
 
-  it('marks the RUNNING version as current', () => {
-    const h = buildHistoryFromStatic(history, { ...opts, currentVersion: '0.0.8-alpha' });
-    expect(h.find((r) => r.version === '0.0.8-alpha')?.is_current).toBe(true);
+  it("marks the RUNNING version as current from the app's bare version", () => {
+    // The app reports `0.0.8` (CARGO_PKG_VERSION), never `0.0.8-alpha`.
+    const h = buildHistoryFromStatic(history, { ...opts, currentVersion: '0.0.8' });
+    expect(h.find((r) => r.tag === 'desktop-v0.0.8-alpha')?.is_current).toBe(true);
+    expect(h.filter((r) => r.is_current)).toHaveLength(1);
   });
 
-  it('a universal mac build IS installable on both mac arches', () => {
+  it('still accepts the tag-normalized form as current (belt and braces)', () => {
+    const h = buildHistoryFromStatic(history, { ...opts, currentVersion: '0.0.8-alpha' });
+    expect(h.find((r) => r.tag === 'desktop-v0.0.8-alpha')?.is_current).toBe(true);
+  });
+
+  it('a universal mac updater bundle IS installable on both mac arches', () => {
     // darwin-universal !== darwin-aarch64, so a naive equality check marks every mac
     // release un-installable on the one machine it certainly runs on.
     for (const arch of ['aarch64', 'x86_64']) {
       const h = buildHistoryFromStatic(history, { ...opts, target: 'darwin', arch });
       expect(h[0].installable, `darwin/${arch}`).toBe(true);
     }
+  });
+
+  it('a .deb/.dmg-only release is NOT revert-installable — the updater cannot swap those (WI-5008)', () => {
+    // The real 0.0.9 cut shipped .deb-only on Linux and .dmg-only on macOS:
+    // artifactMatches alone said installable=true, so the Update Center offered
+    // a Revert button that could only ever fail.
+    const debOnly: StaticHistory = {
+      generated_at: '2026-07-13T00:00:00Z',
+      releases: [
+        {
+          tag: 'desktop-v0.0.9-alpha',
+          version: '0.0.9',
+          channel: 'alpha',
+          notes: '',
+          pub_date: '2026-07-13T00:00:00Z',
+          prerelease: true,
+          artifacts: [
+            { product: 'gui', platform: 'linux-x86_64', name: 'Papercusp GUI_0.0.9_amd64.deb', url: 't/gui.deb', size: 1, sha256: 'a' },
+            { product: 'gui', platform: 'darwin-universal', name: 'Papercusp GUI_0.0.9_universal-apple-darwin.dmg', url: 't/gui.dmg', size: 1, sha256: 'b' },
+          ],
+        },
+      ],
+    };
+    expect(buildHistoryFromStatic(debOnly, opts)[0].installable).toBe(false);
+    expect(buildHistoryFromStatic(debOnly, { ...opts, target: 'darwin', arch: 'aarch64' })[0].installable).toBe(false);
   });
 
   it('does not offer the GUI build to someone asking for the Server product', () => {

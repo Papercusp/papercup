@@ -112,6 +112,61 @@ export function artifactMatches(
   return a.platform === 'darwin-universal' && platformKey.startsWith('darwin-');
 }
 
+/**
+ * Can the Tauri updater actually INSTALL this artifact? (WI-5008)
+ *
+ * `installable` gates the Update Center's "Revert" button, and a revert goes
+ * through tauri-plugin-updater — which can only swap its own updater formats:
+ * an AppImage on Linux, an .app.tar.gz on macOS, a -setup.exe/.msi on Windows.
+ * A .deb / .rpm / .dmg / mobile package IS a real artifact for this platform
+ * (a human can download and install it by hand), but offering "Revert" for it
+ * hands the user a button that can only ever fail — the real 0.0.9 cut shipped
+ * .deb-only on Linux, so every Revert onto it would resolve to nothing.
+ */
+export function updaterInstallableStaticArtifact(a: StaticHistoryArtifact): boolean {
+  const n = a.name.toLowerCase();
+  if (n.endsWith('.sig')) return false;
+  if (a.platform.startsWith('linux-')) return n.endsWith('.appimage') || n.endsWith('.appimage.tar.gz');
+  // macOS updater bundles are `.app.tar.gz` (a plain `.tar.gz` app bundle also
+  // qualifies); a `.dmg` is human-installable but not updater-installable.
+  if (a.platform.startsWith('darwin-')) return n.endsWith('.tar.gz');
+  if (a.platform.startsWith('windows-')) {
+    return n.endsWith('-setup.exe') || n.endsWith('.msi') || n.endsWith('.msi.zip') || n.endsWith('.exe.tar.gz');
+  }
+  return false; // mobile / unknown platforms are never updater-installable
+}
+
+/**
+ * Mark which entry is the RUNNING release (WI-5007). The app reports its bare
+ * package version (`0.0.10` — CARGO_PKG_VERSION / tauri.conf.json), while tags
+ * carry the channel (`desktop-v0.0.10-alpha` → normalized `0.0.10-alpha`), so
+ * a strict equality against the normalized tag-version can NEVER match on a
+ * suffixed rail — the Update Center then never shows "● Current" and happily
+ * offers a Revert button for the release the user is on. Exact matches
+ * (against the entry version AND the normalized tag) win; failing that, the
+ * NEWEST entry whose base version (prerelease suffix stripped) equals the
+ * caller's base version is marked — newest-only, so the 0.0.2-alpha.1..4 era
+ * cannot produce four "current" rows. Entries are built newest-first.
+ * Mutates and returns `entries`.
+ */
+export function markCurrentEntry(
+  entries: UpdateHistoryEntry[],
+  currentVersion: string,
+): UpdateHistoryEntry[] {
+  if (!currentVersion) return entries;
+  const exact = entries.filter(
+    (e) => e.version === currentVersion || normalizeTagVersion(e.tag) === currentVersion,
+  );
+  if (exact.length > 0) {
+    for (const e of exact) e.is_current = true;
+    return entries;
+  }
+  const base = (v: string) => v.split('-')[0];
+  const hit = entries.find((e) => base(e.version) === base(currentVersion));
+  if (hit) hit.is_current = true;
+  return entries;
+}
+
 /** Build the history list from the STATIC feed. Pure — the network is the caller's. */
 export function buildHistoryFromStatic(
   history: StaticHistory,
@@ -126,22 +181,30 @@ export function buildHistoryFromStatic(
 ): UpdateHistoryEntry[] {
   const visible = visibleChannels(opts.channel);
   const platformKey = platformKeyFor(opts.target, opts.arch);
-  return history.releases
+  const entries = history.releases
     .filter((r) => visible.has(r.channel as Channel))
     .sort((a, b) => Date.parse(b.pub_date) - Date.parse(a.pub_date))
     .slice(0, opts.limit)
     .map((r) => ({
       tag: r.tag,
-      version: normalizeTagVersion(r.tag),
+      // The feed's own `version` is what the cut stamped into the app binary
+      // (CARGO_PKG_VERSION / tauri.conf.json), so it is the string the running
+      // app will report back as current_version AND what the footer chip
+      // displays — prefer it over the tag-derived form (WI-5007). Fall back to
+      // the normalized tag for an older generator that wrote no version.
+      version: r.version || normalizeTagVersion(r.tag),
       channel: r.channel as Channel,
       notes: r.notes ?? '',
       pub_date: r.pub_date,
       prerelease: r.prerelease,
-      is_current: Boolean(opts.currentVersion) && normalizeTagVersion(r.tag) === opts.currentVersion,
+      is_current: false,
       installable:
         platformKey != null &&
-        (r.artifacts ?? []).some((a) => artifactMatches(a, platformKey, opts.product)),
+        (r.artifacts ?? []).some(
+          (a) => artifactMatches(a, platformKey, opts.product) && updaterInstallableStaticArtifact(a),
+        ),
     }));
+  return markCurrentEntry(entries, opts.currentVersion);
 }
 
 export interface UpdateHistoryEntry {
@@ -181,7 +244,7 @@ export function buildHistory(
   },
 ): UpdateHistoryEntry[] {
   const visible = visibleChannels(opts.channel);
-  return releases
+  const entries = releases
     .filter((r) => !r.draft)
     .filter((r) => visible.has(classifyChannel(r)))
     .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))
@@ -195,10 +258,11 @@ export function buildHistory(
         notes: r.body ?? '',
         pub_date: r.published_at,
         prerelease: r.prerelease,
-        is_current: Boolean(opts.currentVersion) && version === opts.currentVersion,
+        is_current: false,
         installable: pickAsset(r, opts.target, opts.arch, opts.product) != null,
       } satisfies UpdateHistoryEntry;
     });
+  return markCurrentEntry(entries, opts.currentVersion);
 }
 
 export default defineTool({
