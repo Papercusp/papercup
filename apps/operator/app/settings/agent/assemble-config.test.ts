@@ -49,8 +49,12 @@ const CUSTOM_TIERS: ModelTier[] = [
 ];
 
 describe('modelSpecError', () => {
-  it('accepts known aliases, effort suffixes, full ids, provider ids, and empty', () => {
-    for (const ok of ['', 'haiku', 'opus:high', 'fable:max', 'claude-opus-4-8', 'anthropic/claude-opus-4-8:high', 'gpt-5.5']) {
+  it('accepts known aliases (Anthropic + OpenAI GPT-5.6), effort suffixes, full ids, provider ids, and empty', () => {
+    for (const ok of [
+      '', 'haiku', 'opus:high', 'fable:max', 'sol', 'sol:high', 'terra:xhigh', 'luna:medium',
+      'claude-opus-4-8', 'anthropic/claude-opus-4-8:high', 'gpt-5.6-luna:high',
+      'gpt-5.5',
+    ]) {
       expect(modelSpecError(ok), ok).toBeNull();
     }
   });
@@ -60,6 +64,7 @@ describe('modelSpecError', () => {
     expect(modelSpecError('opush')).toMatch(/not a known model alias/);
     expect(modelSpecError('fable5')).toMatch(/not a known model alias/);
     expect(modelSpecError('opush:high')).toMatch(/not a known model alias/);
+    expect(modelSpecError('sol5')).toMatch(/not a known model alias/);
   });
 });
 

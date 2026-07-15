@@ -47,9 +47,11 @@ export const tierToRow = (t: ModelTier): TierRow => ({
   compactionLimit: t.compactionLimit != null ? String(t.compactionLimit) : '',
 });
 
-/** The claude CLI's bare model aliases (verified against the installed CLI
-    2026-06-11: `claude -p --model <x>` — `fable5`/`opush` are rejected). */
-const KNOWN_CLAUDE_ALIASES = new Set(['haiku', 'sonnet', 'opus', 'fable']);
+/** Bare cloud model aliases that are recognized without a vendor prefix.
+    Includes Anthropic (haiku, sonnet, opus, fable) verified against the installed
+    Claude CLI (2026-06-11: `claude -p --model <x>` — `fable5`/`opush` are rejected)
+    and OpenAI GPT-5.6 (sol, terra, luna) for codex backend (WI-4639). */
+const KNOWN_CLOUD_ALIASES_SETTINGS = new Set(['haiku', 'sonnet', 'opus', 'fable', 'sol', 'terra', 'luna']);
 
 /** Model-id half of a `<modelId>[:<effort>]` spec. */
 export function specId(spec: string): string {
@@ -63,7 +65,7 @@ export function specId(spec: string): string {
  * Validate one model spec for commit. Returns the error message or null.
  *
  * Two layers: the syntactic `<modelId>[:<effort>]` shape, then a HARD check
- * that a bare lowercase word is a known claude alias — a bare unknown word
+ * that a bare lowercase word is a known cloud alias — a bare unknown word
  * ("opush", "fable5") is almost always a typo, and a typo'd spec going live
  * means broken spawns. Full / provider ids (anything with `-`, `/`, or `.`)
  * always pass; that's the escape hatch for new models and other backends.
@@ -73,8 +75,8 @@ export function modelSpecError(spec: string): string | null {
   if (!s) return null; // empty = inherit/unset — the row-level checks own "required"
   if (!isValidModelSpec(s)) return 'invalid spec — shape is <modelId>[:<effort>], no spaces';
   const id = specId(s);
-  if (/^[a-z][a-z0-9]*$/.test(id) && !KNOWN_CLAUDE_ALIASES.has(id)) {
-    return `"${id}" is not a known model alias (haiku · sonnet · opus · fable) — use a full model id like claude-opus-4-8 if intentional`;
+  if (/^[a-z][a-z0-9]*$/.test(id) && !KNOWN_CLOUD_ALIASES_SETTINGS.has(id)) {
+    return `"${id}" is not a known model alias (haiku · sonnet · opus · fable · sol · terra · luna) — use a full model id like claude-opus-4-8 or gpt-5.6-luna if intentional`;
   }
   return null;
 }
