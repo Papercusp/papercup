@@ -11,7 +11,7 @@
  *     default would be the EI-7 class of bug); clamps never error.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { downgradeOpusTierForBudget, effectiveTierConfig, resolveTierSpec, roleDefaultSpec, roleHomeTier, resolveRoleOwnModelSpec, specModelClass, specModelId, tierMenuLines } from './model-tiers';
+import { downgradeOpusTierForBudget, effectiveTierConfig, resolveTierSpec, roleDefaultSpec, roleHomeTier, resolveRoleOwnModelSpec, specFamilyKey, specModelClass, specModelId, tierMenuLines } from './model-tiers';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -211,6 +211,10 @@ describe('roleHomeTier — the default-menu tier a role runs at', () => {
     expect(roleHomeTier('worker')).toBe('standard'); // sonnet → standard
     expect(roleHomeTier('cup')).toBe('quick'); // haiku → quick
   });
+
+  it('treats the current versioned Claude id and its stable menu alias as one family', () => {
+    expect(specFamilyKey('sonnet-5[1m]:high')).toBe(specFamilyKey('sonnet[1m]'));
+  });
   it('undefined for a role with no committed default (no own-model resolution)', () => {
     expect(roleHomeTier('reviewer')).toBeUndefined();
   });
@@ -226,6 +230,12 @@ describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-ste
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const eff = { tiers: [{ name: 'standard', spec: 'opus:xhigh' }] };
     expect(resolveRoleOwnModelSpec('mug', eff)).toBe('opus:xhigh');
+  });
+
+  it('same-family owner rows can raise effort but never weaken the committed role floor', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveRoleOwnModelSpec('mug', { tiers: [{ name: 'standard', spec: 'sonnet[1m]' }] })).toBeNull();
+    expect(resolveRoleOwnModelSpec('mug', { tiers: [{ name: 'standard', spec: 'sonnet-5[1m]:xhigh' }] })).toBe('sonnet-5[1m]:xhigh');
   });
 
   it('allows cross-provider own-model menu specs; invoke infers the backend from the model spec', () => {

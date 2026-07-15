@@ -99,6 +99,13 @@ export interface CollisionTickResult {
   enqueued: number;
   /** The tick counter after this tick. */
   tick: number;
+  /** This tick's collisionCandidates snapshot — computed ONCE here and handed
+   *  to the P-013 adjacency leg (adjacency-cross-feed-io.ts) so both matchers
+   *  ride one peer read + index build. Absent on the no-cursor / timed-out path. */
+  snapshot?: CollisionLike[];
+  /** owner_id per live peer session in this tick's snapshot (the adjacency
+   *  cross-feed's delivery axis). Absent whenever `snapshot` is. */
+  ownerBySession?: Map<string, string | null>;
 }
 
 const ZERO_RESULT: CollisionTickResult = { ran: false, entered: 0, cleared: 0, enqueued: 0, tick: 0 };
@@ -255,7 +262,7 @@ export async function runCollisionTick(input: CollisionTickInput): Promise<Colli
     else if (n.kind === 'collision-cleared') cleared += 1;
   }
 
-  return { ran: true, entered, cleared, enqueued, tick: nextTick };
+  return { ran: true, entered, cleared, enqueued, tick: nextTick, snapshot, ownerBySession };
 }
 
 /**

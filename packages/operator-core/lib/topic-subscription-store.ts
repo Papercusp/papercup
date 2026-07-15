@@ -43,6 +43,24 @@ export async function listTopicSubscriptions(ownerId: string): Promise<Subscript
   return all.filter((s) => s.target_kind === 'topic');
 }
 
+/** Ensure a topic row exists (idempotent — ON CONFLICT DO NOTHING under the
+ *  store, so two sides of a P-013 adjacency can race the create and the first
+ *  writer wins). Returns the live row. */
+export async function ensureTopicFor(input: {
+  slug: string;
+  title?: string;
+  description: string;
+  createdBy?: string | null;
+}): Promise<TopicRow> {
+  return topicStore.create({
+    slug: input.slug,
+    title: input.title,
+    description: input.description,
+    created_by: input.createdBy ?? undefined,
+    created_ts: nowIso(),
+  });
+}
+
 /** Write one topic subscription for `ownerId` (idempotent upsert — re-subscribing
  *  updates the mode, same as topics:subscribe). No TTL: the hysteresis machine's
  *  own drift/staleness exits are the lifecycle. */

@@ -63,14 +63,23 @@ export function specModelId(spec: string): string {
     : trimmed;
 }
 
-/** The COMPARISON key for "same model" checks: the model id with the `[1m]`
-    window marker stripped, lowercased. The marker changes the WINDOW, not the
-    model — role defaults (ROLE_MODEL_DEFAULTS) store bare ids (`sonnet`) while
-    the tier menu carries marked specs (`sonnet[1m]`, owner directive
-    2026-07-02), and an exact-id match between the two would silently drop the
-    role floor (EI-7/EI-286). */
+/** The COMPARISON key for model-FAMILY checks. Known Claude aliases/versioned
+    ids collapse to their capability family (`sonnet` and `sonnet-5` are the
+    same current Claude family); unknown/cross-provider ids remain exact. The
+    `[1m]` marker changes the WINDOW, not the model. This keeps committed role
+    floors compatible with the stable bare aliases in DEFAULT_MODEL_TIERS even
+    when ROLE_MODEL_DEFAULTS pins the current versioned id (EI-7/EI-286). */
 export function specFamilyKey(spec: string): string {
-  return specModelId(spec).replace(/\[1m\]/gi, '').toLowerCase();
+  const id = specModelId(spec).replace(/\[1m\]/gi, '').toLowerCase();
+  const modelClass = specModelClass(spec);
+  return modelClass === 'other' ? id : modelClass;
+}
+
+/** Ordered effort strength for same-family own-model comparisons. An absent
+    effort is the CLI default and therefore below every explicit effort. */
+function specEffortRank(spec: string): number {
+  const suffix = spec.trim().slice(spec.trim().lastIndexOf(':') + 1).toLowerCase();
+  return ({ low: 1, medium: 2, high: 3, xhigh: 4, max: 5 } as const)[suffix as 'low' | 'medium' | 'high' | 'xhigh' | 'max'] ?? 0;
 }
 
 /** The role's resolved DEFAULT spec — what it runs with no tier: the
@@ -293,10 +302,19 @@ export function resolveRoleOwnModelSpec(
   role: string,
   eff: { tiers?: readonly ModelTier[]; tierCeilings?: Record<string, string> },
 ): string | null {
-  const tier = roleTierCeiling(eff.tierCeilings, role) || roleHomeTier(role);
+  const ceiling = roleTierCeiling(eff.tierCeilings, role);
+  // No owner/session tier input means the committed role default is already the
+  // authority. Re-resolving it through the generic menu can only erase details
+  // the role pin deliberately carries (e.g. sonnet-5 `:high`).
+  if (!ceiling && !eff.tiers?.length) return null;
+  const tier = ceiling || roleHomeTier(role);
   if (!tier) return null;
   const r = resolveTierSpec({ tier, role, tiers: eff.tiers, tierCeilings: eff.tierCeilings });
   if (!r.ok) return null;
+  // A requested ceiling below the committed floor is a no-op. Returning the
+  // menu row here would replace a stronger/versioned committed default with a
+  // weaker alias even though resolveTierSpec correctly reported a floor clamp.
+  if (r.clamped === 'floor') return null;
   // Marker-insensitive, EFFORT-sensitive compare: the default menu's specs
   // carry `[1m]` (owner directive 2026-07-02) while committed role defaults
   // are bare, and a marker-only difference is NOT an override — the `[1m]`
@@ -305,8 +323,18 @@ export function resolveRoleOwnModelSpec(
   // (the docstring invariant). An effort/model difference (opus[1m]:high vs
   // default opus) IS a real override, so plain [1m]-stripping — not
   // specFamilyKey, which also strips effort — is the right key.
+  const committed = roleModelDefault(role) ?? '';
+  const candidateClass = specModelClass(r.spec);
+  const committedClass = specModelClass(committed);
+  // Within one known Claude family, an own-model menu row may raise effort but
+  // must never weaken the committed role floor or replace its current versioned
+  // id with a bare alias. Cross-provider/model-family overrides remain explicit
+  // and are returned unchanged.
+  if (candidateClass !== 'other' && candidateClass === committedClass) {
+    return specEffortRank(r.spec) > specEffortRank(committed) ? r.spec : null;
+  }
   const sansMarker = (s: string) => s.replace(/\[1m\]/gi, '').toLowerCase();
-  return r.spec && sansMarker(r.spec) !== sansMarker(roleModelDefault(role) ?? '') ? r.spec : null;
+  return r.spec && sansMarker(r.spec) !== sansMarker(committed) ? r.spec : null;
 }
 
 /**

@@ -148,10 +148,28 @@ export default defineTool({
         // only when a cursor actually landed (no cursor ⇒ no tick).
         if (cursorPersisted) {
           const { boundedCollisionTick } = await import('../../collision-matcher-io');
-          await boundedCollisionTick({
+          const collisionTick = await boundedCollisionTick({
             selfSessionId: args.session_id,
             selfOwnerId: ownerId,
           });
+          // P-013 (ambient-semantic-push) adjacency cross-feed: the band BELOW
+          // collision — two cursors that stay similar WITHOUT being duplicates
+          // (adjacent lanes). Rides the SAME collisionCandidates snapshot the
+          // collision tick just computed (compute once, feed both matchers):
+          // sustained in-band overlap auto-subscribes both sides to a shared
+          // 'adj:…' topic, and this turn's on-topic journal note cross-posts to
+          // the adjacent peer as one bounded line. Same flag/gate, bounded +
+          // fail-soft; skipped when the collision tick timed out (no snapshot).
+          if (collisionTick.ran && collisionTick.snapshot) {
+            const { boundedAdjacencyTick } = await import('../../adjacency-cross-feed-io');
+            await boundedAdjacencyTick({
+              selfSessionId: args.session_id,
+              selfOwnerId: ownerId,
+              snapshot: collisionTick.snapshot,
+              ownerBySession: collisionTick.ownerBySession,
+              journalNote: extracted.note,
+            });
+          }
           // P-006 (ambient-semantic-push) dead-end matcher: the same fresh cursor
           // is one tick of the dead-end detector. Fold the in-scope dead-end facts
           // (the P-015 slot — agent_facts keyed 'dead-end:%') and enqueue a WARNING
