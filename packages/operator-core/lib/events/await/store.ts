@@ -266,6 +266,46 @@ export async function cancelClaimableAwaits(subscriberId: string): Promise<numbe
   return rows.length;
 }
 
+/**
+ * Cancel PENDING (not yet fired/cancelled) awaits for the given subscribers on the
+ * given EXACT event keys — the shared primitive behind two distinct EI-12457 uses:
+ *
+ * 1. SIBLING cancellation at FIRE time: a dual-outcome wait (checkpoint:await arms
+ *    BOTH `release:green:<pipeline>` and `green-checkpoint:red:<pipeline>` so it wakes
+ *    either way) leaves the OTHER key's registration alive until its own timeout once
+ *    one outcome fires — for the resolved candidate it can now never legitimately fire.
+ *    The caller (emitAwaitedEvent) passes the subscribers just woken by THIS fire plus
+ *    the sibling key(s), so the dead registration is retired immediately instead of
+ *    piling up (the "350 total registrations" noise release:trace was reporting).
+ * 2. SUPERSEDED-wait retirement at REGISTRATION time: re-arming checkpoint:await for a
+ *    pipeline (e.g. because the candidate moved) first cancels the SAME subscriber's
+ *    own prior, still-pending checkpoint-family awaits for that pipeline — an old
+ *    registration a caller has moved on from is exactly the "superseded" wait the
+ *    ticket named; without this it lives on and can fire a stale/obsolete wake later.
+ *
+ * Subscriber-scoped (mirrors cancelClaimableAwaits — you can only cancel your own,
+ * both directions). Best-effort at every call site; returns 0 rather than throwing
+ * when there is nothing to cancel.
+ */
+export async function cancelAwaitsForSubscribersOnKeys(
+  subscriberIds: readonly string[],
+  eventKeys: readonly string[],
+): Promise<number> {
+  if (subscriberIds.length === 0 || eventKeys.length === 0) return 0;
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    UPDATE harness_shared.event_awaits
+       SET cancelled_at = now()
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ANY(${sql.array([...subscriberIds])}::text[])
+       AND event_key = ANY(${sql.array([...eventKeys])}::text[])
+       AND fired_at IS NULL AND cancelled_at IS NULL
+    RETURNING id
+  `;
+  return rows.length;
+}
+
 /** Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's). */
 export async function cancelAwait(input: {
   awaitId: number;
