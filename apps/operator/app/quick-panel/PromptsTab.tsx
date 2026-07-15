@@ -35,6 +35,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
@@ -76,13 +77,17 @@ import {
   extractTags,
   extractVariables,
   fillVariables,
+  duplicateSubtreePlan,
   indent as indentOp,
   insertAfter as insertAfterOp,
+  insertBefore as insertBeforeOp,
   isCompleted,
   isFolder,
   moveDown as moveDownOp,
   moveUp as moveUpOp,
   outdent as outdentOp,
+  parsePastedOutline,
+  pasteOutlinePlan,
   projectDrop,
   subtreeIds,
   visibleRows,
@@ -362,7 +367,47 @@ function NodeAffordances({
 }
 
 // ---------------------------------------------------------------------------
-// Inline-editable node title — the outline text IS the editor.
+// Caret ↔ visual-line measurement for a wrapping textarea (bullets wrap like
+// Workflowy, so ↑/↓ must move WITHIN the wrapped lines and only hop to the
+// adjacent bullet from the first/last visual line). Standard mirror-div
+// technique: replicate the textarea's text metrics, insert a marker at the
+// caret, read the marker's offsetTop.
+// ---------------------------------------------------------------------------
+
+let caretMirror: HTMLDivElement | null = null;
+
+function caretLineInfo(el: HTMLTextAreaElement): { line: number; lastLine: number } {
+  const cs = window.getComputedStyle(el);
+  if (!caretMirror) {
+    caretMirror = document.createElement('div');
+    caretMirror.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(caretMirror);
+  }
+  const m = caretMirror;
+  m.style.cssText =
+    'position:absolute;top:-9999px;left:-9999px;visibility:hidden;white-space:pre-wrap;overflow-wrap:anywhere;';
+  m.style.fontFamily = cs.fontFamily;
+  m.style.fontSize = cs.fontSize;
+  m.style.fontWeight = cs.fontWeight;
+  m.style.letterSpacing = cs.letterSpacing;
+  m.style.lineHeight = cs.lineHeight;
+  m.style.width = `${el.clientWidth}px`;
+  const lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4 || 16;
+  const lineAt = (pos: number): number => {
+    m.textContent = el.value.slice(0, pos);
+    const marker = document.createElement('span');
+    marker.textContent = '​';
+    m.appendChild(marker);
+    return Math.round(marker.offsetTop / lineHeight);
+  };
+  const caret = el.selectionStart ?? el.value.length;
+  return { line: lineAt(caret), lastLine: lineAt(el.value.length) };
+}
+
+// ---------------------------------------------------------------------------
+// Inline-editable node title — the outline text IS the editor. A wrapping
+// auto-grow textarea (CSS grid replica trick — the `pc-qp__titlegrow` wrapper's
+// ::after mirrors the text and sets the height), carrying the Workflowy keymap.
 // ---------------------------------------------------------------------------
 
 function NodeTitleInput({
@@ -374,10 +419,17 @@ function NodeTitleInput({
   onFocused,
   onFocusRow,
   onCreateAfter,
+  onInsertAbove,
+  onSplit,
   onMove,
+  onCollapse,
   onNav,
   onDeleteEmpty,
+  onDeleteSubtree,
+  onDuplicate,
   onMergeUp,
+  onMergeForward,
+  onPasteOutline,
   onOpenNote,
   onToggleComplete,
   onZoomIn,
@@ -392,10 +444,26 @@ function NodeTitleInput({
   onFocused: () => void;
   onFocusRow: () => void;
   onCreateAfter: () => void;
+  /** Enter at the very start of a non-empty bullet: empty bullet ABOVE, caret stays. */
+  onInsertAbove: () => void;
+  /** Enter mid-text: `before` stays here, `after` becomes the next bullet. */
+  onSplit: (before: string, after: string) => void;
   onMove: (dir: 'up' | 'down' | 'indent' | 'outdent') => void;
-  onNav: (delta: 1 | -1) => void;
+  /** Ctrl+↑ / Ctrl+↓ (Workflowy expand/collapse). */
+  onCollapse: (dir: 'collapse' | 'expand') => void;
+  /** Hop the caret to the adjacent bullet; `caret` null = end, 0 = start. */
+  onNav: (delta: 1 | -1, caret: number | null) => void;
   onDeleteEmpty: () => void;
+  /** Ctrl+Shift+Backspace (Workflowy delete item — undoable archive). */
+  onDeleteSubtree: () => void;
+  /** Alt+Shift+D (Workflowy duplicate). */
+  onDuplicate: () => void;
   onMergeUp: (danglingText: string) => void;
+  /** Delete at the end of the text: pull the next bullet into this one. */
+  onMergeForward: (currentText: string) => void;
+  /** Multi-line paste: `merged` = new title here, `tail` appended after the
+      last pasted line, `rest` = lines 2+ to create as nested bullets. */
+  onPasteOutline: (merged: string, tail: string, rest: Array<{ title: string; depth: number }>) => void;
   onOpenNote: () => void;
   onToggleComplete: () => void;
   onZoomIn: () => void;
@@ -404,7 +472,7 @@ function NodeTitleInput({
 }) {
   const [text, setText] = useState(row.title ?? '');
   const focusedRef = useRef(false);
-  const ref = useRef<HTMLInputElement>(null);
+  const ref = useRef<HTMLTextAreaElement>(null);
 
   // Mirror external renames while not editing.
   useEffect(() => {

@@ -434,6 +434,75 @@ export function parsePastedOutline(text: string): Array<{ title: string; depth: 
   return out;
 }
 
+/**
+ * Creation plan for the TAIL lines of a Workflowy multi-line paste (the first
+ * pasted line merges into `id`'s own title at the caret — the caller does that
+ * patch). `rows` are lines[1..] with parsePastedOutline's depths kept relative
+ * to line 0: depth 0 ⇒ a sibling created after `id` (in order), depth 1 under
+ * a depth-0 line that was line 0 itself ⇒ a CHILD of `id`, deeper ⇒ child of
+ * the previous shallower create. `creates` come back in creation order:
+ * `parentKey` is the index of the parent create, null ⇒ `parentId` is the real
+ * node id to create under. Null for unknown ids.
+ */
+export function pasteOutlinePlan<R extends PromptNodeFields>(
+  model: PromptTreeModel<R>,
+  id: string,
+  rows: Array<{ title: string; depth: number }>,
+): {
+  assignments: MoveAssignment[];
+  creates: Array<{ parentKey: number | null; parentId: string | null; title: string; position: string }>;
+} | null {
+  const entry = model.byId.get(id);
+  const ctx = siblingListOf(model, id);
+  if (!entry || !ctx) return null;
+  const i = ctx.siblings.findIndex((s) => s.row.id === id);
+  if (i === -1) return null;
+  const siblingParentId = ctx.parent?.row.id ?? null;
+  const { positions, assignments } = effectiveSequence(ctx.siblings, siblingParentId);
+  const nextKey = i + 1 < positions.length ? positions[i + 1] : null;
+  const keys0 = generateNKeysBetween(positions[i], nextKey, rows.filter((r) => r.depth === 0).length);
+
+  const creates: Array<{
+    parentKey: number | null;
+    parentId: string | null;
+    title: string;
+    position: string;
+  }> = [];
+  // anchors[d] = handle of the last materialized node at depth d ('self' = `id`).
+  const anchors: Array<{ kind: 'self' } | { kind: 'create'; index: number }> = [{ kind: 'self' }];
+  // Last child key handed out per parent handle ('self' seeds from existing children).
+  let selfLastChildKey: string | null = null;
+  for (const c of entry.node.children) {
+    const p = c.row.position;
+    if (p !== null && (selfLastChildKey === null || p > selfLastChildKey)) selfLastChildKey = p;
+  }
+  const createLastChildKey = new Map<number, string | null>();
+  let k0 = 0;
+  for (const r of rows) {
+    const depth = Math.max(0, Math.min(r.depth, anchors.length));
+    let spec: { parentKey: number | null; parentId: string | null; title: string; position: string };
+    if (depth === 0) {
+      spec = { parentKey: null, parentId: siblingParentId, title: r.title, position: keys0[k0++] };
+    } else {
+      const parent = anchors[Math.min(depth - 1, anchors.length - 1)];
+      if (parent.kind === 'self') {
+        const pos = generateKeyBetween(selfLastChildKey, null);
+        selfLastChildKey = pos;
+        spec = { parentKey: null, parentId: id, title: r.title, position: pos };
+      } else {
+        const last = createLastChildKey.get(parent.index) ?? null;
+        const pos = generateKeyBetween(last, null);
+        createLastChildKey.set(parent.index, pos);
+        spec = { parentKey: parent.index, parentId: null, title: r.title, position: pos };
+      }
+    }
+    creates.push(spec);
+    anchors.length = Math.min(anchors.length, depth + 1);
+    anchors[depth] = { kind: 'create', index: creates.length - 1 };
+  }
+  return { assignments, creates };
+}
+
 /** Swap with the previous sibling. Null when already first (or unknown id). */
 export function moveUp<R extends PromptNodeFields>(
   model: PromptTreeModel<R>,
