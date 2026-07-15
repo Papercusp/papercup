@@ -50,6 +50,7 @@ vi.mock("../../events/await/store", () => ({
     expiresTs: "2030-01-01",
     timeoutBehavior: i.timeoutBehavior,
   })),
+  cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
 }));
 
 vi.mock("../../events/await/engine", () => ({ startAwaitSweeper: vi.fn() }));
@@ -62,7 +63,7 @@ vi.mock("../../dev-deploy-state", () => ({
 
 await import("./sugar");
 
-import { registerAwait } from "../../events/await/store";
+import { registerAwait, cancelAwaitsForSubscribersOnKeys } from "../../events/await/store";
 import { devDeployState } from "../../dev-deploy-state";
 import { checkpointPipelineName } from "./sugar";
 

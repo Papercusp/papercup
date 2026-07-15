@@ -59,6 +59,19 @@ export async function runHiveControl(
     throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
   }
   const text = body.result?.content?.[0]?.text;
-  const payload = text ? (JSON.parse(text) as { ok?: boolean; message?: string }) : { ok: true };
-  if (payload.ok === false) throw new Error(payload.message ?? `${tool} refused`);
+  if (!text) return;
+
+  // Validation failures from the projected-tool dispatcher are intentionally
+  // plain text (for example `invalid_input: invalid_args: ...`), while normal
+  // tool results are JSON strings. Never replace the useful server error with
+  // a client-side `JSON.parse` SyntaxError.
+  let payload: { ok?: boolean; message?: string; error?: string };
+  try {
+    payload = JSON.parse(text) as typeof payload;
+  } catch {
+    throw new Error(text);
+  }
+  if (payload.ok === false) {
+    throw new Error(payload.message ?? payload.error ?? `${tool} refused`);
+  }
 }

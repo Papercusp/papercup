@@ -7,6 +7,7 @@ import { type PlanListRow } from '@/app/admin/plans/plans-api';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { runHiveControl } from './hive-control';
 
 interface Props {
   slug: string | null;
@@ -16,35 +17,6 @@ interface Props {
 interface HiveControlRow {
   slug: string;
   started: boolean;
-}
-
-/**
- * Fire a hive control tool (start-hive-wake-orchestration P-005/P-006)
- * through the loopback palette bridge — the full gated/audited dispatch.
- * Lifted from the retired global-header HiveStartPauseButton.
- */
-async function runHiveControl(
-  tool: 'pot:start' | 'pot:pause',
-  slug: string,
-  extraArgs: Record<string, unknown> = {},
-): Promise<void> {
-  const res = await fetch('/api/agent-mcp/run-tool', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: tool, args: { harness: slug, ...extraArgs }, confirmed: true }),
-  });
-  const body = (await res.json().catch(() => ({}))) as {
-    ok?: boolean;
-    error?: string;
-    message?: string;
-    result?: { content?: Array<{ text?: string }> };
-  };
-  if (!res.ok || !body.ok) {
-    throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
-  }
-  const text = body.result?.content?.[0]?.text;
-  const payload = text ? (JSON.parse(text) as { ok?: boolean; message?: string }) : { ok: true };
-  if (payload.ok === false) throw new Error(payload.message ?? `${tool} refused`);
 }
 
 /**
@@ -156,7 +128,7 @@ export default function AdvNowRunning({ slug }: Props) {
     });
     if (!ok) return;
     try {
-      await runHiveControl('pot:pause', hive.slug, { drainBees: true });
+      await runHiveControl('pot:pause', hive.slug, { drainCups: true });
       toast.success(`${t('pot')} paused`, { description: `Autonomous wakes staged; ${t('contributor', { plural: true, lower: true })} draining` });
       setAwaitingAgent(false);
     } catch (e) {

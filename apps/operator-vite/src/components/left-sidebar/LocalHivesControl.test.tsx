@@ -100,7 +100,7 @@ describe('LocalHivesControl', () => {
     expect(screen.getByText(/no local pot registered/)).toBeTruthy();
   });
 
-  it('Start on a stopped hive fires pot:start (no drainBees)', async () => {
+  it('Start on a stopped hive fires pot:start (no drainCups)', async () => {
     render(<LocalHivesControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-sb-devboard-hive'));
     await waitFor(() =>
@@ -113,7 +113,7 @@ describe('LocalHivesControl', () => {
     );
   });
 
-  it('Stop on a started hive confirms with the shared dialog, then fires pot:pause{drainBees}', async () => {
+  it('Stop on a started hive confirms with the shared dialog, then fires pot:pause{drainCups}', async () => {
     render(<LocalHivesControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-papercup-hive'));
     await waitFor(() =>
@@ -125,7 +125,7 @@ describe('LocalHivesControl', () => {
     );
     await waitFor(() =>
       expect(runToolCalls).toEqual([
-        { name: 'pot:pause', args: { harness: 'papercup-hive', drainBees: true }, confirmed: true },
+        { name: 'pot:pause', args: { harness: 'papercup-hive', drainCups: true }, confirmed: true },
       ]),
     );
     await waitFor(() =>

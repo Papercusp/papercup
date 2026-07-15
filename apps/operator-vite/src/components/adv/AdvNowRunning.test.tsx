@@ -171,14 +171,14 @@ describe('AdvNowRunning', () => {
     expect(screen.queryByText(/Active —/)).toBeNull();
   });
 
-  it('Stop confirms, then fires pot:pause with drainBees', async () => {
+  it('Stop confirms, then fires pot:pause with drainCups', async () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Stop pot'));
     fireEvent.click(await screen.findByRole('button', { name: 'Pause pot' }));
     await waitFor(() =>
       expect(runToolCalls).toEqual([
-        { name: 'pot:pause', args: { harness: 'hive-1', drainBees: true }, confirmed: true },
+        { name: 'pot:pause', args: { harness: 'hive-1', drainCups: true }, confirmed: true },
       ]),
     );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('pot paused', expect.anything()));

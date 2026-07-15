@@ -43,7 +43,7 @@ export default function LocalHivesControl() {
     setBusy(hive.slug);
     try {
       // Stop drains live bees; start just wakes the Queen.
-      await runHiveControl(tool, hive.slug, hive.started ? { drainBees: true } : {});
+      await runHiveControl(tool, hive.slug, hive.started ? { drainCups: true } : {});
       toast.success(hive.started ? `${t('pot')} paused` : `${t('pot')} started`, { description: hive.slug });
     } catch (e) {
       toast.error(hive.started ? 'Pause failed' : 'Start failed', { description: String(e) });
