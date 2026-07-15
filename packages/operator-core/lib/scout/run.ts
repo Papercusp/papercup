@@ -101,7 +101,7 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
   return buildScoutTickDeps({
     harnessSlug: input.installSlug,
     workspaceId: input.workspaceId,
-    runCycle: ({ budget, cycleId, queenFeedback, signal, onPhase }) =>
+    runCycle: ({ budget, cycleId, queenFeedback, signal, deadlineMs, onPhase }) =>
       runCycle({
         harnessSlug: input.installSlug,
         workspaceId: input.workspaceId,
@@ -110,6 +110,11 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
         scoutConfig,
         ...(queenFeedback ? { queenFeedback } : {}),
         ...(signal ? { signal } : {}),
+        // WI-4644 recurrence (2026-07-14): this bridge used to drop the absolute
+        // deadline that runScoutTick calculated. The production runner therefore
+        // saw `undefined`, ideators fell back to the legacy undifferentiated 180s
+        // wall-clock timer, and an admission wait was recorded as transport death.
+        ...(deadlineMs !== undefined ? { deadlineMs } : {}),
         ...(onPhase ? { onPhase } : {}),
       }),
     readIdleRatio: () => readHiveIdleRatio({ workspaceId: input.workspaceId }),

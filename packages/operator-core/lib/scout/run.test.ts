@@ -28,6 +28,7 @@ function mkDeps(over: Record<string, unknown> = {}): ScoutCycleDeps {
 
 beforeEach(() => {
   sched.runScoutTick.mockReset().mockResolvedValue({ fired: true, costUsd: 1.5, cycleId: 'c1' });
+  sched.buildScoutTickDeps.mockClear();
   runCycle.mockReset();
   buildDeps.mockClear();
   recordTick.mockReset();
@@ -101,6 +102,27 @@ describe('productionDepsBuilder', () => {
     await built.runCycle({ budget: { maxCostUsd: 1, maxIdeators: 1, maxCriticsPerIdea: 2 }, cycleId: 'cyc-1', onPhase });
 
     expect(runCycle.mock.calls[0][0].onPhase).toBe(onPhase);
+  });
+
+  it('forwards the scheduler deadline into the production cycle runner', async () => {
+    productionDepsBuilder(
+      {
+        workspaceId: 'ws',
+        installSlug: 'h',
+        payloadTemplate: null,
+      },
+      runCycle,
+    );
+
+    const deadlineMs = Date.now() + 20 * 60_000;
+    const built = sched.buildScoutTickDeps.mock.calls[0][0];
+    await built.runCycle({
+      budget: { maxCostUsd: 1, maxIdeators: 1, maxCriticsPerIdea: 2 },
+      cycleId: 'cyc-1',
+      deadlineMs,
+    });
+
+    expect(runCycle.mock.calls[0][0].deadlineMs).toBe(deadlineMs);
   });
 });
 
