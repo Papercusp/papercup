@@ -61,7 +61,10 @@ beforeEach(() => {
       ...actual,
       operatorResolveExtends: (opts: { localDirs?: string[] } = {}) => {
         resolveExtendsCalls.push(opts);
-        return actual.operatorResolveExtends(opts);
+        // resolveAndValidate is mocked below and does not consume the resolver. Calling
+        // the real factory here materializes a blueprint into the repository root, so a
+        // supposedly PG/FS-confined unit test dirties .papercusp on every successful run.
+        return {} as ReturnType<typeof actual.operatorResolveExtends>;
       },
     };
   });
@@ -209,13 +212,17 @@ beforeEach(() => {
   // it at module scope) even though this test never exercises that path directly — the
   // mock still needs every export the module graph touches, not just the ones this
   // file's own logic calls.
-  vi.doMock('../../hive-membership-store', () => ({
-    upsertHiveMember: async (input: unknown) => {
-      upsertPotMemberCalls.push(input as never);
-      return {};
-    },
-    listHiveMembers: async () => [],
-  }));
+  vi.doMock('../../hive-membership-store', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../hive-membership-store')>();
+    return {
+      ...actual,
+      upsertHiveMember: async (input: unknown) => {
+        upsertPotMemberCalls.push(input as never);
+        return {};
+      },
+      listHiveMembers: async () => [],
+    };
+  });
 });
 
 afterEach(() => {
