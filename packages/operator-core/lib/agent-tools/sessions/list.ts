@@ -35,6 +35,28 @@ interface SessionListRow {
   total_matching: number;
 }
 
+/**
+ * The projected row the caller reads. Real (indexed) rows carry every field but
+ * `active`; the synthetic live-session fallback row (EI-11403) sets `active:true`
+ * so `owner:'self'` never reports a LIVE session as absent when its turns are
+ * indexed under a different owner stamp — or not yet indexed at all.
+ */
+interface OutSession {
+  source_kind: string;
+  session_id: string;
+  turns: number;
+  prompt_count: number;
+  owner: string | null;
+  harness_slug: string | null;
+  cwd: string | null;
+  first_ts: string | null;
+  last_ts: string | null;
+  response_count: number | null;
+  tool_call_count: number | null;
+  /** Only present (and true) on the injected live-session fallback row. */
+  active?: boolean;
+}
+
 export default defineTool({
   name: 'sessions:list',
   crossWorkspace: true,
@@ -52,7 +74,7 @@ export default defineTool({
     // shapes were not, so writing any code:run batch over this tool required calling
     // it once just to learn the field names — a guaranteed wasted round-trip per tool.
     returns:
-      '{ ok, count (rows HERE), total (rows MATCHING), hasMore, nextCursor?, truncated?, note, sessions: [{ source_kind, session_id, turns, prompt_count, owner, harness_slug, cwd, first_ts, last_ts, response_count, tool_call_count }] }. Timestamps are ISO-8601 with an explicit offset. Pass nextCursor back unchanged to continue the same filters.',
+      '{ ok, count (rows HERE), total (rows MATCHING), hasMore, nextCursor?, truncated?, note, sessions: [{ source_kind, session_id, turns, prompt_count, owner, harness_slug, cwd, first_ts, last_ts, response_count, tool_call_count, active? }] }. `active:true` (owner:\'self\', page one) marks your LIVE session surfaced even if its turns are not yet indexed under `self` (EI-11403). Timestamps are ISO-8601 with an explicit offset. Pass nextCursor back unchanged to continue the same filters.',
     seeAlso: ['sessions:search', 'sessions:read', 'sessions:digest', 'sessions:timeline'],
   },
   requirePrincipal: false,
@@ -158,11 +180,11 @@ export default defineTool({
     // distinguish it from an exhaustive one — a caller could not tell whether the
     // window held 100 sessions or 500, and the max limit (100) made the ambiguity
     // permanent. Report the real total and say plainly whether more remain.
-    const total = rows[0]?.total_matching ?? offset;
+    let total = rows[0]?.total_matching ?? offset;
     // Project explicitly rather than rest-spreading `total_matching` away: the
     // window-function column is a transport detail of THIS query, and an explicit
     // projection guarantees it can never leak into a row the caller reads as data.
-    const sessions = rows.slice(0, limit).map((r) => ({
+    const sessions: OutSession[] = rows.slice(0, limit).map((r) => ({
       source_kind: r.source_kind,
       session_id: r.session_id,
       turns: r.turns,
@@ -175,9 +197,70 @@ export default defineTool({
       response_count: r.response_count,
       tool_call_count: r.tool_call_count,
     }));
-    const hasMore = total > offset + sessions.length;
+    // Pagination advances over the OWNER-matched rows only; the synthetic
+    // fallback below is prepended OUTSIDE that offset stream, so it must never
+    // shift the real-row window.
+    const realPageCount = sessions.length;
+
+    // EI-11403: sessions:list { owner:'self' } returned 0 for a LIVE Codex session
+    // that sessions:search { session:'self' } and sessions:timeline { owner:'self' }
+    // could both read. Root cause: those two resolve the session by session_id,
+    // while list filters session_turns by `owner` — and a managed-Codex-home /
+    // history.jsonl live session's turns are indexed under a different owner stamp
+    // (or not yet indexed at all) than the coord ownerId `self` resolves to, so the
+    // owner filter misses them. Merge an explicit active-session row (the issue's
+    // recommended fix) so list AGREES the session exists. Owner-INDEPENDENT counts
+    // (by session_id, the same lens search/timeline use) make the row match what
+    // those tools see even when the owner stamp diverges. Page one only (the row is
+    // not part of the offset stream); fail-soft (the fallback is a bonus, never
+    // breaks the list).
+    if (args.owner === 'self' && offset === 0 && owner) {
+      try {
+        const { resolveSelfSession } = await import('../../search/self-session');
+        const self = await resolveSelfSession(owner);
+        if (self && !sessions.some((s) => s.source_kind === self.sourceKind && s.session_id === self.sessionId)) {
+          const liveRows = await ctx.tx<Array<{
+            turns: number; prompt_count: number;
+            harness_slug: string | null; cwd: string | null;
+            first_ts: string | null; last_ts: string | null;
+          }>>`
+            SELECT count(*)::int AS turns,
+                   count(*) FILTER (WHERE speaker = 'user')::int AS prompt_count,
+                   max(harness_slug) AS harness_slug, max(cwd) AS cwd,
+                   to_json(min(ts)) #>> '{}' AS first_ts,
+                   to_json(max(ts))  #>> '{}' AS last_ts
+              FROM harness_shared.session_turns
+             WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+               AND source_kind = ${self.sourceKind} AND session_id = ${self.sessionId}
+               AND COALESCE(ts, ingested_at) < ${snapshotUntil}::timestamptz
+               AND (${args.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${args.since ?? null}::timestamptz)
+          `;
+          const lr = liveRows[0];
+          sessions.unshift({
+            source_kind: self.sourceKind,
+            session_id: self.sessionId,
+            turns: lr?.turns ?? 0,
+            prompt_count: lr?.prompt_count ?? 0,
+            owner,
+            harness_slug: lr?.harness_slug ?? null,
+            cwd: lr?.cwd ?? null,
+            first_ts: lr?.first_ts ?? null,
+            last_ts: lr?.last_ts ?? null,
+            response_count: null,
+            tool_call_count: null,
+            active: true,
+          });
+          total += 1;
+        }
+      } catch { /* fail-soft: the active-session fallback never breaks the list */ }
+    }
+
+    // hasMore/nextCursor track the REAL owner-matched rows (offset stream); the
+    // synthetic active row lives on page one only and is excluded from the math.
+    const realTotal = total - (sessions.length - realPageCount);
+    const hasMore = realTotal > offset + realPageCount;
     const nextCursor = hasMore
-      ? encodeSessionCursor('sessions:list', offset + sessions.length, fingerprint, { until: snapshotUntil })
+      ? encodeSessionCursor('sessions:list', offset + realPageCount, fingerprint, { until: snapshotUntil })
       : undefined;
 
     return {
@@ -198,7 +281,8 @@ export default defineTool({
           note:
             'Indexed sessions only (ingest window ~45d). Raw pre-window files: dev:claude_session / dev:omp_session. ' +
             'Timestamps are ISO-8601 with an explicit offset; `since` is parsed as UTC. ' +
-            'UNITS (EI-9970): `turns` = indexed TEXT turns only (excludes tool_use/tool_result/thinking content) — for cost/effort audits use prompt_count/response_count/tool_call_count instead (see this tool\'s description for exact definitions). response_count/tool_call_count are null for source_kind=agent_chat (no tool-call signal in that transcript shape).',
+            'UNITS (EI-9970): `turns` = indexed TEXT turns only (excludes tool_use/tool_result/thinking content) — for cost/effort audits use prompt_count/response_count/tool_call_count instead (see this tool\'s description for exact definitions). response_count/tool_call_count are null for source_kind=agent_chat (no tool-call signal in that transcript shape). ' +
+            'EI-11403: a row with `active:true` (owner:\'self\' only) is your LIVE session surfaced even when its turns are still indexing / stamped under another owner — turns may lag; sessions:search { session:\'self\' } reads its full content.',
           sessions,
         }),
       }],
