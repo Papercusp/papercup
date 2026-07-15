@@ -3,12 +3,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // @ts-expect-error Canonical runtime module is plain ESM so the raw-node PSU launcher can share it.
-import {
+import * as modelContextBudget from './model-context-budget.mjs';
+
+const {
   buildContextBudget,
   formatCodexLaunchContextSection,
   readLaunchContextText,
   resolveModelContextWindow,
-} from './model-context-budget.mjs';
+} = modelContextBudget;
 
 describe('model-context-budget', () => {
   it('reads the selected Codex model window from the installed cache', () => {

@@ -25,7 +25,7 @@ vi.mock('../../storage/prune', () => ({
   pruneStorageCategory: (...args: unknown[]) => pruneMock(...args),
 }));
 
-const cleanupMock = vi.fn(async () => ({
+const cleanupMock = vi.fn(async (_opts?: unknown) => ({
   expiredRows: 0,
   targetsFailed: 0,
   artifactsDeleted: 0,

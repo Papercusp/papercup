@@ -453,8 +453,10 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
 
     expect(roleBackendOverride('mug')).toBe('codex');
     const env = buildInvokeOnce(spec({ role: 'mug' })).env;
-    expect(env.AGENT_CMD).toBe('codex exec --model sonnet');
-    expect(env.CLAUDE).toBe('codex exec --model sonnet');
+    // mug resolves to sonnet-5[1m]:high (model-switch-2026-07-15) — when applied with codex backend,
+    // [1m] marker stays and :high maps to codex's model_reasoning_effort config.
+    expect(env.AGENT_CMD).toBe('codex exec --model sonnet-5[1m] -c model_reasoning_effort="high"');
+    expect(env.CLAUDE).toBe('codex exec --model sonnet-5[1m] -c model_reasoning_effort="high"');
     expect(env.AGENT_BACKEND).toBe('codex');
     expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
     // EI-7138: omp takes a `<model>:<effort>` spec as ONE opaque value natively (no

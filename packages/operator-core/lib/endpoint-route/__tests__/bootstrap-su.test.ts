@@ -49,10 +49,10 @@ const rekeyCodexHomeMock = vi.fn((_source: string | number, target: string | num
 const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
   configDir: `/fake/.papercusp/session-claude/${opts.sid}`,
 }));
-const getSessionPortMock = vi.fn(async () => null as any);
+const getSessionPortMock = vi.fn(async (_id: string, _workspaceId: string) => null as any);
 const transitionSessionPortMock = vi.fn(async (_id: string, _ws: string, _to: string, _fields: unknown) => ({ status: 'pending' }));
-const readSessionPortArtifactMock = vi.fn(async () => 'ported history\n[PAPERCUSP SESSION PORT CHECKSUM rendered-hash]');
-const recordSessionPortTelemetryMock = vi.fn(async () => true);
+const readSessionPortArtifactMock = vi.fn(async (_port: unknown) => 'ported history\n[PAPERCUSP SESSION PORT CHECKSUM rendered-hash]');
+const recordSessionPortTelemetryMock = vi.fn(async (_event: unknown) => true);
 
 vi.mock('../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
