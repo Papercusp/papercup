@@ -598,11 +598,12 @@ async function reconcileSupersededOrphanIssues(
  */
 export async function collectOrphanedDispatchSignals(
   workspaceId: string,
-  opts: { bootMs?: number; recover?: OrphanRecoverDeps } = {},
+  opts: { bootMs?: number; recover?: OrphanRecoverDeps; close?: OrphanCloseDeps } = {},
 ): Promise<CollectorResult> {
   const nowMs = Date.now();
   const bootMs = opts.bootMs ?? processBootMs();
   const recover = opts.recover ?? defaultRecover;
+  const close = opts.close ?? defaultOrphanClose;
   let rows: ImprovementDispatchRow[];
   try {
     rows = await readRecentDispatches(workspaceId, { limit: ORPHAN_SCAN_READ_LIMIT });
@@ -678,6 +679,11 @@ export async function collectOrphanedDispatchSignals(
   // EI-7795: pass the FULL recent read (not just orphan evidence) so a later, already-
   // resolved attempt on the same item can supersede stale orphan evidence.
   const signals = buildOrphanedDispatchSignals(evidence, { nowMs, envOutage, allRows: rows });
+  // EI-11986 class root fix: close any per-item orphan bug ALREADY FILED on evidence
+  // that a later dispatch attempt has since superseded — the signal-suppression path
+  // above (EI-7795) only stops a NEW bug from firing on stale evidence; this reaches
+  // back to reconcile one that was already filed before the recovery landed.
+  const closedSuperseded = await reconcileSupersededOrphanIssues(rows, close);
   const notes: string[] = [];
   if (marked.length) notes.push(`marked ${marked.length} open dispatch(es) orphaned (worker presumed dead)`);
   if (recovered) notes.push(`recovered ${recovered} host-restart victim(s) (claim released + attempt rolled back)`);
@@ -686,5 +692,6 @@ export async function collectOrphanedDispatchSignals(
       `routed ${thrashEscalated} thrashing item(s) to human — host-restart re-dispatch cap (${HOST_RESTART_REDISPATCH_CAP}) exceeded (EI-1689)`,
     );
   if (envOutage) notes.push('lane env-outage detected — cause-unknown orphans suppressed (EI-536 noise-loop guard)');
+  if (closedSuperseded) notes.push(`auto-resolved ${closedSuperseded} superseded orphan bug(s) (item recovered on a later attempt)`);
   return { signals, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }

@@ -285,25 +285,64 @@ export async function buildRecipeAuthorityRecommendation(input: {
   };
 }
 
+/**
+ * Human-actionable detail for each authority failure code — surfaced alongside
+ * `error` (which stays the stable machine-matched string) so a caller who hits
+ * `authority_unresolved` on a NESTED `tools.recipes.run(...)` composition (the
+ * recurring confusion behind EI-12057 — "wrapper recipes that call recipes:run
+ * are unusable") can tell an INHERENT, working-as-designed limitation (the
+ * target recipe embeds an opaque/unprovable call — SQL, shell, or a nested
+ * code:run — so NO proof, nested or top-level, can ever authorize it; run its
+ * script directly via code:run instead) apart from a merely MISSING proof
+ * (`authority_required` — obtain one via recipes:search's recommendation, or
+ * supply matching `authority.context`), which a fresh proof CAN fix.
+ */
+const AUTHORITY_ERROR_REASONS: Record<string, string> = {
+  authority_unresolved:
+    'the recipe script itself contains an opaque/unprovable tool call (raw SQL via dev:pg_query, a shell via ' +
+    'capability:bash/capability:script, a nested code:run, or a dynamically-computed plan/item/fleet/harness/' +
+    'resource argument) — its bound identities cannot be statically verified, so NO authority proof (including ' +
+    'from a NESTED tools.recipes.run(...) call inside another recipe) can ever authorize running it via ' +
+    'recipes:run. This is a permanent, by-design limitation, not a transient failure: run the script directly ' +
+    'via code:run instead (inline it, or code:run { script: "return await tools.recipes.get({ id }).then(r => ' +
+    '/* run r.script yourself */)" }).',
+  authority_required:
+    'the recipe references specific bound entities (a plan/item/fleet/harness/resource) and no `authority` proof ' +
+    'was supplied — this includes a NESTED tools.recipes.run(...) call from inside another recipe\'s script, which ' +
+    'has no way to construct one. Obtain a proof via a recipes:search recommendation (its runArgs carries a ready ' +
+    '`authority`), or call recipes:run { id, authority } directly with a context matching your live session.',
+  authority_version_unsupported: 'the supplied `authority.version` is not 1 — obtain a fresh proof rather than hand-building one.',
+  authority_stale_revision:
+    'the recipe\'s script/updatedAt changed since the `authority` proof was issued (its revision hash no longer ' +
+    'matches) — the recipe was edited; re-derive the proof (recipes:search again) before running.',
+  authority_entity_mismatch:
+    'the `authority` proof\'s bound entities do not match either the recipe\'s own script OR your CURRENT live ' +
+    'session context (workspace/fleet/harness/plan/items/resources) — a proof only authorizes the exact lane it ' +
+    'was issued for.',
+};
+
 export async function validateRecipeAuthorityProof(input: {
   script: string;
   updatedAt: string;
   proof?: RecipeAuthorityProof | null;
   liveContext?: RecipeAuthorityContext;
-}): Promise<{ ok: true; descriptor: RecipeAuthorityDescriptor } | { ok: false; error: string }> {
+}): Promise<{ ok: true; descriptor: RecipeAuthorityDescriptor } | { ok: false; error: string; reason: string }> {
+  const fail = (error: string): { ok: false; error: string; reason: string } => ({
+    ok: false,
+    error,
+    reason: AUTHORITY_ERROR_REASONS[error] ?? error,
+  });
   const descriptor = await deriveRecipeAuthority(input.script);
-  if (descriptor.unresolved) return { ok: false, error: 'authority_unresolved' };
+  if (descriptor.unresolved) return fail('authority_unresolved');
   if (!input.proof) {
-    return descriptor.bound
-      ? { ok: false, error: 'authority_required' }
-      : { ok: true, descriptor };
+    return descriptor.bound ? fail('authority_required') : { ok: true, descriptor };
   }
-  if (input.proof.version !== 1) return { ok: false, error: 'authority_version_unsupported' };
+  if (input.proof.version !== 1) return fail('authority_version_unsupported');
   if (input.proof.revision !== recipeRevision(input.script, input.updatedAt)) {
-    return { ok: false, error: 'authority_stale_revision' };
+    return fail('authority_stale_revision');
   }
   if (!recipeAuthorityMatches(descriptor, input.proof.context)) {
-    return { ok: false, error: 'authority_entity_mismatch' };
+    return fail('authority_entity_mismatch');
   }
   if (input.liveContext) {
     // workspace/fleet/harness come from the dispatch context/presence store.
@@ -319,7 +358,7 @@ export async function validateRecipeAuthorityProof(input: {
       },
     };
     if (!recipeAuthorityMatches(scalarDescriptor, input.liveContext)) {
-      return { ok: false, error: 'authority_entity_mismatch' };
+      return fail('authority_entity_mismatch');
     }
   }
   return { ok: true, descriptor };
