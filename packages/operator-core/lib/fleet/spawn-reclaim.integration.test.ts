@@ -1172,6 +1172,40 @@ describe('reclaimFirstOutputStalledSpawns (EI-7345 — first-output stall reclai
 describe('reclaimCeilingJamDebits (EI-7204/EI-7197 — periodic ceiling-debit reconcile, real PG)', () => {
   const WINDOW = { minAgeMs: 15 * 60_000, silentMs: 15 * 60_000 };
 
+  it('WI-4894: harvests a completed restart-safe Cup artifact before proc-dead ceiling reclaim', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ceiling-jam-result-'));
+    const resultPath = join(dir, 'clean.log');
+    try {
+      writeFileSync(
+        resultPath,
+        'cup completed after operator restart\n__INVOCATION_RESULT__:{"exitCode":0}\n__INVOCATION_DONE__\n',
+      );
+      await insertSpawn('completed-cup-debit', 'running', 5, {
+        startedAgoSec: 20 * 60,
+        pid: 9999,
+        host: hostname(),
+        resultPath,
+      });
+
+      const r = await reclaimCeilingJamDebits(db.sql, { ...WINDOW, isAlive: fakeAlive });
+      expect(r.recovered).toEqual(['completed-cup-debit']);
+      expect(r.reclaimed).toBe(1);
+      const [row] = await db.sql<
+        { status: string; exit_code: number; output_tail: string; error_message: string | null }[]
+      >`
+        SELECT status, exit_code, output_tail, error_message
+          FROM harness_shared.spawned_agents
+         WHERE spawn_id = 'completed-cup-debit'`;
+      expect(row.status).toBe('done');
+      expect(row.exit_code).toBe(0);
+      expect(row.output_tail).toContain('cup completed after operator restart');
+      expect(row.error_message).toBeNull();
+      expect(existsSync(resultPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reclaims a supervised bee row that DID stream, then went silent, EVEN with a fresh heartbeat (reused-pid false-alive)', async () => {
     // heartbeat fresh (5s ago — looks perfectly alive), streamed once 20 min
     // ago then went quiet: this is exactly the row reclaimOrphanedSpawns can

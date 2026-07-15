@@ -943,6 +943,10 @@ export async function reclaimCeilingJamDebits(
     {
       spawn_id: string;
       workspace_id: string;
+      harness_slug: string | null;
+      child_role: string;
+      work_item_id: string | null;
+      result_path: string | null;
       run_id: string | null;
       started_at: string;
       last_output_at: string | null;
@@ -950,16 +954,33 @@ export async function reclaimCeilingJamDebits(
       pid: number | null;
     }[]
   >`
-    SELECT spawn_id, workspace_id, run_id, started_at, last_output_at, launcher_host, pid
+    SELECT spawn_id, workspace_id, harness_slug, child_role,
+           COALESCE(item_id, feature_id) AS work_item_id, result_path,
+           run_id, started_at, last_output_at, launcher_host, pid
       FROM harness_shared.spawned_agents
      WHERE status IN ('running', 'restarting')
      ORDER BY started_at ASC
      LIMIT 500`;
   if (candidates.length === 0) return { reclaimed: 0, spawnIds: [], workspaces: [] };
 
+  // WI-4894 recurrence: this periodic path used to classify a dead invoke-once
+  // PID before consulting its durable result artifact. A Cup that survived an
+  // operator restart could therefore write rc=0 + DONE, exit, and still be
+  // manufactured into a spawn-ceiling-jam failure on the next sweep. Harvest
+  // complete supervised-spawn artifacts first, matching the orphan + boot
+  // reconcilers. Once /proc says the child is dead, invoke-once's synchronous
+  // final artifact append has already completed, so the artifact is the
+  // authoritative terminal outcome and must outrank admission-debit cleanup.
+  const recovered = await settleCompletedSpawnArtifacts(
+    sql,
+    candidates.filter((candidate) => isSupervisedBeeRow(candidate)),
+  );
+  const recoveredIds = new Set(recovered.rows.map((row) => row.spawn_id));
+
   const streamSilent: string[] = []; // DID stream then went silent (the original EI-7204 signal)
   const procDead: string[] = []; // never streamed, but /proc-confirmed dead on THIS host (EI-8839)
   for (const c of candidates) {
+    if (recoveredIds.has(c.spawn_id)) continue;
     const verdict = classifyCeilingJamRow(
       {
         spawnId: c.spawn_id,
@@ -975,7 +996,16 @@ export async function reclaimCeilingJamDebits(
     else if (verdict === 'proc-dead') procDead.push(c.spawn_id);
   }
   const jammed = [...streamSilent, ...procDead];
-  if (jammed.length === 0) return { reclaimed: 0, spawnIds: [], workspaces: [] };
+  if (jammed.length === 0) {
+    const recoveredSpawnIds = recovered.rows.map((row) => row.spawn_id);
+    return {
+      reclaimed: recoveredSpawnIds.length,
+      spawnIds: recoveredSpawnIds,
+      workspaces: [...new Set(recovered.rows.map((row) => row.workspace_id).filter(Boolean))],
+      recovered: recoveredSpawnIds,
+      claimsReleased: recovered.claimsReleased,
+    };
+  }
 
   const streamReason =
     `reclaimed: spawn-ceiling-jam — no stream activity for > ${Math.round(silentMs / 60_000)}min despite ` +
@@ -1006,9 +1036,16 @@ export async function reclaimCeilingJamDebits(
   }
 
   return {
-    reclaimed: rows.length,
-    spawnIds: rows.map((r) => r.spawn_id),
-    workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+    reclaimed: rows.length + recovered.rows.length,
+    spawnIds: [...recovered.rows.map((r) => r.spawn_id), ...rows.map((r) => r.spawn_id)],
+    workspaces: [
+      ...new Set([
+        ...recovered.rows.map((r) => r.workspace_id),
+        ...rows.map((r) => r.workspace_id),
+      ].filter(Boolean)),
+    ],
+    recovered: recovered.rows.map((r) => r.spawn_id),
+    claimsReleased: recovered.claimsReleased,
   };
 }
 
