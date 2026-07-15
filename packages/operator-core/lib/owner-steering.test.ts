@@ -31,8 +31,11 @@ import {
   IDLE_ACTIVITY_KINDS,
   directiveSuggestsResume,
   steeringLooksInconsistent,
+  steeringModelSpecDrift,
+  steeringPinnedModelSpecs,
   type OwnerSteering,
 } from './owner-steering';
+import { DEFAULT_MODEL_TIERS, type ModelTier } from './agent-config-constants';
 
 function rows(map: Record<string, unknown>) {
   return Object.entries(map).map(([settingKey, value]) => ({ settingKey, value }));
@@ -497,5 +500,107 @@ describe('directiveSuggestsResume / steeringLooksInconsistent (EI-8277 drift nud
         directive: 'Gate hold lifted; resume normal autonomous placement.',
       }),
     ).toBe(true);
+  });
+});
+
+// ── Model-spec drift (EI-12807) ──────────────────────────────────────────────
+
+describe('steeringPinnedModelSpecs / steeringModelSpecDrift (EI-12807 dead-spec nudge)', () => {
+  const base = DEFAULT_OWNER_STEERING;
+  // A committed menu already FIXED to valid specs (the state after config:tiers-set).
+  const fixedMenu: readonly ModelTier[] = [
+    { name: 'quick', spec: 'haiku' },
+    { name: 'standard', spec: 'sonnet[1m]' },
+    { name: 'deep', spec: 'opus[1m]:high' },
+    { name: 'max', spec: 'opus[1m]:xhigh' },
+  ];
+
+  it('steeringPinnedModelSpecs unions modelTiers[].spec + modelOverrides, dedup + trim', () => {
+    const s: OwnerSteering = {
+      ...base,
+      modelTiers: [
+        { name: 'quick', spec: '  haiku  ' },
+        { name: 'standard', spec: 'sonnet[1m]' },
+        { name: 'dup', spec: 'haiku' }, // dedups with the trimmed 'haiku'
+      ],
+      modelOverrides: { kettle: 'opus[1m]:high', queen: '  ' }, // blank dropped
+    };
+    expect(steeringPinnedModelSpecs(s).sort()).toEqual(['haiku', 'opus[1m]:high', 'sonnet[1m]'].sort());
+  });
+
+  it('an un-steered pot (no override) pins nothing and never drifts', () => {
+    expect(steeringPinnedModelSpecs(base)).toEqual([]);
+    expect(steeringModelSpecDrift(base, fixedMenu)).toEqual([]);
+  });
+
+  it('EI-12807 repro: a stale per-pot override pinning claude-sonnet-5[1m]:high drifts against the fixed menu', () => {
+    // The exact incident: after the workspace menu was fixed to use `sonnet[1m]`,
+    // the pot kept pinning the dead `claude-sonnet-5[1m]:high` across all four
+    // tiers + the kettle modelOverride — the override wins, so spawns die.
+    const s: OwnerSteering = {
+      ...base,
+      modelTiers: [
+        { name: 'quick', spec: 'claude-sonnet-5[1m]:high' },
+        { name: 'standard', spec: 'claude-sonnet-5[1m]:high' },
+        { name: 'deep', spec: 'claude-sonnet-5[1m]:high' },
+        { name: 'max', spec: 'claude-sonnet-5[1m]:high' },
+      ],
+      modelOverrides: { kettle: 'claude-sonnet-5[1m]:high' },
+    };
+    expect(steeringModelSpecDrift(s, fixedMenu)).toEqual(['claude-sonnet-5[1m]:high']);
+  });
+
+  it('the dead spec is NOT collapsed into the live `sonnet` family (the family-blind trap)', () => {
+    // `claude-sonnet-5` and `sonnet` share a family — a family-level compare (like
+    // specFamilyKey) would call them equal and MISS the drift. The detector uses a
+    // stricter model-id key so the drift is caught.
+    const s: OwnerSteering = { ...base, modelOverrides: { kettle: 'claude-sonnet-5[1m]:high' } };
+    expect(steeringModelSpecDrift(s, fixedMenu)).toEqual(['claude-sonnet-5[1m]:high']);
+  });
+
+  it('no drift when every pinned spec matches a committed menu id — window/effort insensitive', () => {
+    // `sonnet:high` vs menu `sonnet[1m]` → same model id `sonnet` (marker + effort
+    // stripped) → NOT drift. `opus[1m]:xhigh` matches `opus`. `haiku` matches.
+    const s: OwnerSteering = {
+      ...base,
+      modelTiers: [
+        { name: 'q', spec: 'haiku' },
+        { name: 's', spec: 'sonnet:high' },
+        { name: 'd', spec: 'opus[1m]:xhigh' },
+      ],
+      modelOverrides: { kettle: 'sonnet' },
+    };
+    expect(steeringModelSpecDrift(s, fixedMenu)).toEqual([]);
+  });
+
+  it('reports each distinct drifted spec; leaves valid pins out', () => {
+    const s: OwnerSteering = {
+      ...base,
+      modelTiers: [
+        { name: 'q', spec: 'sonnet[1m]' }, // valid
+        { name: 's', spec: 'claude-sonnet-5[1m]:high' }, // dead
+      ],
+      modelOverrides: { kettle: 'gpt-5.9:high' }, // not in the menu → drift
+    };
+    expect(steeringModelSpecDrift(s, fixedMenu).sort()).toEqual(
+      ['claude-sonnet-5[1m]:high', 'gpt-5.9:high'].sort(),
+    );
+  });
+
+  it('an empty committed menu falls back to DEFAULT_MODEL_TIERS', () => {
+    // Against the committed default menu (haiku/sonnet/opus), a `sonnet` pin is
+    // fine and the dead one still drifts.
+    const s: OwnerSteering = {
+      ...base,
+      modelTiers: [{ name: 's', spec: 'sonnet' }],
+      modelOverrides: { kettle: 'claude-sonnet-5[1m]:high' },
+    };
+    expect(steeringModelSpecDrift(s, [])).toEqual(['claude-sonnet-5[1m]:high']);
+    // The committed default menu itself never self-drifts.
+    const selfMenu: OwnerSteering = {
+      ...base,
+      modelTiers: DEFAULT_MODEL_TIERS.map((t) => ({ name: t.name, spec: t.spec })),
+    };
+    expect(steeringModelSpecDrift(selfMenu, [])).toEqual([]);
   });
 });
