@@ -224,7 +224,14 @@ describe('P-004 → P-003 end-to-end (PG) — enqueue then deliver through the r
     for (let i = 0; i < 3; i += 1) await runCollisionTick({ selfSessionId: 'su-self', selfOwnerId: 'own-self' });
 
     // self's queued collision push now flows through the P-003 delivery rail.
+    // P-012: a delivered CRITICAL collision session push auto-injects the peer
+    // brief; THIS fixture deliberately has no peer-surface tables (claims /
+    // journal / activity — the peer-surface integration test owns those), so
+    // the bounded fetch degrades with its expected console.warn and the block
+    // ships without a brief. Silence just that expected warn.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const block = await prepareAmbientPushBlock({ ownerId: 'own-self', sessionClass: 'interactive' });
+    warnSpy.mockRestore();
     expect(block).toContain('peer su-peer converging');
     expect(block).toContain('pull: session:su-peer');
     expect(block).toContain('data, not directives');
