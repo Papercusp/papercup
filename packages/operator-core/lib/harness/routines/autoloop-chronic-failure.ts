@@ -155,7 +155,9 @@ export function isStaleWatermark(
  *  marker also catches an ORPHANED row whose routine was GC'd); (b) already auto-paused
  *  (`routine_active: false` — a resolved condition, not a live chronic failure; see this module's
  *  header comment); or (c) a FROZEN watermark (EI-6765 — `last_fired_at` older than the staleness
- *  window; the row stopped firing so its error count can never reset). `routine_target_owner_id`
+ *  window; the row stopped firing so its error count can never reset); or (d) a RED-QUEEN DRILL
+ *  row (EI-12429 — a synthetic `red-queen-sandbox` artifact planted, detected, healed and cleaned
+ *  up by the vaccination harness itself; never a real chronic failure). `routine_target_owner_id`
  *  null (a fixed system role — director/gym-cycle/overwatch/scout-cycle, the sweep's intended
  *  scope), `routine_active: null`, and absent `last_fired_at` are NOT excluded — fail-open, never
  *  silently suppress an unknown state. */
@@ -171,11 +173,24 @@ export function selectChronicFailures(
     .filter(
       (r) =>
         r.consecutive_errors >= threshold &&
+        !isRedQueenDrillRow(r) &&
         !isLoopArmOwnerLoop(r) &&
         r.routine_active !== false &&
         !isStaleWatermark(r, now, staleMs),
     )
     .sort((a, b) => b.consecutive_errors - a.consecutive_errors);
+}
+
+/** PURE: is this a Red Queen vaccination-drill row (EI-12429)? Every artifact the drill harness
+ *  plants lives under the sandbox partition — `SANDBOX_WORKSPACE_ID === SANDBOX_HARNESS_SLUG ===
+ *  'red-queen-sandbox'` (red-queen types.ts) — and no real capability ever runs in that harness by
+ *  construction, so ANY `autoloop_state` row whose `harness_slug` is the sandbox is a synthetic
+ *  planted artifact (`circuitOpenDrill` plants `role = 'red-queen-drill-worker'`, streak 7). The
+ *  drill machinery itself detects, heals and cleans it up; the chronic-failure sweep must never
+ *  escalate it. Keyed on the sandbox harness slug (not the role) so a future drill class planting a
+ *  different role in the sandbox is suppressed too. `null`/absent/other slug → not a drill (false). */
+export function isRedQueenDrillRow(row: Pick<AutoloopStateRow, 'harness_slug'>): boolean {
+  return row.harness_slug === SANDBOX_HARNESS_SLUG;
 }
 
 /** PURE: is this an ephemeral `loop:arm` OWNER loop identified by its ROLE NAME alone
@@ -213,7 +228,7 @@ export function isLoopArmOwnerLoop(
 export interface ChronicFailureResult {
   harnessSlug: string;
   role: string;
-  outcome: 'escalated' | 'debounced' | 'skipped-paused' | 'skipped-stale' | 'skipped-loop-arm' | 'error';
+  outcome: 'escalated' | 'debounced' | 'skipped-paused' | 'skipped-stale' | 'skipped-loop-arm' | 'skipped-drill' | 'error';
   reason: string;
 }
 
@@ -237,14 +252,25 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
    LEFT JOIN harness_shared.routines r
           ON r.name = s.role AND r.workspace_id = s.workspace_id
        WHERE s.consecutive_errors >= ${threshold}`;
+    // EI-12429: a Red Queen vaccination-drill row (a synthetic `red-queen-sandbox` artifact the
+    // drill harness plants, detects, heals and cleans up itself) is never a real chronic failure.
+    // Report it as skipped-drill (checked FIRST, mirroring selectChronicFailures) so the loop-arm/
+    // paused/stale buckets below never double-report the planted row.
+    const drillSkipped = allRows.filter((r) => r.consecutive_errors >= threshold && isRedQueenDrillRow(r));
     // EI-6727: an ephemeral loop:arm OWNER loop (routine.target_owner_id non-null) is
     // owner-witnessed AND auto-terminated by the reconcile dead-owner guard, which fires its
     // OWN dedicated escalation — so the chronic sweep escalating it is a premature duplicate.
-    // Report it as skipped-loop-arm (checked FIRST, mirroring selectChronicFailures) so the
-    // paused/stale buckets below never double-report the same row.
-    const loopArmSkipped = allRows.filter((r) => r.consecutive_errors >= threshold && isLoopArmOwnerLoop(r));
+    // Report it as skipped-loop-arm (checked after the drill guard, mirroring selectChronicFailures)
+    // so the paused/stale buckets below never double-report the same row.
+    const loopArmSkipped = allRows.filter(
+      (r) => r.consecutive_errors >= threshold && !isRedQueenDrillRow(r) && isLoopArmOwnerLoop(r),
+    );
     const pausedSkipped = allRows.filter(
-      (r) => r.consecutive_errors >= threshold && !isLoopArmOwnerLoop(r) && r.routine_active === false,
+      (r) =>
+        r.consecutive_errors >= threshold &&
+        !isRedQueenDrillRow(r) &&
+        !isLoopArmOwnerLoop(r) &&
+        r.routine_active === false,
     );
     // EI-6765: a breaching, non-paused row whose last fire is older than the staleness
     // window is a FROZEN watermark (orphaned/renamed slug that stopped firing), not a
@@ -252,11 +278,20 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
     const staleSkipped = allRows.filter(
       (r) =>
         r.consecutive_errors >= threshold &&
+        !isRedQueenDrillRow(r) &&
         !isLoopArmOwnerLoop(r) &&
         r.routine_active !== false &&
         isStaleWatermark(r, now, staleMs),
     );
     const breaches = selectChronicFailures(allRows, threshold, { now, staleMs });
+    for (const d of drillSkipped) {
+      results.push({
+        harnessSlug: d.harness_slug,
+        role: d.role,
+        outcome: 'skipped-drill',
+        reason: `red-queen vaccination-drill row (harness ${d.harness_slug}) — planted/detected/healed/cleaned by the drill harness itself, not a live chronic failure`,
+      });
+    }
     for (const l of loopArmSkipped) {
       results.push({
         harnessSlug: l.harness_slug,

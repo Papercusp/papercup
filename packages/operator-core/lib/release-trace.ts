@@ -254,9 +254,11 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
       };
     }
     return {
+      // EI-12457: bind the wait to the EXACT candidate being traced — a verdict for
+      // any other (superseded) SHA on this pipeline will not wake the caller.
       name: 'checkpoint:await',
-      args: { pipeline },
-      reason: 'The commit is on staging with no red verdict; await this pipeline’s next exact gate outcome.',
+      args: { pipeline, candidateSha: targetSha },
+      reason: 'The commit is on staging with no red verdict; await this pipeline’s exact gate outcome for this candidate.',
     };
   }
   if (!position.positions.deployed) {
