@@ -448,11 +448,23 @@ body.has-op-chat:has(.pc-qp) {
   padding: 10px 12px 4px;
 }
 
-.pc-qp__zoomtitle {
-  width: 100%;
+/* Wrapping auto-grow variant of the title editor (see .pc-qp__titlegrow). */
+.pc-qp__zoomgrow {
   font-size: 15px;
   font-weight: 600;
-  font-family: inherit;
+  line-height: 1.35;
+}
+
+.pc-qp__zoomtitle {
+  grid-area: 1 / 1;
+  width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  resize: none;
+  font: inherit;
+  line-height: inherit;
   color: var(--fg);
   background: transparent;
   border: none;
@@ -471,7 +483,8 @@ body.has-op-chat:has(.pc-qp) {
 .pc-qp__node {
   position: relative; /* anchors the drop indicator */
   display: flex;
-  align-items: center;
+  /* Titles wrap onto multiple lines, so chrome aligns to the FIRST line. */
+  align-items: flex-start;
   gap: 4px;
   padding-top: 3px;
   padding-bottom: 3px;
@@ -479,6 +492,22 @@ body.has-op-chat:has(.pc-qp) {
   cursor: pointer;
   border-left: 2px solid transparent;
   min-width: 0;
+}
+
+/* Center the fixed-height chrome (16px buttons, 10-11px chips) on the title's
+   first line (12.5px × 1.45 ≈ 18px). */
+.pc-qp__node > .pc-qp__caret,
+.pc-qp__node > .pc-qp__bulletbtn {
+  margin-top: 1px;
+}
+
+.pc-qp__node > .pc-qp__tags,
+.pc-qp__node > .pc-qp__count {
+  margin-top: 3px;
+}
+
+.pc-qp__node > .pc-qp__nodepin {
+  margin-top: 4px;
 }
 
 .pc-qp__node:hover {
@@ -490,7 +519,9 @@ body.has-op-chat:has(.pc-qp) {
   border-left-color: var(--accent-strong);
 }
 
-.pc-qp__node.folder .pc-qp__nodetitle {
+/* Weight sits on the grow WRAPPER: the height-replica ::after must wrap with
+   the same metrics as the textarea, and bold changes line breaks. */
+.pc-qp__node.folder .pc-qp__titlegrow {
   font-weight: 600;
 }
 
@@ -596,15 +627,41 @@ body.has-op-chat:has(.pc-qp) {
 
 /* Inline node-title editor (the Workflowy behavior: the outline text IS the
    editor). Styled as bare text — the ROW carries hover/selection chrome, so
-   the input itself stays invisible until you type. */
-.pc-qp__nodetitle {
+   the input itself stays invisible until you type.
+
+   Long titles WRAP like Workflowy: the textarea sits in a one-cell grid whose
+   ::after replicates the text (`data-rv`) with identical metrics, so the cell
+   — and therefore the textarea — auto-grows to the wrapped height with no JS
+   measurement. Font metrics live on the WRAPPER so textarea and replica can
+   never drift. */
+.pc-qp__titlegrow {
+  display: grid;
   flex: 1;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-size: 12.5px;
   font-family: inherit;
+  line-height: 1.45;
+}
+
+.pc-qp__titlegrow::after {
+  content: attr(data-rv) ' ';
+  visibility: hidden;
+  grid-area: 1 / 1;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.pc-qp__nodetitle {
+  grid-area: 1 / 1;
+  width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  resize: none;
+  font: inherit;
+  line-height: inherit;
   color: inherit;
   background: transparent;
   border: none;

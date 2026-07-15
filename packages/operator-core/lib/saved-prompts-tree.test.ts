@@ -12,13 +12,18 @@ import {
   extractVariables,
   fillVariables,
   indent,
+  duplicateSubtreePlan,
   insertAfter,
+  insertBefore,
   isCompleted,
   isFolder,
   moveDown,
   moveUp,
   outdent,
+  parsePastedOutline,
+  pasteOutlinePlan,
   projectDrop,
+  siblingAfterPlacement,
   subtreeIds,
   visibleRows,
   type MoveAssignment,
@@ -465,5 +470,124 @@ describe('helpers', () => {
   it('fillVariables substitutes known names and leaves unknown placeholders', () => {
     expect(fillVariables('a {{x}} b {{y}}', { x: '1' })).toBe('a 1 b {{y}}');
     expect(fillVariables('{{ x }}', { x: '1' })).toBe('1');
+  });
+});
+
+describe('workflowy editing ops (wrap/split/paste round, 2026-07-15)', () => {
+  // root: a(a0) → [a1(a0), a2(a1)], b(a1), c(a2)
+  const base = () => [
+    row({ id: 'a', position: 'a0' }),
+    row({ id: 'a1', parentId: 'a', position: 'a0' }),
+    row({ id: 'a2', parentId: 'a', position: 'a1' }),
+    row({ id: 'b', position: 'a1' }),
+    row({ id: 'c', position: 'a2' }),
+  ];
+
+  it('insertBefore places a sibling between the previous sibling and the node', () => {
+    const m = buildPromptTree(base());
+    const p = insertBefore(m, 'b');
+    expect(p).not.toBeNull();
+    expect(p!.parentId).toBeNull();
+    expect(p!.position > 'a0' && p!.position < 'a1').toBe(true);
+    expect(p!.assignments).toEqual([]);
+  });
+
+  it('insertBefore the FIRST sibling lands before it', () => {
+    const m = buildPromptTree(base());
+    const p = insertBefore(m, 'a');
+    expect(p!.position < 'a0').toBe(true);
+  });
+
+  it('siblingAfterPlacement ignores children (unlike insertAfter)', () => {
+    const m = buildPromptTree(base());
+    const sib = siblingAfterPlacement(m, 'a');
+    expect(sib!.parentId).toBeNull();
+    expect(sib!.position > 'a0' && sib!.position < 'a1').toBe(true);
+    // insertAfter on the same expanded node goes to FIRST CHILD instead.
+    const ins = insertAfter(m, 'a');
+    expect(ins!.parentId).toBe('a');
+    expect(ins!.position < 'a0').toBe(true);
+  });
+
+  it('duplicateSubtreePlan copies the subtree in creation order with parentKey links', () => {
+    const m = buildPromptTree(base());
+    const plan = duplicateSubtreePlan(m, 'a');
+    expect(plan).not.toBeNull();
+    const { placement, nodes } = plan!;
+    expect(placement.parentId).toBeNull();
+    expect(placement.position > 'a0' && placement.position < 'a1').toBe(true);
+    expect(nodes.map((n) => n.parentKey)).toEqual([null, 0, 0]);
+    // children reuse the originals' keys — order preserved under the copy
+    expect(nodes[1].position).toBe('a0');
+    expect(nodes[2].position).toBe('a1');
+  });
+
+  it('duplicateSubtreePlan regenerates keys for legacy NULL-position children', () => {
+    const rows = [
+      row({ id: 'p', position: 'a0' }),
+      row({ id: 'k1', parentId: 'p', position: null, title: 'aaa' }),
+      row({ id: 'k2', parentId: 'p', position: null, title: 'bbb' }),
+    ];
+    const plan = duplicateSubtreePlan(buildPromptTree(rows), 'p');
+    const [, k1, k2] = plan!.nodes;
+    expect(k1.position < k2.position).toBe(true);
+  });
+
+  it('parsePastedOutline splits lines, strips markers, nests by indentation', () => {
+    expect(parsePastedOutline('one\ntwo')).toEqual([
+      { title: 'one', depth: 0 },
+      { title: 'two', depth: 0 },
+    ]);
+    expect(parsePastedOutline('a\n  b\n    c\r\nd\n\n')).toEqual([
+      { title: 'a', depth: 0 },
+      { title: 'b', depth: 1 },
+      { title: 'c', depth: 2 },
+      { title: 'd', depth: 0 },
+    ]);
+    expect(parsePastedOutline('- x\n\t* y\n  1. z')).toEqual([
+      { title: 'x', depth: 0 },
+      { title: 'y', depth: 1 },
+      { title: 'z', depth: 1 },
+    ]);
+  });
+
+  it('parsePastedOutline rebases depth and clamps orphan jumps', () => {
+    // First line is always depth 0; a +2 jump clamps to +1.
+    expect(parsePastedOutline('      deep\nshallow\n    jump')).toEqual([
+      { title: 'deep', depth: 0 },
+      { title: 'shallow', depth: 0 },
+      { title: 'jump', depth: 1 },
+    ]);
+    expect(parsePastedOutline('\n  \n')).toEqual([]);
+  });
+
+  it('pasteOutlinePlan creates ordered siblings and nests deeper lines', () => {
+    const m = buildPromptTree(base());
+    const plan = pasteOutlinePlan(m, 'b', [
+      { title: 'A', depth: 0 },
+      { title: 'B', depth: 1 },
+      { title: 'C', depth: 2 },
+      { title: 'D', depth: 0 },
+    ]);
+    expect(plan).not.toBeNull();
+    const [A, B, C, D] = plan!.creates;
+    // A and D are siblings of b, in order, between b(a1) and c(a2).
+    expect(A.parentKey).toBeNull();
+    expect(A.parentId).toBeNull();
+    expect(D.parentKey).toBeNull();
+    expect(A.position > 'a1' && A.position < 'a2').toBe(true);
+    expect(D.position > A.position && D.position < 'a2').toBe(true);
+    // B nests under A, C under B.
+    expect(B.parentKey).toBe(0);
+    expect(C.parentKey).toBe(1);
+  });
+
+  it('pasteOutlinePlan nests a leading depth-1 line under the TARGET node, after its children', () => {
+    const m = buildPromptTree(base());
+    const plan = pasteOutlinePlan(m, 'a', [{ title: 'B', depth: 1 }]);
+    const [B] = plan!.creates;
+    expect(B.parentKey).toBeNull();
+    expect(B.parentId).toBe('a');
+    expect(B.position > 'a1').toBe(true); // after existing children a1(a0), a2(a1)
   });
 });

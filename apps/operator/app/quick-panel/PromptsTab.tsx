@@ -12,19 +12,31 @@
  * slash commands via launch-time materialization.
  *
  * Workflowy surface:
- *   - Zoom/hoist: click a bullet (or Alt+→ / Ctrl+]) to re-root the outline at
- *     that node; breadcrumbs + Alt+← / Ctrl+[ zoom back out. URL-backed (nuqs
- *     `zoom`), so panel state is deep-linkable and agent-drivable.
+ *   - Wrapping bullets: titles are auto-grow textareas (CSS grid replica), so
+ *     long prompts WRAP instead of clipping; ↑/↓ move within wrapped lines and
+ *     hop bullets only from the first/last visual line; ←/→ flow across
+ *     bullets at the text edges.
+ *   - Enter: at end = new bullet; MID-TEXT = split at the caret; at the start
+ *     of non-empty text = empty bullet above (all Workflowy semantics).
+ *   - Zoom/hoist: click a bullet (or Alt+→ / Ctrl+] / Alt+.) to re-root the
+ *     outline at that node; breadcrumbs + Alt+← / Ctrl+[ / Alt+, zoom back
+ *     out. URL-backed (nuqs `zoom`), deep-linkable and agent-drivable.
  *   - Inline notes: Shift+Enter opens the note (= prompt body) under a bullet.
- *   - Complete: Ctrl+Enter checks a node off (strikethrough); the toolbar can
- *     hide completed subtrees (nuqs `done=hide`).
+ *   - Complete: Ctrl+Enter checks a node off (strikethrough); Ctrl+O (or the
+ *     toolbar eye) shows/hides completed subtrees (nuqs `done=hide`).
+ *   - Collapse: Ctrl+↑ / Ctrl+↓ fold/unfold the node at the caret.
+ *   - Move: Alt+Shift+↑↓ / Ctrl+Shift+↑↓ (Alt+↑↓ kept as an alias).
+ *   - Duplicate: Alt+Shift+D copies the whole subtree in place.
+ *   - Delete: Ctrl+Shift+Backspace archives the subtree (undoable).
  *   - Drag: the bullet is the drag handle (@dnd-kit); horizontal offset picks
  *     depth; all placement math is projectDrop() in saved-prompts-tree.
  *   - Tags: #tag / @mention chips parsed from title+note; click = filter.
  *   - Undo/redo: Ctrl+Z / Ctrl+Shift+Z — a bounded client-side inverse-op
  *     journal (D-005); outline delete is an UNDOABLE ARCHIVE (D-004).
  *   - Merge: Backspace at the start of a childless bullet joins it into the
- *     bullet above, Workflowy-style.
+ *     bullet above; Delete at the end pulls the next bullet in.
+ *   - Paste: multi-line text becomes bullets, nested by indentation (tabs or
+ *     2-space steps; `- * •` markers stripped) — parse/plan in the tree lib.
  *
  * Data: reads via useSyncQuery('savedPrompts.byScope'); writes via the
  * WebView-hardened CORS-simple POST helpers (D-010) + server-pushed refetch.
@@ -695,6 +707,56 @@ function NodeTitleInput({
         }}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Zoomed-node header title — same wrapping auto-grow treatment as the bullets
+// (a long hoisted title must wrap, not clip).
+// ---------------------------------------------------------------------------
+
+function ZoomTitle({
+  row,
+  onSave,
+  onEnter,
+}: {
+  row: Row;
+  onSave: (next: string) => void;
+  onEnter: () => void;
+}) {
+  const [text, setText] = useState(row.title ?? '');
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    if (!focusedRef.current) setText(row.title ?? '');
+  }, [row.title]);
+  return (
+    <div className="pc-qp__titlegrow pc-qp__zoomgrow" data-rv={text}>
+      <textarea
+        rows={1}
+        className="pc-qp__zoomtitle"
+        value={text}
+        placeholder={row.name}
+        aria-label="Zoomed node title"
+        onChange={(e) => setText(e.target.value.replace(/[\r\n]+/g, ' '))}
+        onFocus={() => {
+          focusedRef.current = true;
+        }}
+        onBlur={(e) => {
+          focusedRef.current = false;
+          const next = e.target.value.trim();
+          if (next && next !== displayTitle(row)) onSave(next);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            (e.target as HTMLTextAreaElement).blur();
+            onEnter();
+          } else if (e.key === 'Escape') {
+            (e.target as HTMLTextAreaElement).blur();
+          }
+        }}
       />
     </div>
   );
@@ -1519,25 +1581,11 @@ export default function PromptsTab() {
           >
             {zoomRow && (
               <div className="pc-qp__zoomhead">
-                <input
+                <ZoomTitle
                   key={zoomRow.id}
-                  className="pc-qp__zoomtitle"
-                  defaultValue={zoomRow.title ?? ''}
-                  placeholder={zoomRow.name}
-                  aria-label="Zoomed node title"
-                  onBlur={(e) => {
-                    const next = e.target.value.trim();
-                    if (next && next !== displayTitle(zoomRow)) saveTitle(zoomRow, next);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      (e.target as HTMLInputElement).blur();
-                      void addNode(zoom);
-                    } else if (e.key === 'Escape') {
-                      (e.target as HTMLInputElement).blur();
-                    }
-                  }}
+                  row={zoomRow}
+                  onSave={(next) => saveTitle(zoomRow, next)}
+                  onEnter={() => void addNode(zoom)}
                 />
                 {(noteOpen === zoomRow.id || !isFolder(zoomRow)) && (
                   <NodeNote
@@ -1671,12 +1719,16 @@ export default function PromptsTab() {
         </DndContext>
 
         <div className="pc-qp__hints">
-          <span><kbd>↵</kbd> new</span>
+          <span><kbd>↵</kbd> new/split</span>
           <span><kbd>⇧↵</kbd> note</span>
           <span><kbd>⌃↵</kbd> done</span>
           <span><kbd>Tab</kbd> indent</span>
-          <span><kbd>⌥↑↓</kbd> move</span>
+          <span><kbd>⌥⇧↑↓</kbd> move</span>
+          <span><kbd>⌃↑↓</kbd> fold</span>
           <span><kbd>⌥→←</kbd> zoom</span>
+          <span><kbd>⌥⇧D</kbd> duplicate</span>
+          <span><kbd>⌃⇧⌫</kbd> delete</span>
+          <span><kbd>⌃O</kbd> completed</span>
           <span><kbd>⌃Z</kbd> undo</span>
           <span>drag ● to move · click ● to zoom</span>
         </div>
