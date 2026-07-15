@@ -151,13 +151,15 @@ describe('VoiceAppBridge — converse-primary routing (shipped config)', () => {
     expect(sentinelCalled()).toBe(false);
   });
 
-  it('speaks no local ack on the converse path (the provider speaks the real reply)', async () => {
+  it('speaks an immediate ack on the converse path without treating it as the real reply', async () => {
     const converse = vi.fn();
     setVoiceConverseHandler(converse);
     mount();
     setMode(ALWAYS_ON);
     await utter('what is happening');
-    expect(h.speak).not.toHaveBeenCalled();
+    expect(h.speak).toHaveBeenCalledWith('On it.', 'system:operator', 'polite', {
+      preserveAwaitingResponse: true,
+    });
   });
 
   it('does nothing when voice mode is off', async () => {
@@ -269,7 +271,9 @@ describe('VoiceAppBridge — dev pane path (FLAGS.TESTING on)', () => {
     mount();
     setMode(ALWAYS_ON);
     await utter('what is happening');
-    expect(h.speak).toHaveBeenCalledWith('On it.', 'system:operator', 'polite');
+    expect(h.speak).toHaveBeenCalledWith('On it.', 'system:operator', 'polite', {
+      preserveAwaitingResponse: true,
+    });
   });
 
   it('does NOT dispatch to the converse brain when the pane write succeeded', async () => {
@@ -291,8 +295,9 @@ describe('VoiceAppBridge — dev pane path (FLAGS.TESTING on)', () => {
     await utter('what is happening');
     expect(sentinelCalled()).toBe(true); // pane was TRIED first
     expect(converse).toHaveBeenCalledWith('what is happening', { spoken: true });
-    // No instant ack on the converse path — the provider speaks the real reply.
-    expect(h.speak).not.toHaveBeenCalled();
+    expect(h.speak).toHaveBeenCalledWith('On it.', 'system:operator', 'polite', {
+      preserveAwaitingResponse: true,
+    });
   });
 
   it('a full-agent engine still owns its own brain (no pane write, no converse dispatch)', async () => {

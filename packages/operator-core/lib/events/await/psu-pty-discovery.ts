@@ -317,16 +317,30 @@ export function injectIntoHost(
     data: string;
     focus?: string;
     systemPromptAddendum?: string;
+    /** P-020 opt-in cold-boot drill correlation. Ignored by non-drill
+     * carry-respawns and by older hosts (additive v1 fields). */
+    drillId?: string;
+    sessionClass?: string;
   },
   timeoutMs = 2000,
 ): Promise<boolean> {
-  const envelope: { v: 1; mode: string; data: string; focus?: string; systemPromptAddendum?: string } = {
+  const envelope: {
+    v: 1;
+    mode: string;
+    data: string;
+    focus?: string;
+    systemPromptAddendum?: string;
+    drillId?: string;
+    sessionClass?: string;
+  } = {
     v: 1,
     mode: msg.mode,
     data: msg.data,
   };
   if (msg.focus !== undefined) envelope.focus = msg.focus;
   if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;
+  if (msg.drillId !== undefined) envelope.drillId = msg.drillId;
+  if (msg.sessionClass !== undefined) envelope.sessionClass = msg.sessionClass;
   const payload = JSON.stringify(envelope);
   if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) return Promise.resolve(false);
 

@@ -267,6 +267,34 @@ describe('response timeout', () => {
       vi.useRealTimers();
     }
   });
+
+  it('keeps the real-response deadline armed after an instant acknowledgement', async () => {
+    vi.useFakeTimers();
+    try {
+      const prefs = await import('./voice-prefs-client');
+      prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'browser' });
+      const mod = await loadVoiceMode();
+      mod.setVoiceMode('push-to-talk');
+
+      mod.__simulateUtterance('what is happening');
+      mod.speak('On it.', 'system:operator', 'polite', {
+        preserveAwaitingResponse: true,
+      });
+      expect(mod.getVoiceState().awaitingResponse).toBe(true);
+
+      const synth = (globalThis as any).window.speechSynthesis.speak;
+      const ack = synth.mock.calls[0][0] as { onend?: () => void };
+      ack.onend?.();
+      expect(mod.getVoiceState().awaitingResponse).toBe(true);
+
+      vi.advanceTimersByTime(mod.RESPONSE_WINDOW_MS);
+      expect(mod.getVoiceState().awaitingResponse).toBe(false);
+      expect(synth).toHaveBeenCalledTimes(2);
+      expect(synth.mock.calls[1][0].text).toBe(mod.RESPONSE_TIMEOUT_SPOKEN_NOTICE);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // voice-convergence-additive-wins-2026-07-10 P-001: both transport paths relay
