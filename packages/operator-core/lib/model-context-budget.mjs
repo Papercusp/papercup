@@ -99,6 +99,11 @@ export function formatCodexLaunchContextSection(text) {
   return normalized ? `\n\n---\n## Launch Context\n\n${normalized}\n` : '';
 }
 
+export function appendCodexLaunchContextPrompt(promptText, launchContextText) {
+  const section = formatCodexLaunchContextSection(launchContextText);
+  return section ? `${String(promptText ?? '').replace(/\n+$/, '')}${section}` : String(promptText ?? '');
+}
+
 export function installedModelContextWindow({ agent, model, home = homedir() }) {
   const backend = String(agent ?? '').toLowerCase();
   if (backend === 'codex') {

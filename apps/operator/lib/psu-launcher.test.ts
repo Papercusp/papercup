@@ -119,7 +119,9 @@ import {
   sessionPortTargetAccount,
   sessionPortRequestBody,
   formatSessionPortInspection,
+  sessionPortUpgradeError,
   SESSION_PORT_PROTOCOL_VERSION,
+  SESSION_PORT_TRANSFORM_VERSION,
   cloudModelBackendHint,
   validateAgentModelPair,
   autoCompactWindowEnv,
@@ -2205,14 +2207,16 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
     expect(sessionPortTargetAccount({ forward: 'auto' })).toBe('auto');
     expect(sessionPortTargetAccount({ id: 'acct-openai' })).toBe('acct-openai');
     expect(sessionPortTargetAccount({ notice: 'fallback' })).toBe('default');
-    expect(sessionPortRequestBody(source, target, { id: 'acct-openai' }, { contextSize: 'trimmed' })).toEqual({
+    expect(sessionPortRequestBody(source, target, { id: 'acct-openai' }, { contextSize: 'trimmed', launchContext: '/brief.md' })).toEqual({
       protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+      transformVersion: SESSION_PORT_TRANSFORM_VERSION,
       workspace: 'papercusp-workspace',
       sourceAdvSessionId: 42,
       targetBackend: 'codex',
       targetModel: 'sol:high',
       targetAccount: 'acct-openai',
       contextSize: 'trimmed',
+      launchContext: '/brief.md',
     });
     expect(() => sessionPortRequestBody({ ...source, id: null }, target, {}, {})).toThrow(/tracked source/);
   });
@@ -2223,6 +2227,7 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
       account: 'default',
       addDir: [], passthrough: [],
       sessionPortProtocol: 1,
+      sessionPortTransformVersion: 1,
       sessionPortToken: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
       sessionPortSourceAdvSessionId: 42,
       sessionPortSourceCwd: '/source/cwd',
@@ -2233,9 +2238,16 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
     );
     expect(body.cwd).toBe('/source/cwd');
     expect(body.session_port_protocol).toBe(1);
+    expect(body.session_port_transform_version).toBe(1);
     expect(body.session_port_token).toBe(args.sessionPortToken);
     expect(body.launch_argv).toContain('--resume=42');
     expect(body.launch_argv).toContain('--agent=codex');
+  });
+
+  it('maps new-launcher/old-server skew to one actionable upgrade error', () => {
+    expect(sessionPortUpgradeError(Object.assign(new Error('not found'), { status: 404 })).message).toMatch(/Upgrade.*operator together/i);
+    expect(sessionPortUpgradeError(Object.assign(new Error('unsupported session-port protocol'), { status: 426 })).message).toMatch(/migration 611/i);
+    expect(sessionPortUpgradeError(new Error('ordinary failure')).message).toBe('ordinary failure');
   });
 
   it('renders the inspect-before-egress disclosure with omissions and authority boundary', () => {

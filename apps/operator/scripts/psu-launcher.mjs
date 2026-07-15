@@ -2766,7 +2766,10 @@ async function api(path, opts = {}) {
       typeof err === 'string'
         ? err
         : err?.message || (err ? JSON.stringify(err) : `HTTP ${res.status} from ${path}`);
-    throw new Error(msg);
+    const failure = new Error(msg);
+    failure.status = res.status;
+    failure.path = path;
+    throw failure;
   }
   return json;
 }
@@ -4026,6 +4029,7 @@ export async function reportSessionPortDelivery(
       headers,
       body: JSON.stringify({
         protocolVersion: sessionPort.protocolVersion,
+        transformVersion: sessionPort.transformVersion,
         workspace: sessionPort.workspace,
         portId: sessionPort.portId,
         targetAdvSessionId: Number(sessionPort.targetAdvSessionId),
@@ -4822,6 +4826,7 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     cwd: args.sessionPortSourceCwd || process.cwd(),
     ...(args.sessionPortToken ? {
       session_port_protocol: args.sessionPortProtocol,
+      session_port_transform_version: args.sessionPortTransformVersion,
       session_port_token: args.sessionPortToken,
     } : {}),
   };
@@ -5070,6 +5075,27 @@ export function composeResumeModelSpec(model, effort) {
 }
 
 export const SESSION_PORT_PROTOCOL_VERSION = 1;
+export const SESSION_PORT_TRANSFORM_VERSION = 1;
+
+export function sessionPortUpgradeError(error) {
+  const status = Number(error?.status ?? 0);
+  const message = String(error?.message ?? error ?? '');
+  if (status === 404 || status === 426 || /protocol|transform|migration 611|session_ports|upgrade/i.test(message)) {
+    return new Error(
+      `psu: cross-backend session port is unavailable because the launcher/operator protocol is out of sync (${message}). ` +
+        `Upgrade the staging psu launcher and serving operator together, apply migration 611, then retry.`,
+    );
+  }
+  return error instanceof Error ? error : new Error(message);
+}
+
+async function sessionPortApi(path, opts) {
+  try {
+    return await api(path, opts);
+  } catch (error) {
+    throw sessionPortUpgradeError(error);
+  }
+}
 
 function providerForResumeTarget(agent) {
   if (agent === 'claude') return 'anthropic';
@@ -5117,12 +5143,14 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
   }
   return {
     protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+    transformVersion: SESSION_PORT_TRANSFORM_VERSION,
     workspace: source.workspaceId,
     sourceAdvSessionId: Number(source.id),
     targetBackend: target.targetAgent,
     targetModel: target.modelSpec,
     targetAccount: sessionPortTargetAccount(account),
     contextSize: args.contextSize ?? null,
+    launchContext: args.launchContext ?? null,
   };
 }
 
@@ -5274,7 +5302,7 @@ export async function tryRematerializeFromArchive(
 async function launchSessionPort(source, target, account, args) {
   if (source.role != null) throw new Error('session-port protocol v1 requires a plain tracked SU source');
   const request = sessionPortRequestBody(source, target, account, args);
-  const inspected = await api('/api/adv/sessions/port/inspect', {
+  const inspected = await sessionPortApi('/api/adv/sessions/port/inspect', {
     method: 'POST',
     body: JSON.stringify(request),
   });
@@ -5290,7 +5318,7 @@ async function launchSessionPort(source, target, account, args) {
       return;
     }
   }
-  const prepared = await api('/api/adv/sessions/port/prepare', {
+  const prepared = await sessionPortApi('/api/adv/sessions/port/prepare', {
     method: 'POST',
     body: JSON.stringify({
       ...request,
@@ -5318,10 +5346,11 @@ async function launchSessionPort(source, target, account, args) {
     auto: false,
     mode: null,
     profile: 'engineer',
-    launchContext: null,
+    launchContext: args.launchContext ?? null,
     launchedBy: null,
     resumeSession: null,
     sessionPortProtocol: SESSION_PORT_PROTOCOL_VERSION,
+    sessionPortTransformVersion: SESSION_PORT_TRANSFORM_VERSION,
     sessionPortToken: prepared.token,
     sessionPortSourceAdvSessionId: Number(source.id),
     sessionPortSourceCwd: source.cwd,

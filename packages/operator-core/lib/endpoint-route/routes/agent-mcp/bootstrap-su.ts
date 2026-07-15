@@ -56,6 +56,8 @@ import {
   backendFeatureGuard,
   type BackendAccountProvider,
 } from '../../../backend-feature-capabilities';
+import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION, type SessionPortContractSummary } from '../../../session-port/types';
+import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -185,6 +187,7 @@ export interface BootstrapSuResult {
   sessionPortKickoffFile?: string | null;
   sessionPort?: {
     protocolVersion: number;
+    transformVersion: number;
     portId: string;
     sourceAdvSessionId: number;
     renderedHash: string;
@@ -938,6 +941,7 @@ const post = defineTool({
       /** Cross-backend port handshake. Both fields are mandatory together;
        * unknown versions fail before any adv/session artifact is created. */
       session_port_protocol?: number;
+      session_port_transform_version?: number;
       session_port_token?: string | null;
     } = {};
     try {
@@ -1093,18 +1097,32 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: e?.message ?? 'su launch spec build failed' }, 400);
     }
 
+    const launchContextPath = body.launch_context?.trim() || null;
+    let launchContextText = '';
+    if (launchContextPath) {
+      try {
+        // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
+        const budgetModule = await import('../../../model-context-budget.mjs');
+        launchContextText = budgetModule.readLaunchContextText(launchContextPath);
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: `read launch_context: ${e?.message}` }, 400);
+      }
+    }
+
     let sessionPortContext: {
       row: import('../../../session-port/store').SessionPortRow;
       seed: string;
     } | null = null;
     const portToken = body.session_port_token?.trim() || null;
     const portProtocol = body.session_port_protocol;
-    if (portToken || portProtocol != null) {
-      if (!portToken || portProtocol !== 1) {
+    const portTransform = body.session_port_transform_version;
+    if (portToken || portProtocol != null || portTransform != null) {
+      if (!portToken || portProtocol !== SESSION_PORT_PROTOCOL_VERSION || portTransform !== SESSION_PORT_TRANSFORM_VERSION) {
         return jsonRes({
           status: 'error',
-          error: `unsupported/incomplete session-port handshake; launcher and operator must both support protocol 1`,
-          supportedSessionPortProtocols: [1],
+          error: `unsupported/incomplete session-port handshake; launcher and operator must support protocol/transform ${SESSION_PORT_PROTOCOL_VERSION}/${SESSION_PORT_TRANSFORM_VERSION}`,
+          supportedSessionPortProtocols: [SESSION_PORT_PROTOCOL_VERSION],
+          supportedSessionPortTransforms: [SESSION_PORT_TRANSFORM_VERSION],
         }, 426);
       }
       if (body.fleet?.trim() || body.fleet_name?.trim() || body.seat?.trim() || body.auto === true || body.mode?.trim()) {
@@ -1123,7 +1141,12 @@ const post = defineTool({
       if (!parsed) return jsonRes({ status: 'error', error: 'invalid session-port preparation token' }, 401);
       const row = await store.getSessionPort(parsed.portId, workspace);
       if (!row) return jsonRes({ status: 'error', error: 'session-port preparation not found in this workspace' }, 404);
-      if (row.protocolVersion !== 1 || row.status !== 'prepared') {
+      const summary = row.metadata.summary as SessionPortContractSummary | undefined;
+      if (
+        row.protocolVersion !== SESSION_PORT_PROTOCOL_VERSION ||
+        summary?.versions.transform !== SESSION_PORT_TRANSFORM_VERSION ||
+        row.status !== 'prepared'
+      ) {
         return jsonRes({ status: 'error', error: `session port is ${row.status} or version-skewed; refusing a duplicate target` }, 409);
       }
       if (row.targetBackend !== agent || (row.targetModel ?? null) !== (model ?? null)) {
@@ -1150,7 +1173,10 @@ const post = defineTool({
         agent,
         model,
         contextSize,
-        promptText: spec.promptText,
+        promptText: agent === 'codex'
+          ? budgetModule.appendCodexLaunchContextPrompt(spec.promptText, launchContextText)
+          : spec.promptText,
+        additionalPromptText: agent === 'codex' ? '' : launchContextText,
         home: homedir(),
       });
       const estimatedTokens = Number(row.metadata.estimatedTokens ?? NaN);
@@ -1328,8 +1354,8 @@ const post = defineTool({
     // explicitly chose this account, so route there with no failover (stricter than the bees' soft pins).
     const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
     if (sessionPortContext) {
-      const contract = sessionPortContext.row.metadata.contract as { target?: { account?: unknown } } | undefined;
-      const expectedAccount = typeof contract?.target?.account === 'string' ? contract.target.account : 'default';
+      const summary = sessionPortContext.row.metadata.summary as SessionPortContractSummary | undefined;
+      const expectedAccount = typeof summary?.target?.account === 'string' ? summary.target.account : 'default';
       const actualAccount = accountPin.accountId ?? 'default';
       if (actualAccount !== expectedAccount) {
         return jsonRes({
@@ -1364,7 +1390,6 @@ const post = defineTool({
     const drainMode = modeRaw === 'drain';
     const autoMode = body.auto === true || drainMode;
 
-    const launchContextPath = body.launch_context?.trim() || null;
     // solo-launch-provenance: identity-shaped only — refuse garbage loudly rather
     // than bake it into a system prompt / standing fact.
     const launchedByRaw = body.launched_by?.trim() || null;
@@ -1377,14 +1402,9 @@ const post = defineTool({
     const launchedBy = launchedByRaw;
     let promptText = spec.promptText;
     if (agent === 'codex' && launchContextPath) {
-      try {
-        const launchContext = readFileSync(launchContextPath, 'utf8').trim();
-        if (launchContext) {
-          promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## Launch Context\n\n${launchContext}\n`;
-        }
-      } catch (e: any) {
-        return jsonRes({ status: 'error', error: `read launch_context: ${e?.message}` }, 400);
-      }
+      // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
+      const budgetModule = await import('../../../model-context-budget.mjs');
+      promptText = budgetModule.appendCodexLaunchContextPrompt(promptText, launchContextText);
     }
 
     // solo-launch-provenance: bake WHO launched this session into the assembled
@@ -1615,6 +1635,7 @@ const post = defineTool({
       model,
       contextSize,
       promptText,
+      additionalPromptText: agent === 'codex' ? '' : launchContextText,
       home: homedir(),
     });
     if (sessionPortContext) {
@@ -1661,6 +1682,30 @@ const post = defineTool({
         await transitionSessionPort(sessionPortContext.row.id, workspace, 'pending', {
           targetAdvSessionId: sessionId,
           metadata: { targetCoordOwnerId: sid, targetNativeSessionId: nativeSessionId },
+        });
+        const summary = sessionPortContext.row.metadata.summary as SessionPortContractSummary;
+        await recordSessionPortTelemetry({
+          workspaceId: workspace,
+          stage: 'pending',
+          portId: sessionPortContext.row.id,
+          sourceAdvSessionId: sessionPortContext.row.sourceAdvSessionId,
+          targetAdvSessionId: sessionId,
+          sourceBackend: sessionPortContext.row.sourceBackend,
+          targetBackend: sessionPortContext.row.targetBackend,
+          targetProvider: summary?.target?.provider ?? null,
+          targetModel: sessionPortContext.row.targetModel,
+          targetAccount: summary?.target?.account ?? null,
+          fidelity: summary?.fidelity ?? null,
+          omittedAttachments: summary?.stats?.omittedAttachments ?? null,
+          unsupportedBlocks: summary?.stats?.unsupportedBlocks ?? null,
+          redactions: summary?.stats?.redactions ?? null,
+          summarized: summary?.summary != null,
+          summaryModel: summary?.summary?.model ?? null,
+          summaryPromptVersion: summary?.versions?.summaryPrompt ?? null,
+          sourceHash: sessionPortContext.row.sourceHash,
+          renderedHash: sessionPortContext.row.renderedHash,
+          estimatedTokens: Number(sessionPortContext.row.metadata.estimatedTokens ?? null),
+          protocolVersion: sessionPortContext.row.protocolVersion,
         });
       } catch (error) {
         await markAdvSessionEnded(sessionId, 1).catch(() => undefined);
@@ -1739,6 +1784,7 @@ const post = defineTool({
       sessionPortKickoffFile: sessionPortContext?.row.artifactPath ?? null,
       sessionPort: sessionPortContext ? {
         protocolVersion: sessionPortContext.row.protocolVersion,
+        transformVersion: SESSION_PORT_TRANSFORM_VERSION,
         portId: sessionPortContext.row.id,
         sourceAdvSessionId: sessionPortContext.row.sourceAdvSessionId,
         renderedHash: sessionPortContext.row.renderedHash,

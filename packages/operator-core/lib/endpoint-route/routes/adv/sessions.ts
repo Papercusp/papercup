@@ -145,10 +145,10 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     agent: targetBackend,
     model: targetModel,
     contextSize,
-    promptText: spec.promptText,
-    additionalPromptText: targetBackend === 'codex'
-      ? budgetModule.formatCodexLaunchContextSection(launchContextText)
-      : launchContextText,
+    promptText: targetBackend === 'codex'
+      ? budgetModule.appendCodexLaunchContextPrompt(spec.promptText, launchContextText)
+      : spec.promptText,
+    additionalPromptText: targetBackend === 'codex' ? '' : launchContextText,
     home: os.homedir(),
   });
   if (budget.level === 'refuse') throw new Error('target launch prompt already exhausts the selected context window');
