@@ -12,6 +12,7 @@ import {
   validateCloudModelSpec,
   KNOWN_CLOUD_ALIASES,
 } from './agent-config-constants';
+import { ROLE_MODEL_DEFAULTS } from '@papercusp/orchestrator/role-models';
 
 // opus + fable + sonnet-5 are LAUNCHED at the full 1M window — psu-launcher
 // normalizeModelSpec injects the [1m] marker for all three families — and
@@ -191,6 +192,24 @@ describe('validateCloudModelSpec (tool-boundary cloud model-spec guard — WI-19
       expect(r.ok, bad).toBe(false);
       expect(r.message, bad).toContain(want);
       expect(r.message, bad).toContain('gpt-5.6-');
+    }
+  });
+});
+
+// EI-12657 recurrence guard: every COMMITTED per-role model default must be a
+// spec the launcher/gateway can actually run. The 2026-07-15 model-switch pinned
+// the autonomous roles to the VERSIONED shorthand `sonnet-5[1m]:high` — which
+// `validateModelSpec` rejects (`sonnet-5` is not an alias) and the gateway forwards
+// verbatim as an unrunnable upstream id — so EVERY Mug/queen/bee/kettle/... spawn
+// died before its first LLM turn (total placement stall). validateCloudModelSpec is
+// the TS twin of the psu-launcher gate the spawn actually passes through, so pinning
+// EVERY ROLE_MODEL_DEFAULTS spec against it would have caught the malformed default
+// at the gate instead of via a fleet-wide outage.
+describe('ROLE_MODEL_DEFAULTS — every committed spec is a launcher-valid model spec (EI-12657)', () => {
+  it('accepts no versioned-shorthand / otherwise-unrunnable default (e.g. sonnet-5[1m]:high)', () => {
+    for (const [role, spec] of Object.entries(ROLE_MODEL_DEFAULTS)) {
+      const r = validateCloudModelSpec(spec);
+      expect(r.ok, `${role} → "${spec}": ${r.message ?? ''}`).toBe(true);
     }
   });
 });

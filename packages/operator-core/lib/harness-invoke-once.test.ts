@@ -359,25 +359,28 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
 
   // model-switch-2026-07-15: the pot's judgment/control-loop layer (queen, bees,
   // mug, kettle/overwatch, sentinel, operator) moved off gpt-5.4/codex-ChatGPT to
-  // sonnet-5[1m]:high (trimmed 1M-window + high effort, via the gateway) —
+  // the latest sonnet at 1M-window + high effort (via the gateway) —
   // ROLE_MODEL_DEFAULTS pins the spec WITH the `[1m]` marker already embedded, so
   // normalizeModelSpec (idempotent — a no-op when `[1m]` is already present) does
-  // not need to inject it separately. Regression guard: WI-4623's prior attempt
+  // not need to inject it separately. EI-12657: the spec is the BARE `sonnet[1m]`,
+  // NOT the versioned shorthand `sonnet-5[1m]` — `sonnet-5` is not a resolvable
+  // alias, so the CLI/gateway reach an unrunnable upstream id and every autonomous
+  // spawn dies before its first turn. Regression guard: WI-4623's prior attempt
   // left the orchestrator-level resolveModel test asserting the OLD `kettle:
   // 'sonnet'` default (invoke.test.ts) — this is the exec-boundary (applyRoleModel)
   // twin, asserted per-role so a regression on any ONE role names itself.
-  it('the P-012 judgment-tier roles resolve to sonnet-5[1m]:high --effort high without env', () => {
+  it('the P-012 judgment-tier roles resolve to sonnet[1m]:high --effort high without env', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     for (const role of ['queen', 'bee', 'mug', 'kettle', 'overwatch', 'sentinel', 'operator']) {
-      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model sonnet-5[1m] --effort high');
+      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model sonnet[1m] --effort high');
     }
     // the committed default still applies when AGENT_MODELS is set for OTHER roles only
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model sonnet-5[1m] --effort high');
-    // resolveSpawnBackendModel keys it to the sonnet-5[1m] bucket
+    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model sonnet[1m] --effort high');
+    // resolveSpawnBackendModel keys it to the sonnet[1m] bucket
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'claude-code', model: 'sonnet-5[1m]' });
+    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
   });
 });
 
@@ -476,10 +479,10 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
 
     expect(roleBackendOverride('mug')).toBe('codex');
     const env = buildInvokeOnce(spec({ role: 'mug' })).env;
-    // mug resolves to sonnet-5[1m]:high (model-switch-2026-07-15) — when applied with codex backend,
+    // mug resolves to sonnet[1m]:high (model-switch-2026-07-15, EI-12657) — when applied with codex backend,
     // [1m] marker stays and :high maps to codex's model_reasoning_effort config.
-    expect(env.AGENT_CMD).toBe('codex exec --model sonnet-5[1m] -c model_reasoning_effort="high"');
-    expect(env.CLAUDE).toBe('codex exec --model sonnet-5[1m] -c model_reasoning_effort="high"');
+    expect(env.AGENT_CMD).toBe('codex exec --model sonnet[1m] -c model_reasoning_effort="high"');
+    expect(env.CLAUDE).toBe('codex exec --model sonnet[1m] -c model_reasoning_effort="high"');
     expect(env.AGENT_BACKEND).toBe('codex');
     expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
     // EI-7138: omp takes a `<model>:<effort>` spec as ONE opaque value natively (no
