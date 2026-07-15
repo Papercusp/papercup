@@ -2594,12 +2594,14 @@ export function hostThroughPty(o) {
         launchContextPath = minted.launchContextPath ?? null;
       } catch (e) {
         if (drillId) {
-          appendHostEvent(ownerId, 'carry-drill-respawn-failed', {
+          const failExtra = {
             drillId,
             sessionClass,
             reason: 'argv-build-failed',
             detail: e?.message ?? String(e),
-          });
+          };
+          appendHostEvent(ownerId, 'carry-drill-respawn-failed', failExtra);
+          appendSharedDrillLedgerEvent(ownerId, 'carry-drill-respawn-failed', failExtra);
         }
         try {
           process.stderr.write(`psu-pty-host: carry-respawn argv build failed for ${ownerId}: ${e.message}\n`);
@@ -2670,32 +2672,38 @@ export function hostThroughPty(o) {
           /* never let a diagnostic write break the host */
         }
         if (drillId) {
-          appendHostEvent(ownerId, 'carry-drill-respawn-failed', {
+          const failExtra = {
             drillId,
             sessionClass,
             reason: 'spawn-failed',
             detail: e?.message ?? String(e),
-          });
+          };
+          appendHostEvent(ownerId, 'carry-drill-respawn-failed', failExtra);
+          appendSharedDrillLedgerEvent(ownerId, 'carry-drill-respawn-failed', failExtra);
         }
         recycling = false;
         return;
       }
       if (drillId) {
-        appendHostEvent(ownerId, 'carry-drill-respawned', {
+        const respawnedExtra = {
           drillId,
           sessionClass,
           nativeId: nativeId ?? null,
           launchContextPath,
-        });
+        };
+        appendHostEvent(ownerId, 'carry-drill-respawned', respawnedExtra);
+        appendSharedDrillLedgerEvent(ownerId, 'carry-drill-respawned', respawnedExtra);
       }
       recycling = false;
       if (!carryText) {
         if (drillId) {
-          appendHostEvent(ownerId, 'carry-drill-carry-dropped', {
+          const dropExtra = {
             drillId,
             sessionClass,
             reason: 'no-first-prompt',
-          });
+          };
+          appendHostEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
+          appendSharedDrillLedgerEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
         }
         return;
       }
@@ -2719,17 +2727,27 @@ export function hostThroughPty(o) {
         },
       });
       if (drillId) {
-        appendHostEvent(
-          ownerId,
-          carryResult.delivered ? 'carry-drill-carry-delivered' : 'carry-drill-carry-dropped',
-          {
-            drillId,
-            sessionClass,
-            nativeId: nativeId ?? null,
-            reason: carryResult.delivered ? undefined : carryResult.reason,
-            attempts: carryResult.attempts,
-          },
-        );
+        // EI-12655 (drill-1 instrumentation, leader-concurred): a never-settled
+        // drop was previously indistinguishable from a never-booted child.
+        // budgetMs (the wall-clock the retry loop had) + outputSeen (did the
+        // fresh child ever emit a startup byte) make the next occurrence
+        // self-diagnosing: outputSeen:false ⇒ the child never became ready;
+        // outputSeen:true + never-settled ⇒ continuous TUI output kept the
+        // busy gate from ever seeing quietMs of silence.
+        const terminalKind = carryResult.delivered
+          ? 'carry-drill-carry-delivered'
+          : 'carry-drill-carry-dropped';
+        const terminalExtra = {
+          drillId,
+          sessionClass,
+          nativeId: nativeId ?? null,
+          reason: carryResult.delivered ? undefined : carryResult.reason,
+          attempts: carryResult.attempts,
+          budgetMs: recycleCarryInjectBudgetMs,
+          outputSeen: childStartupReady,
+        };
+        appendHostEvent(ownerId, terminalKind, terminalExtra);
+        appendSharedDrillLedgerEvent(ownerId, terminalKind, terminalExtra);
       }
     };
 

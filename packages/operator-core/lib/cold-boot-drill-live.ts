@@ -52,7 +52,15 @@ export type ColdBootDrillLedgerKind =
   | 'carry-drill-requested'
   | 'carry-drill-queued'
   | 'carry-drill-request-failed'
-  | 'carry-drill-graded';
+  | 'carry-drill-graded'
+  // Host-side lifecycle kinds mirrored into the shared ledger by psu-pty-host's
+  // appendSharedDrillLedgerEvent (EI-12655): previously these lived ONLY in the
+  // per-owner host event log, so the shared-ledger report saw an eternally
+  // pending requested/queued pair for every drill whose grade never landed.
+  | 'carry-drill-respawned'
+  | 'carry-drill-respawn-failed'
+  | 'carry-drill-carry-delivered'
+  | 'carry-drill-carry-dropped';
 
 export interface ColdBootDrillLedgerEvent {
   ts: string;
@@ -63,6 +71,10 @@ export interface ColdBootDrillLedgerEvent {
   detail?: string;
   lookups?: RecoveryLookup[];
   transcriptPath?: string;
+  /** Host-mirrored terminal rows (EI-12655): why a carry was dropped / a respawn failed. */
+  reason?: string;
+  /** Host-mirrored respawn rows (EI-12655): the successor's fresh native session id. */
+  nativeId?: string | null;
 }
 
 export interface ColdBootDrillHostEvent {
