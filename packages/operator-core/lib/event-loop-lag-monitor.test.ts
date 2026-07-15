@@ -21,6 +21,7 @@ import {
   isLoopElevated,
   isLoopSaturated,
   loopPressure,
+  shouldTriggerFullHeapSnapshot,
   startEventLoopLagMonitor,
   yieldToEventLoop,
   type LagMonitorHandle,
@@ -402,6 +403,67 @@ describe('P-002 heap-snapshot-on-high-RSS (bg-host-freeze-eventloop-stall-2026-0
       expect(parsed).toHaveProperty('nodes');
     }
   }, 30_000);
+});
+
+describe('shouldTriggerFullHeapSnapshot — SPOF 1h self-disarm gate (autonomous-loop-prod-audit-2026-07-02 P-006)', () => {
+  const NOW = 1_000_000;
+  const opts = { heapSnapshotOnHighRss: true, heapSnapshotSingleShot: true, minHeapSnapshotGapMs: 10_000 };
+
+  it('never triggers when heapSnapshotOnHighRss is off', () => {
+    expect(
+      shouldTriggerFullHeapSnapshot(
+        { snapshotting: false, fullSnapshotTaken: false, lastSnapshotAt: 0 },
+        NOW,
+        { ...opts, heapSnapshotOnHighRss: false },
+      ),
+    ).toBe(false);
+  });
+
+  it('single-flight: never triggers while a capture is already in progress', () => {
+    expect(
+      shouldTriggerFullHeapSnapshot({ snapshotting: true, fullSnapshotTaken: false, lastSnapshotAt: 0 }, NOW, opts),
+    ).toBe(false);
+  });
+
+  it('rate-limit: does not trigger before the gap elapses', () => {
+    expect(
+      shouldTriggerFullHeapSnapshot(
+        { snapshotting: false, fullSnapshotTaken: false, lastSnapshotAt: NOW - 5_000 },
+        NOW,
+        opts,
+      ),
+    ).toBe(false);
+  });
+
+  it('triggers on the first eligible tick (gap elapsed, never taken)', () => {
+    expect(
+      shouldTriggerFullHeapSnapshot(
+        { snapshotting: false, fullSnapshotTaken: false, lastSnapshotAt: NOW - 20_000 },
+        NOW,
+        opts,
+      ),
+    ).toBe(true);
+  });
+
+  it('SELF-DISARMS: once fullSnapshotTaken, never triggers again even after the gap elapses (singleShot true)', () => {
+    expect(
+      shouldTriggerFullHeapSnapshot(
+        { snapshotting: false, fullSnapshotTaken: true, lastSnapshotAt: NOW - 999_999 },
+        NOW,
+        opts,
+      ),
+    ).toBe(false);
+  });
+
+  it('with singleShot FALSE, re-triggers after the gap elapses even if already taken once (legacy repeating behavior)', () => {
+    expect(
+      shouldTriggerFullHeapSnapshot(
+        { snapshotting: false, fullSnapshotTaken: true, lastSnapshotAt: NOW - 20_000 },
+        NOW,
+        { ...opts, heapSnapshotSingleShot: false },
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('cooperativeYield / yieldToEventLoop (event-loop-lag root fix)', () => {

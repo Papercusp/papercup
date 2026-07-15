@@ -72,6 +72,22 @@ export interface LagMonitorOpts {
   /** Retain at most this many `.heapsnapshot` files (oldest pruned). Default 5. */
   maxHeapSnapshots?: number;
   /**
+   * autonomous-loop-prod-audit-2026-07-02 P-006 (SPOF 1h, deferred from
+   * WI-4626/AUDIT B): SELF-DISARM the full heap-snapshot capture after its
+   * FIRST successful trip for this process's lifetime, rather than re-capturing
+   * every `minHeapSnapshotGapMs` for as long as RSS stays above the threshold.
+   * A full snapshot already pauses the live loop for tens of seconds on a
+   * multi-GB heap (the reason this path is opt-in at all, WI-3255) — repeating
+   * that pause every 10 minutes on a SUSTAINED leak turns the diagnostic into
+   * its own steady-state incident, when the FIRST retained-object graph
+   * already identifies the leak (a second capture rarely adds new information
+   * once the pattern is visible). Default true (the recommended posture); set
+   * false — or env PAPERCUSP_HEAP_SNAPSHOT_REPEAT=1 — to keep the pre-existing
+   * repeating behavior (e.g. for an active leak-hunt session watching the
+   * graph evolve over time).
+   */
+  heapSnapshotSingleShot?: boolean;
+  /**
    * WI-1088 leak hunt round 2: SAMPLING heap profiler. A FULL snapshot of a
    * multi-GB heap takes minutes to serialize and the leaking process dies first
    * (three 5-6 GB `.partial`s and zero completed captures on 2026-07-01). The
@@ -134,6 +150,25 @@ const CRITICAL_P95_MS = Math.max(
   ELEVATED_P95_MS + 1,
   Number(process.env.PAPERCUSP_LOOP_CRITICAL_MS) || 600,
 );
+
+/**
+ * PURE gate: should THIS tick trigger a full heap-snapshot capture? Extracted from the
+ * monitor's tick closure (autonomous-loop-prod-audit-2026-07-02 P-006, SPOF 1h) so the
+ * self-disarm invariant — at most once per process lifetime when `heapSnapshotSingleShot`
+ * is on — is unit-testable without forking a real V8 snapshot (that capture pauses the
+ * live loop for tens of seconds on a multi-GB heap, so exercising it repeatedly in a test
+ * is both slow and exactly the cost this gate exists to avoid).
+ */
+export function shouldTriggerFullHeapSnapshot(
+  state: { snapshotting: boolean; fullSnapshotTaken: boolean; lastSnapshotAt: number },
+  now: number,
+  opts: { heapSnapshotOnHighRss: boolean; heapSnapshotSingleShot: boolean; minHeapSnapshotGapMs: number },
+): boolean {
+  if (!opts.heapSnapshotOnHighRss) return false;
+  if (state.snapshotting) return false; // single-flight
+  if (opts.heapSnapshotSingleShot && state.fullSnapshotTaken) return false; // self-disarmed
+  return now - state.lastSnapshotAt >= opts.minHeapSnapshotGapMs; // rate-limit
+}
 
 /** The live loop-delay sample (current partial window), or null if no monitor. */
 export function currentLoopLag(): { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number } | null {
@@ -261,8 +296,13 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   const minHeapSnapshotGapMs = opts.minHeapSnapshotGapMs ?? 600_000;
   const maxHeapSnapshots = opts.maxHeapSnapshots ?? 5;
   const heapSnapshotDir = opts.heapSnapshotDir;
+  // SPOF 1h: self-disarm after the first trip by default (see the option's doc).
+  const heapSnapshotSingleShot =
+    opts.heapSnapshotSingleShot ??
+    !(process.env.PAPERCUSP_HEAP_SNAPSHOT_REPEAT === '1' || process.env.PAPERCUSP_HEAP_SNAPSHOT_REPEAT === 'true');
   let snapshotting = false;
   let lastSnapshotAt = 0;
+  let fullSnapshotTaken = false;
   // WI-1088 round 2: sampling heap profiler — armed lazily on the first tick so
   // startup cost is off the boot path; dumped at the same RSS trigger.
   const heapSamplingOnHighRss =
@@ -335,15 +375,20 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         });
     }
     // P-002: when RSS is high, capture a heap snapshot so the leak is identifiable.
-    // Checked on each tick (cheap: one memoryUsage() call). Single-flight + rate-limited.
+    // Checked on each tick (cheap: one memoryUsage() call). Single-flight + rate-limited,
+    // and (SPOF 1h, default) single-SHOT — at most once per process lifetime, so a
+    // sustained leak doesn't turn the diagnostic pause into its own steady-state cost.
     if (
-      heapSnapshotOnHighRss &&
-      !snapshotting &&
-      Date.now() - lastSnapshotAt >= minHeapSnapshotGapMs
+      shouldTriggerFullHeapSnapshot(
+        { snapshotting, fullSnapshotTaken, lastSnapshotAt },
+        Date.now(),
+        { heapSnapshotOnHighRss, heapSnapshotSingleShot, minHeapSnapshotGapMs },
+      )
     ) {
       const rssMb = process.memoryUsage().rss / 1_048_576;
       if (rssMb >= heapSnapshotRssMb) {
         snapshotting = true;
+        fullSnapshotTaken = true;
         lastSnapshotAt = Date.now();
         // Dump the sampling profile FIRST — it is instant (KBs) and survives even
         // if the full snapshot below dies mid-serialization (the 2026-07-01 mode).
