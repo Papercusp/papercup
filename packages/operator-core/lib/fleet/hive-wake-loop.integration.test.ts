@@ -51,7 +51,8 @@ const SPAWNED_AGENTS_DDL = `
     -- same-host /proc liveness. This fixture hand-rolls the schema, so it must
     -- mirror them or the SELECT fails "column pid does not exist".
     -- migration 339 (EI-2186): the reclaim also SELECTs launcher_boot_id.
-    pid integer, launcher_host text, launcher_boot_id text)`;
+    -- migration 608 (WI-4894): restart-safe terminal artifact harvest.
+    pid integer, launcher_host text, launcher_boot_id text, result_path text)`;
 
 // The reclaim path also frees the three claim surfaces (sweepStaleSpawnClaims,
 // spawn-reclaim.ts) — mirror spawn-reclaim.integration's minimal stand-ins so

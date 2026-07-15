@@ -7,12 +7,11 @@
  * freshly-heartbeated row is left alone; terminal rows are never touched.
  * heartbeatSpawns bumps the lease for live spawns.
  */
-import { hostname } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   reclaimOrphanedSpawns,

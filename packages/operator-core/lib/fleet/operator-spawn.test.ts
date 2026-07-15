@@ -80,6 +80,9 @@ vi.mock('./spawn-reclaim', () => ({
   heartbeatSpawns: vi.fn(async () => {}),
   reclaimOrphanedSpawns: vi.fn(async () => ({ reclaimed: 0, spawnIds: [], workspaces: [] })),
   recordSpawnPid: vi.fn(async () => {}),
+  spawnResultArtifactPath: (projectDir: string, spawnId: string) =>
+    `${projectDir}/.papercusp/spawn-results/${spawnId}.log`,
+  removeSpawnResultArtifact: vi.fn(() => {}),
   SPAWN_HEARTBEAT_INTERVAL_MS: 60_000,
   // operator-spawn re-exports this from spawn-reclaim (threshold centralised there);
   // selectWedgeReapCandidates uses it as a default param, so the mock must expose it.
@@ -413,7 +416,7 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
   const findUpdate = () => {
     const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
     return sqlMock.mock.calls.find(
-      (c) => Array.isArray(c[0]) && (c[0] as string[]).join('').includes('UPDATE harness_shared.spawned_agents'),
+      (c) => Array.isArray(c[0]) && (c[0] as string[]).join('').includes('SET session_id ='),
     );
   };
 
