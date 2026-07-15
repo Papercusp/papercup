@@ -151,6 +151,22 @@ describe('frontierRowToCandidate', () => {
     expect(c).toMatchObject({ id: 'WI-9', view: 'work-item', harness: 'papercup', importance: 'normal', opPriority: 7 });
     expect(c.ageDays).toBeCloseTo(1, 5);
   });
+
+  // EI-12275: a frontier row's severity (issue-family rows only) must carry through
+  // to the candidate so the ranker's blocking-impact feature actually scores it —
+  // previously every frontier candidate scored severity=0 unconditionally.
+  it('carries severity onto the candidate when the row has one (EI-12275)', () => {
+    const c = frontierRowToCandidate(
+      frontierRow({ feature_id: 'EI-1', harness_slug: 'papercup', item_kind: 'bug', severity: 'major' }),
+      NOW,
+    );
+    expect(c.severity).toBe('major');
+  });
+
+  it('omits severity when the row has none (ordinary feature rows)', () => {
+    const c = frontierRowToCandidate(frontierRow({ feature_id: 'WI-9', harness_slug: 'papercup' }), NOW);
+    expect(c.severity).toBeUndefined();
+  });
 });
 
 describe('buildPlanItemBlockGraph (EI-12372)', () => {
@@ -814,6 +830,90 @@ describe('surveyPot plan-item blocking (EI-12372)', () => {
     expect(ids).toContain('WI-2');
     expect(ids).toContain('WI-3');
     expect(survey.frontierBlocked).toBe(0);
+  });
+});
+
+describe('surveyPot escalated-issue frontier (EI-12275)', () => {
+  const noBlockers: HarnessBlockGraph = { blockers: new Map(), statuses: new Map() };
+  const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({
+    now: () => NOW,
+    fetchBlockGraph: async () => noBlockers,
+    fetchQuarantinedCount: async () => 0,
+    fetchFrontier: async () => [],
+    ...over,
+  });
+
+  // The headline defect: pot:survey.fetchFrontierRows is feature/chunk-only
+  // (frontierPlacementKindClause), so a severity:major bug/change/task item was
+  // structurally invisible to the Mug's ranked frontier — no escalation-pressure
+  // weight could ever help it, because it never entered rankPlacements' input set
+  // at all. fetchEscalatedIssues (a separate, severity-gated query) closes that gap.
+  it('surfaces a severity:major issue-family row that fetchFrontier alone never would', async () => {
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        // Mirrors the real fetchFrontierRows behaviour: bug/change/task never appear here.
+        fetchFrontier: async () => [],
+        fetchEscalatedIssues: async () => [
+          frontierRow({ feature_id: 'EI-12220', harness_slug: 'papercup', item_kind: 'bug', severity: 'major' }),
+        ],
+      }),
+    });
+    const ids = survey.frontier.map((c) => c.id);
+    expect(ids).toContain('EI-12220');
+    expect(survey.frontier.find((c) => c.id === 'EI-12220')?.severity).toBe('major');
+  });
+
+  it('ranks a severity:critical issue ABOVE a normal-importance feature row via the blocking-impact severity prior', async () => {
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-ORDINARY', harness_slug: 'papercup' })],
+        fetchEscalatedIssues: async () => [
+          frontierRow({ feature_id: 'EI-URGENT', harness_slug: 'papercup', item_kind: 'bug', severity: 'critical' }),
+        ],
+      }),
+    });
+    expect(survey.frontier[0]?.id).toBe('EI-URGENT');
+  });
+
+  // The escalated-issue slice flows through the SAME readiness/scope machinery as
+  // the feature frontier (concatenated before filterReadyFrontier) — a blocked one
+  // is excluded exactly like a blocked feature row would be, no separate code path.
+  it('drops an escalated issue whose OWN blocked_by is unsatisfied, same as a feature row', async () => {
+    const graph: HarnessBlockGraph = {
+      blockers: new Map([['EI-BLOCKED', ['WI-UPSTREAM']]]),
+      statuses: new Map([['WI-UPSTREAM', 'todo']]),
+    };
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        fetchBlockGraph: async () => graph,
+        fetchEscalatedIssues: async () => [
+          frontierRow({ feature_id: 'EI-BLOCKED', harness_slug: 'papercup', item_kind: 'bug', severity: 'critical' }),
+        ],
+      }),
+    });
+    expect(survey.frontier.map((c) => c.id)).not.toContain('EI-BLOCKED');
+    expect(survey.frontierBlocked).toBe(1);
+  });
+
+  it('a fetchEscalatedIssues failure fails open (feature frontier unaffected)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-STILL-HERE', harness_slug: 'papercup' })],
+        fetchEscalatedIssues: async () => {
+          throw new Error('transient pooler blip');
+        },
+      }),
+    });
+    expect(survey.frontier.map((c) => c.id)).toEqual(['WI-STILL-HERE']);
   });
 });
 
