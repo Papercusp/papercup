@@ -6,10 +6,11 @@ describe('session-port renderer', () => {
   it('renders tool objects as inert text and never emits executable objects', () => {
     const turns: PortableTurn[] = [{
       id: 'a', parentId: null, role: 'assistant', timestamp: null,
-      blocks: [{ type: 'tool_call', id: 'call-1', name: 'Bash', input: { command: 'rm -rf /' } }],
+      blocks: [{ type: 'tool_narrative', event: 'call', name: 'Bash', content: '{"command":"rm -rf /"}' }],
     }];
     const rendered = renderPortableTurns(turns);
-    expect(rendered.text).toContain('[tool call: Bash]');
+    expect(rendered.text).toContain('[historical tool call: Bash]');
+    expect(rendered.text).not.toContain('call-1');
     const seed = renderSessionPortSeed({
       portId: 'p1', sourceBackend: 'claude', targetBackend: 'codex', fidelity: 'full', transcript: rendered.text,
     });

@@ -17,6 +17,16 @@ const textOf = (value: unknown): string => {
   }
 };
 
+export const CLAUDE_SESSION_PORT_ADAPTER_VERSION = 1;
+const MAX_TOOL_NARRATIVE_CHARS = 16_000;
+
+const boundedText = (value: unknown): string => {
+  const text = textOf(value);
+  return text.length <= MAX_TOOL_NARRATIVE_CHARS
+    ? text
+    : `${text.slice(0, MAX_TOOL_NARRATIVE_CHARS)}\n[tool narrative truncated]`;
+};
+
 function roleOf(record: Json): PortableRole {
   const role = String(record?.message?.role ?? record?.role ?? record?.type ?? '').toLowerCase();
   if (role === 'assistant') return 'assistant';
@@ -41,17 +51,18 @@ function blocksOf(record: Json, stats: ClaudeAdaptResult['stats']): PortableBloc
     } else if (kind === 'tool_use') {
       stats.toolCalls++;
       blocks.push({
-        type: 'tool_call',
-        id: String(value.id ?? ''),
+        type: 'tool_narrative',
+        event: 'call',
         name: String(value.name ?? 'unknown'),
-        input: value.input ?? null,
+        content: boundedText(value.input ?? null),
       });
     } else if (kind === 'tool_result') {
       stats.toolResults++;
       blocks.push({
-        type: 'tool_result',
-        toolCallId: String(value.tool_use_id ?? value.toolUseId ?? ''),
-        content: textOf(value.content),
+        type: 'tool_narrative',
+        event: 'result',
+        name: 'prior tool',
+        content: boundedText(value.content),
         isError: value.is_error === true || value.isError === true,
       });
     } else if (kind === 'image' || kind === 'document' || kind === 'attachment') {
@@ -83,6 +94,10 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
     toolResults: 0,
     omittedAttachments: 0,
     unsupportedBlocks: 0,
+    syntheticRecords: 0,
+    redactions: 0,
+    controlBytesRemoved: 0,
+    delimiterEscapes: 0,
   };
   const warnings: string[] = [];
   const records: Array<Json & { __line: number }> = [];
@@ -120,7 +135,8 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
     }
     visited.add(id);
     reversed.push(cursor);
-    const parent = cursor.parentUuid == null ? null : String(cursor.parentUuid);
+    const parentRaw = cursor.parentUuid ?? cursor.logicalParentUuid;
+    const parent = parentRaw == null ? null : String(parentRaw);
     if (!parent) break;
     const next = nodes.get(parent) ?? null;
     if (!next) {
@@ -137,7 +153,17 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
   }
   stats.activePathRecords = path.length;
 
-  const turns: PortableTurn[] = path.map((record) => ({
+  const material = path.filter((record) => {
+    const type = String(record.type ?? '').toLowerCase();
+    const hasMessage = record.message?.role || record.message?.content != null || record.content != null;
+    if (!hasMessage || ['queue-operation', 'progress', 'file-history-snapshot', 'system'].includes(type)) {
+      stats.syntheticRecords++;
+      return false;
+    }
+    return true;
+  });
+  stats.activePathRecords = material.length;
+  const turns: PortableTurn[] = material.map((record) => ({
     id: String(record.uuid),
     parentId: record.parentUuid == null ? null : String(record.parentUuid),
     role: roleOf(record),
@@ -150,5 +176,13 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
   if (stats.sidechainRecords) warnings.push(`${stats.sidechainRecords} sidechain record(s) excluded from the active path`);
   if (stats.omittedAttachments) warnings.push(`${stats.omittedAttachments} binary attachment(s) represented as omissions`);
   if (stats.unsupportedBlocks) warnings.push(`${stats.unsupportedBlocks} unsupported content block(s) represented as omissions`);
+  if (stats.syntheticRecords) warnings.push(`${stats.syntheticRecords} synthetic bookkeeping record(s) excluded`);
+  const contentRecords = material.length;
+  if (records.length > 0 && contentRecords === 0) {
+    throw new Error('Claude transcript format drift: no material user/assistant records found');
+  }
+  if (stats.unsupportedBlocks > Math.max(8, contentRecords * 2)) {
+    throw new Error('Claude transcript format drift: unsupported content dominates the active path');
+  }
   return { turns, stats, warnings, activeLeafId: leaf?.uuid ? String(leaf.uuid) : null };
 }

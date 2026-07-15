@@ -17,9 +17,9 @@ const estimatedTokens = (text: string): number => Math.ceil(Buffer.byteLength(te
 function atomicTurnGroups(turns: PortableTurn[]): PortableTurn[][] {
   const groups: PortableTurn[][] = [];
   for (const turn of turns) {
-    const hasResult = turn.blocks.some((block) => block.type === 'tool_result');
+    const hasResult = turn.blocks.some((block) => block.type === 'tool_narrative' && block.event === 'result');
     const previous = groups.at(-1);
-    const previousHasCall = previous?.some((candidate) => candidate.blocks.some((block) => block.type === 'tool_call'));
+    const previousHasCall = previous?.some((candidate) => candidate.blocks.some((block) => block.type === 'tool_narrative' && block.event === 'call'));
     if (hasResult && previousHasCall) previous!.push(turn);
     else groups.push([turn]);
   }

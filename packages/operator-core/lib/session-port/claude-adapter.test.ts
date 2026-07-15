@@ -11,7 +11,6 @@ describe('adaptClaudeJsonl', () => {
     expect(out.activeLeafId).toBe('a-leaf');
     expect(out.turns.map((turn) => turn.id)).toEqual([
       'u-summary',
-      's-boundary',
       'a-after-compact',
       'u-attachment',
       'a-leaf',
@@ -19,12 +18,13 @@ describe('adaptClaudeJsonl', () => {
     expect(out.turns[0]).toMatchObject({ compactSummary: true, role: 'user' });
     expect(out.stats).toMatchObject({
       sourceRecords: 12,
-      activePathRecords: 5,
+      activePathRecords: 4,
       malformedRecords: 0,
       sidechainRecords: 2,
       compactedAncestors: 4,
       omittedAttachments: 1,
       unsupportedBlocks: 1,
+      syntheticRecords: 1,
     });
   });
 
@@ -33,14 +33,15 @@ describe('adaptClaudeJsonl', () => {
     const out = adaptClaudeJsonl(preCompact);
     expect(out.stats).toMatchObject({ toolCalls: 1, toolResults: 1 });
     expect(out.turns[1].blocks).toContainEqual({
-      type: 'tool_call',
-      id: 'tool-1',
+      type: 'tool_narrative',
+      event: 'call',
       name: 'Read',
-      input: { file_path: '/workspace/example.ts' },
+      content: '{"file_path":"/workspace/example.ts"}',
     });
     expect(out.turns[2].blocks).toContainEqual({
-      type: 'tool_result',
-      toolCallId: 'tool-1',
+      type: 'tool_narrative',
+      event: 'result',
+      name: 'prior tool',
       content: 'export const answer = 42;',
       isError: false,
     });
@@ -55,5 +56,10 @@ describe('adaptClaudeJsonl', () => {
     expect(out.turns).toHaveLength(1);
     expect(out.stats.malformedRecords).toBe(1);
     expect(out.warnings.join('\n')).toMatch(/malformed|missing parent/);
+  });
+
+  it('fails closed when a format drift leaves no material dialogue', () => {
+    expect(() => adaptClaudeJsonl(JSON.stringify({ type: 'progress', uuid: 'p1', message: { content: null } })))
+      .toThrow(/format drift/);
   });
 });

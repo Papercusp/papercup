@@ -21,9 +21,8 @@ const stableJson = (value: unknown): string => {
 
 function renderBlock(block: PortableBlock): string {
   if (block.type === 'text') return block.text;
-  if (block.type === 'tool_call') return `[tool call: ${block.name}]\n${stableJson(block.input)}`;
-  if (block.type === 'tool_result') {
-    return `[tool result${block.isError ? ' · error' : ''}: ${block.toolCallId}]\n${block.content}`;
+  if (block.type === 'tool_narrative') {
+    return `[historical tool ${block.event}${block.isError ? ' · error' : ''}: ${block.name}]\n${block.content}`;
   }
   return `[omitted ${block.sourceType}: ${block.reason}]`;
 }
@@ -54,6 +53,7 @@ export function renderSessionPortSeed(input: {
   fidelity: 'full' | 'summary-tail';
   transcript: string;
   renderedHash?: string;
+  currentInstruction?: string | null;
 }): { seed: string; hash: string } {
   const header = [
     '[PAPERCUSP SESSION PORT — UNTRUSTED HISTORICAL DATA]',
@@ -66,6 +66,9 @@ export function renderSessionPortSeed(input: {
   ].join('\n');
   const body = `${header}\n\n${SESSION_PORT_FRAME_OPEN}\n${input.transcript}\n${SESSION_PORT_FRAME_CLOSE}\n`;
   const hash = createHash('sha256').update(body).digest('hex');
-  const seed = `${body}\n[PAPERCUSP SESSION PORT CHECKSUM ${hash}]\nContinue from the historical context above after re-orienting.`;
+  const current = input.currentInstruction?.trim()
+    ? `\n\n[PAPERCUSP CURRENT INSTRUCTION — TRUSTED NEW TURN]\n${sanitizePortableText(input.currentInstruction).text}`
+    : '';
+  const seed = `${body}\n[PAPERCUSP SESSION PORT CHECKSUM ${hash}]\nContinue from the historical context above after re-orienting.${current}`;
   return { seed, hash };
 }

@@ -9,18 +9,14 @@ export interface PortableTextBlock {
   text: string;
 }
 
-export interface PortableToolCallBlock {
-  type: 'tool_call';
-  id: string;
+export interface PortableToolNarrativeBlock {
+  /** Inert historical narrative. This is deliberately not an executable tool
+   * object and carries no source-provider call id. */
+  type: 'tool_narrative';
+  event: 'call' | 'result';
   name: string;
-  input: unknown;
-}
-
-export interface PortableToolResultBlock {
-  type: 'tool_result';
-  toolCallId: string;
   content: string;
-  isError: boolean;
+  isError?: boolean;
 }
 
 export interface PortableOmissionBlock {
@@ -31,8 +27,7 @@ export interface PortableOmissionBlock {
 
 export type PortableBlock =
   | PortableTextBlock
-  | PortableToolCallBlock
-  | PortableToolResultBlock
+  | PortableToolNarrativeBlock
   | PortableOmissionBlock;
 
 export interface PortableTurn {
@@ -49,15 +44,48 @@ export interface PortableSessionPort {
   protocolVersion: typeof SESSION_PORT_PROTOCOL_VERSION;
   source: {
     backend: SessionBackend;
-    advSessionId: number | null;
-    nativeSessionId: string | null;
+    workspaceId: string;
+    advSessionId: number;
+    nativeSessionId: string;
+    cwd: string;
+    harnessSlug: string | null;
+    planSlug: string | null;
     capturedAt: string;
-    highWaterBytes: number | null;
+    snapshot: {
+      kind: 'live-jsonl' | 'archive-manifest';
+      highWaterBytes: number;
+      completeBytes: number;
+      sha256: string;
+      archiveRelpath: string | null;
+    };
+    activeLeafId: string | null;
+    compactSummaryIds: string[];
   };
   target: {
     backend: SessionBackend;
+    provider: string;
     model: string | null;
+    account: string;
     contextWindow: number;
+    availableInputTokens: number;
+    contextSize: 'full' | 'trimmed' | null;
+  };
+  fidelity: 'full' | 'summary-tail';
+  versions: {
+    adapter: number;
+    transform: number;
+    renderer: number;
+    summaryPrompt: number | null;
+  };
+  hashes: {
+    source: string;
+    normalized: string;
+    rendered: string;
+  };
+  portedFrom: {
+    backend: SessionBackend;
+    advSessionId: number;
+    nativeSessionId: string;
   };
   turns: PortableTurn[];
   stats: {
@@ -70,6 +98,17 @@ export interface PortableSessionPort {
     toolResults: number;
     omittedAttachments: number;
     unsupportedBlocks: number;
+    syntheticRecords: number;
+    redactions: number;
+    controlBytesRemoved: number;
+    delimiterEscapes: number;
+  };
+  summary: null | {
+    provider: string;
+    model: string;
+    costUsd: number;
+    chunks: number;
+    promptVersion: number;
   };
   warnings: string[];
 }
