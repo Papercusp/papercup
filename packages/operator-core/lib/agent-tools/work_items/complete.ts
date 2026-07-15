@@ -584,6 +584,15 @@ export default defineTool({
     ],
   },
   capability: 'work_items:write',
+  // Idempotent-completion (backend-reliability-100pct-2026-07-03 W6/P-007; EI-11507): a completion
+  // whose wall-clock beat the 55s transport deadline under load STILL COMMITTED — the handler ran
+  // to completion, and every finish leg is documented-idempotent (synchronizeFinishWork: terminal
+  // state re-apply, plan-status flip, claim release, checkpoint clear are all no-ops on re-apply;
+  // see the seeAlso "a blind retry of the SAME items+state is safe"). Surfacing the TRUTHFUL success
+  // instead of a spurious `timeout` stops the mandatory *:get verify-read + partial-batch
+  // reconciliation the reporter hit every time (EI-11507). Same opt-in already shipped for
+  // plans:set-status. Inert except in the dispatch abort-race branch (dispatch-stack.ts).
+  idempotent: true,
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   // INTRINSIC emission (D-002/D-004): a completion always auto-broadcasts its

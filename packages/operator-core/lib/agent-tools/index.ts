@@ -125,6 +125,9 @@ import './journal/recent';
 // ambient-semantic-push-2026-07-14 P-011 — the per-matcher push-utilization
 // dashboard (read-only, advisory-only; eviction/tuning stays a human decision).
 import './journal/push-utilization';
+// ambient-semantic-push-2026-07-14 P-012 — resolve a collision handle into the
+// peer's distilled brief (pull side; resolving marks the push pulled).
+import './journal/peer-brief';
 import './curation/feed';
 import './curation/change-feed';
 // hive-creative-ideation-2026-06-08 P-003 (B1) — the "state of the Hive" corpus digest (Scout loop substrate):
