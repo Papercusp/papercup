@@ -18,6 +18,7 @@ import {
   hostThroughPty,
   socketPathFor,
   metaPathFor,
+  eventLogPathForOwner,
   encodeControl,
   readManagedKickoffFile,
   ptyWriteChunks,
@@ -60,6 +61,17 @@ function controlInject(sock: string, mode: 'turn' | 'raw' | 'osc' | 'reset' | 'r
   return new Promise((resolve) => {
     const c = net.connect(sock, () => {
       c.write(encodeControl({ mode, data }));
+      c.end();
+    });
+    c.on('error', () => resolve());
+    c.on('close', () => resolve());
+  });
+}
+
+function envelopeInject(sock: string, envelope: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve) => {
+    const c = net.connect(sock, () => {
+      c.write(JSON.stringify({ v: 1, ...envelope }));
       c.end();
     });
     c.on('error', () => resolve());
@@ -441,6 +453,79 @@ describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mo
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+    },
+    25_000,
+  );
+});
+
+describe('P-020 carry-respawn drill correlation', () => {
+  it(
+    'records the fresh native id, carry path, and first-prompt delivery in the durable host event log',
+    async () => {
+      const ownerId = `su-carry-drill-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+      const nativeId = 'ddddabcd-1234-5678-9abc-def012345678';
+      const carryPath = '/safe/carry-drill-d-1.md';
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId, launchContextPath: carryPath }),
+        onExit: (code: number) => { exitCode = code; },
+      });
+
+      try {
+        await sleep(600);
+        await envelopeInject(sock, {
+          mode: 'carry-respawn',
+          data: '⟦carry-drill:d-1⟧',
+          systemPromptAddendum: 'deterministic carry',
+          drillId: 'd-1',
+          sessionClass: 'claude-su',
+        });
+        await sleep(2500);
+        expect(captured()).toContain('ECHO:⟦carry-drill:d-1⟧');
+        const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-respawned',
+          drillId: 'd-1',
+          sessionClass: 'claude-su',
+          nativeId,
+          launchContextPath: carryPath,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-carry-delivered',
+          drillId: 'd-1',
+          sessionClass: 'claude-su',
+          nativeId,
+        }));
+        await rawInject(sock, 'QUIT\n');
+        expect(await done).toBe(0);
+        expect(exitCode).toBe(0);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
     },
     25_000,
   );

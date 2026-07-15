@@ -202,6 +202,18 @@ describe('gradeColdBootDrill — host event + successor transcript', () => {
     });
     expect(result).toMatchObject({ ok: false, error: 'respawn_not_observed' });
   });
+
+  it('surfaces a durable host preparation failure instead of reporting an ambiguous wait', async () => {
+    const result = await gradeColdBootDrill('su-1', 'drill-1', {
+      readLedger: async () => [requested],
+      appendLedger: async () => true,
+      readHostEvents: async () => [{ kind: 'carry-drill-respawn-failed', drillId: 'drill-1', reason: 'argv-build-failed' }],
+      readCarry: async () => SPEC.systemPromptAddendum,
+      loadTranscript: async () => transcript,
+      now: () => NOW,
+    });
+    expect(result).toMatchObject({ ok: false, error: 'respawn_failed' });
+  });
 });
 
 describe('reportColdBootDrills', () => {
@@ -220,4 +232,3 @@ describe('reportColdBootDrills', () => {
     expect(report.sufficientClasses).toEqual(['claude-su']);
   });
 });
-

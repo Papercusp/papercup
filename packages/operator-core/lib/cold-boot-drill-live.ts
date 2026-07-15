@@ -16,7 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { join, sep } from 'node:path';
 import { buildCarryBrief, type CarryBrief } from './carry-brief';
 import { buildOwnerRespawnLaunchSpec, type RespawnLaunchSpec } from './carry-respawn';
 import {
@@ -447,6 +447,16 @@ export async function gradeColdBootDrill(
     (event) => event.kind === 'carry-drill-respawned' && event.drillId === drillId,
   );
   if (!respawn) {
+    const failure = [...hostEvents].reverse().find(
+      (event) => event.kind === 'carry-drill-respawn-failed' && event.drillId === drillId,
+    );
+    if (failure) {
+      return {
+        ok: false,
+        error: 'respawn_failed',
+        note: `The host kept the current process alive because drill respawn preparation failed (${failure.reason ?? 'unknown reason'}).`,
+      };
+    }
     return { ok: false, error: 'respawn_not_observed', note: 'The host has not durably recorded this drill successor yet.' };
   }
   if (!respawn.launchContextPath) {
@@ -502,4 +512,3 @@ export async function reportColdBootDrills(
 ): Promise<CarrySufficiencyReport> {
   return reportFromLedger(await readLedger());
 }
-

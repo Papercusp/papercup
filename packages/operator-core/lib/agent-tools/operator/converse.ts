@@ -600,8 +600,6 @@ export default defineTool({
       console.warn('[operator-converse] spawn parse/dispatch error', err);
     }
 
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ totalCost, assembled }) }],
-    };
+    return { data: { totalCost, assembled } };
   },
 });

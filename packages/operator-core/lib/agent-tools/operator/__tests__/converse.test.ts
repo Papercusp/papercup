@@ -303,7 +303,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     });
     const res = await handler({ messages: [], sessionUser: null }, makeCtx());
     expect(runAgentChat).toHaveBeenCalledTimes(2);
-    const out = JSON.parse(res.content[0].text);
+    const out = res.data;
     expect(out.assembled).toBe('hello');
     expect(out.totalCost).toBeCloseTo(0.02);
     errSpy.mockRestore();
