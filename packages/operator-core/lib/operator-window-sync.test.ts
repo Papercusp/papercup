@@ -9,7 +9,7 @@
  * the listener tests dispatch synthetic StorageEvents — exactly what a peer
  * window's write produces here.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import {
   adoptableSharedState,
   broadcastGenerating,
@@ -23,12 +23,27 @@ import {
 const SHARED_KEY = 'papercusp.operatorShared.v1';
 const GEN_KEY = 'papercusp.operatorGenerating.v1';
 
+// The operator-core jsdom environment ships a PARTIAL localStorage stub
+// (no clear/removeItem) — install a real in-memory Storage for this suite.
+// The module under test reads window.localStorage at call time, so a
+// beforeAll override is seen by every call.
+let store = new Map<string, string>();
+beforeAll(() => {
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => void store.set(k, String(v)),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => void store.clear(),
+    },
+  });
+});
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-07-15T00:00:00Z'));
-  // Not .clear() — the operator-core jsdom localStorage stub is partial.
-  window.localStorage.removeItem(SHARED_KEY);
-  window.localStorage.removeItem(GEN_KEY);
+  store = new Map();
 });
 
 afterEach(() => {

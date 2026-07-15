@@ -24,6 +24,8 @@ import {
   findNativeTranscriptMarker,
   waitForNativeTranscriptMarker,
   tagSessionPortTurn,
+  startupOutputReady,
+  killPtyProcessTree,
   MAX_CONTROL_PAYLOAD_BYTES,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
@@ -82,6 +84,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ID_OK = { verifyIdentity: () => true } as const;
 
 describe('session-port managed seed + native persistence helpers', () => {
+  it('waits for OMP backend startup rather than treating terminal-query noise as editor readiness', () => {
+    expect(startupOutputReady('omp', '\x1b[6n\x1b[?25l')).toBe(false);
+    expect(startupOutputReady('omp', '\x1b[2J omp v16.3.3 \x1b[0m')).toBe(true);
+    expect(startupOutputReady('codex', '\x1b[6n')).toBe(true);
+  });
+
+  it('signals the forkpty process group and retains a direct-child fallback', () => {
+    const groupKill = vi.fn();
+    const directKill = vi.fn();
+    expect(killPtyProcessTree({ pid: 4242, kill: directKill }, 'SIGHUP', groupKill)).toBe(true);
+    if (process.platform !== 'win32') expect(groupKill).toHaveBeenCalledWith(-4242, 'SIGHUP');
+    expect(directKill).toHaveBeenCalledWith('SIGHUP');
+  });
+
   it('securely reads a 0600 seed and rejects a symlink', () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-port-seed-'));
     try {
@@ -172,7 +188,7 @@ describe('hostThroughPty real round-trip', () => {
       const childCode = [
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-        "let ready=false,b='',wrote=false;setTimeout(()=>{ready=true;process.stdout.write('READY\\n');},400);",
+        "let ready=false,b='',wrote=false;process.stdout.write('\\x1b[6n');setTimeout(()=>{ready=true;process.stdout.write('omp v16.3.3\\nREADY\\n');},400);",
         "process.stdin.on('data',d=>{b+=d;if(!wrote&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){if(!ready){process.stdout.write('EARLY-SEED\\n');process.exit(3);return;}wrote=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',text:process.env.PORT_MARKER})+'\\n');process.stdout.write('WORKING\\n');setTimeout(()=>process.exit(0),1200);}});",
         "setTimeout(()=>process.exit(2),10000);",
       ].join('');
@@ -215,6 +231,80 @@ describe('hostThroughPty real round-trip', () => {
           nativeRef: nativeFile,
         });
         await done;
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+  it(
+    'SIGINT tears down the whole OMP-style process group, records one failed port disposition, and removes listeners',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-port-sigint-'));
+      const hash = 'd'.repeat(64);
+      const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${hash}]`;
+      const seed = join(root, 'seed.md');
+      writeFileSync(seed, `ported history\n${marker}\n`, { mode: 0o600 });
+      chmodSync(seed, 0o600);
+      const ownerId = `su-port-sigint-${process.pid}-${Math.floor(performance.now())}`;
+      const { captured, io } = fakeIo();
+      const signals = new EventEmitter();
+      const onKickoffPersisted = vi.fn(async () => undefined);
+      const childCode = [
+        "const {spawn}=require('child_process');",
+        "const g=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});",
+        "process.stdout.write('GRAND:'+g.pid+'\\nomp v16.3.3\\n');",
+        "process.stdin.setRawMode?.(true);process.stdin.resume();setInterval(()=>{},1000);",
+      ].join('');
+      try {
+        const done = hostThroughPty({
+          command: execPath,
+          args: ['-e', childCode],
+          cwd: root,
+          env: {
+            ...process.env,
+            PAPERCUSP_SID: ownerId,
+            PAPERCUSP_AGENT: 'omp',
+            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+            PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+            PAPERCUSP_TURN_PROVENANCE_DIR: join(root, 'provenance'),
+            PI_CODING_AGENT_DIR: join(root, 'omp-agent'),
+            TERM: 'xterm-256color',
+          },
+          ownerId,
+          io,
+          bridgeTty: false,
+          kickoffFile: seed,
+          sessionPort: { renderedHash: hash },
+          onKickoffPersisted,
+          nativePersistenceTimeoutMs: 5000,
+          signalSource: signals,
+          onExit: () => undefined,
+        });
+        const deadline = Date.now() + 3000;
+        while (!/GRAND:\d+/.test(captured()) && Date.now() < deadline) await sleep(25);
+        const grandPid = Number(captured().match(/GRAND:(\d+)/)?.[1]);
+        expect(grandPid).toBeGreaterThan(1);
+
+        signals.emit('SIGINT');
+        await done;
+        expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
+        expect(onKickoffPersisted.mock.calls[0]?.[0]).toMatchObject({
+          persisted: false,
+          renderedHash: hash,
+        });
+        expect(signals.listenerCount('SIGINT')).toBe(0);
+        expect(signals.listenerCount('SIGTERM')).toBe(0);
+        expect(signals.listenerCount('SIGHUP')).toBe(0);
+
+        let alive = true;
+        const reapDeadline = Date.now() + 2000;
+        while (alive && Date.now() < reapDeadline) {
+          try { process.kill(grandPid, 0); } catch { alive = false; }
+          if (alive) await sleep(25);
+        }
+        expect(alive).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

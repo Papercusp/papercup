@@ -898,6 +898,42 @@ export function stripAnsi(s) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }
 
+/** A launch seed must not reach a TUI before its editor exists. Most backends
+ * are ready for the existing quiet-window check after their first output byte,
+ * but OMP emits terminal capability probes before it paints any UI. Its stable
+ * `omp vN` banner is the earliest backend-owned proof that startup reached the
+ * dashboard; the ordinary output-quiescence gate still runs after this marker.
+ * Pure and exported so backend readiness cannot regress into timing folklore. */
+export function startupOutputReady(agent, output) {
+  const visible = stripAnsi(output);
+  if (String(agent ?? '').toLowerCase() === 'omp') return /\bomp\s+v\d/i.test(visible);
+  return visible.length > 0;
+}
+
+/** Terminate the entire process group created by forkpty, not only its leader.
+ * OMP launches a descendant process; signalling only node-pty's immediate child
+ * can let that target survive after the host exits. The direct child signal is
+ * retained as a cross-platform fallback (negative group pids are POSIX-only). */
+export function killPtyProcessTree(child, signal = 'SIGKILL', kill = process.kill) {
+  const pid = Number(child?.pid);
+  let killed = false;
+  if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 1) {
+    try {
+      kill(-pid, signal);
+      killed = true;
+    } catch {
+      /* the group may already be gone; try the direct child below */
+    }
+  }
+  try {
+    child?.kill?.(signal);
+    killed = true;
+  } catch {
+    /* already gone */
+  }
+  return killed;
+}
+
 /** Status of the /mcp dialog row naming `name`: 'connected' | 'not-connected' |
  *  'unknown' | null (row doesn't name it). Negative markers are checked FIRST;
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
@@ -1404,6 +1440,7 @@ export function injectTurn(sock, text) {
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
  * @param {object} [o.sessionPort]      { renderedHash } for the managed seed
  * @param {(proof:object)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
+ * @param {object} [o.signalSource]      process-like on/off signal source (tests)
  */
 export function hostThroughPty(o) {
   const {
@@ -1435,6 +1472,7 @@ export function hostThroughPty(o) {
     sessionPort = null,
     onKickoffPersisted = async () => {},
     nativePersistenceTimeoutMs = Number(env.PAPERCUSP_SESSION_PORT_PERSIST_TIMEOUT_MS) || 30_000,
+    signalSource = process,
   } = o;
   if (kickoff && kickoffFile) throw new Error('plain kickoff and managed kickoff file are mutually exclusive');
   const managedKickoff = kickoffFile
@@ -1565,11 +1603,12 @@ export function hostThroughPty(o) {
   // fields only (the read-side contract in operator-core psu-pty-discovery.ts
   // tolerates their absence for files written by older hosts).
   const activity = makeActivityTracker();
-  // Counts REAL bytes observed from the current child. Output-quiet alone is
-  // not a startup-ready signal: before the first byte, lastOutputAt=0 reads as
-  // "quiet forever" and a launch seed can be written before a slow TUI has
-  // installed its input handler (live Codex port WI-4943). Reset on recycle.
-  let childOutputEpoch = 0;
+  // Output-quiet alone is not a startup-ready signal: before a backend-owned
+  // marker, terminal probes can read as "quiet at prompt" even though a slow
+  // TUI has not installed its editor yet (live Codex/OMP ports WI-4943/WI-4947).
+  // Reset on recycle.
+  let childStartupOutput = '';
+  let childStartupReady = false;
   const baseMeta = {
     ownerId,
     advSessionId: advSessionId != null ? String(advSessionId) : null,
@@ -1768,12 +1807,12 @@ export function hostThroughPty(o) {
       // least one real startup byte; the subsequent quiet gate then proves the
       // startup repaint has settled at a prompt. Never infer readiness from the
       // sentinel lastOutputAt=0 value.
-      while (requireInitialOutput && childOutputEpoch === 0 && Date.now() < deadline) {
+      while (requireInitialOutput && !childStartupReady && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, deadline - Date.now()))));
       }
-      if (requireInitialOutput && childOutputEpoch === 0) dropReason = 'no-startup-output';
+      if (requireInitialOutput && !childStartupReady) dropReason = 'no-startup-ready-marker';
       // eslint-disable-next-line no-constant-condition
-      while (dropReason !== 'no-startup-output') {
+      while (dropReason !== 'no-startup-ready-marker') {
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
         attempts++;
         const atPrompt = await agentBusyGate.waitAtPrompt();
@@ -1811,7 +1850,7 @@ export function hostThroughPty(o) {
     }
     try {
       process.stderr.write(
-        `psu-pty-host: ${label} DROPPED for ${ownerId} (${dropReason === 'no-startup-output' ? 'the child emitted no startup output' : 'the child never settled to its prompt'} ` +
+        `psu-pty-host: ${label} DROPPED for ${ownerId} (${dropReason === 'no-startup-ready-marker' ? 'the child never emitted its startup-ready marker' : 'the child never settled to its prompt'} ` +
           `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
       );
     } catch {
@@ -2277,7 +2316,11 @@ export function hostThroughPty(o) {
   // closure, so they need no re-wiring.
   wireChildData = () => {
     child.onData((d) => {
-      childOutputEpoch += 1;
+      if (!childStartupReady) {
+        childStartupOutput += typeof d === 'string' ? d : String(d);
+        if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
+        childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
+      }
       activity.touchOutput();
       stdout.write(d);
       // P-003: feed any live output taps (mcp-reconnect macro screen reads).
@@ -2337,9 +2380,20 @@ export function hostThroughPty(o) {
   return new Promise((resolve) => {
     let cleaned = false;
     let orphanTimer = null; // WI-3141 orphan watchdog; assigned below, cleared in cleanup
+    let killChild = () => {};
     const cleanup = (code) => {
       if (cleaned) return;
       cleaned = true;
+      // A PTY leader can exit before its descendants. Reap the group while its
+      // forkpty pgid is still unambiguous, then remove our signal listeners.
+      killPtyProcessTree(child, 'SIGKILL');
+      try {
+        signalSource.off?.('SIGINT', killChild);
+        signalSource.off?.('SIGTERM', killChild);
+        signalSource.off?.('SIGHUP', killChild);
+      } catch {
+        /* best-effort listener hygiene */
+      }
       if (bridgeTty) {
         try {
           stdin.setRawMode(false);
@@ -2467,7 +2521,8 @@ export function hostThroughPty(o) {
         // rejects → boot-retry storm). env (PAPERCUSP_SID) is untouched, so coord
         // identity / locks / socket all survive; only the native claude id rotates.
         const { args: recycleArgs, nativeId } = mintRecycleArgs(args);
-        childOutputEpoch = 0;
+        childStartupOutput = '';
+        childStartupReady = false;
         child = spawnChild(recycleArgs);
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug
@@ -2522,17 +2577,18 @@ export function hostThroughPty(o) {
       });
     };
 
-    // In raw mode the terminal does NOT generate SIGINT — Ctrl-C is a byte
-    // forwarded to the child (what we want). Handle teardown signals only.
-    const killChild = () => {
-      try {
-        child.kill();
-      } catch {
-        cleanup(0);
-      }
+    // Raw-mode keyboard Ctrl-C remains a byte forwarded to the target. A real
+    // process SIGINT (outer terminal/executor interrupt) is teardown, just like
+    // SIGHUP/SIGTERM: kill the whole forkpty group so no backend descendant can
+    // survive and let child.onExit serialize the managed-port failure receipt.
+    killChild = () => {
+      const signalled = killPtyProcessTree(child, 'SIGHUP');
+      killPtyProcessTree(child, 'SIGKILL');
+      if (!signalled) cleanup(0);
     };
-    process.on('SIGTERM', killChild);
-    process.on('SIGHUP', killChild);
+    signalSource.on?.('SIGINT', killChild);
+    signalSource.on?.('SIGTERM', killChild);
+    signalSource.on?.('SIGHUP', killChild);
 
     // ── Orphan / vanished-terminal teardown (WI-3141) ──────────────────────────
     // A managed-pty host must NOT outlive the interactive terminal it bridges.
@@ -2557,12 +2613,8 @@ export function hostThroughPty(o) {
           /* the terminal we'd warn on may be the very one that vanished */
         }
         try {
-          child.kill('SIGHUP');
-        } catch {
-          /* already gone */
-        }
-        try {
-          child.kill('SIGKILL');
+          killPtyProcessTree(child, 'SIGHUP');
+          killPtyProcessTree(child, 'SIGKILL');
         } catch {
           /* already gone */
         }

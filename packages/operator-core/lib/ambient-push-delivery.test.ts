@@ -10,9 +10,11 @@ import {
   applyPushInjectionDoor,
   rowToPushObject,
   pushInjectionDoorTokens,
+  reportVolumeViolations,
 } from './ambient-push-delivery';
-import { makePush } from './ambient-push';
+import { makePush, type DropReason } from './ambient-push';
 import type { PushDeliveryRow } from './push-delivery-store';
+import type { VolumeReport } from './push-volume-guard';
 
 const row = (over: Partial<PushDeliveryRow> = {}): PushDeliveryRow => ({
   id: 1,
@@ -105,8 +107,10 @@ describe('prepareAmbientPushBlock (select → tally → render, mocked store)', 
 
   async function withMockedStore(mock: Record<string, unknown>) {
     vi.resetModules();
-    const recordDelivered = vi.fn(async () => 0);
-    const recordDropped = vi.fn(async () => 0);
+    const recordDelivered = vi.fn<(ids: number[]) => Promise<number>>(async () => 0);
+    const recordDropped = vi.fn<(items: Array<{ id: number; reason: DropReason }>) => Promise<number>>(
+      async () => 0,
+    );
     vi.doMock('./push-delivery-store', () => ({
       pendingPushes: async () => [],
       deliveredRefs: async () => new Set<string>(),
@@ -174,7 +178,7 @@ describe('prepareAmbientPushBlock (select → tally → render, mocked store)', 
     expect(block).toBe('');
     expect(recordDelivered.mock.calls[0]![0]).toEqual([]);
     // both overflow the exhausted budget → dropped budget-exhausted.
-    const droppedArg = recordDropped.mock.calls[0]![0] as Array<{ id: number; reason: string }>;
+    const droppedArg = recordDropped.mock.calls[0]![0];
     expect(droppedArg.map((d) => d.reason)).toEqual(['budget-exhausted', 'budget-exhausted']);
     expect(droppedArg.map((d) => d.id).sort()).toEqual([30, 31]);
   });
@@ -197,5 +201,77 @@ describe('prepareAmbientPushBlock (select → tally → render, mocked store)', 
       },
     });
     expect(await mod.prepareAmbientPushBlock({ ownerId: 'su-recv' })).toBe('');
+  });
+
+  it('P-009: every pass hands the sink an independent per-class volume report', async () => {
+    const rows = [
+      row({ id: 50, handle_ref: 'su-a', score: 0.9 }),
+      row({ id: 51, matcher_kind: 'insight', severity: 'info', handle_kind: 'doc', handle_ref: 'runbook/z', teaser: 'insight', score: 0.9, source_session_id: null }),
+    ];
+    const { mod } = await withMockedStore({ pendingPushes: async () => rows });
+    const reports: VolumeReport[] = [];
+    await mod.prepareAmbientPushBlock({
+      ownerId: 'su-recv',
+      sessionClass: 'drone',
+      onVolumeReport: (r) => reports.push(r),
+    });
+    expect(reports).toHaveLength(1);
+    // 2 candidates in; the info one is severity-gated away from the drone; the
+    // independent re-count agrees the delivered feed honored the class contract.
+    expect(reports[0]).toMatchObject({ sessionClass: 'drone', candidateVolume: 2, deliveredVolume: 1, ok: true });
+  });
+
+  it('P-009: a sink throw never touches the pass (the guard is telemetry, not control)', async () => {
+    const rows = [row({ id: 60, handle_ref: 'su-a', score: 0.9 })];
+    const { mod } = await withMockedStore({ pendingPushes: async () => rows });
+    const block = await mod.prepareAmbientPushBlock({
+      ownerId: 'su-recv',
+      onVolumeReport: () => {
+        throw new Error('sink down');
+      },
+    });
+    expect(block).toContain('pull: session:su-a');
+  });
+});
+
+describe('reportVolumeViolations (the default P-009 sink)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const okReport: VolumeReport = {
+    sessionClass: 'drone',
+    budget: 2,
+    candidateVolume: 4,
+    deliveredVolume: 2,
+    alreadyDelivered: 0,
+    totalAgainstBudget: 2,
+    remainingBudget: 2,
+    withinBudget: true,
+    overflow: 0,
+    violations: [],
+    ok: true,
+  };
+
+  it('stays silent while the class contract holds', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    reportVolumeViolations(okReport);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns once, legibly, when the re-count finds a violation', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    reportVolumeViolations({
+      ...okReport,
+      deliveredVolume: 3,
+      totalAgainstBudget: 3,
+      withinBudget: false,
+      overflow: 1,
+      violations: [{ kind: 'over-budget', detail: 'delivered 3 vs budget 2 for class drone (over by 1)' }],
+      ok: false,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('P-009 volume-guard violation');
+    expect(String(warn.mock.calls[0]![0])).toContain('over by 1');
   });
 });
