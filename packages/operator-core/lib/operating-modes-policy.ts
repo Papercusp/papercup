@@ -238,7 +238,7 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
   scorecard is itself an idea prompt); (iii) your own past graded proposals — \`blender:ideation-feedback\`,
   the grader-feedback priming on features you filed — so a pass builds on what landed and what the
   grader flagged, not a blank page. Then, AS
-  you work: file **RUBRIC-GRADED** observations — \`improvements:capture { rubricRef, ratings }\`,
+  you work: file **RUBRIC-GRADED** observations — \`improvements:capture { lane:'observation', observation:{ rubricRef, ratings } }\`,
   each rating carrying concrete EVIDENCE, never a bare score — whenever a ratified rubric covers
   what you just measured; and when you review or triage a Scout-routed idea, **GRADE it** via
   \`blender:grade-idea\` (an su grades as \`owner\` — the tool already admits you). **Vary your

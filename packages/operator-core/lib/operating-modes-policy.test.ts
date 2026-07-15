@@ -22,7 +22,8 @@ describe('renderModesPolicy — IDEATE grounding pre-pass (P-004)', () => {
   });
 
   it('files rubric-graded observations with evidence + grades Scout-routed ideas', () => {
-    expect(full).toContain('rubricRef');
+    expect(full).toContain("improvements:capture { lane:'observation', observation:{ rubricRef, ratings } }");
+    expect(full).not.toContain('improvements:capture { rubricRef, ratings }');
     expect(full).toMatch(/EVIDENCE/);
     expect(full).toContain('blender:grade-idea');
   });

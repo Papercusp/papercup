@@ -697,6 +697,7 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
     expect(payload.message).toMatch(/plans:set-now/);
     // su-loop-capability-parity P-006: wave-close fleet-execution-health scorecard.
     expect(payload.message).toContain('fleet-execution-health');
+    expect(payload.message).toContain('observation:{ rubricRef:"fleet-execution-health", ratings }');
     expect(payload.message).toMatch(/per-WAVE, never per-turn/);
     // On a writable tmp the compose lands and its path threads into psu's --launch-context.
     if (payload.memberBaselineApplied) {

@@ -412,6 +412,8 @@ describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mo
           // quiet fast, so a short output-quiet window lets the carry land promptly.
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
         },
         ownerId,
         io,
@@ -486,6 +488,8 @@ describe('P-020 carry-respawn drill correlation', () => {
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
         },
         ownerId,
         io,
@@ -503,7 +507,12 @@ describe('P-020 carry-respawn drill correlation', () => {
           drillId: 'd-1',
           sessionClass: 'claude-su',
         });
-        await sleep(2500);
+        const deliveryDeadline = Date.now() + 5_000;
+        while (Date.now() < deliveryDeadline) {
+          const log = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (log.includes('"kind":"carry-drill-carry-delivered"')) break;
+          await sleep(25);
+        }
         expect(captured()).toContain('ECHO:⟦carry-drill:d-1⟧');
         const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
         expect(events).toContainEqual(expect.objectContaining({

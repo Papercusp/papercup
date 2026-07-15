@@ -28,6 +28,28 @@ import { resolveWorkItemRef } from '../../work-items';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { coerceCaptureArgs } from './capture-coerce';
 
+const observationRatingsSchema = z.record(
+  z.string().min(1),
+  z.object({
+    rating: z
+      .string()
+      .min(1)
+      .describe(
+        "a value from the criterion's ratingScale — default ['healthy','degraded','broken','unknown'] ('unknown' = not-assessable this wake)",
+      ),
+    evidence: z
+      .string()
+      .min(1)
+      .describe('MANDATORY concrete evidence backing the rating — a metric, a query result, a reference (a rating without evidence is rejected)'),
+    suggestion: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('OPTIONAL: your concrete improvement idea for this criterion — the Blender ideators see it as a seed'),
+  }),
+);
+
 export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
@@ -93,6 +115,18 @@ export default defineTool({
     checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
     origin: z.enum(['organic', 'drill', 'replay', 'shadow']).optional().describe('signal provenance (frontier P-002) — default organic. ONLY a frontier loop passes non-organic (vaccination drill, replay counterfactual, shadow ablation); synthetic rows stay out of organic learners'),
     lane: z.enum(['improvement', 'observation']).optional().describe("'observation' files a PRE-IDEA turn-end reflection into the SEPARATE observation lane (D-005) — it never enters the work queue/triage/auto-implement; only Blender's corpus-digest + the Observations pane read it. Default 'improvement'."),
+    // EI-12176 compatibility aliases. Older generated guidance advertised these at
+    // top level. Declaring + normalising them prevents tools:invoke's permissive
+    // envelope from silently stripping a scorecard while keeping observation.* as
+    // the canonical shape shown to new callers.
+    rubricRef: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('compatibility alias for observation.rubricRef; prefer observation:{ rubricRef, ratings }'),
+    ratings: observationRatingsSchema
+      .optional()
+      .describe('compatibility alias for observation.ratings; prefer observation:{ rubricRef, ratings }'),
     observation: z
       .object({
         kind: z.enum(['friction', 'workaround', 'gap', 'surprise', 'reinforce']).optional(),
@@ -106,15 +140,7 @@ export default defineTool({
         sourceHive: z.string().max(120).optional().describe('the pot the observation came FROM — AUTO-DERIVED from ctx (the agent harness/pot) when omitted; explicit callers (Kettle/Blender) may set it'),
         targetHive: z.string().max(120).optional().describe('optional: the pot the observation is ABOUT (a cross-pot observation)'),
         rubricRef: z.string().max(120).optional().describe("a rubrics.rubric_id this observation grades against (e.g. 'pot-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it"),
-        ratings: z
-          .record(
-            z.string().min(1),
-            z.object({
-              rating: z.string().min(1).describe("a value from the criterion's ratingScale — default ['healthy','degraded','broken','unknown'] ('unknown' = not-assessable this wake)"),
-              evidence: z.string().min(1).describe('MANDATORY concrete evidence backing the rating — a metric, a query result, a reference (a rating without evidence is rejected)'),
-              suggestion: z.string().min(1).max(2000).optional().describe('OPTIONAL: your concrete improvement idea for this criterion — the Blender ideators see it as a seed'),
-            }),
-          )
+        ratings: observationRatingsSchema
           .optional()
           .describe('per-criterion ratings against rubricRef, KEYED by rubric criterion `key` (a scorecard: one rating per criterion). evidence is mandatory on every entry'),
         // rubric-system-improvements-2026-07-12 P-002: the scoped-drill shorthand.
@@ -197,7 +223,7 @@ export default defineTool({
       .describe(
         "IDEATE-pass provenance for an su session's kind:'feature' origination — stamps the routed-idea ledger row (origin='su-ideate') with your declared lens so grade→outcome→feedback learning attributes back to it. Never a gate: purely additive, ignored for lane:observation / non-feature kinds.",
       ),
-    }),
+    }).strict(),
   ),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
@@ -217,12 +243,30 @@ export default defineTool({
     const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const ctxHarness =
       typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
-    const observationBase = args.observation
+    if (args.observation?.rubricRef && args.rubricRef && args.observation.rubricRef !== args.rubricRef) {
+      throw new ObservationEvidenceError(
+        'conflicting rubricRef values: pass the scorecard once under observation.rubricRef (preferred) or top-level rubricRef (compatibility alias)',
+      );
+    }
+    if (args.observation?.ratings && args.ratings) {
+      throw new ObservationEvidenceError(
+        'ratings were supplied twice: pass them once under observation.ratings (preferred) or top-level ratings (compatibility alias)',
+      );
+    }
+    const observationInput =
+      args.observation || args.rubricRef || args.ratings
+        ? {
+            ...args.observation,
+            rubricRef: args.observation?.rubricRef ?? args.rubricRef,
+            ratings: args.observation?.ratings ?? args.ratings,
+          }
+        : undefined;
+    const observationBase = observationInput
       ? (() => {
           // P-002 notExercised expansion (rubric-system-improvements-2026-07-12):
           // each listed key becomes an idle:-tagged unknown UNLESS explicitly rated;
           // the shorthand key itself is stripped so the stored payload is pure ratings.
-          const { notExercised, ...rest } = args.observation!;
+          const { notExercised, ...rest } = observationInput;
           const expanded =
             notExercised && notExercised.length > 0
               ? Object.fromEntries(
