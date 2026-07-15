@@ -10,9 +10,13 @@ vi.mock('../../operator-conversations', () => ({
   getOrCreateActiveConversation: vi.fn(),
   appendTurn: vi.fn(),
 }));
+vi.mock('../../sync-sse', () => ({
+  notifySyncInvalidate: vi.fn(async () => {}),
+}));
 
 import appendTool from './append';
 import { getOrCreateActiveConversation, appendTurn } from '../../operator-conversations';
+import { notifySyncInvalidate } from '../../sync-sse';
 
 const getConv = vi.mocked(getOrCreateActiveConversation);
 const append = vi.mocked(appendTurn);
@@ -42,5 +46,15 @@ describe('conversation:append (EI-2905 — pass conv.id, never the nonexistent c
       {} as never,
     );
     expect(append.mock.calls[0][0].source).toBe('voice_tts');
+  });
+
+  it('invalidates the chat pane sync query after the append (WI-4838 C)', async () => {
+    await (appendTool as { handler: (a: never, c: never) => Promise<unknown> }).handler(
+      { role: 'user', text: 'ping' } as never,
+      {} as never,
+    );
+    expect(vi.mocked(notifySyncInvalidate)).toHaveBeenCalledWith('operatorTurns.byConversation', {
+      conversationId: 'conv-1',
+    });
   });
 });

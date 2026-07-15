@@ -26,7 +26,9 @@ const GEN_KEY = 'papercusp.operatorGenerating.v1';
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-07-15T00:00:00Z'));
-  window.localStorage.clear();
+  // Not .clear() — the operator-core jsdom localStorage stub is partial.
+  window.localStorage.removeItem(SHARED_KEY);
+  window.localStorage.removeItem(GEN_KEY);
 });
 
 afterEach(() => {

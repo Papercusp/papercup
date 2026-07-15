@@ -96,6 +96,7 @@ beforeAll(async () => {
   for (const m of [
     '609-session-cursor.sql',
     '123-coordination-substrate.sql',
+    '602-work-item-follow-blockers.sql', // adds follow_blockers/derived_from_* the sub store writes
     '610-push-delivery.sql',
     '613-topic-hysteresis.sql',
   ]) {
@@ -253,8 +254,23 @@ describe('P-009 volume guard on the rail (PG)', () => {
     });
     expect(block.split('\n').filter((l) => l.includes('pull:'))).toHaveLength(2);
 
-    // The next pass in the same window: budget exhausted, nothing more ships,
-    // and the report shows the cumulative charge — the after-side measurement.
+    // The next pass in the same window: a FRESH candidate arrives, but the
+    // window budget is already spent — nothing more ships, and the report shows
+    // the cumulative charge (the after-side of the measurement). The first
+    // pass's leftovers were recorded dropped (the P-011 ledger feed), so only
+    // the new row is pending here.
+    await enqueuePush({
+      targetOwnerId: 'own-p009',
+      targetSessionId: 'su-src-late',
+      matcherKind: 'collision',
+      severity: 'critical',
+      handleKind: 'session',
+      handleRef: 'su-peer-late',
+      handleQuery: ['WI-4790'],
+      teaser: 'sustained collision with su-peer-late',
+      score: 0.9,
+      sourceSessionId: 'su-peer-late',
+    });
     const second = await prepareAmbientPushBlock({
       ownerId: 'own-p009',
       sessionClass: 'drone',
@@ -262,6 +278,12 @@ describe('P-009 volume guard on the rail (PG)', () => {
     });
     expect(second).toBe('');
     expect(reports).toHaveLength(2);
-    expect(reports[1]).toMatchObject({ deliveredVolume: 0, alreadyDelivered: 2, ok: true });
+    expect(reports[1]).toMatchObject({
+      candidateVolume: 1,
+      deliveredVolume: 0,
+      alreadyDelivered: 2,
+      remainingBudget: 0,
+      ok: true,
+    });
   });
 });
