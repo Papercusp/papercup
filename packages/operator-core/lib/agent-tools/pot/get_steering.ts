@@ -21,7 +21,7 @@ export default defineTool({
   name: 'pot:get-steering',
   profile: 'engineer',
   description:
-    'Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the Mug may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Mug reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). Also returns `inconsistent: true` (EI-8277) when the directive text reads like the pause was lifted but `pauseNewWork` is still true — a drift nothing else catches; reconcile with pot:set-steering if the owner meant to resume. The READ twin of pot:set-steering.',
+    'Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the Mug may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Mug reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). Also returns `inconsistent: true` (EI-8277) when the directive text reads like the pause was lifted but `pauseNewWork` is still true — a drift nothing else catches; reconcile with pot:set-steering if the owner meant to resume. Also returns `modelSpecDrift: string[]` (EI-12807) — model specs this pot pins via `modelTiers`/`modelOverrides` that are NO LONGER in the committed tier menu (a global tier-menu fix removed them, but the per-pot override still wins, so spawns die on "model unavailable"); non-empty ⇒ reconcile via pot:set-steering { modelTiers:null, modelOverrides:null }. The READ twin of pot:set-steering.',
   guidance: {
     when: 'Checking what the Mug is currently steered toward — before changing it, or to confirm a pot:set-steering write landed.',
     notWhen: 'Changing steering — pot:set-steering. Reading the whole pot status — pot:status.',
@@ -55,6 +55,19 @@ export default defineTool({
       });
     }
     const steering = await getOwnerSteering(workspaceId, installSlug);
+    // EI-12807: revalidate any pinned model spec against the CURRENT committed
+    // (workspace-default) tier menu. A pot's session modelTiers/modelOverrides
+    // override wins over the workspace default, so a global tier-menu fix cannot
+    // reach it — a stale pin silently keeps killing spawns on "model unavailable".
+    // Fail-soft: an unreadable config falls back to DEFAULT_MODEL_TIERS.
+    let committedTiers: readonly ModelTier[] = DEFAULT_MODEL_TIERS;
+    try {
+      const { readAgentConfig } = await import('../../agent-config');
+      const cfg = await readAgentConfig();
+      if (cfg.tiers && cfg.tiers.length > 0) committedTiers = cfg.tiers;
+    } catch {
+      /* unreadable agent-config — compare against the committed default menu */
+    }
     return json({
       ok: true,
       pot: installSlug,
@@ -62,6 +75,10 @@ export default defineTool({
       // EI-8277: flag when the directive text reads like "resumed" but pauseNewWork
       // is still the hard gate ON — advisory only, never auto-clears the pause.
       inconsistent: steeringLooksInconsistent(steering),
+      // EI-12807: the specs this steering pins that are NO LONGER in the committed
+      // tier menu — non-empty ⇒ reconcile via pot:set-steering { modelTiers:null,
+      // modelOverrides:null } (inherit the fixed workspace default). Advisory only.
+      modelSpecDrift: steeringModelSpecDrift(steering, committedTiers),
     });
   },
 });

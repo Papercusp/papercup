@@ -149,6 +149,16 @@ export interface MugBriefFloor {
    * `pause-new-work` is HARD-enforced in `surveyPot`, P-003).
    */
   ownerSteering?: OwnerSteering;
+  /**
+   * Model specs this pot's steering PINS (`modelTiers` / `modelOverrides`) that are
+   * NO LONGER in the committed tier menu (EI-12807). Computed fail-soft in
+   * `computeMugWakeBrief` via `steeringModelSpecDrift`; non-empty ⇒ a stale per-pot
+   * override survived a global tier-menu fix and is silently killing spawns on
+   * "model unavailable". Surfaced as a loud reconcile-nudge so the Mug catches the
+   * drift on the very next wake instead of chasing a launcher red herring. Empty /
+   * absent ⇒ no drift (the section is omitted).
+   */
+  ownerSteeringModelSpecDrift?: string[];
 }
 
 /** Per-section list caps so the brief stays a DIGEST, never a raw dump (P-004). */
@@ -419,6 +429,16 @@ export function renderMugBrief(input: MugBriefInput): string {
           'like the pause was lifted, but `pauseNewWork` is still TRUE. If the owner meant ' +
           'to resume, reconcile now via `pot:set-steering { pauseNewWork:false }` — do not ' +
           'silently keep re-reading this contradiction every wake.',
+      );
+    }
+    if (f.ownerSteeringModelSpecDrift && f.ownerSteeringModelSpecDrift.length > 0) {
+      out.push(
+        `⚠️ **Steering pins a DEAD model spec (EI-12807):** ${f.ownerSteeringModelSpecDrift.join(', ')} — ` +
+          'no longer in the committed tier menu (a global tier-menu fix removed it), but this pot\'s session ' +
+          '`modelTiers`/`modelOverrides` override still WINS, so cup/kettle spawns die on "model unavailable". ' +
+          'This is NOT a launcher/orchestrator reload lag — reconcile via ' +
+          '`pot:set-steering { modelTiers:null, modelOverrides:null }` (inherit the fixed workspace default) ' +
+          'before blaming the launcher.',
       );
     }
 

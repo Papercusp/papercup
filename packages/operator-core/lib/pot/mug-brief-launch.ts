@@ -31,7 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { renderMugBrief, floorFromSurvey, type BriefEscalation, type BriefCup, type BriefInboxItem, type BriefCapacity } from './mug-brief';
 import { overwatchAliveForQueen } from '../overwatch/cross-monitor';
-import { getOwnerSteering, isPausedNow, hasActiveThrottle, type OwnerSteering } from '../owner-steering';
+import { getOwnerSteering, isPausedNow, hasActiveThrottle, steeringModelSpecDrift, type OwnerSteering } from '../owner-steering';
 import { fetchGatewayHeadroom } from '../inference-gateway/observability';
 import { buildCapacityReport } from '../fleet/capacity-dispatch';
 import { parsePriorityTierMap } from '@papercusp/papercusp-shared/agent';
@@ -326,6 +326,20 @@ export async function computeMugWakeBrief(
         gatherOverwatchLiveness(workspaceId, installSlug),
         gatherCapacity(),
       ]);
+    // EI-12807: model-spec drift — specs this pot's steering pins that dropped out
+    // of the committed tier menu (a global tier-menu fix the per-pot override can't
+    // see). Fail-soft: an unreadable agent-config falls back to the committed default
+    // menu inside steeringModelSpecDrift. Only when the pot is actually steered.
+    let ownerSteeringModelSpecDrift: string[] = [];
+    if (ownerSteering) {
+      try {
+        const { readAgentConfig } = await import('../agent-config');
+        const cfg = await readAgentConfig();
+        ownerSteeringModelSpecDrift = steeringModelSpecDrift(ownerSteering, cfg.tiers ?? []);
+      } catch {
+        ownerSteeringModelSpecDrift = steeringModelSpecDrift(ownerSteering, []);
+      }
+    }
     const wokeBy = opts.wokeBy?.trim();
     const floor = floorFromSurvey(survey, {
       // EI-3419: ground-truth pot anchor — her carry-note/journal is
@@ -341,6 +355,7 @@ export async function computeMugWakeBrief(
       ...(overwatchAlive !== undefined ? { overwatchAlive } : {}),
       ...(capacity ? { capacity } : {}),
       ...(ownerSteering ? { ownerSteering } : {}),
+      ...(ownerSteeringModelSpecDrift.length > 0 ? { ownerSteeringModelSpecDrift } : {}),
     });
     // L1c: standing-facts fold — deterministic, fail-soft (a facts outage must
     // never block the brief). workspace + role:mug + this pot's harness scope.
