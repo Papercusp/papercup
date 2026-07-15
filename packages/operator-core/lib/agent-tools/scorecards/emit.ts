@@ -16,6 +16,7 @@ import {
 import { readRunningGeneration } from '../../scout/generation-watermark';
 import {
   listScorecards,
+  evaluateScorecardInstrumentContract,
   scorecardEvidenceFingerprint,
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
@@ -57,6 +58,20 @@ export async function emitScorecard(
       ratings,
       instrumentSnapshots,
     });
+    const instrumentContract = evaluateScorecardInstrumentContract({
+      rubric,
+      ratings,
+      instrumentSnapshots,
+    });
+    if (rubric.releaseGating && !instrumentContract.valid) {
+      return {
+        ok: false as const,
+        error:
+          `release-gating instrument contract invalid for '${args.rubricRef}' — ` +
+          'inspect instrumentContract for missing/stale/window/verdict mismatches',
+        instrumentContract,
+      };
+    }
     const sourceHive = args.sourceHive ?? input.ctxHarness;
     const latest = (
       await listScorecards({ rubricRef: args.rubricRef, sourceHive, limit: 1 })

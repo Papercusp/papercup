@@ -14,6 +14,7 @@ import {
 } from '../../harness/improvements/observation-types';
 import {
   listScorecards,
+  evaluateScorecardInstrumentContract,
   scorecardEvidenceFingerprint,
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
@@ -92,6 +93,24 @@ export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateAr
       ratings,
       instrumentSnapshots,
     });
+    const instrumentContract = evaluateScorecardInstrumentContract({
+      rubric,
+      ratings,
+      instrumentSnapshots,
+    });
+    if (rubric.releaseGating && !instrumentContract.valid) {
+      return {
+        ok: false as const,
+        error:
+          `release-gating instrument contract invalid for '${args.rubricRef}' — ` +
+          'inspect instrumentContract for missing/stale/window/verdict mismatches',
+        skeleton,
+        canonicalRatings: ratings,
+        evidenceFingerprint,
+        instrumentContract,
+        latest: latest ?? null,
+      };
+    }
     const latestFingerprint = latest
       ? latest.evidenceFingerprint ??
         scorecardEvidenceFingerprint({ rubricRef: latest.rubricRef, ratings: latest.ratings })
@@ -116,6 +135,7 @@ export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateAr
       skeleton,
       canonicalRatings: ratings,
       evidenceFingerprint,
+      instrumentContract,
       changed: latestFingerprint !== evidenceFingerprint,
       delta: {
         previousIssueId: latest?.issueId ?? null,

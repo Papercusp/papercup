@@ -7,7 +7,8 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import type { Rubric } from './rubrics';
 import type { CriterionTrend } from './scorecards';
 
 // EI-12147: the graded-generation stamp's read-side validator — a scorecard row must
@@ -107,6 +108,102 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
       ratings: { a: { rating: 'PASS', evidence: 'n=2' } },
     });
     expect(after).not.toBe(before);
+  });
+});
+
+describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () => {
+  const rubric = (over: Partial<Rubric> = {}): Rubric => ({
+    rubricId: 'release-r',
+    workspaceId: 'default',
+    characteristic: 'release',
+    title: 'Release',
+    description: '',
+    criteria: [
+      {
+        key: 'cycle',
+        title: 'Cycle',
+        model: 'm',
+        method: 'method',
+        driftMarkers: 'bad',
+        instrumentKey: 'metrics.cycle',
+        window: { kind: 'rolling', ms: 60_000 },
+      },
+    ],
+    ratingScale: ['PASS', 'FAIL', 'UNKNOWN'],
+    methodRef: 'runbook',
+    releaseGating: true,
+    status: 'active',
+    createdBy: 'su-1',
+    proposedBy: 'su-1',
+    ratifiedBy: 'su-2',
+    createdAt: '2026-07-15T00:00:00Z',
+    updatedAt: '2026-07-15T00:00:00Z',
+    ...over,
+  });
+
+  it('passes exact, fresh, verdict-consistent snapshots', () => {
+    const out = evaluateScorecardInstrumentContract({
+      rubric: rubric(),
+      ratings: { cycle: { rating: 'PASS', evidence: '0/10 errors' } },
+      instrumentSnapshots: {
+        'metrics.cycle': { verdict: 'pass', measuredAt: '2026-07-15T00:00:30Z' },
+      },
+      nowMs: Date.parse('2026-07-15T00:01:00Z'),
+    });
+    expect(out.valid).toBe(true);
+  });
+
+  it('fails loudly on missing, stale, extra, and verdict-mismatched snapshots', () => {
+    const missing = evaluateScorecardInstrumentContract({
+      rubric: rubric(),
+      ratings: { cycle: { rating: 'PASS', evidence: 'e' } },
+      nowMs: Date.parse('2026-07-15T00:02:00Z'),
+    });
+    expect(missing.valid).toBe(false);
+    expect(missing.missingSnapshots).toEqual(['metrics.cycle']);
+
+    const bad = evaluateScorecardInstrumentContract({
+      rubric: rubric(),
+      ratings: { cycle: { rating: 'PASS', evidence: 'e' } },
+      instrumentSnapshots: {
+        'metrics.cycle': { verdict: 'fail', measuredAt: '2026-07-15T00:00:00Z' },
+        extra: { verdict: 'pass', measuredAt: '2026-07-15T00:01:59Z' },
+      },
+      nowMs: Date.parse('2026-07-15T00:02:00Z'),
+    });
+    expect(bad.valid).toBe(false);
+    expect(bad.staleSnapshots).toEqual(['metrics.cycle']);
+    expect(bad.extraSnapshots).toEqual(['extra']);
+    expect(bad.verdictMismatches).toEqual(['metrics.cycle']);
+  });
+
+  it('pins post-watermark snapshots to the declared watermark', () => {
+    const post = rubric({
+      criteria: [
+        {
+          key: 'cycle',
+          title: 'Cycle',
+          model: 'm',
+          method: 'method',
+          driftMarkers: 'bad',
+          instrumentKey: 'metrics.cycle',
+          window: { kind: 'post-watermark', watermarkRef: 'bg-host-restart' },
+        },
+      ],
+    });
+    const out = evaluateScorecardInstrumentContract({
+      rubric: post,
+      ratings: { cycle: { rating: 'PASS', evidence: 'e' } },
+      instrumentSnapshots: {
+        'metrics.cycle': {
+          verdict: 'pass',
+          measuredAt: '2026-07-15T00:02:00Z',
+          window: { watermarkRef: 'wrong', sinceMs: Date.parse('2026-07-15T00:00:00Z') },
+        },
+      },
+    });
+    expect(out.valid).toBe(false);
+    expect(out.windowMismatches).toEqual(['metrics.cycle']);
   });
 });
 

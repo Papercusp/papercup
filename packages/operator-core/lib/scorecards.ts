@@ -29,7 +29,7 @@ import {
   type ScorecardRatingRubric,
 } from './harness/improvements/observation-types';
 import { issuesScopeWorkspace, issuesOutLinksMany } from './issues-engineer';
-import { getRubric, type RubricStatus } from './rubrics';
+import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
@@ -76,6 +76,97 @@ export function scorecardEvidenceFingerprint(input: {
       }),
     )
     .digest('hex');
+}
+
+export interface ScorecardInstrumentContractEvaluation {
+  valid: boolean;
+  bindings: Record<string, string | null>;
+  missingBindings: string[];
+  duplicateBindings: string[];
+  missingSnapshots: string[];
+  extraSnapshots: string[];
+  staleSnapshots: string[];
+  windowMismatches: string[];
+  verdictMismatches: string[];
+}
+
+function expectedInstrumentVerdict(rating: string): ScorecardInstrumentSnapshot['verdict'] | null {
+  const key = rating.trim().toLowerCase();
+  if (['pass', 'healthy', 'green', 'good', 'yes', 'exemplary', 'exceptional'].includes(key)) return 'pass';
+  if (['fail', 'broken', 'red', 'bad', 'no', 'severe'].includes(key)) return 'fail';
+  if (key === 'unknown') return 'unknown';
+  return null;
+}
+
+/**
+ * Validate the one-criterion↔one-instrument contract and the evidence freshness/window
+ * that a release-gating scorecard claims. UNKNOWN or stale evidence is never silently
+ * green: callers get exact missing/stale/mismatch arrays and must fix them before emit.
+ */
+export function evaluateScorecardInstrumentContract(input: {
+  rubric: Rubric;
+  ratings: ObservationRatings;
+  instrumentSnapshots?: Record<string, ScorecardInstrumentSnapshot>;
+  nowMs?: number;
+}): ScorecardInstrumentContractEvaluation {
+  const contract = rubricInstrumentContract(input.rubric);
+  const snapshots = input.instrumentSnapshots ?? {};
+  const required = new Set(
+    Object.values(contract.bindings).filter((key): key is string => Boolean(key) && key !== 'none'),
+  );
+  const missingSnapshots = [...required].filter((key) => !snapshots[key]);
+  const extraSnapshots = Object.keys(snapshots).filter((key) => !required.has(key));
+  const staleSnapshots: string[] = [];
+  const windowMismatches: string[] = [];
+  const verdictMismatches: string[] = [];
+  const nowMs = input.nowMs ?? Date.now();
+
+  for (const criterion of input.rubric.criteria) {
+    const instrumentKey = contract.bindings[criterion.key];
+    if (!instrumentKey || instrumentKey === 'none') continue;
+    const snapshot = snapshots[instrumentKey];
+    if (!snapshot) continue;
+    const measuredAtMs = Date.parse(snapshot.measuredAt);
+    if (!Number.isFinite(measuredAtMs) || measuredAtMs > nowMs + 60_000) {
+      staleSnapshots.push(instrumentKey);
+      continue;
+    }
+    if (criterion.window?.kind === 'rolling') {
+      if (nowMs - measuredAtMs > criterion.window.ms) staleSnapshots.push(instrumentKey);
+    } else if (criterion.window?.kind === 'post-watermark') {
+      const window = snapshot.window ?? {};
+      const sinceMs = typeof window.sinceMs === 'number' ? window.sinceMs : null;
+      const watermarkRef = typeof window.watermarkRef === 'string' ? window.watermarkRef : null;
+      if (
+        watermarkRef !== criterion.window.watermarkRef ||
+        sinceMs === null ||
+        !Number.isFinite(sinceMs) ||
+        measuredAtMs < sinceMs
+      ) {
+        windowMismatches.push(instrumentKey);
+      }
+    }
+    const expected = expectedInstrumentVerdict(input.ratings[criterion.key]?.rating ?? '');
+    if (expected && expected !== snapshot.verdict) verdictMismatches.push(instrumentKey);
+  }
+
+  return {
+    valid:
+      contract.valid &&
+      missingSnapshots.length === 0 &&
+      extraSnapshots.length === 0 &&
+      staleSnapshots.length === 0 &&
+      windowMismatches.length === 0 &&
+      verdictMismatches.length === 0,
+    bindings: contract.bindings,
+    missingBindings: contract.criteriaWithoutInstrument,
+    duplicateBindings: contract.duplicateInstrumentKeys,
+    missingSnapshots,
+    extraSnapshots,
+    staleSnapshots: [...new Set(staleSnapshots)],
+    windowMismatches: [...new Set(windowMismatches)],
+    verdictMismatches: [...new Set(verdictMismatches)],
+  };
 }
 
 /** The canonical 14 keys for pot-coordination-health. This is a fallback for

@@ -609,6 +609,40 @@ export function effectiveCriterionInstrumentKey(
   return match?.[1] ?? null;
 }
 
+export interface RubricInstrumentContract {
+  valid: boolean;
+  bindings: Record<string, string | null>;
+  criteriaWithoutInstrument: string[];
+  duplicateInstrumentKeys: string[];
+}
+
+/** Pure one-criterion↔one-instrument contract used by writes, ratification, and grading. */
+export function rubricInstrumentContract(
+  rubric: Pick<Rubric, 'releaseGating' | 'criteria'>,
+): RubricInstrumentContract {
+  const bindings = Object.fromEntries(
+    rubric.criteria.map((criterion) => [criterion.key, effectiveCriterionInstrumentKey(criterion)]),
+  );
+  if (!rubric.releaseGating) {
+    return { valid: true, bindings, criteriaWithoutInstrument: [], duplicateInstrumentKeys: [] };
+  }
+  const criteriaWithoutInstrument = rubric.criteria
+    .filter((criterion) => !bindings[criterion.key])
+    .map((criterion) => criterion.key);
+  const seen = new Set<string>();
+  const duplicateInstrumentKeys = [...new Set(
+    Object.values(bindings)
+      .filter((key): key is string => Boolean(key) && key !== 'none')
+      .filter((key) => (seen.has(key) ? true : (seen.add(key), false))),
+  )];
+  return {
+    valid: criteriaWithoutInstrument.length === 0 && duplicateInstrumentKeys.length === 0,
+    bindings,
+    criteriaWithoutInstrument,
+    duplicateInstrumentKeys,
+  };
+}
+
 /**
  * PURE: report a rubric's testing-procedure completeness — the owner's target shape is
  * "each aspect comes with its own testing procedure in addition to one main one for the
@@ -620,22 +654,8 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
     .filter((c) => !(c.replication ?? '').trim() && !c.method.includes(REPLICATION_DRILL_MARKER))
     .map((c) => c.key);
   const methodRefMissing = !rubric.methodRef;
-  const bindings = rubric.criteria.map((criterion) => ({
-    key: criterion.key,
-    instrumentKey: effectiveCriterionInstrumentKey(criterion),
-  }));
-  const criteriaWithoutInstrument = rubric.releaseGating
-    ? bindings.filter((binding) => !binding.instrumentKey).map((binding) => binding.key)
-    : [];
-  const seen = new Set<string>();
-  const duplicateInstrumentKeys = rubric.releaseGating
-    ? [...new Set(
-        bindings
-          .map((binding) => binding.instrumentKey)
-          .filter((key): key is string => Boolean(key) && key !== 'none')
-          .filter((key) => (seen.has(key) ? true : (seen.add(key), false))),
-      )]
-    : [];
+  const instrumentContract = rubricInstrumentContract(rubric);
+  const { criteriaWithoutInstrument, duplicateInstrumentKeys } = instrumentContract;
   const complete =
     criteriaWithoutReplication.length === 0 &&
     !methodRefMissing &&
@@ -672,6 +692,25 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
  *  Throws (fail-loud, D-004) if the rubric data is malformed — never persists a broken
  *  rubric. Returns the schema-coerced data. */
 function buildRubricTemplateData(input: ProposeRubricInput): unknown {
+  const instrumentContract = rubricInstrumentContract({
+    releaseGating: input.releaseGating,
+    criteria: input.criteria,
+  });
+  if (!instrumentContract.valid) {
+    throw new Error(
+      `invalid_args: proposeRubric: release-gating rubric '${input.rubricId}' has an invalid instrument contract — ` +
+        [
+          instrumentContract.criteriaWithoutInstrument.length
+            ? `missing bindings: ${instrumentContract.criteriaWithoutInstrument.join(', ')}`
+            : '',
+          instrumentContract.duplicateInstrumentKeys.length
+            ? `duplicate bindings: ${instrumentContract.duplicateInstrumentKeys.join(', ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('; '),
+    );
+  }
   const data = {
     characteristic: input.characteristic,
     criteria: input.criteria,
