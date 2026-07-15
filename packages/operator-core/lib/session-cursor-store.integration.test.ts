@@ -28,6 +28,7 @@ const {
   upsertSessionCursor,
   getSessionCursorRow,
   recentSessionCursors,
+  cursorsByOwner,
   pruneSessionCursors,
   rowToCursor,
 } = await import('./session-cursor-store');
@@ -178,6 +179,22 @@ describe('recentSessionCursors (PG)', () => {
 
     const fresh = await recentSessionCursors({ updatedSince: '2026-07-14T09:30:00Z' });
     expect(fresh.map((r) => r.session_id)).toEqual(['c', 'b']); // 'a' is below the floor
+  });
+
+  it('cursorsByOwner returns the FRESHEST cursor per owner (the P-002 presence-overlay read)', async () => {
+    // su-B has two sessions; the fresher one must win. su-A has one; su-Z none.
+    await upsertSessionCursor({ sessionId: 'b1', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['older su-B note WI-1'], { sessionId: 'b1' }) });
+    await upsertSessionCursor({ sessionId: 'b2', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['newer su-B note WI-2'], { sessionId: 'b2' }) });
+    await upsertSessionCursor({ sessionId: 'a1', ownerId: 'su-A', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['su-A note WI-3'], { sessionId: 'a1' }) });
+    await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T09:00:00Z' WHERE session_id='b1'`;
+    await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T11:00:00Z' WHERE session_id='b2'`;
+
+    const map = await cursorsByOwner(['su-A', 'su-B', 'su-Z']);
+    expect(map.size).toBe(2); // su-Z absent (no cursor)
+    expect(map.get('su-B')!.session_id).toBe('b2'); // freshest session for the owner
+    expect(map.get('su-A')!.session_id).toBe('a1');
+    expect(map.has('su-Z')).toBe(false);
+    expect(await cursorsByOwner([])).toEqual(new Map()); // empty input, no query
   });
 
   it('pruneSessionCursors drops stale rows and reports the count', async () => {

@@ -244,6 +244,18 @@ export default defineTool({
         });
       }
     } catch { /* fail-soft — deafness detection must never degrade the roster */ }
+    // ambient-semantic-push P-002: opt-in cursor overlay — stamp each active
+    // row with its owner's current lexical cursor (top terms, data-not-directive)
+    // so a peer/leader can read what a session is working on. Same best-effort,
+    // batched, snapshot-only, non-etag-tracked overlay pattern as modes/parkedOn/
+    // coordHook above (a cursor churns every turn — it must never ride the delta
+    // channel). DOUBLE DEFAULT-OFF: the caller must pass include_cursor AND the
+    // ambient feature flag must be on; the flag is read inline so the default
+    // path adds no import/query and stays byte-identical.
+    const cursorFlag = process.env.PAPERCUSP_AMBIENT_CURSOR;
+    const cursorEnabled =
+      args.include_cursor === true && (cursorFlag === '1' || cursorFlag === 'true');
+    active = await overlayPresenceCursors(active, { enabled: cursorEnabled });
     const out = {
       ...snapshot,
       ...(self ? { self } : {}),

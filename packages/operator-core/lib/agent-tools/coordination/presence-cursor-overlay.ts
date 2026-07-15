@@ -66,8 +66,8 @@ export function projectPublishedCursor(
 }
 
 /** A minimal roster-row shape the overlay reads/stamps (structural — decoupled
- *  from the full RosterRow). */
-type CursorOverlayRow = Record<string, unknown> & { ownerId?: unknown };
+ *  from the full RosterRow; a roster row always carries an ownerId). */
+type CursorOverlayRow = { ownerId?: unknown };
 
 export interface OverlayPresenceCursorsOptions {
   /** include_cursor && ambientCursorEnabled() — the caller pre-computes both. */
