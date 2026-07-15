@@ -663,7 +663,9 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     const saved = process.env.PAPERCUSP_OMP_CARRY_COMPACTION;
     try {
       process.env.PAPERCUSP_OMP_CARRY_COMPACTION = '0';
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
       writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-off', backendWindow: 204800 }, home);
+      err.mockRestore();
       const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
       expect(written).not.toContain('carryOwner');
       expect(written).toMatch(/\n\s+strategy:\s*shake/);

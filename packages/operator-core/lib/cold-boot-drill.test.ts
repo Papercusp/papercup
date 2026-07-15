@@ -117,10 +117,13 @@ describe('gradeColdBootDrills — per-class sufficiency', () => {
   });
 
   it('aggregates and sorts multiple classes independently', () => {
-    const rep = gradeColdBootDrills([
-      ...cleanDrills('zeta', 10),
-      ...cleanDrills('alpha', 3),
-    ]);
+    const rep = gradeColdBootDrills(
+      [
+        ...cleanDrills('zeta', 10),
+        ...cleanDrills('alpha', 3),
+      ],
+      { ...DEFAULT_SUFFICIENCY_PARAMS, minDrills: 10 },
+    );
     expect(rep.perClass.map((c) => c.sessionClass)).toEqual(['alpha', 'zeta']);
     expect(rep.sufficientClasses).toEqual(['zeta']);
   });

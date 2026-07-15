@@ -61,6 +61,13 @@ describe('flag registry invariants', () => {
     // installs, so default-OFF costs nothing.
     expect(FLAG_DEFAULTS[FLAGS.OPEN_SIGNUP]).toBe(false);
   });
+
+  it('deterministic maintenance carry defaults ON with an explicit false kill-switch', () => {
+    expect(FLAG_DEFAULTS[FLAGS.GATEWAY_MAINTENANCE_CARRY]).toBe(true);
+    expect(resolveWithDefaults({ [FLAGS.GATEWAY_MAINTENANCE_CARRY]: false })[
+      FLAGS.GATEWAY_MAINTENANCE_CARRY
+    ]).toBe(false);
+  });
 });
 
 describe('resolveWithDefaults', () => {
