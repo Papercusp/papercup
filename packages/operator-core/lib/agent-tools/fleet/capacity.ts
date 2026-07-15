@@ -16,15 +16,41 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { parsePriorityTierMap } from '@papercusp/papercusp-shared/agent';
 import { COORD_ROLES } from '../coordination/roles';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
-import { buildCapacityReport } from '../../fleet/capacity-dispatch';
+import { buildCapacityReport, type AccountPoolAvailability } from '../../fleet/capacity-dispatch';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 // Re-exported so existing importers (tests, the queen-brief gather) can reach the read-model via either path.
 export { buildCapacityReport, type CapacityReport } from '../../fleet/capacity-dispatch';
 
+/** The provider bee/cup work routes to — the one `dispatchBudget` is measured for (EI-12282). */
+const BEE_PROVIDER = 'claude';
+
+/**
+ * Best-effort snapshot of REAL account-pool availability for the bee provider (accounts:status), used to
+ * cross-check the gateway's queue-slot dispatchBudget. Returns undefined on any read failure (fail-safe —
+ * a missing cross-check leaves the report byte-identical to before this fix).
+ */
+async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | undefined> {
+  try {
+    const { accountStatus } = await import('../../deployment/account-pool-store');
+    const rows = (await accountStatus(activeWorkspaceId())).filter((r) => r.provider === BEE_PROVIDER);
+    if (rows.length === 0) return undefined;
+    return {
+      provider: BEE_PROVIDER,
+      total: rows.length,
+      available: rows.filter((r) => r.available).length,
+      // A truly-usable account can serve AND is not in an edge-throttle cooldown (a bare-429/IP wall).
+      usable: rows.filter((r) => r.available && !r.edgeThrottled).length,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export default defineTool({
   name: 'fleet:capacity',
   description:
-    'Read live inference-pool capacity for placement decisions (the gateway /stats oracle): the bee-tier dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.',
+    'Read live inference-pool capacity for placement decisions (the gateway /stats oracle): the bee-tier dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. Cross-checks dispatchBudget against REAL account-pool availability and sets `poolExhausted:true` (with factor 0) when the pool has zero usable accounts despite spare queue slots — heed that flag before spawning. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.',
   guidance: {
     when: 'Before a placement round, to size how many FRESH cups to spawn: place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.',
     notWhen: 'Inspecting the gateway pool config / confirming a hot-reload — that is gateway:status. Editing the pool — accounts:* + gateway:reload.',

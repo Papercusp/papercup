@@ -1124,6 +1124,67 @@ describe('appendHostEvent / eventLogPathForOwner (EI-10412 — durable lifecycle
   });
 });
 
+describe('appendSharedDrillLedgerEvent (EI-12655 — host-side mirror into the shared drill ledger)', () => {
+  const fs = nodeFs;
+  const os = nodeOs;
+  const join = pathJoin;
+  // The tool side (cold-boot-drill-live.ts) writes only requested/queued into
+  // carry-drills.events.jsonl; every host-side outcome previously lived ONLY in
+  // the per-owner log — so op:'report' saw perClass:[] even after real drills.
+  it('appends ColdBootDrillLedgerEvent-shaped rows ({ ts, kind, ownerId, ...extra }) into the SHARED file', () => {
+    const dir = fs.mkdtempSync(join(os.tmpdir(), 'psu-drill-ledger-'));
+    try {
+      expect(
+        appendSharedDrillLedgerEvent(
+          'su-a',
+          'carry-drill-respawned',
+          { drillId: 'd-1', sessionClass: 'gateway-claude-headless', nativeId: 'n-1' },
+          dir,
+        ),
+      ).toBe(true);
+      expect(
+        appendSharedDrillLedgerEvent(
+          'su-b',
+          'carry-drill-carry-dropped',
+          { drillId: 'd-2', sessionClass: 'gateway-claude-headless', reason: 'busy-gate-expired', capMs: 180_000 },
+          dir,
+        ),
+      ).toBe(true);
+      const p = sharedDrillLedgerPath(dir);
+      expect(p.endsWith('carry-drills.events.jsonl')).toBe(true); // the SAME file the tool side reads
+      const rows = fs.readFileSync(p, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(rows).toHaveLength(2); // both owners share ONE roll-up file
+      expect(rows[0]).toMatchObject({ kind: 'carry-drill-respawned', ownerId: 'su-a', drillId: 'd-1', nativeId: 'n-1' });
+      expect(rows[1]).toMatchObject({ kind: 'carry-drill-carry-dropped', ownerId: 'su-b', reason: 'busy-gate-expired' });
+      expect(typeof rows[0].ts).toBe('string');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('front-truncates past the 1MB cap, keeping newest rows and whole lines', () => {
+    const dir = fs.mkdtempSync(join(os.tmpdir(), 'psu-drill-ledger-'));
+    try {
+      const p = sharedDrillLedgerPath(dir);
+      const filler = Array.from({ length: 9000 }, (_, i) =>
+        JSON.stringify({ ts: 'old', kind: 'filler', i, pad: 'x'.repeat(96) }),
+      ).join('\n');
+      fs.writeFileSync(p, filler + '\n');
+      expect(fs.statSync(p).size).toBeGreaterThan(1024 * 1024);
+      expect(appendSharedDrillLedgerEvent('su-cap', 'carry-drill-carry-delivered', { drillId: 'd-9' }, dir)).toBe(true);
+      expect(fs.statSync(p).size).toBeLessThan(1024 * 1024);
+      const rows = fs.readFileSync(p, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(rows.at(-1)).toMatchObject({ kind: 'carry-drill-carry-delivered', drillId: 'd-9' });
+      expect(rows[0].kind).toBe('filler');
+      expect(rows[0].i).toBeGreaterThan(1000);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('is fail-soft: an unwritable dir returns false, never throws', () => {
+    expect(appendSharedDrillLedgerEvent('su-x', 'carry-drill-respawned', {}, '/nonexistent-root-dir/nope')).toBe(false);
+  });
+});
+
 describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () => {
   describe('stripAnsi', () => {
     it('strips CSI/OSC/simple-ESC and normalizes carriage returns', () => {

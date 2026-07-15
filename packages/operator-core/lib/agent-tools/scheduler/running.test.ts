@@ -25,13 +25,39 @@ vi.mock('../../fleet/assignments', async (importOriginal) => {
   return { ...actual, listFleetAssignments: vi.fn() };
 });
 vi.mock('../../scheduler/claim-spec-store', () => ({ getClaimSpecHeadsForBees: vi.fn() }));
+// EI-12359: mock the loop-status collaborator the healthy-loop exemption reads — keeps these
+// wiring tests hermetic (no DB) and lets us pin the exemption on/off deterministically.
+vi.mock('../../harness/routines/loop', () => ({ getLoopStatuses: vi.fn() }));
 
 import { listFleetAssignments, type FleetAssignmentRow } from '../../fleet/assignments';
 import { getClaimSpecHeadsForBees } from '../../scheduler/claim-spec-store';
+import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 
 const mockList = vi.mocked(listFleetAssignments);
 const mockSpecs = vi.mocked(getClaimSpecHeadsForBees);
+const mockLoopStatuses = vi.mocked(getLoopStatuses);
 const tool = (await import('./running')).default;
+
+/** A healthy, actively-monitored loop status (active, not stalled) — makes deriveLoopMonitorState
+ *  return a non-null MonitorState, the exemption's trigger condition. */
+function healthyLoop(over: Partial<LoopStatus> = {}): LoopStatus {
+  return {
+    active: true,
+    parked: false,
+    stalled: false,
+    nextFireAt: null,
+    lastFiredAt: null,
+    fireCount: 0,
+    installSlug: 'papercup',
+    name: 'work',
+    maxFires: null,
+    maxDurationSec: null,
+    stalledSinceMs: null,
+    lastDeliveryOutcome: null,
+    consecutiveErrors: 0,
+    ...over,
+  } as unknown as LoopStatus;
+}
 
 type Out = { content: { text: string }[]; isError?: boolean };
 const body = (o: Out) =>
@@ -72,6 +98,7 @@ function row(over: Partial<FleetAssignmentRow> = {}): FleetAssignmentRow {
 beforeEach(() => {
   vi.clearAllMocks();
   mockSpecs.mockResolvedValue(new Map());
+  mockLoopStatuses.mockResolvedValue(new Map());
 });
 
 describe('scheduler:running handler — the live-execution view', () => {
@@ -137,6 +164,39 @@ describe('scheduler:running handler — the live-execution view', () => {
     expect(mockList).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'other-harness', agent: 'su-zzz', workspaceId: 'ws-1' }),
     );
+  });
+
+  it('EI-12359: a stalled bee with a HEALTHY monitored loop is exempted → alive, not stalled', async () => {
+    mockList.mockResolvedValue([row({ stalled: true })] as FleetAssignmentRow[]);
+    mockLoopStatuses.mockResolvedValue(new Map([['su-bee', healthyLoop()]]));
+
+    const { runs, summary } = body(await call());
+    expect(runs[0]!.activity).toBe('alive'); // downgraded, not left as the alarming 'stalled'
+    expect(runs[0]!.idleReason).toMatch(/grace window/);
+    expect(summary).toMatchObject({ total: 1, stalled: 0, idle: 1 });
+    expect(mockLoopStatuses).toHaveBeenCalledWith(['su-bee']);
+  });
+
+  it('EI-12359: a stalled bee whose loop is itself dead-man-stalled is NOT exempted', async () => {
+    mockList.mockResolvedValue([row({ stalled: true })] as FleetAssignmentRow[]);
+    mockLoopStatuses.mockResolvedValue(new Map([['su-bee', healthyLoop({ stalled: true })]]));
+
+    const { runs } = body(await call());
+    expect(runs[0]!.activity).toBe('stalled'); // the loop's own dead-man verdict still wins
+  });
+
+  it('EI-12359: no loop status at all for the bee (never armed one) is NOT exempted — unchanged from before the fix', async () => {
+    mockList.mockResolvedValue([row({ stalled: true })] as FleetAssignmentRow[]);
+    mockLoopStatuses.mockResolvedValue(new Map()); // no matching routine
+
+    const { runs } = body(await call());
+    expect(runs[0]!.activity).toBe('stalled');
+  });
+
+  it('does not query loop statuses at all when nothing is stalled (no wasted round-trip)', async () => {
+    mockList.mockResolvedValue([row()] as FleetAssignmentRow[]); // progressing
+    await call();
+    expect(mockLoopStatuses).not.toHaveBeenCalled();
   });
 
   it('an idle fleet rolls up to an all-zero summary with no runs', async () => {

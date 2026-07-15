@@ -209,6 +209,124 @@ test('capacity report labels fresh gateway zero-capacity snapshot as recovering 
   assert.match(r.advice, /startup capacity snapshot is recovering/);
 });
 
+test('EI-12282 — gateway reports spare bee slots but the REAL account pool is exhausted ⇒ poolExhausted, factor 0, loud hold', () => {
+  // The live false-green: /stats.priorityTiers said healthyAccounts>0 with ~13 spare bee-tier slots
+  // (dispatchBudget 13), so the old report read "tightening (factor 0.92) → trim low-priority; ~13 bee
+  // slots free" — place broadly. But accounts:status showed 6/7 claude accounts usage-walled and the 7th
+  // edge-throttled, so a caller spawning against that signal watched its cups die on their first call.
+  // Cross-checking dispatchBudget against real per-account availability must flip the read to a loud HOLD.
+  const hr = {
+    reachable: true,
+    utilization: 0.97,
+    utilizationPct: 97,
+    paused: true,
+    queueDepth: 2,
+    inFlight: 1,
+    priorityTiers: {
+      healthyAccounts: 7, // gateway's split-brain-stale count (disagrees with the store)
+      tier1Reserve: 2,
+      tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 2 }], // dispatchBudget = 16-1-2 = 13
+    },
+  };
+  const accountAvailability = { provider: 'claude', total: 7, available: 1, usable: 0 };
+
+  // Without the cross-check the report is the false-green (regression baseline).
+  const green = buildCapacityReport(hr, { clampArmed: true, headroom: 13 });
+  assert.equal(green.dispatchBudget, 13);
+  assert.equal(green.poolExhausted, false);
+  assert.ok(green.factor > 0.5, `false-green factor ~0.92, got ${green.factor}`);
+  assert.doesNotMatch(green.advice, /EXHAUSTED/);
+
+  // WITH the cross-check the false-green is corrected to a loud, honest HOLD.
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 13, accountAvailability });
+  assert.equal(r.poolExhausted, true, 'zero usable accounts + spare gateway slots ⇒ exhausted');
+  assert.equal(r.factor, 0, 'no real capacity → factor forced to 0');
+  assert.equal(r.usableAccounts, 0);
+  assert.equal(r.availableAccounts, 1);
+  assert.equal(r.dispatchBudget, 13, 'the raw gateway figure is still surfaced (for diagnosis)');
+  assert.equal(r.recommendedHeadroom, CFG.minHeadroom, 'clamped to the floor, not the queue-slot count');
+  assert.equal(r.throttled, true);
+  assert.match(r.advice, /EXHAUSTED/);
+  assert.match(r.advice, /0\/7 claude accounts are usable/);
+});
+
+test('EI-12282 — poolExhausted does NOT fire when real accounts ARE usable (no false alarm)', () => {
+  const hr = {
+    reachable: true,
+    utilization: 0.5,
+    paused: false,
+    queueDepth: 0,
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 0 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 13,
+    accountAvailability: { provider: 'claude', total: 7, available: 4, usable: 4 },
+  });
+  assert.equal(r.poolExhausted, false);
+  assert.equal(r.factor, 1);
+  assert.equal(r.usableAccounts, 4);
+  assert.equal(r.recommendedHeadroom, 13, 'usable pool → no exhaustion clamp');
+  assert.match(r.advice, /abundant/);
+});
+
+test('EI-12282 — no account cross-check supplied ⇒ byte-identical to before (fail-safe)', () => {
+  const hr = {
+    reachable: true,
+    utilization: 0.97,
+    paused: true,
+    queueDepth: 2,
+    priorityTiers: { healthyAccounts: 7, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 2 }] },
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 13 });
+  assert.equal(r.poolExhausted, false);
+  assert.equal(r.usableAccounts, null);
+  assert.equal(r.availableAccounts, null);
+  assert.ok(r.factor > 0.5, 'unchanged escape-hatch behaviour when no cross-check is passed');
+});
+
+test('EI-12282 — exhaustion suppressed during the fresh-gateway restart grace (startup snapshot is not the store)', () => {
+  const hr = {
+    reachable: true,
+    utilization: 1,
+    paused: true,
+    rejected: true,
+    queueDepth: 0,
+    processUptimeMs: 4_000, // within the 30s restart grace
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 13,
+    accountAvailability: { provider: 'claude', total: 7, available: 0, usable: 0 },
+  });
+  assert.equal(r.restartRecovering, true);
+  assert.equal(r.poolExhausted, false, 'restart grace wins — do not treat startup snapshot as sustained exhaustion');
+  assert.equal(r.factor, 1);
+  assert.match(r.advice, /recovering/);
+});
+
+test('EI-12282 — zero usable accounts but ZERO gateway slots is the ordinary saturated path, not the split-brain flag', () => {
+  // When the gateway ALSO reports no spare slots, poolBlocked/saturation already handles it; poolExhausted
+  // is specifically the CONTRADICTION (gateway says slots free, store says none) — so it must NOT fire here.
+  const hr = {
+    reachable: true,
+    paused: true,
+    rejected: true,
+    queueDepth: 0,
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, cap: 16, inFlight: 16, queued: 0 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 13,
+    accountAvailability: { provider: 'claude', total: 7, available: 0, usable: 0 },
+  });
+  assert.equal(r.dispatchBudget, 0);
+  assert.equal(r.poolExhausted, false, 'no spare gateway slots → ordinary saturation, not the contradiction flag');
+  assert.equal(r.recommendedHeadroom, CFG.minHeadroom, 'still clamps to the floor via the normal saturated path');
+  assert.match(r.advice, /SATURATED/);
+});
+
 test('the floor never manufactures slots — a 0-slot pool stays 0 even when paused', () => {
   const d = computeCapacityHeadroom(0, { reachable: true, paused: true });
   assert.equal(d.headroom, 0, 'no raw headroom → no spawns; the floor lets work flow, it does not invent slots');
