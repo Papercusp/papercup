@@ -750,7 +750,8 @@ function buildFacadeHelp(
  * dedup must NEVER break the run.
  */
 async function maybeCaptureRecipe(
-  args: { script: string; title?: string; description?: string },
+  // EI-11400: `code` is an accepted alias for `script`; resolve to the canonical below.
+  args: { script?: string; code?: string; title?: string; description?: string },
   ctx: UnifiedToolContext,
   tools: ReturnType<typeof listAllProjectedTools>,
   allowed: ReadonlySet<string>,
@@ -780,7 +781,7 @@ async function maybeCaptureRecipe(
         log: (msg) => ctx.log(msg),
       },
       {
-        script,
+        script: (args.script ?? args.code) as string,
         workspaceId,
         harness: ctx.harnessSlug ?? null,
         ownerId,
