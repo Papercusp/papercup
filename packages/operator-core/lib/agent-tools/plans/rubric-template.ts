@@ -165,6 +165,13 @@ export const rubricCriterionSchema = z
           "can't silently drop it as 'verbose method prose' (WI-4287; rubrics:propose loss-guards " +
           'key off it)',
       ),
+    instrumentKey: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "machine-readable instrument binding for this criterion. Use a stable key naming the exact tool/report field that grades it, or 'none' only when deliberately manual. Legacy trailing [instrumentKey: …] model tokens remain readable but new writes should use this field",
+      ),
     window: rubricCriterionWindowSchema
       .optional()
       .describe(

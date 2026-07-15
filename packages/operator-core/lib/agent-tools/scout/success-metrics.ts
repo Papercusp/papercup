@@ -148,14 +148,14 @@ export async function runSuccessMetrics(
 export default defineTool({
   name: 'blender:success-metrics',
   description:
-    "The blender-self-learning program's done-check, over the LIVE ledgers: six bars — rubric-grounded routed ideas >0, zero score-0 cycles fired, cycle error rate <5% over a time-boxed 48h singleton-tick window (floor overridable: sinceMs, or watermarkRef 'bg-host-restart' to judge only the RUNNING generation), ledger rows reconcile with tick routed counts (per cycle), >=1 graded idea has attributed feedback plus an attributed typed revision created after the grade, and recent lens diversity — each PASS/FAIL/UNKNOWN with the measurement behind it. Explicitly windowed reads also return runningGeneration {sha, hostStartedAt}, so a grader can prove the measured window and executing generation match. verdict='pass' only when every bar passes; 'incomplete' when a bar has no evidence yet (an empty window never certifies the program done); 'fail' on any real regression. Read-only.",
+    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the default 48h window (or sinceMs/watermarkRef), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Explicit windows also return resolvedWindow + runningGeneration {sha, hostStartedAt} for parity evidence. verdict='pass' only when every bar passes; 'incomplete' when evidence is missing; 'fail' on a regression.",
   capability: 'curation:read',
   guidance: {
     when: 'Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live rather than merely shipped.',
     notWhen:
       'Asking whether Scout ideas are getting BETTER over time (that is the quality/degradation report — this is an absolute done-check, not a trend). Grading an individual idea (blender:grade-idea).',
     chaining:
-      "blender:success-metrics → read `verdict`: 'incomplete' names which bar lacks evidence (act on THAT bar's unknownReason); 'fail' names the regression + the rows behind it. With sinceMs/watermarkRef, cite resolvedWindow + runningGeneration together as parity evidence.",
+      "Read verdict and each bar's evidence/unknownReason. With sinceMs/watermarkRef, cite resolvedWindow + runningGeneration together.",
     seeAlso: ['blender:ideation-feedback (your own graded-idea priming)', 'blender:grade-idea (grade one routed idea)'],
   },
   requirePrincipal: false,

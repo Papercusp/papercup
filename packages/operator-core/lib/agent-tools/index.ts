@@ -798,6 +798,10 @@ import './scorecards/list';
 // scorecards:freshness — the emission-freshness check (P-014b): has the Overwatch emitted a
 // COMPLETE scorecard since the last wake, or silently skipped (stale) / truncated (partial-only)?
 import './scorecards/freshness';
+// scorecards:evaluate/emit — the typed GRADE-mode path: exact criterion skeleton,
+// canonical ratings, deterministic instrument snapshots, and unchanged-evidence dedup.
+import './scorecards/evaluate';
+import './scorecards/emit';
 
 // System health — the Health tab's owner acknowledge/snooze verbs
 // (health-tab-v2-2026-07-12 P-004, D-A: the one deliberate amendment to the
