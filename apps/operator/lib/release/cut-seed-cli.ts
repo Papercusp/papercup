@@ -79,7 +79,7 @@
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { rm, readFile, writeFile, rename, cp } from 'node:fs/promises';
+import { rm, readFile, writeFile, rename, cp, readdir } from 'node:fs/promises';
 import Corestore from 'corestore';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -877,6 +877,17 @@ async function main(): Promise<void> {
       console.warn(
         `[cut-seed] reused corestore from ${reuseCorestoreDir} (${formatBytes(reused.entry.sizeBytes)}, no live-store snapshot).`,
       );
+    }
+
+    // RocksDB's info log (exactly `LOG`, rotated `LOG.old.<ts>`) records the build
+    // box's hostname and absolute paths on EVERY store open — it redded the 0.0.11
+    // release identity gate (WI-4736 AppDir scan). Purely diagnostic and regenerated
+    // on next open; the numbered `<NNN>.log` WALs are data and must stay.
+    const seedDbDir = join(outDir, CORESTORE_SUBDIR, 'db');
+    if (existsSync(seedDbDir)) {
+      for (const f of await readdir(seedDbDir)) {
+        if (f === 'LOG' || f.startsWith('LOG.old')) await rm(join(seedDbDir, f), { force: true });
+      }
     }
 
     // WI-3232 --emit-epoch-key: write the bundled key so the pot decrypts OFFLINE.

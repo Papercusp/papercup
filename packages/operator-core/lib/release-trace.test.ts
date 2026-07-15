@@ -221,6 +221,20 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.map((c) => c.code)).toContain('gate-verdict-stale');
     expect(out.nextVerb?.name).toBe('release:checkpoint-run');
   });
+  it('EI-12457: on staging with no red verdict yet, awaits the gate bound to the exact candidate SHA', () => {
+    const out = buildReleaseTrace(
+      input({
+        position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+      }),
+    );
+    // The candidate is still on staging, gate not red/stale — the safe next step is to
+    // await the gate, and the await must be bound to THIS exact candidate (candidateSha)
+    // so a stale verdict for a different, superseded SHA can never wake the caller.
+    expect(out.nextVerb).toMatchObject({
+      name: 'checkpoint:await',
+      args: { pipeline: 'papercusp', candidateSha: sha },
+    });
+  });
   it('returns runtime activation instead of deploy advice for staging-tree hosts', () => {
     const out = buildReleaseTrace(
       input({

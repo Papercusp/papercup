@@ -6,8 +6,10 @@ import {
   isStaleWatermark,
   isLoopArmOwnerLoop,
   isLoopArmOwnerRole,
+  isRedQueenDrillRow,
   type AutoloopStateRow,
 } from './autoloop-chronic-failure';
+import { SANDBOX_HARNESS_SLUG } from '../../red-queen/types';
 
 const HOUR_MS = 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 6, 3, 12, 0, 0); // 2026-07-03T12:00:00Z
@@ -535,6 +537,45 @@ describe('selectChronicFailures', () => {
     ];
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 0 })).toHaveLength(1);
   });
+
+  it('EI-12429 real shape: the planted red-queen-sandbox drill row is NOT escalated as a chronic failure', () => {
+    // EI-12429 (red-queen-drill-worker@red-queen-sandbox, red 7 consecutive fires): the Red Queen
+    // vaccination harness plants a synthetic autoloop_state row (drill-classes.ts circuitOpenDrill —
+    // harness_slug 'red-queen-sandbox', role 'red-queen-drill-worker', consecutive_errors 7,
+    // last_status '…synthetic consecutive fire errors (planted, origin=drill)') to exercise the
+    // fire-circuit-open collector, then detects/heals/cleans it itself. This sweep's SELECT is NOT
+    // workspace-scoped, so it saw the transient planted row and (pre-fix) escalated it as a real
+    // chronic failure that re-fired every 24h. The row looks live on every OTHER axis — not a
+    // loop:arm loop, routine_active null (fail-open), fired now (not stale) — so ONLY the sandbox
+    // harness-slug guard (isRedQueenDrillRow) can suppress it.
+    const rows = [
+      row({
+        harness_slug: SANDBOX_HARNESS_SLUG, // 'red-queen-sandbox'
+        role: 'red-queen-drill-worker',
+        consecutive_errors: 7,
+        last_status: 'red-queen drill: synthetic consecutive fire errors (planted, origin=drill)',
+        routine_active: null, // no matching routines row — fail-open on the routine_active axis
+        routine_target_owner_id: null, // not a loop:arm loop
+        last_fired_at: new Date(NOW - 60 * 1000).toISOString(), // fired 1min ago — not stale
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
+  it('EI-12429 mixed batch: a red-queen drill row drops while a witness-less fixed system role still escalates', () => {
+    const rows = [
+      row({
+        harness_slug: SANDBOX_HARNESS_SLUG,
+        role: 'red-queen-drill-worker',
+        consecutive_errors: 12,
+        last_status: 'red-queen drill: synthetic consecutive fire errors (planted, origin=drill)',
+        routine_active: null,
+        last_fired_at: new Date(NOW - 60 * 1000).toISOString(),
+      }),
+      row({ role: 'gym-cycle', consecutive_errors: 8, routine_active: true, routine_target_owner_id: null, last_fired_at: new Date(NOW - 30 * 60 * 1000).toISOString() }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS }).map((r) => r.role)).toEqual(['gym-cycle']);
+  });
 });
 
 describe('staleWindowMs', () => {
@@ -618,5 +659,23 @@ describe('isLoopArmOwnerRole (EI-7220)', () => {
   it('null / undefined / non-string → false', () => {
     expect(isLoopArmOwnerRole(null)).toBe(false);
     expect(isLoopArmOwnerRole(undefined)).toBe(false);
+  });
+});
+
+describe('isRedQueenDrillRow (EI-12429)', () => {
+  it('a row in the red-queen sandbox harness → drill row (true), regardless of role', () => {
+    expect(isRedQueenDrillRow({ harness_slug: SANDBOX_HARNESS_SLUG })).toBe(true);
+    expect(isRedQueenDrillRow({ harness_slug: 'red-queen-sandbox' })).toBe(true);
+    // keyed on the sandbox slug, NOT the role — a future drill class planting a different role
+    // in the sandbox is suppressed too.
+    expect(isRedQueenDrillRow({ harness_slug: SANDBOX_HARNESS_SLUG })).toBe(true);
+  });
+  it('a real harness slug → not a drill row (false)', () => {
+    expect(isRedQueenDrillRow({ harness_slug: 'papercusp' })).toBe(false);
+    expect(isRedQueenDrillRow({ harness_slug: 'papercup' })).toBe(false);
+    expect(isRedQueenDrillRow({ harness_slug: '*' })).toBe(false);
+    // the role, not the harness, is the drill worker — but a real harness never carries it, and
+    // the guard keys on the harness anyway, so a stray same-named role in a real harness is fine.
+    expect(isRedQueenDrillRow({ harness_slug: 'some-real-harness' })).toBe(false);
   });
 });
