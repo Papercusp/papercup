@@ -29,6 +29,7 @@ function mkDeps(
     | 'incrementFireCount'
     | 'findWakeRecipe'
     | 'takeWallNag'
+    | 'renderOwnerDirectives'
   >
 > {
   return {
@@ -47,6 +48,7 @@ function mkDeps(
     incrementFireCount: vi.fn(async () => {}) as never,
     findWakeRecipe: vi.fn(async () => null) as never,
     takeWallNag: vi.fn(async () => null) as never,
+    renderOwnerDirectives: vi.fn(async () => null) as never,
     ...over,
   };
 }
@@ -92,6 +94,19 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     await fireLoopWake(baseInput, deps2);
     expect((deps2.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe(
       defaultLoopKickoff(baseInput.routineId),
+    );
+  });
+
+  it('appends open owner directives without replacing the routine kickoff', async () => {
+    const deps = mkDeps({
+      renderOwnerDirectives: vi.fn(async () => '📌 OPEN OWNER DIRECTIVES\n  • #3 "pin it"') as never,
+    });
+
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X' } }, deps);
+
+    expect(deps.renderOwnerDirectives).toHaveBeenCalledWith('papercusp-workspace', { sql: undefined });
+    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe(
+      'work plan X\n\n📌 OPEN OWNER DIRECTIVES\n  • #3 "pin it"',
     );
   });
 
