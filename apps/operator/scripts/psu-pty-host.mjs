@@ -820,6 +820,7 @@ export function decodeControl(payload) {
         o.mode === 'osc' ||
         o.mode === 'reset' ||
         o.mode === 'recycle' ||
+        o.mode === 'carry-respawn' ||
         o.mode === 'compact' ||
         o.mode === 'mcp-reconnect')
     ) {
@@ -835,6 +836,16 @@ export function decodeControl(payload) {
       // process + MCP warm); recycle = kill + respawn the child in this same host.
       if (o.mode === 'reset') return { mode: 'reset', data: String(o.data ?? ''), gated: true };
       if (o.mode === 'recycle') return { mode: 'recycle', data: String(o.data ?? ''), gated: true };
+      // carry-respawn (deterministic-context-carry P-018): a clean-boundary
+      // RECYCLE whose fresh Claude child receives the deterministic carry as a
+      // system-prompt addendum. `data` is the optional successor first prompt.
+      if (o.mode === 'carry-respawn')
+        return {
+          mode: 'carry-respawn',
+          data: String(o.data ?? ''),
+          systemPromptAddendum: String(o.systemPromptAddendum ?? ''),
+          gated: true,
+        };
       // compact (WI-1804): post-compaction auto-continuation. GATED like a turn (fire at a
       // settled turn, never mid-turn). `focus` = the `/compact <focus>` argument; `data` =
       // the carry-note the compacted context opens on (empty ⇒ a bare compact, no carry).
@@ -1456,6 +1467,7 @@ export function hostThroughPty(o) {
     // re-anchors that fresh native id → coord ownerId. Defaults keep the
     // standalone host + existing tests behavior-identical (same args, no anchor).
     mintRecycleArgs = (a) => ({ args: a, nativeId: null }),
+    mintCarryRespawnArgs = (a) => mintRecycleArgs(a),
     onRespawn = () => {},
     // WI-3141: injectable parent-pid probe for the orphan watchdog, so a test can
     // drive a fake reparent-to-init without a real fork. Defaults to the live ppid.
@@ -1624,7 +1636,7 @@ export function hostThroughPty(o) {
     // older host that has no `caps` field. Additive — grow this as new modes land.
     // 'mcp-reconnect' (P-003, 2026-07-13): the in-place /mcp dialog heal; an old
     // host without it makes the watchdog fall back to notify-only.
-    caps: ['compact', 'mcp-reconnect'],
+    caps: ['compact', 'carry-respawn', 'mcp-reconnect'],
   };
   const writeMeta = () => {
     try {
@@ -2045,8 +2057,11 @@ export function hostThroughPty(o) {
         // Handled specially (not a pty write); the gate above already guaranteed a
         // settled turn (D-006 clean-boundary). reset/turn/raw/osc fall through to
         // the write plan below.
-        if (msg.mode === 'recycle') {
-          await recycleChild(msg.data);
+        if (msg.mode === 'recycle' || msg.mode === 'carry-respawn') {
+          await recycleChild(msg.data, {
+            systemPromptAddendum:
+              msg.mode === 'carry-respawn' ? msg.systemPromptAddendum : '',
+          });
           return;
         }
         // COMPACT (post-compaction auto-continuation, WI-1804): the /compact WARM sibling
@@ -2499,9 +2514,30 @@ export function hostThroughPty(o) {
     // process on the carry-note. Only ever reached at a settled turn (the handler's
     // clean-boundary gate ran first, D-006). Serialized by `recycling`; fail-soft
     // (a spawn failure leaves the host running, carry stays in the inbox).
-    recycleChild = async (carryText) => {
+    recycleChild = async (carryText, { systemPromptAddendum = '' } = {}) => {
       if (recycling) return;
       recycling = true;
+      // Assemble + persist the NEXT child's argv before killing the current one.
+      // If carry-file creation fails, the settled current session remains alive
+      // and its native/force-compaction backstops remain available.
+      let recycleArgs;
+      let nativeId;
+      try {
+        const minted = systemPromptAddendum
+          ? mintCarryRespawnArgs(args, { systemPromptAddendum, ownerId })
+          : mintRecycleArgs(args);
+        recycleArgs = minted.args;
+        nativeId = minted.nativeId;
+      } catch (e) {
+        try {
+          process.stderr.write(`psu-pty-host: carry-respawn argv build failed for ${ownerId}: ${e.message}\n`);
+        } catch {
+          /* diagnostic only */
+        }
+        recycling = false;
+        return;
+      }
+      const priorDisableAutoCompact = env.DISABLE_AUTO_COMPACT;
       try {
         const dead = new Promise((res) => {
           try {
@@ -2520,9 +2556,12 @@ export function hostThroughPty(o) {
         // we don't re-declare the prior child's already-on-disk id (which claude
         // rejects → boot-retry storm). env (PAPERCUSP_SID) is untouched, so coord
         // identity / locks / socket all survive; only the native claude id rotates.
-        const { args: recycleArgs, nativeId } = mintRecycleArgs(args);
         childStartupOutput = '';
         childStartupReady = false;
+        // P-018: disable Claude Code's native AUTO compactor only on the fresh
+        // child whose deterministic carry consumer is now installed. The old
+        // child kept its native safety net right up to this successful cut.
+        if (systemPromptAddendum) env.DISABLE_AUTO_COMPACT = '1';
         child = spawnChild(recycleArgs);
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug
@@ -2549,6 +2588,10 @@ export function hostThroughPty(o) {
         // single byte, even one that will stay busy from its first tick.
         activity.touchOutput();
       } catch (e) {
+        if (systemPromptAddendum) {
+          if (priorDisableAutoCompact === undefined) delete env.DISABLE_AUTO_COMPACT;
+          else env.DISABLE_AUTO_COMPACT = priorDisableAutoCompact;
+        }
         try {
           process.stderr.write(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);
         } catch {

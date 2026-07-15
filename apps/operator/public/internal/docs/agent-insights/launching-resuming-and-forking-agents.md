@@ -82,6 +82,51 @@ turn, and the seam differs by mode:
 **Always pass a `brief`.** Without one the agent boots and sits there; the tool
 warns you, but a warning is not a turn.
 
+## Cross-backend resume is a port, not a shared native thread
+
+`psu --resume=<tracked Claude row> --agent=codex|omp` uses the session-port
+protocol. The distinction matters:
+
+* A same-backend resume reopens the original backend's native transcript.
+* A cross-backend port snapshots the source, creates a **new** target session,
+  carries history as a managed seed, waits for native persistence, and then lets
+  every later resume use the target backend normally.
+
+OMP can appear to resume across models more simply because an OMP thread is
+already provider-neutral: OMP owns one conversation representation and sends the
+next request to whichever model/provider is selected. That is a good pattern
+inside a single host runtime, but it does not make Claude Code JSONL, Codex
+rollouts, and OMP thread storage mutually readable. `psu` coordinates those
+independent native CLIs, so pretending they share one thread would produce false
+lineage and targets that cannot resume natively later.
+
+What the port deliberately copies from OMP's strategy:
+
+* a versioned, provider-independent conversation contract;
+* explicit model/provider selection separate from history;
+* deterministic history fitting before the target request;
+* preserving tool-call/result relationships while normalizing backend syntax.
+
+What it deliberately does not copy:
+
+* relabeling a provider switch as the same native session;
+* replaying unbounded history and hoping the target truncates it safely;
+* persisting full normalized transcript text in coordination/audit metadata;
+* importing source control state, permissions, claims, or prompt authority;
+* treating terminal output as proof that the target recorded the seed.
+
+The extra ceremony is the value: inspect is read-only, prepare occurs only after
+an egress preview/confirmation, delivery is idempotent, the artifact is one-use,
+and `delivered` means the native target transcript contains the managed seed.
+Protocol/transform skew and a missing migration fail closed. A stale prepared or
+pending port is expired by the existing telemetry-retention routine, which ends
+the target, removes the seed, and emits content-free failed-delivery telemetry.
+
+V1 is intentionally narrow: tracked plain Claude sources, Codex/OMP targets, no
+native fork combination, and no transfer from an active fleet/loop/claim-bearing
+source. That boundary keeps the first implementation auditable while leaving the
+contract extensible for future source adapters.
+
 ## Trap 3: a launched agent that "never wakes up" is usually not rate-limited
 
 Two failures on this box make a perfectly-launched agent sit at a dead prompt

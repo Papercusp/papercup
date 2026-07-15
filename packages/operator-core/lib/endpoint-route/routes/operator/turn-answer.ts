@@ -155,8 +155,13 @@ export default defineTool({
         );
       }
 
-      void notifySyncInvalidate('operatorTurns.byConversation', { conversationId })
-        .catch(() => { /* best-effort */ });
+      // The answer mutates an existing assistant row and appends a user row.
+      // Refresh both consumers: the live tail handles open windows, while the
+      // page query is the authoritative bootstrap after a desktop reload.
+      void Promise.all([
+        notifySyncInvalidate('operatorTurns.byConversation', { conversationId }),
+        notifySyncInvalidate('operatorTurns.page', { conversationId }),
+      ]).catch(() => { /* best-effort */ });
 
       return Response.json({
         ok: true,

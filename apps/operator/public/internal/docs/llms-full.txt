@@ -15134,6 +15134,36 @@ A launched agent that opens IDLE is useless — someone has to give it its first
 
 **Always pass a `brief`.** Without one the agent boots and sits there; the tool warns you, but a warning is not a turn.
 
+## Cross-backend resume is a port, not a shared native thread
+
+[Section titled “Cross-backend resume is a port, not a shared native thread”](#cross-backend-resume-is-a-port-not-a-shared-native-thread)
+
+`psu --resume=<tracked Claude row> --agent=codex|omp` uses the session-port protocol. The distinction matters:
+
+* A same-backend resume reopens the original backend’s native transcript.
+* A cross-backend port snapshots the source, creates a **new** target session, carries history as a managed seed, waits for native persistence, and then lets every later resume use the target backend normally.
+
+OMP can appear to resume across models more simply because an OMP thread is already provider-neutral: OMP owns one conversation representation and sends the next request to whichever model/provider is selected. That is a good pattern inside a single host runtime, but it does not make Claude Code JSONL, Codex rollouts, and OMP thread storage mutually readable. `psu` coordinates those independent native CLIs, so pretending they share one thread would produce false lineage and targets that cannot resume natively later.
+
+What the port deliberately copies from OMP’s strategy:
+
+* a versioned, provider-independent conversation contract;
+* explicit model/provider selection separate from history;
+* deterministic history fitting before the target request;
+* preserving tool-call/result relationships while normalizing backend syntax.
+
+What it deliberately does not copy:
+
+* relabeling a provider switch as the same native session;
+* replaying unbounded history and hoping the target truncates it safely;
+* persisting full normalized transcript text in coordination/audit metadata;
+* importing source control state, permissions, claims, or prompt authority;
+* treating terminal output as proof that the target recorded the seed.
+
+The extra ceremony is the value: inspect is read-only, prepare occurs only after an egress preview/confirmation, delivery is idempotent, the artifact is one-use, and `delivered` means the native target transcript contains the managed seed. Protocol/transform skew and a missing migration fail closed. A stale prepared or pending port is expired by the existing telemetry-retention routine, which ends the target, removes the seed, and emits content-free failed-delivery telemetry.
+
+V1 is intentionally narrow: tracked plain Claude sources, Codex/OMP targets, no native fork combination, and no transfer from an active fleet/loop/claim-bearing source. That boundary keeps the first implementation auditable while leaving the contract extensible for future source adapters.
+
 ## Trap 3: a launched agent that “never wakes up” is usually not rate-limited
 
 [Section titled “Trap 3: a launched agent that “never wakes up” is usually not rate-limited”](#trap-3-a-launched-agent-that-never-wakes-up-is-usually-not-rate-limited)
@@ -27211,6 +27241,56 @@ Scout also has to bound the cycle body itself. Once the scheduler wins the fire 
 
 `packages/operator-core/lib/scout/run.test.ts` verifies pre-scheduler Scout gates record gated tick rows. `packages/operator-core/lib/scout/scheduler.test.ts` verifies a timed-out cycle records an error tick. `packages/operator-core/lib/blueprint/learning-loop-health.test.ts` verifies Scout is marked stale when routine fires are fresh but `scout_ticks` activity is stale. `packages/operator-core/lib/dbos/dbos-executor-reaper.test.ts` verifies no-first-output routine fires are cancelled and the owning routine is requeued.
 
+# Server-side terminal spawns must prefer process-per-window to reliably run a command
+
+> On a real desktop box the headless operator's client-server terminal (gnome-terminal → gnome-terminal-server via the D-Bus factory) can open a window but silently NOT run the command — force a process-per-window emulator (preferProcessPerWindow) for command-execution reliability.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A server-side terminal spawn (`capability:terminal`, `capability:launch-agent`, `fleet:launch-on-plan`) reports **ok + a window opens on the owner’s seat**, but:
+
+* the arbitrary command never runs (`echo … > /tmp/x` opens a gnome-terminal but the file is never created — **EI-11543**), or
+* a resumed/forked psu session comes up in the window and **dies within seconds** (**EI-11578**).
+
+Meanwhile the *same* command in an **xterm** works fine, so the display and the desktop session are healthy — the defect is in the terminal *mechanism*, not the seat.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+The headless operator (a systemd `--user` service) spawns terminals via `spawnConsole` (`console-spawn.ts`). When a live desktop session is detected (`desktopSessionDetected`), it prefers the owner’s **standard client-server terminal** — `gnome-terminal`, which is a thin client that hands the window off to `gnome-terminal-server` over the D-Bus factory (WI-4718 restored this so the owner sees their normal window).
+
+That client-server / factory path is **unreliable for command execution** from the server-side spawn on a real box:
+
+* the factory can silently **drop the `-- CMD` handoff** — the window is created but with a default shell, no command (EI-11543);
+* `gnome-terminal-server`’s **pty/env handoff kills a reattached psu managed-pty host** (EI-11578).
+
+**Process-per-window emulators** (`xterm` / `alacritty` / `kitty` / `wezterm`) have no factory: the launched binary *is* the window, binds `DISPLAY` directly, and `exec`s the command itself — so the command always runs and the pty survives.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+If a server-side spawn’s contract is **“run this command and it must actually run”**, force the process-per-window ordering with `spawnConsole({ preferProcessPerWindow: true })`. `resolveTerminalPreference` then returns `false` even on a detected desktop session, and `findLinuxTerminal` picks a process-per-window emulator.
+
+Already applied:
+
+* `capability:terminal` — arbitrary-command windows (EI-11543).
+* `capability:launch-agent` resume/fork — `preferProcessPerWindow: isResume` (EI-11578).
+
+The window is still visible on the owner’s seat **with fleet colors** — the OSC color/title prelude is part of the one-liner and works identically in xterm.
+
+Do *not* reach for this on a fresh non-resume agent launch that genuinely wants the owner’s standard gnome-terminal and does not depend on the fragile handoff; the knob is for the “the command/pty MUST survive” cases.
+
+## Debugging notes
+
+[Section titled “Debugging notes”](#debugging-notes)
+
+* `capability:bash` runs inside a PID/mount-namespaced bwrap sandbox with **no host X / D-Bus** — you cannot reproduce a live gnome-terminal desktop spawn from there (Xvfb can’t create `/tmp/.X11-unix` sockets; the dbus socket bind is blocked). Reason from the code + the working reference spawner instead.
+* The **working reference** is the Rust desktop spawner `papercusp-desktop/src-tauri/src/native_console.rs` — it runs *inside* the GUI session, so its gnome-terminal invocation gets the correct DISPLAY/DBUS directly and does not exercise the headless-resolution fragility.
+
 # Session archive-at-death: ended sessions live in PG, not on disk
 
 > Since session-db-archive-retire-dirs-2026-07-10, an ENDED claude/codex/omp session's files are zstd-archived into harness_shared.session_archives and DELETED from disk (~15s after end + an hourly reconciler backstop). Resume rematerializes byte-exact from PG; sessions:read falls through to the archive; the per-session dir population stays capped at ~live-session count. Anything that greps dead-session dirs on disk is reading a surface that no longer exists.
@@ -36757,13 +36837,34 @@ psu --resume            # picker: list recent tracked sessions, resume one
 psu --resume=<id>       # or: psu --resume <id>  (direct, skip the picker)
 ```
 
-`psu --resume` reads your recent tracked sessions, `cd`s to each one’s recorded cwd, and execs the **raw** CLI’s resume command there — no wrapper:
+`psu --resume` reads your recent tracked sessions. A same-backend selection `cd`s to the recorded cwd and execs the **raw** CLI’s native resume command:
 
 * `claude --resume <native-uuid>` — every modern psu claude launch forces + records a native session id (`adv_sessions.session_id`), so resume re-attaches that **exact** conversation. `claude --continue` (most-recent in the cwd) is only the **fallback** for pre-native-id rows with no recorded id. Resume also re-points `CLAUDE_CONFIG_DIR` to the session’s isolated config dir (see the [claude config-dir note](#codex-a-per-session-codex_home-hooks-and-diagnostics)).
 * `omp -r <thread>` / `-c`, re-adding `-e <coord>` (loaded per-invocation)
 * `codex … resume --last` with `CODEX_HOME` set to that session’s home (derived from its id — the home still holds the session history)
 
 A fresh `PAPERCUSP_SID` is minted for the resumed process. MCP + claude lock hooks are user-level, so they survive the raw resume. You can also resume directly (`claude --resume <uuid>` from the launch dir) or from the `/adv` Sessions tab, which knows the cwd.
+
+### Switching backends: a session port
+
+[Section titled “Switching backends: a session port”](#switching-backends-a-session-port)
+
+A tracked Claude session can instead continue as a fresh Codex or OMP session:
+
+```bash
+psu --resume=<tracked-adv-id> --agent=codex --no-picker --yes
+psu --resume=<tracked-adv-id> --agent=omp   --no-picker --yes
+```
+
+In the interactive picker, selecting a model from another backend triggers the same flow. This is a **port**, not a native resume: Claude, Codex, and OMP have mutually incompatible transcript stores. `psu` snapshots the Claude source, normalizes it into the versioned session-port contract, previews the exact fidelity and egress target, and asks for confirmation before it creates anything. It then creates a new target session and delivers a managed seed after the native CLI reaches its prompt.
+
+* A source that fits is carried in full. An oversized source becomes a deterministic **summary + recent verbatim tail**; the target model’s real context budget includes the engineer prompt, managed seed framing, kickoff, and `--launch-context` file.
+* Tool-result pairs and text attachments are normalized; unsupported binary attachments are represented by content-free omission markers. Prompt/terminal control sequences and secret-shaped values are neutralized before rendering.
+* The carried history is inert conversation context. It does **not** import the source session’s AUTO/DRAIN state, fleet role, claims, locks, or authority.
+* The port becomes `delivered` only after the target CLI has durably written the seed to its own native transcript. Only then is the one-use seed deleted. A failed or interrupted delivery is retryable by the same idempotency key.
+* The source session is never mutated. Ported targets appear in the resume picker as `ported from #<source-id>` and subsequently resume through their backend’s normal native path.
+
+Protocol V1 intentionally supports **tracked plain Claude sources only** and targets Codex or OMP. Raw/untracked sessions remain same-backend. `--fork` is a native same-backend operation and is rejected with a port. Scripted OMP ports must pass `--agent=omp`; a bare non-UUID resume id still means an OMP thread. Launcher and operator protocol/transform versions must match, and migration 611 must be applied; skew fails loudly with upgrade instructions rather than falling back to a context-less target.
 
 ### Resuming a session psu didn’t start
 

@@ -30,8 +30,10 @@
  * is testable in isolation here, exactly as the producers are.
  */
 import {
+  type BuildCarryDocOpts,
   type CarryDoc,
   type OpenOwnerQuestionGate,
+  buildCarryDoc,
   carryDocBudgetChars,
   gateOpenOwnerQuestion,
   renderCarryDoc,
@@ -92,6 +94,18 @@ export interface BuildRespawnLaunchSpecInput {
   plan?: LaunchPlanRef | null;
 }
 
+/** Live adapter inputs. The deterministic assembly remains in
+ * {@link buildRespawnLaunchSpec}; this wrapper only resolves an owner through
+ * the already-defined carry-document producer and fails soft for the watcher. */
+export interface BuildOwnerRespawnLaunchSpecOpts
+  extends Omit<BuildRespawnLaunchSpecInput, 'doc'> {
+  /** Session/transcript/workspace inputs owned by the live watcher. A threshold
+   * boundary is deliberate by default; callers can explicitly mark a forced cut. */
+  buildOpts?: BuildCarryDocOpts;
+  /** Test seam. */
+  buildFn?: (ownerId: string, opts?: BuildCarryDocOpts) => Promise<CarryDoc>;
+}
+
 /**
  * Assemble the {@link RespawnLaunchSpec} from a built carry document. Pure and
  * deterministic — the single place the P-009/P-010/P-011 producers become the
@@ -109,6 +123,31 @@ export function buildRespawnLaunchSpec(input: BuildRespawnLaunchSpecInput): Resp
   const firstPrompt = deriveRespawnFirstPrompt(doc, autoMode, plan);
 
   return { systemPromptAddendum, firstPrompt, budgetChars, openOwnerQuestion };
+}
+
+/**
+ * Build the live successor launch spec for one coordination owner. Returns null
+ * on every assembly failure so the caller can leave the current session intact
+ * and retain its native/gateway safety backstops.
+ */
+export async function buildOwnerRespawnLaunchSpec(
+  ownerId: string,
+  opts: BuildOwnerRespawnLaunchSpecOpts,
+): Promise<RespawnLaunchSpec | null> {
+  if (!ownerId?.trim()) return null;
+  try {
+    const build = opts.buildFn ?? buildCarryDoc;
+    const doc = await build(ownerId.trim(), { boundaryDeliberate: true, ...opts.buildOpts });
+    return buildRespawnLaunchSpec({
+      doc,
+      effectiveWindowTokens: opts.effectiveWindowTokens,
+      now: opts.now,
+      autoMode: opts.autoMode,
+      plan: opts.plan,
+    });
+  } catch {
+    return null;
+  }
 }
 
 /**

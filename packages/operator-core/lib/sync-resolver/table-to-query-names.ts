@@ -210,7 +210,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.toast_log': ['toastLog.recent'],
   'harness_shared.operator_budget': ['operatorBudget.byWorkspace'],
   'harness_shared.operator_conversations': ['operatorConversations.current'],
-  'harness_shared.operator_turns': ['operatorTurns.byConversation'],
+  // Both the live tail and the paged bootstrap read this table. In-place
+  // choice-card answers mutate an existing row's tools JSON, so invalidating
+  // only the live-tail query leaves a reload hydrated from a stale page.
+  'harness_shared.operator_turns': ['operatorTurns.byConversation', 'operatorTurns.page'],
   'harness_shared.operator_prompt_user': ['operatorConfig.byWorkspace'],
   'harness_shared.operator_preferences': ['operatorConfig.byWorkspace', 'operatorPreferences.byWorkspace'],
   'harness_shared.operator_standing_candidates': ['operatorStandingApprovals.byWorkspace'],

@@ -304,25 +304,29 @@ function startJanitor(): void {
  * then a completion-gated carry-note continuation (uses `focus`). `mode:'reset'` /
  * `mode:'recycle'` (su-cold-auto-mode-2026-07-03 Phase 2) = a COLD loop wake:
  * RESET-CONTEXT (`/clear` in place, keep the MCP warm) or RECYCLE (kill+respawn the
- * host), each carrying the carry-note as `data`; both are clean-boundary-gated
+ * host), each carrying the carry-note as `data`; `mode:'carry-respawn'` is P-018's
+ * deterministic successor cut and additionally carries a system-prompt addendum.
+ * All lifecycle verbs are clean-boundary-gated
  * host-side (deferred mid-turn, P-006). Resolves true on a clean write, false on
  * connect error / timeout. Mirrors psu-pty-host.mjs's v1 envelope.
  */
 export function injectIntoHost(
   sock: string,
   msg: {
-    mode: 'turn' | 'raw' | 'osc' | 'compact' | 'reset' | 'recycle' | 'mcp-reconnect';
+    mode: 'turn' | 'raw' | 'osc' | 'compact' | 'reset' | 'recycle' | 'carry-respawn' | 'mcp-reconnect';
     data: string;
     focus?: string;
+    systemPromptAddendum?: string;
   },
   timeoutMs = 2000,
 ): Promise<boolean> {
-  const envelope: { v: 1; mode: string; data: string; focus?: string } = {
+  const envelope: { v: 1; mode: string; data: string; focus?: string; systemPromptAddendum?: string } = {
     v: 1,
     mode: msg.mode,
     data: msg.data,
   };
   if (msg.focus !== undefined) envelope.focus = msg.focus;
+  if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;
   const payload = JSON.stringify(envelope);
   if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) return Promise.resolve(false);
 

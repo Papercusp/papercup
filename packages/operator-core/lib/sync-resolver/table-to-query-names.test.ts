@@ -369,6 +369,12 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     ]));
     expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_entity_subscriptions']).toContain('conversations.questionDetail');
   });
+
+  it('refreshes both operator-turn live-tail and paged hydration queries', () => {
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.operator_turns']).toEqual(
+      expect.arrayContaining(['operatorTurns.byConversation', 'operatorTurns.page']),
+    );
+  });
 });
 
 describe('TABLE_TO_QUERY_NAMES shape', () => {

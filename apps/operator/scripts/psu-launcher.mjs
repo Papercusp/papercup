@@ -1270,6 +1270,40 @@ export function mintRecycleArgs(args = [], { mintId = () => randomUUID() } = {})
 }
 
 /**
+ * P-018 deterministic carry respawn: rotate the native Claude session id using
+ * {@link mintRecycleArgs}, persist the bounded carry document as one owner-scoped
+ * 0600 launch-context file, and layer it onto the fresh child. The original argv
+ * is the input on every respawn, so generated carry flags never accumulate.
+ */
+export function mintCarryRespawnArgs(
+  args = [],
+  {
+    systemPromptAddendum,
+    ownerId = null,
+    mintId = () => randomUUID(),
+    home = homedir(),
+  } = {},
+) {
+  const text = String(systemPromptAddendum ?? '').trim();
+  if (!text) throw new Error('carry-respawn requires a non-empty system-prompt addendum');
+  const rotated = mintRecycleArgs(args, { mintId });
+  if (!rotated.nativeId) throw new Error('carry-respawn requires a Claude --session-id launch');
+  const dir = join(home, '.papercusp', 'launch-context');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const key = String(ownerId || rotated.nativeId)
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .slice(0, 200);
+  const launchContextPath = join(dir, `carry-${key || rotated.nativeId}.md`);
+  writeFileSync(launchContextPath, `${text}\n`, { mode: 0o600 });
+  chmodSync(launchContextPath, 0o600);
+  return {
+    args: [...rotated.args, '--append-system-prompt-file', launchContextPath],
+    nativeId: rotated.nativeId,
+    launchContextPath,
+  };
+}
+
+/**
  * Does claude's OWN store hold a transcript for this session id? A tracked
  * adv row alone doesn't prove resumability: a launch that died before its
  * first persisted turn leaves the adv row behind with NO
@@ -4504,6 +4538,7 @@ function runWrapper({
         // (reusing the on-disk id storms the supervisor). Inject the arg-rewrite
         // + native→coord re-anchor here so the host stays launcher-agnostic.
         mintRecycleArgs,
+        mintCarryRespawnArgs,
         // agent-launch-resume-primitives P-011/D-008: the first turn for a scripted
         // RESUME/FORK. A resumed CLI has no positional-prompt seam (the fresh path's
         // kickoff rides the argv), and a session that just came back from the dead is

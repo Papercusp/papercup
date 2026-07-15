@@ -90,6 +90,7 @@ import {
 import { getConfiguredWakeWordForDisplay } from '@papercusp/operator-core/lib/voice-cards/wakeword-display';
 import { setVoiceConverseHandler } from './voice/voice-converse-handler';
 import { sharedState as sharedOperatorState } from '@papercusp/operator-core/lib/operator-shared-state';
+import { operatorTurnToolsRevision } from '@/lib/operator-turn-tools-revision';
 
 interface OperatorTurnRow {
   id: string;
@@ -932,6 +933,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     enabled: !!convId,
   });
   const remoteTurns = (turnsSync.data as OperatorTurnRow[] | undefined) ?? [];
+  // Row count is not a sufficient revision: answering an already-rendered
+  // choice card mutates tools[i].answered in place while the tail length stays
+  // constant. Track the mutable projection explicitly so cross-tab updates and
+  // persisted reloads reconcile without waiting for another appended turn.
+  const remoteToolsRevision = operatorTurnToolsRevision(remoteTurns);
   useEffect(() => {
     if (!hydratedRef.current) return;
     if (!Array.isArray(remoteTurns) || remoteTurns.length === 0) return;
@@ -1014,7 +1020,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     }
     if (lastTurnTs > 0) dispatch({ type: 'mark_turn', tsMs: lastTurnTs });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remoteTurns.length, convId]);
+  }, [remoteTurns.length, remoteToolsRevision, convId]);
 
   // Persist messages on every change. SessionStorage is per-tab and
   // resets on app reopen, matching the mode + sleep semantics. The

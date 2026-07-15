@@ -90,6 +90,14 @@ ANDROID_HOME=$HOME/Android/Sdk && make tokens bindings-kotlin && tools/build-scr
 device). APK → `android/app/build/outputs/apk/debug/app-debug.apk`. iOS: needs the
 Mac VM (`ssh -p 2222`, `~/.papercusp/build-vms.env`) + `make build-ios`.
 
+For automated microphone endurance tests, keep the Android emulator **windowed**
+even on an Xvfb display. Emulator 36.5.11 and 36.6.11 both exit 139 on the first
+gRPC `injectAudio` stream when launched with `-no-window`; the same AVD and audio
+payload remain online when launched with a display, `-grpc 8554`,
+`-allow-host-audio`, and `-gpu swiftshader_indirect`. Treat one pilot audio
+injection plus an `adb get-state` check as the rig preflight before a multi-turn
+soak, so a harness crash cannot masquerade as an app stability failure.
+
 ## What stays owner-gated
 
 - **APNs enrollment** — Apple Developer account + `.p8` key (iOS push is dead until then).
