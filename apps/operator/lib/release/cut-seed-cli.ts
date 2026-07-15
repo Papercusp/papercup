@@ -403,6 +403,69 @@ export async function refreshCorestoreStateForSeed(inp: {
   return { backfill, drained, passes, ownLogKey: ownLog.keyHex };
 }
 
+/**
+ * WI-4487: the "the operator holds the store" signature. The failing lock is NOT
+ * RocksDB's db/LOCK (the long-standing misdiagnosis) — it is the CORESTORE
+ * device-file lock, which hypercore-storage builds in the CorestoreStorage
+ * CONSTRUCTOR and only when `!readOnly && !allowBackup`. fd-lock raises this exact
+ * string, so it is the one reliable marker that a live writer owns the store.
+ */
+export function isCorestoreLockedError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /could not be locked|descriptor.*lock|resource.*locked/i.test(msg);
+}
+
+/**
+ * WI-4487: wait until the LIVE operator has drained this hive's outbox into its own
+ * log, so a read-only cut ships CURRENT state rather than a stale snapshot.
+ *
+ * We must not drain it ourselves here: `drainOutboxOnce` appends to the own log
+ * (needs the write lock the operator holds) AND stamps `drained_at` in SHARED PG.
+ * Draining into anything other than the live log — a temp copy, say — would mark the
+ * rows delivered while the real log never got them, silently losing them for good.
+ * The operator owns its log; our job is only to enqueue (a PG-only INSERT) and wait.
+ */
+export async function waitForOperatorDrain(inp: {
+  readonly pg: postgres.Sql;
+  readonly workspaceId: string;
+  readonly hive: string;
+  readonly timeoutMs?: number;
+  readonly pollMs?: number;
+  readonly now?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly warn?: (msg: string) => void;
+}): Promise<{ undrained: number; waitedMs: number }> {
+  const timeoutMs = inp.timeoutMs ?? 120_000;
+  const pollMs = inp.pollMs ?? 500;
+  const now = inp.now ?? (() => Date.now());
+  const sleep = inp.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const warn = inp.warn ?? ((m: string) => console.warn(m));
+  const started = now();
+
+  for (;;) {
+    const [{ undrained }] = await inp.pg<{ undrained: number }[]>`
+      SELECT count(*)::int AS undrained
+        FROM harness_shared.substrate_outbox
+       WHERE workspace_id = ${inp.workspaceId}
+         AND harness_slug = ${inp.hive}
+         AND drained_at IS NULL
+    `;
+    if (undrained === 0) return { undrained: 0, waitedMs: now() - started };
+
+    const waited = now() - started;
+    if (waited >= timeoutMs) {
+      throw new Error(
+        `[cut-seed] the running operator has not drained ${undrained} outbox row(s) for ` +
+          `${inp.workspaceId}::${inp.hive} after ${Math.round(waited / 1000)}s — refusing to cut a seed that ` +
+          'would silently omit them. Check the operator is healthy and draining (it owns the own-log ' +
+          'append; this cut cannot drain on its behalf without corrupting delivery state), then retry.',
+      );
+    }
+    if (waited === 0 || waited >= 5_000) warn(`[cut-seed] waiting for the operator to drain ${undrained} outbox row(s)…`);
+    await sleep(pollMs);
+  }
+}
+
 /** Move a dir, falling back to copy+remove across filesystems (EXDEV). */
 async function moveDir(src: string, dst: string): Promise<void> {
   try {
@@ -592,24 +655,45 @@ async function main(): Promise<void> {
           'and ship a silently-empty seed). Pass --store-dir <live hive store> or --no-corestore.',
       );
     }
+    // WI-4487: the CUT itself only ever READS this store — cores are copied out by
+    // pipeReplicate. Only the optional pre-cut refresh writes. So try writable first
+    // (a quiesced box refreshes in-process exactly as before), and fall back to a
+    // READ-ONLY open when the operator holds the store: `readOnly` skips the CORESTORE
+    // device-file lock outright (hypercore-storage builds it only when
+    // `!readOnly && !allowBackup`) and opens RocksDB read-only. That is what lets a box
+    // running the operator cut a properly-seeded release with no quiesce and no outage
+    // — previously every such cut either took an outage or fell back to
+    // PAPERCUSP_SEED_CORESTORE=0 and shipped an installer that cold-clones on first boot.
+    const wantRefresh = !!workspaceId && args['skip-corestore-refresh'] !== true;
+    let sourceWritable = true;
     store = new Corestore(storeDir);
     try {
       await store.ready();
     } catch (e) {
-      // WI-4487 #3 (the "floor"): a fresh-snapshot cut opens the LIVE hive corestore
-      // read-write, and its migrate-on-open (CorestoreStorage._migrateStore) grabs an
-      // EXCLUSIVE RocksDB fd lock. On any box that runs the operator (i.e. every box that
-      // ever cuts a release) the operator already holds that lock, so this throws a raw
-      // hyperbee "File descriptor could not be locked" with zero hint at the cause — and
-      // by here we're already minutes into a cut. Re-throw with the real diagnosis + the
-      // supported no-outage remedies so the next cutter doesn't lose a cut re-deriving it.
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/could not be locked|descriptor.*lock|resource.*locked/i.test(msg)) {
+      if (!isCorestoreLockedError(e)) throw e;
+      await store.close().catch(() => {});
+      sourceWritable = false;
+      // --sparse must APPEND a fresh head snapshot; with a read-only source it cannot,
+      // and computeSparseFrom would then find no in-window snapshot and silently ship a
+      // FULL cut. Refuse loudly rather than degrade quietly.
+      if (sparse) {
         throw new Error(
-          `[cut-seed] cannot snapshot the LIVE hive corestore at ${storeDir}: it is locked by the running ` +
-            'operator (the migrate-on-open needs an exclusive fd lock the operator already holds). A box that ' +
-            'runs the operator can never take a default fresh-snapshot cut without stopping it first. Use a ' +
-            'no-outage path instead:\n' +
+          `[cut-seed] --sparse needs to append a fresh head snapshot to the hive corestore at ${storeDir}, but ` +
+            'the running operator holds it (a read-only cut cannot append). Without that snapshot a --sparse cut ' +
+            'silently ships FULL. Stop the operator for a sparse cut, or drop --sparse for a full read-only cut.',
+        );
+      }
+      store = new Corestore(storeDir, { readOnly: true });
+      try {
+        await store.ready();
+      } catch (roErr) {
+        // The read-only fallback is the no-outage path; if even it cannot open, the
+        // store is not merely operator-locked. Surface the real diagnosis + remedies
+        // rather than a raw hyperbee error minutes into a cut.
+        const msg = roErr instanceof Error ? roErr.message : String(roErr);
+        throw new Error(
+          `[cut-seed] cannot open the hive corestore at ${storeDir} — it is locked by the running operator AND ` +
+            'the read-only fallback failed, so this is not a plain lock conflict. Use a no-outage path instead:\n' +
             '  • PAPERCUSP_SEED_CORESTORE=0 / --no-corestore  → git-only seed (fresh installs cold-clone the hive on first boot)\n' +
             '  • --reuse-corestore <prior seed dir>           → graft an already-cut corestore, no quiesce (WI-3232)\n' +
             '  • PAPERCUSP_SKIP_SEED_CUT=1 (release-local.sh)  → reuse the existing src-tauri/seed as-is\n' +
@@ -617,10 +701,30 @@ async function main(): Promise<void> {
             `See WI-4487. (underlying error: ${msg})`,
         );
       }
-      throw e;
+      console.warn(
+        '[cut-seed] the operator holds the hive corestore — opened it READ-ONLY and cutting live (no quiesce, ' +
+          'no outage). The cut only reads the store; see WI-4487.',
+      );
     }
-    if (workspaceId && args['skip-corestore-refresh'] !== true) {
+
+    if (wantRefresh && sourceWritable) {
+      // Quiesced box: we own the store, so refresh in-process exactly as before.
       await refreshCorestoreStateForSeed({ workspaceId, hive, store, sparse });
+    } else if (wantRefresh) {
+      // Live-operator box: split the refresh along the write boundary. backfill is a
+      // PG-only INSERT into substrate_outbox (it never appends to the log — the drain
+      // owns that), so it is safe with a read-only store; the drain itself is then done
+      // by the OPERATOR, into the real live log, and we simply wait for it. Draining it
+      // ourselves is not an option: it needs the write lock, and stamping `drained_at`
+      // for rows the live log never received would lose them permanently.
+      const pg = getOrgPg().sql;
+      const handle = { workspaceId, harnessSlug: hive } as unknown as BootedHarnessHandle;
+      const backfill = await backfillLocalState(handle, pg, { force: true, maxOpsPerAuthor: 0 });
+      const { waitedMs } = await waitForOperatorDrain({ pg, workspaceId, hive });
+      console.warn(
+        `[cut-seed] refreshed via the live operator for ${workspaceId}::${hive}: ` +
+          `backfill enqueued=${backfill.enqueued} dropped=${backfill.dropped}; operator drained to zero in ${waitedMs}ms.`,
+      );
     } else if (!workspaceId) {
       console.warn('[cut-seed] no --workspace-id: skipping pre-cut corestore refresh (no DB scope to backfill/drain).');
     } else {

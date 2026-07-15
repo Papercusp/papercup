@@ -150,4 +150,50 @@ describe('recipe recommendation authority (P-008)', () => {
       updatedAt: '2026-07-13T12:00:00.000Z',
     })).resolves.toMatchObject({ ok: true, descriptor: { bound: false } });
   });
+
+  // EI-12057: a recipe composing another recipe via `tools.recipes.run(...)` fails
+  // with the SAME authority codes as a direct (non-nested) run of the inner recipe
+  // — the failure is a property of the INNER script, not of nesting. Distinguishing
+  // `reason` text lets a caller tell "permanent, run via code:run instead"
+  // (authority_unresolved — opaque SQL/shell) apart from "get a proof first"
+  // (authority_required — merely bound, not opaque).
+  it('surfaces an actionable reason distinguishing permanent (opaque) from fixable (missing-proof) failures', async () => {
+    const opaqueScript = `await tools.dev.pg_query({ sql: 'SELECT 1' });`;
+    const opaqueResult = await validateRecipeAuthorityProof({
+      script: opaqueScript,
+      updatedAt: '2026-07-13T12:00:00.000Z',
+    });
+    expect(opaqueResult).toMatchObject({ ok: false, error: 'authority_unresolved' });
+    if (!opaqueResult.ok) {
+      expect(opaqueResult.reason).toMatch(/opaque\/unprovable/);
+      expect(opaqueResult.reason).toMatch(/code:run/);
+    }
+
+    const boundScript = `await tools.workItems.get({ id: 'WI-4655', harness: 'papercusp' });`;
+    const boundResult = await validateRecipeAuthorityProof({
+      script: boundScript,
+      updatedAt: '2026-07-13T12:00:00.000Z',
+    });
+    expect(boundResult).toMatchObject({ ok: false, error: 'authority_required' });
+    if (!boundResult.ok) {
+      expect(boundResult.reason).toMatch(/recipes:search/);
+    }
+  });
+
+  // A recipe referencing a work-item is never dropped from bound refs by the
+  // nesting-composition path — this pins the exact EI-12057 repro shape (a
+  // work-item-bound script that ALSO calls the opaque dev:pg_query) to confirm
+  // `unresolved` wins over `bound` (opaque always fails closed, regardless of
+  // whether the script is otherwise entity-bound) and stays stable.
+  it('EI-12057 repro shape: work-item-bound + opaque dev.pg_query stays permanently unresolved', async () => {
+    const script = `
+      await tools.work_items.get({ id: 'WI-4457', harness: 'papercusp', detail: true });
+      await tools.dev.pg_query({ sql: 'SELECT 1', maxRows: 100 });
+    `;
+    const descriptor = await deriveRecipeAuthority(script);
+    expect(descriptor.unresolved).toBe(true);
+    expect(descriptor.bound).toBe(true);
+    const result = await validateRecipeAuthorityProof({ script, updatedAt: '2026-07-13T12:00:00.000Z' });
+    expect(result).toMatchObject({ ok: false, error: 'authority_unresolved' });
+  });
 });

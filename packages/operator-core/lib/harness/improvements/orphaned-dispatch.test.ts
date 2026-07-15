@@ -243,6 +243,42 @@ describe('EI-7795: stale evidence from an item that recovered on a later attempt
   });
 });
 
+describe('supersededOrphanItemIds — EI-11986 class root fix: which items have a bug worth reconciling', () => {
+  it('an item with an orphaned row later resolved (fixed) is superseded', () => {
+    const rows = [
+      row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 }),
+      row({ id: 'd2', itemId: 'EI-1', outcome: 'fixed', resolvedAt: hoursAgo(1), attempt: 2, firedAt: hoursAgo(1) }),
+    ];
+    expect(supersededOrphanItemIds(rows)).toEqual(new Set(['EI-1']));
+  });
+
+  it('an item still orphaned with no later resolution is NOT superseded', () => {
+    const rows = [row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), attempt: 1 })];
+    expect(supersededOrphanItemIds(rows)).toEqual(new Set());
+  });
+
+  it('the evidence window does not matter — supersession is attempt-comparison only (reconciles OLD bugs too)', () => {
+    // Orphan evidence far outside ORPHAN_EVIDENCE_WINDOW_MS (48h) — a signal would
+    // never re-fire on it, but an already-filed bug still needs reconciling.
+    const rows = [
+      row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(200), attempt: 1 }),
+      row({ id: 'd2', itemId: 'EI-1', outcome: 'fixed', resolvedAt: hoursAgo(199), attempt: 2, firedAt: hoursAgo(199) }),
+    ];
+    expect(supersededOrphanItemIds(rows)).toEqual(new Set(['EI-1']));
+  });
+
+  it('multiple superseded items are all returned; a genuinely-broken item is excluded', () => {
+    const rows = [
+      row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 }),
+      row({ id: 'd2', itemId: 'EI-1', outcome: 'fixed', resolvedAt: hoursAgo(1), attempt: 2, firedAt: hoursAgo(1) }),
+      row({ id: 'd3', itemId: 'EI-2', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 }),
+      row({ id: 'd4', itemId: 'EI-2', outcome: 'could-not-fix', resolvedAt: hoursAgo(1), attempt: 2, firedAt: hoursAgo(1) }),
+      row({ id: 'd5', itemId: 'EI-3', outcome: 'orphaned', resolvedAt: hoursAgo(1), attempt: 1 }), // still broken
+    ];
+    expect(supersededOrphanItemIds(rows)).toEqual(new Set(['EI-1', 'EI-2']));
+  });
+});
+
 describe('isLaneBreakageOrphan — env-failure + host-restart orphans do NOT false-alarm (EI-536 noise loop)', () => {
   it('a host-restart-recovered orphan is NOT lane breakage (infra, already recovered)', () => {
     const r = row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'host-restart-recovery' });
@@ -533,5 +569,74 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     const result = await collectOrphanedDispatchSignals('ws-1', { bootMs: 0 });
     expect(result.signals.map((s) => s.key)).toEqual(['EI-UNK']);
     expect(result.note ?? '').not.toMatch(/env-outage/);
+  });
+
+  describe('EI-11986 class root fix: reconciling an already-filed bug whose item recovered on retry', () => {
+    const openIssue = (id: string, itemId: string) => ({
+      id,
+      state: 'open',
+      payload: { watchdogKey: `orphaned-dispatch:${itemId}` },
+    });
+
+    it('auto-resolves an open bug for an item superseded by a later resolved attempt', async () => {
+      vi.mocked(readRecentDispatches).mockResolvedValue([
+        row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 }),
+        row({ id: 'd2', itemId: 'EI-1', outcome: 'fixed', resolvedAt: hoursAgo(1), attempt: 2, firedAt: hoursAgo(1) }),
+      ]);
+      const findOpenByWatchdogKeys = vi.fn(async (keys: string[]) =>
+        keys.includes('orphaned-dispatch:EI-1') ? [openIssue('EI-11986', 'EI-1')] : [],
+      );
+      const comment = vi.fn(async () => null);
+      const resolve = vi.fn(async () => null);
+      const result = await collectOrphanedDispatchSignals('ws-1', {
+        bootMs: 0,
+        close: { findOpenByWatchdogKeys, comment, resolve } as any,
+      });
+      expect(findOpenByWatchdogKeys).toHaveBeenCalledWith(['orphaned-dispatch:EI-1']);
+      expect(comment).toHaveBeenCalledWith(
+        'EI-11986',
+        expect.stringMatching(/superseded/),
+        'watchdog-orphan-superseded',
+      );
+      expect(resolve).toHaveBeenCalledWith('EI-11986', 'watchdog-orphan-superseded');
+      expect(result.note).toMatch(/auto-resolved 1 superseded orphan bug/);
+    });
+
+    it('does NOT touch a bug for an item still genuinely orphaned (no later resolution)', async () => {
+      vi.mocked(readRecentDispatches).mockResolvedValue([
+        row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), attempt: 1 }),
+      ]);
+      const findOpenByWatchdogKeys = vi.fn(async () => [openIssue('EI-11986', 'EI-1')]);
+      const comment = vi.fn(async () => null);
+      const resolve = vi.fn(async () => null);
+      const result = await collectOrphanedDispatchSignals('ws-1', {
+        bootMs: 0,
+        close: { findOpenByWatchdogKeys, comment, resolve } as any,
+      });
+      // No superseded items ⇒ the reconciliation short-circuits before even querying.
+      expect(findOpenByWatchdogKeys).not.toHaveBeenCalled();
+      expect(comment).not.toHaveBeenCalled();
+      expect(resolve).not.toHaveBeenCalled();
+      expect(result.note ?? '').not.toMatch(/auto-resolved/);
+    });
+
+    it('a close failure for one issue is best-effort and never breaks the sweep', async () => {
+      vi.mocked(readRecentDispatches).mockResolvedValue([
+        row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 }),
+        row({ id: 'd2', itemId: 'EI-1', outcome: 'fixed', resolvedAt: hoursAgo(1), attempt: 2, firedAt: hoursAgo(1) }),
+      ]);
+      const findOpenByWatchdogKeys = vi.fn(async () => [openIssue('EI-11986', 'EI-1')]);
+      const comment = vi.fn(async () => {
+        throw new Error('pg down');
+      });
+      const resolve = vi.fn(async () => null);
+      await expect(
+        collectOrphanedDispatchSignals('ws-1', {
+          bootMs: 0,
+          close: { findOpenByWatchdogKeys, comment, resolve } as any,
+        }),
+      ).resolves.toBeDefined();
+      expect(resolve).not.toHaveBeenCalled(); // this issue's close failed before resolve
+    });
   });
 });
