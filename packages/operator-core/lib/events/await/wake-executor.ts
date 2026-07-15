@@ -392,10 +392,14 @@ export function wakeTurnText(d: DeliveryWork): string {
   // P-006 (fleet-member-dx, EI-9018): `d.id` is the DELIVERY-LOG row id, not a
   // wake count — unlabeled "wake #12672" next to a loop's own "wake #5" read as
   // two contradictory counters and confused resuming agents. Label it as an id.
-  return (
+  const base = (
     `[await-event] ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
     `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)`
   ).replace(/\s*\n\s*/g, ' ');
+  // Ambient-push rail (P-003): a prepared teaser block rides the wake injection.
+  // Appended AFTER the collapse so it keeps its own line formatting; undefined on
+  // the default path ⇒ byte-identical. It then flows through applyInjectionDoor.
+  return d.ambientPushBlock ? `${base}\n\n${d.ambientPushBlock}` : base;
 }
 
 /** Injections door (deterministic-context-carry P-006 enforcement leg (b), plan D-007):

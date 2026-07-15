@@ -75,6 +75,21 @@ const DEFAULT_IDLE_MS = Number(process.env.PAPERCUSP_PSU_PTY_IDLE_MS) || 750;
  *  anyway — a wake must not be deferred forever by a user who keeps typing. */
 const DEFAULT_IDLE_WAIT_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_IDLE_CAP_MS) || 8_000;
 
+/** Hard ceiling for one control-socket message. The socket is same-UID, but it
+ * is still an untrusted streaming boundary: buffering until EOF without a cap
+ * lets a wedged or compromised connector grow this long-lived host without
+ * bound. Eight MiB is deliberately large enough for the biggest supported
+ * session-port seed while keeping the allocation deterministic. Mirrored by
+ * operator-core/lib/events/await/psu-pty-discovery.ts. */
+export const MAX_CONTROL_PAYLOAD_BYTES = 8 * 1024 * 1024;
+
+/** Byte-accurate (not JS-code-unit) wire limit check. Exported so the exact
+ * UTF-8 boundary is regression-tested without weakening the runtime guard. */
+export function controlPayloadWithinLimit(payload, maxBytes = MAX_CONTROL_PAYLOAD_BYTES) {
+  const bytes = Buffer.isBuffer(payload) ? payload.length : Buffer.byteLength(String(payload), 'utf8');
+  return bytes <= maxBytes;
+}
+
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
  *  as a SEPARATE keystroke this long later. A single `text + CR` burst is
  *  swallowed by the Claude Code TUI's paste detector — the CR lands as a literal
@@ -1650,9 +1665,35 @@ export function hostThroughPty(o) {
   // written IMMEDIATELY (the whole point of force is to land mid-thinking).
   const server = net.createServer((conn) => {
     const chunks = [];
-    conn.on('data', (d) => chunks.push(d));
+    let payloadBytes = 0;
+    let payloadRejected = false;
+    conn.on('data', (d) => {
+      if (payloadRejected) return;
+      payloadBytes += d.length;
+      if (payloadBytes > MAX_CONTROL_PAYLOAD_BYTES) {
+        payloadRejected = true;
+        chunks.length = 0;
+        appendHostEvent(ownerId, 'control-payload-rejected', {
+          reason: 'payload-too-large',
+          receivedBytes: payloadBytes,
+          maxBytes: MAX_CONTROL_PAYLOAD_BYTES,
+        });
+        try {
+          process.stderr.write(
+            `psu-pty-host: control payload REJECTED for ${ownerId} ` +
+              `(${payloadBytes} bytes > ${MAX_CONTROL_PAYLOAD_BYTES} byte cap)\n`,
+          );
+        } catch {
+          /* diagnostic only */
+        }
+        conn.destroy();
+        return;
+      }
+      chunks.push(d);
+    });
     conn.on('error', () => {});
     conn.on('end', async () => {
+      if (payloadRejected) return;
       const payload = Buffer.concat(chunks);
       if (!payload.length) return;
       const msg = decodeControl(payload);

@@ -34,6 +34,8 @@ import {
   makeTurnCoalescer,
   makeInjectMutex,
   ACTIVITY_PERSIST_MS,
+  MAX_CONTROL_PAYLOAD_BYTES,
+  controlPayloadWithinLimit,
   PSU_PTY_DIR,
   pidLooksLikePsuHost,
   findLiveHostFor,
@@ -77,6 +79,15 @@ describe('socketPathFor / metaPathFor', () => {
 });
 
 describe('control wire protocol (v1)', () => {
+  it('uses a byte-accurate bounded UTF-8 payload ceiling', () => {
+    const prefix = '🧭';
+    const prefixBytes = Buffer.byteLength(prefix, 'utf8');
+    const exact = `${prefix}${'x'.repeat(MAX_CONTROL_PAYLOAD_BYTES - prefixBytes)}`;
+    expect(Buffer.byteLength(exact, 'utf8')).toBe(MAX_CONTROL_PAYLOAD_BYTES);
+    expect(controlPayloadWithinLimit(exact)).toBe(true);
+    expect(controlPayloadWithinLimit(`${exact}x`)).toBe(false);
+  });
+
   it('turn envelope → idle-gated, CR-terminated turn', () => {
     const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello' }));
     expect(d).toEqual({ mode: 'turn', data: 'hello', gated: true });

@@ -27,6 +27,11 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
 export const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
 
+/** Shared wire ceiling with psu-pty-host.mjs. Enforce it before opening a
+ * socket as well as host-side so an accidental giant wake fails cheaply and
+ * never depends on backpressure or the receiver's implementation age. */
+export const MAX_CONTROL_PAYLOAD_BYTES = 8 * 1024 * 1024;
+
 export interface PsuPtyHost {
   ownerId: string;
   advSessionId: string | null;
@@ -312,6 +317,15 @@ export function injectIntoHost(
   },
   timeoutMs = 2000,
 ): Promise<boolean> {
+  const envelope: { v: 1; mode: string; data: string; focus?: string } = {
+    v: 1,
+    mode: msg.mode,
+    data: msg.data,
+  };
+  if (msg.focus !== undefined) envelope.focus = msg.focus;
+  const payload = JSON.stringify(envelope);
+  if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) return Promise.resolve(false);
+
   return new Promise((resolve) => {
     let settled = false;
     const finish = (ok: boolean) => {
@@ -322,10 +336,7 @@ export function injectIntoHost(
     const c = net.connect(sock, () => {
       // `focus` rides the envelope only for mode:'compact' (WI-1804) — the host uses it
       // as the `/compact <focus>` argument, keeping `data` for the carry-note continuation.
-      const envelope: { v: 1; mode: string; data: string; focus?: string } =
-        { v: 1, mode: msg.mode, data: msg.data };
-      if (msg.focus !== undefined) envelope.focus = msg.focus;
-      c.write(JSON.stringify(envelope));
+      c.write(payload);
       c.end();
     });
     c.on('error', () => finish(false));

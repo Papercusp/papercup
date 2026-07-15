@@ -18,6 +18,7 @@ import {
   pruneDeadDiscoveryFiles,
   sanitizeKey,
   PSU_PTY_DIR,
+  MAX_CONTROL_PAYLOAD_BYTES,
   type PsuPtyHost,
 } from './psu-pty-discovery';
 
@@ -230,6 +231,25 @@ describe('injectIntoHost', () => {
     const ok = await injectIntoHost(join(tmpDir(), 'absent.sock'), { mode: 'turn', data: 'x' }, 500);
     expect(ok).toBe(false);
   });
+
+  it('carries an exact-limit UTF-8 envelope and rejects one byte over before connecting', async () => {
+    const dir = tmpDir();
+    const { sock, received } = startSocket(dir, 'su-max-utf8');
+    const emptyEnvelopeBytes = Buffer.byteLength(JSON.stringify({ v: 1, mode: 'turn', data: '' }), 'utf8');
+    const prefix = '🧭';
+    const data = `${prefix}${'x'.repeat(
+      MAX_CONTROL_PAYLOAD_BYTES - emptyEnvelopeBytes - Buffer.byteLength(prefix, 'utf8'),
+    )}`;
+
+    expect(await injectIntoHost(sock, { mode: 'turn', data }, 10_000)).toBe(true);
+    expect(Buffer.byteLength(await received, 'utf8')).toBe(MAX_CONTROL_PAYLOAD_BYTES);
+
+    // The oversized call must fail from the sender-side guard. An absent socket
+    // makes accidental connect-before-check behavior fail this assertion too.
+    expect(
+      await injectIntoHost(join(dir, 'absent.sock'), { mode: 'turn', data: `${data}x` }, 10_000),
+    ).toBe(false);
+  }, 20_000);
 });
 
 describe('recolorViaPty (fleet-color-schemes live recolor)', () => {
