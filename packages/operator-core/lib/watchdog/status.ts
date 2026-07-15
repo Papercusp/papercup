@@ -202,7 +202,20 @@ function parseRunSummary(output: string | null): {
 } {
   if (!output) return {};
   try {
-    const parsed = JSON.parse(output) as { ranAtMs?: unknown; errorCount?: unknown; config?: unknown };
+    const decoded = JSON.parse(output) as unknown;
+    const envelope =
+      decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+        ? (decoded as { json?: unknown; __dbos_serializer?: unknown })
+        : null;
+    const payload =
+      envelope?.__dbos_serializer === 'superjson' &&
+      envelope.json &&
+      typeof envelope.json === 'object' &&
+      !Array.isArray(envelope.json)
+        ? envelope.json
+        : decoded;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+    const parsed = payload as { ranAtMs?: unknown; errorCount?: unknown; config?: unknown };
     return {
       ranAtMs: Number.isFinite(Number(parsed.ranAtMs)) ? Number(parsed.ranAtMs) : undefined,
       errorCount: Number.isFinite(Number(parsed.errorCount)) ? Number(parsed.errorCount) : undefined,

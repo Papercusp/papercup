@@ -108,17 +108,20 @@ describe('classifyScheduledWatchdogStatus', () => {
         return Promise.resolve([
           {
             output: JSON.stringify({
-              ranAtMs: nowMs - 1_000,
-              errorCount: 0,
-              config: {
-                enabled: true,
-                effectiveThresholdSec: 172_800,
-                overrideSource: 'environment',
-                overrideEnv: 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC',
-                rawOverride: '172800',
-                epochMs: 1_783_728_000_000,
-                batchCap: 10,
+              json: {
+                ranAtMs: nowMs - 1_000,
+                errorCount: 0,
+                config: {
+                  enabled: true,
+                  effectiveThresholdSec: 172_800,
+                  overrideSource: 'environment',
+                  overrideEnv: 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC',
+                  rawOverride: '172800',
+                  epochMs: 1_783_728_000_000,
+                  batchCap: 10,
+                },
               },
+              __dbos_serializer: 'superjson',
             }),
             operation_error: null,
             completed_at_epoch_ms: nowMs - 1_000,

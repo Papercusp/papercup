@@ -28,6 +28,11 @@
  */
 
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
+import {
+  clearOperatorMirror,
+  mirrorOperatorMode,
+  mirrorOperatorSleep,
+} from './operator-window-sync';
 
 export type OperatorMode = 'active' | 'passive';
 
@@ -520,6 +525,10 @@ export function readOperatorModeFromSession(): OperatorMode | null {
         if (nav && nav.type === 'reload') {
           window.sessionStorage.removeItem(MODE_KEY);
           window.sessionStorage.removeItem(SLEEP_UNTIL_KEY);
+          // G16 is an operator-wide reset: clearing the cross-window mirror
+          // propagates it to peer windows (multi-window-chat-coherence P-007)
+          // instead of leaving e.g. the Quick Panel on the old mode.
+          clearOperatorMirror();
           return null;
         }
       } catch { /* perf API unsupported — fall through */ }
@@ -538,6 +547,9 @@ export function writeOperatorModeToSession(mode: OperatorMode): void {
   if (typeof window === 'undefined') return;
   try {
     window.sessionStorage.setItem(MODE_KEY, mode);
+    // Keep peer windows (Quick Panel ↔ main app) on the same mode
+    // (multi-window-chat-coherence P-007).
+    mirrorOperatorMode(mode);
   } catch { /* sandbox / quota */ }
 }
 
@@ -570,6 +582,8 @@ export function writeSleepUntilMs(epochMs: number): void {
     window.dispatchEvent(
       new CustomEvent('papercusp:operatorSleep', { detail: { sleepUntilMs: epochMs } }),
     );
+    // Peer windows share the sleep timer (multi-window-chat-coherence P-007).
+    mirrorOperatorSleep(epochMs);
   } catch { /* sandbox / quota */ }
 }
 
