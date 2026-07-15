@@ -19,6 +19,7 @@ afterEach(() => {
   vi.doUnmock('../../workspace-registry');
   vi.doUnmock('../../operator-notes');
   vi.doUnmock('../../harness/git-sync/git-sync-action');
+  vi.doUnmock('node:child_process');
 });
 
 describe('git-sync:run', () => {

@@ -33,9 +33,23 @@ const execFileP = promisify(execFile);
  */
 export const GIT_SYNC_RUN_BUDGET_MS = 45_000;
 
+/**
+ * WI-4940: `git rev-parse HEAD` itself has NO bound — the ~120s hang the reporter
+ * observed (a WI-4938 caller had to terminate its wait) happened AFTER the
+ * commit had already landed (headSha's `after` call, run unconditionally once
+ * `fireGitSyncNow` resolves, degraded or not — the EI-9425 GIT_SYNC_RUN_BUDGET_MS
+ * wrap only bounds the fire itself, never this trailing `git rev-parse`). Under
+ * disk/IO stall or fleet-wide git-process contention a bare `execFile` can hang
+ * indefinitely with no signal back to the caller — an ambiguous-write response-loss
+ * class exactly like the one GIT_SYNC_RUN_BUDGET_MS exists to prevent for the fire
+ * itself. Bound it the same way: a slow/hung `git rev-parse` degrades to `null`
+ * (the function's existing catch-all outcome) instead of hanging the whole tool call.
+ */
+const HEAD_SHA_TIMEOUT_MS = 5_000;
+
 async function headSha(repoDir: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileP('git', ['rev-parse', 'HEAD'], { cwd: repoDir });
+    const { stdout } = await execFileP('git', ['rev-parse', 'HEAD'], { cwd: repoDir, timeout: HEAD_SHA_TIMEOUT_MS });
     return stdout.trim();
   } catch {
     return null;
