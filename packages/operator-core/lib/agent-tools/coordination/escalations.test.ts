@@ -280,6 +280,31 @@ describe('openEscalation dedup + advisory expiry (WI-1503)', () => {
     );
   });
 
+  it('EI-12546: a conditionKey (meta.subjectSignature) coalesces across a severity escalation instead of forking a parallel open row', async () => {
+    // Live repro: 'kettle-invalid-model-config' was first filed severity:advisory,
+    // then re-escalated severity:blocker as the anomaly graduated. Pre-fix, dedupKind
+    // defaulted to severity even with an explicit conditionKey, so the blocker
+    // call missed the advisory row and coord:escalations showed TWO open rows with
+    // the same subjectSignature. Post-fix it must be ONE row, upgraded to blocker.
+    configureCoordLog(new InMemoryCoordLog());
+    const meta = { subjectSignature: 'kettle-invalid-model-config' };
+    const advisory = await openEscalation(identity, { severity: 'advisory', summary: 'invalid model config (warning)', meta });
+    const blocker = await openEscalation(identity, { severity: 'blocker', summary: 'invalid model config (critical)', meta });
+
+    // Coalesced onto the ONE existing open row (same msg_id), no new escalation event.
+    expect(blocker.msg_id).toBe(advisory.msg_id);
+    expect((blocker as Record<string, unknown>).repeatCount).toBe(2);
+    // Row's severity upgraded to the latest (escalated) call — the escalation is
+    // not lost/hidden under the original advisory.
+    expect(blocker.severity).toBe('blocker');
+
+    const open = await listEscalations({ status: 'open' });
+    expect(open.map((e) => e.msg_id)).toEqual([advisory.msg_id]);
+
+    const raw = await coordLog.readEvents('escalations');
+    expect(raw.filter((r) => r.kind === 'escalation')).toHaveLength(1);
+  });
+
   it('auto-expires only stale advisory escalations; blocker/question rows remain open', async () => {
     configureCoordLog(new InMemoryCoordLog());
     await coordLog.putEvent('escalations', 'adv-old', {

@@ -62,15 +62,35 @@ function normalizeSubjectSignature(summary: string): string {
   return summary.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+/**
+ * EI-12546: a stable, severity-INDEPENDENT dedupKind for a caller-supplied
+ * conditionKey (which arrives here as meta.subjectSignature). A recurring
+ * condition that legitimately escalates (advisory → blocker) must coalesce onto
+ * its ONE open row — escalating severity is a normal drift-worsening signal, so
+ * it's exactly when staying coalesced matters most. Before this, dedupKind
+ * defaulted to `severity` even for an explicit conditionKey, so the coalesce
+ * query (which matches on dedupKind AND subjectSignature) missed the existing
+ * row the moment severity changed and forked a parallel one.
+ *
+ * The summary-DERIVED fallback (no explicit conditionKey) still keys dedupKind
+ * on severity, so two unrelated same-summary escalations at different
+ * severities stay separate — preserving the existing dedupKind-boundary
+ * contract for that fuzzy path.
+ */
+const CONDITION_KEY_DEDUP_KIND = 'conditionKey';
+
 function escalationDedupIdentity(input: OpenEscalationInput & { meta?: EscalationMeta }): EscalationDedupIdentity {
-  const subjectSignature =
+  const explicitSignature =
     typeof input.meta?.subjectSignature === 'string' && input.meta.subjectSignature.trim()
       ? input.meta.subjectSignature.trim()
-      : normalizeSubjectSignature(input.summary);
+      : null;
+  const subjectSignature = explicitSignature ?? normalizeSubjectSignature(input.summary);
   const dedupKind =
     typeof input.meta?.dedupKind === 'string' && input.meta.dedupKind.trim()
       ? input.meta.dedupKind.trim()
-      : input.severity;
+      : explicitSignature !== null
+        ? CONDITION_KEY_DEDUP_KIND
+        : input.severity;
   return { dedupKind, subjectSignature };
 }
 
@@ -84,9 +104,16 @@ function withRepeatMetadata(
   dedup: EscalationDedupIdentity,
   nowIso: string,
   repeatCount: number,
+  // EI-12546: refresh the coalesced row's severity to the latest call's. On the
+  // severity-independent conditionKey path this is what lets an advisory→blocker
+  // escalation upgrade the ONE open row instead of leaving it stuck at the
+  // original (lower) severity. On the summary-derived path the bucket is keyed by
+  // severity, so a coalesce there is always same-severity and this is a no-op.
+  severity: EscalationSeverity,
 ): EscalationRecord {
   return {
     ...record,
+    severity,
     [OPEN_ESCALATION_DEDUP_KIND_KEY]: dedup.dedupKind,
     [OPEN_ESCALATION_LAST_SEEN_KEY]: nowIso,
     [OPEN_ESCALATION_REPEAT_COUNT_KEY]: repeatCount,
@@ -129,18 +156,27 @@ async function bumpProjectionDuplicateWithSql(
   workspaceId: string,
   dedup: EscalationDedupIdentity,
   nowIso: string,
+  // EI-12546: refresh the coalesced row's severity to the latest call's, so a
+  // conditionKey re-escalation that graduated advisory→blocker upgrades the ONE
+  // open row instead of leaving it displayed at the old lower severity.
+  severity: EscalationSeverity,
 ): Promise<EscalationRecord | null> {
   const rows = await sql<{ body: EscalationRecord }[]>`
     UPDATE harness_shared.coord_open_escalations
        SET body = jsonb_set(
              jsonb_set(
-               body,
-               '{repeatCount}',
-               to_jsonb(COALESCE(NULLIF(body->>'repeatCount', '')::int, 1) + 1),
+               jsonb_set(
+                 body,
+                 '{repeatCount}',
+                 to_jsonb(COALESCE(NULLIF(body->>'repeatCount', '')::int, 1) + 1),
+                 true
+               ),
+               '{lastSeenTs}',
+               to_jsonb(${nowIso}::text),
                true
              ),
-             '{lastSeenTs}',
-             to_jsonb(${nowIso}::text),
+             '{severity}',
+             to_jsonb(${severity}::text),
              true
            )
      WHERE workspace_id = ${workspaceId}
@@ -184,7 +220,7 @@ async function openEscalationWithPgDedupLock(
           0
         ))
       `;
-      const bumped = await bumpProjectionDuplicateWithSql(tx, ws, dedup, nowIso);
+      const bumped = await bumpProjectionDuplicateWithSql(tx, ws, dedup, nowIso, input.severity);
       if (bumped) return bumped;
       const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
       await insertEscalationEventWithSql(tx, ws, env);
@@ -198,12 +234,13 @@ async function openEscalationWithPgDedupLock(
 async function tryBumpProjectionDuplicate(
   dedup: EscalationDedupIdentity,
   nowIso: string,
+  severity: EscalationSeverity,
 ): Promise<EscalationRecord | null> {
   if (!coordHasPgFastPath()) return null;
   try {
     const sql = coordSql();
     const ws = coordWorkspaceId();
-    return await bumpProjectionDuplicateWithSql(sql, ws, dedup, nowIso);
+    return await bumpProjectionDuplicateWithSql(sql, ws, dedup, nowIso, severity);
   } catch {
     return null;
   }
@@ -245,10 +282,17 @@ export async function openEscalation(
   const dedup = escalationDedupIdentity(input);
   const locked = await openEscalationWithPgDedupLock(identity, input, dedup, nowIso);
   if (locked) return locked;
-  const bumped = await tryBumpProjectionDuplicate(dedup, nowIso);
+  const bumped = await tryBumpProjectionDuplicate(dedup, nowIso, input.severity);
   if (bumped) return bumped;
   const existing = await findOpenDuplicate(dedup);
-  if (existing) return withRepeatMetadata(existing, dedup, nowIso, repeatCountOf(existing as Record<string, unknown>) + 1);
+  if (existing)
+    return withRepeatMetadata(
+      existing,
+      dedup,
+      nowIso,
+      repeatCountOf(existing as Record<string, unknown>) + 1,
+      input.severity,
+    );
 
   const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
   await coordLog.putEvent('escalations', env.msg_id, env);
