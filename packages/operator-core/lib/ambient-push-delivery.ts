@@ -190,10 +190,11 @@ export async function prepareAmbientPushBlock(input: PrepareAmbientPushBlockInpu
       })
       .filter((x): x is { id: number; reason: (typeof result.dropped)[number]['reason'] } => x != null);
 
-    // Record the disposition (the tally). Delivered first so a partial failure
-    // still persists the budget/novelty truth for what shipped.
-    if (deliveredIds.length > 0) await recordDelivered(deliveredIds);
-    if (droppedItems.length > 0) await recordDropped(droppedItems);
+    // Record the disposition (the tally) — always once per pass (both store calls
+    // no-op internally on an empty list, so there is no wasted round-trip).
+    // Delivered first so a partial failure still persists what shipped.
+    await recordDelivered(deliveredIds);
+    await recordDropped(droppedItems);
 
     if (result.selected.length === 0) return '';
     const block = renderPushBlock(result.selected);
