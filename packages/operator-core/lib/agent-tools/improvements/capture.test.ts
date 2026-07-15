@@ -165,6 +165,31 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(r.success).toBe(true);
   });
 
+  it('accepts the legacy top-level rubric aliases instead of silently stripping a scorecard (EI-12176)', () => {
+    const r = argsSchema.safeParse({
+      title: 'legacy scorecard',
+      lane: 'observation',
+      rubricRef: 'pot-coordination-health',
+      ratings: { placement: { rating: 'healthy', evidence: '0 stalls this wake' } },
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data).toMatchObject({
+        rubricRef: 'pot-coordination-health',
+        ratings: { placement: { rating: 'healthy', evidence: '0 stalls this wake' } },
+      });
+    }
+  });
+
+  it('REJECTS an unknown top-level field instead of returning ok after stripping it (EI-12176)', () => {
+    const r = argsSchema.safeParse({
+      title: 'mis-shaped capture',
+      rubricReff: 'typo-must-fail-loud',
+    });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('rubricReff');
+  });
+
   it('REJECTS an unknown observation field (was silently stripped — su-2a0b4) and names the key', () => {
     const r = argsSchema.safeParse({
       title: 'scorecard against a newer schema',
@@ -587,6 +612,38 @@ describe('improvements:capture — gradedGeneration stamp (EI-12147)', () => {
       sha: 'abc1234',
       hostStartedAt: '2026-07-14T18:21:25.000Z',
     });
+  });
+
+  it('normalizes legacy top-level rubric aliases into the canonical observation payload (EI-12176)', async () => {
+    await callTool({
+      title: 'legacy release scorecard',
+      lane: 'observation',
+      rubricRef: 'blender-release-readiness',
+      ratings: { 'cycle-error-rate': { rating: 'pass', evidence: '0/8 post-watermark' } },
+    });
+    expect(passedObservation()).toMatchObject({
+      rubricRef: 'blender-release-readiness',
+      ratings: { 'cycle-error-rate': { rating: 'pass', evidence: '0/8 post-watermark' } },
+      gradedGeneration: {
+        sha: 'abc1234',
+        hostStartedAt: '2026-07-14T18:21:25.000Z',
+      },
+    });
+  });
+
+  it('rejects conflicting nested and compatibility-alias rubric values loudly', async () => {
+    await expect(
+      callTool({
+        title: 'conflicting scorecard',
+        lane: 'observation',
+        rubricRef: 'legacy-ref',
+        observation: {
+          rubricRef: 'canonical-ref',
+          ratings: { k: { rating: 'healthy', evidence: 'measured' } },
+        },
+      }),
+    ).rejects.toThrow(/conflicting rubricRef values/);
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it('does NOT stamp a plain (non-rubric) observation — the stamp is scorecard identity, not ambient metadata', async () => {
