@@ -290,6 +290,49 @@ describe('corestore seed provider', () => {
     expect(res.reason).toMatch(/hash mismatch/);
   });
 
+  it('EI-12881: a scrubbed/regenerated RocksDB info log does not break verify (it is not content identity)', async () => {
+    // The 0.0.11 showstopper: the cut hashed the seed INCLUDING RocksDB's `LOG`,
+    // then the WI-4736 identity scrub deleted it, so verify re-hashed a different
+    // directory, failed closed, and every packaged install silently cold-pathed to
+    // an EMPTY hive. RocksDB also rewrites `LOG` on EVERY store open, so a hash that
+    // covers it can never be stable. All four states below must hash identically.
+    const dirA = tmpDir('seed-log-A-');
+    const storeA = makeStore(dirA);
+    await storeA.ready();
+    const logA = await openOwnLog(storeA);
+    for (let i = 0; i < 3; i++) await logA.append(op(i));
+
+    const provider = createCorestoreSeedProvider();
+    const stagingDir = tmpDir('seed-log-stage-');
+    const { entry, payload } = await provider.cut({ sourceStore: storeA, coreKeys: [logA.keyHex], stagingDir });
+    expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+
+    const dbDir = join(stagingDir, 'db');
+    expect(statSync(dbDir).isDirectory()).toBe(true);
+
+    // (a) a store re-open regenerated LOG — it leaks the build box's identity
+    writeFileSync(join(dbDir, 'LOG'), 'Host name (Env): SOME-BUILD-BOX\n/home/someone/abs/path\n');
+    expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+
+    // (b) plus a rotated LOG.old.<ts>
+    writeFileSync(join(dbDir, 'LOG.old.1784143000'), 'rotated diagnostics\n');
+    expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+
+    // (c) the release scrub removed both — this is what actually ships
+    rmSync(join(dbDir, 'LOG'));
+    rmSync(join(dbDir, 'LOG.old.1784143000'));
+    expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+
+    // The numbered <NNN>.log WALs are DATA — they must still be covered, or the
+    // exclusion above would blind the hash to real corruption.
+    const wal = readdirSync(dbDir).find((f) => /^\d+\.log$/.test(f));
+    expect(wal).toBeDefined();
+    writeFileSync(join(dbDir, wal as string), 'corrupted wal bytes');
+    const corrupted = await provider.verify(entry, payload);
+    expect(corrupted.ok).toBe(false);
+    expect(corrupted.reason).toMatch(/hash mismatch/);
+  });
+
   it('verify fails when the payload path is missing', async () => {
     const provider = createCorestoreSeedProvider();
     const res = await provider.verify(

@@ -939,6 +939,15 @@ export async function bootstrapPapercuspHive(
         console.warn(
           `[papercusp-hive] seed restore: restored=[${restored.join(',')}] deferred=[${seedRes.deferred.join(',')}]`,
         );
+        // EI-12881: a store that fails its verify gate degrades to the cold path —
+        // i.e. an EMPTY hive offline. The per-store reason otherwise only reaches the
+        // progress recorder, so the packaged install's LOG showed `restored=[]` with no
+        // cause and the broken restore looked like a slow one. Never fail this quietly.
+        for (const o of seedRes.outcomes.filter((x) => !x.ok)) {
+          console.warn(
+            `[papercusp-hive] seed restore FAILED for ${o.kind} — cold-pathing (this hive will be EMPTY until it can join): ${o.reason ?? 'unknown'}`,
+          );
+        }
       }
     } catch (e) {
       console.warn(`[papercusp-hive] seed restore failed (non-fatal; cold path): ${(e as Error)?.message ?? e}`);
