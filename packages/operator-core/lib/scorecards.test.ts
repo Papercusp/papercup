@@ -205,6 +205,32 @@ describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () 
     expect(out.valid).toBe(false);
     expect(out.windowMismatches).toEqual(['metrics.cycle']);
   });
+
+  it('fails closed when a persisted rolling window is missing its duration', () => {
+    const malformed = rubric({
+      criteria: [
+        {
+          key: 'cycle',
+          title: 'Cycle',
+          model: 'm',
+          method: 'method',
+          driftMarkers: 'bad',
+          instrumentKey: 'metrics.cycle',
+          window: { kind: 'rolling' },
+        },
+      ],
+    });
+    const out = evaluateScorecardInstrumentContract({
+      rubric: malformed,
+      ratings: { cycle: { rating: 'PASS', evidence: 'e' } },
+      instrumentSnapshots: {
+        'metrics.cycle': { verdict: 'pass', measuredAt: '2026-07-15T00:00:30Z' },
+      },
+      nowMs: Date.parse('2026-07-15T00:01:00Z'),
+    });
+    expect(out.valid).toBe(false);
+    expect(out.windowMismatches).toEqual(['metrics.cycle']);
+  });
 });
 
 const s = (...ratings: string[]) => ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating }));

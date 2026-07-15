@@ -132,7 +132,12 @@ export function evaluateScorecardInstrumentContract(input: {
       continue;
     }
     if (criterion.window?.kind === 'rolling') {
-      if (nowMs - measuredAtMs > criterion.window.ms) staleSnapshots.push(instrumentKey);
+      const rollingMs = criterion.window.ms;
+      if (typeof rollingMs !== 'number' || !Number.isFinite(rollingMs) || rollingMs <= 0) {
+        windowMismatches.push(instrumentKey);
+      } else if (nowMs - measuredAtMs > rollingMs) {
+        staleSnapshots.push(instrumentKey);
+      }
     } else if (criterion.window?.kind === 'post-watermark') {
       const window = snapshot.window ?? {};
       const sinceMs = typeof window.sinceMs === 'number' ? window.sinceMs : null;
