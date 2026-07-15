@@ -5,7 +5,7 @@
  * home-only-blind-spot guard test with no database. The real cross-member SQL
  * is pinned by survey.integration.test.ts.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PlanIndexRow } from '../agent-tools/plans/source';
 import {
   buildPlanItemBlockGraph,

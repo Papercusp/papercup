@@ -14,6 +14,7 @@ import {
   summarizeMcpProxyHealth,
   isStaleSocket400,
   isBenignProbe,
+  isNonInstanceRecord,
   readMcpProxyFailureTail,
   mcpProxyFailureLogPath,
   type McpProxyFailureRecord,
@@ -132,6 +133,74 @@ describe('summarizeMcpProxyHealth — classification', () => {
     );
     expect(d.byKind).toEqual({ recovered: 1, exhausted_refused: 2 });
     expect(d.newestAt).toBe(NOW - 1000);
+  });
+
+  // EI-12102/EI-12211: a record with listenPort:0 never came from a real listening proxy
+  // instance any client could route through (the desktop-sidecar-startup-race signature) —
+  // it must be excluded from every alarm-relevant class, while staying visible in
+  // total/byKind/nonInstance for forensic purposes.
+  describe('isNonInstanceRecord (EI-12102/EI-12211) — listenPort:0 exclusion', () => {
+    it('isNonInstanceRecord is true only for an explicit listenPort:0', () => {
+      expect(isNonInstanceRecord({ listenPort: 0 })).toBe(true);
+      expect(isNonInstanceRecord({ listenPort: 9071 })).toBe(false);
+      expect(isNonInstanceRecord({ listenPort: undefined })).toBe(false);
+      expect(isNonInstanceRecord({})).toBe(false);
+    });
+
+    it('a listenPort:0 hard-failure record is excluded from hardFailures but counted in total/nonInstance/byKind', () => {
+      const d = summarizeMcpProxyHealth(
+        [
+          rec({ kind: 'exhausted_refused', status: 503, listenPort: 0, pid: 1234, target: '127.0.0.1:54321' }),
+          rec({ kind: 'upstream_error', status: 502, listenPort: 0, pid: 5678, target: '127.0.0.1:44821' }),
+        ],
+        NOW,
+      );
+      expect(d.hardFailures).toBe(0);
+      expect(d.otherNon2xx).toBe(0);
+      expect(d.benign).toBe(0);
+      expect(d.nonInstance).toBe(2);
+      expect(d.total).toBe(2);
+      expect(d.byKind).toEqual({ exhausted_refused: 1, upstream_error: 1 });
+    });
+
+    it('a listenPort:0 upstream_non2xx (even matching the stale-socket-400 signature) is excluded, not promoted to hardFailures', () => {
+      const d = summarizeMcpProxyHealth(
+        [rec({ kind: 'upstream_non2xx', status: 400, connection: 'close', listenPort: 0 })],
+        NOW,
+      );
+      expect(d.hardFailures).toBe(0);
+      expect(d.otherNon2xx).toBe(0);
+      expect(d.nonInstance).toBe(1);
+      expect(d.total).toBe(1);
+    });
+
+    it('a real-instance record (nonzero listenPort) is classified normally and does NOT count toward nonInstance', () => {
+      const d = summarizeMcpProxyHealth(
+        [rec({ kind: 'exhausted_refused', status: 503, listenPort: 9071, pid: 42, target: '127.0.0.1:3070' })],
+        NOW,
+      );
+      expect(d.hardFailures).toBe(1);
+      expect(d.nonInstance).toBe(0);
+    });
+
+    it('a legacy record with NO listenPort field at all is NOT excluded (pre-P-006 rows keep counting)', () => {
+      const d = summarizeMcpProxyHealth([rec({ kind: 'exhausted_refused', status: 503 })], NOW);
+      expect(d.hardFailures).toBe(1);
+      expect(d.nonInstance).toBe(0);
+    });
+
+    it('mixed listenPort:0 and real-instance records: only the real one counts toward hardFailures', () => {
+      const d = summarizeMcpProxyHealth(
+        [
+          rec({ kind: 'exhausted_refused', status: 503, listenPort: 0 }),
+          rec({ kind: 'exhausted_refused', status: 503, listenPort: 9071 }),
+        ],
+        NOW,
+      );
+      expect(d.hardFailures).toBe(1);
+      expect(d.nonInstance).toBe(1);
+      expect(d.total).toBe(2);
+    });
   });
 });
 
