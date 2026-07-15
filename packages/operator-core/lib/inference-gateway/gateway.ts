@@ -725,6 +725,16 @@ export interface GatewayDeps {
   maintenanceModel?: string;
   maintenanceMaxTokens?: number;
   maintenanceTimeoutMs?: number;
+  /** DETERMINISTIC MAINTENANCE CARRY (deterministic-context-carry P-017, WI-4845): when present,
+   *  POST /maintenance/summarize?carryOwner=<coord ownerId>[&carryWs=<ws>][&carryWindow=<tokens>]
+   *  tries this builder FIRST and returns its deterministic summary in place of the LLM oneshot;
+   *  a miss (null / throw) falls through to the LLM lane so a carry fault can never strand a live
+   *  compaction. Resolved + flag-gated at the launch layer (FLAGS.GATEWAY_MAINTENANCE_CARRY,
+   *  default OFF): ABSENT ⇒ the carry query params are ignored — byte-identical to today. */
+  maintenanceCarry?: (
+    ownerId: string,
+    opts: { effectiveWindowTokens?: number; workspaceId?: string },
+  ) => Promise<{ summary: string; deterministic: true; budgetChars: number } | null>;
   /** Max wait for upstream RESPONSE HEADERS before the request is aborted as stalled. A stalled
    *  upstream (Anthropic accepts the socket during an overload but never responds) used to hang the
    *  proxy task forever, leaking its admission slot until the pool deadlocked (the 2026-06-19 outage).
@@ -1816,6 +1826,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // the fleet's compactions (a zero here with compactions happening = the omp remoteEndpoint never landed).
   let maintenanceRequests = 0;
   let maintenanceErrors = 0;
+  let maintenanceCarried = 0; // summarize requests answered by the deterministic carry branch (P-017)
   // P-005/W3 slot-leak RECURRENCE GUARD (D-001): the reconcile-invariant counters. The self-heal sweep
   // cross-checks the queue's held-slot counter against the in-flight registry each tick and bumps
   // `slotReconcileMismatch` when they disagree in a way the valve cannot reclaim — a leak surfaced as a
@@ -2117,7 +2128,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           attempts > 0 ? Math.round(((egressFailsByAccount.get(id) ?? 0) / attempts) * 10_000) / 10_000 : 0,
         ]),
       ),
-      maintenance: { requests: maintenanceRequests, errors: maintenanceErrors },
+      maintenance: { requests: maintenanceRequests, errors: maintenanceErrors, carried: maintenanceCarried },
       selfHealReclaims,
       slotReconcileMismatch,
       inFlightTracked: inFlightReg.size,
@@ -4434,7 +4445,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 200, { ok: true, now: Date.now(), pins: [...ownerPinMap.entries()].map(([ownerId, p]) => ({ ownerId, ...p })) });
       return;
     }
-    if (req.method === 'POST' && url === MAINTENANCE_SUMMARIZE_PATH) {
+    if (req.method === 'POST' && (url === MAINTENANCE_SUMMARIZE_PATH || url.startsWith(`${MAINTENANCE_SUMMARIZE_PATH}?`))) {
       // MAINTENANCE SUMMARIZE (deterministic-context-carry P-002, ornith-overflow brief fixes 2–3).
       // Speaks omp's remote-compaction wire: POST {systemPrompt?, prompt} → {summary}. The summary is
       // generated on a CHEAP HOSTED model via a LOOPBACK /v1/messages call into this gateway's OWN
@@ -4459,6 +4470,34 @@ export function createInferenceGateway(deps: GatewayDeps) {
             return;
           }
           maintenanceRequests++;
+          // DETERMINISTIC CARRY (deterministic-context-carry P-017, WI-4845): an opted-in
+          // psu-launcher appends ?carryOwner=<coord ownerId>[&carryWs=<ws>][&carryWindow=<tokens>]
+          // to omp's compaction.remoteEndpoint URL. When the launch layer injected the builder
+          // (FLAGS.GATEWAY_MAINTENANCE_CARRY ON), answer from the deterministic carry doc instead
+          // of the LLM oneshot; ANY miss — no builder, blank owner, null build, throw — falls
+          // through to the LLM lane below, so a carry fault never strands a live compaction.
+          // Without the injected builder the params are ignored entirely (byte-identical).
+          if (deps.maintenanceCarry) {
+            const carryParams = new URL(url, 'http://localhost').searchParams;
+            const carryOwner = carryParams.get('carryOwner')?.trim();
+            if (carryOwner) {
+              const carryWindow = Number(carryParams.get('carryWindow'));
+              const carryWs = carryParams.get('carryWs')?.trim();
+              try {
+                const carried = await deps.maintenanceCarry(carryOwner, {
+                  ...(Number.isFinite(carryWindow) && carryWindow > 0 ? { effectiveWindowTokens: carryWindow } : {}),
+                  ...(carryWs ? { workspaceId: carryWs } : {}),
+                });
+                if (carried?.summary) {
+                  maintenanceCarried++;
+                  sendJson(res, 200, { ok: true, summary: carried.summary, deterministic: true, budgetChars: carried.budgetChars });
+                  return;
+                }
+              } catch {
+                /* fall through to the LLM lane */
+              }
+            }
+          }
           const model = (typeof body.model === 'string' && body.model.trim()) || maintenanceModel;
           const requestedMax = Math.floor(Number(body.maxTokens));
           const maxTokens = Math.min(

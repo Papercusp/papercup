@@ -491,6 +491,26 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     log('info', 'inference-gateway: codex OAuth streaming proxy ON — codex-cli accounts stream via the ChatGPT backend');
   }
 
+  // deterministic-context-carry P-017 (WI-4845): flag-gated DETERMINISTIC maintenance-carry
+  // branch for POST /maintenance/summarize?carryOwner=… — ON ⇒ inject the carry-doc builder
+  // (a builder miss still falls through to the LLM lane inside the gateway). Fail-safe: a
+  // flag read fault ⇒ OFF (LLM lane only, byte-identical). Resolved at the launch layer so
+  // unit tests default it off; the builder is imported lazily so the carry-doc module graph
+  // (PG readers) never loads while the flag is dark.
+  const maintenanceCarryOn = await (async () => {
+    try {
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      return await getFlag(FLAGS.GATEWAY_MAINTENANCE_CARRY, 'system');
+    } catch (e) {
+      log('warn', `inference-gateway: maintenance-carry flag read failed (${(e as Error).message}) — LLM summarize lane only`);
+      return false;
+    }
+  })();
+  if (maintenanceCarryOn) {
+    log('info', 'inference-gateway: deterministic maintenance-carry ON — /maintenance/summarize?carryOwner=… answers from the carry-doc builder');
+  }
+
   const gateway = createInferenceGateway({
     pool,
     codexPool,
@@ -507,6 +527,17 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     // to disable (ops kill-switch). Resolved here at the launch layer so unit tests default it off.
     smoothRpm: process.env.PAPERCUSP_GATEWAY_RPM_SMOOTH !== '0',
     ...(priorityTiers ? { priorityTiers } : {}),
+    ...(maintenanceCarryOn
+      ? {
+          maintenanceCarry: async (ownerId: string, o: { effectiveWindowTokens?: number; workspaceId?: string }) => {
+            const { buildMaintenanceCarrySummary } = await import('../maintenance-carry');
+            return buildMaintenanceCarrySummary(ownerId, {
+              ...(o.effectiveWindowTokens ? { effectiveWindowTokens: o.effectiveWindowTokens } : {}),
+              ...(o.workspaceId ? { buildOpts: { workspaceId: o.workspaceId } } : {}),
+            });
+          },
+        }
+      : {}),
     fetchImpl: opts.fetchImpl,
     log,
     onResponse: makeWindowProjector(opts.workspace, log),

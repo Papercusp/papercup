@@ -1880,7 +1880,17 @@ export function applyOmpMcpUrlParams(mcpJsonText, params) {
  * — no regression). Exported for tests.
  */
 export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir()) {
-  const { discoveryOff = false, toolsAllowlist = null, operatorUrl = OPERATOR_URL, model = null, clientId = null, backendWindow = null } = opts;
+  const {
+    discoveryOff = false,
+    toolsAllowlist = null,
+    operatorUrl = OPERATOR_URL,
+    model = null,
+    clientId = null,
+    backendWindow = null,
+    // DETERMINISTIC CARRY opt-in (deterministic-context-carry P-017, WI-4845) —
+    // env-gated DEFAULT-OFF; tests override via opts.
+    carryCompaction = process.env.PAPERCUSP_OMP_CARRY_COMPACTION === '1',
+  } = opts;
   try {
     if (!sessionId) return null;
     const srcAgent = join(home, '.omp', 'agent');

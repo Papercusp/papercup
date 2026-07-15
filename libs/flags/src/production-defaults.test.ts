@@ -84,6 +84,14 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // owner-attended live canary against production ChatGPT; direct native auth is the
   // fallback. Pending-flip (count 10 → 11).
   'papercusp-codex-gateway-oauth-proxy',
+  // 2026-07-15 (WI-4845) — deterministic maintenance-carry summarizer (deterministic-
+  // context-carry-2026-07-14 P-017): DELIBERATE new dark flag (case: cutover) — the
+  // gateway's /maintenance/summarize?carryOwner=… branch answers compactions from the
+  // deterministic carry-doc builder instead of the LLM oneshot. Dark until (1) every
+  // gateway carries the query-param route (an old gateway 404s the opted-in launcher's
+  // POST and omp throws with no local fallback) and (2) the P-020 cold-boot drills prove
+  // carry sufficiency. OFF ⇒ LLM lane only, byte-identical.
+  'papercusp-gateway-maintenance-carry',
   // 2026-07-04 — onboarding preview features (deterministic-onboarding-tutorial P-001,
   // owner-directed): gates tutorial items whose backing feature isn't ready (telemetry
   // consent, mobile pairing, auto-update channel) so a fresh install never sees them.
@@ -476,7 +484,12 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // probe: BUG-FIX correction, 11th + 12th instances of the EI-7230 class (both comments said
     // dark, never added; real-hardware-unverified cross-machine cutovers, no-op on a single
     // box). Watermark raised 27→29. Count 27 → 29.
-    expect(offCount).toBe(30);
+    // 2026-07-15 (WI-4845) — papercusp-gateway-maintenance-carry: DELIBERATE new dark flag
+    // (case: cutover — NOT parked/incomplete, so no parking-watermark impact): the
+    // deterministic maintenance-carry summarizer branch ships dark until every gateway
+    // carries the ?carryOwner route (deploy-skew: omp throws on a remoteEndpoint 404) and
+    // the P-020 cold-boot drills prove carry sufficiency. Count 30 → 31.
+    expect(offCount).toBe(31);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {
