@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { chmod, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -87,6 +87,44 @@ export async function deleteSessionPortArtifact(path: string): Promise<boolean> 
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
+}
+
+/** Crash backstop for artifacts orphaned before/after a durable row update.
+ * Only our UUID seed/temp names are eligible; symlinks and unrelated files are
+ * never followed or removed. Immediate delivery cleanup remains the fast path. */
+export async function pruneStaleSessionPortArtifacts(input: {
+  root?: string;
+  now?: number;
+  ttlMs?: number;
+  maxEntries?: number;
+} = {}): Promise<{ scanned: number; removed: number; errors: number }> {
+  const root = input.root ?? join(homedir(), '.papercusp', 'session-ports');
+  const cutoff = (input.now ?? Date.now()) - (input.ttlMs ?? SESSION_PORT_ARTIFACT_TTL_MS);
+  const maxEntries = Math.max(1, Math.min(input.maxEntries ?? 10_000, 100_000));
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { scanned: 0, removed: 0, errors: 0 };
+    throw error;
+  }
+  let scanned = 0;
+  let removed = 0;
+  let errors = 0;
+  const eligible = /^(?:[0-9a-f-]{36}\.seed\.md|\.[0-9a-f-]{36}\.[0-9a-f]{12}\.tmp)$/i;
+  for (const entry of entries.slice(0, maxEntries)) {
+    if (!eligible.test(entry.name) || !entry.isFile()) continue;
+    scanned += 1;
+    const path = join(root, entry.name);
+    try {
+      const stat = await lstat(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.mtimeMs > cutoff) continue;
+      if (await deleteSessionPortArtifact(path)) removed += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') errors += 1;
+    }
+  }
+  return { scanned, removed, errors };
 }
 
 /** Compatibility alias for callers/tests predating the two-phase lifecycle.

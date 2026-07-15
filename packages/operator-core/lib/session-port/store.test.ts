@@ -6,9 +6,12 @@ describe('session-port lifecycle', () => {
     const allowed: Array<[SessionPortStatus, SessionPortStatus]> = [
       ['prepared', 'pending'],
       ['prepared', 'failed'],
+      ['prepared', 'expired'],
       ['pending', 'delivered'],
       ['pending', 'failed'],
+      ['pending', 'expired'],
       ['delivered', 'delivered'],
+      ['expired', 'expired'],
     ];
     for (const pair of allowed) expect(canTransitionSessionPort(...pair)).toBe(true);
     expect(canTransitionSessionPort('prepared', 'delivered')).toBe(false);

@@ -21,6 +21,10 @@ export interface SessionPortRow {
   artifactPath: string;
   metadata: Record<string, unknown>;
   error: string | null;
+  preparedAt: string;
+  pendingAt: string | null;
+  deliveredAt: string | null;
+  failedAt: string | null;
   expiresAt: string;
 }
 
@@ -54,8 +58,53 @@ const mapRow = (r: any): SessionPortRow => ({
   artifactPath: r.artifact_path,
   metadata: r.metadata ?? {},
   error: r.error ?? null,
+  preparedAt: new Date(r.prepared_at).toISOString(),
+  pendingAt: r.pending_at == null ? null : new Date(r.pending_at).toISOString(),
+  deliveredAt: r.delivered_at == null ? null : new Date(r.delivered_at).toISOString(),
+  failedAt: r.failed_at == null ? null : new Date(r.failed_at).toISOString(),
   expiresAt: new Date(r.expires_at).toISOString(),
 });
+
+/** Explicit rollout handshake: inspect must fail before source acquisition or
+ * preparation when migration 611 has not reached the serving operator. */
+export async function assertSessionPortStorageReady(): Promise<void> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ table_ready: boolean; adv_columns: number }>>`
+    SELECT to_regclass('harness_shared.session_ports') IS NOT NULL AS table_ready,
+           (SELECT count(*)::int
+              FROM pg_attribute
+             WHERE attrelid = to_regclass('harness_shared.adv_sessions')
+               AND attname IN ('port_id', 'port_source_adv_session_id', 'port_status', 'port_metadata')
+               AND NOT attisdropped) AS adv_columns`;
+  if (!rows[0]?.table_ready || Number(rows[0]?.adv_columns) !== 4) {
+    throw new Error('session-port storage migration 611 is not installed; upgrade/migrate psu operator before porting');
+  }
+}
+
+/** Atomically expire active rows whose token TTL elapsed, and also return any
+ * previously-expired rows whose crash cleanup has not yet completed. */
+export async function sessionPortsNeedingCleanup(workspaceId: string): Promise<SessionPortRow[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<any[]>`
+    WITH newly_expired AS (
+      UPDATE harness_shared.session_ports
+         SET status = 'expired',
+             error = COALESCE(error, 'preparation expired before native persistence'),
+             failed_at = COALESCE(failed_at, now())
+       WHERE workspace_id = ${workspaceId}
+         AND status IN ('prepared', 'pending')
+         AND expires_at <= now()
+      RETURNING *
+    )
+    SELECT * FROM newly_expired
+    UNION ALL
+    SELECT p.* FROM harness_shared.session_ports p
+     WHERE p.workspace_id = ${workspaceId}
+       AND p.status = 'expired'
+       AND COALESCE(p.metadata->>'cleanupComplete', 'false') <> 'true'
+       AND NOT EXISTS (SELECT 1 FROM newly_expired n WHERE n.id = p.id)`;
+  return rows.map(mapRow);
+}
 
 export async function findSessionPortByIdempotency(
   workspaceId: string,

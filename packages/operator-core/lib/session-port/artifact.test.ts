@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deleteSessionPortArtifact, readSessionPortArtifact, writeSessionPortArtifact } from './artifact';
+import { deleteSessionPortArtifact, pruneStaleSessionPortArtifacts, readSessionPortArtifact, writeSessionPortArtifact } from './artifact';
 
 describe('session-port artifacts', () => {
   it('writes owner-only, reads without premature deletion, and verifies the opaque token', async () => {
@@ -40,5 +40,24 @@ describe('session-port artifacts', () => {
     const secret = 'a'.repeat(64);
     const artifact = await writeSessionPortArtifact({ seed: 'seed', root, secret });
     expect(artifact.token).toBe(`${artifact.portId}.${secret}`);
+  });
+
+  it('prunes only stale owned seed/temp names and never follows symlinks', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'port-artifact-prune-'));
+    const old = await writeSessionPortArtifact({ seed: 'old', root, now: 1_000 });
+    const fresh = await writeSessionPortArtifact({ seed: 'fresh', root, now: 1_000 });
+    utimesSync(old.path, new Date(1_000), new Date(1_000));
+    utimesSync(fresh.path, new Date(30_000), new Date(30_000));
+    const unrelated = join(root, 'keep.txt');
+    writeFileSync(unrelated, 'keep');
+    const link = join(root, '33333333-3333-4333-8333-333333333333.seed.md');
+    symlinkSync(unrelated, link);
+
+    const result = await pruneStaleSessionPortArtifacts({ root, now: 40_000, ttlMs: 20_000 });
+    expect(result).toMatchObject({ removed: 1, errors: 0 });
+    expect(existsSync(old.path)).toBe(false);
+    expect(existsSync(fresh.path)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+    expect(existsSync(link)).toBe(true);
   });
 });
