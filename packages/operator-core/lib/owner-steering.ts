@@ -45,8 +45,9 @@
  * feature is purely additive — an un-steered Hive reads `DEFAULT_OWNER_STEERING`.
  */
 import type { Sql } from 'postgres';
-import type { ModelTier } from './agent-config-constants';
+import { DEFAULT_MODEL_TIERS, type ModelTier } from './agent-config-constants';
 import type { FederatedPrimingConfig } from './scout/federated-priming';
+import { specModelId } from './fleet/model-tiers';
 import { listHiveSettings, setHiveSetting, deleteHiveSetting } from './hive-settings-store';
 
 /** The `hive_settings` keys the steering controls occupy (C-1). */
@@ -475,6 +476,69 @@ export function directiveSuggestsResume(directive: string | null): boolean {
  *  as a reconcile-nudge — see the section banner above for why it's advisory-only. */
 export function steeringLooksInconsistent(s: OwnerSteering): boolean {
   return s.pauseNewWork === true && directiveSuggestsResume(s.directive);
+}
+
+// ─── Model-spec drift nudge (EI-12807) ──────────────────────────────────────
+// A pot-level `modelTiers` / `modelOverrides` SESSION override always wins over
+// the workspace default (by design). So a GLOBAL tier-menu fix (config:tiers-set)
+// that replaces a broken/renamed model spec CANNOT reach a pot that pins the old
+// spec through its own steering — the stale pin silently survives the fix, and
+// every cup/kettle spawn on that pot dies on "selected model unavailable". The
+// EI-12807 incident: after the workspace menu was fixed to drop the dead
+// "claude-sonnet-5[1m]:high", the papercusp pot's own steering kept pinning it
+// for ~4h while every escalation blamed the launcher/orchestrator for not
+// reloading — nobody checked pot-level steering, because nothing surfaced it.
+// This is advisory ONLY (like the EI-8277 nudge above): it never rewrites the
+// override — it just makes the drift VISIBLE wherever steering is read
+// (pot:get-steering + the Mug wake brief) so a Mug/owner reconciles it on the
+// very next read instead of chasing a launcher-restart red herring.
+
+/** The MODEL-ID comparison key for drift detection: the spec's model id with the
+ *  `[1m]` window marker and any `:effort` suffix stripped, lowercased. Deliberately
+ *  STRICTER than `specFamilyKey` (which collapses the dead `claude-sonnet-5` and a
+ *  live `sonnet` into ONE family) — the whole trap in EI-12807 is that a drifted
+ *  spec looks family-identical to a valid one, so the drift is invisible at family
+ *  granularity. Window/effort differences are NOT drift (they don't change which
+ *  model launches), so they're normalized away. */
+function modelIdKey(spec: string): string {
+  return specModelId(spec).replace(/\[1m\]/gi, '').trim().toLowerCase();
+}
+
+/** Every distinct model spec a steering override PINS — the union of its
+ *  `modelTiers[].spec` and `modelOverrides` values. The set the drift detector
+ *  checks against the committed tier menu. Pure. */
+export function steeringPinnedModelSpecs(s: OwnerSteering): string[] {
+  const specs = new Set<string>();
+  for (const t of s.modelTiers ?? []) {
+    const spec = t?.spec?.trim();
+    if (spec) specs.add(spec);
+  }
+  for (const spec of Object.values(s.modelOverrides ?? {})) {
+    if (typeof spec === 'string' && spec.trim()) specs.add(spec.trim());
+  }
+  return [...specs];
+}
+
+/**
+ * Detect steering model-spec DRIFT (EI-12807) — see the section banner above.
+ * Returns each PINNED spec (from `modelTiers` / `modelOverrides`) whose model id
+ * matches NO entry in the CURRENT committed tier menu (`committedTiers`, i.e. the
+ * workspace-default menu; an empty menu falls back to `DEFAULT_MODEL_TIERS`).
+ * Compared at model-id granularity via {@link modelIdKey}, so it flags the dead
+ * `claude-sonnet-5[1m]:high` against a menu that now runs `sonnet[1m]` — where a
+ * family-level compare would miss it. An empty override, or a menu that still
+ * carries the pinned ids, yields `[]` (no drift). Advisory only; never rewrites
+ * the override. Pure.
+ */
+export function steeringModelSpecDrift(
+  s: OwnerSteering,
+  committedTiers: readonly ModelTier[],
+): string[] {
+  const pinned = steeringPinnedModelSpecs(s);
+  if (pinned.length === 0) return [];
+  const menu = committedTiers.length > 0 ? committedTiers : DEFAULT_MODEL_TIERS;
+  const knownIds = new Set(menu.map((t) => modelIdKey(t.spec)));
+  return pinned.filter((spec) => !knownIds.has(modelIdKey(spec)));
 }
 
 // ─── Throttle-knob accessors (P-006) ────────────────────────────────────────

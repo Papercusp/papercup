@@ -12,7 +12,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
-import { getOwnerSteering, steeringLooksInconsistent } from '../../owner-steering';
+import { getOwnerSteering, steeringLooksInconsistent, steeringModelSpecDrift } from '../../owner-steering';
+import { DEFAULT_MODEL_TIERS, type ModelTier } from '../../agent-config-constants';
 
 const json = (o: unknown) => ({ data: o });
 
