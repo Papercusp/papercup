@@ -105,6 +105,56 @@ export function selectRollbackRelease(
   return { ok: true, release };
 }
 
+export type StaticRollbackSelection =
+  | { ok: true; release: StaticHistoryRelease }
+  | { ok: false; reason: RollbackRefusal };
+
+/**
+ * The static-host sibling of `selectRollbackRelease` (WI-5008): match the tag
+ * against `<host>/history.json` rows — full tag, case-insensitive tag,
+ * normalized tag-version, or the feed's own stamped version (`0.0.9`, the form
+ * the app actually reports) — and enforce the SAME channel-visibility window.
+ * Pure; the network is the caller's concern.
+ */
+export function selectStaticRollbackRelease(
+  releases: StaticHistoryRelease[],
+  opts: { tag: string; channel: Channel },
+): StaticRollbackSelection {
+  const wanted = opts.tag.trim();
+  const wantedVersion = normalizeTagVersion(wanted);
+  const release = releases.find(
+    (r) =>
+      r.tag === wanted ||
+      r.tag.toLowerCase() === wanted.toLowerCase() ||
+      normalizeTagVersion(r.tag) === wantedVersion ||
+      r.version === wanted,
+  );
+  if (!release) return { ok: false, reason: 'unknown_tag' };
+  if (!visibleChannels(opts.channel).has(release.channel as Channel)) {
+    return { ok: false, reason: 'channel_hidden' };
+  }
+  return { ok: true, release };
+}
+
+/**
+ * Pick the artifact `revert_to` can actually hand to tauri-plugin-updater:
+ * matches this platform/product AND is an updater-installable format (AppImage /
+ * .app.tar.gz / -setup.exe|.msi — a .deb or .dmg would download and then fail
+ * the swap). Returns null when the release has nothing swappable for this
+ * machine, e.g. the real 0.0.9 cut (.deb-only on Linux).
+ */
+export function pickStaticRollbackArtifact(
+  release: StaticHistoryRelease,
+  platformKey: string,
+  product: Product,
+): StaticHistoryArtifact | null {
+  return (
+    (release.artifacts ?? []).find(
+      (a) => artifactMatches(a, platformKey, product) && updaterInstallableStaticArtifact(a),
+    ) ?? null
+  );
+}
+
 const REFUSAL_STATUS: Record<RollbackRefusal | 'unknown_platform' | 'no_asset', number> = {
   unknown_tag: 404,
   channel_hidden: 404,
@@ -135,9 +185,114 @@ export default defineTool({
     const stored = await readOperatorState<{ update_channel?: string }>('setup_wizard_state');
     const channel = resolveChannel(params, stored?.update_channel);
 
+    const platformKey = platformKeyFor(target, arch);
+    if (!platformKey) return refusal('unknown_platform', { error: `unknown platform ${target}/${arch}` });
+
+    /** One response shape for BOTH sources — flat fields + the Tauri-updater
+     *  manifest, so `revert_to`'s plugin parses either. */
+    const respondWith = (r: {
+      tag: string;
+      version: string;
+      channel: Channel;
+      notes: string;
+      pub_date: string;
+      signature: string;
+      url: string;
+    }) =>
+      Response.json({
+        ok: true,
+        tag: r.tag,
+        version: r.version,
+        channel: r.channel,
+        target,
+        arch,
+        product,
+        platform: platformKey,
+        url: r.url,
+        signature: r.signature,
+        notes: r.notes,
+        pub_date: r.pub_date,
+        // Tauri-updater manifest shape — a client may reuse its install_update parser.
+        manifest: {
+          version: r.version,
+          notes: r.notes,
+          pub_date: r.pub_date,
+          platforms: { [platformKey]: { signature: r.signature, url: r.url } },
+        },
+      });
+
+    // ── 1. The static release host — AUTHORITATIVE (WI-5008). ────────────────
+    // The history list is static-first (WI-4446); resolving the revert from the
+    // SAME feed keeps "which Revert buttons appear" and "which reverts succeed"
+    // from ever disagreeing. GitHub has no release newer than 0.0.7.
+    const host = releaseHostBase();
+    let staticRefusal: RollbackRefusal | 'no_asset' | null = null;
+    if (host) {
+      try {
+        const stat = await fetchStaticHistory(host);
+        if (stat && stat.releases.length > 0) {
+          const sel = selectStaticRollbackRelease(stat.releases, { tag, channel });
+          if (!sel.ok) {
+            // channel_hidden is FINAL: the static feed knows this tag and the
+            // caller's channel window excludes it — GitHub would classify it
+            // identically, so falling through could only weaken the gate.
+            if (sel.reason === 'channel_hidden') return refusal('channel_hidden');
+            staticRefusal = sel.reason; // unknown_tag → maybe a pre-rail tag; try GitHub
+          } else {
+            const art = pickStaticRollbackArtifact(sel.release, platformKey, product);
+            if (art) {
+              const artUrl = `${host}/${encodeURI(art.url)}`;
+              let signature = '';
+              try {
+                const sigRes = await fetch(`${artUrl}.sig`);
+                signature = sigRes.ok ? (await sigRes.text()).trim() : '';
+              } catch {
+                /* treated as missing below */
+              }
+              if (!signature) {
+                // Surfaced, never served: revert_to's minisign verify would fail.
+                console.warn(`[updates/rollback] no signature at ${artUrl}.sig`);
+                return Response.json(
+                  {
+                    ok: false,
+                    reason: 'no_signature',
+                    tag: sel.release.tag,
+                    version: sel.release.version || normalizeTagVersion(sel.release.tag),
+                    asset: art.name,
+                  },
+                  { status: 409 },
+                );
+              }
+              return respondWith({
+                tag: sel.release.tag,
+                version: sel.release.version || normalizeTagVersion(sel.release.tag),
+                channel: sel.release.channel as Channel,
+                notes: sel.release.notes ?? '',
+                pub_date: sel.release.pub_date,
+                signature,
+                url: artUrl,
+              });
+            }
+            // Tag known on the host but nothing updater-installable for this
+            // machine (e.g. the .deb-only 0.0.9 Linux cut). A pre-rail tag may
+            // still resolve via GitHub, so remember and fall through.
+            staticRefusal = 'no_asset';
+          }
+        }
+      } catch (e: unknown) {
+        console.warn(
+          `[updates/rollback] release host history fetch failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
+    // ── 2. GitHub — the legacy/hybrid fallback (pre-rail tags ≤ 0.0.7). ─────
     const token = await resolveGithubToken();
     if (!token) {
       console.warn('[updates/rollback] no GitHub token — cannot resolve rollback target');
+      // A definite static verdict beats a credentials complaint: the host was
+      // reachable and authoritative, so report what IT said about the tag.
+      if (staticRefusal) return refusal(staticRefusal, { tag });
       return Response.json({ ok: false, reason: 'no_token' }, { status: 503 });
     }
 
@@ -146,41 +301,31 @@ export default defineTool({
       releases = await fetchReleases(token);
     } catch (e: unknown) {
       console.warn(`[updates/rollback] releases fetch failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (staticRefusal) return refusal(staticRefusal, { tag });
       return Response.json({ ok: false, reason: 'fetch_failed' }, { status: 503 });
     }
-    if (!releases) return Response.json({ ok: false, reason: 'fetch_failed' }, { status: 503 });
+    if (!releases) {
+      if (staticRefusal) return refusal(staticRefusal, { tag });
+      return Response.json({ ok: false, reason: 'fetch_failed' }, { status: 503 });
+    }
 
     const selected = selectRollbackRelease(releases, { tag, channel });
-    if (!selected.ok) return refusal(selected.reason);
+    if (!selected.ok) return refusal(staticRefusal ?? selected.reason, { tag });
     const { release } = selected;
 
     const version = normalizeTagVersion(release.tag_name);
-    const platformKey = platformKeyFor(target, arch);
-    if (!platformKey) return refusal('unknown_platform', { error: `unknown platform ${target}/${arch}` });
 
     const proxyBase = `${reqUrl.origin}/api/updates/download`;
 
     const respond = (signature: string, url: string) =>
-      Response.json({
-        ok: true,
+      respondWith({
         tag: release.tag_name,
         version,
         channel: classifyChannel(release),
-        target,
-        arch,
-        product,
-        platform: platformKey,
-        url,
-        signature,
         notes: release.body ?? '',
         pub_date: release.published_at,
-        // Tauri-updater manifest shape — a client may reuse its install_update parser.
-        manifest: {
-          version,
-          notes: release.body ?? '',
-          pub_date: release.published_at,
-          platforms: { [platformKey]: { signature, url } },
-        },
+        signature,
+        url,
       });
 
     // Primary path: a GitHub asset for this platform/product, signed with its .sig.

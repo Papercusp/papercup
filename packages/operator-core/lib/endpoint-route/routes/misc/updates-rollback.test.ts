@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { selectRollbackRelease } from './updates-rollback';
+import {
+  pickStaticRollbackArtifact,
+  selectRollbackRelease,
+  selectStaticRollbackRelease,
+} from './updates-rollback';
 import type { GhRelease } from './updates-manifest';
+import type { StaticHistoryRelease } from './updates-history';
 
 /** Minimal GitHub release fixture (mirrors updates-history.test.ts). */
 function rel(
@@ -77,5 +82,88 @@ describe('selectRollbackRelease — rollback target selection (pure)', () => {
     expect(selectRollbackRelease(RELEASES, { tag: 'desktop-v0.0.7-alpha', channel: 'alpha' }).ok).toBe(true);
     expect(selectRollbackRelease(RELEASES, { tag: 'desktop-v0.0.6-beta', channel: 'alpha' }).ok).toBe(true);
     expect(selectRollbackRelease(RELEASES, { tag: 'desktop-v0.0.5', channel: 'alpha' }).ok).toBe(true);
+  });
+});
+
+// ── The static release host: the ONLY source that has post-2026-07-08 releases
+// (WI-5008 — GitHub stops at 0.0.7, so a GitHub-only rollback could never
+// resolve the releases the Update Center was offering Revert buttons for).
+function staticRel(
+  tag: string,
+  version: string,
+  channel: string,
+  artifacts: Array<{ product: 'gui' | 'server' | string; platform: string; name: string }> = [],
+): StaticHistoryRelease {
+  return {
+    tag,
+    version,
+    channel,
+    notes: `notes for ${tag}`,
+    pub_date: '2026-07-14T00:00:00Z',
+    prerelease: channel !== 'stable',
+    artifacts: artifacts.map((a, i) => ({
+      product: a.product as 'gui' | 'server',
+      platform: a.platform,
+      name: a.name,
+      url: `${tag}/${a.name}`,
+      size: i + 1,
+      sha256: `hash${i}`,
+    })),
+  };
+}
+
+const STATIC_RELEASES: StaticHistoryRelease[] = [
+  staticRel('desktop-v0.0.10-alpha', '0.0.10', 'alpha', [
+    { product: 'gui', platform: 'linux-x86_64', name: 'Papercusp GUI_0.0.10_amd64.deb' },
+    { product: 'gui', platform: 'linux-x86_64', name: 'Papercusp_GUI_0.0.10_amd64.AppImage' },
+    { product: 'server', platform: 'linux-x86_64', name: 'Papercusp Server_0.0.10_amd64.deb' },
+  ]),
+  // The REAL 0.0.9 shape: .deb/.dmg only — nothing the updater can swap.
+  staticRel('desktop-v0.0.9-alpha', '0.0.9', 'alpha', [
+    { product: 'gui', platform: 'linux-x86_64', name: 'Papercusp GUI_0.0.9_amd64.deb' },
+    { product: 'gui', platform: 'darwin-universal', name: 'Papercusp GUI_0.0.9_universal-apple-darwin.dmg' },
+  ]),
+  staticRel('desktop-v0.0.8-alpha', '0.0.8', 'alpha', [
+    { product: 'gui', platform: 'linux-x86_64', name: 'Papercusp_GUI_0.0.8_amd64.AppImage' },
+  ]),
+];
+
+describe('selectStaticRollbackRelease — static-host rollback selection (pure)', () => {
+  it('matches by full tag, normalized tag-version, and the feed version the app reports', () => {
+    for (const tag of ['desktop-v0.0.8-alpha', '0.0.8-alpha', '0.0.8', 'DESKTOP-V0.0.8-ALPHA']) {
+      const r = selectStaticRollbackRelease(STATIC_RELEASES, { tag, channel: 'alpha' });
+      expect(r.ok, tag).toBe(true);
+      expect(r.ok && r.release.tag).toBe('desktop-v0.0.8-alpha');
+    }
+  });
+
+  it('reports unknown_tag for a tag not on the host', () => {
+    expect(selectStaticRollbackRelease(STATIC_RELEASES, { tag: 'desktop-v9.9.9', channel: 'alpha' })).toEqual({
+      ok: false,
+      reason: 'unknown_tag',
+    });
+  });
+
+  it('refuses a cross-channel rollback: a stable user cannot revert onto an alpha build', () => {
+    expect(selectStaticRollbackRelease(STATIC_RELEASES, { tag: 'desktop-v0.0.8-alpha', channel: 'stable' })).toEqual({
+      ok: false,
+      reason: 'channel_hidden',
+    });
+  });
+});
+
+describe('pickStaticRollbackArtifact — what revert_to can actually swap (pure)', () => {
+  it('picks the updater-installable artifact, never the .deb next to it', () => {
+    const a = pickStaticRollbackArtifact(STATIC_RELEASES[0], 'linux-x86_64', 'gui');
+    expect(a?.name).toBe('Papercusp_GUI_0.0.10_amd64.AppImage');
+  });
+
+  it('returns null for the .deb/.dmg-only 0.0.9 cut — resolvable but not swappable', () => {
+    expect(pickStaticRollbackArtifact(STATIC_RELEASES[1], 'linux-x86_64', 'gui')).toBeNull();
+    expect(pickStaticRollbackArtifact(STATIC_RELEASES[1], 'darwin-aarch64', 'gui')).toBeNull();
+  });
+
+  it('scopes by product — the Server never receives the GUI bundle', () => {
+    expect(pickStaticRollbackArtifact(STATIC_RELEASES[2], 'linux-x86_64', 'server')).toBeNull();
   });
 });
