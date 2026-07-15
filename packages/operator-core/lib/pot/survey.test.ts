@@ -914,6 +914,11 @@ describe('surveyPot escalated-issue frontier (EI-12275)', () => {
       }),
     });
     expect(survey.frontier.map((c) => c.id)).toEqual(['WI-STILL-HERE']);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('escalated-issue frontier read failed'),
+      expect.anything(),
+    );
+    warnSpy.mockRestore();
   });
 });
 
