@@ -37,6 +37,7 @@ import {
   resumeEnvFor,
   resumeAccountPlan,
   buildResumeEnv,
+  ompTrackedResumeEnv,
   rehealResumeCredentials,
   claudeCredExpiresAt,
   gatewayPinEnv,
@@ -1437,6 +1438,22 @@ describe('psu-launcher arg parsing', () => {
       PAPERCUSP_AGENT: 'omp',
       PAPERCUSP_SID: 'su-fresh',
     });
+  });
+
+  it('ompTrackedResumeEnv restores both the tracked config root and overriding agent dir', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-omp-resume-'));
+    try {
+      const root = join(home, '.papercusp', 'su-omp-homes', 'session-12601');
+      mkdirSync(join(root, 'agent'), { recursive: true });
+      expect(ompTrackedResumeEnv({ agent: 'omp', id: 12601 }, { home })).toEqual({
+        PI_CONFIG_DIR: join('.papercusp', 'su-omp-homes', 'session-12601'),
+        PI_CODING_AGENT_DIR: join(root, 'agent'),
+      });
+      expect(ompTrackedResumeEnv({ agent: 'omp', id: 999 }, { home })).toEqual({});
+      expect(ompTrackedResumeEnv({ agent: 'codex', id: 12601 }, { home })).toEqual({});
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('resumeEnvFor: a FORK takes a fresh coord identity + no adv-row link (concurrent-safe)', () => {

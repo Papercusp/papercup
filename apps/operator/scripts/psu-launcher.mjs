@@ -2137,6 +2137,22 @@ export function buildResumeEnv(session, { fork = false, brain = false, accountEn
   };
 }
 
+/** Restore the per-session OMP store a tracked launch created. Fresh OMP
+ * launches pin BOTH variables because PI_CODING_AGENT_DIR overrides
+ * PI_CONFIG_DIR; resumes must do the same or `omp -r <native-id>` searches the
+ * global ~/.omp store and reports a perfectly valid tracked thread as missing.
+ * The config dir remains home-relative because OMP joins it onto homedir(). */
+export function ompTrackedResumeEnv(session, { home = homedir() } = {}) {
+  if (session?.agent !== 'omp' || session?.id == null) return {};
+  const rel = join('.papercusp', 'su-omp-homes', `session-${session.id}`);
+  const root = join(home, rel);
+  if (!existsSync(root)) return {};
+  return {
+    PI_CONFIG_DIR: rel,
+    PI_CODING_AGENT_DIR: join(root, 'agent'),
+  };
+}
+
 /** The per-account routing header the inference gateway reads + the claude CLI forwards (via
  *  ANTHROPIC_CUSTOM_HEADERS). MUST equal the server's `ACCOUNT_HEADER` (gateway.ts) — pinned in
  *  lockstep by a test. Duplicated here (not imported) so the standalone launcher stays dependency-light. */
@@ -4585,6 +4601,10 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   // agent-session marker arms the hook-level scheduler guard (bash gate / omp
   // coord-hook) for the brain only — never the owner's own sessions (D-003).
   const env = buildResumeEnv(session, { fork, brain, accountEnv });
+  // OMP's native id is scoped to its data root. A fresh tracked launch writes
+  // under session-<adv id>; without restoring that root here, the exact id we
+  // read from adv_sessions is looked up in ~/.omp and falsely appears missing.
+  Object.assign(env, ompTrackedResumeEnv(session));
   // EI-155: a claude session launched with per-session transcript isolation wrote
   // its transcript under an isolated CLAUDE_CONFIG_DIR (keyed by coord owner id),
   // NOT the shared ~/.claude — point the resume back at it or `claude --resume
