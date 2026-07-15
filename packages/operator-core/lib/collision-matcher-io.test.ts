@@ -167,7 +167,7 @@ describe('runCollisionTick — read → fold → save → enqueue both sides', (
     const r = await mod.runCollisionTick({ selfSessionId: 'su-self', selfOwnerId: null });
     expect(r.enqueued).toBe(1);
     expect(enqueuePush).toHaveBeenCalledTimes(1);
-    expect((enqueuePush.mock.calls[0]![0] as Record<string, unknown>).targetOwnerId).toBe('own-peer');
+    expect(enqueuePush.mock.calls[0]![0].targetOwnerId).toBe('own-peer');
   });
 
   it('skips the peer side when the peer has no owner id (only self side enqueues)', async () => {
@@ -181,7 +181,7 @@ describe('runCollisionTick — read → fold → save → enqueue both sides', (
     const r = await mod.runCollisionTick({ selfSessionId: 'su-self', selfOwnerId: 'own-self' });
     expect(r.enqueued).toBe(1);
     expect(enqueuePush).toHaveBeenCalledTimes(1);
-    expect((enqueuePush.mock.calls[0]![0] as Record<string, unknown>).targetOwnerId).toBe('own-self');
+    expect(enqueuePush.mock.calls[0]![0].targetOwnerId).toBe('own-self');
   });
 
   it('filters out a same-owner peer (a person\'s own other session is not a cross-agent collision)', async () => {
@@ -207,7 +207,7 @@ describe('runCollisionTick — read → fold → save → enqueue both sides', (
       peerRows: [peer],
       carry: { tick: 0, states: primedState('su-peer') },
     });
-    const onCollisionEntered = vi.fn(async () => {});
+    const onCollisionEntered = vi.fn<(n: CollisionEnteredNotice) => Promise<void>>(async () => {});
     await mod.runCollisionTick({ selfSessionId: 'su-self', selfOwnerId: 'own-self', onCollisionEntered });
     expect(onCollisionEntered).toHaveBeenCalledTimes(1);
     expect(onCollisionEntered.mock.calls[0]![0]).toMatchObject({ selfSessionId: 'su-self', peerSessionId: 'su-peer' });

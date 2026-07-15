@@ -46,6 +46,9 @@ const writeSuCodexHomeMock = vi.fn((opts: any) => ({
 const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
   configDir: `/fake/.papercusp/session-claude/${opts.sid}`,
 }));
+const getSessionPortMock = vi.fn(async () => null as any);
+const transitionSessionPortMock = vi.fn(async (_id: string, _ws: string, _to: string, _fields: unknown) => ({ status: 'pending' }));
+const readSessionPortArtifactMock = vi.fn(async () => 'ported history\n[PAPERCUSP SESSION PORT CHECKSUM rendered-hash]');
 
 vi.mock('../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -82,7 +85,21 @@ vi.mock('../../console-launcher', () => ({
     mode: 'shell',
   })),
 }));
-vi.mock('../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
+vi.mock('../../adv-sessions', () => ({
+  recordAdvSession: recordAdvSessionMock,
+  markAdvSessionEnded: vi.fn(async () => {}),
+  reactivateAdvSession: vi.fn(async () => {}),
+}));
+vi.mock('../../session-port/store', () => ({
+  getSessionPort: (...a: unknown[]) => getSessionPortMock(...(a as [any, any])),
+  transitionSessionPort: (...a: unknown[]) => transitionSessionPortMock(...(a as [any, any, any, any])),
+}));
+vi.mock('../../session-port/artifact', () => ({
+  parsePortToken: (token: string) => token.startsWith('22222222-2222-4222-8222-222222222222.')
+    ? { portId: '22222222-2222-4222-8222-222222222222', secret: token.split('.')[1] }
+    : null,
+  readSessionPortArtifact: (...a: unknown[]) => readSessionPortArtifactMock(...(a as [any])),
+}));
 // launch-wakeability: the route arms the standing inbox-wake at launch (right after
 // recordAdvSession) so the session is parked/wakeable before its first turn. Mock it
 // to keep the unit test hermetic (the real one pulls the await engine + PG) and to
@@ -266,6 +283,7 @@ async function callBrainGet(): Promise<Response> {
 beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(42);
+  getSessionPortMock.mockResolvedValue(null);
   // P-002 brain-brief defaults: one started hive + a brief string. Tests that
   // exercise the no-brief / no-hive branches override per-call.
   listStartedHivesMock.mockResolvedValue([{ workspaceId: 'default', installSlug: 'papercup' }]);
@@ -338,6 +356,60 @@ describe('bootstrap-su', () => {
     // on the identical dir the launch wrote to.
     expect(writeInteractiveClaudeConfigMock).toHaveBeenCalledWith(expect.objectContaining({ sid }));
     expect(json.envelopeEnv.CLAUDE_CONFIG_DIR).toBe(`/fake/.papercusp/session-claude/${sid}`);
+  });
+
+  it('refuses a session-port protocol skew before creating a target row', async () => {
+    const res = await callPost({
+      agent: 'codex',
+      model: 'gpt-5.5',
+      session_port_protocol: 2,
+      session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
+    });
+    expect(res.status).toBe(426);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('claims a prepared port as a fresh pending target and returns only the managed kickoff file', async () => {
+    getSessionPortMock.mockResolvedValueOnce({
+      id: '22222222-2222-4222-8222-222222222222',
+      workspaceId: 'default',
+      protocolVersion: 1,
+      status: 'prepared',
+      sourceAdvSessionId: 9,
+      sourceBackend: 'claude',
+      targetBackend: 'codex',
+      targetModel: 'gpt-5.5',
+      tokenHash: 'token-hash',
+      artifactPath: '/managed/222.seed.md',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      sourceHash: 'source-hash',
+      normalizedHash: 'normalized-hash',
+      renderedHash: 'rendered-hash',
+      metadata: { estimatedTokens: 10, contract: { target: { account: 'default' } } },
+    });
+    const res = await callPost({
+      agent: 'codex',
+      model: 'gpt-5.5',
+      session_port_protocol: 1,
+      session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.kickoffPrompt).toBeNull();
+    expect(body.sessionPortKickoffFile).toBe('/managed/222.seed.md');
+    expect(body).not.toHaveProperty('sessionPortSeed');
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'codex',
+      portId: '22222222-2222-4222-8222-222222222222',
+      portSourceAdvSessionId: 9,
+      portStatus: 'pending',
+    }));
+    expect(transitionSessionPortMock).toHaveBeenCalledWith(
+      '22222222-2222-4222-8222-222222222222',
+      'default',
+      'pending',
+      expect.objectContaining({ targetAdvSessionId: 42 }),
+    );
   });
 
   it('launch-wakeability: arms the standing inbox-wake at launch for the minted sid (parked before first turn)', async () => {

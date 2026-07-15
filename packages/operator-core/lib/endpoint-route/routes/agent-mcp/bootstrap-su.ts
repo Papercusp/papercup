@@ -1303,11 +1303,24 @@ const post = defineTool({
       }
     }
 
-    // Launch artifacts can be materialized before the tracking row exists. For
-    // a port, key them by the already-durable port id; ordinary launches keep a
-    // throwaway key. Delaying the row lets every fallible prompt/config/budget
-    // check finish before the pending target identity is minted.
-    const sessionKey = sessionPortContext?.row.id ?? `t-${randomUUID()}`;
+    // Ordinary launches retain their byte-identical record-first identity/path
+    // (`session-<adv id>`). Only a port delays its pending target row until all
+    // fallible artifact/budget checks finish, keying interim files by port id.
+    let sessionId: number | null = null;
+    if (!sessionPortContext) {
+      sessionId = await recordAdvSession({
+        planSlug,
+        agent,
+        workspaceId: workspace,
+        mode: agent === 'omp' ? 'omp' : 'console',
+        cwd,
+        label: body.label?.trim() || null,
+        coordOwnerId: sid,
+        sessionId: nativeSessionId,
+        launchArgv,
+      });
+    }
+    const sessionKey = sessionPortContext?.row.id ?? sessionId ?? `t-${randomUUID()}`;
 
     // psu-account-chooser: resolve before writing Codex launch artifacts so a Codex
     // account pin can be baked into CODEX_HOME/config.toml.
@@ -1616,17 +1629,17 @@ const post = defineTool({
 
     // Record only after launch artifact + budget checks are green. A port row
     // is pending and hidden from resumable lists until native persistence proof.
-    const sessionId = await recordAdvSession({
-      planSlug,
-      agent,
-      workspaceId: workspace,
-      mode: agent === 'omp' ? 'omp' : 'console',
-      cwd,
-      label: body.label?.trim() || null,
-      coordOwnerId: sid,
-      sessionId: nativeSessionId,
-      launchArgv,
-      ...(sessionPortContext ? {
+    if (sessionPortContext) {
+      sessionId = await recordAdvSession({
+        planSlug,
+        agent,
+        workspaceId: workspace,
+        mode: agent === 'omp' ? 'omp' : 'console',
+        cwd,
+        label: body.label?.trim() || null,
+        coordOwnerId: sid,
+        sessionId: nativeSessionId,
+        launchArgv,
         portId: sessionPortContext.row.id,
         portSourceAdvSessionId: sessionPortContext.row.sourceAdvSessionId,
         portStatus: 'pending',
@@ -1639,9 +1652,7 @@ const post = defineTool({
           normalizedHash: sessionPortContext.row.normalizedHash,
           renderedHash: sessionPortContext.row.renderedHash,
         },
-      } : {}),
-    });
-    if (sessionPortContext) {
+      });
       if (sessionId == null) {
         return jsonRes({ status: 'error', error: 'could not persist the pending session-port target row' }, 503);
       }
