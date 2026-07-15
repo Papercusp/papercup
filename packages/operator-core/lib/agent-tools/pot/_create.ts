@@ -25,7 +25,6 @@ import type { DeploymentConfig } from '@papercusp/deployment-driver';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../../harness-registry';
 import { operatorResolveExtends, availableHiveBlueprintIds } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../blueprint/_resolve';
-import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import { POT_BLUEPRINT_ID, declarePotTimeWake, recordPotWake } from '../../pot/wake';
 import { POT_KIND } from './_resolve';
 
@@ -730,6 +729,14 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
         opts.kickoff ??
         `Pot '${opts.slug}' created. You are the Mug/operator in charge; survey the fleet and figure out what to do.${seededNote}`;
       if (opts.wakeInSeconds <= 0) {
+        // Lazy: fireLaunchBlueprint's module (blueprint/launch-blueprint) transitively
+        // pulls in the fleet spawn machinery -> work-items -> the whole sync/hyperbee
+        // projection-registration graph (boot-all). Loading that eagerly at module scope
+        // dragged every createPotHarness caller/test into that heavy graph even on the
+        // (common) no-wake path that never calls this. Every other side-effecting
+        // subsystem in this file is already imported lazily at its call site — this
+        // matches that convention instead of being the one static exception.
+        const { fireLaunchBlueprint } = await import('../../blueprint/launch-blueprint');
         await fireLaunchBlueprint(blueprintId, { installSlug: opts.slug, workspaceId: ws, kickoff });
         await recordPotWake(ws);
       } else {

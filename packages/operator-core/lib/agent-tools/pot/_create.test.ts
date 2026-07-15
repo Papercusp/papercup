@@ -65,12 +65,19 @@ beforeEach(() => {
       },
     };
   });
-  vi.doMock('../../harness-registry', () => ({
-    loadHarnessRegistry: async () => ({ projects: registry.projects.map((p) => ({ ...p })) }),
-    saveHarnessRegistry: async (reg: { projects: Entry[] }) => {
-      registry.projects = reg.projects.map((p) => ({ ...p }));
-    },
-  }));
+  // Keep the real export surface so transitive imports added elsewhere cannot break
+  // this focused test before createPotHarness runs. Only the two registry I/O seams
+  // belong to this test's PG/filesystem-free fake.
+  vi.doMock('../../harness-registry', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../harness-registry')>();
+    return {
+      ...actual,
+      loadHarnessRegistry: async () => ({ projects: registry.projects.map((p) => ({ ...p })) }),
+      saveHarnessRegistry: async (reg: { projects: Entry[] }) => {
+        registry.projects = reg.projects.map((p) => ({ ...p }));
+      },
+    };
+  });
   vi.doMock('../../scaffold-harness-schema', () => ({
     scaffoldHarnessSchema: () => scaffoldImpl(),
     dropHarnessSchema: async () => {},
@@ -195,12 +202,19 @@ beforeEach(() => {
   vi.doMock('../../identity/resolve-local-github-identity', () => ({
     resolveLocalGithubIdentity: async () => ({ kind: 'ok', token: 't', githubUserId: 1, githubLogin: 'owner-login' }),
   }));
-  // hive-membership-store.ts is OUT OF SCOPE — mock the REAL export name.
+  // hive-membership-store.ts is OUT OF SCOPE — mock the REAL export names.
+  // listHiveMembers is pulled in transitively (fireLaunchBlueprint → fleet/spawn-reclaim
+  // → bee-completion-reconcile → work-items → work-item-claim-lease-wiring →
+  // sync/hyperbee/boot-all → the projection registry → comms-tier-gate, which references
+  // it at module scope) even though this test never exercises that path directly — the
+  // mock still needs every export the module graph touches, not just the ones this
+  // file's own logic calls.
   vi.doMock('../../hive-membership-store', () => ({
     upsertHiveMember: async (input: unknown) => {
       upsertPotMemberCalls.push(input as never);
       return {};
     },
+    listHiveMembers: async () => [],
   }));
 });
 
