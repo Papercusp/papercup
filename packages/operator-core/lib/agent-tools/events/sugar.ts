@@ -25,7 +25,7 @@ import { z } from "zod";
 import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
 import { resolveAgentIdentity } from "../coordination/identity";
 import { captureWakeHandleForOwner } from "../../events/await/handle";
-import { registerAwait } from "../../events/await/store";
+import { registerAwait, cancelAwaitsForSubscribersOnKeys } from "../../events/await/store";
 import { startAwaitSweeper } from "../../events/await/engine";
 import { buildKey } from "../../events/await/catalog";
 import { clampText, LIMITS } from "../limits";
@@ -54,20 +54,37 @@ const timeoutArg = z
  * Arm one or more awaits sharing ONE wake handle (captured now — the agent is
  * asleep at fire time). Mirrors events:await, so the sugar and the raw verb are
  * the same primitive. Returns the registered keys + a resume advice line.
+ *
+ * EI-12457: `opts.payloadFilter` (applied to every key in this call) binds the wait
+ * to an exact subject (e.g. a candidate SHA) so a same-key fire for a DIFFERENT
+ * subject never wakes this caller. `opts.supersedeKeys` cancels this SAME
+ * subscriber's own prior, still-pending awaits on those keys FIRST — re-arming a
+ * wait for a moved-on candidate retires the stale registration instead of leaving
+ * it to accumulate/eventually fire a stale wake.
  */
 async function armAwaits(
   ctx: Parameters<typeof resolveAgentIdentity>[0],
   keys: string[],
   note: string,
   timeoutSec: number | undefined,
+  opts: { payloadFilter?: unknown; supersedeKeys?: string[] } = {},
 ): Promise<{
   ok: true;
   events: string[];
   await_ids: number[];
+  superseded?: number;
   advice: string;
 }> {
   const identity = resolveAgentIdentity(ctx);
   startAwaitSweeper();
+  let superseded: number | undefined;
+  if (opts.supersedeKeys && opts.supersedeKeys.length > 0) {
+    try {
+      superseded = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], opts.supersedeKeys);
+    } catch {
+      /* best-effort — a failed retirement must never block arming the new wait */
+    }
+  }
   const { handle } = await captureWakeHandleForOwner(identity.ownerId, {});
   const awaitIds: number[] = [];
   for (const key of keys) {
@@ -79,6 +96,7 @@ async function armAwaits(
       wakeHandle: handle,
       timeoutBehavior: "wake",
       timeoutSec: timeoutSec ?? DEFAULT_TIMEOUT_SEC,
+      payloadFilter: opts.payloadFilter ?? null,
     });
     awaitIds.push(row.id);
   }
@@ -86,6 +104,7 @@ async function armAwaits(
     ok: true,
     events: keys,
     await_ids: awaitIds,
+    ...(superseded != null ? { superseded } : {}),
     advice:
       "Registered. End your turn now — you are re-invoked when it fires (or at the deadline). Do not poll.",
   };
@@ -161,17 +180,18 @@ defineTool({
 defineTool({
   name: "checkpoint:await",
   description:
-    "Sleep until the current pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed → advanced to main) and green-checkpoint:red:<pipeline> (held → not green) so you wake either way, instead of polling for the gate verdict. Pass pipeline to override; pass global:true only when you intentionally want every co-hosted pipeline verdict and will lineage-check payload.pipeline/payload.sha yourself. Then END YOUR TURN.",
+    "Sleep until the current pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed → advanced to main) and green-checkpoint:red:<pipeline> (held → not green) so you wake either way, instead of polling for the gate verdict. Pass candidateSha to bind the wait to YOUR exact candidate (EI-12457) — a verdict for a different, superseded SHA (a delayed/queued run) then never wakes you; without it you may wake on ANY candidate's verdict for this pipeline and must lineage-check payload.sha yourself (release:trace does this). Pass pipeline to override; pass global:true only when you intentionally want every co-hosted pipeline verdict. Re-arming automatically retires your own prior pending checkpoint await for this pipeline (a superseded wait from an earlier candidate). Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You need to know whether the gate went green (your change cleared into main) or is held (a test is red) before proceeding — instead of re-polling dev:pipeline_position / dev:build_status.",
     notWhen:
       "Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config.",
     chaining:
-      "checkpoint:await → end turn → on wake, payload tells you green (advanced) or red (payload.summary = failing tail) for this pipeline; resume or go fix the red.",
+      "checkpoint:await { candidateSha } → end turn → on wake, payload tells you green (advanced) or red (payload.summary = failing tail) for this pipeline/candidate; resume or go fix the red.",
     seeAlso: [
       "events:catalog",
       "deploy:await (the next stage — live on :3070)",
+      "release:trace (exact-SHA lineage check — use when you did NOT pass candidateSha)",
       "events:await",
     ],
   },
@@ -187,6 +207,17 @@ defineTool({
         "Scope to ONE pipeline's gate — the repo basename of its integration root (e.g. 'papercusp'). " +
           "Omit to default to the current dev pipeline. Use global:true for the global keys, which wake " +
           "on EVERY co-hosted pipeline's verdict (EI-7646: you then must lineage-check payload.sha/payload.pipeline yourself).",
+      ),
+    candidateSha: z
+      .string()
+      .min(4)
+      .max(64)
+      .optional()
+      .describe(
+        "EI-12457: bind the wait to this exact candidate (full sha or a prefix) via a payload predicate on the " +
+          "emitted payload.sha — a verdict for any OTHER candidate (a stale/superseded run) will NOT wake you; " +
+          "you keep sleeping until the correct candidate resolves or the deadline. Strongly recommended whenever " +
+          "you know which commit you are judging (e.g. right after a git-sync:await/deploy).",
       ),
     global: z
       .boolean()
@@ -211,8 +242,15 @@ defineTool({
     ];
     const note =
       args.note ??
-      `checkpoint:await${pipeline ? ` [${pipeline}]` : " [global]"} — blocked until the green gate resolves`;
-    return reply(await armAwaits(ctx, keys, note, args.timeout_sec));
+      `checkpoint:await${pipeline ? ` [${pipeline}]` : " [global]"}${args.candidateSha ? ` @ ${args.candidateSha.slice(0, 8)}` : ""} — blocked until the green gate resolves`;
+    return reply(
+      await armAwaits(ctx, keys, note, args.timeout_sec, {
+        payloadFilter: args.candidateSha ? { sha: { startsWith: args.candidateSha } } : undefined,
+        // EI-12457: a re-await for this pipeline supersedes any prior pending
+        // checkpoint-family wait this same subscriber still holds for it.
+        supersedeKeys: keys,
+      }),
+    );
   },
 });
 

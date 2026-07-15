@@ -2522,6 +2522,9 @@ if (require.main === module) {
         emitResult(red);
         const pipeline = pipelineName(cfg.integrationRoot);
         const payload = { sha: red.candidate, from: red.from, pipeline, summary: red.summary };
+        // EI-12457: symmetric with the normal red path — cancel any still-pending
+        // green await for this pipeline now that this candidate resolved red.
+        const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
         try {
           const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
           await emitAwaitedEvent({
@@ -2529,12 +2532,14 @@ if (require.main === module) {
             summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
             payload,
             source: 'green-checkpoint',
+            cancelSiblingKeysFor,
           });
           await emitAwaitedEvent({
             key: `green-checkpoint:red:${pipeline}`,
             summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
             payload,
             source: 'green-checkpoint',
+            cancelSiblingKeysFor,
           });
         } catch (e) {
           console.error(

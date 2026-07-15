@@ -53,10 +53,27 @@
  * autoloop row). So the loop:arm guard ALSO keys off the ROLE NAME itself: `loopRoutineName` is
  * `` `loop-${ownerId}` ``, so every loop:arm role begins with `loop-` (a join-independent
  * structural marker no fixed system role uses). See `isLoopArmOwnerRole` / `isLoopArmOwnerLoop`.
+ *
+ * SKIP A RED-QUEEN DRILL ROW (EI-12429): the Red Queen vaccination harness PLANTS a synthetic
+ * `autoloop_state` row — `harness_slug = 'red-queen-sandbox'`, `role = 'red-queen-drill-worker'`,
+ * `consecutive_errors = 7`, `last_status = 'red-queen drill: synthetic consecutive fire errors
+ * (planted, origin=drill)'` — under the SANDBOX workspace to exercise the fire-circuit-open
+ * collector, then the drill machinery itself detects, heals (`consecutive_errors = 0`), and
+ * cleans it up (drill-classes.ts `circuitOpenDrill`). It is NEVER a real chronic failure. But this
+ * sweep's SELECT is NOT workspace-scoped (it reads every workspace's rows, filtering only on
+ * `consecutive_errors >= threshold`), so it saw the planted row transiently present and escalated
+ * it as "CHRONIC autoloop failure: red-queen-drill-worker@red-queen-sandbox red 7 consecutive
+ * fires" — a false positive that re-fired every 24h debounce cycle. Every artifact the drill harness
+ * plants lives under the sandbox partition (`SANDBOX_WORKSPACE_ID === SANDBOX_HARNESS_SLUG ===
+ * 'red-queen-sandbox'`); no real capability ever lives in that harness by construction (red-queen
+ * types.ts). So the sweep drops any row whose `harness_slug` is the red-queen sandbox — restoring
+ * the sandbox-partition invariant every live workspace-scoped collector already honors. See
+ * `isRedQueenDrillRow`.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { SANDBOX_HARNESS_SLUG } from '../../red-queen/types';
 
 /** Breach threshold (env-overridable; <=0 disables the sweep). */
 export function chronicErrorThreshold(): number {

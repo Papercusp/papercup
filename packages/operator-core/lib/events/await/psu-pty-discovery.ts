@@ -379,20 +379,38 @@ export function injectIntoHost(
  * ends the current turn, session stays resumable); `'esc'` = Esc (\x1b, the
  * claude/omp TUI's stop-generating key).
  *
- * Returns false when the owner has NO live psu-pty host — the caller
- * (`turn:interrupt`) then falls back to headless SIGINT on the resolved pid.
- * Authorization, attribution, audit + storm-limit are the operator-mediated
- * `turn:interrupt` tool's job (D-008); this is the dumb transport leg.
+ * EI-12460: retries once after a socket-write miss, re-reading the owner-scoped
+ * discovery record before giving up — the SAME re-verify-after-miss pattern
+ * WI-3683 added to wake-executor's psu-socket delivery (a bg-host/desktop
+ * freeze can leave the discovery record + socket path present while the first
+ * connect attempt races a host restart or a transiently wedged socket; a live
+ * host may also have rebound its control socket to a new path in the interim
+ * — never reuse the first host object, re-read discovery fresh). Confirmed
+ * missing here (this leg's previous single-attempt form is exactly what a
+ * ~15min, ~20-event burst of `turn.interrupt_failed` for 4 sessions during a
+ * bg-host freeze produced — stall-waker's `unwedge` calls straight into this).
+ *
+ * Returns false when the owner has NO live psu-pty host (or both attempts
+ * miss) — the caller (`turn:interrupt`) then falls back to headless SIGINT on
+ * the resolved pid. Authorization, attribution, audit + storm-limit are the
+ * operator-mediated `turn:interrupt` tool's job (D-008); this is the dumb
+ * transport leg.
  */
 export async function interruptViaPty(
   ownerId: string,
   key: 'sigint' | 'esc' = 'sigint',
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<boolean> {
-  const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
-  if (!host) return false;
   const data = key === 'esc' ? '\x1b' : '\x03';
-  return injectIntoHost(host.sock, { mode: 'raw', data });
+  let host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  for (let attempt = 0; host && attempt < 2; attempt += 1) {
+    const ok = await injectIntoHost(host.sock, { mode: 'raw', data });
+    if (ok) return true;
+    // Re-read the owner-scoped discovery record after a miss. Do not reuse the
+    // first host object: a live psu host may have rebound its control socket.
+    host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  }
+  return false;
 }
 
 /**

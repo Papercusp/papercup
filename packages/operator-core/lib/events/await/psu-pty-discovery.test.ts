@@ -327,6 +327,55 @@ describe('interruptViaPty (Phase 4 pty-force leg)', () => {
     expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'raw', data: '\x03' });
     expect(JSON.parse(recv[1])).toEqual({ v: 1, mode: 'raw', data: '\x1b' });
   });
+
+  // EI-12460: interruptViaPty previously gave up on the FIRST socket-write miss —
+  // no re-verification of the discovery record, unlike wake-executor's
+  // injectPsuHostWakeWithReverify (WI-3683). This reproduces a stale socket that
+  // dies mid-episode and a live host that rebinds its control socket to a new
+  // path — the exact "bg-host freeze" class the ticket describes.
+  it('re-verifies the discovery record and retries a rebound socket after a stale-socket miss', async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-rebound-test-${process.pid}-${Math.floor(performance.now())}`;
+    const key = sanitizeKey(ownerId);
+    const staleSock = join(PSU_PTY_DIR, `${key}.sock`);
+    const reboundSock = join(PSU_PTY_DIR, `${key}-rebound.sock`);
+    const meta = join(PSU_PTY_DIR, `${key}.json`);
+    const recv: string[] = [];
+
+    // The stale socket PATH exists on disk (satisfies findLiveHost's existsSync
+    // check) but has NOTHING listening — connecting to it fails immediately,
+    // exactly like a wedged/dead control socket during a host freeze.
+    writeFileSync(staleSock, '');
+    writeFileSync(
+      meta,
+      JSON.stringify({ ownerId, advSessionId: null, pid: process.pid, ptyPid: process.pid, sock: staleSock, command: 'claude-su', startedAt: 1 }),
+    );
+
+    const reboundServer = net.createServer((conn) => {
+      const chunks: Buffer[] = [];
+      conn.on('data', (d) => chunks.push(d));
+      conn.on('end', () => recv.push(Buffer.concat(chunks).toString('utf8')));
+    });
+    cleanups.push(() => {
+      reboundServer.close();
+      for (const p of [staleSock, reboundSock, meta]) if (existsSync(p)) unlinkSync(p);
+    });
+
+    // First attempt (against staleSock) is in flight — before it resolves, "rebind"
+    // the host: point the discovery record at a socket that's actually listening.
+    // interruptViaPty's retry re-reads the meta file fresh, so it picks this up.
+    const firstAttempt = interruptViaPty(ownerId, 'sigint', ID_OK);
+    await new Promise<void>((r) => reboundServer.listen(reboundSock, r));
+    writeFileSync(
+      meta,
+      JSON.stringify({ ownerId, advSessionId: null, pid: process.pid, ptyPid: process.pid, sock: reboundSock, command: 'claude-su', startedAt: 1 }),
+    );
+
+    expect(await firstAttempt).toBe(true);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(recv.length).toBe(1);
+    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'raw', data: '\x03' });
+  });
 });
 
 describe('injectIntoHost — compact envelope (WI-1804 auto-continuation)', () => {
