@@ -148,12 +148,6 @@ export interface PerfVerdict {
   sessionDirs: { claudeOwnerDirs: number | null; codexHomes: number | null } | null;
   ageMs: number | null;
   stale: boolean;
-  /** Reasons that WOULD have been crit/warn but were downgraded/suppressed given
-   *  context the caller passed in (currently: `deployInProgress` suppresses the
-   *  operator-unreachable crit during a known, sanctioned restart window). Always
-   *  present (possibly empty) so a caller can surface "N false-positive(s) suppressed"
-   *  instead of the suppression being silently invisible. */
-  suppressedReasons: string[];
 }
 
 function lagP95(s: PerfSignalsV1['signals']): number | null {
@@ -266,8 +260,8 @@ export function evaluatePerfSignals(
     }
   }
   if (s.gateway_8788_reachable === false) warn.push('inference gateway :8788 unreachable');
-  if (warn.length) return { ...v, status: 'warn', reasons: warn, suppressedReasons: suppressed };
-  return { ...v, status: 'ok', reasons: [], suppressedReasons: suppressed };
+  if (warn.length) return { ...v, status: 'warn', reasons: warn };
+  return { ...v, status: 'ok', reasons: [] };
 }
 
 export const PERF_BASELINES_DIR = join(homedir(), '.papercusp', 'perf-baselines');

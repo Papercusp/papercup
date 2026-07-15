@@ -17,6 +17,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { probeBgHostTicker } from '../service-health';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
@@ -571,14 +572,22 @@ export async function readPotSoakReport(
          )
        ORDER BY created_at ASC
     `,
-    // Context burn (P-008), workspace-scoped: the wake meter (event_wake_deliveries,
-    // D-007) carries every queued loop/coord wake's injected summary.
+    // Context burn (P-008): the wake meter (event_wake_deliveries, D-007) carries
+    // every queued loop/coord wake's injected summary. EI-12456: this table is NOT
+    // pot-workspace-scoped — WI-3575 made events:await a single flat plane, so every
+    // row lands under DEFAULT_COORD_WORKSPACE ('default') regardless of which pot's
+    // loop fired it (see inbox-wake-arm.ts's deprecated `workspaceId` param docs +
+    // the same DEFAULT_COORD_WORKSPACE fold-in in issues-engineer.ts). Filtering on
+    // this pot's `workspaceId` (activeWorkspaceId(), e.g. 'papercusp-workspace')
+    // instead of DEFAULT_COORD_WORKSPACE matched ZERO rows for every non-'default'
+    // pot — loop:status showed real fires while this metric silently read 0/null,
+    // making the public-readiness context-overhead gate blind.
     sql<WakeBurnAggRow[]>`
       SELECT count(*)::int AS loop_wakes,
              round(avg(length(summary)))::int AS mean_wake_chars,
              max(length(summary))::int AS max_wake_chars
         FROM harness_shared.event_wake_deliveries
-       WHERE workspace_id = ${workspaceId}
+       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
          AND event_key LIKE 'coord:inbox-wake:%'
          AND created_at >= now() - make_interval(hours => ${windowHours})
     `,
