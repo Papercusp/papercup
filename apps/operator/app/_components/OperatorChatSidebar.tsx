@@ -362,6 +362,7 @@ export function OperatorChatSidebar() {
           <OperatorChat
             messages={conv.messages}
             busy={conv.busy}
+            peerBusy={conv.peerBusy}
             passive={conv.mode === 'passive'}
             onSend={conv.sendUserMessage}
             onGenerateIdeas={conv.generateIdeas}

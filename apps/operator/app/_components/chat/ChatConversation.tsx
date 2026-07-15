@@ -74,6 +74,11 @@ export interface ChatConversationProps {
   messages: ChatMessage[];
   /** True while the model is composing/streaming. Disables input + shows thinking row. */
   busy: boolean;
+  /** A generation is in flight in a PEER window on the same thread
+   *  (multi-window-chat-coherence P-009): shows the thinking row so the
+   *  incoming reply doesn't appear out of nowhere, WITHOUT disabling this
+   *  window's composer — user sends are never blocked by a peer. */
+  peerThinking?: boolean;
   /** Short error string, or null. Renders as the `.oracle-error` row. */
   error?: string | null;
 
@@ -161,6 +166,7 @@ export function ChatConversation(props: ChatConversationProps) {
   const {
     messages,
     busy,
+    peerThinking,
     error,
     emptyState,
     iconForRole,
@@ -498,9 +504,13 @@ export function ChatConversation(props: ChatConversationProps) {
             })}
           </div>
         )}
-        {busy && (
+        {(busy || peerThinking) && (
           <div className="oracle-thinking-row" aria-live="polite">
-            <span>{thinkingLabelText} is thinking</span>
+            <span>
+              {busy
+                ? `${thinkingLabelText} is thinking`
+                : `${thinkingLabelText} is answering in another window`}
+            </span>
             <span className="oracle-thinking-dots">
               <span /><span /><span />
             </span>

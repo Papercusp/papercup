@@ -14,7 +14,17 @@
  * The admin write-side keys (`personalApiKey`, `webhookSecret`) are NEVER
  * bundled — those live only on maintainer machines / CI secrets.
  */
+// ⚠ The projectKey MUST be the api_token of a real project on `host`. PostHog's
+// capture endpoints answer {"status":"Ok"} to an UNKNOWN key and drop the event, so a
+// stale key here fails silently and forever — which is exactly what happened: this
+// shipped a key from a previous incarnation of the instance long after its only
+// project was re-provisioned to the token below, so every shipped build's telemetry
+// was discarded for months. Maintainer boxes never noticed, because
+// ~/.papercusp/posthog.json overrides this before it is ever read.
+// Verify with: the token of the target project at <host>/api/organizations/<org>/projects/.
+// Keep in sync with papercusp-desktop/bin/audit-bundle.sh PUBLIC_PROJECT_KEY (the
+// bundle audit masks this exact literal; a mismatch REDs the release audit).
 export const POSTHOG_PUBLIC_DEFAULTS = {
   host: 'https://flags.papercuspai.com',
-  projectKey: 'phc_tnwKu5QTgaHi6hyrHwA3EUQFKhskJES4c4zAzHCUrPFv',
+  projectKey: 'phc_nm3LSXkJKynGzsGTZfwqUywbrfsryNNNVWrxHy7Kriug',
 } as const;

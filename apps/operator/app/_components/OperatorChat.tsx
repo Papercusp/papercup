@@ -31,6 +31,8 @@ interface Props {
   messages: ChatMessage[];
   /** True while the operator is composing/streaming. */
   busy: boolean;
+  /** Peer-window generation in flight (multi-window P-009) — thinking row only. */
+  peerBusy?: boolean;
   /** True while in passive mode — input still accepts text; no auto-replies. */
   passive: boolean;
   /** Called with the user's message when they submit. */
@@ -94,7 +96,7 @@ const STARTING_PROMPTS = [
 ] as const;
 
 export function OperatorChat({
-  messages, busy, passive, onSend, onGenerateIdeas, banner, error,
+  messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
   conversationId, workspaceId,
 }: Props) {
@@ -147,6 +149,7 @@ export function OperatorChat({
     <ChatConversation
       messages={messages}
       busy={busy}
+      peerThinking={peerBusy}
       error={error}
       banner={
         <>
