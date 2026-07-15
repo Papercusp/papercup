@@ -77,7 +77,7 @@ describe('overlayPresenceCursors (gating + wiring + fail-soft)', () => {
       cursorsByOwner: async (_ids: string[]) => new Map<string, SessionCursorRow>([['su-1', row({ owner_id: 'su-1' })]]),
     }));
     const { overlayPresenceCursors: fn } = await import('./presence-cursor-overlay');
-    const active = [
+    const active: Array<Record<string, unknown>> = [
       { ownerId: 'su-1', intent: 'x' },
       { ownerId: 'su-2', intent: 'y' }, // no cursor for su-2
     ];
