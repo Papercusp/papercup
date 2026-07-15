@@ -269,7 +269,7 @@ describe('improvements:capture kind coercion (WI-1974)', () => {
       expect(() => parse({ title: 't', kind: null })).not.toThrow();
     });
 
-    it("an observation sub-kind parses to a lane:observation record", () => {
+    it('an observation sub-kind parses to a lane:observation record', () => {
       const p = parse({ title: 'hit a gap', kind: 'gap' });
       expect(p.lane).toBe('observation');
       expect(p.observation).toMatchObject({ kind: 'gap' });
@@ -316,11 +316,13 @@ describe('improvements:capture IDEATE-provenance coercion (EI-10424)', () => {
     });
 
     it("foundDuring naming an ideate pass, no ideation payload → kind:'feature'", () => {
-      expect(coerceIdeateProvenance({ title: 't', foundDuring: 'su-ideate pass 2026-07-12: memory frontier' })).toEqual({
-        title: 't',
-        foundDuring: 'su-ideate pass 2026-07-12: memory frontier',
-        kind: 'feature',
-      });
+      expect(coerceIdeateProvenance({ title: 't', foundDuring: 'su-ideate pass 2026-07-12: memory frontier' })).toEqual(
+        {
+          title: 't',
+          foundDuring: 'su-ideate pass 2026-07-12: memory frontier',
+          kind: 'feature',
+        },
+      );
     });
 
     it('an unrelated foundDuring / no ideation signal is left untouched (stays change-default)', () => {
@@ -463,9 +465,11 @@ describe('improvements:capture — the su-ideate GROUNDING leg (EI-10607)', () =
     // capture.ts maps the identity tier to its `source` label: only omp-hook-session /
     // static-client resolve to 'su', and ONLY an 'su' source writes the ideate ledger row.
     mockIdentity.mockReturnValue(identity('omp-hook-session'));
-    mockCapture.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-900', title: 'su idea' } } as unknown as Awaited<
-      ReturnType<typeof captureImprovement>
-    >);
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-900', title: 'su idea' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
   });
 
   it('records the declared pattern refs on the su-ideate ledger row', async () => {
@@ -657,9 +661,7 @@ describe('improvements:capture — gradedGeneration stamp (EI-12147)', () => {
   });
 
   it('a caller CANNOT supply gradedGeneration (strict schema rejects) — provenance stays server-authored', () => {
-    const schema = (
-      captureTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }
-    ).args;
+    const schema = (captureTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }).args;
     const r = schema.safeParse({
       title: 'forged stamp',
       lane: 'observation',
@@ -682,7 +684,7 @@ describe('improvements:capture — notExercised shorthand (rubric-system-improve
     >);
   });
 
-  it("expands each listed key to an idle:-tagged unknown and strips the shorthand from the stored observation", async () => {
+  it('expands each listed key to an idle:-tagged unknown and strips the shorthand from the stored observation', async () => {
     await callTool({
       title: 'scoped drill scorecard',
       lane: 'observation',
@@ -693,7 +695,9 @@ describe('improvements:capture — notExercised shorthand (rubric-system-improve
       },
     });
     const passed = mockCapture.mock.calls[0]![0] as {
-      payloadExtra?: { observation?: { ratings?: Record<string, { rating: string; evidence: string }>; notExercised?: unknown } };
+      payloadExtra?: {
+        observation?: { ratings?: Record<string, { rating: string; evidence: string }>; notExercised?: unknown };
+      };
     };
     const obs = passed.payloadExtra?.observation;
     expect(obs?.notExercised).toBeUndefined(); // stripped — stored payload stays pure ratings

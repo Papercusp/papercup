@@ -50,7 +50,12 @@ import {
   releaseFleetLaunchSlot,
 } from '../../agent-fleets-store';
 import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
-import { fleetSpecBeeKey, resolveClaimSpecWorkspace, setClaimSpec, getClaimSpec } from '../../scheduler/claim-spec-store';
+import {
+  fleetSpecBeeKey,
+  resolveClaimSpecWorkspace,
+  setClaimSpec,
+  getClaimSpec,
+} from '../../scheduler/claim-spec-store';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
@@ -130,9 +135,7 @@ export function cloudModelBackendHint(model: string | undefined): 'claude' | 'co
 /** The three fleet-member backends (psu `--agent`). Guards an inherited caller backend. */
 const FLEET_BACKENDS = new Set(['claude', 'omp', 'codex']);
 
-export type FleetAgentResolution =
-  | { agent: 'claude' | 'omp' | 'codex'; model: string | undefined }
-  | { error: string };
+export type FleetAgentResolution = { agent: 'claude' | 'omp' | 'codex'; model: string | undefined } | { error: string };
 
 /**
  * PURE (fleet-launch-agent-inheritance-2026-07-03): resolve a fleet member's backend + model from
@@ -170,10 +173,8 @@ export function resolveFleetAgent(opts: {
     };
   }
   const inherited =
-    opts.callerAgent && FLEET_BACKENDS.has(opts.callerAgent)
-      ? (opts.callerAgent as 'claude' | 'omp' | 'codex')
-      : null;
-  const agent = opts.argAgent ?? (localModel ? 'omp' : cloudBackend ?? inherited ?? 'claude');
+    opts.callerAgent && FLEET_BACKENDS.has(opts.callerAgent) ? (opts.callerAgent as 'claude' | 'omp' | 'codex') : null;
+  const agent = opts.argAgent ?? (localModel ? 'omp' : (cloudBackend ?? inherited ?? 'claude'));
   // Inherit the caller's model ONLY when we also inherited its backend (no explicit agent) — else
   // an omp member would launch on omp's default, not the ornith the leader is actually running.
   const inheritedBackend = !opts.argAgent && agent === opts.callerAgent;
@@ -223,7 +224,10 @@ function floorCap(n: number | null | undefined): number | null {
  */
 export function clampFleetTopUpToCapacity(
   requestedOpenCount: number,
-  report: Pick<ReturnType<typeof buildCapacityReport>, 'reachable' | 'healthyAccounts' | 'dispatchBudget' | 'recommendedHeadroom'>,
+  report: Pick<
+    ReturnType<typeof buildCapacityReport>,
+    'reachable' | 'healthyAccounts' | 'dispatchBudget' | 'recommendedHeadroom'
+  >,
   opts?: {
     /** Whether the members being opened will route through the inference GATEWAY ('auto' or a
      *  pinned pool account / seat). Default true (the conservative legacy behavior). Pass false
@@ -348,7 +352,7 @@ export const memberLaunchCommand = sharedMemberLaunchCommand;
 export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }> = [
   {
     head: 'Already-fixed check FIRST',
-    body: 'Before building anything, spend ~2 min confirming the fix has not already shipped — check code/tests, `git log`, sibling work-items. Re-implementing a peer\'s fix is the single biggest fleet-time waste. If already done, close it as already-fixed WITH the evidence you checked — do not rebuild it.',
+    body: "Before building anything, spend ~2 min confirming the fix has not already shipped — check code/tests, `git log`, sibling work-items. Re-implementing a peer's fix is the single biggest fleet-time waste. If already done, close it as already-fixed WITH the evidence you checked — do not rebuild it.",
   },
   {
     // EI-8318: members were completing exactly ONE item per external wake, then ending
@@ -381,13 +385,13 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'A hive pause is a Mug-loop signal, not a self-drain order',
-    body: '`pauseNewWork` / `maxBees` / a pot-steering fact you SEE in orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you (check its authority+scope stamp: `hive-queen(<hive>)→hive-wide` is the Mug; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business — ignore it) or an explicit `fleet:*`/owner action. Unsure? Ask your leader, never self-drain on an observed pause.',
+    body: "`pauseNewWork` / `maxBees` / a pot-steering fact you SEE in orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you (check its authority+scope stamp: `hive-queen(<hive>)→hive-wide` is the Mug; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet's business — ignore it) or an explicit `fleet:*`/owner action. Unsure? Ask your leader, never self-drain on an observed pause.",
   },
   {
     // su-loop-capability-parity P-011: the bee turn-end reflection ritual + the overwatch
     // integrity clause, ported to fleet members (bee.base.md / the overwatch prompt).
     head: 'Turn-end reflection + reporting integrity',
-    body: 'End each turn with ONE bounded reflection: file an observation (`improvements:capture lane:"observation"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING (a sensor reading, never a fix or self-grade). Never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you weren\'t in, a send you didn\'t make, or a reading you didn\'t take.',
+    body: "End each turn with ONE bounded reflection: file an observation (`improvements:capture lane:\"observation\"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING (a sensor reading, never a fix or self-grade). Never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you weren't in, a send you didn't make, or a reading you didn't take.",
   },
   {
     // su-loop-capability-parity P-012: the bee checkpoint protocol (bee.base.md §"End of
@@ -437,7 +441,7 @@ export const LEADER_STANDING_JOB: readonly string[] = [
   // agent-launch-resume-primitives D-006: no magic "resume the fleet" verb — the leader
   // sees WHO died and composes the revival per member (resume vs fork vs fresh).
   'BRING BACK a member that DIED mid-lane instead of re-launching a blank one: `capability:launch-agent { resume: { agentId }, fleet, brief }` restores it mid-thread, context intact (the brief becomes its next turn). `fleet:status` tells you WHO died and whether each is `resumable`. Choose per member — resume one deep in a lane, launch fresh for an unstarted lane; do not blanket-revive a member killed days ago.',
-  'Right-size + wind down: relaunch a wave (this tool again) if workers thin out while claimable work remains; when only owner-gated/blocked/other-fleet residue is left OR the Mug issues graceful-drain cues, loop:end and report to the owner. Do not spin empty wakes. AT WAVE CLOSE emit ONE scorecard (per-WAVE, never per-turn) — `improvements:capture { lane:"observation", observation:{ rubricRef:"fleet-execution-health", ratings } }`, one rating per criterion, evidence MANDATORY, "unknown" the honest value for what you could not assess.',
+  'Right-size + wind down: relaunch a wave (this tool again) if workers thin out while claimable work remains; when only owner-gated/blocked/other-fleet residue is left OR the Mug issues graceful-drain cues, loop:end and report to the owner. Do not spin empty wakes. AT WAVE CLOSE emit a scorecard (per-WAVE, never per-turn) — `improvements:capture { lane:"observation", observation:{ rubricRef:"fleet-execution-health", ratings } }`, one rating per criterion, evidence MANDATORY, "unknown" the honest value for what you could not assess.',
   "Pausing the Hive Mug is NOT a 'drain your fleet' order. A hive pause / `pauseNewWork` / `maxBees` / a steering fact you see in orient governs the queen-bee loop, NOT your fleet: a fleet drains ONLY on an explicit owner / `fleet:*` action or a drain cue ADDRESSED to you. Check a cue's authority+scope stamp — `hive-queen(<hive>)→hive-wide` is the Mug; `fleet-leader(<other>)→fleet-members` is a PEER draining ITS OWN members, not a command to you. Never drain a peer leader or another fleet; if unsure, `pot:get-steering` + ask the owner rather than self-draining.",
   // su-loop-capability-parity P-010: read the CURATED fleet feed at wave boundaries
   // (salience-ranked, triage-deduped) + the overwatch nudge-hygiene rule.
@@ -479,7 +483,7 @@ export function renderMemberBaseline(opts: {
     '',
     `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, working plan \`${plan}\`. The session that launched you is your LEADER — report notable completions and blockers to them.`,
     '',
-    'Your loop, until nothing is claimable: **pull** via `scheduler:get_next` (NOT `work_items:claim_next` — leader steers WHICH item via `scheduler:set_claim_spec`; no spec = default order) → **read** it (`work_items:get`) → **classify + act** (fix / already-fixed-close / blocked) → drive to a **terminal** state with evidence → repeat. Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader\'s call, PICKUP is yours.',
+    "Your loop, until nothing is claimable: **pull** via `scheduler:get_next` (NOT `work_items:claim_next` — leader steers WHICH item via `scheduler:set_claim_spec`; no spec = default order) → **read** it (`work_items:get`) → **classify + act** (fix / already-fixed-close / blocked) → drive to a **terminal** state with evidence → repeat. Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader's call, PICKUP is yours.",
     '',
     '## Non-negotiables',
     rules,
@@ -529,10 +533,7 @@ export function resolveMemberBriefText(
  * DEFAULT_CLAIM_SPEC unchanged: only the view.filter narrows (D-002 — a spec can
  * only narrow + reorder within the global floors, never widen past them).
  */
-export function buildFleetKindClaimSpec(
-  fleetSlug: string,
-  kinds: readonly string[],
-): Record<string, unknown> {
+export function buildFleetKindClaimSpec(fleetSlug: string, kinds: readonly string[]): Record<string, unknown> {
   return {
     specVersion: '1.0',
     specId: `fleet-launch-${fleetSlug}-kinds`,
@@ -560,10 +561,7 @@ export function buildFleetPlanClaimSpec(
   kinds?: readonly string[],
 ): Record<string, unknown> {
   const planLeaf = { field: 'plan', op: '=', value: planSlug };
-  const filter =
-    kinds && kinds.length
-      ? { all: [planLeaf, { field: 'kind', op: 'in', value: [...kinds] }] }
-      : planLeaf;
+  const filter = kinds && kinds.length ? { all: [planLeaf, { field: 'kind', op: 'in', value: [...kinds] }] } : planLeaf;
   return {
     specVersion: '1.0',
     specId: `fleet-launch-${fleetSlug}-plan`,
@@ -598,10 +596,7 @@ export function isLeaderAuthoredClaimSpec(specId: string, fleetSlug: string): bo
  * (`view: {}` — the `DEFAULT_CLAIM_SPEC` shape), the kind leaf becomes the whole
  * filter.
  */
-export function mergeKindIntoClaimSpec(
-  existing: ClaimSpec,
-  kinds: readonly string[],
-): Record<string, unknown> {
+export function mergeKindIntoClaimSpec(existing: ClaimSpec, kinds: readonly string[]): Record<string, unknown> {
   const kindLeaf = { field: 'kind', op: 'in', value: [...kinds] };
   const existingFilter = existing.view?.filter;
 
@@ -653,7 +648,9 @@ export default defineTool({
     harness: z
       .string()
       .optional()
-      .describe("Harness the plan belongs to. Defaults to the session's harness scope; required when the session is unscoped."),
+      .describe(
+        "Harness the plan belongs to. Defaults to the session's harness scope; required when the session is unscoped.",
+      ),
     agent: z
       .enum(['claude', 'omp', 'codex'])
       .optional()
@@ -671,7 +668,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Launch the members HEADLESS — background su sessions with NO desktop window (default false = visible terminals). Same su members (NOT cups), same leader-led contract, they register presence + count toward the fleet, auto-start on the plan, and stay injectable for warm loop:arm wakes; they just have no window and log to a file you can tail. KNOWN GAP (EI-9748): unlike a visible member (durably parented to a desktop terminal), a headless member is a plain detached child of the operator API process and gets silently SIGTERM-killed whenever that process\'s systemd unit restarts (papercup-staging-api.service restarts routinely — every few minutes during active dev — and papercup-dev-api.service restarts on deploy); this is NOT host load, OOM, or a crash, and a killed member\'s log now says so (see EI-9748). Prefer visible for anything that must survive hours unattended until EI-9748 lands a durable fix; use headless when the owner explicitly wants no window and accepts the risk, and check on the fleet more often. Orthogonal to `carry`.',
+        "Launch the members HEADLESS — background su sessions with NO desktop window (default false = visible terminals). Same su members (NOT cups), same leader-led contract, they register presence + count toward the fleet, auto-start on the plan, and stay injectable for warm loop:arm wakes; they just have no window and log to a file you can tail. KNOWN GAP (EI-9748): unlike a visible member (durably parented to a desktop terminal), a headless member is a plain detached child of the operator API process and gets silently SIGTERM-killed whenever that process's systemd unit restarts (papercup-staging-api.service restarts routinely — every few minutes during active dev — and papercup-dev-api.service restarts on deploy); this is NOT host load, OOM, or a crash, and a killed member's log now says so (see EI-9748). Prefer visible for anything that must survive hours unattended until EI-9748 lands a durable fix; use headless when the owner explicitly wants no window and accepts the risk, and check on the fleet more often. Orthogonal to `carry`.",
       ),
     carry: z
       .enum(['warm', 'cold'])
@@ -690,7 +687,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "psu --account routing for EVERY member (account-routing-3-options) — one of three: a POOL ACCOUNT ID (from accounts:list / gateway:status) → pin every member to it via the inference gateway (isolate/concentrate the fleet's load; no failover); \"auto\" → route through the gateway, which auto-selects an available account + fails over; \"default\" → skip the gateway, use the system / CLI-login credential. OMIT to auto-pick: \"auto\" on macOS (a headless Mac member can't inherit the Keychain login directly, so it routes via the always-on desktop gateway) and \"default\" elsewhere. (For a multi-account spread, launch in batches with different account ids.) ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.",
+        'psu --account routing for EVERY member (account-routing-3-options) — one of three: a POOL ACCOUNT ID (from accounts:list / gateway:status) → pin every member to it via the inference gateway (isolate/concentrate the fleet\'s load; no failover); "auto" → route through the gateway, which auto-selects an available account + fails over; "default" → skip the gateway, use the system / CLI-login credential. OMIT to auto-pick: "auto" on macOS (a headless Mac member can\'t inherit the Keychain login directly, so it routes via the always-on desktop gateway) and "default" elsewhere. (For a multi-account spread, launch in batches with different account ids.) ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.',
       ),
     workspace: z
       .string()
@@ -720,7 +717,11 @@ export default defineTool({
       .superRefine((value, ctx) => {
         const v = validateCloudModelSpec(value);
         if (!v.ok) {
-          ctx.addIssue({ code: 'custom', message: v.message ?? 'invalid model spec', params: { cloudModelSpec: true, got: value } });
+          ctx.addIssue({
+            code: 'custom',
+            message: v.message ?? 'invalid model spec',
+            params: { cloudModelSpec: true, got: value },
+          });
         }
       })
       .optional()
@@ -793,11 +794,11 @@ export default defineTool({
       .max(5)
       .optional()
       .describe(
-        'EI-7671: restrict every member\'s scheduler:get_next self-pull to these work-item kinds — e.g. ' +
+        "EI-7671: restrict every member's scheduler:get_next self-pull to these work-item kinds — e.g. " +
           '["bug","change","task"] for a bugs-only backlog-drain fleet. Sets a FLEET-level claim spec ' +
           'BEFORE any member terminal opens, closing the boot-race where members start pulling under the ' +
           'empty-filter DEFAULT_CLAIM_SPEC (which admits every kind, including feature/chunk) before the ' +
-          'leader gets around to calling scheduler:set_claim_spec by hand. A member\'s own later per-bee ' +
+          "leader gets around to calling scheduler:set_claim_spec by hand. A member's own later per-bee " +
           'spec still overrides this fleet default. Omit to leave scheduling exactly as before (no spec set).',
       ),
   }),
@@ -805,8 +806,7 @@ export default defineTool({
     const { identity, ownerId, workspaceId: callerWs } = resolveFleetCaller(ctx);
     // An explicit `workspace` arg (psu --workspace) scopes the fleet + envelope + every
     // member; otherwise the launch session's workspace (never the '*' wildcard).
-    const workspaceId =
-      args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
+    const workspaceId = args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
     // `agent` and `model` are COUPLED: a local/gateway model (ollama-cc/…ornith) only runs on
     // the omp backend. Infer omp from such a model when agent is unspecified, and reject an
     // explicit claude/codex pairing outright — otherwise psu launches that backend with an
@@ -1043,7 +1043,10 @@ export default defineTool({
       // defaultMemberAccountRouting: darwin ⇒ 'auto', else the direct system credential).
       const plannedAccount = seatsRequested ? 'auto' : defaultMemberAccountRouting(args.account?.trim() || undefined);
       const gatewayRouted = !!plannedAccount && plannedAccount !== 'default' && plannedAccount !== 'system';
-      capacityClamp = clampFleetTopUpToCapacity(openCount, capacity, { gatewayRouted, override: args.overrideCapacityClamp ?? false });
+      capacityClamp = clampFleetTopUpToCapacity(openCount, capacity, {
+        gatewayRouted,
+        override: args.overrideCapacityClamp ?? false,
+      });
       if (capacityClamp) openCount = capacityClamp.openCount;
       sizingAdvisory = buildFleetSizingAdvisory(count, capacity) ?? null;
       // A "they WILL still launch" sizing advisory alongside a zero-clamp is a self-contradictory
@@ -1116,7 +1119,12 @@ export default defineTool({
       }
       // The slot's model rides the SAME agent/model coupling as an explicit arg (a
       // local/gateway slot model implies the omp backend, etc.).
-      const re = resolveFleetAgent({ argAgent: args.agent, argModel: seatResolution.launch.model, callerAgent, callerModel });
+      const re = resolveFleetAgent({
+        argAgent: args.agent,
+        argModel: seatResolution.launch.model,
+        callerAgent,
+        callerModel,
+      });
       if ('error' in re) return err(re.error);
       effAgent = re.agent;
       effModel = re.model;
@@ -1200,7 +1208,13 @@ export default defineTool({
           briefReadError = `Could not read launchContext \`${effectiveLaunchContext}\` (${e?.message ?? e}) — members got the baseline only.`;
         }
       }
-      const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, carry: args.carry, customBriefText: sharedBriefText });
+      const composed = composeMemberLaunchContext({
+        fleetSlug,
+        plan: args.plan,
+        count,
+        carry: args.carry,
+        customBriefText: sharedBriefText,
+      });
       const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
       mkdirSync(ctxDir, { recursive: true });
       const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context.md`);
@@ -1222,9 +1236,7 @@ export default defineTool({
     // for ONE member falls that member back to the shared `effectiveLaunchContext`
     // (never blocks the whole launch); every failure is collected + surfaced.
     const perMemberBriefsRaw = args.perMemberLaunchContext;
-    const perMemberLaunchContextPaths: (string | null)[] | null = perMemberBriefsRaw?.length
-      ? []
-      : null;
+    const perMemberLaunchContextPaths: (string | null)[] | null = perMemberBriefsRaw?.length ? [] : null;
     const perMemberReadErrors: string[] = [];
     let memberLaunchContextPathForIndex: (i: number) => string | undefined = () => effectiveLaunchContext;
     if (perMemberBriefsRaw?.length) {
@@ -1249,14 +1261,22 @@ export default defineTool({
         }
         const briefText = ownBriefText ?? sharedBriefText;
         try {
-          const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, carry: args.carry, customBriefText: briefText });
+          const composed = composeMemberLaunchContext({
+            fleetSlug,
+            plan: args.plan,
+            count,
+            carry: args.carry,
+            customBriefText: briefText,
+          });
           const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context-member-${i + 1}.md`);
           writeFileSync(ctxPath, composed, 'utf8');
           resolved.push(ctxPath);
           perMemberLaunchContextPaths!.push(ctxPath);
         } catch (e: any) {
           // Per-member compose/write failed — this member falls back to the shared file.
-          perMemberReadErrors.push(`member ${i + 1}: could not write its composed context (${e?.message ?? e}) — fell back to the shared brief.`);
+          perMemberReadErrors.push(
+            `member ${i + 1}: could not write its composed context (${e?.message ?? e}) — fell back to the shared brief.`,
+          );
           resolved.push(effectiveLaunchContext);
           perMemberLaunchContextPaths!.push(null);
         }
@@ -1338,9 +1358,7 @@ export default defineTool({
     // SAME one-liner under a detached `bash -lc` logging to a file — no window, no
     // scheme, no desktop bridge. Members log under the workspace's fleet-logs dir
     // (NON-repo — never the staging tree git-sync would try to commit).
-    const headlessLogDir = args.headless
-      ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs')
-      : null;
+    const headlessLogDir = args.headless ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs') : null;
     const results = await Promise.all(
       Array.from({ length: openCount }, (_v, i) =>
         args.headless
@@ -1431,7 +1449,7 @@ export default defineTool({
     if (opened.some((o) => o.desktopEnvResolvedVia === 'socket-scan')) {
       lines.push(
         '  ⚠ no active login seat was detected (who) — the DISPLAY(s) above were picked by a raw X11 ' +
-          'socket scan and MAY be a virtual/sandbox display rather than the owner\'s real desktop ' +
+          "socket scan and MAY be a virtual/sandbox display rather than the owner's real desktop " +
           '(EI-8289). Confirm the owner can actually see these windows before assuming supervision works.',
       );
     }

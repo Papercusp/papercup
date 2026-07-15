@@ -121,9 +121,9 @@ describe('memberLaunchCommand', () => {
   });
 
   it('builds the scripted psu launch that triggers the auto-kickoff', () => {
-    expect(
-      memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'my-plan' }),
-    ).toBe('psu --no-picker --fleet=ops --agent=claude --harness=papercusp --plan=my-plan');
+    expect(memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'my-plan' })).toBe(
+      'psu --no-picker --fleet=ops --agent=claude --harness=papercusp --plan=my-plan',
+    );
   });
 
   it('always carries --no-picker + --plan (the kickoff gate) for every backend', () => {
@@ -138,8 +138,16 @@ describe('memberLaunchCommand', () => {
 
   it('threads the account pin + scalar psu flags as --flag=value (EI-5765)', () => {
     const cmd = memberLaunchCommand({
-      fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'my-plan',
-      account: 'aviynw6', workspace: 'ws1', role: 'su', model: 'opus:high', feature: 'F-3', profile: 'p',
+      fleetSlug: 'ops',
+      agent: 'claude',
+      harness: 'papercusp',
+      plan: 'my-plan',
+      account: 'aviynw6',
+      workspace: 'ws1',
+      role: 'su',
+      model: 'opus:high',
+      feature: 'F-3',
+      profile: 'p',
     });
     expect(cmd).toContain('--account=aviynw6');
     expect(cmd).toContain('--workspace=ws1');
@@ -148,14 +156,17 @@ describe('memberLaunchCommand', () => {
     expect(cmd).toContain('--feature=F-3');
     expect(cmd).toContain('--profile=p');
     // the base tokens stay first + unchanged
-    expect(
-      cmd.startsWith('psu --no-picker --fleet=ops --agent=claude --harness=papercusp --plan=my-plan'),
-    ).toBe(true);
+    expect(cmd.startsWith('psu --no-picker --fleet=ops --agent=claude --harness=papercusp --plan=my-plan')).toBe(true);
   });
 
   it('emits --brain as a bare flag and --add-dir repeated', () => {
     const cmd = memberLaunchCommand({
-      fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', brain: true, addDir: ['/a', '/b'],
+      fleetSlug: 'f',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      brain: true,
+      addDir: ['/a', '/b'],
     });
     expect(cmd).toContain(' --brain');
     expect(cmd).toContain('--add-dir=/a');
@@ -164,12 +175,16 @@ describe('memberLaunchCommand', () => {
 
   it('emits --allow-subagents as a bare flag when opted in (owner mandate 2026-07-02); omitted by default (deny)', () => {
     const cmd = memberLaunchCommand({
-      fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', allowSubagents: true,
+      fleetSlug: 'f',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      allowSubagents: true,
     });
     expect(cmd).toContain(' --allow-subagents');
-    expect(
-      memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p' }),
-    ).not.toContain('--allow-subagents');
+    expect(memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p' })).not.toContain(
+      '--allow-subagents',
+    );
   });
 
   it('threads --context-size=<variant> (full|trimmed) for every backend', () => {
@@ -185,30 +200,36 @@ describe('memberLaunchCommand', () => {
     expect(
       memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', seat: 'opus:xhigh:AUTO' }),
     ).toContain('--seat=opus:xhigh:AUTO'); // ':' is shell-safe → bare
-    expect(
-      memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p' }),
-    ).not.toContain('--seat');
+    expect(memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p' })).not.toContain('--seat');
   });
 
   it('shell-quotes a launch-context path with spaces (injection-safe)', () => {
     const cmd = memberLaunchCommand({
-      fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', launchContext: '/home/x/brief one.md',
+      fleetSlug: 'f',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      launchContext: '/home/x/brief one.md',
     });
     expect(cmd).toContain(`--launch-context='/home/x/brief one.md'`);
   });
 
   it('appends extraArgs verbatim, quoting only what needs it', () => {
     const cmd = memberLaunchCommand({
-      fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', extraArgs: ['--yes', '--add-dir=/x y'],
+      fleetSlug: 'f',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      extraArgs: ['--yes', '--add-dir=/x y'],
     });
     expect(cmd).toContain(' --yes');
     expect(cmd).toContain(`'--add-dir=/x y'`);
   });
 
   it('omits every optional flag when none are passed (base command unchanged)', () => {
-    expect(
-      memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'my-plan' }),
-    ).toBe('psu --no-picker --fleet=ops --agent=claude --harness=papercusp --plan=my-plan');
+    expect(memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'my-plan' })).toBe(
+      'psu --no-picker --fleet=ops --agent=claude --harness=papercusp --plan=my-plan',
+    );
   });
 
   it('loads + self-registers the tool module without error', () => {
@@ -594,7 +615,7 @@ describe('composeMemberLaunchContext / renderMemberBaseline', () => {
 
 // su-loop-capability-parity-2026-07-03 P-002: the leader STEERS members by claim-spec
 // (property filters, not id-pins) and OWNS driving the plan to done through the fleet.
-describe('LEADER_STANDING_JOB — steer-don\'t-dispatch + completion mandate (P-002)', () => {
+describe("LEADER_STANDING_JOB — steer-don't-dispatch + completion mandate (P-002)", () => {
   const steer = LEADER_STANDING_JOB.find((p) => p.includes('scheduler:set_claim_spec'));
 
   it('has a steer-via-claim-spec point that names set_claim_spec + a PROPERTY filter, not id-pins', () => {
@@ -629,7 +650,7 @@ describe('LEADER_STANDING_JOB — steer-don\'t-dispatch + completion mandate (P-
 // moment the caller becomes a leader, so the directive rides the result — an AUTO-off leader
 // parks at its ask-first posture while its fleet runs unsupervised (the ornith 9980 run).
 describe('LEADER_AUTO_MODE_DIRECTIVE — leading a fleet auto-enters AUTO mode', () => {
-  it('declares AUTO mode ON now, for the rest of the session — act-don\'t-ask', () => {
+  it("declares AUTO mode ON now, for the rest of the session — act-don't-ask", () => {
     expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/AUTO MODE/);
     expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/effective NOW/i);
     expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/rest of your session/i);
@@ -639,7 +660,7 @@ describe('LEADER_AUTO_MODE_DIRECTIVE — leading a fleet auto-enters AUTO mode',
     expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/notice, not a question/i);
   });
 
-  it('leads INTO the standing-job list (it renders as that list\'s header line)', () => {
+  it("leads INTO the standing-job list (it renders as that list's header line)", () => {
     expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/standing job each cycle:$/);
   });
 });
@@ -1022,7 +1043,9 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       {} as never,
     );
     const payload = JSON.parse((res as any).content[0].text);
-    expect(payload.message).toMatch(/Fleet `refire-fleet` was already launched — 3 members opened \d+s ago \(possibly by this very session\)\./);
+    expect(payload.message).toMatch(
+      /Fleet `refire-fleet` was already launched — 3 members opened \d+s ago \(possibly by this very session\)\./,
+    );
     expect(payload.message).toContain(
       'You ARE the leader; do NOT call fleet:launch-on-plan again or fleet:take-leadership for this fleet — re-call only to add another wave once the current members have drained.',
     );
@@ -1242,7 +1265,12 @@ describe('fleet:launch-on-plan handler — overrideCapacityClamp arg threads thr
     expect(payload.capacitySuppressed).toBe(true);
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     // The clamp recommended 0 and was NOT overridden.
-    expect(payload.capacityClamp).toMatchObject({ openCount: 0, clamped: true, overridden: false, recommendedOpenCount: 0 });
+    expect(payload.capacityClamp).toMatchObject({
+      openCount: 0,
+      clamped: true,
+      overridden: false,
+      recommendedOpenCount: 0,
+    });
   });
 
   it('WITH overrideCapacityClamp:true: all 4 members launch despite healthyAccounts:0, and the override is legible', async () => {

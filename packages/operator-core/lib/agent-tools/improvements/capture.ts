@@ -40,7 +40,9 @@ const observationRatingsSchema = z.record(
     evidence: z
       .string()
       .min(1)
-      .describe('MANDATORY concrete evidence backing the rating — a metric, a query result, a reference (a rating without evidence is rejected)'),
+      .describe(
+        'MANDATORY concrete evidence backing the rating — a metric, a query result, a reference (a rating without evidence is rejected)',
+      ),
     suggestion: z
       .string()
       .min(1)
@@ -57,8 +59,10 @@ export default defineTool({
     'Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. An su kind=feature filing also gets a REPORT-ONLY novelty pre-check (`priorArt[]`, incl. already-tried-and-failed priors) — never blocks. Pass `paths` (files involved) to feed the protected-path gate. lane:"observation" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).',
   guidance: {
     when: 'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation) — filing is mandatory, not a judgment call: file (kind:bug, evidence in body) even with no fix and even if it self-recovered; only fix-now-vs-leave-filed is the judgment call. Also DX/tooling/code friction out of scope. Include `paths` — the auto-implement risk gate reads them.',
-    notWhen: 'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.',
-    chaining: 'improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them.',
+    notWhen:
+      'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.',
+    chaining:
+      'improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them.',
     seeAlso: [
       'improvements:digest (triage the backlog this lands in)',
       'work_items:create (a problem in a MANAGED harness, not papercusp itself)',
@@ -84,146 +88,223 @@ export default defineTool({
   // change-work — see capture-coerce.ts for the full contract.
   args: z.preprocess(
     coerceCaptureArgs,
-    z.object({
-    title: hardText(LIMITS.SHORT_TITLE).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
-    kind: z.enum(['bug', 'change', 'feature']).optional().describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated). Required for an improvement; ignored for lane:observation (always stored as a non-bug nit). Default change.'),
-    body: hardText(LIMITS.CONTENT).optional().describe('repro / context / the correct-state, especially for a bug'),
-    severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
-    subTopic: z.string().min(1).max(40).optional().describe('optional sub-area topic, e.g. coord-dx, db-tooling'),
-    scope: z.string().max(80).optional().describe("'operator' (default) or 'harness:<slug>'"),
-    // EI-10943: was `z.string().max(120)` — a HARD reject. Overrunning it bounced the
-    // WHOLE capture (the finding is lost, and the agent gets the entire args schema
-    // dumped back at it) over a provenance LABEL the tool only stores and echoes, into
-    // an unbounded `text` column. Soft-capped: truncate + warn, never reject. The clamp
-    // is handler-side, NOT a zod .transform() — a transform is unrepresentable in JSON
-    // Schema and crashes z.toJSONSchema for the whole catalog (see limits.ts).
-    foundDuring: softText(LIMITS.LABEL)
-      .optional()
-      .describe(
-        `what you were doing when you found this (a plan slug, a task, "the X audit"). ` +
-          `Free text — truncated to ${LIMITS.LABEL} chars with a warning if longer, never rejected.`,
-      ),
-    paths: z.array(z.string().min(1).max(300)).max(20).optional().describe('repo-relative file paths the improvement touches, when known — feeds the protected-path gate'),
-    notifyAgents: z
-      .array(z.string().min(1))
-      .max(8)
-      .optional()
-      .describe(
-        "@-mention SPECIFIC agents: ownerId prefixes / handles (resolve via coord:presence). Each is SUBSCRIBED to the captured item (gets every future update) AND pinged now, pointing at it — a DIRECTED handoff to a known owner. Distinct from the auto-topic broadcast (which reaches whoever subscribed to the area) and from claiming. Ignored for lane:observation. Use when you know exactly who should see/own this.",
-      ),
-    force: z.boolean().optional().describe('file even if a likely duplicate exists (default false → search-first declines)'),
-    checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
-    origin: z.enum(['organic', 'drill', 'replay', 'shadow']).optional().describe('signal provenance (frontier P-002) — default organic. ONLY a frontier loop passes non-organic (vaccination drill, replay counterfactual, shadow ablation); synthetic rows stay out of organic learners'),
-    lane: z.enum(['improvement', 'observation']).optional().describe("'observation' files a PRE-IDEA turn-end reflection into the SEPARATE observation lane (D-005) — it never enters the work queue/triage/auto-implement; only Blender's corpus-digest + the Observations pane read it. Default 'improvement'."),
-    // EI-12176 compatibility aliases. Older generated guidance advertised these at
-    // top level. Declaring + normalising them prevents tools:invoke's permissive
-    // envelope from silently stripping a scorecard while keeping observation.* as
-    // the canonical shape shown to new callers.
-    rubricRef: z
-      .string()
-      .max(120)
-      .optional()
-      .describe('compatibility alias for observation.rubricRef; prefer observation:{ rubricRef, ratings }'),
-    ratings: observationRatingsSchema
-      .optional()
-      .describe('compatibility alias for observation.ratings; prefer observation:{ rubricRef, ratings }'),
-    observation: z
+    z
       .object({
-        kind: z.enum(['friction', 'workaround', 'gap', 'surprise', 'reinforce']).optional(),
-        scope: z.enum(['self', 'role', 'harness', 'papercusp']).optional(),
-        confidence: z.enum(['low', 'med', 'high']).optional(),
-        refs: z.array(z.string().max(200)).max(12).optional().describe('attribution: tool:/file:/WI- refs grounding the observation'),
-        // ── Structured-observation v2 (rubric-driven-observations-2026-06-20 P-001 / D-003).
-        // Converges the source-hive tag (workspace-scoped-coordination P-001) + rubric
-        // grading (this plan) into ONE coherent extension. All optional — free-text
-        // observations stay first-class.
-        sourceHive: z.string().max(120).optional().describe('the pot the observation came FROM — AUTO-DERIVED from ctx (the agent harness/pot) when omitted; explicit callers (Kettle/Blender) may set it'),
-        targetHive: z.string().max(120).optional().describe('optional: the pot the observation is ABOUT (a cross-pot observation)'),
-        rubricRef: z.string().max(120).optional().describe("a rubrics.rubric_id this observation grades against (e.g. 'pot-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it"),
+        title: hardText(LIMITS.SHORT_TITLE).describe(
+          'one-line summary (do NOT include a [kind] prefix — pass kind separately)',
+        ),
+        kind: z
+          .enum(['bug', 'change', 'feature'])
+          .optional()
+          .describe(
+            'bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated). Required for an improvement; ignored for lane:observation (always stored as a non-bug nit). Default change.',
+          ),
+        body: hardText(LIMITS.CONTENT).optional().describe('repro / context / the correct-state, especially for a bug'),
+        severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
+        subTopic: z.string().min(1).max(40).optional().describe('optional sub-area topic, e.g. coord-dx, db-tooling'),
+        scope: z.string().max(80).optional().describe("'operator' (default) or 'harness:<slug>'"),
+        // EI-10943: was `z.string().max(120)` — a HARD reject. Overrunning it bounced the
+        // WHOLE capture (the finding is lost, and the agent gets the entire args schema
+        // dumped back at it) over a provenance LABEL the tool only stores and echoes, into
+        // an unbounded `text` column. Soft-capped: truncate + warn, never reject. The clamp
+        // is handler-side, NOT a zod .transform() — a transform is unrepresentable in JSON
+        // Schema and crashes z.toJSONSchema for the whole catalog (see limits.ts).
+        foundDuring: softText(LIMITS.LABEL)
+          .optional()
+          .describe(
+            `what you were doing when you found this (a plan slug, a task, "the X audit"). ` +
+              `Free text — truncated to ${LIMITS.LABEL} chars with a warning if longer, never rejected.`,
+          ),
+        paths: z
+          .array(z.string().min(1).max(300))
+          .max(20)
+          .optional()
+          .describe('repo-relative file paths the improvement touches, when known — feeds the protected-path gate'),
+        notifyAgents: z
+          .array(z.string().min(1))
+          .max(8)
+          .optional()
+          .describe(
+            '@-mention SPECIFIC agents: ownerId prefixes / handles (resolve via coord:presence). Each is SUBSCRIBED to the captured item (gets every future update) AND pinged now, pointing at it — a DIRECTED handoff to a known owner. Distinct from the auto-topic broadcast (which reaches whoever subscribed to the area) and from claiming. Ignored for lane:observation. Use when you know exactly who should see/own this.',
+          ),
+        force: z
+          .boolean()
+          .optional()
+          .describe('file even if a likely duplicate exists (default false → search-first declines)'),
+        checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
+        origin: z
+          .enum(['organic', 'drill', 'replay', 'shadow'])
+          .optional()
+          .describe(
+            'signal provenance (frontier P-002) — default organic. ONLY a frontier loop passes non-organic (vaccination drill, replay counterfactual, shadow ablation); synthetic rows stay out of organic learners',
+          ),
+        lane: z
+          .enum(['improvement', 'observation'])
+          .optional()
+          .describe(
+            "'observation' files a PRE-IDEA turn-end reflection into the SEPARATE observation lane (D-005) — it never enters the work queue/triage/auto-implement; only Blender's corpus-digest + the Observations pane read it. Default 'improvement'.",
+          ),
+        // EI-12176 compatibility aliases. Older generated guidance advertised these at
+        // top level. Declaring + normalising them prevents tools:invoke's permissive
+        // envelope from silently stripping a scorecard while keeping observation.* as
+        // the canonical shape shown to new callers.
+        rubricRef: z
+          .string()
+          .max(120)
+          .optional()
+          .describe('compatibility alias for observation.rubricRef; prefer observation:{ rubricRef, ratings }'),
         ratings: observationRatingsSchema
           .optional()
-          .describe('per-criterion ratings against rubricRef, KEYED by rubric criterion `key` (a scorecard: one rating per criterion). evidence is mandatory on every entry'),
-        // rubric-system-improvements-2026-07-12 P-002: the scoped-drill shorthand.
-        // A targeted run exercises a handful of a rubric's criteria; the completeness
-        // gate still (rightly) demands every key, which day-one produced ~13 hand-written
-        // boilerplate unknowns per scorecard. Each listed key expands server-side to
-        // { rating:'unknown', evidence:'idle: not exercised by this run.' } — the idle:
-        // form the staleness calc excludes. Explicit ratings always win; the key is
-        // stripped before storage so the persisted payload stays pure ratings.
-        notExercised: z
-          .array(z.string().min(1))
-          .max(64)
-          .optional()
-          .describe(
-            "criterion keys this run did NOT exercise — each expands to { rating:'unknown', evidence:'idle: not exercised by this run.' } so a scoped drill passes the completeness gate without hand-written boilerplate (explicit ratings win)",
-          ),
-        // WI-3594 (scorecard→improvement flow): a GRADE filing (rubricRef+ratings) often
-        // identifies a concrete follow-up — link it AT FILE TIME instead of a separate
-        // work_items:link round-trip later (which is easy to forget, silently orphaning the
-        // scorecard from the work it motivated). Surfaced in ScorecardDetail's UI (scorecards.list
-        // linkedItems). Optional — a scorecard with nothing concrete to link stays unlinked.
-        linkTo: z
-          .array(
-            z.object({
-              targetId: z.string().min(1).max(120).describe('the work-item id (WI-/F-/EI-…) this scorecard relates to'),
-              rel: z.enum(['relates', 'blocks', 'duplicates', 'fixes', 'revises']).optional().describe("default 'relates'; use 'revises' when this new filing incorporates feedback on the target"),
-              targetHarness: z.string().max(80).optional().describe('harness for a feature targetId (disambiguation)'),
-            }),
-          )
-          .max(5)
-          .optional()
-          .describe("link this filing to one or more existing work-items at file time (e.g. a GRADE follow-up, or rel:'revises' for a feedback-driven revision) — best-effort, never fails the capture"),
-      })
-      // plan-templates-and-rubric-v2 P-012 (strict/fail-loud): reject UNKNOWN observation keys
-      // LOUDLY instead of silently STRIPPING them. A silent strip dropped data live (su-2a0b4: an
-      // Overwatch scorecard emitted against the not-yet-deployed schema persisted scope-only with no
-      // error, corrupting the trend). A schema-evolution / deploy-timing mismatch now surfaces as a
-      // named-key validation error at arg-parse instead of vanishing.
-      .strict()
-      .optional()
-      .describe('structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body). Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.'),
-    // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
-    // the ONE schema bump — the full shape is declared here so the tool contract never
-    // churns again; P-002 stamps `lens` on the ledger row, P-007 persists the whole
-    // declared object onto the created item's payload (payload.ideation) for the
-    // triage/learning read). Enrichment only, never a gate (D-005): absence changes
-    // nothing about the capture.
-    ideation: z
-      .object({
-        lens: z
-          .enum([...SU_IDEATION_LENSES] as [SuIdeationLens, ...SuIdeationLens[]])
-          .optional()
-          .describe(
-            "the generative stance that produced this idea — Scout's four creative lenses (analogical / first-principles / reframing / constraint-removal) + the su stances (risk-first = de-risk the riskiest assumption; user-value = backward from felt owner/user value; cost-leverage = small change, big recurring cost). Declaring it earns per-lens outcome feedback on YOUR ideas (P-004); omitted = recorded under the 'su-ideate' sentinel (no per-lens learning)",
-          ),
-        bet: z.string().max(2000).optional().describe('the bet — the concrete upside if the idea pans out (persisted to the created item payload, payload.ideation)'),
-        // EI-10607: the GROUNDING leg. Without it the su-ideate rail could not write
-        // addresses_pattern_refs at all (no su-reachable verb accepted them — only Scout's
-        // internal router did), so observationsImpact.ideasGrounded/shipped were pinned at 0
-        // by construction: 122 su ideas, 0 grounded, against Scout's 24/24. The reader and the
-        // ledger column had been waiting for a writer since P-021 shipped.
-        addressesPatternRefs: z
-          .array(z.string().min(1).max(200))
-          .max(10)
-          .optional()
-          .describe(
-            "the digest meta-pattern refs this idea GROUNDS ON — the observation→pattern→idea→shipped arc is joined on this field, so an idea filed without it can never show up as grounded in anyone's observationsImpact. You already have the refs: they come back from blender:ideation-feedback as observationsImpact.patterns[].ref (e.g. 'wi:EI-10587'). Pass the pattern(s) your pass actually built on",
-          ),
-        cheapExperiment: z
+          .describe('compatibility alias for observation.ratings; prefer observation:{ rubricRef, ratings }'),
+        observation: z
           .object({
-            hypothesis: z.string().min(1).max(2000).describe('what we believe will be true if the idea has merit'),
-            method: z.string().min(1).max(2000).describe('the cheap first test (what to run / build / measure)'),
-            falsifiableSignal: z.string().min(1).max(2000).describe('the observable that would prove the hypothesis WRONG'),
+            kind: z.enum(['friction', 'workaround', 'gap', 'surprise', 'reinforce']).optional(),
+            scope: z.enum(['self', 'role', 'harness', 'papercusp']).optional(),
+            confidence: z.enum(['low', 'med', 'high']).optional(),
+            refs: z
+              .array(z.string().max(200))
+              .max(12)
+              .optional()
+              .describe('attribution: tool:/file:/WI- refs grounding the observation'),
+            // ── Structured-observation v2 (rubric-driven-observations-2026-06-20 P-001 / D-003).
+            // Converges the source-hive tag (workspace-scoped-coordination P-001) + rubric
+            // grading (this plan) into ONE coherent extension. All optional — free-text
+            // observations stay first-class.
+            sourceHive: z
+              .string()
+              .max(120)
+              .optional()
+              .describe(
+                'the pot the observation came FROM — AUTO-DERIVED from ctx (the agent harness/pot) when omitted; explicit callers (Kettle/Blender) may set it',
+              ),
+            targetHive: z
+              .string()
+              .max(120)
+              .optional()
+              .describe('optional: the pot the observation is ABOUT (a cross-pot observation)'),
+            rubricRef: z
+              .string()
+              .max(120)
+              .optional()
+              .describe(
+                "a rubrics.rubric_id this observation grades against (e.g. 'pot-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it",
+              ),
+            ratings: observationRatingsSchema
+              .optional()
+              .describe(
+                'per-criterion ratings against rubricRef, KEYED by rubric criterion `key` (a scorecard: one rating per criterion). evidence is mandatory on every entry',
+              ),
+            // rubric-system-improvements-2026-07-12 P-002: the scoped-drill shorthand.
+            // A targeted run exercises a handful of a rubric's criteria; the completeness
+            // gate still (rightly) demands every key, which day-one produced ~13 hand-written
+            // boilerplate unknowns per scorecard. Each listed key expands server-side to
+            // { rating:'unknown', evidence:'idle: not exercised by this run.' } — the idle:
+            // form the staleness calc excludes. Explicit ratings always win; the key is
+            // stripped before storage so the persisted payload stays pure ratings.
+            notExercised: z
+              .array(z.string().min(1))
+              .max(64)
+              .optional()
+              .describe(
+                "criterion keys this run did NOT exercise — each expands to { rating:'unknown', evidence:'idle: not exercised by this run.' } so a scoped drill passes the completeness gate without hand-written boilerplate (explicit ratings win)",
+              ),
+            // WI-3594 (scorecard→improvement flow): a GRADE filing (rubricRef+ratings) often
+            // identifies a concrete follow-up — link it AT FILE TIME instead of a separate
+            // work_items:link round-trip later (which is easy to forget, silently orphaning the
+            // scorecard from the work it motivated). Surfaced in ScorecardDetail's UI (scorecards.list
+            // linkedItems). Optional — a scorecard with nothing concrete to link stays unlinked.
+            linkTo: z
+              .array(
+                z.object({
+                  targetId: z
+                    .string()
+                    .min(1)
+                    .max(120)
+                    .describe('the work-item id (WI-/F-/EI-…) this scorecard relates to'),
+                  rel: z
+                    .enum(['relates', 'blocks', 'duplicates', 'fixes', 'revises'])
+                    .optional()
+                    .describe(
+                      "default 'relates'; use 'revises' when this new filing incorporates feedback on the target",
+                    ),
+                  targetHarness: z
+                    .string()
+                    .max(80)
+                    .optional()
+                    .describe('harness for a feature targetId (disambiguation)'),
+                }),
+              )
+              .max(5)
+              .optional()
+              .describe(
+                "link this filing to one or more existing work-items at file time (e.g. a GRADE follow-up, or rel:'revises' for a feedback-driven revision) — best-effort, never fails the capture",
+              ),
           })
+          // plan-templates-and-rubric-v2 P-012 (strict/fail-loud): reject UNKNOWN observation keys
+          // LOUDLY instead of silently STRIPPING them. A silent strip dropped data live (su-2a0b4: an
+          // Overwatch scorecard emitted against the not-yet-deployed schema persisted scope-only with no
+          // error, corrupting the trend). A schema-evolution / deploy-timing mismatch now surfaces as a
+          // named-key validation error at arg-parse instead of vanishing.
+          .strict()
           .optional()
-          .describe('the cheap falsifiable first experiment (ScoutExperiment shape, D-006 bettable-not-clever; persisted to payload.ideation — a COMPLETE one makes the idea machine-checkably bettable and ranks it first in triage)'),
+          .describe(
+            'structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body). Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.',
+          ),
+        // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
+        // the ONE schema bump — the full shape is declared here so the tool contract never
+        // churns again; P-002 stamps `lens` on the ledger row, P-007 persists the whole
+        // declared object onto the created item's payload (payload.ideation) for the
+        // triage/learning read). Enrichment only, never a gate (D-005): absence changes
+        // nothing about the capture.
+        ideation: z
+          .object({
+            lens: z
+              .enum([...SU_IDEATION_LENSES] as [SuIdeationLens, ...SuIdeationLens[]])
+              .optional()
+              .describe(
+                "the generative stance that produced this idea — Scout's four creative lenses (analogical / first-principles / reframing / constraint-removal) + the su stances (risk-first = de-risk the riskiest assumption; user-value = backward from felt owner/user value; cost-leverage = small change, big recurring cost). Declaring it earns per-lens outcome feedback on YOUR ideas (P-004); omitted = recorded under the 'su-ideate' sentinel (no per-lens learning)",
+              ),
+            bet: z
+              .string()
+              .max(2000)
+              .optional()
+              .describe(
+                'the bet — the concrete upside if the idea pans out (persisted to the created item payload, payload.ideation)',
+              ),
+            // EI-10607: the GROUNDING leg. Without it the su-ideate rail could not write
+            // addresses_pattern_refs at all (no su-reachable verb accepted them — only Scout's
+            // internal router did), so observationsImpact.ideasGrounded/shipped were pinned at 0
+            // by construction: 122 su ideas, 0 grounded, against Scout's 24/24. The reader and the
+            // ledger column had been waiting for a writer since P-021 shipped.
+            addressesPatternRefs: z
+              .array(z.string().min(1).max(200))
+              .max(10)
+              .optional()
+              .describe(
+                "the digest meta-pattern refs this idea GROUNDS ON — the observation→pattern→idea→shipped arc is joined on this field, so an idea filed without it can never show up as grounded in anyone's observationsImpact. You already have the refs: they come back from blender:ideation-feedback as observationsImpact.patterns[].ref (e.g. 'wi:EI-10587'). Pass the pattern(s) your pass actually built on",
+              ),
+            cheapExperiment: z
+              .object({
+                hypothesis: z.string().min(1).max(2000).describe('what we believe will be true if the idea has merit'),
+                method: z.string().min(1).max(2000).describe('the cheap first test (what to run / build / measure)'),
+                falsifiableSignal: z
+                  .string()
+                  .min(1)
+                  .max(2000)
+                  .describe('the observable that would prove the hypothesis WRONG'),
+              })
+              .optional()
+              .describe(
+                'the cheap falsifiable first experiment (ScoutExperiment shape, D-006 bettable-not-clever; persisted to payload.ideation — a COMPLETE one makes the idea machine-checkably bettable and ranks it first in triage)',
+              ),
+          })
+          .strict()
+          .optional()
+          .describe(
+            "IDEATE-pass provenance for an su session's kind:'feature' origination — stamps the routed-idea ledger row (origin='su-ideate') with your declared lens so grade→outcome→feedback learning attributes back to it. Never a gate: purely additive, ignored for lane:observation / non-feature kinds.",
+          ),
       })
-      .strict()
-      .optional()
-      .describe(
-        "IDEATE-pass provenance for an su session's kind:'feature' origination — stamps the routed-idea ledger row (origin='su-ideate') with your declared lens so grade→outcome→feedback learning attributes back to it. Never a gate: purely additive, ignored for lane:observation / non-feature kinds.",
-      ),
-    }).strict(),
+      .strict(),
   ),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
@@ -277,9 +358,7 @@ export default defineTool({
               : undefined;
           return {
             ...rest,
-            ...(expanded && Object.keys(expanded).length > 0
-              ? { ratings: { ...expanded, ...rest.ratings } }
-              : {}),
+            ...(expanded && Object.keys(expanded).length > 0 ? { ratings: { ...expanded, ...rest.ratings } } : {}),
             sourceHive: rest.sourceHive ?? ctxHarness,
           };
         })()
@@ -292,9 +371,7 @@ export default defineTool({
     // different generations. Best-effort by construction (both legs degrade to null) —
     // the stamp must never fail the capture it rides on.
     const gradedGeneration =
-      observationBase?.rubricRef && observationBase.ratings
-        ? await readRunningGeneration().catch(() => null)
-        : null;
+      observationBase?.rubricRef && observationBase.ratings ? await readRunningGeneration().catch(() => null) : null;
     const observation = observationBase
       ? { ...observationBase, ...(gradedGeneration ? { gradedGeneration } : {}) }
       : undefined;
@@ -315,8 +392,7 @@ export default defineTool({
     // EI-10943: truncate-and-warn. The capture always lands; the agent is TOLD what
     // was trimmed rather than losing the finding to a validation bounce.
     const foundDuring = clampText(args.foundDuring, LIMITS.LABEL);
-    const foundDuringTruncated =
-      typeof args.foundDuring === 'string' && args.foundDuring.length > LIMITS.LABEL;
+    const foundDuringTruncated = typeof args.foundDuring === 'string' && args.foundDuring.length > LIMITS.LABEL;
     try {
       const result = await captureImprovement({
         title: args.title,
@@ -348,7 +424,13 @@ export default defineTool({
       // weight learning (the lens readers filter origin='scout'). Fires only for an su caller's
       // freshly-created kind:'feature' (not the watchdog, not an observation, not a dedup-decline).
       // Fully guarded + best-effort: a ledger hiccup must NEVER fail the capture the user asked for.
-      if (source === 'su' && args.kind === 'feature' && args.lane !== 'observation' && captured.created && captured.issue?.id) {
+      if (
+        source === 'su' &&
+        args.kind === 'feature' &&
+        args.lane !== 'observation' &&
+        captured.created &&
+        captured.issue?.id
+      ) {
         const featureId = captured.issue.id;
         const ledgerHarness =
           ctxHarness ?? (args.scope?.startsWith('harness:') ? args.scope.slice('harness:'.length) : 'papercusp');
@@ -414,9 +496,7 @@ export default defineTool({
       // (audit find 2026-07-11, first surfaced on the EI-9694 filing). [] semantics
       // preserved: checked-nothing-similar.
       const selfId = captured.issue?.id;
-      const priorArt = selfId
-        ? priorArtRaw?.filter((p) => p.ref !== `wi:${selfId}` && p.ref !== selfId)
-        : priorArtRaw;
+      const priorArt = selfId ? priorArtRaw?.filter((p) => p.ref !== `wi:${selfId}` && p.ref !== selfId) : priorArtRaw;
       const notified =
         args.notifyAgents?.length && captured.created && captured.issue?.id && args.lane !== 'observation'
           ? await notifyAgents(id, {
