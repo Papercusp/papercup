@@ -456,6 +456,89 @@ function computeDeployLatency(rows: PipelineEventRow[]): DeployLatencyMetrics {
   };
 }
 
+/**
+ * Context-burn telemetry (P-008), extracted (EI-12456) so its one load-bearing
+ * subtlety — event_wake_deliveries is a single flat plane pinned to
+ * DEFAULT_COORD_WORKSPACE regardless of the firing pot's real workspace, while
+ * tool_invocations correctly carries the pot's own workspaceId — is isolated
+ * behind a narrow, independently-testable seam instead of buried inside
+ * readPotSoakReport's 9-query Promise.all. See the WakeBurnAggRow query's
+ * comment below for the full root-cause story (WI-3575 / migration 361).
+ */
+export async function readContextBurnMetrics(
+  sql: Sql,
+  opts: { workspaceId: string; windowHours: number },
+): Promise<ContextBurnMetrics> {
+  const { workspaceId, windowHours } = opts;
+  const [wakeBurnRows, compactionRows] = await Promise.all([
+    // EI-12456: this table is NOT pot-workspace-scoped — WI-3575 made events:await
+    // a single flat plane, so every row lands under DEFAULT_COORD_WORKSPACE
+    // ('default') regardless of which pot's loop fired it (see
+    // inbox-wake-arm.ts's deprecated `workspaceId` param docs + the same
+    // DEFAULT_COORD_WORKSPACE fold-in in issues-engineer.ts). Filtering on this
+    // pot's `workspaceId` (activeWorkspaceId(), e.g. 'papercusp-workspace')
+    // instead of DEFAULT_COORD_WORKSPACE matched ZERO rows for every non-'default'
+    // pot — loop:status showed real fires while this metric silently read
+    // 0/null, making the public-readiness context-overhead gate blind.
+    sql<WakeBurnAggRow[]>`
+      SELECT count(*)::int AS loop_wakes,
+             round(avg(length(summary)))::int AS mean_wake_chars,
+             max(length(summary))::int AS max_wake_chars
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+         AND event_key LIKE 'coord:inbox-wake:%'
+         AND created_at >= now() - make_interval(hours => ${windowHours})
+    `,
+    // Requested compactions per owner + the post-compaction error markers: failed
+    // calls matching the hallucinated-schema class within the attribution window
+    // of the SAME owner's compaction. tool_invocations DOES carry the real
+    // workspaceId correctly (unlike event_wake_deliveries above) — no fold-in
+    // needed here.
+    sql<CompactionAggRow[]>`
+      WITH compactions AS (
+        SELECT coord_owner_id AS owner, invoked_at
+          FROM harness_shared.tool_invocations
+         WHERE workspace_id = ${workspaceId}
+           AND tool_name = 'session:request-compaction'
+           AND status = 'ok'
+           AND invoked_at >= now() - make_interval(hours => ${windowHours})
+      )
+      SELECT (SELECT count(*) FROM compactions)::int AS compactions,
+             (SELECT count(DISTINCT owner) FROM compactions WHERE owner IS NOT NULL)::int AS sessions,
+             (SELECT count(*)
+                FROM harness_shared.tool_invocations ti
+               WHERE ti.workspace_id = ${workspaceId}
+                 AND ti.invoked_at >= now() - make_interval(hours => ${windowHours})
+                 AND ti.status <> 'ok'
+                 AND ti.error_message ~* ${POST_COMPACTION_ERROR_MARKER_REGEX}
+                 AND EXISTS (
+                   SELECT 1
+                     FROM compactions c
+                    WHERE c.owner IS NOT NULL
+                      AND c.owner = ti.coord_owner_id
+                      AND ti.invoked_at >= c.invoked_at
+                      AND ti.invoked_at < c.invoked_at + make_interval(mins => ${POST_COMPACTION_MARKER_WINDOW_MIN})
+                 ))::int AS post_markers
+    `,
+  ]);
+
+  const wakeBurn = wakeBurnRows[0] ?? { loop_wakes: 0, mean_wake_chars: null, max_wake_chars: null };
+  const compaction = compactionRows[0] ?? { compactions: 0, sessions: 0, post_markers: 0 };
+  const meanWakeChars = wakeBurn.mean_wake_chars != null ? Number(wakeBurn.mean_wake_chars) : null;
+  const sessionsCompacting = Number(compaction.sessions ?? 0);
+
+  return {
+    loopWakes: Number(wakeBurn.loop_wakes ?? 0),
+    meanWakeChars,
+    maxWakeChars: wakeBurn.max_wake_chars != null ? Number(wakeBurn.max_wake_chars) : null,
+    estMeanWakeTokens: meanWakeChars != null ? Math.round(meanWakeChars / 4) : null,
+    requestedCompactions: Number(compaction.compactions ?? 0),
+    sessionsCompacting,
+    compactionsPerSession: sessionsCompacting > 0 ? Number(compaction.compactions ?? 0) / sessionsCompacting : null,
+    postCompactionErrorMarkers: Number(compaction.post_markers ?? 0),
+  };
+}
+
 export async function readPotSoakReport(
   potSlug: string,
   opts: { windowHours?: number; sql?: Sql } = {},
@@ -474,8 +557,7 @@ export async function readPotSoakReport(
     escalationRows,
     pipelineAggRows,
     pipelineEventRows,
-    wakeBurnRows,
-    compactionRows,
+    contextBurn,
     placeableCount,
     quarantinedCount,
   ] = await Promise.all([
@@ -572,54 +654,9 @@ export async function readPotSoakReport(
          )
        ORDER BY created_at ASC
     `,
-    // Context burn (P-008): the wake meter (event_wake_deliveries, D-007) carries
-    // every queued loop/coord wake's injected summary. EI-12456: this table is NOT
-    // pot-workspace-scoped — WI-3575 made events:await a single flat plane, so every
-    // row lands under DEFAULT_COORD_WORKSPACE ('default') regardless of which pot's
-    // loop fired it (see inbox-wake-arm.ts's deprecated `workspaceId` param docs +
-    // the same DEFAULT_COORD_WORKSPACE fold-in in issues-engineer.ts). Filtering on
-    // this pot's `workspaceId` (activeWorkspaceId(), e.g. 'papercusp-workspace')
-    // instead of DEFAULT_COORD_WORKSPACE matched ZERO rows for every non-'default'
-    // pot — loop:status showed real fires while this metric silently read 0/null,
-    // making the public-readiness context-overhead gate blind.
-    sql<WakeBurnAggRow[]>`
-      SELECT count(*)::int AS loop_wakes,
-             round(avg(length(summary)))::int AS mean_wake_chars,
-             max(length(summary))::int AS max_wake_chars
-        FROM harness_shared.event_wake_deliveries
-       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
-         AND event_key LIKE 'coord:inbox-wake:%'
-         AND created_at >= now() - make_interval(hours => ${windowHours})
-    `,
-    // Requested compactions per owner + the post-compaction error markers: failed
-    // calls matching the hallucinated-schema class within the attribution window
-    // of the SAME owner's compaction.
-    sql<CompactionAggRow[]>`
-      WITH compactions AS (
-        SELECT coord_owner_id AS owner, invoked_at
-          FROM harness_shared.tool_invocations
-         WHERE workspace_id = ${workspaceId}
-           AND tool_name = 'session:request-compaction'
-           AND status = 'ok'
-           AND invoked_at >= now() - make_interval(hours => ${windowHours})
-      )
-      SELECT (SELECT count(*) FROM compactions)::int AS compactions,
-             (SELECT count(DISTINCT owner) FROM compactions WHERE owner IS NOT NULL)::int AS sessions,
-             (SELECT count(*)
-                FROM harness_shared.tool_invocations ti
-               WHERE ti.workspace_id = ${workspaceId}
-                 AND ti.invoked_at >= now() - make_interval(hours => ${windowHours})
-                 AND ti.status <> 'ok'
-                 AND ti.error_message ~* ${POST_COMPACTION_ERROR_MARKER_REGEX}
-                 AND EXISTS (
-                   SELECT 1
-                     FROM compactions c
-                    WHERE c.owner IS NOT NULL
-                      AND c.owner = ti.coord_owner_id
-                      AND ti.invoked_at >= c.invoked_at
-                      AND ti.invoked_at < c.invoked_at + make_interval(mins => ${POST_COMPACTION_MARKER_WINDOW_MIN})
-                 ))::int AS post_markers
-    `,
+    // Context burn (P-008), extracted to readContextBurnMetrics (EI-12456) — see
+    // its doc comment for the event_wake_deliveries single-flat-plane story.
+    readContextBurnMetrics(sql, { workspaceId, windowHours }),
     // The two halves of the frontier: what the pot MAY place, and what the admission
     // gate is withholding from it. Both, or the readiness gate cannot tell an idle
     // pot (nothing to do) from a deadlocked one (work it may never touch).
@@ -631,10 +668,6 @@ export async function readPotSoakReport(
   const escalation = escalationRows[0] ?? { open_now: 0, older_open_count: 0, newer_open_count: 0 };
   const pipeline = pipelineAggRows[0] ?? { green_total: 0, green_success: 0 };
   const deployLatency = computeDeployLatency(pipelineEventRows);
-  const wakeBurn = wakeBurnRows[0] ?? { loop_wakes: 0, mean_wake_chars: null, max_wake_chars: null };
-  const compaction = compactionRows[0] ?? { compactions: 0, sessions: 0, post_markers: 0 };
-  const meanWakeChars = wakeBurn.mean_wake_chars != null ? Number(wakeBurn.mean_wake_chars) : null;
-  const sessionsCompacting = Number(compaction.sessions ?? 0);
 
   return computeSoakReport({
     potSlug,
@@ -674,15 +707,6 @@ export async function readPotSoakReport(
           : null,
     },
     deployLatency,
-    contextBurn: {
-      loopWakes: Number(wakeBurn.loop_wakes ?? 0),
-      meanWakeChars,
-      maxWakeChars: wakeBurn.max_wake_chars != null ? Number(wakeBurn.max_wake_chars) : null,
-      estMeanWakeTokens: meanWakeChars != null ? Math.round(meanWakeChars / 4) : null,
-      requestedCompactions: Number(compaction.compactions ?? 0),
-      sessionsCompacting,
-      compactionsPerSession: sessionsCompacting > 0 ? Number(compaction.compactions ?? 0) / sessionsCompacting : null,
-      postCompactionErrorMarkers: Number(compaction.post_markers ?? 0),
-    },
+    contextBurn,
   });
 }
