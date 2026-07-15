@@ -17,6 +17,7 @@
  * lib/scheduler/get-next-for-bee-plan-lane-guard.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { createBranchedSqlMock } from '../testing/sql-mock';
 
 const { sqlMock } = vi.hoisted(() => ({
   sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
@@ -68,28 +69,58 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
   });
 
   it('fails closed when the bee already holds an active or parked claim (EI-11796)', async () => {
-    sqlMock.mockImplementation(async (strings: unknown) => {
-      // getActiveClaimsForBee (claim-spec-store.ts) selects `feature_id AS id,
-      // item_kind AS kind ... WHERE ... taken_by = ...` — countActiveClaimsForBee
-      // is just `.length` of those rows, so the guard cares about ROW COUNT, not
-      // any literal "active_claims" column/alias (there isn't one). Match on
-      // `taken_by` (unique to this query among the ones this loop issues) and
-      // return one row to simulate the bee already holding a claim.
-      const query = Array.isArray(strings) ? strings.join(' ') : '';
-      return query.includes('taken_by') ? [{ id: 'F-held', kind: 'feature' }] : [];
-    });
+    // EI-12141 (the durable fix for THIS bug's class — a hand-rolled `.includes()`
+    // matcher silently rotting to false-red/false-green on a query-shape refactor):
+    // an explicit branch per query getNextForBee's call chain actually issues, via
+    // the shared createBranchedSqlMock helper. Even with ignoreStoredSpec:true,
+    // getClaimSpecRecord still runs first (its per-bee row lookup, then — on a
+    // miss — a fleet-membership lookup) before getActiveClaimsForBee's `taken_by`
+    // query; all three are declared here so an unmatched query throws loudly
+    // instead of masquerading as an unrelated red/green, and assertAllMatched()
+    // below catches a branch going dead the moment a future refactor stops
+    // exercising it.
+    const branches = createBranchedSqlMock([
+      {
+        label: 'per-bee claim-spec lookup (cup_claim_specs) — none stored',
+        match: (q) => q.includes('FROM harness_shared.cup_claim_specs'),
+        respond: () => [],
+      },
+      {
+        label: 'fleet-membership lookup (fleet_membership_events) — no membership',
+        match: (q) => q.includes('FROM harness_shared.fleet_membership_events'),
+        respond: () => [],
+      },
+      {
+        // getActiveClaimsForBee (claim-spec-store.ts) selects `feature_id AS id,
+        // item_kind AS kind ... WHERE ... taken_by = ...` — countActiveClaimsForBee
+        // is just `.length` of those rows, so the guard cares about ROW COUNT, not
+        // any literal "active_claims" column/alias (there isn't one). Match on
+        // `taken_by` (unique to this query among the ones this loop issues) and
+        // return one row to simulate the bee already holding a claim.
+        label: 'active-claims-by-taken_by',
+        match: (q) => q.includes('taken_by'),
+        respond: () => [{ id: 'F-held', kind: 'feature' }],
+      },
+    ]);
+    sqlMock.mockImplementation(branches.handler);
 
     const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
 
     expect(res).toBeNull();
     expect(getNextWorkItemMock).not.toHaveBeenCalled();
+    branches.assertAllMatched();
   });
 
   it('honors an explicitly authored concurrency limit above one', async () => {
-    sqlMock.mockImplementation(async (strings: unknown) => {
-      const query = Array.isArray(strings) ? strings.join(' ') : '';
-      if (query.includes('SELECT spec, revision')) {
-        return [
+    // EI-12141: explicit branches (see the previous test's comment) instead of a
+    // hand-rolled `.includes()` chain — a per-bee spec row exists here, so
+    // getClaimSpecRecord returns on the FIRST query and never reaches the
+    // fleet-membership lookup (unlike the previous test).
+    const branches = createBranchedSqlMock([
+      {
+        label: 'per-bee claim-spec lookup (cup_claim_specs) — authored maxConcurrentClaims:2',
+        match: (q) => q.includes('FROM harness_shared.cup_claim_specs'),
+        respond: () => [
           {
             spec: {
               specVersion: '1.0',
@@ -104,12 +135,18 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
             updated_at: new Date().toISOString(),
             harness_slug: null,
           },
-        ];
-      }
-      // One held claim (< the spec's maxConcurrentClaims:2 authored above) — the
-      // guard should let this one through. See the row-shape note above.
-      return query.includes('taken_by') ? [{ id: 'F-held', kind: 'feature' }] : [];
-    });
+        ],
+      },
+      {
+        // One held claim (< the spec's maxConcurrentClaims:2 authored above) — the
+        // guard should let this one through. See the row-shape note in the
+        // previous test.
+        label: 'active-claims-by-taken_by',
+        match: (q) => q.includes('taken_by'),
+        respond: () => [{ id: 'F-held', kind: 'feature' }],
+      },
+    ]);
+    sqlMock.mockImplementation(branches.handler);
     getNextWorkItemMock.mockResolvedValueOnce(claimResult('F-parallel'));
     planItemLaneBlockReasonMock.mockResolvedValueOnce(null);
 
@@ -117,6 +154,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
 
     expect(res?.workItem.id).toBe('F-parallel');
     expect(getNextWorkItemMock).toHaveBeenCalledOnce();
+    branches.assertAllMatched();
   });
 
   it('serves the first claim straight through when its plan-item lane is clear', async () => {

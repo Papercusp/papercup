@@ -1,0 +1,144 @@
+/**
+ * A shared BRANCHED sql-mock for the `vi.mock('@papercusp/db-org', ...)` /
+ * `sqlMock.mockImplementation(...)` pattern used across ~375 test files in this
+ * package (EI-12141 — "test mock/prod query-shape drift silently red-pins a
+ * regression guard", class: silent gate-red).
+ *
+ * The hand-rolled version of this pattern looks like:
+ *
+ *   sqlMock.mockImplementation(async (strings) => {
+ *     const query = Array.isArray(strings) ? strings.join(' ') : '';
+ *     return query.includes('some_literal_substring') ? [{ ...fixture }] : [];
+ *   });
+ *
+ * That silently falls through to `[]` for ANY query that doesn't match the
+ * hardcoded substring — including one that used to match before the real query
+ * was refactored. The traced instance (EI-11796 / WI-4864): a query shape
+ * changed from a `COUNT(*) AS active_claims` aggregate to a row list, the old
+ * `.includes('active_claims')` matcher stopped matching anything, and the mock
+ * quietly returned `[]` for a query it was supposed to fake a held claim for —
+ * masquerading as an unrelated, hard-to-triage red instead of a loud "your mock
+ * doesn't cover this query anymore".
+ *
+ * `createBranchedSqlMock` replaces the ad-hoc `.includes()` chain with a small
+ * ordered list of labeled branches and TWO loud-failure guarantees a hand-rolled
+ * chain doesn't give you:
+ *
+ *   1. UNMATCHED QUERY throws immediately (naming the query text + every
+ *      declared branch label) instead of silently falling through to `[]` —
+ *      the false-red/false-green case above.
+ *   2. `assertAllMatched()` throws (naming the never-hit label(s)) when a query
+ *      shape refactor makes a declared branch permanently unreachable — the
+ *      DEAD-BRANCH case (the same drift caught from the other direction: the
+ *      branch's fixture is never exercised, so the test passes for the wrong
+ *      reason). Call it at the end of any test that cares its fixtures are
+ *      still live.
+ *
+ * Usage (replacing a hand-rolled `sqlMock.mockImplementation`):
+ *
+ *   const { sqlMock } = vi.hoisted(() => ({ sqlMock: vi.fn() }));
+ *   vi.mock('@papercusp/db-org', async (importOriginal) => ({
+ *     ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+ *     getOrgPg: () => ({ sql: sqlMock }),
+ *   }));
+ *
+ *   const branches = createBranchedSqlMock([
+ *     { label: 'held-claims', match: (q) => q.includes('taken_by'), respond: () => [{ id: 'F-held', kind: 'feature' }] },
+ *   ]);
+ *   sqlMock.mockImplementation(branches.handler);
+ *   // ... exercise the code under test ...
+ *   branches.assertAllMatched(); // optional — asserts every declared branch fired at least once
+ *
+ * A test that legitimately doesn't care about every query the code under test
+ * issues (it only needs ONE specific fixture; every other query can safely
+ * no-op) should say so EXPLICITLY — either pass `{ onUnmatched: 'empty' }`, or
+ * add a low-priority catch-all branch (`{ label: '...', match: () => true,
+ * respond: () => [] }`) as the LAST entry so the intent is visible in the
+ * branch list itself, not silently defaulted.
+ */
+
+export interface SqlMockBranch {
+  /** Short human label — surfaces in both failure modes' error messages. */
+  label: string;
+  /** Matched (in declaration order — first match wins) against the joined SQL template text. */
+  match: (queryText: string, args: unknown[]) => boolean;
+  /** Produces the mocked row set for a matching call. */
+  respond: (queryText: string, args: unknown[]) => unknown[] | Promise<unknown[]>;
+}
+
+export interface BranchedSqlMock {
+  /** Pass directly to `sqlMock.mockImplementation(branches.handler)`. */
+  handler: (...args: unknown[]) => Promise<unknown[]>;
+  /** Throws (naming the unreached label(s)) if any declared branch was never matched. */
+  assertAllMatched: () => void;
+  /** Clears hit-tracking (NOT the branch list) — call in beforeEach when reusing one mock across tests. */
+  resetHits: () => void;
+  /** True once every declared branch has matched at least one call. */
+  readonly allMatched: boolean;
+}
+
+export interface CreateBranchedSqlMockOptions {
+  /**
+   * What to do when a call matches no declared branch. Default `'throw'` — the
+   * whole point of this helper (a hand-rolled `.includes()` chain silently
+   * returns `[]` here, which is the exact EI-12141 failure class). Pass
+   * `'empty'` only for a deliberately-permissive test; prefer an explicit
+   * catch-all branch instead where practical so the intent is visible in the
+   * branch list.
+   */
+  onUnmatched?: 'throw' | 'empty';
+}
+
+function queryTextOf(strings: unknown): string {
+  return Array.isArray(strings) ? strings.join(' ') : String(strings ?? '');
+}
+
+export function createBranchedSqlMock(
+  branches: SqlMockBranch[],
+  options: CreateBranchedSqlMockOptions = {},
+): BranchedSqlMock {
+  if (branches.length === 0) {
+    throw new Error('createBranchedSqlMock: at least one branch is required');
+  }
+  const onUnmatched = options.onUnmatched ?? 'throw';
+  const hit = new Set<string>();
+
+  const handler = async (...args: unknown[]): Promise<unknown[]> => {
+    const queryText = queryTextOf(args[0]);
+    const branch = branches.find((b) => b.match(queryText, args));
+    if (!branch) {
+      if (onUnmatched === 'empty') return [];
+      const labels = branches.map((b) => `  - ${b.label}`).join('\n');
+      throw new Error(
+        `createBranchedSqlMock: no branch matched a query.\n` +
+          `Query text: ${queryText || '(empty)'}\n` +
+          `Declared branches:\n${labels}\n` +
+          `A real query shape changed (or a new query was issued that no branch covers) — this is the ` +
+          `EI-12141 failure class this helper exists to catch loudly instead of silently returning [] ` +
+          `and masquerading as an unrelated red/green. Add a branch for this query, or pass ` +
+          `{ onUnmatched: 'empty' } / add a catch-all branch if this test deliberately doesn't care.`,
+      );
+    }
+    hit.add(branch.label);
+    return await branch.respond(queryText, args);
+  };
+
+  return {
+    handler,
+    assertAllMatched: () => {
+      const unreached = branches.filter((b) => !hit.has(b.label)).map((b) => b.label);
+      if (unreached.length > 0) {
+        throw new Error(
+          `createBranchedSqlMock: ${unreached.length} branch(es) were never matched: ${unreached.join(', ')}.\n` +
+            `A declared branch no call ever reaches is either dead test setup or a sign the matcher no ` +
+            `longer lines up with the real query — the same query-shape-drift class this helper exists ` +
+            `to catch (EI-12141), just caught from the other direction.`,
+        );
+      }
+    },
+    resetHits: () => hit.clear(),
+    get allMatched() {
+      return branches.every((b) => hit.has(b.label));
+    },
+  };
+}
