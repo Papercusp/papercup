@@ -1,12 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import {
-  classifyScheduledWatchdogStatus,
-  type ScheduledWatchdogStatus,
-} from './status';
+import { describe, expect, it, vi } from 'vitest';
+import { classifyScheduledWatchdogStatus, readScheduledWatchdogStatus, type ScheduledWatchdogStatus } from './status';
 
-function base(
-  patch: Partial<Pick<ScheduledWatchdogStatus, 'config' | 'scheduler' | 'eligibility' | 'fire'>> = {},
-) {
+function base(patch: Partial<Pick<ScheduledWatchdogStatus, 'config' | 'scheduler' | 'eligibility' | 'fire'>> = {}) {
   return {
     id: 'su-ideate-ungraded' as const,
     scope: { workspaceId: 'ws', harnessSlug: 'pot' },
@@ -99,5 +94,67 @@ describe('classifyScheduledWatchdogStatus', () => {
         base({ fire: { count: 1, lastFireAt: '2026-07-18T00:01:00.000Z', lastReason: 'nudged' } as never }),
       ).effectiveState,
     ).toBe('healthy-fired');
+  });
+
+  it('uses the scheduler-persisted config when the API process environment differs', async () => {
+    vi.stubEnv('PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC', '604800');
+    const nowMs = Date.parse('2026-07-15T03:30:00.000Z');
+    const oldestMs = Date.parse('2026-07-13T03:18:10.000Z');
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push({ text, values });
+      if (text.includes('FROM dbos.operation_outputs')) {
+        return Promise.resolve([
+          {
+            output: JSON.stringify({
+              ranAtMs: nowMs - 1_000,
+              errorCount: 0,
+              config: {
+                enabled: true,
+                effectiveThresholdSec: 172_800,
+                overrideSource: 'environment',
+                overrideEnv: 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC',
+                rawOverride: '172800',
+                epochMs: 1_783_728_000_000,
+                batchCap: 10,
+              },
+            }),
+            operation_error: null,
+            completed_at_epoch_ms: nowMs - 1_000,
+            workflow_status: 'SUCCESS',
+            workflow_error: null,
+          },
+        ]);
+      }
+      if (text.includes('FROM harness_shared.scout_routed_ideas')) {
+        return Promise.resolve([{ pending_count: 1, eligible_count: 1, oldest_routed_at: oldestMs }]);
+      }
+      if (text.includes('FROM harness_shared.pot_watchdog_fires')) {
+        return Promise.resolve([{ fire_count: 0, last_fire_at: null, last_reason: null }]);
+      }
+      throw new Error(`unexpected SQL: ${text}`);
+    }) as never;
+
+    try {
+      const status = await readScheduledWatchdogStatus({
+        id: 'su-ideate-ungraded',
+        workspaceId: 'ws',
+        harnessSlug: 'pot',
+        nowMs,
+        sql,
+      });
+
+      expect(status.config).toMatchObject({
+        effectiveThresholdSec: 172_800,
+        overrideSource: 'environment',
+        rawOverride: '172800',
+      });
+      expect(status.eligibility.firstEligibleAt).toBe(new Date(oldestMs + 172_800_000).toISOString());
+      const eligibilityCall = calls.find((call) => call.text.includes('FROM harness_shared.scout_routed_ideas'));
+      expect(eligibilityCall?.values[0]).toBe(nowMs - 172_800_000);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

@@ -39,7 +39,12 @@ import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine } from '../harness/routines/claim';
 import { checkFireGate, recordFire } from '../autoloop';
 import { fireLoopWake } from '../harness/routines/loop-fire';
-import { getSystemAction, getSystemActionEntry, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
+import {
+  getSystemAction,
+  getSystemActionEntry,
+  SYSTEM_TARGET_PREFIX,
+  type SystemActionResult,
+} from '../harness/routines/system-actions';
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import { poolPressure, recordPoolShed, lastPoolProbeMs } from './pool-pressure';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
@@ -60,16 +65,18 @@ const operatorBase = operatorApiBase;
 // caller only logs as "[dbos] boot failed (non-fatal)" and swallows, silently
 // preventing DBOS.launch() (and therefore routinesTick itself) from ever arming.
 // See idempotent-register-workflow.ts's doc comment for the full incident story.
-const routinesQueue = idempotentWorkflowQueue(ROUTINES_QUEUE, () =>
-  new WorkflowQueue(ROUTINES_QUEUE, { concurrency: queueConcurrency(4) }),
+const routinesQueue = idempotentWorkflowQueue(
+  ROUTINES_QUEUE,
+  () => new WorkflowQueue(ROUTINES_QUEUE, { concurrency: queueConcurrency(4) }),
 );
 // Protected lane for critical QUICK routines (git-sync) — a saturated shared `routines` queue (long
 // routines holding every slot) must never starve fleet-wide persistence (the 2026-06-23 7h commit-freeze).
 // Low concurrency: git-sync fires are quick AND serializing them avoids git-index contention across the
 // per-hive git-sync routines. Instantiated at module load so DBOS listens on it; fires route here via
 // queueForRoutine(). Both names exported so a boot/deploy check can assert DBOS is listening on each.
-const routinesCriticalQueue = idempotentWorkflowQueue(ROUTINES_CRITICAL_QUEUE, () =>
-  new WorkflowQueue(ROUTINES_CRITICAL_QUEUE, { concurrency: queueConcurrency(2) }),
+const routinesCriticalQueue = idempotentWorkflowQueue(
+  ROUTINES_CRITICAL_QUEUE,
+  () => new WorkflowQueue(ROUTINES_CRITICAL_QUEUE, { concurrency: queueConcurrency(2) }),
 );
 export const ROUTINE_FIRE_QUEUES = [routinesQueue.name, routinesCriticalQueue.name] as const;
 
@@ -235,41 +242,44 @@ async function routineFireImpl(
       // (the same autonomous launch path the git-sync merge-resolver spawn uses).
       // Fire-and-forget — the agent runs detached and the next due tick re-fires;
       // this matches the routine cadence model.
-      await DBOS.runStep(async () => {
-        // P-009 (D-009): the error-backoff fire gate + outcome recording — a
-        // repeatedly-failing role fire backs off exponentially instead of
-        // re-firing at full cadence (circuit-open ⇒ ~one probe per cap window).
-        const gate = await checkFireGate(installSlug, targetRole);
-        if (!gate.allow) {
-          console.warn(
-            `[routines] ${installSlug}/${targetRole} fire WITHHELD (${gate.reason}, ` +
-              `consecutive_errors=${gate.consecutiveErrors}, retry in ~${gate.retryAfterSec}s)`,
-          );
-          return;
-        }
-        const kickoff =
-          typeof payloadTemplate?.kickoff === 'string'
-            ? payloadTemplate.kickoff
-            : `Scheduled routine '${routineId}' (role ${targetRole}).`;
-        const ws = encodeURIComponent(workspaceId);
-        const url = `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(targetRole)}&ws=${ws}`;
-        void recordFire(installSlug, targetRole, 'firing', 'attempt').catch(() => {});
-        void loopbackFetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ kickoff }),
-        })
-          .then(
-            (r) =>
-              recordFire(installSlug, targetRole, r.ok ? 'ok' : `error: HTTP ${r.status}`, r.ok ? 'ok' : 'error'),
-            (e) => {
-              const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
-              console.warn(`[routines] role spawn failed (${installSlug}/${targetRole}): ${detail}`);
-              return recordFire(installSlug, targetRole, `error: ${detail}`, 'error');
-            },
-          )
-          .catch(() => {});
-      }, { name: `spawn:${targetRole}` });
+      await DBOS.runStep(
+        async () => {
+          // P-009 (D-009): the error-backoff fire gate + outcome recording — a
+          // repeatedly-failing role fire backs off exponentially instead of
+          // re-firing at full cadence (circuit-open ⇒ ~one probe per cap window).
+          const gate = await checkFireGate(installSlug, targetRole);
+          if (!gate.allow) {
+            console.warn(
+              `[routines] ${installSlug}/${targetRole} fire WITHHELD (${gate.reason}, ` +
+                `consecutive_errors=${gate.consecutiveErrors}, retry in ~${gate.retryAfterSec}s)`,
+            );
+            return;
+          }
+          const kickoff =
+            typeof payloadTemplate?.kickoff === 'string'
+              ? payloadTemplate.kickoff
+              : `Scheduled routine '${routineId}' (role ${targetRole}).`;
+          const ws = encodeURIComponent(workspaceId);
+          const url = `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(targetRole)}&ws=${ws}`;
+          void recordFire(installSlug, targetRole, 'firing', 'attempt').catch(() => {});
+          void loopbackFetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ kickoff }),
+          })
+            .then(
+              (r) =>
+                recordFire(installSlug, targetRole, r.ok ? 'ok' : `error: HTTP ${r.status}`, r.ok ? 'ok' : 'error'),
+              (e) => {
+                const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
+                console.warn(`[routines] role spawn failed (${installSlug}/${targetRole}): ${detail}`);
+                return recordFire(installSlug, targetRole, `error: ${detail}`, 'error');
+              },
+            )
+            .catch(() => {});
+        },
+        { name: `spawn:${targetRole}` },
+      );
     }
 
     // A completed dispatch (loop:wake / system:<action> / spawn:<role>) produced DBOS
@@ -364,9 +374,7 @@ async function routinesTickImpl(): Promise<void> {
            LIMIT 1`,
     })
   ) {
-    console.warn(
-      `[routines-tick] SKIPPED — another routinesTick invocation already in flight (EI-9935 overlap guard)`,
-    );
+    console.warn(`[routines-tick] SKIPPED — another routinesTick invocation already in flight (EI-9935 overlap guard)`);
     return;
   }
 
@@ -558,7 +566,8 @@ async function routinesTickImpl(): Promise<void> {
   // PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC<=0. Debounced + fail-soft inside the module.
   await DBOS.runStep(
     async () => {
-      const { suIdeateUngradedSweep } = await import('../scout/ungraded-filings-watchdog');
+      const { suIdeateUngradedConfig, suIdeateUngradedSweep } = await import('../scout/ungraded-filings-watchdog');
+      const config = suIdeateUngradedConfig();
       const results = await suIdeateUngradedSweep();
       for (const res of results) {
         if (res.outcome === 'nudged' || res.outcome === 'error') {
@@ -574,6 +583,7 @@ async function routinesTickImpl(): Promise<void> {
         resultCount: results.length,
         errorCount: results.filter((res) => res.outcome === 'error').length,
         nudgedCount: results.filter((res) => res.outcome === 'nudged').length,
+        config,
         results: results.slice(0, 25),
       };
     },

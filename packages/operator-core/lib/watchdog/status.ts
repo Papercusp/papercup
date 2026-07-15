@@ -8,10 +8,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import {
-  suIdeateUngradedConfig,
-  type SuIdeateUngradedConfig,
-} from '../scout/ungraded-filings-watchdog';
+import { suIdeateUngradedConfig, type SuIdeateUngradedConfig } from '../scout/ungraded-filings-watchdog';
 
 export const SCHEDULED_WATCHDOG_IDS = ['su-ideate-ungraded'] as const;
 export type ScheduledWatchdogId = (typeof SCHEDULED_WATCHDOG_IDS)[number];
@@ -164,13 +161,52 @@ interface FireRow {
   last_reason: string | null;
 }
 
-function parseRunSummary(output: string | null): { ranAtMs?: number; errorCount?: number } {
+function parsePersistedConfig(value: unknown): SuIdeateUngradedConfig | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<SuIdeateUngradedConfig>;
+  const threshold = Number(candidate.effectiveThresholdSec);
+  const epochMs = Number(candidate.epochMs);
+  const batchCap = Number(candidate.batchCap);
+  const validOverrideSources: SuIdeateUngradedConfig['overrideSource'][] = [
+    'default',
+    'environment',
+    'invalid-environment-fallback',
+  ];
+  if (
+    typeof candidate.enabled !== 'boolean' ||
+    !Number.isFinite(threshold) ||
+    candidate.enabled !== threshold > 0 ||
+    !validOverrideSources.includes(candidate.overrideSource as SuIdeateUngradedConfig['overrideSource']) ||
+    candidate.overrideEnv !== 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC' ||
+    (candidate.rawOverride !== null && typeof candidate.rawOverride !== 'string') ||
+    !Number.isFinite(epochMs) ||
+    !Number.isFinite(batchCap)
+  ) {
+    return undefined;
+  }
+  return {
+    enabled: candidate.enabled,
+    effectiveThresholdSec: threshold,
+    overrideSource: candidate.overrideSource as SuIdeateUngradedConfig['overrideSource'],
+    overrideEnv: candidate.overrideEnv,
+    rawOverride: candidate.rawOverride,
+    epochMs,
+    batchCap,
+  };
+}
+
+function parseRunSummary(output: string | null): {
+  ranAtMs?: number;
+  errorCount?: number;
+  config?: SuIdeateUngradedConfig;
+} {
   if (!output) return {};
   try {
-    const parsed = JSON.parse(output) as { ranAtMs?: unknown; errorCount?: unknown };
+    const parsed = JSON.parse(output) as { ranAtMs?: unknown; errorCount?: unknown; config?: unknown };
     return {
       ranAtMs: Number.isFinite(Number(parsed.ranAtMs)) ? Number(parsed.ranAtMs) : undefined,
       errorCount: Number.isFinite(Number(parsed.errorCount)) ? Number(parsed.errorCount) : undefined,
+      config: parsePersistedConfig(parsed.config),
     };
   } catch {
     return {};
@@ -186,21 +222,26 @@ export async function readScheduledWatchdogStatus(args: {
 }): Promise<ScheduledWatchdogStatus> {
   const sql = args.sql ?? getOrgPg().sql;
   const nowMs = args.nowMs ?? Date.now();
-  const config = suIdeateUngradedConfig();
+  const schedulerRows = await sql<SchedulerRow[]>`
+    SELECT op.output,
+           op.error AS operation_error,
+           op.completed_at_epoch_ms,
+           ws.status AS workflow_status,
+           ws.error AS workflow_error
+      FROM dbos.operation_outputs op
+      LEFT JOIN dbos.workflow_status ws ON ws.workflow_uuid = op.workflow_uuid
+     WHERE op.function_name = 'su-ideate-ungraded-sweep'
+     ORDER BY op.completed_at_epoch_ms DESC NULLS LAST
+     LIMIT 1`;
+  const schedulerRow = schedulerRows[0];
+  const runSummary = parseRunSummary(schedulerRow?.output ?? null);
+  // The DBOS step runs in the dedicated bg-host, while this reader usually runs
+  // in the API process. Their environment overrides may differ, so the step's
+  // persisted readback is authoritative whenever present.
+  const config = runSummary.config ?? suIdeateUngradedConfig();
   const eligibleBeforeMs = nowMs - Math.max(0, config.effectiveThresholdSec) * 1_000;
 
-  const [schedulerRows, eligibilityRows, fireRows] = await Promise.all([
-    sql<SchedulerRow[]>`
-      SELECT op.output,
-             op.error AS operation_error,
-             op.completed_at_epoch_ms,
-             ws.status AS workflow_status,
-             ws.error AS workflow_error
-        FROM dbos.operation_outputs op
-        LEFT JOIN dbos.workflow_status ws ON ws.workflow_uuid = op.workflow_uuid
-       WHERE op.function_name = 'su-ideate-ungraded-sweep'
-       ORDER BY op.completed_at_epoch_ms DESC NULLS LAST
-       LIMIT 1`,
+  const [eligibilityRows, fireRows] = await Promise.all([
     sql<EligibilityRow[]>`
       SELECT count(*)::int AS pending_count,
              count(*) FILTER (WHERE routed_at <= ${eligibleBeforeMs})::int AS eligible_count,
@@ -222,8 +263,6 @@ export async function readScheduledWatchdogStatus(args: {
          AND source = 'su-ideate-ungraded'`,
   ]);
 
-  const schedulerRow = schedulerRows[0];
-  const runSummary = parseRunSummary(schedulerRow?.output ?? null);
   const completedMs = Number(schedulerRow?.completed_at_epoch_ms ?? Number.NaN);
   const executionMs = Number.isFinite(runSummary.ranAtMs)
     ? runSummary.ranAtMs!
