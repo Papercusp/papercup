@@ -47,7 +47,9 @@ import {
   heartbeatSpawns,
   reclaimOrphanedSpawns,
   recordSpawnPid,
+  removeSpawnResultArtifact,
   SPAWN_HEARTBEAT_INTERVAL_MS,
+  spawnResultArtifactPath,
   WEDGE_REAP_SILENT_MS,
 } from './spawn-reclaim';
 // Re-exported for back-compat: the wedge-reap action threshold is now centralised in
@@ -958,6 +960,22 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     return { ...res, awaitEvent };
   }
 
+  // WI-4894: scope isolation lets the child survive a deploy restart, but the
+  // old operator's stdout pipe + completion promise do not. Give every governed
+  // spawn a deterministic invoke-once artifact and persist its path before the
+  // child starts; the fresh operator's boot/periodic reconcile harvests it.
+  const resultPath = spawnResultArtifactPath(project.path, spawnId);
+  try {
+    await sql`
+      UPDATE harness_shared.spawned_agents
+         SET result_path = ${resultPath}
+       WHERE workspace_id = ${input.workspaceId} AND spawn_id = ${spawnId}`;
+  } catch (e) {
+    console.warn(
+      `[operator-spawn] record result_path failed (mig 608 pending?): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
   // EI-2186/EI-85 hardening: close the admission -> child-pid gap. A row exists
   // as soon as recordSpawn commits, but the real child pid is only known after
   // spawnInvokeOnce starts the subprocess. If the operator restarts in between,
@@ -1345,6 +1363,9 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
         errorMessage: args.errorMessage ?? null,
         outputTail: args.outputTail ?? null,
       });
+      // Normal completion won the durable status race; the recovery artifact is
+      // no longer needed. If finishSpawn throws, keep it for the reclaim sweep.
+      removeSpawnResultArtifact(resultPath);
       if (args.releaseClaim) {
         await releaseSpawnWorkItemClaim(sql, { harness: slug, workItemId, spawnId }).catch(() => {});
       }
@@ -1403,6 +1424,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   void spawnInvokeOnceWithFallback(project.path, role, extras, extraEnv, {
     signal: abort.signal,
     forceSessionId,
+    resultPath,
     ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
     // EI-85: record the child OS pid + this host so the reclaim sweep can
     // /proc-liveness-check the process instead of mislabeling a stale-heartbeat

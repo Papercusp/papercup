@@ -9,6 +9,9 @@
  */
 import { hostname } from 'node:os';
 import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
@@ -42,7 +45,7 @@ const SPAWNED_AGENTS_DDL = `
     restart_window_start timestamptz, cancel_reason text, cancelled_at timestamptz,
     heartbeat_at timestamptz NOT NULL DEFAULT now(),
     last_output_at timestamptz,
-    pid integer, launcher_host text, launcher_boot_id text)`;
+    pid integer, launcher_host text, launcher_boot_id text, result_path text)`;
 
 // Minimal stand-in for the prod `harness_features_consolidated` VIEW — the boot
 // reconcile LEFT JOINs it (feature_id, workspace_id, harness_slug → status) to
@@ -95,6 +98,7 @@ async function insertSpawn(
     featureId?: string;
     itemId?: string;
     parentRole?: string;
+    resultPath?: string;
     /** Seconds-ago for last_output_at (wedge tests). Omitted ⇒ NULL (no output yet). */
     lastOutputAgoSec?: number;
     /** Seconds-ago for started_at (first-output-stall tests). Default 10 minutes ago. */
@@ -107,11 +111,11 @@ async function insertSpawn(
       : db.sql`NULL`;
   await db.sql`
     INSERT INTO harness_shared.spawned_agents
-      (spawn_id, workspace_id, harness_slug, child_role, parent_role, feature_id, item_id, run_id, status, started_at, heartbeat_at, last_output_at, pid, launcher_host, launcher_boot_id)
+      (spawn_id, workspace_id, harness_slug, child_role, parent_role, feature_id, item_id, run_id, status, started_at, heartbeat_at, last_output_at, pid, launcher_host, launcher_boot_id, result_path)
     VALUES (${spawnId}, ${WS}, 'papercup', ${rec.childRole ?? 'worker'}, ${rec.parentRole ?? null},
             ${rec.featureId ?? null}, ${rec.itemId ?? null}, ${rec.runId ?? 'r-' + spawnId}, ${status},
             now() - ${rec.startedAgoSec ?? 600}::int * interval '1 second', now() - ${heartbeatAgoSec}::int * interval '1 second', ${lastOutput},
-            ${rec.pid ?? null}, ${rec.host ?? null}, ${rec.bootId ?? null})`;
+            ${rec.pid ?? null}, ${rec.host ?? null}, ${rec.bootId ?? null}, ${rec.resultPath ?? null})`;
 }
 
 /** Seed a work-item row so the reconcile's LEFT JOIN resolves a feature's status. */
@@ -247,6 +251,66 @@ describe('reclaimOrphanedSpawns liveness gate (EI-85: host-died vs child-died)',
     expect(r.reclaimed).toBe(2);
     expect(r.spawnIds.sort()).toEqual(['dead', 'legacy']);
     expect(await statusOf('alive')).toBe('running');
+  });
+});
+
+describe('restart-safe scoped-spawn completion artifacts (WI-4894)', () => {
+  const ME = hostname();
+  let dir = '';
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'spawn-result-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('harvests a clean Cup result before dead-PID reclaim can manufacture a failure', async () => {
+    const resultPath = join(dir, 'clean.log');
+    writeFileSync(
+      resultPath,
+      'cup completed its work\n__INVOCATION_RESULT__:{"exitCode":0}\n__INVOCATION_DONE__\n',
+    );
+    await insertSpawn('survived-deploy', 'running', 10 * 60, {
+      pid: 9999,
+      host: ME,
+      resultPath,
+    });
+
+    const r = await reclaimOrphanedSpawns(db.sql, STALE_FAKE);
+    expect(r.recovered).toEqual(['survived-deploy']);
+    expect(r.reclaimed).toBe(1); // its ceiling debit was freed
+    const [row] = await db.sql<{ status: string; exit_code: number; output_tail: string; error_message: string | null }[]>`
+      SELECT status, exit_code, output_tail, error_message
+        FROM harness_shared.spawned_agents WHERE spawn_id = 'survived-deploy'`;
+    expect(row.status).toBe('done');
+    expect(row.exit_code).toBe(0);
+    expect(row.output_tail).toContain('cup completed its work');
+    expect(row.error_message).toBeNull();
+    expect(existsSync(resultPath)).toBe(false);
+  });
+
+  it('preserves a real non-zero result instead of replacing it with exit_code NULL', async () => {
+    const resultPath = join(dir, 'failed.log');
+    writeFileSync(
+      resultPath,
+      'agent reported a concrete failure\n__INVOCATION_RESULT__:{"exitCode":7}\n__INVOCATION_DONE__\n',
+    );
+    await insertSpawn('real-failure', 'running', 10 * 60, { pid: 9998, host: ME, resultPath });
+
+    const r = await reclaimOrphanedSpawns(db.sql, STALE_FAKE);
+    expect(r.recovered).toEqual(['real-failure']);
+    const [row] = await db.sql<{ status: string; exit_code: number; error_message: string }[]>`
+      SELECT status, exit_code, error_message
+        FROM harness_shared.spawned_agents WHERE spawn_id = 'real-failure'`;
+    expect(row.status).toBe('failed');
+    expect(row.exit_code).toBe(7);
+    expect(row.error_message).toContain('invoke-once exited 7');
+  });
+
+  it('never trusts a partial artifact without the final done sentinel', async () => {
+    const resultPath = join(dir, 'partial.log');
+    writeFileSync(resultPath, 'still running\n__INVOCATION_RESULT__:{"exitCode":0}\n');
+    await insertSpawn('partial', 'running', 10 * 60, { pid: 9997, host: ME, resultPath });
+
+    const r = await reclaimOrphanedSpawns(db.sql, STALE_FAKE);
+    expect(r.recovered).toEqual([]);
+    expect(await statusOf('partial')).toBe('failed');
   });
 });
 
@@ -590,6 +654,26 @@ describe('reconcileSpawnAdmissionOnBoot RE-ATTACH (WI-1499 scope-isolated surviv
     expect(r.reclaimed).toBe(1);
     expect(r.reattached).toEqual([]);
     expect(await statusOf('gone')).toBe('failed');
+  });
+
+  it('harvests a scoped spawn that completed between restart and boot reconcile', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spawn-boot-result-'));
+    const resultPath = join(dir, 'boot.log');
+    try {
+      writeFileSync(resultPath, 'done after restart\n__INVOCATION_RESULT__:{"exitCode":0}\n__INVOCATION_DONE__\n');
+      await insertSpawn('boot-complete', 'running', 1, {
+        pid: 9996,
+        host: ME,
+        bootId: 'boot-prior',
+        runId: 'r-boot-complete',
+        resultPath,
+      });
+      const r = await reconcileSpawnAdmissionOnBoot(db.sql, { isAlive: fakeAlive });
+      expect(r.recovered).toEqual(['boot-complete']);
+      expect(await statusOf('boot-complete')).toBe('done');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('a launch-kind row is ALWAYS reclaimed at boot even when its recorded pid reads ALIVE', async () => {

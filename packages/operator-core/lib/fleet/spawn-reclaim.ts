@@ -19,14 +19,59 @@
  * EI-108: When reclaiming a spawn with a parent, also wake the parent.
  */
 import { hostname } from 'node:os';
-import { readFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { Sql, TransactionSql } from 'postgres';
 import { wakeParentOnChildDeath } from './parent-wake';
 import { FEATURE_NON_REQUEUE_STATES } from '../work-item-dispatch-states';
+import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 
 /** A query handle — a pooled client or an open transaction. */
 type Db = Sql | TransactionSql;
+
+const INVOCATION_RESULT_MARKER = '__INVOCATION_RESULT__:';
+const INVOCATION_DONE_SENTINEL = '__INVOCATION_DONE__';
+
+/**
+ * Stable, host-local completion artifact for a governed agent spawn. The path is
+ * persisted on spawned_agents before launch; invoke-once writes it from inside
+ * the scope, so it survives the launching operator process and its stdout pipe.
+ */
+export function spawnResultArtifactPath(projectDir: string, spawnId: string): string {
+  const safeId = spawnId.replace(/[^A-Za-z0-9._-]/g, '_');
+  return join(projectDir, '.papercusp', 'spawn-results', `${safeId}.log`);
+}
+
+export interface CompletedSpawnArtifact {
+  exitCode: number;
+  outputTail: string;
+}
+
+/** Parse only a complete artifact: the final structured marker must be followed
+ * by the legacy done sentinel. A partial write is unknown, never failure. */
+export function readCompletedSpawnArtifact(resultPath: string | null | undefined): CompletedSpawnArtifact | null {
+  if (!resultPath) return null;
+  try {
+    const text = readFileSync(resultPath, 'utf8');
+    const markerAt = text.lastIndexOf(INVOCATION_RESULT_MARKER);
+    if (markerAt < 0) return null;
+    const doneAt = text.indexOf(INVOCATION_DONE_SENTINEL, markerAt);
+    if (doneAt < 0) return null;
+    const encoded = text.slice(markerAt + INVOCATION_RESULT_MARKER.length, doneAt).trim();
+    const parsed = JSON.parse(encoded) as { exitCode?: unknown };
+    if (!Number.isInteger(parsed.exitCode)) return null;
+    const output = text.slice(0, markerAt).trimEnd();
+    return { exitCode: Number(parsed.exitCode), outputTail: output.slice(-2_000) };
+  } catch {
+    return null;
+  }
+}
+
+export function removeSpawnResultArtifact(resultPath: string | null | undefined): void {
+  if (!resultPath) return;
+  try { unlinkSync(resultPath); } catch { /* absent/locked artifact is harmless */ }
+}
 
 /** Cadence the live host bumps `heartbeat_at` for its in-flight spawns. */
 export const SPAWN_HEARTBEAT_INTERVAL_MS = 60_000;
@@ -238,6 +283,10 @@ export interface ReclaimResult {
    *  kind row; this is the same liveness-checked re-attach, just at periodic-sweep
    *  cadence instead of boot-only). */
   reattached?: string[];
+  /** Scope-isolated spawns whose launching operator disappeared but whose
+   * restart-safe result artifact supplied the real terminal status. These free
+   * a ceiling slot without being misclassified as an infra failure (WI-4894). */
+  recovered?: string[];
   /** Durable claims freed alongside the reclaim (dead-holder release — see
    *  releaseClaimsOfDeadSpawns). */
   claimsReleased?: DeadSpawnClaimsReleased;
@@ -288,6 +337,82 @@ export async function releaseClaimsOfDeadSpawns(sql: Db, spawnIds: string[]): Pr
     );
   }
   return released;
+}
+
+interface SpawnArtifactCandidate {
+  spawn_id: string;
+  workspace_id: string;
+  harness_slug: string | null;
+  child_role: string;
+  work_item_id: string | null;
+  result_path: string | null;
+}
+
+interface SettledSpawnArtifact extends SpawnArtifactCandidate {
+  exitCode: number;
+}
+
+/**
+ * Settle complete restart-safe artifacts before any dead-PID classifier runs.
+ * A prior operator may have vanished, but invoke-once is still the authority on
+ * whether the scoped child succeeded. The status guard makes this race-safe
+ * against the original parent finishing normally at the same time.
+ */
+async function settleCompletedSpawnArtifacts(
+  sql: Db,
+  candidates: SpawnArtifactCandidate[],
+): Promise<{ rows: SettledSpawnArtifact[]; claimsReleased: DeadSpawnClaimsReleased }> {
+  const settled: SettledSpawnArtifact[] = [];
+  for (const candidate of candidates) {
+    const artifact = readCompletedSpawnArtifact(candidate.result_path);
+    if (!artifact) continue;
+    const status = artifact.exitCode === 0 ? 'done' : 'failed';
+    const outputTail = artifact.outputTail || null;
+    const rows = await sql<{ spawn_id: string }[]>`
+      UPDATE harness_shared.spawned_agents
+         SET status = ${status},
+             finished_at = now(),
+             duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
+             exit_code = ${artifact.exitCode},
+             output_tail = COALESCE(${outputTail}::text, output_tail),
+             last_output_at = CASE
+               WHEN ${outputTail}::text IS NOT NULL THEN GREATEST(COALESCE(last_output_at, now()), now())
+               ELSE last_output_at
+             END,
+             error_message = CASE
+               WHEN ${artifact.exitCode}::int <> 0 THEN COALESCE(
+                 error_message,
+                 'recovered after launcher restart: invoke-once exited ' || ${artifact.exitCode}::text
+               )
+               ELSE error_message
+             END
+       WHERE spawn_id = ${candidate.spawn_id}
+         AND workspace_id = ${candidate.workspace_id}
+         AND status IN ('running', 'restarting')
+      RETURNING spawn_id`;
+    // Terminal already won elsewhere: the artifact is redundant and can go.
+    if (rows.length === 0) {
+      removeSpawnResultArtifact(candidate.result_path);
+      continue;
+    }
+    settled.push({ ...candidate, exitCode: artifact.exitCode });
+    removeSpawnResultArtifact(candidate.result_path);
+
+    // Preserve the normal operator-spawn completion path's conservative Cup
+    // work-item safety net. This is best-effort and only flips a claimed,
+    // in-flight item on a clean rc=0.
+    await maybeReconcileBeeCompletion({
+      role: candidate.child_role,
+      exitCode: artifact.exitCode,
+      aborted: false,
+      featureId: candidate.work_item_id,
+      harnessSlug: candidate.harness_slug ?? '',
+      workspaceId: candidate.workspace_id,
+    });
+    void wakeParentOnChildDeath(sql as Sql, candidate.spawn_id, candidate.workspace_id, status).catch(() => {});
+  }
+  const claimsReleased = await releaseClaimsOfDeadSpawns(sql, settled.map((r) => r.spawn_id));
+  return { rows: settled, claimsReleased };
 }
 
 /**
@@ -443,13 +568,19 @@ export async function reclaimOrphanedSpawns(
     {
       spawn_id: string;
       workspace_id: string;
+      harness_slug: string | null;
+      child_role: string;
+      work_item_id: string | null;
+      result_path: string | null;
       pid: number | null;
       launcher_host: string | null;
       run_id: string | null;
       launcher_boot_id: string | null;
     }[]
   >`
-    SELECT spawn_id, workspace_id, pid, launcher_host, run_id, launcher_boot_id
+    SELECT spawn_id, workspace_id, harness_slug, child_role,
+           COALESCE(item_id, feature_id) AS work_item_id, result_path,
+           pid, launcher_host, run_id, launcher_boot_id
       FROM harness_shared.spawned_agents
      WHERE status IN ('running', 'restarting')
        AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'`;
@@ -471,6 +602,7 @@ export async function reclaimOrphanedSpawns(
   // need their `launcher_boot_id` REWRITTEN (not just a heartbeat bump), or every
   // future sweep re-hits the same mismatch branch for as long as the row runs.
   const reattachBoot: string[] = [];
+  const completedArtifacts: SpawnArtifactCandidate[] = [];
   for (const c of candidates) {
     const sameHost = c.launcher_host != null && c.launcher_host === me;
     // A `launch-%` run_id OR a `durable-spawn:%` spawn_id is an in-process loopback launch (the
@@ -481,6 +613,13 @@ export async function reclaimOrphanedSpawns(
     // false-reclaimed — D-011.)
     const kind: 'spawn' | 'launch' =
       (c.run_id ?? '').startsWith('launch-') || c.spawn_id.startsWith('durable-spawn:') ? 'launch' : 'spawn';
+    // WI-4894: the durable artifact outranks a now-dead PID. A scoped Cup can
+    // finish after its launching operator restarted; classifying the dead PID
+    // first manufactured a failure even though invoke-once exited cleanly.
+    if (kind === 'spawn' && readCompletedSpawnArtifact(c.result_path)) {
+      completedArtifacts.push(c);
+      continue;
+    }
     // EI-2186: a same-host row stamped with a DIFFERENT (non-null) boot id was
     // launched by a prior incarnation of this operator on this host. For a
     // `launch`-kind row that is provably orphaned (its firing process IS the
@@ -516,6 +655,8 @@ export async function reclaimOrphanedSpawns(
     }
   }
 
+  const recovered = await settleCompletedSpawnArtifacts(sql, completedArtifacts);
+
   // Keep the live-but-host-paused children: bump their heartbeat so neither this
   // sweep nor the next reclaims them (their own host will resume heartbeating).
   if (alive.length > 0) await heartbeatSpawns(sql, alive);
@@ -534,7 +675,15 @@ export async function reclaimOrphanedSpawns(
 
   const reclaimable = [...deadChild, ...hostGone, ...priorBoot];
   if (reclaimable.length === 0) {
-    return { reclaimed: 0, spawnIds: [], workspaces: [], reattached: reattachBoot };
+    const recoveredIds = recovered.rows.map((r) => r.spawn_id);
+    return {
+      reclaimed: recoveredIds.length,
+      spawnIds: recoveredIds,
+      workspaces: [...new Set(recovered.rows.map((r) => r.workspace_id))],
+      reattached: reattachBoot,
+      recovered: recoveredIds,
+      claimsReleased: recovered.claimsReleased,
+    };
   }
 
   // Reclaim the confirmed-dead + unverifiable rows. The status guard keeps it
@@ -582,14 +731,20 @@ export async function reclaimOrphanedSpawns(
   }
 
   return {
-    reclaimed: rows.length,
-    spawnIds: rows.map((r) => r.spawn_id),
-    workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+    reclaimed: rows.length + recovered.rows.length,
+    spawnIds: [...recovered.rows.map((r) => r.spawn_id), ...rows.map((r) => r.spawn_id)],
+    workspaces: [
+      ...new Set([
+        ...recovered.rows.map((r) => r.workspace_id),
+        ...rows.map((r) => r.workspace_id),
+      ].filter(Boolean)),
+    ],
     reattached: reattachBoot,
+    recovered: recovered.rows.map((r) => r.spawn_id),
     claimsReleased: {
-      features: claimsReleased.features + backstop.features,
-      issues: claimsReleased.issues + backstop.issues,
-      planClaims: claimsReleased.planClaims + backstop.planClaims,
+      features: recovered.claimsReleased.features + claimsReleased.features + backstop.features,
+      issues: recovered.claimsReleased.issues + claimsReleased.issues + backstop.issues,
+      planClaims: recovered.claimsReleased.planClaims + claimsReleased.planClaims + backstop.planClaims,
     },
   };
 }
@@ -1270,11 +1425,18 @@ export async function reconcileSpawnAdmissionOnBoot(
   const candidates = await sql<
     {
       spawn_id: string;
+      workspace_id: string;
+      harness_slug: string | null;
+      child_role: string;
+      work_item_id: string | null;
+      result_path: string | null;
       pid: number | null;
       run_id: string | null;
     }[]
   >`
-    SELECT a.spawn_id, a.pid, a.run_id
+    SELECT a.spawn_id, a.workspace_id, a.harness_slug, a.child_role,
+           COALESCE(a.item_id, a.feature_id) AS work_item_id, a.result_path,
+           a.pid, a.run_id
       FROM harness_shared.spawned_agents AS a
      WHERE a.status IN ('running', 'restarting')
        AND a.launcher_host = ${me}
@@ -1289,14 +1451,19 @@ export async function reconcileSpawnAdmissionOnBoot(
   // process's dead predecessor by construction — see the doc comment above).
   const aliveIds: string[] = [];
   const deadIds: string[] = [];
+  const completedArtifacts: SpawnArtifactCandidate[] = [];
   for (const c of candidates) {
     const kind: 'spawn' | 'launch' = (c.run_id ?? '').startsWith('launch-') ? 'launch' : 'spawn';
-    if (kind === 'spawn' && c.pid != null && isAlive(c.pid, kind)) {
+    if (kind === 'spawn' && readCompletedSpawnArtifact(c.result_path)) {
+      completedArtifacts.push(c);
+    } else if (kind === 'spawn' && c.pid != null && isAlive(c.pid, kind)) {
       aliveIds.push(c.spawn_id);
     } else {
       deadIds.push(c.spawn_id);
     }
   }
+
+  const recovered = await settleCompletedSpawnArtifacts(sql, completedArtifacts);
 
   // Re-attach the survivors to this fresh incarnation: same row, same status,
   // just handed off — future sweeps (periodic + the next boot) now see it as
@@ -1314,7 +1481,16 @@ export async function reconcileSpawnAdmissionOnBoot(
   }
 
   if (deadIds.length === 0) {
-    return { reclaimed: 0, spawnIds: [], workspaces: [], relaunched: [], reattached };
+    const recoveredIds = recovered.rows.map((r) => r.spawn_id);
+    return {
+      reclaimed: recoveredIds.length,
+      spawnIds: recoveredIds,
+      workspaces: [...new Set(recovered.rows.map((r) => r.workspace_id))],
+      relaunched: [],
+      reattached,
+      recovered: recoveredIds,
+      claimsReleased: recovered.claimsReleased,
+    };
   }
 
   // Settle every confirmed-dead prior-incarnation row to `failed` (freeing the
@@ -1433,10 +1609,16 @@ export async function reconcileSpawnAdmissionOnBoot(
   }
 
   return {
-    reclaimed: rows.length,
-    spawnIds: rows.map((r) => r.spawn_id),
-    workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+    reclaimed: rows.length + recovered.rows.length,
+    spawnIds: [...recovered.rows.map((r) => r.spawn_id), ...rows.map((r) => r.spawn_id)],
+    workspaces: [
+      ...new Set([
+        ...recovered.rows.map((r) => r.workspace_id),
+        ...rows.map((r) => r.workspace_id),
+      ].filter(Boolean)),
+    ],
     relaunched,
     reattached,
+    recovered: recovered.rows.map((r) => r.spawn_id),
   };
 }

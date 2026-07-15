@@ -222,12 +222,13 @@ describe('spawnAgentInHarness — happy path', () => {
     // The child launches in the harness's REAL project dir with the registry
     // slug pinned in env (schema resolution) + the feature extra.
     expect(spawnInvokeOnceWithFallback).toHaveBeenCalledTimes(1);
-    const [dir, role, extras, env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
+    const [dir, role, extras, env, opts] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(dir).toBe('/tmp');
     expect(role).toBe('validator');
     expect(extras).toContain('FEATURE_ID=F-1');
     expect(env.HARNESS_SLUG).toBe('demo');
     expect(env.PAPERCUSP_WORKSPACE_ID).toBe('ws-1');
+    expect(opts?.resultPath).toBe(`/tmp/.papercusp/spawn-results/${res.spawnId}.log`);
 
     await flush();
     expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
