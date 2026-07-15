@@ -18,7 +18,10 @@ import { fileURLToPath } from 'node:url';
 
 // --- mocks (hoisted) ---------------------------------------------------------
 const spawnMock = vi.fn();
-vi.mock('node:child_process', () => ({ spawn: (...a: unknown[]) => spawnMock(...a) }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: (...a: unknown[]) => spawnMock(...a) };
+});
 
 const appendPipelineEvent = vi.fn(async (..._a: unknown[]) => {});
 vi.mock('../git-sync/pipeline-events', () => ({
