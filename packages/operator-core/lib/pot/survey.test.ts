@@ -697,6 +697,28 @@ describe('notStopped (per-pot Stop stop-list, pure)', () => {
   });
 });
 
+describe('buildPlanItemBlockGraph (EI-12372) — plan-item blocking', () => {
+  it('correctly identifies when a plan-item is blocked', () => {
+    const graph = buildPlanItemBlockGraph([
+      [
+        planRow({
+          planSlug: 'P-plan',
+          harnessSlug: 'h1',
+          items: [
+            { id: 'P-001', status: 'todo', text: '', importance: 'high', blockedBy: [], decisionRefs: [], phase: null },
+            { id: 'P-002', status: 'todo', text: '', importance: 'high', blockedBy: ['P-001'], decisionRefs: [], phase: null },
+          ],
+        }),
+      ],
+    ]);
+
+    // P-002 is blocked by P-001
+    expect(graph.planItemBlockers.get('P-plan')?.get('P-002')).toEqual(['P-001']);
+    // P-001 status is recorded as 'todo'
+    expect(graph.planItemStatuses.get('P-plan')?.get('P-001')).toBe('todo');
+  });
+});
+
 describe('surveyPot plan-item blocking (EI-12372)', () => {
   const noBlockers: HarnessBlockGraph = { blockers: new Map(), statuses: new Map() };
   const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({

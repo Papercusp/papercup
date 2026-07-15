@@ -377,9 +377,9 @@ export function filterReadyFrontier(
       // Check if this work-item's linked plan-item (if any) is blocked (EI-12372).
       // A work-item with payload.plan_item = { plan_slug, item_id } is blocked if
       // its plan-item has unresolved blockers in its blockedBy chain.
-      if (planItemGraph && r.payload && typeof r.payload === 'object' && 'plan_item' in r.payload) {
+      if (planItemGraph && r.payload && typeof r.payload === 'object' && r.payload !== null && 'plan_item' in r.payload) {
         const planItem = (r.payload as Record<string, unknown>).plan_item;
-        if (planItem && typeof planItem === 'object' && 'plan_slug' in planItem && 'item_id' in planItem) {
+        if (planItem && planItem !== null && typeof planItem === 'object' && 'plan_slug' in planItem && 'item_id' in planItem) {
           const planSlug = (planItem as Record<string, unknown>).plan_slug as string;
           const itemId = (planItem as Record<string, unknown>).item_id as string;
           const planBlockers = planItemGraph.planItemBlockers.get(planSlug)?.get(itemId) ?? [];
