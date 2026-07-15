@@ -844,6 +844,10 @@ export function decodeControl(payload) {
           mode: 'carry-respawn',
           data: String(o.data ?? ''),
           systemPromptAddendum: String(o.systemPromptAddendum ?? ''),
+          // P-020 drill correlation is additive on the v1 envelope. An ordinary
+          // P-018 carry-respawn omits both fields and stays byte-for-byte inert.
+          drillId: o.drillId != null ? String(o.drillId).slice(0, 200) : '',
+          sessionClass: o.sessionClass != null ? String(o.sessionClass).slice(0, 200) : '',
           gated: true,
         };
       // compact (WI-1804): post-compaction auto-continuation. GATED like a turn (fire at a
@@ -2061,6 +2065,8 @@ export function hostThroughPty(o) {
           await recycleChild(msg.data, {
             systemPromptAddendum:
               msg.mode === 'carry-respawn' ? msg.systemPromptAddendum : '',
+            drillId: msg.mode === 'carry-respawn' ? msg.drillId : '',
+            sessionClass: msg.mode === 'carry-respawn' ? msg.sessionClass : '',
           });
           return;
         }
@@ -2514,7 +2520,10 @@ export function hostThroughPty(o) {
     // process on the carry-note. Only ever reached at a settled turn (the handler's
     // clean-boundary gate ran first, D-006). Serialized by `recycling`; fail-soft
     // (a spawn failure leaves the host running, carry stays in the inbox).
-    recycleChild = async (carryText, { systemPromptAddendum = '' } = {}) => {
+    recycleChild = async (
+      carryText,
+      { systemPromptAddendum = '', drillId = '', sessionClass = '' } = {},
+    ) => {
       if (recycling) return;
       recycling = true;
       // Assemble + persist the NEXT child's argv before killing the current one.
@@ -2522,13 +2531,23 @@ export function hostThroughPty(o) {
       // and its native/force-compaction backstops remain available.
       let recycleArgs;
       let nativeId;
+      let launchContextPath = null;
       try {
         const minted = systemPromptAddendum
           ? mintCarryRespawnArgs(args, { systemPromptAddendum, ownerId })
           : mintRecycleArgs(args);
         recycleArgs = minted.args;
         nativeId = minted.nativeId;
+        launchContextPath = minted.launchContextPath ?? null;
       } catch (e) {
+        if (drillId) {
+          appendHostEvent(ownerId, 'carry-drill-respawn-failed', {
+            drillId,
+            sessionClass,
+            reason: 'argv-build-failed',
+            detail: e?.message ?? String(e),
+          });
+        }
         try {
           process.stderr.write(`psu-pty-host: carry-respawn argv build failed for ${ownerId}: ${e.message}\n`);
         } catch {
@@ -2597,11 +2616,36 @@ export function hostThroughPty(o) {
         } catch {
           /* never let a diagnostic write break the host */
         }
+        if (drillId) {
+          appendHostEvent(ownerId, 'carry-drill-respawn-failed', {
+            drillId,
+            sessionClass,
+            reason: 'spawn-failed',
+            detail: e?.message ?? String(e),
+          });
+        }
         recycling = false;
         return;
       }
+      if (drillId) {
+        appendHostEvent(ownerId, 'carry-drill-respawned', {
+          drillId,
+          sessionClass,
+          nativeId: nativeId ?? null,
+          launchContextPath,
+        });
+      }
       recycling = false;
-      if (!carryText) return;
+      if (!carryText) {
+        if (drillId) {
+          appendHostEvent(ownerId, 'carry-drill-carry-dropped', {
+            drillId,
+            sessionClass,
+            reason: 'no-first-prompt',
+          });
+        }
+        return;
+      }
       // Open the fresh process on the carry-note once it has booted to its prompt
       // (boot output quiesces → the agent-busy gate clears), via the shared
       // guaranteed-or-loudly-dropped delivery (WI-1941 — the old single-shot
@@ -2609,9 +2653,9 @@ export function hostThroughPty(o) {
       // leaving the session booted-but-idle with no trace until its next
       // scheduled wake). The carry also stays in the inbox as the last-resort
       // next-turn resume, so a drop is observable, not lossy.
-      await injectTurnAtPrompt({
+      const carryResult = await injectTurnAtPrompt({
         text: carryText,
-        label: 'recycle carry-note',
+        label: drillId ? `carry-drill ${drillId} first prompt` : 'recycle carry-note',
         // A fresh child can be output-quiet before its input handler exists.
         // Apply the same backend-aware boot proof as a scripted resume/port.
         requireInitialOutput: true,
@@ -2621,6 +2665,19 @@ export function hostThroughPty(o) {
           writeMeta();
         },
       });
+      if (drillId) {
+        appendHostEvent(
+          ownerId,
+          carryResult.delivered ? 'carry-drill-carry-delivered' : 'carry-drill-carry-dropped',
+          {
+            drillId,
+            sessionClass,
+            nativeId: nativeId ?? null,
+            reason: carryResult.delivered ? undefined : carryResult.reason,
+            attempts: carryResult.attempts,
+          },
+        );
+      }
     };
 
     // Raw-mode keyboard Ctrl-C remains a byte forwarded to the target. A real

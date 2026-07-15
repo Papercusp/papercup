@@ -129,6 +129,8 @@ describe('control wire protocol (v1)', () => {
       mode: 'carry-respawn',
       data: 'successor first prompt',
       systemPromptAddendum: 'deterministic carry',
+      drillId: '',
+      sessionClass: '',
       gated: true,
     });
   });
