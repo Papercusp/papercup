@@ -39,6 +39,7 @@ import {
   validateObservationRatings,
   validateScorecardCompleteness,
   validateScorecardRatingValues,
+  normalizeScorecardRatings,
   type StructuredObservation,
 } from './observation-types';
 import { getRubric } from '../../rubrics';
@@ -229,7 +230,7 @@ export async function captureImprovement(
   // dedup/search work. One gate here covers BOTH capture entry points (the
   // improvements:capture tool + the watchdog). Throws ObservationEvidenceError;
   // the tool handler catches it into a clean { ok:false, error } result.
-  const observationForGate = input.payloadExtra?.observation as StructuredObservation | undefined;
+  let observationForGate = input.payloadExtra?.observation as StructuredObservation | undefined;
   validateObservationRatings(observationForGate);
   // P-014a completeness gate (D-005): a rubric-graded scorecard must rate EVERY rubric criterion —
   // an omitted key is a silent truncation, not a pass (D-005 caught 3–4 of 13 keys live). Load the
@@ -242,6 +243,18 @@ export async function captureImprovement(
     Object.keys(observationForGate.ratings).length > 0
   ) {
     const rubric = await deps.loadRubric(observationForGate.rubricRef).catch(() => null);
+    if (rubric) {
+      const normalizedRatings = normalizeScorecardRatings(observationForGate.ratings, rubric);
+      const rawObservation = input.payloadExtra?.observation as Record<string, unknown>;
+      observationForGate = { ...observationForGate, ratings: normalizedRatings };
+      input = {
+        ...input,
+        payloadExtra: {
+          ...input.payloadExtra,
+          observation: { ...rawObservation, ratings: normalizedRatings },
+        },
+      };
+    }
     validateScorecardCompleteness(observationForGate, rubric ? rubric.criteria.map((c) => c.key) : null);
     // P-002 rating-VALUE gate (rubric-system-improvements-2026-07-12): an off-scale
     // rating ("pas", "helthy") would file fine and be silently excluded from

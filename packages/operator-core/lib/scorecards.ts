@@ -20,16 +20,63 @@
  * stays, the backing changes). Workspace scope reuses `issuesScopeWorkspace()` so
  * scorecards flip per-workspace exactly like the engineer_issues store they ride.
  */
+import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   asStructuredObservation,
+  normalizeScorecardRatings,
   type ObservationRatings,
+  type ScorecardRatingRubric,
 } from './harness/improvements/observation-types';
 import { issuesScopeWorkspace, issuesOutLinksMany } from './issues-engineer';
 import { getRubric, type RubricStatus } from './rubrics';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
+
+/** One deterministic measurement attached to a scorecard evaluation/emission. */
+export interface ScorecardInstrumentSnapshot {
+  verdict: 'pass' | 'fail' | 'unknown';
+  measuredAt: string;
+  /** Concrete evidence window/provenance, kept JSON-shaped for instrument diversity. */
+  window?: Record<string, unknown>;
+  /** Bounded deterministic measurement (count/rate/status payload). */
+  value?: unknown;
+  /** Stable ledger/query/run reference supporting the snapshot. */
+  evidenceRef?: string;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Stable evidence identity used by scorecards:evaluate/emit. Timestamps that are
+ * measurement DATA remain significant; object insertion order and criterion order do
+ * not. This keeps append-only history meaningful while declining byte-shuffled repeats.
+ */
+export function scorecardEvidenceFingerprint(input: {
+  rubricRef: string;
+  ratings: ObservationRatings;
+  instrumentSnapshots?: Record<string, ScorecardInstrumentSnapshot>;
+}): string {
+  return createHash('sha256')
+    .update(
+      canonicalJson({
+        rubricRef: input.rubricRef,
+        ratings: input.ratings,
+        instrumentSnapshots: input.instrumentSnapshots ?? {},
+      }),
+    )
+    .digest('hex');
+}
 
 /** The canonical 14 keys for pot-coordination-health. This is a fallback for
  * read-side completeness only: if the rubric-template store is temporarily
@@ -86,6 +133,8 @@ export interface ScorecardRow {
   extraKeys: string[];
   /** Whether `rubricRef` resolved to a known rubric (so `missingKeys` is meaningful). */
   rubricResolved: boolean;
+  /** Stable canonical evidence identity when filed through scorecards:emit. */
+  evidenceFingerprint?: string;
   /**
    * True when this scorecard is a SYNTHESIZED floor (`payload.observation.synthesized`),
    * not an agent emission — the deterministic backstop filed by overwatch/scorecard-backstop
@@ -266,7 +315,14 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
 
   // Resolve each distinct rubric ONCE (a scorecard read touches a handful of rubrics):
   // its criterion keys (completeness) + its scale-aware score overrides (projection).
-  const rubricMeta = new Map<string, { keys: string[] | null; overrides?: Record<string, number> }>();
+  const rubricMeta = new Map<
+    string,
+    {
+      keys: string[] | null;
+      overrides?: Record<string, number>;
+      ratingRubric: ScorecardRatingRubric | null;
+    }
+  >();
   const out: ScorecardRow[] = [];
   // WI-3594: batch-fetch every row's outbound links in ONE query (no N+1) rather
   // than a per-row listOut — a scorecard page can be up to `limit` (500) rows.
@@ -277,17 +333,22 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
     // The SQL guarantees rubricRef is set, but parse defensively (a malformed
     // payload yields no structured view) so a bad row degrades, never throws.
     if (!observation?.rubricRef || !observation.ratings) continue;
-    const ratings = observation.ratings;
-    const ratedKeys = new Set(Object.keys(ratings));
-
     if (!rubricMeta.has(observation.rubricRef)) {
       const rubric = await getRubric(observation.rubricRef);
       rubricMeta.set(observation.rubricRef, {
         keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
         overrides: scoreOverridesForScale(rubric?.ratingScale),
+        ratingRubric: rubric
+          ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria }
+          : null,
       });
     }
     const meta = rubricMeta.get(observation.rubricRef)!;
+    // Canonical READ boundary: historic `PASS`/`pass` rows project to the rubric's
+    // exact scale spelling, so distributions, RLE, and direction math never split a
+    // semantic rating merely because an older writer used different case.
+    const ratings = normalizeScorecardRatings(observation.ratings, meta.ratingRubric);
+    const ratedKeys = new Set(Object.keys(ratings));
     const criteriaKeys = meta.keys;
     const rubricResolved = criteriaKeys !== null;
     const missingKeys = rubricResolved ? criteriaKeys!.filter((k) => !ratedKeys.has(k)) : [];
@@ -320,6 +381,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       missingKeys,
       extraKeys,
       rubricResolved,
+      ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       synthesized,
       score10: scorecardScore10(projectionRatings, meta.overrides),
       linkedItems: linksByIssue.get(row.issue_id) ?? [],

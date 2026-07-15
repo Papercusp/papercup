@@ -99,6 +99,14 @@ export interface StructuredObservation {
   rubricRef?: string;
   /** Per-criterion ratings against `rubricRef` — each carries MANDATORY evidence. */
   ratings?: ObservationRatings;
+  /**
+   * Stable SHA-256 of the canonical rubricRef + ratings + deterministic instrument
+   * snapshots. Written by scorecards:emit so repeated grading of unchanged evidence
+   * can be declined without creating a duplicate history row.
+   */
+  evidenceFingerprint?: string;
+  /** Deterministic instrument snapshots attached by scorecards:emit/evaluate. */
+  instrumentSnapshots?: Record<string, unknown>;
 }
 
 /** Thrown by `validateObservationRatings` when a rating lacks required evidence
@@ -230,6 +238,51 @@ export function validateScorecardRatingValues(
   }
 }
 
+/** The minimal rubric shape needed to canonicalize scorecard rating values. */
+export interface ScorecardRatingRubric {
+  ratingScale?: readonly string[];
+  criteria: readonly { key: string; ratingScale?: readonly string[] }[];
+}
+
+/**
+ * Resolve a case-insensitive caller rating to the rubric's EXACT canonical spelling.
+ * `unknown` is universal; when the rubric omits it we still canonicalize it to the
+ * shared lower-case spelling. Unknown/off-scale values are returned unchanged so the
+ * existing validation gate can reject them with its teaching error.
+ */
+export function canonicalScorecardRating(
+  rating: string,
+  scale: readonly string[] | null | undefined,
+): string {
+  const trimmed = String(rating).trim();
+  const match = (scale ?? []).find((candidate) => candidate.trim().toLowerCase() === trimmed.toLowerCase());
+  if (match) return match;
+  return trimmed.toLowerCase() === 'unknown' ? 'unknown' : trimmed;
+}
+
+/**
+ * Canonicalize every rating against its criterion scale (or rubric default). Pure:
+ * callers may safely use it at both write and read boundaries, which repairs historic
+ * `PASS`/`pass` splits without rewriting the append-only observation ledger.
+ */
+export function normalizeScorecardRatings(
+  ratings: ObservationRatings,
+  rubric: ScorecardRatingRubric | null | undefined,
+): ObservationRatings {
+  if (!rubric) return { ...ratings };
+  const rubricScale = rubric.ratingScale ?? [];
+  const criterionScales = new Map(rubric.criteria.map((criterion) => [criterion.key, criterion.ratingScale]));
+  return Object.fromEntries(
+    Object.entries(ratings).map(([criterion, entry]) => [
+      criterion,
+      {
+        ...entry,
+        rating: canonicalScorecardRating(entry.rating, criterionScales.get(criterion) ?? rubricScale),
+      },
+    ]),
+  );
+}
+
 /**
  * Narrow an unknown `payload.observation` field to the StructuredObservation
  * shape (a cheap structural check, mirroring read-items' isIdeaLifecycle). Used
@@ -253,10 +306,20 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       if (!raw || typeof raw !== 'object') continue;
       const e = raw as Record<string, unknown>;
       if (typeof e.rating === 'string' && typeof e.evidence === 'string') {
-        ratings[k] = { rating: e.rating, evidence: e.evidence };
+        ratings[k] = {
+          rating: e.rating,
+          evidence: e.evidence,
+          ...(typeof e.suggestion === 'string' && e.suggestion.trim() ? { suggestion: e.suggestion } : {}),
+        };
       }
     }
     if (Object.keys(ratings).length > 0) out.ratings = ratings;
+  }
+  if (typeof o.evidenceFingerprint === 'string' && o.evidenceFingerprint.trim()) {
+    out.evidenceFingerprint = o.evidenceFingerprint;
+  }
+  if (o.instrumentSnapshots && typeof o.instrumentSnapshots === 'object' && !Array.isArray(o.instrumentSnapshots)) {
+    out.instrumentSnapshots = o.instrumentSnapshots as Record<string, unknown>;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
