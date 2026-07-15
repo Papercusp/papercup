@@ -7,10 +7,12 @@
  * plumbing: which rows get enqueued, to which owners, and the fail-soft contract.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mirrorCollisionPush } from './collision-matcher-io';
+import { mirrorCollisionPush, type CollisionEnteredNotice } from './collision-matcher-io';
 import { collisionToPush, makePush } from './ambient-push';
 import { buildCursor, type LexicalCursor } from './lexical-cursor';
 import type { SessionCursorRow } from './session-cursor-store';
+import type { EnqueuePushInput } from './push-delivery-store';
+import type { SaveCollisionStateInput } from './collision-hysteresis-store';
 import type { CollisionState } from './collision-hysteresis';
 
 // A cursor row carrying a precomputed LexicalCursor the mocked rowToCursor returns
@@ -55,9 +57,9 @@ async function withMocks(opts: {
   enqueueImpl?: () => Promise<number>;
 }) {
   vi.resetModules();
-  const enqueuePush = vi.fn(opts.enqueueImpl ?? (async () => 1));
-  const saveCollisionState = vi.fn(async () => {});
-  const loadCollisionState = vi.fn(async () => opts.carry ?? { tick: 0, states: [] });
+  const enqueuePush = vi.fn<(input: EnqueuePushInput) => Promise<number>>(opts.enqueueImpl ?? (async () => 1));
+  const saveCollisionState = vi.fn<(input: SaveCollisionStateInput) => Promise<void>>(async () => {});
+  const loadCollisionState = vi.fn(async () => opts.carry ?? { tick: 0, states: [] as CollisionState[] });
 
   vi.doMock('./session-cursor-store', () => ({
     getSessionCursorRow: async () => opts.selfRow ?? null,
@@ -140,7 +142,7 @@ describe('runCollisionTick — read → fold → save → enqueue both sides', (
     expect(r.entered).toBe(1);
     expect(r.enqueued).toBe(2);
     expect(enqueuePush).toHaveBeenCalledTimes(2);
-    const calls = enqueuePush.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    const calls = enqueuePush.mock.calls.map((c) => c[0]);
     // self's side: delivered to self's owner, handle points at the peer.
     const selfSide = calls.find((c) => c.targetOwnerId === 'own-self')!;
     expect(selfSide).toMatchObject({ targetOwnerId: 'own-self', targetSessionId: 'su-self', matcherKind: 'collision', handleRef: 'su-peer', sourceSessionId: 'su-peer' });
@@ -149,7 +151,7 @@ describe('runCollisionTick — read → fold → save → enqueue both sides', (
     const peerSide = calls.find((c) => c.targetOwnerId === 'own-peer')!;
     expect(peerSide).toMatchObject({ targetOwnerId: 'own-peer', targetSessionId: 'su-peer', matcherKind: 'collision', handleRef: 'su-self', sourceSessionId: 'su-self' });
     // next state saved at tick 10, peer now colliding.
-    const saved = saveCollisionState.mock.calls[0]![0] as { tick: number; states: CollisionState[] };
+    const saved = saveCollisionState.mock.calls[0]![0];
     expect(saved.tick).toBe(10);
     expect(saved.states.find((s) => s.sessionId === 'su-peer')!.colliding).toBe(true);
   });

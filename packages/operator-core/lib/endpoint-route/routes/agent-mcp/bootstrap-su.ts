@@ -179,6 +179,17 @@ export interface BootstrapSuResult {
     pct: number;
     estimator: string;
   };
+  /** Server-owned, token-validated user-turn artifact for a cross-backend
+   * port. The launcher passes this only to the managed PTY host; never argv,
+   * env, AGENTS.md, or an appended system prompt. */
+  sessionPortKickoffFile?: string | null;
+  sessionPort?: {
+    protocolVersion: number;
+    portId: string;
+    sourceAdvSessionId: number;
+    renderedHash: string;
+    status: 'pending';
+  } | null;
 }
 
 const options = defineTool({
@@ -924,6 +935,10 @@ const post = defineTool({
        *  DRAIN directive (instead of the plain AUTO one) into system prompt + kickoff.
        *  Unknown values are refused loudly (400) — never silently ignored. */
       mode?: string | null;
+      /** Cross-backend port handshake. Both fields are mandatory together;
+       * unknown versions fail before any adv/session artifact is created. */
+      session_port_protocol?: number;
+      session_port_token?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -1078,6 +1093,76 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: e?.message ?? 'su launch spec build failed' }, 400);
     }
 
+    let sessionPortContext: {
+      row: import('../../../session-port/store').SessionPortRow;
+      seed: string;
+    } | null = null;
+    const portToken = body.session_port_token?.trim() || null;
+    const portProtocol = body.session_port_protocol;
+    if (portToken || portProtocol != null) {
+      if (!portToken || portProtocol !== 1) {
+        return jsonRes({
+          status: 'error',
+          error: `unsupported/incomplete session-port handshake; launcher and operator must both support protocol 1`,
+          supportedSessionPortProtocols: [1],
+        }, 426);
+      }
+      if (body.fleet?.trim() || body.fleet_name?.trim() || body.seat?.trim() || body.auto === true || body.mode?.trim()) {
+        return jsonRes({
+          status: 'error',
+          error: 'session ports mint a fresh non-fleet, non-AUTO target; fleet/seat/auto/mode authority cannot cross the boundary',
+        }, 409);
+      }
+      const [artifact, store, budgetModule] = await Promise.all([
+        import('../../../session-port/artifact'),
+        import('../../../session-port/store'),
+        // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
+        import('../../../model-context-budget.mjs'),
+      ]);
+      const parsed = artifact.parsePortToken(portToken);
+      if (!parsed) return jsonRes({ status: 'error', error: 'invalid session-port preparation token' }, 401);
+      const row = await store.getSessionPort(parsed.portId, workspace);
+      if (!row) return jsonRes({ status: 'error', error: 'session-port preparation not found in this workspace' }, 404);
+      if (row.protocolVersion !== 1 || row.status !== 'prepared') {
+        return jsonRes({ status: 'error', error: `session port is ${row.status} or version-skewed; refusing a duplicate target` }, 409);
+      }
+      if (row.targetBackend !== agent || (row.targetModel ?? null) !== (model ?? null)) {
+        return jsonRes({
+          status: 'error',
+          error: `prepared target ${row.targetBackend}/${row.targetModel ?? 'default'} does not match bootstrap ${agent}/${model ?? 'default'}`,
+        }, 409);
+      }
+      let seed: string;
+      try {
+        seed = await artifact.readSessionPortArtifact({
+          token: portToken,
+          expectedTokenHash: row.tokenHash,
+          expectedPath: row.artifactPath,
+          expiresAt: row.expiresAt,
+        });
+      } catch (error) {
+        return jsonRes({ status: 'error', error: error instanceof Error ? error.message : String(error) }, 401);
+      }
+      if (!seed.includes(`[PAPERCUSP SESSION PORT CHECKSUM ${row.renderedHash}]`)) {
+        return jsonRes({ status: 'error', error: 'session-port artifact marker/hash mismatch' }, 409);
+      }
+      const previewBudget = budgetModule.buildContextBudget({
+        agent,
+        model,
+        contextSize,
+        promptText: spec.promptText,
+        home: homedir(),
+      });
+      const estimatedTokens = Number(row.metadata.estimatedTokens ?? NaN);
+      if (!Number.isFinite(estimatedTokens) || estimatedTokens > previewBudget.availableInputTokens) {
+        return jsonRes({
+          status: 'error',
+          error: `prepared session port no longer fits the target launch budget (${estimatedTokens} > ${previewBudget.availableInputTokens}); inspect again`,
+        }, 409);
+      }
+      sessionPortContext = { row, seed };
+    }
+
     // Per-session coord/lock owner (P-022). Replaces the wrapper's SID
     // minting: claude's user-level papercusp-su url env-expands ${PAPERCUSP_SID}
     // and the lock hooks read the same var, so a session's interactive calls
@@ -1218,42 +1303,28 @@ const post = defineTool({
       }
     }
 
-    // Record the tracked session first so the prompt/home files key off its id.
-    const sessionId = await recordAdvSession({
-      planSlug,
-      agent,
-      workspaceId: workspace,
-      mode: agent === 'omp' ? 'omp' : 'console',
-      cwd,
-      label: body.label?.trim() || null,
-      coordOwnerId: sid,
-      sessionId: nativeSessionId,
-      launchArgv,
-    });
-
-    // launch-wakeability (turn-lifecycle-control): arm the standing inbox-wake NOW —
-    // the reliable, synchronous, PRE-FIRST-TURN launch moment — so a coordinator sees
-    // this session as `parked`/wakeable the instant bootstrap returns, instead of
-    // waiting on the detached, fail-open SessionStart lifecycle hook (whose lost POST
-    // otherwise leaves a freshly-launched agent visible-but-undispatchable — the "idle
-    // su peers I can't wake" gap). Composes with the recorded-session roster leg: the
-    // adv_sessions row makes it visible, this arm flips `recorded` → `parked`. Idempotent
-    // (the hook's later re-arm refreshes the same standing row) + best-effort (a launch
-    // must never fail on an arm hiccup).
-    try {
-      const { armInboxWake } = await import('../../../events/await/inbox-wake-arm');
-      await armInboxWake({ ownerId: sid, workspaceId: workspace });
-    } catch (e: any) {
-      process.stderr.write(`[bootstrap-su] inbox-wake arm failed (non-fatal): ${e?.message}\n`);
-    }
-
-    const sessionKey = sessionId ?? `t-${randomUUID()}`;
+    // Launch artifacts can be materialized before the tracking row exists. For
+    // a port, key them by the already-durable port id; ordinary launches keep a
+    // throwaway key. Delaying the row lets every fallible prompt/config/budget
+    // check finish before the pending target identity is minted.
+    const sessionKey = sessionPortContext?.row.id ?? `t-${randomUUID()}`;
 
     // psu-account-chooser: resolve before writing Codex launch artifacts so a Codex
     // account pin can be baked into CODEX_HOME/config.toml.
     // HARD pin (account-hard-pin-2026-06-29): the interactive PSU launcher pins are STRICT — the operator
     // explicitly chose this account, so route there with no failover (stricter than the bees' soft pins).
     const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
+    if (sessionPortContext) {
+      const contract = sessionPortContext.row.metadata.contract as { target?: { account?: unknown } } | undefined;
+      const expectedAccount = typeof contract?.target?.account === 'string' ? contract.target.account : 'default';
+      const actualAccount = accountPin.accountId ?? 'default';
+      if (actualAccount !== expectedAccount) {
+        return jsonRes({
+          status: 'error',
+          error: `prepared target account ${expectedAccount} did not resolve exactly at bootstrap (got ${actualAccount}); no fallback allowed`,
+        }, 409);
+      }
+    }
 
     // WI-1343's in-memory setPendingFleet placement used to live here; replaced by the
     // durable membership-fact stamp above (WI-1893 — the map was per-cluster-worker and
@@ -1522,6 +1593,81 @@ const post = defineTool({
       /* flag miss ⇒ replace-base stays off (Claude base + --append stands) */
     }
 
+    // Revalidate the fully assembled launch prompt before minting a pending
+    // target identity. The imported history remains a separate user turn.
+    // @ts-expect-error Plain ESM is intentional: psu-launcher.mjs shares it.
+    const { buildContextBudget } = await import('../../../model-context-budget.mjs');
+    const contextBudget = buildContextBudget({
+      agent,
+      model,
+      contextSize,
+      promptText,
+      home: homedir(),
+    });
+    if (sessionPortContext) {
+      const estimatedTokens = Number(sessionPortContext.row.metadata.estimatedTokens ?? NaN);
+      if (!Number.isFinite(estimatedTokens) || estimatedTokens > contextBudget.availableInputTokens) {
+        return jsonRes({
+          status: 'error',
+          error: `session-port fit changed at bootstrap (${estimatedTokens} > ${contextBudget.availableInputTokens}); inspect again`,
+        }, 409);
+      }
+    }
+
+    // Record only after launch artifact + budget checks are green. A port row
+    // is pending and hidden from resumable lists until native persistence proof.
+    const sessionId = await recordAdvSession({
+      planSlug,
+      agent,
+      workspaceId: workspace,
+      mode: agent === 'omp' ? 'omp' : 'console',
+      cwd,
+      label: body.label?.trim() || null,
+      coordOwnerId: sid,
+      sessionId: nativeSessionId,
+      launchArgv,
+      ...(sessionPortContext ? {
+        portId: sessionPortContext.row.id,
+        portSourceAdvSessionId: sessionPortContext.row.sourceAdvSessionId,
+        portStatus: 'pending',
+        portMetadata: {
+          protocolVersion: sessionPortContext.row.protocolVersion,
+          sourceBackend: sessionPortContext.row.sourceBackend,
+          targetBackend: sessionPortContext.row.targetBackend,
+          targetModel: sessionPortContext.row.targetModel,
+          sourceHash: sessionPortContext.row.sourceHash,
+          normalizedHash: sessionPortContext.row.normalizedHash,
+          renderedHash: sessionPortContext.row.renderedHash,
+        },
+      } : {}),
+    });
+    if (sessionPortContext) {
+      if (sessionId == null) {
+        return jsonRes({ status: 'error', error: 'could not persist the pending session-port target row' }, 503);
+      }
+      try {
+        const { transitionSessionPort } = await import('../../../session-port/store');
+        await transitionSessionPort(sessionPortContext.row.id, workspace, 'pending', {
+          targetAdvSessionId: sessionId,
+          metadata: { targetCoordOwnerId: sid, targetNativeSessionId: nativeSessionId },
+        });
+      } catch (error) {
+        await markAdvSessionEnded(sessionId, 1).catch(() => undefined);
+        return jsonRes({
+          status: 'error',
+          error: `session-port target claim raced or failed: ${error instanceof Error ? error.message : String(error)}`,
+        }, 409);
+      }
+    }
+
+    // The target becomes wakeable only after the tracking row/port claim exists.
+    try {
+      const { armInboxWake } = await import('../../../events/await/inbox-wake-arm');
+      await armInboxWake({ ownerId: sid, workspaceId: workspace });
+    } catch (e: any) {
+      process.stderr.write(`[bootstrap-su] inbox-wake arm failed (non-fatal): ${e?.message}\n`);
+    }
+
     const envelopeEnv: Record<string, string> = {
       ...envelope.env,
       ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
@@ -1555,24 +1701,9 @@ const post = defineTool({
     // --no-kickoff); the server supplies the canonical text (deriveKickoffPrompt,
     // pure + tested) — shared with plans:launch's headless kickoff via
     // ./launch-prompt, so the two never drift.
-    const kickoffPrompt = deriveKickoffPrompt({ planSlug, harnessSlug, autoMode, launchContextPath, drainMode });
-
-    // Shared budget contract (PSU cross-backend port P-017): bootstrap owns
-    // the rendered prompt and has access to the installed backend registries,
-    // so it computes the authoritative launch budget once. The raw-node PSU
-    // launcher imports this same .mjs module for role/fallback preflights.
-    // @ts-expect-error Plain ESM is intentional: psu-launcher.mjs must consume it without tsx.
-    const { buildContextBudget } = await import('../../../model-context-budget.mjs');
-    const contextBudget = buildContextBudget({
-      agent,
-      model,
-      contextSize,
-      // `promptText` is the authoritative, fully assembled source that was just
-      // materialized for every backend. Re-reading the diagnostic artifact here
-      // needlessly couples budgeting to the writer's filesystem implementation.
-      promptText,
-      home: homedir(),
-    });
+    const kickoffPrompt = sessionPortContext
+      ? null
+      : deriveKickoffPrompt({ planSlug, harnessSlug, autoMode, launchContextPath, drainMode });
 
     const result: BootstrapSuResult = {
       status: 'ok',
@@ -1594,6 +1725,14 @@ const post = defineTool({
       fleetRole: fleetPin.fleetRole,
       kickoffPrompt,
       contextBudget,
+      sessionPortKickoffFile: sessionPortContext?.row.artifactPath ?? null,
+      sessionPort: sessionPortContext ? {
+        protocolVersion: sessionPortContext.row.protocolVersion,
+        portId: sessionPortContext.row.id,
+        sourceAdvSessionId: sessionPortContext.row.sourceAdvSessionId,
+        renderedHash: sessionPortContext.row.renderedHash,
+        status: 'pending',
+      } : null,
     };
     return jsonRes(result);
   },
