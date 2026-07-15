@@ -202,6 +202,11 @@ export function selectCursorNotes(rows: JournalNoteInput[], opts: { includeMecha
   for (const r of rows) {
     if (!r || typeof r.note !== 'string' || !r.note.trim()) continue;
     if (r.source === 'mechanical' && !includeMechanical) continue;
+    // Honor the row's own flag, not just its source: turn-journal flags every
+    // note nobody deliberately authored (today that is exactly the mechanical
+    // fallback, but the field is the contract — a future flag source must not
+    // silently leak into the cursor's topic signal).
+    if (r.flagged && !includeMechanical) continue;
     out.push(r.note);
   }
   return out;

@@ -360,22 +360,24 @@ describe('runLivenessAlarmTick (debounced, transition-only)', () => {
     };
 
     const first = await runLivenessAlarmTick('ws', deps);
-    // stale cache → health-tick-stale fires; computed fresh has dead-routines too.
-    expect(first.fired.map((s) => s.key).sort()).toEqual(['dead-routines', 'health-tick-stale']);
-    expect(escalate.calls.length).toBe(2);
+    // stale cache triggers recompute, fresh snapshot shows dead-routines. The fresh
+    // snapshot is NOT reported as stale (WI-4878 fix: snapshotAgeMs = null when fresh),
+    // so health-tick-stale does NOT fire — the fresh data is actually fresh, not stale.
+    expect(first.fired.map((s) => s.key).sort()).toEqual(['dead-routines']);
+    expect(escalate.calls.length).toBe(1);
     expect(escalate.calls[0].summary).toContain('[infra-liveness]');
 
     // Same signals within the debounce window → no new escalations.
     now += 5 * 60_000;
     const second = await runLivenessAlarmTick('ws', deps);
     expect(second.fired).toEqual([]);
-    expect(escalate.calls.length).toBe(2);
+    expect(escalate.calls.length).toBe(1);
 
     // Past the debounce window → fires again.
     now += 30 * 60_000;
     const third = await runLivenessAlarmTick('ws', deps);
-    expect(third.fired.length).toBe(2);
-    expect(escalate.calls.length).toBe(4);
+    expect(third.fired.length).toBe(1);
+    expect(escalate.calls.length).toBe(2);
   });
 
   it('WI-4773: a stale request-worker cache does not page while the shared bg-host heartbeat is fresh', async () => {
