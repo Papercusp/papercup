@@ -129,9 +129,8 @@ export default defineTool({
       'reuse recipes whose tools you may call.',
     notWhen:
       'When no existing recipe fits — author a fresh code:run (which also auto-captures + dedups). ' +
-      'Preview a recipe\'s mutations with dryRun before a committing run. A recipe using raw SQL/shell/nested ' +
-      'code:run, or NESTED inside another recipe\'s own tools.recipes.run(...) — check the failure\'s `reason` ' +
-      '(authority_unresolved = permanent, run it via code:run instead; authority_required = get a proof first).',
+      'Preview a recipe\'s mutations with dryRun before a committing run. On authority_unresolved (incl. nested ' +
+      'tools.recipes.run) check the `reason` — it is often a permanent by-design limit; run via code:run instead.',
     chaining:
       'recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, dryRun:true } → ' +
       'recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',

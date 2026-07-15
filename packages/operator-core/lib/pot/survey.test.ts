@@ -207,6 +207,7 @@ describe('surveyPot (P-012 regression)', () => {
     now: () => NOW,
     fetchBlockGraph: async () => noBlockers,
     fetchQuarantinedCount: async () => 0,
+    fetchEscalatedIssues: async () => [],
     ...over,
   });
 
@@ -727,6 +728,7 @@ describe('surveyPot plan-item blocking (EI-12372)', () => {
     now: () => NOW,
     fetchBlockGraph: async () => noBlockers,
     fetchQuarantinedCount: async () => 0,
+    fetchEscalatedIssues: async () => [],
     ...over,
   });
 
@@ -821,6 +823,7 @@ describe('surveyWorkspace crossPot dedup (EI-8377)', () => {
       loadRegistry: async () => ({ projects: [] }),
       listPlanRows: async () => [],
       fetchFrontier: async () => [],
+      fetchEscalatedIssues: async () => [],
       fetchBlockGraph: async () => ({ blockers: new Map(), statuses: new Map() }),
       fetchQuarantinedCount: async () => 0,
       now: () => NOW,

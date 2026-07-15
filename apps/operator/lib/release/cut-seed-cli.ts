@@ -673,14 +673,19 @@ async function main(): Promise<void> {
       if (!isCorestoreLockedError(e)) throw e;
       await store.close().catch(() => {});
       sourceWritable = false;
-      // --sparse must APPEND a fresh head snapshot; with a read-only source it cannot,
-      // and computeSparseFrom would then find no in-window snapshot and silently ship a
-      // FULL cut. Refuse loudly rather than degrade quietly.
+      // --sparse trims the cut to the head-snapshot span, but appending that fresh head
+      // snapshot needs the write lock the operator holds. Without it computeSparseFrom
+      // finds no in-window snapshot and ships FULL history for the core — the seed is
+      // still COMPLETE and CORRECT, just larger. Sparse is a size optimisation, not a
+      // correctness feature, so degrade rather than fail the release; but say so loudly,
+      // because silently shipping a much bigger installer than asked for is its own trap.
       if (sparse) {
-        throw new Error(
-          `[cut-seed] --sparse needs to append a fresh head snapshot to the hive corestore at ${storeDir}, but ` +
-            'the running operator holds it (a read-only cut cannot append). Without that snapshot a --sparse cut ' +
-            'silently ships FULL. Stop the operator for a sparse cut, or drop --sparse for a full read-only cut.',
+        console.warn(
+          '[cut-seed] --sparse cannot trim this cut: appending the fresh head snapshot it needs requires the ' +
+            'write lock the running operator holds. The cut will ship FULL history (correct, just larger). ' +
+            'For a trimmed cut, quiesce the operator — or, once the owner enables the (currently dark, ' +
+            'P-008-gated) SUBSTRATE_LOG_SNAPSHOT producer, the operator maintains head snapshots itself and a ' +
+            'live sparse cut trims with no quiesce. See WI-4487.',
         );
       }
       store = new Corestore(storeDir, { readOnly: true });
