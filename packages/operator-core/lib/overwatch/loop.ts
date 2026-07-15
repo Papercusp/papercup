@@ -42,7 +42,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { getOrgPg } from "@papercusp/db-org";
-import { loopbackFetch } from "../loopback-fetch";
+import { describeFetchError, loopbackFetch } from "../loopback-fetch";
 import { operatorApiBase } from "../operator-api-base";
 import { classifyFireError, recordFire } from "../autoloop";
 import {
@@ -304,6 +304,11 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = async ({
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+  }, {
+    // This connection stays open for the whole Kettle turn. Use the dispatcher
+    // whose headers/body timeouts cover the invoke ceiling instead of undici's
+    // short default, which otherwise surfaces as a blind `fetch failed`.
+    launch: true,
   })
     .then(
       async (r) => {
@@ -338,7 +343,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = async ({
         return recordFire(installSlug, role, "ok", "ok");
       },
       async (e) => {
-        const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
+        const detail = describeFetchError(e).slice(0, 180);
         console.warn(
           `[overwatch-loop] launch fire failed (${installSlug}/${role}): ${detail}`,
         );

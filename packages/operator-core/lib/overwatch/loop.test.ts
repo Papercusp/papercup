@@ -36,7 +36,10 @@ vi.mock('./liveness', () => ({
 }));
 
 const loopbackFetch = vi.fn();
-vi.mock('../loopback-fetch', () => ({ loopbackFetch: (...a: unknown[]) => loopbackFetch(...a) }));
+vi.mock('../loopback-fetch', async () => ({
+  ...(await vi.importActual<typeof import('../loopback-fetch')>('../loopback-fetch')),
+  loopbackFetch: (...a: unknown[]) => loopbackFetch(...a),
+}));
 
 const overwatchScorecardEndCheck = vi.fn();
 vi.mock('./scorecard-backstop', () => ({ overwatchScorecardEndCheck: (...a: unknown[]) => overwatchScorecardEndCheck(...a) }));
@@ -225,6 +228,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     const [url, opts] = loopbackFetch.mock.calls[0] as [string, { method: string; body: string }];
     expect(url).toBe('http://op/api/harness/papercup-hive/invoke?role=kettle&ws=ws-1&bpkind=overwatch');
     expect(opts.method).toBe('POST');
+    expect(loopbackFetch.mock.calls[0]?.[2]).toEqual({ launch: true });
     const body = JSON.parse(opts.body);
     expect(body.kickoff).toBe('why-i-woke');
     expect(body.timeoutMs).toBe(OVERWATCH_INVOKE_TIMEOUT_MS);
@@ -325,13 +329,19 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
   });
 
-  it('transport failure records an error and runs the scorecard backstop', async () => {
-    loopbackFetch.mockRejectedValue(new Error('connection refused'));
+  it('transport failure preserves the hidden undici cause and runs the scorecard backstop', async () => {
+    const cause = Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' });
+    loopbackFetch.mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause }));
 
     await handleOverwatchLaunch(ctx);
 
     await vi.waitFor(() => {
-      expect(recordFire).toHaveBeenCalledWith(SLUG, 'kettle', expect.stringContaining('connection refused'), 'infra-error'); // WI-669
+      expect(recordFire).toHaveBeenCalledWith(
+        SLUG,
+        'kettle',
+        expect.stringContaining('fetch failed (UND_ERR_HEADERS_TIMEOUT: Headers Timeout Error)'),
+        'infra-error', // WI-669
+      );
     });
     await vi.waitFor(() => {
       expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });

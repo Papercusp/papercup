@@ -5069,6 +5069,78 @@ export function composeResumeModelSpec(model, effort) {
   return normalizeModelSpec(e ? `${m}:${e}` : m);
 }
 
+export const SESSION_PORT_PROTOCOL_VERSION = 1;
+
+function providerForResumeTarget(agent) {
+  if (agent === 'claude') return 'anthropic';
+  if (agent === 'codex') return 'openai';
+  return 'omp-configured-provider';
+}
+
+/** Resolve the backend before account selection. Same-backend selections keep
+ * the byte-identical native resume/fork path; a tracked plain Claude source may
+ * instead create a fresh Codex/OMP session through protocol v1. */
+export function resolveResumeTarget(session, args = {}, selected = {}) {
+  const sourceAgent = session?.agent;
+  if (!AGENTS.includes(sourceAgent)) throw new Error(`unsupported source backend ${String(sourceAgent)}`);
+  const modelSpec = selected.modelSpec ?? args.model ?? null;
+  const hinted = modelSpec ? cloudModelBackendHint(modelSpec) : null;
+  const targetAgent = selected.targetAgent ?? args.agent ?? hinted ?? sourceAgent;
+  if (!AGENTS.includes(targetAgent)) throw new Error(`--agent must be one of ${AGENTS.join('|')}`);
+  const pair = validateAgentModelPair(targetAgent, modelSpec);
+  if (!pair.ok) throw new Error(pair.message);
+  const operation = targetAgent === sourceAgent ? 'native' : 'port';
+  if (operation === 'port') {
+    if (args.fork) throw new Error('--fork is a native same-backend operation and cannot be combined with a session port');
+    if (sourceAgent !== 'claude' || (targetAgent !== 'codex' && targetAgent !== 'omp')) {
+      throw new Error(`session-port protocol v1 supports tracked plain Claude → Codex/OMP only (got ${sourceAgent} → ${targetAgent})`);
+    }
+  }
+  return {
+    operation,
+    sourceAgent,
+    targetAgent,
+    provider: providerForResumeTarget(targetAgent),
+    modelSpec,
+  };
+}
+
+export function sessionPortTargetAccount(account) {
+  if (account?.forward === 'auto' || account?.auto === true) return 'auto';
+  if (account?.id) return account.id;
+  return 'default';
+}
+
+export function sessionPortRequestBody(source, target, account, args = {}) {
+  if (!Number.isSafeInteger(Number(source?.id)) || Number(source.id) <= 0) {
+    throw new Error('cross-backend resume requires a tracked source adv session id');
+  }
+  return {
+    protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+    workspace: source.workspaceId,
+    sourceAdvSessionId: Number(source.id),
+    targetBackend: target.targetAgent,
+    targetModel: target.modelSpec,
+    targetAccount: sessionPortTargetAccount(account),
+    contextSize: args.contextSize ?? null,
+  };
+}
+
+export function formatSessionPortInspection(result) {
+  const i = result?.inspection;
+  if (!i) return ['psu: session-port inspection unavailable'];
+  const s = i.stats ?? {};
+  return [
+    `psu: cross-backend port preview — Claude session #${i.source?.advSessionId} → ${i.target?.backend}/${i.target?.model ?? 'default'}`,
+    `psu: source snapshot — ${i.source?.snapshotKind}, ${i.source?.completeBytes ?? '?'} bytes, sha256 ${String(i.source?.sha256 ?? '').slice(0, 12)}…`,
+    `psu: fidelity — ${i.requiresSummary ? 'summary + recent tail (target budget requires summarization)' : 'full active-path history'}; estimated ${i.fullHistoryEstimatedTokens ?? '?'} tokens / ${i.target?.availableInputTokens ?? '?'} available`,
+    `psu: sanitization — ${s.redactions ?? 0} secret redaction(s), ${s.omittedAttachments ?? 0} attachment omission(s), ${s.unsupportedBlocks ?? 0} unsupported block(s), ${s.sidechainRecords ?? 0} sidechain record(s) excluded`,
+    `psu: egress — target ${i.disclosure?.targetEgress ?? 'unknown'}${i.disclosure?.summarizerEgress ? `; summarizer ${i.disclosure.summarizerEgress}` : '; no summarizer egress'}`,
+    'psu: boundary — creates a NEW target session; source stays untouched; fleet/loop/claims/AUTO/DRAIN authority is not carried.',
+    ...(Array.isArray(i.warnings) ? i.warnings.map((w) => `psu: source warning — ${w}`) : []),
+  ];
+}
+
 /**
  * WI-3758 (owner directive 2026-07-10): a resume SHOWS the session's
  * last-active model and lets you pick the one to resume with. Returns the psu
@@ -5085,69 +5157,79 @@ export function composeResumeModelSpec(model, effort) {
  *     chooseResumeAccount's no-prompt gating) — agent default, exactly the old
  *     behavior.
  */
-async function chooseResumeModel(session, args) {
+async function chooseResumeTarget(session, args) {
   let last = null;
   try {
     last = lastActiveModelFor(session);
   } catch { /* a transcript we can't read only costs the announce */ }
   if (last) console.error(`psu: last active model in this session: ${last}`);
-  if (args.model) return args.model;
-  if (!args.picker) return null;
+  // Explicit CLI selections are a complete scripted target. Cloud aliases can
+  // infer Claude vs Codex; OMP remains explicit (`--agent=omp`) because its
+  // model vocabulary is intentionally open/config-driven.
+  if (args.model || args.agent || !args.picker) return resolveResumeTarget(session, args);
   const { select, input } = await import('@inquirer/prompts');
-  // "Keep" passes the recorded id back through normalizeModelSpec so a
-  // default-1M family (fable/opus/sonnet-5) keeps its 1M window on the resume
-  // — the raw id alone would silently drop to the 200k auto-compact window.
   const picked = await select({
-    message: 'Model for the resumed session?',
+    message: 'Continue this session with which backend/model?',
     choices: [
-      ...(last ? [{ name: `Keep last active — ${last}`, value: normalizeModelSpec(last) }] : []),
-      { name: 'Agent default (no model flag)', value: null },
+      ...(last ? [{ name: `Native ${session.agent}: keep last active — ${last}`, value: { targetAgent: session.agent, modelSpec: normalizeModelSpec(last) } }] : []),
+      { name: `Native ${session.agent}: backend default (no model flag)`, value: { targetAgent: session.agent, modelSpec: null } },
       { name: 'Choose a different model…', value: CHOOSE_MODEL },
     ],
   });
-  if (picked !== CHOOSE_MODEL) return picked;
-  // WI-4889: a MENU instead of a free-text spec. WI-4891: a resume is bound to
-  // session.agent's backend (you can't resume a claude transcript as codex), so
-  // the base-model menu only offers models THAT backend can launch, and the
-  // free-text escape rejects a cross-backend spec instead of building a broken
-  // `claude -m sol`. composeResumeModelSpec normalizes base+effort into the spec.
-  //
-  // The open-set free-text escape (also the whole flow for omp, whose model
-  // vocabulary is config-driven and not the claude/codex CLI aliases): reject a
-  // spec whose native backend differs from this session's — a resume can't
-  // switch backend, so point the user at a fresh session for the other backend.
-  const askCustomSpec = async () => {
+  if (picked !== CHOOSE_MODEL) return resolveResumeTarget(session, args, picked);
+
+  const allowedBackends = session.agent === 'claude' ? AGENTS : [session.agent];
+  const askCustomSpec = async (targetAgent) => {
     const typed = await input({
-      message: 'Model spec (<model>[:<effort>], e.g. fable:high):',
+      message: `${targetAgent} model spec (<model>[:<effort>]; empty = backend default):`,
       validate: (v) => {
         const s = String(v ?? '').trim();
-        if (!s) return true; // empty → agent default
+        if (!s) return true;
         const r = validateModelSpec(s);
         if (!r.ok) return r.message;
-        const hinted = cloudModelBackendHint(s);
-        if (hinted && session.agent !== 'omp' && hinted !== session.agent) {
-          return `\`${s}\` is a ${hinted} model, but this session runs ${session.agent} — a resume can't switch backend. Start a NEW ${hinted} session (psu --agent=${hinted}) to use it.`;
-        }
-        return true;
+        return validateAgentModelPair(targetAgent, s).ok || validateAgentModelPair(targetAgent, s).message;
       },
     });
     const spec = String(typed ?? '').trim();
-    return spec ? normalizeModelSpec(spec) : null;
+    return resolveResumeTarget(session, args, {
+      targetAgent,
+      modelSpec: spec ? normalizeModelSpec(spec) : null,
+    });
   };
-  const menu = resumeModelMenuFor(session.agent);
-  // omp (empty menu) → straight to the free-text spec; no guessed alias list.
-  if (!menu.length) return askCustomSpec();
+
+  const menu = RESUME_MODEL_MENU
+    .filter((row) => allowedBackends.includes(row.backend))
+    .map((row) => ({
+      name: `${row.backend === session.agent ? 'Native' : 'Port to'} ${row.backend}: ${row.name}`,
+      value: { targetAgent: row.backend, model: row.value },
+    }));
   const baseModel = await select({
-    message: 'Base model',
-    choices: [...menu, { name: 'Type a custom model id / full spec…', value: CUSTOM_MODEL }],
+    message: 'Target backend and base model',
+    choices: [
+      ...menu,
+      ...(allowedBackends.includes('omp') ? [{ name: `${session.agent === 'omp' ? 'Native' : 'Port to'} omp: configured/custom model…`, value: { targetAgent: 'omp', model: CUSTOM_MODEL } }] : []),
+      { name: 'Type a custom model id / full spec…', value: CUSTOM_MODEL },
+    ],
   });
-  if (baseModel === CUSTOM_MODEL) return askCustomSpec();
+  if (baseModel === CUSTOM_MODEL) {
+    const targetAgent = allowedBackends.length === 1
+      ? allowedBackends[0]
+      : await select({
+          message: 'Target backend',
+          choices: allowedBackends.map((agent) => ({ name: agent, value: agent })),
+        });
+    return askCustomSpec(targetAgent);
+  }
+  if (baseModel.model === CUSTOM_MODEL) return askCustomSpec(baseModel.targetAgent);
   const effort = await select({
     message: 'Reasoning effort',
     default: '',
     choices: RESUME_EFFORT_MENU,
   });
-  return composeResumeModelSpec(baseModel, effort);
+  return resolveResumeTarget(session, args, {
+    targetAgent: baseModel.targetAgent,
+    modelSpec: composeResumeModelSpec(baseModel.model, effort),
+  });
 }
 
 /** WI-3859 F4: the archive-at-death lifecycle DELETES an ended session's
@@ -5189,6 +5271,101 @@ export async function tryRematerializeFromArchive(
   }
 }
 
+async function launchSessionPort(source, target, account, args) {
+  if (source.role != null) throw new Error('session-port protocol v1 requires a plain tracked SU source');
+  const request = sessionPortRequestBody(source, target, account, args);
+  const inspected = await api('/api/adv/sessions/port/inspect', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+  for (const line of formatSessionPortInspection(inspected)) console.error(line);
+  if (args.picker && !args.yes) {
+    const { confirm } = await import('@inquirer/prompts');
+    const proceed = await confirm({
+      message: `Prepare this sanitized history and launch a new ${target.targetAgent} session?`,
+      default: false,
+    });
+    if (!proceed) {
+      console.error('psu: session port cancelled before egress; no artifact or target session was created.');
+      return;
+    }
+  }
+  const prepared = await api('/api/adv/sessions/port/prepare', {
+    method: 'POST',
+    body: JSON.stringify({
+      ...request,
+      expectedSourceHash: inspected.inspection.source.sha256,
+      currentInstruction: resumeKickoffText(args),
+    }),
+  });
+  console.error(
+    `psu: prepared session port ${prepared.portId} (${prepared.fidelity}; expires ${prepared.expiresAt}) — launching fresh target.`,
+  );
+  const targetArgs = {
+    ...args,
+    picker: false,
+    resume: false,
+    resumeId: null,
+    fork: false,
+    agent: target.targetAgent,
+    model: target.modelSpec,
+    account: sessionPortTargetAccount(account),
+    fleet: null,
+    fleetRole: null,
+    fleetName: null,
+    fleetScheme: null,
+    seat: null,
+    auto: false,
+    mode: null,
+    profile: 'engineer',
+    launchContext: null,
+    launchedBy: null,
+    resumeSession: null,
+    sessionPortProtocol: SESSION_PORT_PROTOCOL_VERSION,
+    sessionPortToken: prepared.token,
+    sessionPortSourceAdvSessionId: Number(source.id),
+    sessionPortSourceCwd: source.cwd,
+  };
+  await launchFreshSu({
+    agent: target.targetAgent,
+    workspace: source.workspaceId,
+    harness: null,
+    plan: source.planSlug ?? null,
+  }, targetArgs);
+}
+
+async function launchResolvedResume(source, args, { tracked }) {
+  // Backend/model first, account second. Account choices are provider-scoped;
+  // prompting before the target is known is how cross-backend resumes get
+  // silently pinned to the source provider.
+  const target = await chooseResumeTarget(source, args);
+  if (target.operation === 'port' && !tracked) {
+    throw new Error('cross-backend resume requires a psu-tracked source session; raw native sessions can only resume/fork in place');
+  }
+  if (target.operation === 'port' && !(await ensureBackendInstalled(target.targetAgent))) {
+    process.exitCode = 1;
+    return;
+  }
+  const account = await chooseResumeAccount({ ...source, agent: target.targetAgent }, args);
+  if (target.operation === 'port') {
+    await launchSessionPort(source, target, account, args);
+    return;
+  }
+  if (args.fork && tracked) {
+    await launchTrackedFork(source, args, account, target.modelSpec);
+    return;
+  }
+  launchResume(source, {
+    fork: args.fork,
+    passthrough: args.passthrough,
+    addDir: args.addDir,
+    accountEnv: account,
+    allowSubagents: args.allowSubagents,
+    model: target.modelSpec,
+    kickoff: resumeKickoffText(args),
+  });
+}
+
 // `psu --resume` (picker) or `psu --resume=<id>` / `psu --resume <id>`
 // (direct): resume a tracked session by adv id, recorded native session id,
 // linked OMP thread id, or Codex rollout UUID under a tracked CODEX_HOME. If
@@ -5227,13 +5404,7 @@ async function resumeFlow(args = {}) {
           process.exit(1);
         }
       }
-      // Re-pin the gateway account (prompt when interactive / honor --account) —
-      // the pin is spawn-env only, so a resume otherwise drops it (option 1).
-      const acct = await chooseResumeAccount(tracked, args);
-      // Show the last-active model + honor/prompt the one to resume with (WI-3758).
-      const model = await chooseResumeModel(tracked, args);
-      if (args.fork) { await launchTrackedFork(tracked, args, acct, model); return; }
-      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model, kickoff: resumeKickoffText(args) });
+      await launchResolvedResume(tracked, args, { tracked: true });
       return;
     }
 
@@ -5282,10 +5453,10 @@ async function resumeFlow(args = {}) {
     }
     // An untracked session has no adv row to seed a tracked fork from — fork it in
     // place (claude mints a random id; resumable only by uuid). launchResume handles it.
-    // Account re-pin applies here too (a raw resume can be routed through the gateway).
-    const acct = await chooseResumeAccount(untracked, args);
-    const model = await chooseResumeModel(untracked, args);
-    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model, kickoff: resumeKickoffText(args) });
+    // Account re-pin applies here too (a raw resume can be routed through the
+    // gateway), but raw sessions remain same-backend: V1 ports require tracked
+    // workspace/source identity and server-side authority checks.
+    await launchResolvedResume(untracked, args, { tracked: false });
     return;
   }
 
@@ -5334,12 +5505,7 @@ async function resumeFlow(args = {}) {
   if (!sessionHasTranscript(picked)) {
     await tryRematerializeFromArchive(picked.sessionId, picked.agent);
   }
-  // Re-pin the gateway account (prompt when interactive / honor --account) before
-  // resuming — the pin is spawn-env only, otherwise lost on resume (option 1).
-  const acct = await chooseResumeAccount(picked, args);
-  const model = await chooseResumeModel(picked, args);
-  if (args.fork) { await launchTrackedFork(picked, args, acct, model); return; }
-  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model, kickoff: resumeKickoffText(args) });
+  await launchResolvedResume(picked, args, { tracked: true });
 }
 
 // `psu --brain` was retired 2026-06-21. Keep a hard CLI tombstone so old
@@ -6012,6 +6178,12 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     wrapperBin: bin,
     args: launchArgs,
     cwd: res.cwd,
+    kickoffFile: res.sessionPortKickoffFile || null,
+    sessionPort: res.sessionPort ? {
+      ...res.sessionPort,
+      workspace: selections.workspace,
+      targetAdvSessionId: res.sessionId,
+    } : null,
     // Anything launched through psu is an agent session for hook purposes:
     // native-scheduler lockout, OMP coord-hook guards, and the destructive
     // shared-tree git guard must all be armed. Direct non-psu Claude terminals

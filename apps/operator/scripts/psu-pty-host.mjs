@@ -1419,6 +1419,16 @@ export function hostThroughPty(o) {
     ? readManagedKickoffFile(kickoffFile, sessionPort?.renderedHash)
     : null;
   const nativeCaptureAfterMs = Date.now();
+  let managedKickoffDisposition = null;
+  const acknowledgeManagedKickoff = (proof) => {
+    if (!managedKickoff) return Promise.resolve();
+    if (!managedKickoffDisposition) {
+      // First terminal outcome wins. Child exit and persistence verification can
+      // race; sharing one promise prevents delivered→failed double transitions.
+      managedKickoffDisposition = Promise.resolve().then(() => onKickoffPersisted(proof));
+    }
+    return managedKickoffDisposition;
+  };
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
   const onExit = o.onExit ?? ((code) => process.exit(code ?? 0));
@@ -1792,7 +1802,7 @@ export function hostThroughPty(o) {
       }
       if (!r.delivered) {
         try {
-          await onKickoffPersisted({
+          await acknowledgeManagedKickoff({
             persisted: false,
             renderedHash: managedKickoff.renderedHash,
             error: `session-port seed was not submitted (${r.reason ?? 'unknown'})`,
@@ -1811,7 +1821,7 @@ export function hostThroughPty(o) {
       });
       if (!proof.persisted) {
         try {
-          await onKickoffPersisted({
+          await acknowledgeManagedKickoff({
             persisted: false,
             renderedHash: managedKickoff.renderedHash,
             error: `session-port seed was submitted but not found in the ${env.PAPERCUSP_AGENT} native transcript`,
@@ -1822,7 +1832,7 @@ export function hostThroughPty(o) {
         return;
       }
       try {
-        await onKickoffPersisted({
+        await acknowledgeManagedKickoff({
           persisted: true,
           renderedHash: managedKickoff.renderedHash,
           nativeRef: proof.nativeRef,
@@ -1834,7 +1844,11 @@ export function hostThroughPty(o) {
         process.stderr.write(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
         try { child.kill(); } catch { /* already exited */ }
       }
-    })();
+    })().catch((error) => {
+      try { process.stderr.write(`psu: managed kickoff failed: ${error?.message ?? error}\n`); }
+      catch { /* diagnostics are best-effort */ }
+      try { child.kill(); } catch { /* already exited */ }
+    });
   }
 
   // P-001a (compaction-continuity-hardening): fold duplicate same-source turn
@@ -2348,8 +2362,24 @@ export function hostThroughPty(o) {
           }
         }
       }
-      resolve(code ?? 0);
-      onExit(code ?? 0);
+      const finishExit = () => {
+        resolve(code ?? 0);
+        onExit(code ?? 0);
+      };
+      if (managedKickoff && !managedKickoffDisposition) {
+        void acknowledgeManagedKickoff({
+          persisted: false,
+          renderedHash: managedKickoff.renderedHash,
+          error: `target child exited (${code ?? 0}) before native session-port persistence was verified`,
+        }).catch((error) => {
+          try { process.stderr.write(`psu: session-port failure acknowledgement failed: ${error?.message ?? error}\n`); }
+          catch { /* diagnostics are best-effort */ }
+        }).finally(finishExit);
+      } else if (managedKickoffDisposition) {
+        void managedKickoffDisposition.catch(() => undefined).finally(finishExit);
+      } else {
+        finishExit();
+      }
     };
 
     // Child-exit wiring, re-attachable for RECYCLE (P-004b). Double-guarded so a

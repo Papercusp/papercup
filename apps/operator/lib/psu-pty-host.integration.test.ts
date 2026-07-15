@@ -7,7 +7,9 @@
  * Spawns a real @lydell/node-pty subprocess, so it's an integration test.
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { execPath } from 'node:process';
@@ -17,6 +19,10 @@ import {
   socketPathFor,
   metaPathFor,
   encodeControl,
+  readManagedKickoffFile,
+  ptyWriteChunks,
+  findNativeTranscriptMarker,
+  waitForNativeTranscriptMarker,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
@@ -72,6 +78,59 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // `process.pid` as a live-host stand-in injects `() => true`"), already applied in the
 // sibling psu-pty-host-turn.integration.test.ts — mirrored here.
 const ID_OK = { verifyIdentity: () => true } as const;
+
+describe('session-port managed seed + native persistence helpers', () => {
+  it('securely reads a 0600 seed and rejects a symlink', () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-port-seed-'));
+    try {
+      const hash = 'a'.repeat(64);
+      const seed = join(root, 'seed.md');
+      writeFileSync(seed, `history\n[PAPERCUSP SESSION PORT CHECKSUM ${hash}]\n`, { mode: 0o600 });
+      chmodSync(seed, 0o600);
+      expect(readManagedKickoffFile(seed, hash)).toMatchObject({ renderedHash: hash });
+      const link = join(root, 'link.md');
+      symlinkSync(seed, link);
+      expect(() => readManagedKickoffFile(link, hash)).toThrow(/regular file/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('chunks the maximum-style UTF-8 paste without changing a code point or exceeding 64KiB/write', () => {
+    const text = `start-${'😀'.repeat(100_000)}-end`;
+    const chunks = ptyWriteChunks(text);
+    expect(chunks.join('')).toBe(text);
+    expect(Math.max(...chunks.map((chunk) => Buffer.byteLength(chunk, 'utf8')))).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it('accepts only the exact marker in the target Codex/OMP native JSONL roots', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-port-native-'));
+    const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${'b'.repeat(64)}]`;
+    try {
+      const codexDir = join(home, 'codex-target', 'sessions', '2026', '07');
+      mkdirSync(codexDir, { recursive: true });
+      const codexFile = join(codexDir, 'rollout.jsonl');
+      writeFileSync(codexFile, `${JSON.stringify({ role: 'user', text: marker })}\n`);
+      expect(findNativeTranscriptMarker({
+        agent: 'codex', env: { CODEX_HOME: join(home, 'codex-target') }, marker, sinceMs: Date.now(), home,
+      })).toBe(codexFile);
+
+      const ompDir = join(home, '.omp-target', 'agent', 'sessions', 'project');
+      mkdirSync(ompDir, { recursive: true });
+      const ompFile = join(ompDir, 'thread.jsonl');
+      writeFileSync(ompFile, `${JSON.stringify({ type: 'message', text: marker })}\n`);
+      const proof = await waitForNativeTranscriptMarker({
+        agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker, sinceMs: Date.now(), home, timeoutMs: 100, pollMs: 5,
+      });
+      expect(proof).toEqual({ persisted: true, nativeRef: ompFile });
+      expect(findNativeTranscriptMarker({
+        agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker: `${marker}-wrong`, sinceMs: Date.now(), home,
+      })).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('hostThroughPty real round-trip', () => {
   it(

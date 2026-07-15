@@ -217,20 +217,35 @@ export async function workspaceForCoordOwner(coordOwnerId: string): Promise<stri
 export async function recordAdvSession(opts: RecordOpts): Promise<number | null> {
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ id: number }[]>`
-      INSERT INTO harness_shared.adv_sessions
-        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id, session_id, display, launch_argv,
-         port_id, port_source_adv_session_id, port_status, port_metadata)
-      VALUES
-        (${opts.workspaceId ?? activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null},
-         ${opts.role ?? null}, ${opts.feature ?? null}, ${opts.mode},
-         ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
-         ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null}, ${opts.sessionId ?? null},
-         ${opts.display ?? null}, ${opts.launchArgv ? JSON.stringify(opts.launchArgv) : null}::text::jsonb,
-         ${opts.portId ?? null}, ${opts.portSourceAdvSessionId ?? null}, ${opts.portStatus ?? null},
-         ${opts.portMetadata ? JSON.stringify(opts.portMetadata) : null}::text::jsonb)
-      RETURNING id
-    `;
+    // Rollout-order compatibility (WI-4936): ordinary sessions must remain
+    // writable while migration 611 is still pending. Mentioning a new column in
+    // an INSERT fails at parse time, even when its value is null, so only the
+    // actual session-port path uses the extended INSERT. A port correctly fails
+    // closed until its schema exists; every pre-existing caller stays legacy-safe.
+    const rows = opts.portId
+      ? await sql<{ id: number }[]>`
+          INSERT INTO harness_shared.adv_sessions
+            (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id, session_id, display, launch_argv,
+             port_id, port_source_adv_session_id, port_status, port_metadata)
+          VALUES
+            (${opts.workspaceId ?? activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null},
+             ${opts.role ?? null}, ${opts.feature ?? null}, ${opts.mode},
+             ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
+             ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null}, ${opts.sessionId ?? null},
+             ${opts.display ?? null}, ${opts.launchArgv ? JSON.stringify(opts.launchArgv) : null}::text::jsonb,
+             ${opts.portId}, ${opts.portSourceAdvSessionId ?? null}, ${opts.portStatus ?? null},
+             ${opts.portMetadata ? JSON.stringify(opts.portMetadata) : null}::text::jsonb)
+          RETURNING id`
+      : await sql<{ id: number }[]>`
+          INSERT INTO harness_shared.adv_sessions
+            (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id, session_id, display, launch_argv)
+          VALUES
+            (${opts.workspaceId ?? activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null},
+             ${opts.role ?? null}, ${opts.feature ?? null}, ${opts.mode},
+             ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
+             ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null}, ${opts.sessionId ?? null},
+             ${opts.display ?? null}, ${opts.launchArgv ? JSON.stringify(opts.launchArgv) : null}::text::jsonb)
+          RETURNING id`;
     return rows[0]?.id ?? null;
   } catch (e) {
     warnUnlessMissingTable(e, 'recordAdvSession');
@@ -479,8 +494,11 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
-             port_id, port_source_adv_session_id, port_status, port_metadata
-        FROM harness_shared.adv_sessions
+             to_jsonb(a)->>'port_id' AS port_id,
+             to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
+             to_jsonb(a)->>'port_status' AS port_status,
+             to_jsonb(a)->'port_metadata' AS port_metadata
+        FROM harness_shared.adv_sessions a
        WHERE workspace_id = ${activeWorkspaceId()}
          AND NOT (
            ended_at IS NOT NULL
@@ -531,10 +549,12 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
-        FROM harness_shared.adv_sessions
+        FROM harness_shared.adv_sessions a
        WHERE agent IS NOT NULL
          AND cwd IS NOT NULL
-         AND (port_status IS NULL OR port_status = 'delivered')
+         -- `to_jsonb(row)->key` is parse-safe before migration 611: a missing
+         -- key is NULL, while pending post-migration ports remain hidden.
+         AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
        ORDER BY started_at DESC
        LIMIT ${limit}
     `;
@@ -576,8 +596,11 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
-             port_id, port_source_adv_session_id, port_status, port_metadata
-        FROM harness_shared.adv_sessions
+             to_jsonb(a)->>'port_id' AS port_id,
+             to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
+             to_jsonb(a)->>'port_status' AS port_status,
+             to_jsonb(a)->'port_metadata' AS port_metadata
+        FROM harness_shared.adv_sessions a
        WHERE workspace_id = ${activeWorkspaceId()}
          AND id = ${id}
        LIMIT 1
@@ -599,9 +622,12 @@ export async function getAdvSessionInWorkspace(id: number, workspaceId: string):
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             started_at, ended_at, exit_code, port_id, port_source_adv_session_id,
-             port_status, port_metadata
-        FROM harness_shared.adv_sessions
+             started_at, ended_at, exit_code,
+             to_jsonb(a)->>'port_id' AS port_id,
+             to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
+             to_jsonb(a)->>'port_status' AS port_status,
+             to_jsonb(a)->'port_metadata' AS port_metadata
+        FROM harness_shared.adv_sessions a
        WHERE workspace_id = ${workspaceId} AND id = ${id}
        LIMIT 1`;
     return rows[0] ? mapAdvSessionRow(rows[0]) : null;

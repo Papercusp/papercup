@@ -72,6 +72,7 @@ import {
   modelArgsFor,
   reportSessionEnded,
   reportSessionResumed,
+  reportSessionPortDelivery,
   tryRematerializeFromArchive,
   roleLaunchArgs,
   suLaunchArgs,
@@ -114,6 +115,11 @@ import {
   RESUME_MODEL_MENU,
   RESUME_EFFORT_MENU,
   resumeModelMenuFor,
+  resolveResumeTarget,
+  sessionPortTargetAccount,
+  sessionPortRequestBody,
+  formatSessionPortInspection,
+  SESSION_PORT_PROTOCOL_VERSION,
   cloudModelBackendHint,
   validateAgentModelPair,
   autoCompactWindowEnv,
@@ -2149,6 +2155,118 @@ describe('resumeModelMenuFor — the resume menu is scoped to the session backen
     for (const row of resumeModelMenuFor('claude')) {
       expect(Object.keys(row).sort()).toEqual(['name', 'value']);
     }
+  });
+});
+
+describe('cross-backend resume target + protocol-v1 launcher contract', () => {
+  const source = {
+    id: 42,
+    agent: 'claude',
+    role: null,
+    workspaceId: 'papercusp-workspace',
+    cwd: '/repo',
+    planSlug: 'the-plan',
+  };
+
+  it('keeps same-backend selections on the native path byte-for-byte', () => {
+    expect(resolveResumeTarget(source, { agent: 'claude', model: 'opus[1m]:high' })).toEqual({
+      operation: 'native',
+      sourceAgent: 'claude',
+      targetAgent: 'claude',
+      provider: 'anthropic',
+      modelSpec: 'opus[1m]:high',
+    });
+  });
+
+  it('infers Codex from a cloud model alias and makes the operation an explicit port', () => {
+    expect(resolveResumeTarget(source, { model: 'sol:xhigh' })).toMatchObject({
+      operation: 'port',
+      sourceAgent: 'claude',
+      targetAgent: 'codex',
+      provider: 'openai',
+      modelSpec: 'sol:xhigh',
+    });
+  });
+
+  it('requires an explicit OMP backend for its open model vocabulary', () => {
+    expect(resolveResumeTarget(source, { agent: 'omp', model: 'local/qwen3:high' })).toMatchObject({
+      operation: 'port', targetAgent: 'omp', provider: 'omp-configured-provider',
+    });
+  });
+
+  it('refuses authority-ambiguous operations and unsupported source directions', () => {
+    expect(() => resolveResumeTarget(source, { agent: 'codex', fork: true })).toThrow(/cannot be combined/);
+    expect(() => resolveResumeTarget({ ...source, agent: 'codex' }, { agent: 'claude' })).toThrow(/v1 supports/);
+    expect(() => resolveResumeTarget(source, { agent: 'codex', model: 'opus' })).toThrow(/belongs to/);
+  });
+
+  it('builds a target-scoped request only from tracked source identity', () => {
+    const target = resolveResumeTarget(source, { agent: 'codex', model: 'sol:high' });
+    expect(sessionPortTargetAccount({ forward: 'auto' })).toBe('auto');
+    expect(sessionPortTargetAccount({ id: 'acct-openai' })).toBe('acct-openai');
+    expect(sessionPortTargetAccount({ notice: 'fallback' })).toBe('default');
+    expect(sessionPortRequestBody(source, target, { id: 'acct-openai' }, { contextSize: 'trimmed' })).toEqual({
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+      workspace: 'papercusp-workspace',
+      sourceAdvSessionId: 42,
+      targetBackend: 'codex',
+      targetModel: 'sol:high',
+      targetAccount: 'acct-openai',
+      contextSize: 'trimmed',
+    });
+    expect(() => sessionPortRequestBody({ ...source, id: null }, target, {}, {})).toThrow(/tracked source/);
+  });
+
+  it('records resume provenance and forwards the opaque handshake/source cwd to bootstrap', () => {
+    const args = {
+      model: 'sol:high',
+      account: 'default',
+      addDir: [], passthrough: [],
+      sessionPortProtocol: 1,
+      sessionPortToken: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
+      sessionPortSourceAdvSessionId: 42,
+      sessionPortSourceCwd: '/source/cwd',
+    };
+    const body = freshSuBootstrapBody(
+      { agent: 'codex', workspace: 'papercusp-workspace', harness: null, plan: 'the-plan' },
+      args,
+    );
+    expect(body.cwd).toBe('/source/cwd');
+    expect(body.session_port_protocol).toBe(1);
+    expect(body.session_port_token).toBe(args.sessionPortToken);
+    expect(body.launch_argv).toContain('--resume=42');
+    expect(body.launch_argv).toContain('--agent=codex');
+  });
+
+  it('renders the inspect-before-egress disclosure with omissions and authority boundary', () => {
+    const lines = formatSessionPortInspection({ inspection: {
+      source: { advSessionId: 42, snapshotKind: 'live-jsonl', completeBytes: 100, sha256: 'a'.repeat(64) },
+      target: { backend: 'codex', model: 'sol', availableInputTokens: 1000 },
+      fullHistoryEstimatedTokens: 2000,
+      requiresSummary: true,
+      stats: { redactions: 2, omittedAttachments: 1, unsupportedBlocks: 3, sidechainRecords: 4 },
+      disclosure: { targetEgress: 'openai/default', summarizerEgress: 'papercusp inference gateway' },
+      warnings: ['one malformed record'],
+    } });
+    expect(lines.join('\n')).toMatch(/summary \+ recent tail/);
+    expect(lines.join('\n')).toMatch(/authority is not carried/);
+    expect(lines.join('\n')).toMatch(/one malformed record/);
+  });
+
+  it('reconciles a lost delivery response against the durable status route', async () => {
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        port: { status: 'delivered', targetAdvSessionId: 99 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const result = await reportSessionPortDelivery(
+      { protocolVersion: 1, portId: '22222222-2222-4222-8222-222222222222', targetAdvSessionId: 99, workspace: 'papercusp-workspace' },
+      { persisted: true, renderedHash: 'a'.repeat(64), nativeRef: '/native/rollout.jsonl' },
+      { fetchImpl, operatorUrl: 'http://operator', token: 'token' },
+    );
+    expect(result.port.status).toBe('delivered');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
 

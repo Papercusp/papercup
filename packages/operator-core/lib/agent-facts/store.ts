@@ -40,6 +40,18 @@ export const FACTS_PER_SCOPE_CAP = 50;
 export const FACTS_FOLD_LIMIT = 12;
 
 /**
+ * P-015 (deterministic-context-carry) dead-end slot key prefix — the canonical
+ * home of the convention. A dead-end fact (a tried-and-failed approach, asserted
+ * via facts:assert { slot:'dead-end' }) is keyed `dead-end:<slug>` so it is
+ * machine-greppable in SQL (`key LIKE 'dead-end:%'`). Defined HERE (not the tool
+ * layer) so the WRITE convention (facts/assert.normalizeDeadEndSlot, which
+ * re-exports this) and the READ filter ({@link foldDeadEndFacts}, the P-006
+ * dead-end matcher live leg's fact source) share one source of truth — a drift
+ * between them would silently hide every dead-end fact from the matcher.
+ */
+export const DEAD_END_KEY_PREFIX = 'dead-end:';
+
+/**
  * P-007 (coord-authority-hardening): the platform-VERIFIED stamp for a TYPED
  * sourceRef (`msg:<id>` / `wi:<id>`/WI-/EI- / `owner-turn`), captured
  * server-side AT ASSERT TIME (H2-tier reuse — see
@@ -389,6 +401,10 @@ export async function foldFacts(
     workspaceId?: string;
     limitPerSelector?: number;
     audiences?: readonly string[] | 'all';
+    /** Narrow the fold to keys starting with this prefix (applied IN SQL, before
+     *  the per-selector LIMIT, so a slot's facts are never crowded out by
+     *  unrelated ones). Used by {@link foldDeadEndFacts}. */
+    keyPrefix?: string;
   } = {},
   inject?: Sql,
 ): Promise<AgentFact[]> {
@@ -396,6 +412,7 @@ export async function foldFacts(
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const limit = opts.limitPerSelector ?? FACTS_FOLD_LIMIT;
+  const keyPrefix = (opts.keyPrefix ?? '').trim();
   const audiences =
     opts.audiences === 'all'
       ? 'all'
@@ -411,6 +428,7 @@ export async function foldFacts(
        WHERE workspace_id = ${ws} AND scope = ${sel.scope}
          AND coalesce(scope_ref,'') = ${ref}
          AND retracted_at IS NULL AND expires_at > now()
+         AND ${keyPrefix ? sql`key LIKE ${keyPrefix + '%'}` : sql`TRUE`}
          AND ${
            audiences === 'all'
              ? sql`TRUE`
@@ -423,6 +441,22 @@ export async function foldFacts(
     out.push(...rows.map(rowToFact));
   }
   return out;
+}
+
+/**
+ * Fold the in-scope DEAD-END facts (the P-015 slot: keys `dead-end:%`) for a set
+ * of selectors — the fact source the P-006 dead-end matcher live leg ticks off.
+ * Same scoping + audience semantics as {@link foldFacts}, narrowed to the
+ * dead-end slot IN SQL so the per-selector limit is spent only on dead-ends. The
+ * default per-selector limit is raised above FACTS_FOLD_LIMIT: this fold isn't a
+ * brief budget, it's the matcher's full candidate set for one tick.
+ */
+export async function foldDeadEndFacts(
+  selectors: readonly FactSelector[],
+  opts: { workspaceId?: string; limitPerSelector?: number; audiences?: readonly string[] | 'all' } = {},
+  inject?: Sql,
+): Promise<AgentFact[]> {
+  return foldFacts(selectors, { ...opts, keyPrefix: DEAD_END_KEY_PREFIX }, inject);
 }
 
 /** List facts for one selector (the facts:list tool read; includes near-expiry).

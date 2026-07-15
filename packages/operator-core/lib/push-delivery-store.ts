@@ -186,6 +186,32 @@ export async function deliveredRefs(
 }
 
 /**
+ * The stateless-matcher ENQUEUE dedup: the set of handle_refs a given matcher
+ * kind already has QUEUED (undelivered) for this owner. A stateless matcher
+ * (dead-end / insight-docs) re-proposes the same ref every tick its cursor still
+ * overlaps the source; {@link deliveredRefs} suppresses re-warning AFTER delivery
+ * (novelty), but nothing stops a fresh QUEUED row piling up every turn BEFORE the
+ * rail next drains — the "Clippy" spam the design forbids. A matcher live leg
+ * skips a ref already in this set so at most one queued row per (owner, matcher,
+ * ref) is ever outstanding. (The collision matcher needs no equivalent: its
+ * hysteresis only enqueues on the enter EDGE, not every tick.)
+ */
+export async function queuedRefs(
+  targetOwnerId: string,
+  matcherKind: MatcherKind,
+): Promise<Set<string>> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ handle_ref: string }>>`
+    SELECT DISTINCT handle_ref
+    FROM harness_shared.push_delivery
+    WHERE target_owner_id = ${targetOwnerId}
+      AND matcher_kind = ${matcherKind}
+      AND status = 'queued'
+  `;
+  return new Set(rows.map((r) => r.handle_ref));
+}
+
+/**
  * The per-class budget's `alreadyDelivered`: how many pushes were delivered to
  * this owner since `sinceIso` (the rolling window). selectPushes subtracts this
  * from the class budget so the window's budget persists across hops.

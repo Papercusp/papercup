@@ -13,7 +13,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS, type FactSourceProvenance } from '../../agent-facts/store';
+import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS, DEAD_END_KEY_PREFIX, type FactSourceProvenance } from '../../agent-facts/store';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 
@@ -53,7 +53,10 @@ export function truncationField(
  * existing delivery surface (orient/brief/dossier fact folds) renders it
  * correctly with zero renderer changes.
  */
-export const DEAD_END_KEY_PREFIX = 'dead-end:';
+// The key prefix is owned by the agent-facts store (single source shared with the
+// P-006 dead-end matcher's read filter, foldDeadEndFacts) — re-exported here so the
+// slot's write-side helpers + existing importers keep their `./assert` import path.
+export { DEAD_END_KEY_PREFIX };
 export const DEAD_END_BODY_PREFIX = '⛔ DEAD END — do not retry: ';
 
 /** PURE: normalize a slot:'dead-end' assert's key/body onto the slot encoding.
