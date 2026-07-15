@@ -193,12 +193,16 @@ teardown() {
 }
 
 # ── boot Xvfb (isolated, headless — never DISPLAY :0/:1) ────────────────────
-Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp >"$WORK/xvfb.log" 2>&1 &
+# --boot-only returns control to its caller, so every long-lived process must
+# live outside the launcher's terminal session. Without setsid, closing a PTY
+# kills Xvfb; WebKit then exits with XIO and the "ready" desktop disappears
+# before the caller's first tauri-agent-tools command (WI-4975).
+setsid Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp >"$WORK/xvfb.log" 2>&1 &
 XVFB_PID=$!
 trap teardown EXIT INT TERM
 sleep 1
 DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
-DISPLAY=":$DISPLAY_NUM" openbox >"$WORK/openbox.log" 2>&1 &
+setsid env DISPLAY=":$DISPLAY_NUM" openbox >"$WORK/openbox.log" 2>&1 &
 OPENBOX_PID=$!
 
 # ── real-GPU GL check (agent-e2e.mdx §15.4: bare Xvfb has no GL → WebKitGTK
@@ -393,7 +397,11 @@ if [ "${1:-}" = "--boot-only" ]; then
   # advisory port locks alive in a tiny child for the interactive session.
   # It exits automatically when the owned Tauri wrapper dies; the printed stop
   # script also kills it explicitly during normal cleanup.
-  ( while kill -0 "$TAURI_PID" 2>/dev/null; do sleep 2; done ) &
+  # A subshell inherits EXIT traps. Clear the launcher's teardown trap inside
+  # the keeper BEFORE it waits: the `tauri dev` wrapper may exit after handing
+  # off to the real desktop process, and the keeper ending must never tear down
+  # that app/Xvfb/sidecar out from under the interactive caller (WI-4975).
+  ( trap - EXIT INT TERM; while kill -0 "$TAURI_PID" 2>/dev/null; do sleep 2; done ) &
   PORT_LOCK_KEEPER_PID=$!
   trap - EXIT INT TERM   # caller owns teardown from here
   write_stop_script
