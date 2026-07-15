@@ -291,6 +291,13 @@ export default defineTool({
     ],
   },
   capability: 'plans:write',
+  // Idempotent-completion (backend-reliability-100pct-2026-07-03 W6/P-007; EI-11507): a plans:new
+  // whose wall-clock beat the 55s transport deadline still COMMITTED the plan — the slug write runs
+  // inside withPlanLock, synchronously before the handler returns. Surfacing the TRUTHFUL success
+  // instead of a spurious `timeout` stops the forced verify-read; and a genuine retry is safe — the
+  // plan lock's slug uniqueness makes a re-create a no-op (slug_exists), never a duplicate plan.
+  // Same opt-in already shipped for plans:set-status. Inert except in the dispatch abort-race branch.
+  idempotent: true,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],

@@ -99,6 +99,20 @@ beforeEach(() => {
   fireReactionInProcess.mockResolvedValue({ ok: true });
 });
 
+// ── EI-11507: idempotent-completion opt-in (false-timeout fix) ───────────────────────────
+// A completion whose wall-clock beat the 55s transport deadline STILL COMMITTED (the finish
+// saga is documented retry-safe). Declaring `idempotent: true` opts the tool into the dispatch
+// abort-race branch (dispatch-stack.ts) that surfaces the TRUTHFUL success instead of a spurious
+// `timeout`, so the caller stops the mandatory *:get verify-read + partial-batch reconciliation.
+// The abort-race branch itself is exercised in libs/generic/tooldef dispatch-projected.test.ts;
+// this pins the missing link — that THIS mutation tool actually declares the flag, mirroring
+// plans:set-status's own W6/P-007 remediation.
+describe('work_items:complete idempotent-completion opt-in (EI-11507)', () => {
+  it('declares idempotent:true so a committed-but-slow completion surfaces success, not a false timeout', () => {
+    expect((complete as { idempotent?: boolean }).idempotent).toBe(true);
+  });
+});
+
 describe('work_items:complete (keyed-array)', () => {
   it('errors cleanly per item when the work-item does not exist', async () => {
     getWorkItem.mockResolvedValue(null);
