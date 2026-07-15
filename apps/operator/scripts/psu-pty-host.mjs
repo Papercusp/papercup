@@ -907,7 +907,7 @@ export function stripAnsi(s) {
 export function startupOutputReady(agent, output) {
   const visible = stripAnsi(output);
   if (String(agent ?? '').toLowerCase() === 'omp') return /\bomp\s+v\d/i.test(visible);
-  return visible.length > 0;
+  return String(output ?? '').length > 0;
 }
 
 /** Terminate the entire process group created by forkpty, not only its leader.
@@ -2569,6 +2569,9 @@ export function hostThroughPty(o) {
       await injectTurnAtPrompt({
         text: carryText,
         label: 'recycle carry-note',
+        // A fresh child can be output-quiet before its input handler exists.
+        // Apply the same backend-aware boot proof as a scripted resume/port.
+        requireInitialOutput: true,
         onDrop: () => {
           baseMeta.lastCarryDropAt = Date.now();
           baseMeta.carryDropCount = (baseMeta.carryDropCount || 0) + 1;

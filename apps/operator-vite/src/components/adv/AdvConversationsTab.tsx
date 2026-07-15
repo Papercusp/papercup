@@ -1779,7 +1779,17 @@ function ThreadsView({
     staleTime: 30_000,
   });
   const list = listQuery.data ?? [];
-  const detail = detailQuery.data?.[0] ?? null;
+  // usePollingQuery sets `placeholderData: keepPreviousData` on every
+  // useSyncQuery (list AND per-id detail alike) so a filter/pagination change
+  // stays warm instead of blanking. For an id-scoped DETAIL query that has a
+  // sharp side effect: switching the selected thread hands back the PREVIOUS
+  // thread's fully-loaded detail — mislabeled as the new selection — until the
+  // new id's fetch resolves, which reads as the detail pane flashing/lagging
+  // (WI-4142; the production Conversations flashing report). Guard on row
+  // identity so a cross-id placeholder is never trusted as "the" detail; the
+  // sel-mismatch case falls through to the loading skeleton below instead.
+  const detailRow = detailQuery.data?.[0] ?? null;
+  const detail = detailRow && detailRow.id === sel ? detailRow : null;
   const loading = listQuery.loading;
   const error = listQuery.error ? errText(listQuery.error) : null;
 
@@ -2078,7 +2088,12 @@ function DeliberationsView({
   });
   const list = listQuery.data ?? [];
   const total = readListTotal(list);
-  const detail = detailQuery.data?.[0];
+  // See the matching guard + comment in ThreadsView: keepPreviousData means a
+  // just-switched selection can hand back the PREVIOUS thread's detail row
+  // mislabeled as the new one until its own fetch resolves. Only trust it once
+  // its own thread_id matches the current selection (WI-4142).
+  const detailRow = detailQuery.data?.[0];
+  const detail = detailRow && detailRow.thread?.thread_id === sel ? detailRow : undefined;
   const head = detail?.thread ?? null;
   const posts = detail?.posts ?? [];
   const loading = listQuery.loading;
@@ -2283,7 +2298,11 @@ function AgentChatsView({
   });
   const list = listQuery.data ?? [];
   const total = readListTotal(list);
-  const detail = detailQuery.data?.[0] ?? null;
+  // See the matching guard + comment in ThreadsView (WI-4142): don't trust a
+  // keepPreviousData cross-id placeholder — a chat switch can otherwise show
+  // the PREVIOUS session's transcript mislabeled as the new selection.
+  const detailRow = detailQuery.data?.[0] ?? null;
+  const detail = detailRow && detailRow.id === sel ? detailRow : null;
   const loading = listQuery.loading;
   const error = listQuery.error ? errText(listQuery.error) : null;
 
@@ -2524,7 +2543,11 @@ function MessagesView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
   });
   const list = listQuery.data ?? [];
   const total = readListTotal(list);
-  const messageDetail = detailQuery.data?.[0] ?? null;
+  // See the matching guard + comment in ThreadsView (WI-4142): a keepPreviousData
+  // cross-id placeholder must not be trusted as the currently-open message —
+  // fall back to the (already-loaded) list row, then to the loading state.
+  const messageDetailRaw = detailQuery.data?.[0] ?? null;
+  const messageDetail = messageDetailRaw && messageDetailRaw.id === open ? messageDetailRaw : null;
   const selectedMessage = messageDetail ?? list.find((message) => message.id === open) ?? null;
   const loading = listQuery.loading;
   const error = listQuery.error ? errText(listQuery.error) : null;
