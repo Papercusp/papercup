@@ -146,14 +146,16 @@ describe('clampCompactionLimit (the default is also the CEILING)', () => {
 // functions agree value-for-value. This suite pins the CONTRACT (what passes / what
 // the corrective message says) independently of that cross-package guard.
 describe('validateCloudModelSpec (tool-boundary cloud model-spec guard — WI-1993)', () => {
-  it('KNOWN_CLOUD_ALIASES is the canonical short-alias set', () => {
-    expect([...KNOWN_CLOUD_ALIASES]).toEqual(['opus', 'sonnet', 'haiku', 'fable']);
+  it('KNOWN_CLOUD_ALIASES is the canonical short-alias set (Anthropic + OpenAI GPT-5.6)', () => {
+    expect([...KNOWN_CLOUD_ALIASES]).toEqual(['opus', 'sonnet', 'haiku', 'fable', 'sol', 'terra', 'luna']);
   });
   it('accepts valid aliases, effort specs, full/provider ids, [1m] round-trips, local ids, and empty', () => {
     for (const s of [
       'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
       'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
       'claude-sonnet-5:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'sol', 'sol:high', 'sol:max', 'terra:xhigh', 'luna', 'luna:medium',
+      'gpt-5.6-sol', 'gpt-5.6-terra:high', 'gpt-5.6-luna:xhigh',
       'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
     ]) {
       expect(validateCloudModelSpec(s).ok, s).toBe(true);
@@ -178,6 +180,17 @@ describe('validateCloudModelSpec (tool-boundary cloud model-spec guard — WI-19
       const r = validateCloudModelSpec(bad);
       expect(r.ok, bad).toBe(false);
       expect(r.message, bad).toContain(want);
+    }
+  });
+  it('rejects version-suffixed GPT-5.6 aliases (sol-5.6, terra-5, luna-5.6) and suggests the bare alias', () => {
+    for (const [bad, want] of [
+      ['sol-5.6', 'sol'], ['terra-5', 'terra'], ['luna-5.6', 'luna'],
+      ['sol-5.6:high', 'sol:high'], ['terra-5:xhigh', 'terra:xhigh'],
+    ] as const) {
+      const r = validateCloudModelSpec(bad);
+      expect(r.ok, bad).toBe(false);
+      expect(r.message, bad).toContain(want);
+      expect(r.message, bad).toContain('gpt-5.6-');
     }
   });
 });

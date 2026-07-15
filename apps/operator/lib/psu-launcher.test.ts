@@ -2424,6 +2424,8 @@ describe('validateModelSpec + --model guard (WI-1979 — reject a malformed mode
       'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
       'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
       'claude-sonnet-5:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'sol', 'sol:high', 'sol:max', 'terra:xhigh', 'luna', 'luna:medium',
+      'gpt-5.6-sol', 'gpt-5.6-terra:high', 'gpt-5.6-luna:xhigh',
       'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
     ]) {
       expect(validateModelSpec(s).ok, s).toBe(true);
@@ -2448,10 +2450,11 @@ describe('validateModelSpec + --model guard (WI-1979 — reject a malformed mode
       expect(r.message, bad).toContain(want);
     }
   });
-  it('rejects the alias-glued-to-version shorthand (sonnet-5 / opus-4.8 / haiku-4) — the common leak that reached the CLI as an unrunnable id', () => {
+  it('rejects the alias-glued-to-version shorthand (sonnet-5 / opus-4.8 / haiku-4 / sol-5.6) — the common leak that reached the CLI as an unrunnable id', () => {
     for (const [bad, want] of [
       ['sonnet-5', 'sonnet'], ['sonnet-5:high', 'sonnet:high'], ['opus-4.8', 'opus'],
       ['haiku-4', 'haiku'], ['fable-5:xhigh', 'fable:xhigh'], ['opus-4-8', 'opus'], ['sonnet5', 'sonnet'],
+      ['sol-5.6', 'sol'], ['terra-5', 'terra'], ['luna-5.6', 'luna'], ['sol-5.6:high', 'sol:high'],
     ] as const) {
       const r = validateModelSpec(bad);
       expect(r.ok, bad).toBe(false);
@@ -2483,6 +2486,8 @@ describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift gua
     'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
     'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
     'claude-sonnet-5:high', 'claude-opus-4-8', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+    'sol', 'sol:high', 'terra:xhigh', 'luna', 'luna:medium',
+    'gpt-5.6-sol', 'gpt-5.6-terra:high', 'gpt-5.6-luna:xhigh',
     'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
     // plausible-unknown (pass)
     'o3', 'gpt4', 'grok',
@@ -2490,6 +2495,7 @@ describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift gua
     'fabel5[1m]', 'fabel', 'sonet', 'sonnet5', 'opus4', 'opuss', 'fabel5:xhigh', 'opus[1m]x',
     // rejected: alias-glued-to-version shorthand (the sonnet-5 leak this guard closes)
     'sonnet-5', 'sonnet-5:high', 'opus-4.8', 'haiku-4', 'fable-5:xhigh', 'opus-4-8',
+    'sol-5.6', 'sol-5.6:high', 'terra-5', 'luna-5.6',
   ];
   it('the two copies return an identical { ok, message } for every spec', () => {
     for (const s of VECTORS) {

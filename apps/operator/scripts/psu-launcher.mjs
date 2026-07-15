@@ -3031,8 +3031,9 @@ export function isFleetMemberLaunch(args) {
 
 /** The canonical BARE cloud model aliases psu recognizes. Short + lowercase. The CLI/gateway own
  *  the full OPEN set of ids, so this list is used ONLY to spot an obviously-misspelled short alias
- *  (validateModelSpec) — never to gate full/provider ids. */
-export const KNOWN_CLOUD_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+ *  (validateModelSpec) — never to gate full/provider ids. Includes Anthropic (opus/sonnet/haiku/fable)
+ *  and OpenAI GPT-5.6 (sol/terra/luna) families. */
+export const KNOWN_CLOUD_ALIASES = ['opus', 'sonnet', 'haiku', 'fable', 'sol', 'terra', 'luna'];
 
 /** Native backend hint for unambiguous cloud model families. Unknown model ids
  * stay open-set and return null; explicit OMP remains valid for either family. */
@@ -3146,15 +3147,16 @@ export function validateModelSpec(spec) {
   //     appends [1m], so `sonnet-5` reaches the CLI as an unrunnable id. A genuine full id starts with a
   //     VENDOR prefix (`claude-…`, `anthropic.…`), never a bare alias, so it is unaffected — checked HERE,
   //     BEFORE the dash/version passthrough below that would otherwise wave `sonnet-5` through as a full id.
-  const aliasVer = core.toLowerCase().match(/^(opus|sonnet|haiku|fable)(?=[-.]?[0-9])/);
+  const aliasVer = core.toLowerCase().match(/^(opus|sonnet|haiku|fable|sol|terra|luna)(?=[-.]?[0-9])/);
   if (aliasVer) {
     const fam = aliasVer[1];
+    const prefix = /^(sol|terra|luna)$/i.test(fam) ? 'gpt-5.6-' : 'claude-';
     return {
       ok: false,
       message:
         `\`${s}\` is not a recognized model spec. Did you mean \`${effort ? `${fam}:${effort}` : fam}\`? ` +
         `Type the BARE alias (${KNOWN_CLOUD_ALIASES.join('/')}) — psu resolves it to the latest generation, appending the [1m] 1M-context window — ` +
-        `not a versioned shorthand; pin a specific generation only as a full id (e.g. claude-${fam}-5).`,
+        `not a versioned shorthand; pin a specific generation only as a full id (e.g. ${prefix}${fam}-5).`,
     };
   }
   // A full/provider id (dashes/dots/slashes/version) is NOT alias-shaped → open set, pass — including
