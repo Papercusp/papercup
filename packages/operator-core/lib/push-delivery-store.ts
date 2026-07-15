@@ -166,6 +166,50 @@ export async function recordDropped(
 }
 
 /**
+ * P-011 outcome stamp: the receiver RESOLVED a delivered push's handle (pulled
+ * the brief). Keyed by (owner, handle_ref) — the correlation axis
+ * push_delivery_ref_idx serves: the outcome probe sees a handle being resolved,
+ * never a row id. First observation wins (an already-stamped row is left alone),
+ * and only DELIVERED rows take the stamp — a queued/dropped push never reached
+ * the receiver, so it cannot have been pulled. Returns the count stamped by THIS
+ * call (0 = nothing delivered under that ref, or already stamped).
+ */
+export async function recordPulled(targetOwnerId: string, handleRef: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ id: number }>>`
+    UPDATE harness_shared.push_delivery
+    SET pulled_at = now()
+    WHERE target_owner_id = ${targetOwnerId}
+      AND handle_ref = ${handleRef}
+      AND status = 'delivered'
+      AND pulled_at IS NULL
+    RETURNING id
+  `;
+  return rows.length;
+}
+
+/**
+ * P-011 outcome stamp: a downstream ACTION followed a delivered push (route
+ * change / lock taken / fact read). Independent of {@link recordPulled} — acting
+ * on the teaser alone, without resolving the handle, is still genuine engagement
+ * (push-utilization's PushOutcome contract), so acted_at never implies pulled_at.
+ * Same keying + idempotence as recordPulled.
+ */
+export async function recordActed(targetOwnerId: string, handleRef: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ id: number }>>`
+    UPDATE harness_shared.push_delivery
+    SET acted_at = now()
+    WHERE target_owner_id = ${targetOwnerId}
+      AND handle_ref = ${handleRef}
+      AND status = 'delivered'
+      AND acted_at IS NULL
+    RETURNING id
+  `;
+  return rows.length;
+}
+
+/**
  * The novelty-dedup set: distinct handle refs DELIVERED to this owner since
  * `sinceIso` (the budget/dedup window). ambient-push.isNovelPush drops a push
  * whose ref is already here (already delivered ⇒ not novel).

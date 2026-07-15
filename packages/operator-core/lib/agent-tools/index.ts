@@ -122,6 +122,9 @@ import './activity/tool-log';
 // (turn-end ingest via the per-CLI hooks + the fleet-readable read surface).
 import './journal/record-turn';
 import './journal/recent';
+// ambient-semantic-push-2026-07-14 P-011 — the per-matcher push-utilization
+// dashboard (read-only, advisory-only; eviction/tuning stays a human decision).
+import './journal/push-utilization';
 import './curation/feed';
 import './curation/change-feed';
 // hive-creative-ideation-2026-06-08 P-003 (B1) — the "state of the Hive" corpus digest (Scout loop substrate):

@@ -295,6 +295,24 @@ export interface HarnessBlockGraph {
   statuses: Map<string, string>;
 }
 
+/**
+ * Plan-item blocking graph for the readiness filter: resolves whether a plan-item
+ * is blocked by its blockedBy chain (EI-12372). Since work-items can link to
+ * plan-items via `payload.plan_item`, a frontier work-item is unplaceable if its
+ * linked plan-item's blockers are unresolved.
+ * - `planItemBlockers`: plan_slug → { item_id → blocker_item_ids[] } (the plan-item's `blockedBy` field)
+ * - `planItemStatuses`: (plan_slug, item_id) → status, for resolving blocker terminal-ness
+ */
+export interface PlanItemBlockGraph {
+  /** plan_slug → (item_id → blocker_item_ids[]). */
+  planItemBlockers: Map<string, Map<string, string[]>>;
+  /** plan_slug → (item_id → status), for blocker terminal resolution. */
+  planItemStatuses: Map<string, Map<string, string>>;
+}
+
+/** Terminal statuses for plan-items (same as the orchestrator uses). */
+const PLAN_ITEM_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['passed', 'deprecated', 'done']);
+
 /** Dispatchable status for the survey's frontier: an unplaced lane is a `todo` item. */
 const FRONTIER_READINESS: ReadonlySet<string> = new Set(['todo']);
 
@@ -304,11 +322,14 @@ const FRONTIER_READINESS: ReadonlySet<string> = new Set(['todo']);
  * is ready iff every blocker is TERMINAL (passed/deprecated) or absent. So a wave's
  * tier2 stays out of the Mug's frontier until tier1 completes (D-002: one
  * readiness, two consumers). Feature ids aren't globally unique, so readiness is
- * computed per-harness. Returns the kept (ready) rows and the count dropped.
+ * computed per-harness. Also checks plan-item blocking (EI-12372): a work-item
+ * whose linked plan-item (via `payload.plan_item`) has unresolved blockers is
+ * excluded. Returns the kept (ready) rows and the count dropped.
  */
 export function filterReadyFrontier(
   rows: readonly FrontierRow[],
   graphByHarness: ReadonlyMap<string, HarnessBlockGraph>,
+  planItemGraph?: PlanItemBlockGraph,
 ): { ready: FrontierRow[]; blockedCount: number } {
   const byHarness = new Map<string, FrontierRow[]>();
   for (const r of rows) {
@@ -349,8 +370,35 @@ export function filterReadyFrontier(
     const { ready: readyNodes } = selectReady([...nodes.values()], new Set(), FRONTIER_READINESS);
     const readyIds = new Set(readyNodes.map((n) => n.id));
     for (const r of hRows) {
-      if (readyIds.has(r.feature_id)) ready.push(r);
-      else blockedCount += 1;
+      if (!readyIds.has(r.feature_id)) {
+        blockedCount += 1;
+        continue;
+      }
+      // Check if this work-item's linked plan-item (if any) is blocked (EI-12372).
+      // A work-item with payload.plan_item = { plan_slug, item_id } is blocked if
+      // its plan-item has unresolved blockers in its blockedBy chain.
+      if (planItemGraph && r.payload && typeof r.payload === 'object' && 'plan_item' in r.payload) {
+        const planItem = (r.payload as Record<string, unknown>).plan_item;
+        if (planItem && typeof planItem === 'object' && 'plan_slug' in planItem && 'item_id' in planItem) {
+          const planSlug = (planItem as Record<string, unknown>).plan_slug as string;
+          const itemId = (planItem as Record<string, unknown>).item_id as string;
+          const planBlockers = planItemGraph.planItemBlockers.get(planSlug)?.get(itemId) ?? [];
+          // Check if any blocker is non-terminal.
+          let planItemBlocked = false;
+          for (const blocker of planBlockers) {
+            const blockerStatus = planItemGraph.planItemStatuses.get(planSlug)?.get(blocker);
+            if (!blockerStatus || !PLAN_ITEM_TERMINAL_STATUSES.has(blockerStatus)) {
+              planItemBlocked = true;
+              break;
+            }
+          }
+          if (planItemBlocked) {
+            blockedCount += 1;
+            continue;
+          }
+        }
+      }
+      ready.push(r);
     }
   }
   return { ready, blockedCount };
@@ -614,6 +662,50 @@ export async function fetchHarnessBlockGraph(
   return { blockers, statuses };
 }
 
+/**
+ * Build a plan-item blocking graph from plan rows (EI-12372): maps each plan's
+ * items to their blockedBy dependencies and resolved statuses. This allows the
+ * frontier filter to exclude work-items whose linked plan-item has unresolved
+ * blockers. Pure, injected for testability.
+ */
+export function buildPlanItemBlockGraph(planRowsPerHarness: readonly PlanIndexRow[][]): PlanItemBlockGraph {
+  const planItemBlockers = new Map<string, Map<string, string[]>>();
+  const planItemStatuses = new Map<string, Map<string, string>>();
+
+  for (const rows of planRowsPerHarness) {
+    for (const row of rows) {
+      const planSlug = row.planSlug;
+      // Initialize maps for this plan if not already present
+      if (!planItemBlockers.has(planSlug)) {
+        planItemBlockers.set(planSlug, new Map());
+        planItemStatuses.set(planSlug, new Map());
+      }
+      const itemBlockers = planItemBlockers.get(planSlug)!;
+      const itemStatuses = planItemStatuses.get(planSlug)!;
+
+      // Build a map of item_id → status for quick lookup
+      const itemStatusMap = new Map<string, string>();
+      for (const item of row.items) {
+        itemStatusMap.set(item.id, item.status);
+      }
+
+      // Record blockedBy and statuses for each item
+      for (const item of row.items) {
+        itemBlockers.set(item.id, item.blockedBy ?? []);
+        // Also record all blocker statuses for terminal resolution
+        for (const blocker of item.blockedBy ?? []) {
+          const blockerStatus = itemStatusMap.get(blocker);
+          if (blockerStatus) {
+            itemStatuses.set(blocker, blockerStatus);
+          }
+        }
+      }
+    }
+  }
+
+  return { planItemBlockers, planItemStatuses };
+}
+
 // ── The assembled survey ────────────────────────────────────────────────────
 
 export interface PotSurvey {
@@ -785,6 +877,8 @@ export async function surveyPot(
   // Honor blocked_by (W-01/P-010): resolve each surveyed harness's blocking graph
   // and drop frontier lanes whose blockers aren't satisfied — the SAME readiness
   // the orchestrator dispatches by. Per-harness because feature ids aren't global.
+  // Also check plan-item blocking (EI-12372): exclude work-items whose linked
+  // plan-item has unresolved blockers.
   const frontierHarnesses = [...new Set(frontierRows.map((r) => r.harness_slug))];
   const graphByHarness = new Map<string, HarnessBlockGraph>();
   await Promise.all(
@@ -801,7 +895,13 @@ export async function surveyPot(
       }
     }),
   );
-  const { ready: readyFrontierRowsAll, blockedCount } = filterReadyFrontier(frontierRows, graphByHarness);
+  // Build plan-item blocking graph from the plan rows (EI-12372).
+  const planItemGraph = buildPlanItemBlockGraph(planRowsPerHarness);
+  const { ready: readyFrontierRowsAll, blockedCount } = filterReadyFrontier(
+    frontierRows,
+    graphByHarness,
+    planItemGraph,
+  );
   if (blockedCount > 0) {
     console.log(
       `[pot-survey] frontier: ${blockedCount} lane(s) held back by unsatisfied blocked_by; ${readyFrontierRowsAll.length} ready`,

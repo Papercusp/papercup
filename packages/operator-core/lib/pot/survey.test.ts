@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanIndexRow } from '../agent-tools/plans/source';
 import {
+  buildPlanItemBlockGraph,
   filterReadyFrontier,
   frontierInEligiblePlans,
   notStopped,
@@ -18,6 +19,7 @@ import {
   surveyWorkspace,
   type FrontierRow,
   type HarnessBlockGraph,
+  type PlanItemBlockGraph,
   type SurveyDeps,
 } from './survey';
 
@@ -148,6 +150,54 @@ describe('frontierRowToCandidate', () => {
     const c = frontierRowToCandidate(frontierRow({ feature_id: 'WI-9', harness_slug: 'papercup', feature_order: 7 }), NOW);
     expect(c).toMatchObject({ id: 'WI-9', view: 'work-item', harness: 'papercup', importance: 'normal', opPriority: 7 });
     expect(c.ageDays).toBeCloseTo(1, 5);
+  });
+});
+
+describe('buildPlanItemBlockGraph (EI-12372)', () => {
+  it('builds a mapping of plan-item blockedBy dependencies and statuses', () => {
+    const rows = [
+      planRow({
+        planSlug: 'P-main',
+        harnessSlug: 'h1',
+        items: [
+          { id: 'P-001', status: 'todo', text: '', importance: 'high', blockedBy: [], decisionRefs: [], phase: null },
+          { id: 'P-002', status: 'todo', text: '', importance: 'high', blockedBy: ['P-001'], decisionRefs: [], phase: null },
+          { id: 'P-003', status: 'wip', text: '', importance: 'high', blockedBy: ['P-001', 'P-002'], decisionRefs: [], phase: null },
+        ],
+      }),
+    ];
+
+    const graph = buildPlanItemBlockGraph([rows]);
+
+    expect(graph.planItemBlockers.get('P-main')?.get('P-001')).toEqual([]);
+    expect(graph.planItemBlockers.get('P-main')?.get('P-002')).toEqual(['P-001']);
+    expect(graph.planItemBlockers.get('P-main')?.get('P-003')).toEqual(['P-001', 'P-002']);
+
+    // Blocker statuses are recorded for terminal resolution
+    expect(graph.planItemStatuses.get('P-main')?.get('P-001')).toBe('todo');
+    expect(graph.planItemStatuses.get('P-main')?.get('P-002')).toBe('todo');
+  });
+
+  it('handles multiple plans in the graph', () => {
+    const rows = [
+      planRow({
+        planSlug: 'P-plan-a',
+        harnessSlug: 'h1',
+        items: [{ id: 'P-A1', status: 'todo', text: '', importance: 'high', blockedBy: [], decisionRefs: [], phase: null }],
+      }),
+      planRow({
+        planSlug: 'P-plan-b',
+        harnessSlug: 'h2',
+        items: [{ id: 'P-B1', status: 'todo', text: '', importance: 'high', blockedBy: [], decisionRefs: [], phase: null }],
+      }),
+    ];
+
+    const graph = buildPlanItemBlockGraph([rows]);
+
+    expect(graph.planItemBlockers.has('P-plan-a')).toBe(true);
+    expect(graph.planItemBlockers.has('P-plan-b')).toBe(true);
+    expect(graph.planItemBlockers.get('P-plan-a')?.get('P-A1')).toEqual([]);
+    expect(graph.planItemBlockers.get('P-plan-b')?.get('P-B1')).toEqual([]);
   });
 });
 
@@ -644,6 +694,101 @@ describe('notStopped (per-pot Stop stop-list, pure)', () => {
   it('withholds ONLY harnesses in the stop-list', () => {
     expect(notStopped('stopped', { stoppedHarnesses: ['stopped'] })).toBe(false);
     expect(notStopped('other', { stoppedHarnesses: ['stopped'] })).toBe(true); // standalone/other passes
+  });
+});
+
+  // ── plan-item blocking (EI-12372) ──
+  it('excludes a frontier work-item whose linked plan-item is blocked', async () => {
+    // A work-item WI-X links to plan-item P-002 (via payload.plan_item)
+    // P-002 is blocked by P-001 (P-002.blockedBy = ['P-001'])
+    // P-001 is still in 'todo' (not terminal)
+    // → WI-X should be excluded from the ready frontier
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup'
+            ? [
+                planRow({
+                  planSlug: 'P-plan',
+                  harnessSlug: 'papercup',
+                  items: [
+                    { id: 'P-001', status: 'todo', text: '', importance: 'high', blockedBy: [], decisionRefs: [], phase: null },
+                    { id: 'P-002', status: 'todo', text: '', importance: 'high', blockedBy: ['P-001'], decisionRefs: [], phase: null },
+                  ],
+                }),
+              ]
+            : [],
+        fetchFrontier: async () => [
+          // WI-X links to plan-item P-002 which is blocked
+          frontierRow({
+            feature_id: 'WI-X',
+            harness_slug: 'papercup',
+            payload: { plan_item: { plan_slug: 'P-plan', item_id: 'P-002' } },
+          }),
+          // WI-Y is unrelated (no payload)
+          frontierRow({ feature_id: 'WI-Y', harness_slug: 'papercup' }),
+        ],
+      }),
+    });
+    const ids = survey.frontier.map((c) => c.id);
+    expect(ids).not.toContain('WI-X'); // blocked by unresolved plan-item blocker
+    expect(ids).toContain('WI-Y'); // unrelated, surfaces normally
+    expect(survey.frontierBlocked).toBe(1); // WI-X is blocked
+  });
+
+  it('surfaces a frontier work-item whose linked plan-item blocker is now terminal', async () => {
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup'
+            ? [
+                planRow({
+                  planSlug: 'P-plan',
+                  harnessSlug: 'papercup',
+                  items: [
+                    { id: 'P-001', status: 'passed', text: '', importance: 'high', blockedBy: [], decisionRefs: [], phase: null },
+                    { id: 'P-002', status: 'todo', text: '', importance: 'high', blockedBy: ['P-001'], decisionRefs: [], phase: null },
+                  ],
+                }),
+              ]
+            : [],
+        fetchFrontier: async () => [
+          // WI-X links to plan-item P-002 whose blocker (P-001) is now terminal (passed)
+          frontierRow({
+            feature_id: 'WI-X',
+            harness_slug: 'papercup',
+            payload: { plan_item: { plan_slug: 'P-plan', item_id: 'P-002' } },
+          }),
+        ],
+      }),
+    });
+    const ids = survey.frontier.map((c) => c.id);
+    expect(ids).toContain('WI-X'); // blocker is terminal, so P-002 is ready
+    expect(survey.frontierBlocked).toBe(0);
+  });
+
+  it('ignores plan-item blocking when payload.plan_item is missing or null', async () => {
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup'
+            ? [planRow({ planSlug: 'P-plan', harnessSlug: 'papercup', items: [planItem('P-001')] })]
+            : [],
+        fetchFrontier: async () => [
+          frontierRow({ feature_id: 'WI-1', harness_slug: 'papercup', payload: null }),
+          frontierRow({ feature_id: 'WI-2', harness_slug: 'papercup', payload: {} }),
+          frontierRow({ feature_id: 'WI-3', harness_slug: 'papercup', payload: { plan_item: null } }),
+        ],
+      }),
+    });
+    const ids = survey.frontier.map((c) => c.id);
+    expect(ids).toContain('WI-1');
+    expect(ids).toContain('WI-2');
+    expect(ids).toContain('WI-3');
+    expect(survey.frontierBlocked).toBe(0);
   });
 });
 
