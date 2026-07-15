@@ -1589,6 +1589,7 @@ export function OperatorConversationProvider({
             broadcastGenerating(true);
           }
         }
+        if (ctrl.signal.aborted) return;
 
         const parsed = parseOperatorTurn(buf);
 
