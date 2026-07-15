@@ -417,7 +417,10 @@ body.has-op-chat:has(.pc-qp) {
 }
 
 .pc-qp__pin.on {
-  color: var(--accent-strong);
+  /* --accent-soft is a LIGHT tint in every theme, so the label must be
+     --accent-ink (the on-accent text token), not the equally-light
+     --accent-strong — that pairing was 1.26:1 (WI-4834's class). */
+  color: var(--accent-ink);
   border-color: var(--accent);
   background: var(--accent-soft, var(--bg-2));
 }
@@ -627,7 +630,10 @@ body.has-op-chat:has(.pc-qp) {
   border: none;
   padding: 0 5px;
   font-size: 10px;
-  color: var(--accent-strong);
+  /* Ink on the soft tint — matches this rule's own :hover, which already used
+     --accent-ink; the rest state was left on the light-on-light --accent-strong
+     (1.26:1, WI-4834's class). */
+  color: var(--accent-ink);
   background: var(--accent-soft, var(--bg-2));
   border-radius: 999px;
   cursor: pointer;

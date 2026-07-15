@@ -43,6 +43,7 @@
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { pruneStorageCategory } from '../../storage/prune';
+import { cleanupExpiredSessionPorts } from '../../session-port/cleanup';
 
 /** Minimal shape of the postgres.js tagged-template client this module needs —
  *  mirrors `storage/prune.ts`'s local `Sql` type (not exported there either). */
@@ -241,6 +242,18 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
           `${vacuumed ? ', vacuumed' : ''})`,
       );
     }
+  }
+
+  // Session-port artifacts are short-lived capability material, not ordinary
+  // day-retained storage. Extend this existing janitor rather than creating a
+  // parallel routine: expire crashed pending rows/targets and sweep orphaned
+  // 0600 artifacts after their 15-minute TTL.
+  if (!dryRun) {
+    const cleanup = await cleanupExpiredSessionPorts({ workspaceId: ctx.workspaceId });
+    console.log(
+      `[telemetry-retention] session-port cleanup: ${cleanup.expiredRows} expired row(s), ` +
+        `${cleanup.artifactsDeleted + cleanup.orphanArtifactsDeleted} artifact(s) deleted, ${cleanup.errors} error(s)`,
+    );
   }
 
   // ── Periodic index-bloat maintenance (EI-7482) ──────────────────────────

@@ -25,6 +25,17 @@ vi.mock('../../storage/prune', () => ({
   pruneStorageCategory: (...args: unknown[]) => pruneMock(...args),
 }));
 
+const cleanupMock = vi.fn(async () => ({
+  expiredRows: 0,
+  targetsFailed: 0,
+  artifactsDeleted: 0,
+  orphanArtifactsDeleted: 0,
+  errors: 0,
+}));
+vi.mock('../../session-port/cleanup', () => ({
+  cleanupExpiredSessionPorts: (...args: unknown[]) => cleanupMock(...args),
+}));
+
 const sqlUnsafeMock = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
 const sqlTagMockFn = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
 const sqlTagMock = Object.assign(sqlTagMockFn, { unsafe: sqlUnsafeMock }) as unknown as TestSql;
@@ -251,6 +262,7 @@ describe('system:telemetry-retention action', () => {
     sqlUnsafeMock.mockReset().mockResolvedValue([]);
     sqlTagMockFn.mockReset().mockResolvedValue([]);
     guardResourceMock.mockClear();
+    cleanupMock.mockClear();
     // The action logs warn() on the invalid/failed-prune branches exercised below;
     // the repo's vitest-fail-on-console treats an un-mocked warn as a failure, so
     // capture it (the real assertions are on pruneMock / non-throwing).
@@ -266,6 +278,7 @@ describe('system:telemetry-retention action', () => {
     await action!(ctx({}));
 
     expect(pruneMock).toHaveBeenCalledTimes(4);
+    expect(cleanupMock).toHaveBeenCalledWith({ workspaceId: 'ws-1' });
     expect(pruneMock).toHaveBeenNthCalledWith(1, {
       categoryId: 'route-invocations',
       olderThanDays: 7,

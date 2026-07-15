@@ -82,6 +82,7 @@ export const TURN_ORIGIN_BASES = [
   'loop-fire',
   'self-compaction',
   'fleet-kickoff',
+  'session-port',
   'watchdog',
 ] as const;
 export type TurnOriginBase = (typeof TURN_ORIGIN_BASES)[number];

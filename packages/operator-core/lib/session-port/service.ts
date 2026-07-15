@@ -33,6 +33,7 @@ import {
 import {
   SESSION_PORT_PROTOCOL_VERSION,
   SESSION_PORT_SCHEMA,
+  SESSION_PORT_TRANSFORM_VERSION,
   type PortableBlock,
   type PortableSessionPort,
   type SessionPortContractSummary,
@@ -40,7 +41,7 @@ import {
   type SessionBackend,
 } from './types';
 
-export const SESSION_PORT_TRANSFORM_VERSION = 1;
+export { SESSION_PORT_TRANSFORM_VERSION } from './types';
 
 export interface SessionPortTarget {
   backend: Exclude<SessionBackend, 'claude'>;

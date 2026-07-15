@@ -39,6 +39,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,6 +127,27 @@ export function readManagedKickoffFile(path, expectedRenderedHash) {
   } finally {
     closeSync(fd);
   }
+}
+
+/** Dedicated verified provenance for the imported-history first turn. It is
+ * neither owner input nor a fleet kickoff. Mirror the turn-provenance JSONL
+ * envelope/ledger protocol; write the ledger row before PTY submission. */
+export function tagSessionPortTurn(text, sid, env = process.env, nowMs = Date.now()) {
+  if (!text || !sid) throw new Error('session-port provenance requires seed text and target sid');
+  const nonce = randomBytes(8).toString('hex');
+  const sha256 = createHash('sha256')
+    .update(String(text).replace(/\r\n?/g, '\n').trim(), 'utf8')
+    .digest('hex');
+  const dir = env.PAPERCUSP_TURN_PROVENANCE_DIR || join(homedir(), '.papercusp', 'turn-provenance');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const safe = sanitizeKey(sid);
+  appendFileSync(
+    join(dir, `${safe}.jsonl`),
+    JSON.stringify({ sid, nonce, origin: 'session-port', sha256, ts: nowMs }) + '\n',
+    { mode: 0o600 },
+  );
+  return `⟦turn-origin:session-port nonce:${nonce}⟧\n${text}`;
 }
 
 /** Chunk a large paste without splitting a UTF-16 surrogate pair. 16k code
@@ -1416,7 +1438,10 @@ export function hostThroughPty(o) {
   } = o;
   if (kickoff && kickoffFile) throw new Error('plain kickoff and managed kickoff file are mutually exclusive');
   const managedKickoff = kickoffFile
-    ? readManagedKickoffFile(kickoffFile, sessionPort?.renderedHash)
+    ? (() => {
+        const read = readManagedKickoffFile(kickoffFile, sessionPort?.renderedHash);
+        return { ...read, text: tagSessionPortTurn(read.text, ownerId, env) };
+      })()
     : null;
   const nativeCaptureAfterMs = Date.now();
   let managedKickoffDisposition = null;

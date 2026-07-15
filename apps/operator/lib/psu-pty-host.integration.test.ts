@@ -23,6 +23,7 @@ import {
   ptyWriteChunks,
   findNativeTranscriptMarker,
   waitForNativeTranscriptMarker,
+  tagSessionPortTurn,
   MAX_CONTROL_PAYLOAD_BYTES,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
@@ -105,6 +106,23 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(Math.max(...chunks.map((chunk) => Buffer.byteLength(chunk, 'utf8')))).toBeLessThanOrEqual(64 * 1024);
   });
 
+  it('stamps a dedicated verified session-port provenance row before injection', () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-port-provenance-'));
+    try {
+      const tagged = tagSessionPortTurn(
+        'history',
+        'su-port-proof',
+        { PAPERCUSP_TURN_PROVENANCE_DIR: root } as any,
+        1234,
+      );
+      expect(tagged).toMatch(/^⟦turn-origin:session-port nonce:[a-f0-9]{16}⟧\nhistory$/);
+      const row = JSON.parse(readFileSync(join(root, 'su-port-proof.jsonl'), 'utf8'));
+      expect(row).toMatchObject({ sid: 'su-port-proof', origin: 'session-port', ts: 1234 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('accepts only the exact marker in the target Codex/OMP native JSONL roots', async () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-port-native-'));
     const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${'b'.repeat(64)}]`;
@@ -172,6 +190,7 @@ describe('hostThroughPty real round-trip', () => {
             PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
             PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
             PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+            PAPERCUSP_TURN_PROVENANCE_DIR: join(root, 'provenance'),
             PI_CODING_AGENT_DIR: agentDir,
             PORT_MARKER: marker,
             PORT_NATIVE_FILE: nativeFile,

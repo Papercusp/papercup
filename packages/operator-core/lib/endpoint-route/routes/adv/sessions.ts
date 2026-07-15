@@ -38,6 +38,12 @@ import {
 import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
 import { setOnDesktopWindowsCache, type WindowsDesktopWindow } from '../../../windows-desktop-windows';
 import { readOmpConfig } from '../../../omp-config';
+import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../../session-port/types';
+import {
+  classifySessionPortFailure,
+  recordSessionPortTelemetry,
+  telemetryFromInspection,
+} from '../../../session-port/telemetry';
 import {
   findOmpSessionNear,
   getOmpSessionRowSummary,
@@ -46,16 +52,16 @@ import {
 } from '../../../omp-sessions';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
-const SESSION_PORT_PROTOCOL_VERSION = 1;
-
 type SessionPortRequestBody = {
   protocolVersion?: unknown;
+  transformVersion?: unknown;
   workspace?: unknown;
   sourceAdvSessionId?: unknown;
   targetBackend?: unknown;
   targetModel?: unknown;
   targetAccount?: unknown;
   contextSize?: unknown;
+  launchContext?: unknown;
   expectedSourceHash?: unknown;
   currentInstruction?: unknown;
 };
@@ -64,12 +70,13 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
-function sessionPortProtocolError(version: unknown): Response | null {
-  if (version === SESSION_PORT_PROTOCOL_VERSION) return null;
+function sessionPortProtocolError(version: unknown, transformVersion: unknown): Response | null {
+  if (version === SESSION_PORT_PROTOCOL_VERSION && transformVersion === SESSION_PORT_TRANSFORM_VERSION) return null;
   return json({
     ok: false,
-    error: `unsupported session-port protocol ${String(version)}; upgrade psu/operator together`,
+    error: `unsupported session-port protocol/transform ${String(version)}/${String(transformVersion)}; upgrade psu/operator together`,
     supportedProtocolVersions: [SESSION_PORT_PROTOCOL_VERSION],
+    supportedTransformVersions: [SESSION_PORT_TRANSFORM_VERSION],
   }, 426);
 }
 
@@ -83,7 +90,7 @@ async function parseSessionPortBody(req: Request): Promise<SessionPortRequestBod
 }
 
 async function resolveSessionPortInspection(req: Request, body: SessionPortRequestBody) {
-  const protocolError = sessionPortProtocolError(body.protocolVersion);
+  const protocolError = sessionPortProtocolError(body.protocolVersion, body.transformVersion);
   if (protocolError) return { response: protocolError } as const;
   const sourceAdvSessionId = Number(body.sourceAdvSessionId);
   if (!Number.isSafeInteger(sourceAdvSessionId) || sourceAdvSessionId <= 0) {
@@ -97,21 +104,30 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   if (contextSize !== null && contextSize !== 'full' && contextSize !== 'trimmed') {
     return { response: json({ ok: false, error: 'contextSize must be full|trimmed|null' }, 400) } as const;
   }
-  const [{ activeWorkspaceId }, { buildLaunchSpec }, service, budgetModule] = await Promise.all([
+  const [{ activeWorkspaceId }, { buildLaunchSpec }, service, budgetModule, store] = await Promise.all([
     import('../../../workspace-registry'),
     import('../../../role-launch-spec'),
     import('../../../session-port/service'),
     // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
     import('../../../model-context-budget.mjs'),
+    import('../../../session-port/store'),
   ]);
   const workspaceId = typeof body.workspace === 'string' && body.workspace.trim()
     ? body.workspace.trim()
     : activeWorkspaceId();
+  await store.assertSessionPortStorageReady();
   const sourceRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
   if (!sourceRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
   await service.assertNoPortableAuthority(sourceRow);
   const targetModel = typeof body.targetModel === 'string' && body.targetModel.trim() ? body.targetModel.trim() : null;
   const targetAccount = typeof body.targetAccount === 'string' && body.targetAccount.trim() ? body.targetAccount.trim() : 'default';
+  const launchContextPath = typeof body.launchContext === 'string' && body.launchContext.trim() ? body.launchContext.trim() : null;
+  let launchContextText = '';
+  try {
+    launchContextText = budgetModule.readLaunchContextText(launchContextPath);
+  } catch (error) {
+    return { response: json({ ok: false, error: `read launchContext: ${error instanceof Error ? error.message : String(error)}` }, 400) } as const;
+  }
   const spec = await buildLaunchSpec({
     kind: 'su',
     agent: targetBackend,
@@ -130,6 +146,9 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     model: targetModel,
     contextSize,
     promptText: spec.promptText,
+    additionalPromptText: targetBackend === 'codex'
+      ? budgetModule.formatCodexLaunchContextSection(launchContextText)
+      : launchContextText,
     home: os.homedir(),
   });
   if (budget.level === 'refuse') throw new Error('target launch prompt already exhausts the selected context window');
@@ -1131,7 +1150,8 @@ const onDesktopWindows = defineTool({
 });
 
 /** Read-only stage: stable snapshot + omissions/redactions/budget disclosure.
- * No summarizer call, artifact, or lifecycle row is created here. */
+ * No summarizer call, artifact, or lifecycle row is created here; the only
+ * write is content-free audit telemetry. */
 const sessionPortInspect = defineTool({
   method: 'POST',
   path: '/adv/sessions/port/inspect',
@@ -1142,6 +1162,11 @@ const sessionPortInspect = defineTool({
     try {
       const resolved = await resolveSessionPortInspection(req, parsed);
       if ('response' in resolved && resolved.response) return resolved.response;
+      await recordSessionPortTelemetry(telemetryFromInspection(
+        resolved.inspection.source.workspaceId,
+        'inspected',
+        resolved.inspection,
+      ));
       return json({
         ok: true,
         inspection: resolved.service.publicSessionPortInspection(resolved.inspection),
@@ -1203,6 +1228,17 @@ const sessionPortPrepare = defineTool({
         summarizer,
         currentInstruction: typeof parsed.currentInstruction === 'string' ? parsed.currentInstruction : null,
       });
+      await recordSessionPortTelemetry({
+        ...telemetryFromInspection(
+          resolved.inspection.source.workspaceId,
+          'prepared',
+          resolved.inspection,
+          prepared.summary,
+        ),
+        portId: prepared.port.id,
+        estimatedTokens: Number(prepared.port.metadata.estimatedTokens ?? null),
+        idempotentReuse: prepared.reused,
+      });
       return json({
         ok: true,
         portId: prepared.port.id,
@@ -1210,10 +1246,10 @@ const sessionPortPrepare = defineTool({
         reused: prepared.reused,
         expiresAt: prepared.port.expiresAt,
         status: prepared.port.status,
-        fidelity: prepared.contract.fidelity,
-        hashes: prepared.contract.hashes,
-        stats: prepared.contract.stats,
-        summary: prepared.contract.summary,
+        fidelity: prepared.summary.fidelity,
+        hashes: prepared.summary.hashes,
+        stats: prepared.summary.stats,
+        summary: prepared.summary.summary,
       });
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 409);
@@ -1267,6 +1303,7 @@ const sessionPortDelivery = defineTool({
   async handler(req) {
     let body: {
       protocolVersion?: unknown;
+      transformVersion?: unknown;
       workspace?: unknown;
       portId?: unknown;
       targetAdvSessionId?: unknown;
@@ -1276,7 +1313,7 @@ const sessionPortDelivery = defineTool({
     };
     try { body = await req.json() as typeof body; }
     catch { return json({ ok: false, error: 'invalid JSON body' }, 400); }
-    const protocolError = sessionPortProtocolError(body.protocolVersion);
+    const protocolError = sessionPortProtocolError(body.protocolVersion, body.transformVersion);
     if (protocolError) return protocolError;
     const portId = typeof body.portId === 'string' ? body.portId : '';
     const targetAdvSessionId = Number(body.targetAdvSessionId);
@@ -1303,6 +1340,21 @@ const sessionPortDelivery = defineTool({
       });
       await updateAdvSessionPortStatus(targetAdvSessionId, workspaceId, 'delivered', { persistenceProof: proof });
       const artifactDeleted = await artifact.deleteSessionPortArtifact(current.artifactPath);
+      await recordSessionPortTelemetry({
+        workspaceId,
+        stage: 'delivered',
+        portId,
+        sourceAdvSessionId: current.sourceAdvSessionId,
+        targetAdvSessionId,
+        sourceBackend: current.sourceBackend,
+        targetBackend: current.targetBackend,
+        targetModel: current.targetModel,
+        protocolVersion: current.protocolVersion,
+        sourceHash: current.sourceHash,
+        renderedHash: current.renderedHash,
+        persistenceLatencyMs: Math.max(0, Date.now() - Date.parse(current.preparedAt)),
+        cleanupOutcome: artifactDeleted ? 'deleted' : 'already-absent',
+      });
       return json({ ok: true, status: port.status, artifactDeleted });
     }
     if (body.status === 'failed') {
@@ -1310,6 +1362,22 @@ const sessionPortDelivery = defineTool({
       const port = await store.transitionSessionPort(portId, workspaceId, 'failed', { error: message });
       await updateAdvSessionPortStatus(targetAdvSessionId, workspaceId, 'failed', { deliveryError: message });
       const artifactDeleted = await artifact.deleteSessionPortArtifact(current.artifactPath);
+      await recordSessionPortTelemetry({
+        workspaceId,
+        stage: 'failed',
+        portId,
+        sourceAdvSessionId: current.sourceAdvSessionId,
+        targetAdvSessionId,
+        sourceBackend: current.sourceBackend,
+        targetBackend: current.targetBackend,
+        targetModel: current.targetModel,
+        protocolVersion: current.protocolVersion,
+        sourceHash: current.sourceHash,
+        renderedHash: current.renderedHash,
+        persistenceLatencyMs: Math.max(0, Date.now() - Date.parse(current.preparedAt)),
+        cleanupOutcome: artifactDeleted ? 'deleted' : 'already-absent',
+        failureClass: classifySessionPortFailure(message),
+      });
       return json({ ok: true, status: port.status, artifactDeleted });
     }
     return json({ ok: false, error: 'status must be delivered|failed' }, 400);
