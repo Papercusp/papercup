@@ -30,17 +30,6 @@ export interface PerfSignalsV1 {
     closeWait_3070?: number | null;
     gateway_8788_reachable?: boolean | null;
     operator_3070_reachable?: boolean | null;
-    /**
-     * EI-12302: true when the `papercup-dev-api` systemd unit was in a
-     * TRANSITIONAL ActiveState (activating/deactivating/reloading — the window a
-     * sanctioned `dev:restart` / release deploy passes through) at the SAME
-     * instant `operator_3070_reachable` was probed. capture-signals.py sets this
-     * from `systemctl --user show … -p ActiveState` (already captured for every
-     * USER_SERVICES entry) — no cross-process/PG correlation needed. A brief
-     * unreachable read during a real restart is EXPECTED downtime, not a wedge;
-     * see evaluatePerfSignals below for how this downgrades the crit.
-     */
-    operator_3070_restarting?: boolean | null;
     // MCP-merged (null until an agent run fills them) — supported in either spot.
     eventLoopLag?: { lag_p95_ms?: number | null } | null;
     _mcp_supplemented?: { eventLoopLag?: { lag_p95_ms?: number | null } | null } | null;
@@ -150,9 +139,6 @@ export interface PerfVerdict {
   closeWait: number | null;
   eventLoopLagP95Ms: number | null;
   operatorReachable: boolean | null;
-  /** EI-12302: true when an unreachable :3070 was captured mid-restart (expected
-   *  deploy downtime) rather than a genuine wedge — see operator_3070_restarting. */
-  operatorRestarting: boolean | null;
   /** Host-total inotify watches (per-uid) / the fattest single holder. */
   inotifyTotalWatches: number | null;
   inotifyMaxPerProc: { pid: number; comm: string; watches: number } | null;
@@ -162,12 +148,6 @@ export interface PerfVerdict {
   sessionDirs: { claudeOwnerDirs: number | null; codexHomes: number | null } | null;
   ageMs: number | null;
   stale: boolean;
-  /** Reasons that WOULD have been crit/warn but were downgraded/suppressed given
-   *  context the caller passed in (currently: `deployInProgress` suppresses the
-   *  operator-unreachable crit during a known, sanctioned restart window). Always
-   *  present (possibly empty) so a caller can surface "N false-positive(s) suppressed"
-   *  instead of the suppression being silently invisible. */
-  suppressedReasons: string[];
 }
 
 function lagP95(s: PerfSignalsV1['signals']): number | null {
