@@ -23,6 +23,7 @@ import {
   ptyWriteChunks,
   findNativeTranscriptMarker,
   waitForNativeTranscriptMarker,
+  MAX_CONTROL_PAYLOAD_BYTES,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
@@ -97,9 +98,10 @@ describe('session-port managed seed + native persistence helpers', () => {
   });
 
   it('chunks the maximum-style UTF-8 paste without changing a code point or exceeding 64KiB/write', () => {
-    const text = `start-${'😀'.repeat(100_000)}-end`;
+    const text = '😀'.repeat(MAX_CONTROL_PAYLOAD_BYTES / 4); // exactly 8 MiB UTF-8
     const chunks = ptyWriteChunks(text);
     expect(chunks.join('')).toBe(text);
+    expect(Buffer.byteLength(text, 'utf8')).toBe(MAX_CONTROL_PAYLOAD_BYTES);
     expect(Math.max(...chunks.map((chunk) => Buffer.byteLength(chunk, 'utf8')))).toBeLessThanOrEqual(64 * 1024);
   });
 
