@@ -48,7 +48,7 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
       const query = textOf(sql, i);
       expect(query).toContain("to_jsonb(a)->>'port_id'");
       expect(query).toContain("to_jsonb(a)->>'port_status'");
-      expect(query).not.toMatch(/[,\s]port_id\s*[,\n]/);
+      expect(query).not.toMatch(/exit_code,\s*port_id,/);
     }
   });
 

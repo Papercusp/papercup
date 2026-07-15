@@ -152,6 +152,19 @@ export default defineTool({
             selfSessionId: args.session_id,
             selfOwnerId: ownerId,
           });
+          // P-006 (ambient-semantic-push) dead-end matcher: the same fresh cursor
+          // is one tick of the dead-end detector. Fold the in-scope dead-end facts
+          // (the P-015 slot — agent_facts keyed 'dead-end:%') and enqueue a WARNING
+          // push (handle → the fact) to SELF for each documented dead end the
+          // cursor is drifting toward. Same flag/gate, bounded + fail-soft; only
+          // when a cursor actually landed. Independent of the collision tick above.
+          const { boundedDeadEndTick } = await import('../../dead-end-matcher-io');
+          await boundedDeadEndTick({
+            selfSessionId: args.session_id,
+            selfOwnerId: ownerId,
+            harnessSlug: args.harness ?? null,
+            workspaceId: identity.workspaceId ?? undefined,
+          });
         }
       }
     }

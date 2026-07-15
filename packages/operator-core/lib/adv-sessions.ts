@@ -552,7 +552,7 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
         FROM harness_shared.adv_sessions a
        WHERE agent IS NOT NULL
          AND cwd IS NOT NULL
-         -- `to_jsonb(row)->key` is parse-safe before migration 611: a missing
+         -- to_jsonb(row)->key is parse-safe before migration 611: a missing
          -- key is NULL, while pending post-migration ports remain hidden.
          AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
        ORDER BY started_at DESC
