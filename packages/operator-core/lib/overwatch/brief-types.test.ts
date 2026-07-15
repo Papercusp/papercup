@@ -157,6 +157,44 @@ test('renderOverwatchBrief — wokeBy omitted / whitespace-only suppresses the W
   assert.doesNotMatch(renderOverwatchBrief(brief), /Woke by:/);
 });
 
+test('renderOverwatchBrief — a mid-turn Mug reads on-cadence, not "cadence OFF · next unscheduled" (EI-12553)', () => {
+  // A healthily-working Mug: her one-shot pot-wake routine fired + self-deactivated,
+  // so nextFireAt is momentarily null and armed reads false until she re-declares at
+  // turn end. The panel must NOT false-report a stall for this — it corrupts the
+  // Kettle's mug-stalled detector input (crying wolf / masking a real stall).
+  const brief = emptyOverwatchBrief('papercup-hive');
+  brief.queen = {
+    started: true,
+    lastWakeAt: '2026-07-15T10:06:33.533Z',
+    stalled: false,
+    midTurn: true,
+    cadenceOk: true, // as the fixed compute.ts derivation now yields for a mid-turn Mug
+    workingTracked: 0,
+    nextFireAt: null,
+    coordOwner: null,
+    consecutiveZeroTokenWakes: 0,
+  };
+  const out = renderOverwatchBrief(brief);
+  assert.match(out, /cadence ok/);
+  assert.doesNotMatch(out, /cadence OFF/);
+  assert.match(out, /next pending \(turn live\)/);
+  assert.doesNotMatch(out, /next unscheduled/);
+
+  // The render is self-correcting: even if an upstream derivation forgot to fold
+  // midTurn into cadenceOk, a mid-turn Mug still renders on-cadence.
+  brief.queen.cadenceOk = false;
+  const out2 = renderOverwatchBrief(brief);
+  assert.match(out2, /cadence ok/);
+  assert.doesNotMatch(out2, /cadence OFF/);
+
+  // A genuinely unarmed, NON-mid-turn Mug still reads OFF · unscheduled (no false green).
+  brief.queen.midTurn = false;
+  brief.queen.cadenceOk = false;
+  const out3 = renderOverwatchBrief(brief);
+  assert.match(out3, /cadence OFF/);
+  assert.match(out3, /next unscheduled/);
+});
+
 test('emptyOverwatchBrief — neutral fail-soft default: healthy, zeroed, no anomalies, independent instances', () => {
   const a = emptyOverwatchBrief('hive-a');
   assert.equal(a.potSlug, 'hive-a');

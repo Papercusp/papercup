@@ -722,6 +722,13 @@ test('mapSystemHealthToBrief — plumbs QueenHealth.started through to brief.que
   assert.equal(notStarted.queen.started, false);
 });
 
+test('mapSystemHealthToBrief — plumbs QueenHealth.midTurn through to brief.queen.midTurn (EI-12553)', () => {
+  const mid = mapSystemHealthToBrief(fakeHealth({ queen: queenData({ midTurn: true }) }), 'papercup-hive');
+  assert.equal(mid.queen.midTurn, true);
+  const notMid = mapSystemHealthToBrief(fakeHealth({ queen: queenData({ midTurn: false }) }), 'papercup-hive');
+  assert.equal(notMid.queen.midTurn, false);
+});
+
 test('mapSystemHealthToBrief — unreadable panels (data:null) degrade to neutral defaults, never an alarm', () => {
   const h = fakeHealth({
     queen: null,
