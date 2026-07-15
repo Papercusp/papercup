@@ -1244,7 +1244,7 @@ import { backgroundWorkspaceIds } from '../workspace-registry';
 // (EI-312 leg 1: a test worker must not poke the live wake system). The
 // PAPERCUSP_BACKGROUND_WORKERS flag only controls background loops and is `0`
 // in the request workers whose process-local matcher must remain armed.
-import { reactionMatcherShouldArm } from '../background-workers';
+import { backgroundWorkersEnabled, reactionMatcherShouldArm } from '../background-workers';
 try {
   if (reactionMatcherShouldArm()) {
     // WI-4890: :3070 is a reuse-port cluster, but event-reaction rules are
