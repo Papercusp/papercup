@@ -39,13 +39,35 @@ export default defineTool({
     .object({
       rubricRef: z.string().min(1).optional().describe('a single rubric ref/slug, e.g. "pot-coordination-health" (n=1 shorthand for rubricRefs:[ref])'),
       rubricRefs: z.array(z.string().min(1)).min(1).max(100).optional().describe('rubric refs/slugs to fetch (1–100)'),
+      // EI-11400: a rubric is identified by its ref/slug; `rubricId`/`rubricIds` are ACCEPTED
+      // ALIASES for `rubricRef`/`rubricRefs` — the id an agent reaches for after rubrics:list,
+      // and the vocabulary rubrics:get itself required before it was bulk-standardized. Accept
+      // the obvious spelling instead of rejecting it into a schema-probe retry (same remedy as
+      // the body↔summary alias, WI-4492).
+      rubricId: z.string().min(1).optional().describe('alias for `rubricRef` (EI-11400)'),
+      rubricIds: z.array(z.string().min(1)).min(1).max(100).optional().describe('alias for `rubricRefs` (EI-11400)'),
     })
-    .refine((a) => Boolean(a.rubricRef) || (a.rubricRefs?.length ?? 0) > 0, {
-      message: 'pass `rubricRef` (one) or `rubricRefs` (many)',
+    .refine(
+      (a) => Boolean(a.rubricRef || a.rubricId) || (a.rubricRefs?.length ?? 0) > 0 || (a.rubricIds?.length ?? 0) > 0,
+      { message: 'pass `rubricRef`/`rubricRefs` (or their aliases `rubricId`/`rubricIds`)' },
+    )
+    .superRefine((a, ctx) => {
+      // The one case aliasing can't resolve: the same field under both names, DIFFERENT values.
+      if (a.rubricRef !== undefined && a.rubricId !== undefined && a.rubricRef !== a.rubricId) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rubricId'],
+          message: '`rubricRef` and `rubricId` are the SAME field — pass one (which did you mean?).',
+        });
+      }
     }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const ids = mergeIds(args.rubricRef, args.rubricRefs);
+    // EI-11400: fold each alias into its canonical before merging.
+    const ids = mergeIds(args.rubricRef ?? args.rubricId, [
+      ...(args.rubricRefs ?? []),
+      ...(args.rubricIds ?? []),
+    ]);
     const env = await runBulk(
       ids,
       async (rubricId) => {

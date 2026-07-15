@@ -88,11 +88,21 @@ export default defineTool({
       .string()
       .min(1)
       .max(20_000)
+      .optional()
       .describe(
         'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
           'No setTimeout/setInterval (not ambient in this sandbox) — use `await sleep(ms)` for a ' +
           'short bounded delay (e.g. write-then-reverify) instead.',
       ),
+    // EI-11400: `code` is an ACCEPTED ALIAS for `script` — the noun cognate surfaces use, and the
+    // spelling an agent reaches for on a tool literally named `code:run`. Accept it instead of
+    // rejecting the whole call into a schema-probe retry (same remedy as body↔summary, WI-4492).
+    code: z
+      .string()
+      .min(1)
+      .max(20_000)
+      .optional()
+      .describe('alias for `script` (EI-11400)'),
     title: z
       .string()
       .max(120)

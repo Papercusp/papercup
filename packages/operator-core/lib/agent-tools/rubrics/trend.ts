@@ -36,7 +36,10 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    rubricRef: z.string().describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric)'),
+    rubricRef: z.string().min(1).optional().describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric)'),
+    // EI-11400: `rubricId` is an ACCEPTED ALIAS for `rubricRef` (the same canonical noun the whole
+    // rubric family uses) so a call reaching for the wrong-but-obvious spelling lands first try.
+    rubricId: z.string().min(1).optional().describe('alias for `rubricRef` (EI-11400)'),
     sourceHive: z.string().optional().describe('restrict the trend to one source-hive'),
     since: z
       .string()
@@ -55,11 +58,25 @@ export default defineTool({
       .describe(
         'also return each criterion\'s chronological series as RLE runs {rating, from, to, n} (default false — the summary fields are the payload)',
       ),
-  }),
+  })
+    .refine((a) => Boolean(a.rubricRef || a.rubricId), {
+      message: 'pass `rubricRef` (or its alias `rubricId`)',
+    })
+    .superRefine((a, ctx) => {
+      // The one case aliasing can't resolve: the same field under both names, DIFFERENT values.
+      if (a.rubricRef !== undefined && a.rubricId !== undefined && a.rubricRef !== a.rubricId) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rubricId'],
+          message: '`rubricRef` and `rubricId` are the SAME field — pass one (which did you mean?).',
+        });
+      }
+    }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     const trend = await scorecardTrend({
-      rubricRef: args.rubricRef,
+      // EI-11400: `rubricId` is an accepted alias for `rubricRef`.
+      rubricRef: (args.rubricRef ?? args.rubricId) as string,
       sourceHive: args.sourceHive,
       since: args.since,
       limit: args.limit,
