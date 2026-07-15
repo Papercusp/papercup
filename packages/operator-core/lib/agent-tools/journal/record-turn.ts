@@ -141,6 +141,18 @@ export default defineTool({
           harnessSlug: args.harness ?? null,
           turnTs: turn.ts,
         });
+        // P-004 (ambient-semantic-push) collision matcher: the fresh cursor is
+        // one tick of the sustained-collision detector. Fold it against the live
+        // peer-cursor index and enqueue a collision push to BOTH sides on each
+        // enter edge (push-delivery rail). Same flag/gate, bounded + fail-soft;
+        // only when a cursor actually landed (no cursor ⇒ no tick).
+        if (cursorPersisted) {
+          const { boundedCollisionTick } = await import('../../collision-matcher-io');
+          await boundedCollisionTick({
+            selfSessionId: args.session_id,
+            selfOwnerId: ownerId,
+          });
+        }
       }
     }
 
