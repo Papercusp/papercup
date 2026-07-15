@@ -91,6 +91,30 @@ export interface MemoryWatchdogOpts {
   proactiveGcMb?: number;
   /** Minimum gap between forced proactive GCs (ms). Default 120_000 (2 min). */
   gcCooldownMs?: number;
+  /**
+   * BORN-OVER-BUDGET recycle guard (EI-11522). When true (default), the recycle
+   * is SUPPRESSED for a process that has NEVER been observed below `warnMb` since
+   * the watchdog started — i.e. it booted straight into an over-budget working
+   * set (the desktop sidecar warm-boots ~23 plugins to ~3.1 GB the moment it
+   * starts) rather than *growing* into the limit over time.
+   *
+   * Why: a SIGKILL recycle can only shed heap the fresh restart won't immediately
+   * re-allocate. A process whose STEADY-STATE working set is already over the cap
+   * boots right back into the same footprint, trips again a few minutes later, and
+   * recycles again — a hot SIGKILL loop that reclaims ~nothing (observed live:
+   * `reclaimedMb: 6` of `rssMbAfter: 3117`, `rssLimitMb: 3200`) and severs every
+   * in-flight converse SSE turn each cycle (the user turn persists, the assistant
+   * reply is lost). Recycling cannot fix a working set that is genuinely too big
+   * for the limit, so looping is strictly harmful. Instead escalate loudly (the
+   * limit is misconfigured / the working set must shed) and keep serving — the
+   * in-flight turn survives.
+   *
+   * A process that DID observe a healthy sample (RSS < warnMb) before crossing the
+   * limit *grew* into it, so its excess heap IS sheddable — that recycles normally
+   * (the original 0.2 GB/min-leak case the watchdog exists for is unchanged). Set
+   * false to restore the always-recycle behavior.
+   */
+  suppressBornOverBudgetRecycle?: boolean;
   /** Injectable forced-GC seam (tests). Defaults to `global.gc` when `--expose-gc`. */
   forceGc?: (() => void) | null;
   /** Structured log sink. Default console.warn. */
@@ -155,6 +179,7 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
   // forced-GC hook is available (no `--expose-gc`).
   const proactiveGcMb = opts.proactiveGcMb ?? Math.round(rssLimitMb * 0.6);
   const gcCooldownMs = Math.max(0, opts.gcCooldownMs ?? 120_000);
+  const suppressBornOverBudgetRecycle = opts.suppressBornOverBudgetRecycle ?? true;
   // Resolve a forced-GC hook, fresh-box-correct (no dependency on `--expose-gc`
   // being in NODE_OPTIONS): prefer an injected seam, else `global.gc` if exposed,
   // else RUNTIME-enable it via `v8.setFlagsFromString('--expose-gc')` +
@@ -186,12 +211,19 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
   let overCount = 0;
   let recycled = false;
   let lastGcAt = 0;
+  // EI-11522: has this process EVER been observed below the soft-warn line since
+  // boot? A process that never has booted straight into an over-budget working
+  // set — a SIGKILL recycle can't shed that, it just loops. One that has, grew
+  // into the limit and its excess is sheddable, so it recycles normally.
+  let sawHealthySample = false;
+  let bornOverBudgetLogged = false;
 
   const rssMb = () => bytesToMb(process.memoryUsage().rss);
 
   const timer = managedSetInterval('memory-watchdog', intervalMs, () => {
     if (recycled) return;
     const rss = rssMb();
+    if (rss < warnMb) sawHealthySample = true;
     if (rss >= warnMb) {
       log('[memory-watchdog] RSS above soft threshold', {
         rssMb: rss,
@@ -233,6 +265,22 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
     if (rss >= rssLimitMb) {
       overCount += 1;
       if (overCount >= tripsToRecycle) {
+        // BORN-OVER-BUDGET guard (EI-11522): if this process was never observed
+        // below warnMb, its steady-state working set is already over the cap. A
+        // SIGKILL recycle would boot a fresh process into the same footprint and
+        // trip again — a hot loop that reclaims ~nothing and kills every in-flight
+        // converse SSE turn each cycle. Suppress the futile recycle and escalate
+        // loudly instead; the limit is misconfigured / the working set must shed.
+        if (suppressBornOverBudgetRecycle && !sawHealthySample) {
+          if (!bornOverBudgetLogged) {
+            bornOverBudgetLogged = true;
+            log(
+              '[memory-watchdog] RSS over the recycle limit since boot — SUPPRESSING the recycle to avoid a SIGKILL loop that reclaims ~nothing and severs in-flight turns. The working set is over budget from startup (a restart would boot straight back into it); raise PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB or shed the working set.',
+              { rssMb: rss, rssLimitMb, warnMb },
+            );
+          }
+          return;
+        }
         recycled = true;
         onTrip({ rssMb: rss, rssLimitMb });
       }

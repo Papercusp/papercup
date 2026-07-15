@@ -637,6 +637,31 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'scout-ready-autostart-sweep' },
   );
 
+  // autonomous-loop-prod-audit-2026-07-02 P-006 (SPOF 5a/5b, deferred from
+  // WI-4626/AUDIT B): the Scout OUTCOME-REFRESH sweep — refreshScoutOutcomes
+  // previously ran ONLY inside a Scout cycle (scout/scheduler.ts
+  // refreshOutcomes()), so an idle/backed-off/dead Scout froze every routed
+  // idea's cached outcome and silently stalled the per-lens weight learning.
+  // This sweep decouples the refresh from Scout's own cadence (its own
+  // in-process throttle, default 15min) and separately alerts (debounced via
+  // the shared hive_watchdog_fires ledger) when routed ideas sit
+  // outcome NULL/'pending' past a staleness threshold even after a refresh —
+  // the "stuck forever, nobody noticed" failure class. Fail-soft; kill
+  // switches: PAPERCUSP_SCOUT_OUTCOME_REFRESH_SEC<=0 (whole sweep),
+  // PAPERCUSP_SCOUT_OUTCOME_STALE_PENDING_SEC<=0 (alert only).
+  await DBOS.runStep(
+    async () => {
+      const { scoutOutcomeRefreshSweep } = await import('../scout/outcome-refresh-sweep');
+      const results = await scoutOutcomeRefreshSweep();
+      for (const res of results) {
+        if (res.outcome === 'error' || res.alerted) {
+          console.warn(`[scout-outcome-refresh] ${res.outcome}: ${res.workspaceId} — ${res.reason}`);
+        }
+      }
+    },
+    { name: 'scout-outcome-refresh-sweep' },
+  );
+
   // WI-1623: the release-deploy STALENESS recurrence guard. The green pin can sit
   // deployable-but-not-live far past the documented ≤15-min auto-deploy cadence with
   // NOTHING catching it (confirmed live: a stuck `deployedAt` display field went

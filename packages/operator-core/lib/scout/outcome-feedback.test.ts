@@ -50,6 +50,12 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       ],
       // status only in the title (detail absent) — fallback path
       ['gym:d', entry({ ref: 'gym:d', kind: 'proposal', title: 'Accepted prompt for scoper' })],
+      // P-006 (SPOF 5c): a plan-run entry tagged dropped (the ABANDONED plan
+      // terminal) — the plan-rail loss case.
+      [
+        'plan:dropped1',
+        entry({ ref: 'plan:dropped1', kind: 'plan-run', title: 'Plan abandoned: dropped1', detail: 'Status: dropped' }),
+      ],
     ]);
 
     it('pending when the routed artifact is not yet in the feed', () => {
@@ -60,6 +66,12 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
 
     it('plan-run present = won', () => {
       expect(classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'plan:foo', rail: 'plan' }), feed)).toBe('won');
+    });
+
+    it('plan-run tagged dropped = lost (P-006 SPOF 5c: abandoned plan resolves instead of pending forever)', () => {
+      expect(
+        classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'plan:dropped1', rail: 'plan' }), feed),
+      ).toBe('lost');
     });
 
     it('work-item completion present = won', () => {
