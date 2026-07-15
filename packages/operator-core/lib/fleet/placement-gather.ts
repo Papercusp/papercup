@@ -363,7 +363,7 @@ export function partitionTasksByReadiness(
     created_ts: null,
     feature_order: null,
   }));
-  const { ready } = filterReadyFrontier(rows, graphByHarness);
+  const { ready } = filterReadyFrontier(rows, graphByHarness, undefined);
   const readyIds = new Set(ready.map((r) => r.feature_id));
   return {
     ready: tasks.filter((t) => readyIds.has(t.id)),
