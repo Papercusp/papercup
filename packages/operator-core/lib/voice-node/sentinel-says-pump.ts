@@ -32,16 +32,17 @@ export interface SentinelSaysPumpDeps {
   speak(text: string): Promise<boolean>;
   /** Fan a framed bus message to every attached client. */
   broadcast(frame: Uint8Array): void;
-  /** Persist the spoken line to the shared conversation thread. */
-  persist(text: string): Promise<void>;
   log?(msg: string): void;
 }
 
 export const SAYS_PUMP_TICK_MS = 1_000;
 
 /**
- * One pump tick: drain pending lines and, in order, display + speak + persist
- * each. Exported for unit tests; `startSentinelSaysPump` runs it on an interval
+ * One pump tick: drain pending lines and, in order, display + speak each.
+ * Chat persistence is NOT the pump's job (WI-4838): the `voice:say` tool
+ * persists at PUSH time — one seam shared by every drain path — so a
+ * drain-time persist here would double-write the turn.
+ * Exported for unit tests; `startSentinelSaysPump` runs it on an interval
  * with a re-entrancy guard (a long synth must not overlap the next tick).
  */
 export async function pumpSentinelSaysOnce(deps: SentinelSaysPumpDeps): Promise<number> {
@@ -52,7 +53,6 @@ export async function pumpSentinelSaysOnce(deps: SentinelSaysPumpDeps): Promise<
     deps.broadcast(encodeResponseTranscript({ text: line }));
     const spoken = await deps.speak(line).catch(() => false);
     if (!spoken) deps.log?.(`says-pump: synth failed for line (${line.length} chars)`);
-    await deps.persist(line).catch(() => {});
   }
   return lines.length;
 }

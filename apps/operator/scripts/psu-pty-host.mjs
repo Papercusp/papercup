@@ -1565,6 +1565,11 @@ export function hostThroughPty(o) {
   // fields only (the read-side contract in operator-core psu-pty-discovery.ts
   // tolerates their absence for files written by older hosts).
   const activity = makeActivityTracker();
+  // Counts REAL bytes observed from the current child. Output-quiet alone is
+  // not a startup-ready signal: before the first byte, lastOutputAt=0 reads as
+  // "quiet forever" and a launch seed can be written before a slow TUI has
+  // installed its input handler (live Codex port WI-4943). Reset on recycle.
+  let childOutputEpoch = 0;
   const baseMeta = {
     ownerId,
     advSessionId: advSessionId != null ? String(advSessionId) : null,
@@ -1750,14 +1755,25 @@ export function hostThroughPty(o) {
     budgetMs = recycleCarryInjectBudgetMs,
     backoffMs = recycleCarryRetryBackoffMs,
     onDrop = () => {},
+    requireInitialOutput = false,
   }) => {
     if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
     const injectChild = child; // bail if a newer recycle supersedes this one
     const deadline = Date.now() + budgetMs;
     let attempts = 0;
+    let dropReason = 'never-settled';
     try {
+      // A scripted resume/port begins this task before wireChildData() is
+      // reached later in host setup. Yield until the listener has observed at
+      // least one real startup byte; the subsequent quiet gate then proves the
+      // startup repaint has settled at a prompt. Never infer readiness from the
+      // sentinel lastOutputAt=0 value.
+      while (requireInitialOutput && childOutputEpoch === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, deadline - Date.now()))));
+      }
+      if (requireInitialOutput && childOutputEpoch === 0) dropReason = 'no-startup-output';
       // eslint-disable-next-line no-constant-condition
-      while (true) {
+      while (dropReason !== 'no-startup-output') {
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
         attempts++;
         const atPrompt = await agentBusyGate.waitAtPrompt();
@@ -1795,13 +1811,13 @@ export function hostThroughPty(o) {
     }
     try {
       process.stderr.write(
-        `psu-pty-host: ${label} DROPPED for ${ownerId} (the child never settled to its prompt ` +
+        `psu-pty-host: ${label} DROPPED for ${ownerId} (${dropReason === 'no-startup-output' ? 'the child emitted no startup output' : 'the child never settled to its prompt'} ` +
           `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
       );
     } catch {
       /* never let a diagnostic write break the host */
     }
-    return { delivered: false, reason: 'never-settled', attempts };
+    return { delivered: false, reason: dropReason, attempts };
   };
 
   // Launch KICKOFF (P-011/D-008): the launcher passes the first-turn text for a
@@ -1815,7 +1831,7 @@ export function hostThroughPty(o) {
   if (launchKickoff) {
     void (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
-      const r = await injectTurnAtPrompt({ text: launchKickoff, label });
+      const r = await injectTurnAtPrompt({ text: launchKickoff, label, requireInitialOutput: true });
       if (!managedKickoff) {
         if (!r.delivered) return;
         try {
@@ -2261,6 +2277,7 @@ export function hostThroughPty(o) {
   // closure, so they need no re-wiring.
   wireChildData = () => {
     child.onData((d) => {
+      childOutputEpoch += 1;
       activity.touchOutput();
       stdout.write(d);
       // P-003: feed any live output taps (mcp-reconnect macro screen reads).
@@ -2450,6 +2467,7 @@ export function hostThroughPty(o) {
         // rejects → boot-retry storm). env (PAPERCUSP_SID) is untouched, so coord
         // identity / locks / socket all survive; only the native claude id rotates.
         const { args: recycleArgs, nativeId } = mintRecycleArgs(args);
+        childOutputEpoch = 0;
         child = spawnChild(recycleArgs);
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug

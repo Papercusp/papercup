@@ -37,6 +37,29 @@ export default defineTool({
   }),
   async handler(args) {
     await pushSentinelSay(args.text);
+    // Voice ≡ text (WI-4838): the spoken line is persisted HERE, at push
+    // time — the single seam every drain path shares (server says-pump when a
+    // full-agent session is live, webview local-mode poll otherwise). Persist
+    // at drain would tie chat presence to whichever consumer won the FIFO;
+    // push-time also means the text reaches chat even if synthesis fails.
+    try {
+      const { getOrCreateActiveConversation, appendTurn } = await import(
+        '../../operator-conversations'
+      );
+      const conv = await getOrCreateActiveConversation();
+      await appendTurn({
+        conversationId: conv.id,
+        role: 'assistant',
+        text: args.text,
+        source: 'voice_tts',
+        elConvId: null,
+      });
+      const { notifySyncInvalidate } = await import('../../sync-sse');
+      void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: conv.id })
+        .catch(() => { /* best-effort */ });
+    } catch (err) {
+      console.warn('[voice:say] chat persist failed:', (err as Error)?.message ?? err);
+    }
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
   },
 });

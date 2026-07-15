@@ -54,6 +54,33 @@ export default defineTool({
 
     const res = await writeToSentinelPane(text, { spoken });
     if (res.ok) {
+      // Voice↔text unification (WI-4838 D): a spoken transcript accepted by
+      // the pane must ALSO land in the shared conversation the chat panes
+      // render — the pane consumed it, so no other path will persist it.
+      // Only on success: a 503/409 falls back to the converse path, which
+      // persists its own user turn (double-write otherwise).
+      if (spoken) {
+        try {
+          const { getOrCreateActiveConversation, appendTurn } = await import(
+            '../../../operator-conversations'
+          );
+          const conv = await getOrCreateActiveConversation();
+          await appendTurn({
+            conversationId: conv.id,
+            role: 'user',
+            text,
+            source: 'voice_stt',
+            elConvId: null,
+          });
+          const { notifySyncInvalidate } = await import('../../../sync-sse');
+          void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: conv.id })
+            .catch(() => { /* best-effort */ });
+        } catch (err) {
+          // The pane got the words either way — never fail the voice turn
+          // over the mirror write, but say so in the log.
+          console.warn('[papercup-input] voice turn persist failed:', (err as Error)?.message ?? err);
+        }
+      }
       return Response.json({ ok: true, session: res.session, paneId: res.paneId, targeted: res.targeted });
     }
     switch (res.reason) {

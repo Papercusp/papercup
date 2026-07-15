@@ -1349,7 +1349,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           // tool/report-only turns; persistTurn writes whatever we send.
           // The server-side turns route accepts tools + report alongside
           // text (POST /api/operator/conversations/:id/turns).
-          persistTurn('assistant', sayContent, 'text_typed', undefined, collectedTools, report);
+          persistTurn(
+            'assistant',
+            sayContent,
+            opts?.spokenReply ? 'voice_tts' : 'text_typed',
+            undefined,
+            collectedTools,
+            report,
+          );
         }
         // Successful turn → clear backoff. G14.
         dispatch({ type: 'reset_error_count' });
@@ -1948,7 +1955,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       ) {
         dispatch({ type: 'record_want_active_declined', tsMs: nowMs });
       }
-      persistTurn('user', trimmed, 'text_typed', optimisticId);
+      // Spoken turns carry their real source (WI-4838 defect B): 'voice_stt'
+      // keeps voice turns distinguishable in the store (forensics, rendering).
+      persistTurn('user', trimmed, sendOpts?.spoken === true ? 'voice_stt' : 'text_typed', optimisticId);
       // Trigger resolution (priority order):
       //   - "ready"-style utterance → user_says_ready (surfaces 2-3
       //     concrete suggestions from workspace inventory)

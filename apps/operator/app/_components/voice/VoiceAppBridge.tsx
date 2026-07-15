@@ -319,11 +319,11 @@ export function VoiceAppBridge(): null {
       // FIFO (synth + bus fan-out to every attached client) — this local-mode
       // poll must not compete for the drain.
       if (voiceStateRef.current.micOwnedByFullAgent) return;
-      // The FIFO carries PANE replies; with the dock dev path off, voice
-      // replies come back through the converse thread's own spoken:true TTS
-      // (operator-chat-sidebar-revival P-007) — don't poll for a pane that
-      // does not exist.
-      if (!paneDevPathRef.current) return;
+      // NOT gated on the pane dev path (WI-4838 E): the FIFO is fed by
+      // `voice:say` from ANY permitted agent, not just the dock pane. With
+      // no full-agent session and no local drain, those lines used to queue
+      // forever — the tool promised speech and delivered dead air. Voice
+      // mode on + no full-agent session ⇒ this webview is the consumer.
       void (async () => {
         const says = await drainSentinelOutput();
         if (says.length === 0) return;

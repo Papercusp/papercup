@@ -3502,6 +3502,39 @@ test('POST /admin/readmit on a pool without readmit (single-account) → 503, ne
   assert.match(body.error?.message ?? '', /no readmit/, 'explains the pool has no readmit');
 });
 
+// ── EI-11511: /stats.healthyAccounts excludes weekly-usage-walled (governor-paused) accounts ──────────
+// The capacity oracle (fleet:capacity, WI-390 spawn-readiness) reads /stats.healthyAccounts. Pre-fix, stats()
+// reported the UN-narrowed pool.healthyCount() — accounts still IN ROTATION but weekly-usage-walled (7d
+// util≈1.0 → the per-(model,account) governor predictively paused) were counted as healthy, so fleet:capacity
+// read "abundant" and advised fresh-spawning into a days-walled pool (the live symptom: healthyAccounts:7 while
+// 6 of 7 were usageWalled). Now stats() applies the SAME governor-not-paused predicate the serviceable-admission
+// clamp already uses, so the count reflects accounts ACTUALLY usable right now.
+test('[EI-11511] /stats.healthyAccounts counts only serviceable accounts — a weekly-usage-walled (governor-paused) account is excluded', async () => {
+  resetGovernorRegistry();
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
+  await boot(
+    (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
+    { pool, governorFor: undefined, concurrency: 24 },
+  );
+  // Precondition: nothing walled yet → all three count (no governor paused).
+  const before = (await (await ask('/stats')).json()) as { healthyAccounts: number };
+  assert.equal(before.healthyAccounts, 3, 'all three accounts serviceable to start');
+
+  // Wall A and B: the SERVICEABLE_CLAMP_MODEL bucket (claude-opus-4 → anthropic:opus@<id>) governor is
+  // predictively paused into the future — exactly what a 7d usage cap (util≈1.0) does. Neither is
+  // pool-exhausted (both still in rotation via active()), so the pre-fix un-narrowed healthyCount() counted them.
+  getGovernor('anthropic', 'opus', undefined, 'A').penalize({ resetAt: Date.now() + 60_000 });
+  getGovernor('anthropic', 'opus', undefined, 'B').penalize({ resetAt: Date.now() + 60_000 });
+
+  const after = (await (await ask('/stats')).json()) as { healthyAccounts: number };
+  assert.equal(
+    after.healthyAccounts,
+    1,
+    'only C is serviceable — the two governor-paused (weekly-walled) accounts are excluded from the capacity denominator (pre-fix: 3)',
+  );
+}, 20_000);
+
 // ── MAINTENANCE summarize lane (deterministic-context-carry P-002, ornith-overflow fixes 2–3) ──────
 
 test('POST /maintenance/summarize — omp remote-compaction wire: {systemPrompt,prompt} → {summary} on the maintenance model, tagged maintenance priority', async () => {

@@ -76,11 +76,8 @@ export function startOperatorVoiceHost(): void {
     },
     speak: (text) => speakIntoSession(text, broadcastOpVoice),
     broadcast: broadcastOpVoice,
-    persist: async (text) => {
-      const { getOrCreateActiveConversation, appendTurn } = await import('../operator-conversations');
-      const conv = await getOrCreateActiveConversation();
-      await appendTurn({ conversationId: conv.id, role: 'assistant', text, source: 'voice_tts', elConvId: null });
-    },
+    // No persist dep (WI-4838): voice:say persists the line to the shared
+    // conversation at PUSH time, covering every drain path exactly once.
     log: (msg) => console.log(`[voice-host] ${msg}`),
   });
 

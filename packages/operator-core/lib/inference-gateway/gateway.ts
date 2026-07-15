@@ -833,11 +833,12 @@ export interface GatewayStats {
   totalRequests: number;
   inFlight: number;
   queueDepth: number;
-  /** Pool-wide count of accounts that can serve a request RIGHT NOW (not circuit-paused for
-   *  SERVICEABLE_CLAMP_MODEL) — the same `pool.healthyCount()` denominator the serviceable-admission
-   *  clamp and `priorityTiers.healthyAccounts` already use, hoisted to the top level (unconditionally,
-   *  not gated behind the priority-tier flag) so a plain consumer (WI-390 spawn-readiness gate) can read
-   *  it without opting into the tier layer. `1` when the pool has no healthyCount() (single-account pool). */
+  /** Pool-wide count of accounts that can serve a request RIGHT NOW — in rotation AND not governor-paused
+   *  for SERVICEABLE_CLAMP_MODEL (so a weekly-usage-walled account at util7d≈1.0 does NOT count, EI-11511).
+   *  The SAME governor-narrowed serviceable count the serviceable-admission clamp enforces and
+   *  `priorityTiers.healthyAccounts` reports, hoisted to the top level (unconditionally, not gated behind the
+   *  priority-tier flag) so a plain consumer (WI-390 spawn-readiness gate) can read it without opting into the
+   *  tier layer. `1` when the pool has no healthyCount() (single-account pool). */
   healthyAccounts: number;
   /** Per-priority queue breakdown (P-011 / P-014). With the priority-TIER layer on, `admission.byTier`
    *  carries the per-tier {cap,inFlight,queued} and `admission.tier1Reserve` the reserved floor. */
@@ -2023,12 +2024,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const snap = gov.snapshot();
     const admission = queue.snapshot();
     const codexAdmission = codexQueue.snapshot();
+    // The pool-wide serviceable-account count (EI-11511): governor-narrowed so a weekly-usage-walled
+    // account (util7d≈1.0, governor predictively paused) does NOT inflate the capacity denominator, matching
+    // what the admission clamp already enforces + the WI-390 spawn-readiness gate reads. `null` (single-account
+    // pool) → 1.
+    const healthyAccounts = serviceableHealthyCount() ?? 1;
     // Priority-tier /stats (step 5): per-tier demand from the queue + the pool-wide healthy-account
     // capacity denominator. Present only with the tier layer (admission.byTier set) → flag-OFF stays
-    // byte-identical. `healthyCount()` is absent on a single-account pool → report 1.
+    // byte-identical.
     const priorityTiers = admission.byTier
       ? {
-          healthyAccounts: pool.healthyCount ? pool.healthyCount() : 1,
+          healthyAccounts,
           tier1Reserve: admission.tier1Reserve ?? 0,
           tiers: admission.byTier,
         }
@@ -2080,7 +2086,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       totalRequests,
       inFlight: admission.running,
       queueDepth: admission.queued,
-      healthyAccounts: pool.healthyCount ? pool.healthyCount() : 1,
+      healthyAccounts,
       admission,
       codexAdmission,
       ...(priorityTiers ? { priorityTiers } : {}),

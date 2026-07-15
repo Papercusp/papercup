@@ -20,11 +20,11 @@ export default defineTool({
     "Append a turn to the SHARED operator conversation thread the app's webview chat displays. Mirror your voice/TUI turns here so the local user sees the conversation in the app.",
   capability: 'operator:converse',
   guidance: {
-    when: `You (the voice-first Papercup) just heard the user or spoke a reply — append BOTH sides so the webview chat reflects the live conversation: the user's words as role:'user' (source 'voice_stt'), your spoken reply as role:'assistant' (source 'voice_tts').`,
-    notWhen: `Don't append internal tool noise, code, or unspoken scratch — only the user-visible conversation turns.`,
+    when: `A user-visible turn happened OUTSIDE the auto-persisted voice flow (e.g. the user typed into your pane, or you replied in text without voice:say) — append it so the app chat stays complete.`,
+    notWhen: `Don't mirror the voice flow — it persists itself (WI-4838): a spoken user transcript lands in the thread at papercup-input, and every voice:say line lands as your reply. Appending those again double-writes the turn. No internal tool noise, code, or unspoken scratch.`,
     seeAlso: [
       'conversation:recent (read the shared thread first)',
-      'voice:say (speak the reply aloud)',
+      'voice:say (speak aloud — ALSO persists the line to this thread)',
     ],
   },
   requirePrincipal: false,
@@ -50,6 +50,9 @@ export default defineTool({
       text: args.text,
       source,
     });
+    const { notifySyncInvalidate } = await import('../../sync-sse');
+    void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: conv.id })
+      .catch(() => { /* best-effort */ });
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true, seq: turn.seq }) }] };
   },
 });
