@@ -169,7 +169,8 @@ export interface QueenHealth {
   staleForMs: number | null;
   /** ms epoch of the next armed wake. */
   nextFireAt: number | null;
-  /** armed && not stalled — the loop is keeping cadence. */
+  /** (armed || midTurn) && not stalled — the loop is keeping cadence (a fired,
+   *  re-declaration-pending one-shot routine is momentarily unarmed but still on-cadence). */
   cadenceOk: boolean;
   /** Hive watchdog fallback fires in the last 24h (a forgot-to-declare signal). */
   watchdogFires24h: number;

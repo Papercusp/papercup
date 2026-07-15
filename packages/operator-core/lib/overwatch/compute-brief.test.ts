@@ -75,6 +75,7 @@ test('detectAnomalies — a stalled Queen → a critical queen-stalled NUDGE (B-
     started: true,
     lastWakeAt: '2026-06-15T01:00:00Z',
     stalled: true,
+    midTurn: false,
     cadenceOk: false,
     workingTracked: 2,
     nextFireAt: null,

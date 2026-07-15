@@ -272,7 +272,11 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
     const stalled =
       started && !midTurn && hasDemand &&
       ((live.staleForMs !== null && live.staleForMs > QUEEN_STALL_MS && !live.armed) || overdue);
-    const cadenceOk = started && live.armed && !stalled;
+    // A mid-turn Mug is on cadence even though her one-shot pot-wake routine has fired
+    // and self-deactivated (re-declaration pending) — mirror the `stalled` line above,
+    // which already excludes midTurn. Without this the Overwatch/Kettle brief false-
+    // reports "cadence OFF" for an actively-working Mug (EI-12553).
+    const cadenceOk = started && (live.armed || midTurn) && !stalled;
 
     // Monitor-the-monitor (hive-loop-supervision 2026-06-21 / D-009): are the Queen's
     // recent wakes actually running the LLM? A 0-token wake = launched but never reached

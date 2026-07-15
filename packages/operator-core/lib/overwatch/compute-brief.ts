@@ -407,6 +407,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, potSlug: string): O
       started: queen.started,
       lastWakeAt: msToIso(queen.lastWakeAt),
       stalled: queen.stalled,
+      midTurn: queen.midTurn,
       cadenceOk: queen.cadenceOk,
       workingTracked: queen.workingTracked,
       nextFireAt: msToIso(queen.nextFireAt),

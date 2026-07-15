@@ -44,7 +44,14 @@ export interface OverwatchQueenHealth {
   lastWakeAt: string | null;
   /** True when she has stalled — last wake older than her cadence threshold (the 2026-06-15 opus-pacing case). */
   stalled: boolean;
-  /** True when she is waking on her expected cadence. */
+  /** A tracked Mug turn is live right now: her one-shot `pot-wake` routine has fired
+   *  (and self-deactivated) and re-declaration is pending, so `nextFireAt`/`cadenceOk`
+   *  read momentarily unarmed even though she is healthily working. Renderers + the
+   *  cadence derivation must fold this in, or they false-report "cadence OFF · next
+   *  unscheduled" for an actively-working Mug (EI-12553). */
+  midTurn: boolean;
+  /** True when she is waking on her expected cadence — armed OR mid-turn (a fired,
+   *  re-declaration-pending routine is still on-cadence), and not stalled. */
   cadenceOk: boolean;
   /** Count of placements she is driving to terminal (her in-flight completion mandate). */
   workingTracked: number;
@@ -273,6 +280,7 @@ export function emptyOverwatchBrief(potSlug: string): OverwatchBrief {
       started: true,
       lastWakeAt: null,
       stalled: false,
+      midTurn: false,
       cadenceOk: true,
       workingTracked: 0,
       nextFireAt: null,
@@ -501,7 +509,16 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   const q = brief.queen;
   out.push('');
   out.push('### Mug');
-  out.push(`- last woke ${q.lastWakeAt ?? 'unknown'}${q.stalled ? ' [STALLED]' : ''} · cadence ${q.cadenceOk ? 'ok' : 'OFF'} · ` + `driving ${q.workingTracked} placement(s) · next ${q.nextFireAt ?? 'unscheduled'}`);
+  // A mid-turn Mug is healthily working: her one-shot pot-wake routine fired and
+  // self-deactivated, so it momentarily reads unarmed with no next_fire_at until she
+  // re-declares at turn end. Fold `midTurn` into BOTH the cadence verdict and the
+  // next-wake label so the panel never false-reports "cadence OFF · next unscheduled"
+  // for an actively-working Mug (EI-12553). The render owns this so it stays correct
+  // even if an upstream `cadenceOk` derivation forgets midTurn.
+  const midTurn = q.midTurn === true;
+  const cadenceLabel = q.cadenceOk || midTurn ? 'ok' : 'OFF';
+  const nextLabel = q.nextFireAt ?? (midTurn ? 'pending (turn live)' : 'unscheduled');
+  out.push(`- last woke ${q.lastWakeAt ?? 'unknown'}${q.stalled ? ' [STALLED]' : ''} · cadence ${cadenceLabel} · ` + `driving ${q.workingTracked} placement(s) · next ${nextLabel}`);
   // Queen nudges use the stable role slot. A concrete coordOwner is diagnostic
   // only: Queen sessions are fresh-per-wake and direct owner sends can race the
   // session ending before Overwatch sends.
