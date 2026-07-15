@@ -117,12 +117,28 @@ interface CorestoreSeedMeta {
   readonly coreSparseFrom?: Record<string, number>;
 }
 
+/**
+ * RocksDB's info log (exactly `LOG`, rotated `LOG.old.<ts>`) is DIAGNOSTIC and is
+ * rewritten on EVERY store open — it can never be part of the seed's content
+ * identity. It is also scrubbed from the shipped seed because it embeds the build
+ * box's hostname + absolute paths (WI-4736). Those two facts collide: hashing it
+ * meant the cut hashed a LOG that the scrub then deleted, so `verify` re-hashed a
+ * different directory and refused the restore — every install silently cold-pathed
+ * to an EMPTY hive (EI-12881). Excluded here so the hash is stable whether or not a
+ * LOG exists, on both the pack and verify sides. The numbered `<NNN>.log` WALs are
+ * DATA and must keep participating.
+ */
+const isRocksInfoLog = (rel: string): boolean => {
+  const base = rel.split(/[\\/]/).pop() ?? '';
+  return base === 'LOG' || base.startsWith('LOG.old');
+};
+
 async function walkFiles(root: string, dir: string = root, acc: string[] = []): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   for (const e of entries) {
     const full = join(dir, e.name);
     if (e.isDirectory()) await walkFiles(root, full, acc);
-    else if (e.isFile()) acc.push(relative(root, full));
+    else if (e.isFile() && !isRocksInfoLog(e.name)) acc.push(relative(root, full));
   }
   return acc;
 }
