@@ -1014,4 +1014,77 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     expect(t2.signals.map((s) => s.key)).not.toContain('panel:infra');
     expect(t2.resolved.length).toBeGreaterThan(0); // RECOVERED was emitted
   });
+
+  it('WI-4878 comprehensive: MCP proxy failures roll out of window → recovery detected → no re-fire', async () => {
+    // Comprehensive scenario: MCP proxy records failures within a 1h window, the
+    // condition fires and opens an escalation. Later, those failures age out of
+    // the window (now - windowMs), the infra panel recovers, and the recovery
+    // must be auto-detected even if the evaluator cache is stale. The condition
+    // should stay resolved and NOT re-fire with phantom failures.
+    const store = makeStore();
+    const windowMs = 60 * 60_000; // 1h MCP proxy window
+    const staleMs = 6 * 60_000; // 6 min health-tick stale threshold
+    const mcpFailureTs = 100 * 60_000;
+    const mcpFailureAgeMs = windowMs - 5 * 60_000; // 55 min old (still in window at t1)
+
+    // Time t1: MCP failures recorded 55 min ago, still in window → infra crit
+    let now = mcpFailureTs + mcpFailureAgeMs;
+    const infraWithMcpCrit = mkHealth({
+      evaluatedAt: now,
+      panels: { infra: { status: 'crit', summary: 'MCP PROXY FAILING: 10 hard tool-call failures/1h' } },
+    });
+
+    // Tick 1: escalation fires because infra is crit
+    const deps = {
+      readLast: () => infraWithMcpCrit,
+      computeHealth: async () => infraWithMcpCrit,
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      pageResolved: async () => {},
+      now: () => now,
+      snapshotStaleMs: staleMs,
+      debounceMs: 30 * 60_000,
+    };
+
+    const t1 = await runLivenessAlarmTick('ws', deps);
+    expect(t1.signals.map((s) => s.key)).toContain('panel:infra');
+    expect(t1.fired.length).toBeGreaterThan(0);
+    const openEsc = await store.listOpen();
+    expect(openEsc.length).toBeGreaterThan(0); // escalation opened
+
+    // Time t2: 30+ minutes later, MCP failures have aged out of window
+    // (now 85 min old, window is 60 min), so infra should recover → panel ok
+    now = mcpFailureTs + mcpFailureAgeMs + 35 * 60_000; // 35 min later
+    const infraRecovered = mkHealth({ evaluatedAt: now }); // panel now ok
+    let currentHealth = infraRecovered;
+
+    // Tick 2: snapshot cache is now 35 min old (STALE by 6-min threshold),
+    // but infra panel is ok because MCP failures rolled out. Recovery detection
+    // must recompute fresh, see the ok panel, and auto-resolve the escalation.
+    const deps2 = {
+      readLast: () => currentHealth,
+      computeHealth: async () => currentHealth,
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      pageResolved: async () => {},
+      now: () => now,
+      snapshotStaleMs: staleMs,
+      debounceMs: 30 * 60_000,
+    };
+
+    const t2 = await runLivenessAlarmTick('ws', deps2);
+    // Recovery should be detected: panel:infra is no longer firing
+    expect(t2.signals.map((s) => s.key)).not.toContain('panel:infra');
+    // Escalation should be auto-resolved
+    expect(t2.resolved.length).toBeGreaterThan(0);
+
+    // Time t3: One more tick. Even though another ~30 min has passed,
+    // the condition should stay resolved (not re-fire).
+    now = mcpFailureTs + mcpFailureAgeMs + 65 * 60_000; // 1 hour+ later
+    const t3 = await runLivenessAlarmTick('ws', deps2);
+    expect(t3.signals.map((s) => s.key)).not.toContain('panel:infra'); // still recovered
+    expect(t3.fired.length).toBe(0); // no re-fire
+  });
 });
