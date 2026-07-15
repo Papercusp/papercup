@@ -16,10 +16,13 @@ import {
   gatewaySupervisorPort,
   isGatewayListening,
   ensureGatewaySidecar,
+  gatewayReprobeIntervalSec,
+  gatewayReprobeTick,
   GATEWAY_MAX_RESPAWN_ATTEMPTS,
   GATEWAY_RESPAWN_WINDOW_MS,
   _resetGatewaySidecarStateForTests,
   _gatewaySidecarStateForTests,
+  _setRespawnGivenUpForTests,
 } from './gateway-sidecar-spawn';
 import { DEFAULT_GATEWAY_PORT } from './launch';
 
@@ -37,7 +40,11 @@ function closeServer(server: net.Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-const SAVED_ENV_KEYS = ['PAPERCUSP_GATEWAY_PORT', 'PAPERCUSP_GATEWAY_SUPERVISE'] as const;
+const SAVED_ENV_KEYS = [
+  'PAPERCUSP_GATEWAY_PORT',
+  'PAPERCUSP_GATEWAY_SUPERVISE',
+  'PAPERCUSP_GATEWAY_REPROBE_SEC',
+] as const;
 let savedEnv: Record<string, string | undefined>;
 
 beforeEach(() => {

@@ -27,6 +27,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { DEFAULT_GATEWAY_PORT } from './launch';
 import {
   resolveSidecarSpawnPlan,
@@ -56,6 +57,13 @@ let deliberateStop = false;
 let respawnAttempts: number[] = []; // timestamps (ms) of recent auto-respawn schedules
 let respawnTimer: ReturnType<typeof setTimeout> | null = null;
 let adoptedExternal = false;
+// autonomous-loop-prod-audit-2026-07-02 P-006 (SPOF 2, deferred items d+e): true once
+// scheduleRespawn's circuit breaker gives up (GATEWAY_MAX_RESPAWN_ATTEMPTS exhausted) —
+// without the periodic reprobe below this was a PERMANENT fail-closed state on a
+// packaged desktop (no systemd to eventually recover the port), requiring a manual
+// ensureGatewaySidecar() call the agent has no reason to make.
+let respawnGivenUp = false;
+let reprobeHandle: ManagedHandle | null = null;
 
 /** The port this supervisor manages (env override → default 8788). */
 export function gatewaySupervisorPort(): number {
@@ -122,16 +130,107 @@ export async function ensureGatewaySidecar(): Promise<EnsureGatewayOutcome> {
   if (gatewayProcess) return 'already-running';
 
   const port = gatewaySupervisorPort();
+  armReprobeTimer(port);
   if (await isGatewayListening(port)) {
     // systemd (Linux dev box) or a sibling operator already owns the port — adopt, never
-    // double-bind. If IT dies later, nothing here notices (it has its own Restart=always);
-    // the periodic health surfaces (gateway-wedge watchdog) cover that case.
+    // double-bind. If IT dies later, nothing here notices on its own (it has its own
+    // Restart=always) — armReprobeTimer above is what NOW periodically re-checks this
+    // (SPOF 2e: previously only the wedge watchdog covered gateway health, and that
+    // detector reads a live /stats response, so a cleanly-DEAD external gateway with no
+    // listener at all was invisible to it).
     adoptedExternal = true;
     return 'adopted-external';
   }
 
   await spawnGatewayChild(port);
   return 'spawned';
+}
+
+/** How often the reprobe timer re-checks port liveness (SPOF 2 d+e). Default 60s — cheap
+ *  (a single TCP connect probe). Env PAPERCUSP_GATEWAY_REPROBE_SEC; `<=0` disables it (the
+ *  supervisor then behaves exactly as before this fix — no periodic re-probe). */
+export function gatewayReprobeIntervalSec(): number {
+  const n = Number(process.env.PAPERCUSP_GATEWAY_REPROBE_SEC ?? 60);
+  return Number.isFinite(n) ? n : 60;
+}
+
+/** Arm the periodic reprobe timer (idempotent — managedSetInterval re-arms replace, and this
+ *  guards on `reprobeHandle` besides). Category 'watchdog': an out-of-band sentinel that must
+ *  keep running independent of the gateway process it watches (scheduled-registry's own
+ *  taxonomy for exactly this shape). */
+function armReprobeTimer(port: number): void {
+  if (reprobeHandle) return;
+  const intervalSec = gatewayReprobeIntervalSec();
+  if (intervalSec <= 0) return; // kill switch
+  reprobeHandle = managedSetInterval(
+    'gateway-sidecar-reprobe',
+    intervalSec * 1_000,
+    () => gatewayReprobeTick(port),
+    { category: 'watchdog' },
+  );
+}
+
+/**
+ * The periodic reprobe tick (SPOF 2, autonomous-loop-prod-audit-2026-07-02 P-006, deferred
+ * items d+e). Exported (with an injectable spawn seam) so the two failure classes are unit-
+ * testable without forking a real child:
+ *
+ *  (e) adopted-external gateway died and nothing here noticed — reprobe finds the port no
+ *      longer listening, so drop the adoption and spawn our OWN child (the fallback the
+ *      packaged desktop needs when there's no systemd to notice/restart it).
+ *  (d) the respawn circuit breaker gave up (GATEWAY_MAX_RESPAWN_ATTEMPTS exhausted) — without
+ *      this, that was a PERMANENT fail-closed state. Each reprobe tick either finds the port
+ *      reoccupied externally (adopt) or retries a spawn with a FRESH respawn-budget window (a
+ *      long-backoff re-arm, gated by this timer's own interval rather than the tight in-window
+ *      backoff, so a persistently-broken environment doesn't spin — it retries at most once per
+ *      `gatewayReprobeIntervalSec()`).
+ */
+export async function gatewayReprobeTick(
+  port: number,
+  deps: { spawnGatewayChild?: (port: number) => Promise<void> } = {},
+): Promise<void> {
+  if (deliberateStop) return;
+  const doSpawn = deps.spawnGatewayChild ?? spawnGatewayChild;
+  try {
+    const listening = await isGatewayListening(port);
+    if (adoptedExternal) {
+      if (listening) return; // still healthy — nothing to do
+      console.warn(
+        `[gateway-sidecar] adopted-external gateway on :${port} is no longer listening — spawning our own child`,
+      );
+      adoptedExternal = false;
+      try {
+        await doSpawn(port);
+      } catch (err) {
+        console.error('[gateway-sidecar] reprobe respawn-after-external-death failed:', err instanceof Error ? err.message : err);
+        scheduleRespawn(port);
+      }
+      return;
+    }
+    if (respawnGivenUp) {
+      if (listening) {
+        // Something else took the port while we'd given up (systemd/another operator) — adopt.
+        adoptedExternal = true;
+        respawnGivenUp = false;
+        respawnAttempts = [];
+        console.log(`[gateway-sidecar] :${port} now listening externally — adopting after respawn-budget exhaustion`);
+        return;
+      }
+      console.warn(
+        `[gateway-sidecar] re-arming respawn after budget exhaustion — reprobe (every ${gatewayReprobeIntervalSec()}s) found the gateway still down on :${port}`,
+      );
+      respawnGivenUp = false;
+      respawnAttempts = []; // fresh circuit-breaker window for this long-backoff retry
+      try {
+        await doSpawn(port);
+      } catch (err) {
+        console.error('[gateway-sidecar] re-armed respawn attempt failed:', err instanceof Error ? err.message : err);
+        scheduleRespawn(port);
+      }
+    }
+  } catch (err) {
+    console.warn('[gateway-sidecar] reprobe tick failed:', err instanceof Error ? err.message : err);
+  }
 }
 
 async function spawnGatewayChild(port: number): Promise<void> {
@@ -170,6 +269,7 @@ async function spawnGatewayChild(port: number): Promise<void> {
   while (Date.now() < deadline) {
     if (await isGatewayListening(port, 750)) {
       console.log(`${prefix} up on 127.0.0.1:${port} (${plan.mode}, pid ${child.pid})`);
+      respawnGivenUp = false; // a successful spawn clears any prior budget-exhaustion state
       return;
     }
     if (gatewayProcess !== child) throw new Error('gateway child exited during startup');
@@ -193,9 +293,15 @@ function scheduleRespawn(port: number): void {
   const now = Date.now();
   respawnAttempts = pruneRespawnWindow(respawnAttempts, now, GATEWAY_RESPAWN_WINDOW_MS);
   if (respawnBudgetExhausted(respawnAttempts, GATEWAY_MAX_RESPAWN_ATTEMPTS)) {
+    // SPOF 2d: this used to be a PERMANENT fail-closed state (a manual ensureGatewaySidecar()
+    // call was the only way out — on a packaged desktop with no systemd, nothing ever made
+    // that call). respawnGivenUp lets the reprobe timer (armed at ensureGatewaySidecar time)
+    // retry with a fresh budget window on its own long-backoff cadence instead.
+    respawnGivenUp = true;
     console.error(
-      `[gateway-sidecar] ${GATEWAY_MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(GATEWAY_RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn. ` +
-        'Agents get connection-refused on :' + port + ' (fail-closed) until an explicit ensureGatewaySidecar() call.',
+      `[gateway-sidecar] ${GATEWAY_MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(GATEWAY_RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn for now. ` +
+        'Agents get connection-refused on :' + port + ' (fail-closed) until the periodic reprobe re-arms it ' +
+        `(every ${gatewayReprobeIntervalSec()}s) or an explicit ensureGatewaySidecar() call.`,
     );
     return;
   }
@@ -228,6 +334,10 @@ export async function stopGatewaySidecar(): Promise<void> {
     clearTimeout(respawnTimer);
     respawnTimer = null;
   }
+  if (reprobeHandle) {
+    reprobeHandle.stop();
+    reprobeHandle = null;
+  }
   const child = gatewayProcess;
   if (!child) return;
   await gracefulStopChild(child, { timeoutMs: 15_000, kill: (sig) => child.kill(sig) });
@@ -258,17 +368,29 @@ export function _resetGatewaySidecarStateForTests(): void {
   if (respawnTimer) clearTimeout(respawnTimer);
   respawnTimer = null;
   adoptedExternal = false;
+  respawnGivenUp = false;
+  if (reprobeHandle) reprobeHandle.stop();
+  reprobeHandle = null;
 }
 export function _gatewaySidecarStateForTests(): {
   running: boolean;
   adoptedExternal: boolean;
   pendingRespawn: boolean;
   attemptsInWindow: number;
+  respawnGivenUp: boolean;
+  reprobeArmed: boolean;
 } {
   return {
     running: gatewayProcess != null,
     adoptedExternal,
     pendingRespawn: respawnTimer != null,
     attemptsInWindow: respawnAttempts.length,
+    respawnGivenUp,
+    reprobeArmed: reprobeHandle != null,
   };
+}
+/** Test seam: force respawnGivenUp true without running the real 5-crash window
+ *  (gatewayReprobeTick's (d) branch is otherwise expensive to reach in a unit test). */
+export function _setRespawnGivenUpForTests(v: boolean): void {
+  respawnGivenUp = v;
 }

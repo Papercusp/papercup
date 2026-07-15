@@ -23,20 +23,107 @@ describe('startMemoryWatchdog', () => {
     } as NodeJS.MemoryUsage);
   }
 
-  it('recycles only after the high-water mark is held for tripsToRecycle samples', () => {
-    withRss(4000); // over the 3200 default
+  it('recycles only after the high-water mark is held for tripsToRecycle samples (a process that GREW into the limit)', () => {
+    withRss(800); // healthy first — a grow-into-limit process, not born over budget
     const onTrip = vi.fn();
     const log = vi.fn();
-    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 2, onTrip, log });
+    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 2, warnMb: 2400, onTrip, log });
 
-    vi.advanceTimersByTime(1000); // sample 1 — over, but debounce not met
+    vi.advanceTimersByTime(1000); // sample 1 — healthy (marks sawHealthySample)
+    withRss(4000); // over the 3200 default
+    vi.advanceTimersByTime(1000); // sample 2 — over, but debounce not met
     expect(onTrip).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1000); // sample 2 — trips
+    vi.advanceTimersByTime(1000); // sample 3 — over, debounce met → trips
     expect(onTrip).toHaveBeenCalledTimes(1);
     expect(onTrip.mock.calls[0][0]).toMatchObject({ rssLimitMb: 3200 });
 
     // Idempotent: no further trips after recycle latches.
     vi.advanceTimersByTime(3000);
+    expect(onTrip).toHaveBeenCalledTimes(1);
+    h.stop();
+  });
+
+  // EI-11522 — born-over-budget recycle guard: a process that boots straight into
+  // an over-budget working set (the desktop sidecar warm-boots ~23 plugins to
+  // ~3.1 GB immediately) must NOT SIGKILL-recycle in a loop — the fresh restart
+  // boots into the same footprint, reclaims ~nothing, and severs in-flight
+  // converse SSE turns each cycle. It escalates loudly and keeps serving instead.
+  it('a process BORN over budget (over the limit from boot, never healthy) SUPPRESSES the recycle instead of hot-looping (EI-11522)', () => {
+    withRss(3300); // over the 3200 limit from the very first sample
+    const onTrip = vi.fn();
+    const log = vi.fn();
+    const h = startMemoryWatchdog({
+      intervalMs: 1000,
+      tripsToRecycle: 2,
+      warnMb: 2400,
+      rssLimitMb: 3200,
+      onTrip,
+      log,
+    });
+
+    vi.advanceTimersByTime(1000); // over (count=1)
+    vi.advanceTimersByTime(1000); // over (count=2) — would trip, but born over budget
+    vi.advanceTimersByTime(5000); // keep sampling — still no recycle
+    expect(onTrip).not.toHaveBeenCalled();
+
+    // Escalates loudly exactly once — not per-tick spam.
+    const suppressLines = log.mock.calls.filter((c) =>
+      String(c[0]).includes('SUPPRESSING the recycle'),
+    );
+    expect(suppressLines).toHaveLength(1);
+    h.stop();
+  });
+
+  it('the DEFAULT (no onTrip) recycle is also suppressed — a born-over-budget process never exits (EI-11522)', () => {
+    withRss(3300);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const h = startMemoryWatchdog({
+      intervalMs: 1000,
+      tripsToRecycle: 1,
+      warnMb: 2400,
+      rssLimitMb: 3200,
+      log: vi.fn(),
+    });
+    vi.advanceTimersByTime(1000); // would trip → suppressed (never healthy)
+    vi.advanceTimersByTime(250); // no flush-then-exit was ever scheduled
+    expect(exitSpy).not.toHaveBeenCalled();
+    h.stop();
+  });
+
+  it('a born-over-budget process that later recovers below warn then climbs again DOES recycle (the guard releases) (EI-11522)', () => {
+    withRss(3300); // born over budget
+    const onTrip = vi.fn();
+    const h = startMemoryWatchdog({
+      intervalMs: 1000,
+      tripsToRecycle: 1,
+      warnMb: 2400,
+      rssLimitMb: 3200,
+      onTrip,
+      log: vi.fn(),
+    });
+    vi.advanceTimersByTime(1000); // over → suppressed (never healthy yet)
+    expect(onTrip).not.toHaveBeenCalled();
+    withRss(800);
+    vi.advanceTimersByTime(1000); // healthy → sawHealthySample=true, overCount reset
+    withRss(4000);
+    vi.advanceTimersByTime(1000); // over again — now it demonstrably had headroom → recycles
+    expect(onTrip).toHaveBeenCalledTimes(1);
+    h.stop();
+  });
+
+  it('suppressBornOverBudgetRecycle:false restores the always-recycle behavior for a born-over-budget process', () => {
+    withRss(3300);
+    const onTrip = vi.fn();
+    const h = startMemoryWatchdog({
+      intervalMs: 1000,
+      tripsToRecycle: 1,
+      warnMb: 2400,
+      rssLimitMb: 3200,
+      suppressBornOverBudgetRecycle: false,
+      onTrip,
+      log: vi.fn(),
+    });
+    vi.advanceTimersByTime(1000); // over → recycles (guard disabled)
     expect(onTrip).toHaveBeenCalledTimes(1);
     h.stop();
   });
@@ -78,10 +165,12 @@ describe('startMemoryWatchdog', () => {
   });
 
   it('the DEFAULT recycle exits NON-ZERO (75) so systemd restarts under Restart=on-failure too (EI-1613, R4-1)', () => {
-    withRss(4000);
+    withRss(800); // healthy first — a grow-into-limit process (born-over-budget is suppressed)
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     // no onTrip injected → exercise the default recycle path
-    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 1, log: vi.fn() });
+    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 1, warnMb: 2400, log: vi.fn() });
+    vi.advanceTimersByTime(1000); // sample 1 — healthy (marks sawHealthySample)
+    withRss(4000);
     vi.advanceTimersByTime(1000); // trips → schedules the 250ms flush-then-exit
     vi.advanceTimersByTime(250); // fire the flush delay → process.exit(recycleExitCode)
     expect(exitSpy).toHaveBeenCalledWith(75);
@@ -90,9 +179,11 @@ describe('startMemoryWatchdog', () => {
   });
 
   it('honors an explicit recycleExitCode in the default recycle', () => {
-    withRss(4000);
+    withRss(800); // healthy first — a grow-into-limit process
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 1, recycleExitCode: 42, log: vi.fn() });
+    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 1, warnMb: 2400, recycleExitCode: 42, log: vi.fn() });
+    vi.advanceTimersByTime(1000); // sample 1 — healthy
+    withRss(4000);
     vi.advanceTimersByTime(1000);
     vi.advanceTimersByTime(250);
     expect(exitSpy).toHaveBeenCalledWith(42);
