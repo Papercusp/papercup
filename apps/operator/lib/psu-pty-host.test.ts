@@ -134,6 +134,26 @@ describe('control wire protocol (v1)', () => {
       gated: true,
     });
   });
+  it('carry-respawn preserves additive P-020 drill correlation for the host ledger', () => {
+    const d = decodeControl(
+      JSON.stringify({
+        v: 1,
+        mode: 'carry-respawn',
+        data: '⟦carry-drill:d-1⟧',
+        systemPromptAddendum: 'deterministic carry',
+        drillId: 'd-1',
+        sessionClass: 'claude-su',
+      }),
+    );
+    expect(d).toEqual({
+      mode: 'carry-respawn',
+      data: '⟦carry-drill:d-1⟧',
+      systemPromptAddendum: 'deterministic carry',
+      drillId: 'd-1',
+      sessionClass: 'claude-su',
+      gated: true,
+    });
+  });
   it('reset/recycle with no data → gated verb with an empty carry (bare reset)', () => {
     expect(decodeControl(encodeControl({ mode: 'reset' }))).toEqual({ mode: 'reset', data: '', gated: true });
     expect(decodeControl(encodeControl({ mode: 'recycle' }))).toEqual({ mode: 'recycle', data: '', gated: true });

@@ -376,6 +376,27 @@ describe('injectIntoHost — deterministic carry-respawn envelope (P-018)', () =
       systemPromptAddendum: 'bounded deterministic carry document',
     });
   });
+
+  it('adds P-020 drill correlation without changing an ordinary P-018 envelope', async () => {
+    const dir = tmpDir();
+    const { sock, received } = startSocket(dir, 'su-carry-drill');
+    const ok = await injectIntoHost(sock, {
+      mode: 'carry-respawn',
+      data: '⟦carry-drill:d-1⟧',
+      systemPromptAddendum: 'bounded deterministic carry document',
+      drillId: 'd-1',
+      sessionClass: 'claude-su',
+    });
+    expect(ok).toBe(true);
+    expect(JSON.parse(await received)).toEqual({
+      v: 1,
+      mode: 'carry-respawn',
+      data: '⟦carry-drill:d-1⟧',
+      systemPromptAddendum: 'bounded deterministic carry document',
+      drillId: 'd-1',
+      sessionClass: 'claude-su',
+    });
+  });
 });
 
 describe('hostSupports (WI-1804 rollout gate)', () => {
