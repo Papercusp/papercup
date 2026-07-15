@@ -41,10 +41,10 @@ const {
   openEscalationMock: vi.fn(async () => ({ msg_id: 'esc-1' })),
   // P-012 force-compact deps. Defaults keep the EXISTING over-limit tests unaffected:
   // flag ON but NO live host ⇒ maybeForceCompact no-ops (out.forceCompacted stays []).
-  getFlagMock: vi.fn(async () => true),
+  getFlagMock: vi.fn(async (_key: string, _scope?: string) => true),
   findLiveHostMock: vi.fn((_ownerId: string) => null as null | { sock: string; caps?: string[] }),
   hostSupportsMock: vi.fn((_host: unknown, _cap: string) => false),
-  injectMock: vi.fn(async () => true),
+  injectMock: vi.fn(async (_sock: string, _payload: unknown) => true),
   findTranscriptMock: vi.fn(async () => '/tmp/live-session.jsonl' as string | null),
   newestTranscriptMock: vi.fn((_ownerId: string) => null as string | null),
   buildOwnerRespawnMock: vi.fn(async () => ({
@@ -335,7 +335,8 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
       caps: ['carry-respawn', 'compact'],
     });
     hostSupportsMock.mockImplementation(
-      (host: { caps?: string[] }, cap: string) => host.caps?.includes(cap) ?? false,
+      (host: unknown, cap: string) =>
+        (host as { caps?: string[] }).caps?.includes(cap) ?? false,
     );
     buildOwnerRespawnMock.mockResolvedValue({
       systemPromptAddendum: 'deterministic carry',
@@ -416,7 +417,8 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
     resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-1' });
     findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
     hostSupportsMock.mockImplementation(
-      (host: { caps?: string[] }, cap: string) => host.caps?.includes(cap) ?? false,
+      (host: unknown, cap: string) =>
+        (host as { caps?: string[] }).caps?.includes(cap) ?? false,
     );
 
     const out = await checkCompactionCompliance(fakeSql({ seeded }));

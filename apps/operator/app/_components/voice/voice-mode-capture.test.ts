@@ -182,6 +182,39 @@ describe('utterance dispatch', () => {
   });
 });
 
+describe('response timeout', () => {
+  it('speaks an audible failure notice as well as dispatching the visual timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const prefs = await import('./voice-prefs-client');
+      prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'browser' });
+      const mod = await loadVoiceMode();
+      mod.setVoiceMode('push-to-talk');
+
+      const events: TimeoutDetail[] = [];
+      const handler = (e: any) => events.push(e.detail);
+      (globalThis as any).addEventListener('papercusp:voiceTimeout', handler);
+      try {
+        mod.__simulateUtterance('what is the release status');
+        expect(mod.getVoiceState().awaitingResponse).toBe(true);
+
+        vi.advanceTimersByTime(mod.RESPONSE_WINDOW_MS);
+
+        expect(mod.getVoiceState().awaitingResponse).toBe(false);
+        expect(events).toContainEqual(expect.objectContaining({ phase: 'response' }));
+        const synth = (globalThis as any).window.speechSynthesis.speak;
+        expect(synth).toHaveBeenCalledTimes(1);
+        expect(synth.mock.calls[0][0].text).toBe(mod.RESPONSE_TIMEOUT_SPOKEN_NOTICE);
+        expect(mod.getVoiceState().status).toBe('speaking');
+      } finally {
+        (globalThis as any).removeEventListener('papercusp:voiceTimeout', handler);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 // voice-convergence-additive-wins-2026-07-10 P-001: both transport paths relay
 // the transcript into the pane through ONE uniform, source-tagged seam. The
 // tag is additive — a legacy 1-arg listener is unaffected — so this is a pure

@@ -298,6 +298,8 @@ function endProcessingTranscript(): void {
  * this window runs.
  */
 export const RESPONSE_WINDOW_MS = 45_000;
+export const RESPONSE_TIMEOUT_SPOKEN_NOTICE =
+  "Sorry, I didn't get a response. Please try again.";
 
 /**
  * Mark "transcript captured — the agent is composing a response."
@@ -325,6 +327,15 @@ function beginAwaitingResponse(): void {
         );
       } catch { /* ignore */ }
     }
+    // A visual toast is invisible to the eyes-off-screen user who initiated
+    // this turn by voice. Route the failure through the same local TTS queue
+    // as normal replies. `allowDuringRealtime` is intentionally narrower than
+    // `force`: it still respects voice-off, output mute, and leader election,
+    // but lets the fallback speak when an attached full-agent session is the
+    // thing that failed to answer.
+    speak(RESPONSE_TIMEOUT_SPOKEN_NOTICE, 'system:operator', 'assertive', {
+      allowDuringRealtime: true,
+    });
   }, RESPONSE_WINDOW_MS);
 }
 
@@ -2293,7 +2304,7 @@ export function speak(
   text: string,
   role = 'system:operator',
   priority: 'polite' | 'assertive' = 'polite',
-  options: { force?: boolean } = {},
+  options: { force?: boolean; allowDuringRealtime?: boolean } = {},
 ): void {
   // Dev test seam: record the reply text regardless of the gates below (we want
   // the brain's reply even on a tab that won't emit TTS). See __lastSpokenForTest.
@@ -2325,7 +2336,7 @@ export function speak(
   // the aria-live publish above so screen readers still see the text.
   // Callers who genuinely need to override (test buttons in
   // /settings/voice) already pass force:true.
-  if (realtimeSession && !options.force) return;
+  if (realtimeSession && !options.force && !options.allowDuringRealtime) return;
   // Leader-election gate (v4 §2i): only the leader tab actually emits TTS.
   // Followers are silent; aria-live still publishes so screen-readers in any
   // tab see the text.
