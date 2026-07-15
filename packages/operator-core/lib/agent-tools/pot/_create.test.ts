@@ -180,6 +180,21 @@ beforeEach(() => {
       return { ok: true, potSlug: input.potSlug, gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5, undo: async () => {} };
     },
   }));
+  // EI-12220: the default wake-subscription arm (step 6, armDefaultPotWakeSubscriptions)
+  // and the cross-pot outbox-drain arm (step 6d, armHiveCrossHiveDrainRoutine) are both
+  // best-effort steps that hit the REAL Postgres pool (getOrgPg) when unmocked. In this
+  // PG-free unit sandbox that's a genuine ECONNREFUSED, caught by their try/catch and
+  // console.warn'd — which vitest-fail-on-console then turns into a suite-wide failure.
+  // Mock both modules as pure no-ops (their own behavior is pinned in wake-defaults.test.ts
+  // and the cross-hive-drain routine's own coverage) — mirrors the provision-learning-loop
+  // mock immediately above.
+  vi.doMock('../../pot/wake-defaults', () => ({
+    armDefaultPotWakeSubscriptions: async () => ({ rules: 0, added: 0 }),
+    blueprintWakeSubscriptions: () => undefined,
+  }));
+  vi.doMock('../../harness/routines/arm-hive-cross-hive-drain', () => ({
+    armHiveCrossHiveDrainRoutine: async () => ({ undo: async () => {} }),
+  }));
   // P-021 (domain-generic-pot): the mug-home-pubkey record step is mocked (its
   // own behavior is pinned in hive-settings-store + steering-lease tests). Without
   // this the real setMugHomePubkey → setPotSetting → getPotBySlug hits the
