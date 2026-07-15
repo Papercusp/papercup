@@ -41,6 +41,8 @@ import {
   findLiveHostFor,
   eventLogPathForOwner,
   appendHostEvent,
+  sharedDrillLedgerPath,
+  appendSharedDrillLedgerEvent,
   stripAnsi,
   mcpServerRowStatus,
   mcpDialogRowSelected,

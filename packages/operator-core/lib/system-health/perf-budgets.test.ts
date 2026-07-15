@@ -53,6 +53,58 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(evaluatePerfSignals(sig({}, { hostState: 'wedge-active' }), NOW).status).toBe('crit');
   });
 
+  // EI-12302: a sanctioned deploy restart makes :3070 briefly unreachable — that must
+  // not page as a real wedge when the caller has confirmed a deploy is in progress
+  // (the 'dev-server' resource lock held exclusive), but every OTHER definitive
+  // per-thread crit signal must still fire unaffected.
+  it('suppresses the unreachable crit when deployInProgress is true, and downgrades status', () => {
+    const v = evaluatePerfSignals(sig({ operator_3070_reachable: false }), NOW, undefined, true);
+    expect(v.status).toBe('ok'); // no other crit/warn signals present
+    expect(v.degraded).toBe(false);
+    expect(v.reasons).toEqual([]);
+    expect(v.suppressedReasons.join(' ')).toMatch(/unreachable/);
+    expect(v.suppressedReasons.join(' ')).toMatch(/deploy-in-progress/);
+  });
+
+  it('still crits on unreachable when deployInProgress is false (the default)', () => {
+    const v = evaluatePerfSignals(sig({ operator_3070_reachable: false }), NOW);
+    expect(v.status).toBe('crit');
+    expect(v.suppressedReasons).toEqual([]);
+  });
+
+  it('deployInProgress does NOT swallow a real wedge signal (hostState=wedge-active still crits)', () => {
+    const v = evaluatePerfSignals(
+      sig({ operator_3070_reachable: false }, { hostState: 'wedge-active' }),
+      NOW,
+      undefined,
+      true,
+    );
+    expect(v.status).toBe('crit');
+    expect(v.reasons.join(' ')).toMatch(/wedge-active/);
+    expect(v.reasons.join(' ')).not.toMatch(/unreachable/); // the reachable reason was suppressed, not just co-listed
+    expect(v.suppressedReasons.join(' ')).toMatch(/unreachable/);
+  });
+
+  it('deployInProgress does NOT swallow event-loop-lag / CLOSE_WAIT crits', () => {
+    const lag = evaluatePerfSignals(
+      sig({ operator_3070_reachable: false, eventLoopLag: { lag_p95_ms: 2000 } }),
+      NOW,
+      undefined,
+      true,
+    );
+    expect(lag.status).toBe('crit');
+    expect(lag.reasons.join(' ')).toMatch(/event-loop lag/);
+
+    const closeWait = evaluatePerfSignals(
+      sig({ operator_3070_reachable: false, closeWait_3070: 600 }),
+      NOW,
+      undefined,
+      true,
+    );
+    expect(closeWait.status).toBe('crit');
+    expect(closeWait.reasons.join(' ')).toMatch(/CLOSE_WAIT/);
+  });
+
   it('crit on event-loop lag p95 over the crit budget', () => {
     const v = evaluatePerfSignals(sig({ eventLoopLag: { lag_p95_ms: 1746 } }), NOW);
     expect(v.status).toBe('crit');

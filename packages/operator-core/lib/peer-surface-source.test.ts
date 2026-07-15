@@ -99,9 +99,10 @@ describe('fetchPeerSurface', () => {
   it('composes claim/checkpoint/journal/touched with the source provenance rule (never owner)', async () => {
     mockCursorRow.mockResolvedValue(cursorRow('su-peer', 'own-peer'));
     mockClaim.mockResolvedValue(CLAIM);
-    // NB fixture must not carry the build box's git user name — the release bundle
-    // audit hunts build-identity literals in the shipped source tar (WI-4419).
-    mockCheckpoint.mockResolvedValue('landed the advisory-lock fix; [owner:lead] said ship it');
+    // NB fixture must not carry ANY named [owner:NAME] provenance tag — the release
+    // identity-literal lint (WI-4776) + bundle audit (WI-4419) red the cut on a real
+    // person's name in shipped source. Nameless [owner] form is the blessed shape.
+    mockCheckpoint.mockResolvedValue('landed the advisory-lock fix; [owner] said ship it');
     mockJournal.mockResolvedValue([journalRow('psu-launcher.mjs loop reproduced — WI-4790 lock held')]);
     mockTouched.mockResolvedValue(['/repo/lib/psu-launcher.mjs']);
 
