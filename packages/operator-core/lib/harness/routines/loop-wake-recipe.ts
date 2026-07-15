@@ -17,6 +17,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { deriveRecipeAuthority } from '../../recipe-authority';
 
 /** Absolute cosine floor a hit must clear to be worth a wake line — below it
  *  the "match" is topical noise that trains agents to ignore the splice. */
