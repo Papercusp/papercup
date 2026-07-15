@@ -650,7 +650,9 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
   });
 
   it('carry DEFAULT-OFF is byte-identical: no params, shake preserved, clientId or not', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
     writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-3', backendWindow: 204800 }, home);
+    err.mockRestore();
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
     expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize"/);
     expect(written).not.toContain('carryOwner');
