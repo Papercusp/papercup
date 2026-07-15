@@ -5,7 +5,7 @@
 // a stubbed run-tool dispatch (the pinned AdvNowRunning sibling pattern). Asserts:
 // a row per hive with state shown via the Start/Stop toggle label, the running
 // tally, Start → pot:start (no drain), Stop → shared confirm dialog →
-// pot:pause{drainBees}, and a declined confirm aborts.
+// pot:pause{drainCups}, and a declined confirm aborts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';

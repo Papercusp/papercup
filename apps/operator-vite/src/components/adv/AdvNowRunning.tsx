@@ -47,7 +47,7 @@ export function waitingLabel(n: number): string {
  *
  * The Start/Stop button IS the hive control (replaced the retired global-header
  * HiveStartPauseButton): Start boots the brain (`pot:start`); Stop pauses it
- * (`pot:pause { drainBees:true }`). "Active" = the persisted per-hive
+ * (`pot:pause { drainCups:true }`). "Active" = the persisted per-hive
  * `started` bit (live via the hive.controlState invalidation) or a just-clicked
  * Start. Hidden when no hive is registered.
  */

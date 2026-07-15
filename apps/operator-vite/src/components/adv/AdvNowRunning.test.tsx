@@ -10,7 +10,7 @@
 //   - stopped → Start hive, started → Stop hive (no per-agent label),
 //   - Start fires pot:start through the loopback palette bridge and flips to
 //     the optimistic active state (errors → toast.error),
-//   - Stop confirms, then fires pot:pause { drainBees: true },
+//   - Stop confirms, then fires pot:pause { drainCups: true },
 //   - the "N plans waiting" nudge (push-driven plans.list) + its click-through
 //     to the Plans tab's Running bucket.
 
