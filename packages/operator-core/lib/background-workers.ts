@@ -58,12 +58,16 @@ export function utilityHostEnabled(env: NodeJS.ProcessEnv = process.env): boolea
  * that gate is exactly the EI-307 bug — a `work_items:create` landing on :3170
  * matched no rule (staging's matcher was never armed) so the hive demand-wake
  * silently dropped. The matcher therefore arms wherever requests are served:
- * everywhere except tests (a vitest worker must not poke the live wake system) and
- * an explicit full-disable (PAPERCUSP_BACKGROUND_WORKERS=0).
+ * everywhere except tests (a vitest worker must not poke the live wake system).
+ *
+ * `PAPERCUSP_BACKGROUND_WORKERS=0` is deliberately NOT a matcher kill switch:
+ * the clustered :3070 request workers and the :3170 staging host both carry that
+ * value to disable background loops while still serving the tool calls whose
+ * events the matcher must observe. Treating it as a full disable leaves every
+ * request-serving process with an empty process-local reaction registry.
  */
 export function reactionMatcherShouldArm(env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.VITEST) return false;
-  if (env.PAPERCUSP_BACKGROUND_WORKERS === '0') return false;
   return true;
 }
 

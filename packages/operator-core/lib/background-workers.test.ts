@@ -57,7 +57,10 @@ describe('utilityHostEnabled (EI-368)', () => {
 
 describe('reactionMatcherShouldArm (EI-307)', () => {
   it('arms on STAGING (:3170) — the EI-307 fix, where backgroundWorkersEnabled does NOT', () => {
-    const stagingEnv = { PAPERCUSP_HONO_PORT: '3170' } as unknown as NodeJS.ProcessEnv;
+    const stagingEnv = {
+      PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_BACKGROUND_WORKERS: '0',
+    } as unknown as NodeJS.ProcessEnv;
     // The crux contrast: the matcher must arm on the request-serving staging host,
     // even though staging runs no background LOOPS.
     expect(reactionMatcherShouldArm(stagingEnv)).toBe(true);
@@ -73,8 +76,13 @@ describe('reactionMatcherShouldArm (EI-307)', () => {
     expect(reactionMatcherShouldArm({ VITEST: 'true', PAPERCUSP_HONO_PORT: '3070' } as unknown as NodeJS.ProcessEnv)).toBe(false);
   });
 
-  it('respects an explicit full-disable (PAPERCUSP_BACKGROUND_WORKERS=0)', () => {
-    expect(reactionMatcherShouldArm({ PAPERCUSP_BACKGROUND_WORKERS: '0' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+  it('arms in a clustered request worker even though background loops are disabled', () => {
+    const clusterWorkerEnv = {
+      PAPERCUSP_HONO_PORT: '3070',
+      PAPERCUSP_BACKGROUND_WORKERS: '0',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(reactionMatcherShouldArm(clusterWorkerEnv)).toBe(true);
+    expect(backgroundWorkersEnabled(clusterWorkerEnv)).toBe(false);
   });
 });
 

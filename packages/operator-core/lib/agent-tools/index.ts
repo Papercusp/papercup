@@ -1240,9 +1240,11 @@ import { backgroundWorkspaceIds } from '../workspace-registry';
 // invoked there fires its demand-wake reaction in-process. `backgroundWorkersEnabled`
 // turns the loops off on :3170 (request-only), and gating the matcher on it was the
 // bug (staging matched no rule → demand wakes silently dropped). `reactionMatcherShouldArm`
-// arms green + staging; still excludes vitest (EI-312 leg 1: a worker must not poke the
-// live wake system) + explicit full-disable.
-import { backgroundWorkersEnabled, reactionMatcherShouldArm } from '../background-workers';
+// arms green + staging + clustered request-only workers; it excludes vitest
+// (EI-312 leg 1: a test worker must not poke the live wake system). The
+// PAPERCUSP_BACKGROUND_WORKERS flag only controls background loops and is `0`
+// in the request workers whose process-local matcher must remain armed.
+import { reactionMatcherShouldArm } from '../background-workers';
 try {
   if (reactionMatcherShouldArm()) {
     // WI-4890: :3070 is a reuse-port cluster, but event-reaction rules are
