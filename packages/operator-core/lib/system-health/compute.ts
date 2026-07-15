@@ -1162,6 +1162,10 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= 95 ? 'crit' : worstDisk >= 90 ? 'warn' : undefined),
         m('backup', backup?.ageMs == null ? 'n/a' : agoMin(backup.lastOkAtMs, ctx.now), backup && backup.ageMs !== null && backup.ageMs > 48 * 60 * 60_000 ? 'warn' : undefined),
         m('drift', migrationDrift ? migrationDrift.unapplied : 'n/a', (migrationDrift?.unapplied ?? 0) > 0 ? 'warn' : undefined),
+        // EI-12302: surface a suppressed reachability crit instead of leaving it
+        // silently invisible (per PerfVerdict.suppressedReasons's own contract) —
+        // 'n/a' when nothing was suppressed this tick (the common case).
+        ...(perf?.suppressedReasons?.length ? [m('deploy', 'in progress (suppressed unreachable)', undefined)] : []),
       ],
     };
   });
