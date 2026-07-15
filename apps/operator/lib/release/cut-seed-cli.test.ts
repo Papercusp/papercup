@@ -19,6 +19,7 @@ import {
   readReusableCorestore,
   isCorestoreLockedError,
   waitForOperatorDrain,
+  openSourceStoreForCut,
 } from './cut-seed-cli';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 
@@ -399,5 +400,92 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     await expect(
       waitForOperatorDrain({ ...base, pg: sql, stallMs: 10, now: () => (t += 100), sleep: async () => {}, warn: () => {} }),
     ).rejects.toThrow(/cannot drain on its behalf without corrupting delivery state/);
+  });
+});
+
+describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapshot)', () => {
+  const LOCKED = new Error('File descriptor could not be locked');
+
+  /**
+   * A fake store whose ready() fails for the writable open (as the live operator's lock
+   * makes it) and succeeds read-only — recording the exact sequence of opens.
+   */
+  function harness(opts: { readonly locked: boolean }) {
+    const calls: string[] = [];
+    const openStore = (_dir: string, o?: { readOnly?: boolean; wait?: boolean }) => {
+      const readOnly = o?.readOnly === true;
+      calls.push(readOnly ? `open:ro(wait=${String(o?.wait)})` : 'open:rw');
+      return {
+        ready: async () => {
+          if (!readOnly && opts.locked) throw LOCKED;
+        },
+        close: async () => {},
+      } as never;
+    };
+    return { calls, openStore };
+  }
+
+  const base = {
+    storeDir: '/tmp/store',
+    workspaceId: 'ws',
+    hive: 'papercusp',
+    sparse: false,
+    wantRefresh: true,
+    pg: {} as never,
+    warn: () => {},
+  };
+
+  it('on a LIVE-operator box opens read-only only AFTER the drain completes — the seed must not be a pre-drain snapshot', async () => {
+    const { calls, openStore } = harness({ locked: true });
+    const res = await openSourceStoreForCut({
+      ...base,
+      openStore,
+      backfillImpl: (async () => {
+        calls.push('backfill');
+        return { enqueued: 3, dropped: 0 };
+      }) as never,
+      waitImpl: (async () => {
+        calls.push('drain');
+        return { undrained: 0, waitedMs: 5 };
+      }) as never,
+    });
+
+    expect(res.sourceWritable).toBe(false);
+    // THE regression: a readOnly RocksDB open snapshots at open(), so opening before the
+    // drain ships state frozen at that instant while still exiting 0. Order is the fix.
+    expect(calls).toEqual(['open:rw', 'backfill', 'drain', 'open:ro(wait=false)']);
+    expect(calls.indexOf('open:ro(wait=false)')).toBeGreaterThan(calls.indexOf('drain'));
+  });
+
+  it('pins wait:false on the read-only open (a truthy wait re-arms the DeviceFile lock readOnly avoids)', async () => {
+    const { calls, openStore } = harness({ locked: true });
+    await openSourceStoreForCut({
+      ...base,
+      wantRefresh: false,
+      openStore,
+    });
+    expect(calls).toContain('open:ro(wait=false)');
+  });
+
+  it('a QUIESCED box still refreshes in-process against the writable store (no behaviour change)', async () => {
+    const { calls, openStore } = harness({ locked: false });
+    const res = await openSourceStoreForCut({
+      ...base,
+      openStore,
+      refreshImpl: (async () => {
+        calls.push('refresh:in-process');
+        return {} as never;
+      }) as never,
+    });
+    expect(res.sourceWritable).toBe(true);
+    expect(calls).toEqual(['open:rw', 'refresh:in-process']);
+    // Never falls back to a read-only open when it owns the store.
+    expect(calls.some((c) => c.startsWith('open:ro'))).toBe(false);
+  });
+
+  it('propagates a non-lock open failure instead of silently degrading to read-only', async () => {
+    const boom = new Error('corrupt manifest');
+    const openStore = () => ({ ready: async () => { throw boom; }, close: async () => {} }) as never;
+    await expect(openSourceStoreForCut({ ...base, openStore })).rejects.toThrow(/corrupt manifest/);
   });
 });

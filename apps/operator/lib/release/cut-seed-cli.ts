@@ -425,6 +425,149 @@ export function isCorestoreLockedError(e: unknown): boolean {
  * rows delivered while the real log never got them, silently losing them for good.
  * The operator owns its log; our job is only to enqueue (a PG-only INSERT) and wait.
  */
+/**
+ * Open the hive corestore for a cut, refreshing it first, and return a store whose
+ * contents are current as of the return.
+ *
+ * The ORDER of the steps here is the whole point of the function, and it is why this is
+ * one unit rather than inline code in main(): a `readOnly` corestore open is a RocksDB
+ * `OpenForReadOnly`, i.e. a POINT-IN-TIME SNAPSHOT — it never observes another process's
+ * subsequent writes. Measured against the live operator: a held readOnly open sat frozen
+ * at own-log length 83311 across 45s while a fresh readOnly open of the same store read
+ * 84872. So on the live path the refresh (whose appends are performed by the OPERATOR,
+ * not us) MUST fully complete BEFORE we open. Open first and the cut replicates state
+ * frozen at open, silently omitting every op the drain appended — while exiting 0 and
+ * printing a green "drained to zero". That is the ships-green-does-nothing failure
+ * WI-4487 exists to fix, so the ordering is asserted by tests; do not reorder.
+ */
+export async function openSourceStoreForCut(inp: {
+  readonly storeDir: string;
+  /** Undefined ⇒ no DB scope, so no refresh is possible. */
+  readonly workspaceId: string | undefined;
+  readonly hive: string;
+  readonly sparse: boolean;
+  /** False ⇒ --skip-corestore-refresh. */
+  readonly wantRefresh: boolean;
+  readonly openStore?: (dir: string, opts?: { readOnly?: boolean; wait?: boolean }) => Corestore;
+  readonly pg?: postgres.Sql;
+  readonly refreshImpl?: typeof refreshCorestoreStateForSeed;
+  readonly backfillImpl?: typeof backfillLocalState;
+  readonly waitImpl?: typeof waitForOperatorDrain;
+  readonly warn?: (msg: string) => void;
+}): Promise<{ store: Corestore; sourceWritable: boolean }> {
+  const warn = inp.warn ?? ((m: string) => console.warn(m));
+  const openStore = inp.openStore ?? ((dir, opts) => new Corestore(dir, opts) as Corestore);
+  const wantRefresh = !!inp.workspaceId && inp.wantRefresh;
+
+  // The CUT itself only ever READS this store — cores are copied out by pipeReplicate.
+  // Only the optional pre-cut refresh writes. So try writable first (a quiesced box
+  // refreshes in-process exactly as before) and fall back to read-only when the operator
+  // holds the store.
+  let store: Corestore | undefined = openStore(inp.storeDir);
+  let sourceWritable = true;
+  try {
+    await store.ready();
+  } catch (e) {
+    if (!isCorestoreLockedError(e)) throw e;
+    // Hold NOTHING open across the refresh: see the snapshot semantics above.
+    await store.close().catch(() => {});
+    store = undefined;
+    sourceWritable = false;
+  }
+
+  if (wantRefresh && sourceWritable) {
+    // Quiesced box: we own the store, so refresh in-process exactly as before.
+    await (inp.refreshImpl ?? refreshCorestoreStateForSeed)({
+      workspaceId: inp.workspaceId!,
+      hive: inp.hive,
+      store: store!,
+      sparse: inp.sparse,
+    });
+  } else if (wantRefresh) {
+    // Live-operator box: split the refresh along the write boundary. backfill is a
+    // PG-only INSERT into substrate_outbox (it never appends to the log — the drain owns
+    // that), so it needs no store handle at all; the drain itself is done by the OPERATOR,
+    // into the real live log, and we simply wait for it. Draining it ourselves is not an
+    // option: it needs the write lock, and stamping `drained_at` for rows the live log
+    // never received would lose them permanently.
+    const pg = inp.pg ?? getOrgPg().sql;
+    const handle = { workspaceId: inp.workspaceId, harnessSlug: inp.hive } as unknown as BootedHarnessHandle;
+    const backfill = await (inp.backfillImpl ?? backfillLocalState)(handle, pg, {
+      force: true,
+      maxOpsPerAuthor: 0,
+    });
+    const { waitedMs } = await (inp.waitImpl ?? waitForOperatorDrain)({
+      pg,
+      workspaceId: inp.workspaceId!,
+      hive: inp.hive,
+    });
+    warn(
+      `[cut-seed] refreshed via the live operator for ${inp.workspaceId}::${inp.hive}: ` +
+        `backfill enqueued=${backfill.enqueued} dropped=${backfill.dropped}; operator drained to zero in ${waitedMs}ms.`,
+    );
+  } else if (!inp.workspaceId) {
+    warn('[cut-seed] no --workspace-id: skipping pre-cut corestore refresh (no DB scope to backfill/drain).');
+  } else {
+    warn('[cut-seed] --skip-corestore-refresh: snapshotting corestore without refreshing local PG state first.');
+  }
+
+  if (!sourceWritable) {
+    // NOW open read-only — strictly after any refresh above, so this snapshot CONTAINS
+    // the ops the operator just drained. `readOnly` skips the CORESTORE device-file lock
+    // outright (hypercore-storage builds it only when `!readOnly && !allowBackup`) and
+    // opens RocksDB read-only. That is what lets a box running the operator cut a
+    // properly-seeded release with no quiesce and no outage — previously every such cut
+    // either took an outage or fell back to PAPERCUSP_SEED_CORESTORE=0 and shipped an
+    // installer that cold-clones on first boot.
+    //
+    // `wait: false` is load-bearing, not decoration. hypercore-storage:496 reads
+    //   if ((this.bootstrap && !this.readOnly && !this.allowBackup) || this.wait)
+    // — the `|| this.wait` binds AFTER the whole readOnly clause, so a truthy `wait`
+    // re-arms the very DeviceFile lock readOnly is here to avoid, and it fails with an
+    // error identical to the one we just caught. Pin it explicitly so this cannot regress
+    // silently if a default changes upstream.
+    store = openStore(inp.storeDir, { readOnly: true, wait: false });
+    try {
+      await store.ready();
+    } catch (roErr) {
+      // The read-only fallback is the no-outage path; if even it cannot open, the store is
+      // not merely operator-locked. Surface the real diagnosis + remedies rather than a
+      // raw hyperbee error minutes into a cut.
+      const msg = roErr instanceof Error ? roErr.message : String(roErr);
+      throw new Error(
+        `[cut-seed] cannot open the hive corestore at ${inp.storeDir} — it is locked by the running operator AND ` +
+          'the read-only fallback failed, so this is not a plain lock conflict. Use a no-outage path instead:\n' +
+          '  • PAPERCUSP_SEED_CORESTORE=0 / --no-corestore  → git-only seed (fresh installs cold-clone the hive on first boot)\n' +
+          '  • --reuse-corestore <prior seed dir>           → graft an already-cut corestore, no quiesce (WI-3232)\n' +
+          '  • PAPERCUSP_SKIP_SEED_CUT=1 (release-local.sh)  → reuse the existing src-tauri/seed as-is\n' +
+          '  • or stop the operator, then re-run (an OUTAGE — not for the shared dev box).\n' +
+          `See WI-4487. (underlying error: ${msg})`,
+      );
+    }
+    // --sparse trims the cut to the head-snapshot span, but appending that fresh head
+    // snapshot needs the write lock the operator holds. Without it computeSparseFrom finds
+    // no in-window snapshot and ships FULL history for the core — the seed is still
+    // COMPLETE and CORRECT, just larger. Sparse is a size optimisation, not a correctness
+    // feature, so degrade rather than fail the release; but say so loudly, because
+    // silently shipping a much bigger installer than asked for is its own trap.
+    if (inp.sparse) {
+      warn(
+        '[cut-seed] --sparse cannot trim this cut: appending the fresh head snapshot it needs requires the ' +
+          'write lock the running operator holds. The cut will ship FULL history (correct, just larger). ' +
+          'For a trimmed cut, quiesce the operator — or, once the owner enables the (currently dark, ' +
+          'P-008-gated) SUBSTRATE_LOG_SNAPSHOT producer, the operator maintains head snapshots itself and a ' +
+          'live sparse cut trims with no quiesce. See WI-4487.',
+      );
+    }
+    warn(
+      '[cut-seed] the operator holds the hive corestore — opened it READ-ONLY (after the refresh above) and ' +
+        'cutting live (no quiesce, no outage). The cut only reads the store; see WI-4487.',
+    );
+  }
+
+  return { store: store!, sourceWritable };
+}
+
 export async function waitForOperatorDrain(inp: {
   readonly pg: postgres.Sql;
   readonly workspaceId: string;
