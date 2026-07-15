@@ -32,6 +32,7 @@ describe('session-port stale cleanup', () => {
   it('fails a pending target, deletes its artifact, and marks cleanup complete', async () => {
     const updateTarget = vi.fn(async () => true);
     const endTarget = vi.fn(async () => undefined);
+    const recordTelemetry = vi.fn(async () => true);
     const transition = vi.fn(async (id, workspaceId, status, fields) => row({ id, workspaceId, status, metadata: fields.metadata }));
     const result = await cleanupExpiredSessionPorts({
       workspaceId: 'ws',
@@ -41,11 +42,18 @@ describe('session-port stale cleanup', () => {
       updateTarget,
       endTarget,
       transition,
+      recordTelemetry,
     });
     expect(result).toEqual({ expiredRows: 1, targetsFailed: 1, artifactsDeleted: 1, orphanArtifactsDeleted: 1, errors: 0 });
     expect(updateTarget).toHaveBeenCalledWith(9, 'ws', 'failed', { deliveryErrorClass: 'preparation-expired' });
     expect(endTarget).toHaveBeenCalledWith(9, 1);
     expect(transition.mock.calls[0][3].metadata.cleanupComplete).toBe(true);
+    expect(recordTelemetry).toHaveBeenCalledWith(expect.objectContaining({
+      stage: 'failed',
+      portId: row().id,
+      cleanupOutcome: 'deleted',
+      failureClass: 'preparation-expired',
+    }));
   });
 
   it('leaves cleanup incomplete for retry when target projection fails', async () => {
@@ -58,6 +66,7 @@ describe('session-port stale cleanup', () => {
       updateTarget: async () => false,
       endTarget: async () => undefined,
       transition,
+      recordTelemetry: async () => true,
     });
     expect(result.errors).toBe(1);
     expect(transition.mock.calls[0][3].metadata.cleanupComplete).toBe(false);

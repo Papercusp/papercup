@@ -5,6 +5,7 @@ import {
   transitionSessionPort,
   type SessionPortRow,
 } from './store';
+import { recordSessionPortTelemetry } from './telemetry';
 
 export interface SessionPortCleanupResult {
   expiredRows: number;
@@ -26,6 +27,7 @@ export async function cleanupExpiredSessionPorts(input: {
   updateTarget?: typeof updateAdvSessionPortStatus;
   endTarget?: typeof markAdvSessionEnded;
   transition?: typeof transitionSessionPort;
+  recordTelemetry?: typeof recordSessionPortTelemetry;
 }): Promise<SessionPortCleanupResult> {
   const list = input.list ?? sessionPortsNeedingCleanup;
   const rows = input.rows ?? await list(input.workspaceId);
@@ -33,6 +35,7 @@ export async function cleanupExpiredSessionPorts(input: {
   const updateTarget = input.updateTarget ?? updateAdvSessionPortStatus;
   const endTarget = input.endTarget ?? markAdvSessionEnded;
   const transition = input.transition ?? transitionSessionPort;
+  const recordTelemetry = input.recordTelemetry ?? recordSessionPortTelemetry;
   const out: SessionPortCleanupResult = {
     expiredRows: rows.length,
     targetsFailed: 0,
@@ -43,9 +46,11 @@ export async function cleanupExpiredSessionPorts(input: {
 
   for (const row of rows) {
     let artifactComplete = false;
+    let cleanupOutcome: 'deleted' | 'already-absent' | 'failed' = 'failed';
     try {
       const deleted = await deleteArtifact(row.artifactPath);
       if (deleted) out.artifactsDeleted += 1;
+      cleanupOutcome = deleted ? 'deleted' : 'already-absent';
       artifactComplete = true; // false means already absent, also complete
     } catch {
       out.errors += 1;
@@ -76,6 +81,25 @@ export async function cleanupExpiredSessionPorts(input: {
     } catch {
       out.errors += 1;
     }
+
+    // Expiration is a failed delivery, not merely a maintenance counter. Keep
+    // the lifecycle visible with the same content-free allowlisted telemetry
+    // as immediate failures; telemetry itself remains best-effort.
+    await recordTelemetry({
+      workspaceId: input.workspaceId,
+      stage: 'failed',
+      portId: row.id,
+      sourceAdvSessionId: row.sourceAdvSessionId,
+      targetAdvSessionId: row.targetAdvSessionId,
+      sourceBackend: row.sourceBackend,
+      targetBackend: row.targetBackend,
+      targetModel: row.targetModel,
+      sourceHash: row.sourceHash,
+      renderedHash: row.renderedHash,
+      protocolVersion: row.protocolVersion,
+      cleanupOutcome,
+      failureClass: 'preparation-expired',
+    });
   }
 
   try {

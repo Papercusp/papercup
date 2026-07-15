@@ -5074,6 +5074,15 @@ export function composeResumeModelSpec(model, effort) {
   return normalizeModelSpec(e ? `${m}:${e}` : m);
 }
 
+/** Content-free lineage shown in the resume picker for ported target sessions. */
+export function resumeSessionLineageLabel(session) {
+  if (!Number.isSafeInteger(Number(session?.portSourceAdvSessionId))) return null;
+  const status = typeof session?.portStatus === 'string' && session.portStatus
+    ? session.portStatus
+    : 'delivered';
+  return `ported from #${Number(session.portSourceAdvSessionId)}${status === 'delivered' ? '' : ` (${status})`}`;
+}
+
 export const SESSION_PORT_PROTOCOL_VERSION = 1;
 export const SESSION_PORT_TRANSFORM_VERSION = 1;
 
@@ -5515,10 +5524,11 @@ async function resumeFlow(args = {}) {
     // tail read per row; unknown (omp / unreadable) rows just omit the segment.
     let lastModel = null;
     try { lastModel = lastActiveModelFor(s); } catch { /* row stays model-less */ }
+    const lineage = resumeSessionLineageLabel(s);
     return {
       name:
         `${s.id != null ? `#${s.id}  ·  ` : ''}${s.agent}${lastModel ? ` (${lastModel})` : ''}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.startedAt)}` +
-        `${s.endedAt ? '' : '  · active'}`,
+        `${lineage ? `  · ${lineage}` : ''}${s.endedAt ? '' : '  · active'}`,
       value: s,
     };
   });

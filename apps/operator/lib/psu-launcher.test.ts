@@ -69,6 +69,7 @@ import {
   sessionIsResumable,
   sessionTranscriptFile,
   lastActiveModelFor,
+  resumeSessionLineageLabel,
   modelArgsFor,
   reportSessionEnded,
   reportSessionResumed,
@@ -3247,7 +3248,7 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }).args).not.toContain('--model');
   });
 
-  describe('lastActiveModelFor (tail-read the session transcript)', () => {
+describe('lastActiveModelFor (tail-read the session transcript)', () => {
     const UUID = '0123abcd-1234-5678-9abc-def012345678';
     let home = '';
     beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-lastmodel-')); });
@@ -3299,6 +3300,19 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
       writeJsonl(f, [{ type: 'user', message: { content: 'hi' } }]);
       expect(lastActiveModelFor({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe(null);
     });
+  });
+});
+
+describe('resumeSessionLineageLabel', () => {
+  it('labels a delivered port without exposing transcript content', () => {
+    expect(resumeSessionLineageLabel({ portSourceAdvSessionId: 42, portStatus: 'delivered' }))
+      .toBe('ported from #42');
+  });
+
+  it('surfaces a non-delivered lifecycle state and ignores native sessions', () => {
+    expect(resumeSessionLineageLabel({ portSourceAdvSessionId: 42, portStatus: 'failed' }))
+      .toBe('ported from #42 (failed)');
+    expect(resumeSessionLineageLabel({ portSourceAdvSessionId: null })).toBeNull();
   });
 });
 
