@@ -20,7 +20,12 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 
 import { buildProgramSuccessReport, type ProgramSuccessReport } from '../../scout/success-metrics';
-import { BG_HOST_RESTART_WATERMARK, resolveWatermarkRef } from '../../scout/generation-watermark';
+import {
+  BG_HOST_RESTART_WATERMARK,
+  readRunningGeneration,
+  resolveWatermarkRef,
+  type RunningGeneration,
+} from '../../scout/generation-watermark';
 
 export const successMetricsArgs = z
   .object({
@@ -86,7 +91,12 @@ export interface ResolvedSuccessWindow {
 export async function runSuccessMetrics(
   args: SuccessMetricsArgs,
 ): Promise<
-  | { ok: true; report: ProgramSuccessReport; resolvedWindow?: ResolvedSuccessWindow }
+  | {
+      ok: true;
+      report: ProgramSuccessReport;
+      resolvedWindow?: ResolvedSuccessWindow;
+      runningGeneration?: RunningGeneration;
+    }
   | { ok: false; error: string }
 > {
   try {
@@ -119,7 +129,17 @@ export async function runSuccessMetrics(
       ...(args.maxErrorRate != null ? { maxErrorRate: args.maxErrorRate } : {}),
       ...(resolvedWindow ? { sinceMs: resolvedWindow.sinceMs } : {}),
     });
-    return { ok: true, report, ...(resolvedWindow ? { resolvedWindow } : {}) };
+    // P-007 generation parity: an explicitly windowed judgment also carries the
+    // identity of the generation being judged. Keep the legacy/default read byte-
+    // identical by omitting this field when no window override was requested.
+    const runningGeneration = resolvedWindow
+      ? await readRunningGeneration().catch(() => ({ sha: null, hostStartedAt: null }))
+      : undefined;
+    return {
+      ok: true,
+      report,
+      ...(resolvedWindow ? { resolvedWindow, runningGeneration } : {}),
+    };
   } catch (e) {
     return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) };
   }

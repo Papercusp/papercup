@@ -42,7 +42,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
 import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
-import { recentWatchdogFires, recordFire } from '../pot/watchdog';
+import { claimWatchdogFire } from '../pot/watchdog';
 
 // ── tunable (env-overridable, like the liveness-watchdog floor) ───────────────
 
@@ -211,19 +211,28 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
         const candidates = await readScoutDraftCandidates(sql, workspaceId, installSlug);
         const stale = selectStaleDrafts(candidates, { now, thresholdMs });
         if (stale.length === 0) continue;
-        const alreadyFiredRecently =
-          (await recentWatchdogFires(workspaceId, installSlug, windowHours, 'scout-draft-review')) > 0;
-        if (!shouldNudgeHive({ staleCount: stale.length, alreadyFiredRecently })) {
-          results.push({ workspaceId, installSlug, outcome: 'skipped', staleCount: stale.length, reason: 'debounced' });
-          continue;
-        }
-        const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
+        
+        // EI-XXXX: use atomic claimWatchdogFire (with advisory lock) instead of non-atomic
+        // check-then-act pattern (recentWatchdogFires + recordFire) to prevent race-condition
+        // duplicate fires when concurrent sweeps run. Same pattern as watchdog.ts EI-6760.
         const reason =
           `${stale.length} scout-routed draft(s) unreviewed > ${windowHours}h: ` +
           stale.slice(0, 5).map((s) => s.planSlug).join(', ');
+        const claimed = await claimWatchdogFire({
+          workspaceId,
+          installSlug,
+          source: 'scout-draft-review',
+          reason,
+          wakeAt: null,
+          windowHours,
+        });
+        if (!claimed) {
+          results.push({ workspaceId, installSlug, outcome: 'skipped', staleCount: stale.length, reason: 'debounced' });
+          continue;
+        }
+        
+        const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
         await fireReviewWake(workspaceId, queenOwner, stale, staleSec, installSlug);
-        // Record the fire so the debounce engages next tick (source='scout-draft-review').
-        await recordFire({ workspaceId, installSlug, source: 'scout-draft-review', reason, wakeAt: null });
         results.push({ workspaceId, installSlug, outcome: 'nudged', staleCount: stale.length, reason });
       } catch (e) {
         results.push({
