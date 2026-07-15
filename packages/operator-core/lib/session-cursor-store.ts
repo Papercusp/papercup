@@ -125,6 +125,33 @@ export async function recentSessionCursors(filter: {
   return rows;
 }
 
+/**
+ * The FRESHEST cursor per owner across `ownerIds`, as a Map keyed by owner_id —
+ * the P-002 presence-overlay read (a presence roster row is keyed by ownerId,
+ * one live session per owner, so the owner's most-recently-updated cursor is the
+ * one to surface). Batched (one query, DISTINCT ON) + bounded; an owner with no
+ * cursor is simply absent from the map. Empty input ⇒ empty map (no query).
+ */
+export async function cursorsByOwner(ownerIds: string[]): Promise<Map<string, SessionCursorRow>> {
+  const ids = [...new Set(ownerIds.filter((x) => typeof x === 'string' && x.length > 0))];
+  const out = new Map<string, SessionCursorRow>();
+  if (ids.length === 0) return out;
+  const { sql } = getOrgPg();
+  const rows = await sql<SessionCursorRow[]>`
+    SELECT DISTINCT ON (owner_id)
+           session_id, workspace_id, owner_id, harness_slug,
+           turn_ts::text AS turn_ts, note_count, term_count, terms,
+           updated_at::text AS updated_at
+    FROM harness_shared.session_cursor
+    WHERE owner_id = ANY(${ids})
+    ORDER BY owner_id, updated_at DESC
+  `;
+  for (const r of rows) {
+    if (r.owner_id) out.set(r.owner_id, r);
+  }
+  return out;
+}
+
 /** Retention prune: drop cursors not updated since `olderThan`. Returns the
  *  count removed. Stale cursors are noise to the collision index. */
 export async function pruneSessionCursors(olderThan: Date | string): Promise<number> {
