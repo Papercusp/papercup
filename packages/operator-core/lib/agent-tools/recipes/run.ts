@@ -129,7 +129,9 @@ export default defineTool({
       'reuse recipes whose tools you may call.',
     notWhen:
       'When no existing recipe fits — author a fresh code:run (which also auto-captures + dedups). ' +
-      'Preview a recipe\'s mutations with dryRun before a committing run.',
+      'Preview a recipe\'s mutations with dryRun before a committing run. A recipe using raw SQL/shell/nested ' +
+      'code:run, or NESTED inside another recipe\'s own tools.recipes.run(...) — check the failure\'s `reason` ' +
+      '(authority_unresolved = permanent, run it via code:run instead; authority_required = get a proof first).',
     chaining:
       'recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, dryRun:true } → ' +
       'recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
@@ -251,7 +253,14 @@ export default defineTool({
           liveContext: liveAuthorityContext,
         });
         if (!authority.ok) {
-          return { ok: false, id: it.id, error: authority.error };
+          // EI-12057: `reason` distinguishes a PERMANENT, by-design limitation
+          // (authority_unresolved — the recipe embeds an opaque/unprovable call,
+          // e.g. dev:pg_query; no proof, nested or top-level, can ever fix it) from
+          // a FIXABLE one (authority_required — go get a proof), so a caller who
+          // hit this via a nested `tools.recipes.run(...)` composition doesn't
+          // mistake it for "nesting is broken" when the target recipe itself
+          // simply can't be authority-verified.
+          return { ok: false, id: it.id, error: authority.error, reason: authority.reason };
         }
         const needsLiveRefs =
           authority.descriptor.refs.plans.length > 0 ||

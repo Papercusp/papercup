@@ -114,6 +114,29 @@ describe('UpdateChip', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it('a no_candidate check says the channel has no releases yet — never that the host is unreachable (WI-5010)', async () => {
+    // The manifest route answers cannot_check/no_candidate when the host IS
+    // reachable but this channel has nothing published (a beta user while all
+    // releases are alpha). That must read as an informational "nothing here
+    // yet", not a scary transport failure — and never as "you're current".
+    checkForUpdate.mockResolvedValue({
+      available: false,
+      current_version: '1.2.3',
+      new_version: null,
+      notes: null,
+      check_failed: true,
+      check_reason: 'no_candidate',
+    });
+    render(<UpdateChip />);
+    const chip = await screen.findByRole('button', { name: /v1\.2\.3/ });
+    fireEvent.click(chip);
+
+    await waitFor(() => expect(toast.info).toHaveBeenCalled());
+    expect(vi.mocked(toast.info).mock.calls.at(-1)?.[0]).toMatch(/no releases published/i);
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it('still reports a genuine up-to-date check as up to date', async () => {
     checkForUpdate.mockResolvedValue({
       available: false,
@@ -258,6 +281,20 @@ describe('UpdateChip — Update Center panel', () => {
     // The popover content renders in a portal once open — wait for it.
     await screen.findByText('Update Center');
   }
+
+  it('the update card renders no_candidate as "no releases for this channel yet", not host-unreachable (WI-5010)', async () => {
+    checkForUpdate.mockResolvedValue({
+      available: false,
+      current_version: '1.2.3',
+      new_version: null,
+      notes: null,
+      check_failed: true,
+      check_reason: 'no_candidate',
+    });
+    await openPanel();
+    await screen.findByText(/No releases are published for the beta channel yet/);
+    expect(screen.queryByText(/reach the release host/)).toBeNull();
+  });
 
   it('opening the chip shows the channel switcher on the saved channel', async () => {
     await openPanel();

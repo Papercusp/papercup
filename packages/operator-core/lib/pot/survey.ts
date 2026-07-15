@@ -805,6 +805,10 @@ export interface SurveyDeps {
   loadRegistry: (ws: string) => Promise<{ projects: RegistryProjectForPotSurvey[] }>;
   listPlanRows: (harnessSlug: string) => Promise<PlanIndexRow[]>;
   fetchFrontier: (surveySlugs: readonly string[], limit: number) => Promise<FrontierRow[]>;
+  /** The escalated-issue slice (EI-12275) — severity critical/major bug/change/task
+   *  rows, otherwise invisible to the feature-only {@link fetchFrontier}. Injectable,
+   *  mirroring `fetchFrontier`; defaults to {@link fetchEscalatedIssueFrontierRows}. */
+  fetchEscalatedIssues: (surveySlugs: readonly string[], limit: number) => Promise<FrontierRow[]>;
   /** Resolve one harness's blocking graph for the readiness filter (W-01/P-010). */
   fetchBlockGraph: (harness: string) => Promise<HarnessBlockGraph>;
   /** Count the frontier withheld PURELY by the G2 admission gate (remote +
@@ -828,6 +832,10 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
     fetchFrontier: (surveySlugs, limit) => {
       const { sql } = getOrgPg();
       return fetchFrontierRows(sql, workspaceId, surveySlugs, limit);
+    },
+    fetchEscalatedIssues: (surveySlugs, limit) => {
+      const { sql } = getOrgPg();
+      return fetchEscalatedIssueFrontierRows(sql, workspaceId, surveySlugs, limit);
     },
     fetchBlockGraph: (harness) => {
       const { sql } = getOrgPg();
@@ -904,7 +912,7 @@ export async function surveyPot(
     );
   }
 
-  const [planRowsPerHarness, frontierRows, frontierQuarantined] = await Promise.all([
+  const [planRowsPerHarness, featureFrontierRows, escalatedIssueRows, frontierQuarantined] = await Promise.all([
     Promise.all(
       planSlugs.map(async (slug) => {
         try {
@@ -922,11 +930,28 @@ export async function surveyPot(
       }),
     ),
     deps.fetchFrontier(surveySlugs, opts.frontierLimit ?? 50),
+    // EI-12275: the escalated-issue slice (severity critical/major bug/change/task),
+    // otherwise invisible to the feature-only fetchFrontier above. Fail-open — a
+    // flaky read here must not blank the (much larger, higher-traffic) feature
+    // frontier alongside it.
+    deps
+      .fetchEscalatedIssues(surveySlugs, 10)
+      .catch((err) => {
+        console.warn(
+          '[pot-survey] escalated-issue frontier read failed — reporting none:',
+          err instanceof Error ? err.message : err,
+        );
+        return [] as FrontierRow[];
+      }),
     // The admission-withheld count, scoped identically to the frontier fetch (the
     // same surveySlugs) so `frontier: []` is diagnosable as deadlock-vs-idle
     // (EI-8498 / WI-4563). Fail-open in the default dep → never blanks the survey.
     deps.fetchQuarantinedCount(surveySlugs),
   ]);
+  // One combined row set flows through readiness/scope filtering below (EI-12275)
+  // so an escalated issue is excluded by the same blocked_by/pause/eligible-plan
+  // rules a feature frontier row would be — no separate code path to drift.
+  const frontierRows = [...featureFrontierRows, ...escalatedIssueRows];
 
   const planCandidates: PlacementCandidate[] = [];
   for (const rows of planRowsPerHarness) {

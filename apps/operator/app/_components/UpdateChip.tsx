@@ -56,6 +56,24 @@ const CHANNEL_BLURB: Record<Channel, string> = {
   stable: 'Conservative. Updated when a release is ready for everyone.',
 };
 
+/**
+ * Human copy for a cannot_check update result (WI-5010). `no_candidate` means
+ * the release host WAS reached but has published nothing visible to this
+ * channel (e.g. a beta user while every release is still alpha) — rendering
+ * that as "couldn't reach the release host" is false and alarming, and every
+ * beta/stable user would see it until the first beta/stable cut. Only genuine
+ * transport/credential failures should read as unreachable.
+ */
+function describeCheckFailure(reason: string | null | undefined, channel: Channel): string {
+  if (reason === 'no_candidate') {
+    return `No releases are published for the ${channel} channel yet — update status unknown.`;
+  }
+  if (reason === 'manifest_unconfigured') {
+    return 'The release host manifest is misconfigured (manifest_unconfigured) — update status unknown.';
+  }
+  return `Couldn’t reach the release host${reason ? ` (${reason})` : ''} — update status unknown.`;
+}
+
 /** One release row from GET /api/updates/history. Mirrors the server's
  *  `UpdateHistoryEntry` (updates-history.ts) — kept as a local shape so the
  *  client doesn't import the server route module. */
@@ -152,11 +170,20 @@ export default function UpdateChip() {
         // are up to date when we never actually managed to ask, which is how an
         // app can sit on a stale version forever and never say a word.
         if (u.check_failed) {
-          toast.error("Couldn't check for updates", {
-            description: `The release host could not be reached${
-              u.check_reason ? ` (${u.check_reason})` : ''
-            } — you may not be on the latest version. Retry, or check your connection.`,
-          });
+          // no_candidate = the host answered, this channel just has nothing
+          // published yet (WI-5010) — an informational state, not a failure.
+          if (u.check_reason === 'no_candidate') {
+            toast.info('No releases published for your channel yet', {
+              description:
+                'The release host is reachable, but nothing has been published to your current channel so far.',
+            });
+          } else {
+            toast.error("Couldn't check for updates", {
+              description: `The release host could not be reached${
+                u.check_reason ? ` (${u.check_reason})` : ''
+              } — you may not be on the latest version. Retry, or check your connection.`,
+            });
+          }
         } else {
           toast.success(
             u.available
@@ -466,7 +493,7 @@ export default function UpdateChip() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <span>
               {info?.check_failed
-                ? `Couldn’t reach the release host${info.check_reason ? ` (${info.check_reason})` : ''} — update status unknown.`
+                ? describeCheckFailure(info.check_reason, channel)
                 : `You’re on the latest (${channel}).`}
             </span>
             <button

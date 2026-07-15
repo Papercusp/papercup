@@ -20,6 +20,7 @@ import {
   laneInEnvOutage,
   isCauseUnknownOrphan,
   orphanStormSignature,
+  supersededOrphanItemIds,
   ORPHAN_EVIDENCE_WINDOW_MS,
 } from './orphaned-dispatch';
 import { readRecentDispatches, markDispatchOrphaned, type ImprovementDispatchRow } from './dispatch-ledger';
