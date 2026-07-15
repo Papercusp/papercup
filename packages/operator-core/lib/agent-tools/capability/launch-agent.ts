@@ -48,12 +48,19 @@ import {
   injectLaunchedByArg,
   recordAgentLaunchResult,
   resolveResumeTarget,
+  verifyResumeStarted,
 } from '../../agent-launch-core';
 import type { ColorScheme } from '../../console-color-schemes';
 
 /** Launching more than this many agents in one call is almost certainly a mistake
  *  (and is heavy — each is a real CLI process). Mirrors capability:terminal's cap. */
 const MAX_AGENTS = 12;
+
+/** How long to wait for a resumed session's live psu-pty host to appear before
+ *  declaring the resume UNVERIFIED (EI-11524). A healthy resume registers its host
+ *  within a few seconds (verifyResumeStarted returns early), so only a silent
+ *  no-op pays this full window — comfortably under the ~55s MCP foreground cap. */
+const RESUME_VERIFY_TIMEOUT_MS = 30_000;
 
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
@@ -75,7 +82,7 @@ export default defineTool({
     notWhen:
       'To run a COMMAND (dev server, build, REPL) rather than an agent: capability:terminal / capability:bash. For N members on a plan with fleet seats + capacity advice in one call, fleet:launch-on-plan is still the ergonomic door.',
     chaining:
-      'Returns once spawned; does NOT wait. `resume: { agentId }` resolves that agent\'s latest session (no uuid hunting); a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.',
+      'A fresh/fork/headless launch returns once spawned; an IN-PLACE resume also VERIFIES a live agent registered (EI-11524) — it reports isError + a loud "RESUME UNVERIFIED" note if the window opened but no agent booted (archived transcript / boot no-op), so a resume no longer silently reports phantom success. `resume: { agentId }` resolves that agent\'s latest session (no uuid hunting); a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.',
     seeAlso: [
       'fleet:launch-on-plan (N members on a plan, with seats + capacity advice)',
       'capability:terminal (run a COMMAND in a visible terminal, not an agent)',
@@ -356,6 +363,30 @@ export default defineTool({
     const opened = results.filter((r) => r.status === 'ok');
     const failed = results.filter((r) => r.status !== 'ok');
 
+    // EI-11524: a clean terminal spawn is NOT proof the agent is running. An
+    // in-place `psu --resume` whose transcript was archived off-disk (or whose
+    // launcher searched the wrong projects dir) finds nothing, starts no process,
+    // and the window closes seconds later — yet we previously reported SUCCESS.
+    // Verify a live psu-pty host actually appears for the resumed identity (which
+    // re-attaches its ORIGINAL ownerId) before calling the resume good; if none
+    // does, say so LOUDLY and fail the tool. Scoped to a VISIBLE IN-PLACE resume:
+    // a fork mints a new identity we can't poll here, and a headless session hosts
+    // no window whose silent close is the symptom.
+    let resumeVerifyFailed = false;
+    if (isResume && !fork && !args.headless && resumeOwnerId && opened.length > 0) {
+      const verify = await verifyResumeStarted(resumeOwnerId, { timeoutMs: RESUME_VERIFY_TIMEOUT_MS });
+      if (!verify.started) {
+        resumeVerifyFailed = true;
+        notes.push(
+          `✗ RESUME UNVERIFIED — a window opened but NO live agent registered for ${resumeOwnerId} within ` +
+            `${Math.round(RESUME_VERIFY_TIMEOUT_MS / 1000)}s, so the resume almost certainly NO-OP'd (its transcript may be ` +
+            `archived off-disk, or \`claude --resume\` found nothing and the terminal exited). Do NOT assume it is running: ` +
+            `check the terminal window; if it exited, rematerialize the archived transcript ` +
+            `(POST /api/adv/sessions/rematerialize) or relaunch FRESH with a context-seeded brief.`,
+        );
+      }
+    }
+
     const lines: string[] = [];
     if (opened.length) {
       const how = args.headless ? 'headless' : 'visible';
@@ -400,12 +431,13 @@ export default defineTool({
         fleet: fleetSlug,
         mode: isResume ? (fork ? 'fork' : 'resume') : 'fresh',
         resumedOwnerId: resumeOwnerId,
+        ...(resumeVerifyFailed ? { resumeVerified: false } : {}),
       },
     });
 
     return {
       content: [{ type: 'text' as const, text: lines.join('\n') }],
-      ...(opened.length === 0 ? { isError: true as const } : {}),
+      ...(opened.length === 0 || resumeVerifyFailed ? { isError: true as const } : {}),
     };
   },
 });

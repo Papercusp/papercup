@@ -73,6 +73,12 @@ export interface AdvSessionRow {
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
+  /** Cross-backend session-port lineage. A port target remains hidden from
+   * resumable surfaces until portStatus='delivered'. */
+  portId?: string | null;
+  portSourceAdvSessionId?: number | null;
+  portStatus?: string | null;
+  portMetadata?: Record<string, unknown> | null;
 }
 
 export interface RecordOpts {
@@ -101,6 +107,10 @@ export interface RecordOpts {
   display?: string | null;
   /** The exact argv the pui pane runs (a fresh `psu …`) for a deferred launch. */
   launchArgv?: string[] | null;
+  portId?: string | null;
+  portSourceAdvSessionId?: number | null;
+  portStatus?: string | null;
+  portMetadata?: Record<string, unknown> | null;
 }
 
 export function toIsoTimestamp(value: string | Date | null | undefined): string | null {
@@ -135,6 +145,10 @@ export function mapAdvSessionRow(r: {
   started_at: string | Date;
   ended_at: string | Date | null;
   exit_code: number | null;
+  port_id?: string | null;
+  port_source_adv_session_id?: number | string | null;
+  port_status?: string | null;
+  port_metadata?: Record<string, unknown> | null;
 }): AdvSessionRow {
   return {
     id: r.id,
@@ -158,6 +172,10 @@ export function mapAdvSessionRow(r: {
     startedAt: toIsoTimestamp(r.started_at)!,
     endedAt: toIsoTimestamp(r.ended_at),
     exitCode: r.exit_code,
+    portId: r.port_id ?? null,
+    portSourceAdvSessionId: r.port_source_adv_session_id == null ? null : Number(r.port_source_adv_session_id),
+    portStatus: r.port_status ?? null,
+    portMetadata: r.port_metadata ?? null,
   };
 }
 
@@ -201,13 +219,16 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id, session_id, display, launch_argv)
+        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id, session_id, display, launch_argv,
+         port_id, port_source_adv_session_id, port_status, port_metadata)
       VALUES
         (${opts.workspaceId ?? activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null},
          ${opts.role ?? null}, ${opts.feature ?? null}, ${opts.mode},
          ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
          ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null}, ${opts.sessionId ?? null},
-         ${opts.display ?? null}, ${opts.launchArgv ? JSON.stringify(opts.launchArgv) : null}::text::jsonb)
+         ${opts.display ?? null}, ${opts.launchArgv ? JSON.stringify(opts.launchArgv) : null}::text::jsonb,
+         ${opts.portId ?? null}, ${opts.portSourceAdvSessionId ?? null}, ${opts.portStatus ?? null},
+         ${opts.portMetadata ? JSON.stringify(opts.portMetadata) : null}::text::jsonb)
       RETURNING id
     `;
     return rows[0]?.id ?? null;
@@ -450,10 +471,15 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
         started_at: string | Date;
         ended_at: string | Date | null;
         exit_code: number | null;
+        port_id?: string | null;
+        port_source_adv_session_id?: number | string | null;
+        port_status?: string | null;
+        port_metadata?: Record<string, unknown> | null;
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
+             port_id, port_source_adv_session_id, port_status, port_metadata
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
          AND NOT (
@@ -508,6 +534,7 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
         FROM harness_shared.adv_sessions
        WHERE agent IS NOT NULL
          AND cwd IS NOT NULL
+         AND (port_status IS NULL OR port_status = 'delivered')
        ORDER BY started_at DESC
        LIMIT ${limit}
     `;
@@ -541,10 +568,15 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
         started_at: string | Date;
         ended_at: string | Date | null;
         exit_code: number | null;
+        port_id?: string | null;
+        port_source_adv_session_id?: number | string | null;
+        port_status?: string | null;
+        port_metadata?: Record<string, unknown> | null;
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
+             port_id, port_source_adv_session_id, port_status, port_metadata
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
          AND id = ${id}
@@ -557,6 +589,43 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
     warnUnlessMissingTable(e, 'getAdvSession');
     return null;
   }
+}
+
+/** Explicit workspace lookup for a server-side port request. getAdvSession()
+ * remains active-workspace scoped for legacy UI callers. */
+export async function getAdvSessionInWorkspace(id: number, workspaceId: string): Promise<AdvSessionRow | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
+             started_at, ended_at, exit_code, port_id, port_source_adv_session_id,
+             port_status, port_metadata
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${workspaceId} AND id = ${id}
+       LIMIT 1`;
+    return rows[0] ? mapAdvSessionRow(rows[0]) : null;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'getAdvSessionInWorkspace');
+    return null;
+  }
+}
+
+export async function updateAdvSessionPortStatus(
+  id: number,
+  workspaceId: string,
+  status: 'pending' | 'delivered' | 'failed',
+  metadata: Record<string, unknown> = {},
+): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ id: number }[]>`
+    UPDATE harness_shared.adv_sessions
+       SET port_status = ${status},
+           port_metadata = COALESCE(port_metadata, '{}'::jsonb) || ${JSON.stringify(metadata)}::jsonb,
+           ended_at = CASE WHEN ${status} = 'failed' THEN COALESCE(ended_at, now()) ELSE ended_at END
+     WHERE id = ${id} AND workspace_id = ${workspaceId}
+     RETURNING id`;
+  return rows.length > 0;
 }
 
 /**

@@ -1567,7 +1567,10 @@ const post = defineTool({
       agent,
       model,
       contextSize,
-      promptText: readFileSync(promptFile, 'utf8'),
+      // `promptText` is the authoritative, fully assembled source that was just
+      // materialized for every backend. Re-reading the diagnostic artifact here
+      // needlessly couples budgeting to the writer's filesystem implementation.
+      promptText,
       home: homedir(),
     });
 

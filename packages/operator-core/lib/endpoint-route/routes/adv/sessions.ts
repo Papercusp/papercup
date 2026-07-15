@@ -17,6 +17,7 @@ import {
   closeWindowId,
   focusWindowId,
   getAdvSession,
+  getAdvSessionInWorkspace,
   listAdvSessions,
   listEndedAdvSessions,
   listPendingWorkbenchLaunches,
@@ -26,6 +27,7 @@ import {
   resolveWindowIdForTitleFragment,
   setAdvSessionOmpThreadId,
   setAdvSessionWindowId,
+  updateAdvSessionPortStatus,
 } from '../../../adv-sessions';
 import {
   mergeRosterWithAssignments,
@@ -44,6 +46,112 @@ import {
 } from '../../../omp-sessions';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
+const SESSION_PORT_PROTOCOL_VERSION = 1;
+
+type SessionPortRequestBody = {
+  protocolVersion?: unknown;
+  workspace?: unknown;
+  sourceAdvSessionId?: unknown;
+  targetBackend?: unknown;
+  targetModel?: unknown;
+  targetAccount?: unknown;
+  contextSize?: unknown;
+  expectedSourceHash?: unknown;
+  currentInstruction?: unknown;
+};
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+}
+
+function sessionPortProtocolError(version: unknown): Response | null {
+  if (version === SESSION_PORT_PROTOCOL_VERSION) return null;
+  return json({
+    ok: false,
+    error: `unsupported session-port protocol ${String(version)}; upgrade psu/operator together`,
+    supportedProtocolVersions: [SESSION_PORT_PROTOCOL_VERSION],
+  }, 426);
+}
+
+async function parseSessionPortBody(req: Request): Promise<SessionPortRequestBody | Response> {
+  try {
+    const body = await req.json() as SessionPortRequestBody;
+    return body && typeof body === 'object' ? body : json({ ok: false, error: 'JSON object required' }, 400);
+  } catch {
+    return json({ ok: false, error: 'invalid JSON body' }, 400);
+  }
+}
+
+async function resolveSessionPortInspection(req: Request, body: SessionPortRequestBody) {
+  const protocolError = sessionPortProtocolError(body.protocolVersion);
+  if (protocolError) return { response: protocolError } as const;
+  const sourceAdvSessionId = Number(body.sourceAdvSessionId);
+  if (!Number.isSafeInteger(sourceAdvSessionId) || sourceAdvSessionId <= 0) {
+    return { response: json({ ok: false, error: 'sourceAdvSessionId must be a positive integer' }, 400) } as const;
+  }
+  const targetBackend = body.targetBackend;
+  if (targetBackend !== 'codex' && targetBackend !== 'omp') {
+    return { response: json({ ok: false, error: 'V1 targetBackend must be codex|omp' }, 400) } as const;
+  }
+  const contextSize = body.contextSize == null || body.contextSize === '' ? null : body.contextSize;
+  if (contextSize !== null && contextSize !== 'full' && contextSize !== 'trimmed') {
+    return { response: json({ ok: false, error: 'contextSize must be full|trimmed|null' }, 400) } as const;
+  }
+  const [{ activeWorkspaceId }, { buildLaunchSpec }, service, budgetModule] = await Promise.all([
+    import('../../../workspace-registry'),
+    import('../../../role-launch-spec'),
+    import('../../../session-port/service'),
+    // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
+    import('../../../model-context-budget.mjs'),
+  ]);
+  const workspaceId = typeof body.workspace === 'string' && body.workspace.trim()
+    ? body.workspace.trim()
+    : activeWorkspaceId();
+  const sourceRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
+  if (!sourceRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
+  await service.assertNoPortableAuthority(sourceRow);
+  const targetModel = typeof body.targetModel === 'string' && body.targetModel.trim() ? body.targetModel.trim() : null;
+  const targetAccount = typeof body.targetAccount === 'string' && body.targetAccount.trim() ? body.targetAccount.trim() : 'default';
+  const spec = await buildLaunchSpec({
+    kind: 'su',
+    agent: targetBackend,
+    workspaceId,
+    operatorBaseUrl: new URL(req.url).origin,
+    harnessSlug: null,
+    profile: 'engineer',
+    contextSize,
+    model: targetModel,
+    planSlug: sourceRow.planSlug,
+    planTitle: null,
+    planNow: null,
+  });
+  const budget = budgetModule.buildContextBudget({
+    agent: targetBackend,
+    model: targetModel,
+    contextSize,
+    promptText: spec.promptText,
+    home: os.homedir(),
+  });
+  if (budget.level === 'refuse') throw new Error('target launch prompt already exhausts the selected context window');
+  const stableSource = await service.acquireTrackedClaudeSource(sourceRow);
+  const modelProvider = targetBackend === 'codex'
+    ? 'openai'
+    : (targetModel?.includes('/') ? targetModel.split('/')[0] : 'omp-configured-provider');
+  const inspection = service.inspectAcquiredSessionPort({
+    sourceRow,
+    stableSource,
+    target: {
+      backend: targetBackend,
+      provider: modelProvider,
+      model: targetModel,
+      account: targetAccount,
+      contextWindow: budget.window,
+      availableInputTokens: budget.availableInputTokens,
+      contextSize,
+    },
+  });
+  return { inspection, service, budget } as const;
+}
 
 /**
  * Await `factory()` — the query-embedder ACQUISITION (buildQueryEmbedder → the
@@ -1022,4 +1130,190 @@ const onDesktopWindows = defineTool({
   },
 });
 
-export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, roster, markLaunched, agentDetail, onDesktopWindows];
+/** Read-only stage: stable snapshot + omissions/redactions/budget disclosure.
+ * No summarizer call, artifact, or lifecycle row is created here. */
+const sessionPortInspect = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/port/inspect',
+  auth: 'loopback',
+  async handler(req) {
+    const parsed = await parseSessionPortBody(req);
+    if (parsed instanceof Response) return parsed;
+    try {
+      const resolved = await resolveSessionPortInspection(req, parsed);
+      if ('response' in resolved) return resolved.response;
+      return json({
+        ok: true,
+        inspection: resolved.service.publicSessionPortInspection(resolved.inspection),
+        targetBudget: resolved.budget,
+      });
+    } catch (error) {
+      return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 409);
+    }
+  },
+});
+
+/** Write stage: reacquire and require the exact inspected source hash, then fit,
+ * summarize if necessary, and issue an opaque preparation token. */
+const sessionPortPrepare = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/port/prepare',
+  auth: 'loopback',
+  async handler(req) {
+    const parsed = await parseSessionPortBody(req);
+    if (parsed instanceof Response) return parsed;
+    const expectedSourceHash = typeof parsed.expectedSourceHash === 'string' ? parsed.expectedSourceHash.trim() : '';
+    if (!/^[0-9a-f]{64}$/i.test(expectedSourceHash)) {
+      return json({ ok: false, error: 'expectedSourceHash from inspect is required' }, 400);
+    }
+    try {
+      const resolved = await resolveSessionPortInspection(req, parsed);
+      if ('response' in resolved) return resolved.response;
+      const { readSuperuserToken } = await import('../../../superuser-token');
+      const tokenKey = readSuperuserToken();
+      if (!tokenKey) return json({ ok: false, error: 'server session-port token key is unavailable' }, 503);
+      const gatewayPort = Number(process.env.PAPERCUSP_GATEWAY_PORT ?? 8788);
+      const summarizer = resolved.inspection.requiresSummary
+        ? async ({ text, signal }: { text: string; signal: AbortSignal }) => {
+            const response = await fetch(`http://127.0.0.1:${gatewayPort}/maintenance/summarize`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                systemPrompt: resolved.service.SESSION_PORT_SUMMARIZER_SYSTEM_PROMPT,
+                prompt: text,
+              }),
+              signal,
+            });
+            const payload = await response.json().catch(() => ({})) as { summary?: unknown; model?: unknown; error?: unknown };
+            if (!response.ok || typeof payload.summary !== 'string' || !payload.summary.trim()) {
+              throw new Error(`session-port summarizer failed (${response.status}): ${JSON.stringify(payload.error ?? payload).slice(0, 300)}`);
+            }
+            return {
+              text: payload.summary,
+              model: typeof payload.model === 'string' ? payload.model : 'maintenance-default',
+              provider: 'papercusp-inference-gateway',
+              costUsd: null,
+            };
+          }
+        : null;
+      const prepared = await resolved.service.prepareInspectedSessionPort({
+        inspection: resolved.inspection,
+        expectedSourceHash,
+        tokenKey,
+        summarizer,
+        currentInstruction: typeof parsed.currentInstruction === 'string' ? parsed.currentInstruction : null,
+      });
+      return json({
+        ok: true,
+        portId: prepared.port.id,
+        token: prepared.token,
+        reused: prepared.reused,
+        expiresAt: prepared.port.expiresAt,
+        status: prepared.port.status,
+        fidelity: prepared.contract.fidelity,
+        hashes: prepared.contract.hashes,
+        stats: prepared.contract.stats,
+        summary: prepared.contract.summary,
+      });
+    } catch (error) {
+      return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 409);
+    }
+  },
+});
+
+const sessionPortStatus = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/port/status',
+  auth: 'loopback',
+  async handler(req) {
+    const url = new URL(req.url);
+    const id = url.searchParams.get('id')?.trim() ?? '';
+    const workspace = url.searchParams.get('workspace')?.trim();
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ ok: false, error: 'valid port id required' }, 400);
+    const [{ activeWorkspaceId }, { getSessionPort }] = await Promise.all([
+      import('../../../workspace-registry'),
+      import('../../../session-port/store'),
+    ]);
+    const port = await getSessionPort(id, workspace || activeWorkspaceId());
+    if (!port) return json({ ok: false, error: 'session port not found' }, 404);
+    return json({
+      ok: true,
+      port: {
+        id: port.id,
+        protocolVersion: port.protocolVersion,
+        status: port.status,
+        sourceAdvSessionId: port.sourceAdvSessionId,
+        targetAdvSessionId: port.targetAdvSessionId,
+        sourceBackend: port.sourceBackend,
+        targetBackend: port.targetBackend,
+        targetModel: port.targetModel,
+        sourceHash: port.sourceHash,
+        normalizedHash: port.normalizedHash,
+        renderedHash: port.renderedHash,
+        error: port.error,
+        expiresAt: port.expiresAt,
+      },
+    });
+  },
+});
+
+/** Managed-PTY delivery acknowledgement. `proof.persisted=true` is emitted
+ * only after the launcher finds the exact marker/hash in the target backend's
+ * native transcript; output activity alone never calls this route. */
+const sessionPortDelivery = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/port/delivery',
+  auth: 'loopback',
+  async handler(req) {
+    let body: {
+      protocolVersion?: unknown;
+      workspace?: unknown;
+      portId?: unknown;
+      targetAdvSessionId?: unknown;
+      status?: unknown;
+      proof?: unknown;
+      error?: unknown;
+    };
+    try { body = await req.json() as typeof body; }
+    catch { return json({ ok: false, error: 'invalid JSON body' }, 400); }
+    const protocolError = sessionPortProtocolError(body.protocolVersion);
+    if (protocolError) return protocolError;
+    const portId = typeof body.portId === 'string' ? body.portId : '';
+    const targetAdvSessionId = Number(body.targetAdvSessionId);
+    if (!/^[0-9a-f-]{36}$/i.test(portId) || !Number.isSafeInteger(targetAdvSessionId) || targetAdvSessionId <= 0) {
+      return json({ ok: false, error: 'valid portId and targetAdvSessionId required' }, 400);
+    }
+    const [{ activeWorkspaceId }, store, artifact] = await Promise.all([
+      import('../../../workspace-registry'),
+      import('../../../session-port/store'),
+      import('../../../session-port/artifact'),
+    ]);
+    const workspaceId = typeof body.workspace === 'string' && body.workspace.trim() ? body.workspace.trim() : activeWorkspaceId();
+    const current = await store.getSessionPort(portId, workspaceId);
+    if (!current || current.targetAdvSessionId !== targetAdvSessionId) {
+      return json({ ok: false, error: 'pending session port/target mismatch' }, 409);
+    }
+    if (body.status === 'delivered') {
+      const proof = body.proof as { persisted?: unknown; renderedHash?: unknown; nativeRef?: unknown } | null;
+      if (proof?.persisted !== true || proof.renderedHash !== current.renderedHash || typeof proof.nativeRef !== 'string') {
+        return json({ ok: false, error: 'native persistence proof/hash required' }, 409);
+      }
+      const port = await store.transitionSessionPort(portId, workspaceId, 'delivered', {
+        metadata: { persistenceProof: proof, persistenceVerifiedAt: new Date().toISOString() },
+      });
+      await updateAdvSessionPortStatus(targetAdvSessionId, workspaceId, 'delivered', { persistenceProof: proof });
+      const artifactDeleted = await artifact.deleteSessionPortArtifact(current.artifactPath);
+      return json({ ok: true, status: port.status, artifactDeleted });
+    }
+    if (body.status === 'failed') {
+      const message = typeof body.error === 'string' && body.error.trim() ? body.error.trim().slice(0, 1000) : 'native persistence verification failed';
+      const port = await store.transitionSessionPort(portId, workspaceId, 'failed', { error: message });
+      await updateAdvSessionPortStatus(targetAdvSessionId, workspaceId, 'failed', { deliveryError: message });
+      const artifactDeleted = await artifact.deleteSessionPortArtifact(current.artifactPath);
+      return json({ ok: true, status: port.status, artifactDeleted });
+    }
+    return json({ ok: false, error: 'status must be delivered|failed' }, 400);
+  },
+});
+
+export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];

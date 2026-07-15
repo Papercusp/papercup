@@ -542,3 +542,49 @@ export async function injectKickoffAfterResume(
     await sleep(pollMs);
   }
 }
+
+/**
+ * Post-resume LIVENESS VERIFICATION (EI-11524): an in-place `psu --resume` can
+ * spawn a clean terminal yet leave NO running agent — the transcript was archived
+ * off-disk, or `claude --resume` located the wrong projects dir, so it found
+ * nothing, started no process, and the window closed seconds later. That silent
+ * no-op previously reported SUCCESS: a launch that opens a window but leaves no
+ * live agent is the core EI-11524 defect.
+ *
+ * A resumed session re-attaches its ORIGINAL coord identity, so a live psu-pty
+ * host appearing for that `ownerId` is proof the agent actually booted (the host
+ * writes its discovery file once the pty is up, and findLiveHost self-validates:
+ * pid alive + socket exists + psu-host identity). If none appears within the
+ * window, the resume no-op'd and the caller must say so LOUDLY rather than report
+ * a phantom success.
+ *
+ * Returns as SOON as a host appears — a healthy resume waits only a few seconds;
+ * ONLY a failed resume pays the full timeout, which is exactly when we need to
+ * wait to detect the failure. Injectable (findHost / sleep) so it unit-tests
+ * without a real host, mirroring injectKickoffAfterResume. (A FORK mints a fresh
+ * identity we cannot poll by a known ownerId, so verification is scoped to an
+ * in-place resume — the exact case the bug documents.)
+ */
+export async function verifyResumeStarted(
+  ownerId: string,
+  {
+    timeoutMs = 30_000,
+    pollMs = 1_000,
+    findHost = findLiveHost,
+    sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    findHost?: typeof findLiveHost;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<{ started: boolean; waitedMs: number }> {
+  const begun = Date.now();
+  for (;;) {
+    if (findHost(ownerId)) return { started: true, waitedMs: Date.now() - begun };
+    if (Date.now() - begun + pollMs > timeoutMs) {
+      return { started: false, waitedMs: Date.now() - begun };
+    }
+    await sleep(pollMs);
+  }
+}

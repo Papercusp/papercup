@@ -5,6 +5,7 @@ import {
   injectKickoffAfterResume,
   memberLaunchCommand,
   resolveResumeTarget,
+  verifyResumeStarted,
 } from './agent-launch-core';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
@@ -220,5 +221,38 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
 
     expect(r.delivered).toBe(false);
     expect(r.error).toMatch(/socket write failed/);
+  });
+});
+
+describe('verifyResumeStarted (EI-11524: a resume that leaves no live agent must not report success)', () => {
+  it('confirms started once a live psu-pty host appears for the resumed identity', async () => {
+    const findHost = vi
+      .fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValue({ ownerId: OWNER, pid: 42, sock: `/run/psu-pty/${OWNER}.sock` } as never);
+    const sleep = vi.fn().mockResolvedValue(undefined);
+
+    const r = await verifyResumeStarted(OWNER, { findHost, sleep, pollMs: 10, timeoutMs: 1000 });
+
+    expect(r.started).toBe(true);
+    expect(findHost).toHaveBeenCalledWith(OWNER);
+    // Returned as soon as the host appeared — a healthy resume does not pay the full window.
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  // THE REGRESSION: an archived/no-op resume spawns a window but boots no agent, so
+  // no live host EVER registers. Before EI-11524 this reported phantom success; now
+  // it must be detectable as started:false so the tool can fail loudly.
+  it('reports started:false when no live host ever appears (the silent no-op case)', async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const r = await verifyResumeStarted(OWNER, {
+      findHost: () => null,
+      sleep,
+      pollMs: 10,
+      timeoutMs: 35,
+    });
+
+    expect(r.started).toBe(false);
+    expect(r.waitedMs).toBeGreaterThanOrEqual(0);
   });
 });
