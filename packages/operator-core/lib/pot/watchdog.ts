@@ -215,7 +215,14 @@ export type WatchdogSource =
   // watchdog — an ACTIVE releaseGating rubric with no COMPLETE scorecard within
   // its threshold window (default 6h) fires one debounced alert + escalation
   // (a release bar nobody is grading is a silent gate, not a green one).
-  | 'rubric-staleness';
+  | 'rubric-staleness'
+  // autonomous-loop-prod-audit-2026-07-02 P-006 (SPOF 5b): the Scout
+  // outcome-refresh sweep's stale-pending alert — routed ideas whose cached
+  // `outcome` has sat NULL/'pending' past the staleness threshold even after
+  // an independent (Scout-cadence-decoupled) refresh, i.e. the plan-rail /
+  // gym-rail / wi-rail outcome ledger looks genuinely stuck, not just
+  // between cycles.
+  | 'scout-outcome-stale-pending';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review

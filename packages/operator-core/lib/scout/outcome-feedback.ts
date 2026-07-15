@@ -246,6 +246,17 @@ export function classifyIdeaOutcome(
   // classifies lost instead of sitting pending forever. Winning/untagged
   // entries stay 'won' byte-identically.
   if (entry.kind === 'completion' && gymStatusOf(entry) === 'deprecated') return 'lost';
+  // plan-run: SPOF 5 / P-006 (autonomous-loop-prod-audit-2026-07-02) — a plan
+  // routed by Scout that reaches the ABANDONED terminal (harness_plans
+  // op_status='dropped', isTerminalStatus) must resolve 'lost', not sit
+  // 'pending' forever. Before this, the plan rail was win-only: only
+  // op_status='done' ever produced a plan-run entry, so a dropped plan's idea
+  // had no terminal entry at all and classified pending indefinitely — the
+  // exact "plan-rail outcome ledger stuck pending" gap this fix closes. The
+  // scout-scoped ledger read (readScoutRefScopedTerminalEntries) tags a
+  // dropped plan's entry "Status: dropped"; any other/untagged plan-run entry
+  // (op_status='done') stays 'won' byte-identically.
+  if (entry.kind === 'plan-run' && gymStatusOf(entry) === 'dropped') return 'lost';
   // plan-run + winning completions: the feed only carries winning terminals.
   return 'won';
 }

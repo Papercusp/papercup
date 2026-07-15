@@ -387,6 +387,37 @@ export async function readIdeaQueueStatus(
   return { total: Number(row.total), pending: Number(row.pending) };
 }
 
+/**
+ * Count routed ideas whose cached outcome is stuck pending PAST a staleness
+ * threshold: `outcome` is NULL/'pending' AND the last outcome check
+ * (`outcome_checked_at`, epoch ms — migration 194) is either NULL (never
+ * classified) or older than `staleBeforeMs`. P-006 (SPOF 5b,
+ * autonomous-loop-prod-audit-2026-07-02): the escalation half of the
+ * decoupled-refresh fix — {@link refreshScoutOutcomes} now runs on an
+ * independent sweep ({@link scoutOutcomeRefreshSweep} in
+ * ./outcome-refresh-sweep) instead of only inside a Scout cycle, but a refresh
+ * running does not by itself GUARANTEE every idea resolves (a rail artifact
+ * that itself never reaches a terminal state — e.g. an abandoned draft that
+ * never got flipped `dropped` — still classifies pending forever); this count
+ * is what the sweep alerts on so that class of stuck-forever idea gets a human
+ * witness instead of silently aging in the ledger.
+ */
+export async function countStalePendingIdeas(opts: {
+  workspaceId: string;
+  staleBeforeMs: number;
+  harnessSlug?: string;
+}): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ c: string }[]>`
+    SELECT count(*)::text AS c
+      FROM harness_shared.scout_routed_ideas
+     WHERE workspace_id = ${opts.workspaceId}
+       AND (outcome IS NULL OR outcome = 'pending')
+       AND (outcome_checked_at IS NULL OR outcome_checked_at < ${opts.staleBeforeMs})
+       ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}`;
+  return Number(rows[0]?.c ?? 0);
+}
+
 /** Read routed-idea provenance for (workspace[, harness][, cycle]), newest-first. */
 export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<RoutedIdeaProvenance[]> {
   const { sql } = getOrgPg();
@@ -617,7 +648,7 @@ async function readScoutRefScopedTerminalEntries(
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}`;
 
-  const [wiRows, gymRows, planRows] = await Promise.all([
+  const [wiRows, gymRows, planRows, droppedPlanRows] = await Promise.all([
     sql<
       { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
     >`
@@ -641,6 +672,19 @@ async function readScoutRefScopedTerminalEntries(
       SELECT hp.plan_slug, hp.title, hp.harness_slug, hp.op_updated_at
         FROM harness_shared.harness_plans hp
        WHERE hp.op_status = 'done' AND hp.op_updated_at IS NOT NULL
+         AND ('plan:' || hp.plan_slug) IN (${scoutRefsFor('plan:')})`,
+    // P-006 (SPOF 5c) — the plan-rail LOSS terminal: a scout-routed plan that
+    // reached the ABANDONED op_status ('dropped', plans/set-status.ts
+    // isTerminalStatus) must resolve, not sit pending forever (before this fix
+    // the plan rail was win-only — only op_status='done' ever produced an
+    // entry). Tagged "Status: dropped" so classifyIdeaOutcome (outcome-
+    // feedback.ts) can tell it apart from a winning plan-run.
+    sql<
+      { plan_slug: string; title: string | null; harness_slug: string; op_updated_at: Date }[]
+    >`
+      SELECT hp.plan_slug, hp.title, hp.harness_slug, hp.op_updated_at
+        FROM harness_shared.harness_plans hp
+       WHERE hp.op_status = 'dropped' AND hp.op_updated_at IS NOT NULL
          AND ('plan:' || hp.plan_slug) IN (${scoutRefsFor('plan:')})`,
   ]);
 
@@ -672,7 +716,16 @@ async function readScoutRefScopedTerminalEntries(
     ref: `plan:${r.plan_slug}`,
     ts: tsToIso(r.op_updated_at) ?? new Date(0).toISOString(),
   }));
-  return [...wi, ...gym, ...plan];
+  const droppedPlan: ChangeFeedEntry[] = droppedPlanRows.map((r) => ({
+    id: `plan:${r.plan_slug}`,
+    kind: 'plan-run' as const,
+    title: `Plan abandoned: ${r.title || r.plan_slug}`,
+    detail: 'Status: dropped',
+    harness: r.harness_slug || undefined,
+    ref: `plan:${r.plan_slug}`,
+    ts: tsToIso(r.op_updated_at) ?? new Date(0).toISOString(),
+  }));
+  return [...wi, ...gym, ...plan, ...droppedPlan];
 }
 
 /**
