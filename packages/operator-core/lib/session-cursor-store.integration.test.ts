@@ -1,0 +1,227 @@
+/**
+ * session-cursor-store.integration.test.ts — the P-001 live leg against a real
+ * Postgres (ambient-semantic-push-2026-07-14; table: migration 609
+ * harness_shared.session_cursor).
+ *
+ * What a fake-sql unit test can't prove and this does:
+ *   • the `${terms}::text::jsonb` double-encode-avoidance — terms round-trips as
+ *     a queryable jsonb ARRAY (jsonb_typeof = 'array'), not a string scalar;
+ *   • upsert-on-session_id REPLACE semantics (one current cursor per session);
+ *   • the recentSessionCursors owner / exclude / freshness filters + ordering;
+ *   • the END-TO-END wiring buildAndPersistCursor rides: journal rows → the
+ *     echo-guard (agent notes in, mechanical/flagged out) → buildCursor's
+ *     class-weighted recency-decayed vector → persisted row → rowToCursor
+ *     rehydrate. This is the P-001 "wired" evidence.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import postgres from 'postgres';
+import { randomBytes } from 'node:crypto';
+import { getTestPg } from '@papercusp/test-config';
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+
+const {
+  upsertSessionCursor,
+  getSessionCursorRow,
+  recentSessionCursors,
+  pruneSessionCursors,
+  rowToCursor,
+} = await import('./session-cursor-store');
+const { buildAndPersistCursor } = await import('./session-cursor-io');
+const { buildCursor } = await import('./lexical-cursor');
+
+let rootSql: postgres.Sql;
+
+/** Insert a journal row directly (the ingest side is journal:record-turn; here
+ *  we seed the notes buildAndPersistCursor reads). created_at controls the
+ *  newest-first order the cursor decays over. */
+async function seedJournal(over: {
+  sessionId: string;
+  note: string;
+  source?: 'agent' | 'mechanical';
+  flagged?: boolean;
+  ownerId?: string | null;
+  createdAt: string;
+}): Promise<void> {
+  await rootSql`
+    INSERT INTO harness_shared.session_turn_journal
+      (owner_id, agent, source_kind, session_id, turn_ts, note, source, flagged, tripwire, harness_slug, created_at)
+    VALUES (
+      ${over.ownerId ?? null}, 'claude', 'claude', ${over.sessionId}, ${over.createdAt}::timestamptz,
+      ${over.note}, ${over.source ?? 'agent'}, ${over.flagged ?? false}, NULL, 'papercusp',
+      ${over.createdAt}::timestamptz
+    )`;
+}
+
+beforeAll(async () => {
+  const adminUri = await getTestPg();
+  const dbName = `curs_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  // FAITHFUL to migration 609.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.session_cursor (
+      session_id   text PRIMARY KEY,
+      workspace_id text NOT NULL DEFAULT 'default',
+      owner_id     text,
+      harness_slug text,
+      turn_ts      timestamptz,
+      note_count   integer NOT NULL DEFAULT 0,
+      term_count   integer NOT NULL DEFAULT 0,
+      terms        jsonb NOT NULL DEFAULT '[]'::jsonb,
+      updated_at   timestamptz NOT NULL DEFAULT now()
+    )`);
+  // FAITHFUL to migration 605 (the journal rows buildAndPersistCursor reads).
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.session_turn_journal (
+      id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      workspace_id text NOT NULL DEFAULT 'default',
+      owner_id     text,
+      agent        text,
+      source_kind  text NOT NULL DEFAULT 'claude',
+      session_id   text NOT NULL,
+      turn_ts      timestamptz,
+      note         text NOT NULL,
+      source       text NOT NULL CHECK (source IN ('agent', 'mechanical')),
+      flagged      boolean NOT NULL DEFAULT false,
+      tripwire     jsonb,
+      harness_slug text,
+      created_at   timestamptz NOT NULL DEFAULT now()
+    )`);
+  h.sql = rootSql;
+}, 90_000);
+
+afterAll(async () => {
+  await rootSql?.end({ timeout: 5 });
+});
+
+beforeEach(async () => {
+  await rootSql`TRUNCATE harness_shared.session_cursor`;
+  await rootSql`TRUNCATE harness_shared.session_turn_journal`;
+});
+
+describe('upsertSessionCursor (PG)', () => {
+  it('stores terms as a queryable jsonb ARRAY (::text::jsonb), not a double-encoded string scalar', async () => {
+    const cursor = buildCursor(['landed WI-4790 advisory-lock fix; compaction now settles cleanly'], { sessionId: 's1' });
+    await upsertSessionCursor({ sessionId: 's1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: '2026-07-14T10:00:00Z', cursor });
+
+    const row = (await rootSql<{ typ: string; first_term: string; term_count: number; note_count: number }[]>`
+      SELECT jsonb_typeof(terms) AS typ,
+             terms->0->>'term' AS first_term,
+             term_count, note_count
+        FROM harness_shared.session_cursor WHERE session_id = 's1'`)[0]!;
+    expect(row.typ).toBe('array'); // a real jsonb array, NOT a double-encoded string
+    expect(row.first_term).toBe('WI-4790'); // highest weight (artifact-id class) survives ordering
+    expect(row.term_count).toBeGreaterThan(0);
+    expect(row.note_count).toBe(1);
+  });
+
+  it('rowToCursor rehydrates the full LexicalCursor (weightByTerm / classByTerm) from the stored row', async () => {
+    const original = buildCursor(['debugging psu-launcher.mjs restart loop under compaction — WI-4790'], { sessionId: 's1' });
+    await upsertSessionCursor({ sessionId: 's1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: original });
+
+    const row = await getSessionCursorRow('s1');
+    expect(row).not.toBeNull();
+    const hydrated = rowToCursor(row!);
+    expect(hydrated.sessionId).toBe('s1');
+    expect(hydrated.noteCount).toBe(1);
+    expect(hydrated.terms).toEqual(original.terms);
+    // The derived maps must match what buildCursor produced.
+    expect(hydrated.weightByTerm.get('WI-4790')).toBe(original.weightByTerm.get('WI-4790'));
+    expect(hydrated.classByTerm.get('WI-4790')).toBe('artifact-id');
+    expect(hydrated.classByTerm.get('compaction')).toBe('domain-term');
+  });
+
+  it('upserts on session_id — a later turn REPLACES the cursor (one current cursor per session)', async () => {
+    await upsertSessionCursor({ sessionId: 's1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['first note about WI-1111'], { sessionId: 's1' }) });
+    await upsertSessionCursor({ sessionId: 's1', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['later note about WI-2222'], { sessionId: 's1' }) });
+
+    const count = (await rootSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.session_cursor`)[0]!.n;
+    expect(count).toBe(1); // replaced, not appended
+    const hydrated = rowToCursor((await getSessionCursorRow('s1'))!);
+    expect(hydrated.weightByTerm.has('WI-2222')).toBe(true);
+    expect(hydrated.weightByTerm.has('WI-1111')).toBe(false); // the old cursor is gone
+  });
+});
+
+describe('recentSessionCursors (PG)', () => {
+  it('filters by owner / exclude-session / freshness and orders freshest-first', async () => {
+    const mk = (sid: string, owner: string) => buildCursor([`note for ${sid} about WI-4790`], { sessionId: sid });
+    await upsertSessionCursor({ sessionId: 'a', ownerId: 'su-A', harnessSlug: 'papercusp', turnTs: null, cursor: mk('a', 'su-A') });
+    await upsertSessionCursor({ sessionId: 'b', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: mk('b', 'su-B') });
+    await upsertSessionCursor({ sessionId: 'c', ownerId: 'su-B', harnessSlug: 'papercusp', turnTs: null, cursor: mk('c', 'su-B') });
+    // Force a deterministic freshness order: a oldest, then b, then c newest.
+    await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T09:00:00Z' WHERE session_id='a'`;
+    await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T10:00:00Z' WHERE session_id='b'`;
+    await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-14T11:00:00Z' WHERE session_id='c'`;
+
+    const all = await recentSessionCursors();
+    expect(all.map((r) => r.session_id)).toEqual(['c', 'b', 'a']); // freshest first
+
+    const byOwner = await recentSessionCursors({ ownerId: 'su-B' });
+    expect(byOwner.map((r) => r.session_id)).toEqual(['c', 'b']);
+
+    const excluded = await recentSessionCursors({ excludeSessionId: 'c' });
+    expect(excluded.map((r) => r.session_id)).toEqual(['b', 'a']);
+
+    const fresh = await recentSessionCursors({ updatedSince: '2026-07-14T09:30:00Z' });
+    expect(fresh.map((r) => r.session_id)).toEqual(['c', 'b']); // 'a' is below the floor
+  });
+
+  it('pruneSessionCursors drops stale rows and reports the count', async () => {
+    await upsertSessionCursor({ sessionId: 'old', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['stale WI-1'], { sessionId: 'old' }) });
+    await upsertSessionCursor({ sessionId: 'new', ownerId: 'su-1', harnessSlug: 'papercusp', turnTs: null, cursor: buildCursor(['fresh WI-2'], { sessionId: 'new' }) });
+    await rootSql`UPDATE harness_shared.session_cursor SET updated_at = '2026-07-01T00:00:00Z' WHERE session_id='old'`;
+
+    const removed = await pruneSessionCursors('2026-07-10T00:00:00Z');
+    expect(removed).toBe(1);
+    expect(await getSessionCursorRow('old')).toBeNull();
+    expect(await getSessionCursorRow('new')).not.toBeNull();
+  });
+});
+
+describe('buildAndPersistCursor — the end-to-end P-001 wiring', () => {
+  it('mines the session journal into a persisted cursor, echo-guarding out mechanical/flagged notes', async () => {
+    // Two AGENT notes (newest first by created_at) + one MECHANICAL flagged note
+    // carrying a term that must NOT reach the cursor (echo-guard, ambient D-001).
+    await seedJournal({ sessionId: 'sX', note: 'landed WI-4790 advisory-lock fix; compaction settles', ownerId: 'su-9', createdAt: '2026-07-14T12:00:00Z' });
+    await seedJournal({ sessionId: 'sX', note: 'earlier work on the cursor pipeline and hysteresis', ownerId: 'su-9', createdAt: '2026-07-14T11:00:00Z' });
+    await seedJournal({ sessionId: 'sX', note: 'mechanical fallback mentioning EI-8888 nobody authored', source: 'mechanical', flagged: true, ownerId: 'su-9', createdAt: '2026-07-14T11:30:00Z' });
+
+    const res = await buildAndPersistCursor({ sessionId: 'sX', ownerId: 'su-9', harnessSlug: 'papercusp', turnTs: '2026-07-14T12:00:00Z' });
+    expect(res.persisted).toBe(true);
+    expect(res.noteCount).toBe(2); // both agent notes, the mechanical/flagged one dropped
+
+    const hydrated = rowToCursor((await getSessionCursorRow('sX'))!);
+    expect(hydrated.weightByTerm.has('WI-4790')).toBe(true);
+    expect(hydrated.weightByTerm.has('compaction')).toBe(true);
+    expect(hydrated.weightByTerm.has('EI-8888')).toBe(false); // echo-guard held
+    // artifact-id outweighs a domain term (class weighting survived the round-trip).
+    expect(hydrated.terms[0]!.termClass).toBe('artifact-id');
+    expect(hydrated.weightByTerm.get('WI-4790')!).toBeGreaterThan(hydrated.weightByTerm.get('compaction')!);
+
+    const stored = await getSessionCursorRow('sX');
+    expect(stored!.owner_id).toBe('su-9');
+    expect(stored!.turn_ts).not.toBeNull();
+  });
+
+  it('persists nothing when the session has no echo-guard-eligible notes', async () => {
+    await seedJournal({ sessionId: 'empty', note: 'only a mechanical note', source: 'mechanical', flagged: true, createdAt: '2026-07-14T12:00:00Z' });
+    const res = await buildAndPersistCursor({ sessionId: 'empty', ownerId: 'su-9', harnessSlug: 'papercusp', turnTs: null });
+    expect(res.persisted).toBe(false);
+    expect(res.cursor).toBeNull();
+    expect(await getSessionCursorRow('empty')).toBeNull();
+  });
+});

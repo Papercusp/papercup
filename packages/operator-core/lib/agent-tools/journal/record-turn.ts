@@ -155,6 +155,7 @@ export default defineTool({
         tripwire,
         turn_ts: turn.ts ? turn.ts.toISOString() : null,
         ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
+        ...(cursorPersisted ? { cursorPersisted } : {}),
       },
     };
   },
