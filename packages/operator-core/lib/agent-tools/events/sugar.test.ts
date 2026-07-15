@@ -121,4 +121,66 @@ describe("checkpoint:await sugar", () => {
       "dir-with-spaces-",
     );
   });
+
+  // EI-12457: candidateSha binds the wait to an exact subject via a payload
+  // predicate, and re-arming must retire this subscriber's own prior pending
+  // checkpoint-family wait for the pipeline BEFORE registering the new one.
+  it("binds candidateSha to a payloadFilter on every registered key", async () => {
+    const out = await call({ candidateSha: "94c1234567" });
+
+    for (const call_ of vi.mocked(registerAwait).mock.calls) {
+      expect(call_[0].payloadFilter).toEqual({
+        sha: { startsWith: "94c1234567" },
+      });
+    }
+    expect(out.events).toEqual([
+      "release:green:papercusp",
+      "green-checkpoint:red:papercusp",
+    ]);
+  });
+
+  it("omits payloadFilter when no candidateSha is given", async () => {
+    await call({});
+
+    for (const call_ of vi.mocked(registerAwait).mock.calls) {
+      expect(call_[0].payloadFilter).toBeNull();
+    }
+  });
+
+  it("supersedes this subscriber's own prior pending checkpoint keys BEFORE registering the new wait, and threads the count into the response", async () => {
+    const callOrder: string[] = [];
+    vi.mocked(cancelAwaitsForSubscribersOnKeys).mockImplementationOnce(
+      async () => {
+        callOrder.push("supersede");
+        return 3;
+      },
+    );
+    vi.mocked(registerAwait).mockImplementationOnce(async (i) => {
+      callOrder.push("register");
+      return {
+        id: 99,
+        eventKey: i.eventKey,
+        expiresTs: "2030-01-01",
+        timeoutBehavior: i.timeoutBehavior,
+      };
+    });
+
+    const out = await call({ candidateSha: "94c1234567" });
+
+    expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
+      ["su-awaiter"],
+      ["release:green:papercusp", "green-checkpoint:red:papercusp"],
+    );
+    expect(callOrder[0]).toBe("supersede");
+    expect(callOrder).toContain("register");
+    expect(out.superseded).toBe(3);
+  });
+
+  it("reports zero superseded when nothing was retired (checkpoint:await always attempts supersession)", async () => {
+    vi.mocked(cancelAwaitsForSubscribersOnKeys).mockResolvedValueOnce(0);
+
+    const out = await call({});
+
+    expect(out.superseded).toBe(0);
+  });
 });
