@@ -2212,6 +2212,8 @@ describe('cross-backend resume target + protocol-v1 launcher contract', () => {
     expect(resolveResumeTarget(source, { agent: 'omp', model: 'local/qwen3:high' })).toMatchObject({
       operation: 'port', targetAgent: 'omp', provider: 'omp-configured-provider',
     });
+    expect(resolveResumeTarget(source, { agent: 'omp', model: 'anthropic/claude-opus-4-6' }))
+      .toMatchObject({ modelSpec: 'anthropic/claude-opus-4-6' });
   });
 
   it('refuses authority-ambiguous operations and unsupported source directions', () => {
@@ -2472,7 +2474,16 @@ describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026
 
   it('keeps explicit OMP valid for cloud families because OMP is multi-provider', () => {
     expect(validateAgentModelPair('omp', 'gpt-5.6-luna:high')).toEqual({ ok: true });
-    expect(parseArgs(['--agent=omp', '--model=gpt-5.6-luna:high']).agent).toBe('omp');
+    expect(parseArgs(['--agent=omp', '--model=gpt-5.6-luna:high'])).toMatchObject({
+      agent: 'omp', model: 'gpt-5.6-luna:high',
+    });
+    // `[1m]` is a Claude Code-only window marker. OMP may legitimately have
+    // provider model ids containing the same family names and must see the
+    // exact configured id regardless of argv order.
+    expect(parseArgs(['--agent=omp', '--model=anthropic/claude-opus-4-6']).model)
+      .toBe('anthropic/claude-opus-4-6');
+    expect(parseArgs(['--model=anthropic/claude-opus-4-6', '--agent=omp']).model)
+      .toBe('anthropic/claude-opus-4-6');
   });
 });
 

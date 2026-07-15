@@ -343,7 +343,11 @@ export function parseArgs(argv) {
       const rawModel = a.slice('--model='.length);
       const v = validateModelSpec(rawModel);
       if (!v.ok) throw new Error(v.message);
-      out.model = normalizeModelSpec(rawModel);
+      // Normalization is backend-specific and therefore happens after the
+      // complete argv has resolved `--agent` below. OMP is multi-provider and
+      // must receive configured model ids verbatim; Claude's `[1m]` marker is
+      // not part of OMP's model grammar.
+      out.model = rawModel;
     }
     else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
     else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
@@ -433,6 +437,7 @@ export function parseArgs(argv) {
   if (!out.agent && hintedBackend) out.agent = hintedBackend;
   const pairing = validateAgentModelPair(out.agent, out.model);
   if (!pairing.ok) throw new Error(pairing.message);
+  out.model = normalizeModelSpecForAgent(out.agent, out.model);
   return out;
 }
 
@@ -2905,6 +2910,13 @@ export function normalizeModelSpec(spec) {
   return `${spec}[1m]`;
 }
 
+/** Apply Claude Code's private window marker only at a Claude boundary.
+ * OMP model ids are provider-configured/open vocabulary, and Codex has its
+ * own context controls, so both must remain byte-identical. */
+export function normalizeModelSpecForAgent(agent, spec) {
+  return agent === 'claude' ? normalizeModelSpec(spec) : spec;
+}
+
 /**
  * The `[1m]` SOFT compaction limits — LOCKSTEP with agent-config-constants
  * `COMPACTION_LIMIT_DEFAULT_1M_CAP` (leader/solo) + `COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP`
@@ -5138,10 +5150,11 @@ function providerForResumeTarget(agent) {
 export function resolveResumeTarget(session, args = {}, selected = {}) {
   const sourceAgent = session?.agent;
   if (!AGENTS.includes(sourceAgent)) throw new Error(`unsupported source backend ${String(sourceAgent)}`);
-  const modelSpec = selected.modelSpec ?? args.model ?? null;
-  const hinted = modelSpec ? cloudModelBackendHint(modelSpec) : null;
+  const requestedModelSpec = selected.modelSpec ?? args.model ?? null;
+  const hinted = requestedModelSpec ? cloudModelBackendHint(requestedModelSpec) : null;
   const targetAgent = selected.targetAgent ?? args.agent ?? hinted ?? sourceAgent;
   if (!AGENTS.includes(targetAgent)) throw new Error(`--agent must be one of ${AGENTS.join('|')}`);
+  const modelSpec = normalizeModelSpecForAgent(targetAgent, requestedModelSpec);
   const pair = validateAgentModelPair(targetAgent, modelSpec);
   if (!pair.ok) throw new Error(pair.message);
   const operation = targetAgent === sourceAgent ? 'native' : 'port';
@@ -5228,7 +5241,7 @@ async function chooseResumeTarget(session, args) {
   const picked = await select({
     message: 'Continue this session with which backend/model?',
     choices: [
-      ...(last ? [{ name: `Native ${session.agent}: keep last active — ${last}`, value: { targetAgent: session.agent, modelSpec: normalizeModelSpec(last) } }] : []),
+      ...(last ? [{ name: `Native ${session.agent}: keep last active — ${last}`, value: { targetAgent: session.agent, modelSpec: last } }] : []),
       { name: `Native ${session.agent}: backend default (no model flag)`, value: { targetAgent: session.agent, modelSpec: null } },
       { name: 'Choose a different model…', value: CHOOSE_MODEL },
     ],
@@ -5250,7 +5263,7 @@ async function chooseResumeTarget(session, args) {
     const spec = String(typed ?? '').trim();
     return resolveResumeTarget(session, args, {
       targetAgent,
-      modelSpec: spec ? normalizeModelSpec(spec) : null,
+      modelSpec: spec || null,
     });
   };
 

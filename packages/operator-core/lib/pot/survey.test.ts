@@ -697,6 +697,15 @@ describe('notStopped (per-pot Stop stop-list, pure)', () => {
   });
 });
 
+describe('surveyPot plan-item blocking (EI-12372)', () => {
+  const noBlockers: HarnessBlockGraph = { blockers: new Map(), statuses: new Map() };
+  const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({
+    now: () => NOW,
+    fetchBlockGraph: async () => noBlockers,
+    fetchQuarantinedCount: async () => 0,
+    ...over,
+  });
+
   // ── plan-item blocking (EI-12372) ──
   it('excludes a frontier work-item whose linked plan-item is blocked', async () => {
     // A work-item WI-X links to plan-item P-002 (via payload.plan_item)
@@ -775,7 +784,7 @@ describe('notStopped (per-pot Stop stop-list, pure)', () => {
         loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
         listPlanRows: async (slug) =>
           slug === 'papercup'
-            ? [planRow({ planSlug: 'P-plan', harnessSlug: 'papercup', items: [planItem('P-001')] })]
+            ? [planRow({ planSlug: 'P-plan', harnessSlug: 'papercup', items: [{ id: 'P-001', status: 'todo', text: '', importance: 'high', blockedBy: [], decisionRefs: [], phase: null }] })]
             : [],
         fetchFrontier: async () => [
           frontierRow({ feature_id: 'WI-1', harness_slug: 'papercup', payload: null }),

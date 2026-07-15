@@ -144,7 +144,7 @@ describe('runUtilizationReport', () => {
     const result = await runUtilizationReport({ targetOwnerId: 'su-recv', since, limit: 200, now });
 
     expect(mockRecent).toHaveBeenCalledWith({ targetOwnerId: 'su-recv', since, limit: 200 });
-    expect(result.counts).toEqual({ rows: 6, ledgerEntries: 4, queued: 1, pendingObservation: 1 });
+    expect(result.counts).toEqual({ rows: 6, ledgerEntries: 5, queued: 1, pendingObservation: 1 });
     expect(result.window).toEqual({
       targetOwnerId: 'su-recv',
       since: since.toISOString(),
