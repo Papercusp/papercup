@@ -139,14 +139,30 @@ export default defineTool({
           `that, but this call will not see the result. For work that genuinely needs longer, split it ` +
           `into multiple code:run calls or fall back to individual tool calls.`,
       ),
+  }).superRefine((a, ctx) => {
+    // EI-11400: exactly one of `script`/`code` (the same field). Require one, and reject the
+    // ambiguous both-with-DIFFERENT-values case loudly rather than silently picking a winner.
+    if (!a.script && !a.code) {
+      ctx.addIssue({ code: 'custom', path: ['script'], message: 'pass the script body as `script` (or its alias `code`).' });
+      return;
+    }
+    if (a.script && a.code && a.script !== a.code) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['code'],
+        message: '`script` and `code` are the SAME field — pass one (which did you mean?).',
+      });
+    }
   }),
   async handler(args, ctx) {
+    // EI-11400: `code` is an accepted alias for `script`; fold to the canonical once here.
+    const script = (args.script ?? args.code) as string;
     const all = listAllProjectedTools();
     // Scope the facade to tools this agent's role may call (mirrors the dispatcher role-allowlist);
     // exclude code:run itself so a script cannot recursively nest code-mode.
     const allowed = roleScopedToolNames(all, ctx.role, new Set(['code:run']));
 
-    const result = await runToolOrchestration(args.script, {
+    const result = await runToolOrchestration(script, {
       ctx,
       // Thread the host's REAL dispatch deps (B-CX-DEPS): inner tool calls route through
       // the same dispatcher pipeline as any MCP `tools/call` — so they are recordInvocation-
@@ -764,7 +780,7 @@ async function maybeCaptureRecipe(
         log: (msg) => ctx.log(msg),
       },
       {
-        script: args.script,
+        script,
         workspaceId,
         harness: ctx.harnessSlug ?? null,
         ownerId,
