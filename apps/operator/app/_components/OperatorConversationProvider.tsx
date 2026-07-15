@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * OperatorConversationProvider — owns the operator's conversation
@@ -45,7 +45,7 @@ import {
   useRef,
   useState,
   type ReactNode,
-} from 'react';
+} from "react";
 import {
   parseOperatorTurn,
   readOperatorMessagesFromSession,
@@ -58,20 +58,25 @@ import {
   writeSleepUntilMs,
   type OperatorMode,
   type ParsedReport,
-} from '@papercusp/operator-core/lib/operator-converse-tags';
+} from "@papercusp/operator-core/lib/operator-converse-tags";
 import {
   adoptableSharedState,
   broadcastGenerating,
   installOperatorWindowSync,
   peerGeneratingNow,
-} from '@papercusp/operator-core/lib/operator-window-sync';
-import { getVoiceState, speak, subscribeVoiceState, type TranscriptSource } from './voice/voice-mode';
-import { useSyncQuery } from '@papercusp/sync';
-import { useWorkspaceId } from '@/lib/use-workspace-id';
-import type { ChatMessage, ChatToolCall } from './chat/chat-types';
-import { useStateSnapshots } from '@/lib/use-state-snapshots';
-import { selectFocusedCard } from '@/lib/chat-cards/select-focused-card';
-import { composeAmbiguityPrompt } from '@papercusp/operator-core/lib/voice-cards/compose-ambiguity-prompt';
+} from "@papercusp/operator-core/lib/operator-window-sync";
+import {
+  getVoiceState,
+  speak,
+  subscribeVoiceState,
+  type TranscriptSource,
+} from "./voice/voice-mode";
+import { useSyncQuery } from "@papercusp/sync";
+import { useWorkspaceId } from "@/lib/use-workspace-id";
+import type { ChatMessage, ChatToolCall } from "./chat/chat-types";
+import { useStateSnapshots } from "@/lib/use-state-snapshots";
+import { selectFocusedCard } from "@/lib/chat-cards/select-focused-card";
+import { composeAmbiguityPrompt } from "@papercusp/operator-core/lib/voice-cards/compose-ambiguity-prompt";
 import {
   attachActive as routerAttachActive,
   BUFFER_WINDOW_MS as ROUTER_BUFFER_WINDOW_MS,
@@ -81,22 +86,23 @@ import {
   markPending as routerMarkPending,
   resetRouter,
   routeTranscript,
-} from '@papercusp/operator-core/lib/voice-cards/voice-card-router';
-import { postCardResponse } from '@papercusp/operator-core/lib/post-card-response';
+} from "@papercusp/operator-core/lib/voice-cards/voice-card-router";
+import { postCardResponse } from "@papercusp/operator-core/lib/post-card-response";
 import {
   loadVoicePrefsClient,
   subscribeVoicePrefsClient,
-} from './voice/voice-prefs-client';
-import { getConfiguredWakeWordForDisplay } from '@papercusp/operator-core/lib/voice-cards/wakeword-display';
-import { setVoiceConverseHandler } from './voice/voice-converse-handler';
-import { sharedState as sharedOperatorState } from '@papercusp/operator-core/lib/operator-shared-state';
-import { operatorTurnToolsRevision } from '@/lib/operator-turn-tools-revision';
+} from "./voice/voice-prefs-client";
+import { getConfiguredWakeWordForDisplay } from "@papercusp/operator-core/lib/voice-cards/wakeword-display";
+import { setVoiceConverseHandler } from "./voice/voice-converse-handler";
+import { sharedState as sharedOperatorState } from "@papercusp/operator-core/lib/operator-shared-state";
+import { operatorTurnToolsRevision } from "@/lib/operator-turn-tools-revision";
+import { OperatorSayStreamProjector } from "@/lib/operator-say-stream";
 
 interface OperatorTurnRow {
   id: string;
   conversationId: string;
   seq: number;
-  role: 'user' | 'assistant' | 'system';
+  role: "user" | "assistant" | "system";
   text: string;
   createdAt: number;
   tools?: ChatToolCall[] | null;
@@ -112,12 +118,12 @@ interface OperatorTurnRow {
 //   - nudged: nudge fired — silent forever until user speaks or says "ready"
 //   - quiet_wait: legacy state kept only for the "say ready" banner UX
 type SubState =
-  | 'ready'
-  | 'generating'
-  | 'awaiting_reply'
-  | 'nudged'
-  | 'quiet_wait'
-  | 'passive_idle';
+  | "ready"
+  | "generating"
+  | "awaiting_reply"
+  | "nudged"
+  | "quiet_wait"
+  | "passive_idle";
 
 interface State {
   mode: OperatorMode;
@@ -161,8 +167,8 @@ interface State {
 }
 
 const INITIAL: State = {
-  mode: 'active',
-  sub: 'ready',
+  mode: "active",
+  sub: "ready",
   messages: [],
   error: null,
   recentUserTurnTsMs: [],
@@ -177,7 +183,7 @@ const INITIAL: State = {
  *  so a refresh mid-conversation doesn't lose what the user was discussing.
  *  SSR-safe: returns empty list on the server. */
 function initState(): State {
-  if (typeof window === 'undefined') return INITIAL;
+  if (typeof window === "undefined") return INITIAL;
   const persisted = readOperatorMessagesFromSession();
   if (persisted.length === 0) return INITIAL;
   // Cast is safe — readOperatorMessagesFromSession already validated
@@ -186,26 +192,28 @@ function initState(): State {
   // round-trip here in practice, but keep the cast loose.
   return {
     ...INITIAL,
-    messages: persisted as State['messages'],
+    messages: persisted as State["messages"],
   };
 }
 
 type Action =
-  | { type: 'set_mode'; mode: OperatorMode }
-  | { type: 'set_sub'; sub: SubState }
-  | { type: 'append_message'; message: ChatMessage }
-  | { type: 'replace_message_id'; oldId: string; newId: string }
-  | { type: 'append_assistant_delta'; text: string }
-  | { type: 'set_error'; error: string | null }
-  | { type: 'record_user_turn'; tsMs: number }
-  | { type: 'record_want_active_asked'; tsMs: number }
-  | { type: 'record_want_active_declined'; tsMs: number }
-  | { type: 'mark_turn'; tsMs: number }
-  | { type: 'mark_error' }
-  | { type: 'reset_error_count' }
-  | { type: 'reset_messages' }
-  | { type: 'replace_messages'; messages: ChatMessage[]; lastTurnAtMs?: number }
-  | { type: 'prepend_messages'; messages: ChatMessage[] }
+  | { type: "set_mode"; mode: OperatorMode }
+  | { type: "set_sub"; sub: SubState }
+  | { type: "append_message"; message: ChatMessage }
+  | { type: "replace_message_id"; oldId: string; newId: string }
+  | { type: "append_assistant_delta"; id: string; text: string }
+  | { type: "finalize_assistant_stream"; id: string; message: ChatMessage }
+  | { type: "remove_message_id"; id: string }
+  | { type: "set_error"; error: string | null }
+  | { type: "record_user_turn"; tsMs: number }
+  | { type: "record_want_active_asked"; tsMs: number }
+  | { type: "record_want_active_declined"; tsMs: number }
+  | { type: "mark_turn"; tsMs: number }
+  | { type: "mark_error" }
+  | { type: "reset_error_count" }
+  | { type: "reset_messages" }
+  | { type: "replace_messages"; messages: ChatMessage[]; lastTurnAtMs?: number }
+  | { type: "prepend_messages"; messages: ChatMessage[] }
   /**
    * Surgical in-place update of a message identified by seq. Used by
    * the live-tail when a remote row's mutable fields change after the
@@ -214,65 +222,94 @@ type Action =
    * Tab B never sees the assistant row's `tools[i].answered` set
    * because Tab B's live-tail only appends new seqs.
    */
-  | { type: 'update_message_tools'; seq: number; tools: ChatToolCall[] };
+  | { type: "update_message_tools"; seq: number; tools: ChatToolCall[] };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case 'set_mode': {
+    case "set_mode": {
       // Mode flip resets the sub-state to a sensible default for the
       // new mode (passive → passive_idle; active → ready).
-      const sub: SubState = action.mode === 'passive' ? 'passive_idle' : 'ready';
+      const sub: SubState =
+        action.mode === "passive" ? "passive_idle" : "ready";
       return { ...state, mode: action.mode, sub };
     }
-    case 'set_sub':
+    case "set_sub":
       // Fan out so the navbar chip + any other interested component
       // can reflect quiet_wait / silence_check / etc. without taking
       // the React-context route.
       try {
-        if (typeof window !== 'undefined') {
+        if (typeof window !== "undefined") {
           window.dispatchEvent(
-            new CustomEvent('papercusp:operatorSub', { detail: { sub: action.sub } }),
+            new CustomEvent("papercusp:operatorSub", {
+              detail: { sub: action.sub },
+            }),
           );
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       return { ...state, sub: action.sub };
-    case 'append_message':
+    case "append_message":
       return { ...state, messages: [...state.messages, action.message] };
-    case 'replace_message_id': {
+    case "replace_message_id": {
       const idx = state.messages.findIndex((m) => m.id === action.oldId);
       if (idx < 0) return state;
       const next = state.messages.slice();
       next[idx] = { ...next[idx], id: action.newId };
       return { ...state, messages: next };
     }
-    case 'update_message_tools': {
+    case "update_message_tools": {
       const idx = state.messages.findIndex((m) => m.seq === action.seq);
       if (idx < 0) return state;
       // Compare structurally to avoid no-op re-renders.
       const before = state.messages[idx].tools;
-      const beforeSerialized = before ? JSON.stringify(before) : '';
+      const beforeSerialized = before ? JSON.stringify(before) : "";
       const afterSerialized = JSON.stringify(action.tools);
       if (beforeSerialized === afterSerialized) return state;
       const next = state.messages.slice();
       next[idx] = { ...next[idx], tools: action.tools };
       return { ...state, messages: next };
     }
-    case 'append_assistant_delta': {
+    case "append_assistant_delta": {
       const last = state.messages[state.messages.length - 1];
-      if (!last || last.role !== 'assistant') {
+      if (!last || last.role !== "assistant" || last.id !== action.id) {
         // Open a new assistant message and seed it with the delta.
         return {
           ...state,
-          messages: [...state.messages, { role: 'assistant', content: action.text }],
+          messages: [
+            ...state.messages,
+            { role: "assistant", content: action.text, id: action.id },
+          ],
         };
       }
       const updated = [...state.messages];
-      updated[updated.length - 1] = { ...last, content: last.content + action.text };
+      updated[updated.length - 1] = {
+        ...last,
+        content: last.content + action.text,
+      };
       return { ...state, messages: updated };
     }
-    case 'set_error':
+    case "finalize_assistant_stream": {
+      const idx = state.messages.findIndex(
+        (message) => message.id === action.id,
+      );
+      if (idx < 0)
+        return { ...state, messages: [...state.messages, action.message] };
+      const updated = state.messages.slice();
+      updated[idx] = action.message;
+      return { ...state, messages: updated };
+    }
+    case "remove_message_id": {
+      if (!state.messages.some((message) => message.id === action.id))
+        return state;
+      return {
+        ...state,
+        messages: state.messages.filter((message) => message.id !== action.id),
+      };
+    }
+    case "set_error":
       return { ...state, error: action.error };
-    case 'record_user_turn': {
+    case "record_user_turn": {
       // Trim to the last 2 min to keep the array bounded.
       const cutoff = action.tsMs - 2 * 60 * 1000;
       const next = state.recentUserTurnTsMs.filter((t) => t >= cutoff);
@@ -283,32 +320,37 @@ function reducer(state: State, action: Action): State {
         userTurnsSinceDecline: state.userTurnsSinceDecline + 1,
       };
     }
-    case 'record_want_active_asked':
+    case "record_want_active_asked":
       return { ...state, wantActiveAskedAtMs: action.tsMs };
-    case 'record_want_active_declined':
+    case "record_want_active_declined":
       return {
         ...state,
         wantActiveDeclinedAtMs: action.tsMs,
         userTurnsSinceDecline: 0,
       };
-    case 'mark_turn':
-      return state.lastTurnAtMs === action.tsMs ? state : { ...state, lastTurnAtMs: action.tsMs };
-    case 'mark_error':
-      return { ...state, consecutiveErrorCount: state.consecutiveErrorCount + 1 };
-    case 'reset_error_count':
+    case "mark_turn":
+      return state.lastTurnAtMs === action.tsMs
+        ? state
+        : { ...state, lastTurnAtMs: action.tsMs };
+    case "mark_error":
+      return {
+        ...state,
+        consecutiveErrorCount: state.consecutiveErrorCount + 1,
+      };
+    case "reset_error_count":
       return state.consecutiveErrorCount === 0
         ? state
         : { ...state, consecutiveErrorCount: 0 };
-    case 'reset_messages':
+    case "reset_messages":
       return { ...state, messages: [], error: null };
-    case 'replace_messages':
+    case "replace_messages":
       return {
         ...state,
         messages: action.messages,
         error: null,
         lastTurnAtMs: action.lastTurnAtMs ?? state.lastTurnAtMs,
       };
-    case 'prepend_messages':
+    case "prepend_messages":
       return { ...state, messages: [...action.messages, ...state.messages] };
   }
 }
@@ -336,8 +378,11 @@ const DECLINE_COOLDOWN_TURNS = 5;
  *
  * Exposed to the route as the `[may_ask_active]` prompt context marker.
  */
-export function mayAskActiveNow(state: State, nowMs: number = Date.now()): boolean {
-  if (state.mode !== 'passive') return false;
+export function mayAskActiveNow(
+  state: State,
+  nowMs: number = Date.now(),
+): boolean {
+  if (state.mode !== "passive") return false;
   if (readSleepUntilMs() > nowMs) return false;
   const cutoff = nowMs - WINDOW_MS;
   const inWindow = state.recentUserTurnTsMs.filter((t) => t >= cutoff).length;
@@ -361,7 +406,8 @@ export function mayAskActiveNow(state: State, nowMs: number = Date.now()): boole
  * "want me back to active?" question? Used to seed the decline-detection
  * window — when the next user turn is a "no", we know to record it.
  */
-const WANT_ACTIVE_RE = /(want.*back.*active|back into active|go.*active.*mode)/i;
+const WANT_ACTIVE_RE =
+  /(want.*back.*active|back into active|go.*active.*mode)/i;
 export function sayContainsWantActive(say: string): boolean {
   return WANT_ACTIVE_RE.test(say);
 }
@@ -372,7 +418,8 @@ export function sayContainsWantActive(say: string): boolean {
  * have the operator re-ask sooner) than to mis-detect (and cool down
  * when the user actually said yes).
  */
-const DECLINE_RE = /^(no\b|nah\b|nope\b|not (yet|now|really)|keep (it )?(quiet|passive)|stay (passive|quiet)|leave it)/i;
+const DECLINE_RE =
+  /^(no\b|nah\b|nope\b|not (yet|now|really)|keep (it )?(quiet|passive)|stay (passive|quiet)|leave it)/i;
 export function userReplyDeclinesActive(text: string): boolean {
   return DECLINE_RE.test(text.trim());
 }
@@ -404,23 +451,27 @@ export function userReplyDeclinesActive(text: string): boolean {
  *      engagement, not pushback ("are you busy with that?", "let me
  *      think — what are the options?").
  */
-const DISMISS_PHRASE_RE = /(shut up|leave me alone|stop talking|stop asking|ease off|be quiet|go quiet|i'?m busy|i am busy|let me (think|work|focus)|i need (quiet|silence)|you'?re talking too much|too much talking)/i;
+const DISMISS_PHRASE_RE =
+  /(shut up|leave me alone|stop talking|stop asking|ease off|be quiet|go quiet|i'?m busy|i am busy|let me (think|work|focus)|i need (quiet|silence)|you'?re talking too much|too much talking)/i;
 const SHORT_UTTERANCE_MAX = 50;
 const PREAMBLE_RE = /^(hey|ok(ay)?|wait|listen|um|uh|so|well)[,!\s.]+/i;
 export function userDismissesOperator(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
   // Questions are engagement, not pushback.
-  if (trimmed.includes('?')) return false;
+  if (trimmed.includes("?")) return false;
   // Strip a brief conversational preamble so "ok, leave me alone"
   // still matches at start.
-  const stripped = trimmed.replace(PREAMBLE_RE, '');
+  const stripped = trimmed.replace(PREAMBLE_RE, "");
   // Whole message short and matches → dismissal.
-  if (stripped.length <= SHORT_UTTERANCE_MAX && DISMISS_PHRASE_RE.test(stripped)) {
+  if (
+    stripped.length <= SHORT_UTTERANCE_MAX &&
+    DISMISS_PHRASE_RE.test(stripped)
+  ) {
     return true;
   }
   // Long message must START with the phrase to count.
-  const headRe = new RegExp('^' + DISMISS_PHRASE_RE.source, 'i');
+  const headRe = new RegExp("^" + DISMISS_PHRASE_RE.source, "i");
   return headRe.test(stripped);
 }
 
@@ -442,10 +493,10 @@ export function detectAwaitingReply(
   say: string | null | undefined,
   tools?: ReadonlyArray<{ name?: string }> | null,
 ): boolean {
-  if (tools && tools.some((t) => t?.name === 'chat:ask_choice')) return true;
+  if (tools && tools.some((t) => t?.name === "chat:ask_choice")) return true;
   if (!say) return false;
-  const trimmed = say.trim().replace(/[*_`~]+$/g, '');
-  return trimmed.endsWith('?');
+  const trimmed = say.trim().replace(/[*_`~]+$/g, "");
+  return trimmed.endsWith("?");
 }
 
 /**
@@ -454,7 +505,8 @@ export function detectAwaitingReply(
  * for the user to specify what they want. Compromise between
  * "operator pesters" and "user must be explicit".
  */
-const USER_READY_RE = /^\s*(ready|next|what's next\??|whats next\??|what now\??|go|continue|keep going|let's go|lets go|resume|what should i (do|work on)( next)?\??)\s*[.!?]*\s*$/i;
+const USER_READY_RE =
+  /^\s*(ready|next|what's next\??|whats next\??|what now\??|go|continue|keep going|let's go|lets go|resume|what should i (do|work on)( next)?\??)\s*[.!?]*\s*$/i;
 export function detectUserReadyTrigger(text: string): boolean {
   return USER_READY_RE.test(text);
 }
@@ -471,12 +523,12 @@ export interface GenerationRequest {
   messages: ChatMessage[];
   /** Why we're calling — fed to the prompt as context. */
   trigger:
-    | 'user_message'
-    | 'quiet_wait_resume'
-    | 'open_canvas'
-    | 'user_says_ready'
-    | 'user_welcomed'
-    | 'continue';
+    | "user_message"
+    | "quiet_wait_resume"
+    | "open_canvas"
+    | "user_says_ready"
+    | "user_welcomed"
+    | "continue";
   /** True when we're allowed to ask "want active?" this turn. */
   mayAskActive: boolean;
   /** Display name set on `user_welcomed` so brain greets by name. */
@@ -486,7 +538,7 @@ export interface GenerationRequest {
    * so the brain knows text-only affordances (chat:ask_choice buttons)
    * are invisible to the user — must reply in plain say() instead.
    */
-  modality: 'voice' | 'text';
+  modality: "voice" | "text";
   /** AbortSignal for cancellation (e.g. mode flip mid-generation). */
   signal: AbortSignal;
   /**
@@ -503,7 +555,7 @@ export interface GenerationRequest {
    */
   isAutoFire?: boolean;
   /** Audience persona overlay: 'engineer' (default) or 'novice'. */
-  audienceMode?: 'engineer' | 'novice';
+  audienceMode?: "engineer" | "novice";
 }
 
 export interface GenerationStream {
@@ -521,7 +573,9 @@ export interface GenerationStream {
  * Stubbed in this commit; replaced by a fetch to /api/agent-mcp/operator-converse
  * (or, in voice mode, the realtime-session's turn output) in the next commit.
  */
-export type GenerationFn = (req: GenerationRequest) => Promise<GenerationStream>;
+export type GenerationFn = (
+  req: GenerationRequest,
+) => Promise<GenerationStream>;
 
 /**
  * Default GenerationFn — POSTs to /api/agent-mcp/operator-converse and
@@ -536,11 +590,12 @@ export type GenerationFn = (req: GenerationRequest) => Promise<GenerationStream>
 const defaultGenerationFn: GenerationFn = async (req) => {
   // Lazy import — avoids dragging the sessionStorage path into SSR.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getOrCreateClientId } = require('@papercusp/operator-core/lib/ui/client-id') as typeof import('@papercusp/operator-core/lib/ui/client-id');
+  const { getOrCreateClientId } =
+    require("@papercusp/operator-core/lib/ui/client-id") as typeof import("@papercusp/operator-core/lib/ui/client-id");
   const uiClientId = getOrCreateClientId();
-  const res = await fetch('/api/agent-mcp/operator-converse', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+  const res = await fetch("/api/agent-mcp/operator-converse", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
       messages: req.messages,
       trigger: req.trigger,
@@ -571,30 +626,40 @@ const defaultGenerationFn: GenerationFn = async (req) => {
   return {
     tools,
     chunks: (async function* () {
-      let buf = '';
+      let buf = "";
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         // SSE frame parse — split on blank line.
         let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
+        while ((idx = buf.indexOf("\n\n")) !== -1) {
           const frame = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
           const eventMatch = frame.match(/^event:\s*(.+)$/m);
           const dataMatch = frame.match(/^data:\s*(.+)$/m);
           if (!eventMatch || !dataMatch) continue;
           const event = eventMatch[1].trim();
-          if (event !== 'delta' && event !== 'done' && event !== 'error' && event !== 'tool_call') continue;
+          if (
+            event !== "delta" &&
+            event !== "done" &&
+            event !== "error" &&
+            event !== "tool_call"
+          )
+            continue;
           let data: unknown;
-          try { data = JSON.parse(dataMatch[1]); } catch { continue; }
+          try {
+            data = JSON.parse(dataMatch[1]);
+          } catch {
+            continue;
+          }
 
-          if (event === 'delta') {
+          if (event === "delta") {
             const text = (data as { text?: unknown })?.text;
-            if (typeof text === 'string') yield text;
-          } else if (event === 'tool_call') {
+            if (typeof text === "string") yield text;
+          } else if (event === "tool_call") {
             const d = data as { name?: unknown; input?: unknown };
-            if (typeof d?.name === 'string') {
+            if (typeof d?.name === "string") {
               tools.push({ name: d.name, input: d.input });
               // Surface tool_call to listeners in real time so the
               // voice-card router (plan §C.1a) can arm `pending` the
@@ -604,20 +669,26 @@ const defaultGenerationFn: GenerationFn = async (req) => {
               // arrives, opening a race where a fast STT answer
               // would be dispatched as user_message instead of
               // resolving the card.
-              if (typeof window !== 'undefined') {
+              if (typeof window !== "undefined") {
                 try {
                   window.dispatchEvent(
-                    new CustomEvent('papercusp:operatorToolCall', {
-                      detail: { name: d.name, input: d.input, tsMs: Date.now() },
+                    new CustomEvent("papercusp:operatorToolCall", {
+                      detail: {
+                        name: d.name,
+                        input: d.input,
+                        tsMs: Date.now(),
+                      },
                     }),
                   );
-                } catch { /* ignore */ }
+                } catch {
+                  /* ignore */
+                }
               }
             }
-          } else if (event === 'error') {
+          } else if (event === "error") {
             const msg = (data as { message?: unknown })?.message;
-            throw new Error(typeof msg === 'string' ? msg : 'stream error');
-          } else if (event === 'done') {
+            throw new Error(typeof msg === "string" ? msg : "stream error");
+          } else if (event === "done") {
             return;
           }
         }
@@ -695,12 +766,15 @@ interface OperatorConversationContextValue {
   conversationId: string | null;
 }
 
-const OperatorConversationContext = createContext<OperatorConversationContextValue | null>(null);
+const OperatorConversationContext =
+  createContext<OperatorConversationContextValue | null>(null);
 
 export function useOperatorConversation(): OperatorConversationContextValue {
   const v = useContext(OperatorConversationContext);
   if (!v) {
-    throw new Error('useOperatorConversation must be used inside OperatorConversationProvider');
+    throw new Error(
+      "useOperatorConversation must be used inside OperatorConversationProvider",
+    );
   }
   return v;
 }
@@ -711,7 +785,10 @@ interface ProviderProps {
   generationFn?: GenerationFn;
 }
 
-export function OperatorConversationProvider({ children, generationFn = defaultGenerationFn }: ProviderProps) {
+export function OperatorConversationProvider({
+  children,
+  generationFn = defaultGenerationFn,
+}: ProviderProps) {
   const [state, dispatch] = useReducer(reducer, INITIAL, initState);
   const workspaceId = useWorkspaceId();
 
@@ -720,9 +797,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // Mutation across renders is intentional — the router models a small
   // state machine, not React state. Buffer-window timer lives alongside.
   const routerStateRef = useRef(createRouterState());
-  const routerBufferTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const routerBufferTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   // Live mirror of voice-prefs.audienceMode. Updated via subscribeVoicePrefsClient.
-  const audienceModeRef = useRef<'engineer' | 'novice'>('engineer');
+  const audienceModeRef = useRef<"engineer" | "novice">("engineer");
 
   // Live mirror of voice-prefs.cardAnsweringEnabled. Updated via
   // subscribeVoicePrefsClient so toggling the pref OFF mid-session
@@ -752,7 +831,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   const armNudgeGraceTimer = useCallback(() => {
     if (nudgeGraceTimerRef.current) clearTimeout(nudgeGraceTimerRef.current);
     const prefs = loadVoicePrefsClient();
-    const graceSecs = Math.max(0, Math.min(120, prefs.silenceNudgeGraceSecs ?? 30));
+    const graceSecs = Math.max(
+      0,
+      Math.min(120, prefs.silenceNudgeGraceSecs ?? 30),
+    );
     if (graceSecs === 0) return; // pref-disabled
     nudgeGraceTimerRef.current = setTimeout(() => {
       nudgeGraceTimerRef.current = null;
@@ -760,12 +842,16 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       if (!voiceActiveRef.current) return;
       // Hand off to voice-mode. The handler tears down the EL session
       // and arms wake-word if configured (existing wakeGated flow).
-      if (typeof window !== 'undefined') {
+      if (typeof window !== "undefined") {
         try {
-          window.dispatchEvent(new CustomEvent('papercusp:voiceSilenceTeardown', {
-            detail: { wakeword: getConfiguredWakeWordForDisplay(prefs) },
-          }));
-        } catch { /* ignore */ }
+          window.dispatchEvent(
+            new CustomEvent("papercusp:voiceSilenceTeardown", {
+              detail: { wakeword: getConfiguredWakeWordForDisplay(prefs) },
+            }),
+          );
+        } catch {
+          /* ignore */
+        }
       }
     }, graceSecs * 1000);
   }, []);
@@ -830,28 +916,33 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
 
   type TurnPage = { turns: OperatorTurnRow[]; hasMoreEarlier: boolean };
   const conversationSync = useSyncQuery<{ id: string }>({
-    queryName: 'operatorConversations.current',
+    queryName: "operatorConversations.current",
     args: { workspaceId },
     staleTime: 30_000,
   });
   const currentConversation = conversationSync.data?.[0];
   useEffect(() => {
-    if (!currentConversation?.id || currentConversation.id === conversationIdRef.current) return;
+    if (
+      !currentConversation?.id ||
+      currentConversation.id === conversationIdRef.current
+    )
+      return;
     conversationIdRef.current = currentConversation.id;
     setConvId(currentConversation.id);
     hydratedRef.current = false;
   }, [currentConversation?.id]);
 
   const initialPageSync = useSyncQuery<TurnPage>({
-    queryName: 'operatorTurns.page',
-    args: { conversationId: convId ?? '', limit: INITIAL_PAGE },
+    queryName: "operatorTurns.page",
+    args: { conversationId: convId ?? "", limit: INITIAL_PAGE },
     enabled: !!convId,
     staleTime: 30_000,
   });
   const initialPage = initialPageSync.data?.[0];
   const hydratedConversationRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!convId || !initialPage || hydratedConversationRef.current === convId) return;
+    if (!convId || !initialPage || hydratedConversationRef.current === convId)
+      return;
     const turns = initialPage.turns ?? [];
     hydratedConversationRef.current = convId;
     if (turns.length > 0) {
@@ -859,12 +950,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       newestLoadedSeqRef.current = turns[turns.length - 1].seq;
       setHasMoreEarlier(initialPage.hasMoreEarlier);
       dispatch({
-        type: 'replace_messages',
+        type: "replace_messages",
         messages: turns.map((t) => ({
           role: t.role,
           content: t.text,
-          id: typeof t.id === 'string' ? t.id : undefined,
-          seq: typeof t.seq === 'number' ? t.seq : undefined,
+          id: typeof t.id === "string" ? t.id : undefined,
+          seq: typeof t.seq === "number" ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
         })),
         lastTurnAtMs: turns[turns.length - 1].createdAt ?? 0,
@@ -873,15 +964,19 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       oldestLoadedSeqRef.current = null;
       newestLoadedSeqRef.current = null;
       setHasMoreEarlier(false);
-      dispatch({ type: 'replace_messages', messages: [] });
+      dispatch({ type: "replace_messages", messages: [] });
     }
     hydratedRef.current = true;
   }, [convId, initialPage]);
 
   const [olderBeforeSeq, setOlderBeforeSeq] = useState<number | null>(null);
   const olderPageSync = useSyncQuery<TurnPage>({
-    queryName: 'operatorTurns.page',
-    args: { conversationId: convId ?? '', beforeSeq: olderBeforeSeq ?? 0, limit: PAGE_SIZE },
+    queryName: "operatorTurns.page",
+    args: {
+      conversationId: convId ?? "",
+      beforeSeq: olderBeforeSeq ?? 0,
+      limit: PAGE_SIZE,
+    },
     enabled: !!convId && olderBeforeSeq !== null,
     staleTime: 60_000,
   });
@@ -898,12 +993,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       oldestLoadedSeqRef.current = page.turns[0].seq;
       setHasMoreEarlier(page.hasMoreEarlier);
       dispatch({
-        type: 'prepend_messages',
+        type: "prepend_messages",
         messages: page.turns.map((t) => ({
           role: t.role,
           content: t.text,
-          id: typeof t.id === 'string' ? t.id : undefined,
-          seq: typeof t.seq === 'number' ? t.seq : undefined,
+          id: typeof t.id === "string" ? t.id : undefined,
+          seq: typeof t.seq === "number" ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
         })),
       });
@@ -913,7 +1008,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   }, [convId, olderBeforeSeq, olderPageSync.data]);
 
   const loadEarlier = useCallback(async (): Promise<void> => {
-    if (!conversationIdRef.current || loadingEarlier || oldestLoadedSeqRef.current === null || !hasMoreEarlier) return;
+    if (
+      !conversationIdRef.current ||
+      loadingEarlier ||
+      oldestLoadedSeqRef.current === null ||
+      !hasMoreEarlier
+    )
+      return;
     setLoadingEarlier(true);
     setOlderBeforeSeq(oldestLoadedSeqRef.current);
   }, [hasMoreEarlier, loadingEarlier]);
@@ -928,8 +1029,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // conversation depth — the user-facing depth is bounded only by how
   // far they scroll back. Older turns land via loadEarlier() against PG.
   const turnsSync = useSyncQuery<OperatorTurnRow>({
-    queryName: 'operatorTurns.byConversation',
-    args: { conversationId: convId ?? '', limit: 200 },
+    queryName: "operatorTurns.byConversation",
+    args: { conversationId: convId ?? "", limit: 200 },
     enabled: !!convId,
   });
   const remoteTurns = (turnsSync.data as OperatorTurnRow[] | undefined) ?? [];
@@ -945,7 +1046,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     const since = newestLoadedSeqRef.current;
     // Dedup by id: if a remote row's id matches an already-loaded
     // message (optimistic uuid or real PG id), skip the append. G19.
-    const localIds = new Set(state.messages.map((m) => m.id).filter((x): x is string => !!x));
+    const localIds = new Set(
+      state.messages.map((m) => m.id).filter((x): x is string => !!x),
+    );
     // B4: content-based dedup fallback for the optimistic-write race.
     // The optimistic id is local-only (PG never sees it); when Zero
     // echoes the inserted row back BEFORE persistTurn's .then() swaps
@@ -954,9 +1057,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // against the most recent few optimistic-prefixed messages and
     // swap the id in place rather than appending.
     const optimisticByKey = new Map<string, string>();
-    for (let i = state.messages.length - 1; i >= Math.max(0, state.messages.length - 8); i--) {
+    for (
+      let i = state.messages.length - 1;
+      i >= Math.max(0, state.messages.length - 8);
+      i--
+    ) {
       const m = state.messages[i];
-      if (m.id && m.id.startsWith('opt-')) {
+      if (m.id && m.id.startsWith("opt-")) {
         optimisticByKey.set(`${m.role}\x00${m.content}`, m.id);
       }
     }
@@ -968,57 +1075,62 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // the card button.
     const localToolsBySeq = new Map<number, ChatToolCall[] | undefined>();
     for (const m of state.messages) {
-      if (typeof m.seq === 'number') localToolsBySeq.set(m.seq, m.tools);
+      if (typeof m.seq === "number") localToolsBySeq.set(m.seq, m.tools);
     }
     for (const t of sorted) {
       if (since !== null && t.seq <= since) {
         // Already-loaded row: check if its mutable fields (tools) have
         // changed and dispatch a surgical update if so. Cross-tab
         // chat:ask_choice answered-state lives in this branch.
-        if (Array.isArray(t.tools) && typeof t.seq === 'number') {
+        if (Array.isArray(t.tools) && typeof t.seq === "number") {
           const local = localToolsBySeq.get(t.seq);
           const remoteJson = JSON.stringify(t.tools);
-          const localJson = local ? JSON.stringify(local) : '';
+          const localJson = local ? JSON.stringify(local) : "";
           if (remoteJson !== localJson) {
-            dispatch({ type: 'update_message_tools', seq: t.seq, tools: t.tools as ChatToolCall[] });
+            dispatch({
+              type: "update_message_tools",
+              seq: t.seq,
+              tools: t.tools as ChatToolCall[],
+            });
           }
         }
         continue;
       }
-      if (typeof t.id === 'string' && localIds.has(t.id)) {
+      if (typeof t.id === "string" && localIds.has(t.id)) {
         newestLoadedSeqRef.current = t.seq;
         continue;
       }
       const optKey = `${t.role}\x00${t.text}`;
       const optId = optimisticByKey.get(optKey);
       if (optId) {
-        dispatch({ type: 'replace_message_id', oldId: optId, newId: t.id });
+        dispatch({ type: "replace_message_id", oldId: optId, newId: t.id });
         optimisticByKey.delete(optKey);
         newestLoadedSeqRef.current = t.seq;
         continue;
       }
       dispatch({
-        type: 'append_message',
+        type: "append_message",
         message: {
           role: t.role,
           content: t.text,
-          id: typeof t.id === 'string' ? t.id : undefined,
-          seq: typeof t.seq === 'number' ? t.seq : undefined,
+          id: typeof t.id === "string" ? t.id : undefined,
+          seq: typeof t.seq === "number" ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
         },
       });
       newestLoadedSeqRef.current = t.seq;
-      if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = t.seq;
+      if (oldestLoadedSeqRef.current === null)
+        oldestLoadedSeqRef.current = t.seq;
       const ts = t.createdAt ?? Date.now();
       if (ts > lastTurnTs) lastTurnTs = ts;
       // B3: cross-tab user turns also count toward engagement. Without
       // this, a user typing in one tab while another tab is open
       // would never satisfy mayAskActiveNow()'s 3-in-2min threshold.
-      if (t.role === 'user') {
-        dispatch({ type: 'record_user_turn', tsMs: ts });
+      if (t.role === "user") {
+        dispatch({ type: "record_user_turn", tsMs: ts });
       }
     }
-    if (lastTurnTs > 0) dispatch({ type: 'mark_turn', tsMs: lastTurnTs });
+    if (lastTurnTs > 0) dispatch({ type: "mark_turn", tsMs: lastTurnTs });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remoteTurns.length, remoteToolsRevision, convId]);
 
@@ -1042,9 +1154,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   //     error banner instead of dropping the turn invisibly.
   const persistTurn = useCallback(
     (
-      role: 'user' | 'assistant',
+      role: "user" | "assistant",
       text: string,
-      source: 'text_typed' | 'voice_stt' | 'voice_tts' = 'text_typed',
+      source: "text_typed" | "voice_stt" | "voice_tts" = "text_typed",
       optimisticId?: string,
       tools?: ChatToolCall[],
       report?: ParsedReport | null,
@@ -1065,13 +1177,16 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         for (let i = 1; i <= MAX_TRIES; i++) {
           // Re-read per try — an earlier try (or the sync query) may have
           // resolved the id in the meantime.
-          const target = conversationIdRef.current ?? 'active';
+          const target = conversationIdRef.current ?? "active";
           try {
-            const r = await fetch(`/api/operator/conversations/${target}/turns`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: payload,
-            });
+            const r = await fetch(
+              `/api/operator/conversations/${target}/turns`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: payload,
+              },
+            );
             if (!r.ok) throw new Error(`persist ${r.status}`);
             const j = (await r.json()) as {
               turn?: { id?: string; seq?: number };
@@ -1080,20 +1195,32 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
             // Adopt the server-resolved conversation when we posted to
             // `active` (the sync-query effect's `=== current` guard makes
             // the later sync delivery of the same id a no-op).
-            if (target === 'active' && typeof j.conversationId === 'string' && !conversationIdRef.current) {
+            if (
+              target === "active" &&
+              typeof j.conversationId === "string" &&
+              !conversationIdRef.current
+            ) {
               conversationIdRef.current = j.conversationId;
               setConvId(j.conversationId);
             }
             const seq = j?.turn?.seq;
             const realId = j?.turn?.id;
-            if (typeof seq === 'number') {
-              if (newestLoadedSeqRef.current === null || seq > newestLoadedSeqRef.current) {
+            if (typeof seq === "number") {
+              if (
+                newestLoadedSeqRef.current === null ||
+                seq > newestLoadedSeqRef.current
+              ) {
                 newestLoadedSeqRef.current = seq;
               }
-              if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = seq;
+              if (oldestLoadedSeqRef.current === null)
+                oldestLoadedSeqRef.current = seq;
             }
-            if (optimisticId && typeof realId === 'string') {
-              dispatch({ type: 'replace_message_id', oldId: optimisticId, newId: realId });
+            if (optimisticId && typeof realId === "string") {
+              dispatch({
+                type: "replace_message_id",
+                oldId: optimisticId,
+                newId: realId,
+              });
             }
             return;
           } catch (err) {
@@ -1101,10 +1228,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               // The turn is still visible locally (optimistic state +
               // sessionStorage cache) but did NOT reach the shared thread —
               // other windows/devices won't see it. Say so.
-              console.warn('[conversation] persist failed after retries:', err);
+              console.warn("[conversation] persist failed after retries:", err);
               dispatch({
-                type: 'set_error',
-                error: 'A message could not be saved to the conversation — it may be missing on other windows.',
+                type: "set_error",
+                error:
+                  "A message could not be saved to the conversation — it may be missing on other windows.",
               });
               return;
             }
@@ -1128,30 +1256,38 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   const freshenHistory = useCallback(
     async (history: ChatMessage[], timeoutMs = 250): Promise<ChatMessage[]> => {
       try {
-        const target = conversationIdRef.current ?? 'active';
-        const r = await fetch(`/api/operator/conversations/${target}/turns?limit=30`, {
-          signal: AbortSignal.timeout(timeoutMs),
-        });
+        const target = conversationIdRef.current ?? "active";
+        const r = await fetch(
+          `/api/operator/conversations/${target}/turns?limit=30`,
+          {
+            signal: AbortSignal.timeout(timeoutMs),
+          },
+        );
         if (!r.ok) return history;
         const page = (await r.json()) as {
-          turns?: Array<{ id?: string; seq?: number; role?: string; text?: string }>;
+          turns?: Array<{
+            id?: string;
+            seq?: number;
+            role?: string;
+            text?: string;
+          }>;
         };
         const cutoff = newestLoadedSeqRef.current;
         const known = new Set(history.map((m) => m.id).filter(Boolean));
         const missed = (page.turns ?? []).filter(
           (t) =>
-            typeof t.seq === 'number' &&
+            typeof t.seq === "number" &&
             (cutoff === null || t.seq > cutoff) &&
-            (t.role === 'user' || t.role === 'assistant') &&
-            typeof t.text === 'string' &&
-            t.text.trim() !== '' &&
-            !(typeof t.id === 'string' && known.has(t.id)),
+            (t.role === "user" || t.role === "assistant") &&
+            typeof t.text === "string" &&
+            t.text.trim() !== "" &&
+            !(typeof t.id === "string" && known.has(t.id)),
         );
         if (missed.length === 0) return history;
         const mapped: ChatMessage[] = missed.map((t) => ({
-          role: t.role as 'user' | 'assistant',
+          role: t.role as "user" | "assistant",
           content: t.text as string,
-          id: typeof t.id === 'string' ? t.id : undefined,
+          id: typeof t.id === "string" ? t.id : undefined,
         }));
         // Deliberately NOT bumping newestLoadedSeqRef: the sync reconciler
         // still owes these turns to the UI and dedupes them by id/seq.
@@ -1172,7 +1308,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     const seedFromSession = readOperatorModeFromSession();
     if (seedFromSession) {
       // Mid-session value is authoritative.
-      if (seedFromSession !== state.mode) dispatch({ type: 'set_mode', mode: seedFromSession });
+      if (seedFromSession !== state.mode)
+        dispatch({ type: "set_mode", mode: seedFromSession });
     } else {
       // First time this WINDOW. A live peer window (main app ↔ Quick Panel
       // share one conversation) outranks the prefs seed — two sidebars
@@ -1183,20 +1320,34 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       if (adopted) {
         writeOperatorModeToSession(adopted.mode);
         if (adopted.sleepUntilMs > 0) writeSleepUntilMs(adopted.sleepUntilMs);
-        if (adopted.mode !== state.mode) dispatch({ type: 'set_mode', mode: adopted.mode });
+        if (adopted.mode !== state.mode)
+          dispatch({ type: "set_mode", mode: adopted.mode });
         try {
-          window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode: adopted.mode } }));
-        } catch { /* ignore */ }
+          window.dispatchEvent(
+            new CustomEvent("papercusp:operatorMode", {
+              detail: { mode: adopted.mode },
+            }),
+          );
+        } catch {
+          /* ignore */
+        }
       } else {
         // Seed from the root-fed preference cache.
-        writeOperatorModeToSession('active');
-        const wantActive = loadVoicePrefsClient().operatorActiveOnStartup !== false;
+        writeOperatorModeToSession("active");
+        const wantActive =
+          loadVoicePrefsClient().operatorActiveOnStartup !== false;
         if (!wantActive) {
-          writeOperatorModeToSession('passive');
-          dispatch({ type: 'set_mode', mode: 'passive' });
+          writeOperatorModeToSession("passive");
+          dispatch({ type: "set_mode", mode: "passive" });
           try {
-            window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode: 'passive' } }));
-          } catch { /* ignore */ }
+            window.dispatchEvent(
+              new CustomEvent("papercusp:operatorMode", {
+                detail: { mode: "passive" },
+              }),
+            );
+          } catch {
+            /* ignore */
+          }
         }
       }
     }
@@ -1205,11 +1356,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // (and the set_mode tag dispatcher / voice path).
     const onModeEvent = (e: Event) => {
       const detail = (e as CustomEvent<{ mode: OperatorMode }>).detail;
-      if (detail?.mode === 'active' || detail?.mode === 'passive') {
-        dispatch({ type: 'set_mode', mode: detail.mode });
+      if (detail?.mode === "active" || detail?.mode === "passive") {
+        dispatch({ type: "set_mode", mode: detail.mode });
       }
     };
-    window.addEventListener('papercusp:operatorMode', onModeEvent as EventListener);
+    window.addEventListener(
+      "papercusp:operatorMode",
+      onModeEvent as EventListener,
+    );
 
     // Voice-engagement signal: STT delivers a user transcript →
     // count toward `recentUserTurnTsMs` so passive-mode's
@@ -1218,10 +1372,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // at commit-time; now wired. Also marks the silence-ladder
     // freshness clock so it stays active after a voice exchange.
     const onVoiceUserTurn = (e: Event) => {
-      const detail = (e as CustomEvent<{ tsMs?: number; text?: string; confidence?: number; transcriptSource?: TranscriptSource }>).detail;
-      const tsMs = typeof detail?.tsMs === 'number' ? detail.tsMs : Date.now();
-      const text = typeof detail?.text === 'string' ? detail.text : '';
-      const confidence = typeof detail?.confidence === 'number' ? detail.confidence : undefined;
+      const detail = (
+        e as CustomEvent<{
+          tsMs?: number;
+          text?: string;
+          confidence?: number;
+          transcriptSource?: TranscriptSource;
+        }>
+      ).detail;
+      const tsMs = typeof detail?.tsMs === "number" ? detail.tsMs : Date.now();
+      const text = typeof detail?.text === "string" ? detail.text : "";
+      const confidence =
+        typeof detail?.confidence === "number" ? detail.confidence : undefined;
       // Producer origin (localWhisper vs providerSTT) — observable on the
       // uniform pane seam (P-001). Not branched on today; engagement +
       // card-routing are source-agnostic.
@@ -1238,42 +1400,44 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           { text, tsMs, confidence },
           composeAmbiguityPrompt,
         );
-        if (outcome.kind === 'buffered') {
+        if (outcome.kind === "buffered") {
           // Snapshot-arrival race: wait for it. Router timer (armed
           // on tool_call) will flush if no snapshot lands within
           // BUFFER_WINDOW_MS. Don't touch engagement state — the
           // turn isn't real yet.
           return;
         }
-        if (outcome.kind === 'submit' || outcome.kind === 'decline') {
+        if (outcome.kind === "submit" || outcome.kind === "decline") {
           const conv = conversationIdRef.current;
           if (conv) {
             void postCardResponse(conv, {
               correlationId: outcome.correlationId,
               workspaceId,
               action: outcome.kind,
-              payload: outcome.kind === 'submit' ? outcome.payload : undefined,
+              payload: outcome.kind === "submit" ? outcome.payload : undefined,
             });
           }
           // Still record engagement for the silence ladder.
-          dispatch({ type: 'record_user_turn', tsMs });
-          dispatch({ type: 'mark_turn', tsMs });
+          dispatch({ type: "record_user_turn", tsMs });
+          dispatch({ type: "mark_turn", tsMs });
           return;
         }
-        if (outcome.kind === 'ambiguous') {
+        if (outcome.kind === "ambiguous") {
           // Speak the disambiguation prompt; leave router active. The
           // user's next utterance gets re-parsed. After MAX rounds the
           // router falls through automatically.
           try {
-            speak(outcome.prompt, 'system:operator', 'polite');
-          } catch { /* ignore */ }
+            speak(outcome.prompt, "system:operator", "polite");
+          } catch {
+            /* ignore */
+          }
           return;
         }
         // fall_through: original behavior below.
       }
 
-      dispatch({ type: 'record_user_turn', tsMs });
-      dispatch({ type: 'mark_turn', tsMs });
+      dispatch({ type: "record_user_turn", tsMs });
+      dispatch({ type: "mark_turn", tsMs });
       // User spoke (whatever they said) — they're engaged, cancel
       // any pending silence-nudge grace timer so EL stays up.
       cancelNudgeGraceTimer();
@@ -1283,15 +1447,28 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // the voice path. The voice tag observer reads this stamp on the
       // next assistant flush and force-flips to passive if the brain
       // forgot to emit <set_mode>passive</set_mode>.
-      if (text && stateRef.current.mode === 'active' && userDismissesOperator(text)) {
+      if (
+        text &&
+        stateRef.current.mode === "active" &&
+        userDismissesOperator(text)
+      ) {
         writePendingDismissalAtMs(tsMs);
       }
     };
-    window.addEventListener('papercusp:operatorUserTurn', onVoiceUserTurn as EventListener);
+    window.addEventListener(
+      "papercusp:operatorUserTurn",
+      onVoiceUserTurn as EventListener,
+    );
 
     return () => {
-      window.removeEventListener('papercusp:operatorMode', onModeEvent as EventListener);
-      window.removeEventListener('papercusp:operatorUserTurn', onVoiceUserTurn as EventListener);
+      window.removeEventListener(
+        "papercusp:operatorMode",
+        onModeEvent as EventListener,
+      );
+      window.removeEventListener(
+        "papercusp:operatorUserTurn",
+        onVoiceUserTurn as EventListener,
+      );
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1306,7 +1483,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // reflects the PREVIOUS render. The ref is updated on every render
   // below so the runner always sees the latest committed state.
   const stateRef = useRef(state);
-  useEffect(() => { stateRef.current = state; }, [state]);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
   // Voice-active mirror so runGeneration (which is declared before
   // useState voiceActive) can read the current value without a re-bind.
   // Initialized eagerly from the voice subscription so the very first
@@ -1324,7 +1503,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // (state hasn't committed yet).
   const runGeneration = useCallback(
     async (
-      trigger: GenerationRequest['trigger'],
+      trigger: GenerationRequest["trigger"],
       opts?: {
         messagesOverride?: ChatMessage[];
         welcomedUser?: { displayName: string };
@@ -1351,7 +1530,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // thread read as the operator talking over itself. User sends are
       // never deferred.
       if (opts?.isAutoFire && peerGeneratingNow()) {
-        console.debug('[operator] auto-fire deferred — a peer window is generating');
+        console.debug(
+          "[operator] auto-fire deferred — a peer window is generating",
+        );
         return;
       }
 
@@ -1361,11 +1542,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       const ctrl = new AbortController();
       inFlightRef.current = ctrl;
 
-      dispatch({ type: 'set_sub', sub: 'generating' });
-      dispatch({ type: 'set_error', error: null });
+      dispatch({ type: "set_sub", sub: "generating" });
+      dispatch({ type: "set_error", error: null });
       // Cross-window typing indicator + auto-fire deferral beacon (P-009).
       broadcastGenerating(true);
       let lastGenBeatMs = Date.now();
+      const sayProjector = new OperatorSayStreamProjector();
+      let streamedAssistantId: string | null = null;
+      let streamedAssistantCommitted = false;
 
       const snapshot = stateRef.current;
       const history = opts?.messagesOverride ?? snapshot.messages;
@@ -1375,7 +1559,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           messages: history,
           trigger,
           mayAskActive: mayAskActiveNow(snapshot),
-          modality: voiceActiveRef.current ? 'voice' : 'text',
+          modality: voiceActiveRef.current ? "voice" : "text",
           welcomedUser: opts?.welcomedUser,
           signal: ctrl.signal,
           // V8 continue-chain ledger plumbing — server records one
@@ -1385,10 +1569,19 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           audienceMode: audienceModeRef.current,
         });
 
-        let buf = '';
+        let buf = "";
         for await (const chunk of stream.chunks) {
           if (ctrl.signal.aborted) return;
           buf += chunk;
+          const visibleDelta = sayProjector.push(chunk);
+          if (visibleDelta) {
+            streamedAssistantId ??= `opt-assistant-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+            dispatch({
+              type: "append_assistant_delta",
+              id: streamedAssistantId,
+              text: visibleDelta,
+            });
+          }
           // Keep the cross-window beacon fresh through a long stream
           // (peers treat a stale beacon as a crashed writer).
           if (Date.now() - lastGenBeatMs > 5_000) {
@@ -1405,7 +1598,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // tool-call-only turns (e.g. chat:ask_choice). The card never
         // appeared because the assistant row was never appended.
         // Now: a non-empty tool array also qualifies.
-        const collectedTools = stream.tools && stream.tools.length > 0 ? stream.tools.slice() : undefined;
+        const collectedTools =
+          stream.tools && stream.tools.length > 0
+            ? stream.tools.slice()
+            : undefined;
         // The report is PERSISTED (it is the Inbox's durable store — the
         // operator-report attention source reads operator_turns.report) but
         // NOT threaded onto the chat message: chat renders conversation
@@ -1414,10 +1610,22 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         const turnHasContent = !!parsed.say || !!collectedTools || !!report;
 
         if (turnHasContent) {
-          const sayContent = parsed.say ?? '';
-          const assistantMessage: ChatMessage = { role: 'assistant', content: sayContent };
+          const sayContent = parsed.say ?? "";
+          const assistantMessage: ChatMessage = {
+            role: "assistant",
+            content: sayContent,
+            ...(streamedAssistantId ? { id: streamedAssistantId } : {}),
+          };
           if (collectedTools) assistantMessage.tools = collectedTools;
-          dispatch({ type: 'append_message', message: assistantMessage });
+          if (streamedAssistantId) {
+            dispatch({
+              type: "finalize_assistant_stream",
+              id: streamedAssistantId,
+              message: assistantMessage,
+            });
+          } else {
+            dispatch({ type: "append_message", message: assistantMessage });
+          }
           // Voice ≡ text: when the user turn that triggered this
           // generation was SPOKEN (local-STT → converse bridge), speak
           // the assistant's reply back so a spoken turn gets a spoken
@@ -1428,8 +1636,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           // silent. (sentinel-tui-shared-backend-and-cards Phase 1.)
           if (opts?.spokenReply && sayContent.trim()) {
             try {
-              speak(sayContent.trim(), 'system:operator', 'polite');
-            } catch { /* TTS unavailable — aria-live still published */ }
+              speak(sayContent.trim(), "system:operator", "polite");
+            } catch {
+              /* TTS unavailable — aria-live still published */
+            }
           }
           // Engagement check tracks USER turns only. Assistant turns
           // (a) probe for the want-active phrase to seed G2's decline
@@ -1437,26 +1647,29 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           // turns so a "no" to a later "want passive?" check doesn't
           // get misclassified as declining active. G12 of the audit.
           if (parsed.say && sayContainsWantActive(parsed.say)) {
-            dispatch({ type: 'record_want_active_asked', tsMs: Date.now() });
+            dispatch({ type: "record_want_active_asked", tsMs: Date.now() });
           } else if (parsed.say) {
-            dispatch({ type: 'record_want_active_asked', tsMs: 0 });
+            dispatch({ type: "record_want_active_asked", tsMs: 0 });
           }
-          dispatch({ type: 'mark_turn', tsMs: Date.now() });
+          dispatch({ type: "mark_turn", tsMs: Date.now() });
           // Persist text + tools + report. Empty say is fine for
           // tool/report-only turns; persistTurn writes whatever we send.
           // The server-side turns route accepts tools + report alongside
           // text (POST /api/operator/conversations/:id/turns).
           persistTurn(
-            'assistant',
+            "assistant",
             sayContent,
-            opts?.spokenReply ? 'voice_tts' : 'text_typed',
-            undefined,
+            opts?.spokenReply ? "voice_tts" : "text_typed",
+            streamedAssistantId ?? undefined,
             collectedTools,
             report,
           );
+          streamedAssistantCommitted = true;
+        } else if (streamedAssistantId) {
+          dispatch({ type: "remove_message_id", id: streamedAssistantId });
         }
         // Successful turn → clear backoff. G14.
-        dispatch({ type: 'reset_error_count' });
+        dispatch({ type: "reset_error_count" });
 
         if (parsed.sleep) {
           writeSleepUntilMs(sleepTagToEpochMs(parsed.sleep));
@@ -1477,10 +1690,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // include <set_mode>passive</set_mode>, force the flip. Plan
         // flagged the gap; this closes it.
         let effectiveMode = parsed.setMode;
-        if (!effectiveMode && stateRef.current.mode === 'active') {
-          const lastUser = [...history].reverse().find((m) => m.role === 'user');
+        if (!effectiveMode && stateRef.current.mode === "active") {
+          const lastUser = [...history]
+            .reverse()
+            .find((m) => m.role === "user");
           if (lastUser && userDismissesOperator(lastUser.content)) {
-            effectiveMode = 'passive';
+            effectiveMode = "passive";
           }
         }
         if (effectiveMode) {
@@ -1489,11 +1704,15 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           writeOperatorModeToSession(effectiveMode);
           try {
             window.dispatchEvent(
-              new CustomEvent('papercusp:operatorMode', { detail: { mode: effectiveMode } }),
+              new CustomEvent("papercusp:operatorMode", {
+                detail: { mode: effectiveMode },
+              }),
             );
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
           // Reducer also moves to the right sub-state via set_mode.
-          dispatch({ type: 'set_mode', mode: effectiveMode });
+          dispatch({ type: "set_mode", mode: effectiveMode });
           return;
         }
 
@@ -1508,14 +1727,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         //     (arms ONE 30s nudge). Otherwise → 'ready' (no timer).
         const awaitingReply = detectAwaitingReply(parsed.say, collectedTools);
         let endSub: SubState;
-        if (stateRef.current.mode === 'passive') {
-          endSub = 'passive_idle';
+        if (stateRef.current.mode === "passive") {
+          endSub = "passive_idle";
         } else if (awaitingReply) {
-          endSub = 'awaiting_reply';
+          endSub = "awaiting_reply";
         } else {
-          endSub = 'ready';
+          endSub = "ready";
         }
-        dispatch({ type: 'set_sub', sub: endSub });
+        dispatch({ type: "set_sub", sub: endSub });
 
         // ── Active-mode proactive responses ────────────────────────
         // Three end-of-turn outcomes (plan §C.1):
@@ -1535,9 +1754,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // sendUserMessage does — manually append the assistant
         // message we just emitted. (Round-4 audit bug fix.)
         const justEmittedAssistant: ChatMessage | null = turnHasContent
-          ? (collectedTools
-            ? { role: 'assistant' as const, content: parsed.say ?? '', tools: collectedTools }
-            : { role: 'assistant' as const, content: parsed.say ?? '' })
+          ? collectedTools
+            ? {
+                role: "assistant" as const,
+                content: parsed.say ?? "",
+                tools: collectedTools,
+              }
+            : { role: "assistant" as const, content: parsed.say ?? "" }
           : null;
         const nextHistoryForAutoFire: ChatMessage[] = justEmittedAssistant
           ? [...stateRef.current.messages, justEmittedAssistant]
@@ -1551,10 +1774,20 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
             continueChainStartedAtMsRef.current = nowMs;
           }
           continueChainCountRef.current += 1;
-          const maxCount = Math.max(1, Math.min(20, prefs.maxConsecutiveContinues ?? 5));
-          const maxSecs = Math.max(30, Math.min(1800, prefs.maxContinueChainSecs ?? 300));
-          const elapsedSecs = (nowMs - continueChainStartedAtMsRef.current) / 1000;
-          if (continueChainCountRef.current <= maxCount && elapsedSecs <= maxSecs) {
+          const maxCount = Math.max(
+            1,
+            Math.min(20, prefs.maxConsecutiveContinues ?? 5),
+          );
+          const maxSecs = Math.max(
+            30,
+            Math.min(1800, prefs.maxContinueChainSecs ?? 300),
+          );
+          const elapsedSecs =
+            (nowMs - continueChainStartedAtMsRef.current) / 1000;
+          if (
+            continueChainCountRef.current <= maxCount &&
+            elapsedSecs <= maxSecs
+          ) {
             // Fire the chained turn with the latest history (including
             // the assistant turn we just emitted — see comment above
             // about React state lag).
@@ -1565,7 +1798,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
             // user_says_ready that emits <continue/> would chain into a
             // terminal turn, which would re-trigger terminal-auto-fire
             // and create an oscillation loop (audit round 3).
-            void runGeneration('continue', {
+            void runGeneration("continue", {
               messagesOverride: nextHistoryForAutoFire,
               isAutoFire: opts?.isAutoFire,
               // Keep speaking chain steps that descend from a spoken turn.
@@ -1575,7 +1808,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           }
           // Cap hit — drop the chain, wait for user.
           // eslint-disable-next-line no-console
-          console.warn('[operator] <continue/> chain capped', {
+          console.warn("[operator] <continue/> chain capped", {
             count: continueChainCountRef.current,
             elapsedSecs,
             maxCount,
@@ -1601,23 +1834,26 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // sharedState (operator-shared-state) — different store from
         // state.mode (active/passive).
         const isTerminal =
-          !parsed.continue
-          && !parsed.sleep
-          && !awaitingReply
-          && stateRef.current.mode === 'active'
-          && !sharedOperatorState.paused
-          && !voiceActiveRef.current
-          && (prefs.proactiveTicksEnabled ?? true) === true
-          && readSleepUntilMs() <= Date.now()
-          && !opts?.isAutoFire;
+          !parsed.continue &&
+          !parsed.sleep &&
+          !awaitingReply &&
+          stateRef.current.mode === "active" &&
+          !sharedOperatorState.paused &&
+          !voiceActiveRef.current &&
+          (prefs.proactiveTicksEnabled ?? true) === true &&
+          readSleepUntilMs() <= Date.now() &&
+          !opts?.isAutoFire;
         if (isTerminal) {
           const ELCoolOffMs = 5 * 60 * 1000;
           const sinceTeardown = Date.now() - lastELTeardownMsRef.current;
-          if (lastELTeardownMsRef.current === 0 || sinceTeardown > ELCoolOffMs) {
+          if (
+            lastELTeardownMsRef.current === 0 ||
+            sinceTeardown > ELCoolOffMs
+          ) {
             // Reset the continue chain — this is a terminal turn,
             // chain is over.
             resetContinueChain();
-            void runGeneration('user_says_ready', {
+            void runGeneration("user_says_ready", {
               messagesOverride: nextHistoryForAutoFire,
               isAutoFire: true,
             });
@@ -1633,15 +1869,25 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           resetContinueChain();
         }
       } catch (err) {
+        if (streamedAssistantId && !streamedAssistantCommitted) {
+          dispatch({ type: "remove_message_id", id: streamedAssistantId });
+        }
         if (ctrl.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
-        dispatch({ type: 'set_error', error: msg });
-        dispatch({ type: 'mark_error' });
+        dispatch({ type: "set_error", error: msg });
+        dispatch({ type: "mark_error" });
         dispatch({
-          type: 'set_sub',
-          sub: stateRef.current.mode === 'passive' ? 'passive_idle' : 'ready',
+          type: "set_sub",
+          sub: stateRef.current.mode === "passive" ? "passive_idle" : "ready",
         });
       } finally {
+        if (
+          ctrl.signal.aborted &&
+          streamedAssistantId &&
+          !streamedAssistantCommitted
+        ) {
+          dispatch({ type: "remove_message_id", id: streamedAssistantId });
+        }
         // Clear the cross-window beacon ONLY when no newer generation took
         // over (a chained runGeneration replaced inFlightRef synchronously
         // in its prologue — its own lifecycle owns the beacon then).
@@ -1652,8 +1898,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // the chat doesn't get stranded in 'generating'.
         if (ctrl.signal.aborted && inFlightRef.current === ctrl) {
           dispatch({
-            type: 'set_sub',
-            sub: stateRef.current.mode === 'passive' ? 'passive_idle' : 'ready',
+            type: "set_sub",
+            sub: stateRef.current.mode === "passive" ? "passive_idle" : "ready",
           });
           inFlightRef.current = null;
         }
@@ -1674,7 +1920,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // and the unified-conversation log fills with two parallel monologues
   // ("Bug B" of the voice/text divergence audit).
   const [voiceActive, setVoiceActive] = useState(() => {
-    try { return getVoiceState().mode !== 'off'; } catch { return false; }
+    try {
+      return getVoiceState().mode !== "off";
+    } catch {
+      return false;
+    }
   });
   // Ref mirror so runGeneration (declared above) can read the current
   // value without a useCallback re-bind on every voice state change.
@@ -1684,7 +1934,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     voiceActiveRef.current = voiceActive;
   }, [voiceActive]);
   useEffect(() => {
-    return subscribeVoiceState((s) => setVoiceActive(s.mode !== 'off'));
+    return subscribeVoiceState((s) => setVoiceActive(s.mode !== "off"));
   }, []);
 
   // ── Cross-window operator-state sync (multi-window-chat-coherence) ──
@@ -1696,10 +1946,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     return installOperatorWindowSync({
       onModeFromPeer: (mode) => {
         writeOperatorModeToSession(mode);
-        dispatch({ type: 'set_mode', mode });
+        dispatch({ type: "set_mode", mode });
         try {
-          window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode } }));
-        } catch { /* ignore */ }
+          window.dispatchEvent(
+            new CustomEvent("papercusp:operatorMode", { detail: { mode } }),
+          );
+        } catch {
+          /* ignore */
+        }
       },
       onSleepFromPeer: (sleepUntilMs) => {
         // writeSleepUntilMs also fans out the local sleep CustomEvent the
@@ -1710,12 +1964,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       onMirrorCleared: () => {
         // A peer window's reload-reset (G16) is operator-wide: re-seed to
         // the same fresh-session state that window just reset to.
-        writeOperatorModeToSession('active');
+        writeOperatorModeToSession("active");
         writeSleepUntilMs(0);
-        dispatch({ type: 'set_mode', mode: 'active' });
+        dispatch({ type: "set_mode", mode: "active" });
         try {
-          window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode: 'active' } }));
-        } catch { /* ignore */ }
+          window.dispatchEvent(
+            new CustomEvent("papercusp:operatorMode", {
+              detail: { mode: "active" },
+            }),
+          );
+        } catch {
+          /* ignore */
+        }
       },
       onPeerGenerating: setPeerBusy,
     });
@@ -1742,33 +2002,47 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // arming; if the user is text-only, the router stays asleep.
   useEffect(() => {
     const onToolCall = (e: Event) => {
-      const detail = (e as CustomEvent<{ name?: string; tsMs?: number }>).detail;
-      if (!detail || detail.name !== 'chat:ask_choice') return;
+      const detail = (e as CustomEvent<{ name?: string; tsMs?: number }>)
+        .detail;
+      if (!detail || detail.name !== "chat:ask_choice") return;
       if (!voiceActiveRef.current) return;
-      const nowMs = typeof detail.tsMs === 'number' ? detail.tsMs : Date.now();
+      const nowMs = typeof detail.tsMs === "number" ? detail.tsMs : Date.now();
       routerMarkPending(routerStateRef.current, nowMs);
-      if (routerBufferTimerRef.current) clearTimeout(routerBufferTimerRef.current);
+      if (routerBufferTimerRef.current)
+        clearTimeout(routerBufferTimerRef.current);
       routerBufferTimerRef.current = setTimeout(() => {
         // Buffer expired without a state-snapshot. Flush buffered
         // transcripts back through the user-turn path so the brain
         // doesn't lose them.
         const drained = routerExpirePending(routerStateRef.current);
         for (const tx of drained) {
-          if (typeof window === 'undefined') continue;
+          if (typeof window === "undefined") continue;
           window.dispatchEvent(
-            new CustomEvent('papercusp:operatorUserTurn', {
+            new CustomEvent("papercusp:operatorUserTurn", {
               // Buffered transcripts only ever enter the router from the
-            // provider pane-relay (the sole emitter of operatorUserTurn), so
-            // replays are providerSTT (P-001 uniform seam).
-            detail: { text: tx.text, source: 'voice_stt', tsMs: tx.tsMs, confidence: tx.confidence, transcriptSource: 'providerSTT' as TranscriptSource },
+              // provider pane-relay (the sole emitter of operatorUserTurn), so
+              // replays are providerSTT (P-001 uniform seam).
+              detail: {
+                text: tx.text,
+                source: "voice_stt",
+                tsMs: tx.tsMs,
+                confidence: tx.confidence,
+                transcriptSource: "providerSTT" as TranscriptSource,
+              },
             }),
           );
         }
       }, ROUTER_BUFFER_WINDOW_MS);
     };
-    window.addEventListener('papercusp:operatorToolCall', onToolCall as EventListener);
+    window.addEventListener(
+      "papercusp:operatorToolCall",
+      onToolCall as EventListener,
+    );
     return () => {
-      window.removeEventListener('papercusp:operatorToolCall', onToolCall as EventListener);
+      window.removeEventListener(
+        "papercusp:operatorToolCall",
+        onToolCall as EventListener,
+      );
     };
   }, []);
 
@@ -1792,10 +2066,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // announcer respects its own prefs gate.
     if (!announcedCardsRef.current.has(focusedCard.correlationId)) {
       announcedCardsRef.current.add(focusedCard.correlationId);
-      if (typeof window !== 'undefined') {
+      if (typeof window !== "undefined") {
         try {
           window.dispatchEvent(
-            new CustomEvent('operator:cardOpen', {
+            new CustomEvent("operator:cardOpen", {
               detail: {
                 correlationId: focusedCard.correlationId,
                 prompt: focusedCard.prompt,
@@ -1803,7 +2077,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               },
             }),
           );
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     }
     // Honor voiceAnswerable: only opt-in cards arm the router.
@@ -1812,16 +2088,19 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // never resolved by voice; they must click.
     const presentation = focusedCard.presentation;
     const optIn =
-      presentation !== undefined
-      && presentation.kind === 'radio'
-      && (presentation as unknown as { voiceAnswerable?: boolean }).voiceAnswerable === true;
+      presentation !== undefined &&
+      presentation.kind === "radio" &&
+      (presentation as unknown as { voiceAnswerable?: boolean })
+        .voiceAnswerable === true;
     const cardAnsweringEnabled = cardAnsweringEnabledRef.current;
     if (!optIn || !cardAnsweringEnabled) {
       routerClearActive(routerStateRef.current);
       return;
     }
     // Same card already armed? No-op (don't churn ambiguity counter).
-    if (routerStateRef.current.active?.correlationId === focusedCard.correlationId) {
+    if (
+      routerStateRef.current.active?.correlationId === focusedCard.correlationId
+    ) {
       return;
     }
     const drained = routerAttachActive(routerStateRef.current, {
@@ -1830,14 +2109,20 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       card: focusedCard,
     });
     // Replay any buffered transcripts now that the card is active.
-    if (drained.length > 0 && typeof window !== 'undefined') {
+    if (drained.length > 0 && typeof window !== "undefined") {
       for (const tx of drained) {
         window.dispatchEvent(
-          new CustomEvent('papercusp:operatorUserTurn', {
+          new CustomEvent("papercusp:operatorUserTurn", {
             // Buffered transcripts only ever enter the router from the
             // provider pane-relay (the sole emitter of operatorUserTurn), so
             // replays are providerSTT (P-001 uniform seam).
-            detail: { text: tx.text, source: 'voice_stt', tsMs: tx.tsMs, confidence: tx.confidence, transcriptSource: 'providerSTT' as TranscriptSource },
+            detail: {
+              text: tx.text,
+              source: "voice_stt",
+              tsMs: tx.tsMs,
+              confidence: tx.confidence,
+              transcriptSource: "providerSTT" as TranscriptSource,
+            },
           }),
         );
       }
@@ -1891,18 +2176,24 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     const onTeardown = () => {
       lastELTeardownMsRef.current = Date.now();
     };
-    window.addEventListener('papercusp:voiceSilenceTeardown', onTeardown as EventListener);
+    window.addEventListener(
+      "papercusp:voiceSilenceTeardown",
+      onTeardown as EventListener,
+    );
     return () => {
-      window.removeEventListener('papercusp:voiceSilenceTeardown', onTeardown as EventListener);
+      window.removeEventListener(
+        "papercusp:voiceSilenceTeardown",
+        onTeardown as EventListener,
+      );
     };
   }, []);
 
   // Live voice-prefs subscription. Tears down the active router ref
   // Seed audienceModeRef from prefs cache and keep it live.
   useEffect(() => {
-    audienceModeRef.current = loadVoicePrefsClient().audienceMode ?? 'engineer';
+    audienceModeRef.current = loadVoicePrefsClient().audienceMode ?? "engineer";
     const unsub = subscribeVoicePrefsClient((next) => {
-      audienceModeRef.current = next.audienceMode ?? 'engineer';
+      audienceModeRef.current = next.audienceMode ?? "engineer";
     });
     return unsub;
   }, []);
@@ -1935,13 +2226,17 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // sleep deadline passes (or when the user wakes the operator via
   // the navbar chip).
   const [sleepUntilMs, setSleepUntilMsState] = useState(() => {
-    try { return readSleepUntilMs(); } catch { return 0; }
+    try {
+      return readSleepUntilMs();
+    } catch {
+      return 0;
+    }
   });
   useEffect(() => {
     const refresh = () => setSleepUntilMsState(readSleepUntilMs());
     refresh();
-    window.addEventListener('papercusp:operatorSleep', refresh);
-    return () => window.removeEventListener('papercusp:operatorSleep', refresh);
+    window.addEventListener("papercusp:operatorSleep", refresh);
+    return () => window.removeEventListener("papercusp:operatorSleep", refresh);
   }, []);
   // When sleep expires in the future, schedule a wake-up so the silence
   // timer re-arms automatically. Cleared on every effect re-run.
@@ -1964,9 +2259,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // operator-converse keeps failing. Cap at 2^6 = 64x so the worst
   // case is ~10min between nudges.
   const SILENCE_FRESHNESS_MS = 5 * 60 * 1000;
-  const errorMul = state.consecutiveErrorCount > 0
-    ? Math.pow(2, Math.min(state.consecutiveErrorCount, 6))
-    : 1;
+  const errorMul =
+    state.consecutiveErrorCount > 0
+      ? Math.pow(2, Math.min(state.consecutiveErrorCount, 6))
+      : 1;
 
   // Fire the deterministic silence-nudge card. Replaces the
   // previous brain-driven runGeneration('silence_after_question')
@@ -1981,16 +2277,19 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     const prefs = loadVoicePrefsClient();
     const wakeword = getConfiguredWakeWordForDisplay(prefs);
     try {
-      await fetch(`/api/operator/conversations/${encodeURIComponent(id)}/silence-nudge`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({
-          workspaceId,
-          voiceActive: voiceActiveRef.current,
-          ...(wakeword ? { wakeword } : {}),
-        }),
-      });
+      await fetch(
+        `/api/operator/conversations/${encodeURIComponent(id)}/silence-nudge`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            workspaceId,
+            voiceActive: voiceActiveRef.current,
+            ...(wakeword ? { wakeword } : {}),
+          }),
+        },
+      );
       // Arm the grace timer AFTER the POST succeeds — no point
       // arming if the card didn't actually open.
       armNudgeGraceTimer();
@@ -1998,15 +2297,15 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // Best-effort: if the silence-nudge endpoint fails, we don't
       // retry — the user can still type or speak to re-engage.
       // eslint-disable-next-line no-console
-      console.warn('[silence-nudge] POST failed:', e);
+      console.warn("[silence-nudge] POST failed:", e);
     }
     // Transition sub to 'nudged' so the next render doesn't re-arm
     // the timer (same terminal state as the legacy brain-driven path).
-    dispatch({ type: 'set_sub', sub: 'nudged' });
+    dispatch({ type: "set_sub", sub: "nudged" });
   }, [workspaceId, armNudgeGraceTimer]);
 
   useEffect(() => {
-    if (state.mode !== 'active') return;
+    if (state.mode !== "active") return;
     if (voiceActive) return; // voice owns the conversation; no nudge filler
     if (sleepUntilMs > Date.now()) return; // operator self-quieted via <sleep> tag
     const sinceLast = Date.now() - state.lastTurnAtMs;
@@ -2017,14 +2316,26 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // spam. The user can say "ready" / "next" to re-engage with
     // suggestions, or just type what they want.
     let timer: ReturnType<typeof setTimeout> | null = null;
-    if (state.sub === 'awaiting_reply') {
-      const wait = Math.max(0, (SILENCE_AFTER_QUESTION_MS * errorMul) - sinceLast);
+    if (state.sub === "awaiting_reply") {
+      const wait = Math.max(
+        0,
+        SILENCE_AFTER_QUESTION_MS * errorMul - sinceLast,
+      );
       timer = setTimeout(() => void fireSilenceNudge(), wait);
     }
     // 'ready' and 'nudged' are quiet states — no timer.
-    return () => { if (timer) clearTimeout(timer); };
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.mode, state.sub, state.lastTurnAtMs, errorMul, voiceActive, sleepUntilMs]);
+  }, [
+    state.mode,
+    state.sub,
+    state.lastTurnAtMs,
+    errorMul,
+    voiceActive,
+    sleepUntilMs,
+  ]);
 
   // G10 — opening utterance on fresh chat. Fires ONCE on mount when the
   // sidebar is empty AND mode is active AND voice is off AND not sleeping.
@@ -2034,10 +2345,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   useEffect(() => {
     if (openCanvasFiredRef.current) return;
     if (!hydratedRef.current) return;
-    if (state.mode !== 'active') return;
+    if (state.mode !== "active") return;
     if (voiceActive) return;
     if (sleepUntilMs > Date.now()) return;
-    if (state.sub !== 'ready') return;
+    if (state.sub !== "ready") return;
 
     // Welcome flow: the login page set sessionStorage on success.
     // Consume the flag and fire user_welcomed (overrides open_canvas
@@ -2045,20 +2356,31 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // Plan 4.8.
     let welcomedName: string | null = null;
     try {
-      welcomedName = sessionStorage.getItem('papercusp_just_logged_in');
-      if (welcomedName) sessionStorage.removeItem('papercusp_just_logged_in');
-    } catch { /* sessionStorage unavailable */ }
+      welcomedName = sessionStorage.getItem("papercusp_just_logged_in");
+      if (welcomedName) sessionStorage.removeItem("papercusp_just_logged_in");
+    } catch {
+      /* sessionStorage unavailable */
+    }
     if (welcomedName) {
       openCanvasFiredRef.current = true;
-      void runGeneration('user_welcomed', { welcomedUser: { displayName: welcomedName } });
+      void runGeneration("user_welcomed", {
+        welcomedUser: { displayName: welcomedName },
+      });
       return;
     }
 
     // Fall-through: only auto-fire open_canvas on truly empty conversation.
     if (state.messages.length > 0) return;
     openCanvasFiredRef.current = true;
-    void runGeneration('open_canvas');
-  }, [state.mode, state.sub, state.messages.length, voiceActive, sleepUntilMs, runGeneration]);
+    void runGeneration("open_canvas");
+  }, [
+    state.mode,
+    state.sub,
+    state.messages.length,
+    voiceActive,
+    sleepUntilMs,
+    runGeneration,
+  ]);
 
   // ── Public actions ──────────────────────────────────────────────────
 
@@ -2070,12 +2392,16 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // returns (see persistTurn). The live-tail Zero reconciler
       // dedupes by id, so a fast Zero echo won't double-render the
       // user's message. G19.
-      const optimisticId = `opt-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
-      const userMsg: ChatMessage = { role: 'user', content: trimmed, id: optimisticId };
+      const optimisticId = `opt-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+      const userMsg: ChatMessage = {
+        role: "user",
+        content: trimmed,
+        id: optimisticId,
+      };
       const nowMs = Date.now();
-      dispatch({ type: 'append_message', message: userMsg });
-      dispatch({ type: 'record_user_turn', tsMs: nowMs });
-      dispatch({ type: 'mark_turn', tsMs: nowMs });
+      dispatch({ type: "append_message", message: userMsg });
+      dispatch({ type: "record_user_turn", tsMs: nowMs });
+      dispatch({ type: "mark_turn", tsMs: nowMs });
       // User typed — they're engaged, no need to tear EL down. Cancel
       // any pending silence-nudge grace timer.
       cancelNudgeGraceTimer();
@@ -2086,29 +2412,34 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // record the decline so mayAskActiveNow() applies the cooldown.
       const askedAt = stateRef.current.wantActiveAskedAtMs;
       if (
-        askedAt > 0
-        && nowMs - askedAt < 60_000
-        && userReplyDeclinesActive(trimmed)
+        askedAt > 0 &&
+        nowMs - askedAt < 60_000 &&
+        userReplyDeclinesActive(trimmed)
       ) {
-        dispatch({ type: 'record_want_active_declined', tsMs: nowMs });
+        dispatch({ type: "record_want_active_declined", tsMs: nowMs });
       }
       // Spoken turns carry their real source (WI-4838 defect B): 'voice_stt'
       // keeps voice turns distinguishable in the store (forensics, rendering).
-      persistTurn('user', trimmed, sendOpts?.spoken === true ? 'voice_stt' : 'text_typed', optimisticId);
+      persistTurn(
+        "user",
+        trimmed,
+        sendOpts?.spoken === true ? "voice_stt" : "text_typed",
+        optimisticId,
+      );
       // Trigger resolution (priority order):
       //   - "ready"-style utterance → user_says_ready (surfaces 2-3
       //     concrete suggestions from workspace inventory)
       //   - was in quiet_wait/nudged → quiet_wait_resume (reference
       //     where we left off)
       //   - otherwise → user_message (default)
-      let trigger: GenerationRequest['trigger'] = 'user_message';
+      let trigger: GenerationRequest["trigger"] = "user_message";
       if (detectUserReadyTrigger(trimmed)) {
-        trigger = 'user_says_ready';
+        trigger = "user_says_ready";
       } else if (
-        stateRef.current.sub === 'quiet_wait'
-        || stateRef.current.sub === 'nudged'
+        stateRef.current.sub === "quiet_wait" ||
+        stateRef.current.sub === "nudged"
       ) {
-        trigger = 'quiet_wait_resume';
+        trigger = "quiet_wait_resume";
       }
       // Pass the explicit history including the just-dispatched user
       // turn so the model sees what the user actually said. State hasn't
@@ -2125,7 +2456,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         });
       })();
     },
-    [runGeneration, persistTurn, freshenHistory, cancelNudgeGraceTimer, resetContinueChain],
+    [
+      runGeneration,
+      persistTurn,
+      freshenHistory,
+      cancelNudgeGraceTimer,
+      resetContinueChain,
+    ],
   );
 
   // Voice-IN seam (plan voice-public-release-readiness D-001, owner-ratified
@@ -2148,7 +2485,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // path, that's fine — the user asked).
     resetContinueChain();
     cancelNudgeGraceTimer();
-    void runGeneration('user_says_ready');
+    void runGeneration("user_says_ready");
   }, [runGeneration, resetContinueChain, cancelNudgeGraceTimer]);
 
   const flipMode = useCallback((mode: OperatorMode) => {
@@ -2158,21 +2495,28 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // timers stay parked. Per the active-mode plan, flipping to
     // active means "I'm here, talk to me." Sleep event fires so the
     // chip's reactive sleepUntilMs state clears immediately. B5.
-    if (mode === 'active') {
+    if (mode === "active") {
       writeSleepUntilMs(0);
-      try { window.dispatchEvent(new Event('papercusp:operatorSleep')); } catch { /* ignore */ }
+      try {
+        window.dispatchEvent(new Event("papercusp:operatorSleep"));
+      } catch {
+        /* ignore */
+      }
     }
     try {
       window.dispatchEvent(
-        new CustomEvent('papercusp:operatorMode', { detail: { mode } }),
+        new CustomEvent("papercusp:operatorMode", { detail: { mode } }),
       );
-    } catch { /* ignore */ }
-    dispatch({ type: 'set_mode', mode });
+    } catch {
+      /* ignore */
+    }
+    dispatch({ type: "set_mode", mode });
   }, []);
 
   // Banner text for transient sub-states (silence prompts).
   const bannerText = useMemo<string | null>(() => {
-    if (state.sub === 'quiet_wait') return 'Operator is quiet — type to pick up where you left off.';
+    if (state.sub === "quiet_wait")
+      return "Operator is quiet — type to pick up where you left off.";
     return null;
   }, [state.sub]);
 
@@ -2188,22 +2532,21 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       declined?: boolean;
     }): Promise<void> => {
       const id = conversationIdRef.current;
-      if (!id) throw new Error('answerChoice: no active conversation');
-      const r = await fetch(
-        `/api/operator/conversations/${id}/turn-answer`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(input),
-        },
-      );
+      if (!id) throw new Error("answerChoice: no active conversation");
+      const r = await fetch(`/api/operator/conversations/${id}/turn-answer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
       if (!r.ok) {
-        const detail = await r.text().catch(() => '');
+        const detail = await r.text().catch(() => "");
         throw new Error(`turn-answer ${r.status}: ${detail.slice(0, 200)}`);
       }
 
       const answeredAt = Date.now();
-      const existing = stateRef.current.messages.find((m) => m.seq === input.assistantSeq);
+      const existing = stateRef.current.messages.find(
+        (m) => m.seq === input.assistantSeq,
+      );
       let nextHistory = stateRef.current.messages;
       if (existing?.tools && existing.tools[input.toolIndex]) {
         const nextTools = existing.tools.map((tool, index) =>
@@ -2218,39 +2561,49 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               }
             : tool,
         );
-        dispatch({ type: 'update_message_tools', seq: input.assistantSeq, tools: nextTools });
+        dispatch({
+          type: "update_message_tools",
+          seq: input.assistantSeq,
+          tools: nextTools,
+        });
         nextHistory = nextHistory.map((msg) =>
           msg.seq === input.assistantSeq ? { ...msg, tools: nextTools } : msg,
         );
       }
 
       const joined = input.declined
-        ? 'Skipped'
-        : input.picks.map((p) => p.label).join(' · ');
-      const optimisticId = `opt-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
-      const userMsg: ChatMessage = { role: 'user', content: joined, id: optimisticId };
-      dispatch({ type: 'append_message', message: userMsg });
-      dispatch({ type: 'record_user_turn', tsMs: answeredAt });
-      dispatch({ type: 'mark_turn', tsMs: answeredAt });
+        ? "Skipped"
+        : input.picks.map((p) => p.label).join(" · ");
+      const optimisticId = `opt-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+      const userMsg: ChatMessage = {
+        role: "user",
+        content: joined,
+        id: optimisticId,
+      };
+      dispatch({ type: "append_message", message: userMsg });
+      dispatch({ type: "record_user_turn", tsMs: answeredAt });
+      dispatch({ type: "mark_turn", tsMs: answeredAt });
       const askedAt = stateRef.current.wantActiveAskedAtMs;
       if (
-        askedAt > 0
-        && answeredAt - askedAt < 60_000
-        && userReplyDeclinesActive(joined)
+        askedAt > 0 &&
+        answeredAt - askedAt < 60_000 &&
+        userReplyDeclinesActive(joined)
       ) {
-        dispatch({ type: 'record_want_active_declined', tsMs: answeredAt });
+        dispatch({ type: "record_want_active_declined", tsMs: answeredAt });
       }
 
-      let trigger: GenerationRequest['trigger'] = 'user_message';
+      let trigger: GenerationRequest["trigger"] = "user_message";
       if (detectUserReadyTrigger(joined)) {
-        trigger = 'user_says_ready';
+        trigger = "user_says_ready";
       } else if (
-        stateRef.current.sub === 'quiet_wait'
-        || stateRef.current.sub === 'nudged'
+        stateRef.current.sub === "quiet_wait" ||
+        stateRef.current.sub === "nudged"
       ) {
-        trigger = 'quiet_wait_resume';
+        trigger = "quiet_wait_resume";
       }
-      void runGeneration(trigger, { messagesOverride: [...nextHistory, userMsg] });
+      void runGeneration(trigger, {
+        messagesOverride: [...nextHistory, userMsg],
+      });
     },
     [runGeneration],
   );
@@ -2261,7 +2614,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       sub: state.sub,
       messages: state.messages,
       error: state.error,
-      busy: state.sub === 'generating',
+      busy: state.sub === "generating",
       peerBusy,
       sendUserMessage,
       generateIdeas,
@@ -2274,9 +2627,19 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       conversationId: convId,
     }),
     [
-      state.mode, state.sub, state.messages, state.error, peerBusy,
-      sendUserMessage, generateIdeas, flipMode, bannerText,
-      hasMoreEarlier, loadingEarlier, loadEarlier, answerChoice,
+      state.mode,
+      state.sub,
+      state.messages,
+      state.error,
+      peerBusy,
+      sendUserMessage,
+      generateIdeas,
+      flipMode,
+      bannerText,
+      hasMoreEarlier,
+      loadingEarlier,
+      loadEarlier,
+      answerChoice,
       convId,
     ],
   );
