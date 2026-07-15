@@ -175,7 +175,6 @@ export function inspectAcquiredSessionPort(input: {
   if (sourceRow.agent !== 'claude' || sourceRow.role != null || !sourceRow.sessionId || !sourceRow.cwd) {
     throw new Error('V1 ports require a tracked plain Claude SU source');
   }
-  if (target.backend === 'claude') throw new Error('same-backend Claude continuation must use native resume');
   if (!Number.isFinite(target.availableInputTokens) || target.availableInputTokens <= 0) {
     throw new Error('target launch has no available input budget');
   }

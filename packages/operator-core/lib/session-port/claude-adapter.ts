@@ -146,7 +146,10 @@ export function adaptClaudeJsonl(jsonl: string): ClaudeAdaptResult {
     cursor = next;
   }
   let path = reversed.reverse();
-  const compactIndex = path.findLastIndex((record) => record.isCompactSummary === true);
+  let compactIndex = -1;
+  for (let index = path.length - 1; index >= 0; index--) {
+    if (path[index].isCompactSummary === true) { compactIndex = index; break; }
+  }
   if (compactIndex > 0) {
     stats.compactedAncestors = compactIndex;
     path = path.slice(compactIndex);

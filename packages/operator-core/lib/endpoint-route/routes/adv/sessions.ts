@@ -1141,7 +1141,7 @@ const sessionPortInspect = defineTool({
     if (parsed instanceof Response) return parsed;
     try {
       const resolved = await resolveSessionPortInspection(req, parsed);
-      if ('response' in resolved) return resolved.response;
+      if ('response' in resolved && resolved.response) return resolved.response;
       return json({
         ok: true,
         inspection: resolved.service.publicSessionPortInspection(resolved.inspection),
@@ -1168,7 +1168,7 @@ const sessionPortPrepare = defineTool({
     }
     try {
       const resolved = await resolveSessionPortInspection(req, parsed);
-      if ('response' in resolved) return resolved.response;
+      if ('response' in resolved && resolved.response) return resolved.response;
       const { readSuperuserToken } = await import('../../../superuser-token');
       const tokenKey = readSuperuserToken();
       if (!tokenKey) return json({ ok: false, error: 'server session-port token key is unavailable' }, 503);
