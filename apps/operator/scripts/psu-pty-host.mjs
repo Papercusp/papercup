@@ -429,6 +429,42 @@ export function appendHostEvent(ownerId, kind, extra = {}, dir = PSU_PTY_DIR) {
   }
 }
 
+/** Shared drill-lifecycle roll-up file — the SAME carry-drills.events.jsonl the
+ *  tool side (cold-boot-drill-live.ts) writes requested/queued rows into. */
+const DRILL_LEDGER_MAX_BYTES = 1024 * 1024;
+export function sharedDrillLedgerPath(dir = PSU_PTY_DIR) {
+  return join(dir, 'carry-drills.events.jsonl');
+}
+
+/** EI-12655 (fix b): mirror a carry-drill lifecycle event into the SHARED drill
+ *  ledger. The tool side records only requested/queued there; every HOST-side
+ *  outcome (respawned / respawn-failed / carry-delivered / carry-dropped)
+ *  previously lived ONLY in the per-owner event log — so
+ *  `session:carry-drill { op:'report' }` (which reads the shared ledger) saw
+ *  perClass:[] even after real drills, and a vanished host left NO terminal row
+ *  anywhere. Call this NEXT TO every carry-drill-* appendHostEvent. Row shape
+ *  matches ColdBootDrillLedgerEvent ({ ts, kind, ownerId, drillId,
+ *  sessionClass, reason?, nativeId?, ... }). FAIL-SOFT like appendHostEvent —
+ *  a ledger write must never break the session. */
+export function appendSharedDrillLedgerEvent(ownerId, kind, extra = {}, dir = PSU_PTY_DIR) {
+  try {
+    const p = sharedDrillLedgerPath(dir);
+    const row = JSON.stringify({ ts: new Date().toISOString(), kind, ownerId, ...extra });
+    try {
+      if (statSync(p).size > DRILL_LEDGER_MAX_BYTES) {
+        const tail = readFileSync(p, 'utf8');
+        writeFileSync(p, tail.slice(Math.floor(tail.length / 2)).replace(/^[^\n]*\n/, ''), { mode: 0o600 });
+      }
+    } catch {
+      /* no ledger yet — the append below creates it */
+    }
+    appendFileSync(p, row + '\n', { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Control-socket path for an ownerId. Pure. */
 export function socketPathFor(ownerId) {
   return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`);
@@ -2048,6 +2084,23 @@ export function hostThroughPty(o) {
               );
             } catch {
               /* never let a diagnostic write break the session */
+            }
+            // EI-12655 (fix b, leader-concurred rider: "expired must FAIL LOUD"):
+            // a carry-respawn DRILL refused here previously vanished with ZERO
+            // durable trace — its only terminal signal was the stderr line
+            // above, so the shared drill ledger kept an eternally-pending
+            // requested/queued pair and op:'report' showed nothing. Record a
+            // TERMINAL drop (per-owner host log + shared drill ledger) so
+            // op:'report' / op:'verify' see the busy-gate-expired outcome.
+            if (msg.mode === 'carry-respawn' && msg.drillId) {
+              const dropExtra = {
+                drillId: msg.drillId,
+                sessionClass: msg.sessionClass ?? '',
+                reason: 'busy-gate-expired',
+                capMs: turnInjectBusyCapMs,
+              };
+              appendHostEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
+              appendSharedDrillLedgerEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
             }
             // P-001a: clear the coalesce slot on defer — wakes folded into this
             // waiter are dropped WITH it (same queue-to-next-turn semantics), and

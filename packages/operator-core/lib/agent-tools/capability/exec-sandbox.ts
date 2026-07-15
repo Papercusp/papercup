@@ -156,7 +156,19 @@ export function capabilitySrtSettingsPathForCwd(cwd: string): string {
   const path = join(dir, `srt-${createHash('sha256').update(cwd).digest('hex').slice(0, 16)}.json`);
   // backend:'omp' ⇒ no model-endpoint domains added (a shell command talks to no
   // model); egress = the package registries/CDNs + localhost (the operator + PG).
-  writeFileSync(path, JSON.stringify(buildFleetSrtSettings({ cwd, backend: 'omp' })), { mode: 0o600 });
+  const settings = buildFleetSrtSettings({ cwd, backend: 'omp' }) as {
+    filesystem: { allowWrite: string[] };
+  };
+  // EI-12389: srt's OWN default write paths only cover `TMPDIR` (defaults to
+  // `/tmp/claude`, NOT the real `/tmp`) — unlike the bwrap-only fallback below,
+  // which does `--tmpfs /tmp` (the whole of /tmp writable). That asymmetry broke
+  // any tool that needs a well-known /tmp path ignoring TMPDIR (X11's
+  // `/tmp/.X11-unix` sockets are hardcoded by the X11 protocol, so relocating
+  // TMPDIR — the workaround the reporting cup already tried — can't help them).
+  // Add the real tmpdir() to srt's allowWrite so capability:bash's srt path is
+  // consistent with its own bwrap fallback.
+  settings.filesystem.allowWrite = [...settings.filesystem.allowWrite, tmpdir()];
+  writeFileSync(path, JSON.stringify(settings), { mode: 0o600 });
   _srtSettingsByCwd.set(cwd, path);
   return path;
 }

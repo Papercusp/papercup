@@ -126,4 +126,35 @@ d('exec-sandbox — REAL bwrap exec (host is bwrap-capable)', () => {
     expect(r.status).toBe(0);
     expect(out).toContain(`SRT_RAN_IN=${WORK}`);
   });
+
+  // EI-12389: srt's own default write paths only cover TMPDIR (defaults to
+  // /tmp/claude), NOT the real /tmp — so anything writing to a well-known /tmp
+  // path (e.g. Xvfb's /tmp/.X11-unix X11 sockets, which are hardcoded by the
+  // X11 protocol and ignore TMPDIR) failed EROFS under the srt path even though
+  // the bwrap-only fallback (which does `--tmpfs /tmp`) worked fine.
+  // capabilitySrtSettingsPathForCwd now adds the real tmpdir() to srt's
+  // allowWrite to close that gap — this asserts a write under the real /tmp
+  // actually succeeds when srt-wrapped.
+  (SRT_BIN ? it : it.skip)('srt-preferred path: the real /tmp is writable (EI-12389)', () => {
+    const settingsPath = capabilitySrtSettingsPathForCwd(WORK);
+    const probe = `wi12389-srt-tmp-probe-${process.pid}`;
+    const { decision, r, out } = run(
+      ['/bin/sh', '-c', `echo x > /tmp/${probe} && cat /tmp/${probe} && echo TMP_WRITE_OK`],
+      WORK,
+      {
+        enabled: true,
+        srtBin: SRT_BIN,
+        srtSettingsPath: settingsPath,
+        homeDir: FAKE_HOME,
+        bwrapBinary: '/usr/bin/bwrap',
+      },
+    );
+    try {
+      expect(decision.mode).toBe('srt');
+      expect(r.status).toBe(0);
+      expect(out).toContain('TMP_WRITE_OK');
+    } finally {
+      rmSync(`/tmp/${probe}`, { force: true });
+    }
+  });
 });

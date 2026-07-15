@@ -74,10 +74,27 @@ export interface FindTopRecipeDeps {
   timeoutMs?: number;
 }
 
+/** How many cosine-ranked candidates to consider before giving up — lets the
+ *  authority-unresolved skip (WI-4946) fall through to the next-best hit
+ *  instead of surfacing a recipe that recipes:run can never execute. */
+const CANDIDATE_LIMIT = 5;
+
 /**
  * The single best active recipe for `query`, or null when nothing clears the
  * floor / no embedder / any failure / the time budget expires. ≤1-tool recipes
  * are excluded (the established low-value gate, recipes-reuse-activation P-004).
+ *
+ * WI-4946: a recipe embedding an opaque/unprovable call (raw SQL via
+ * dev:pg_query, a shell via capability:bash/capability:script, a nested
+ * code:run) can NEVER be authorized via recipes:run — see recipe-authority.ts's
+ * `unresolved` flag, a PERMANENT property of the script regardless of context
+ * match. recipes:search / code-recipes-search.ts already filter these out of
+ * every recommendation; this splice queried raw cosine distance directly and
+ * skipped that filter, so it could — and did — recommend an unresolved recipe
+ * straight into a guaranteed `authority_unresolved` dead end (the agent's only
+ * recourse was re-authoring the same script via code:run). Fetch a small
+ * top-N and walk past any unresolved candidate to the next-best one instead of
+ * returning the raw #1 hit unconditionally.
  */
 export async function findTopRecipeForWake(
   query: string,
@@ -100,20 +117,37 @@ export async function findTopRecipeForWake(
     const qVec = `[${vec.join(',')}]`;
     const sql = deps.sql ?? getOrgPg().sql;
     const rows = (await sql`
-      SELECT id, title, run_count, 1 - (embedding <=> ${qVec}::vector) AS sim
+      SELECT id, title, script, run_count, 1 - (embedding <=> ${qVec}::vector) AS sim
         FROM harness_shared.code_recipes
        WHERE status = 'active'
          AND embedding IS NOT NULL
          AND COALESCE(array_length(tools_used, 1), 0) >= 2
     ORDER BY embedding <=> ${qVec}::vector
-       LIMIT 1
-    `) as unknown as Array<{ id: string; title: string; run_count: number | string; sim: number | string }>;
-    const top = rows[0];
-    if (!top) return null;
-    const sim = Number(top.sim);
-    if (!Number.isFinite(sim) || sim < LOOP_WAKE_RECIPE_SIM_FLOOR) return null;
-    const runCount = typeof top.run_count === 'number' ? top.run_count : parseInt(top.run_count, 10) || 0;
-    return { id: top.id, title: top.title, runCount, sim };
+       LIMIT ${CANDIDATE_LIMIT}
+    `) as unknown as Array<{
+      id: string;
+      title: string;
+      script: string | null;
+      run_count: number | string;
+      sim: number | string;
+    }>;
+
+    for (const row of rows) {
+      const sim = Number(row.sim);
+      // ORDER BY cosine distance ⇒ sim is non-increasing across rows — once one
+      // row misses the floor, every later row misses it too.
+      if (!Number.isFinite(sim) || sim < LOOP_WAKE_RECIPE_SIM_FLOOR) break;
+      let unresolved = false;
+      try {
+        unresolved = (await deriveRecipeAuthority(row.script ?? '')).unresolved;
+      } catch {
+        unresolved = true; // fail closed: an unparsable script isn't recommendable either
+      }
+      if (unresolved) continue;
+      const runCount = typeof row.run_count === 'number' ? row.run_count : parseInt(row.run_count, 10) || 0;
+      return { id: row.id, title: row.title, runCount, sim };
+    }
+    return null;
   };
 
   try {

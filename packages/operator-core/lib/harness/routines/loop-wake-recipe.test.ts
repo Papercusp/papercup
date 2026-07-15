@@ -129,4 +129,58 @@ describe('findTopRecipeForWake', () => {
     });
     expect(hit).toEqual({ id: 'r2', title: 'T', runCount: 11, sim: 0.71 });
   });
+
+  // WI-4946: the top cosine hit embeds an opaque dev:pg_query call — permanently
+  // unrunnable via recipes:run (recipe-authority.ts's `unresolved`, independent of
+  // any context match). The splice must skip past it to the next-best candidate
+  // instead of recommending a guaranteed authority_unresolved dead end.
+  it('skips a top hit whose script is authority-unresolved (opaque dev:pg_query) and falls through to the next candidate', async () => {
+    const unresolvedScript = 'return await tools.call("dev:pg_query", { sql: "SELECT 1" });';
+    const hit = await findTopRecipeForWake('do the thing', {
+      sql: stubSql([
+        { id: 'r-opaque', title: 'Opaque one', script: unresolvedScript, run_count: 1, sim: 0.9 },
+        { id: 'r-clean', title: 'Clean one', script: 'return await tools.docs.search({ query: "x" });', run_count: 4, sim: 0.75 },
+      ]),
+      embedder: okEmbedder,
+    });
+    expect(hit).toEqual({ id: 'r-clean', title: 'Clean one', runCount: 4, sim: 0.75 });
+  });
+
+  it('returns null when every candidate clearing the floor is authority-unresolved', async () => {
+    const unresolvedScript = 'return await tools.call("capability:bash", { cmd: "ls" });';
+    const hit = await findTopRecipeForWake('do the thing', {
+      sql: stubSql([
+        { id: 'r-opaque-1', title: 'Opaque one', script: unresolvedScript, run_count: 1, sim: 0.9 },
+        { id: 'r-opaque-2', title: 'Opaque two', script: unresolvedScript, run_count: 2, sim: 0.8 },
+      ]),
+      embedder: okEmbedder,
+    });
+    expect(hit).toBeNull();
+  });
+
+  it('does not walk past a candidate that misses the floor even if a later row would resolve', async () => {
+    const unresolvedScript = 'return await tools.call("dev:pg_query", { sql: "SELECT 1" });';
+    const hit = await findTopRecipeForWake('do the thing', {
+      sql: stubSql([
+        { id: 'r-opaque', title: 'Opaque one', script: unresolvedScript, run_count: 1, sim: 0.9 },
+        {
+          id: 'r-below-floor',
+          title: 'Below floor',
+          script: 'return 1;',
+          run_count: 4,
+          sim: LOOP_WAKE_RECIPE_SIM_FLOOR - 0.01,
+        },
+      ]),
+      embedder: okEmbedder,
+    });
+    expect(hit).toBeNull();
+  });
+
+  it('treats a missing/null script as resolvable (fail-open on the legacy shape, not fail-closed)', async () => {
+    const hit = await findTopRecipeForWake('do the thing', {
+      sql: stubSql([{ id: 'r-no-script', title: 'No script column', run_count: 2, sim: 0.7 }]),
+      embedder: okEmbedder,
+    });
+    expect(hit).toEqual({ id: 'r-no-script', title: 'No script column', runCount: 2, sim: 0.7 });
+  });
 });
