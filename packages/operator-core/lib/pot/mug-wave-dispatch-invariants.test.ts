@@ -91,7 +91,7 @@ const readyByOrchestrator = (tier1Done: boolean): Set<string> =>
   );
 const readyBySurvey = (tier1Done: boolean): Set<string> =>
   new Set(
-    filterReadyFrontier(tier1Done ? [row('F-2')] : [row('F-1'), row('F-2')], graphFor(tier1Done)).ready.map(
+    filterReadyFrontier(tier1Done ? [row('F-2')] : [row('F-1'), row('F-2')], graphFor(tier1Done), undefined).ready.map(
       (r) => r.feature_id,
     ),
   );

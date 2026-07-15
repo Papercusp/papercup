@@ -654,9 +654,33 @@ describe('filterReadyFrontier (W-01 / P-010 — the shared readiness, pure)', ()
     const { ready } = filterReadyFrontier(
       [row('F-1', 'a'), row('F-1', 'b')], // same id, different harness
       new Map([['a', ha], ['b', hb]]),
+      undefined,
     );
     // a/F-1 is blocked; b/F-1 has no blockers → only b's survives.
     expect(ready.map((r) => r.harness_slug)).toEqual(['b']);
+  });
+
+  it('excludes a frontier work-item whose linked plan-item is blocked (EI-12372 direct test)', () => {
+    const planItemGraph: PlanItemBlockGraph = {
+      planItemBlockers: new Map([['P-plan', new Map([['P-002', ['P-001']]])]]),
+      planItemStatuses: new Map([['P-plan', new Map([['P-001', 'todo']])]]),
+    };
+    const wiWithBlockedPlanItem: FrontierRow = {
+      feature_id: 'WI-X',
+      harness_slug: 'h',
+      title: 'work-item with blocked plan-item',
+      item_kind: 'feature',
+      created_ts: daysAgo(1),
+      feature_order: null,
+      payload: { plan_item: { plan_slug: 'P-plan', item_id: 'P-002' } },
+    };
+    const { ready, blockedCount } = filterReadyFrontier(
+      [wiWithBlockedPlanItem],
+      new Map(), // no feature-level blockers
+      planItemGraph,
+    );
+    expect(ready.map((r) => r.feature_id)).toEqual([]);
+    expect(blockedCount).toBe(1);
   });
 });
 

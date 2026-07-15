@@ -43,7 +43,7 @@ import { checkBudget, recordSpend, shouldBypassOperatorBudget } from '../../oper
 import { parseOperatorTurn } from '../../operator-converse-tags';
 import { readSystemPrincipal } from '../../system-principal';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { ALL_AGENT_MCP_TOOLS } from '../../operator-mcp-tools';
+import { ALL_AGENT_MCP_TOOLS, canonicalToolName } from '../../operator-mcp-tools';
 import { PROMPT_ROLES } from '../../prompt-assembly';
 import {
   buildOperatorPrompt,
@@ -397,9 +397,12 @@ export default defineTool({
             assembled += ev.text;
           } else if (ev.type === 'tool_call') {
             emittedToolCall = true;
-            const name = ev.name.startsWith('mcp__agentmcp__')
-              ? ev.name.replace(/^mcp__agentmcp__/, '')
-              : ev.name;
+            // Claude Code strips the colon before the model sees the name, so
+            // this arrives sanitized (`chat_ask_choice`). Restore the canonical
+            // `chat:ask_choice` — the key the chat-cards registry and the
+            // ask_choice gates match on; without it the card silently never
+            // renders and the user sees a "pick one" with nothing to pick.
+            const name = canonicalToolName(ev.name);
             ctx.emit('tool_call', { name, input: ev.input });
           } else if (ev.type === 'result') {
             totalCost += ev.costUsd ?? 0;

@@ -299,3 +299,58 @@ export const INTERACTIVE_CHAT_TOOLS: readonly string[] = [
  */
 export const NON_INTERACTIVE_AGENT_MCP_TOOLS: readonly string[] =
   ALL_AGENT_MCP_TOOLS.filter((t) => !INTERACTIVE_CHAT_TOOLS.includes(t));
+
+/**
+ * Claude Code sanitizes the colon out of an MCP tool name before handing it
+ * to the model (`chat:ask_choice` → `chat_ask_choice`), which is why the
+ * prompt catalog advertises the underscore form (converse-prompt's
+ * `toClaudeName`). A `tool_call` event therefore carries the SANITIZED name,
+ * while every consumer — the chat-cards registry, the converse provider's
+ * ask_choice gates, turn-answer — is keyed on the CANONICAL colon name.
+ * Restoring it here, at ingest, keeps the persisted `operator_turns.tools[].name`
+ * canonical instead of making each consumer reconcile a name that can be wrong.
+ *
+ * Built by inverting ALL_AGENT_MCP_TOOLS (the same source `toClaudeName`
+ * mangles) so the mapping is EXACT. A blind `replace(/_/g, ':')` is wrong:
+ * it would corrupt legitimately-underscored names (`work_items:create` →
+ * `work:items:create`).
+ */
+const { sanitizedToCanonical, sanitizedCollisions } = ((): {
+  sanitizedToCanonical: ReadonlyMap<string, string>;
+  sanitizedCollisions: readonly string[];
+} => {
+  const map = new Map<string, string>();
+  const collisions: string[] = [];
+  for (const fullName of ALL_AGENT_MCP_TOOLS) {
+    const canonical = fullName.replace(/^mcp__agentmcp__/, '');
+    if (!canonical.includes(':')) continue;
+    const sanitized = canonical.replace(/:/g, '_');
+    const prior = map.get(sanitized);
+    if (prior !== undefined && prior !== canonical) {
+      // Two canonical names collapsing onto one sanitized form would make the
+      // inverse ambiguous. Keep the first and surface it — the unit test
+      // asserts this stays empty, so a colliding new tool reds in CI rather
+      // than silently mis-resolving a card at runtime.
+      collisions.push(sanitized);
+      continue;
+    }
+    map.set(sanitized, canonical);
+  }
+  return { sanitizedToCanonical: map, sanitizedCollisions: collisions };
+})();
+
+/** Sanitized names that two canonical tools collide on. Must stay empty. */
+export const SANITIZED_TOOL_NAME_COLLISIONS: readonly string[] = sanitizedCollisions;
+
+/**
+ * Recover the canonical agent-MCP tool name from whatever the model emitted:
+ * strips the `mcp__agentmcp__` prefix and un-sanitizes the colon. Returns the
+ * bare name unchanged when it isn't a known agent-MCP tool (a built-in like
+ * `Read`, or a tool that never had a colon).
+ */
+export function canonicalToolName(name: string): string {
+  const bare = name.startsWith('mcp__agentmcp__')
+    ? name.replace(/^mcp__agentmcp__/, '')
+    : name;
+  return sanitizedToCanonical.get(bare) ?? bare;
+}
