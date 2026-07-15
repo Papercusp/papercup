@@ -44,6 +44,7 @@ import {
 } from './push-delivery-store';
 import { capInjectionText, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
+import { checkPushVolume, type VolumeReport } from './push-volume-guard';
 
 /** The rolling budget + novelty window: deliveries within this window count
  *  against the per-class budget and suppress a repeat of the same handle. A
@@ -126,6 +127,26 @@ export interface PrepareAmbientPushBlockInput {
   nowMs?: number;
   /** Window override for tests (default AMBIENT_PUSH_WINDOW_MS). */
   windowMs?: number;
+  /** P-009 volume-guard sink: called with EVERY pass's {@link VolumeReport}
+   *  (candidateVolume vs deliveredVolume vs the class budget — the before/after
+   *  measurement per class), whether or not it holds. Telemetry only — the
+   *  report NEVER steers delivery (carry D-001/D-005); selectPushes stays the
+   *  enforcement, the guard is the independent re-count that catches a
+   *  regression. Default: {@link reportVolumeViolations} (loud only on a
+   *  violation). */
+  onVolumeReport?: (report: VolumeReport) => void;
+}
+
+/** The default P-009 sink: silent while the class contract holds; one loud
+ *  console line when the independent re-count finds the delivered feed broke it
+ *  (over budget / disallowed severity / below-floor) — a selectPushes regression
+ *  tripwire, never a control path. */
+export function reportVolumeViolations(report: VolumeReport): void {
+  if (report.ok) return;
+  console.warn(
+    `[ambient-push] P-009 volume-guard violation (class ${report.sessionClass}): ` +
+      report.violations.map((v) => v.detail).join('; '),
+  );
 }
 
 /**
@@ -173,12 +194,25 @@ export async function prepareAmbientPushBlock(input: PrepareAmbientPushBlockInpu
       deliveredCount(input.ownerId, sinceIso),
     ]);
 
+    const sessionClass = input.sessionClass ?? 'interactive';
     const result = selectPushes({
       candidates,
-      sessionClass: input.sessionClass ?? 'interactive',
+      sessionClass,
       known: { refs },
       alreadyDelivered: already,
     });
+
+    // P-009 volume guard: independently re-check the class contract over this
+    // pass's OWN selection output (checkPushVolume trusts nothing — it re-counts
+    // and re-applies the budget/severity/floor predicates). Advisory only: the
+    // report goes to the sink and delivery proceeds unchanged either way; a
+    // sink fault never touches the pass.
+    try {
+      const report = checkPushVolume({ selection: result, sessionClass, alreadyDelivered: already });
+      (input.onVolumeReport ?? reportVolumeViolations)(report);
+    } catch {
+      /* the guard is telemetry — never a control path */
+    }
 
     const deliveredIds = result.selected
       .map((p) => idByPush.get(p))

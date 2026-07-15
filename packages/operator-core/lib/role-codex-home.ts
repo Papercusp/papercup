@@ -35,6 +35,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -152,6 +153,27 @@ function freshCodexHome(codexHome: string): string {
   mkdirSync(codexHome, { recursive: true });
   inheritUserCodexHome(codexHome);
   return codexHome;
+}
+
+/**
+ * Move an already-materialized isolated Codex home from a temporary launch
+ * key to the durable adv-session id used by every native resume path.
+ *
+ * Session ports deliberately create all fallible launch artifacts before
+ * recording their pending target row. Once that row exists, the home must be
+ * re-keyed instead of rebuilt: rebuilding would discard prompts/hooks already
+ * materialized into the home, while leaving it under the port UUID makes
+ * `psu --resume=<adv id>` look in a different directory. Refuse to overwrite a
+ * destination so this helper can never erase another session's native state.
+ */
+export function rekeyCodexHome(sourceSessionKey: string | number, targetSessionKey: string | number): string {
+  const source = codexHomeForSessionKey(sourceSessionKey);
+  const target = codexHomeForSessionKey(targetSessionKey);
+  if (source === target) return target;
+  if (!existsSync(source)) throw new Error(`temporary Codex home does not exist: ${source}`);
+  if (existsSync(target)) throw new Error(`target Codex home already exists: ${target}`);
+  renameSync(source, target);
+  return target;
 }
 
 const CODEX_HOME_INHERIT_DIRS = ['skills', 'plugins', 'prompts'] as const;

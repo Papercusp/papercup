@@ -165,6 +165,18 @@ export default defineTool({
             harnessSlug: args.harness ?? null,
             workspaceId: identity.workspaceId ?? undefined,
           });
+          // P-008 (ambient-semantic-push) topic auto-subscribe: the same fresh
+          // cursor is one tick of the subscribe/unsubscribe machine
+          // (topic-hysteresis, D-009). Score the cursor against the live topic
+          // centroids, advance the carried per-session hysteresis state, actuate
+          // real subscription changes, and enqueue each applied change as a
+          // typed 'topic-sub' notice to SELF on the delivery rail (visible,
+          // never silent). Same flag/gate, bounded + fail-soft.
+          const { boundedTopicTick } = await import('../../topic-matcher-io');
+          await boundedTopicTick({
+            selfSessionId: args.session_id,
+            selfOwnerId: ownerId,
+          });
         }
       }
     }

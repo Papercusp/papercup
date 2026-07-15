@@ -20,7 +20,7 @@
  * 'public'` — requirePrincipal() inline, mirroring console-launch.ts.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
@@ -39,7 +39,7 @@ import {
   type InstructionRuntimeContext,
 } from '../../../instruction-lint';
 import { deriveLaunchPromptText } from '../../../agent-tools/plans/launch-prompt';
-import { writeSuCodexHome } from '../../../role-codex-home';
+import { rekeyCodexHome, writeSuCodexHome } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import { resolveSuLaunchCwd } from '../../../su-launch-cwd';
 import {
@@ -1678,6 +1678,14 @@ const post = defineTool({
         return jsonRes({ status: 'error', error: 'could not persist the pending session-port target row' }, 503);
       }
       try {
+        // Artifact preparation intentionally precedes the target row, so Codex
+        // initially uses the port UUID as a collision-free temporary key. Native
+        // resume derives CODEX_HOME from the recorded adv id; move the prepared
+        // home atomically before exposing the target as pending.
+        if (agent === 'codex' && codexHome) {
+          codexHome = rekeyCodexHome(sessionKey, sessionId);
+          promptFile = join(codexHome, 'AGENTS.md');
+        }
         const { transitionSessionPort } = await import('../../../session-port/store');
         await transitionSessionPort(sessionPortContext.row.id, workspace, 'pending', {
           targetAdvSessionId: sessionId,

@@ -59,6 +59,12 @@ import {
   type OperatorMode,
   type ParsedReport,
 } from '@papercusp/operator-core/lib/operator-converse-tags';
+import {
+  adoptableSharedState,
+  broadcastGenerating,
+  installOperatorWindowSync,
+  peerGeneratingNow,
+} from '@papercusp/operator-core/lib/operator-window-sync';
 import { getVoiceState, speak, subscribeVoiceState, type TranscriptSource } from './voice/voice-mode';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -627,6 +633,10 @@ interface OperatorConversationContextValue {
   messages: ChatMessage[];
   error: string | null;
   busy: boolean;
+  /** A PEER window (main app ↔ Quick Panel) has a generation in flight on
+   *  this same conversation — render a typing indicator so the reply that
+   *  is about to appear doesn't come out of nowhere (P-009). */
+  peerBusy: boolean;
 
   /** User-initiated send. Always allowed; restarts silence timer.
    *  `opts.spoken` marks a voice-initiated turn so the assistant reply
@@ -1100,6 +1110,52 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     [],
   );
 
+  // Multi-window coherence (P-008): another window may have appended turns
+  // to the shared conversation that this window's sync tail hasn't delivered
+  // yet — a generation built purely from local state would answer blind to
+  // them. Before a user send, take one fast, BOUNDED look at the persisted
+  // tail and splice anything newer than our cursor into the outbound history
+  // (chronologically before the just-typed message). Display catch-up stays
+  // the sync reconciler's job — this only feeds the brain; on timeout the
+  // send proceeds with local history exactly as before.
+  const freshenHistory = useCallback(
+    async (history: ChatMessage[], timeoutMs = 250): Promise<ChatMessage[]> => {
+      try {
+        const target = conversationIdRef.current ?? 'active';
+        const r = await fetch(`/api/operator/conversations/${target}/turns?limit=30`, {
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!r.ok) return history;
+        const page = (await r.json()) as {
+          turns?: Array<{ id?: string; seq?: number; role?: string; text?: string }>;
+        };
+        const cutoff = newestLoadedSeqRef.current;
+        const known = new Set(history.map((m) => m.id).filter(Boolean));
+        const missed = (page.turns ?? []).filter(
+          (t) =>
+            typeof t.seq === 'number' &&
+            (cutoff === null || t.seq > cutoff) &&
+            (t.role === 'user' || t.role === 'assistant') &&
+            typeof t.text === 'string' &&
+            t.text.trim() !== '' &&
+            !(typeof t.id === 'string' && known.has(t.id)),
+        );
+        if (missed.length === 0) return history;
+        const mapped: ChatMessage[] = missed.map((t) => ({
+          role: t.role as 'user' | 'assistant',
+          content: t.text as string,
+          id: typeof t.id === 'string' ? t.id : undefined,
+        }));
+        // Deliberately NOT bumping newestLoadedSeqRef: the sync reconciler
+        // still owes these turns to the UI and dedupes them by id/seq.
+        return [...history.slice(0, -1), ...mapped, ...history.slice(-1)];
+      } catch {
+        return history;
+      }
+    },
+    [],
+  );
+
   // Hydrate mode from sessionStorage on mount. If the session is
   // empty (fresh app open, no prior toggle), fall back to the user's
   // operatorActiveOnStartup voice-pref setting (default true). If the
@@ -1111,15 +1167,30 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // Mid-session value is authoritative.
       if (seedFromSession !== state.mode) dispatch({ type: 'set_mode', mode: seedFromSession });
     } else {
-      // First time this session — seed from the root-fed preference cache.
-      writeOperatorModeToSession('active');
-      const wantActive = loadVoicePrefsClient().operatorActiveOnStartup !== false;
-      if (!wantActive) {
-        writeOperatorModeToSession('passive');
-        dispatch({ type: 'set_mode', mode: 'passive' });
+      // First time this WINDOW. A live peer window (main app ↔ Quick Panel
+      // share one conversation) outranks the prefs seed — two sidebars
+      // showing different operator modes is the multi-window confusion
+      // P-007 kills. Only a mirror with a fresh lease counts; a dead app
+      // run's mirror is ignored and we seed from prefs as before.
+      const adopted = adoptableSharedState();
+      if (adopted) {
+        writeOperatorModeToSession(adopted.mode);
+        if (adopted.sleepUntilMs > 0) writeSleepUntilMs(adopted.sleepUntilMs);
+        if (adopted.mode !== state.mode) dispatch({ type: 'set_mode', mode: adopted.mode });
         try {
-          window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode: 'passive' } }));
+          window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode: adopted.mode } }));
         } catch { /* ignore */ }
+      } else {
+        // Seed from the root-fed preference cache.
+        writeOperatorModeToSession('active');
+        const wantActive = loadVoicePrefsClient().operatorActiveOnStartup !== false;
+        if (!wantActive) {
+          writeOperatorModeToSession('passive');
+          dispatch({ type: 'set_mode', mode: 'passive' });
+          try {
+            window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode: 'passive' } }));
+          } catch { /* ignore */ }
+        }
       }
     }
 
@@ -1267,6 +1338,16 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         spokenReply?: boolean;
       },
     ) => {
+      // Multi-window coherence (P-009): an AUTO-fired generation (terminal
+      // tick, welcome, chained continue descending from one) yields while
+      // ANOTHER window is mid-generation — two spontaneous brains on one
+      // thread read as the operator talking over itself. User sends are
+      // never deferred.
+      if (opts?.isAutoFire && peerGeneratingNow()) {
+        console.debug('[operator] auto-fire deferred — a peer window is generating');
+        return;
+      }
+
       // Abort any in-flight generation first (e.g. user sent a new message
       // mid-thinking, or a mode flip happened).
       inFlightRef.current?.abort();
@@ -1275,6 +1356,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
 
       dispatch({ type: 'set_sub', sub: 'generating' });
       dispatch({ type: 'set_error', error: null });
+      // Cross-window typing indicator + auto-fire deferral beacon (P-009).
+      broadcastGenerating(true);
+      let lastGenBeatMs = Date.now();
 
       const snapshot = stateRef.current;
       const history = opts?.messagesOverride ?? snapshot.messages;
@@ -1298,6 +1382,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         for await (const chunk of stream.chunks) {
           if (ctrl.signal.aborted) return;
           buf += chunk;
+          // Keep the cross-window beacon fresh through a long stream
+          // (peers treat a stale beacon as a crashed writer).
+          if (Date.now() - lastGenBeatMs > 5_000) {
+            lastGenBeatMs = Date.now();
+            broadcastGenerating(true);
+          }
         }
 
         const parsed = parseOperatorTurn(buf);
@@ -1545,6 +1635,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           sub: stateRef.current.mode === 'passive' ? 'passive_idle' : 'ready',
         });
       } finally {
+        // Clear the cross-window beacon ONLY when no newer generation took
+        // over (a chained runGeneration replaced inFlightRef synchronously
+        // in its prologue — its own lifecycle owns the beacon then).
+        if (inFlightRef.current === ctrl) {
+          broadcastGenerating(false);
+        }
         // G15 — aborted with no follow-up taking over → reset sub so
         // the chat doesn't get stranded in 'generating'.
         if (ctrl.signal.aborted && inFlightRef.current === ctrl) {
@@ -1582,6 +1678,40 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   }, [voiceActive]);
   useEffect(() => {
     return subscribeVoiceState((s) => setVoiceActive(s.mode !== 'off'));
+  }, []);
+
+  // ── Cross-window operator-state sync (multi-window-chat-coherence) ──
+  // Mode/sleep flips made in a peer window (main app ↔ Quick Panel) land
+  // here via localStorage `storage` events; peer in-flight generations
+  // surface as `peerBusy` (typing indicator + auto-fire deferral).
+  const [peerBusy, setPeerBusy] = useState(false);
+  useEffect(() => {
+    return installOperatorWindowSync({
+      onModeFromPeer: (mode) => {
+        writeOperatorModeToSession(mode);
+        dispatch({ type: 'set_mode', mode });
+        try {
+          window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode } }));
+        } catch { /* ignore */ }
+      },
+      onSleepFromPeer: (sleepUntilMs) => {
+        // writeSleepUntilMs also fans out the local sleep CustomEvent the
+        // chip + silence timers listen for; re-mirroring the same value is
+        // loop-safe (the peer's listener sees no change).
+        writeSleepUntilMs(sleepUntilMs);
+      },
+      onMirrorCleared: () => {
+        // A peer window's reload-reset (G16) is operator-wide: re-seed to
+        // the same fresh-session state that window just reset to.
+        writeOperatorModeToSession('active');
+        writeSleepUntilMs(0);
+        dispatch({ type: 'set_mode', mode: 'active' });
+        try {
+          window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode: 'active' } }));
+        } catch { /* ignore */ }
+      },
+      onPeerGenerating: setPeerBusy,
+    });
   }, []);
 
   // ── Voice-card router lifecycle (plan §C.1a + C.6) ────────────────
@@ -1977,13 +2107,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // turn so the model sees what the user actually said. State hasn't
       // committed yet on this tick; reading state.messages would miss it.
       const nextHistory = [...stateRef.current.messages, userMsg];
-      // Voice-initiated turns request spoken replies.
-      void runGeneration(trigger, {
-        messagesOverride: nextHistory,
-        spokenReply: sendOpts?.spoken === true,
-      });
+      // Voice-initiated turns request spoken replies. The freshness merge
+      // (P-008) is bounded to 250ms — imperceptible on a loopback fetch,
+      // and the send falls back to local history on any failure.
+      void (async () => {
+        const merged = await freshenHistory(nextHistory);
+        void runGeneration(trigger, {
+          messagesOverride: merged,
+          spokenReply: sendOpts?.spoken === true,
+        });
+      })();
     },
-    [runGeneration, persistTurn, cancelNudgeGraceTimer, resetContinueChain],
+    [runGeneration, persistTurn, freshenHistory, cancelNudgeGraceTimer, resetContinueChain],
   );
 
   // Voice-IN seam (plan voice-public-release-readiness D-001, owner-ratified
@@ -2110,6 +2245,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       messages: state.messages,
       error: state.error,
       busy: state.sub === 'generating',
+      peerBusy,
       sendUserMessage,
       generateIdeas,
       flipMode,
@@ -2121,7 +2257,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       conversationId: convId,
     }),
     [
-      state.mode, state.sub, state.messages, state.error,
+      state.mode, state.sub, state.messages, state.error, peerBusy,
       sendUserMessage, generateIdeas, flipMode, bannerText,
       hasMoreEarlier, loadingEarlier, loadEarlier, answerChoice,
       convId,

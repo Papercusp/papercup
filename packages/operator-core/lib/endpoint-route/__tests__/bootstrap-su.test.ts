@@ -40,6 +40,9 @@ const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   agentsPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/AGENTS.md`,
   configPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/config.toml`,
 }));
+const rekeyCodexHomeMock = vi.fn((_source: string | number, target: string | number) =>
+  `/fake/.papercusp/su-codex-homes/session-${target}`,
+);
 // EI-155: the interactive-claude config-dir materializer. Mocked so the unit
 // test never touches the dev box's real ~/.claude (the materializer's own
 // symlink-farm behavior is covered by interactive-claude-config.test.ts).
@@ -118,6 +121,7 @@ vi.mock('../../role-launch-spec', () => ({
 }));
 vi.mock('../../role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
+  rekeyCodexHome: (...args: unknown[]) => rekeyCodexHomeMock(...(args as [any, any])),
 }));
 vi.mock('../../interactive-claude-config', () => ({
   writeInteractiveClaudeConfig: (...args: unknown[]) => writeInteractiveClaudeConfigMock(...(args as [any])),
@@ -416,6 +420,13 @@ describe('bootstrap-su', () => {
     expect(body.kickoffPrompt).toBeNull();
     expect(body.sessionPortKickoffFile).toBe('/managed/222.seed.md');
     expect(body).not.toHaveProperty('sessionPortSeed');
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKey: '22222222-2222-4222-8222-222222222222',
+    }));
+    expect(rekeyCodexHomeMock).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', 42);
+    expect(body.codexHome).toMatch(/su-codex-homes\/session-42$/);
+    expect(body.promptFile).toBe(`${body.codexHome}/AGENTS.md`);
+    expect(body.envelopeEnv.CODEX_HOME).toBe(body.codexHome);
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: 'codex',
       portId: '22222222-2222-4222-8222-222222222222',

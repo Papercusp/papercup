@@ -303,6 +303,32 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
+  it('rekeys a prepared home to the durable adv-session id without rebuilding or overwriting', async () => {
+    const { rekeyCodexHome, writeSuCodexHome } = await loadMod();
+    const prepared = writeSuCodexHome({
+      sessionKey: 'port-uuid',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PORTED SESSION PLAYBOOK',
+      sid: 'su-port',
+    });
+    writeFileSync(join(prepared.codexHome, 'prepared-only.txt'), 'keep me');
+
+    const durableHome = rekeyCodexHome('port-uuid', 12596);
+    expect(durableHome).toBe(join(fakeHome, '.papercusp', 'su-codex-homes', 'session-12596'));
+    expect(existsSync(prepared.codexHome)).toBe(false);
+    expect(readFileSync(join(durableHome, 'prepared-only.txt'), 'utf8')).toBe('keep me');
+    expect(readFileSync(join(durableHome, 'AGENTS.md'), 'utf8')).toContain('PORTED SESSION PLAYBOOK');
+
+    writeSuCodexHome({
+      sessionKey: 12597,
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'EXISTING TARGET',
+      sid: 'su-existing',
+    });
+    expect(() => rekeyCodexHome(12596, 12597)).toThrow(/target Codex home already exists/);
+    expect(readFileSync(join(durableHome, 'prepared-only.txt'), 'utf8')).toBe('keep me');
+  });
+
   it('writes the engineer playbook + a superuser MCP (baked http_headers bearer, per-session client)', async () => {
     const { writeSuCodexHome } = await loadMod();
     const out = writeSuCodexHome({
