@@ -285,6 +285,28 @@ describe("getOverwatchTimeWake + overwatchLivenessCheck", () => {
     expect(live.armed).toBe(false);
   });
 
+  it("EI-13022 layer (c): a WEDGED row (next_fire_at far in the past) is NOT armed", async () => {
+    // 11min past → wedged (fire path skipping it) → not armed, seams may re-arm.
+    let live = await overwatchLivenessCheck(
+      fakeSqlReturning([
+        { active: true, next_fire_at: new Date(NOW - 11 * 60_000), last_fired_at: null },
+      ]),
+      SLUG,
+      { now: NOW },
+    );
+    expect(live.armed).toBe(false);
+
+    // 5min past → within tick-jitter grace → still armed (no false re-arm churn).
+    live = await overwatchLivenessCheck(
+      fakeSqlReturning([
+        { active: true, next_fire_at: new Date(NOW - 5 * 60_000), last_fired_at: null },
+      ]),
+      SLUG,
+      { now: NOW },
+    );
+    expect(live.armed).toBe(true);
+  });
+
   it("staleForMs = since the last fire; null when never fired", async () => {
     let live = await overwatchLivenessCheck(
       fakeSqlReturning([

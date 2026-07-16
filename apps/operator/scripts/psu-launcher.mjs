@@ -2531,6 +2531,30 @@ export const CLAUDE_DEFAULT_AUTH_ENV_KEYS = Object.freeze([
   'ANTHROPIC_CUSTOM_HEADERS',
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_OAUTH_TOKEN',
+  'ANTHROPIC_IDENTITY_TOKEN',
+  'ANTHROPIC_IDENTITY_TOKEN_FILE',
+  'ANTHROPIC_AWS_API_KEY',
+  'ANTHROPIC_AWS_BASE_URL',
+  'ANTHROPIC_BEDROCK_BASE_URL',
+  'ANTHROPIC_BEDROCK_MANTLE_BASE_URL',
+  'ANTHROPIC_FOUNDRY_API_KEY',
+  'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+  'ANTHROPIC_FOUNDRY_BASE_URL',
+  'ANTHROPIC_FOUNDRY_RESOURCE',
+  'ANTHROPIC_UNIX_SOCKET',
+  'ANTHROPIC_VERTEX_BASE_URL',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLAUDE_CODE_API_BASE_URL',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_HOST_AUTH_ENV_VAR',
+  'CLAUDE_CODE_HOST_CREDS_FILE',
+  'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+  'CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH',
+  'CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH',
+  'CLAUDE_CODE_SESSION_ACCESS_TOKEN',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
@@ -2584,21 +2608,11 @@ export function enforceDefaultClaudeAccount(wrapperBin, env) {
   if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return env;
   if (env[ACCOUNT_ROUTING_MODE_ENV] !== 'default') return env;
   for (const key of [
-    'ANTHROPIC_BASE_URL',
-    'ANTHROPIC_CUSTOM_HEADERS',
+    ...CLAUDE_DEFAULT_AUTH_ENV_KEYS,
     'PAPERCUSP_ANTHROPIC_URL',
     'PAPERCUSP_ACCOUNT_ID',
     'PAPERCUSP_CODEX_GATEWAY',
     'CLAUDE_CODE_OAUTH_TOKEN',
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_AUTH_TOKEN',
-    'ANTHROPIC_OAUTH_TOKEN',
-    'CLAUDE_CODE_USE_BEDROCK',
-    'CLAUDE_CODE_USE_VERTEX',
-    'CLAUDE_CODE_USE_FOUNDRY',
-    'CLAUDE_CODE_USE_MANTLE',
-    'CLAUDE_CODE_USE_ANTHROPIC_AWS',
-    'CLAUDE_CODE_USE_GATEWAY',
   ]) {
     delete env[key];
   }
@@ -3670,7 +3684,10 @@ export function accountProviderFromChoices(accounts, agent = 'claude') {
  * server endpoint that may not be deployed where it points (the 404 deploy-skew bug). Gating reuses
  * the live `/options` choices. Returns `{ id, env, notice }`: `id` for the FORK path (folded
  * server-side via the bootstrap POST), `env`/`notice` for the in-place resume (launchResume).
- * No prompt + no env when the gateway is off / pool empty / scripting (`--no-picker`).
+ * Scripting (`--no-picker`) with no account uses the default system login. A
+ * user-selected `auto` or named pin is fail-closed: if the gateway/provider/pin
+ * cannot be honored, this function throws instead of silently returning the
+ * default-account marker.
  */
 export async function chooseResumeAccount(session, args) {
   const plan = resumeAccountPlan(args);
@@ -3687,12 +3704,14 @@ export async function chooseResumeAccount(session, args) {
 
   const accounts = await fetchAccountChoices(session.workspaceId, session.agent);
   if (!accounts?.gatewayOn || !(Array.isArray(accounts.pool) && accounts.pool.length)) {
-    // Gateway off / empty pool → both `auto` and a pool pin collapse to the default-credential resume.
-    return {
-      id: null,
-      env: defaultAccountEnv(),
-      notice: plan.account ? `--account ${plan.account} ignored: inference gateway off / no pool — using the default credential.` : null,
-    };
+    // No explicit nondefault choice exists on the prompt path because the picker
+    // hides unavailable gateway rows; omission therefore remains the product's
+    // default system route. A flag-selected auto/pin is a contract and must fail.
+    if (plan.prompt) return { id: null, env: defaultAccountEnv(), notice: null };
+    throw new Error(
+      `--account ${plan.account} could not be honored: inference gateway off / no pool. ` +
+        'Refusing to fall back to the default system login.',
+    );
   }
 
   const requested = plan.prompt ? await promptAccount(accounts) : plan.account;
@@ -3709,10 +3728,13 @@ export async function chooseResumeAccount(session, args) {
 
   if (mode === 'auto') {
     // Route through the gateway with NO pin — it selects an available account + fails over.
-    // Wired for claude only (gatewayAutoEnv returns {} otherwise); codex/omp have no "let the
-    // gateway pick" form, so fall back to the default credential with a clear notice.
+    // Wired for claude only on the raw resume path (gatewayAutoEnv returns {}
+    // otherwise). An explicit unsupported auto choice fails closed.
     if (provider !== 'claude') {
-      return { id: null, env: defaultAccountEnv(), notice: `--account auto ignored: gateway auto-routing isn't wired for ${session.agent} yet — using the default credential.` };
+      throw new Error(
+        `--account auto could not be honored: gateway auto-routing isn't wired for ${session.agent} yet. ` +
+          'Refusing to fall back to the default system login.',
+      );
     }
     // `forward: 'auto'` is the value a TRACKED fork sends to the server (resolveAccountPin) so the
     // fork re-derives the same auto-route — `id` is null here, so the fork's `id` fallback alone
@@ -3723,10 +3745,16 @@ export async function chooseResumeAccount(session, args) {
   // mode === 'pin'
   const id = requested;
   if (!accountPinnable(accounts, id)) {
-    return { id: null, env: defaultAccountEnv(), notice: `--account ${id} ignored: not an allowed pool account — using the default credential.` };
+    throw new Error(
+      `--account ${id} could not be honored: not an allowed pool account. ` +
+        'Refusing to fall back to the default system login.',
+    );
   }
   if (!provider) {
-    return { id: null, env: defaultAccountEnv(), notice: `--account ${id} ignored: account routing is unsupported for ${session.agent} — using the default credential.` };
+    throw new Error(
+      `--account ${id} could not be honored: account routing is unsupported for ${session.agent}. ` +
+        'Refusing to fall back to the default system login.',
+    );
   }
   return { id, provider, env: gatewayPinEnv(id, provider, session.coordOwnerId), notice: `pinned to ${provider === 'codex' ? 'Codex ' : ''}account ${id} (routed through the inference gateway).` };
 }
