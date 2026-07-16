@@ -29,7 +29,7 @@ type ApplyPendingMigrations = (args: {
 }) => Promise<{ appliedCount: number; totalKnown: number; failed: Array<{ file: string; error: string }> }>;
 
 const applyPendingMigrations = _applyPendingMigrations as ApplyPendingMigrations;
-import { resolveSqlDir } from './migration-drift';
+import { checkMigrationDrift, resolveSqlDir } from './migration-drift';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
@@ -107,6 +107,33 @@ export async function applyPendingMigrationsAtBoot(): Promise<BootMigrateResult 
           .join('\n')}`,
         category: 'service-health',
       }).catch(() => {});
+    }
+    // WI-5050 (WI-4070 class): detect the INVERSE drift — the shared DB was
+    // migrated by a NEWER code tree than the one booting. Renames/drops that
+    // newer tree performed have already executed, so THIS tree's queries can
+    // hit `relation does not exist` at runtime and (worst case) the federation
+    // plane dies silently — exactly how a stale dev-source tree (hives→pots,
+    // mig-557) killed the VM peer with nothing but scattered PG errors. Loud
+    // log + ambient coord broadcast; the operator still boots (the stale tree
+    // may serve read paths fine and a refusal would take the whole box down).
+    try {
+      const drift = await checkMigrationDrift();
+      if (drift.schemaAhead.length > 0) {
+        const head = drift.schemaAhead.slice(0, 5).join(', ');
+        console.error(
+          `[boot-migrate] 🚨 SCHEMA AHEAD OF CODE: the DB has ${drift.schemaAhead.length} migration(s) NEWER than anything this code tree ships (${head}${drift.schemaAhead.length > 5 ? ', …' : ''}). ` +
+            'This operator is running STALE CODE against a newer-migrated shared DB — expect `relation does not exist` failures on renamed tables and a silently-dead federation plane (WI-4070 class). ' +
+            'Update/redeploy this code tree (stale dev-source / old bundle / lagging checkout) before trusting this host.',
+        );
+        await sendMessage(BOOT_MIGRATE_IDENTITY, {
+          to: ['*'],
+          summary: `🚨 schema AHEAD of code on operator boot: DB carries ${drift.schemaAhead.length} migration(s) newer than this code tree — stale operator (WI-4070 class), update/redeploy it`,
+          body: `Newest DB-side migrations unknown to this tree: ${head}${drift.schemaAhead.length > 5 ? ', …' : ''}. A stale tree against a newer-migrated DB fails as scattered "relation does not exist" errors and can silently kill federation. Refresh the running code (dev-source tree / bundle / checkout), then restart.`,
+          category: 'service-health',
+        }).catch(() => {});
+      }
+    } catch {
+      /* detection is best-effort — never blocks boot */
     }
     return { applied: appliedCount, failed };
   } catch (err) {

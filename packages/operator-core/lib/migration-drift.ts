@@ -52,6 +52,40 @@ export interface MigrationDrift {
   /** True when the live DB has applied every on-disk migration — i.e. `missing`
    *  is empty. NOT affected by `extra` (see above). */
   inSync: boolean;
+  /** WI-5050 (WI-4070 class): applied migrations whose NUMERIC prefix is HIGHER
+   *  than the max numbered migration this code tree ships — i.e. the shared DB
+   *  was migrated by a NEWER code tree than the one running. Unlike `extra`
+   *  (squashed-history noise), this is NOT benign: renames/drops the newer tree
+   *  performed have already executed, so THIS tree's queries can hit
+   *  `relation does not exist` at runtime (the VM dev-source rot that silently
+   *  killed federation: post-mig-557 hives→pots DB vs pre-557 code). Empty when
+   *  the code tree can't be resolved (unknown ≠ ahead). */
+  schemaAhead: string[];
+}
+
+/** Numeric NNN prefix of a migration filename, or null (template/manual files). */
+function migrationNumber(f: string): number | null {
+  const m = /^(\d+)-/.exec(f);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Pure core of the WI-5050 schema-ahead-of-code detection — exported for tests.
+ * Returns applied, runner-eligible migrations numbered beyond the max numbered
+ * migration present on disk. Empty when onDisk has no numbered migrations
+ * (an unresolvable/foreign tree must not flag the whole DB as "ahead").
+ */
+export function computeSchemaAhead(onDisk: string[], applied: string[]): string[] {
+  const codeCap = Math.max(
+    ...onDisk.map(migrationNumber).filter((n): n is number => n !== null),
+    -1,
+  );
+  if (codeCap < 0) return [];
+  return applied.filter((f) => {
+    if (!isRunnerMigration(f)) return false;
+    const n = migrationNumber(f);
+    return n !== null && n > codeCap;
+  });
 }
 
 export async function checkMigrationDrift(): Promise<MigrationDrift> {
@@ -90,5 +124,6 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
     // in_sync permanently false on this fleet, masking real `missing` drift
     // (infra round-3 F14).
     inSync: missing.length === 0,
+    schemaAhead: computeSchemaAhead(onDisk, applied),
   };
 }
