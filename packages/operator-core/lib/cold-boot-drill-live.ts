@@ -407,7 +407,7 @@ export function terminalOutcomesFromLedger(
   for (const event of events) {
     const field = KIND_TO_FIELD[event.kind];
     if (!field || !event.drillId) continue;
-    const dedupeKey = `${event.drillId} ${event.kind}`;
+    const dedupeKey = `${event.drillId}\x00${event.kind}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
     const sessionClass = event.sessionClass || 'unknown';
