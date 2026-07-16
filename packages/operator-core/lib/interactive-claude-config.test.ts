@@ -876,3 +876,90 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
     expect(() => ensureInteractiveClaudeConfig({ sid: 'su-dangle', home })).not.toThrow();
   });
 });
+
+/**
+ * EI-12938's ACTUAL regression class, pinned structurally.
+ *
+ * The repair was never the hard part — `writeInteractiveClaudeConfig` existed,
+ * was correct, and was well tested. The bug was a MISSING CALL: the 2026-07-12
+ * fix (psu-resume-relogin leg 2) was bolted onto ONE of `rematerializeSession`'s
+ * callers — the HTTP route — so the desktop Resume console, which calls
+ * `rematerializeSession` directly, kept handing humans a transcript-only dir and
+ * kept sending them to a /login screen for four more days. No unit test could
+ * have caught that: every unit involved was green.
+ *
+ * So this guard is about the SHAPE of the system, not a unit: every leg that
+ * rematerializes a session INTO A DIR A HUMAN WILL LAUNCH must re-ensure it.
+ * A new caller must be classified deliberately — interactive (call the ensure)
+ * or not (say why here) — instead of silently inheriting the bug.
+ */
+describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config dir', () => {
+  const LIB = join(__dirname);
+
+  /** Callers that DON'T need the ensure — each with the reason it is exempt. */
+  const NON_INTERACTIVE = new Map<string, string>([
+    [
+      'events/await/wake-executor.ts',
+      'headless bee wake: its dir is writeSpawnClaudeConfig\'s deliberately plugin-free ' +
+        'isolation (the plugin-checkout-into-cwd defect). A full mirror there is WRONG.',
+    ],
+    [
+      'endpoint-route/routes/harness/streams.ts',
+      'read-only transcript follow for the UI: restores a file to TAIL it, never launches an agent.',
+    ],
+  ]);
+
+  /** The definition site, not a caller. */
+  const DEFINER = 'session-archive.ts';
+
+  it('no rematerializeSession caller launches a human into an unensured dir', () => {
+    const found = execFileSync('grep', ['-rl', '--include=*.ts', 'rematerializeSession', LIB], {
+      encoding: 'utf8',
+    })
+      .split('\n')
+      .filter(Boolean)
+      .map((p) => p.slice(LIB.length + 1))
+      .filter((rel) => !rel.endsWith('.test.ts') && rel !== DEFINER);
+
+    const unclassified: string[] = [];
+    const missingEnsure: string[] = [];
+    for (const rel of found) {
+      const src = readFileSync(join(LIB, rel), 'utf8');
+      // A real call, not a doc-comment mention (session-dir-gc.ts / this module
+      // both reference it in prose only).
+      if (!/rematerializeSession\w*\s*\(/.test(src)) continue;
+      if (NON_INTERACTIVE.has(rel)) continue;
+      if (/ensureInteractiveClaudeConfig/.test(src)) continue;
+      // Known-interactive legs are named so a failure reads as a regression;
+      // anything else is a NEW caller nobody classified.
+      if (rel === 'console-launcher.ts' || rel === 'endpoint-route/routes/adv/sessions.ts') missingEnsure.push(rel);
+      else unclassified.push(rel);
+    }
+
+    expect(
+      missingEnsure,
+      'These legs rematerialize a session into a dir a HUMAN then launches, but never call ' +
+        'ensureInteractiveClaudeConfig — the exact EI-12938 regression: the transcript comes ' +
+        'back, `.claude.json` does not, and claude boots its first-run /login wizard on a box ' +
+        'that is perfectly logged in.',
+    ).toEqual([]);
+
+    expect(
+      unclassified,
+      'A NEW rematerializeSession caller appeared. Classify it: if a human launches into that ' +
+        'dir, call ensureInteractiveClaudeConfig after the restore (see console-launcher.ts); ' +
+        'if not (headless spawn / read-only follow), add it to NON_INTERACTIVE here WITH the ' +
+        'reason. Do not just delete this assertion — inheriting EI-12938 silently is the failure ' +
+        'mode it exists to stop.',
+    ).toEqual([]);
+  });
+
+  it('the exempt legs are still exempt for the reason recorded (not quietly repurposed)', () => {
+    // wake-executor's exemption rests on it targeting a bee's OWN config dir.
+    const wake = readFileSync(join(LIB, 'events/await/wake-executor.ts'), 'utf8');
+    expect(wake).toMatch(/rematerializeSession\(\{ sourceKind: 'claude', sessionId: sid, targetRoot: cfgDir \}\)/);
+    // streams.ts's rests on it only ever resolving a path to read.
+    const streams = readFileSync(join(LIB, 'endpoint-route/routes/harness/streams.ts'), 'utf8');
+    expect(streams).toMatch(/if \(r\.ok\) path = await source\.resolve\(\)/);
+  });
+});
