@@ -3,6 +3,9 @@ import type {
   AppReady,
   AssertionResult,
   BridgeStatus,
+  LayoutElement,
+  LayoutExpectation,
+  LayoutInfo,
   RouteInfo,
   ScopeInfo,
   VerifyConfig,
@@ -195,6 +198,99 @@ export async function assertScope(
     }
   }
   return scope;
+}
+
+/**
+ * Verify layout over the authenticated bridge instead of a `screenshot --selector`
+ * capture (EI-11084). `tauri-agent-tools screenshot --selector` resolves the OS
+ * window by `document.title` via `xdotool search --name`, which silently fails when
+ * the webview's document title ("Papercusp Operator") differs from the X11 window
+ * title ("Papercusp") — e.g. on a self-spawned dev shell / non-default display. This
+ * assertion measures the same layout facts the screenshot was proving — no window
+ * geometry, no xdotool — so it cannot hit that trap.
+ *
+ * Checks (all against the viewport, with a `tolerance` px slack for sub-pixel rounding):
+ * - the PAGE does not overflow horizontally (documentElement.scrollWidth ≤ clientWidth);
+ * - each `selectors` element sits fully within the viewport (right edge ≤ viewport width);
+ * - a declared `scrollContainer` (overflow:auto) may scroll its OWN content freely —
+ *   internal scroll is never a failure — but it too must sit within the viewport.
+ */
+export async function assertLayout(
+  config: VerifyConfig,
+  expected: LayoutExpectation = {},
+): Promise<VerifyResult<LayoutInfo>> {
+  const tolerance = expected.tolerance ?? 1;
+  const selectors = expected.selectors ?? [];
+  const scrollContainer = expected.scrollContainer ?? null;
+  const measured = [...selectors, ...(scrollContainer ? [scrollContainer] : [])];
+
+  const result = await bridgeEval<string>(
+    config,
+    `(() => {
+      const de = document.documentElement;
+      const measure = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return { selector: sel, found: false };
+        const r = el.getBoundingClientRect();
+        return {
+          selector: sel, found: true,
+          left: r.left, right: r.right, width: r.width,
+          scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+          overflowsInternally: el.scrollWidth > el.clientWidth,
+        };
+      };
+      return JSON.stringify({
+        viewportWidth: de.clientWidth,
+        documentScrollWidth: de.scrollWidth,
+        measured: ${JSON.stringify(measured)}.map(measure),
+      });
+    })()`,
+  );
+  if (!result.ok) return result;
+  const parsed = parseJsonResult<{
+    viewportWidth: number;
+    documentScrollWidth: number;
+    measured: LayoutElement[];
+  }>(result.value, 'layout metrics');
+  if (!parsed.ok) return parsed;
+
+  const { viewportWidth, documentScrollWidth, measured: allMeasured } = parsed.value;
+  const container = scrollContainer
+    ? allMeasured.find((el) => el.selector === scrollContainer) ?? null
+    : null;
+  const elements = allMeasured;
+  const horizontalOverflow = documentScrollWidth > viewportWidth + tolerance;
+  const info: LayoutInfo = { viewportWidth, documentScrollWidth, horizontalOverflow, elements, scrollContainer: container };
+
+  const missing = allMeasured.filter((el) => !el.found).map((el) => el.selector);
+  if (missing.length) {
+    return {
+      ok: false,
+      code: 'layout_element_not_found',
+      error: `Layout target(s) not found: ${missing.join(', ')}`,
+      evidence: { ...info },
+    };
+  }
+  if (horizontalOverflow) {
+    return {
+      ok: false,
+      code: 'horizontal_overflow',
+      error: `Page overflows horizontally: scrollWidth ${documentScrollWidth} > viewport ${viewportWidth} (tolerance ${tolerance}).`,
+      evidence: { ...info },
+    };
+  }
+  const overflowing = allMeasured.filter((el) => (el.right ?? 0) > viewportWidth + tolerance);
+  if (overflowing.length) {
+    return {
+      ok: false,
+      code: 'element_overflow',
+      error: `Element(s) extend past the viewport right edge (${viewportWidth}px): ${overflowing
+        .map((el) => `${el.selector}@${Math.round(el.right ?? 0)}`)
+        .join(', ')}.`,
+      evidence: { ...info, overflowing },
+    };
+  }
+  return { ok: true, value: info };
 }
 
 export function formatAssertionResult(result: AssertionResult): string {

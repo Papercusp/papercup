@@ -26,8 +26,17 @@
  * if (!scope.ok) throw new Error(scope.error);
  */
 
-import type { VerifyConfig, VerifyResult, AppReady, RouteInfo, ScopeInfo, Screen } from './types.js';
-import { assertAppReady, assertRoute, assertScope, readRoute } from './assertions.js';
+import type {
+  VerifyConfig,
+  VerifyResult,
+  AppReady,
+  RouteInfo,
+  ScopeInfo,
+  Screen,
+  LayoutExpectation,
+  LayoutInfo,
+} from './types.js';
+import { assertAppReady, assertLayout, assertRoute, assertScope, readRoute } from './assertions.js';
 import { bridgeEval } from './bridge-client.js';
 import { findScreen, findScreenByRoute, screenMatchesRoute } from './screens.js';
 
@@ -52,6 +61,12 @@ export interface Verifier {
 
   /** Assert semantic route + required live selectors. */
   screen(screenId: string): Promise<VerifyResult<Screen>>;
+
+  /**
+   * Verify layout over the bridge (no screenshot / xdotool) — the reliable
+   * alternative to `screenshot --selector` for layout checks (EI-11084).
+   */
+  layout(expected?: LayoutExpectation): Promise<VerifyResult<LayoutInfo>>;
 
   /**
    * Navigate to a semantic screen by ID.
@@ -131,6 +146,10 @@ export function createVerifier(config?: VerifyConfig): Verifier {
 
     async screen(screenId: string): Promise<VerifyResult<Screen>> {
       return assertSemanticScreen(screenId);
+    },
+
+    async layout(expected?: LayoutExpectation): Promise<VerifyResult<LayoutInfo>> {
+      return assertLayout(finalConfig, expected);
     },
 
     async navigateToScreen(screenId: string): Promise<VerifyResult<Screen>> {

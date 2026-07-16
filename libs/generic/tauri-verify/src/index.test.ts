@@ -130,6 +130,105 @@ describe('Tauri verification surface', () => {
     });
   });
 
+  describe('layout verification (EI-11084 — bridge, not xdotool screenshot)', () => {
+    const layoutVerifier = () => createVerifier({ bridgePort: 4444, bridgeToken: 'secret' });
+
+    it('passes a well-laid-out page: no horizontal page overflow, all elements within the viewport', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(
+          json({
+            result: JSON.stringify({
+              viewportWidth: 1280,
+              documentScrollWidth: 1280,
+              measured: [{ selector: '.pc-advshell', found: true, left: 0, right: 1280, width: 1280, scrollWidth: 1280, clientWidth: 1280, overflowsInternally: false }],
+            }),
+          }),
+        ),
+      );
+      await expect(layoutVerifier().layout({ selectors: ['.pc-advshell'] })).resolves.toMatchObject({
+        ok: true,
+        value: { viewportWidth: 1280, documentScrollWidth: 1280, horizontalOverflow: false },
+      });
+    });
+
+    it('fails when the PAGE overflows horizontally — the layout regression a screenshot was meant to catch', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(
+          json({ result: JSON.stringify({ viewportWidth: 1280, documentScrollWidth: 1440, measured: [] }) }),
+        ),
+      );
+      await expect(layoutVerifier().layout()).resolves.toMatchObject({
+        ok: false,
+        code: 'horizontal_overflow',
+      });
+    });
+
+    it('allows an overflow:auto container to scroll its own content while the page stays put (the eval fallback the author verified by hand)', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(
+          json({
+            result: JSON.stringify({
+              viewportWidth: 1280,
+              documentScrollWidth: 1280,
+              measured: [{ selector: '.pc-rubrics', found: true, left: 0, right: 1280, width: 1280, scrollWidth: 2400, clientWidth: 1280, overflowsInternally: true }],
+            }),
+          }),
+        ),
+      );
+      const result = await layoutVerifier().layout({ scrollContainer: '.pc-rubrics' });
+      expect(result).toMatchObject({ ok: true });
+      if (result.ok) {
+        expect(result.value.scrollContainer).toMatchObject({ selector: '.pc-rubrics', overflowsInternally: true });
+        expect(result.value.horizontalOverflow).toBe(false);
+      }
+    });
+
+    it('fails when a target element extends past the viewport right edge', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(
+          json({
+            result: JSON.stringify({
+              viewportWidth: 1280,
+              documentScrollWidth: 1280,
+              measured: [{ selector: '.pc-panel', found: true, left: 40, right: 1360, width: 1320, scrollWidth: 1320, clientWidth: 1320, overflowsInternally: false }],
+            }),
+          }),
+        ),
+      );
+      await expect(layoutVerifier().layout({ selectors: ['.pc-panel'] })).resolves.toMatchObject({
+        ok: false,
+        code: 'element_overflow',
+      });
+    });
+
+    it('fails clearly when a requested selector is not present', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(
+          json({
+            result: JSON.stringify({
+              viewportWidth: 1280,
+              documentScrollWidth: 1280,
+              measured: [{ selector: '.pc-missing', found: false }],
+            }),
+          }),
+        ),
+      );
+      await expect(layoutVerifier().layout({ selectors: ['.pc-missing'] })).resolves.toMatchObject({
+        ok: false,
+        code: 'layout_element_not_found',
+      });
+    });
+
+    it('never silently drives an unspecified desktop', async () => {
+      await expect(createVerifier().layout()).resolves.toMatchObject({ ok: false, code: 'target_required' });
+    });
+  });
+
   describe('semantic screen registry', () => {
     it('uses real shell selectors and concrete navigation destinations', () => {
       expect(SCREENS.ONBOARDING.requiredElements).toContain('.pc-onboarding-shell');
