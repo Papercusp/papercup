@@ -203,19 +203,54 @@ function injectBudgetChars(): number {
   return 16_000;
 }
 
+/**
+ * Phase telemetry (EI-12962): the injection measured ~10.7s of a ~11s prompt
+ * build on a COLD operator process (available() ~5s + first-embed ~4s) vs
+ * ~1.5s warm (probe 2026-07-16, hybrid-pg, 7-scope fan-out). Log the per-phase
+ * split whenever a call is slow enough to matter, so a cold-start regression
+ * (or a warmup that stopped covering the real path) is visible in the operator
+ * log instead of re-derived by hand. `postMs` = totalMs − the stamped legs
+ * (feedback/dedup/flags/assembly).
+ */
+const SLOW_INJECTION_LOG_MS = 750;
+
 export async function buildMemoryContextBlock(
   input: MemoryInjectionInput,
+): Promise<string | null> {
+  const marks: Array<[string, number]> = [];
+  const t0 = Date.now();
+  try {
+    return await buildBlockInner(input, (label, ms) => marks.push([label, ms]));
+  } finally {
+    const totalMs = Date.now() - t0;
+    if (totalMs > SLOW_INJECTION_LOG_MS) {
+      const stamped = marks.reduce((s, [, v]) => s + v, 0);
+      console.log(
+        `[memory-injection] phases totalMs=${totalMs} ${marks
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ')} postMs=${Math.max(0, totalMs - stamped)}`,
+      );
+    }
+  }
+}
+
+async function buildBlockInner(
+  input: MemoryInjectionInput,
+  mark: (label: string, ms: number) => void,
 ): Promise<string | null> {
   if (!input.queryContext.trim()) return null;
   if (isMemoryDegraded()) return null;
 
   const backend = getMemoryBackend();
+  const tAvail = Date.now();
   try {
     const avail = await withMemoryTimeout(backend.available(), 'available()', MEMORY_INJECT_TIMEOUT_MS);
     if (!avail.ok) return null;
   } catch (err) {
     noteMemoryFailure(err);
     return null;
+  } finally {
+    mark('availableMs', Date.now() - tAvail);
   }
 
   const userLimit = input.limit ?? 6;
@@ -239,6 +274,7 @@ export async function buildMemoryContextBlock(
   if (input.hiveSlugs !== undefined) {
     hiveSlugs = input.hiveSlugs.filter((s) => typeof s === 'string' && s.length > 0);
   } else if (harnessSlugs.length > 0) {
+    const tHive = Date.now();
     try {
       hiveSlugs = await withMemoryTimeout(
         resolveHiveSlugsForHarnesses(input.workspaceId, harnessSlugs),
@@ -248,6 +284,8 @@ export async function buildMemoryContextBlock(
     } catch (err) {
       noteMemoryFailure(err);
       hiveSlugs = [];
+    } finally {
+      mark('hiveResolveMs', Date.now() - tHive);
     }
   }
   if (hiveSlugs.length > MAX_HARNESS_FANOUT) hiveSlugs = hiveSlugs.slice(0, MAX_HARNESS_FANOUT);
@@ -284,11 +322,12 @@ export async function buildMemoryContextBlock(
         })
       : Promise.resolve([]);
 
+    const tSearch = Date.now();
     const [userEntries, harnessEntries, hiveEntries] = await withMemoryTimeout(
       Promise.all([userPull, harnessPull, hivePull]),
       'search',
       MEMORY_INJECT_TIMEOUT_MS,
-    );
+    ).finally(() => mark('searchMs', Date.now() - tSearch));
     userResults = userEntries;
     harnessHits = harnessEntries.map((hit) => ({
       hit,

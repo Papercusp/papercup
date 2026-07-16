@@ -98,6 +98,40 @@ payload remain online when launched with a display, `-grpc 8554`,
 injection plus an `adb get-state` check as the rig preflight before a multi-turn
 soak, so a harness crash cannot masquerade as an app stability failure.
 
+### The working rig (2026-07-16, verified 10/10 STT+TTS)
+
+A reusable rig lives at `~/.papercusp/scratch/voice-endurance-20260716/`
+(`injectord.py`, `turns.sh`, `ui.py`, `rig.py`, generated 16 kHz WAVs). Three
+non-obvious rules cost hours before the soak ran clean — bake them into any
+future rig:
+
+1. **`injectAudio` crashes the emulator unless a guest recorder is actively
+   consuming the stream.** In the default `MODE_UNSPECIFIED` (blocking) delivery
+   mode the emulator only pulls packets while the app holds an `AudioRecord`;
+   pushing audio (even silence) with no active recorder overflows/SIGSEGVs it
+   within ~4 s. So the injector daemon holds **one** `injectAudio` stream open
+   for the whole campaign but **yields nothing while idle** (never a silence
+   keep-alive) and streams WAV chunks only on command — and it **never closes**
+   the stream (closing it also SIGSEGVs the emulator). Per turn: tap the Voice
+   FAB → `LISTENING` → drop a `play <wav>` command → tap the FAB again to stop
+   and send. Rows land in `harness_shared.operator_turns` (`source` =
+   `voice_stt` / `voice_tts`).
+2. **Run the emulator on your own dedicated Xvfb display** (e.g. `:99`), not a
+   shared one. A peer reaping the shared `:90` kills the emulator with
+   `XIO: fatal IO error on X server` mid-run.
+3. **Liveness is `adb get-state`, never a `pgrep` for the AVD name.** The running
+   process cmdline is `qemu-system-x86_64 -avd papercusp-test` (no `.avd`), so a
+   `pgrep -f papercusp-test.avd` always misses and reports a healthy emulator as
+   dead. Worse, `pkill -f` with any pattern containing `papercusp-test`,
+   `injectord.py`, or an AVD path **self-matches your own shell** (exit 144) and
+   also matches the unrelated `papercusp-testvm-clean` VM — kill by the exact
+   qemu pid via `pgrep -f "Sdk/emulator/qemu/linux-x86_64"` instead.
+
+Pre-grant `RECORD_AUDIO` (`adb shell pm grant … android.permission.RECORD_AUDIO`)
+so the mic session opens without a dialog mid-soak; the app's pairing credential
+survives an `install -r` on the persistent userdata partition, so re-pairing is
+usually unnecessary across relaunches of the same AVD.
+
 ## What stays owner-gated
 
 - **APNs enrollment** — Apple Developer account + `.p8` key (iOS push is dead until then).
