@@ -5,8 +5,13 @@
  * the step implementations use, without importing the heavier step modules.
  */
 
-/** Owner directive: keep every autonomous loop role on the shared sonnet lane. */
-export const DEFAULT_SCOUT_IDEATOR_MODEL = 'claude-sonnet-5[1m]:high';
+/** Owner directive: keep every autonomous loop role on the shared sonnet lane.
+ *  ⚠ RAW API model id ONLY — the scout stateless path (llm-testing/llm-client →
+ *  anthropic-direct) passes this string verbatim to the API. Fleet-spec syntax
+ *  ('claude-sonnet-5[1m]:high', 'chatgpt:5.5') 404s there, and a 404'd ideator
+ *  can surface as a SILENT 'ran/no-ideas' streak, not an error tick — that spec
+ *  killed all organic ideation 07-14→07-16 (2.3 days) before EI-13118 caught it. */
+export const DEFAULT_SCOUT_IDEATOR_MODEL = 'claude-sonnet-5';
 
 /** Cheap by default: deterministic novelty already does the load-bearing dedup. */
 export const DEFAULT_SCOUT_CRITIC_MODEL = 'claude-haiku-4-5';
