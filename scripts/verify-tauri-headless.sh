@@ -90,6 +90,13 @@
 #                                via the bridge still work; agent-e2e.mdx §15.4)
 #   VERIFY_TAURI_PORT_LOCK_DIR  advisory-lock directory for concurrent verifier
 #                               launches (default: $TMPDIR/papercusp-tauri-port-locks)
+#   VERIFY_TAURI_PORT_STRAGGLER_WAIT
+#                               seconds teardown HOLDS the advisory port lock while
+#                                waiting for THIS run's sidecar to release its
+#                                display-derived port(s) before releasing the lock,
+#                                so a display-reusing next run can't collide with a
+#                                straggler (default 30; EI-11559). The wait exits
+#                                early the instant the port is free.
 #   VERIFY_TAURI_MEMORY_LIMIT_MB
 #                               RSS high-water mark (MiB) the isolated verify
 #                                sidecar's memory-watchdog recycles at (default
@@ -174,7 +181,11 @@ XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID=""
 write_stop_script() {
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
-[ -n "$PORT_LOCK_KEEPER_PID" ] && kill "$PORT_LOCK_KEEPER_PID" 2>/dev/null
+# EI-11559: do NOT force-kill the port-lock keeper here — killing it releases the
+# advisory flock IMMEDIATELY, while the sidecar (its own process group) still holds
+# the display-derived port. Instead we tear down the display/app and let the keeper
+# SELF-terminate once Xvfb is gone AND the port is free (it holds the lock through
+# that drain), so a next run reusing this display can't collide with a straggler.
 [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
 [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
 [ -n "$XVFB_PID" ] && kill -9 $XVFB_PID 2>/dev/null
@@ -183,11 +194,40 @@ echo "stopped (display :$DISPLAY_NUM, port $DEV_PORT)"
 STOP
   chmod +x "$WORK/stop.sh"
 }
+# ── EI-11559: hold the advisory port lock until our sidecar releases the port ──
+# Ports are DERIVED FROM THE DISPLAY (WI-4342), so a freed-then-reused display maps
+# to the SAME derived port base. Our operator sidecar (dev-operator-ifneeded.sh)
+# runs in its OWN process group behind a detached reaper + a restart-on-nonzero
+# supervision loop, so it can keep DEV_PORT/PTY_PORT bound for seconds after we
+# signal $TAURI_PID's group — "the squatter that only exists during someone's
+# boot/teardown window". If we release the advisory lock the instant we signal, the
+# NEXT run reusing this freed display derives the same port, sees it free at
+# pick-time, acquires the now-free lock, and collides at BIND-time (~100s later,
+# EADDRINUSE — the reporter's exact failure). So HOLD the lock until OUR ports are
+# actually free: the still-held flock forces a concurrent run onto a disjoint port
+# via the existing pick-time walk-forward loop (fed_acquire_port_lock fails → the
+# loop walks PORT_BASE forward). The wait is passive — the sidecar's own reaper
+# (dev-operator-ifneeded.sh's wrapper-trap + detached watchdog) does the killing —
+# and bounded, so a genuinely wedged port only delays teardown, never deadlocks it.
+PORT_STRAGGLER_WAIT="${VERIFY_TAURI_PORT_STRAGGLER_WAIT:-30}"
+port_is_listening() { ss -tlnH "sport = :$1" 2>/dev/null | grep -q .; }
+wait_owned_ports_free() {
+  local port waited
+  for port in "$DEV_PORT" "$PTY_PORT"; do
+    [ -n "$port" ] || continue
+    waited=0
+    while port_is_listening "$port" && [ "$waited" -lt "$PORT_STRAGGLER_WAIT" ]; do
+      sleep 1; waited=$((waited + 1))
+    done
+    port_is_listening "$port" && log "WARNING: :$port still held after ${PORT_STRAGGLER_WAIT}s at teardown — releasing the advisory lock anyway; a display-reusing run may collide (EI-11559)."
+  done
+}
 teardown() {
   local ec=$?
   log "tearing down (exit=$ec)"
   write_stop_script
   "$WORK/stop.sh" >/dev/null 2>&1 || true
+  wait_owned_ports_free   # EI-11559: hold the advisory lock until our sidecar releases the port
   fed_release_port_locks
   exit "$ec"
 }
@@ -394,14 +434,22 @@ tauri-agent-tools probe --pid "$VERIFY_TAURI_PID" 2>&1 | sed 's/^/[probe] /' >&2
 
 if [ "${1:-}" = "--boot-only" ]; then
   # The parent exits after printing the source-able environment, so keep the
-  # advisory port locks alive in a tiny child for the interactive session.
-  # It exits automatically when the owned Tauri wrapper dies; the printed stop
-  # script also kills it explicitly during normal cleanup.
+  # advisory port locks alive in a tiny child for the interactive session; the
+  # keeper self-terminates when the display is gone AND our port is free (below).
   # A subshell inherits EXIT traps. Clear the launcher's teardown trap inside
   # the keeper BEFORE it waits: the `tauri dev` wrapper may exit after handing
   # off to the real desktop process, and the keeper ending must never tear down
   # that app/Xvfb/sidecar out from under the interactive caller (WI-4975).
-  ( trap - EXIT INT TERM; while kill -0 "$TAURI_PID" 2>/dev/null; do sleep 2; done ) &
+  # EI-11559: the keeper holds the advisory port lock for the LIFETIME OF THE
+  # DISPLAY (Xvfb), not the tauri-dev wrapper ($TAURI_PID, which can exit early on
+  # handoff). The port collision happens precisely when THIS display is freed while
+  # our sidecar still holds the derived port, so the lock must stay held until Xvfb
+  # is gone AND the port is actually free — then the keeper exits, releasing the
+  # flock last. The wait is PASSIVE (never kills), so it can never tear down a live
+  # app (WI-4975 safe); the caller's stop.sh does the killing.
+  ( trap - EXIT INT TERM
+    while kill -0 "$XVFB_PID" 2>/dev/null; do sleep 2; done
+    wait_owned_ports_free ) &
   PORT_LOCK_KEEPER_PID=$!
   trap - EXIT INT TERM   # caller owns teardown from here
   write_stop_script

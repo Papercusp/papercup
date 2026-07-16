@@ -19,14 +19,17 @@ describe('WI-4975 — verify-tauri-headless --boot-only keeps the isolated app a
   it('clears teardown traps inside the background keeper before it can exit', () => {
     const branch = src.match(/if \[ "\$\{1:-\}" = "--boot-only" \]; then([\s\S]*?)\nfi/)?.[1];
     expect(branch).toBeTruthy();
-    expect(branch).toMatch(
-      /\( trap - EXIT INT TERM; while kill -0 "\$TAURI_PID"[^;]*; do sleep 2; done \) &/,
-    );
+    // The trap-clear is the FIRST statement inside the keeper subshell, before its
+    // wait — so a normal wrapper exit can never tear down the isolated app. EI-11559
+    // switched the keeper to watch the DISPLAY (XVFB_PID) rather than the tauri-dev
+    // wrapper (TAURI_PID, which can exit early on handoff); the WI-4975 property is
+    // unchanged.
+    expect(branch).toMatch(/\(\s*trap - EXIT INT TERM\s*\n\s*while kill -0 "\$XVFB_PID"[^;]*; do sleep 2; done/);
   });
 
   it('does not start the keeper before clearing only the parent trap', () => {
     expect(src).not.toMatch(
-      /\( while kill -0 "\$TAURI_PID"[^;]*; do sleep 2; done \) &\s*\n\s*PORT_LOCK_KEEPER_PID=\$!\s*\n\s*trap - EXIT INT TERM/,
+      /\(\s*while kill -0 "\$XVFB_PID"[\s\S]*?\) &\s*\n\s*PORT_LOCK_KEEPER_PID=\$!\s*\n\s*trap - EXIT INT TERM/,
     );
   });
 });
