@@ -1,6 +1,7 @@
 /** Recurrence guards for P-016's shared fleet-scope predicate + wind-down contract. */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FilterNode } from './claim-spec';
+import type { ClaimSpecRecord } from './claim-spec-store';
 import {
   claimSpecSubjectFromWorkItem,
   matchesClaimSpecFilter,
@@ -206,7 +207,7 @@ describe('fleet scope assignment admission (P-016)', () => {
   // stand-down release woke a parked member which then claimed the released item because
   // it was in-spec and the claim path never checked the pause.
   describe('EI-12832: fleet pause gates the claim/assign admission path', () => {
-    const fleetSpec = {
+    const fleetSpec: ClaimSpecRecord = {
       source: 'fleet' as const,
       spec: {
         specVersion: '1.0',
