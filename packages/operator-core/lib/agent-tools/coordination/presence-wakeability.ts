@@ -172,13 +172,15 @@ export function deriveSessionState(input: {
   claimsHeld?: boolean;
 }): SessionState {
   if (input.pidConfirmedDead || input.hardStale) return input.claimsHeld ? 'suspect' : 'ended';
-  // EI-12699: a turn genuinely IN FLIGHT (recent activity, no end-marker) is
-  // demonstrably alive and is NEVER `ended`, even when the session is not
-  // inbox-wake-dispatchable — a fresh, non-stale liveTurn is `live`. Only a
-  // non-wakeable session with NO live turn (cleanly ended / idle-no-await) is
-  // `ended`. This must precede the `!wakeable ⇒ ended` gate, which otherwise
-  // mislabels a live-but-not-wakeable one-turn bee as dead.
-  if (input.liveTurn && !input.stale) return 'live';
+  // EI-12699: a turn genuinely IN FLIGHT (recent activity, no end-marker) means
+  // the session is ALIVE and is NEVER `ended`, even when it is not
+  // inbox-wake-dispatchable — a fresh liveTurn is `live`; the rare
+  // stale-heartbeat-but-recently-active combo is `draining` (confirm before
+  // assuming dead), never a flat `ended`. This must precede the `!wakeable ⇒
+  // ended` gate, which otherwise mislabels a live-but-not-wakeable one-turn bee
+  // (invoke-once.ts) as dead and serves a self-contradictory row (`ended` while
+  // lastActiveSecAgo is seconds).
+  if (input.liveTurn) return input.stale ? 'draining' : 'live';
   if (!input.wakeable) return 'ended';
   if (input.stale) return 'draining';
   return 'parked';

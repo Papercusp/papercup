@@ -16,10 +16,29 @@ import {
 } from './presence-wakeability';
 
 describe('deriveSessionState', () => {
-  it('not wakeable → ended (no live await; a wake reaches nobody — relaunch only)', () => {
-    // Even with a fresh heartbeat + a running turn, no await ⇒ a wake can't land.
-    expect(deriveSessionState({ stale: false, wakeable: false, liveTurn: true })).toBe('ended');
+  it('not wakeable + NO live turn → ended (cleanly ended / idle no-await; a wake reaches nobody — relaunch only)', () => {
+    // A non-wakeable session that is NOT mid-turn is genuinely gone: no await ⇒
+    // a wake can't land, and no in-flight turn ⇒ nothing is running.
+    expect(deriveSessionState({ stale: false, wakeable: false, liveTurn: false })).toBe('ended');
     expect(deriveSessionState({ stale: true, wakeable: false, liveTurn: false })).toBe('ended');
+  });
+
+  // EI-12699: wakeability and liveness are ORTHOGONAL. A cup:spawn'd one-turn bee
+  // (invoke-once.ts) doing agentic work never registers a coord:inbox-wake await
+  // (wakeable:false) yet is very much alive mid-turn (a fresh liveTurn). The old
+  // `!wakeable ⇒ ended` short-circuit fired ahead of the liveTurn check and served
+  // a self-contradictory row — `ended` while `lastActiveSecAgo` was seconds — so
+  // peers' wake:'required' reported `recipient_dead` and black-holed into a LIVE
+  // agent. A demonstrably-active session must NEVER read `ended`.
+  it('EI-12699: a live turn in flight is `live` even when NOT wakeable (never a false `ended` for an active bee)', () => {
+    // The exact incident shape: a one-turn bee mid-turn — fresh heartbeat, a turn
+    // running, but no inbox-wake await. Alive, not dead.
+    expect(deriveSessionState({ stale: false, wakeable: false, liveTurn: true })).toBe('live');
+    // `wakeable` is emitted as its own field, so the honest read is `live` +
+    // `wakeable:false` — "alive and working, but a wake won't land right now".
+    // A non-wakeable stale-but-recently-active row is `draining` (confirm before
+    // assuming dead), never a flat `ended`.
+    expect(deriveSessionState({ stale: true, wakeable: false, liveTurn: true })).toBe('draining');
   });
 
   it('wakeable + a running turn (fresh heartbeat) → live', () => {
