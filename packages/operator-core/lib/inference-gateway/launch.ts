@@ -510,6 +510,24 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   if (maintenanceCarryOn) {
     log('info', 'inference-gateway: deterministic maintenance-carry ON — /maintenance/summarize?carryOwner=… answers from the carry-doc builder');
   }
+  // P-019 residual sampler (D-010 live leg 2): only meaningful when the deterministic
+  // branch serves (it samples that branch's boundaries), so it rides the carry flag AND
+  // its own kill-switch. Fail-safe: a flag read fault ⇒ OFF (no sampling, byte-identical).
+  const residualSamplerOn =
+    maintenanceCarryOn &&
+    (await (async () => {
+      try {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        return await getFlag(FLAGS.RESIDUAL_CARRY_SAMPLER, 'system');
+      } catch (e) {
+        log('warn', `inference-gateway: residual-sampler flag read failed (${(e as Error).message}) — sampling off`);
+        return false;
+      }
+    })());
+  if (residualSamplerOn) {
+    log('info', 'inference-gateway: P-019 residual carry sampler ON — deterministic maintenance-carry boundaries feed the per-class retirement corpus');
+  }
 
   const gateway = createInferenceGateway({
     pool,
@@ -535,6 +553,24 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
               ...(o.effectiveWindowTokens ? { effectiveWindowTokens: o.effectiveWindowTokens } : {}),
               ...(o.workspaceId ? { buildOpts: { workspaceId: o.workspaceId } } : {}),
             });
+          },
+        }
+      : {}),
+    ...(residualSamplerOn
+      ? {
+          residualSampler: (input: {
+            carryOwner: string;
+            stage1Doc: string;
+            droppedContext: string;
+            interactive: boolean;
+            workspaceId?: string;
+          }) => {
+            // Fire-and-forget: the sampler is lazily imported (its module graph —
+            // PG readers, the pass core — never loads while the flag is dark) and
+            // every fault is swallowed; the served compaction is already on the wire.
+            void import('../residual-carry-pass-live')
+              .then((m) => m.runMaintenanceResidualSample(input))
+              .catch(() => {});
           },
         }
       : {}),

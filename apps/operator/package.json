@@ -117,6 +117,7 @@
     "@papercusp/plugin-sdk": "file:../../packages/plugin-sdk",
     "@papercusp/publish-auth": "file:../../libs/papercusp-publish-auth",
     "@papercusp/rate-limit": "file:../../libs/generic/rate-limit",
+    "@papercusp/release-profile": "file:../../libs/generic/release-profile",
     "@papercusp/rerank": "file:../../libs/generic/rerank",
     "@papercusp/rrf": "file:../../libs/generic/rrf",
     "@papercusp/rules": "file:../../libs/generic/rules",

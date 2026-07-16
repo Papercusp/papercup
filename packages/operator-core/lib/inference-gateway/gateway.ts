@@ -735,6 +735,18 @@ export interface GatewayDeps {
     ownerId: string,
     opts: { effectiveWindowTokens?: number; workspaceId?: string },
   ) => Promise<{ summary: string; deterministic: true; budgetChars: number } | null>;
+  /** P-019 RESIDUAL SAMPLER (deterministic-context-carry D-010 live leg 2): fire-and-forget
+   *  observability hook called AFTER a deterministic carry summary is served, with both pass
+   *  inputs (the served stage-1 doc + the raw prompt material the compaction drops) and the
+   *  launcher-threaded ?carryInteractive bit. Never awaited, never affects the response.
+   *  Resolved + flag-gated at the launch layer (FLAGS.RESIDUAL_CARRY_SAMPLER); ABSENT ⇒ no-op. */
+  residualSampler?: (input: {
+    carryOwner: string;
+    stage1Doc: string;
+    droppedContext: string;
+    interactive: boolean;
+    workspaceId?: string;
+  }) => void;
   /** Max wait for upstream RESPONSE HEADERS before the request is aborted as stalled. A stalled
    *  upstream (Anthropic accepts the socket during an overload but never responds) used to hang the
    *  proxy task forever, leaking its admission slot until the pool deadlocked (the 2026-06-19 outage).
@@ -4509,6 +4521,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 if (carried?.summary) {
                   maintenanceCarried++;
                   sendJson(res, 200, { ok: true, summary: carried.summary, deterministic: true, budgetChars: carried.budgetChars });
+                  // P-019 residual sampler (D-010 live leg 2): this is a REAL compaction
+                  // boundary with both pass inputs in hand — the served stage-1 doc and
+                  // the raw material it replaces. Strictly fire-and-forget AFTER the
+                  // response; a sampler fault can never affect the served compaction.
+                  if (deps.residualSampler) {
+                    try {
+                      deps.residualSampler({
+                        carryOwner,
+                        stage1Doc: carried.summary,
+                        droppedContext: prompt,
+                        interactive: carryParams.get('carryInteractive') === '1',
+                        ...(carryWs ? { workspaceId: carryWs } : {}),
+                      });
+                    } catch {
+                      /* observational only */
+                    }
+                  }
                   return;
                 }
               } catch {

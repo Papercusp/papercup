@@ -1922,6 +1922,12 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     // DEFAULT-ON by explicit owner release direction 2026-07-15. The env is now
     // an emergency opt-OUT; tests can still override directly via opts.
     carryCompaction = process.env.PAPERCUSP_OMP_CARRY_COMPACTION !== '0',
+    // P-019 residual sampler (D-010): the launcher is the ONLY layer that knows
+    // whether this session is interactive (headless members / piped launches are
+    // not) — thread the truthful bit so the gateway's sampler honors the
+    // interactive-only gate instead of guessing. Default false: under-claiming
+    // interactivity only skips samples (conservative), never mis-samples.
+    interactive = false,
   } = opts;
   try {
     if (!sessionId) return null;
@@ -1998,8 +2004,12 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     // cutover stays inert.
     const carryOptIn = !!(carryCompaction && clientId);
     const carryBw = Number(backendWindow);
+    // &carryInteractive=1 (P-019, D-010): threads the launcher's truthful
+    // interactivity knowledge to the gateway's residual sampler — headless /
+    // piped sessions omit it and their boundaries are skipped (graded by the
+    // P-020 drills instead). An older gateway ignores the extra param.
     const carryParams = carryOptIn
-      ? `?carryOwner=${encodeURIComponent(clientId)}${Number.isFinite(carryBw) && carryBw > 0 ? `&carryWindow=${carryBw}` : ''}`
+      ? `?carryOwner=${encodeURIComponent(clientId)}${Number.isFinite(carryBw) && carryBw > 0 ? `&carryWindow=${carryBw}` : ''}${interactive ? '&carryInteractive=1' : ''}`
       : '';
     const remoteEndpointLine = `  remoteEndpoint: "http://127.0.0.1:${gwPort}/maintenance/summarize${carryParams}"\n`;
     if (localModel) {
@@ -6601,7 +6611,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // ESCAPE HATCH (dynamic-tool-surface D-010): --context-size=full opts OUT of the
       // seed — eager-load the whole catalog with discovery OFF (latency-critical broad-tool
       // task / debugging). Everything else defaults to the seed below.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow, interactive: !args.headless && !!process.stdout.isTTY });
       if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
     } else {
@@ -6622,7 +6632,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       if (spine.length !== OMP_CORE_MCP_TOOL_NAMES.length) {
         console.error(`psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${OMP_CORE_MCP_TOOL_NAMES.length - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`);
       }
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow, interactive: !args.headless && !!process.stdout.isTTY });
       if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
       else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }

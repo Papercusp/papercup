@@ -155,3 +155,130 @@ export async function reportResidualCarrySamples(
 ): Promise<MissRateReport> {
   return scoreResidualMissRate(await readLedger(), params);
 }
+
+// ── P-019 live leg 2: the per-class sampling harness over REAL boundaries ─────
+// D-010 landed the llmFn seam (leg 1) but left "the per-class sampling harness
+// over real compaction boundaries" unwired — so the retirement corpus never
+// accumulated (one labeled smoke row was the whole ledger) and P-022's per-class
+// strict-zero gate could never be reached. This is that harness: the gateway's
+// deterministic maintenance-carry branch calls it fire-and-forget at each REAL
+// compaction boundary it serves, where BOTH pass inputs are in hand (the served
+// stage-1 carry doc + the raw prompt material the compaction is dropping).
+
+/** Min spacing between samples for one owner — a compaction-storm cost guard. */
+export const RESIDUAL_SAMPLE_MIN_INTERVAL_MS = 10 * 60_000;
+/** Tail bound on the dropped-context material fed to the pass (the newest,
+ *  least-well-carried material; the pass prompt must stay well inside the
+ *  maintenance model's window). */
+export const RESIDUAL_SAMPLE_DROPPED_CONTEXT_MAX_CHARS = 120_000;
+/** The `source` stamp real gateway-boundary samples carry in the ledger. */
+export const RESIDUAL_SAMPLE_SOURCE = 'gateway-maintenance-carry live boundary';
+
+export interface MaintenanceResidualSampleInput {
+  /** The compacting session's coord ownerId (the gateway's ?carryOwner). */
+  carryOwner: string;
+  /** The deterministic carry doc the gateway just served (stage-1 output). */
+  stage1Doc: string;
+  /** The raw material the caller sent to be summarized — what stage-1 drops. */
+  droppedContext: string;
+  /** Truthful interactivity bit, threaded from the psu-launcher
+   *  (?carryInteractive=1) — the D-010 interactive-only gate. The pass SKIPS
+   *  (not-a-sample) when false; we never guess it here. */
+  interactive: boolean;
+  workspaceId?: string;
+}
+
+export interface MaintenanceResidualSampleDeps {
+  readLedger: () => Promise<ResidualSampleLedgerEvent[]>;
+  appendLedger: (event: ResidualSampleLedgerEvent) => Promise<boolean>;
+  llmFn: ResidualLlmFn;
+  /** ownerId → agent kind ('omp' | 'claude' | ...) for the class label; null on miss. */
+  resolveAgent: (ownerId: string) => Promise<string | null>;
+  now: () => number;
+}
+
+function sampleDeps(overrides: Partial<MaintenanceResidualSampleDeps>): MaintenanceResidualSampleDeps {
+  return {
+    readLedger: readResidualCarryLedger,
+    appendLedger: appendResidualCarryLedgerEvent,
+    llmFn: buildMaintenanceResidualLlmFn(),
+    resolveAgent: async (ownerId) => {
+      try {
+        const { resolveSessionRef } = await import('./compaction-usage');
+        return (await resolveSessionRef(ownerId))?.agent ?? null;
+      } catch {
+        return null;
+      }
+    },
+    now: Date.now,
+    ...overrides,
+  };
+}
+
+export type MaintenanceResidualSampleResult = {
+  sampled: boolean;
+  reason: 'ok' | 'rate-limited' | 'non-interactive' | 'append-failed' | 'owner-missing';
+  sessionClass?: string;
+  material?: boolean;
+  parseError?: boolean;
+};
+
+/**
+ * Run one residual-pass sample at a real gateway maintenance-carry boundary and
+ * persist it to the per-class retirement corpus. Fail-soft by construction: the
+ * caller fires and forgets; the served compaction response is NEVER affected
+ * (the pass core treats an llmFn throw as parseError, and everything else here
+ * returns a reason instead of throwing).
+ */
+export async function runMaintenanceResidualSample(
+  input: MaintenanceResidualSampleInput,
+  overrides: Partial<MaintenanceResidualSampleDeps> = {},
+): Promise<MaintenanceResidualSampleResult> {
+  const deps = sampleDeps(overrides);
+  const ownerId = input.carryOwner.trim();
+  if (!ownerId) return { sampled: false, reason: 'owner-missing' };
+
+  // D-010 interactive-only gate — the pass core records the skip semantics; we
+  // simply do not append (a skipped boundary is not a sample, and skip rows
+  // from a drone fleet would roll real samples out of the bounded ledger).
+  const agent = await deps.resolveAgent(ownerId);
+  const sessionClass = `gateway-${agent ?? 'unknown'}`;
+  if (!input.interactive) return { sampled: false, reason: 'non-interactive', sessionClass };
+
+  // Per-owner cost guard: one sample per RESIDUAL_SAMPLE_MIN_INTERVAL_MS.
+  const nowMs = deps.now();
+  const ledger = await deps.readLedger();
+  const recent = ledger.some((row) => {
+    if (row.ownerId !== ownerId) return false;
+    const t = Date.parse(row.ts);
+    return Number.isFinite(t) && nowMs - t < RESIDUAL_SAMPLE_MIN_INTERVAL_MS;
+  });
+  if (recent) return { sampled: false, reason: 'rate-limited', sessionClass };
+
+  const { runResidualCarryPass } = await import('./residual-carry-pass');
+  const result = await runResidualCarryPass({
+    sessionClass,
+    interactive: true,
+    stage1Doc: input.stage1Doc,
+    droppedContext: input.droppedContext.slice(-RESIDUAL_SAMPLE_DROPPED_CONTEXT_MAX_CHARS),
+    llmFn: deps.llmFn,
+  });
+  const appended = await deps.appendLedger({
+    ts: new Date(nowMs).toISOString(),
+    ownerId,
+    sessionClass,
+    material: result.material,
+    ran: true,
+    parseError: result.parseError,
+    source: RESIDUAL_SAMPLE_SOURCE,
+    findingsCount: result.findings.length,
+  });
+  if (!appended) return { sampled: false, reason: 'append-failed', sessionClass };
+  return {
+    sampled: true,
+    reason: 'ok',
+    sessionClass,
+    material: result.material,
+    parseError: result.parseError,
+  };
+}

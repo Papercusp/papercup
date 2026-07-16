@@ -1285,6 +1285,22 @@ export const FLAGS = {
   // sat unnoticed ~40min). DEFAULT ON. OFF = the kill-switch: the timer still
   // ticks but every sweep no-ops before reading the ledger.
   CARRY_DRILL_DROP_WATCHER: "papercusp-carry-drill-drop-watcher",
+  // deterministic-context-carry P-019 (D-010 live leg 2): gates the residual
+  // carry SAMPLER — at each REAL compaction boundary the gateway's deterministic
+  // maintenance-carry branch serves, fire-and-forget one reserved-lane residual
+  // pass (stage-1 doc vs the dropped raw material) and append the per-class
+  // MissRateSample to ~/.papercusp/psu-pty/residual-carry-samples.events.jsonl.
+  // That corpus is what scoreResidualMissRate's strict-zero retirement gate
+  // (≥30 parsed samples/class, missRate 0, errorFraction ≤0.1) reads, and the
+  // per-class `retire` verdict is exactly what P-022 (retire native compaction
+  // fleet-wide) consumes — without this sampler the corpus never accumulates and
+  // P-022 can never unblock. Interactive boundaries only (the launcher threads
+  // ?carryInteractive=1; headless boundaries skip, they are graded by P-020
+  // drills instead) + a 10-min per-owner rate limit bound the LLM cost. Rides
+  // GATEWAY_MAINTENANCE_CARRY (no deterministic branch ⇒ nothing to sample).
+  // DEFAULT ON; OFF = the kill-switch (no sampling, served compactions
+  // byte-identical either way).
+  RESIDUAL_CARRY_SAMPLER: "papercusp-residual-carry-sampler",
   // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for moving the
   // QUEEN + SCOUT (+ later OVERWATCH) from per-HIVE to WORKSPACE scope — ONE central brain per
   // workspace spanning all its hives (P-003 Queen re-key + P-002 Scout re-key both gate on THIS

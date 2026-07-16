@@ -8,6 +8,7 @@ import {
   startColdBootDrill,
   verifyColdBootDrill,
 } from '../../cold-boot-drill-live';
+import { reportResidualCarrySamples } from '../../residual-carry-pass-live';
 
 const argsSchema = z.discriminatedUnion('op', [
   z.object({
@@ -64,7 +65,10 @@ export default defineTool({
                 drillId: args.drillId,
                 sessionClass: args.sessionClass,
               })
-            : await reportColdBootDrills();
+            : // op:'report' — drill sufficiency + terminal outcomes, PLUS the P-019
+              // residual miss-rate corpus (per-class retire verdicts, D-010): the two
+              // halves of P-022's per-class retirement evidence on one surface.
+              { ...(await reportColdBootDrills()), residual: await reportResidualCarrySamples() };
     const failed = 'ok' in result && result.ok === false;
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result) }],

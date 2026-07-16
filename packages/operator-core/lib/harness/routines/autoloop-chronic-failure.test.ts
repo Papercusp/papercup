@@ -819,6 +819,7 @@ describe('autoloopChronicFailureSweep — WI-4632: escalation ALSO wakes overwat
   });
 
   it('requestOverwatchWake throwing is swallowed: the already-filed observation is NOT undone and the sweep still reports escalated', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(requestOverwatchWake).mockRejectedValue(new Error('boom'));
     mockRows([
       {
@@ -835,6 +836,8 @@ describe('autoloopChronicFailureSweep — WI-4632: escalation ALSO wakes overwat
 
     expect(results[0]).toMatchObject({ outcome: 'escalated', overwatchWaked: false });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('overwatch wake failed'));
+    warn.mockRestore();
   });
 
   it('requestOverwatchWake resolving wired:true but with an error field counts as NOT waked (overwatchWaked:false)', async () => {
