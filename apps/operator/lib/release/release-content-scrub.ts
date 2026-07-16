@@ -62,7 +62,16 @@ export const IDENTITY_PATTERNS: IdentityPattern[] = [
   // Any email address, not just this box's. Over-redacting a doc's `you@example.com`
   // costs nothing; under-redacting the owner's inbox costs him the thing he asked
   // us to prevent.
-  { kind: 'email', pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, placeholder: '[email]' },
+  //
+  // ⚠ The quantifiers are BOUNDED to RFC maxima (local ≤64, domain ≤255, TLD ≤24)
+  // ON PURPOSE — do NOT relax them back to `+`. The unbounded form
+  // (`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`) backtracks catastrophically:
+  // its overlapping classes make matching O(n²)+ on a long email-ish run with no
+  // valid match (a base64 data-URI, a big plan body), and scrubIdentity runs it over
+  // EVERY release page. That single regex was 40s of a 45s `record-release-cli`
+  // page-regen — the "why does regenerating a simple page take 45s" bug. Bounding the
+  // repeats caps per-start-position backtracking to a constant, so it is linear again.
+  { kind: 'email', pattern: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/g, placeholder: '[email]' },
   // Someone's home directory — ours is an enumerated literal and is redacted first;
   // these catch a path belonging to a VM, a build box, or another human entirely.
   { kind: 'unix-home', pattern: /\/home\/[A-Za-z0-9._-]+/g, placeholder: '~' },
