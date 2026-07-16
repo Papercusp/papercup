@@ -214,7 +214,12 @@ const itemSpec = z.object({
   body: z.string().optional(),
   files: z.array(z.string()).optional(),
   plan_slug: z.string().optional(),
-  related_msg_id: z.string().optional(),
+  related_msg_id: z
+    .string()
+    .optional()
+    .describe(
+      "Replying? The EXACT msg_id you are answering (copy from coord:inbox) — this fires the asker's wake-on-reply. A dangling id refuses the send (related_msg_not_found); never hand-type or placeholder it.",
+    ),
   expectsReply: expectsReplyArg,
   relayOf: relayOfArg,
   relayQuote: relayQuoteArg,
@@ -314,6 +319,40 @@ async function sendOne(
       };
     }
     relayStamp = r.stamp;
+  }
+
+  // Reply-threading honesty (WI-5072): related_msg_id is the edge the ENTIRE
+  // reply-wake contract fires on — the asker's wakeOnReply can only match a
+  // reply whose related_msg_id resolves to their message. A dangling id
+  // (hand-typed, placeholder, stale) silently voided that contract for BOTH
+  // sides: the replier's send returned ok, the asker slept until a human
+  // prodded them (live incident 2026-07-16: a reply threaded to the literal id
+  // 'mrnyt8k4-0000-placeholder'; 62 of 870 replies in the prior 7 days dangled
+  // the same way, across many senders). Mirror the relayOf contract directly
+  // above: a CLEAN lookup miss refuses the message loudly; an infra error
+  // stays fail-soft (never refuse a genuine reply on a transient read hiccup).
+  // The fetched original is reused by the reply-wake block below (one lookup).
+  let relatedOriginal: Awaited<ReturnType<typeof getMessageById>> = null;
+  if (msg.related_msg_id) {
+    let lookupErrored = false;
+    try {
+      relatedOriginal = await getMessageById(msg.related_msg_id);
+    } catch {
+      lookupErrored = true; // infra hiccup — deliver anyway (fail-soft)
+    }
+    if (!lookupErrored && relatedOriginal == null) {
+      return {
+        ok: false,
+        to: msg.to,
+        error: 'related_msg_not_found',
+        message:
+          `related_msg_id '${msg.related_msg_id}' matches no coord message — nothing was sent. ` +
+          `A dangling threading id silently voids the asker's wake-on-reply (they sleep while ` +
+          `you believe you replied). Copy the EXACT msg_id from coord:inbox / the message you ` +
+          `are answering — never hand-type or placeholder it. If the original is genuinely ` +
+          `old/pruned, resend without related_msg_id.`,
+      };
+    }
   }
 
   // EI-279: persist the wake intent ON the envelope so it federates — a recipient
@@ -452,7 +491,9 @@ async function sendOne(
   let replyWake: { target: string; woken: number } | undefined;
   if (wakeOnReplyFlag && msg.related_msg_id) {
     try {
-      const original = await getMessageById(msg.related_msg_id);
+      // WI-5072: the send-time validation above already fetched the original;
+      // re-fetch only in the rare fail-soft path where that lookup errored.
+      const original = relatedOriginal ?? (await getMessageById(msg.related_msg_id));
       const originalFrom = original?.from;
       const optedIn =
         original != null && (original as { wakeOnReply?: unknown }).wakeOnReply === true;
@@ -809,7 +850,12 @@ export default defineTool({
     body: z.string().optional(),
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),
-    related_msg_id: z.string().optional(),
+    related_msg_id: z
+    .string()
+    .optional()
+    .describe(
+      "Replying? The EXACT msg_id you are answering (copy from coord:inbox) — this fires the asker's wake-on-reply. A dangling id refuses the send (related_msg_not_found); never hand-type or placeholder it.",
+    ),
     expectsReply: expectsReplyArg,
     relayOf: relayOfArg,
     relayQuote: relayQuoteArg,

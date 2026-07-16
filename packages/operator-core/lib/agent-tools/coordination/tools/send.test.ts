@@ -297,6 +297,38 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(wakeM).not.toHaveBeenCalled();
     expect(b.results[0].replyWake).toBeUndefined();
   });
+
+  // WI-5072: reply-threading honesty — a dangling related_msg_id used to be
+  // silently swallowed (the reply sent ok, the asker's wake-on-reply never
+  // fired, and NEITHER side learned; live incident 2026-07-16 threaded a reply
+  // to the literal id 'mrnyt8k4-0000-placeholder'). Now it mirrors relayOf:
+  // clean miss = loud per-message refusal; infra error = fail-soft delivery.
+  it('WI-5072: a DANGLING related_msg_id refuses the send loudly (related_msg_not_found, nothing persisted)', async () => {
+    // default getMessageById mock resolves null = a clean lookup miss
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'mrn-0000-placeholder' });
+    expect(b.results[0].ok).toBe(false);
+    expect((b.results[0] as { error?: string }).error).toBe('related_msg_not_found');
+    expect(sendM).not.toHaveBeenCalled(); // nothing was persisted
+    expect(wakeM).not.toHaveBeenCalled();
+  });
+
+  it('WI-5072: a getMessageById INFRA error stays fail-soft — the reply still sends (never refuse on a read hiccup)', async () => {
+    getByIdM.mockRejectedValueOnce(new Error('pg blip')); // validation lookup errors
+    getByIdM.mockRejectedValueOnce(new Error('pg blip')); // reply-wake re-fetch errors too
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
+    expect(b.results[0].ok).toBe(true);
+    expect(sendM).toHaveBeenCalledTimes(1); // delivered despite the hiccup
+    expect(b.results[0].replyWake).toBeUndefined(); // wake fail-softed, as before
+  });
+
+  it('WI-5072: a RESOLVED related_msg_id is fetched ONCE — validation result is reused by the reply-wake', async () => {
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 1 });
+    expect(getByIdM).toHaveBeenCalledTimes(1); // one lookup, not two
+  });
 });
 
 describe('coord:send body auto-refs opt-out (coord-authority-hardening P-008)', () => {
