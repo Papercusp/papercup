@@ -12,8 +12,43 @@
  * Pure — unit-tests without PG.
  */
 
+import type { RecencyRank } from '@papercusp/search';
 import type { RosterEntry } from './adv-roster';
 import type { AdvSessionRow } from './adv-sessions';
+
+/**
+ * Parse the route's recency query params into the engine's RecencyRank —
+ * DEFAULT-ON (owner ask 2026-07-12): absent params mean 24h half-life,
+ * weight 0.3, fresh-candidate window 2×half-life; `?recency=off` disables.
+ *
+ * ⚠ WI-5097: this previously lived inline in the route as
+ * `Number(url.searchParams.get('recencyWeight'))` — but `Number(null)` is
+ * **0**, not NaN, so an ABSENT param (every normal search; the UI never
+ * sends it) passed the `>= 0 && <= 1` validity check and silently ran with
+ * weight 0 = recency OFF. The desktop pill showed stale June hits for
+ * queries with fresh same-day matches. Absent/blank/garbage now falls to
+ * the default; an EXPLICIT in-range value (including 0) is honored. Pure —
+ * unit-tested without a route. */
+export function parseRecencyParams(searchParams: URLSearchParams): RecencyRank | undefined {
+  if (searchParams.get('recency') === 'off') return undefined;
+  // Absent or blank → NaN (→ default), NEVER Number(null)'s accidental 0.
+  const num = (name: string): number => {
+    const raw = searchParams.get(name);
+    return raw === null || raw.trim() === '' ? NaN : Number(raw);
+  };
+  const halfLifeH = num('recencyHalfLifeH');
+  const halfLifeMs = (Number.isFinite(halfLifeH) && halfLifeH > 0 ? halfLifeH : 24) * 3_600_000;
+  const weight = (() => {
+    const w = num('recencyWeight');
+    return Number.isFinite(w) && w >= 0 && w <= 1 ? w : 0.3;
+  })();
+  // Fresh-candidate window (engine `RecencyRank.freshWindowMs`): guarantees
+  // recent matches a seat in the relevance-cut candidate pool. Default
+  // 2×half-life; `?recencyFreshWindowH=0` disables just the fresh leg.
+  const freshH = num('recencyFreshWindowH');
+  const freshWindowMs = Number.isFinite(freshH) && freshH >= 0 ? freshH * 3_600_000 : 2 * halfLifeMs;
+  return { halfLifeMs, weight, freshWindowMs };
+}
 
 /** One matched transcript turn (a session_turns row that hit the query). */
 export interface TranscriptTurnHit {

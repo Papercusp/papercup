@@ -35,6 +35,9 @@ import {
   dedupeEndedAgainstActive,
   pendingLaunchesToRosterEntries,
 } from '../../../adv-roster';
+// Pure recency-param parsing (WI-5097; the rest of adv-session-search stays
+// dynamically imported inside the handler with the other search-only deps).
+import { parseRecencyParams } from '../../../adv-session-search';
 import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
 import { setOnDesktopWindowsCache, type WindowsDesktopWindow } from '../../../windows-desktop-windows';
 import { readOmpConfig } from '../../../omp-config';
@@ -683,20 +686,15 @@ const searchTranscripts = defineTool({
       sinceParam || untilParam
         ? { ...(sinceParam ? { since: sinceParam } : {}), ...(untilParam ? { until: untilParam } : {}) }
         : undefined;
-    // 2. SOFT RE-RANK — a recency decay blended into the fused score before the
-    //    top-N cut. DEFAULT-ON for this route; ?recency=off disables it, and
-    //    ?recencyHalfLifeH / ?recencyWeight tune it. getTime defaults to hit.ts
-    //    (populated by the session_turn source).
-    const halfLifeH = Number(url.searchParams.get('recencyHalfLifeH'));
-    const weightParam = Number(url.searchParams.get('recencyWeight'));
-    const recency: RecencyRank | undefined =
-      url.searchParams.get('recency') === 'off'
-        ? undefined
-        : {
-            halfLifeMs: (Number.isFinite(halfLifeH) && halfLifeH > 0 ? halfLifeH : 24) * 3_600_000,
-            weight:
-              Number.isFinite(weightParam) && weightParam >= 0 && weightParam <= 1 ? weightParam : 0.3,
-          };
+    // 2. SOFT RE-RANK + FRESH-CANDIDATE LEG — a recency decay blended into the
+    //    fused score before the top-N cut, plus a recent-window BM25 candidate
+    //    list so same-day matches can't be crowded out of the relevance-cut
+    //    pool by old high-term-density turns (WI-5097). DEFAULT-ON for this
+    //    route; ?recency=off disables, ?recencyHalfLifeH / ?recencyWeight /
+    //    ?recencyFreshWindowH tune. Parsing lives in parseRecencyParams
+    //    (adv-session-search.ts) — pure + unit-tested, after the inline
+    //    Number(null)=0 parse silently disabled the whole re-rank (WI-5097).
+    const recency: RecencyRank | undefined = parseRecencyParams(url.searchParams);
 
     // Per-stage timing breakdown (WI-3924 follow-up C): the endpoint's cold
     // baseline was ~3.3s even with a BM25-only (no-embed) hit, and the cost

@@ -9,6 +9,7 @@ import {
   groupHitsBySession,
   matchActiveEntry,
   matchSessionRow,
+  parseRecencyParams,
   type TranscriptTurnHit,
 } from './adv-session-search';
 import type { RosterEntry } from './adv-roster';
@@ -159,5 +160,52 @@ describe('classifySessionGroups', () => {
     expect(out[1].session).not.toBeNull();
     expect(out[2].active).toBeNull();
     expect(out[2].session).toBeNull();
+  });
+});
+
+describe('parseRecencyParams (WI-5097)', () => {
+  const parse = (qs: string) => parseRecencyParams(new URLSearchParams(qs));
+
+  it('ABSENT params → the documented defaults (24h half-life, weight 0.3, fresh window 2×half-life)', () => {
+    // THE WI-5097 regression: `Number(null)` is 0, so the old inline parse
+    // read an absent recencyWeight as an explicit 0 and silently disabled
+    // the default-ON recency re-rank for every normal search.
+    expect(parse('q=inbox')).toEqual({
+      halfLifeMs: 24 * 3_600_000,
+      weight: 0.3,
+      freshWindowMs: 48 * 3_600_000,
+    });
+  });
+
+  it('blank values behave like absent ones (never an accidental 0)', () => {
+    expect(parse('q=x&recencyWeight=&recencyHalfLifeH=&recencyFreshWindowH=')).toEqual({
+      halfLifeMs: 24 * 3_600_000,
+      weight: 0.3,
+      freshWindowMs: 48 * 3_600_000,
+    });
+  });
+
+  it('recency=off → undefined (re-rank disabled entirely)', () => {
+    expect(parse('q=x&recency=off')).toBeUndefined();
+  });
+
+  it('EXPLICIT values are honored — including weight 0 and freshWindow 0', () => {
+    expect(parse('q=x&recencyWeight=0')).toMatchObject({ weight: 0 });
+    expect(parse('q=x&recencyWeight=0.7')).toMatchObject({ weight: 0.7 });
+    expect(parse('q=x&recencyHalfLifeH=6')).toMatchObject({
+      halfLifeMs: 6 * 3_600_000,
+      freshWindowMs: 12 * 3_600_000, // fresh default tracks the half-life
+    });
+    expect(parse('q=x&recencyFreshWindowH=0')).toMatchObject({ freshWindowMs: 0 });
+    expect(parse('q=x&recencyFreshWindowH=72')).toMatchObject({ freshWindowMs: 72 * 3_600_000 });
+  });
+
+  it('out-of-range / garbage values fall back to defaults', () => {
+    expect(parse('q=x&recencyWeight=2')).toMatchObject({ weight: 0.3 });
+    expect(parse('q=x&recencyWeight=-1')).toMatchObject({ weight: 0.3 });
+    expect(parse('q=x&recencyWeight=abc')).toMatchObject({ weight: 0.3 });
+    expect(parse('q=x&recencyHalfLifeH=0')).toMatchObject({ halfLifeMs: 24 * 3_600_000 });
+    expect(parse('q=x&recencyHalfLifeH=-5')).toMatchObject({ halfLifeMs: 24 * 3_600_000 });
+    expect(parse('q=x&recencyFreshWindowH=-1')).toMatchObject({ freshWindowMs: 48 * 3_600_000 });
   });
 });
