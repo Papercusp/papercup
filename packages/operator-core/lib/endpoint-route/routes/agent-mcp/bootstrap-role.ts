@@ -198,6 +198,9 @@ const post = defineTool({
     const feature = body.feature?.trim() || null;
     const plan = body.plan?.trim() || null;
     const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent);
+    if (accountPin.error) {
+      return jsonRes({ status: 'error', error: accountPin.error }, 409);
+    }
 
     // Feature + plan gating from the single source (roleConsumes / consumes).
     const consumes = roleConsumes(role, harnessSlug ?? '');

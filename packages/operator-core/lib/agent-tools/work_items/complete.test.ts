@@ -958,8 +958,32 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         expect(gatherFlatCompletion(call)).toBe(call);
       });
 
-      it('does not attempt a merge when `completion` is not yet a plain object (e.g. a raw JSON string) — left for coerceCompletionShape', () => {
-        const call = { id: 'WI-1', completion: JSON.stringify({ summary: 's' }), tests: 'flat' };
+      // EI-13016: a bare-string `completion` (prose OR a JSON blob) with a flat sibling used
+      // to bail here ("left for coerceCompletionShape") — but coerceCompletionShape only sees
+      // the `completion` value, never the top-level sibling, so `tests` was dropped and the
+      // verificationWarning became unsatisfiable. Now the string is coerced to its object shape
+      // and the sibling is merged in (the WI-5069, 2026-07-16 repro).
+      it('coerces a raw JSON-string `completion` and MERGES a flat `tests` sibling into it (EI-13016)', () => {
+        expect(
+          gatherFlatCompletion({ id: 'WI-1', completion: JSON.stringify({ summary: 's' }), tests: 'flat' }),
+        ).toEqual({
+          id: 'WI-1',
+          completion: { summary: 's', tests: 'flat' },
+        });
+      });
+
+      it('coerces a bare PROSE-string `completion` and MERGES a flat `tests` sibling into { summary } (the exact WI-5069 repro)', () => {
+        expect(
+          gatherFlatCompletion({ id: 'WI-5069', state: 'done', completion: 'Completion audit prose', tests: '18 green' }),
+        ).toEqual({
+          id: 'WI-5069',
+          state: 'done',
+          completion: { summary: 'Completion audit prose', tests: '18 green' },
+        });
+      });
+
+      it('an empty-string `completion` with a flat sibling is left for validation (no merge onto a non-object)', () => {
+        const call = { id: 'WI-1', completion: '   ', tests: 'flat' };
         expect(gatherFlatCompletion(call)).toBe(call);
       });
     });
@@ -1024,6 +1048,36 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.ok).toBe(true);
       expect(r.completion.tests).toBe('mac VM live verification passed');
       expect(r.verificationWarning).toBeUndefined();
+    });
+
+    // EI-13016: the EI-9930 rescue only fired when `completion` was already a plain OBJECT.
+    // A bare-STRING completion (the live shape the reporter used) still dropped the flat
+    // `tests` sibling — the object schema stripped it, coerceCompletionShape never saw it,
+    // terminalCompletionEvidence stayed null, and the verificationWarning demanding `tests`
+    // became unsatisfiable (re-sending with `tests` changed nothing). Now the string
+    // completion is coerced to { summary } and the sibling merges in — verification survives
+    // and reaches the terminal state writer as completionEvidence (the WI-5069, 2026-07-16 repro).
+    it('a flat top-level `tests` sibling of a bare-STRING `completion` is rescued — no false verificationWarning + evidence reaches the state writer (EI-13016)', async () => {
+      const r = await one({
+        id: 'WI-9',
+        state: 'resolved',
+        completion: 'Completion audit — everything verified in tree and deploy.',
+        tests: 'npm run test:file — 154 green (exit 0)',
+      });
+      expect(r.ok).toBe(true);
+      expect(r.completion.summary).toBe('Completion audit — everything verified in tree and deploy.');
+      expect(r.completion.tests).toBe('npm run test:file — 154 green (exit 0)');
+      // The unsatisfiable-warning loop is closed: the warning no longer fires.
+      expect(r.verificationWarning).toBeUndefined();
+      // …and the evidence is not merely echoed — it is passed to the terminal state writer as
+      // completionEvidence, which is what persists terminalCompletionEvidence (was null before).
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-9',
+        'resolved',
+        expect.objectContaining({
+          completionEvidence: expect.objectContaining({ testsRun: 'npm run test:file — 154 green (exit 0)' }),
+        }),
+      );
     });
 
     // EI-6999: a shape with NEITHER `completion` NOR any recognizable flat

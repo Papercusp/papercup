@@ -763,16 +763,18 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
   const pin = async (requested: string | null, agent: 'claude' | 'omp' | 'codex' = 'claude') =>
     (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountPin('default', requested, agent);
 
-  it('no account → no env patch, no notice', async () => {
-    expect(await pin(null)).toMatchObject({ env: {}, notice: null, accountId: null, provider: null });
-    expect(await pin('   ')).toMatchObject({ env: {}, notice: null, accountId: null, provider: null });
+  it('no account → explicit Claude default-route marker, no notice', async () => {
+    const expected = { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' };
+    expect(await pin(null)).toMatchObject({ env: expected, notice: null, accountId: null, provider: null });
+    expect(await pin('   ')).toMatchObject({ env: expected, notice: null, accountId: null, provider: null });
   });
 
-  it('gateway off → fail-soft notice, no env patch (the current live default)', async () => {
+  it('gateway off → explicit pin fails closed instead of using the default login', async () => {
     getFlagMock.mockResolvedValue(false);
     const r = await pin('aviynw6');
     expect(r.env).toEqual({});
-    expect(r.notice).toMatch(/gateway is off/i);
+    expect(r.error).toMatch(/gateway is off/i);
+    expect(r.error).toMatch(/refusing to fall back to the default system login/i);
   });
 
   it('OMP account pinning routes through the gateway (D-006): the account-id signal, not the claude ANTHROPIC_BASE_URL env', async () => {
@@ -788,27 +790,27 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(loadAccountPoolMock).toHaveBeenCalled();
   });
 
-  it('unknown account (not in pool) → fail-soft notice', async () => {
+  it('unknown account (not in pool) → fails closed', async () => {
     getFlagMock.mockResolvedValue(true);
     const r = await pin('not-a-real-acct');
     expect(r.env).toEqual({});
-    expect(r.notice).toMatch(/not in the account pool/i);
+    expect(r.error).toMatch(/not in the account pool/i);
   });
 
-  it('account excluded by session-override → fail-soft notice', async () => {
+  it('account excluded by session-override → fails closed', async () => {
     getFlagMock.mockResolvedValue(true);
     getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: ['aviynw6'] });
     const r = await pin('aviynw6');
     expect(r.env).toEqual({});
-    expect(r.notice).toMatch(/exclude list/i);
+    expect(r.error).toMatch(/exclude list/i);
   });
 
-  it('account outside forcedAccounts allow-list → fail-soft notice', async () => {
+  it('account outside forcedAccounts allow-list → fails closed', async () => {
     getFlagMock.mockResolvedValue(true);
     getAccountOverrideMock.mockResolvedValue({ forcedAccounts: ['aviynw2'], excludeAccounts: [] });
     const r = await pin('aviynw6');
     expect(r.env).toEqual({});
-    expect(r.notice).toMatch(/allow-list/i);
+    expect(r.error).toMatch(/allow-list/i);
   });
 
   it('valid + allowed + gateway on → gateway env pin + PAPERCUSP_ACCOUNT_ID + confirm notice', async () => {
@@ -825,7 +827,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     getFlagMock.mockResolvedValue(true); // gateway ON — `default` must STILL skip it (the system-account escape hatch)
     for (const kw of ['default', 'none', 'system', 'DEFAULT', ' System ']) {
       const r = await pin(kw);
-      expect(r.env).toEqual({});
+      expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' });
       expect(r.accountId).toBeNull();
       expect(r.notice).toMatch(/default system account.*inference gateway skipped/i);
     }
@@ -855,11 +857,12 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/auto/i);
   });
 
-  it("'auto' + gateway OFF → fail-soft to the default credential", async () => {
+  it("'auto' + gateway OFF → fails closed instead of using the default credential", async () => {
     getFlagMock.mockResolvedValue(false);
     const r = await pin('auto');
     expect(r.env).toEqual({});
-    expect(r.notice).toMatch(/--account auto ignored.*gateway is off/i);
+    expect(r.error).toMatch(/--account auto could not be honored.*gateway is off/i);
+    expect(r.error).toMatch(/refusing to fall back/i);
   });
 
   it("'auto' + codex → UNPINNED gateway routing carried by gatewayAuto (WI-3645), not a fail-soft", async () => {
@@ -878,12 +881,12 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/routing through the inference gateway \(auto/i);
   });
 
-  it("'auto' + omp still fail-softs (models.yml needs a specific account — unchanged)", async () => {
+  it("'auto' + omp fails closed because models.yml needs a specific account", async () => {
     getFlagMock.mockResolvedValue(true);
     const r = await pin('auto', 'omp');
     expect(r.env).toEqual({});
     expect(r.gatewayAuto).toBeUndefined();
-    expect(r.notice).toMatch(/auto gateway routing isn't wired for omp yet/i);
+    expect(r.error).toMatch(/auto gateway routing isn't wired for omp yet/i);
   });
 
   it('Codex account + codex agent → no Anthropic env, but carries account id for CODEX_HOME config', async () => {
@@ -896,21 +899,24 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/pinned to Codex account codex-main/i);
   });
 
-  it('Codex account + claude agent → fail-soft provider mismatch notice', async () => {
+  it('Codex account + claude agent → fails closed on provider mismatch', async () => {
     getFlagMock.mockResolvedValue(true);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
     const r = await pin('codex-main', 'claude');
     expect(r.env).toEqual({});
-    expect(r.notice).toMatch(/codex account.*claude sessions require claude/i);
+    expect(r.error).toMatch(/codex account.*claude sessions require claude/i);
   });
 
   // P-006 (end-to-end through the POST handler): the launcher's `account` body field
   // flows → resolveAccountPin → the response's envelopeEnv + accountNotice.
-  it('POST { account } → response carries the fail-soft notice when the gateway is off', async () => {
+  it('POST { account } → 409 before session bookkeeping when the explicit route is unavailable', async () => {
     getFlagMock.mockResolvedValue(false);
-    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup', account: 'aviynw6' })).json();
-    expect(json.accountNotice).toMatch(/gateway is off/i);
-    expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
+    const response = await callPost({ agent: 'claude', harness_slug: 'papercup', account: 'aviynw6' });
+    expect(response.status).toBe(409);
+    const json = await response.json();
+    expect(json.error).toMatch(/gateway is off/i);
+    expect(json.error).toMatch(/refusing to fall back/i);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
   it('POST { account } → response pins the account + sets the gateway env when on + valid', async () => {
@@ -921,10 +927,11 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('aviynw6');
   });
 
-  it('POST without account → no accountNotice, no gateway env (unchanged default)', async () => {
+  it('POST without account → no accountNotice, explicit default marker, no gateway env', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     expect(json.accountNotice).toBeNull();
     expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
   });
 });
 

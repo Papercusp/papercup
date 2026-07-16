@@ -217,10 +217,12 @@ const optionsForOptions = defineTool({
  * psu-account-chooser P-002: the env patch that pins an interactive psu session to a
  * chosen pool `account`. Mirrors the fleet's gateway routing (operator-spawn →
  * gatewaySpawnEnv) but with an EXPLICIT, validated account instead of the drain
- * selector. Fail-soft (D-002): gateway off / unknown / disallowed account → no env
- * patch + a human `notice` the launcher prints, never an error. Honors the
- * session-override allow/exclude (D-003). Exported so the gating unit-tests without
- * the POST handler.
+ * selector. `default` is an active route decision: Claude gets an envelope marker
+ * that makes the launcher clear every inherited gateway/direct credential before
+ * restoring the system login. Explicit `auto`/pin requests fail CLOSED when they
+ * cannot be honored — they must never silently become the default system login.
+ * Honors the session-override allow/exclude (D-003). Exported so the gating
+ * unit-tests can exercise the resolution without the POST handler.
  */
 export async function resolveAccountPin(
   workspaceId: string,
@@ -237,6 +239,9 @@ export async function resolveAccountPin(
   notice: string | null;
   accountId: string | null;
   provider: BackendAccountProvider | null;
+  /** Present only when an explicit nondefault route could not be honored. Route
+   * handlers reject the launch before recording/spawning anything. */
+  error?: string;
   /** WI-3645: explicit-auto routing for a config-FILE-carried backend (codex) — the CODEX_HOME
    *  writers translate this into an UNPINNED gateway provider block (codexGatewayAuto). Claude
    *  auto needs no marker (its routing rides entirely in `env`); absent on pins/default/fail. */
@@ -252,7 +257,10 @@ export async function resolveAccountPin(
   //  • <pool id>                          → pin to that specific account (HARD when hardPin — the PSU pin).
   if (!raw || lower === 'default' || lower === 'none' || lower === 'system') {
     return {
-      env: {},
+      // Marker parity with the raw-node launcher. The default route is not the
+      // absence of routing state: it actively forces Claude back to the machine's
+      // system `/login`, regardless of ambient env inherited from a prior session.
+      env: agent === 'claude' ? { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' } : {},
       notice: raw ? 'using the default system account (inference gateway skipped).' : null,
       accountId: null,
       provider: null,
@@ -261,12 +269,18 @@ export async function resolveAccountPin(
   const wantAuto = lower === 'auto' || lower === 'gateway';
   const id = raw;
   const label = wantAuto ? 'auto' : id;
-  const fail = (why: string) => ({
-    env: {} as Record<string, string>,
-    notice: `--account ${label} ignored: ${why} — using the default credential.`,
-    accountId: null,
-    provider: null as BackendAccountProvider | null,
-  });
+  const fail = (why: string) => {
+    const error =
+      `--account ${label} could not be honored: ${why}. ` +
+      'Refusing to fall back to the default system login.';
+    return {
+      env: {} as Record<string, string>,
+      notice: error,
+      accountId: null,
+      provider: null as BackendAccountProvider | null,
+      error,
+    };
+  };
   const accountGuard = backendFeatureGuard(agent, wantAuto ? 'gateway-routing' : 'account-pinning');
   if (!accountGuard.supported)
     return fail(
@@ -315,9 +329,9 @@ export async function resolveAccountPin(
           gatewayAuto: true,
         };
       }
-      // OMP auto-routing needs a per-session models.yml pointing at a specific account (there is
-      // none here), so it is not wired interactively yet — fail-soft to the default credential,
-      // never block the launch.
+      // OMP auto-routing needs a per-session models.yml pointing at a specific
+      // account (there is none here), so it is not wired interactively yet.
+      // Fail closed: the operator explicitly chose auto, not the system login.
       return fail(`auto gateway routing isn't wired for ${agent} yet`);
     }
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
@@ -1224,6 +1238,26 @@ const post = defineTool({
         fleet: body.fleet?.trim() || body.fleet_name?.trim() || null,
       });
 
+    // Resolve account routing BEFORE fleet creation, seat consumption, or the
+    // adv_sessions row. An explicit auto/pin route is a contract: if it cannot be
+    // honored, reject with no ghost session and no side effects instead of silently
+    // launching on the default system credential.
+    const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
+    if (accountPin.error) {
+      return jsonRes({ status: 'error', error: accountPin.error }, 409);
+    }
+    if (sessionPortContext) {
+      const summary = sessionPortContext.row.metadata.summary as SessionPortContractSummary | undefined;
+      const expectedAccount = typeof summary?.target?.account === 'string' ? summary.target.account : 'default';
+      const actualAccount = accountPin.accountId ?? 'default';
+      if (actualAccount !== expectedAccount) {
+        return jsonRes({
+          status: 'error',
+          error: `prepared target account ${expectedAccount} did not resolve exactly at bootstrap (got ${actualAccount}); no fallback allowed`,
+        }, 409);
+      }
+    }
+
     // named-su-agent-fleets P-006: resolve the chosen fleet (create-on-new-name +
     // membership env). sid is this session's coord owner id → the fleet's owner +
     // leader when it creates a new fleet (D-002).
@@ -1347,23 +1381,6 @@ const post = defineTool({
       });
     }
     const sessionKey = sessionPortContext?.row.id ?? sessionId ?? `t-${randomUUID()}`;
-
-    // psu-account-chooser: resolve before writing Codex launch artifacts so a Codex
-    // account pin can be baked into CODEX_HOME/config.toml.
-    // HARD pin (account-hard-pin-2026-06-29): the interactive PSU launcher pins are STRICT — the operator
-    // explicitly chose this account, so route there with no failover (stricter than the bees' soft pins).
-    const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
-    if (sessionPortContext) {
-      const summary = sessionPortContext.row.metadata.summary as SessionPortContractSummary | undefined;
-      const expectedAccount = typeof summary?.target?.account === 'string' ? summary.target.account : 'default';
-      const actualAccount = accountPin.accountId ?? 'default';
-      if (actualAccount !== expectedAccount) {
-        return jsonRes({
-          status: 'error',
-          error: `prepared target account ${expectedAccount} did not resolve exactly at bootstrap (got ${actualAccount}); no fallback allowed`,
-        }, 409);
-      }
-    }
 
     // WI-1343's in-memory setPendingFleet placement used to live here; replaced by the
     // durable membership-fact stamp above (WI-1893 — the map was per-cluster-worker and

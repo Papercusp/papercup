@@ -280,6 +280,48 @@ describe('bootstrap-role', () => {
     );
   });
 
+  it('rejects an unavailable explicit account route before recording or building the role launch', async () => {
+    resolveAccountPinMock.mockResolvedValue({
+      env: {},
+      notice: '--account auto could not be honored: the inference gateway is off.',
+      error:
+        '--account auto could not be honored: the inference gateway is off. Refusing to fall back to the default system login.',
+      accountId: null,
+      provider: null,
+    });
+    const res = await callPost({
+      role: 'worker',
+      agent: 'claude',
+      harness_slug: 'papercup',
+      feature: 'F-001',
+      account: 'auto',
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ status: 'error', error: expect.stringMatching(/refusing to fall back/i) });
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
+  });
+
+  it('carries the explicit default-route marker into a Claude role launch envelope', async () => {
+    resolveAccountPinMock.mockResolvedValue({
+      env: { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' },
+      notice: 'using the default system account (inference gateway skipped).',
+      accountId: null,
+      provider: null,
+    });
+    const res = await callPost({
+      role: 'worker',
+      agent: 'claude',
+      harness_slug: 'papercup',
+      feature: 'F-001',
+      account: 'default',
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+    expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
   it('requires a harness slug', async () => {
     const res = await callPost({ role: 'worker', agent: 'claude', feature: 'F-001' });
     expect(res.status).toBe(400);
