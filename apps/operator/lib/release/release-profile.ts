@@ -30,6 +30,7 @@ import {
   type ComponentCheckResult,
   type ComponentRawVerdict,
   type ComponentSpec,
+  type EvaluateReleaseProfileOpts,
   type ReleaseProfileSpec,
   type ReleaseProfileVerdict,
 } from '@papercusp/release-profile';
@@ -275,11 +276,22 @@ export async function buildPapercuspReleaseProfile(
     readRunningGenerationFn(),
   ]);
 
+  // Reuse the Rubric objects listRubrics already fetched instead of a redundant
+  // per-component getRubric round-trip — resolve by id from this same read unless the
+  // caller explicitly injected its own getRubric (e.g. a test fixture).
+  const rubricById = new Map(releaseGatingRubrics.map((r) => [r.rubricId, r]));
+  const rubricDeps = {
+    ...opts.rubricOpts?.deps,
+    getRubric: opts.rubricOpts?.deps?.getRubric ?? (async (ref: string) => rubricById.get(ref) ?? null),
+  };
+
   return {
     profileRef: opts.profileRef ?? PAPERCUSP_RELEASE_PROFILE_REF,
     ...(generation.sha ? { expectedLineage: { sha: generation.sha } } : {}),
     components: [
-      ...releaseGatingRubrics.map((r) => rubricReleaseComponent(r.rubricId, opts.rubricOpts)),
+      ...releaseGatingRubrics.map((r) =>
+        rubricReleaseComponent(r.rubricId, { ...opts.rubricOpts, deps: rubricDeps }),
+      ),
       deployStalenessGateComponent(opts.gateOpts),
       ...(opts.extraComponents ?? []),
     ],
@@ -287,10 +299,11 @@ export async function buildPapercuspReleaseProfile(
 }
 
 /** Build + evaluate the papercusp release profile in one call — the entry point
- *  WI-3548's GO/NO-GO synthesis consumes. */
+ *  WI-3548's GO/NO-GO synthesis consumes. `evaluateOpts` threads through to the
+ *  generic evaluator (e.g. an injectable `now` for deterministic tests). */
 export async function evaluatePapercuspReleaseProfile(
-  opts: BuildPapercuspReleaseProfileOpts = {},
+  opts: BuildPapercuspReleaseProfileOpts & { evaluateOpts?: EvaluateReleaseProfileOpts } = {},
 ): Promise<ReleaseProfileVerdict> {
   const spec = await buildPapercuspReleaseProfile(opts);
-  return evaluateReleaseProfile(spec);
+  return evaluateReleaseProfile(spec, opts.evaluateOpts);
 }

@@ -71,21 +71,22 @@ describe('resolveCellConfig — pins floor=cap=target', () => {
     expect(c.configReachable).toBe(true);
   });
 
-  it('the 100K point is UNREACHABLE through the config surface (floor bound 50K) — reported honestly', () => {
+  it('the 100K point IS reachable — the floor bound was raised to 100K (D-012 live-leg prerequisite)', () => {
     const c = resolveCellConfig({ maxTurnTargetTokens: 100_000, effectiveWindowTokens: M1_WINDOW, doorSplitVariantId: 'baked' });
-    expect(c.patch.maxTurnFloorTokens).toBe(SESSION_DOOR_FLOOR_MAX); // clamped to 50K
+    expect(c.patch.maxTurnFloorTokens).toBe(100_000);
     expect(c.patch.maxTurnCapTokens).toBe(100_000);
-    expect(c.achievedMaxTurnTokens).toBe(50_000); // cannot exceed the floor bound on any real window
-    expect(c.configReachable).toBe(false);
-    expect(c.clampNote).toContain('50k');
+    expect(c.achievedMaxTurnTokens).toBe(100_000);
+    expect(c.configReachable).toBe(true);
   });
 
-  it('exactly 50K is reachable (the floor bound), 50K+1 is not', () => {
-    const at = resolveCellConfig({ maxTurnTargetTokens: 50_000, effectiveWindowTokens: M1_WINDOW, doorSplitVariantId: 'baked' });
+  it('exactly 100K is reachable (the raised floor bound), 100K+1 is not — still reported honestly', () => {
+    const at = resolveCellConfig({ maxTurnTargetTokens: 100_000, effectiveWindowTokens: M1_WINDOW, doorSplitVariantId: 'baked' });
     expect(at.configReachable).toBe(true);
-    expect(at.achievedMaxTurnTokens).toBe(50_000);
-    const over = resolveCellConfig({ maxTurnTargetTokens: 50_001, effectiveWindowTokens: M1_WINDOW, doorSplitVariantId: 'baked' });
+    expect(at.achievedMaxTurnTokens).toBe(100_000);
+    expect(at.patch.maxTurnFloorTokens).toBe(SESSION_DOOR_FLOOR_MAX);
+    const over = resolveCellConfig({ maxTurnTargetTokens: 100_001, effectiveWindowTokens: M1_WINDOW, doorSplitVariantId: 'baked' });
     expect(over.configReachable).toBe(false);
+    expect(over.clampNote).toContain('100k');
   });
 
   it('applies the door-split variant to the derived doors', () => {
@@ -157,25 +158,28 @@ describe('runMaxTurnSweep — staged by default, fail-soft when armed', () => {
     expect(out.results.every((r) => r.status === 'staged' && r.note === 'no-driver')).toBe(true);
   });
 
-  it('armed + driver ⇒ drives reachable cells, skips the unreachable 100K cell (onlyReachable default)', async () => {
+  it('armed + driver ⇒ drives every cell — the 100K point is now config-reachable (D-012 prerequisite landed)', async () => {
     const driver = vi.fn(async () => okMetrics());
     const out = await runMaxTurnSweep({ axes: tinyAxes, armed: true, driver });
     expect(out.ran).toBe(true);
-    // 2K + 25K driven; 100K staged (unreachable).
     const byId = Object.fromEntries(out.results.map((r) => [r.cellId, r]));
     expect(byId['ornith-drone__mt2k__baked__drain'].status).toBe('ok');
     expect(byId['ornith-drone__mt25k__baked__drain'].status).toBe('ok');
-    expect(byId['ornith-drone__mt100k__baked__drain'].status).toBe('staged');
-    expect(driver).toHaveBeenCalledTimes(2);
-    expect(out.unreachableCells).toEqual(['ornith-drone__mt100k__baked__drain']);
-    expect(out.reachableCount).toBe(2);
+    expect(byId['ornith-drone__mt100k__baked__drain'].status).toBe('ok');
+    expect(driver).toHaveBeenCalledTimes(3);
+    expect(out.unreachableCells).toEqual([]);
+    expect(out.reachableCount).toBe(3);
   });
 
-  it('onlyReachable:false attempts the unreachable cell too', async () => {
+  it('onlyReachable still guards a genuinely out-of-bound target (>100K) when armed', async () => {
     const driver = vi.fn(async () => okMetrics());
-    const out = await runMaxTurnSweep({ axes: tinyAxes, armed: true, driver, onlyReachable: false });
-    expect(driver).toHaveBeenCalledTimes(3);
-    expect(out.results.every((r) => r.status === 'ok')).toBe(true);
+    const axes = { ...tinyAxes, maxTurnTargetsTokens: [2_000, 150_000] };
+    const out = await runMaxTurnSweep({ axes, armed: true, driver });
+    const byId = Object.fromEntries(out.results.map((r) => [r.cellId, r]));
+    expect(byId['ornith-drone__mt2k__baked__drain'].status).toBe('ok');
+    expect(byId['ornith-drone__mt150k__baked__drain'].status).toBe('staged');
+    expect(driver).toHaveBeenCalledTimes(1);
+    expect(out.unreachableCells).toEqual(['ornith-drone__mt150k__baked__drain']);
   });
 
   it('a throwing driver on one cell ⇒ that cell status:error, the sweep continues (fail-soft)', async () => {
@@ -199,20 +203,20 @@ describe('runMaxTurnSweep — staged by default, fail-soft when armed', () => {
       return okMetrics();
     });
     await runMaxTurnSweep({ axes: tinyAxes, armed: true, driver, repeats: 0 });
-    expect(seen).toEqual([1, 1]); // 2 reachable cells, each clamped 0 → 1
+    expect(seen).toEqual([1, 1, 1]); // 3 reachable cells (100K now included), each clamped 0 → 1
 
     seen.length = 0;
     await runMaxTurnSweep({ axes: tinyAxes, armed: true, driver, repeats: 3 });
-    expect(seen).toEqual([3, 3]);
+    expect(seen).toEqual([3, 3, 3]);
   });
 
   it('the default (un-armed) sweep exposes the full 189-cell matrix with configs for inspection', async () => {
     const out = await runMaxTurnSweep();
     expect(out.cells).toHaveLength(189);
     expect(out.results).toHaveLength(189);
-    // Every 100K cell (one per class×split×task = 27) is flagged unreachable.
-    expect(out.unreachableCells).toHaveLength(DEFAULT_SESSION_CLASSES.length * DEFAULT_DOOR_SPLIT_VARIANTS.length * DEFAULT_BENCHMARK_TASKS.length);
-    expect(out.reachableCount).toBe(189 - out.unreachableCells.length);
+    // The whole owner range 2K–100K is config-reachable now (floor bound raised, D-012).
+    expect(out.unreachableCells).toHaveLength(0);
+    expect(out.reachableCount).toBe(189);
     expect(out.results.every((r) => r.config.turnDoors.maxTurn > 0)).toBe(true);
   });
 

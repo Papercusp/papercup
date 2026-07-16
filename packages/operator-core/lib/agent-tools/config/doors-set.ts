@@ -49,7 +49,10 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
-    maxTurnFloorTokens: z.number().int().min(1_000).max(50_000).optional().describe('Per-hop budget floor (baked 8000).'),
+    // Floor max raised 50K→100K (deterministic-context-carry P-024, D-012 live-leg
+    // prerequisite): pinning maxTurn=100K for a sweep cell requires floor=100K, and the
+    // owner's sweep range is 2K–100K. Aligned with the cap's ceiling below.
+    maxTurnFloorTokens: z.number().int().min(1_000).max(100_000).optional().describe('Per-hop budget floor (baked 8000).'),
     maxTurnCapTokens: z.number().int().min(1_000).max(100_000).optional().describe('Per-hop budget cap (baked 15000). Must stay ≥ the effective floor.'),
     maxTurnWindowDivisor: z.number().min(1).max(1_000).optional().describe('Window divisor between the knees (baked 26).'),
     doorSplit: doorSplitSchema.optional(),

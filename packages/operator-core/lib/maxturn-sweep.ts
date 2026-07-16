@@ -125,9 +125,11 @@ export const DEFAULT_SWEEP_AXES: SweepAxes = Object.freeze({
 
 /** The floor override's schema minimum in BOTH config verbs. */
 export const SESSION_DOOR_FLOOR_MIN = 1_000;
-/** The floor override's schema MAXIMUM in BOTH config verbs — the hard reason the 100K
- *  sweep point is unreachable through the override surface (you cannot pin floor=100K). */
-export const SESSION_DOOR_FLOOR_MAX = 50_000;
+/** The floor override's schema MAXIMUM in BOTH config verbs. Raised 50K→100K
+ *  (D-012's named live-leg prerequisite): the owner's sweep range is 2K–100K and
+ *  pinning maxTurn=100K requires floor=100K — with the old 50K bound the 100K
+ *  cell was structurally unreachable. Now aligned with SESSION_DOOR_CAP_MAX. */
+export const SESSION_DOOR_FLOOR_MAX = 100_000;
 /** The cap override's schema maximum in BOTH config verbs. */
 export const SESSION_DOOR_CAP_MAX = 100_000;
 
@@ -215,9 +217,9 @@ export function resolveCellConfig(cell: Pick<SweepCell, 'maxTurnTargetTokens' | 
   const target = cell.maxTurnTargetTokens;
   const variant = axes.doorSplitVariants.find((v) => v.id === cell.doorSplitVariantId);
 
-  // Pin floor=cap=target, clamped to what the config verbs accept (floor ≤ 50K, cap ≤ 100K,
-  // both ≥ 1K). An out-of-range target yields the closest appliable patch; achieved reflects
-  // reality after the real resolver runs.
+  // Pin floor=cap=target, clamped to what the config verbs accept (floor ≤ 100K, cap ≤ 100K,
+  // both ≥ 1K — floor max raised 50K→100K per D-012's live-leg prerequisite). An out-of-range
+  // target yields the closest appliable patch; achieved reflects reality after the real resolver runs.
   const floorTarget = Math.min(Math.max(target, SESSION_DOOR_FLOOR_MIN), SESSION_DOOR_FLOOR_MAX);
   const capTarget = Math.min(Math.max(target, floorTarget), SESSION_DOOR_CAP_MAX);
   const patch: DoorConstantsPatch = {

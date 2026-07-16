@@ -50,7 +50,9 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
-    maxTurnFloorTokens: z.number().int().min(1_000).max(50_000).optional(),
+    // Floor max raised 50K→100K (P-024, D-012): the sweep pins per-SESSION floors up to
+    // the owner's 100K sweep point. Mirrored in doors-set.ts + maxturn-sweep.ts constants.
+    maxTurnFloorTokens: z.number().int().min(1_000).max(100_000).optional(),
     maxTurnCapTokens: z.number().int().min(1_000).max(100_000).optional(),
     maxTurnWindowDivisor: z.number().min(1).max(1_000).optional(),
     doorSplit: doorSplitSchema.optional(),
