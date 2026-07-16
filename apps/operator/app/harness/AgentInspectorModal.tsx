@@ -1,8 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft } from 'lucide-react';
 import { Modal } from './Modal';
 import { TONE } from './theme';
+import { Tooltip } from './Tooltip';
 import {
   useAgentThinkingStream,
   Entry,
@@ -258,9 +260,34 @@ export default function AgentInspectorModal({
         background: 'var(--bg-2)',
         fontSize: 12,
       }}>
-        <span style={{ color: 'var(--fg-mute)' }}>
-          <strong style={{ color: 'var(--fg)' }}>{role}</strong>
-          {' · '}<code style={{ fontSize: 11 }}>{runId}</code>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-mute)' }}>
+          <Tooltip label="Back to agent sessions">
+            <button
+              type="button"
+              data-testid="agent-inspector-back"
+              aria-label="Back to agent sessions"
+              onClick={onClose}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 24,
+                height: 24,
+                padding: 0,
+                color: 'var(--fg-mute)',
+                background: 'transparent',
+                border: '1px solid transparent',
+                borderRadius: 4,
+                cursor: 'pointer',
+              }}
+            >
+              <ArrowLeft size={15} aria-hidden />
+            </button>
+          </Tooltip>
+          <span>
+            <strong style={{ color: 'var(--fg)' }}>{role}</strong>
+            {' · '}<code style={{ fontSize: 11 }}>{runId}</code>
+          </span>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {/* TASK2 (owner 2026-07-11): Resume + Fork are two INDEPENDENT buttons,

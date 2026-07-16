@@ -94,6 +94,29 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
     expect(userPromptText).toContain('PICK-ONE RULE');
     expect(userPromptText).toContain('MUST CALL chat_ask_choice');
     expect(userPromptText).toContain('Never enumerate choices in prose');
+    // 2026-07-16 hardening (WI-4950 live re-repro: the mid-prompt rule alone
+    // was ignored on trigger=user_message). Two added layers, both text-only:
+    // an OUTPUT-SHAPE CHECK + worked example in the user_message trigger, and
+    // a FINAL CHECK self-check as the very last line of the prompt.
+    expect(userPromptText).toContain('OUTPUT-SHAPE CHECK');
+    expect(userPromptText).toContain('WORKED EXAMPLE');
+    expect(userPromptText).toContain('FINAL CHECK before you emit');
+  });
+
+  it('keeps the voice closing nudge free of the text-only pick-one FINAL CHECK', async () => {
+    const { userPromptText } = await buildOperatorPrompt(
+      {
+        messages: [{ role: 'user', content: 'Give me a few options to pick from.' }],
+        trigger: 'user_message',
+        modality: 'voice',
+      },
+      null,
+    );
+    // Voice has its own disambiguation-card contract inside the Modality
+    // section; the closing nudge stays the plain one (a voice <say> is not a
+    // clickable surface in the same way, and the voice rules already cover it).
+    expect(userPromptText).not.toContain('FINAL CHECK before you emit');
+    expect(userPromptText).toContain('Respond now per your operator instructions');
   });
 
   it('falls back to a discovery hint when a TUI turn carries no client_id', async () => {

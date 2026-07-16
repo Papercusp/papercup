@@ -191,6 +191,12 @@ export default defineTool({
   },
   handler: async (input: Args, ctx) => {
     const sessionUser: ConverseSessionUser | null = input.sessionUser ?? null;
+    // Per-turn phase timing (reply-latency instrumentation, grade-loop
+    // 2026-07-16): the IPC converse path never lands in tool_invocations, so
+    // this structured log line is the only latency split we have. Grep for
+    // `turn-timings` in the operator log.
+    const tTurnStart = Date.now();
+    const turnModality: 'voice' | 'text' = input.modality === 'voice' ? 'voice' : 'text';
 
     // Build the prompt up-front. This dominates wall-clock when mem0
     // is healthy (search hits one or two times). Failures inside
@@ -220,6 +226,7 @@ export default defineTool({
       } satisfies OperatorConverseInput,
       sessionUser,
     );
+    const buildPromptMs = Date.now() - tTurnStart;
 
     // Budget gate. operator-converse fires on every user turn AND
     // self-fired silence-ladder triggers AND through ask_operator
@@ -331,6 +338,7 @@ export default defineTool({
     let totalCost = 0;
     let assembled = '';
     let emittedToolCall = false;
+    let firstEventAt: number | null = null;
 
     // Resolve the brain model once per turn: env > agent-config
     // models['operator'] > pinned Anthropic default.
@@ -391,6 +399,7 @@ export default defineTool({
           disableToolSearch: true,
           signal: ctx.signal,
         })) {
+          if (firstEventAt === null) firstEventAt = Date.now();
           if (ctx.signal.aborted) break;
           if (ev.type === 'delta') {
             ctx.emit('delta', { text: ev.text });
@@ -444,6 +453,38 @@ export default defineTool({
         `[operator:converse] agent backend produced no output after ${MAX_BRAIN_ATTEMPTS} attempts.`,
       );
       throw new Error('operator brain produced no output (agent backend failure)');
+    }
+
+    // Per-turn latency split (reply-latency instrumentation, grade-loop
+    // 2026-07-16). buildPromptMs = prompt assembly (mem0 + role files);
+    // firstEventMs = agent-backend spawn + connect + LLM time-to-first-event;
+    // totalMs = the whole turn as the user experiences it.
+    console.log(
+      `[operator:converse] turn-timings buildPromptMs=${buildPromptMs} ` +
+        `firstEventMs=${firstEventAt !== null ? firstEventAt - tTurnStart : -1} ` +
+        `totalMs=${Date.now() - tTurnStart} model=${operatorModel} ` +
+        `modality=${turnModality} emittedToolCall=${emittedToolCall} ` +
+        `assembledChars=${assembled.length}`,
+    );
+
+    // WI-4950 class observability: a text turn that enumerated options in
+    // prose and asked the user to pick, without any tool call, is a
+    // conversational dead-end the prompt contract failed to prevent. Log it
+    // so the grade loop can measure the miss rate live. Detector is
+    // deliberately conservative; failures here must never fail the turn.
+    if (turnModality === 'text' && !emittedToolCall && assembled.trim()) {
+      try {
+        const { detectProsePickOne } = await import('../../operator-prose-pick-one');
+        const hit = detectProsePickOne(assembled);
+        if (hit.detected) {
+          console.warn(
+            `[operator:converse] prose-pick-one detected (${hit.reason}; WI-4950 class): ` +
+              `reply="${assembled.slice(0, 140).replace(/\n/g, ' ')}"`,
+          );
+        }
+      } catch {
+        /* observability only */
+      }
     }
 
     // Post-stream side-effects. All fire-and-forget so transient

@@ -397,6 +397,7 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
     // …and that round-trips back to the exact list the server allowlist decodes.
     expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES]);
+    expect(u.searchParams.get('tools')!.split(',')).toContain('fleet:launch-on-plan');
     // The superuser door is otherwise unchanged.
     expect(u.searchParams.get('superuser')).toBe('1');
     expect(u.searchParams.get('workspace')).toBe('default');

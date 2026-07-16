@@ -44,8 +44,17 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     renderModal();
     expect(captured).not.toBeNull();
     expect(screen.getByText('worker')).toBeTruthy();
+    expect(screen.getByTestId('agent-inspector-back')).toBeTruthy();
     expect(screen.getByText('Connecting…')).toBeTruthy();
     expect(screen.getByText(/0 events/)).toBeTruthy();
+  });
+
+  it('returns to the agent-session list from the top-left back control', () => {
+    const { onClose } = renderModal();
+    const back = screen.getByTestId('agent-inspector-back');
+    expect(back.getAttribute('aria-label')).toBe('Back to agent sessions');
+    fireEvent.click(back);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('renders the backfilled timeline and the live event count', () => {

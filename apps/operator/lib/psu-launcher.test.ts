@@ -151,11 +151,9 @@ import { validateCloudModelSpec } from '@papercusp/operator-core/lib/agent-confi
 // value-for-value so a fix landed in one (the codex effort-drop, found 2026-07-03) can never
 // again silently miss the other.
 import { applyRoleModel } from '@papercusp/operator-core/lib/harness-invoke-once';
-// weak-model-tool-tier: the canonical core spine — the psu-launcher.mjs inlined copy
-// (OMP_CORE_MCP_TOOL_NAMES) is its omp/weak-model VARIANT: identical except it adds
-// fleet:launch-on-plan (drift guard below). (The old second divergence — dropping the
-// granular lock tools — became a no-op when the 2026-07-05 rebalance cut them from the
-// canonical list too.)
+// weak-model-tool-tier: the canonical core spine — psu-launcher.mjs carries an
+// inlined copy because it is a plain node script with no TS imports. The drift
+// guard below keeps the OMP seed exactly aligned with every other trimmed client.
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 
 describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-install)', () => {
@@ -941,9 +939,8 @@ describe('isWeakOmpModel / ompDefaultModel (weak-model-tool-tier — tier gate)'
 
 describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
   // psu-launcher.mjs is a plain node script with no TS imports, so it inlines the spine.
-  // It is the omp/weak-model VARIANT of the canonical orchestrator CORE spine, and
-  // deliberately diverges in exactly ONE documented way (asserted below); any OTHER
-  // drift fails the build — edit the orchestrator source, then mirror here.
+  // It is the inlined omp/weak-model copy of the canonical orchestrator CORE spine.
+  // Any drift fails the build — edit the orchestrator source, then mirror here.
   // (The former second divergence — OMP dropping locks:acquire_granular/release_granular —
   // became a no-op in the 2026-07-05 demand-evidence rebalance, which cut the granular
   // lock tools from the CANONICAL list too: hooks auto-lock every Edit/Write on all
@@ -957,10 +954,9 @@ describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
     }
   });
 
-  it('adds fleet:launch-on-plan so a routing-gate leader can actually execute option C', () => {
-    // Root cause of session 9870 not launching its fleet: the whole fleet:* group was
-    // hidden, so the AUTO-off "(C) launch a fleet" option had no callable verb.
+  it('includes fleet:launch-on-plan so every trimmed routing-gate client can execute the fleet route', () => {
     expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain('fleet:launch-on-plan');
+    expect([...CORE_MCP_TOOL_NAMES]).toContain('fleet:launch-on-plan');
   });
 
   it('seeds work_items:release for worker handoffs instead of relying on deferred discovery', () => {
@@ -971,9 +967,8 @@ describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
     expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain('work_items:release');
   });
 
-  it('is otherwise identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved', () => {
-    const ompMinusFleet = OMP_CORE_MCP_TOOL_NAMES.filter((n) => n !== 'fleet:launch-on-plan');
-    expect([...ompMinusFleet]).toEqual([...CORE_MCP_TOOL_NAMES]);
+  it('is identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved', () => {
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toEqual([...CORE_MCP_TOOL_NAMES]);
   });
 });
 

@@ -260,7 +260,16 @@ export async function buildOperatorPrompt(
   }
 
   const triggerLines: Record<NonNullable<ConverseInput['trigger']>, string> = {
-    user_message: 'Trigger: user_message — the user just said something. React per the ladder.',
+    user_message: `Trigger: user_message — the user just said something. React per the ladder.
+
+OUTPUT-SHAPE CHECK: if your reply would name 2 or more options and ask the user to choose, do NOT write it as prose — CALL chat_ask_choice with those options as buttons (2-3 typical, 6 max; mark a recommended pick with style: 'primary'). The buttons ARE the question: no prose option list, no trailing "Which?". This applies to ANY pick-one shape, including "give me options", "what should I do next", and your own idea of offering alternatives.
+
+WORKED EXAMPLE — user says "What should I focus on next? Give me a few concrete options to pick from":
+  ✅ chat_ask_choice({ question: "What next?", options: [
+       { id: "stall", label: "Unstick the placement stall", style: "primary" },
+       { id: "rubric", label: "Grade the overdue release rubric" },
+       { id: "esc", label: "Triage the aging escalations" }] })
+  ❌ <say>"Three picks: the stall, the rubric, or the escalations. Which?"</say>   ← WRONG — a prose dead-end with nothing to click (WI-4950). Call the tool instead.`,
     quiet_wait_resume: 'Trigger: quiet_wait_resume — the user just re-engaged after a long silence. Reference where you left off in your first sentence, then continue the thread.',
     continue: `Trigger: continue — you emitted \`<continue/>\` on the prior turn, signaling more user-visible progress. Pick up where you left off.
 
@@ -383,7 +392,14 @@ Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT as
   }
 
   // Closing nudge so the model knows the spec ends and it should act now.
-  userSections.push('Respond now per your operator instructions and trigger above.');
+  // Text modality carries a FINAL pick-one self-check at maximum salience (the
+  // very end of the prompt): the mid-prompt PICK-ONE RULE alone was empirically
+  // ignored on trigger=user_message (WI-4950 re-repro 2026-07-16).
+  userSections.push(
+    modality === 'text'
+      ? 'Respond now per your operator instructions and trigger above. FINAL CHECK before you emit: if your reply enumerates two or more options and asks the user to pick, you MUST call chat_ask_choice with those options instead — on this surface a prose option list is a dead-end with nothing to click.'
+      : 'Respond now per your operator instructions and trigger above.',
+  );
 
   return {
     systemPromptText: systemSections.join('\n\n---\n\n'),
