@@ -111,8 +111,15 @@ did nothing (see
 verify.** `papercusp.iss:105` guards the seed behind
 `#if AppId == "com.papercusp.server"` — the **GUI** bundle ships **no seed by
 design** (WI-3234: on Windows the GUI role never restores a seed; it attaches to
-or launches the Server bundle, whose sidecar owns restore. Self-hosting in one
-bundle is Linux-only). The GUI installer finishes first. Verifying it yields a
+or launches the Server bundle, whose sidecar owns restore. **WINDOWS is the
+exception — NOT "Linux-only".** An earlier revision of this doc said "self-hosting
+in one bundle is Linux-only"; that is WRONG, and it contradicted this same doc's
+own note below that `main.rs:4011` enumerates macOS. MEASURED 2026-07-16 against
+the shipped 0.0.11 mac GUI: it carries the FULL seed at `Contents/Resources/seed`
+— corestore 700,901,586 bytes across 27 files, exactly its manifest's declared
+`sizeBytes`, same `coreKey`/`coreLength` as the linux+windows staged seed. So the
+GUI self-hosts on **Linux AND macOS**; only Windows splits it out). The GUI
+installer finishes first. Verifying it yields a
 release-blocking **false negative** — "Windows ships no seed!" — that is simply
 wrong. **Always target `*Server*x64-setup*.exe`.**
 
