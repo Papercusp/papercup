@@ -59,6 +59,8 @@ import { stripNonSpeechAnnotations } from './voice-transcript-normalize';
 import {
   createVoiceBrainFirstEventDeadline,
   VOICE_BRAIN_TIMEOUT_MESSAGE,
+  VOICE_BRAIN_NO_REPLY_MESSAGE,
+  voiceTurnProducedNoReply,
 } from '../../../voice-turn-deadline';
 
 /** How many recent turns feed the brain — same as the device text path. */
@@ -333,6 +335,26 @@ const voiceTurn = defineTool({
 
           // ── persist the assistant turn (clean say, same as text path) ─
           const parsed = parseOperatorTurn(assembled);
+
+          // EI-13027: the brain stream completed cleanly (no error/timeout/abort)
+          // but produced no spoken or persisted reply — an empty completion or a
+          // silently-dropped brain call (correlates with pool latency under load).
+          // A deliberate <sleep> going-silent turn is NOT a drop. Surface a retry
+          // prompt on the existing `error` surface instead of a silent `done` that
+          // leaves the phone showing / speaking nothing.
+          if (
+            voiceTurnProducedNoReply({
+              say: parsed.say,
+              report: parsed.report,
+              audioChunks: audioSeq,
+              wentSilent: parsed.sleep != null,
+            })
+          ) {
+            sink.event('error', { stage: 'brain', message: VOICE_BRAIN_NO_REPLY_MESSAGE });
+            sink.close();
+            return;
+          }
+
           if (parsed.say || parsed.report) {
             try {
               await appendTurn({

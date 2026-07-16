@@ -6,40 +6,9 @@
  * AgentsRunningPill.test.tsx so importing the module stays cheap.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useSyncExternalStore } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
-
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: [] }] }) }));
-vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
-vi.mock('@/app/harness/AgentInspectorModal', () => ({ default: () => null }));
-vi.mock('@/app/harness/AgentThinkingStream', () => ({ ThinkingDot: () => null }));
-// SessionSearchResults (WI-4734 tests below) AND InactiveSessionsSection's
-// expand toggle (WI-3881) are URL-backed via nuqs; the suite runs without a
-// NuqsAdapter. Unlike AgentsRunningPill.test.tsx's single-value stub, this
-// file exercises MULTIPLE independent nuqs keys at once (agentsWindow,
-// agentsFacets, agentsInactiveOpen) in the same render tree, so it needs a
-// real per-key keyed store — a stub that ignores `key` and returns one
-// shared value would make those three collapse into each other. The store is
-// reset in the top-level afterEach below so a test that expands the section
-// doesn't leak that into the next (unlike real nuqs, which the URL would
-// legitimately carry forward — but each `it()` here should start clean).
-const nuqsStore = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
-vi.mock('nuqs', () => ({
-  ...nuqsParsers,
-  useQueryState: (key: string, parser?: { defaultValue?: unknown }) => {
-    if (!(key in nuqsStore.state)) nuqsStore.state[key] = parser?.defaultValue ?? null;
-    return [
-      nuqsStore.state[key],
-      (v: unknown) => {
-        nuqsStore.state[key] = typeof v === 'function'
-          ? (v as (prev: unknown) => unknown)(nuqsStore.state[key])
-          : v;
-        return Promise.resolve(true);
-      },
-    ];
-  },
-}));
-
 import {
   appendEndedPage,
   endedDisplayName,
@@ -54,6 +23,59 @@ import {
   type SearchSessionResult,
 } from './AgentsPillSessions';
 import type { RosterAgent } from './AgentsRunningPill';
+
+vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: [] }] }) }));
+vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
+vi.mock('@/app/harness/AgentInspectorModal', () => ({ default: () => null }));
+vi.mock('@/app/harness/AgentThinkingStream', () => ({ ThinkingDot: () => null }));
+// SessionSearchResults (WI-4734 tests below) AND InactiveSessionsSection's
+// expand toggle (WI-3881) are URL-backed via nuqs; the suite runs without a
+// NuqsAdapter. Unlike AgentsRunningPill.test.tsx's single-value stub, this
+// file exercises MULTIPLE independent nuqs keys at once (agentsWindow,
+// agentsFacets, agentsInactiveOpen) in the same render tree, so it needs a
+// real per-key keyed store — a stub that ignores `key` and returns one
+// shared value would make those three collapse into each other. Unlike a
+// bare `[value, setter]` stub, this ALSO needs to be reactive: clicking the
+// "View inactive sessions" toggle must cause the section to actually
+// re-render expanded, the same way real nuqs (backed by useSyncExternalStore
+// internally) does — so this uses useSyncExternalStore itself rather than a
+// plain closure variable a setter mutates silently. The store is reset in
+// the top-level afterEach below so a test that expands the section doesn't
+// leak that into the next (unlike real nuqs, which the URL would
+// legitimately carry forward — but each `it()` here should start clean).
+const nuqsStore = vi.hoisted(() => ({
+  state: {} as Record<string, unknown>,
+  listeners: new Set<() => void>(),
+}));
+function notifyNuqsStore() {
+  for (const listener of nuqsStore.listeners) listener();
+}
+vi.mock('nuqs', () => ({
+  ...nuqsParsers,
+  useQueryState: (key: string, parser?: { defaultValue?: unknown }) => {
+    if (!(key in nuqsStore.state)) nuqsStore.state[key] = parser?.defaultValue ?? null;
+    const value = useSyncExternalStore(
+      (onStoreChange: () => void) => {
+        nuqsStore.listeners.add(onStoreChange);
+        return () => nuqsStore.listeners.delete(onStoreChange);
+      },
+      () => nuqsStore.state[key],
+    );
+    const setValue = (v: unknown) => {
+      nuqsStore.state[key] = typeof v === 'function'
+        ? (v as (prev: unknown) => unknown)(nuqsStore.state[key])
+        : v;
+      notifyNuqsStore();
+      return Promise.resolve(true);
+    };
+    return [value, setValue];
+  },
+}));
+
+afterEach(() => {
+  for (const key of Object.keys(nuqsStore.state)) delete nuqsStore.state[key];
+  nuqsStore.listeners.clear();
+});
 
 const rosterAgent = (over: Record<string, unknown>) => over as unknown as RosterAgent;
 
