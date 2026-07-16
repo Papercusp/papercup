@@ -132,6 +132,73 @@ Exit `2` means the artifacts uploaded fine but the hostname does not resolve —
 R2 bucket has not been bound to the custom domain yet. That is one-time Cloudflare
 setup, not a broken upload.
 
+## Re-publishing ONE platform onto an existing cut (incremental)
+
+You do **not** rebuild or re-upload the whole cut to add a single platform late (the
+common case: mac lands after linux + windows are already live). Two things make the
+incremental add cheap, and both are already built in:
+
+- **`upload-release.sh` size-skips what is already on R2.** It HEADs each artifact and
+  skips any whose remote size matches, so adding mac uploads only the new mac
+  `.app.tar.gz`/`.sig`/`.dmg` + the refreshed `latest.json` — the 4 GB AppImage and the
+  windows installer are skipped, not re-sent. Put the *full* artifact set in the
+  recorded manifest (`/tmp/papercusp-artifacts-<tag>.txt`, via
+  `bin/lib/release-artifacts.sh`) and let the size-check do the rest. If `/tmp` was
+  cleaned, rebuild that manifest with `release_artifacts_write <tag> <paths…>`.
+- **`latest.json` is regenerated with ALL platforms, every time.** Feed the generator
+  the linux + windows + mac *updater* artifacts (AppImage, `-setup.exe`, `.app.tar.gz`)
+  so it carries all four platform keys — `linux-x86_64`, `windows-x86_64`, and both
+  `darwin-x86_64` + `darwin-aarch64` pointing at the one universal `.app.tar.gz`.
+  `upload-release.sh` **asserts every `latest.json` url's basename is in the recorded
+  manifest**, so a platform added to one must be added to the other or it refuses.
+
+The **download page** is a *separate surface* from the updater — for a human,
+"published" means the artifact is visible on `index.html`, **not** merely present in
+`latest.json`. After the upload, re-run `record-release-cli.ts` (it re-scans `$BUNDLE`,
+so a newly-dropped `.dmg` in `$BUNDLE/dmg/` is picked up) then
+`publish-release-history.sh`. Miss this and the auto-updater has the new platform but
+the shared beta link does not.
+
+## The mac leg — a DMG from an intact `.app`, and ENOSPC
+
+- **A build that dies AFTER producing the signed `.app` but BEFORE the DMG step is a
+  ~5-minute recovery, not a rebuild.** The DMG is just `hdiutil` over a staged
+  `.app` + tutorial app + `/Applications` symlink (the DMG loop in `mac-vm-build.sh`) —
+  independent of the Rust compile. Replicate only that step against the existing
+  `.app` (`cp -Rc` clones it for free on APFS; only the ~2 GB compressed DMG costs
+  disk). No re-signing: the updater signature is the separate `.app.tar.gz.sig` (Tauri
+  minisign); the DMG is an unsigned plain download (mac alphas aren't Apple-notarized —
+  users right-click → Open past Gatekeeper).
+- **The recurring "mac build hangs / dies silently" is DISK EXHAUSTION (ENOSPC), not
+  memory.** Each role compiles into its OWN ~11–12 GB `CARGO_TARGET_DIR`
+  (`role-gui` + `role-server` ≈ 24 GB) and the VM's 120 GB disk runs ~95 % full — a
+  cold two-role build cannot fit, and dies mid-build with no artifacts and no `DONE`
+  sentinel (which *looks* like a hang). `PAPERCUSP_BUILD_ROLES=gui` builds only the
+  auto-updatable/download GUI artifact and fits. `mac-vm-build.sh` now has a disk
+  preflight that fails LOUD (`DONE:28`) instead of dying silently; the durable fix is
+  growing the VM disk (WI-5027).
+- **Pull artifacts whose filenames contain spaces with a tar-over-ssh pipe, not `scp`.**
+  Modern (SFTP-mode) `scp` mangles the space in `Papercusp GUI.app.tar.gz`, and the
+  mac's ancient `rsync` 2.6.9 lacks `--protect-args`. Use
+  `ssh … "cd '<dir>' && tar -cf - 'Papercusp GUI.app.tar.gz'" | tar -C <local> -xf -`
+  (and delete the stray `._<name>` AppleDouble sidecar `tar` leaves behind).
+
+## record-release-cli is fast now — keep it that way
+
+Regenerating the download site once took ~50 s, which looks absurd for "a static
+page". Two causes, both fixed 2026-07-15 — profile (`NODE_OPTIONS=--cpu-prof`) before
+assuming it's the artifacts if it is ever slow again:
+
+- It **re-SHA-256'd every artifact on every run** (~18 GB for a tri-platform cut).
+  Now cached by (path, size, mtime) in `~/.papercusp/release-sha256-cache.json`: an
+  unchanged artifact is hashed exactly once, so an incremental re-publish hashes only
+  the genuinely-new files.
+- The identity scrubber's **email regex backtracked catastrophically** on large page
+  bodies — that one regex was 40 s of the 45 s. Its quantifiers are now bounded to RFC
+  maxima; **do not relax them back to `+`** (there's a comment on `IDENTITY_PATTERNS`
+  in `release-content-scrub.ts` saying exactly this). A full `record-release-cli` run
+  is now ~2 s.
+
 ## How auto-update actually resolves
 
 An installed app polls its operator's `/api/updates/manifest`, which discovers
