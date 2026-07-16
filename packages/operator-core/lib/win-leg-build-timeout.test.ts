@@ -81,3 +81,28 @@ describe('EI-12902: the Windows leg bounds its remote build (mac parity)', () =>
     expect(winLeg).toMatch(/block-buffer/i);
   });
 });
+
+describe('EI-12909: the ISCC progress line is per-role (the GUI has no seed to claim)', () => {
+  // Invoke-Inno emits ONE progress line that interpolates $role, so the SAME text
+  // prints for both GUI and Server. It hardcoded "full seed stored raw" — false for
+  // the GUI bundle, which ships NO seed (papercusp.iss:109 guards the seed behind
+  // AppId == com.papercusp.server; WI-3234). The seed claim must therefore be
+  // per-role: the shared line references a $role-conditional note, never an
+  // unconditional seed assertion.
+
+  it('the shared Invoke-Inno progress line does NOT hardcode a seed claim (it is per-role)', () => {
+    // The shared, $role-interpolating line must not literally assert the seed — that
+    // is exactly the claim that is false for the seedless GUI bundle.
+    expect(winLeg).not.toMatch(/ISCC \$role packaging \([^)"]*seed stored raw/);
+    // …it references a per-role variable instead.
+    expect(winLeg).toMatch(/ISCC \$role packaging \(\$seedNote/);
+  });
+
+  it('the seed note is gated on the Server role, and the GUI branch disclaims the seed', () => {
+    // Only the Server bundle carries the seed; the note is conditioned on $role.
+    expect(winLeg).toMatch(/\$seedNote\s*=\s*if\s*\(\s*\$role\s+-eq\s+['"]Server['"]/);
+    // The non-Server (GUI) branch must say there is NO seed, citing the guard (WI-3234)
+    // so a reader does not report the (correct) absence of a GUI seed as a blocker.
+    expect(winLeg).toMatch(/no seed[\s\S]{0,80}WI-3234/i);
+  });
+});
