@@ -438,6 +438,22 @@ export async function buildConsoleEnvelope(
           pgSessionArchiveStore(),
         );
       } catch { /* best-effort — nothing to restore / archive unavailable */ }
+      // EI-12938 (owner-hit 2026-07-16, "psu --resume still prompted me to
+      // login"): the dir we just pointed at may not be LAUNCH-READY. The archive
+      // holds only the transcript, and a plan-run/bee dir was built minimal by
+      // `writeSpawnClaudeConfig` (creds symlink only) — either way there is no
+      // `.claude.json`, so the interactive claude below boots the FIRST-RUN
+      // wizard (/login) despite a healthy system login, then mints a stub config
+      // that makes the NEXT attempt "work" while silently running with no MCP
+      // servers and no lock hooks. Re-ensure the interactive dir before handing
+      // it to a human. Deliberately OUTSIDE the rematerialize try: a
+      // never-archived bee dir needs this exactly as much as a restored one, and
+      // it must not be skipped just because there was nothing to restore.
+      // No-ops on an already-healthy dir; never throws.
+      if (row.coordOwnerId) {
+        const { ensureInteractiveClaudeConfig } = await import('./interactive-claude-config');
+        ensureInteractiveClaudeConfig({ sid: row.coordOwnerId });
+      }
     }
     const verb = opts.fork ? 'forking' : 'resuming';
     if (backend === 'claude-code') {
@@ -455,6 +471,12 @@ export async function buildConsoleEnvelope(
       // re-derives + points CLAUDE_CONFIG_DIR at it (overriding whatever we set
       // above), relocates creds, parks any role-scoped .mcp.json (identity-leak
       // fix), reactivates the adv row, and resumes with the frictionless posture.
+      // ⚠ EI-12938 corrects one assumption in the paragraph above: psu's resume
+      // heals `.credentials.json` ONLY. Credentials are not account state — the
+      // /login artifact ALSO needs `.claude.json`, which only the interactive
+      // mirror provides. That is why the ensure above is not redundant with
+      // routing through psu (psu re-ensures too, via the operator, for a
+      // hand-typed `psu --resume`; both legs are idempotent).
       // Fork is claude-only (psu `--fork`, guarded above). psu is on PATH via the
       // ~/.papercusp/bin shim. The rematerialization above still seeds an archived
       // transcript into the isolation dir so psu's `--resume=<id>` finder locates

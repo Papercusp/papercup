@@ -456,4 +456,42 @@ describe('rosterForBudget', () => {
     expect(rosterForBudget(1)).toEqual({ lenses: ['analogical'] });
     expect(rosterForBudget(0)).toEqual({ lenses: ['analogical'] });
   });
+
+  // WI-5041: the capped roster ROTATES by staleness instead of pinning the
+  // first N — the live defect that held the system at 2 distinct lenses for
+  // weeks (multi-lens-routing v2 bar: >=4 distinct/7d).
+  describe('lens rotation by recency (WI-5041)', () => {
+    it('a capped roster runs the stalest lenses first (never-routed = most stale)', () => {
+      // analogical/first-principles routed recently; the other two never routed.
+      expect(rosterForBudget(2, undefined, { analogical: 1000, 'first-principles': 900 }))
+        .toEqual({ lenses: ['reframing', 'constraint-removal'] });
+    });
+
+    it('alternates through the whole set across cycles (4 distinct within two capped cycles)', () => {
+      // After the rotated pair routes, IT becomes the newest → the original pair returns.
+      expect(
+        rosterForBudget(2, undefined, {
+          analogical: 1000,
+          'first-principles': 900,
+          reframing: 2000,
+          'constraint-removal': 2100,
+        }),
+      ).toEqual({ lenses: ['first-principles', 'analogical'] });
+    });
+
+    it('empty/absent recency is byte-identical to the legacy first-N truncation (stable sort)', () => {
+      expect(rosterForBudget(2, undefined, {})).toEqual({ lenses: ['analogical', 'first-principles'] });
+      expect(rosterForBudget(1, undefined, {})).toEqual({ lenses: ['analogical'] });
+    });
+
+    it('the full-roster path ignores recency (weights/default roster stay in charge)', () => {
+      expect(rosterForBudget(4, undefined, { analogical: 1 })).toEqual({});
+      expect(rosterForBudget(undefined, undefined, { analogical: 1 })).toEqual({});
+    });
+
+    it('unknown lens keys in the recency map are harmless', () => {
+      expect(rosterForBudget(1, undefined, { 'not-a-lens': 5, analogical: 10 }))
+        .toEqual({ lenses: ['first-principles'] });
+    });
+  });
 });

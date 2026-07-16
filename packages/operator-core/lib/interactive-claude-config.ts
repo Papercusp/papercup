@@ -780,6 +780,92 @@ export function writeInteractiveClaudeConfig(opts: {
 }
 
 /**
+ * Is `configDir` a LAUNCH-READY interactive config dir — i.e. did
+ * `writeInteractiveClaudeConfig` build it — or is it merely transcript-bearing?
+ *
+ * The distinction exists because a session's `CLAUDE_CONFIG_DIR` can come into
+ * being three ways, and only one of them is launch-ready:
+ *   1. `writeInteractiveClaudeConfig` (fresh psu launch) — the full symlink
+ *      mirror. READY.
+ *   2. `writeSpawnClaudeConfig(persistentDir)` (orchestrator bee / plan-run) —
+ *      a DELIBERATELY minimal dir: the `.credentials.json` symlink and nothing
+ *      else. Correct for a headless `-p` worker, NOT launch-ready for a human.
+ *   3. `rematerializeSession` (an archived session restored on resume) — the
+ *      archive holds only the TRANSCRIPT, so the dir comes back with
+ *      `projects/**` and nothing else.
+ *
+ * Cases 2+3 have no `.claude.json`, and that file — not `.credentials.json` —
+ * is where claude keeps `oauthAccount` / `hasCompletedOnboarding` / per-project
+ * trust. A valid credential symlink with no `.claude.json` therefore boots an
+ * interactive resume into the FIRST-RUN wizard (a /login screen) despite a
+ * perfectly healthy system login — the owner-reported psu-resume-relogin bug
+ * (EI-12938, 2026-07-16; earlier legs WI-4159 + the 2026-07-12 route fix).
+ *
+ * The check keys on `.claude.json` because it is both the file that gates the
+ * wizard and the one only the mirror provides:
+ *   - a SYMLINK ⇒ the mirror linked the user's real config in. READY.
+ *   - a real file WITH `mcpServers` ⇒ a P-020 pruned fleet copy (filtered, but
+ *     complete). READY — and reported ready deliberately, so a re-ensure never
+ *     silently UN-prunes a context-trimmed member.
+ *   - a real file WITHOUT `mcpServers` ⇒ the stub claude mints for ITSELF on a
+ *     first-run boot. NOT ready: it carries an `oauthAccount` (so the *second*
+ *     launch stops prompting — the "re-run it and it works" symptom) but no MCP
+ *     servers and no hooks, i.e. a silently TOOL-LESS session on a shared tree.
+ *     That is worse than the login prompt and must be repaired, not accepted.
+ *   - absent/unreadable ⇒ NOT ready.
+ * Pure + never throws — `home` is not needed (the dir speaks for itself).
+ */
+export function isInteractiveClaudeConfigReady(configDir: string): boolean {
+  try {
+    const path = join(configDir, '.claude.json');
+    if (lstatSync(path).isSymbolicLink()) return true;
+    const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown> | null;
+    return !!cfg && typeof cfg === 'object' && cfg.mcpServers != null;
+  } catch {
+    return false; // absent, dangling, or corrupt — re-materialize over it
+  }
+}
+
+/**
+ * Make `sid`'s config dir launch-ready for an INTERACTIVE claude session,
+ * repairing it only when it isn't (`isInteractiveClaudeConfigReady`).
+ *
+ * THE choke point for the psu-resume-relogin class. A FRESH launch has always
+ * been fine — bootstrap-su calls `writeInteractiveClaudeConfig`. A RESUME does
+ * no bootstrap POST, so every resume leg that points `CLAUDE_CONFIG_DIR` at a
+ * dir it did not build has to re-ensure it here, or the human lands in the
+ * first-run wizard (see `isInteractiveClaudeConfigReady`). Callers today:
+ * `console-launcher` (the desktop Resume console), `POST /adv/sessions/
+ * ensure-claude-config` (psu's resume leg — psu is plain node and cannot import
+ * this module), and the rematerialize route.
+ *
+ * Deliberately NOT called from inside `rematerializeSession`: the wake-executor
+ * restores into a headless bee's dir, whose plugin-free isolation is the whole
+ * point of `writeSpawnClaudeConfig` (a full mirror there would re-introduce the
+ * plugin-checkout-into-cwd defect). "Interactive" is the caller's claim to make.
+ *
+ * The ready-check is what keeps this cheap + non-destructive: a healthy dir is
+ * left byte-identical (no re-link churn, no un-pruning) and pays one lstat.
+ * Never throws — a launch must never fail on config repair; a failed repair
+ * degrades to exactly today's behavior.
+ */
+export function ensureInteractiveClaudeConfig(opts: {
+  /** Per-session coord-owner id (`PAPERCUSP_SID`) — keys the dir. */
+  sid: string;
+  /** Source HOME (testability); defaults to the process home. */
+  home?: string;
+}): { configDir: string; repaired: boolean } {
+  const configDir = sessionClaudeConfigDir(opts.sid);
+  if (isInteractiveClaudeConfigReady(configDir)) return { configDir, repaired: false };
+  try {
+    writeInteractiveClaudeConfig({ sid: opts.sid, home: opts.home });
+    return { configDir, repaired: true };
+  } catch {
+    return { configDir, repaired: false };
+  }
+}
+
+/**
  * WI-3278: the session's `settings.json` is a REAL MERGED COPY of the user's
  * global settings with `permissions.defaultMode = 'bypassPermissions'` baked in
  * — NOT a symlink. psu grants a session its dangerous permissions via CLI argv

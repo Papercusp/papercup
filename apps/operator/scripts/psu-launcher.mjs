@@ -4693,6 +4693,16 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
       || (session.coordOwnerId ? sessionClaudeConfigDir(session.coordOwnerId) : null);
     if (dir && existsSync(dir)) {
       env.CLAUDE_CONFIG_DIR = dir;
+      // EI-12938: creds are not account state. The reheal below fixes
+      // `.credentials.json`; `.claude.json` (oauthAccount / onboarding / trust /
+      // the user-level MCP servers) only ever comes from the interactive mirror,
+      // and a dir restored from the archive (transcript only) or built for a
+      // headless bee (creds symlink only) has none — so an interactive resume
+      // lands in the first-run wizard. Re-ensure it server-side (ONE mirror
+      // implementation) BEFORE the reheal + the settings merge below, so those
+      // read the materialized dir rather than re-creating a stub over it.
+      // No-op + no round-trip when the dir is already healthy.
+      await ensureInteractiveConfigViaOperator(session.coordOwnerId, dir);
       // psu-resume-relogin fix: a fresh launch re-heals this dir's
       // .credentials.json (writeInteractiveClaudeConfig's reconcile-before-
       // mirror); a raw resume did not, so an in-session OAuth refresh that
@@ -5399,6 +5409,91 @@ export async function tryRematerializeFromArchive(
     console.error(
       `psu: transcript restored from the session archive (${r.sourceKind}, ${r.written} file(s) → ${r.root}).`,
     );
+    return r;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is a claude session's isolated `CLAUDE_CONFIG_DIR` LAUNCH-READY, or merely
+ * transcript-bearing? The .mjs mirror of operator-core's
+ * `isInteractiveClaudeConfigReady` — duplicated for the same reason
+ * `rehealResumeCredentials` duplicates the credential reconciler: this script
+ * runs as plain node outside the operator-core TS package (see the file-top note
+ * on this module's dependency surface). Keep the two in sync; the REPAIR itself
+ * is not duplicated — that stays server-side behind /adv/sessions/
+ * ensure-claude-config, so the symlink mirror has exactly one implementation.
+ *
+ * `.claude.json` is the tell: a symlink ⇒ the mirror linked the user's real
+ * config in; a real file with `mcpServers` ⇒ a P-020 pruned fleet copy; a real
+ * file WITHOUT ⇒ the stub claude minted for itself in a first-run boot (an
+ * account, but no MCP + no hooks); absent ⇒ a bee/rematerialized dir. Pure —
+ * exported for tests; never throws.
+ */
+export function isClaudeConfigDirLaunchReady(configDir) {
+  try {
+    if (!configDir) return false;
+    const path = join(configDir, '.claude.json');
+    if (lstatSync(path).isSymbolicLink()) return true;
+    const cfg = JSON.parse(readFileSync(path, 'utf8'));
+    return !!cfg && typeof cfg === 'object' && cfg.mcpServers != null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * EI-12938 (owner-hit 2026-07-16, "psu --resume STILL prompted me to login"):
+ * ask the operator to re-materialize this session's interactive config dir when
+ * it is not launch-ready.
+ *
+ * A fresh launch's dir is built server-side by the bootstrap-su POST; a resume
+ * does no POST, so a dir that came from the ARCHIVE (transcript only) or from
+ * `writeSpawnClaudeConfig` (a plan-run/bee's creds-symlink-only dir) has no
+ * `.claude.json` — and that, not the credential symlink `rehealResumeCredentials`
+ * fixes, is what claude reads to decide it is signed in. Result: an interactive
+ * resume boots the first-run wizard (/login), mints a stub config, and the
+ * SECOND attempt "works" while silently running with no MCP servers and no lock
+ * hooks on a shared tree.
+ *
+ * Local ready-check FIRST so the normal (healthy-dir) resume pays no round-trip
+ * — only a genuinely degraded dir calls out. Fail-soft: an unreachable/older
+ * operator (404) leaves the launch exactly as it is today. Returns the API
+ * result or null; never throws. Injectable `fetchImpl`/`operatorUrl`/`token`
+ * mirror tryRematerializeFromArchive so this is unit-testable without a live
+ * operator.
+ */
+export async function ensureInteractiveConfigViaOperator(
+  owner,
+  configDir,
+  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 10_000 } = {},
+) {
+  if (!owner) return null; // untracked/pre-EI-155 session — no owner keys its dir
+  // The server keys the dir by OWNER, so it can only ensure the conventional
+  // per-owner path. A session resumed from a relocated/foreign configDir would
+  // otherwise have a DIFFERENT dir materialized behind its back while the one it
+  // actually launches with stays broken. Same guard the rematerialize route uses.
+  if (configDir !== sessionClaudeConfigDir(owner)) return null;
+  if (isClaudeConfigDirLaunchReady(configDir)) return null; // healthy — byte-identical, no call
+  try {
+    const tok = token ?? readToken();
+    const res = await fetchImpl(operatorUrl + '/api/adv/sessions/ensure-claude-config', {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'content-type': 'application/json',
+        ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+      },
+      body: JSON.stringify({ owner }),
+    });
+    const r = await res.json().catch(() => null);
+    if (!r?.ok) return null;
+    if (r.repaired) {
+      console.error(
+        'psu: repaired this session\'s claude config dir (it carried a transcript but no account/MCP state — a resume would have hit the first-run login screen).',
+      );
+    }
     return r;
   } catch {
     return null;

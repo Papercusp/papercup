@@ -41,7 +41,7 @@ import {
 } from './router-deps';
 import { gatherSteppingStones, type ArchivePort } from './gym-bridge';
 import { gatherGraderFeedbackPriming, type GradedIdeaView } from './ideator-feedback-priming';
-import { getScoutLensWeights } from './routed-ledger';
+import { getScoutLensWeights, readLensRecency } from './routed-ledger';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
 import { DEFAULT_SCOUT_CONFIG, type ScoutConfig } from './config';
 import type { CorpusEntry } from './critique-core';
@@ -107,12 +107,23 @@ export interface BuildScoutCycleDepsOptions {
 
 /**
  * Map a per-cycle ideator budget to an ideator roster. A budget below the lens
- * count runs only the first N lenses (one ideator each); at/above it, the default
+ * count runs only N lenses (one ideator each); at/above it, the default
  * one-per-lens roster runs. Never silences below one lens (D-004 floor).
+ *
+ * WI-5041 lens ROTATION: when the budget caps the roster AND `lensRecency`
+ * (lens → last-routed ms; absent = never routed) is provided, the capped
+ * window runs the STALEST lenses first instead of always `slice(0, n)` — the
+ * pin that held the live system at 2 distinct lenses for weeks (the
+ * multi-lens-routing v2 bar wants >=4 distinct/7d; after one capped cycle the
+ * just-run lenses become the newest, so successive cycles alternate through
+ * the whole set — 4 distinct within two routed cycles on a 2-ideator roster).
+ * The sort is STABLE (ties keep configured order), so no/empty recency is
+ * byte-identical to the legacy first-N behavior.
  */
 export function rosterForBudget(
   maxIdeators?: number,
   lenses: readonly CreativeLens[] = CREATIVE_LENSES,
+  lensRecency?: Readonly<Record<string, number>>,
 ): { lenses?: readonly CreativeLens[] } {
   if (maxIdeators == null || maxIdeators >= lenses.length) {
     // Full roster. Return {} ONLY for the engine-default lenses, so the default path keeps
@@ -121,7 +132,11 @@ export function rosterForBudget(
     // keyed to the default lenses, so it does not apply to a custom roster). (P-009)
     return lenses === CREATIVE_LENSES ? {} : { lenses: [...lenses] };
   }
-  return { lenses: lenses.slice(0, Math.max(1, Math.floor(maxIdeators))) };
+  const n = Math.max(1, Math.floor(maxIdeators));
+  const ordered = lensRecency
+    ? [...lenses].sort((a, b) => (lensRecency[a] ?? 0) - (lensRecency[b] ?? 0))
+    : [...lenses];
+  return { lenses: ordered.slice(0, n) };
 }
 
 type FederatedArchiveSqlRow = {
@@ -557,7 +572,21 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     // never over-spends (extraIdeatorBudget would otherwise add ideators past the cap).
     ideate: async (digest, ctx) => {
       const federatedPriming = await readFederatedPriming();
-      const roster = rosterForBudget(ctx.maxIdeators, scoutConfig.lenses);
+      // WI-5041 lens rotation: only when the budget will actually cap the roster,
+      // read per-lens last-routed recency so the capped window runs the STALEST
+      // lenses first (>=4 distinct/7d bar). Fail-soft: a ledger hiccup degrades
+      // to the legacy configured-order truncation, never blocks the cycle.
+      const capped = ctx.maxIdeators != null && ctx.maxIdeators < scoutConfig.lenses.length;
+      const lensRecency = capped
+        ? await readLensRecency().catch((err) => {
+            console.warn(
+              '[scout/cycle-deps] lens-recency read failed (rotation degraded to configured order):',
+              err instanceof Error ? err.message : err,
+            );
+            return undefined;
+          })
+        : undefined;
+      const roster = rosterForBudget(ctx.maxIdeators, scoutConfig.lenses, lensRecency);
       const weighting = roster.lenses ? {} : await getScoutLensWeights({ harnessSlug: opts.harnessSlug });
       // P-012 archive→Scout FEED: prime the ideators with the gym QD archive's diverse
       // elites (stepping-stones), so Scout builds on / leaps away from what the gym has

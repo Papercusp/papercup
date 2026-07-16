@@ -919,6 +919,64 @@ const resumable = defineTool({
 });
 
 /**
+ * POST /api/adv/sessions/ensure-claude-config — make a session's per-owner
+ * `CLAUDE_CONFIG_DIR` launch-ready for an INTERACTIVE claude resume, and report
+ * whether it had to be repaired. Body: `{ owner: string }` (the coord owner id
+ * / `PAPERCUSP_SID`). Returns `{ ok, configDir, repaired }`.
+ *
+ * EI-12938. A FRESH psu launch gets its dir materialized server-side by
+ * bootstrap-su (`writeInteractiveClaudeConfig`); a RESUME does no bootstrap POST
+ * — the asymmetry this whole bug family lives in. `psu --resume` therefore has
+ * no way to (re)build the mirror itself: psu-launcher.mjs is plain node running
+ * outside the operator-core TS package, so it cannot import the writer (see the
+ * launcher's dependency-surface note; `rehealResumeCredentials` is the same
+ * logic re-implemented locally, and doing that a SECOND time for the whole
+ * symlink mirror is exactly the duplication this endpoint avoids).
+ *
+ * So: this route gives the resume leg the same server-materializes-the-dir
+ * contract the fresh leg already has, with ONE implementation of the mirror.
+ * Idempotent + non-destructive — a healthy dir is left byte-identical and the
+ * call reports `repaired: false` (see `ensureInteractiveClaudeConfig`).
+ * `loopback` auth, matching the sibling control routes: it materializes a dir
+ * under the operator user's own home and is only ever called by a local
+ * launcher.
+ */
+const ensureClaudeConfig = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/ensure-claude-config',
+  auth: 'loopback',
+  async handler(req) {
+    let body: { owner?: string } = {};
+    try {
+      const text = await req.text();
+      if (text.trim()) body = JSON.parse(text);
+    } catch { /* validated below */ }
+    const owner = typeof body.owner === 'string' ? body.owner.trim() : '';
+    if (!owner) {
+      return new Response(JSON.stringify({ ok: false, error: 'owner required' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    // Containment: `owner` keys a path, so refuse anything that isn't a plain
+    // session-id token before it reaches join() — a `../` would materialize a
+    // symlink farm outside the session-claude root.
+    if (!/^[A-Za-z0-9._-]+$/.test(owner) || owner === '.' || owner === '..') {
+      return new Response(JSON.stringify({ ok: false, error: 'invalid owner' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    const { ensureInteractiveClaudeConfig } = await import('../../../interactive-claude-config');
+    const { configDir, repaired } = ensureInteractiveClaudeConfig({ sid: owner });
+    return new Response(JSON.stringify({ ok: true, owner, configDir, repaired }), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
+  },
+});
+
+/**
  * POST /api/adv/sessions/rematerialize — restore an ARCHIVED session's files
  * from harness_shared.session_archives back onto disk (WI-3859 F4). The
  * archive-at-death lifecycle deletes an ended session's transcript ~15s after
@@ -974,12 +1032,17 @@ const rematerialize = defineTool({
       // never shadowed; best-effort — the restore itself already succeeded.
       if (r.ok && sourceKind === 'claude' && stamp.owner) {
         try {
-          const [{ writeInteractiveClaudeConfig }, { sessionClaudeConfigDir }] = await Promise.all([
+          const [{ ensureInteractiveClaudeConfig }, { sessionClaudeConfigDir }] = await Promise.all([
             import('../../../interactive-claude-config'),
             import('@papercusp/orchestrator/session-launch-dirs'),
           ]);
           if (sessionClaudeConfigDir(stamp.owner) === stamp.session_root) {
-            writeInteractiveClaudeConfig({ sid: stamp.owner });
+            // EI-12938: was a bare writeInteractiveClaudeConfig. The shared
+            // ensure is the same repair behind a ready-check, so the four legs
+            // that need a launch-ready dir now share ONE implementation (this
+            // route was the only one that ever had it — the bug was the other
+            // three not calling it).
+            ensureInteractiveClaudeConfig({ sid: stamp.owner });
           }
         } catch (e) {
           console.warn(`[rematerialize] interactive-config seed failed for ${sessionId}: ${(e as Error)?.message ?? e}`);
@@ -1384,4 +1447,4 @@ const sessionPortDelivery = defineTool({
   },
 });
 
-export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
+export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, ensureClaudeConfig, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
