@@ -682,6 +682,16 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     expect(codex.overlaySource).toBe(path.join(tmpAppRoot, 'prompts', 'papercusp-su.codex.md'));
   });
 
+  it('keeps the canonical Claude overlay explicit that trimmed tools are an initial seed', async () => {
+    const canonicalOverlay = await fs.readFile(
+      new URL('../../../../../apps/operator/prompts/papercusp-su.claude.md', import.meta.url),
+      'utf8',
+    );
+    expect(canonicalOverlay).toContain('initial seed');
+    expect(canonicalOverlay).toContain('tools:invoke({ name, args })');
+    expect(canonicalOverlay).not.toContain('You load the full catalog');
+  });
+
   it('throws when the base profile file is missing', async () => {
     await expect(renderSuPlaybook({ agent: 'claude', profile: 'ghost', operatorAppRoot: tmpAppRoot })).rejects.toThrow(
       /papercusp-su-ghost\.tools\.md/,
