@@ -25589,7 +25589,8 @@ body.papercusp-chromeless .oracle-fab {
   color: var(--accent-cool);
 }
 
-.oracle-send-button {
+.oracle-send-button,
+.op-chat-ideas-button {
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
@@ -25629,7 +25630,8 @@ body.papercusp-chromeless .oracle-fab {
     height: 14px;
   }
 
-  .oracle-send-button {
+  .oracle-send-button,
+  .op-chat-ideas-button {
     min-width: 68px;
     padding-inline: 12px;
   }
@@ -26010,6 +26012,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
    rest of the app chrome while preserving existing sizing/placement. */
 .oracle-dock--maximal-hud .oracle-icon-button,
 .oracle-dock--maximal-hud .oracle-send-button,
+.oracle-dock--maximal-hud .op-chat-ideas-button,
 .oracle-dock--maximal-hud .oracle-tab-close,
 .oracle-dock--maximal-hud .oracle-picker-item,
 .oracle-dock--maximal-hud .oracle-picker-menu-option {
@@ -26030,6 +26033,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 
 .oracle-dock--maximal-hud .oracle-icon-button::before,
 .oracle-dock--maximal-hud .oracle-send-button::before,
+.oracle-dock--maximal-hud .op-chat-ideas-button::before,
 .oracle-dock--maximal-hud .oracle-tab-close::before,
 .oracle-dock--maximal-hud .oracle-picker-item::before,
 .oracle-dock--maximal-hud .oracle-picker-menu-option::before {
@@ -26045,6 +26049,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 
 .oracle-dock--maximal-hud .oracle-icon-button > *,
 .oracle-dock--maximal-hud .oracle-send-button > *,
+.oracle-dock--maximal-hud .op-chat-ideas-button > *,
 .oracle-dock--maximal-hud .oracle-tab-close > *,
 .oracle-dock--maximal-hud .oracle-picker-item > *,
 .oracle-dock--maximal-hud .oracle-picker-menu-option > * {
@@ -26054,6 +26059,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 
 .oracle-dock--maximal-hud .oracle-icon-button:hover,
 .oracle-dock--maximal-hud .oracle-send-button:hover:not(:disabled),
+.oracle-dock--maximal-hud .op-chat-ideas-button:hover:not(:disabled),
 .oracle-dock--maximal-hud .oracle-tab-close:hover,
 .oracle-dock--maximal-hud .oracle-picker-item:hover,
 .oracle-dock--maximal-hud .oracle-picker-menu-option:hover,
@@ -26066,12 +26072,14 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
     0 0 24px rgb(from var(--accent) r g b / 0.22) !important;
 }
 
-.oracle-dock--maximal-hud .oracle-send-button {
+.oracle-dock--maximal-hud .oracle-send-button,
+.oracle-dock--maximal-hud .op-chat-ideas-button {
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.34) !important;
   font-weight: 760;
 }
 
-.oracle-dock--maximal-hud .oracle-send-button:disabled {
+.oracle-dock--maximal-hud .oracle-send-button:disabled,
+.oracle-dock--maximal-hud .op-chat-ideas-button:disabled {
   filter: saturate(0.72);
   opacity: 0.58;
 }
@@ -26463,7 +26471,9 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 }
 
 .oracle-dock .oracle-send-button,
-.op-chat-sidebar .oracle-send-button {
+.oracle-dock .op-chat-ideas-button,
+.op-chat-sidebar .oracle-send-button,
+.op-chat-sidebar .op-chat-ideas-button {
   min-width: 76px;
   gap: 6px;
 }
