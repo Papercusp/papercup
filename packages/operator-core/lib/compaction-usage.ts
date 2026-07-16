@@ -58,12 +58,60 @@ const IMAGE_PAYLOAD_RE = /"(?:data|base64)":"[A-Za-z0-9+/=]{8192,}"/g;
 /** Claude's per-image billing cap (≥1568px images are downscaled to ~1600 tok). */
 const IMAGE_TOKEN_COST = 1600;
 
+/** EI-12848 (the TEXT analogue of WI-3176's image double-write): Claude Code writes
+ *  each tool_result's payload into the transcript line TWICE — once in the in-context
+ *  `message.content` tool_result block, and again in the top-level `toolUseResult`
+ *  bookkeeping field. Only `message.content` is sent to the model; `toolUseResult`
+ *  is CC's local replay/re-render copy and NEVER enters context (same "latter never
+ *  entering context at all" note as the image `"base64"` copy). It is ~20% of a
+ *  tool-heavy transcript, so counting it at bytes/4 roughly DOUBLE-counts every tool
+ *  result: a fresh fleet member reads 111% of its soft limit right after a ToolSearch
+ *  schema preload — before any real work — and compact-loops forever on the immovable
+ *  duplicate. The field is always emitted AFTER `message` on the line (verified across
+ *  live transcripts), followed only by more non-context metadata (uuid/session_id/
+ *  cwd/…), so every byte from the top-level `,"toolUseResult":` key to end-of-line is
+ *  out-of-context. The comma anchor (a top-level key is always comma-preceded — the
+ *  first key is parentUuid) fails SAFE: a nested/escaped `\"toolUseResult\"` mention
+ *  inside message.content the session merely READ never matches (the WI-4608
+ *  false-positive class), and an unmatched top-level key just leaves the (safe)
+ *  over-count rather than risking an under-count that would cause a real context death. */
+const TOOL_USE_RESULT_KEY = ',"toolUseResult":';
+
 /**
- * tokens ≈ (bytes SINCE THE LAST COMPACTION − base64-image excess) / 4.
+ * Sum the out-of-context `toolUseResult` byte excess over a settled latin1 slice
+ * (complete lines only — each matched key's end-of-line newline must lie within
+ * `visible`). Image-payload bytes inside a toolUseResult region are SUBTRACTED here
+ * so they stay accounted for solely by the image path (IMAGE_PAYLOAD_RE) — no
+ * double-discount, and the existing image handling is left byte-identical.
+ */
+function toolUseResultExcessIn(visible: string): number {
+  let excess = 0;
+  let from = 0;
+  for (;;) {
+    const key = visible.indexOf(TOOL_USE_RESULT_KEY, from);
+    if (key === -1) break;
+    const start = key + 1; // discount from the key's opening quote (drop the separator comma)
+    const nl = visible.indexOf('\n', start);
+    const end = nl === -1 ? visible.length : nl;
+    let region = end - start;
+    // Exclude image runs inside the region — the image path already discounts them.
+    const seg = visible.slice(start, end);
+    for (const m of seg.matchAll(IMAGE_PAYLOAD_RE)) region -= m[0].length;
+    excess += Math.max(0, region);
+    from = end;
+  }
+  return excess;
+}
+
+/**
+ * tokens ≈ (bytes SINCE THE LAST COMPACTION − base64-image excess −
+ * toolUseResult double-write) / 4.
  * EI-6410: the transcript JSONL accumulates across compactions, so whole-file/4
  * is monotonic and reads a compacted session at 150–250%+ of its limit forever —
  * false over-limit warnings and compact-loops. WI-3176: base64 image payloads
- * are counted at their real ~1600-token cost, not byte-weight. Small files stay
+ * are counted at their real ~1600-token cost, not byte-weight. EI-12848: the
+ * top-level `toolUseResult` field duplicates the in-context tool_result block but
+ * never enters context — discount it (see toolUseResultExcessIn). Small files stay
  * stat-only; larger ones scan a bounded tail for the last compaction-summary
  * entry and count from there.
  */
@@ -102,7 +150,9 @@ export function tokensFromFileSize(pathStr: string): number | null {
       for (const m of visible.matchAll(IMAGE_PAYLOAD_RE)) {
         imageExcess += m[0].length - IMAGE_TOKEN_COST * 4;
       }
-      return Math.max(0, Math.floor((sinceBytes - imageExcess) / 4));
+      // EI-12848: also drop the out-of-context toolUseResult double-write.
+      const tureExcess = toolUseResultExcessIn(visible);
+      return Math.max(0, Math.floor((sinceBytes - imageExcess - tureExcess) / 4));
     } finally {
       fs.closeSync(fd);
     }
@@ -210,6 +260,9 @@ interface TranscriptAnchor {
   countStart: number;
   /** Image-payload byte excess accumulated over settled bytes in [countStart, settled). */
   imageExcess: number;
+  /** EI-12848: out-of-context `toolUseResult` byte excess over settled bytes in
+   *  [countStart, settled) — the text double-write, image bytes already excluded. */
+  tureExcess: number;
   /** Absolute offset just past the last complete line scanned (settled ≤ sizeSeen). */
   settled: number;
   /** File size at the last read; (settled, sizeSeen] is the raw-counted partial tail. */
@@ -222,7 +275,7 @@ const anchors = new Map<string, TranscriptAnchor>();
 const seedInFlight = new Set<string>();
 
 function anchorTokens(a: TranscriptAnchor): number {
-  return Math.max(0, Math.floor((a.sizeSeen - a.countStart - a.imageExcess) / 4));
+  return Math.max(0, Math.floor((a.sizeSeen - a.countStart - a.imageExcess - a.tureExcess) / 4));
 }
 
 /** Sum the image discount (WI-3176) over a settled latin1 slice. */
