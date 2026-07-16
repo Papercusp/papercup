@@ -136,34 +136,46 @@ cap). No cliff/leak has been attributed to it yet.
 
 ## Known limitations (standing, document-honestly)
 
-### 0. ACTIVE REGRESSION (2026-07-10): admit-after-connect never attaches a replicator (EI-8895) — gate currently RED
+### 0. LIVE STATUS (rewritten 2026-07-16, su-4d3eb — supersedes the 2026-07-10 "EI-8895 ACTIVE" framing)
 
-The public-release checklist below (current as of 2026-07-02) is **stale**: the
-live-federation gate went RED again on 2026-07-10. Two regressions were found
-this week; treat this row as the up-to-date status, not the "No open
-release-critical blocker" callout further down.
+The 2026-07-10 version of this section carried two claims that were DISPROVEN
+the same day, and two new events have happened since — treat THIS as the
+current status row (successor execution structure: the owner's 2026-07-16
+3-lane split — git → `p2p-git-live-activation-2026-07-09`, coordination →
+su-18f2f, everything else → `p2p-public-release-remaining-lanes-2026-07-16`):
 
-* **EI-8895 / `connected_never_replicated` (WI-183 class) — ACTIVE, root-caused, fix not yet landed.**
-  A log admitted **after** a swarm connection is already up never gets its
-  replicator attached — admission was only ever a DB write, not an attach
-  trigger. Symptom: `coord_event_log` remote-origin rows freeze completely
-  (observed stuck at count=147, `max_ts` 2026-07-10 10:32 EDT, cursor
-  `ef7a8160` at pos=0 for 2h+). Conclusively diagnosed by the coord-lane lead
-  (su-bce8d8e6, WI-3549 checkpoint 19:40Z 2026-07-10); confirmed not a
-  disk/ENOSPC issue. A candidate fix + deterministic in-process repro test
-  (`wi183-attach-on-late-admit.integration.test.ts`) exist; the fix is to
-  iterate already-connected peers and (re)attach replication on completing a
-  NEW log's announce→attest→admit, not just persist the admission. **A prior
-  blind live-rig fix attempt already failed** — the sanctioned path is
-  repro-first (verify the candidate test in-process) before any live-rig
-  change. Tracked by plan `p2p-live-federation-crack-2026-07-10` (P-001
-  critical path); owner-authorized fleet `p2p-blocker-crack-sonnet5` cracking
-  it as of 19:5x Z.
-* **iMac hive membership absent — ACTIVE, second live blocker.** The iMac's
-  `hives` table is empty (no admitted remote log), so even once EI-8895 lands,
-  replication cannot resume until membership is restored through the existing
-  typed surfaces. Tracked as P-002 of the same plan (`git-live-activation`
-  P-003 umbrella item).
+* **EI-8895 ("admit-after-connect never attaches") — CLOSED resolved-no-fix-needed
+  (2026-07-10 \~20:00 EDT).** Two independent re-runs of
+  `wi183-attach-on-late-admit.integration.test.ts` came back GREEN — the
+  attach seam already works, and the WI-3684 repair-on-detect auto-heal was
+  already shipped. The 07-10 freeze's REAL root cause was a live
+  admission/drain problem: **WI-3891** (VM hive/pot registry backfill —
+  pre-backfill sends were refused `harness_not_federated`) + the WI-3896/
+  WI-3937 drain fixes. **GATE CLEARED 2026-07-10 22:53 EDT** (two paired
+  VM-authored `origin=remote` rows, 5-way corroborated — see
+  RELEASE-READINESS.md).
+* **WI-4070 (tower↔VM federation dead again since \~2026-07-13) — ACTIVE,
+  root-caused, fix in flight (git lane su-71c69).** A NEW wedge, distinct from
+  the 07-10 one: the VM operator ran a **stale Jul-9 dev-source tree**
+  (post-mig-557 DB vs pre-557 code); VM rebooted with the fix 2026-07-16.
+  Tower-side reads during the wedge: `origin=remote` newest 2026-07-13 09:14
+  EDT; the 4 VM-side merge cursors frozen 2026-07-15 15:48; tower's own log
+  advancing normally throughout.
+* **Retired-route class in the live gate + smokes — FIXED 2026-07-16.** The
+  mig-557 lexicon sweep renamed `GET /api/discovery/hives` →
+  `/api/discovery/pots` (and `join-hive` → `join-pot`), but the two-instance
+  smokes + `federation-asserts.sh` still curled the retired route → 404
+  `{"error":"not_found"}` → the whole discovery leg (and the hourly
+  live-federation gate's content-matrix run) red-failed with a misleading
+  "announce never crossed" signature. Fixed across the smoke family
+  (`fed_hive_dir_row`, from-repo/directory/content-matrix smokes, rows key
+  `hiveId`→`potId`) and guarded in `federation-asserts.selftest.sh` so the
+  class self-announces.
+* **GO/NO-GO gate 1b (WI-2009 + WI-2102) — BOTH halves now independently
+  verified (2026-07-16).** The ledger's "WI-2009 half not independently
+  re-verified" flag is cleared: the leg-3 backlog-stall detector + poll
+  re-attempt + epoch-gate defer semantics re-verified at HEAD
+  (`outbox-drain-stall.test.ts` 14/14 + drain family 29/29).
 * **WI-3646 (hive\_slug federation regression) — FIXED + live-rig verified 2026-07-09/10.**
   `hive:create` from an existing harness never wrote `hive_slug` onto the
   owner's source-harness registry row, so `potHomeSlugForHarness` /
@@ -433,6 +445,20 @@ receive-side column yet (WI-2233, `REVIEW(findings-B)`-tagged, out of scope — 
 real but minor future gap, not silent data loss since it's explicitly documented).
 `trusted_authors` is local-only **by design** (federating the auto-run grant
 would be a security regression).
+
+**2026-07-16 drift catch + fix (the guard doing its job):** the column-grain
+guard went RED on three tables after recent feature migrations —
+`agent_facts.audience_scope`/`source_provenance` (mig 574) and
+`memory_canonical.valid_at`/`invalid_at`/`superseded_by` (mig 578, the
+temporal-lite validity semantics) were silently dropped on the wire, and
+`engineer_issues.feature_order` (mig 588) was undocumented. All five content
+columns are now CARRIED end-to-end (mapper + wire-row guard + projection
+INSERT/UPSERT, optional-tolerant for pre-migration history ops), and
+`feature_order` is documented local (per-machine dispatch rank; whether backlog
+priority federates is a work-distribution-activation posture question —
+remaining-lanes P-201). Guard re-run green 28/28. Lesson unchanged since
+WI-251: every new column on a federated table MUST route through this guard's
+three-way decision (carry / provenance / reasoned-local) at migration time.
 
 ### 8. The 2-server quota cap → no true 3-machine multi-member LIVE
 

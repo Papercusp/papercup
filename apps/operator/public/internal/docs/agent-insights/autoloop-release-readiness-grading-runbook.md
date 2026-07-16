@@ -1,0 +1,122 @@
+# autoloop-release-readiness — grading runbook
+URL: /internal/docs/agent-insights/autoloop-release-readiness-grading-runbook
+
+How to grade the composite Full auto-loop (Mug→Cup→Kettle→Blender) public-release rubric: per-criterion instruments, evidence queries, and the typed emission path.
+
+The `autoloop-release-readiness` rubric (releaseGating, 8 criteria, ratingScale
+`pass / at-risk / fail / unknown`) is the **composite** public-release gate for the
+full autonomous loop product. It COMPOSES the leg rubrics instead of duplicating
+them: `blender-release-readiness` grades the blender/scout self-learning leg
+(separate grader lane), `pot-coordination-health` is the Kettle's own per-wake
+scorecard. Origin: EI-12461 / EI-12455; owner directive
+`[owner:Avi turn f362a778@2026-07-16T20:31:59Z]`.
+
+## The one main procedure
+
+1. **Generation stamp first.** Record the generation you are grading BEFORE
+   gathering evidence: `blender:success-metrics { watermarkRef: 'bg-host-restart' }`
+   (runningGeneration echo) + `dev:pipeline_position` (release sha on `:3070`) +
+   `systemctl --user show papercup-bg-host.service -p ActiveEnterTimestamp`.
+   Evidence gathered across a host-restart boundary is invalid — re-gather.
+2. **Gather instrument snapshots per criterion** (queries below). Each criterion
+   binds ONE instrument (`instrumentKey`); the typed grading path verifies the
+   snapshot set against the rubric's instrument contract.
+3. **Emit via the typed path** — never prose:
+   `scorecards:evaluate { rubricRef: 'autoloop-release-readiness' }` → fill the
+   returned skeleton → `scorecards:evaluate { rubricRef, ratings, instrumentSnapshots }`
+   (validates + fingerprints) → `scorecards:emit` the canonical result.
+4. **Rate honestly.** `unknown` beats invented; a criterion whose fix is live but
+   whose window has not yet cleared is `at-risk` with the clearing time stated in
+   evidence, not `pass`.
+5. **Cadence:** ≤6h between complete scorecards while the rubric is release-gating.
+
+## Per-criterion instruments
+
+### placement-throughput · `pot-throughput-ticks`
+
+Rolling 24h. The Mug must place when frontier is nonempty and cup capacity free.
+
+```sql
+SELECT tick_at, frontier_depth, placements, cups_busy, cups_cap
+FROM harness_shared.pot_throughput_ticks
+WHERE workspace_id='papercusp-workspace' AND tick_at > now()-interval '24 hours'
+ORDER BY tick_at;
+```
+
+`pass` = no run of ≥3 consecutive stuck ticks (`frontier_depth>0 AND cups_busy<cups_cap AND placements=0`),
+excluding ticks where the pool is genuinely walled (see capacity-admission).
+`fail` = sustained stuck runs, or zero placements all window with a nonempty frontier.
+
+### cup-execution-health · `cup-keeper-runs`
+
+Rolling 24h run success + restart durability.
+
+```sql
+SELECT count(*) FILTER (WHERE exit_code=0)::float/greatest(count(*),1) AS success_rate,
+       count(*) AS runs
+FROM harness_shared.cup_keeper_runs
+WHERE workspace_id='papercusp-workspace' AND started_at > now()-interval '24 hours';
+```
+
+`pass` ≥ 0.80 · `at-risk` 0.60–0.80 · `fail` \< 0.60 or systematic identical failures.
+Restart durability: keeper respawn after a death (`cup_keeper_instances` churn) with
+the claim resumed, or a passing restart drill.
+
+### kettle-supervision-health · `kettle-autoloop-state`
+
+A frozen `last_fired_at` watermark weeks old = a dead supervisor (`fail`), whatever
+else looks healthy. Evidence: `harness_shared.autoloop_state` kettle rows +
+`scorecards:list { rubricRef: 'pot-coordination-health', limit: 3 }` (newest complete
+scorecard ≤6h). The journal symptom is the `autoloop-chronic skipped-stale … frozen
+watermark` line (see EI-12968).
+
+### blender-leg-health · `blender-leg-scorecard`
+
+Defer to the leg rubric — do NOT re-measure scout internals here.
+`scorecards:list { rubricRef: 'blender-release-readiness', limit: 1 }`: complete
+(`missingKeys:[]`), fresh ≤6h, no unowned `fail`. Scout rows live under
+`harness_slug='@singleton'` (workspace+origin scoping — EI-10520); `routed_at` is
+epoch **milliseconds**.
+
+### capacity-admission · `accounts-capacity`
+
+`accounts:status` (+ gateway stats). `pass` = ≥2 healthy accounts (7d-util \< 0.9) AND
+clean no-capacity classification under exhaustion (capacity-storm drill on the current
+generation, or organic `gated` ticks). Never blame capacity without a real 429
+(owner standing directive). Silent member death on a walled pool = `fail`.
+
+```sql
+SELECT status, gate, count(*) FROM harness_shared.scout_ticks
+WHERE tick_at > now()-interval '48 hours' GROUP BY 1,2;
+```
+
+### e2e-loop-closure · `e2e-traversal-trace`
+
+Trace ≥1 full traversal in 48h: `pot_placements` row → matching `cup_keeper_runs`
+execution → subsequent Kettle scorecard covering the window → blender routed-ledger /
+outcome update. Drill traversals count only when marked `origin='drill'` and run on
+the current generation.
+
+### owner-controls · `owner-controls-probe`
+
+`autoloop:control { action:'status' }` round-trip + `pot:get-steering` coherent with
+the last set (watch the stale-override class: a pot-level steering override silently
+shadowing workspace config — the 2026-07-14 incident) + a watchdog page demonstrably
+delivered (`notifications:recent`).
+
+### release-parity · `release-generation-parity`
+
+The graded generation must be the shipped one: newest scorecard `gradedGeneration`
+matches bg-host `ActiveEnterTimestamp` + release sha; green gate. Note bg-host runs
+loop-critical routines **from the staging tree** — a staging fix can be live on the
+loop while `:3070` is still behind; state which host serves each graded path.
+
+## Known standing reds (first-pass expectations, 2026-07-16)
+
+* **kettle-supervision-health**: kettle autoloop `last_fired_at` frozen since
+  2026-06-25 — expect `fail` until the watermark moves.
+* **capacity-admission**: pool was hard-walled on 7-day budgets 2026-07-13
+  (4 accounts util7d=1.0); re-probe live before rating.
+* **blender-leg-health**: EI-12940 (OAuth SPOF → gateway-pool) + WI-5041 (lens
+  rotation) fixes live since the 2026-07-16 18:40:43Z watermark; leg rubric's rolling
+  windows clear \~07-18.
