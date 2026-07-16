@@ -13,6 +13,7 @@ const admissionMocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
   releaseWorkItem: vi.fn(),
   sendMessage: vi.fn(),
+  getFleet: vi.fn(),
 }));
 
 vi.mock('./claim-spec-store', () => ({
@@ -31,8 +32,16 @@ vi.mock('../work-items', () => ({
 vi.mock('../agent-tools/coordination/messages', () => ({
   sendMessage: admissionMocks.sendMessage,
 }));
+vi.mock('../agent-fleets-store', () => ({
+  getFleet: admissionMocks.getFleet,
+}));
 
-import { fleetScopedMiss, reconcileFleetScopeClaims } from './fleet-scope-admission';
+import {
+  admitWorkItemForFleetTarget,
+  fleetScopedMiss,
+  readFleetPauseState,
+  reconcileFleetScopeClaims,
+} from './fleet-scope-admission';
 
 const base: ClaimSpecSubject = {
   id: 'WI-7',
@@ -188,6 +197,95 @@ describe('fleet scope assignment admission (P-016)', () => {
     expect(admissionMocks.sendMessage.mock.calls[0]?.[1]).toMatchObject({
       to: ['@fleet-leader:bugs'],
       summary: 'quarantined 2 out-of-scope fleet claim(s)',
+    });
+  });
+
+  // EI-12832: while a fleet is winding-down (paused via fleet:pause / fleet:wind-down),
+  // a member must not acquire NEW work — the by-id claim path (admitWorkItemForFleetTarget)
+  // must consult the durable control_state, not just spec-match. Regression: a compliant
+  // stand-down release woke a parked member which then claimed the released item because
+  // it was in-spec and the claim path never checked the pause.
+  describe('EI-12832: fleet pause gates the claim/assign admission path', () => {
+    const fleetSpec = {
+      source: 'fleet' as const,
+      spec: {
+        specVersion: '1.0',
+        specId: 'bugs-rev4',
+        revision: 4,
+        view: { filter: { field: 'id', op: 'in', value: ['WI-in'] } },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      },
+      revision: 4,
+      updatedBy: 'su-leader',
+      updatedAt: 'now',
+    };
+    const issueItem = {
+      id: 'WI-in',
+      family: 'issue',
+      kind: 'bug',
+      title: 'WI-in',
+      summary: 'WI-in',
+      state: 'open',
+      assignee: null,
+      payload: {},
+      createdAt: '2026-07-13T00:00:00.000Z',
+      updatedAt: '2026-07-13T00:00:00.000Z',
+    };
+
+    beforeEach(() => {
+      admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'bugs', fleetRole: 'member' });
+      admissionMocks.getClaimSpecRecord.mockResolvedValue(fleetSpec);
+    });
+
+    it('refuses a member by-id claim while its fleet is winding-down (paused), before any item read', async () => {
+      admissionMocks.getFleet.mockResolvedValue({ fleetSlug: 'bugs', controlState: 'winding-down', controlReason: 'owner pause' });
+
+      const admission = await admitWorkItemForFleetTarget({
+        target: 'su-member',
+        workItemId: 'WI-in',
+        workspaceId: 'papercusp-workspace',
+      });
+
+      expect(admission).toMatchObject({ allowed: false, code: 'fleet_winding_down', scope: { fleetSlug: 'bugs' } });
+      expect((admission as { reason: string }).reason).toMatch(/winding-down/);
+      expect((admission as { reason: string }).reason).toMatch(/owner pause/);
+      // The pause short-circuits admission BEFORE the item read — the claim never reaches spec-match.
+      expect(admissionMocks.getWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('allows the SAME in-spec claim once the fleet is active again (the fix is control-state-conditional)', async () => {
+      admissionMocks.getFleet.mockResolvedValue({ fleetSlug: 'bugs', controlState: 'active', controlReason: null });
+      admissionMocks.getWorkItem.mockResolvedValue(issueItem);
+
+      const admission = await admitWorkItemForFleetTarget({
+        target: 'su-member',
+        workItemId: 'WI-in',
+        workspaceId: 'papercusp-workspace',
+      });
+
+      expect(admission).toMatchObject({ allowed: true, scoped: true });
+      expect(admissionMocks.getWorkItem).toHaveBeenCalledWith('WI-in', undefined);
+    });
+
+    it('fleetScopedMiss surfaces a paused stand-down verdict for the self-select path', () => {
+      const miss = fleetScopedMiss(
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        [],
+        { pausedReason: 'owner pause' },
+      );
+      expect(miss).toMatchObject({ windDown: true, paused: true, fleetScope: { fleet: 'bugs' } });
+      expect(miss.error).toMatch(/winding-down/);
+      expect(miss.error).toMatch(/owner pause/);
+      expect(miss.advice).toMatch(/fleet:resume/);
+    });
+
+    it('readFleetPauseState fails OPEN when the control-state read errors (never wedges claiming)', async () => {
+      admissionMocks.getFleet.mockRejectedValue(new Error('pg unavailable'));
+      const state = await readFleetPauseState(
+        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', record: fleetSpec },
+        'papercusp-workspace',
+      );
+      expect(state).toEqual({ windingDown: false, reason: null });
     });
   });
 });

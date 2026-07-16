@@ -32,6 +32,7 @@ import { matchRoutingGateHint } from '../../routing-gate-hints';
 import {
   fleetScopedMiss,
   reconcileFleetScopeClaims,
+  readFleetPauseState,
 } from '../../scheduler/fleet-scope-admission';
 
 /**
@@ -241,6 +242,25 @@ export default defineTool({
           },
         ],
       };
+    }
+    // EI-12832: a paused fleet (control_state='winding-down') floors the SELECT side too —
+    // a member woken during the pause must stand down, not pull the next item (even one
+    // its spec matches). The by-id claim path is gated at admission; this closes the
+    // self-select sibling seam with the same durable-control-state read.
+    if (reconciliation.scope) {
+      const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
+      if (pause.windingDown) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { pausedReason: pause.reason }),
+              ),
+            },
+          ],
+        };
+      }
     }
     // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
     // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).

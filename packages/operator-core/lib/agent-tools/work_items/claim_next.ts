@@ -29,6 +29,7 @@ import { cancelClaimableAwaits } from '../../events/await/store';
 import {
   fleetScopedMiss,
   reconcileFleetScopeClaims,
+  readFleetPauseState,
 } from '../../scheduler/fleet-scope-admission';
 
 export default defineTool({
@@ -110,6 +111,16 @@ export default defineTool({
     // scheduler:get_next. P-016: a fleet member NEVER takes the legacy generic
     // fallback, even when the scheduler flag is off — scope is an admission
     // boundary, not a feature toggle.
+    // EI-12832: a paused fleet (control_state='winding-down') floors self-select too — a
+    // member woken during the pause must stand down, not pull the next item. Gate here,
+    // before any claim, with the same durable-control-state read the by-id admission path uses.
+    if (reconciliation.scope) {
+      const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
+      if (pause.windingDown) {
+        const miss = fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { pausedReason: pause.reason });
+        return { content: [{ type: 'text' as const, text: JSON.stringify(args.count && args.count > 1 ? { ...miss, claimed: [] } : miss) }] };
+      }
+    }
     const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
     // P-002 co-location lever: under the per-Hive claim lease, honor each item's
     // swarm_affinity by passing THIS Swarm's id — the claim then skips work affined to

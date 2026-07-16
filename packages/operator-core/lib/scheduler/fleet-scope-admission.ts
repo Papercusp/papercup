@@ -125,22 +125,32 @@ function denyMissing(scope: FleetScopeContext): FleetScopeAdmission {
  * (allowed). A registry-read hiccup must never wedge normal claiming — the pause
  * gate is a floor on new work, not a hard dependency of the claim path.
  */
+export async function readFleetPauseState(
+  scope: FleetScopeContext,
+  workspaceId?: string | null,
+): Promise<{ windingDown: boolean; reason: string | null }> {
+  const ws = resolveClaimSpecWorkspace(workspaceId);
+  if (!ws) return { windingDown: false, reason: null };
+  const { getFleet } = await import('../agent-fleets-store');
+  const fleet = await getFleet(ws, scope.fleetSlug).catch(() => null);
+  if (fleet?.controlState !== 'winding-down') return { windingDown: false, reason: null };
+  return { windingDown: true, reason: fleet.controlReason };
+}
+
+/** The admission-seam form: a loud, leader-addressed refusal when paused, else null. */
 export async function fleetControlWindDownRefusal(
   scope: FleetScopeContext,
   workspaceId?: string | null,
 ): Promise<Extract<FleetScopeAdmission, { allowed: false }> | null> {
-  const ws = resolveClaimSpecWorkspace(workspaceId);
-  if (!ws) return null;
-  const { getFleet } = await import('../agent-fleets-store');
-  const fleet = await getFleet(ws, scope.fleetSlug).catch(() => null);
-  if (fleet?.controlState !== 'winding-down') return null;
+  const { windingDown, reason } = await readFleetPauseState(scope, workspaceId);
+  if (!windingDown) return null;
   return {
     allowed: false,
     scoped: true,
     code: 'fleet_winding_down',
     scope,
     reason:
-      `fleet '${scope.fleetSlug}' is winding-down (paused${fleet.controlReason ? `: ${fleet.controlReason}` : ''}); ` +
+      `fleet '${scope.fleetSlug}' is winding-down (paused${reason ? `: ${reason}` : ''}); ` +
       `member ${scope.ownerId} may not acquire NEW work until a fleet:resume (control_state=active) lands. ` +
       'A release performed as part of the stand-down must not recruit the next member',
   };
