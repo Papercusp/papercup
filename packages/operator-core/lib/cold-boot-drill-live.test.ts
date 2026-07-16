@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   gradeColdBootDrill,
@@ -358,5 +359,16 @@ describe('verifyColdBootDrill — post-start lifecycle self-check (EI-12655 fix 
       socketExists: async () => true,
     });
     expect(none).toMatchObject({ ok: false, error: 'no_drill_found' });
+  });
+});
+
+describe('source hygiene — no raw NUL byte in the module (EI-12655)', () => {
+  it('contains no raw NUL byte (keeps it a text file, not binary)', () => {
+    // terminalOutcomesFromLedger joins its dedupe key with a NUL delimiter. It must
+    // be written as the `\x00` escape, NOT a literal NUL char in source: a raw NUL
+    // makes the file report as binary to file(1)/grep and breaks tooling (the file
+    // was shipped this way by the EI-12655 fix). Guard against the class recurring.
+    const src = readFileSync(new URL('./cold-boot-drill-live.ts', import.meta.url), 'utf8');
+    expect(src.includes('\u0000')).toBe(false);
   });
 });
