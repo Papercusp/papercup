@@ -25,13 +25,9 @@ export default defineTool({
   async handler(args, ctx) {
     const potSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!potSlug) {
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no hive home harness resolved' }) }],
-      };
+      return { data: { ok: false, error: 'no hive home harness resolved' } };
     }
     const digest = await readSessionAuditDigest(potSlug, { windowHours: args.windowHours });
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, digest }) }],
-    };
+    return { data: { ok: true, digest } };
   },
 });

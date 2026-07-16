@@ -139,6 +139,7 @@ export async function resolveSpawnGatewayEnv(opts: {
   const wantAuto = acctMode === 'auto' || acctMode === 'gateway';
   const explicitPin = acctOverride && !useDefault && !wantAuto ? acctOverride : undefined;
   const explicitGatewayRoute = wantAuto || !!explicitPin;
+  const routingWorkspaceId = opts.workspaceId ?? (await import('../workspace-registry')).activeWorkspaceId();
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
   const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
@@ -169,7 +170,7 @@ export async function resolveSpawnGatewayEnv(opts: {
       import('../deployment/account-pool-store'),
       import('../deployment/account-pool'),
     ]);
-    const pool = await loadAccountPool(opts.workspaceId);
+    const pool = await loadAccountPool(routingWorkspaceId);
     const account = pool.accounts.find((candidate) => candidate.id === explicitPin);
     if (!account) {
       throw new Error(`account '${explicitPin}' is not in the account pool; refusing default-system fallback`);
@@ -181,7 +182,7 @@ export async function resolveSpawnGatewayEnv(opts: {
       );
     }
     const { getAccountOverride } = await import('../deployment/account-session-override');
-    const override = await getAccountOverride(opts.workspaceId);
+    const override = await getAccountOverride(routingWorkspaceId);
     if (override.excludeAccounts.includes(explicitPin)) {
       throw new Error(`account '${explicitPin}' is excluded by the session override; refusing fallback`);
     }
@@ -198,9 +199,9 @@ export async function resolveSpawnGatewayEnv(opts: {
       import('../deployment/account-pool-store'),
       import('../deployment/account-pool'),
     ]);
-    const pool = await loadAccountPool(opts.workspaceId);
+    const pool = await loadAccountPool(routingWorkspaceId);
     const { getAccountOverride } = await import('../deployment/account-session-override');
-    const override = await getAccountOverride(opts.workspaceId);
+    const override = await getAccountOverride(routingWorkspaceId);
     const candidates = pool.accounts.filter((candidate) => {
       if (accountProvider(candidate) !== provider) return false;
       if (override.excludeAccounts.includes(candidate.id)) return false;

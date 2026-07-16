@@ -182,10 +182,10 @@ defineTool({
 defineTool({
   name: "checkpoint:await",
   description:
-    "Sleep until the current pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held) so you wake either way, instead of polling for the gate verdict. Pass candidateSha to bind to YOUR exact candidate (EI-12457) — a verdict for a different, superseded SHA never wakes you; without it you may wake on ANY candidate's verdict and must lineage-check payload.sha yourself (release:trace does this). Pass runId (WI-4957) to bind further to the exact judging run, for the rare case two runs might judge the same candidate. Pass pipeline to override; global:true only for every co-hosted pipeline's verdict. Re-arming retires your own prior pending wait for this pipeline; a killed/superseded run's candidate-bound wait is also proactively cancelled rather than left to time out. Then END YOUR TURN.",
+    "Sleep until the pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held), so you wake either way instead of polling. candidateSha (EI-12457) binds to YOUR exact candidate — another/superseded SHA's verdict never wakes you; without it you may wake on ANY candidate and must lineage-check payload.sha (release:trace). runId (WI-4957) binds to the exact judging run (rare: two runs judging one candidate). pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait; a superseded run's candidate-bound wait is proactively cancelled. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
-    when: "You need to know whether the gate went green (your change cleared into main) or is held (a test is red) before proceeding — instead of re-polling dev:pipeline_position / dev:build_status.",
+    when: "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
     notWhen:
       "Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config.",
     chaining:
