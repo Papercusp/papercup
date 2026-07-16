@@ -28,7 +28,7 @@ import {
   type SeedKeyRef,
 } from '@papercusp/seed-bundle';
 import { createGitSeedProvider } from './seed-provider-git';
-import { createCorestoreSeedProvider } from './seed-provider-corestore';
+import { createCorestoreSeedProvider, isRocksInfoLog } from './seed-provider-corestore';
 import { openOwnLog } from './peer-log';
 
 /** The seed root subdir each store's payload is written under (and recorded as
@@ -122,7 +122,13 @@ async function walkFiles(root: string, dir: string = root, acc: string[] = []): 
   for (const e of entries) {
     const full = join(dir, e.name);
     if (e.isDirectory()) await walkFiles(root, full, acc);
-    else if (e.isFile()) acc.push(relative(root, full));
+    // Skip the corestore RocksDB info LOG for the SAME reason the corestore
+    // provider's own walk does (isRocksInfoLog): it is rewritten on every store
+    // open (non-deterministic), hash-excluded (EI-12881), AND scrubbed from the
+    // shipped seed (WI-4736). The per-store `sizeBytes` already excludes it, so
+    // measureSeedDir must too — otherwise the recount over-counts the seed's
+    // shipped footprint by the LOG's bytes and diverges from sizeReport.totalBytes.
+    else if (e.isFile() && !isRocksInfoLog(e.name)) acc.push(relative(root, full));
   }
   return acc;
 }

@@ -128,7 +128,7 @@ interface CorestoreSeedMeta {
  * LOG exists, on both the pack and verify sides. The numbered `<NNN>.log` WALs are
  * DATA and must keep participating.
  */
-const isRocksInfoLog = (rel: string): boolean => {
+export const isRocksInfoLog = (rel: string): boolean => {
   const base = rel.split(/[\\/]/).pop() ?? '';
   return base === 'LOG' || base.startsWith('LOG.old');
 };
