@@ -1301,6 +1301,27 @@ export const FLAGS = {
   // DEFAULT ON; OFF = the kill-switch (no sampling, served compactions
   // byte-identical either way).
   RESIDUAL_CARRY_SAMPLER: "papercusp-residual-carry-sampler",
+  // deterministic-context-carry P-021 (verdict-gated cold-by-default): once a session
+  // CLASS's cold-boot drills prove its deterministic carry sufficient
+  // (gradeColdBootDrills → sufficientClasses), that class's LOOP wakes go cold WITHOUT
+  // the per-loop `loop:arm { carry:'cold' }` opt-in — still hard-gated on SU_COLD_AUTO
+  // (master), a carry-note anchor existing (P-006), and NO active interactive exchange
+  // (no human keystroke into the host within the ACTIVE_EXCHANGE_WINDOW — the plan's
+  // "warm continuation stays within active interactive exchanges"). DEFAULT ON — safe
+  // because the mechanism is EVIDENCE-gated: nothing goes cold-by-default until a class
+  // has a passing drill record. OFF = the kill-switch: only explicitly cold-armed loops
+  // ever go cold (today's behavior).
+  COLD_BY_DEFAULT_PROVEN_CLASSES: "papercusp-cold-by-default-proven-classes",
+  // deterministic-context-carry P-026 (verdict-gated enrichment retirement): for a
+  // session class whose cold-boot drills prove the deterministic carry sufficient, the
+  // POST-COMPACTION speculative memory re-prime (compact-reprime.ts — the same-session
+  // hole-patch auto-recall that refills a wiped context with nearest-neighbour hits,
+  // observed at 0.023–0.033 cosine = noise) is SKIPPED: the epoch bump stays (ledger
+  // hygiene — turn-start deltas re-arm), only the speculative fold is retired. A needed
+  // successor search is a BUILDER gap to fix, not a reason to keep the fold. DEFAULT ON
+  // (evidence-gated like P-021 — inert until a class passes drills). OFF = kill-switch:
+  // every compaction re-primes, today's behavior.
+  ENRICHMENT_RETIRE_PROVEN_CLASSES: "papercusp-enrichment-retire-proven-classes",
   // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for moving the
   // QUEEN + SCOUT (+ later OVERWATCH) from per-HIVE to WORKSPACE scope — ONE central brain per
   // workspace spanning all its hives (P-003 Queen re-key + P-002 Scout re-key both gate on THIS

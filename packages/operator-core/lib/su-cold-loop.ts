@@ -87,8 +87,16 @@ export function coldWakeMode(
 
 /**
  * Decide the cold-auto disposition of a loop wake. COLD requires ALL of:
- *   (1) the loop was armed `carry:'cold'` (marker.carry === 'cold') — the opt-in
- *       (D-001 / P-003); a warm loop or a non-loop wake is never cold;
+ *   (1) an ELIGIBILITY route — either:
+ *       (a) the loop was armed `carry:'cold'` (marker.carry === 'cold') — the
+ *           opt-in (D-001 / P-003); or
+ *       (b) P-021 verdict-gated cold-by-default: the caller resolved
+ *           `classDefaultCold:true` (this wake's session belongs to a class whose
+ *           cold-boot drills prove the carry sufficient, the kill-switch flag is
+ *           on, and no active interactive exchange) AND the marker is a
+ *           harness-scoped LOOP marker with NO explicit carry (a future
+ *           `carry:'warm'` stamp opts a loop out of the default). A non-loop
+ *           wake (no marker) is never cold on either route;
  *   (2) cold-auto is enabled at all (`coldEnabled` — the P-007 master gate the
  *       caller resolves; defence-in-depth over the per-loop opt-in);
  *   (3) a carry-note EXISTS to reconstruct from (P-006) — cold-start loses
@@ -101,9 +109,20 @@ export function decideColdWake(input: {
   coldEnabled: boolean;
   carryNote: string | null;
   caps?: ColdLoopCaps;
+  /** P-021: caller-resolved verdict that this wake's session class is drill-proven
+   *  cold-by-default (flag + sufficientClasses + no active interactive exchange —
+   *  see su-cold-by-default.ts). Absent/false ⇒ only the explicit opt-in colds. */
+  classDefaultCold?: boolean;
 }): ColdWakeDecision {
   const marker = readColdLoopMarker(input.payload);
-  if (!marker || marker.carry !== 'cold') {
+  const optIn = marker?.carry === 'cold';
+  const byVerdict =
+    !optIn &&
+    input.classDefaultCold === true &&
+    marker != null &&
+    marker.carry === undefined && // an explicit non-cold carry stamp opts out
+    typeof marker.harness === 'string';
+  if (!optIn && !byVerdict) {
     return { cold: false, reason: 'warm loop (or not a cold loop wake)' };
   }
   if (!input.coldEnabled) {
@@ -113,7 +132,7 @@ export function decideColdWake(input: {
   if (!note) {
     return { cold: false, reason: 'no carry-note anchor — cannot safely cold-start (P-006)' };
   }
-  const mode = coldWakeMode(marker.wakeCount ?? 0, input.caps ?? DEFAULT_COLD_LOOP_CAPS);
+  const mode = coldWakeMode(marker!.wakeCount ?? 0, input.caps ?? DEFAULT_COLD_LOOP_CAPS);
   return { cold: true, mode, carryNote: note };
 }
 

@@ -55,6 +55,40 @@ export interface PsuPtyHost {
   //    branch (mode:'compact' = /compact then a completion-gated carry-note turn).
   //    A consumer MUST treat a missing/empty `caps` as "base modes only".
   caps?: string[] | null;
+  // ── Interactive-vs-headless advertisement (deterministic-context-carry P-021;
+  //    ADDITIVE — absent on files written by older hosts). `false` = a headless/
+  //    piped host (the psu-pty-host spawned with no bridgeable human TTY); `true`
+  //    = a genuine interactive terminal. Consumers MUST fail-soft an absent value
+  //    to "interactive" (sessionClassForHost) — the safe direction, since the
+  //    interactive class additionally requires the no-recent-human-input guard
+  //    before any cold-by-default action.
+  bridgeTty?: boolean | null;
+}
+
+/**
+ * The CANONICAL ownerId→sessionClass mapping (deterministic-context-carry P-021 /
+ * P-026 — solve once, share). A session's CLASS is the join key between the
+ * cold-boot drill ledger's per-class sufficiency verdicts (cold-boot-drill.ts
+ * gradeColdBootDrills) and the live surfaces that ACT on those verdicts (the
+ * wake-executor's cold-by-default fork, compact-reprime's enrichment retirement,
+ * session:carry-drill's default class). One vocabulary, derived from the live
+ * host discovery record:
+ *
+ *   - 'claude-headless'    — the host advertises bridgeTty:false (a headless /
+ *                            piped psu host, no human TTY bridged);
+ *   - 'claude-interactive' — everything else, INCLUDING an absent host or an
+ *                            old host that predates the bridgeTty field.
+ *
+ * Fail-soft direction is deliberate: misclassifying headless→interactive only
+ * DELAYS a cold-by-default flip (the interactive class must separately pass
+ * drills, and its actuation additionally requires no recent human input); the
+ * reverse misclassification is impossible because bridgeTty:false is only ever
+ * written by a host that verifiably had no TTY at spawn. Pure.
+ */
+export function sessionClassForHost(
+  host: Pick<PsuPtyHost, 'bridgeTty'> | null | undefined,
+): string {
+  return host?.bridgeTty === false ? 'claude-headless' : 'claude-interactive';
 }
 
 /**

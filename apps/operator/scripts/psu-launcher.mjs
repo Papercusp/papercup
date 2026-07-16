@@ -4330,6 +4330,39 @@ export async function reportSessionResumed(
   }
 }
 
+/**
+ * Best-effort "my managed host RESPAWNED the child under a fresh native id"
+ * report (WI-5075) — the third lifecycle sibling next to ended/resumed. A P-018
+ * carry-respawn / cold-loop RECYCLE keeps the coord identity + adv row but
+ * rotates the NATIVE `--session-id`; without this report the adv_sessions row
+ * keeps naming the dead predecessor, and every owner→transcript consumer (the
+ * compaction watchdog's context estimate above all) stays pinned to the
+ * predecessor's over-limit transcript — the successor-kill loop of 2026-07-15/16.
+ * Fire-and-forget, bounded, never rejects — a respawn must never wait on it.
+ * Exported with injectables for tests.
+ */
+export async function reportSessionRespawned(
+  advSessionId,
+  sessionId,
+  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 2_000 } = {},
+) {
+  if (!advSessionId || !sessionId) return;
+  try {
+    const tok = token ?? readToken();
+    await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/session-respawned', {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'content-type': 'application/json',
+        ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+      },
+      body: JSON.stringify({ advSessionId: Number(advSessionId), sessionId: String(sessionId) }),
+    });
+  } catch {
+    /* best-effort — never surface */
+  }
+}
+
 /** Critical (not best-effort) session-port disposition. The server accepts a
  * delivery only when `proof.nativeRef` names the target backend's own persisted
  * transcript containing the exact rendered hash. If the POST response is lost,
@@ -4823,8 +4856,15 @@ function runWrapper({
         kickoffFile,
         sessionPort,
         onKickoffPersisted: (proof) => reportSessionPortDelivery(sessionPort, proof),
-        onRespawn: (freshId) =>
-          recordSessionOwner(freshId, ownerId, { advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null }),
+        onRespawn: (freshId) => {
+          recordSessionOwner(freshId, ownerId, { advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null });
+          // WI-5075: ALSO re-anchor the authoritative adv_sessions owner→native
+          // mapping. recordSessionOwner only writes the file-based native→owner
+          // index; resolveSessionRef / the compaction watchdog's estimate read
+          // adv_sessions.session_id, which otherwise keeps naming the dead
+          // predecessor — the P-018 successor-kill loop.
+          void reportSessionRespawned(env.PAPERCUSP_ADV_SESSION_ID || null, freshId);
+        },
         onExit: (code) => {
           void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code).finally(() =>
             process.exit(code ?? 0),

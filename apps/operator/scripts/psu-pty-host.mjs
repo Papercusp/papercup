@@ -2690,6 +2690,11 @@ export function hostThroughPty(o) {
     ) => {
       if (recycling) return;
       recycling = true;
+      // WI-5075 observability: the drill-only rows below made a WATCHDOG-initiated
+      // carry-respawn (no drillId) completely invisible in the per-owner event log
+      // — the P-018 successor-kill loop left ZERO durable trace outside journalctl.
+      // Non-drill respawns now always leave generic respawned/failed/carry rows.
+      const respawnMode = systemPromptAddendum ? 'carry-respawn' : 'recycle';
       // Assemble + persist the NEXT child's argv before killing the current one.
       // If carry-file creation fails, the settled current session remains alive
       // and its native/force-compaction backstops remain available.
@@ -2713,6 +2718,12 @@ export function hostThroughPty(o) {
           };
           appendHostEvent(ownerId, 'carry-drill-respawn-failed', failExtra);
           appendSharedDrillLedgerEvent(ownerId, 'carry-drill-respawn-failed', failExtra);
+        } else {
+          appendHostEvent(ownerId, 'respawn-failed', {
+            mode: respawnMode,
+            reason: 'argv-build-failed',
+            detail: e?.message ?? String(e),
+          });
         }
         try {
           process.stderr.write(`psu-pty-host: carry-respawn argv build failed for ${ownerId}: ${e.message}\n`);
@@ -2791,6 +2802,12 @@ export function hostThroughPty(o) {
           };
           appendHostEvent(ownerId, 'carry-drill-respawn-failed', failExtra);
           appendSharedDrillLedgerEvent(ownerId, 'carry-drill-respawn-failed', failExtra);
+        } else {
+          appendHostEvent(ownerId, 'respawn-failed', {
+            mode: respawnMode,
+            reason: 'spawn-failed',
+            detail: e?.message ?? String(e),
+          });
         }
         recycling = false;
         return;
@@ -2804,6 +2821,15 @@ export function hostThroughPty(o) {
         };
         appendHostEvent(ownerId, 'carry-drill-respawned', respawnedExtra);
         appendSharedDrillLedgerEvent(ownerId, 'carry-drill-respawned', respawnedExtra);
+      } else {
+        appendHostEvent(ownerId, 'respawned', {
+          mode: respawnMode,
+          nativeId: nativeId ?? null,
+          launchContextPath,
+          // false = the successor boots with NO first prompt (P-010 answered case)
+          // and waits for its loop/coord wake — expected, but worth seeing.
+          firstPrompt: Boolean(carryText),
+        });
       }
       recycling = false;
       if (!carryText) {
@@ -2859,6 +2885,18 @@ export function hostThroughPty(o) {
         };
         appendHostEvent(ownerId, terminalKind, terminalExtra);
         appendSharedDrillLedgerEvent(ownerId, terminalKind, terminalExtra);
+      } else {
+        appendHostEvent(
+          ownerId,
+          carryResult.delivered ? 'respawn-carry-delivered' : 'respawn-carry-dropped',
+          {
+            mode: respawnMode,
+            nativeId: nativeId ?? null,
+            reason: carryResult.delivered ? undefined : carryResult.reason,
+            attempts: carryResult.attempts,
+            outputSeen: childStartupReady,
+          },
+        );
       }
     };
 

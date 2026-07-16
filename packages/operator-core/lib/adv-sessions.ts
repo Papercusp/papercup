@@ -455,6 +455,39 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
   }
 }
 
+/**
+ * WI-5075 (P-018 carry-respawn kill loop): re-anchor a tracked session row's
+ * NATIVE session id after a managed-host respawn (carry-respawn / cold RECYCLE).
+ *
+ * psu-pty-host's recycleChild kills the Claude child and boots a successor under
+ * a FRESH `--session-id`, but this row — the authoritative owner→native mapping
+ * that `resolveSessionRef` / `estimateContextTokensForOwner` read — kept naming
+ * the dead predecessor. The compaction watchdog's context estimate therefore
+ * stayed pinned to the predecessor's over-limit transcript and re-killed every
+ * successor at each retry-grace expiry (193 CARRY-RESPAWN firings 2026-07-15/16).
+ * Updating `session_id` in place keeps the row the SAME logical session (same
+ * coord owner, same pty, same adv id) while tracking the live incarnation;
+ * ended/exit stamps are cleared and `started_at` bumped for the same
+ * resume-visibility reasons as {@link reactivateAdvSession}. Idempotent per
+ * native id; returns true when a row was updated.
+ */
+export async function reanchorAdvSessionNativeId(id: number, sessionId: string): Promise<boolean> {
+  if (!sessionId) return false;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now()
+       WHERE id = ${id} AND session_id IS DISTINCT FROM ${sessionId}
+      RETURNING id
+    `;
+    return rows.length > 0;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
+    return false;
+  }
+}
+
 export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   try {
     const { sql } = getOrgPg();

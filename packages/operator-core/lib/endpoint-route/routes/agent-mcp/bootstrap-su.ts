@@ -26,7 +26,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
-import { markAdvSessionEnded, reactivateAdvSession, recordAdvSession } from '../../../adv-sessions';
+import {
+  markAdvSessionEnded,
+  reactivateAdvSession,
+  reanchorAdvSessionNativeId,
+  recordAdvSession,
+} from '../../../adv-sessions';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -2002,6 +2007,69 @@ const optionsForSessionResumed = defineTool({
   },
 });
 
+/** Claude native session ids are v4 UUIDs; refuse anything else so a corrupted
+ *  report can never poison the authoritative owner→native mapping (WI-5075). */
+const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * POST /api/agent-mcp/console/bootstrap-su/session-respawned  { advSessionId, sessionId }
+ *
+ * The psu launcher's RESPAWN report (WI-5075) — the managed pty host replaced the
+ * agent child with a fresh successor under a NEW native `--session-id` (P-018
+ * carry-respawn / cold-loop RECYCLE), keeping the same coord identity and adv
+ * row. Re-anchors the row's `session_id` to the successor so every owner→native
+ * consumer — above all the compaction watchdog's context estimate — tracks the
+ * LIVE incarnation instead of the dead predecessor's transcript. Without this,
+ * the estimate stays pinned over-limit and the watchdog re-kills each successor
+ * at every retry-grace expiry (the 2026-07-15/16 kill loop).
+ *
+ * Best-effort + idempotent like its ended/resumed siblings: re-anchoring to the
+ * already-recorded id is a no-op, and the launcher swallows any failure.
+ */
+const sessionRespawned = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/console/bootstrap-su/session-respawned',
+  auth: 'loopback',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    let advSessionId: number | null = null;
+    let sessionId: string | null = null;
+    try {
+      const body = (await req.json()) as { advSessionId?: unknown; sessionId?: unknown };
+      if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
+        advSessionId = body.advSessionId;
+      }
+      if (typeof body.sessionId === 'string' && NATIVE_SESSION_ID_RE.test(body.sessionId.trim())) {
+        sessionId = body.sessionId.trim();
+      }
+    } catch {
+      /* fall through to the 400 */
+    }
+    if (advSessionId == null || advSessionId <= 0) {
+      return jsonRes({ error: 'advSessionId required' }, 400);
+    }
+    if (!sessionId) {
+      return jsonRes({ error: 'sessionId (native session UUID) required' }, 400);
+    }
+    try {
+      const reanchored = await reanchorAdvSessionNativeId(advSessionId, sessionId);
+      return jsonRes({ ok: true, reanchored });
+    } catch (err) {
+      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
+    }
+  },
+});
+
+const optionsForSessionRespawned = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/session-respawned',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
 export default [
   options,
   optionsForOptions,
@@ -2014,4 +2082,6 @@ export default [
   optionsForSessionEnded,
   sessionResumed,
   optionsForSessionResumed,
+  sessionRespawned,
+  optionsForSessionRespawned,
 ];
