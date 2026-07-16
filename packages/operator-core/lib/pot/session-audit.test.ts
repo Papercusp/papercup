@@ -144,8 +144,10 @@ describe('computeRecurringFriction', () => {
     const rows: FailedCallRow[] = [
       { ownerId: 'su-a', toolName: 'docs:get', invokedAtMs: base, errorMessage: 'timeout' },
       { ownerId: 'su-b', toolName: 'docs:get', invokedAtMs: base, errorMessage: 'timeout' },
+      { ownerId: 'su-c', toolName: 'docs:get', invokedAtMs: base, errorMessage: 'timeout' },
       { ownerId: 'su-a', toolName: 'work_items:get', invokedAtMs: base, errorMessage: 'timeout' },
       { ownerId: 'su-b', toolName: 'work_items:get', invokedAtMs: base, errorMessage: 'timeout' },
+      { ownerId: 'su-c', toolName: 'work_items:get', invokedAtMs: base, errorMessage: 'timeout' },
     ];
     const friction = computeRecurringFriction(rows);
     expect(friction).toHaveLength(2);

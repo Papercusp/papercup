@@ -424,6 +424,64 @@ describe('runGreenCheckpoint', () => {
     expect(calls).toContain(`emit:release:green:${pipelineName(repo)}`); // pipeline-scoped (EI-7646)
   });
 
+  it('WI-4957: green-path verdict (result + event payloads) carries this run\'s runId', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const payloads: Record<string, { runId?: string | null }> = {};
+    const deps: CheckpointDeps = {
+      setupTree: async () => {},
+      runGreen: async () => ({ green: true, summary: 'all pass' }),
+      advance: (candidate) => advanceReady(repo, candidate, 'ready'),
+      push: async () => {},
+      broadcast: async () => {},
+      escalate: async () => {},
+      clearEscalation: async () => {},
+      emitEvent: async ({ key, payload }) => {
+        payloads[key] = payload as { runId?: string | null };
+      },
+      log: () => {},
+      runId: 'run-green-1',
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.runId).toBe('run-green-1');
+    expect(payloads['release:green']?.runId).toBe('run-green-1');
+    expect(payloads[`release:green:${pipelineName(repo)}`]?.runId).toBe('run-green-1');
+  });
+
+  it('WI-4957: red-path verdict (result + event payloads) carries runId, the FULL failingTests array, and logPath', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const payloads: Record<string, { runId?: string | null; failingTests?: string[]; logPath?: string | null }> = {};
+    const deps: CheckpointDeps = {
+      setupTree: async () => {},
+      runGreen: async () => ({
+        green: false,
+        summary: '3 failed',
+        failingTests: ['a.test.ts', 'b.test.ts', 'c.test.ts'],
+        logPath: '/tmp/fake-checkpoint-run.log',
+      }),
+      advance: (candidate) => advanceReady(repo, candidate, 'ready'),
+      push: async () => {},
+      broadcast: async () => {},
+      escalate: async () => {},
+      clearEscalation: async () => {},
+      emitEvent: async ({ key, payload }) => {
+        payloads[key] = payload as { runId?: string | null; failingTests?: string[]; logPath?: string | null };
+      },
+      log: () => {},
+      runId: 'run-red-1',
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.runId).toBe('run-red-1');
+    expect(r.logPath).toBe('/tmp/fake-checkpoint-run.log');
+    const p = payloads['green-checkpoint:red'];
+    expect(p?.runId).toBe('run-red-1');
+    expect(p?.logPath).toBe('/tmp/fake-checkpoint-run.log');
+    expect(p?.failingTests).toEqual(['a.test.ts', 'b.test.ts', 'c.test.ts']);
+  });
+
   it('holds ready when the candidate is NOT green', async () => {
     const c1 = await commit('a', '1', 'c1');
     await git(repo, ['branch', 'ready', c1]);

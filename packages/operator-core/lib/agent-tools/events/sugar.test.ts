@@ -147,6 +147,31 @@ describe("checkpoint:await sugar", () => {
     }
   });
 
+  // WI-4957: runId binds further than candidateSha alone — needed only when two runs
+  // might judge the same candidate (a re-fire, or a routine/manual race).
+  it("WI-4957: binds runId to a payloadFilter on every registered key", async () => {
+    const out = await call({ runId: "run-abc-123" });
+
+    for (const call_ of vi.mocked(registerAwait).mock.calls) {
+      expect(call_[0].payloadFilter).toEqual({ runId: "run-abc-123" });
+    }
+    expect(out.events).toEqual([
+      "release:green:papercusp",
+      "green-checkpoint:red:papercusp",
+    ]);
+  });
+
+  it("WI-4957: candidateSha + runId compose into ONE AND-filter (both must match)", async () => {
+    await call({ candidateSha: "94c1234567", runId: "run-abc-123" });
+
+    for (const call_ of vi.mocked(registerAwait).mock.calls) {
+      expect(call_[0].payloadFilter).toEqual({
+        sha: { startsWith: "94c1234567" },
+        runId: "run-abc-123",
+      });
+    }
+  });
+
   it("supersedes this subscriber's own prior pending checkpoint keys BEFORE registering the new wait, and threads the count into the response", async () => {
     const callOrder: string[] = [];
     vi.mocked(cancelAwaitsForSubscribersOnKeys).mockImplementationOnce(

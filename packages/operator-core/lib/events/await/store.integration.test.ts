@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes } =
   await import('./store');
 
 let rootSql: postgres.Sql;
@@ -229,6 +229,44 @@ describe('await-event store (PG)', () => {
     expect(fired).toHaveLength(1);
     // the row is now fired, not pending — the sibling-cancel pass must be a no-op on it
     expect(await cancelAwaitsForSubscribersOnKeys(['sub-c'], ['green-checkpoint:red:papercusp'])).toBe(0);
+  });
+
+  // WI-4957: cancelAwaitsByIds — the precise by-id cancel cancelSupersededCandidateAwaits
+  // uses once it has identified EXACTLY which rows are payload-bound to a dead candidate.
+  // Unlike cancelAwaitsForSubscribersOnKeys (subscriber+key scoped), this must be able to
+  // cancel ONE of two payload-bound rows a single subscriber holds on the SAME key without
+  // touching the other.
+  it('cancelAwaitsByIds cancels exactly the named rows, leaves a sibling row on the SAME key+subscriber untouched, and is idempotent', async () => {
+    const staleBound = await registerAwait({
+      subscriberId: 'sub-d',
+      eventKey: 'release:green:papercusp',
+      payloadFilter: { sha: { startsWith: 'deadbeef' } },
+    });
+    const otherBound = await registerAwait({
+      subscriberId: 'sub-d',
+      eventKey: 'release:green:papercusp',
+      payloadFilter: { sha: { startsWith: 'cafef00d' } },
+    });
+    const peer = await registerAwait({ subscriberId: 'sub-e', eventKey: 'lock:grant:xyz' });
+
+    const cancelled = await cancelAwaitsByIds([staleBound.id, 99999999]); // a non-existent id is silently ignored
+    expect(cancelled).toBe(1);
+
+    const subD = await listActiveAwaits('sub-d');
+    expect(subD.map((r) => r.id)).toEqual([otherBound.id]); // the sibling-candidate wait survives
+    expect((await listActiveAwaits('sub-e')).map((r) => r.id)).toEqual([peer.id]); // untouched
+
+    // idempotent: the row is already cancelled, nothing left to cancel
+    expect(await cancelAwaitsByIds([staleBound.id])).toBe(0);
+    // empty input is a no-op, not a query
+    expect(await cancelAwaitsByIds([])).toBe(0);
+  });
+
+  it('cancelAwaitsByIds never touches an already-fired row', async () => {
+    const row = await registerAwait({ subscriberId: 'sub-f', eventKey: 'release:green:papercusp' });
+    const fired = await fireAwaitsForKey({ eventKey: 'release:green:papercusp' });
+    expect(fired.map((r) => r.id)).toContain(row.id);
+    expect(await cancelAwaitsByIds([row.id])).toBe(0);
   });
 
   // ── P-001 (fleet-member-dx-improvements-2026-07-10): parked-on-event read ──

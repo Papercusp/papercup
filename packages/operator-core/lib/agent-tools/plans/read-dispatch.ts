@@ -56,6 +56,15 @@ export async function callPlansReadRaw(
   } else if (b.harness == null) {
     b.harness = 'all';
   }
+  // The UI reads FULL payloads: this in-process dispatch feeds the admin Plans
+  // routes + the @papercusp/sync resolvers (no model-context budget, no MCP
+  // result cap). Without the EXPLICIT per-call escape hatch, the payload-tier
+  // HARD CEILING force-trims any >30KB shaper-tool result — plans:attention
+  // (~1.1MB) came back as item-less group summaries, which the UI's
+  // normalizeAttentionGroups dropped entirely, blanking the Queue / Overview
+  // needs-you / sidebar Inbox (WI-5078). A caller that wants a shaped read can
+  // still pass its own payloadTier.
+  if (b.payloadTier == null) b.payloadTier = 'full';
   const result = await handleHttpToolRequest(
     {
       method: 'POST',
