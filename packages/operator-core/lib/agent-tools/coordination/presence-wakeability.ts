@@ -131,13 +131,29 @@ export function isHardStale(heartbeatAtMs: number | null | undefined, nowMs: num
  * timing heuristic, so it beats even `hardStale`'s 30-minute wait — a locally
  * co-located dead agent is detected in ~seconds instead of up to 30 minutes.
  * Then `hardStale` (a zombie await from an abrupt death can't outvote an
- * hour-cold heartbeat, see PRESENCE_DEAD_MS), then wakeability is the gate (not
- * wakeable ⇒ `ended` regardless of a still-warm heartbeat), then a stale but
- * wakeable session is `draining`, a running turn ⇒ `live`, else `parked`
- * (wakeable but idle — the dispatch target). A confirmed-dead owner with claims
- * remains `suspect` until claim cleanup runs; one with no claims is `ended`.
- * Injected
- * inputs so the boundary unit-tests without PG. `hardStale`/`pidConfirmedDead`
+ * hour-cold heartbeat, see PRESENCE_DEAD_MS). THEN — before wakeability gates
+ * anything — a turn genuinely IN FLIGHT wins: a session with `liveTurn` (recent
+ * `agent_activity` and NO trailing `■ session ended` marker) is demonstrably
+ * alive and is `live`, EVEN WHEN it is not wakeable. Only a non-wakeable session
+ * with NO live turn (cleanly ended: the end-marker cancelled activity, or an idle
+ * session that never registered / already cancelled its await) is `ended`. Then a
+ * stale but wakeable session is `draining`, else `parked` (wakeable but idle — the
+ * dispatch target). A confirmed-dead owner with claims remains `suspect` until
+ * claim cleanup runs; one with no claims is `ended`.
+ *
+ * EI-12699: wakeability and liveness are ORTHOGONAL axes and must not be
+ * conflated. A `cup:spawn`'d one-turn bee (invoke-once.ts) doing agentic build
+ * work never registers a `coord:inbox-wake:<id>` await, so `wakeable:false` — yet
+ * it is very much alive mid-turn. The old `!wakeable ⇒ ended` short-circuit fired
+ * AHEAD of the liveTurn check and served a self-contradictory row (`ended` +
+ * `wakeable:false` while `lastActiveSecAgo` was seconds), so peers' `wake:'required'`
+ * reported `recipient_dead` and black-holed messages into a LIVE agent (and
+ * manufactured false "the bee died / was reaped" root causes). `wakeable` stays its
+ * own emitted field, so the honest read for such a bee is now `live` + `wakeable:false`
+ * — "alive and working, but a wake won't land; retry or use a durable surface (the
+ * work-item checkpoint)", never "this agent is gone".
+ *
+ * Injected inputs so the boundary unit-tests without PG. `hardStale`/`pidConfirmedDead`
  * default to false/undefined, so a caller that doesn't compute them keeps prior
  * behavior unchanged.
  */
@@ -156,9 +172,15 @@ export function deriveSessionState(input: {
   claimsHeld?: boolean;
 }): SessionState {
   if (input.pidConfirmedDead || input.hardStale) return input.claimsHeld ? 'suspect' : 'ended';
+  // EI-12699: a turn genuinely IN FLIGHT (recent activity, no end-marker) is
+  // demonstrably alive and is NEVER `ended`, even when the session is not
+  // inbox-wake-dispatchable — a fresh, non-stale liveTurn is `live`. Only a
+  // non-wakeable session with NO live turn (cleanly ended / idle-no-await) is
+  // `ended`. This must precede the `!wakeable ⇒ ended` gate, which otherwise
+  // mislabels a live-but-not-wakeable one-turn bee as dead.
+  if (input.liveTurn && !input.stale) return 'live';
   if (!input.wakeable) return 'ended';
   if (input.stale) return 'draining';
-  if (input.liveTurn && !input.stale) return 'live';
   return 'parked';
 }
 
