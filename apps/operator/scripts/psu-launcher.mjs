@@ -2305,6 +2305,15 @@ export function accountRoutingMode(value) {
   return 'pin';
 }
 
+/** Explicit launch-envelope marker for the direct system/CLI credential route.
+ * It must be envelope state (not inherited ambient state), because runWrapper uses
+ * it to clear every higher-precedence Claude credential before restoring the
+ * machine's default login. */
+export const ACCOUNT_ROUTING_MODE_ENV = 'PAPERCUSP_ACCOUNT_ROUTING_MODE';
+export function defaultAccountEnv() {
+  return { [ACCOUNT_ROUTING_MODE_ENV]: 'default' };
+}
+
 /**
  * The inference-gateway AUTO-route env, built CLIENT-SIDE. Pure — exported for tests. Mirrors the
  * server's gatewaySpawnEnv(true, {}) for the no-account case: point the agent at the localhost
@@ -2485,6 +2494,41 @@ export function applyDefaultClaudeOAuthToken(wrapperBin, env, { home = homedir()
   if (env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) return env;
   const tok = readStoredClaudeOAuthToken({ home });
   if (tok) env.CLAUDE_CODE_OAUTH_TOKEN = tok;
+  return env;
+}
+
+/**
+ * Make an EXPLICIT `default` Claude launch mean exactly what the picker says:
+ * use the system / CLI login, regardless of the parent shell's prior account.
+ *
+ * Claude credential env vars outrank its config-dir login. Merely removing the
+ * inference-gateway URL is therefore insufficient: a resumed auto/pinned session
+ * (or a shell with a direct API/OAuth token) can otherwise keep using that inherited
+ * credential after the user selects `default`. Clear every Claude direct/gateway
+ * credential here; applyDefaultClaudeOAuthToken then restores the stored system
+ * OAuth token, while launchResume's rehealResumeCredentials points the isolated
+ * config dir back at the global system credential on file-based platforms.
+ *
+ * The marker is applied only by Papercusp's account-routing decision. A direct
+ * non-psu Claude invocation, and role launches without that decision, retain their
+ * explicitly exported credentials.
+ */
+export function enforceDefaultClaudeAccount(wrapperBin, env) {
+  if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return env;
+  if (env[ACCOUNT_ROUTING_MODE_ENV] !== 'default') return env;
+  for (const key of [
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_CUSTOM_HEADERS',
+    'PAPERCUSP_ANTHROPIC_URL',
+    'PAPERCUSP_ACCOUNT_ID',
+    'PAPERCUSP_CODEX_GATEWAY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_OAUTH_TOKEN',
+  ]) {
+    delete env[key];
+  }
   return env;
 }
 
@@ -3555,15 +3599,17 @@ export function accountProviderFromChoices(accounts, agent = 'claude') {
  * server-side via the bootstrap POST), `env`/`notice` for the in-place resume (launchResume).
  * No prompt + no env when the gateway is off / pool empty / scripting (`--no-picker`).
  */
-async function chooseResumeAccount(session, args) {
+export async function chooseResumeAccount(session, args) {
   const plan = resumeAccountPlan(args);
-  if (plan.source === 'none') return { id: null, env: {}, notice: null }; // --no-picker + no --account
+  if (plan.source === 'none') {
+    return { id: null, env: defaultAccountEnv(), notice: null }; // --no-picker + no --account = system credential
+  }
 
   // account-routing-3-options: the `default` keyword (or '' / none / system) is resolved by NAME —
   // it deliberately skips the gateway, so it needs no pool fetch. (The picker path resolves its
   // keyword AFTER fetching the choices, below.)
   if (!plan.prompt && accountRoutingMode(plan.account) === 'default') {
-    return { id: null, env: {}, notice: 'using the default system account (inference gateway skipped).' };
+    return { id: null, env: defaultAccountEnv(), notice: 'using the default system account (inference gateway skipped).' };
   }
 
   const accounts = await fetchAccountChoices(session.workspaceId, session.agent);
@@ -3571,14 +3617,20 @@ async function chooseResumeAccount(session, args) {
     // Gateway off / empty pool → both `auto` and a pool pin collapse to the default-credential resume.
     return {
       id: null,
-      env: {},
+      env: defaultAccountEnv(),
       notice: plan.account ? `--account ${plan.account} ignored: inference gateway off / no pool — using the default credential.` : null,
     };
   }
 
   const requested = plan.prompt ? await promptAccount(accounts) : plan.account;
   const mode = accountRoutingMode(requested);
-  if (mode === 'default') return { id: null, env: {}, notice: requested ? 'using the default system account (inference gateway skipped).' : null };
+  if (mode === 'default') {
+    return {
+      id: null,
+      env: defaultAccountEnv(),
+      notice: requested ? 'using the default system account (inference gateway skipped).' : null,
+    };
+  }
 
   const provider = accountProviderFromChoices(accounts, session.agent);
 
@@ -3587,7 +3639,7 @@ async function chooseResumeAccount(session, args) {
     // Wired for claude only (gatewayAutoEnv returns {} otherwise); codex/omp have no "let the
     // gateway pick" form, so fall back to the default credential with a clear notice.
     if (provider !== 'claude') {
-      return { id: null, env: {}, notice: `--account auto ignored: gateway auto-routing isn't wired for ${session.agent} yet — using the default credential.` };
+      return { id: null, env: defaultAccountEnv(), notice: `--account auto ignored: gateway auto-routing isn't wired for ${session.agent} yet — using the default credential.` };
     }
     // `forward: 'auto'` is the value a TRACKED fork sends to the server (resolveAccountPin) so the
     // fork re-derives the same auto-route — `id` is null here, so the fork's `id` fallback alone
@@ -3598,10 +3650,10 @@ async function chooseResumeAccount(session, args) {
   // mode === 'pin'
   const id = requested;
   if (!accountPinnable(accounts, id)) {
-    return { id: null, env: {}, notice: `--account ${id} ignored: not an allowed pool account — using the default credential.` };
+    return { id: null, env: defaultAccountEnv(), notice: `--account ${id} ignored: not an allowed pool account — using the default credential.` };
   }
   if (!provider) {
-    return { id: null, env: {}, notice: `--account ${id} ignored: account routing is unsupported for ${session.agent} — using the default credential.` };
+    return { id: null, env: defaultAccountEnv(), notice: `--account ${id} ignored: account routing is unsupported for ${session.agent} — using the default credential.` };
   }
   return { id, provider, env: gatewayPinEnv(id, provider, session.coordOwnerId), notice: `pinned to ${provider === 'codex' ? 'Codex ' : ''}account ${id} (routed through the inference gateway).` };
 }
@@ -4234,6 +4286,7 @@ export function sanitizeInheritedEnv(env) {
     'PAPERCUSP_ANTHROPIC_URL',
     'PAPERCUSP_ACCOUNT_ID',
     'PAPERCUSP_CODEX_GATEWAY',
+    ACCOUNT_ROUTING_MODE_ENV,
   ]) {
     delete out[key];
   }
@@ -4477,6 +4530,10 @@ function runWrapper({
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
+  // WI-5052 acceptance hardening: `default` is an active credential choice,
+  // not merely the absence of a gateway overlay. Clear every prior Claude auth
+  // source before restoring the system login below.
+  enforceDefaultClaudeAccount(wrapperBin, env);
   // Export the RESOLVED operator url to every agent child so claude's user-level
   // papercusp-su MCP url (`${PAPERCUSP_OPERATOR_URL:-…}/api/mcp?…`, written by
   // desktop-install/claude-integration) resolves to the LIVE operator on each
@@ -5121,7 +5178,13 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     // Same as resume: the seeded transcript is keyed by the original cwd, so
     // never redirect it away from a `.papercusp` state dir (EI-10938).
     preserveCwd: true,
-    envelopeEnv: trackedForkEnvelopeEnv(res.envelopeEnv),
+    envelopeEnv: {
+      ...trackedForkEnvelopeEnv(res.envelopeEnv),
+      // A successful tracked fork resolves account routing server-side. No
+      // gateway URL in the returned envelope means the result is the direct
+      // system route; stamp the same fail-closed marker as an in-place resume.
+      ...(res.agent === 'claude' && !res.envelopeEnv?.ANTHROPIC_BASE_URL ? defaultAccountEnv() : {}),
+    },
     // Tagged with the FORK's fresh SID (not the original's) — the provenance ledger
     // is keyed by the identity that will actually submit the turn.
     kickoff: forkKickoff
@@ -6472,6 +6535,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // stay unmarked, preserving the owner-session exemption.
     envelopeEnv: {
       ...res.envelopeEnv,
+      // The SU account picker defines no gateway route as "default — system/CLI
+      // login". Make that an explicit envelope decision so ambient API/OAuth
+      // credentials cannot silently override what the user selected.
+      ...(res.agent === 'claude' && !res.envelopeEnv?.ANTHROPIC_BASE_URL ? defaultAccountEnv() : {}),
       PAPERCUSP_AGENT_SESSION: '1',
       // PAPERCUSP_MODEL: the launch model spec, exported so the codex/omp title hook can
       // render the model in the terminal title (WI-1963 title-parity — those CLIs have no

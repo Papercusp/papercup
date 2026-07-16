@@ -36,6 +36,7 @@ import {
   resumeArgsFor,
   resumeEnvFor,
   resumeAccountPlan,
+  chooseResumeAccount,
   buildResumeEnv,
   ompTrackedResumeEnv,
   rehealResumeCredentials,
@@ -49,6 +50,9 @@ import {
   GATEWAY_ACCOUNT_HEADER,
   GATEWAY_OWNER_HEADER,
   GATEWAY_CLIENT_AUTH_TOKEN,
+  ACCOUNT_ROUTING_MODE_ENV,
+  defaultAccountEnv,
+  enforceDefaultClaudeAccount,
   sanitizeInheritedEnv,
   addDirArgs,
   forkUnsupportedMessage,
@@ -1567,6 +1571,32 @@ describe('psu-launcher arg parsing', () => {
     expect(resumeAccountPlan({ account: null, picker: false })).toEqual({ source: 'none', account: null, prompt: false });
   });
 
+  it('chooseResumeAccount: explicit Claude --account=default stamps the force-system-login envelope without consulting the gateway', async () => {
+    await expect(
+      chooseResumeAccount(
+        { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-default' },
+        { account: 'default', picker: false },
+      ),
+    ).resolves.toEqual({
+      id: null,
+      env: defaultAccountEnv(),
+      notice: 'using the default system account (inference gateway skipped).',
+    });
+  });
+
+  it('chooseResumeAccount: a scripted resume with no account flag also uses the system-login envelope', async () => {
+    await expect(
+      chooseResumeAccount(
+        { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-default' },
+        { account: null, picker: false },
+      ),
+    ).resolves.toEqual({
+      id: null,
+      env: defaultAccountEnv(),
+      notice: null,
+    });
+  });
+
   it('buildResumeEnv: resumed psu sessions always carry the agent-session marker', () => {
     const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
     expect(buildResumeEnv(session)).toEqual({
@@ -1719,6 +1749,7 @@ describe('psu-launcher arg parsing', () => {
       PAPERCUSP_ANTHROPIC_URL: 'http://127.0.0.1:8788',
       PAPERCUSP_ACCOUNT_ID: 'inherited-account',
       PAPERCUSP_CODEX_GATEWAY: '1',
+      [ACCOUNT_ROUTING_MODE_ENV]: 'default',
       CLAUDE_CODE_OAUTH_TOKEN: 'direct-system-oauth',
       KEEP_ME: 'yes',
     };
@@ -4107,6 +4138,33 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
         applyDefaultClaudeOAuthToken(bin, env, { home });
         expect(env.CLAUDE_CODE_OAUTH_TOKEN, bin).toBe(TOKEN);
       }
+    });
+
+    it('an explicit default route discards every inherited Claude credential, then injects the system login (WI-5052 acceptance)', () => {
+      storeClaudeOAuthToken(TOKEN, { home });
+      const env: Record<string, string> = {
+        ...defaultAccountEnv(),
+        ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
+        ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-account: old-pin',
+        PAPERCUSP_ACCOUNT_ID: 'old-pin',
+        CLAUDE_CODE_OAUTH_TOKEN: 'old-oauth',
+        ANTHROPIC_API_KEY: 'old-api-key',
+        ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+        ANTHROPIC_OAUTH_TOKEN: 'old-anthropic-oauth',
+      };
+      enforceDefaultClaudeAccount('claude', env);
+      expect(env).toEqual({ [ACCOUNT_ROUTING_MODE_ENV]: 'default' });
+      applyDefaultClaudeOAuthToken('claude', env, { home });
+      expect(env).toEqual({
+        [ACCOUNT_ROUTING_MODE_ENV]: 'default',
+        CLAUDE_CODE_OAUTH_TOKEN: TOKEN,
+      });
+    });
+
+    it('without an explicit default route, direct user credentials remain untouched', () => {
+      const env: Record<string, string> = { ANTHROPIC_API_KEY: 'direct-user-key' };
+      enforceDefaultClaudeAccount('claude', env);
+      expect(env).toEqual({ ANTHROPIC_API_KEY: 'direct-user-key' });
     });
   });
 
