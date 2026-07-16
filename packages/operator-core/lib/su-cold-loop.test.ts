@@ -108,6 +108,76 @@ describe('decideColdWake — the three-gate cold precondition', () => {
   });
 });
 
+describe('decideColdWake — P-021 verdict-gated cold-by-default (classDefaultCold)', () => {
+  // The marker a WARM loop's fire now stamps: {wakeCount, harness}, NO carry.
+  const warmLoopPayload = (wakeCount = 3) => ({ wakeCount, harness: 'papercusp' });
+
+  it('a no-carry LOOP marker colds when the caller resolved classDefaultCold (all other gates held)', () => {
+    expect(
+      decideColdWake({ payload: warmLoopPayload(), coldEnabled: true, carryNote: 'note', classDefaultCold: true }),
+    ).toEqual({ cold: true, mode: 'reset', carryNote: 'note' });
+  });
+
+  it('the recycle cadence flows through on the verdict route exactly as on the opt-in route', () => {
+    expect(
+      decideColdWake({ payload: warmLoopPayload(8), coldEnabled: true, carryNote: 'note', classDefaultCold: true }),
+    ).toEqual({ cold: true, mode: 'recycle', carryNote: 'note' });
+  });
+
+  it('classDefaultCold absent/false keeps a no-carry loop WARM (today’s behavior, byte-identical)', () => {
+    expect(decideColdWake({ payload: warmLoopPayload(), coldEnabled: true, carryNote: 'note' }).cold).toBe(false);
+    expect(
+      decideColdWake({ payload: warmLoopPayload(), coldEnabled: true, carryNote: 'note', classDefaultCold: false }).cold,
+    ).toBe(false);
+  });
+
+  it('the verdict route still requires the master gate AND the carry-note (P-006/P-007 unchanged)', () => {
+    expect(
+      decideColdWake({ payload: warmLoopPayload(), coldEnabled: false, carryNote: 'note', classDefaultCold: true }),
+    ).toEqual({ cold: false, reason: 'cold-auto disabled (master gate off)' });
+    expect(
+      decideColdWake({ payload: warmLoopPayload(), coldEnabled: true, carryNote: '  ', classDefaultCold: true }).cold,
+    ).toBe(false);
+  });
+
+  it('a NON-loop wake (no marker) never colds, even with the verdict', () => {
+    expect(decideColdWake({ payload: null, coldEnabled: true, carryNote: 'n', classDefaultCold: true }).cold).toBe(false);
+    expect(
+      decideColdWake({ payload: { kickoff: 'x' }, coldEnabled: true, carryNote: 'n', classDefaultCold: true }).cold,
+    ).toBe(false);
+  });
+
+  it('a marker without a harness scope never colds by verdict (carry-note cannot be scoped)', () => {
+    expect(
+      decideColdWake({ payload: { wakeCount: 2 }, coldEnabled: true, carryNote: 'n', classDefaultCold: true }).cold,
+    ).toBe(false);
+  });
+
+  it('an EXPLICIT non-cold carry stamp opts the loop out of the default (future carry:"warm")', () => {
+    expect(
+      decideColdWake({
+        payload: { carry: 'warm', wakeCount: 2, harness: 'papercusp' },
+        coldEnabled: true,
+        carryNote: 'n',
+        classDefaultCold: true,
+      }).cold,
+    ).toBe(false);
+  });
+
+  it('the explicit cold opt-in is unchanged by the verdict input (either value)', () => {
+    for (const classDefaultCold of [true, false]) {
+      expect(
+        decideColdWake({
+          payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' },
+          coldEnabled: true,
+          carryNote: 'n',
+          classDefaultCold,
+        }),
+      ).toEqual({ cold: true, mode: 'reset', carryNote: 'n' });
+    }
+  });
+});
+
 describe('renderColdWakeInjection — the cold-wake injected text (P-002 producer)', () => {
   it('carries the carry-note verbatim', () => {
     const note = '## Did\nwired the producer\n\n## Next action\nrun the tests';

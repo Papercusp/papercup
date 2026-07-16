@@ -322,24 +322,30 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
     });
   });
 
-  it('a WARM loop stamps NO payload marker, but its fire counter still advances (P-001b: the wake cadence needs it)', async () => {
+  it('a WARM loop stamps a NO-carry {wakeCount, harness} marker (P-021: the wake-executor needs the loop identity + carry-note scope for cold-by-default), and its fire counter still advances', async () => {
     const readFireCount = vi.fn(async () => 3);
     const incrementFireCount = vi.fn(async () => {});
     const deps = mkDeps({ readFireCount: readFireCount as never, incrementFireCount: incrementFireCount as never });
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'x' } }, deps); // carry absent → warm
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(opts.payload).toBeUndefined();
+    // No carry field: decideColdWake treats it as warm unless the P-021 verdict
+    // (classDefaultCold) is resolved by the executor — so with the flag off this
+    // marker is inert downstream.
+    expect(opts.payload).toEqual({ wakeCount: 4, harness: 'papercusp' });
     expect(readFireCount).toHaveBeenCalledTimes(1);
     expect(incrementFireCount).toHaveBeenCalledTimes(1);
   });
 
-  it('an explicit carry:"warm" is also treated as warm (no marker)', async () => {
+  it('an explicit carry:"warm" is also warm — same NO-carry marker, never a carry field', async () => {
     const deps = mkDeps({
       readFireCount: vi.fn(async () => 5) as never,
       incrementFireCount: vi.fn(async () => {}) as never,
     });
     await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'warm' } }, deps);
-    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toBeUndefined();
+    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toEqual({
+      wakeCount: 6,
+      harness: 'papercusp',
+    });
   });
 
   it('a COLD fire that does NOT reach a session does NOT advance the counter (no wakeCount slot consumed)', async () => {
