@@ -27,6 +27,7 @@ import { readPlanEvents } from '../agent-tools/coordination/plan-events';
 import { getAllBlockedPlanItems } from '../issue-blocks-merge';
 import { loadRecentSurfaced, recordSurfaced } from './curation-log';
 import { surfaceCuratedMessage } from './curation-surface';
+import { planEventProgressTitle } from './plan-event-title';
 import type {
   FleetReaders,
   RawEscalation,
@@ -154,8 +155,13 @@ async function readProgress(): Promise<RawProgress[]> {
     const ts = typeof e.ts === 'string' ? e.ts : new Date().toISOString();
     const t = Date.parse(ts);
     if (Number.isFinite(t) && t < cutoff) continue;
-    const summary = typeof e.summary === 'string' ? e.summary : 'plan update';
     const planSlug = typeof e.plan_slug === 'string' ? e.plan_slug : undefined;
+    // WI-5040 (owner report 2026-07-16): emitPlanEvent never writes `summary`,
+    // so the old `e.summary ?? 'plan update'` fallback was the 100% path and
+    // every progress bullet rendered as the contentless literal "plan update".
+    // planEventProgressTitle composes a real title from the envelope fields
+    // the emitter DOES write, e.g. "my-plan-2026-07-16 P-003: todo → wip".
+    const summary = planEventProgressTitle(e);
     out.push({
       id: `plan-event:${e.msg_id}`,
       title: summary,

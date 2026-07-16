@@ -54,16 +54,35 @@ const argsSchema = z.object({
     .string({ error: 'chat:ask_choice needs a `question` — the prompt shown to the user.' })
     .min(1, '`question` must be a non-empty prompt.')
     .max(MAX_QUESTION_LEN),
-  options: z
-    .array(optionSchema, {
-      error:
-        'chat:ask_choice needs `options`: 1-6 clickable choices, each { id, label }. For an OPEN-ENDED question (describe / paste), use plain text instead.',
-    })
-    .min(
-      1,
-      'chat:ask_choice needs at least one option (each { id, label }) — provide 2-3 for a yes/no or pick-one decision.',
-    )
-    .max(MAX_OPTIONS, `chat:ask_choice accepts at most ${MAX_OPTIONS} options.`),
+  options: z.preprocess(
+    // Models sometimes STRINGIFY the options array — `options: "[{…}]"` —
+    // observed live from the operator brain (operator_turns seq 11831,
+    // 2026-07-16): the first ask_choice call failed validation on exactly
+    // this and burned a full retry round-trip. It is an encoding slip, not a
+    // semantic error, so parse it; anything that isn't a JSON array falls
+    // through to the normal schema error.
+    (v) => {
+      if (typeof v === 'string') {
+        try {
+          const parsed: unknown = JSON.parse(v);
+          if (Array.isArray(parsed)) return parsed;
+        } catch {
+          /* fall through to the schema error */
+        }
+      }
+      return v;
+    },
+    z
+      .array(optionSchema, {
+        error:
+          'chat:ask_choice needs `options`: 1-6 clickable choices, each { id, label }. For an OPEN-ENDED question (describe / paste), use plain text instead.',
+      })
+      .min(
+        1,
+        'chat:ask_choice needs at least one option (each { id, label }) — provide 2-3 for a yes/no or pick-one decision.',
+      )
+      .max(MAX_OPTIONS, `chat:ask_choice accepts at most ${MAX_OPTIONS} options.`),
+  ),
   /** Multi-select. Default false (radio: one pick commits). */
   multi: z.boolean().optional(),
   /** Show Skip affordance. Default true. */

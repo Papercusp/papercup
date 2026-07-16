@@ -467,19 +467,22 @@ export default defineTool({
         `assembledChars=${assembled.length}`,
     );
 
-    // WI-4950 class observability: a text turn that enumerated options in
-    // prose and asked the user to pick, without any tool call, is a
-    // conversational dead-end the prompt contract failed to prevent. Log it
-    // so the grade loop can measure the miss rate live. Detector is
-    // deliberately conservative; failures here must never fail the turn.
-    if (turnModality === 'text' && !emittedToolCall && assembled.trim()) {
+    // WI-4950 class observability: a turn that enumerated options in prose
+    // and asked the user to pick, without any tool call, is a conversational
+    // dead-end the prompt contract failed to prevent — in BOTH modalities
+    // (the chat sidebar sends modality=voice for TYPED messages whenever
+    // voice mode is on, and prose enumeration is neither clickable nor
+    // voice-answerable either way). Log it so the grade loop can measure the
+    // miss rate live. Detector is deliberately conservative; failures here
+    // must never fail the turn.
+    if (!emittedToolCall && assembled.trim()) {
       try {
         const { detectProsePickOne } = await import('../../operator-prose-pick-one');
         const hit = detectProsePickOne(assembled);
         if (hit.detected) {
           console.warn(
-            `[operator:converse] prose-pick-one detected (${hit.reason}; WI-4950 class): ` +
-              `reply="${assembled.slice(0, 140).replace(/\n/g, ' ')}"`,
+            `[operator:converse] prose-pick-one detected (${hit.reason}; WI-4950 class; ` +
+              `modality=${turnModality}): reply="${assembled.slice(0, 140).replace(/\n/g, ' ')}"`,
           );
         }
       } catch {

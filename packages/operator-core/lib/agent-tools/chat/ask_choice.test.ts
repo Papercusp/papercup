@@ -393,3 +393,32 @@ describe('chat:ask_choice — B-10 autonomous-agent card interception', () => {
     expect((await listEscalations()).length).toBe(0);
   });
 });
+
+describe('argsSchema — stringified options coercion (operator_turns seq 11831, 2026-07-16)', () => {
+  const schema = (askChoiceTool as { args: { parse: (v: unknown) => { options: unknown } } }).args;
+
+  it('parses a JSON-string options array (the observed model encoding slip)', () => {
+    const parsed = schema.parse({
+      question: 'What next?',
+      options:
+        '[{"id": "stall", "label": "Unstick the placement stall", "style": "primary"}, {"id": "rubric", "label": "Grade the overdue release rubric"}]',
+    });
+    expect(Array.isArray(parsed.options)).toBe(true);
+    expect((parsed.options as Array<{ id: string }>).map((o) => o.id)).toEqual([
+      'stall',
+      'rubric',
+    ]);
+  });
+
+  it('still rejects a non-array JSON string and plain garbage', () => {
+    expect(() =>
+      schema.parse({ question: 'q?', options: '{"id":"a","label":"A"}' }),
+    ).toThrow();
+    expect(() => schema.parse({ question: 'q?', options: 'not json at all' })).toThrow();
+  });
+
+  it('leaves a real array untouched', () => {
+    const parsed = schema.parse({ question: 'q?', options: [{ id: 'a', label: 'A' }] });
+    expect((parsed.options as Array<{ id: string }>)[0]).toMatchObject({ id: 'a', label: 'A' });
+  });
+});

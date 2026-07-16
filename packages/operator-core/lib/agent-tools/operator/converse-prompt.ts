@@ -82,6 +82,11 @@ export async function buildOperatorPrompt(
   input: ConverseInput,
   sessionUser: ConverseSessionUser | null,
 ): Promise<BuiltOperatorPrompt> {
+  // Sub-phase timing (reply-latency instrumentation, grade-loop 2026-07-16):
+  // buildOperatorPrompt was measured at ~18s of a ~22s turn (turn-timings
+  // buildPromptMs) with no visibility into WHICH phase pays it. One log line
+  // per turn; grep `prompt-phases` in the operator log.
+  const tP0 = Date.now();
   const prefs = await loadVoicePrefs().catch(() => null);
   const budget = prefs?.operatorHistoryTokenBudget ?? 40000;
   const messages = selectHistoryWithinBudget(
@@ -111,6 +116,7 @@ export async function buildOperatorPrompt(
       );
     }
   }
+  const tHistSummary = Date.now();
   const modality: 'voice' | 'text' = input.modality === 'voice' ? 'voice' : 'text';
   const trigger = input.trigger ?? 'user_message';
   const mayAskActive = !!input.mayAskActive;
@@ -180,6 +186,7 @@ export async function buildOperatorPrompt(
 
   const playbook = loadRoleToolsMd(role);
   if (playbook) systemSections.push(playbook);
+  const tPersona = Date.now();
 
   // Operator memory pre-turn injection — best-effort, via the shared
   // helper. Same source of truth as architect/brainstorm prompts; each
@@ -203,6 +210,7 @@ export async function buildOperatorPrompt(
     ...(role === 'papercup' ? { heading: 'Sentinel memory (relevant entries)' } : {}),
   });
   if (memBlock) systemSections.push(memBlock);
+  const tMem = Date.now();
 
   // SENTINEL read-context. The Sentinel watches the WHOLE
   // system, so it walks in already understanding the live state — escalations,
@@ -238,6 +246,8 @@ export async function buildOperatorPrompt(
       );
     }
   }
+
+  const tSentinel = Date.now();
 
   // USER sections (this turn's context — sent as the positional message)
   const userSections: string[] = [];
@@ -399,6 +409,12 @@ Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT as
     modality === 'text'
       ? 'Respond now per your operator instructions and trigger above. FINAL CHECK before you emit: if your reply enumerates two or more options and asks the user to pick, you MUST call chat_ask_choice with those options instead — on this surface a prose option list is a dead-end with nothing to click.'
       : 'Respond now per your operator instructions and trigger above.',
+  );
+
+  console.log(
+    `[converse-prompt] prompt-phases historySummaryMs=${tHistSummary - tP0} ` +
+      `personaCatalogMs=${tPersona - tHistSummary} memoryMs=${tMem - tPersona} ` +
+      `sentinelMs=${tSentinel - tMem} renderMs=${Date.now() - tSentinel} role=${role}`,
   );
 
   return {

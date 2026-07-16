@@ -77,6 +77,8 @@ import {
   reportSessionResumed,
   reportSessionPortDelivery,
   tryRematerializeFromArchive,
+  isClaudeConfigDirLaunchReady,
+  ensureInteractiveConfigViaOperator,
   roleLaunchArgs,
   suLaunchArgs,
   kickoffPositionalArgs,
@@ -4786,6 +4788,146 @@ describe('per-hop output door (deterministic-context-carry P-006 leg (a) — max
     it('no backendWindow → registry copied verbatim, no door applied (pre-P-006 behavior)', () => {
       writeOmpSessionConfigDir('d1', { model: 'ollama-cc/ornith-x' }, home);
       expect(read('models.yml')).toBe(YML);
+    });
+  });
+});
+
+/**
+ * EI-12938 (owner-reported 2026-07-16): `psu --resume` boots claude into the
+ * first-run wizard (a /login screen) despite a healthy system login; exit it,
+ * re-run, and the second attempt "works".
+ *
+ * psu's resume leg heals `.credentials.json` (rehealResumeCredentials) — but
+ * credentials are not ACCOUNT STATE. `.claude.json` is what claude reads to
+ * decide it is signed in, and it carries the user-level MCP servers too. A dir
+ * restored from the archive (transcript only) or built for a headless bee
+ * (`writeSpawnClaudeConfig` — creds symlink only) has none, so the resume hits
+ * the wizard, claude mints a stub, and attempt 2 stops prompting while running
+ * TOOL-LESS. These pin the launcher-side glue: detect the degraded dir locally
+ * (no round-trip when healthy), delegate the repair to the operator (the mirror
+ * has exactly ONE implementation, server-side), and never block a launch.
+ */
+describe('EI-12938: psu --resume ensures a launch-ready claude config dir', () => {
+  let root: string;
+  const savedRoot = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'psu-icc-'));
+    process.env.PAPERCUSP_SESSION_CLAUDE_DIR = root;
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    if (savedRoot === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = savedRoot;
+  });
+
+  const dirFor = (sid: string) => {
+    const d = join(root, sid);
+    mkdirSync(d, { recursive: true });
+    return d;
+  };
+
+  describe('isClaudeConfigDirLaunchReady (the .mjs mirror of the operator-core predicate)', () => {
+    it('a mirrored dir (.claude.json symlinked to the real config) is ready', () => {
+      const home = mkdtempSync(join(tmpdir(), 'psu-icc-home-'));
+      writeFileSync(join(home, '.claude.json'), '{"mcpServers":{"papercusp-su":{}}}');
+      const dir = dirFor('su-ok');
+      symlinkSync(join(home, '.claude.json'), join(dir, '.claude.json'));
+      expect(isClaudeConfigDirLaunchReady(dir)).toBe(true);
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    it('a rematerialized / bee dir (no .claude.json) is NOT ready', () => {
+      expect(isClaudeConfigDirLaunchReady(dirFor('su-remat'))).toBe(false);
+    });
+
+    it("claude's first-run stub (an account, no mcpServers) is NOT ready", () => {
+      const dir = dirFor('su-stub');
+      writeFileSync(join(dir, '.claude.json'), '{"oauthAccount":{"emailAddress":"o@e.com"}}');
+      expect(isClaudeConfigDirLaunchReady(dir)).toBe(false);
+    });
+
+    it('a P-020 pruned real copy (mcpServers kept) IS ready — never re-materialized behind its back', () => {
+      const dir = dirFor('su-pruned');
+      writeFileSync(join(dir, '.claude.json'), '{"mcpServers":{"papercusp-su":{}},"hasCompletedOnboarding":true}');
+      expect(isClaudeConfigDirLaunchReady(dir)).toBe(true);
+    });
+
+    it('a dangling symlink / corrupt json is NOT ready, and never throws', () => {
+      const dangling = dirFor('su-dangle');
+      symlinkSync(join(root, 'gone.json'), join(dangling, '.claude.json'));
+      expect(isClaudeConfigDirLaunchReady(dangling)).toBe(false);
+      const corrupt = dirFor('su-corrupt');
+      writeFileSync(join(corrupt, '.claude.json'), '{ not json');
+      expect(isClaudeConfigDirLaunchReady(corrupt)).toBe(false);
+      expect(isClaudeConfigDirLaunchReady('')).toBe(false);
+    });
+  });
+
+  describe('ensureInteractiveConfigViaOperator', () => {
+    it('POSTs the owner and reports the repair when the dir is not launch-ready', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const calls: { url: string; opts: any }[] = [];
+      const fetchImpl = async (url: string, opts: any) => {
+        calls.push({ url, opts });
+        return { json: async () => ({ ok: true, owner: 'su-remat', configDir: join(root, 'su-remat'), repaired: true }) };
+      };
+      const r = await ensureInteractiveConfigViaOperator('su-remat', dirFor('su-remat'), {
+        fetchImpl,
+        operatorUrl: 'http://op:1',
+        token: 'tok-1',
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe('http://op:1/api/adv/sessions/ensure-claude-config');
+      expect(calls[0].opts.method).toBe('POST');
+      expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
+      expect(JSON.parse(calls[0].opts.body)).toEqual({ owner: 'su-remat' });
+      expect(r).toMatchObject({ ok: true, repaired: true });
+      // The repair is DISCLOSED — a silently-degraded session is the bug.
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      errSpy.mockRestore();
+    });
+
+    it('a healthy dir costs NO round-trip (the normal resume is byte-identical)', async () => {
+      const home = mkdtempSync(join(tmpdir(), 'psu-icc-home2-'));
+      writeFileSync(join(home, '.claude.json'), '{"mcpServers":{"papercusp-su":{}}}');
+      const dir = dirFor('su-healthy');
+      symlinkSync(join(home, '.claude.json'), join(dir, '.claude.json'));
+      const calls: unknown[] = [];
+      const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { json: async () => ({ ok: true }) }; };
+      expect(await ensureInteractiveConfigViaOperator('su-healthy', dir, { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+      expect(calls).toHaveLength(0);
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    it('a foreign/relocated configDir is left alone (the server can only key by owner)', async () => {
+      const calls: unknown[] = [];
+      const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { json: async () => ({ ok: true }) }; };
+      const foreign = mkdtempSync(join(tmpdir(), 'psu-foreign-'));
+      // Not sessionClaudeConfigDir('su-x') — ensuring would materialize a DIFFERENT
+      // dir while the one actually being launched stayed broken.
+      expect(await ensureInteractiveConfigViaOperator('su-x', foreign, { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+      expect(calls).toHaveLength(0);
+      rmSync(foreign, { recursive: true, force: true });
+    });
+
+    it('no owner (untracked / pre-EI-155 session) → no request, returns null', async () => {
+      const calls: unknown[] = [];
+      const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { json: async () => ({ ok: true }) }; };
+      expect(await ensureInteractiveConfigViaOperator(null, dirFor('su-none'), { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+      expect(calls).toHaveLength(0);
+    });
+
+    it('an older operator without the route (404 / ok:false) → null, launch proceeds exactly as today', async () => {
+      const fetchImpl = async () => ({ json: async () => ({ ok: false, error: 'not found' }) });
+      expect(await ensureInteractiveConfigViaOperator('su-remat', dirFor('su-remat'), { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+    });
+
+    it('an unreachable operator is swallowed — config repair NEVER blocks a resume', async () => {
+      const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+      await expect(
+        ensureInteractiveConfigViaOperator('su-remat', dirFor('su-remat'), { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+      ).resolves.toBeNull();
     });
   });
 });

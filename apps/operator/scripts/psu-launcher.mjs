@@ -4629,7 +4629,10 @@ function fmtAge(iso) {
  *  session as the pinned brain (Queen) — an AGENT, so it re-applies the
  *  native-scheduler lockout the human resume path deliberately skips
  *  (flags don't persist into resumes; every brain dock-open re-arms it). */
-function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents, model = null, kickoff = null } = {}) {
+// EI-12938: async because the resume must be able to re-ensure a non-launch-ready
+// config dir server-side before spawning (ensureInteractiveConfigViaOperator).
+// Every call site is already inside an async function and now awaits it.
+async function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents, model = null, kickoff = null } = {}) {
   // --fork is native for claude/codex — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
@@ -5020,7 +5023,7 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
   if (!forkable) {
     // Untracked claude (no adv row) → the plain untracked fork; non-claude →
     // launchResume refuses with a clear message. Either way defer to launchResume.
-    launchResume(session, forkOpts);
+    await launchResume(session, forkOpts);
     return;
   }
   let res;
@@ -5031,14 +5034,14 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     });
   } catch (e) {
     console.error(`psu: fork bootstrap failed (${e?.message ?? e}) — falling back to an UNTRACKED fork (resumable only by uuid).`);
-    launchResume(session, forkOpts);
+    await launchResume(session, forkOpts);
     return;
   }
   const forkId = res?.nativeSessionId || null;
   const forkConfigDir = res?.envelopeEnv?.CLAUDE_CONFIG_DIR || null;
   if (!forkId || !forkConfigDir) {
     console.error('psu: fork bootstrap returned no native id / config dir — falling back to an UNTRACKED fork (resumable only by uuid).');
-    launchResume(session, forkOpts);
+    await launchResume(session, forkOpts);
     return;
   }
   // Seed the fork's empty per-session config dir with the original's transcript so
@@ -5435,9 +5438,12 @@ export function isClaudeConfigDirLaunchReady(configDir) {
   try {
     if (!configDir) return false;
     const path = join(configDir, '.claude.json');
-    if (lstatSync(path).isSymbolicLink()) return true;
+    const entry = lstatSync(path); // throws when absent
+    // Read THROUGH the link: a DANGLING symlink still lstats as a symlink but
+    // gives claude nothing — the same wizard by a different door.
     const cfg = JSON.parse(readFileSync(path, 'utf8'));
-    return !!cfg && typeof cfg === 'object' && cfg.mcpServers != null;
+    if (!cfg || typeof cfg !== 'object') return false;
+    return entry.isSymbolicLink() || cfg.mcpServers != null;
   } catch {
     return false;
   }
@@ -5585,7 +5591,7 @@ async function launchResolvedResume(source, args, { tracked }) {
     await launchTrackedFork(source, args, account, target.modelSpec);
     return;
   }
-  launchResume(source, {
+  await launchResume(source, {
     fork: args.fork,
     passthrough: args.passthrough,
     addDir: args.addDir,
