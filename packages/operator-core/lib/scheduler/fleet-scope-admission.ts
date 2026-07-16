@@ -32,7 +32,7 @@ export type FleetScopeAdmission =
   | {
       allowed: false;
       scoped: true;
-      code: 'fleet_scope_missing' | 'fleet_scope_violation';
+      code: 'fleet_scope_missing' | 'fleet_scope_violation' | 'fleet_winding_down';
       reason: string;
       scope: FleetScopeContext;
     };
@@ -103,6 +103,49 @@ function denyMissing(scope: FleetScopeContext): FleetScopeAdmission {
   };
 }
 
+/**
+ * EI-12832: while a fleet is paused (control_state='winding-down', set by
+ * fleet:pause / fleet:wind-down), a member must NOT acquire NEW work — not via a
+ * direct by-id claim, not via a leader/self assign, not via a self-select pull.
+ *
+ * The prior gap: the winding-down state floored the SELECT-side (get_next), but a
+ * member parked on `events:await('work-item:claimable')` from before the pause
+ * would still be woken by a peer's compliant stand-down release and then claim the
+ * released item by id — the claim path only checked spec-match (in-spec ⇒ passed),
+ * never the fleet's control state — so a release performed BECAUSE of the pause
+ * recruited the next member (observed live 2026-07-15, fleet
+ * nonp2p-bug-drain-0715).
+ *
+ * Consulting the durable registry control state (mig 575) at every fleet-scope
+ * admission seam closes the class: a refusal here reaches work_items:claim,
+ * plan_items:assign, and work_items:create's assign-on-create. Returns the loud,
+ * leader-addressed refusal when winding-down, else null (allowed).
+ *
+ * FAIL-OPEN: an unresolvable workspace or a control-state read error returns null
+ * (allowed). A registry-read hiccup must never wedge normal claiming — the pause
+ * gate is a floor on new work, not a hard dependency of the claim path.
+ */
+export async function fleetControlWindDownRefusal(
+  scope: FleetScopeContext,
+  workspaceId?: string | null,
+): Promise<Extract<FleetScopeAdmission, { allowed: false }> | null> {
+  const ws = resolveClaimSpecWorkspace(workspaceId);
+  if (!ws) return null;
+  const { getFleet } = await import('../agent-fleets-store');
+  const fleet = await getFleet(ws, scope.fleetSlug).catch(() => null);
+  if (fleet?.controlState !== 'winding-down') return null;
+  return {
+    allowed: false,
+    scoped: true,
+    code: 'fleet_winding_down',
+    scope,
+    reason:
+      `fleet '${scope.fleetSlug}' is winding-down (paused${fleet.controlReason ? `: ${fleet.controlReason}` : ''}); ` +
+      `member ${scope.ownerId} may not acquire NEW work until a fleet:resume (control_state=active) lands. ` +
+      'A release performed as part of the stand-down must not recruit the next member',
+  };
+}
+
 export async function admitWorkItemForFleetTarget(args: {
   target: string;
   workItemId: string;
@@ -111,6 +154,9 @@ export async function admitWorkItemForFleetTarget(args: {
 }): Promise<FleetScopeAdmission> {
   const scope = await resolveFleetScopeContext(args.target, args.workspaceId);
   if (!scope) return { allowed: true, scoped: false };
+  // EI-12832: a paused fleet's member takes no NEW work, whatever its spec says.
+  const paused = await fleetControlWindDownRefusal(scope, args.workspaceId);
+  if (paused) return paused;
   if (scope.record.source === 'default') return denyMissing(scope);
   const { getWorkItem } = await import('../work-items');
   const item = await getWorkItem(args.workItemId, args.harness);
@@ -134,6 +180,9 @@ export async function admitSubjectForFleetTarget(args: {
 }): Promise<FleetScopeAdmission> {
   const scope = await resolveFleetScopeContext(args.target, args.workspaceId);
   if (!scope) return { allowed: true, scoped: false };
+  // EI-12832: a paused fleet's member takes no NEW work, whatever its spec says.
+  const paused = await fleetControlWindDownRefusal(scope, args.workspaceId);
+  if (paused) return paused;
   if (scope.record.source === 'default') return denyMissing(scope);
   if (matchesClaimSpecFilter(args.subject, scope.record.spec.view.filter)) {
     return { allowed: true, scoped: true, scope };
@@ -206,12 +255,23 @@ export async function reconcileFleetScopeClaims(args: {
   return { scope, quarantinedIds };
 }
 
-export function fleetScopedMiss(scope: FleetScopeContext, quarantinedIds: string[] = []) {
+export function fleetScopedMiss(
+  scope: FleetScopeContext,
+  quarantinedIds: string[] = [],
+  // EI-12832: when the miss is because the fleet is PAUSED (winding-down), the item
+  // may well match the spec — the member just must not pull. Say so honestly instead
+  // of the "no item matched scope" message (which would be actively misleading during
+  // a pause), and give the stand-down (not the re-steer) advice.
+  opts?: { pausedReason?: string | null },
+) {
+  const paused = opts?.pausedReason !== undefined;
   return {
     ok: false as const,
-    error:
-      `no claimable work-item matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision}; ` +
-      'the member was NOT allowed to fall through to the generic backlog',
+    error: paused
+      ? `fleet '${scope.fleetSlug}' is winding-down (paused${opts?.pausedReason ? `: ${opts.pausedReason}` : ''}); ` +
+        'do NOT pull new work from this fleet\'s lanes — stand down until a fleet:resume (control_state=active) lands'
+      : `no claimable work-item matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision}; ` +
+        'the member was NOT allowed to fall through to the generic backlog',
     fleetScope: {
       fleet: scope.fleetSlug,
       specId: scope.record.spec.specId,
@@ -220,7 +280,9 @@ export function fleetScopedMiss(scope: FleetScopeContext, quarantinedIds: string
     },
     quarantinedIds,
     windDown: true as const,
-    advice:
-      'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Resume only after a claim-spec revision or a new claimable event.',
+    ...(paused ? { paused: true as const } : {}),
+    advice: paused
+      ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Resume only after a fleet:resume cue.'
+      : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end, and report the scoped miss to the fleet leader. Resume only after a claim-spec revision or a new claimable event.',
   };
 }
