@@ -448,6 +448,20 @@ export function isPausedNow(s: OwnerSteering, nowMs: number): boolean {
 const RESUME_LANGUAGE =
   /\b(resum(?:e|ing|ed)|(?:hold|pause|gate)\b.{0,20}\b(?:lifted|released|cleared|over)|un-?paus(?:e|ed|ing)|no longer paused|back to (?:normal|autonomous)|go[\s-]?ahead)\b/i;
 
+/** EI-13023: directive text that COMMANDS active placement/work without using any
+ *  explicit pause-lifecycle word ("resume"/"lifted"/…). The live incident: the
+ *  standing directive "Run the full Mug→Cup→Kettle→Blender loop. Place and
+ *  complete real work" sailed past RESUME_LANGUAGE, so `pauseNewWork: true`
+ *  silently froze ALL placements for ~36h with `inconsistent: false`. A directive
+ *  that orders the loop to run contradicts a hard pause exactly as much as one
+ *  that says "resume" — flag both. Same suppression rules as RESUME_LANGUAGE
+ *  (ACTIVE_PAUSE_LANGUAGE wins, so EI-9952-class quoted/superseded work text in a
+ *  genuine pause directive stays consistent). Deliberately targeted alternations
+ *  rather than loose fillers, so prose like "run the numbers on the loop metrics"
+ *  does not trip it. */
+const WORK_COMMAND_LANGUAGE =
+  /\b(?:run(?:ning)? the (?:full )?(?:auto[- ]?loop|loop\b|\S{0,24}(?:→|->)\S{0,40}\s*loop)|(?:place|placing) (?:and \w+ )?(?:real |new )?work\b|keep placing|start placing|(?:place|placing) from the frontier|work the frontier)/i;
+
 /** Directive text that explicitly asserts the pause is STILL in effect. When any
  *  of these is present, resume-words elsewhere in the same directive are almost
  *  certainly NEGATED ("do not resume"), QUOTED/SUPERSEDED ("'resume ...' is
@@ -467,7 +481,7 @@ const ACTIVE_PAUSE_LANGUAGE =
 export function directiveSuggestsResume(directive: string | null): boolean {
   if (!directive) return false;
   if (ACTIVE_PAUSE_LANGUAGE.test(directive)) return false;
-  return RESUME_LANGUAGE.test(directive);
+  return RESUME_LANGUAGE.test(directive) || WORK_COMMAND_LANGUAGE.test(directive);
 }
 
 /** True when the stored steering looks INTERNALLY inconsistent: the directive

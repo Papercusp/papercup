@@ -363,6 +363,72 @@ describe('verifyColdBootDrill — post-start lifecycle self-check (EI-12655 fix 
   });
 });
 
+describe('scanCarryDrillDrops (EI-12755 — the drop watchdog scanner)', () => {
+  const T0 = Date.parse('2026-07-15T12:00:00.000Z');
+  const row = (
+    kind: ColdBootDrillLedgerEvent['kind'],
+    drillId: string,
+    offsetMs: number,
+    extra: Partial<ColdBootDrillLedgerEvent> = {},
+  ): ColdBootDrillLedgerEvent => ({
+    ts: new Date(T0 + offsetMs).toISOString(),
+    kind,
+    drillId,
+    ownerId: 'su-w',
+    sessionClass: 'gateway-claude-headless',
+    ...extra,
+  });
+
+  it('alerts on dropped + respawn-failed rows newer than the watermark, ignoring the rest', () => {
+    const events = [
+      row('carry-drill-requested', 'd-1', 1_000),
+      row('carry-drill-queued', 'd-1', 1_100),
+      row('carry-drill-carry-delivered', 'd-1', 2_000),
+      row('carry-drill-carry-dropped', 'd-2', 3_000, { reason: 'busy-gate-expired' }),
+      row('carry-drill-respawn-failed', 'd-3', 4_000, { reason: 'argv-build-failed' }),
+      // EI-12754's non-terminal marker must never alert (its retry ends in its own terminal row).
+      row('carry-drill-rearm-queued', 'd-4', 5_000),
+    ];
+    const { alerts, watermarkMs } = scanCarryDrillDrops(events, T0);
+    expect(alerts).toEqual([
+      expect.objectContaining({ drillId: 'd-2', kind: 'carry-drill-carry-dropped', reason: 'busy-gate-expired' }),
+      expect.objectContaining({ drillId: 'd-3', kind: 'carry-drill-respawn-failed', reason: 'argv-build-failed' }),
+    ]);
+    expect(watermarkMs).toBe(T0 + 4_000);
+  });
+
+  it('respects the watermark and dedupes per (drillId, kind)', () => {
+    const events = [
+      row('carry-drill-carry-dropped', 'd-old', -60_000, { reason: 'never-settled' }),
+      row('carry-drill-carry-dropped', 'd-5', 1_000, { reason: 'busy-gate-expired' }),
+      // A retried mirror write can duplicate a row — one drill never alerts twice.
+      row('carry-drill-carry-dropped', 'd-5', 1_500, { reason: 'busy-gate-expired' }),
+      // ...but a DIFFERENT terminal kind for the same drill is a distinct signal.
+      row('carry-drill-respawn-failed', 'd-5', 2_000, { reason: 'argv-build-failed' }),
+    ];
+    const { alerts } = scanCarryDrillDrops(events, T0);
+    expect(alerts.map((a) => `${a.drillId}:${a.kind}`)).toEqual([
+      'd-5:carry-drill-carry-dropped',
+      'd-5:carry-drill-respawn-failed',
+    ]);
+  });
+
+  it('returns the unchanged watermark when nothing qualifies', () => {
+    const events = [row('carry-drill-carry-delivered', 'd-6', 1_000)];
+    expect(scanCarryDrillDrops(events, T0)).toEqual({ alerts: [], watermarkMs: T0 });
+  });
+
+  it('terminalOutcomesFromLedger ignores the non-terminal rearm-queued kind', () => {
+    const events = [
+      row('carry-drill-rearm-queued', 'd-7', 1_000),
+      row('carry-drill-carry-dropped', 'd-7', 2_000, { reason: 'busy-gate-expired', rearmed: true }),
+    ];
+    const outcomes = terminalOutcomesFromLedger(events);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ dropped: 1, respawned: 0, delivered: 0 });
+  });
+});
+
 describe('source hygiene — no raw NUL byte in the module (EI-12655)', () => {
   it('contains no raw NUL byte (keeps it a text file, not binary)', () => {
     // terminalOutcomesFromLedger joins its dedupe key with a NUL delimiter. It must

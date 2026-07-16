@@ -489,6 +489,34 @@ describe('directiveSuggestsResume / steeringLooksInconsistent (EI-8277 drift nud
     expect(directiveSuggestsResume('Keep the pause; no new placements until further notice.')).toBe(false);
   });
 
+  it('EI-13023: a work-COMMANDING directive (no explicit resume words) counts as resume-suggesting', () => {
+    // The live incident directive, verbatim: pauseNewWork=true froze all
+    // placements for ~36h while this stood, and inconsistent stayed false.
+    const liveDirective =
+      'Owner-directed public-release readiness run [Avi 2026-07-14]. Run the full Mug→Cup→Kettle→Blender loop. Place and complete real work, emit rubric scorecards, close the learning cycle. Diagnose every failed cup/wake to evidence; do not hand-wave as capacity without a real capacity signal.';
+    expect(directiveSuggestsResume(liveDirective)).toBe(true);
+    expect(steeringLooksInconsistent({ ...base, pauseNewWork: true, directive: liveDirective })).toBe(true);
+    // Same directive with the gate already open — consistent, no nudge.
+    expect(steeringLooksInconsistent({ ...base, pauseNewWork: false, directive: liveDirective })).toBe(false);
+
+    // Smaller work-command variants.
+    expect(directiveSuggestsResume('Keep placing from the frontier.')).toBe(true);
+    expect(directiveSuggestsResume('Place new work as capacity frees up.')).toBe(true);
+    expect(directiveSuggestsResume('Run the auto-loop end to end.')).toBe(true);
+
+    // Non-work-command prose stays quiet (targeted alternations, not loose fillers).
+    expect(directiveSuggestsResume('Focus only on the billing plan this week.')).toBe(false);
+    expect(directiveSuggestsResume('Investigating an incident; run the numbers on the loop metrics.')).toBe(false);
+
+    // ACTIVE_PAUSE_LANGUAGE still suppresses work-command text inside a genuine
+    // pause directive (the EI-9952 guarantee extends to the new branch).
+    expect(
+      directiveSuggestsResume(
+        'Pause new work until further notice — the prior "place and complete real work" mission is SUPERSEDED.',
+      ),
+    ).toBe(false);
+  });
+
   it('EI-9952: a genuine lift/resume directive with NO active-pause language still flags drift', () => {
     // No "in force until" / "pause new work" / "do not resume" — the resume is
     // asserted, not negated — so drift is still surfaced when the gate is still on.
