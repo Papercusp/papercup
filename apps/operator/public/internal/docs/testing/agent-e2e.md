@@ -401,6 +401,45 @@ express (layout, animation, font rendering), and treat it as
 corroborating evidence, not the primary assertion, whenever multiple
 windows might be present.
 
+Even with a single window, `screenshot --selector` (with no `--title`)
+resolves the OS window by the webview's `document.title` and runs
+`xdotool search --name "<that title>"` to get the window geometry. On a
+shell you spawned yourself (`npm run dev`), that lookup **fails outright**:
+
+```
+xdotool failed: Command failed: xdotool search --name Papercusp Operator
+```
+
+The reason is a title mismatch: the webview's `document.title` is
+`"Papercusp Operator"`, but the Tauri **X11 window title** is `"Papercusp"`
+(`papercusp-desktop/src-tauri/tauri.conf.json` → `windows[0].title`), so
+the `--name "Papercusp Operator"` regex matches no window. `eval`/`dom`/
+`describe` over the same `--pid` keep working — only the screenshot's
+window-geometry step breaks. Two fixes:
+
+1. **Pass the real X11 window title explicitly:**
+   `screenshot --selector ... --title Papercusp -o out.png` (the tool takes
+   `-t, --title <regex>`; `Papercusp` matches the X11 title regardless of
+   the dynamic `document.title`).
+2. **Prefer the bridge-based layout check** — it does no window lookup at
+   all, so it cannot hit this trap. `@papercusp/tauri-verify`'s
+   `verify.layout()` measures the same facts a layout screenshot proves
+   (page horizontal overflow, per-selector right-edge vs. viewport, an
+   overflow:auto container scrolling its own content) over the bridge:
+
+   ```ts
+   import { createVerifier } from '@papercusp/tauri-verify';
+   const verify = createVerifier({ tauriPID: PID });
+   // page must not scroll horizontally; the rubrics panel may scroll internally
+   const r = await verify.layout({ scrollContainer: '.pc-rubrics' });
+   if (!r.ok) throw new Error(r.error); // e.g. code 'horizontal_overflow'
+   ```
+
+   Or inline the equivalent one-off assertion via `eval`:
+   `document.documentElement.scrollWidth <= document.documentElement.clientWidth`
+   for the page, and `el.getBoundingClientRect().right <= documentElement.clientWidth`
+   for a specific element.
+
 ### 1.4 Stale Vite cache
 
 If the Tauri sidecar log shows a JSX parse error referencing a line

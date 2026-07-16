@@ -2141,6 +2141,48 @@ The Pot chooses what to run via `blueprint:catalog` (built-in + installed tiers;
 * `packages/agent-mcp/src/tools/harness/{list,status,registry-read}.ts` — the registry-aware harness read tools.
 * Plan `autoloop-pot-operator-rebuild-2026-06-05` — the full design + decisions (D-001..D-009).
 
+# Autonomous-role spawns dying with model:null → a malformed committed role-default model spec
+
+> When Mug/queen/bee/kettle spawns end before their first LLM turn (model:null, empty intent, "selected model unavailable"), suspect a versioned-shorthand model spec (sonnet-5) in ROLE_MODEL_DEFAULTS — the bare alias (sonnet) is required.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+An autonomous-role session (Mug / queen / bee / kettle / overwatch / sentinel / operator) spawns and **ends before executing a single LLM turn**. `coord:presence` on it shows `sessionState:"ended"`, `model:null`, `intent:""` (empty), no claimed items, 0 LLM tokens across consecutive wakes. Concurrent spawn-failure rows report **“selected model unavailable/inaccessible”**. The whole autonomous-role class stalls (e.g. Mug placement dead for 10+ wakes) while the rest of the fleet (haiku cups, sonnet workers, opus fixers) keeps making LLM calls — so it is **not** capacity exhaustion, rate limits, or an account wall. (EI-12657; the “kettle-invalid-model-config” / EI-12531 lineage.)
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+A **committed role-default model spec** in `ROLE_MODEL_DEFAULTS` (`libs/papercusp/packages/orchestrator/src/role-models.ts`) used a **versioned shorthand** — `sonnet-5[1m]:high` — instead of the **bare alias** `sonnet[1m]:high`.
+
+`sonnet-5` is not a resolvable alias anywhere in the launch path:
+
+* `validateCloudModelSpec` / the psu-launcher `validateModelSpec` **reject** it (“Did you mean `sonnet:high`? Type the BARE alias…”).
+* The inference gateway’s `resolveGatewayModel` strips the `[1m]` marker + effort to bare `sonnet-5`, which is **absent from `ONE_MILLION_MODEL_ALIASES`** (only bare `sonnet` → `claude-sonnet-5`), so it forwards `sonnet-5` **verbatim** as an unrunnable upstream Anthropic model id → 4xx “unavailable”.
+
+Either way the spawn dies at model resolution, before its first turn. The `model:null` in presence is a *symptom* of the early death, not the cause.
+
+## Why existing defenses missed it
+
+[Section titled “Why existing defenses missed it”](#why-existing-defenses-missed-it)
+
+The launcher’s model-spec validation runs on **hand-typed** specs (the `cup:spawn`/`fleet:launch-on-plan` tool boundary). A **committed** `ROLE_MODEL_DEFAULTS` entry flows straight into `resolveModel` / `applyRoleModel` and reaches the CLI/gateway **without passing that gate** — so a malformed committed default sails past every existing guard until spawn time. Worse, the buggy commit **updated the unit tests to assert the broken value**, so the suite was green.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+* **Committed role defaults are bare aliases, not versioned shorthands.** Use `sonnet[1m]:high` (resolves to the latest sonnet = `claude-sonnet-5`), matching `DEFAULT_MODEL_TIERS`’ `sonnet[1m]`. Only pin a specific generation as a **full id** (`claude-sonnet-5[1m]:high`, as `scout/models.ts` does — the `claude-` prefix is a valid upstream id the gateway forwards verbatim). Never the bare `<alias>-<version>` middle form.
+* A guard now enforces this: `agent-config-constants.test.ts` asserts **every** `ROLE_MODEL_DEFAULTS` spec passes `validateCloudModelSpec`. If you add/retune a role default, keep it launcher-valid or that test reds with the role name.
+
+## First move when you see it
+
+[Section titled “First move when you see it”](#first-move-when-you-see-it)
+
+Read the role’s resolved spec — `ROLE_MODEL_DEFAULTS[role]` (or `AGENT_MODELS` env override / owner tier-ceiling steering) — and run it through `validateCloudModelSpec`. A rejection there is your bug; a versioned-shorthand alias is the most common shape.
+
 # The autonomy gate has a RESIDUE the per-category ceilings can't reach — MUG_FULL_AUTONOMY is the only lift
 
 > Raising all 14 autonomy ceilings to critical does NOT make the Mug fully autonomous — a set of CATEGORICAL hard-gates (authority owner, irreversible, protected-lock, unmapped) plus graduation asks still force gated, independent of the ceiling. That is the residue. And it is TWO surfaces, not one — the DECISION gate (decider.ts, may she auto-decide?) and the IMPLEMENT TCB (improvements/policy.ts, may the loop auto-implement protected-path code?). The single reversible owner flag MUG_FULL_AUTONOMY (scope autonomy per-workspace, default OFF, fail-dark) lifts BOTH. Verify the live policy before assuming protected==locked; a new staging flag is not flippable via flags-set until the deploy carries it.
@@ -2586,25 +2628,32 @@ Placements went `cursed` with `failCount: 0` (the infra-victim signature — kil
 
 # Grading Blender public-release readiness
 
-> Deterministic runbook for the blender-release-readiness rubric: live watch metrics, DBOS grading-watchdog liveness, tenant-scoped grade flow, drill freshness, ledger reconciliation, red-path integrity, and complete scorecard filing.
+> Deterministic runbook for the blender-release-readiness rubric (v2): watermark-windowed instruments, generation-parity stamps, both drill modes, DBOS grading-watchdog liveness, coverage floors, red-path integrity, and complete scorecard filing.
 
 # Grading Blender public-release readiness
 
 [Section titled “Grading Blender public-release readiness”](#grading-blender-public-release-readiness)
 
-This is the rubric-level `methodRef` for `blender-release-readiness`. The active rubric owns the exact model, bar, drift markers, and replication procedure for each criterion; this page owns the shared grading sequence and the evidence rules that keep six individually-correct checks from becoming a misleading release verdict.
+This is the rubric-level `methodRef` for `blender-release-readiness` (**v2**, ratified 2026-07-16 under rubric-system-hardening-2026-07-14 P-008). The active rubric owns the exact model, bar, drift markers, and replication procedure for each criterion; this page owns the shared grading sequence and the evidence rules that keep seven individually-correct checks from becoming a misleading release verdict.
 
-Release is **GO only when one complete, fresh scorecard rates all six criteria `pass`**. `at-risk`, `fail`, or `unknown` is NO-GO. An empty window never certifies health, and old evidence does not substitute for an on-demand drill.
+Release is **GO only when one complete, fresh scorecard rates all seven criteria `pass`**. `at-risk`, `fail`, or `unknown` is NO-GO. An empty window never certifies health, and old evidence does not substitute for an on-demand drill.
+
+**v2 machinery this runbook assumes** (all landed in rubric-system-hardening-2026-07-14):
+
+* Every criterion carries a structured `window` (`{ kind: 'rolling', ms }` or `{ kind: 'post-watermark', watermarkRef }`), resolved by `resolveCriterionWindow()` — the rubric’s window IS the instrument’s window; never re-hardcode one in prose.
+* `blender:success-metrics` accepts `sinceMs`/`watermarkRef` (`'bg-host-restart'` = the running bg-host’s start instant) and echoes `resolvedWindow` + `runningGeneration { sha, hostStartedAt }` on every explicitly-windowed read.
+* Every rubric-graded scorecard is server-stamped `gradedGeneration { sha, hostStartedAt }` at capture time; callers cannot forge it.
+* The rubric is `releaseGating: true`, so the rubric-staleness watchdog pages when no complete scorecard lands within the threshold (default 6h, `PAPERCUSP_RUBRIC_STALENESS_THRESHOLD_SEC`). A page is a dead-grader alarm, not noise — grade or explain, never silence.
 
 ## One grading pass
 
 [Section titled “One grading pass”](#one-grading-pass)
 
 1. Read `rubrics:get { rubricRef: 'blender-release-readiness' }`. Never grade a remembered revision; this rubric is deliberately improved as live defects teach us better probes.
-2. Run `blender:success-metrics { harnessSlug: 'papercusp' }`, then run the saved hourly-watch recipe for the post-fix timeout window, signal-lane activation, and grading-watchdog fires. The success-metrics window and the post-fix watch answer different questions; record both.
-3. Gather the criterion-specific evidence below. Scope every raw ledger query to `workspace_id='papercusp-workspace'` and its real `harness_slug`. A workspace-wide count silently mixes `@singleton`, `papercusp`, and other Pots and is not admissible release evidence.
-4. File one complete rubric observation, then read `rubrics:trend`. Worsening is surfaced immediately; it is not deferred to the next hourly wake.
-5. Act on an actionable failure. Passive waiting is valid only while the criterion’s own eligibility window is genuinely empty.
+2. Run `blender:success-metrics { watermarkRef: 'bg-host-restart' }` and record `resolvedWindow` + `runningGeneration` verbatim — they are the pass’s generation identity. Cross-check the live host: `systemctl --user show papercup-bg-host.service -p ActiveEnterTimestamp --value` must equal `runningGeneration.hostStartedAt`. A mid-pass bg-host restart invalidates the window: re-read and re-cite.
+3. Gather the criterion-specific evidence below. Scope every raw ledger query to `workspace_id='papercusp-workspace'` and its real `harness_slug`. A workspace-wide count silently mixes `@singleton`, `papercusp`, and other Pots and is not admissible release evidence. **Know each partition’s real slug** (verified 2026-07-16): `origin='scout'` routed rows write under `harness_slug='@singleton'` (the singleton scout install — the newest `papercusp`-scoped scout row is 2026-06-11, a pre-migration relic), while `origin='su-ideate'` rows carry `harness_slug='papercusp'`. Filtering scout rows on `'papercusp'` returns weeks-stale rows and reads as a dead pipeline when it is not.
+4. File one complete rubric observation (all seven keys), then read the scorecard back and verify its `gradedGeneration` stamp matches step 2’s `runningGeneration` (the generation-parity replication). Then read `rubrics:trend`. Worsening is surfaced immediately; it is not deferred to the next wake.
+5. Act on an actionable failure — file the defect (`improvements:capture { kind: 'bug' }`) and cite it in the rating. Passive waiting is valid only while the criterion’s own eligibility window is genuinely empty.
 
 ## Deterministic evidence bundle
 
@@ -2614,15 +2663,13 @@ Release is **GO only when one complete, fresh scorecard rates all six criteria `
 
 [Section titled “Cycle error rate”](#cycle-error-rate)
 
-Use the post-fix watermark from WI-4475’s current checkpoint. Split cycles into timeout-class, explicit no-capacity, and clean. Capacity stays outside the genuine-error numerator; timeout-class stays inside it. Do not use a newest-N window when the active rubric requires 48 hours or a post-fix watermark.
-
-The WI-4475 soak bar (roughly ten clean RAN cycles) is stricter than the criterion’s arithmetic bar and remains the completion guard for that incident. A background-host restart invalidates its old watermark; reset the window to the observed restart timestamp rather than combining generations.
+Grade over the criterion’s rolling 48h window, or sharpen with `watermarkRef: 'bg-host-restart'` after a fix ships (a rolling window keeps failing on pre-fix errors for up to 48h — EI-12148). The newest-N sampling defect the v1 rubric warned about is FIXED (P-002); the instrument time-boxes by default. Split cycles into typed no-capacity (outside the genuine-error numerator), timeouts (inside it — asymmetry of harm, see the criterion model), and other errors. Always pull the error COMPOSITION (`detail->>'error'` grouped) — a single dominant class is a fileable defect, not background noise (e.g. EI-12940, the OAuth credential-loss class).
 
 ### Multi-lens routing
 
 [Section titled “Multi-lens routing”](#multi-lens-routing)
 
-Read the newest 20 `origin='scout'` routed rows, not lifetime history. Require at least two distinct lenses and check recent tick reasons for a consecutive `budget-exhausted + 0 routed` streak. Judge the configured roster’s outcome; do not turn an owner cost choice into a hardcoded roster-size requirement.
+Two bars in v2: the v1 floor (at least two distinct lenses across the newest 20 `origin='scout'` routed rows, no `budget-exhausted + 0 routed` streak) is the FAIL line; PASS additionally requires **at least four distinct lenses over the trailing 7 days** — two or three grades `at-risk`. Judge the configured roster’s outcome; do not turn an owner cost choice into a hardcoded roster-size requirement.
 
 ### Grading-loop closure
 
@@ -2656,25 +2703,42 @@ WHERE workspace_id = 'papercusp-workspace'
 GROUP BY origin;
 ```
 
-Count eligible rows using the **live** `suIdeateUngradedStaleSec` value (default seven days; a deployed environment override wins), the enablement epoch `2026-07-11T00:00:00Z`, `origin='su-ideate'`, `human_grade IS NULL`, and a pending/null outcome. Zero watchdog fires is healthy only when the DBOS step is executing without errors and eligible rows are zero. Once eligible rows exist, require a fire, grades landing afterward, priming/win-rate refresh, and one observed low-grade-with-feedback revision wake.
+Count eligible rows using the **live** `suIdeateUngradedStaleSec` value (default seven days; a deployed environment override wins), the enablement epoch `2026-07-11T00:00:00Z`, `origin='su-ideate'`, `human_grade IS NULL`, and a pending/null outcome. **v2 coverage floor: PASS requires eligible-stale = 0 — a positive count is `fail`, not `at-risk` (the loop is open now).** Watchdog liveness alone is necessary but not sufficient. Zero watchdog fires is healthy only when the DBOS step is executing without errors and eligible rows are zero. Once eligible rows exist, require a fire, grades landing afterward, priming/win-rate refresh, and one observed low-grade-with-feedback revision wake.
 
-### On-demand drill
+### On-demand drill (both modes)
 
-[Section titled “On-demand drill”](#on-demand-drill)
+[Section titled “On-demand drill (both modes)”](#on-demand-drill-both-modes)
 
-The repeatable P-013/WI-4457 integration drill proves the code path, but public release also requires the deployed generation to run it. Confirm an `origin='drill'` signal flows through digest, rubric-seeded ideation, routing, and the grading surface, while organic metrics remain unchanged. No live drill row after the release-candidate generation is `fail`, not “previously tested.”
+v2 requires **both** `blender:run-drill` modes green, each run on the CURRENT running generation (the criterion’s `post-watermark` window — a drill that predates the running bg-host’s start proves nothing about the code that will ship):
+
+* `mode: 'rubric-seeding'` — an `origin='drill'` signal flows through digest, rubric-seeded ideation, routing, and the grading surface, while organic metrics remain unchanged.
+* `mode: 'capacity-storm'` — three synthetic failure legs through the deployed scheduler: a typed `all-accounts-paused` denial must gate `'no-capacity'`; a real cycle timeout and a `no-free-slot` admission defect (dressed in capacity-looking prose) must stay errors on write AND read-back; zero non-drill-origin leakage. Require `ok: true`, `failures: []`.
+
+Cite both drillIds plus the `runningGeneration` current at run time. No live drill run after the release-candidate generation is `fail`, not “previously tested.”
 
 ### Ledger reconciliation
 
 [Section titled “Ledger reconciliation”](#ledger-reconciliation)
 
-For each recent routed Scout cycle, compare the tick’s claimed routed count to `scout_routed_ideas` grouped by `cycle_id` (not `cycle`). Exclude rows with `cycle_id IS NULL`; su-ideate rows legitimately have no Scout cycle. Any mismatch fails. If no post-fix cycle routed anything, rate `unknown` instead of reusing an older pass.
+For each recent routed Scout cycle, compare the tick’s claimed routed count to `scout_routed_ideas` grouped by `cycle_id` (not `cycle`). Exclude rows with `cycle_id IS NULL`; su-ideate rows legitimately have no Scout cycle. Drill routes are `origin='drill'` and stay excluded. Any mismatch fails. If no post-fix cycle routed anything, rate `unknown` instead of reusing an older pass.
 
 ### Instrument integrity
 
 [Section titled “Instrument integrity”](#instrument-integrity)
 
-Every bar needs a demonstrated red path. Point to a failing fixture or a live `origin='drill'` break for each criterion, then show it returns green after the break is removed. A declared guard with no call site, a cited test that does not exist, a lifetime window masking current collapse, or a zero-row query that cannot distinguish healthy from dead all fail this criterion.
+Every bar needs a demonstrated red path. The capacity classifier’s standing red-path prover is `blender:run-drill { mode: 'capacity-storm' }` — its three legs are reintroduced-bug fixtures, and its unit suite (`capacity-storm-drill.test.ts`) proves the drill itself goes red on a broken classification, a provenance leak, or a lost ledger write. For every other criterion, point to a failing fixture or a live `origin='drill'` break, then show it returns green after the break is removed. A declared guard with no call site, a cited test that does not exist, a lifetime window masking current collapse, or a zero-row query that cannot distinguish healthy from dead all fail this criterion.
+
+### Generation parity (new in v2)
+
+[Section titled “Generation parity (new in v2)”](#generation-parity-new-in-v2)
+
+The judged evidence and the running code must be the same generation — three identities have to match on every pass:
+
+1. the instrument’s `runningGeneration { sha, hostStartedAt }` (from the watermark-windowed `blender:success-metrics` read),
+2. the deployed pin (`dev:pipeline_position` `deployedSha`), and
+3. the live host (`systemctl --user show papercup-bg-host.service -p ActiveEnterTimestamp --value`).
+
+After filing, read the scorecard back and require its server-authored `gradedGeneration` stamp to equal (1). A missing/null stamp on a fresh scorecard means the stamp path broke — that is itself a `fail` here. A pending restart or sha divergence is `at-risk`, explicitly accounted, never silently ignored.
 
 ## Filing the scorecard
 
@@ -2686,12 +2750,12 @@ Use `improvements:capture` with `lane:'observation'` and:
 observation: {
   kind: 'reinforce',
   rubricRef: 'blender-release-readiness',
-  ratings: { <all six criterion keys>: { rating, evidence } },
-  linkTo: ['WI-4458']
+  ratings: { <all seven criterion keys>: { rating, evidence } },
+  linkTo: [<the defects this pass filed or tracked>]
 }
 ```
 
-Every criterion is mandatory and every rating needs concrete evidence. Use `unknown` when there was no activity to measure. After the write, read `scorecards:list` and require `missingKeys: []`, then read `rubrics:trend` for direction. The scorecard is the release record; a prose status report is not.
+Every criterion is mandatory and every rating needs concrete evidence. Use `unknown` when there was no activity to measure. After the write, read `scorecards:list` and require `missingKeys: []` **and a `gradedGeneration` stamp matching the pass’s `runningGeneration`**, then read `rubrics:trend` for direction. The scorecard is the release record; a prose status report is not.
 
 # Blueprint op/role liveness is only validated if the operator passes the registries
 
@@ -2890,6 +2954,117 @@ When a synthetic interaction “does nothing”, DON’T file a bug. Instead: (1
 [Section titled “Routing rule”](#routing-rule)
 
 bridge-driving = nav · render · console · DOM-state · API/SQL mutations. Radix/ cmdk activation + form-autosave round-trips = real input (xdotool — but round-3 found coordinate-driving the dev-wrapper webview UNRELIABLE: openbox offset + DPR + layout perturbation) or, preferably, the committed Playwright specs (`apps/operator/e2e/*.spec.ts`, real Chromium events). Use the right tool per surface. Related: \[\[isolated-stack-for-mutation-e2e]], \[\[../testing/agent-e2e]].
+
+# Browser work: verdict is the answer — including for pages that need a login
+
+> verdict's daemon uses its own profile, so `goto` + `snapshot -i` on an authed site lands on the LOGIN PAGE. Agents read that as 'verdict can't do authenticated sessions' and abandon it — but handoff / auth-save / goto-auth --profile are documented in the same SKILL.md they just read. On 2026-07-15 that misread cascaded: agent drops verdict → Bytebot (dead, EI-12895) → successor hand-rolls Xvfb+xdotool+ImageMagick pixel-clicking for a task verdict handles natively. The decision tree for every browser target on this box, and why xdotool is never the answer.
+
+## The mistake this prevents
+
+[Section titled “The mistake this prevents”](#the-mistake-this-prevents)
+
+You need to drive a web page that requires a login (a Cloudflare dashboard, a Google admin console, any SaaS panel). You reach for `verdict` — correctly, it’s the repo default. You run:
+
+```bash
+node $B goto https://dash.cloudflare.com/...
+node $B snapshot -i
+```
+
+…and you get the **login page**. Two links, `Cloudflare` and `Privacy`. Not the dashboard.
+
+The natural inference is *“verdict runs its own headless Chromium with its own profile, so it isn’t logged in — verdict can’t do this task.”* **That inference is wrong, and it is expensive.** The first half is true; the conclusion is not. verdict has a first-class auth story, documented roughly twenty lines below the command list in the very same `SKILL.md` you just read.
+
+On **2026-07-15** this misread cascaded through two agents on an owner-directed Cloudflare DNS + Google Workspace recovery task:
+
+1. Agent A ran `verdict snapshot -i`, saw the login page, and **abandoned verdict.**
+2. Fell back to **Bytebot** — dead on every route (EI-12895): the model payload rejects the plain string spec, direct-Anthropic instances sat on a depleted balance, and the proxy failover was configured with the literal placeholder `"dummy-key-for-proxy"`. Zero completed tasks across all ten instances.
+3. Tried the **Cloudflare API** — token reads zones fine, but has no DNS-edit scope (deliberate least-privilege; see below).
+4. Agent B inherited the mess and **hand-rolled `Xvfb` + `xdotool` + ImageMagick `import`** — roughly thirty full-page screenshots, every click a hardcoded pixel coordinate, several misfires on dropdowns and scroll regions.
+
+The task did land. It cost tens of thousands of tokens and a fragile, coordinate-dependent session to do something verdict does in a handful of calls with semantic element refs.
+
+**The whole detour was one command deep.** If verdict shows you a login page, you have not hit a wall — you have hit `handoff`.
+
+## The decision tree
+
+[Section titled “The decision tree”](#the-decision-tree)
+
+| Target                                                                               | Tool                                                                                                                   |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| **Any external / arbitrary web page — logged-in or not**                             | **`verdict`** (use the auth flow below when it needs a session)                                                        |
+| Operator UI (`:3055` / `:3070`)                                                      | **Never a browser.** The Tauri shell + `tauri-agent-tools` — see [testing/agent-e2e](/internal/docs/testing/agent-e2e) |
+| The committed e2e suite (`apps/operator/e2e/*.spec.ts`)                              | Playwright — running/extending that suite only                                                                         |
+| Drag-and-drop, pixel-diff screenshots, or a plan that says `QA Tool: PLAYWRIGHT_MCP` | Playwright MCP (verdict’s own documented fallback)                                                                     |
+| Desktop GUI apps in the clean-room VM                                                | See [linux-vm-desktop-testing-workflow](/internal/docs/agent-insights/linux-vm-desktop-testing-workflow)               |
+
+And the ones that are **not** options on this box:
+
+* **`claude-in-chrome`** — the extension is **not installed**. Verified 2026-07-15: the Default Chrome profile carries ColorZilla, Honey, Loom, Keepa, Jungle Scout, Toky, Video Speed Controller — nothing Anthropic — and `list_connected_browsers` returns `[]`. It *would* be a good fit (it drives the owner’s real, already-authenticated Chrome), so this may change; check `list_connected_browsers` before assuming, and don’t plan around it while it returns empty.
+* **Bytebot** — broken as of 2026-07-15, **EI-12895**. No working inference route on any instance. Don’t burn a task discovering this.
+* **Raw `xdotool` / `Xvfb` / `import` pixel-clicking** — see below.
+
+## The auth flow (the part everyone misses)
+
+[Section titled “The auth flow (the part everyone misses)”](#the-auth-flow-the-part-everyone-misses)
+
+```bash
+cd <project-root>
+B=node_modules/.bin/verdict
+
+
+node $B handoff                 # opens a VISIBLE Chrome — a human logs in by hand
+# ... human logs in ...
+node $B resume                  # back to headless
+node $B auth-save cloudflare    # session saved, encrypted
+node $B goto-auth https://dash.cloudflare.com/<acct>/<zone>/dns/records --profile cloudflare
+node $B snapshot -i             # you are now inside the authed dashboard
+```
+
+The session persists, so `handoff` is a **one-time cost per site**, not per task. Check what already exists before asking a human for anything:
+
+```bash
+node $B auth-list               # saved profiles
+node $B status                  # daemon: current URL / title / refs / viewport
+```
+
+The full verified command set (from the CLI itself, not the skill doc):
+
+> goto, back, forward, reload, url, title, snapshot, click, fill, select, hover, type, press, scroll, wait, text, css, inspect, js, console, network, perf, screenshot, viewport, responsive, style, **auth-save, auth-load, auth-list, auth-delete, handoff, resume, goto-auth, cookies, cookie-set, cookie-import**, tabs, newtab, tab, closetab, frame, frame-exit, diff, chain, status, stop
+
+Note `cookie-import` — a second route into an authenticated session when a human-driven `handoff` isn’t practical.
+
+Skill file: `~/.omp/agent/skills/verdict/SKILL.md`. Binary: `node_modules/.bin/verdict` (→ `verdict-cli/bin/browse.mjs`); also on `PATH` via linuxbrew.
+
+## Why hand-rolled xdotool is never the answer
+
+[Section titled “Why hand-rolled xdotool is never the answer”](#why-hand-rolled-xdotool-is-never-the-answer)
+
+The repo’s `CLAUDE.md` already bans ad-hoc Puppeteer for browser checks. **Pixel-clicking is strictly worse than the thing that’s already banned**, and it fails in ways that are hard to even notice:
+
+* **Coordinates, not elements.** `xdotool mousemove 305 799 click 1` breaks on any reflow, scroll, or surprise banner. verdict’s `snapshot -i` → `click @e3` targets the actual ARIA node.
+* **No diffing.** verdict’s `snapshot -D` tells you *whether the page changed*. Under xdotool you infer that from screenshots — which is exactly how the 2026-07-15 session spent multiple rounds failing to notice a silent redirect back to a prior step.
+* **Cost.** \~50–100 tokens per verdict call versus a \~1280×900 PNG per xdotool observation.
+* **Real interference risk.** Driving the owner’s *real* Chrome profile on a scratch display fights their running browser for the profile lock, and stray clicks land on whatever is actually under the cursor — on 2026-07-15 an unrelated extension popup appeared mid-flow asking for read/change-all-sites permission, directly beneath the click path.
+
+If you catch yourself composing an `xdotool` command to drive a web page: stop. That is this mistake, in progress.
+
+## Corollary: a read-only API token is not an invitation to widen it
+
+[Section titled “Corollary: a read-only API token is not an invitation to widen it”](#corollary-a-read-only-api-token-is-not-an-invitation-to-widen-it)
+
+The host `CLOUDFLARE_API_TOKEN` resolves zones but **cannot edit DNS**; the wrangler OAuth session is likewise scoped. That is almost certainly deliberate least-privilege, not an oversight.
+
+The right response is **verdict + an auth profile**, not minting a broader token. Reach for a credential change only with an explicit owner decision — the browser path exists precisely so the write scope can stay narrow.
+
+## The general shape
+
+[Section titled “The general shape”](#the-general-shape)
+
+Two independent lessons, and the second is the one worth carrying:
+
+1. **verdict handles authenticated pages.** A login page means run `handoff`.
+
+2. **When a documented tool appears not to fit, re-read its doc before you route around it.** The escape hatch was in the file Agent A had already opened. Every step after that — Bytebot, the API token, xdotool — was elaborate work built on an unchecked assumption, and each step made the next detour feel more reasonable. A tool that seems to lack an obvious capability usually has it; the second look is far cheaper than the fallback.
 
 # Authoring a bulk agent tool — the keyed-array dual-arity contract (_bulk)
 
@@ -4683,6 +4858,46 @@ tauri-agent-tools console-monitor --port <port> --token <tok> --duration 30000 -
 | `console-monitor` (bridge) | the entire webview console feed                                             | anything before its start window |
 
 For “is the console clean now?”, query **all three** and reconcile.
+
+# Context estimator: toolUseResult is a double-write that never enters context
+
+> The transcript-bytes/4 context estimator must discount the top-level toolUseResult field — Claude Code writes each tool_result payload twice, and only message.content enters context.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A fresh/warm session (often a `[1m]` fleet member) reports context **already CRITICAL (>100% of its soft compaction limit) right after a ToolSearch schema preload, before any substantive tool call** — and the **exact same token figure recurs verbatim across consecutive wakes**. Each wake burns on flush+compact with zero progress; compaction never helps because the number is dominated by an *immovable* baseline that reconstitutes identically every wake.
+
+## Root cause: the transcript double-writes every tool\_result
+
+[Section titled “Root cause: the transcript double-writes every tool\_result”](#root-cause-the-transcript-double-writes-every-tool_result)
+
+The context estimator (`packages/operator-core/lib/compaction-usage.ts`) estimates context as **transcript-bytes-since-last-compaction / 4**. But Claude Code writes each tool\_result’s payload into its JSONL line **TWICE**:
+
+1. `message.content` → a `tool_result` block — **this is what the model sees** (in context).
+2. a **top-level `toolUseResult`** field — CC’s local replay/re-render copy — **never sent to the model** (out of context).
+
+So a bytes/4 estimate **roughly double-counts every tool result**. Measured on a real 21MB transcript, `toolUseResult` was **21.3% of the file**. A big ToolSearch schema preload is exactly a large text tool\_result → doubled → a member on a 300k soft cap reads \~332k (111%) before doing anything, and compact-loops on the duplicate. The verbatim-repeat across wakes is the tell: it’s not genuine token growth, it’s the same payload reconstituted each wake.
+
+This is the **text analogue of WI-3176** (which already discounts the `"base64"` *image* copy in `toolUseResult`), and one more member of the recurring “bytes/4 counts non-context bytes” family (EI-6410 cross-compaction accumulation, EI-10434 unbounded scan, WI-4154 stale cache).
+
+## The fix pattern
+
+[Section titled “The fix pattern”](#the-fix-pattern)
+
+Discount the top-level `toolUseResult` field from the estimate (key → end-of-line), **minus any image-run bytes inside it** (those stay handled solely by the image path — no double-discount). Safe because:
+
+* `toolUseResult` is **always emitted after `message`** on the line (verified across live transcripts), followed only by non-context metadata (`uuid`/`session_id`/`cwd`/…) — so discounting from the key to end-of-line can never touch in-context `message.content`.
+* Match the **comma-anchored top-level key** (`,"toolUseResult":`), which **fails safe**: a nested/escaped `\"toolUseResult\"` the session merely *read* as data never matches (the WI-4608 false-positive class), and an unmatched key just leaves the (harmless) over-count rather than risking an **under-count → real context death**.
+
+Apply it to **both** estimator paths: the full-scan `tokensFromFileSize` and the anchored-incremental path (a parallel `tureExcess` on the `TranscriptAnchor`, reset on a compaction marker just like `imageExcess`).
+
+## The general lesson
+
+[Section titled “The general lesson”](#the-general-lesson)
+
+`bytes/4` over the raw transcript is only an approximation of context: the JSONL also stores CC bookkeeping the model never receives (`toolUseResult`, uuids, timestamps, image base64 copies). When adding or debugging context accounting, **count only what enters `message.content`** — and when you can’t parse, discount the biggest non-context offenders (`toolUseResult`, images) rather than counting the whole file.
 
 # Coord-canary SLO breach: attribute per-step before optimizing — a slow INSERT ≠ a slow read
 
@@ -6580,6 +6795,34 @@ It then verifies two things separately, because they fail for unrelated reasons:
 * **the public read path** — can a client actually fetch what the manifest advertises? It re-downloads `latest.json` over HTTPS, diffs it byte-for-byte against what was uploaded, and HEADs every artifact url in it.
 
 Exit `2` means the artifacts uploaded fine but the hostname does not resolve — the R2 bucket has not been bound to the custom domain yet. That is one-time Cloudflare setup, not a broken upload.
+
+## Re-publishing ONE platform onto an existing cut (incremental)
+
+[Section titled “Re-publishing ONE platform onto an existing cut (incremental)”](#re-publishing-one-platform-onto-an-existing-cut-incremental)
+
+You do **not** rebuild or re-upload the whole cut to add a single platform late (the common case: mac lands after linux + windows are already live). Two things make the incremental add cheap, and both are already built in:
+
+* **`upload-release.sh` size-skips what is already on R2.** It HEADs each artifact and skips any whose remote size matches, so adding mac uploads only the new mac `.app.tar.gz`/`.sig`/`.dmg` + the refreshed `latest.json` — the 4 GB AppImage and the windows installer are skipped, not re-sent. Put the *full* artifact set in the recorded manifest (`/tmp/papercusp-artifacts-<tag>.txt`, via `bin/lib/release-artifacts.sh`) and let the size-check do the rest. If `/tmp` was cleaned, rebuild that manifest with `release_artifacts_write <tag> <paths…>`.
+* **`latest.json` is regenerated with ALL platforms, every time.** Feed the generator the linux + windows + mac *updater* artifacts (AppImage, `-setup.exe`, `.app.tar.gz`) so it carries all four platform keys — `linux-x86_64`, `windows-x86_64`, and both `darwin-x86_64` + `darwin-aarch64` pointing at the one universal `.app.tar.gz`. `upload-release.sh` **asserts every `latest.json` url’s basename is in the recorded manifest**, so a platform added to one must be added to the other or it refuses.
+
+The **download page** is a *separate surface* from the updater — for a human, “published” means the artifact is visible on `index.html`, **not** merely present in `latest.json`. After the upload, re-run `record-release-cli.ts` (it re-scans `$BUNDLE`, so a newly-dropped `.dmg` in `$BUNDLE/dmg/` is picked up) then `publish-release-history.sh`. Miss this and the auto-updater has the new platform but the shared beta link does not.
+
+## The mac leg — a DMG from an intact `.app`, and ENOSPC
+
+[Section titled “The mac leg — a DMG from an intact .app, and ENOSPC”](#the-mac-leg--a-dmg-from-an-intact-app-and-enospc)
+
+* **A build that dies AFTER producing the signed `.app` but BEFORE the DMG step is a \~5-minute recovery, not a rebuild.** The DMG is just `hdiutil` over a staged `.app` + tutorial app + `/Applications` symlink (the DMG loop in `mac-vm-build.sh`) — independent of the Rust compile. Replicate only that step against the existing `.app` (`cp -Rc` clones it for free on APFS; only the \~2 GB compressed DMG costs disk). No re-signing: the updater signature is the separate `.app.tar.gz.sig` (Tauri minisign); the DMG is an unsigned plain download (mac alphas aren’t Apple-notarized — users right-click → Open past Gatekeeper).
+* **The recurring “mac build hangs / dies silently” is DISK EXHAUSTION (ENOSPC), not memory.** Each role compiles into its OWN \~11–12 GB `CARGO_TARGET_DIR` (`role-gui` + `role-server` ≈ 24 GB) and the VM’s 120 GB disk runs \~95 % full — a cold two-role build cannot fit, and dies mid-build with no artifacts and no `DONE` sentinel (which *looks* like a hang). `PAPERCUSP_BUILD_ROLES=gui` builds only the auto-updatable/download GUI artifact and fits. `mac-vm-build.sh` now has a disk preflight that fails LOUD (`DONE:28`) instead of dying silently; the durable fix is growing the VM disk (WI-5027).
+* **Pull artifacts whose filenames contain spaces with a tar-over-ssh pipe, not `scp`.** Modern (SFTP-mode) `scp` mangles the space in `Papercusp GUI.app.tar.gz`, and the mac’s ancient `rsync` 2.6.9 lacks `--protect-args`. Use `ssh … "cd '<dir>' && tar -cf - 'Papercusp GUI.app.tar.gz'" | tar -C <local> -xf -` (and delete the stray `._<name>` AppleDouble sidecar `tar` leaves behind).
+
+## record-release-cli is fast now — keep it that way
+
+[Section titled “record-release-cli is fast now — keep it that way”](#record-release-cli-is-fast-now--keep-it-that-way)
+
+Regenerating the download site once took \~50 s, which looks absurd for “a static page”. Two causes, both fixed 2026-07-15 — profile (`NODE_OPTIONS=--cpu-prof`) before assuming it’s the artifacts if it is ever slow again:
+
+* It **re-SHA-256’d every artifact on every run** (\~18 GB for a tri-platform cut). Now cached by (path, size, mtime) in `~/.papercusp/release-sha256-cache.json`: an unchanged artifact is hashed exactly once, so an incremental re-publish hashes only the genuinely-new files.
+* The identity scrubber’s **email regex backtracked catastrophically** on large page bodies — that one regex was 40 s of the 45 s. Its quantifiers are now bounded to RFC maxima; **do not relax them back to `+`** (there’s a comment on `IDENTITY_PATTERNS` in `release-content-scrub.ts` saying exactly this). A full `record-release-cli` run is now \~2 s.
 
 ## How auto-update actually resolves
 
@@ -18447,6 +18690,58 @@ Even when the real `emitWorkItemCreatedEvent` slips past the module spy, it now 
 
 When suppressing a **fire-and-forget** side effect that reaches its target via a **dynamic import inside a circular graph**, mock the **innermost sink** the effect ultimately calls (the leaf with no cycle back to the SUT), not the cyclic mid-layer module the async `vi.mock` factory can’t reliably intercept.
 
+# "model unavailable" after a tier-menu fix? Check POT steering, not the launcher
+
+> When cup/kettle spawns keep dying on "selected model unavailable" AFTER a global tier-menu fix (config:tiers-set), the cause is almost never a launcher/orchestrator reload lag — it is a per-pot modelTiers/modelOverrides steering override that still pins the OLD spec and wins over the fixed workspace default.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+After a global model-spec / tier-menu fix lands (an owner or agent runs `config:tiers-set` to replace a broken/renamed spec, e.g. dropping a dead `claude-sonnet-5[1m]:high` for `sonnet[1m]`), a specific pot’s `cup`/`kettle` spawns **keep dying on “selected model unavailable/inaccessible”** — for hours, long after the global fix is committed and live.
+
+## The trap (why this ate \~4h once — EI-12807)
+
+[Section titled “The trap (why this ate \~4h once — EI-12807)”](#the-trap-why-this-ate-4h-once--ei-12807)
+
+Every escalation in the chain assumed the **launcher/orchestrator hadn’t reloaded the fix** and chased a restart. It had reloaded. The real cause:
+
+* A pot can carry its OWN `pot:set-steering { modelTiers, modelOverrides }` SESSION override.
+* **Per-pot steering ALWAYS wins over the workspace default, by design.**
+* So a `config:tiers-set` fix to the *workspace* menu **cannot reach** a pot that pins the old spec through its own steering. The stale pin silently survives the fix and keeps every spawn on that pot pinned to a dead model.
+
+A stale pin like `claude-sonnet-5[1m]:high` is extra sneaky: it passes `validateCloudModelSpec` (it *looks* like a full `claude-…` provider id) and it is family-identical to the live `sonnet` — so nothing that compares at family granularity flags it.
+
+## Diagnose it in one read
+
+[Section titled “Diagnose it in one read”](#diagnose-it-in-one-read)
+
+```plaintext
+pot:get-steering { pot: '<slug>' }
+```
+
+Look at `modelSpecDrift` (added by EI-12807): a **non-empty** array lists the pinned specs that are no longer in the committed tier menu. Also check `steering.modelTiers` / `steering.modelOverrides` directly — a pot pinning specs that don’t match your current `config:tiers-get` menu is the smoking gun.
+
+The Mug wake brief now also renders a loud **“Steering pins a DEAD model spec (EI-12807)”** nudge, so a steered pot surfaces this on its very next wake.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+Reconcile the pot back to the fixed workspace default:
+
+```plaintext
+pot:set-steering { pot: '<slug>', modelTiers: null, modelOverrides: null }
+```
+
+(Or set fresh, valid specs if the override was intentional.) This clears the stale per-pot pins so the pot inherits the corrected workspace tier menu.
+
+## General lesson
+
+[Section titled “General lesson”](#general-lesson)
+
+When a *global* config fix “doesn’t take” for one tenant/pot/session, suspect a **more-specific override that wins over the global default** before you suspect a reload/restart lag. Precedence layers (session > workspace > committed) are exactly where a fix at one layer silently fails to reach a pin at a higher one.
+
 # Mug fires but no-ops (19-80ms runs) — DBOS routine/step context breaks her spawn
 
 > The autonomous Mug wakes on cadence but her runs complete in tens of milliseconds and place no work, because on the green :3070 operator the pot autoloop fires her from inside a DBOS step/transaction.
@@ -25708,6 +26003,141 @@ This is the same defect as a claim-path that returns an empty result without nam
 * **Both `coord:inbox` and `coord:orient` count as reading.** Orienting clears it.
 * Nothing in it needs you? Then nothing is required of you. Carry on.
 
+# A readOnly corestore open is a point-in-time snapshot — refresh BEFORE you open
+
+> rocksdb-native readOnly:true means RocksDB OpenForReadOnly: the handle is frozen at open() and never observes another process's later writes. So any refresh whose appends are performed by a DIFFERENT process (the live operator draining its outbox) must FULLY COMPLETE before the read-only open, not after. Open first and you replicate state frozen at open, silently omitting every op the refresh produced — while exiting 0 and printing a green 'drained to zero'. Also: observing that a store 'grew' never discriminates snapshot-at-open from tracks-live; only a held-open-vs-fresh-open A/B does.
+
+## The mistake this doc prevents
+
+[Section titled “The mistake this doc prevents”](#the-mistake-this-doc-prevents)
+
+You need to read a corestore that a **live process already holds** — on this box, the release cut (`cut-seed`) reading the hive corestore the running operator has locked. `readOnly: true` gets you in without a quiesce, which is genuinely the right call.
+
+Then you write the obvious sequence:
+
+```ts
+// ❌ WRONG — ships stale state, exits 0, prints green
+const store = new Corestore(dir, { readOnly: true, wait: false });
+await store.ready();
+await backfillLocalState(handle, pg, { force: true });   // enqueues ~8k ops
+await waitForOperatorDrain({ pg, workspaceId, hive });   // operator appends them
+await replicate(store);                                  // ← sees NONE of them
+```
+
+This looks airtight. The backfill runs, the drain completes, the log says `operator drained to zero in 413514ms`, the process exits 0 — **and the artifact is missing every single op the drain produced.**
+
+## Why
+
+[Section titled “Why”](#why)
+
+`readOnly: true` is forwarded Corestore → hypercore-storage → `new RocksDB(dbPath, { ...opts, lock: this.deviceFile })` → `binding.init(readOnly, ...)`, and in rocksdb-native that means RocksDB’s **`OpenForReadOnly`**. That API opens a **point-in-time snapshot**: the handle is frozen at `open()` and *never* observes another process’s subsequent writes. It is not a stale cache you can flush, and no re-`get()` of the core refreshes it — the frozen view is below the hypercore layer.
+
+RocksDB does have a mechanism for tracking a live primary — a **secondary** instance plus explicit `TryCatchUpWithPrimary()` calls. **Corestore does not use it.** So there is no “read-only but follows along” mode available here.
+
+The consequence is a strict ordering rule:
+
+> **Any refresh whose writes are performed by another process must FULLY COMPLETE before you take the read-only open.**
+
+```ts
+// ✅ RIGHT — refresh first, hold NOTHING open across it, then snapshot
+let store = new Corestore(dir);           // try writable first
+try { await store.ready(); }
+catch (e) {
+  if (!isCorestoreLockedError(e)) throw;  // don't silently degrade
+  await store.close().catch(() => {});    // hold NOTHING across the refresh
+  store = undefined;
+}
+if (locked) {
+  await backfillLocalState(handle, pg, { force: true });
+  await waitForOperatorDrain({ pg, workspaceId, hive });
+  store = new Corestore(dir, { readOnly: true, wait: false });  // ← strictly after
+  await store.ready();
+}
+```
+
+What makes refresh-before-open possible at all is that **the refresh is not our write**: `backfillLocalState` only touches Postgres (it enqueues outbox rows), and the **live operator** is what appends to the store as it drains. We never need the write lock — we just need to not look until it’s done.
+
+## `wait: false` is load-bearing
+
+[Section titled “wait: false is load-bearing”](#wait-false-is-load-bearing)
+
+In hypercore-storage the `|| this.wait` clause binds **after** the `readOnly` clause, so a truthy `wait` re-arms the DeviceFile lock **even under `readOnly: true`** — and fails with a `File descriptor could not be locked` error identical to the one you were avoiding. Pin it explicitly: `{ readOnly: true, wait: false }`.
+
+(Related: that error comes from `fd-lock` (POSIX `fcntl`) via `device-file` — it is the **corestore device file**, built in the `CorestoreStorage` constructor *before* `_migrateStore`. It is **not** RocksDB’s `db/LOCK`, which is where this bug is usually mis-attributed.)
+
+## The diagnostic — “it grew” proves nothing
+
+[Section titled “The diagnostic — “it grew” proves nothing”](#the-diagnostic--it-grew-proves-nothing)
+
+The trap that makes this bug survive review: **observing that the store grew does not discriminate** “snapshot at open” from “tracks live.” A growing store is consistent with both. An earlier pass here cited *“own-log grew 71,164 → 71,273”* as proof the wait-for-drain worked. It proved nothing, and the claim had to be retracted.
+
+The only test that discriminates is a **held-open-vs-fresh-open A/B**, while a writer is actively appending:
+
+```ts
+const store = new Corestore(STORE, { readOnly: true, wait: false });
+await store.ready();
+const c0 = store.get({ key }); await c0.ready();
+const L0 = c0.length;                       // T0 via the HELD open
+
+
+await sleep(45_000);                        // let the live writer append
+
+
+const c1 = store.get({ key }); await c1.ready();
+const L1 = c1.length;                       // same held open, FRESH core handle
+                                            // (defeats hypercore's length cache)
+
+
+const store2 = new Corestore(STORE, { readOnly: true, wait: false });
+await store2.ready();
+const c2 = store2.get({ key }); await c2.ready();
+const L2 = c2.length;                       // CONTROL: brand-new open, right now
+
+
+// L1 > L0            → TRACKS_LIVE
+// L1 === L0 && L2 > L0 → STALE_SNAPSHOT  ← what actually happens
+```
+
+Measured against the live operator on 2026-07-15:
+
+```plaintext
+T0 length=83311
+T1 length=83311   (same held RO open, fresh core handle)  ← FROZEN
+T1 length=84872   (FRESH RO open)                         ← sees growth
+RESULT=STALE_SNAPSHOT
+```
+
+The dual of this A/B is how you prove the *fix*: a **delta against a known pre-cut baseline**. Baseline own-log 87,662 (undrained 0) → backfill enqueued 8,092 → drained to zero → seed manifest `coreLengths` **95,812**. `95,812 > 87,662` is only reachable if the drain landed *before* the snapshot; the old ordering yields ≈87,662.
+
+## Why this is worth a doc
+
+[Section titled “Why this is worth a doc”](#why-this-is-worth-a-doc)
+
+The failure is in the **ships-green-does-nothing** class: a correct-looking sequence, an exit code of 0, and a log line that actively asserts success (`drained to zero`) over an artifact that is silently incomplete. Releases 0.0.9 and 0.0.10 both shipped seeds that failed the same *class* of check, and this instance appeared **inside the fix for it** — the ordering bug was introduced by the very patch that added the drain.
+
+Guard it with a test that asserts **order**, not just outcome, and inject the steps so the sequence is observable:
+
+```ts
+expect(calls).toEqual(['open:rw', 'backfill', 'drain', 'open:ro(wait=false)']);
+expect(calls.indexOf('open:ro(wait=false)')).toBeGreaterThan(calls.indexOf('drain'));
+```
+
+The old ordering produces `['open:rw','open:ro','backfill','drain']` and fails both assertions. An outcome-only test passes under both orderings — which is exactly how this shipped in the first place.
+
+## Sparse degrades correctly — leave it
+
+[Section titled “Sparse degrades correctly — leave it”](#sparse-degrades-correctly--leave-it)
+
+A `--sparse` cut wants to append a fresh head snapshot (`produceLogSnapshot`) so it can trim history. That is a **write**, so it is impossible under a read-only open. The correct behavior is what the code already does: warn, and ship **FULL** history — larger, but complete and correct. Do not try to reclaim sparse on the read-only path; sparse is a size optimization, never a correctness requirement.
+
+## Rule of thumb
+
+[Section titled “Rule of thumb”](#rule-of-thumb)
+
+* Need a consistent read of a store another process owns? `readOnly: true, wait: false`.
+* Need it to be **current**? Do every refresh **first**, hold **nothing** open across it, and open **last**.
+* Proving a live-store read is fresh? Never cite growth. Cite a **delta against a baseline**, or run the **held-vs-fresh A/B**.
+
 # Code recipes — the reuse loop (search → reuse → leave findable) and how popular ones graduate
 
 > Every successful code:run is saved as a reusable RECIPE. How to FIND and REUSE an existing recipe instead of re-authoring (recipes:search / recipes:run), what the code:run similarRecipes nudge means, and how hot recipes graduate into first-class tools via recipes:candidates + the Mug.
@@ -27038,6 +27468,80 @@ Runbooks stay **inside** agent-insights on purpose. Insights already have the ma
 
 * `docs:search { query: "runbook <topic>" }` — the convention guarantees the word is in the ×4/×2 scoring fields.
 * The [agent-insights index](/reference/agent-insights-index) lists tags — scan for `runbook`.
+
+# Sandbox tmp blocks unix sockets — subprocess/tsx tests EPERM (skip, don't chase)
+
+> Symptom `listen EPERM /tmp/claude/…pipe` in a cup capability_bash sandbox = the sandbox rejects AF_UNIX socket bind everywhere; a test spawning tsx (or any tool that opens a tmp unix socket) must self-skip, not false-alarm.
+
+# Sandbox tmp blocks unix sockets — subprocess/tsx tests EPERM (skip, don’t chase)
+
+[Section titled “Sandbox tmp blocks unix sockets — subprocess/tsx tests EPERM (skip, don’t chase)”](#sandbox-tmp-blocks-unix-sockets--subprocesstsx-tests-eperm-skip-dont-chase)
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A test that shells out to `tsx` (or any tool opening a unix-domain socket under `os.tmpdir()`) fails inside the **cup `capability_bash` sandbox** with:
+
+```plaintext
+Error: listen EPERM: operation not permitted /tmp/claude/tsx-1000/<pid>.pipe
+```
+
+thrown from tsx’s own `createIpcServer` (`node_modules/tsx/dist/cli.mjs`) — **before** tsx imports anything. So every subtest fails identically with an *environment* error, not a real code break. (First seen: `EI-12473`, `tsx-runtime-imports.test.ts` — all 5 subtests red only in the sandbox, green on the dev box / green-checkpoint gate.)
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+The cup `capability_bash` sandbox’s writable tmp is `/tmp/claude` (via `TMPDIR`), and the sandbox **rejects `listen()`/`bind()` on AF\_UNIX sockets in *every* writable directory** — `/tmp`, `/tmp/claude`, `/dev/shm`, and `$HOME` all `EPERM`. So there is **no `TMPDIR` override that helps**; you cannot relocate tsx’s IPC socket to a bindable dir because none exists in the sandbox.
+
+Quick repro (returns `LISTEN ERR: EPERM` in the sandbox, `LISTEN OK` on a normal box):
+
+```js
+const net = require('net'), os = require('os'), path = require('path');
+const p = path.join(os.tmpdir(), `sock-${process.pid}.pipe`);
+const s = net.createServer();
+s.on('error', e => console.log('LISTEN ERR:', e.code));
+s.listen(p, () => { console.log('LISTEN OK'); s.close(); require('fs').unlinkSync(p); });
+```
+
+This is the **WI-4439 class** (a third-party/hardcoded tmp assumption vs a locked-down sandbox tmp) — but a *new* manifestation: here it’s the **tsx CLI’s own internal IPC socket**, not papercusp code, so making papercusp `TMPDIR`-aware fixes nothing.
+
+## Fix pattern: probe + self-skip, don’t relocate
+
+[Section titled “Fix pattern: probe + self-skip, don’t relocate”](#fix-pattern-probe--self-skip-dont-relocate)
+
+The test is *inapplicable* in a socket-hostile environment — it can’t faithfully run there, so it should **skip cleanly** (exactly like an already-present `skipIf(!existsSync(OPERATOR_DIR) || !TSX_CLI)` absence guard), not try to make tsx behave.
+
+1. Add a probe that binds+closes a unix socket and **never throws** (returns `false` on any error, `true` on a clean `listen`) so `describe.skipIf` always gets a boolean:
+
+   ```ts
+   function probeUnixSocketBindable(sockPath: string): Promise<boolean> {
+     return new Promise((res) => {
+       const server = createServer();
+       const finish = (ok: boolean) => {
+         try { server.close(); } catch {}
+         try { unlinkSync(sockPath); } catch {}
+         res(ok);
+       };
+       server.once('error', () => finish(false));
+       try { server.listen(sockPath, () => finish(true)); } catch { finish(false); }
+     });
+   }
+   const CAN_BIND_UNIX_SOCKET = await probeUnixSocketBindable(
+     resolve(tmpdir(), `probe-${process.pid}-${Date.now()}.pipe`),
+   );
+   ```
+
+2. Add `!CAN_BIND_UNIX_SOCKET` to the guard’s `describe.skipIf(...)`.
+
+Top-level `await` is fine here (operator-core tsconfig is `target: ES2022`, `module: ESNext`). On the real dev box / green gate, `/tmp` binds sockets so the guard runs for real and still catches genuine breaks — the skip is scoped to the socket-hostile sandbox only.
+
+## Rule of thumb
+
+[Section titled “Rule of thumb”](#rule-of-thumb)
+
+`listen EPERM …pipe` (or `EPERM/EROFS` on a `.sock` / IPC path) in a sandboxed run is an **environment capability gap, not a bug in the code under test**. Detect the missing capability at collection time and skip; do not widen the tmp assumption or chase a `TMPDIR` that doesn’t exist. This generalizes to any test spawning a subprocess that opens a unix socket in tmp (tsx, some watchers, IPC brokers).
 
 # Which schedulers deliberately stay OFF DBOS (and why)
 
@@ -30901,6 +31405,66 @@ Pointing LiteLLM’s *openai* provider at the gateway fails (it POSTs `/v1/chat/
 
 Vendored copy + runner: `~/.papercusp/bench-harnesses/tau2-bench` (`pc_run.sh`, `pc_suite.sh`, `pc_metrics.py`; all patches tagged `papercusp patch (benchmark-suite-tau2-bench-2026-06-17)`).
 
+# tauri-agent-tools check/wait: millisecond options collapsed to NaN, and wait's truthiness was inverted underneath it
+
+> Two stacked bugs in the globally-installed tauri-agent-tools CLI (external npm package, not in this repo) — a classic commander.js parseInt-as-radix footgun turned every --duration/--timeout/--interval default into NaN, which masked a second bug where wait --selector/--eval compared against the bridge's stringified booleans and could never match or never fail correctly.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+`tauri-agent-tools check --duration 5000` printed a Node `TimeoutNaNWarning` and returned a pass verdict after \~1ms instead of running for 5s. `tauri-agent-tools wait --eval <condition> --timeout 120000 --interval 100` returned “Timed out waiting for expression to be truthy” after \~34ms instead of polling for up to 120s. `console-monitor --duration 5000` (no CLI-declared default) ran correctly for \~5.3s — so the fault looked command-specific rather than a shell/Commander universal, which is what made it look small (WI-4991 / EI-12504).
+
+**This is a globally-installed third-party npm package** (`tauri-agent-tools`, from `github.com/cesarandreslopez/tauri-agent-tools`), not part of this repo — installed at `/home/linuxbrew/.linuxbrew/lib/node_modules/tauri-agent-tools`. There is no local source checkout, only the compiled `dist/`. The fix here was applied directly to the installed `dist/*.js` files so every agent on this box gets the corrected CLI immediately; it will **not** survive a `brew reinstall` / `npm install -g tauri-agent-tools` that pulls a fresh copy from the registry — re-apply (or push upstream) if the tool ever gets reinstalled and the symptoms above reappear.
+
+## Root cause 1 — commander’s classic `parseInt`-as-custom-parser footgun
+
+[Section titled “Root cause 1 — commander’s classic parseInt-as-custom-parser footgun”](#root-cause-1--commanders-classic-parseint-as-custom-parser-footgun)
+
+Commander.js option definitions accept `(flags, description, fn, defaultValue)`. When `fn` is supplied, Commander calls it as `fn(value, previousValue)` on every occurrence — where `previousValue` is the option’s **default value** on the first (and, for a non-variadic option, only) call. Passing the bare `parseInt` function directly hits this: `parseInt`’s second parameter is a **radix**, not an accumulator. So `--duration 5000` with a declared default of `3000` calls `parseInt("5000", 3000)` — radix `3000` is out of the valid `2..36` range, so `parseInt` returns `NaN`, **regardless of what the user typed**. That `NaN` then flows into `setTimeout(fn, NaN)` (Node coerces a non-finite delay to `1`, emitting `TimeoutNaNWarning`), or into `deadline = start + NaN`, making every `Date.now() < deadline` loop guard evaluate to `false` immediately.
+
+This explains the “some commands work, some don’t” pattern exactly: `console-monitor --duration <ms>` had **no declared default** (`.option('--duration <ms>', '...', parseInt)`), so `previousValue` was `undefined` on the first call and `parseInt(value, undefined)` correctly parses in base 10. Every option with a *numeric default* alongside bare `parseInt` was broken; every option *without* one happened to work by luck.
+
+Found **12 occurrences** of this pattern across the CLI (not just check/wait): `check --duration`, `wait --timeout` + `--interval`, `dom --depth`, `capture --dom-depth` + `--logs-duration`, `ipc-monitor --interval`, `rust-logs --interval`, `console-monitor --interval`, `mutations --interval`, `snapshot --dom-depth`, `store-inspect --depth`, plus `--max-width` on `screenshot` and `--port`/`--pid` in the shared bridge options. All were fixed by one shared helper (`parsePositiveInt` in `commands/shared.js`) that ignores the previous/default argument entirely and rejects non-finite input with a clear `commander.InvalidArgumentError` instead of a silent `NaN`.
+
+## Root cause 2 — `wait`’s truthiness checks were inverted by bridge stringification, and root cause 1 was hiding it
+
+[Section titled “Root cause 2 — wait’s truthiness checks were inverted by bridge stringification, and root cause 1 was hiding it”](#root-cause-2--waits-truthiness-checks-were-inverted-by-bridge-stringification-and-root-cause-1-was-hiding-it)
+
+Once the `NaN` bug above was fixed, live verification against a running Tauri bridge (`tauri-agent-tools wait --eval "false" --timeout 3000`) immediately exposed a **second, more severe** bug that root cause 1 had been masking: the bridge’s `/eval` endpoint always returns primitive results **stringified** — `bridge.eval("false")` resolves to the *string* `"false"`, never the boolean `false` (confirmed by probing `BridgeClient.eval` directly; `eval.js`’s own JSON-parse-then-print fallback already silently works around this for display purposes).
+
+`wait.js` did not account for this:
+
+* **selector mode** compared `result === true` — always `false`, since the wire value is the string `"true"`. This meant `wait --selector` could **never succeed**, even for a selector present from the start — it always ran the full `--timeout` window and then threw `Timed out waiting for selector: ...`, regardless of reality.
+* **eval mode** did `if (result)` — a non-empty string is JS-truthy, so `"false"` (and `"0"`) evaluated as truthy. `wait --eval` **always matched near-instantly** regardless of the real expression value.
+
+Before the `NaN` fix, both paths were dominated by the `deadline = start + NaN` short-circuit (loop body never executes, straight to “Timed out”), which is exactly EI-12504’s reported symptom. Fixing only root cause 1 without also fixing this would have “fixed” the ticket into a **worse** state: `wait --eval` would then report false-positive matches in \~100ms instead of a false-negative timeout in \~50ms — same practical brokenness, opposite direction, and much easier to miss in a quick pass since it “returns success.”
+
+Fixed with a shared `isBridgeResultTruthy(result)` helper (`commands/shared.js`) that JSON-parses a string result back to its real value before applying `Boolean()`, falling back to “non-empty string is truthy” only when the string isn’t valid JSON (e.g. an arbitrary string return value). Both `wait` call sites (`selector` and `eval` modes) now use it.
+
+## Verified live (not just unit-level)
+
+[Section titled “Verified live (not just unit-level)”](#verified-live-not-just-unit-level)
+
+Against a live Tauri bridge (`--pid <papercusp-desktop pid>`):
+
+| command                                         | before                                              | after                                                                  |
+| ----------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------- |
+| `check --no-errors --duration 3000`             | passes in \~1ms                                     | passes in \~3.39s                                                      |
+| `wait --eval "false" --timeout 3000`            | ”Timed out” in \~0.06s                              | ”Timed out” in \~3.40s (correctly never matches)                       |
+| `wait --eval "true" --timeout 5000`             | (masked by NaN bug)                                 | matches in \~86ms                                                      |
+| `wait --selector "body" --timeout 5000`         | ”Timed out” in \~5s even though `body` exists       | matches in \~102ms                                                     |
+| `wait --selector ".nonexistent" --timeout 3000` | ”Timed out” in \~0.06s (right answer, wrong reason) | “Timed out” in \~3.40s (right answer, right mechanism)                 |
+| `dom --depth abc` (garbage input)               | silently became `NaN`, no error                     | rejected: `error: option '--depth <number>' argument 'abc' is invalid` |
+
+## Takeaway for anyone touching this class of code
+
+[Section titled “Takeaway for anyone touching this class of code”](#takeaway-for-anyone-touching-this-class-of-code)
+
+* Never pass a bare `parseInt` (or any 2-arg function whose 2nd param isn’t meant to be “the previous value”) as a commander custom option processor. Wrap it: `(value) => parseInt(value, 10)`, and validate `Number.isFinite`.
+* If a CLI’s bridge/IPC layer stringifies primitives, every downstream strict-equality/truthiness check against that value needs to account for it — grep for `=== true`, `if (result)` style checks after any bridge change.
+* A bug that “returns a timeout error” can be hiding a second bug that would make it “return false success” once you fix the first — verify the *actual elapsed time and actual correctness*, not just “no longer NaN”, before closing out a timing-related ticket. This is why WI-4991’s “add elapsed-time regression coverage” ask mattered: a bare unit test on `parsePositiveInt` would have missed root cause 2 entirely.
+
 # "Couldn't find callback id" console flood = stale IPC Channels, not event listeners
 
 > A webview reload orphans every in-flight endpoint-IPC Channel (the JS finally that sends CANCEL never runs), so Rust keeps fanning stream frames into dead callbacks. Fixed by an on_page_load flush; this page records the diagnosis path — including why Tauri event listeners CANNOT cause this warning.
@@ -32361,6 +32925,17 @@ Papercusp ships its own hybrid lexical+semantic finder, **`tools:find`** (`packa
 
 This is now spelled out directly in `apps/operator/prompts/papercusp-su.claude.md`’s “Finding a capability” section (the injected system-prompt text every Claude su session gets), so it no longer depends on an agent independently rediscovering it mid-task.
 
+## Re-reported for `session:*` (EI-12618) — same class, no session-specific defect
+
+[Section titled “Re-reported for session:\* (EI-12618) — same class, no session-specific defect”](#re-reported-for-session-ei-12618--same-class-no-session-specific-defect)
+
+EI-12618 hit the same wall for `session:carry-drill` and hypothesised “an activation/indexing gap specific to `session:*` group tools” — noting that even the CORRECTLY-mangled `select:mcp__papercusp-su__session_carry-drill` returned “No matching deferred tools found”, not just the colon form. Two clarifications fall out, and there is **no `session:*`-specific defect**:
+
+* **On a full-catalog session, the defer set is EMPTY, so every `select:` fails trivially.** ToolSearch only searches tools the client declared with `defer_loading`. A non-seeded (frontier-tier) Claude session gets the FULL papercusp catalog directly in `tools/list` — nothing is deferred — so `select:<anything>` returns “No matching deferred tools found” no matter how the name is spelled. The tool is already in your list: just call `mcp__papercusp-su__session_carry-drill` directly (or `tools:invoke`).
+* **On a SEEDED session, deferred tools aren’t in `tools/list` at all** (papercusp grows the surface via `tools:find` → `activateTools`, not the API-native defer mechanism — see [dynamic-tool-surface](/internal/docs/agent-insights/dynamic-tool-surface)), so ToolSearch has nothing to select there either. The path is `tools:find` (which activates the match) → call it, or `tools:invoke`.
+
+`session:carry-drill` is verifiably registered, MCP-projected, in the `tools:find` corpus (exact-name lexical hit), and dispatchable via `tools:invoke` — the whole group is fine. A regression guard (`packages/operator-core/lib/agent-tools/session/carry-drill.test.ts`) locks that in so the hypothesised “session:\* indexing gap” cannot silently become real.
+
 ## Consequence / what NOT to do
 
 [Section titled “Consequence / what NOT to do”](#consequence--what-not-to-do)
@@ -33379,6 +33954,28 @@ Distinguishing it from the recovery-window phantom: check `metadata.reaped_count
 
 ⚠⚠ **You MUST pass `?phase=<the row's phase>` or the clear silently no-ops the row the collector reads (EI-8788).** The resolve route (`supervisor-actions.ts`) appends `supervisor_notes` to the **disk** `supervisor-notes.md` + the un-phased PG text-artifact **unconditionally**, but its `UPDATE harness_shared.harness_escalations` is scoped to `phase = (requestedPhase ?? 'staging')`. So if you call `.../escalation/resolve` **without** `?phase=git-sync-watchdog` (or with a wrong phase), the disk notes ARE written — and `harness:escalation` (disk-backed) then shows your resolution — while the PG `harness_escalations` row the improvement-watchdog’s `collectEscalationSignals` actually reads is **never touched**: `escalation` stays set, `supervisor_notes` stays `''`, and it re-fires next tick. This is exactly how EI-8787 “resolved” `shared-pot-test`/`git-sync-watchdog` yet it immediately re-dispatched as EI-8788. **Always verify the fix on the PG row, not the disk view:** `SELECT COALESCE(escalation,'')<>'' AS has_esc, COALESCE(supervisor_notes,'')<>'' AS has_notes FROM harness_shared.harness_escalations WHERE harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or `has_notes=true`; if `harness:escalation` shows notes but the PG row still has `has_esc=true, has_notes=false`, your resolve missed the phase.
 
+## The `mcp-dark-int:su-<uuid>` phase — a self-clearing recovery-window phantom (EI-12934 / EI-12059)
+
+[Section titled “The mcp-dark-int:su-\<uuid> phase — a self-clearing recovery-window phantom (EI-12934 / EI-12059)”](#the-mcp-dark-intsu-uuid-phase--a-self-clearing-recovery-window-phantom-ei-12934--ei-12059)
+
+A third recurring flavor of this EI, key `escalation:papercusp:mcp-dark-int:su-<uuid>` (phase `mcp-dark-int:su-<uuid>`), is written by the **mcp-dark-watchdog INTERACTIVE sweep** (`mcp-dark-watchdog.ts` `notifyInteractiveDark`, `INTERACTIVE_PHASE_PREFIX = 'mcp-dark-int:'`) when a live interactive `psu` session’s tool-call-coupled presence beat goes stale (its MCP transport appears severed). Like the `git-sync-watchdog` case, it **self-clears**: the same watchdog’s recovery sweep (`checkInteractiveMcpDark`, \~L642-653) idempotently nulls the escalation on its next pass for any owner **no longer in the dark set** — either the session recovered (a fresh beat) OR **ended entirely** (dropped out of the live-hosts list; that end-of-session sweep is the 2026-07-14 durability follow-up that fixed EI-12059/su-39f079d3). The improvement-watchdog simply filed the EI **inside that window**, before the recovery sweep ran. (You will typically see several stale `.papercusp/state/escalations/mcp-dark-int_su-*.md` disk mirrors — those are the recovered rows’ disk side; the PG row is the authority.)
+
+The drill is the same “verify recovery, no manual clear needed if already null” path as git-sync-watchdog:
+
+1. **The PG row already shows `has_esc=false`** (escalation IS NULL) for that phase — the recovery sweep cleared it. Verify:
+
+   ```sql
+   SELECT COALESCE(escalation,'')<>'' AS has_esc, COALESCE(supervisor_notes,'')<>'' AS has_notes
+     FROM harness_shared.harness_escalations
+    WHERE phase = 'mcp-dark-int:su-<uuid>';
+   ```
+
+2. **Confirm the session is genuinely gone** (not still dark): `su-<uuid>` has **no** `harness_shared.coord_presence` row and **no** `harness_shared.spawned_agents` row. `collectEscalationSignals` gates on `COALESCE(e.escalation,'') <> ''`, so a NULL row is never selected → it cannot re-dispatch.
+
+3. **Resolve `fixed`** with that evidence (state-only, zero code diff). Do **not** try to “reconnect” anything — the transport-death condition is long gone.
+
+4. **The durable class-fix** — debouncing `collectEscalationSignals` so it does not file inside the mcp-dark recovery window — touches the **self-improvement loop’s own code** (a protected surface), and is the same debounce already filed as **EI-8671** (human-gated). Do NOT auto-fix it.
+
 # Per-user REST routes must use getSessionUserOrDefault, not a strict 401
 
 > The desktop webview usually carries NO session cookie, so a /user/* route gating on getSessionUser + 401 silently blanks its UI (the settings memory page showed "No memories stored yet." over a 1,700-row store). Per-user data routes fall back to the seeded default user.
@@ -33857,6 +34454,215 @@ A 200 on `flags/bootstrap` but 404 on the `desktop/*` + `operator/whoami` endpoi
 [Section titled “The work-items “parent shows child” bug (the actual fix this session)”](#the-work-items-parent-shows-child-bug-the-actual-fix-this-session)
 
 Selecting a formal pot home (`harness_kind:'pot'`, e.g. `papercusp`) showed its first child’s (`pot-canary`) work items. Root cause: `hiveMembers()` excludes a pot home from its own member list, so `dockSlug` fell through to `members[0]`. Fixed with `resolveDockSlug()` in `harness-axis.ts` (a registered selected pot shows ITS OWN content). `?harness` / `focusSlug` were red herrings — `focusSlug` is an output-only focused-panel tracker, not an input.
+
+# Verify what's inside a packaged installer WITHOUT extracting it — grep the raw-stored payload, but prove your detector fires first
+
+> innoextract isn't installed and 7z has no Inno handler, so 'what's actually in this Windows installer?' looks blocked. It isn't: papercusp.iss stores the seed/resources with `nocompression` + `SolidCompression=no`, so those bytes sit RAW in the payload and are directly greppable — no extraction, no VM, no new tooling. The trap is that a grep returning 0 hits is NOT evidence of absence until you've proven (a) the region is searchable at all and (b) your pattern fires on a real instance. Two controls turn a meaningless silence into a real measurement.
+
+## The wall that isn’t a wall
+
+[Section titled “The wall that isn’t a wall”](#the-wall-that-isnt-a-wall)
+
+You need to answer “does the shipped Windows installer actually contain X?” and:
+
+* `innoextract` is **not installed** on the build box;
+* `7z` has **no Inno handler** (`7z i` lists NSIS only — verify, don’t assume);
+* installing tooling on a shared box, or touching a build VM, is **gated**.
+
+This reads as blocked. It usually isn’t. `papercusp.iss:52` documents that the big payloads are stored **uncompressed**:
+
+> Per-file compression (SolidCompression=no): the seed (encrypted corestore + rootfs) are ENCRYPTED/pre-compressed (stored raw in the installer)
+
+`SolidCompression=no` + `nocompression` on those `[Files]` entries means **those bytes appear verbatim in the payload**. You can `grep -a` the installer directly. This generalises: any packager that stores pre-compressed/encrypted blobs raw (to avoid pointless double-compression) leaks a searchable window into its payload.
+
+## The trap: absence is not evidence until you’ve earned it
+
+[Section titled “The trap: absence is not evidence until you’ve earned it”](#the-trap-absence-is-not-evidence-until-youve-earned-it)
+
+`grep -c 'BadThing' installer.bin` → `0` proves **nothing** on its own. It is equally consistent with:
+
+1. BadThing genuinely isn’t there ✅ (what you want to conclude)
+2. the region is compressed/encrypted, so *nothing* is greppable ❌
+3. your pattern is wrong and would never match even a real BadThing ❌
+
+Readings 2 and 3 are how a verification produces a confident, wrong PASS. Two controls collapse them:
+
+### Control 1 — positive control: prove the region is searchable
+
+[Section titled “Control 1 — positive control: prove the region is searchable”](#control-1--positive-control-prove-the-region-is-searchable)
+
+Grep for something you **know is there**. For the corestore seed, the db dir’s `IDENTITY` file is ideal — a UUID, unique, guaranteed present:
+
+```bash
+ID=$(cat "$SEED/corestore/db/IDENTITY")        # e.g. 2cd89561-5530-4357-b5b3-3e585e9bacd6
+LC_ALL=C grep -a -c -- "$ID" "Papercusp Server_0.0.11_x64-setup-2.bin"   # → 5  ✅ searchable
+LC_ALL=C grep -a -c -- "$ID" "Papercusp GUI_0.0.11_x64-setup.exe"        # → 0  (no seed at all)
+```
+
+A **non-zero** hit in the bundle under test means the region really is raw and your later “0 hits” is meaningful. If the positive control is also 0, **stop** — you cannot conclude anything about absence.
+
+### Control 2 — negative control: prove your detector FIRES
+
+[Section titled “Control 2 — negative control: prove your detector FIRES”](#control-2--negative-control-prove-your-detector-fires)
+
+Find a real instance of the thing you’re hunting and confirm your pattern matches it. For a RocksDB diagnostic `LOG`:
+
+```bash
+# find a real LOG anywhere on the box and prove the regex fires
+find /tmp -path '*db/LOG' -size +0 | head -3 | while read f; do
+  LC_ALL=C grep -a -c -E '20[0-9]{2}/[0-9]{2}/[0-9]{2}-[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ .{0,20}RocksDB version:' "$f"
+done       # → 1, 1, 1  ✅ the detector works
+```
+
+Only now does `0` on the artifact mean **absence**.
+
+### Why *that* regex (the discriminator matters)
+
+[Section titled “Why that regex (the discriminator matters)”](#why-that-regex-the-discriminator-matters)
+
+Naively grepping `RocksDB version:` gives false positives: **rocksdb’s own native binary carries that string as a format template**, and the sidecar ships in every bundle. The discriminator is the **timestamp prefix** — a real LOG line looks like
+
+```plaintext
+2026/07/12-14:20:41.167234 42655 RocksDB version: 10.5.1
+```
+
+whereas the binary’s copy has no timestamp. Anchor on the part that only exists in *emitted* output, never in the code that emits it. This is the general shape: **find the token that distinguishes an instance of the artifact from the machinery that produces it.**
+
+## What this method can and cannot reach
+
+[Section titled “What this method can and cannot reach”](#what-this-method-can-and-cannot-reach)
+
+Applied to the 0.0.11 Windows artifacts (WI-5016) it produced real measurements:
+
+| question                                           | reachable?          | how                                                                                                                       |
+| -------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| does the Server bundle contain the seed?           | ✅ measured          | manifest `coreKey` → 7 + 3 hits across the two `.bin` slices                                                              |
+| does the GUI bundle contain the seed?              | ✅ measured          | same key → **0 hits** (correct — `iss:105` guards it Server-only)                                                         |
+| is a stray RocksDB `LOG` shipped?                  | ✅ measured          | detector validated, then **0 hits** in all artifacts                                                                      |
+| are `{app}\seed` and `{app}\sidecar` **siblings**? | ❌ **not reachable** | Inno’s file-destination records live in the setup.exe’s **compressed header** — grep can’t see them. Needs `innoextract`. |
+| does the seed get **consumed** at runtime?         | ❌ not reachable     | needs a real install on the target OS                                                                                     |
+
+Be explicit about that boundary when you report. “The seed bytes are in the bundle” is **not** “the installer puts them where the app looks” is **not** “the app consumes them”. Three different claims, three different proofs. Reporting the first as if it were the third is exactly how 0.0.9 and 0.0.10 shipped a seed that did nothing (see [verifying-seed-consumption-headless](/internal/docs/agent-insights/verifying-seed-consumption-headless)).
+
+## Windows-specific gotchas this surfaced
+
+[Section titled “Windows-specific gotchas this surfaced”](#windows-specific-gotchas-this-surfaced)
+
+**The build emits TWO installers, and the first one to land is the wrong one to verify.** `papercusp.iss:105` guards the seed behind `#if AppId == "com.papercusp.server"` — the **GUI** bundle ships **no seed by design** (WI-3234: on Windows the GUI role never restores a seed; it attaches to or launches the Server bundle, whose sidecar owns restore. **WINDOWS is the exception — NOT “Linux-only”.** An earlier revision of this doc said “self-hosting in one bundle is Linux-only”; that is WRONG, and it contradicted this same doc’s own note below that `main.rs:4011` enumerates macOS. MEASURED 2026-07-16 against the shipped 0.0.11 mac GUI: it carries the FULL seed at `Contents/Resources/seed` — corestore 700,901,586 bytes across 27 files, exactly its manifest’s declared `sizeBytes`, same `coreKey`/`coreLength` as the linux+windows staged seed. So the GUI self-hosts on **Linux AND macOS**; only Windows splits it out). The GUI installer finishes first. Verifying it yields a release-blocking **false negative** — “Windows ships no seed!” — that is simply wrong. **Always target `*Server*x64-setup*.exe`.**
+
+**The Server installer is disk-SPANNED.** `iss:73` sets `DiskSpanning=yes` when `sidecar\source.tar.zst` is staged and `/DSingleFile` isn’t passed, so the output is a small stub plus slices:
+
+```plaintext
+Papercusp Server_0.0.11_x64-setup.exe         3,758,036   ← stub only
+Papercusp Server_0.0.11_x64-setup-1.bin   2,096,241,920
+Papercusp Server_0.0.11_x64-setup-2.bin   1,870,534,189
+```
+
+A 3.6 MB “installer” looks broken and isn’t — but **grep the `.bin` slices, not the stub**, or you’ll measure 0 hits on an empty shell and conclude the payload is missing. (This layout is also why `.bin` must travel with the exe — the publish path getting that wrong is **EI-12913**.)
+
+**Don’t reason from Linux.** Windows is the only platform whose sidecar runs in **WSL**: `SIDECAR_WSLENV` (`main.rs:3961`) passes `PAPERCUSP_SEED_DIR/p`, a Win→WSL path translation, and `main.rs:4020` notes PGDATA **cannot** live on DrvFs (`/mnt/c`). A Linux PASS says nothing about any of that. Note too that `main.rs:4011`’s sibling-layout comment enumerates Linux `.deb`, macOS, and the dev tree — **Windows is not named**.
+
+## Check your calibration target is real
+
+[Section titled “Check your calibration target is real”](#check-your-calibration-target-is-real)
+
+A prior `Papercusp Server_0.0.8_x64-setup.exe` sitting in a scratch dir looked like a perfect control to develop the method against. It is a **10-byte stub**. `stat` it before you build a plan on it — five seconds that saves an hour of debugging a “method” against a file with no payload.
+
+## Recipe
+
+[Section titled “Recipe”](#recipe)
+
+```bash
+D=.../src-tauri/target/windows-vm/bundle/inno
+SEED=.../papercusp-desktop/src-tauri/seed
+
+
+# 0. the source of truth: is the thing even staged? (and does the manifest match the other platforms?)
+find "$SEED" -iname 'LOG*' | wc -l          # 0 = no diagnostic LOG staged
+python3 -c "import json;m=json.load(open('$SEED/manifest.json'));print(m['cutTs'],[ (s['kind'],s['meta'].get('coreLengths')) for s in m['stores']])"
+
+
+# 1. positive control — is the region searchable in the artifact under test?
+ID=$(cat "$SEED/corestore/db/IDENTITY")
+LC_ALL=C grep -a -c -- "$ID" "$D/Papercusp Server_0.0.11_x64-setup-2.bin"
+
+
+# 2. negative control — does the detector fire on a REAL instance?
+find /tmp -path '*db/LOG' -size +0 | head -1 | xargs -I{} \
+  grep -a -c -E '20[0-9]{2}/[0-9]{2}/[0-9]{2}-.* RocksDB version:' {}
+
+
+# 3. only now: the actual measurement
+for f in "$D"/*.bin "$D"/*setup.exe; do
+  printf '%-50s %s\n' "$(basename "$f")" \
+    "$(LC_ALL=C grep -a -c -E '20[0-9]{2}/[0-9]{2}/[0-9]{2}-.* RocksDB version:' "$f")"
+done
+```
+
+## The generalisable rule
+
+[Section titled “The generalisable rule”](#the-generalisable-rule)
+
+> A verification that has never been shown to fail is not a verification.
+
+Before you report PASS on the strength of something *not* being found, prove the search could have found it: one control that the haystack is searchable, one that the needle’s pattern matches a real needle. Both are cheap. Skipping them is how you hand someone a confident PASS that means nothing — and on a release path, that is worse than reporting “I couldn’t check.”
+
+# Verify a fresh install CONSUMES the hive seed (does NOT cold-clone) headlessly — you don't need a full AppImage build
+
+> The WI-4487 acceptance leg — 'a seeded install must not cold-clone' — is what 0.0.9 AND 0.0.10 both silently failed (shipped a seed that did nothing). You can prove/disprove it in ~40s against a REAL cut seed WITHOUT building or booting the AppImage: run the exact consumer path (resolveSeedDir -> restoreHiveSeed -> open the target corestore OFFLINE and read its length) via `node --import tsx/esm`. Decompose the verdict into three independently-checkable parts so a 'cold-clone' failure tells you WHICH layer broke (bad seed vs bad packaging vs bad consumer) — those have completely different fixes.
+
+## The question that keeps silently shipping wrong
+
+[Section titled “The question that keeps silently shipping wrong”](#the-question-that-keeps-silently-shipping-wrong)
+
+A packaged install is supposed to CONSUME the bundled corestore seed (the hive’s plans/work-items/coordination) so first boot pre-positions the data locally and the join only transfers the live delta. **0.0.9 AND 0.0.10 both silently cold-cloned** — shipped a seed that did nothing, the full data came over the network, and nobody noticed until after publication (the cut exits 0; the seed is just unused). The cut side (WI-4487) is only half — the other half is proving a fresh install actually consumes a *good* seed.
+
+## You do NOT need to build/boot the AppImage to answer it
+
+[Section titled “You do NOT need to build/boot the AppImage to answer it”](#you-do-not-need-to-buildboot-the-appimage-to-answer-it)
+
+The consumption is done by the **operator sidecar (Node)**, not the Rust/Tauri layer. Tauri only sets env vars and spawns the sidecar. So the decisive verdict runs headless against a REAL cut seed in \~40s, no cargo, no xvfb:
+
+```ts
+// run: cd packages/operator-core && node --import tsx/esm <script>.ts
+import { resolveSeedDir, restoreHiveSeed } from './lib/sync/hyperbee/restore-hive-seed';
+import Corestore from 'corestore';
+const SEED = '<abs path to a cut seed dir with manifest.json>';
+// 1. RESOLVER — the exact channel main.rs uses: PAPERCUSP_SEED_DIR = <parent-of-sidecar>/seed
+resolveSeedDir({ env: { PAPERCUSP_SEED_DIR: SEED } }); // expect source:'env' (or 'autodetect:*')
+// 2. RESTORE — corestore restores; an ENCRYPTED git store DEFERS (needs the post-admission key)
+const res = await restoreHiveSeed({ seedDir: SEED, targetRepoDir, targetStoreDir });
+// expect ran:true, outcomes:[{kind:'corestore',ok:true}], deferred:['git']
+// 3. BOOT READ — open the target store OFFLINE (no replication peer) and read the core length.
+//    Populated to the manifest coreLength + block[0]/block[len-1] present with wait:false
+//    => the data is LOCAL from the seed, i.e. NOT cold-cloned.
+```
+
+A pass looks like: `resolveSeedDir` returns `source:'env'`, `restoreHiveSeed` restores the corestore and defers git, and the target core opens offline at exactly the manifest `coreLengths[<key>]` (e.g. 95,812) with its first and last blocks readable `wait:false`. (Proven live 2026-07-15 against a real 335 MiB corestore cut.)
+
+## Decompose the verdict — a bare “it cold-cloned” is useless
+
+[Section titled “Decompose the verdict — a bare “it cold-cloned” is useless”](#decompose-the-verdict--a-bare-it-cold-cloned-is-useless)
+
+Three layers can independently cause a cold-clone, and each has a different fix:
+
+1. **Bad SEED** — the cut shipped a stale/absent/short corestore (e.g. the `readOnly:true` point-in-time-snapshot ordering bug WI-4487 fixed; or a git-only seed with no corestore at all). Check the seed’s `manifest.json` has a `corestore` store with a non-zero `coreLengths`. **Fix lives in the cut (cut-seed-cli).**
+2. **Bad PACKAGING** — the seed isn’t where the consumer looks. `resolveSeedDir` returns `null`/`env-missing`/`none`. This was the 0.0.9/0.0.10 WI-2902 bug: the Rust side passed `<sidecar>/seed` while the bundle held `<resourceRoot>/seed`. Now `main.rs` computes `seed_dir = <parent-of-sidecar>/seed` and `build-appimage.sh` places the seed at `usr/lib/<product>/seed` — **they agree by construction** (a static code proof). **Fix lives in main.rs / build-appimage.sh.**
+3. **Bad CONSUMER** — the resolver finds it and restore runs, but the store lands where boot doesn’t read it, or restore fails. Check `restoreHiveSeed` outcomes + that `targetStoreDir` == `join(workspacesRoot(), 'papercusp-workspace', '.papercusp', 'papercusp', 'hyperbee')` (seedTargetDirs, WI-3232). **Fix lives in the consumer.**
+
+The seed-restore path only runs when the **canonical invite is baked** (it is — COMMITTED in `canonical-hive-invite.ts`, not release-env-injected, so even a bare build takes the join+seed path) AND `detectPapercupRoot` finds no local checkout (a fresh install / isolated HOME). git is encrypted at rest and DEFERS to post-admission by design — “corestore restored, git deferred” is the correct healthy state, not a half-failure.
+
+## The sandbox can’t build the AppImage — the literal smoke belongs to the pipeline
+
+[Section titled “The sandbox can’t build the AppImage — the literal smoke belongs to the pipeline”](#the-sandbox-cant-build-the-appimage--the-literal-smoke-belongs-to-the-pipeline)
+
+The agent `capability_bash` sandbox makes only the project subtree + `/dev/shm` writable: the cargo target lives on read-only `/mnt/data` (89G), so `tauri build` can’t write; the `tsx` CLI can’t `listen(2)` (EPERM) — use `node --import tsx/esm`; vitest works only if `TMPDIR` stays the default `/tmp/claude` (an in-repo TMPDIR makes `vitest-config` force the read-only `/tmp/pcv`). So the **literal** end-to-end install smoke (AppImage → operator boot → plans/work-items visible) must run via the release **pipeline / a VM**, not an agent shell (EI-12725). The headless consumer verdict above is what an agent CAN — and should — produce in-sandbox before then.
+
+## Existing CI guards (don’t re-add)
+
+[Section titled “Existing CI guards (don’t re-add)”](#existing-ci-guards-dont-re-add)
+
+The resolver’s exact bug surface is already covered: `restore-hive-seed.test.ts` — “autodetects the GRANDPARENT `<resourceRoot>/seed` … packaged .deb/.app layout” + every branch; `seed-second-consumer.test.ts` — cut → restore → populated-offline → delta-replicate both halves. The genuine remaining gap is the literal packaged-install smoke (the heavy `PackagedInstallMeasure` seam in `seed-e2e-measurement.ts` is unimplemented) — a release-gate step, not a unit test.
 
 # vi.mock hand-listed factories drop exports — use importOriginal+spread
 
@@ -75699,6 +76505,30 @@ wmctrl -lxp | awk -v pid="$PID" '$3 == pid'
 ```
 
 If the screenshot output doesn’t match what `wmctrl`/`xwininfo` (for that PID) shows, prefer the DOM-native path instead — `check --selector ...`, `dom <selector>`, or `eval` geometry/content assertions are resolved through the bridge itself and cannot be fooled by an occluding window. Reserve `screenshot`/`snapshot`/`capture` for a *visual* signal DOM can’t express (layout, animation, font rendering), and treat it as corroborating evidence, not the primary assertion, whenever multiple windows might be present.
+
+screenshot --selector auto-resolves the window by document.title, which mismatches the X11 window title on a self-spawned shell (EI-11084)
+
+Even with a single window, `screenshot --selector` (with no `--title`) resolves the OS window by the webview’s `document.title` and runs `xdotool search --name "<that title>"` to get the window geometry. On a shell you spawned yourself (`npm run dev`), that lookup **fails outright**:
+
+```plaintext
+xdotool failed: Command failed: xdotool search --name Papercusp Operator
+```
+
+The reason is a title mismatch: the webview’s `document.title` is `"Papercusp Operator"`, but the Tauri **X11 window title** is `"Papercusp"` (`papercusp-desktop/src-tauri/tauri.conf.json` → `windows[0].title`), so the `--name "Papercusp Operator"` regex matches no window. `eval`/`dom`/ `describe` over the same `--pid` keep working — only the screenshot’s window-geometry step breaks. Two fixes:
+
+1. **Pass the real X11 window title explicitly:** `screenshot --selector ... --title Papercusp -o out.png` (the tool takes `-t, --title <regex>`; `Papercusp` matches the X11 title regardless of the dynamic `document.title`).
+
+2. **Prefer the bridge-based layout check** — it does no window lookup at all, so it cannot hit this trap. `@papercusp/tauri-verify`’s `verify.layout()` measures the same facts a layout screenshot proves (page horizontal overflow, per-selector right-edge vs. viewport, an overflow:auto container scrolling its own content) over the bridge:
+
+   ```ts
+   import { createVerifier } from '@papercusp/tauri-verify';
+   const verify = createVerifier({ tauriPID: PID });
+   // page must not scroll horizontally; the rubrics panel may scroll internally
+   const r = await verify.layout({ scrollContainer: '.pc-rubrics' });
+   if (!r.ok) throw new Error(r.error); // e.g. code 'horizontal_overflow'
+   ```
+
+   Or inline the equivalent one-off assertion via `eval`: `document.documentElement.scrollWidth <= document.documentElement.clientWidth` for the page, and `el.getBoundingClientRect().right <= documentElement.clientWidth` for a specific element.
 
 ### 1.4 Stale Vite cache
 

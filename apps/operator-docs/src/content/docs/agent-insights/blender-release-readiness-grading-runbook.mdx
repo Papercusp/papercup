@@ -67,7 +67,13 @@ rubric-system-hardening-2026-07-14):
 3. Gather the criterion-specific evidence below. Scope every raw ledger query
    to `workspace_id='papercusp-workspace'` and its real `harness_slug`. A
    workspace-wide count silently mixes `@singleton`, `papercusp`, and other
-   Pots and is not admissible release evidence.
+   Pots and is not admissible release evidence. **Know each partition's real
+   slug** (verified 2026-07-16): `origin='scout'` routed rows write under
+   `harness_slug='@singleton'` (the singleton scout install — the newest
+   `papercusp`-scoped scout row is 2026-06-11, a pre-migration relic), while
+   `origin='su-ideate'` rows carry `harness_slug='papercusp'`. Filtering scout
+   rows on `'papercusp'` returns weeks-stale rows and reads as a dead pipeline
+   when it is not.
 4. File one complete rubric observation (all seven keys), then read the
    scorecard back and verify its `gradedGeneration` stamp matches step 2's
    `runningGeneration` (the generation-parity replication). Then read

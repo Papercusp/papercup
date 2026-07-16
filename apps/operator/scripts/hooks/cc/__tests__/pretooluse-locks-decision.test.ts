@@ -305,6 +305,78 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(fs.existsSync(join(cache, 'tu-linked-elsewhere.lock'))).toBe(false);
   });
 
+  it('worktree guard (WI-5031): same-origin sibling still refused; INDEPENDENT sibling repo allowed', async () => {
+    // papercup-rust-mobile is a standalone project (own .git dir, own remote,
+    // own commit discipline) that happens to live as a direct child of the
+    // workspace root. The guard exists to catch stray checkouts OF THE
+    // CANONICAL project — an independent repo must fall through to normal
+    // lock coordination, not be refused (refusing it parked the whole mobile
+    // release campaign as needs-human). Identity = the origin remote URL:
+    // provably different ⇒ allow; same (any ssh/https spelling) or
+    // unreadable ⇒ refuse as before.
+    const gitBack = fs.readFileSync(join(repo, '.git'), 'utf8');
+    fs.rmSync(join(repo, '.git'));
+    try {
+      // Give the canonical tree a READABLE origin (an ordinary .git dir).
+      fs.mkdirSync(join(repo, '.git'));
+      fs.writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
+      fs.writeFileSync(
+        join(repo, '.git', 'config'),
+        '[remote "origin"]\n\turl = git@github.com:Papercusp/papercup.git\n',
+      );
+
+      // A same-project sibling (papercup-release: SAME origin, https
+      // spelling) is still refused — the actual stranding hazard.
+      const release = join(ws, 'papercup-release');
+      fs.mkdirSync(join(release, 'sub'), { recursive: true });
+      fs.mkdirSync(join(release, '.git'));
+      fs.writeFileSync(join(release, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      fs.writeFileSync(
+        join(release, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/Papercusp/papercup.git\n',
+      );
+      const denied = await run({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(release, 'sub/x.ts') },
+        tool_use_id: 'tu-same-origin',
+        session_id: 's',
+        cwd: release,
+      });
+      expect(denied.status).toBe(0);
+      const deniedOut = JSON.parse(denied.stdout);
+      expect(deniedOut.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(deniedOut.hookSpecificOutput.permissionDecisionReason).toContain('worktree guard');
+      expect(fs.existsSync(join(cache, 'tu-same-origin.lock'))).toBe(false);
+
+      // An INDEPENDENT sibling (provably different origin) is allowed and
+      // coordinates through the normal lock flow (grant → cached lock_id).
+      const mobile = join(ws, 'papercup-rust-mobile');
+      fs.mkdirSync(join(mobile, 'sub'), { recursive: true });
+      fs.mkdirSync(join(mobile, '.git'));
+      fs.writeFileSync(join(mobile, '.git', 'HEAD'), 'ref: refs/heads/master\n');
+      fs.writeFileSync(
+        join(mobile, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/Papercusp/papercup-rust-mobile.git\n',
+      );
+      nextInner = { ok: true, lock_id: 'mobile-lock' };
+      const allowed = await run({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(mobile, 'sub/x.ts') },
+        tool_use_id: 'tu-independent',
+        session_id: 's',
+        cwd: mobile,
+      });
+      expect(allowed.status).toBe(0);
+      expect(allowed.stdout).toBe(''); // allow = no decision
+      expect(fs.readFileSync(join(cache, 'tu-independent.lock'), 'utf8')).toBe('mobile-lock');
+    } finally {
+      fs.rmSync(join(repo, '.git'), { recursive: true, force: true });
+      fs.writeFileSync(join(repo, '.git'), gitBack);
+      fs.rmSync(join(ws, 'papercup-release'), { recursive: true, force: true });
+      fs.rmSync(join(ws, 'papercup-rust-mobile'), { recursive: true, force: true });
+    }
+  });
+
   // ── EI-9478: transient workspace-contention must never be rendered as a foreign hold ──
   // The server's per-workspace advisory-lock wait can time out (commonly THIS
   // session's own parallel edits racing each other, or a starved PG pool). That

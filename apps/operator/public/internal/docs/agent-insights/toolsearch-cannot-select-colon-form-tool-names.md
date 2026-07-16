@@ -73,6 +73,33 @@ This is now spelled out directly in `apps/operator/prompts/papercusp-su.claude.m
 su session gets), so it no longer depends on an agent independently
 rediscovering it mid-task.
 
+## Re-reported for `session:*` (EI-12618) — same class, no session-specific defect
+
+EI-12618 hit the same wall for `session:carry-drill` and hypothesised "an
+activation/indexing gap specific to `session:*` group tools" — noting that even
+the CORRECTLY-mangled `select:mcp__papercusp-su__session_carry-drill` returned
+"No matching deferred tools found", not just the colon form. Two clarifications
+fall out, and there is **no `session:*`-specific defect**:
+
+* **On a full-catalog session, the defer set is EMPTY, so every `select:` fails
+  trivially.** ToolSearch only searches tools the client declared with
+  `defer_loading`. A non-seeded (frontier-tier) Claude session gets the FULL
+  papercusp catalog directly in `tools/list` — nothing is deferred — so
+  `select:<anything>` returns "No matching deferred tools found" no matter how the
+  name is spelled. The tool is already in your list: just call
+  `mcp__papercusp-su__session_carry-drill` directly (or `tools:invoke`).
+* **On a SEEDED session, deferred tools aren't in `tools/list` at all** (papercusp
+  grows the surface via `tools:find` → `activateTools`, not the API-native defer
+  mechanism — see [dynamic-tool-surface](/internal/docs/agent-insights/dynamic-tool-surface)),
+  so ToolSearch has nothing to select there either. The path is `tools:find`
+  (which activates the match) → call it, or `tools:invoke`.
+
+`session:carry-drill` is verifiably registered, MCP-projected, in the `tools:find`
+corpus (exact-name lexical hit), and dispatchable via `tools:invoke` — the whole
+group is fine. A regression guard
+(`packages/operator-core/lib/agent-tools/session/carry-drill.test.ts`) locks that
+in so the hypothesised "session:\* indexing gap" cannot silently become real.
+
 ## Consequence / what NOT to do
 
 * Don't retry `ToolSearch select:` with more name-variant guesses — the input
