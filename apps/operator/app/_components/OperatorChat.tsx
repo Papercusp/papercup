@@ -202,12 +202,17 @@ export function OperatorChat({
       composerExtra={
         onGenerateIdeas ? (
           <Tooltip label="Generate ideas" side="top" align="center">
+            {/* EI-13109: never reuse the send button's class here — this button
+                renders BEFORE the real submit, so `.oracle-send-button` lookups
+                (and users) mistook it for Send and typed drafts went unsent.
+                Disabled while a draft is pending: with text in the composer the
+                only live affordance is Send, so a click can't discard the draft. */}
             <button
               type="button"
               aria-label="Generate ideas"
               onClick={onGenerateIdeas}
-              disabled={busy}
-              className="pc-button oracle-send-button op-chat-ideas-button"
+              disabled={busy || input.trim() !== ''}
+              className="pc-button op-chat-ideas-button"
             >
               <Lightbulb aria-hidden="true" className="oracle-send-icon" />
             </button>

@@ -101,6 +101,12 @@ describe('getOctokit — live integration smoke', () => {
         // Offline skip: gh is authenticated locally but GitHub is unreachable (DNS/network) — a live
         // smoke must not fail the gate on connectivity (gate-red 2026-07-01: ENOTFOUND api.github.com).
         if (/ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|ENETUNREACH|fetch failed|network|timed? ?out/i.test(String(e))) return;
+        // Transient GitHub-SIDE skip: a 5xx server error or a rate-limit/abuse throttle (429/403) is
+        // GitHub's fault, never our client's — a live smoke must not gate the checkpoint on it either
+        // (gate-red 2026-07-16: Octokit HttpError status 503 from api.github.com getAuthenticated,
+        // which also reproduced locally while GitHub was 5xx-ing). Same class as the connectivity skip.
+        const httpStatus = Number((e as { status?: unknown } | null)?.status);
+        if (Number.isFinite(httpStatus) && (httpStatus >= 500 || httpStatus === 429 || httpStatus === 403)) return;
         throw e;
       }
       expect(data.login).toBeTruthy();
