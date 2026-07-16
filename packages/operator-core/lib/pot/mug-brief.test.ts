@@ -544,7 +544,7 @@ test('renderMugBrief — no potSlug: the anchor line and the scope caveat are bo
 });
 
 test('floorFromSurvey — maps survey frontier/plans/blocked and merges watchdog signals (P-005 reuse)', () => {
-  const survey = { frontier: frontier3, plans: [], frontierBlocked: 4 };
+  const survey = { frontier: frontier3, plans: [], frontierBlocked: 4, frontierQuarantined: 0 };
   const cups: BriefCup[] = [{ id: 'b1', load: 1, alive: true }];
   const floor = floorFromSurvey(survey, { wokeBy: 'timer', cups });
   assert.equal(floor.frontier, frontier3);

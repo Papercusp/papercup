@@ -3642,6 +3642,85 @@ test('POST /maintenance/summarize?carryOwner=… — the injected carry builder 
   assert.deepEqual(s.maintenance, { requests: 1, errors: 0, carried: 1 });
 });
 
+// ── P-019 residual sampler (deterministic-context-carry D-010 live leg 2) ─────────────────────────
+
+test('a deterministic carry serve fires the residual sampler with both pass inputs + the carryInteractive bit', async () => {
+  const sampled: Array<Record<string, unknown>> = [];
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'LLM SUMMARY' }] }));
+    },
+    {
+      maintenanceCarry: async () => ({ summary: 'CARRY DOC', deterministic: true, budgetChars: 9000 }),
+      residualSampler: (input) => sampled.push(input as unknown as Record<string, unknown>),
+    },
+  );
+  const res = await ask('/maintenance/summarize?carryOwner=su-abc123&carryWs=ws-1&carryInteractive=1', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'RAW DROPPED MATERIAL' }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(sampled, [
+    {
+      carryOwner: 'su-abc123',
+      stage1Doc: 'CARRY DOC',
+      droppedContext: 'RAW DROPPED MATERIAL',
+      interactive: true,
+      workspaceId: 'ws-1',
+    },
+  ]);
+});
+
+test('no carryInteractive param ⇒ the sampler is told interactive:false (headless boundaries skip downstream)', async () => {
+  const sampled: Array<{ interactive?: boolean }> = [];
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'x' }] }));
+    },
+    {
+      maintenanceCarry: async () => ({ summary: 'CARRY DOC', deterministic: true, budgetChars: 1 }),
+      residualSampler: (input) => sampled.push(input),
+    },
+  );
+  await ask('/maintenance/summarize?carryOwner=su-abc123', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'p' }),
+  });
+  assert.equal(sampled.length, 1);
+  assert.equal(sampled[0].interactive, false);
+});
+
+test('a THROWING residual sampler never affects the served carry response, and the LLM-lane fallback never samples', async () => {
+  let llmHits = 0;
+  await boot(
+    (_req, res) => {
+      llmHits++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'LLM FALLBACK' }] }));
+    },
+    {
+      maintenanceCarry: async () => ({ summary: 'CARRY DOC', deterministic: true, budgetChars: 1 }),
+      residualSampler: () => {
+        throw new Error('sampler exploded');
+      },
+    },
+  );
+  const res = await ask('/maintenance/summarize?carryOwner=su-abc123&carryInteractive=1', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'p' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { summary?: string; deterministic?: boolean };
+  assert.equal(body.summary, 'CARRY DOC', 'the sampler throw was swallowed; the carry still served');
+  assert.equal(body.deterministic, true);
+  assert.equal(llmHits, 0);
+});
+
 test('carry miss (null) falls through to the LLM lane — a carry fault never strands a live compaction', async () => {
   await boot(
     (_req, res) => {

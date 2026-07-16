@@ -53,11 +53,12 @@ vi.mock('../inference-gateway/observability', () => ({ fetchGatewayHeadroom: (..
 // own behavior is pinned for real in agent-facts/store.test.ts. Default = no facts (the
 // stub renderer mirrors the real renderFactsFold's "empty in ⇒ '' out" contract).
 const foldFacts = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
-const renderFactsFold = vi.fn((facts: unknown[]) =>
-  Array.isArray(facts) && facts.length > 0
+const renderFactsFold = vi.fn((...a: unknown[]) => {
+  const facts = a[0];
+  return Array.isArray(facts) && facts.length > 0
     ? '### Standing facts (deterministic — assert via facts:assert, retract when stale)\n• stub fact'
-    : '',
-);
+    : '';
+});
 vi.mock('../agent-facts/store', () => ({
   foldFacts: (...a: unknown[]) => foldFacts(...a),
   renderFactsFold: (...a: unknown[]) => renderFactsFold(...a),

@@ -11,6 +11,9 @@ import {
   readResidualCarryLedger,
   appendResidualCarryLedgerEvent,
   reportResidualCarrySamples,
+  runMaintenanceResidualSample,
+  RESIDUAL_SAMPLE_MIN_INTERVAL_MS,
+  RESIDUAL_SAMPLE_SOURCE,
   type ResidualSampleLedgerEvent,
 } from './residual-carry-pass-live';
 
@@ -109,5 +112,143 @@ describe('residual carry sample ledger — durable, bounded JSONL', () => {
     expect(cls?.materialCount).toBe(1);
     // Nowhere near minSample(30) — must not recommend retirement on 2 samples.
     expect(cls?.retire).toBe(false);
+  });
+});
+
+describe('runMaintenanceResidualSample — the gateway-boundary sampling harness (D-010 live leg 2)', () => {
+  const NOW = Date.parse('2026-07-16T12:00:00.000Z');
+  const INPUT = {
+    carryOwner: 'su-samp-1',
+    stage1Doc: 'STAGE-1 CARRY DOC',
+    droppedContext: 'RAW DROPPED TURNS',
+    interactive: true,
+  };
+  function harness(overrides: Record<string, unknown> = {}) {
+    const appended: ResidualSampleLedgerEvent[] = [];
+    const deps = {
+      readLedger: async () => [] as ResidualSampleLedgerEvent[],
+      appendLedger: async (e: ResidualSampleLedgerEvent) => {
+        appended.push(e);
+        return true;
+      },
+      llmFn: async () => '{"findings":[]}',
+      resolveAgent: async () => 'omp' as string | null,
+      now: () => NOW,
+      ...overrides,
+    };
+    return { appended, deps };
+  }
+
+  it('appends a parsed no-miss sample with the gateway-<agent> class + the live-boundary source stamp', async () => {
+    const h = harness();
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toEqual({
+      sampled: true,
+      reason: 'ok',
+      sessionClass: 'gateway-omp',
+      material: false,
+      parseError: false,
+    });
+    expect(h.appended).toEqual([
+      {
+        ts: new Date(NOW).toISOString(),
+        ownerId: 'su-samp-1',
+        sessionClass: 'gateway-omp',
+        material: false,
+        ran: true,
+        parseError: false,
+        source: RESIDUAL_SAMPLE_SOURCE,
+        findingsCount: 0,
+      },
+    ]);
+  });
+
+  it('a material finding records material:true (a real stage-1 miss enters the corpus)', async () => {
+    const h = harness({
+      llmFn: async () =>
+        '{"findings":[{"text":"the owner said to ship Friday","provenance":"owner","anchor":"turn 12","material":true}]}',
+    });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toMatchObject({ sampled: true, material: true, parseError: false });
+    expect(h.appended[0]).toMatchObject({ material: true, findingsCount: 1 });
+  });
+
+  it('non-interactive boundaries skip WITHOUT appending — drone compactions are graded by the P-020 drills, and skip rows must not roll real samples out of the bounded ledger', async () => {
+    const h = harness();
+    const r = await runMaintenanceResidualSample({ ...INPUT, interactive: false }, h.deps);
+    expect(r).toEqual({ sampled: false, reason: 'non-interactive', sessionClass: 'gateway-omp' });
+    expect(h.appended).toEqual([]);
+  });
+
+  it('rate-limits a second sample for the same owner inside RESIDUAL_SAMPLE_MIN_INTERVAL_MS', async () => {
+    const h = harness({
+      readLedger: async () => [
+        {
+          ts: new Date(NOW - RESIDUAL_SAMPLE_MIN_INTERVAL_MS + 1_000).toISOString(),
+          ownerId: 'su-samp-1',
+          sessionClass: 'gateway-omp',
+          material: false,
+          ran: true,
+          source: 'earlier',
+        },
+      ],
+    });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toEqual({ sampled: false, reason: 'rate-limited', sessionClass: 'gateway-omp' });
+    expect(h.appended).toEqual([]);
+  });
+
+  it("another owner's recent sample does NOT rate-limit this owner", async () => {
+    const h = harness({
+      readLedger: async () => [
+        {
+          ts: new Date(NOW - 1_000).toISOString(),
+          ownerId: 'su-other',
+          sessionClass: 'gateway-omp',
+          material: false,
+          ran: true,
+          source: 'earlier',
+        },
+      ],
+    });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r.sampled).toBe(true);
+  });
+
+  it('an unparseable LLM response records parseError:true (a blind instrument, never a false "complete")', async () => {
+    const h = harness({ llmFn: async () => 'sorry, I cannot do that' });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toMatchObject({ sampled: true, parseError: true, material: false });
+    expect(h.appended[0]).toMatchObject({ parseError: true });
+  });
+
+  it('an llmFn throw is a parseError sample, never a throw out of the sampler', async () => {
+    const h = harness({
+      llmFn: async () => {
+        throw new Error('gateway down');
+      },
+    });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toMatchObject({ sampled: true, parseError: true });
+  });
+
+  it('a ledger append failure reports append-failed', async () => {
+    const h = harness({ appendLedger: async () => false });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toMatchObject({ sampled: false, reason: 'append-failed' });
+  });
+
+  it('an unresolvable agent labels the class gateway-unknown (segregated, never folded into a real corpus)', async () => {
+    const h = harness({ resolveAgent: async () => null });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r.sessionClass).toBe('gateway-unknown');
+    expect(h.appended[0]?.sessionClass).toBe('gateway-unknown');
+  });
+
+  it('a blank carryOwner refuses before any work', async () => {
+    const h = harness();
+    const r = await runMaintenanceResidualSample({ ...INPUT, carryOwner: '  ' }, h.deps);
+    expect(r).toEqual({ sampled: false, reason: 'owner-missing' });
+    expect(h.appended).toEqual([]);
   });
 });

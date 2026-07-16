@@ -670,6 +670,31 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).toMatch(/\n\s+thresholdPercent:\s*\d+/); // threshold seeding unchanged
   });
 
+  it('interactive:true appends &carryInteractive=1 so the gateway residual sampler gets the truthful bit (P-019, D-010)', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    writeOmpSessionConfigDir(
+      'sess1',
+      { model: 'ollama/ornith', clientId: 'su-carry-i', backendWindow: 204800, carryCompaction: true, interactive: true },
+      home,
+    );
+    err.mockRestore();
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toContain('/maintenance/summarize?carryOwner=su-carry-i&carryWindow=204800&carryInteractive=1');
+  });
+
+  it('interactive defaults FALSE — a headless/piped launch omits carryInteractive (its boundaries are graded by P-020 drills, not sampled)', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    writeOmpSessionConfigDir(
+      'sess1',
+      { model: 'ollama/ornith', clientId: 'su-carry-h', backendWindow: 204800, carryCompaction: true },
+      home,
+    );
+    err.mockRestore();
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toContain('carryOwner=su-carry-h');
+    expect(written).not.toContain('carryInteractive');
+  });
+
   it('carry opt-in without a clientId stays INERT — no owner to build a carry doc for', () => {
     writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', carryCompaction: true }, home);
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
