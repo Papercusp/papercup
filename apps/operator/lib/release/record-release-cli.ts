@@ -27,6 +27,7 @@
 
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import postgres from 'postgres';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -104,14 +105,59 @@ export function releaseTag(version: string, channel: string): string {
 }
 
 /**
- * Hash the file in CHUNKS, never with readFileSync.
+ * Persistent SHA-256 cache keyed by (absolute path, size, mtimeMs).
+ *
+ * A tri-platform cut is ~18 GB of artifacts (two ~4 GB debs, a 4 GB AppImage,
+ * plus ~2 GB each for the dmg / app.tar.gz / setup.exe), and record-release-cli
+ * re-hashed ALL of it on EVERY run. So a re-publish that only ADDED one platform
+ * (e.g. dropping mac onto an already-published linux+windows cut) still spent
+ * tens of seconds re-SHA-256-ing the UNCHANGED linux+windows bytes — which is why
+ * "regenerating the simple index.html" was never actually fast. Caching the
+ * digest by content-identity (size+mtime) means an unchanged artifact is hashed
+ * exactly ONCE, ever: an incremental re-publish hashes only the genuinely-new
+ * files, and a no-op re-run is instant. The cache is advisory — a miss (or an
+ * absent/corrupt cache file) simply re-hashes, so it can never ship a wrong sum.
+ */
+const SHA_CACHE_PATH = path.join(os.homedir(), '.papercusp', 'release-sha256-cache.json');
+type ShaCacheEntry = { size: number; mtimeMs: number; sha256: string };
+let shaCache: Record<string, ShaCacheEntry> | null = null;
+function loadShaCache(): Record<string, ShaCacheEntry> {
+  if (!shaCache) {
+    try {
+      shaCache = JSON.parse(fs.readFileSync(SHA_CACHE_PATH, 'utf8')) as Record<string, ShaCacheEntry>;
+    } catch {
+      shaCache = {};
+    }
+  }
+  return shaCache;
+}
+function saveShaCache(): void {
+  if (!shaCache) return;
+  try {
+    fs.mkdirSync(path.dirname(SHA_CACHE_PATH), { recursive: true });
+    const tmp = `${SHA_CACHE_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(shaCache));
+    fs.renameSync(tmp, SHA_CACHE_PATH); // atomic swap — safe under concurrent cuts
+  } catch {
+    /* advisory cache: a write failure just means the next run re-hashes */
+  }
+}
+
+/**
+ * Hash the file in CHUNKS, never with readFileSync — cached by (path,size,mtime).
  *
  * Node's readFileSync throws ERR_FS_FILE_TOO_LARGE above 2 GiB — and EVERY real
  * artifact here is 3-4 GB, so the naive version worked on test fixtures and blew
  * up on the first genuine release. Hash the stream instead: constant memory,
- * no size ceiling.
+ * no size ceiling. The cache (above) skips the multi-GB read entirely when the
+ * artifact is unchanged since a prior run.
  */
 function sha256File(file: string): string {
+  const st = fs.statSync(file);
+  const key = path.resolve(file);
+  const cache = loadShaCache();
+  const hit = cache[key];
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.sha256;
   const hash = createHash('sha256');
   const fd = fs.openSync(file, 'r');
   try {
@@ -123,7 +169,10 @@ function sha256File(file: string): string {
   } finally {
     fs.closeSync(fd);
   }
-  return hash.digest('hex');
+  const digest = hash.digest('hex');
+  cache[key] = { size: st.size, mtimeMs: st.mtimeMs, sha256: digest };
+  saveShaCache();
+  return digest;
 }
 
 /**
