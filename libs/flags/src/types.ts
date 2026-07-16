@@ -1276,6 +1276,15 @@ export const FLAGS = {
   // arms a loop cold. OFF ⇒ every loop wake stays warm regardless of its carry marker. Read at
   // the wake-executor call-site (engine.ts) as the injected coldAutoEnabled dep.
   SU_COLD_AUTO: "papercusp-su-cold-auto",
+  // EI-12755 (deterministic-context-carry P-020 hardening): gates the
+  // carry-drill drop watchdog — a system-health sweep that tails the shared
+  // drill ledger (~/.papercusp/psu-pty/carry-drills.events.jsonl) and opens ONE
+  // deduped escalation per dropped/respawn-failed carry drill, so a drop
+  // reaches the attention queue in ~a minute instead of waiting for someone to
+  // poll session:carry-drill op:'report' (the 2/2 silent failures of 2026-07-15
+  // sat unnoticed ~40min). DEFAULT ON. OFF = the kill-switch: the timer still
+  // ticks but every sweep no-ops before reading the ledger.
+  CARRY_DRILL_DROP_WATCHER: "papercusp-carry-drill-drop-watcher",
   // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for moving the
   // QUEEN + SCOUT (+ later OVERWATCH) from per-HIVE to WORKSPACE scope — ONE central brain per
   // workspace spanning all its hives (P-003 Queen re-key + P-002 Scout re-key both gate on THIS

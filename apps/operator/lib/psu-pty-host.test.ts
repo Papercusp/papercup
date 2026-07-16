@@ -28,6 +28,7 @@ import {
   makeIdleGate,
   makeActivityTracker,
   makeAgentBusyGate,
+  makeCarryRearmController,
   makeSubmitVerifier,
   turnCoalesceKey,
   renderCoalescedTurn,
@@ -1383,5 +1384,144 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       const decoded = decodeControl(encodeControl({ mode: 'mcp-reconnect', data: 'papercusp-su' }));
       expect(decoded).toEqual({ mode: 'mcp-reconnect', data: 'papercusp-su', gated: true });
     });
+  });
+});
+
+describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-refused drills)', () => {
+  const DRILL_MSG = {
+    mode: 'carry-respawn',
+    data: '⟦carry-drill:d-77⟧ first prompt',
+    systemPromptAddendum: '## Identity\nownerId: su-r',
+    drillId: 'd-77',
+    sessionClass: 'gateway-claude-headless',
+  };
+
+  function makeHarness({ promptResults = [{ deferred: false }], recycleError = null, waitIdle } = {}) {
+    const events = [];
+    const recycles = [];
+    const order = [];
+    let releases = 0;
+    let promptCalls = 0;
+    const controller = makeCarryRearmController({
+      acquireInject: async () => {
+        order.push('acquire');
+        return () => {
+          releases += 1;
+          order.push('release');
+        };
+      },
+      waitIdle: waitIdle
+        ? async () => {
+            order.push('idle');
+          }
+        : null,
+      waitAtPrompt: async (capMs) => {
+        order.push('prompt');
+        const result = promptResults[Math.min(promptCalls, promptResults.length - 1)];
+        promptCalls += 1;
+        return { capMs, ...result };
+      },
+      recycle: async (data, opts) => {
+        order.push('recycle');
+        recycles.push({ data, opts });
+        if (recycleError) throw recycleError;
+      },
+      emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+      capMs: 1234,
+    });
+    const settle = async () => {
+      // The scheduled retry is fire-and-forget; drain the microtask/timer queue.
+      for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+    };
+    return { controller, events, recycles, order, settle, releaseCount: () => releases };
+  }
+
+  it('queues one retry, emits the durable rearm-queued row, and recycles at the settled prompt', async () => {
+    const h = makeHarness();
+    expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
+    expect(h.events[0]).toMatchObject({
+      kind: 'carry-drill-rearm-queued',
+      drillId: 'd-77',
+      sessionClass: 'gateway-claude-headless',
+      reason: 'busy-gate-expired',
+      capMs: 1234,
+    });
+    await h.settle();
+    expect(h.recycles).toEqual([
+      {
+        data: DRILL_MSG.data,
+        opts: {
+          systemPromptAddendum: DRILL_MSG.systemPromptAddendum,
+          drillId: 'd-77',
+          sessionClass: 'gateway-claude-headless',
+        },
+      },
+    ]);
+    // The retry re-acquired the SAME gated-inject mutex and released it after.
+    expect(h.order).toEqual(['acquire', 'prompt', 'recycle', 'release']);
+    expect(h.releaseCount()).toBe(1);
+    // No terminal drop was emitted — recycle()'s own delivered/dropped events own the outcome.
+    expect(h.events.filter((e) => e.kind === 'carry-drill-carry-dropped')).toEqual([]);
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('a retry that ALSO defers drops terminally with rearmed:true and never recycles', async () => {
+    const h = makeHarness({ promptResults: [{ deferred: true }] });
+    expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
+    await h.settle();
+    expect(h.recycles).toEqual([]);
+    expect(h.events.at(-1)).toMatchObject({
+      kind: 'carry-drill-carry-dropped',
+      drillId: 'd-77',
+      reason: 'busy-gate-expired',
+      rearmed: true,
+    });
+    expect(h.releaseCount()).toBe(1);
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('a duplicate schedule while the retry is pending returns duplicate and emits nothing new', async () => {
+    // Hold the retry at the prompt gate forever so the first schedule stays pending.
+    const h = makeHarness({ promptResults: [] });
+    const never = new Promise(() => {});
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt: () => never,
+      recycle: async () => {},
+      emitEvent: (kind, extra) => h.events.push({ kind, ...extra }),
+      capMs: 1234,
+    });
+    expect(controller.schedule(DRILL_MSG)).toBe('queued');
+    expect(controller.schedule(DRILL_MSG)).toBe('duplicate');
+    expect(controller.pendingCount()).toBe(1);
+    expect(h.events.filter((e) => e.kind === 'carry-drill-rearm-queued')).toHaveLength(1);
+  });
+
+  it('a recycle error drops terminally with reason rearm-error and still releases the mutex', async () => {
+    const h = makeHarness({ recycleError: new Error('argv exploded') });
+    expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
+    await h.settle();
+    expect(h.events.at(-1)).toMatchObject({
+      kind: 'carry-drill-carry-dropped',
+      drillId: 'd-77',
+      reason: 'rearm-error',
+      rearmed: true,
+      detail: 'argv exploded',
+    });
+    expect(h.releaseCount()).toBe(1);
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('honors the human-keystroke idle gate (bridged tty) before the busy gate', async () => {
+    const h = makeHarness({ waitIdle: true });
+    h.controller.schedule(DRILL_MSG);
+    await h.settle();
+    expect(h.order).toEqual(['acquire', 'idle', 'prompt', 'recycle', 'release']);
+  });
+
+  it('refuses a message with no drillId (never latches on the empty key)', () => {
+    const h = makeHarness();
+    expect(h.controller.schedule({ ...DRILL_MSG, drillId: '' })).toBe('duplicate');
+    expect(h.events).toEqual([]);
   });
 });

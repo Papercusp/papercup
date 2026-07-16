@@ -60,7 +60,12 @@ export type ColdBootDrillLedgerKind =
   | 'carry-drill-respawned'
   | 'carry-drill-respawn-failed'
   | 'carry-drill-carry-delivered'
-  | 'carry-drill-carry-dropped';
+  | 'carry-drill-carry-dropped'
+  // EI-12754: NON-terminal marker — a busy-gate-refused carry-respawn drill was
+  // re-queued for exactly one deferred retry at the next settled turn. The
+  // retry itself ends in a terminal delivered/dropped row; report/verify
+  // deliberately ignore this kind (it is sequence context, not an outcome).
+  | 'carry-drill-rearm-queued';
 
 export interface ColdBootDrillLedgerEvent {
   ts: string;
@@ -75,6 +80,8 @@ export interface ColdBootDrillLedgerEvent {
   reason?: string;
   /** Host-mirrored respawn rows (EI-12655): the successor's fresh native session id. */
   nativeId?: string | null;
+  /** EI-12754: set on a terminal drop that came from the one-shot re-armed retry. */
+  rearmed?: boolean;
 }
 
 export interface ColdBootDrillHostEvent {
@@ -422,6 +429,60 @@ export function terminalOutcomesFromLedger(
     byClass.set(sessionClass, agg);
   }
   return [...byClass.values()];
+}
+
+// ── EI-12755: carry-drill drop scanning (pure half of the drop watchdog) ─────
+// Ledger rows are durable but nobody reads them until someone asks — the 2/2
+// silent drill failures of 2026-07-15 sat unnoticed ~40 minutes. The watchdog
+// (system-health/carry-drill-drop-watchdog.ts) sweeps the shared ledger with
+// this pure scanner and escalates each fresh drop once.
+
+/** The terminal kinds a human should hear about in real time. */
+const DROP_ALERT_KINDS: ReadonlySet<string> = new Set([
+  'carry-drill-carry-dropped',
+  'carry-drill-respawn-failed',
+]);
+
+export interface CarryDrillDropAlert {
+  drillId: string;
+  ownerId: string;
+  sessionClass: string;
+  kind: string;
+  reason: string;
+  ts: string;
+}
+
+/**
+ * Scan ledger events for terminal DROP rows newer than `sinceMs`, deduped per
+ * (drillId, kind). Returns the alerts plus the advanced watermark (the newest
+ * scanned drop-row ts, or `sinceMs` when nothing qualified) so a caller can
+ * sweep incrementally without re-alerting old rows. Pure; exported for tests.
+ */
+export function scanCarryDrillDrops(
+  events: readonly ColdBootDrillLedgerEvent[],
+  sinceMs: number,
+): { alerts: CarryDrillDropAlert[]; watermarkMs: number } {
+  const alerts: CarryDrillDropAlert[] = [];
+  const seen = new Set<string>();
+  let watermarkMs = sinceMs;
+  for (const event of events) {
+    if (!DROP_ALERT_KINDS.has(event.kind) || !event.drillId) continue;
+    const tsMs = Date.parse(event.ts);
+    if (!Number.isFinite(tsMs) || tsMs <= sinceMs) continue;
+    const dedupeKey = `${event.drillId}\x00${event.kind}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    if (tsMs > watermarkMs) watermarkMs = tsMs;
+    alerts.push({
+      drillId: event.drillId,
+      ownerId: event.ownerId || 'unknown',
+      sessionClass: event.sessionClass || 'unknown',
+      kind: event.kind,
+      reason: event.reason || 'unknown',
+      ts: event.ts,
+    });
+  }
+  return { alerts, watermarkMs };
 }
 
 async function safeReadCarry(path: string, root: string = CARRY_ROOT): Promise<string | null> {

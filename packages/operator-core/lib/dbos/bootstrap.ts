@@ -365,6 +365,14 @@ export async function startDbos(): Promise<void> {
       '../system-health/compaction-compliance-watchdog'
     );
     startCompactionComplianceWatchdog(getOrgPg().sql);
+    // EI-12755: escalate dropped/respawn-failed P-020 carry drills in real time
+    // (the shared drill ledger is durable but was only read on demand — 2/2
+    // silent failures sat unnoticed ~40min on 2026-07-15). Runtime gate:
+    // FLAGS.CARRY_DRILL_DROP_WATCHER (default ON), checked per tick.
+    const { startCarryDrillDropWatchdog } = await import(
+      '../system-health/carry-drill-drop-watchdog'
+    );
+    startCarryDrillDropWatchdog();
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }

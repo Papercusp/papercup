@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   gradeColdBootDrill,
   reportColdBootDrills,
+  scanCarryDrillDrops,
   startColdBootDrill,
   terminalOutcomesFromLedger,
   verifyColdBootDrill,
