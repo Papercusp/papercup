@@ -749,6 +749,90 @@ export function makeAgentBusyGate({
 }
 
 /**
+ * Carry-respawn drill RE-ARM controller (EI-12754, the leader-concurred re-arm
+ * leg deferred out of the EI-12655 diff). A carry-respawn DRILL refused at the
+ * busy-gate bail used to terminally drop on the FIRST refusal — correct for a
+ * wake `turn` (the durable inbox stands for the next natural turn) but lossy
+ * for a drill, whose whole point is the cut. This schedules exactly ONE
+ * deferred retry at the next settled turn:
+ *
+ *   - same clean-boundary discipline (the retry re-acquires the inject mutex
+ *     and re-waits the SAME agent-busy gate — no timer polling of its own, the
+ *     gate's quiet check is the settle detector; D-006 never-kill-mid-turn holds);
+ *   - once-only per drillId (a permanently-busy session drops LOUD on the
+ *     re-armed attempt instead of looping);
+ *   - every path emits a durable event: 'carry-drill-rearm-queued' when the
+ *     retry is scheduled (non-terminal — op:'report'/'verify' ignore it), then
+ *     either recycle()'s own terminal delivered/dropped events, or a terminal
+ *     'carry-drill-carry-dropped' { rearmed:true } when the retry also defers
+ *     or throws.
+ *
+ * Pure factory (injected deps) in the makeAgentBusyGate style; exported for tests.
+ */
+export function makeCarryRearmController({
+  acquireInject, // () => Promise<release()>  — the host's gated-inject mutex
+  waitIdle = null, // optional human-keystroke gate (bridged tty only)
+  waitAtPrompt, // (capMs?) => Promise<{ deferred }>
+  recycle, // (data, { systemPromptAddendum, drillId, sessionClass }) => Promise<void>
+  emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
+  capMs = TURN_INJECT_BUSY_CAP_MS * 2,
+}) {
+  const pending = new Set();
+  return {
+    /** Live count of drills awaiting their one-shot retry (diagnostics/tests). */
+    pendingCount() {
+      return pending.size;
+    },
+    /**
+     * Schedule the one-shot retry for a busy-gate-refused carry-respawn drill.
+     * Returns 'queued' when scheduled, 'duplicate' when a retry for this drillId
+     * is already pending (the caller should terminally drop instead).
+     */
+    schedule(msg) {
+      const drillId = String(msg?.drillId || '');
+      if (!drillId || pending.has(drillId)) return 'duplicate';
+      pending.add(drillId);
+      const extra = {
+        drillId,
+        sessionClass: msg.sessionClass ?? '',
+        reason: 'busy-gate-expired',
+        capMs,
+      };
+      emitEvent('carry-drill-rearm-queued', extra);
+      void (async () => {
+        const release = await acquireInject();
+        try {
+          if (waitIdle) await waitIdle();
+          const atPrompt = await waitAtPrompt(capMs);
+          if (atPrompt.deferred) {
+            // The re-armed attempt ALSO found the agent mid-turn past the cap —
+            // terminal, loud, never a second re-arm.
+            emitEvent('carry-drill-carry-dropped', { ...extra, rearmed: true });
+            return;
+          }
+          await recycle(msg.data, {
+            systemPromptAddendum: msg.systemPromptAddendum ?? '',
+            drillId,
+            sessionClass: msg.sessionClass ?? '',
+          });
+        } catch (error) {
+          emitEvent('carry-drill-carry-dropped', {
+            ...extra,
+            rearmed: true,
+            reason: 'rearm-error',
+            detail: String(error?.message ?? error).slice(0, 200),
+          });
+        } finally {
+          release();
+          pending.delete(drillId);
+        }
+      })();
+      return 'queued';
+    },
+  };
+}
+
+/**
  * Submit verifier (WI-2930) — the POST-submit sibling of makeAgentBusyGate. The
  * gates above decide when it is safe to WRITE an injected turn; nothing verified
  * the submit actually TOOK (the CR can be swallowed by paste-settle, or land in a
@@ -1992,6 +2076,26 @@ export function hostThroughPty(o) {
   // both pass the at-prompt gate and interleave their bytes into one pty input
   // line (the "/compact swallowed as prose" race). See makeInjectMutex.
   const injectMutex = makeInjectMutex();
+  // EI-12754: one-shot deferred retry for busy-gate-refused carry-respawn
+  // drills. The retry window defaults to 2× the live-inject cap (a busy turn
+  // that outran the first 3-minute wait gets one more, longer chance to settle);
+  // per-session tunable like the caps above. Deps are read through closures so
+  // the retry always uses the CURRENT recycleChild (it is reassigned per child).
+  const carryRearmCapMs = positiveNumber(
+    env.PAPERCUSP_PSU_PTY_REARM_CAP_MS,
+    turnInjectBusyCapMs * 2,
+  );
+  const carryRearm = makeCarryRearmController({
+    acquireInject: () => injectMutex.acquire(),
+    waitIdle: bridgeTty ? () => idleGate.waitIdle() : null,
+    waitAtPrompt: (cap) => agentBusyGate.waitAtPrompt(cap),
+    recycle: (data, opts) => recycleChild(data, opts),
+    emitEvent: (kind, extra) => {
+      appendHostEvent(ownerId, kind, extra);
+      appendSharedDrillLedgerEvent(ownerId, kind, extra);
+    },
+    capMs: carryRearmCapMs,
+  });
 
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
   // we inject it into the pty (a wake turn / a force-interrupt control byte).
@@ -2085,22 +2189,29 @@ export function hostThroughPty(o) {
             } catch {
               /* never let a diagnostic write break the session */
             }
-            // EI-12655 (fix b, leader-concurred rider: "expired must FAIL LOUD"):
-            // a carry-respawn DRILL refused here previously vanished with ZERO
-            // durable trace — its only terminal signal was the stderr line
-            // above, so the shared drill ledger kept an eternally-pending
-            // requested/queued pair and op:'report' showed nothing. Record a
-            // TERMINAL drop (per-owner host log + shared drill ledger) so
-            // op:'report' / op:'verify' see the busy-gate-expired outcome.
+            // EI-12655 (fix b, leader-concurred rider: "expired must FAIL LOUD")
+            // + EI-12754 (the re-arm leg deferred out of that diff): a
+            // carry-respawn DRILL refused here previously vanished with ZERO
+            // durable trace, then (post-EI-12655) terminally dropped on the
+            // FIRST refusal. Now it re-queues exactly ONE deferred retry at the
+            // next settled turn via makeCarryRearmController (which emits the
+            // durable 'carry-drill-rearm-queued' row and, on a second refusal
+            // or an error, the terminal drop) — so op:'report' / op:'verify'
+            // always see a durable outcome, and a busy-but-recovering session
+            // no longer loses its drill to one long turn. A duplicate schedule
+            // (a retry already pending for this drillId) drops terminally.
             if (msg.mode === 'carry-respawn' && msg.drillId) {
-              const dropExtra = {
-                drillId: msg.drillId,
-                sessionClass: msg.sessionClass ?? '',
-                reason: 'busy-gate-expired',
-                capMs: turnInjectBusyCapMs,
-              };
-              appendHostEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
-              appendSharedDrillLedgerEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
+              if (carryRearm.schedule(msg) === 'duplicate') {
+                const dropExtra = {
+                  drillId: msg.drillId,
+                  sessionClass: msg.sessionClass ?? '',
+                  reason: 'busy-gate-expired',
+                  capMs: turnInjectBusyCapMs,
+                  rearmed: true,
+                };
+                appendHostEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
+                appendSharedDrillLedgerEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
+              }
             }
             // P-001a: clear the coalesce slot on defer — wakes folded into this
             // waiter are dropped WITH it (same queue-to-next-turn semantics), and
