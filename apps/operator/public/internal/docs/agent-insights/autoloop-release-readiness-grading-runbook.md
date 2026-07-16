@@ -30,6 +30,28 @@ scorecard. Origin: EI-12461 / EI-12455; owner directive
    evidence, not `pass`.
 5. **Cadence:** ≤6h between complete scorecards while the rubric is release-gating.
 
+## Composite verdict (roll-up)
+
+The rubric is a GATE, so the 8 criterion ratings collapse to ONE decision. Take
+the worst rating that applies, in this order:
+
+* **NO-GO** if ANY criterion is `fail`. A composite gate is only as green as its
+  weakest leg — one failing stage means the loop is not a shippable product.
+* **NO-GO** if ANY criterion is `unknown`. A gate cannot certify what it did not
+  measure; `unknown` is a NOT-pass that blocks GO. Resolve it (run the instrument,
+  gather the evidence) rather than shipping past an unmeasured leg — never let
+  `unknown` round up to `pass`.
+* **CONDITIONAL-HOLD** if the worst rating is `at-risk` (no `fail`, no `unknown`):
+  the fix is live but its window has not cleared. GO only with explicit owner
+  sign-off AND a stated clear-by time in evidence; otherwise hold and re-grade
+  when the window clears.
+* **GO** only when EVERY criterion is `pass`.
+
+Leg deference is transitive: `kettle-supervision-health` (c3) and
+`blender-leg-health` (c4) inherit their leg rubric's verdict — a NO-GO on
+`pot-coordination-health` or `blender-release-readiness` is a composite NO-GO,
+never overridden by a fresh-but-incomplete leg scorecard.
+
 ## Per-criterion instruments
 
 ### placement-throughput · `pot-throughput-ticks`
@@ -52,11 +74,20 @@ excluding ticks where the pool is genuinely walled (see capacity-admission).
 Rolling 24h run success + restart durability.
 
 ```sql
-SELECT count(*) FILTER (WHERE exit_code=0)::float/greatest(count(*),1) AS success_rate,
+-- NB (corrected 2026-07-16, EI-13024): cup_keeper_runs has terminal_state (NOT exit_code)
+-- and NO workspace_id — scope via the instances join.
+SELECT count(*) FILTER (WHERE r.terminal_state='completed')::float/greatest(count(*),1) AS success_rate,
        count(*) AS runs
-FROM harness_shared.cup_keeper_runs
-WHERE workspace_id='papercusp-workspace' AND started_at > now()-interval '24 hours';
+FROM harness_shared.cup_keeper_runs r
+JOIN harness_shared.cup_keeper_instances i ON i.instance_id = r.instance_id
+WHERE i.workspace_id='papercusp-workspace' AND r.started_at > now()-interval '24 hours';
 ```
+
+The table is fed by the gen-0 IQ battery (`beekeeper-gen0-runner.ts`), scheduled monthly via
+`bp-singleton-iq-battery-0` (owner budget in `payload_template.budgetUsd`). If the window is
+empty, check the singleton's `last_fired_at` and whether the last fire left an instance with
+ZERO runs (the EI-13049 silent-failure/dedupe-trap class); a manual fill is
+`npx tsx packages/operator-core/lib/iq-battery/beekeeper-gen0-runner.ts --harness=papercusp --cap=25`.
 
 `pass` ≥ 0.80 · `at-risk` 0.60–0.80 · `fail` \< 0.60 or systematic identical failures.
 Restart durability: keeper respawn after a death (`cup_keeper_instances` churn) with

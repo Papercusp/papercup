@@ -30,6 +30,8 @@ import { startAwaitSweeper } from "../../events/await/engine";
 import { buildKey } from "../../events/await/catalog";
 import { clampText, LIMITS } from "../limits";
 import { devDeployState } from "../../dev-deploy-state";
+import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
+import { withBoundedTimeout } from "../../bounded-timeout";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -324,6 +326,47 @@ defineTool({
       state === "any"
         ? buildKey("work-item", { id: args.id })
         : buildKey(WI_STATE_FAMILY[state], { id: args.id });
+    // Registration LATCHES (EI-13095): the sugar used to bypass the latches the raw
+    // events:await handler carries, so a wait armed AFTER the fact could only time
+    // out. Same probes, same answers: state:'done' on an ALREADY-settled item ⇒
+    // already_done (the done key fired at settle time and never re-fires);
+    // state:'unblocked' on an item with no live blocker / settled ⇒
+    // already_unblocked (the P-006 edge-key latch). Best-effort + time-bounded —
+    // an 'unknown' probe arms normally.
+    if (state === "done") {
+      const probe = await withBoundedTimeout(liveSettledProbe(args.id), {
+        fallback: { verdict: "unknown" as const },
+        timeoutMs: 1_500,
+        label: "work-item-await:doneLatch",
+      });
+      if (probe.value.verdict === "settled") {
+        return reply({
+          ok: true,
+          already_done: true,
+          event: key,
+          item_state: probe.value.itemState ?? "settled",
+          advice: `${args.id} is ALREADY settled (${probe.value.itemState ?? "terminal"}) — "${key}" fired when it settled and will not fire again. Do not wait; proceed now.`,
+        });
+      }
+    } else if (state === "unblocked") {
+      const probe = await withBoundedTimeout(liveBlockedState(args.id), {
+        fallback: "unknown" as const,
+        timeoutMs: 1_500,
+        label: "work-item-await:unblockedLatch",
+      });
+      if (probe.value === "unblocked" || probe.value === "settled") {
+        return reply({
+          ok: true,
+          already_unblocked: true,
+          event: key,
+          item_state: probe.value,
+          advice:
+            probe.value === "settled"
+              ? `${args.id} is already SETTLED — "${key}" will never fire. Do not wait on it.`
+              : `${args.id} has NO live blocker right now — "${key}" fires only on a future blocked→unblocked edge. Proceed with the blocked work now.`,
+        });
+      }
+    }
     return reply(
       await armAwaits(
         ctx,

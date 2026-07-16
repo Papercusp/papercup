@@ -28,7 +28,7 @@ import { ComposedSpecError, type ComposedSpec } from '../../events/await/compose
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
-import { liveBlockedState } from '../../work-items-events';
+import { liveBlockedState, liveSettledProbe } from '../../work-items-events';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
@@ -321,6 +321,40 @@ export default defineTool({
       );
       // A null probe (timeout / discovery failure) ⇒ we cannot be sure ⇒ say nothing.
       if (probe.value) unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
+    }
+
+    // ── EI-13095 (the WI-5075 stranded-await incident): the done-key LATCH.
+    // `work-item:done:<id>` fires ONCE, at settle time, so a registration made
+    // AFTER the item settled can only ever time out — the awaiter sleeps through
+    // a fix/completion that already happened (live case: an await on
+    // work-item:done:WI-5075 registered 6 minutes after the item resolved slept
+    // to its 2h timeout). The item row is the durable latch state: probe it NOW
+    // and answer already_done instead of registering a dead wait. Same class as
+    // the EI-9270 announced-gate latch and the P-006 unblocked latch below.
+    // Best-effort + time-bounded: an 'unknown' probe registers normally.
+    const doneTarget = patternAwait ? undefined : /^work-item:done:([^:]+)$/.exec(eventKey)?.[1];
+    if (doneTarget) {
+      const probe = await withBoundedTimeout(liveSettledProbe(doneTarget), {
+        fallback: { verdict: 'unknown' as const },
+        timeoutMs: 1_500,
+        label: 'events-await:doneLatch',
+      });
+      if (probe.value.verdict === 'settled') {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                already_done: true,
+                event: eventKey,
+                item_state: probe.value.itemState ?? 'settled',
+                advice: `${doneTarget} is ALREADY settled (${probe.value.itemState ?? 'terminal'}) — "${eventKey}" fired when it settled and will not fire again. Do not wait; proceed with the work this settle unblocks now.`,
+              }),
+            },
+          ],
+        };
+      }
     }
 
     // ── linking-notify-family-hardening P-006: the unblocked-key LATCH.

@@ -61,10 +61,19 @@ vi.mock("../../dev-deploy-state", () => ({
   })),
 }));
 
+// EI-13095: the work-item:await latches probe the live item — mocked here so the
+// rig stays hermetic (the real module pulls db-org). Default 'live'/'blocked' =
+// every existing case registers exactly as before.
+vi.mock("../../work-items-events", () => ({
+  liveSettledProbe: vi.fn(async () => ({ verdict: "live" as const, itemState: "wip" })),
+  liveBlockedState: vi.fn(async () => "blocked" as const),
+}));
+
 await import("./sugar");
 
 import { registerAwait, cancelAwaitsForSubscribersOnKeys } from "../../events/await/store";
 import { devDeployState } from "../../dev-deploy-state";
+import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
 import { checkpointPipelineName } from "./sugar";
 
 const checkpointTool = definedTools.find(

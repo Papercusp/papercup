@@ -7,6 +7,15 @@
  */
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+// WI-4957: launchDetachedCheckpoint's DEFAULT `cancelStaleAwaits` param is the real
+// cancelStaleCheckpointAwaits, which lazily requires events/await/engine → a real PG pool.
+// Every test in this file EXCEPT the WI-4957 ones below injects no 5th param, so without
+// this mock every replaceStale test would hit a real (here, absent) database and hang.
+// Mocked to resolve immediately; the WI-4957 tests inject their own spy and bypass this
+// entirely (the module-level function is never reached when a 5th arg is supplied).
+vi.mock('./events/await/engine', () => ({
+  cancelSupersededCandidateAwaits: vi.fn(async () => ({ cancelled: 0, ids: [] })),
+}));
 import {
   buildCheckpointSystemdArgv,
   checkpointRunLogPath,

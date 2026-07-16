@@ -449,6 +449,31 @@ export async function liveBlockedState(
 }
 
 /**
+ * The `work-item:done:<id>` registration LATCH probe (EI-13095, 2026-07-16 —
+ * the WI-5075 stranded-await incident): `work-item:done:<id>` fires ONCE, at the
+ * moment the item settles, so an await registered AFTER the settle can only ever
+ * time out — the same await-after-the-fact strand the EI-9270 announced-gate
+ * latch and the P-006 unblocked latch close for their keys. The work-item row
+ * itself is the durable latch state (no event-log scan needed): if the item is
+ * ALREADY settled, the event this caller wants has already happened. Lean by
+ * design (no edge reads — settledness needs only the item row); 'unknown'
+ * (unreadable / ambiguous id) must never block a registration.
+ */
+export async function liveSettledProbe(
+  id: string,
+  deps: Pick<SettledEventsDeps, 'getItem'> = {},
+): Promise<{ verdict: 'settled' | 'live' | 'unknown'; itemState?: string }> {
+  const getItem = deps.getItem ?? getWorkItem;
+  try {
+    const item = await getItem(id, undefined).catch(() => null);
+    if (!item) return { verdict: 'unknown' };
+    return { verdict: isSettledWorkItem(item) ? 'settled' : 'live', itemState: item.state };
+  } catch {
+    return { verdict: 'unknown' };
+  }
+}
+
+/**
  * WI-4034 DEFECT 1 (the unlink gap): `unlinkWorkItem` deleted a `blocks` edge
  * and returned — nothing ever re-checked whether that removal was the
  * dependent's LAST live blocker, so an `events:await('work-item:unblocked:<dep>')`

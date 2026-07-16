@@ -133,31 +133,84 @@ export async function resolveSpawnGatewayEnv(opts: {
    *  Omitted/'' → today's behavior (env pin → multi-account select → gateway active()). */
   account?: string | null;
 }): Promise<Record<string, string>> {
+  const acctOverride = (opts.account ?? '').trim();
+  const acctMode = acctOverride.toLowerCase();
+  const useDefault = acctMode === 'default' || acctMode === 'none' || acctMode === 'system';
+  const wantAuto = acctMode === 'auto' || acctMode === 'gateway';
+  const explicitPin = acctOverride && !useDefault && !wantAuto ? acctOverride : undefined;
+  const explicitGatewayRoute = wantAuto || !!explicitPin;
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
   const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
-  if (!gwOn) return {};
+  if (!gwOn) {
+    if (explicitGatewayRoute) {
+      throw new Error(
+        `account route '${acctOverride}' requires the inference gateway, but INFERENCE_GATEWAY is off; refusing default-system fallback`,
+      );
+    }
+    return {};
+  }
   // account-routing-3-options: an explicit `account` override picks the routing MODE up-front.
   // 'default'/'none'/'system' skips the gateway entirely (the operator's "use the system credential"
   // escape hatch) — return before any pool work.
-  const acctOverride = (opts.account ?? '').trim();
-  const acctMode = acctOverride.toLowerCase();
-  if (acctMode === 'default' || acctMode === 'none' || acctMode === 'system') return {};
-  const wantAuto = acctMode === 'auto' || acctMode === 'gateway';
-  const explicitPin = acctOverride && !wantAuto ? acctOverride : undefined;
+  if (useDefault) return {};
   const backend = interactiveBackendFromSpawnBackend(opts.backend ?? 'claude');
   const provider = accountProviderForInteractiveBackend(backend);
-  if (!provider) return {};
+  if (!provider) {
+    if (explicitGatewayRoute) {
+      throw new Error(`account routing is unsupported for backend '${backend}'; refusing default-system fallback`);
+    }
+    return {};
+  }
   let accountId: string | undefined;
   let hardPin = false;
   if (explicitPin) {
-    // Operator-chosen specific account → HARD pin via the gateway (no failover). Trusts the id, the
-    // same as the PAPERCUSP_SPAWN_ACCOUNT_PIN env path below (no extra pool validation).
+    const [{ loadAccountPool }, { accountProvider }] = await Promise.all([
+      import('../deployment/account-pool-store'),
+      import('../deployment/account-pool'),
+    ]);
+    const pool = await loadAccountPool(opts.workspaceId);
+    const account = pool.accounts.find((candidate) => candidate.id === explicitPin);
+    if (!account) {
+      throw new Error(`account '${explicitPin}' is not in the account pool; refusing default-system fallback`);
+    }
+    const actualProvider = accountProvider(account);
+    if (actualProvider !== provider) {
+      throw new Error(
+        `account '${explicitPin}' is a ${actualProvider} account, but ${backend} requires ${provider}; refusing fallback`,
+      );
+    }
+    const { getAccountOverride } = await import('../deployment/account-session-override');
+    const override = await getAccountOverride(opts.workspaceId);
+    if (override.excludeAccounts.includes(explicitPin)) {
+      throw new Error(`account '${explicitPin}' is excluded by the session override; refusing fallback`);
+    }
+    if (override.forcedAccounts.length && !override.forcedAccounts.includes(explicitPin)) {
+      throw new Error(`account '${explicitPin}' is outside the session override allow-list; refusing fallback`);
+    }
     accountId = explicitPin;
     hardPin = true;
   } else if (wantAuto) {
-    // Explicit AUTO: leave accountId unset so the gateway active()/drain-selects + fails over (no pin
-    // header) — the gateway "does the auto-routing" the owner asked for, independent of MULTI_ACCOUNT.
+    // An explicit auto selection is a contract with the credential pool. Verify
+    // there is at least one allowed provider account before emitting an unpinned
+    // gateway route; an empty pool must not look like a successful system login.
+    const [{ loadAccountPool }, { accountProvider }] = await Promise.all([
+      import('../deployment/account-pool-store'),
+      import('../deployment/account-pool'),
+    ]);
+    const pool = await loadAccountPool(opts.workspaceId);
+    const { getAccountOverride } = await import('../deployment/account-session-override');
+    const override = await getAccountOverride(opts.workspaceId);
+    const candidates = pool.accounts.filter((candidate) => {
+      if (accountProvider(candidate) !== provider) return false;
+      if (override.excludeAccounts.includes(candidate.id)) return false;
+      return !override.forcedAccounts.length || override.forcedAccounts.includes(candidate.id);
+    });
+    if (!candidates.length) {
+      throw new Error(
+        `account route 'auto' has no allowed ${provider} account in the pool; refusing default-system fallback`,
+      );
+    }
     accountId = undefined;
   } else {
     // Owner-directed dedicated-account pin (2026-06-23): when PAPERCUSP_SPAWN_ACCOUNT_PIN names a
@@ -187,8 +240,8 @@ export async function resolveSpawnGatewayEnv(opts: {
     // <home>/.omp/agent/models.yml and force-selects via `--model`. A bare PAPERCUSP_ACCOUNT_ID
     // (no models.yml) keeps a pinned-but-unseeded session fail-soft on direct egress.
     // (omp-account-pinning-gateway-2026-06-29 D-001/D-003/D-006/D-008)
-    if (!accountId) return {};
-    const env: Record<string, string> = { PAPERCUSP_ACCOUNT_ID: accountId };
+    const env: Record<string, string> = {};
+    if (accountId) env.PAPERCUSP_ACCOUNT_ID = accountId;
     // Same priority-TIER resolution as the claude path below (role → admission tier, flag-gated).
     const ompPriority =
       opts.role && (await getFlag(FLAGS.GATEWAY_PRIORITY_TIERS, 'system'))
@@ -202,6 +255,7 @@ export async function resolveSpawnGatewayEnv(opts: {
     const roleModelId = ompModelIdFromSpec(opts.model);
     const cfg = ompGatewayModelsConfig({
       accountId,
+      gatewayOn: wantAuto,
       provider: ompProviderForAccountProvider(provider),
       ownerId: opts.ownerId,
       priority: ompPriority,
@@ -235,8 +289,16 @@ export async function resolveSpawnGatewayEnv(opts: {
         const acct = pool.accounts.find((a) => a.id === accountId && a.provider === 'codex');
         const usable =
           !!acct && (!!parseCodexCliRef(acct.credentialRef) || (await credentialRefSupportsOpenAiBearer(acct.credentialRef)));
-        if (!usable) accountId = undefined; // unusable pin → fall back to gateway auto-routing, not a full bypass
+        if (!usable) {
+          if (explicitPin) {
+            throw new Error(`account '${explicitPin}' has no usable Codex gateway credential; refusing fallback`);
+          }
+          accountId = undefined;
+        }
       } catch {
+        if (explicitPin) {
+          throw new Error(`account '${explicitPin}' could not be validated for Codex gateway routing; refusing fallback`);
+        }
         accountId = undefined;
       }
     }
@@ -255,6 +317,7 @@ export async function resolveSpawnGatewayEnv(opts: {
   // gateway to route to it with NO failover; auto/env-pin/multi-account selection stay soft (yield to
   // liveness/load), unchanged from before.
   const env = gatewaySpawnEnv(true, { accountId, ownerId: opts.ownerId, priority, hardPin });
+  if (explicitGatewayRoute) env.PAPERCUSP_ACCOUNT_ROUTING_MODE = explicitPin ? 'pin' : 'auto';
   if (accountId) env.PAPERCUSP_ACCOUNT_ID = accountId;
   return env;
 }
