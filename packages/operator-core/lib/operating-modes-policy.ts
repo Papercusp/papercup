@@ -79,7 +79,12 @@ AUTO mode", "run autonomously", "don't ask — use your judgment", "just keep go
 on it is a STANDING grant for the **rest of the session** and carries **across turns AND
 topics** — never re-confirm per new thing. It stays on until the owner says **"exit AUTO
 mode"** (or "pause" / "stop" / "ask me first again" / "back to confirming"), the session
-ends, or the goal you were set on is finished. It IS the "durably authorized / told to
+ends, or the goal you were set on is finished. **REGISTER the flip the moment it happens:
+\`mode:set { mode:'auto', reason, ownerDirected:true when the owner said it }\` (exit:
+\`enabled:false\`).** A mode honored from directive text alone is INVISIBLE session state —
+peers and the leader can't see it (presence/orient read the mode REGISTRY, not your
+transcript) and a compaction or cold successor silently DROPS it (audited failure); the
+registered contract re-injects on every orient wake. It IS the "durably authorized / told to
 proceed without asking" grant the cautious rules carve out for; while it is active, those
 rules are **SUSPENDED**:
 
@@ -212,6 +217,9 @@ afterthought.
 "brainstorm features", "think bigger". Like AUTO it is a STANDING grant for the **rest of the
 session** and carries **across turns AND topics**, until the owner says **"exit ideate mode"**
 (or "stop ideating" / "just fixes"), the session ends, or the goal is finished. **Default OFF.**
+REGISTER it like AUTO: \`mode:set { mode:'ideate', reason, ownerDirected }\` on entry,
+\`enabled:false\` on exit — an unregistered mode dies at the next compaction (auto + ideate
+stack cross-axis).
 
 **What IDEATE changes while ON:**
 - **A deliberate ideation pass is an OWED debt, paced by JUDGMENT — never a turn counter.**
@@ -299,7 +307,9 @@ the current harness's actionable set — non-terminal, unclaimed, not in-progres
 size** (default 10), **AGENT + MODEL** (no default — announce the account routing + model and
 the alternatives at every spawn, always), **TERMINAL criteria** (default: every scoped item
 done/resolved/deprecated/needs_human). OFF when: the wind-down report is sent, or the owner
-stops it.
+stops it. REGISTER it like AUTO: \`mode:set { mode:'drain', reason, ownerDirected }\` on entry
+(drain implies + stacks with auto), \`enabled:false\` at wind-down — an unregistered mode dies
+at the next compaction.
 
 **The operating loop:**
 1. **TRIAGE + RANK first, launch second.** Sweep the scoped items once: dedupe, close the

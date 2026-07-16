@@ -297,8 +297,21 @@ export function renderLoopWakeText(opts: {
   const priority = [opts.ownerDirectivesBlock || null, opts.wallNagLine || null, wallsBlock].filter(
     (s): s is string => Boolean(s),
   );
+  // WI-5092 (su-behavior audit): an armed loop whose carry-note is NEVER written is the
+  // audited continuity gap — monitor loops especially armed fine, then settled wake after
+  // wake with loop:checkpoint absent from every call, leaving a cold wake / successor /
+  // post-compaction resume only the arm-time goal text. When no note exists, say so
+  // CONCRETELY (same design as renderDrivenWorkItemLine: a conditional made true is
+  // named, not left hypothetical). block == null always renders the FULL form
+  // (isLoopWakeFullForm), so the mandate only needs to ride that branch.
+  const noNoteMandate =
+    block == null
+      ? '⚠ NO loop:checkpoint carry-note exists for this loop yet. Write the FIRST one before this turn ends — loop:checkpoint { did, left, insight, next } — even on a quiet wake: with no carry-note, a cold wake, a successor, or a post-compaction resume reconstructs this loop from its arm-time goal text alone.'
+      : null;
   if (isLoopWakeFullForm(opts.fireNumber, block != null)) {
-    return [opts.kickoff, ...priority, ...(block ? [block] : [])].join('\n\n');
+    return [opts.kickoff, ...priority, ...(block ? [block] : []), ...(noNoteMandate ? [noNoteMandate] : [])].join(
+      '\n\n',
+    );
   }
   const firstLine = opts.kickoff.split('\n').find((l) => l.trim().length > 0) ?? opts.kickoff;
   return [

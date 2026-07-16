@@ -508,3 +508,114 @@ describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules 
     expect(dirs.some((d) => d.startsWith(linkToTree))).toBe(false);
   });
 });
+
+/**
+ * EI-13127: `prune_post_pin_workspace_pkgs()` — the pin-aware companion to the
+ * EI-2118 workspace-resolution fatal gate. A release symlink can dangle for two
+ * reasons with opposite correct handling: (a) the package's source IS in the
+ * target ref but extraction failed → real crash-loop risk, must stay for the
+ * fatal gate; (b) the package was added to staging AFTER the pin (integration
+ * node_modules reflects staging tip, release source reflects the pin) → pinned
+ * code cannot import it, and fataling on it froze EVERY deploy (target and
+ * rollback refs alike) until the next green pin — the 2026-07-16
+ * @papercusp/release-profile deploy freeze. These tests pin the discriminator:
+ * absent-from-TARGET_SHA ⇒ pruned; present-in-TARGET_SHA ⇒ left for the gate.
+ */
+describe('prune_post_pin_workspace_pkgs (EI-13127)', () => {
+  let integrationRoot: string;
+  let releaseRoot: string;
+  let targetSha: string;
+
+  function runPrune(): string {
+    const wrapper = [
+      'set -uo pipefail',
+      'log() { echo "[log] $*"; }',
+      'source <(sed -n "/^prune_post_pin_workspace_pkgs()/,/^}/p" "$SETUP_SCRIPT")',
+      'prune_post_pin_workspace_pkgs',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: integrationRoot,
+        RELEASE_ROOT: releaseRoot,
+        TARGET_SHA: targetSha,
+      },
+      encoding: 'utf8',
+    });
+    if (r.status !== 0) {
+      throw new Error(`prune_post_pin_workspace_pkgs exited ${r.status}: ${r.stderr || r.stdout}`);
+    }
+    return r.stdout;
+  }
+
+  const git = (...args: string[]) => {
+    const r = spawnSync(
+      'git',
+      ['-C', integrationRoot, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+      { encoding: 'utf8' },
+    );
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  /** Source dir + package.json under <root>/libs/generic/<pkg>. */
+  function addSource(root: string, pkg: string): void {
+    const dir = join(root, 'libs', 'generic', pkg);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: `@papercusp/${pkg}` }));
+  }
+
+  /** Relative workspace symlink node_modules/@papercusp/<pkg> -> ../../libs/generic/<pkg>. */
+  function linkPkg(root: string, pkg: string): void {
+    const scopeDir = join(root, 'node_modules', '@papercusp');
+    mkdirSync(scopeDir, { recursive: true });
+    symlinkSync(join('..', '..', 'libs', 'generic', pkg), join(scopeDir, pkg));
+  }
+
+  beforeEach(() => {
+    integrationRoot = realpathSync(mkdtempSync(join(tmpdir(), 'prune-int-')));
+    releaseRoot = realpathSync(mkdtempSync(join(tmpdir(), 'prune-rel-')));
+    // Pin contains ONLY in-pin-pkg…
+    git('init', '-q');
+    addSource(integrationRoot, 'in-pin-pkg');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'pin');
+    targetSha = git('rev-parse', 'HEAD');
+    // …then post-pin-pkg lands on the working tree (staging tip) after the pin.
+    addSource(integrationRoot, 'post-pin-pkg');
+    linkPkg(integrationRoot, 'in-pin-pkg');
+    linkPkg(integrationRoot, 'post-pin-pkg');
+    // Release tree: node_modules copied from integration (both symlinks) but
+    // source extracted at the PIN — only in-pin-pkg's source exists, and we
+    // model the extraction failure by omitting BOTH sources so both dangle.
+    linkPkg(releaseRoot, 'in-pin-pkg');
+    linkPkg(releaseRoot, 'post-pin-pkg');
+  });
+
+  afterEach(() => {
+    rmSync(integrationRoot, { recursive: true, force: true });
+    rmSync(releaseRoot, { recursive: true, force: true });
+  });
+
+  it('prunes a dangling symlink for a package ABSENT from the target ref (post-pin) and logs it', () => {
+    const out = runPrune();
+    expect(existsSync(join(releaseRoot, 'node_modules', '@papercusp', 'post-pin-pkg'))).toBe(false);
+    expect(lstatSync(join(releaseRoot, 'node_modules', '@papercusp', 'post-pin-pkg'), { throwIfNoEntry: false })).toBeUndefined();
+    expect(out).toContain('pruned post-pin workspace package @papercusp/post-pin-pkg');
+  });
+
+  it('LEAVES a dangling symlink for a package PRESENT in the target ref (real extraction break → fatal gate)', () => {
+    runPrune();
+    // Symlink still there (dangling), so unresolved_workspace_pkgs still fatals on it.
+    expect(lstatSync(join(releaseRoot, 'node_modules', '@papercusp', 'in-pin-pkg'), { throwIfNoEntry: false })).toBeDefined();
+  });
+
+  it('never touches a RESOLVABLE release package', () => {
+    // Give the release tree the in-pin source so it resolves.
+    addSource(releaseRoot, 'in-pin-pkg');
+    const out = runPrune();
+    expect(existsSync(join(releaseRoot, 'node_modules', '@papercusp', 'in-pin-pkg', 'package.json'))).toBe(true);
+    expect(out).not.toContain('in-pin-pkg');
+  });
+});

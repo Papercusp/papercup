@@ -63,6 +63,7 @@ import {
   forkUnsupportedMessage,
   forkBootstrapBody,
   trackedForkEnvelopeEnv,
+  forkFallbackAccountRoute,
   freshSuBootstrapBody,
   psuLaunchArgvRecord,
   effectiveAutoMode,
@@ -1411,6 +1412,25 @@ describe('psu-launcher arg parsing', () => {
     });
     // No account → NO `account` key at all (byte-identical to the pre-account body).
     expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' }, null)).not.toHaveProperty('account');
+  });
+
+  it('fork fallback preserves the complete route decision for config-carried backends', () => {
+    expect(forkFallbackAccountRoute({
+      mode: 'pin',
+      id: 'codex-main',
+      provider: 'codex',
+      env: { PAPERCUSP_ACCOUNT_ID: 'codex-main' },
+      notice: 'pinned',
+    })).toMatchObject({
+      mode: 'pin',
+      id: 'codex-main',
+      provider: 'codex',
+      env: { PAPERCUSP_ACCOUNT_ID: 'codex-main' },
+    });
+    expect(forkFallbackAccountRoute({ mode: 'auto', forward: 'auto', env: {}, notice: null }))
+      .toMatchObject({ mode: 'auto', forward: 'auto', env: {} });
+    expect(forkFallbackAccountRoute({ mode: 'default', id: null, env: defaultAccountEnv(), notice: null }))
+      .toMatchObject({ mode: 'default', id: null, env: defaultAccountEnv() });
   });
 
   it('freshSuBootstrapBody forwards launch_context so Codex can fold it into AGENTS.md', () => {

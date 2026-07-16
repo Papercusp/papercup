@@ -209,7 +209,11 @@ path," not "add one." (Plan: `desktop-build-speed-2026-07-16`.)
   `incremental = true` (+ `strip = "symbols"`), so a cut after a small source change
   recompiles only the changed crates instead of the world. The FIRST cut after that
   profile landed is a one-time cold rebuild (the profile change busts the cache once);
-  every cut after is incremental.
+  every cut after is incremental. **Measured (linux, `cargo build --release` Rust
+  compile only, 2026-07-16):** a full 428-crate recompile was **143 s**; a warm rebuild
+  after a one-line change was **4 s**. So the linux Rust compile is already fast — the
+  build-time that matters lives in the slower mac/windows VM legs (keep *their* target
+  dirs warm, per the first bullet), not linux micro-optimizations.
 - **Fast iteration build: one role, not two.** `PAPERCUSP_BUILD_ROLES=gui
   bin/release-local.sh` (or `bin/mac-vm-build.sh`) skips the ~12 GB Server-role compile
   — roughly halving the build — and produces only the auto-updatable/download GUI

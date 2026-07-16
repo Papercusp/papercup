@@ -2420,10 +2420,9 @@ export function defaultAccountEnv() {
  * The inference-gateway AUTO-route env, built CLIENT-SIDE. Pure — exported for tests. Mirrors the
  * server's gatewaySpawnEnv(true, {}) for the no-account case: point the agent at the localhost
  * gateway with NO `x-papercusp-account` header, so the gateway auto-selects an available pool
- * account and fails over. Auto-routing is wired for claude only today (codex/omp route per-session
- * config keyed off an EXPLICIT account id, so there is no "let the gateway pick" form for them) —
- * returns `{}` for any other provider, matching resolveAccountPin's `auto gateway routing isn't
- * wired for <agent> yet` guard.
+ * account and fails over. Claude carries this route in environment variables.
+ * Codex and OMP carry the equivalent unpinned route in per-session config files,
+ * so their callers use the returned route mode rather than this helper's env payload.
  *
  * `ownerId` (WI-4402): same session-identity-header treatment as gatewayPinEnv above — carries
  * GATEWAY_OWNER_HEADER when provided (no-op if omitted, unchanged for existing callers/tests) so a
@@ -4561,8 +4560,8 @@ export async function reportSessionPortDelivery(
  * envelope is intentionally empty. Strip every inference-gateway route marker
  * here, BEFORE runWrapper overlays the explicit launch envelope. Auto/pin launches
  * re-add the complete route through gatewayAutoEnv/gatewayPinEnv or bootstrap-su.
- * Preserve arbitrary direct credentials; remove ANTHROPIC_AUTH_TOKEN only when it
- * is Papercusp's non-secret gateway sentinel. */
+ * Direct credentials are route selectors too: the explicit envelope re-adds
+ * only the credential source selected for this child. */
 export function sanitizeInheritedEnv(env) {
   const out = { ...env };
   for (const key of Object.keys(out)) {
@@ -5433,6 +5432,18 @@ export function trackedForkEnvelopeEnv(bootstrapEnvelopeEnv) {
   return { ...bootstrapEnvelopeEnv, PAPERCUSP_AGENT_SESSION: '1' };
 }
 
+/** Preserve the complete account-route decision when a tracked fork falls back
+ * to the native fork path. Codex applies routing from `mode`/`id`, not env alone;
+ * narrowing this object to `{ env, notice }` silently converted its auto/pin
+ * forks to the default route. */
+export function forkFallbackAccountRoute(account = null) {
+  return {
+    ...(account ?? {}),
+    env: account?.env ?? {},
+    notice: account?.notice ?? null,
+  };
+}
+
 async function launchTrackedFork(session, args = {}, acct = { id: null, env: {}, notice: null }, model = null) {
   // The account re-pin: a TRACKED fork folds it server-side (forkBootstrapBody →
   // resolveAccountPin), like a fresh launch; an UNTRACKED fallback re-pins client-
@@ -5441,7 +5452,7 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     fork: true,
     passthrough: args.passthrough,
     addDir: args.addDir,
-    accountEnv: { env: acct?.env ?? {}, notice: acct?.notice ?? null },
+    accountEnv: forkFallbackAccountRoute(acct),
     allowSubagents: args.allowSubagents,
     model,
     // P-011/D-008: a scripted fork gets its first turn seeded too. It matters MORE

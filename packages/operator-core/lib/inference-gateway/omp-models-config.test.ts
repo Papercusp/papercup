@@ -37,6 +37,13 @@ describe('ompGatewayModelsConfig', () => {
     expect(cfg.content).toContain('baseUrl: "http://127.0.0.1:8788"');
   });
 
+  it('omits the headers field instead of emitting YAML null when auto has no attribution headers', () => {
+    const cfg = ompGatewayModelsConfig({ provider: 'anthropic', gatewayOn: true, port: 8788 })!;
+    expect(cfg.headers).toEqual({});
+    expect(cfg.content).not.toContain('    headers:');
+    expect(cfg.content).toContain('    models:');
+  });
+
   it('emits a DEDICATED anthropic-wire gateway provider pinned to the account', () => {
     const cfg = ompGatewayModelsConfig({ provider: 'anthropic', accountId: 'acct-7', port: 8788 })!;
     expect(cfg.relPath).toBe(OMP_MODELS_REL_PATH);

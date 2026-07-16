@@ -281,6 +281,54 @@ if [ -d "$RELEASE_ROOT/patches" ] && [ -x "$RELEASE_ROOT/node_modules/.bin/patch
     || log "WARN patch-package reported issues (continuing)"
 fi
 
+# 3b-2. Post-pin package prune (EI-13127) — a dangling release symlink has TWO
+# causes with OPPOSITE correct handling, and the fatal gate below cannot tell
+# them apart on its own:
+#   (a) the package's source IS in the target ref but extraction/copy failed →
+#       pinned code may require() it → crash-loop risk → FATAL is correct;
+#   (b) the package was added to staging AFTER the target ref was pinned (the
+#       integration node_modules symlink set always reflects staging tip, the
+#       release source tree reflects the PIN) → pinned code cannot possibly
+#       import a package that did not exist when it was committed → the dangling
+#       name is inert, and fataling on it froze EVERY deploy (target AND
+#       rollback refs both predate the package) until the next green pin — a
+#       multi-hour deploy freeze re-opened by every new workspace package
+#       (2026-07-16 @papercusp/release-profile: :3070 stuck 13 commits behind
+#       a green pin). Discriminate with the pin itself: the integration
+#       symlink's repo-relative source path present in TARGET_SHA ⇒ case (a),
+#       leave for the gate; absent ⇒ case (b), prune the dangling symlink and
+#       log. Named function for sed-extraction unit tests
+#       (setup-release-checkout-deps.test.ts pattern).
+prune_post_pin_workspace_pkgs() {
+  local scope pkg src rel
+  for scope in @papercusp @papercup; do
+    [ -d "$INTEGRATION_ROOT/node_modules/$scope" ] || continue
+    while IFS= read -r pkg; do
+      [ -n "$pkg" ] || continue
+      # Same predicate as unresolved_workspace_pkgs: resolves in integration…
+      [ -e "$INTEGRATION_ROOT/node_modules/$scope/$pkg/package.json" ] || continue
+      # …but not in the release tree.
+      [ -e "$RELEASE_ROOT/node_modules/$scope/$pkg/package.json" ] && continue
+      # Repo-relative source path via the integration symlink target.
+      src="$(readlink -f "$INTEGRATION_ROOT/node_modules/$scope/$pkg" 2>/dev/null)" || continue
+      [ -n "$src" ] || continue
+      case "$src" in
+        "$INTEGRATION_ROOT"/*) rel="${src#"$INTEGRATION_ROOT"/}" ;;
+        *) continue ;;
+      esac
+      # Present in the pinned tree (plain dir OR submodule gitlink)? Then this
+      # is case (a) — a genuine extraction break; leave it for the fatal gate.
+      if [ -n "$(git -C "$INTEGRATION_ROOT" ls-tree "$TARGET_SHA" -- "$rel" 2>/dev/null)" ]; then
+        continue
+      fi
+      rm -rf "$RELEASE_ROOT/node_modules/$scope/$pkg"
+      log "pruned post-pin workspace package $scope/$pkg (source $rel absent from target ref ${TARGET_SHA:0:10} — added to staging after the pin; pinned code cannot import it)"
+    done < <(ls -1 "$INTEGRATION_ROOT/node_modules/$scope" 2>/dev/null)
+  done
+  return 0
+}
+prune_post_pin_workspace_pkgs
+
 # 3c. Workspace-resolution gate (EI-2118) — fail the swap BEFORE any restart ---
 # A workspace package the release tree cannot resolve is invisible until the
 # operator boots and crash-loops on "Cannot find module", which then health-fails
@@ -291,7 +339,9 @@ fi
 # not in the release tree, abort non-zero so the deploy's `swap` step fails cleanly
 # (no migrate, no restart) instead of cutting over to a tree that cannot boot. In
 # `auto` mode step 3's copy already re-links any break, so this should only ever
-# fire when the copy genuinely could not produce a resolvable tree.
+# fire when the copy genuinely could not produce a resolvable tree. Post-pin
+# packages (case (b) above) were pruned by prune_post_pin_workspace_pkgs, so a
+# hit here is a REAL in-pin resolution break.
 unresolved="$(unresolved_workspace_pkgs)"
 if [ -n "$unresolved" ]; then
   echo "[setup-release] FATAL: release tree cannot resolve workspace package(s): $unresolved" >&2

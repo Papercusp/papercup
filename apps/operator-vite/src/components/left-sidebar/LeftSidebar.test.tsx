@@ -210,15 +210,15 @@ describe('<LeftSidebar> shell', () => {
 
   /* ── Inbox tab (EI-13037) — the human inbox beside Papercup ───────────── */
 
-  it('places the Inbox tab immediately after Papercup/sentinel (owner ask 2026-07-16)', () => {
+  it('places the Inbox tab immediately BEFORE Papercup/sentinel (owner ask 2026-07-16, placement refinement)', () => {
     H.overwatchOn = true; // both flag mocks share this value → sentinel visible too
     renderRail();
     const ids = within(screen.getByRole('tablist'))
       .getAllByRole('tab')
       .map((x) => x.getAttribute('data-testid'));
-    const sentinelAt = ids.indexOf('left-sidebar-tab-sentinel');
-    expect(sentinelAt).toBeGreaterThan(-1);
-    expect(ids[sentinelAt + 1]).toBe('left-sidebar-tab-inbox');
+    const inboxAt = ids.indexOf('left-sidebar-tab-inbox');
+    expect(inboxAt).toBeGreaterThan(-1);
+    expect(ids[inboxAt + 1]).toBe('left-sidebar-tab-sentinel');
   });
 
   it('keeps the Inbox tab when the role flags are off (it is not flag-gated)', () => {

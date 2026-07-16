@@ -400,9 +400,17 @@ describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
     }
   });
 
-  it('NO checkpoint ⇒ the full kickoff regardless of fire number (it is the only brief the agent has)', () => {
+  it('NO checkpoint ⇒ the full kickoff regardless of fire number + the first-carry-note mandate (WI-5092)', () => {
     const out = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 5, checkpoint: null });
-    expect(out).toBe(FULL_KICKOFF);
+    expect(out).toContain(FULL_KICKOFF);
+    // WI-5092 su-behavior audit: a loop with NO carry-note ever written is the audited
+    // continuity gap — the wake names the empty-note condition concretely.
+    expect(out).toContain('NO loop:checkpoint carry-note exists for this loop yet');
+    // With a note present the mandate must NOT render — it is the empty-note conditional
+    // made concrete, never boilerplate on every wake.
+    expect(renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 1, checkpoint: note })).not.toContain(
+      'NO loop:checkpoint carry-note',
+    );
   });
 
   it('a warm fireLoopWake threads the fire number: prior fires 4 ⇒ wake #5 short form', async () => {
