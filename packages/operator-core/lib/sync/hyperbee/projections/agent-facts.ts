@@ -38,6 +38,17 @@ export interface AgentFactWireRow {
   expires_at: string;
   retracted_at: string | null;
   created_by: string;
+  /** mig 574 (audience-scoped facts): the author's delivery-audience constraint
+   *  (v1 grammar 'fleet:<slug>'). Carried so a receiving peer HONORS the
+   *  restriction in its own folds (fold-relevance, not secrecy — facts:list
+   *  shows it everywhere); an unresolvable audience on the receiver folds to no
+   *  one, which is the safe direction. OPTIONAL on the wire — pre-574 history
+   *  ops lack it (absent ⇒ NULL). */
+  audience_scope?: string | null;
+  /** mig 574: the platform-verified provenance stamp for source_ref (opaque
+   *  jsonb, passed through like gym's outcome_record). Sender-attested — same
+   *  trust level as body. OPTIONAL on the wire — pre-574 history ops lack it. */
+  source_provenance?: Record<string, unknown> | null;
 }
 
 function isString(v: unknown): v is string {
