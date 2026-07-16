@@ -672,7 +672,8 @@ async function readScoutRefScopedTerminalEntries(
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}`;
 
-  const [wiRows, gymRows, planRows, droppedPlanRows] = await Promise.all([
+  const [wiRows, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows] =
+    await Promise.all([
     sql<
       { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
     >`
@@ -682,20 +683,96 @@ async function readScoutRefScopedTerminalEntries(
          AND w.terminal_owner IS NOT NULL AND w.terminal_owner <> ''
          AND w.terminal_completion_ref IS NOT NULL AND w.terminal_completion_ref <> ''
          AND ('wi:' || w.feature_id) IN (${scoutRefsFor('wi:')})`,
+    // GYM-3 (autonomous-loop-prod-audit-2026-07-02 P-013): gym_proposals.id is a
+    // COMPOUND key (`${variantId}__${role}`, control-plane.ts recordProposal) —
+    // it never equals the bare candidateId the Scout router stamps as
+    // `routedRef = gym:<proposalId>` (router.ts). Joining on `id` (the pre-fix
+    // shape) therefore NEVER matched a single Scout-routed gym idea; every one
+    // sat 'pending' forever regardless of how its proposal decided. The archive
+    // schema's own comment documents the correct key: "candidate_id = the gym
+    // variant_id, so P-013 joins it to gym_proposals.variant_id" (migration 193).
+    // Join on variant_id instead; a variant with several role-proposals decided
+    // at different times resolves to the NEWEST (decided_at DESC — matches the
+    // production feed / idempotence contract: newest decision wins).
     sql<
-      { id: string; harness_slug: string | null; status: string; decided_at: string }[]
+      { variant_id: string; harness_slug: string | null; status: string; decided_at: string }[]
     >`
-      SELECT gp.id, gp.harness_slug, gp.status, gp.decided_at
+      SELECT gp.variant_id, gp.harness_slug, gp.status, gp.decided_at
         FROM harness_shared.gym_proposals gp
        WHERE gp.status IN ('accepted', 'rejected', 'superseded')
          AND gp.decided_at IS NOT NULL
-         AND ('gym:' || gp.id) IN (${scoutRefsFor('gym:')})`,
+         AND gp.variant_id IS NOT NULL
+         AND ('gym:' || gp.variant_id) IN (${scoutRefsFor('gym:')})
+       ORDER BY gp.decided_at DESC`,
+    // GYM-3 — the gym-rail WIN terminal for a Scout-SEEDED idea specifically (as
+    // opposed to a gym-GENERATED candidate that reached full proposal review,
+    // above): `seedDistantNiches` (gym-bridge.ts, wired live in router-deps.ts's
+    // buildGymDispatchPort) inserts the idea straight into `gym_qd_archive` as a
+    // MAP-Elites niche seed — it never becomes a `gym_proposals` row at all. Its
+    // fate IS the archive: if `candidate_id` is still the reigning elite for its
+    // niche, the seed opened/held genuinely novel territory (won); if a later,
+    // better candidate has since taken the niche (or the seed was never admitted
+    // because the niche was already occupied), it's superseded (below, lost).
+    // Admission is decided SYNCHRONOUSLY at seed time (router.ts only stamps
+    // `routedRef` after `gymDispatch` returns), so "not currently the elite" is
+    // immediately and permanently classifiable — no pending grace window needed.
+    // Workspace-scoped only (no harnessSlug predicate): EI-10520 established the
+    // archive/ledger corpora don't share a consistent harness_slug across the
+    // Scout write path and the archive write path (mirrors readRoutedIdeas'
+    // corpus-wide read).
+    sql<
+      { candidate_id: string; harness_slug: string | null; updated_at: string }[]
+    >`
+      SELECT a.candidate_id, sri.harness_slug, a.updated_at
+        FROM harness_shared.gym_qd_archive a
+        JOIN harness_shared.scout_routed_ideas sri
+          ON sri.origin = 'scout' AND sri.rail = 'gym'
+         AND sri.routed_ref = 'gym:' || a.candidate_id
+         AND sri.workspace_id = ${ws}
+         ${opts.cycleId ? sql`AND sri.cycle_id = ${opts.cycleId}` : sql``}
+       WHERE a.workspace_id = ${ws}`,
+    // GYM-3 — the archive-seed LOSS terminal: a Scout-routed gym idea whose
+    // candidate is NOT the current archive elite (never admitted — the niche was
+    // already occupied by a stronger candidate — or since superseded), AND has no
+    // still-OPEN gym_proposals review under the same id (defensive: a candidate
+    // that DID advance to full proposal review stays pending here so the decided
+    // read above — or a future one — is what resolves it, never guessed lost).
+    sql<
+      { routed_ref: string; harness_slug: string | null }[]
+    >`
+      SELECT DISTINCT sri.routed_ref, sri.harness_slug
+        FROM harness_shared.scout_routed_ideas sri
+       WHERE sri.origin = 'scout' AND sri.rail = 'gym' AND sri.routed_ref LIKE 'gym:%'
+         AND sri.workspace_id = ${ws}
+         ${opts.harnessSlug ? sql`AND sri.harness_slug = ${opts.harnessSlug}` : sql``}
+         ${opts.cycleId ? sql`AND sri.cycle_id = ${opts.cycleId}` : sql``}
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.gym_qd_archive a
+            WHERE a.workspace_id = ${ws} AND a.candidate_id = substring(sri.routed_ref FROM 5)
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.gym_proposals gp
+            WHERE gp.status = 'pending' AND gp.variant_id = substring(sri.routed_ref FROM 5)
+         )`,
     sql<
       { plan_slug: string; title: string | null; harness_slug: string; op_updated_at: Date }[]
     >`
       SELECT hp.plan_slug, hp.title, hp.harness_slug, hp.op_updated_at
         FROM harness_shared.harness_plans hp
        WHERE hp.op_status = 'done' AND hp.op_updated_at IS NOT NULL
+         AND ('plan:' || hp.plan_slug) IN (${scoutRefsFor('plan:')})`,
+    // GYM-3 — the plan-rail WIN terminal via the plan-store's OWN lifecycle
+    // status (frontmatter `status: shipped`, libs/generic/plan-parser PLAN_STATUSES),
+    // a DIFFERENT state machine than `op_status` (the harness-run tracker checked
+    // above). A Scout-routed plan idea that shipped WITHOUT ever running as a
+    // tracked harness op (op_status stays null forever) previously had no terminal
+    // entry on EITHER machine and sat pending indefinitely.
+    sql<
+      { plan_slug: string; title: string | null; harness_slug: string; updated_at: Date }[]
+    >`
+      SELECT hp.plan_slug, hp.title, hp.harness_slug, hp.updated_at
+        FROM harness_shared.harness_plans hp
+       WHERE hp.status = 'shipped'
          AND ('plan:' || hp.plan_slug) IN (${scoutRefsFor('plan:')})`,
     // P-006 (SPOF 5c) — the plan-rail LOSS terminal: a scout-routed plan that
     // reached the ABANDONED op_status ('dropped', plans/set-status.ts
@@ -709,6 +786,18 @@ async function readScoutRefScopedTerminalEntries(
       SELECT hp.plan_slug, hp.title, hp.harness_slug, hp.op_updated_at
         FROM harness_shared.harness_plans hp
        WHERE hp.op_status = 'dropped' AND hp.op_updated_at IS NOT NULL
+         AND ('plan:' || hp.plan_slug) IN (${scoutRefsFor('plan:')})`,
+    // GYM-3 — the plan-rail LOSS terminal via the plan-store's own `status:
+    // superseded` (TERMINAL_PLAN_STATUSES, plan-start-state.ts) — the sibling of
+    // 'shipped' above: a plan idea reviewed and replaced/abandoned without ever
+    // becoming a tracked harness op. Tagged "Status: superseded" so
+    // classifyIdeaOutcome resolves it lost (extended below), not stuck pending.
+    sql<
+      { plan_slug: string; title: string | null; harness_slug: string; updated_at: Date }[]
+    >`
+      SELECT hp.plan_slug, hp.title, hp.harness_slug, hp.updated_at
+        FROM harness_shared.harness_plans hp
+       WHERE hp.status = 'superseded'
          AND ('plan:' || hp.plan_slug) IN (${scoutRefsFor('plan:')})`,
   ]);
 

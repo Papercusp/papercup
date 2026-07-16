@@ -30,6 +30,15 @@ export const FLAGS = {
   // (that flag is parked/cut for V1). Default ON (derived FLAG_DEFAULTS);
   // flip OFF via /admin/features to hide the sidebar without a rebuild.
   OPERATOR_CHAT_SIDEBAR: "papercusp-operator-chat-sidebar",
+  // WI-5071 (reply-latency TTFT): reuse ONE claude-code brain session per chat
+  // conversation — turns 2+ resume the session with a DELTA prompt (new
+  // trigger/utterance only; the session carries the verbatim history) instead
+  // of cold-spawning with the full prompt every turn. Measured baseline
+  // 2026-07-16: 21.1s to first visible event, 68% of it inside claude-code
+  // (MCP init + opus TTFT on an uncached full prompt). Default ON (derived
+  // FLAG_DEFAULTS); OFF restores the per-turn cold-spawn path byte-identically
+  // — the clean kill-switch if resumed sessions misbehave.
+  OPERATOR_CHAT_SESSION_REUSE: "papercusp-operator-chat-session-reuse",
   // Quick Panel — the global-shortcut popup window's tabbed body (Saved Prompts
   // outline / Docs search / Brainstorm), served at /quick-panel
   // (quick-panel-saved-prompts-2026-07-13). Default ON (derived FLAG_DEFAULTS —

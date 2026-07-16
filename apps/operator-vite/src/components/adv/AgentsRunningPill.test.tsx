@@ -33,10 +33,36 @@ vi.mock('@/app/harness/AgentThinkingStream', () => ({
 // always-rendered path throw here (and 40 other tests) before the component
 // switched to a plain `useQueryState(key)`. Parsers now come from the shared
 // complete mock so that class of break can't recur.
+//
+// This mock must be KEY-AWARE, not a single shared value: the popover renders
+// InactiveSessionsSection (WI-3881), whose "View inactive sessions" expander
+// is its own independent `agentsInactiveOpen` nuqs key. A key-blind stub
+// returning the SAME `[nuqs.open, nuqs.set]` for every key — as this used to
+// — makes that expander's `expanded` collapse onto the pill's own open/closed
+// state, so every test that opens the pill (`nuqs.open = true`) ALSO renders
+// the inactive-sessions list expanded (and its uncontrolled `fetch()`),
+// silently breaking assertions in totally unrelated tests (exactly the class
+// of break this file's own comment above warns about). `agentsRoster` keeps
+// its dedicated spy-friendly `nuqs.open`/`nuqs.set` (nothing here asserts on
+// `nuqs.set` calls, but tests read/set `nuqs.open` directly); every other key
+// gets its own independent, parser-defaulted slot.
 const nuqs = vi.hoisted(() => ({ open: false, set: vi.fn() }));
+const nuqsOther = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
 vi.mock('nuqs', () => ({
   ...nuqsParsers,
-  useQueryState: () => [nuqs.open, nuqs.set],
+  useQueryState: (key: string, parser?: { defaultValue?: unknown }) => {
+    if (key === 'agentsRoster') return [nuqs.open, nuqs.set];
+    if (!(key in nuqsOther.state)) nuqsOther.state[key] = parser?.defaultValue ?? null;
+    return [
+      nuqsOther.state[key],
+      (v: unknown) => {
+        nuqsOther.state[key] = typeof v === 'function'
+          ? (v as (prev: unknown) => unknown)(nuqsOther.state[key])
+          : v;
+        return Promise.resolve(true);
+      },
+    ];
+  },
 }));
 
 import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, canForkSession, type RosterAgent } from './AgentsRunningPill';
@@ -59,6 +85,7 @@ beforeEach(() => {
   ];
   nuqs.open = false;
   nuqs.set = vi.fn();
+  for (const key of Object.keys(nuqsOther.state)) delete nuqsOther.state[key];
 });
 afterEach(() => cleanup());
 
