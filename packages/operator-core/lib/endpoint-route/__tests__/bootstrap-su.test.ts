@@ -783,7 +783,11 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     const r = await pin('aviynw6', 'omp');
     // omp consumes PAPERCUSP_ACCOUNT_ID via its per-session models.yml — it must NOT
     // get the claude-CLI gatewaySpawnEnv (ANTHROPIC_BASE_URL/ANTHROPIC_CUSTOM_HEADERS).
-    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'aviynw6' });
+    expect(r.env).toMatchObject({
+      PAPERCUSP_ACCOUNT_ID: 'aviynw6',
+      PAPERCUSP_OMP_MODEL_SELECTOR: 'papercusp-gateway/claude-sonnet-4-6',
+    });
+    expect(r.env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-account": "aviynw6"');
     expect(r.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
     expect(r.accountId).toBe('aviynw6');
     expect(r.provider).toBe('claude');
@@ -846,8 +850,9 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.accountId).toBeNull();
     expect(r.provider).toBe('claude');
     expect(r.notice).toMatch(/auto.*selects an available pool account and fails over/i);
-    // No pool membership lookup — auto means "let the gateway pick", not "validate an id".
-    expect(loadAccountPoolMock).not.toHaveBeenCalled();
+    // Auto remains unpinned, but the pool is validated so a missing provider
+    // cannot silently degrade to the default system login.
+    expect(loadAccountPoolMock).toHaveBeenCalledWith('default');
   });
 
   it("'gateway' is an alias for 'auto'", async () => {
@@ -874,6 +879,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     // auto-selects via its bearer-pool → codex-CLI fallback). env stays {} deliberately: codex
     // routing rides in config.toml, never ANTHROPIC_* env.
     getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
     const r = await pin('auto', 'codex');
     expect(r.env).toEqual({});
     expect(r.provider).toBe('codex');
@@ -882,12 +888,14 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/routing through the inference gateway \(auto/i);
   });
 
-  it("'auto' + omp fails closed because models.yml needs a specific account", async () => {
+  it("'auto' + omp emits an unpinned gateway models.yml", async () => {
     getFlagMock.mockResolvedValue(true);
     const r = await pin('auto', 'omp');
-    expect(r.env).toEqual({});
-    expect(r.gatewayAuto).toBeUndefined();
-    expect(r.error).toMatch(/auto gateway routing isn't wired for omp yet/i);
+    expect(r.env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-sonnet-4-6');
+    expect(r.env.PAPERCUSP_OMP_MODELS_YML).toContain('papercusp-gateway:');
+    expect(r.env.PAPERCUSP_OMP_MODELS_YML).not.toContain('x-papercusp-account');
+    expect(r.gatewayAuto).toBe(true);
+    expect(r.error).toBeUndefined();
   });
 
   it('Codex account + codex agent → no Anthropic env, but carries account id for CODEX_HOME config', async () => {

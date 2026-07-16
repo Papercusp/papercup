@@ -470,6 +470,25 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
 });
 
 describe('spawnAgentInHarness — backend-aware gateway account routing', () => {
+  it('rejects an unavailable explicit route before durable admission or child launch', async () => {
+    vi.mocked(resolveSpawnGatewayEnv).mockRejectedValueOnce(
+      new Error("account route 'auto' requires the inference gateway, but it is off; refusing fallback"),
+    );
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1',
+      harness: 'demo',
+      role: 'cup',
+      accountOverride: 'auto',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/spawn rejected.*refusing fallback/i);
+    // The rejection is ledgered as an immediately-terminal failed attempt, not
+    // admitted as a live/running nursery slot.
+    expect(recordSpawn).toHaveBeenCalledTimes(1);
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ status: 'failed' }));
+    expect(spawnInvokeOnceWithFallback).not.toHaveBeenCalled();
+  });
+
   it('applies owner steering to an unpinned cup spawn instead of falling back to the host Claude command', async () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     h.ownerSteering.value = {
