@@ -18,6 +18,7 @@
  */
 import {
   runAgentChat as realRunAgentChat,
+  resolveBackend,
   setAgentConfigBootstrap,
   classifyHttpError,
   classifyTurnError,

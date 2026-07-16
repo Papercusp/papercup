@@ -14,7 +14,7 @@
  * behavior is covered by the Queue's suites — this pane only re-hosts it).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 const H = vi.hoisted(() => ({
@@ -188,19 +188,20 @@ describe('<InboxTab>', () => {
     expect(rows).toEqual(['inbox-row-d1', 'inbox-row-act1']);
   });
 
-  it('clicking a row writes ?lsis; the ?lsis-selected row hosts OtherDetail inline', () => {
+  it('clicking a row writes ?lsis; the ?lsis-selected row hosts OtherDetail inline', async () => {
     seedAttention([mkItem('d1'), mkItem('d2')]);
     const { lastQuery } = renderTab('?lsis=d2');
     // Pre-seeded selection renders the detail for d2 only.
     const detail = screen.getByTestId('other-detail');
     expect(detail.getAttribute('data-item')).toBe('d2');
     expect(screen.getAllByTestId('other-detail')).toHaveLength(1);
-    // Clicking another row re-targets the selection.
+    // Clicking another row re-targets the selection (the adapter reports URL
+    // writes on the next tick — same waitFor convention as LeftSidebar.test).
     fireEvent.click(screen.getByTestId('inbox-row-d1'));
-    expect(lastQuery()).toContain('lsis=d1');
-    // Clicking the selected row clears it (toggle).
-    fireEvent.click(screen.getByTestId('inbox-row-d2'));
-    expect(lastQuery()).not.toContain('lsis=d2');
+    await waitFor(() => expect(lastQuery()).toContain('lsis=d1'));
+    // Clicking the (now-)selected row clears it (toggle).
+    fireEvent.click(screen.getByTestId('inbox-row-d1'));
+    await waitFor(() => expect(lastQuery()).not.toContain('lsis='));
   });
 
   it('shows the inbox-zero empty state when nothing needs the owner', () => {

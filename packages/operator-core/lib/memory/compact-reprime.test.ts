@@ -32,6 +32,10 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }
 vi.mock('../auth', () => ({
   getSessionUserOrDefault: vi.fn(async () => ({ id: 'user-1' })),
 }));
+// P-026: the DEFAULT retire-flag read lazily imports the real flag store — stub it
+// OFF here so the legacy (deps-less) cases stay hermetic AND pin today's behavior;
+// the P-026 cases below pass explicit deps and never touch this mock.
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 
 beforeEach(() => {
   vi.mocked(bumpSessionEpoch).mockClear();
@@ -116,5 +120,68 @@ describe('buildCompactReprimeBlock', () => {
     });
     expect(out).toBeNull();
     expect(bumpSessionEpoch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('buildCompactReprimeBlock — P-026 verdict-gated enrichment retirement (deterministic-context-carry, WI-5001)', () => {
+  const held = [{ title: 'WI-1 wire prelude', harness: 'papercusp' }];
+
+  it('a DRILL-PROVEN class skips the speculative re-prime entirely — but the epoch bump STAYS (the ledger boundary is not the enrichment)', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue('## R\n\n- would-have-injected');
+    const provenClassFn = vi.fn(async () => 'claude-headless');
+    const out = await buildCompactReprimeBlock(
+      { ownerId: 'sid-1', heldItems: held },
+      { retireFlagFn: async () => true, provenClassFn },
+    );
+    expect(out).toBeNull(); // the hole-patch fold is retired for this class
+    expect(bumpSessionEpoch).toHaveBeenCalledTimes(1); // epoch boundary unaffected
+    expect(buildLaunchMemoryBlock).not.toHaveBeenCalled(); // no speculative recall paid
+    expect(provenClassFn).toHaveBeenCalledWith('sid-1');
+  });
+
+  it('an UNPROVEN class keeps the re-prime (null verdict ⇒ today’s behavior)', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue('## R\n\n- x');
+    const out = await buildCompactReprimeBlock(
+      { ownerId: 'sid-1', heldItems: held },
+      { retireFlagFn: async () => true, provenClassFn: async () => null },
+    );
+    expect(out).toBe('## R\n\n- x');
+    expect(buildLaunchMemoryBlock).toHaveBeenCalledTimes(1);
+  });
+
+  it('the kill-switch flag OFF keeps the re-prime WITHOUT reading the verdict', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue('## R\n\n- x');
+    const provenClassFn = vi.fn(async () => 'claude-headless');
+    const out = await buildCompactReprimeBlock(
+      { ownerId: 'sid-1', heldItems: held },
+      { retireFlagFn: async () => false, provenClassFn },
+    );
+    expect(out).toBe('## R\n\n- x');
+    expect(provenClassFn).not.toHaveBeenCalled();
+  });
+
+  it('FAIL-SOFT: a throwing flag/verdict read KEEPS the enrichment (never a lost re-prime on a fault)', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue('## R\n\n- x');
+    await expect(
+      buildCompactReprimeBlock(
+        { ownerId: 'sid-1', heldItems: held },
+        {
+          retireFlagFn: async () => {
+            throw new Error('flag store down');
+          },
+        },
+      ),
+    ).resolves.toBe('## R\n\n- x');
+    await expect(
+      buildCompactReprimeBlock(
+        { ownerId: 'sid-1', heldItems: held },
+        {
+          retireFlagFn: async () => true,
+          provenClassFn: async () => {
+            throw new Error('ledger unreadable');
+          },
+        },
+      ),
+    ).resolves.toBe('## R\n\n- x');
   });
 });

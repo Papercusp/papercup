@@ -29,7 +29,7 @@ import { Link } from '@tanstack/react-router';
 import { useQueryState, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { useLexicon } from '@/lib/useLexicon';
 import { OtherDetail, KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
-import { TIER_LABEL, type AttentionItem, type AttentionTier } from '@/app/admin/plans/plans-api';
+import { TIER_LABEL, type AttentionTier } from '@/app/admin/plans/plans-api';
 import { effectiveTier, useInboxAttention } from './use-inbox-pending';
 // The Queue detail card's styles (pc-items__*, pc-tier/pc-kind badges). Global
 // (non-module) CSS, already loaded on /adv + /admin/plans routes; importing it
@@ -167,6 +167,3 @@ export default function InboxTab({ active: _active }: { active: boolean }) {
     </div>
   );
 }
-
-/** The row shape tests assert against (kept here so fixtures stay honest). */
-export type { AttentionItem as InboxAttentionItem };

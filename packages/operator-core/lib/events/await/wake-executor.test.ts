@@ -1410,6 +1410,122 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
   });
 });
 
+describe('executeWake — P-021 verdict-gated cold-by-default (deterministic-context-carry, WI-5000)', () => {
+  // The NO-carry loop marker a WARM loop's fire now stamps ({wakeCount, harness}).
+  const warmLoopPayload = (over: Record<string, unknown> = {}) => ({
+    wakeCount: 1,
+    harness: 'papercusp',
+    ...over,
+  });
+  const hostView = { sock: '/tmp/psu-pty/p021.sock', bridgeTty: false, lastInputAt: null };
+  const p021Deps = (over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps =>
+    deps({
+      findPsuHost: vi.fn(() => ({ ...hostView })) as never,
+      injectPsuHost: vi.fn(async () => true) as never,
+      coldAutoEnabled: vi.fn(async () => true),
+      classDefaultCold: vi.fn(async () => true),
+      getLoopCarryNoteFn: vi.fn(async () => '## Next action\ncontinue the drain'),
+      ...over,
+    });
+
+  it('a no-carry loop wake on a drill-proven class colds (RESET) WITHOUT the per-loop opt-in — and the resolver receives the HOST view (bridgeTty/lastInputAt)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const classDefaultCold = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: warmLoopPayload() }),
+      p021Deps({ injectPsuHost: injectPsuHost as never, classDefaultCold }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    expect((injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }])[1].mode).toBe('reset');
+    expect((injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data).toContain(
+      '## Next action\ncontinue the drain',
+    );
+    expect(classDefaultCold).toHaveBeenCalledWith(expect.objectContaining({ bridgeTty: false, lastInputAt: null }));
+  });
+
+  it('the HYBRID recycle cadence applies on the verdict route too (wakeCount 8 → RECYCLE)', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: warmLoopPayload({ wakeCount: 8 }) }),
+      p021Deps(),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
+  });
+
+  it('DORMANT by default: with NO classDefaultCold dep wired, a no-carry loop wake stays WARM and never reads the carry-note (today’s behavior, byte-identical)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const getLoopCarryNoteFn = vi.fn(async () => 'note');
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: warmLoopPayload() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ ...hostView })) as never,
+        injectPsuHost: injectPsuHost as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        getLoopCarryNoteFn,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect((injectPsuHost.mock.calls[0] as unknown as [string, { mode: string }])[1].mode).toBe('turn');
+    expect(getLoopCarryNoteFn).not.toHaveBeenCalled();
+  });
+
+  it('a FALSE verdict (class unproven / active exchange / flag off) stays WARM without a note read', async () => {
+    const getLoopCarryNoteFn = vi.fn(async () => 'note');
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: warmLoopPayload() }),
+      p021Deps({ classDefaultCold: vi.fn(async () => false), getLoopCarryNoteFn }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(getLoopCarryNoteFn).not.toHaveBeenCalled();
+  });
+
+  it('the MASTER gate (SU_COLD_AUTO) outranks the verdict: gate off ⇒ the resolver is never consulted', async () => {
+    const classDefaultCold = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: warmLoopPayload() }),
+      p021Deps({ coldAutoEnabled: vi.fn(async () => false), classDefaultCold }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(classDefaultCold).not.toHaveBeenCalled();
+  });
+
+  it('an explicitly COLD-armed loop never consults the verdict (the opt-in route needs none)', async () => {
+    const classDefaultCold = vi.fn(async () => false);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
+      p021Deps({ classDefaultCold }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    expect(classDefaultCold).not.toHaveBeenCalled();
+  });
+
+  it('a NON-loop wake (no payload marker) never consults the verdict', async () => {
+    const classDefaultCold = vi.fn(async () => true);
+    const out = await executeWake(work({ wakeHandle: advHandle() }), p021Deps({ classDefaultCold }));
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(classDefaultCold).not.toHaveBeenCalled();
+  });
+
+  it('FAIL-SOFT: a THROWING verdict resolver stays WARM — never a dropped wake', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: warmLoopPayload() }),
+      p021Deps({
+        classDefaultCold: vi.fn(async () => {
+          throw new Error('ledger unreadable');
+        }),
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+  });
+
+  it('P-006 unchanged on the verdict route: no carry-note anchor ⇒ WARM', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: warmLoopPayload() }),
+      p021Deps({ getLoopCarryNoteFn: vi.fn(async () => null) as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+  });
+});
+
 describe('applyInjectionDoor (deterministic-context-carry P-006 leg (b))', () => {
   it('a wake within the door passes through byte-identical (the common case pays nothing)', () => {
     const text = 'a normal-sized wake';

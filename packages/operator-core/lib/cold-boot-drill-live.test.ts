@@ -82,6 +82,30 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
     expect(String(h.injected[0].msg.data)).toContain('session:carry-drill { op: "grade"');
   });
 
+  it('P-021: an OMITTED sessionClass defaults from the CANONICAL classifier (sessionClassForHost) — the drill ledger and live actuation share one vocabulary', async () => {
+    // Headless host → 'claude-headless'.
+    const h = startHarness();
+    const headless = await startColdBootDrill(
+      { ownerId: 'su-1', ownerLabel: 'su · 1' },
+      { ...h.deps, findHost: () => ({ ...HOST, bridgeTty: false }) },
+    );
+    expect(headless).toMatchObject({ ok: true, sessionClass: 'claude-headless' });
+    expect(h.ledger[0]).toMatchObject({ kind: 'carry-drill-requested', sessionClass: 'claude-headless' });
+
+    // Interactive / legacy host (no bridgeTty field) → 'claude-interactive'.
+    const h2 = startHarness();
+    const legacy = await startColdBootDrill({ ownerId: 'su-1', ownerLabel: 'su · 1' }, h2.deps);
+    expect(legacy).toMatchObject({ ok: true, sessionClass: 'claude-interactive' });
+
+    // An explicit caller class still WINS (scoped campaigns).
+    const h3 = startHarness();
+    const explicit = await startColdBootDrill(
+      { ownerId: 'su-1', ownerLabel: 'su · 1', sessionClass: 'gateway-claude-headless' },
+      { ...h3.deps, findHost: () => ({ ...HOST, bridgeTty: false }) },
+    );
+    expect(explicit).toMatchObject({ ok: true, sessionClass: 'gateway-claude-headless' });
+  });
+
   it('rate-limits a second destructive cut from the persisted ledger', async () => {
     const h = startHarness([
       { ts: new Date(NOW - 5 * 60_000).toISOString(), kind: 'carry-drill-queued', drillId: 'prior', ownerId: 'su-1', sessionClass: 'claude-su' },

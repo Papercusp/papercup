@@ -58,6 +58,14 @@ export interface ConverseInput {
    *  than the verbatim window (operator-context-compaction-2026-06-05).
    *  Absent (legacy voice ask_operator, llm-testing) ⇒ window-only behavior. */
   conversationId?: string;
+  /** WI-5071 session reuse: relocate the per-turn-VARYING memory recall (and
+   *  the sentinel read-context) from the SYSTEM sections into the USER
+   *  sections. A resumed claude session needs a byte-stable system prompt —
+   *  both so the systemHash invalidation check compares persona/catalog
+   *  changes (not every turn's fresh recall) and so the Anthropic prompt-cache
+   *  prefix survives across turns. Default false ⇒ byte-identical legacy
+   *  layout (memory in system). */
+  memoryInUser?: boolean;
 }
 
 export interface ConverseSessionUser {
@@ -76,6 +84,11 @@ export interface BuiltOperatorPrompt {
       + may_ask_active hint. Sent as the positional user message so
       omp's chat loop sees it as the user's turn. */
   userPromptText: string;
+  /** WI-5071: `userPromptText` MINUS the history-carrying sections
+      (compacted summary + verbatim transcript) — the prompt for a turn on a
+      RESUMED claude session, which already holds the prior turns verbatim.
+      Equal to `userPromptText` when the turn had no history sections. */
+  userPromptTextDelta: string;
 }
 
 export async function buildOperatorPrompt(
@@ -256,18 +269,24 @@ export async function buildOperatorPrompt(
       : Promise.resolve(null);
 
   const memBlock = await memBlockPromise;
-  if (memBlock) systemSections.push(memBlock);
+  const memoryInUser = !!input.memoryInUser;
+  if (memBlock && !memoryInUser) systemSections.push(memBlock);
   const tMem = Date.now();
 
   const sentinelBlock = await sentinelBlockPromise;
-  if (sentinelBlock) systemSections.push(sentinelBlock);
+  if (sentinelBlock && !memoryInUser) systemSections.push(sentinelBlock);
   const tSentinel = Date.now();
 
-  // USER sections (this turn's context — sent as the positional message)
+  // USER sections (this turn's context — sent as the positional message).
+  // historySections carry the conversation PAST (rolling summary + verbatim
+  // transcript window). A RESUMED claude session already holds those turns
+  // natively, so the delta prompt (userPromptTextDelta) omits exactly this
+  // list and nothing else (WI-5071).
+  const historySections: string[] = [];
   const userSections: string[] = [];
 
   if (compactedSummary) {
-    userSections.push(
+    historySections.push(
       `## Earlier conversation (compacted)\n\n` +
         `The verbatim transcript below covers only recent turns. Everything ` +
         `earlier was compacted into this rolling summary — treat it as your ` +
@@ -280,8 +299,14 @@ export async function buildOperatorPrompt(
     const transcript = messages
       .map((m) => `[${m.role}]\n${m.content}`)
       .join('\n\n');
-    userSections.push(`## Conversation history (oldest first; last ${messages.length} turns)\n\n${transcript}`);
+    historySections.push(`## Conversation history (oldest first; last ${messages.length} turns)\n\n${transcript}`);
   }
+
+  // WI-5071: with memoryInUser the varying recall blocks ride in the USER
+  // prompt (present in BOTH the full and delta variants) so the system
+  // prompt stays byte-stable for session reuse + prompt-cache hits.
+  if (memoryInUser && memBlock) userSections.push(memBlock);
+  if (memoryInUser && sentinelBlock) userSections.push(sentinelBlock);
 
   const triggerLines: Record<NonNullable<ConverseInput['trigger']>, string> = {
     user_message: `Trigger: user_message — the user just said something. React per the ladder.
@@ -433,7 +458,8 @@ Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT as
 
   return {
     systemPromptText: systemSections.join('\n\n---\n\n'),
-    userPromptText: userSections.join('\n\n---\n\n'),
+    userPromptText: [...historySections, ...userSections].join('\n\n---\n\n'),
+    userPromptTextDelta: userSections.join('\n\n---\n\n'),
   };
 }
 
