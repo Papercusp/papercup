@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir, rm, stat, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
@@ -7,6 +8,7 @@ import {
   extractDevSourceTree,
   hasPapercupMarkers,
   escapingLinkIgnore,
+  SOURCE_ARCHIVE_STAMP_BASENAME,
 } from './dev-source-extract';
 
 async function tmp(): Promise<string> {
@@ -17,6 +19,15 @@ async function writeMarkers(root: string): Promise<void> {
   await mkdir(join(root, 'libs', 'papercusp'), { recursive: true });
   await writeFile(join(root, 'apps', 'operator', 'package.json'), '{}');
   await writeFile(join(root, 'libs', 'papercusp', 'package.json'), '{}');
+}
+/** Stamp the tree as having come from EXACTLY this archive (WI-5052). */
+async function writeMatchingStamp(archive: string, root: string): Promise<void> {
+  const s = await stat(archive);
+  await writeFile(
+    join(root, SOURCE_ARCHIVE_STAMP_BASENAME),
+    JSON.stringify({ size: s.size, mtimeMs: Math.floor(s.mtimeMs) }),
+    'utf8',
+  );
 }
 
 const makeDecompress = () => new PassThrough();
@@ -57,12 +68,13 @@ describe('extractDevSourceTree', () => {
     await rm(t, { recursive: true, force: true });
   });
 
-  it('reuses an already-extracted tree (idempotent) without re-extracting', async () => {
+  it('reuses an already-extracted tree whose stamp matches the bundle (same-bundle reinstall)', async () => {
     const t = await tmp();
     const archive = join(t, 'source.tar.zst');
     await writeFile(archive, 'x');
     const target = join(t, 'out');
     await writeMarkers(target);
+    await writeMatchingStamp(archive, target);
     const makeExtract = vi.fn(makeFakeExtractSuccess(target));
     const r = await extractDevSourceTree({
       archivePath: archive,
@@ -72,6 +84,77 @@ describe('extractDevSourceTree', () => {
     });
     expect(r).toBe(target);
     expect(makeExtract).not.toHaveBeenCalled();
+    await rm(t, { recursive: true, force: true });
+  });
+
+  it('re-extracts a LEGACY (unstamped) tree once and stamps it (WI-5052 upgrade)', async () => {
+    const t = await tmp();
+    const archive = join(t, 'source.tar.zst');
+    await writeFile(archive, 'x'.repeat(500));
+    const target = join(t, 'out');
+    await writeMarkers(target);
+    const sentinel = join(target, 'stale-old-code.txt');
+    await writeFile(sentinel, 'week-old code');
+    const makeExtract = vi.fn(makeFakeExtractSuccess(target));
+    const r = await extractDevSourceTree({
+      archivePath: archive,
+      targetDir: target,
+      makeDecompress,
+      makeExtract,
+    });
+    expect(r).toBe(target);
+    expect(makeExtract).toHaveBeenCalledTimes(1);
+    // the stale tree was moved aside — its content must NOT survive into the new tree
+    expect(existsSync(sentinel)).toBe(false);
+    expect(hasPapercupMarkers(target)).toBe(true);
+    const stamp = JSON.parse(
+      await readFile(join(target, SOURCE_ARCHIVE_STAMP_BASENAME), 'utf8'),
+    ) as { size: number };
+    expect(stamp.size).toBe(500);
+    await rm(t, { recursive: true, force: true });
+  });
+
+  it('re-extracts when the stamp differs from the shipped bundle (app was updated)', async () => {
+    const t = await tmp();
+    const archive = join(t, 'source.tar.zst');
+    await writeFile(archive, 'x'.repeat(700));
+    const target = join(t, 'out');
+    await writeMarkers(target);
+    await writeFile(
+      join(target, SOURCE_ARCHIVE_STAMP_BASENAME),
+      JSON.stringify({ size: 1, mtimeMs: 1 }),
+      'utf8',
+    );
+    const makeExtract = vi.fn(makeFakeExtractSuccess(target));
+    const r = await extractDevSourceTree({
+      archivePath: archive,
+      targetDir: target,
+      makeDecompress,
+      makeExtract,
+    });
+    expect(r).toBe(target);
+    expect(makeExtract).toHaveBeenCalledTimes(1);
+    await rm(t, { recursive: true, force: true });
+  });
+
+  it('restores the previous tree when the upgrade extract fails (non-fatal rollback)', async () => {
+    const t = await tmp();
+    const archive = join(t, 'source.tar.zst');
+    await writeFile(archive, 'x'.repeat(900));
+    const target = join(t, 'out');
+    await writeMarkers(target);
+    const sentinel = join(target, 'stale-old-code.txt');
+    await writeFile(sentinel, 'week-old code');
+    const r = await extractDevSourceTree({
+      archivePath: archive,
+      targetDir: target,
+      makeDecompress,
+      makeExtract: makeFakeExtractFail(),
+    });
+    // the OLD tree is back in place and returned (degraded-but-working)
+    expect(r).toBe(target);
+    expect(existsSync(sentinel)).toBe(true);
+    expect(hasPapercupMarkers(target)).toBe(true);
     await rm(t, { recursive: true, force: true });
   });
 

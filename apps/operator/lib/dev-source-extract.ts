@@ -1,5 +1,5 @@
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Writable } from 'node:stream';
@@ -95,44 +95,131 @@ export interface ExtractDevSourceOpts extends ExtractDevSourceDeps {
 }
 
 /**
- * Extract the dev-source tree if a bundle is present and the target isn't already
- * populated. Idempotent (marker-gated: an already-extracted tree is reused, so a
- * Server-only REINSTALL keeps it — WI-3244 no-wipe runbook) and NEVER throws: on
- * any failure it returns null and dev/local simply stay skipped 'no-source-tree',
- * exactly as before this feature. Returns the extracted root path on success (the
- * caller sets PAPERCUSP_DEV_SOURCE_ROOT to it) or null when there's nothing to do.
+ * Identity stamp of the bundled archive an extracted tree came from (WI-5052 /
+ * WI-4070 class). Written into the tree root after a successful extract; a tree
+ * whose stamp no longer matches the shipped `source.tar.zst` (app was updated)
+ * is RE-EXTRACTED instead of reused forever — the "reuse forever" behavior let
+ * an operator run week-old code against a DB the newer bundle had already
+ * migrated (hives→pots rename), killing federation with nothing but scattered
+ * `relation does not exist` errors. Size+mtime is deliberately cheap (no hash
+ * of a multi-GB archive on every boot); the installer rewrites the archive on
+ * update so both change together.
+ */
+export const SOURCE_ARCHIVE_STAMP_BASENAME = '.papercusp-source-archive.json';
+
+interface ArchiveStamp {
+  size: number;
+  mtimeMs: number;
+}
+
+async function readArchiveStamp(stampPath: string): Promise<ArchiveStamp | null> {
+  try {
+    const parsed = JSON.parse(await readFile(stampPath, 'utf8')) as Partial<ArchiveStamp>;
+    if (typeof parsed.size === 'number' && typeof parsed.mtimeMs === 'number') {
+      return { size: parsed.size, mtimeMs: parsed.mtimeMs };
+    }
+  } catch {
+    /* missing or corrupt stamp → treated as unstamped (legacy tree) */
+  }
+  return null;
+}
+
+/**
+ * Extract the dev-source tree when a bundle is present and the target either
+ * isn't populated yet or came from a DIFFERENT bundle (stamp mismatch — see
+ * SOURCE_ARCHIVE_STAMP_BASENAME above; an unstamped pre-WI-5052 tree counts as
+ * stale and is upgraded once). A Server-only REINSTALL of the SAME bundle keeps
+ * the tree (stamp matches — WI-3244 no-wipe runbook still holds). NEVER throws:
+ * on any failure it restores/returns what it safely can (the previous tree on a
+ * failed upgrade, null on a failed first extract) and dev/local degrade exactly
+ * as before this feature. Returns the tree root on success (the caller sets
+ * PAPERCUSP_DEV_SOURCE_ROOT to it) or null when there's nothing to run from.
  */
 export async function extractDevSourceTree(
   opts: ExtractDevSourceOpts,
 ): Promise<string | null> {
   const { archivePath, targetDir, log = () => {} } = opts;
   if (!archivePath || !targetDir) return null;
-  if (!existsSync(archivePath)) {
+  const archiveStat = await stat(archivePath).catch(() => null);
+  if (!archiveStat) {
     log(
       `[dev-source] no bundle at ${archivePath} — dev/local run from source only on a source-bundled build`,
     );
     return null;
   }
-  if (hasPapercupMarkers(targetDir)) {
-    log(`[dev-source] tree already present at ${targetDir} (reusing)`);
-    return targetDir;
-  }
-  try {
-    await mkdir(targetDir, { recursive: true });
-    const makeDecompress = opts.makeDecompress ?? (await defaultDecompress());
-    const makeExtract = opts.makeExtract ?? (await defaultExtract(log));
-    log(`[dev-source] extracting ${archivePath} → ${targetDir} (first boot; ~2 min)`);
-    await pipeline(createReadStream(archivePath), makeDecompress(), makeExtract(targetDir));
-    if (!hasPapercupMarkers(targetDir)) {
-      log(
-        `[dev-source] extract finished but markers missing at ${targetDir} — treating as failed (dev/local skip)`,
-      );
+  const wanted: ArchiveStamp = {
+    size: archiveStat.size,
+    mtimeMs: Math.floor(archiveStat.mtimeMs),
+  };
+  const stampPath = join(targetDir, SOURCE_ARCHIVE_STAMP_BASENAME);
+
+  const doExtract = async (label: string): Promise<string | null> => {
+    try {
+      await mkdir(targetDir, { recursive: true });
+      const makeDecompress = opts.makeDecompress ?? (await defaultDecompress());
+      const makeExtract = opts.makeExtract ?? (await defaultExtract(log));
+      log(`[dev-source] extracting ${archivePath} → ${targetDir} (${label}; ~2 min)`);
+      await pipeline(createReadStream(archivePath), makeDecompress(), makeExtract(targetDir));
+      if (!hasPapercupMarkers(targetDir)) {
+        log(
+          `[dev-source] extract finished but markers missing at ${targetDir} — treating as failed (dev/local skip)`,
+        );
+        return null;
+      }
+      await writeFile(stampPath, JSON.stringify(wanted), 'utf8').catch(() => {});
+      log(`[dev-source] tree extracted → ${targetDir}`);
+      return targetDir;
+    } catch (e) {
+      log(`[dev-source] extract failed (non-fatal; dev/local skip): ${(e as Error)?.message ?? e}`);
       return null;
     }
-    log(`[dev-source] tree extracted → ${targetDir}`);
+  };
+
+  if (!hasPapercupMarkers(targetDir)) return doExtract('first boot');
+
+  const current = await readArchiveStamp(stampPath);
+  if (current && current.size === wanted.size && current.mtimeMs === wanted.mtimeMs) {
+    log(`[dev-source] tree already present at ${targetDir} (stamp matches bundle; reusing)`);
     return targetDir;
+  }
+
+  // Stale tree: it was extracted from an older bundle (or predates stamping).
+  // Move it aside, extract fresh, and only then drop the old tree — a failed
+  // extract (e.g. ENOSPC with the .stale copy still held) restores the previous
+  // tree so dev/local keep whatever worked before, with a LOUD log.
+  log(
+    `[dev-source] tree at ${targetDir} came from a ${
+      current ? 'different' : 'pre-stamp (legacy)'
+    } bundle — re-extracting the shipped source (WI-5052 stale-tree upgrade)`,
+  );
+  const staleDir = `${targetDir}.stale-${Date.now()}`;
+  try {
+    await rename(targetDir, staleDir);
   } catch (e) {
-    log(`[dev-source] extract failed (non-fatal; dev/local skip): ${(e as Error)?.message ?? e}`);
+    log(
+      `[dev-source] LOUD: could not move the stale tree aside (${(e as Error)?.message ?? e}) — REUSING the OUTDATED tree at ${targetDir}; dev/local run week-old code until this is resolved`,
+    );
+    return targetDir;
+  }
+  const extracted = await doExtract('stale-tree upgrade');
+  if (extracted) {
+    void rm(staleDir, { recursive: true, force: true }).catch((e) =>
+      log(`[dev-source] stale tree cleanup failed (harmless, delete by hand): ${staleDir} — ${(e as Error)?.message ?? e}`),
+    );
+    return extracted;
+  }
+  // Fresh extract failed — restore the previous tree rather than leaving nothing.
+  await rm(targetDir, { recursive: true, force: true }).catch(() => {});
+  try {
+    await rename(staleDir, targetDir);
+    log(
+      `[dev-source] LOUD: upgrade extract FAILED — restored the previous (OUTDATED) tree at ${targetDir}; dev/local run stale code until the next successful upgrade`,
+    );
+    return hasPapercupMarkers(targetDir) ? targetDir : null;
+  } catch (e) {
+    log(
+      `[dev-source] upgrade extract failed AND restore failed (${(e as Error)?.message ?? e}) — dev/local skip 'no-source-tree'`,
+    );
     return null;
   }
 }
