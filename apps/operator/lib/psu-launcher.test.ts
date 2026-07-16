@@ -4180,9 +4180,9 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
     it('adds a highest-precedence settings override only for explicit default Claude launches', () => {
       const args = ['--resume', 'session-id'];
       const applied = applyDefaultClaudeAuthSettingsArgs('claude', args, defaultAccountEnv());
-      expect(applied.slice(0, 2)).toEqual(args);
-      expect(applied.at(-2)).toBe('--settings');
-      expect(JSON.parse(applied.at(-1)!)).toEqual(defaultClaudeAuthSettings());
+      expect(applied.slice(0, 2)).toEqual(['--settings', JSON.stringify(defaultClaudeAuthSettings())]);
+      expect(applied.slice(2)).toEqual(args);
+      expect(JSON.parse(applied[1]!)).toEqual(defaultClaudeAuthSettings());
       expect(defaultClaudeAuthSettings().apiKeyHelper).toBe('');
       expect(Object.keys(defaultClaudeAuthSettings().env)).toEqual([...CLAUDE_DEFAULT_AUTH_ENV_KEYS]);
       expect(Object.values(defaultClaudeAuthSettings().env).every((value) => value === '')).toBe(true);

@@ -2540,14 +2540,18 @@ export function defaultClaudeAuthSettings() {
   };
 }
 
-/** Append the default-account settings override at the central wrapper seam
+/** Add the default-account settings override at the central wrapper seam
  * shared by fresh, resume, and fork launches. Pure; exported for regression
  * coverage. */
 export function applyDefaultClaudeAuthSettingsArgs(wrapperBin, args, env) {
   const list = Array.isArray(args) ? args : [];
   if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return list;
   if (env?.[ACCOUNT_ROUTING_MODE_ENV] !== 'default') return list;
-  return [...list, '--settings', JSON.stringify(defaultClaudeAuthSettings())];
+  // Global options must precede subcommands (`claude auth status --settings`
+  // is rejected), so prepend rather than append. This is also valid for the
+  // normal interactive/resume argv where every remaining token is an option or
+  // the optional kickoff prompt.
+  return ['--settings', JSON.stringify(defaultClaudeAuthSettings()), ...list];
 }
 
 /**
