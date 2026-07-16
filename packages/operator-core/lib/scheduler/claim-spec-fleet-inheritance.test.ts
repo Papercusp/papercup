@@ -29,7 +29,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: {} }),
 }));
 
-import { getClaimSpec, fleetSpecBeeKey } from './claim-spec-store';
+import { getClaimSpec, clearClaimSpec, fleetSpecBeeKey } from './claim-spec-store';
 import { DEFAULT_CLAIM_SPEC } from './claim-spec';
 import setClaimSpecTool from '../agent-tools/scheduler/set_claim_spec';
 
@@ -105,6 +105,45 @@ describe('getClaimSpec fleet inheritance (P-002)', () => {
   });
 });
 
+describe('clearClaimSpec (EI-12830 — drop a per-bee override so it falls back to fleet inheritance)', () => {
+  it('DELETEs the (workspace, bee_id) row and reports cleared:true when a row existed', async () => {
+    const { sql, calls } = makeSqlStub([[{ bee_id: 'su-m' }]]); // DELETE ... RETURNING → one row
+    const res = await clearClaimSpec({ cupId: 'su-m', workspaceId: 'ws1' }, sql);
+    expect(res).toEqual({ ok: true, errors: [], cleared: true });
+    expect(calls[0]).toContain('DELETE FROM harness_shared.cup_claim_specs');
+    expect(calls[0]).toContain('ws1');
+    expect(calls[0]).toContain('su-m');
+  });
+
+  it('is idempotent — clearing an absent row reports cleared:false', async () => {
+    const { sql } = makeSqlStub([[]]); // DELETE ... RETURNING → no rows
+    expect(await clearClaimSpec({ cupId: 'su-absent', workspaceId: 'ws1' }, sql)).toEqual({
+      ok: true,
+      errors: [],
+      cleared: false,
+    });
+  });
+
+  it('REGRESSION: a stale per-bee override shadows the fleet; after clearing it the bee inherits the fleet spec again', async () => {
+    // Before the clear: the per-bee spec ALWAYS wins — membership is not even consulted.
+    const before = makeSqlStub([[{ spec: laneSpec('stale-per-bee') }]]);
+    expect((await getClaimSpec({ cupId: 'su-m', workspaceId: 'ws1' }, before.sql)).specId).toBe('stale-per-bee');
+    expect(membershipMock).not.toHaveBeenCalled();
+
+    // Clear the per-bee row (the capability that did not exist before EI-12830).
+    const cleared = makeSqlStub([[{ bee_id: 'su-m' }]]);
+    expect((await clearClaimSpec({ cupId: 'su-m', workspaceId: 'ws1' }, cleared.sql)).cleared).toBe(true);
+
+    // After: with the per-bee row gone, getClaimSpec falls through to the fleet's spec —
+    // a later fleet-level re-steer is finally visible to this member.
+    membershipMock.mockResolvedValue({ fleetSlug: 'drain-fleet', fleetRole: 'member' });
+    const after = makeSqlStub([[], [{ spec: laneSpec('fleet-lane') }]]);
+    const got = await getClaimSpec({ cupId: 'su-m', workspaceId: 'ws1' }, after.sql);
+    expect(got.specId).toBe('fleet-lane');
+    expect(after.calls[1]).toContain(fleetSpecBeeKey('drain-fleet'));
+  });
+});
+
 describe('scheduler:set_claim_spec args — exactly one of cupId | fleet', () => {
   const args = (setClaimSpecTool as { args: ZodTypeAny }).args;
   const spec = laneSpec('lane');
@@ -117,5 +156,16 @@ describe('scheduler:set_claim_spec args — exactly one of cupId | fleet', () =>
   it('rejects neither and both', () => {
     expect(args.safeParse({ spec }).success).toBe(false);
     expect(args.safeParse({ cupId: 'su-abc', fleet: 'backlog-clearance', spec }).success).toBe(false);
+  });
+
+  it('EI-12830: accepts clear:true WITHOUT a spec (cupId or fleet); still requires a target', () => {
+    expect(args.safeParse({ cupId: 'su-abc', clear: true }).success).toBe(true);
+    expect(args.safeParse({ fleet: 'backlog-clearance', clear: true }).success).toBe(true);
+    // clear still needs exactly one target — clear alone names none.
+    expect(args.safeParse({ clear: true }).success).toBe(false);
+  });
+
+  it('EI-12830: still requires a spec when NOT clearing', () => {
+    expect(args.safeParse({ cupId: 'su-abc' }).success).toBe(false);
   });
 });
