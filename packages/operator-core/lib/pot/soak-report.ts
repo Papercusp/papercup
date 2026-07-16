@@ -20,6 +20,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { probeBgHostTicker } from '../service-health';
 import { activeWorkspaceId } from '../workspace-registry';
+import { LOOP_WAKE_SOURCE_PREFIX } from '../agent-tools/coordination/inbox-wake';
 import {
   countPlaceableFrontier,
   countQuarantinedFrontier,
@@ -113,15 +114,34 @@ export const POST_COMPACTION_ERROR_MARKER_REGEX = 'column .* does not exist|rela
  * agent contexts, and how often that forces compactions. WORKSPACE-scoped (wake
  * deliveries + compactions key on owner ids, not harness membership), unlike the
  * pot-scoped metrics above. `requestedCompactions` counts session:request-compaction
- * calls — the disciplined path; native auto-compactions leave no durable row.
+ * calls — the disciplined path; native auto-compactions leave no durable row (see
+ * session-audit.ts's transcript-marker scan for the reconciled count).
+ *
+ * WI-4958: `loopWakes`/`meanWakeChars`/`maxWakeChars`/`estMeanWakeTokens` are scoped
+ * to deliveries whose `source` carries the LOOP_WAKE_SOURCE_PREFIX ('loop:') stamp —
+ * i.e. genuine engine-loop kickoffs (loop-fire.ts stamps the FULL rendered wake text,
+ * checkpoint + walls + recipe + owner-directives, as the delivery's `summary`). Before
+ * this fix the query counted EVERY `coord:inbox-wake:%` delivery regardless of source —
+ * including plain peer-to-peer `coord:send` wakes, whose `summary` is a short one-line
+ * headline — so the WAKE_MEAN_CHAR_BUDGET gate (intended to catch the P-001 wake-diet
+ * regressing) was silently averaging two very different populations together. The
+ * `source` column (migration 387) was added for exactly this scoping but never wired
+ * in. `nonLoopInboxWakes` keeps the excluded population visible rather than dropping
+ * it on the floor.
  */
 export interface ContextBurnMetrics {
-  /** coord:inbox-wake deliveries queued in the window (the wake meter, D-007). */
+  /** LOOP-fired coord:inbox-wake deliveries in the window (source LIKE 'loop:%') —
+   *  the wake meter's intended population (D-007 / WI-4958). */
   loopWakes: number;
+  /** Mean/max `length(summary)` over loopWakes ONLY — see the interface doc. */
   meanWakeChars: number | null;
   maxWakeChars: number | null;
   /** meanWakeChars / 4 — the usual chars-per-token heuristic. */
   estMeanWakeTokens: number | null;
+  /** WI-4958: coord:inbox-wake deliveries in the window whose source is NOT a loop
+   *  fire (ordinary coord:send / dispatch / handoff wakes) — excluded from the
+   *  budget-gated metrics above but counted here so total wake traffic stays visible. */
+  nonLoopInboxWakes: number;
   requestedCompactions: number;
   /** Distinct owners that requested a compaction in the window. */
   sessionsCompacting: number;
@@ -355,6 +375,7 @@ type WakeBurnAggRow = {
   loop_wakes: number;
   mean_wake_chars: number | null;
   max_wake_chars: number | null;
+  non_loop_wakes: number;
 };
 
 type CompactionAggRow = {
@@ -480,10 +501,22 @@ export async function readContextBurnMetrics(
     // instead of DEFAULT_COORD_WORKSPACE matched ZERO rows for every non-'default'
     // pot — loop:status showed real fires while this metric silently read
     // 0/null, making the public-readiness context-overhead gate blind.
+    // WI-4958: `mean_wake_chars`/`max_wake_chars` are computed FILTERED to
+    // source LIKE 'loop:%' (LOOP_WAKE_SOURCE_PREFIX) — genuine engine-loop
+    // kickoffs, whose `summary` carries the full rendered wake text
+    // (loop-fire.ts's renderLoopWakeText: checkpoint + walls + recipe + owner
+    // directives). An ordinary coord:send wake stamps `source` with the
+    // sender's ownerId (never the 'loop:' prefix) and its `summary` is a short
+    // one-line headline — counting it into the SAME average silently diluted/
+    // skewed the WAKE_MEAN_CHAR_BUDGET gate, which the comment on that budget
+    // constant has always documented as a per-LOOP-wake measure. `non_loop_wakes`
+    // keeps the excluded population visible (never dropped) rather than folding
+    // it into a number the field name doesn't claim to represent.
     sql<WakeBurnAggRow[]>`
-      SELECT count(*)::int AS loop_wakes,
-             round(avg(length(summary)))::int AS mean_wake_chars,
-             max(length(summary))::int AS max_wake_chars
+      SELECT count(*) FILTER (WHERE source LIKE ${LOOP_WAKE_SOURCE_PREFIX + '%'})::int AS loop_wakes,
+             round(avg(length(summary)) FILTER (WHERE source LIKE ${LOOP_WAKE_SOURCE_PREFIX + '%'}))::int AS mean_wake_chars,
+             max(length(summary)) FILTER (WHERE source LIKE ${LOOP_WAKE_SOURCE_PREFIX + '%'})::int AS max_wake_chars,
+             count(*) FILTER (WHERE source IS DISTINCT FROM NULL AND source NOT LIKE ${LOOP_WAKE_SOURCE_PREFIX + '%'})::int AS non_loop_wakes
         FROM harness_shared.event_wake_deliveries
        WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
          AND event_key LIKE 'coord:inbox-wake:%'
@@ -522,7 +555,7 @@ export async function readContextBurnMetrics(
     `,
   ]);
 
-  const wakeBurn = wakeBurnRows[0] ?? { loop_wakes: 0, mean_wake_chars: null, max_wake_chars: null };
+  const wakeBurn = wakeBurnRows[0] ?? { loop_wakes: 0, mean_wake_chars: null, max_wake_chars: null, non_loop_wakes: 0 };
   const compaction = compactionRows[0] ?? { compactions: 0, sessions: 0, post_markers: 0 };
   const meanWakeChars = wakeBurn.mean_wake_chars != null ? Number(wakeBurn.mean_wake_chars) : null;
   const sessionsCompacting = Number(compaction.sessions ?? 0);
@@ -532,6 +565,7 @@ export async function readContextBurnMetrics(
     meanWakeChars,
     maxWakeChars: wakeBurn.max_wake_chars != null ? Number(wakeBurn.max_wake_chars) : null,
     estMeanWakeTokens: meanWakeChars != null ? Math.round(meanWakeChars / 4) : null,
+    nonLoopInboxWakes: Number(wakeBurn.non_loop_wakes ?? 0),
     requestedCompactions: Number(compaction.compactions ?? 0),
     sessionsCompacting,
     compactionsPerSession: sessionsCompacting > 0 ? Number(compaction.compactions ?? 0) / sessionsCompacting : null,

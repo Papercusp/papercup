@@ -256,7 +256,15 @@ export function classifyIdeaOutcome(
   // scout-scoped ledger read (readScoutRefScopedTerminalEntries) tags a
   // dropped plan's entry "Status: dropped"; any other/untagged plan-run entry
   // (op_status='done') stays 'won' byte-identically.
-  if (entry.kind === 'plan-run' && gymStatusOf(entry) === 'dropped') return 'lost';
+  //
+  // GYM-3 (P-013): 'superseded' is the sibling LOSS terminal on the plan
+  // STORE's own lifecycle status (frontmatter status, a separate state
+  // machine from op_status — TERMINAL_PLAN_STATUSES in plan-start-state.ts).
+  // A plan idea Scout routed can be reviewed and replaced/abandoned as a plan
+  // DRAFT without ever running as a tracked harness op at all (op_status
+  // stays null forever) — that idea had no terminal entry on either machine
+  // and sat pending indefinitely until this fix.
+  if (entry.kind === 'plan-run' && (gymStatusOf(entry) === 'dropped' || gymStatusOf(entry) === 'superseded')) return 'lost';
   // plan-run + winning completions: the feed only carries winning terminals.
   return 'won';
 }

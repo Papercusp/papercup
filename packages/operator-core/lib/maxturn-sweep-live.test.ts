@@ -1,0 +1,244 @@
+/**
+ * maxturn-sweep-live (P-024 live driver, WI-5002): the pure transcript→metrics
+ * extractor, the benchmark kickoff builder, repeat aggregation, and the seam-
+ * injected headless cell driver (bind→spawn→extract→clear, fail-soft clear).
+ */
+import { describe, expect, it, vi } from 'vitest';
+import {
+  SWEEP_TASK_DONE_MARKER,
+  aggregateRepeatMetrics,
+  buildBenchmarkKickoff,
+  buildLogFixture,
+  extractCellMetricsFromJsonl,
+  makeHeadlessPsuCellDriver,
+  sweepWorkDir,
+} from './maxturn-sweep-live';
+import { emptyCellMetrics, expandSweepCells, resolveCellConfig, type SweepCell } from './maxturn-sweep';
+
+// ── transcript fixture helpers ────────────────────────────────────────────────
+
+const ts = (i: number) => new Date(1_784_300_000_000 + i * 1_000).toISOString();
+
+function assistantLine(opts: {
+  id: string;
+  i: number;
+  stop?: string | null;
+  input?: number;
+  cacheRead?: number;
+  text?: string;
+}): string {
+  return JSON.stringify({
+    type: 'assistant',
+    timestamp: ts(opts.i),
+    message: {
+      id: opts.id,
+      model: 'claude-opus-4-8',
+      stop_reason: opts.stop ?? 'end_turn',
+      usage: { input_tokens: opts.input ?? 100, cache_read_input_tokens: opts.cacheRead ?? 900, output_tokens: 50 },
+      content: [{ type: 'text', text: opts.text ?? 'working' }],
+    },
+  });
+}
+
+describe('extractCellMetricsFromJsonl — the pure transcript grader', () => {
+  it('an empty/unparseable transcript yields ALL-NULL metrics (never fabricated zeros)', () => {
+    expect(extractCellMetricsFromJsonl('')).toEqual(emptyCellMetrics());
+    expect(extractCellMetricsFromJsonl('not json\n{"torn')).toEqual(emptyCellMetrics());
+  });
+
+  it('dedupes assistant lines by message.id (one API call = one hop) with max-merged usage', () => {
+    const jsonl = [
+      assistantLine({ id: 'm1', i: 0, input: 10, cacheRead: 100 }),
+      assistantLine({ id: 'm1', i: 1, input: 120, cacheRead: 480 }), // same message streaming — max wins
+      assistantLine({ id: 'm2', i: 2, input: 30, cacheRead: 200 }),
+    ].join('\n');
+    const m = extractCellMetricsFromJsonl(jsonl);
+    expect(m.hopsPerTask).toBe(2);
+    expect(m.freshInputTokens).toBe(120 + 30);
+    expect(m.cacheReadInputTokens).toBe(480 + 200);
+  });
+
+  it("counts stop_reason 'max_tokens' AND 'length' as length-stops (rate over hops)", () => {
+    const jsonl = [
+      assistantLine({ id: 'm1', i: 0, stop: 'max_tokens' }),
+      assistantLine({ id: 'm2', i: 1, stop: 'tool_use' }),
+      assistantLine({ id: 'm3', i: 2, stop: 'length' }),
+      assistantLine({ id: 'm4', i: 3, stop: 'end_turn' }),
+    ].join('\n');
+    expect(extractCellMetricsFromJsonl(jsonl).stopReasonLengthRate).toBe(0.5);
+  });
+
+  it('counts compact_boundary system lines and the wall clock from timestamps', () => {
+    const jsonl = [
+      assistantLine({ id: 'm1', i: 0 }),
+      JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: ts(5) }),
+      assistantLine({ id: 'm2', i: 60 }),
+    ].join('\n');
+    const m = extractCellMetricsFromJsonl(jsonl);
+    expect(m.compactionCount).toBe(1);
+    expect(m.wallClockMs).toBe(60_000);
+  });
+
+  it('task success reads the done marker from ASSISTANT content only — a kickoff/user line quoting it never counts', () => {
+    const userQuoting = JSON.stringify({
+      type: 'user',
+      timestamp: ts(0),
+      message: { role: 'user', content: `finish then print ${SWEEP_TASK_DONE_MARKER}` },
+    });
+    const withoutDone = [userQuoting, assistantLine({ id: 'm1', i: 1 })].join('\n');
+    expect(extractCellMetricsFromJsonl(withoutDone).taskSuccessRate).toBe(0);
+    const withDone = [userQuoting, assistantLine({ id: 'm1', i: 1, text: `done\n${SWEEP_TASK_DONE_MARKER}` })].join('\n');
+    expect(extractCellMetricsFromJsonl(withDone).taskSuccessRate).toBe(1);
+  });
+
+  it('spill-chase: a result-door pointer path read back later counts as chased; an ignored one does not; no spills ⇒ null', () => {
+    const spillLine = JSON.stringify({
+      type: 'user',
+      timestamp: ts(1),
+      message: { content: [{ type: 'tool_result', content: '[result-door: truncated — full result at /home/x/.papercusp/scratch/ws/tool/abc/result-door-1.md — page it]' }] },
+    });
+    const chaseLine = JSON.stringify({
+      type: 'assistant',
+      timestamp: ts(2),
+      message: { id: 'm9', model: 'claude-opus-4-8', stop_reason: 'tool_use', usage: { input_tokens: 1 }, content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/home/x/.papercusp/scratch/ws/tool/abc/result-door-1.md' } }] },
+    });
+    const ignoredSpill = JSON.stringify({
+      type: 'user',
+      timestamp: ts(3),
+      message: { content: [{ type: 'tool_result', content: '[result-door: full result at /home/x/.papercusp/scratch/ws/tool/def/result-door-2.md]' }] },
+    });
+    const both = [assistantLine({ id: 'm1', i: 0 }), spillLine, chaseLine, ignoredSpill].join('\n');
+    expect(extractCellMetricsFromJsonl(both).spillChaseSuccessRate).toBe(0.5); // 1 of 2 chased
+    expect(extractCellMetricsFromJsonl(assistantLine({ id: 'm1', i: 0 })).spillChaseSuccessRate).toBeNull();
+  });
+
+  it('synthetic (<synthetic>) assistant rows are not hops', () => {
+    const synthetic = JSON.stringify({
+      type: 'assistant',
+      timestamp: ts(0),
+      message: { id: 's1', model: '<synthetic>', usage: { input_tokens: 5 }, content: [] },
+    });
+    expect(extractCellMetricsFromJsonl(synthetic)).toEqual(emptyCellMetrics());
+  });
+});
+
+describe('buildBenchmarkKickoff / buildLogFixture', () => {
+  const cell = expandSweepCells().find((c) => c.taskKind === 'long-log-analysis')!;
+
+  it('every kickoff sandboxes to the work dir, forbids shared surfaces, and closes with the done-marker discipline', () => {
+    for (const c of ['drain-style', 'file-heavy-writes', 'long-log-analysis'] as const) {
+      const anyCell = expandSweepCells().find((x) => x.taskKind === c)!;
+      const text = buildBenchmarkKickoff({ id: anyCell.taskId, kind: c, summary: '' }, anyCell, '/tmp/wd');
+      expect(text).toContain('/tmp/wd');
+      expect(text).toContain('never create work items');
+      expect(text.trimEnd().endsWith(`${SWEEP_TASK_DONE_MARKER} as your final line and stop.`)).toBe(true);
+      expect(text).toContain(anyCell.cellId);
+    }
+  });
+
+  it('the long-log kickoff names the fixture; the fixture is long, deterministic, and carries a burst', () => {
+    const text = buildBenchmarkKickoff({ id: cell.taskId, kind: cell.taskKind, summary: '' }, cell, '/tmp/wd');
+    expect(text).toContain('/tmp/wd/fixture.log');
+    const fixture = buildLogFixture(1_000);
+    expect(fixture).toBe(buildLogFixture(1_000)); // deterministic
+    expect(fixture.split('\n')).toHaveLength(1_000);
+    expect(fixture).toContain('ERROR');
+  });
+
+  it('sweepWorkDir sanitizes the cell id into a safe path segment', () => {
+    expect(sweepWorkDir('a/b c__x', '/base')).toBe('/base/a_b_c__x');
+  });
+});
+
+describe('aggregateRepeatMetrics', () => {
+  it('means per metric, excluding nulls PER METRIC (one failed repeat never nulls the cell)', () => {
+    const a = { ...emptyCellMetrics(), hopsPerTask: 10, taskSuccessRate: 1, spillChaseSuccessRate: null };
+    const b = { ...emptyCellMetrics(), hopsPerTask: 20, taskSuccessRate: 0, spillChaseSuccessRate: 0.5 };
+    const agg = aggregateRepeatMetrics([a, b]);
+    expect(agg.hopsPerTask).toBe(15);
+    expect(agg.taskSuccessRate).toBe(0.5);
+    expect(agg.spillChaseSuccessRate).toBe(0.5); // the one non-null repeat
+    expect(agg.compactionCount).toBeNull();
+  });
+
+  it('no repeats ⇒ empty metrics', () => {
+    expect(aggregateRepeatMetrics([])).toEqual(emptyCellMetrics());
+  });
+});
+
+describe('makeHeadlessPsuCellDriver — the seam-injected cell run', () => {
+  const cell: SweepCell = expandSweepCells().find((c) => c.taskKind === 'drain-style' && c.maxTurnTargetTokens === 8_000)!;
+  const config = resolveCellConfig(cell);
+
+  function stubDeps() {
+    const calls: string[] = [];
+    const jsonl = [assistantLine({ id: 'm1', i: 0, text: SWEEP_TASK_DONE_MARKER })].join('\n');
+    return {
+      calls,
+      deps: {
+        mintOwnerId: (_c: SweepCell, r: number) => `su-sweep-test-r${r}`,
+        bindOverride: vi.fn(async (ownerId: string, patch: unknown, cellId: string) => {
+          calls.push(`bind:${ownerId}:${cellId}:${JSON.stringify(patch) === JSON.stringify(config.patch)}`);
+        }),
+        clearOverride: vi.fn(async (ownerId: string) => {
+          calls.push(`clear:${ownerId}`);
+        }),
+        prepareWorkDir: vi.fn(async () => {
+          calls.push('prepare');
+        }),
+        spawnSession: vi.fn(async (input: { ownerId: string; kickoff: string }) => {
+          calls.push(`spawn:${input.ownerId}`);
+          expect(input.kickoff).toContain(SWEEP_TASK_DONE_MARKER);
+        }),
+        readTranscript: vi.fn(async (): Promise<string | null> => jsonl),
+      },
+    };
+  }
+
+  it('binds the cell patch BEFORE spawning, extracts from the transcript, and ALWAYS clears', async () => {
+    const { calls, deps } = stubDeps();
+    const driver = makeHeadlessPsuCellDriver(deps);
+    const metrics = await driver(cell, config, { repeats: 1, now: Date.now });
+    expect(metrics.hopsPerTask).toBe(1);
+    expect(metrics.taskSuccessRate).toBe(1);
+    expect(calls).toEqual([
+      'bind:su-sweep-test-r1:' + cell.cellId + ':true',
+      'prepare',
+      'spawn:su-sweep-test-r1',
+      'clear:su-sweep-test-r1',
+    ]);
+  });
+
+  it('runs N repeats with fresh owners and aggregates', async () => {
+    const { deps } = stubDeps();
+    const driver = makeHeadlessPsuCellDriver(deps);
+    const metrics = await driver(cell, config, { repeats: 3, now: Date.now });
+    expect(deps.spawnSession).toHaveBeenCalledTimes(3);
+    expect(deps.clearOverride).toHaveBeenCalledTimes(3);
+    expect(metrics.taskSuccessRate).toBe(1);
+  });
+
+  it('a missing transcript THROWS (runMaxTurnSweep captures it as the cell error) — and the override is STILL cleared', async () => {
+    const { deps } = stubDeps();
+    deps.readTranscript = vi.fn(async () => null);
+    const driver = makeHeadlessPsuCellDriver(deps);
+    await expect(driver(cell, config, { repeats: 1, now: Date.now })).rejects.toThrow(/no transcript/);
+    expect(deps.clearOverride).toHaveBeenCalledTimes(1);
+  });
+
+  it('a clear failure never masks the run result (warned, swallowed)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { deps } = stubDeps();
+      deps.clearOverride = vi.fn(async () => {
+        throw new Error('pg down');
+      });
+      const driver = makeHeadlessPsuCellDriver(deps);
+      const metrics = await driver(cell, config, { repeats: 1, now: Date.now });
+      expect(metrics.taskSuccessRate).toBe(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('failed to clear session doors override'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

@@ -650,11 +650,26 @@ async function readSuRefScopedTerminalEntries(
  *     still classifies 'pending' (the scout path deliberately folds NO losses,
  *     unlike su's {@link readWorkItemLossEntries});
  *   - gym_proposals: the decided statuses (accepted → won, rejected/superseded →
- *     lost) — matching the feed, which already carries both;
- *   - harness_plans: op_status='done' (the feed's only plan terminal → won).
+ *     lost), joined on `variant_id` (GYM-3 — NOT `id`, a compound
+ *     `${variantId}__${role}` key that a Scout routedRef, always the bare
+ *     candidateId, can never match — the pre-fix join silently matched zero
+ *     rows for every scout-routed gym idea, ever);
+ *   - gym_qd_archive (GYM-3): a Scout-SEEDED idea (seedDistantNiches,
+ *     gym-bridge.ts) never becomes a gym_proposals row at all — its fate IS
+ *     the archive: still the niche's reigning elite → won; not (never
+ *     admitted, or since superseded) and no still-open proposal review →
+ *     lost;
+ *   - harness_plans: op_status='done' (the feed's only plan terminal → won),
+ *     OR (GYM-3) the plan-store's own terminal frontmatter `status`
+ *     ('shipped' → won, 'superseded' → lost, TERMINAL_PLAN_STATUSES) — a
+ *     SEPARATE state machine from op_status that resolves a plan idea
+ *     reviewed/shipped/abandoned without ever running as a tracked harness op.
  *
  * Scoped to (workspace + origin='scout' [+ harnessSlug] [+ cycleId]) so it only
  * augments the rows being classified — mirroring readSuRefScopedTerminalEntries.
+ * (The two archive queries omit harnessSlug: EI-10520 established the Scout
+ * ledger and the archive don't share a consistent harness_slug across their
+ * write paths — see readRoutedIdeas' corpus-wide read for the same reasoning.)
  * Entry shapes match the feed readers so the first-wins dedup in
  * {@link gatherCompletionsForOrigin} keeps the feed's richer entry on collision.
  */
@@ -729,6 +744,7 @@ async function readScoutRefScopedTerminalEntries(
           ON sri.origin = 'scout' AND sri.rail = 'gym'
          AND sri.routed_ref = 'gym:' || a.candidate_id
          AND sri.workspace_id = ${ws}
+         ${opts.harnessSlug ? sql`AND sri.harness_slug = ${opts.harnessSlug}` : sql``}
          ${opts.cycleId ? sql`AND sri.cycle_id = ${opts.cycleId}` : sql``}
        WHERE a.workspace_id = ${ws}`,
     // GYM-3 — the archive-seed LOSS terminal: a Scout-routed gym idea whose
@@ -813,13 +829,31 @@ async function readScoutRefScopedTerminalEntries(
   }));
   const gymLabel: Record<string, string> = { accepted: 'Accepted', rejected: 'Rejected', superseded: 'Superseded' };
   const gym: ChangeFeedEntry[] = gymRows.map((r) => ({
-    id: `gym:${r.id}`,
+    id: `gym:${r.variant_id}`,
     kind: 'proposal' as const,
     title: `${gymLabel[r.status] ?? r.status} prompt`,
     detail: `Status: ${r.status}`,
     harness: r.harness_slug ?? undefined,
-    ref: `gym:${r.id}`,
+    ref: `gym:${r.variant_id}`,
     ts: epochMsToIso(r.decided_at),
+  }));
+  const gymArchiveWon: ChangeFeedEntry[] = gymArchiveWonRows.map((r) => ({
+    id: `gym:${r.candidate_id}`,
+    kind: 'proposal' as const,
+    title: `QD niche held: gym seed '${r.candidate_id}'`,
+    detail: 'Status: accepted',
+    harness: r.harness_slug ?? undefined,
+    ref: `gym:${r.candidate_id}`,
+    ts: epochMsToIso(r.updated_at),
+  }));
+  const gymArchiveLost: ChangeFeedEntry[] = gymArchiveLostRows.map((r) => ({
+    id: r.routed_ref,
+    kind: 'proposal' as const,
+    title: `QD niche not held: gym seed '${r.routed_ref.slice(4)}'`,
+    detail: 'Status: rejected',
+    harness: r.harness_slug ?? undefined,
+    ref: r.routed_ref,
+    ts: new Date().toISOString(),
   }));
   const plan: ChangeFeedEntry[] = planRows.map((r) => ({
     id: `plan:${r.plan_slug}`,
@@ -828,6 +862,14 @@ async function readScoutRefScopedTerminalEntries(
     harness: r.harness_slug || undefined,
     ref: `plan:${r.plan_slug}`,
     ts: tsToIso(r.op_updated_at) ?? new Date(0).toISOString(),
+  }));
+  const planShipped: ChangeFeedEntry[] = planShippedRows.map((r) => ({
+    id: `plan:${r.plan_slug}`,
+    kind: 'plan-run' as const,
+    title: `Plan shipped: ${r.title || r.plan_slug}`,
+    harness: r.harness_slug || undefined,
+    ref: `plan:${r.plan_slug}`,
+    ts: tsToIso(r.updated_at) ?? new Date(0).toISOString(),
   }));
   const droppedPlan: ChangeFeedEntry[] = droppedPlanRows.map((r) => ({
     id: `plan:${r.plan_slug}`,
@@ -838,7 +880,19 @@ async function readScoutRefScopedTerminalEntries(
     ref: `plan:${r.plan_slug}`,
     ts: tsToIso(r.op_updated_at) ?? new Date(0).toISOString(),
   }));
-  return [...wi, ...gym, ...plan, ...droppedPlan];
+  const planSuperseded: ChangeFeedEntry[] = planSupersededRows.map((r) => ({
+    id: `plan:${r.plan_slug}`,
+    kind: 'plan-run' as const,
+    title: `Plan superseded: ${r.title || r.plan_slug}`,
+    detail: 'Status: superseded',
+    harness: r.harness_slug || undefined,
+    ref: `plan:${r.plan_slug}`,
+    ts: tsToIso(r.updated_at) ?? new Date(0).toISOString(),
+  }));
+  // Decided-proposal / op_status entries are listed before their archive- and
+  // frontmatter-status-derived siblings so a higher-fidelity explicit decision
+  // wins the first-wins-by-ref dedup (computeLensOutcomes) on the rare overlap.
+  return [...wi, ...gym, ...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded];
 }
 
 /**

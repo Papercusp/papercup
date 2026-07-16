@@ -289,19 +289,34 @@ function toReleaseRow(r: Record<string, unknown>): ReleaseRow {
   };
 }
 
-/** The cut_at of the release immediately BEFORE `cutAt` in the same channel —
- *  i.e. the lower bound of this release's window. Null when this is the first. */
+/** The cut_at of the release immediately BEFORE `cutAt` in the same channel — the
+ *  lower bound of this release's changelog window. Null when this is the first.
+ *
+ *  `excludeVersion` is the version being (re-)recorded, and it is EXCLUDED from the
+ *  lookup ON PURPOSE. The release row is idempotent on (workspace, channel, version),
+ *  so re-recording the same version to add a late platform (e.g. mac landing after
+ *  linux + windows) UPDATEs the existing row. Without this exclusion, `previousCutAt`
+ *  for that re-record returns the version's OWN earlier cut — now the most-recent cut
+ *  before "now" — collapsing the window to the tiny gap between the two records (which
+ *  holds ~no terminal work), and the `ON CONFLICT DO UPDATE` then overwrites the first
+ *  record's work-item / plan associations with the empty set. That is exactly what
+ *  wiped 0.0.11's changelog: 319 work items went terminal since 0.0.10, yet the row
+ *  stored 0 (fixed 2026-07-16). Excluding the same version bounds the window at the
+ *  last DIFFERENT release, so a re-record recomputes the same [prev-real-release → now]
+ *  window and re-associates the same work every time — idempotent, as intended. */
 export async function previousCutAt(
   sql: Sql,
   workspaceId: string,
   channel: string,
   cutAt: Date,
+  excludeVersion: string,
 ): Promise<Date | null> {
   const rows = await sql<Array<{ cut_at: Date }>>`
     SELECT cut_at
       FROM harness_shared.releases
      WHERE workspace_id = ${workspaceId}
        AND channel = ${channel}
+       AND version <> ${excludeVersion}
        AND cut_at < ${cutAt}
      ORDER BY cut_at DESC
      LIMIT 1

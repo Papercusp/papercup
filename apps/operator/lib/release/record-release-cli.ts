@@ -465,7 +465,13 @@ export async function run(opts: RecordOpts): Promise<number> {
   try {
     const tag = releaseTag(opts.version, opts.channel);
 
-    const prev = await previousCutAt(sql, opts.scope.workspaceId, opts.channel, opts.cutAt);
+    const prev = await previousCutAt(
+      sql,
+      opts.scope.workspaceId,
+      opts.channel,
+      opts.cutAt,
+      opts.version,
+    );
     const from =
       opts.since ??
       prev ??

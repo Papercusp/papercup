@@ -46,13 +46,18 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     const sql = db.adminSql;
 
     // Completions the ledger refs will join against:
-    // gym sp-1 accepted (a win), sp-2 rejected (a loss).
+    // gym sp-1 accepted (a win), sp-2 rejected (a loss). GYM-3: production
+    // gym_proposals rows are keyed by a COMPOUND id (`${variantId}__${role}`,
+    // control-plane.ts recordProposal) — a Scout routedRef (`gym:<candidateId>`)
+    // always joins on the separate `variant_id` column, never `id`. Model that
+    // shape here (id != variant_id) so this fixture doesn't silently validate
+    // the pre-fix wrong-column join.
     await sql`
       INSERT INTO harness_shared.gym_proposals
-        (id, workspace_id, harness_slug, role, proposed_md, status, created_at, decided_at)
+        (id, workspace_id, harness_slug, role, variant_id, proposed_md, status, created_at, decided_at)
       VALUES
-        ('sp-1', ${WS}, ${HARNESS}, 'worker', '# v', 'accepted', ${T_GYM - 1000}, ${T_GYM}),
-        ('sp-2', ${WS}, ${HARNESS}, 'worker', '# v', 'rejected', ${T_GYM - 1000}, ${T_GYM})`;
+        ('sp-1__worker', ${WS}, ${HARNESS}, 'worker', 'sp-1', '# v', 'accepted', ${T_GYM - 1000}, ${T_GYM}),
+        ('sp-2__worker', ${WS}, ${HARNESS}, 'worker', 'sp-2', '# v', 'rejected', ${T_GYM - 1000}, ${T_GYM})`;
     // plan scout-x op done (a win).
     await sql`
       INSERT INTO harness_shared.harness_plans
