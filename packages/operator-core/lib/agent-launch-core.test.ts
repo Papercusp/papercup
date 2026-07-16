@@ -107,9 +107,9 @@ describe('buildAgentLaunchCommand', () => {
     );
   });
 
-  it('defaults macOS to the gateway account (a per-session config dir cannot reach the Keychain login)', () => {
+  it('defaults every platform to the system account; auto requires an explicit selection', () => {
     expect(buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', platform: 'darwin' })).toContain(
-      '--account=auto',
+      '--account=default',
     );
     expect(buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', platform: 'linux' })).toContain(
       '--account=default',

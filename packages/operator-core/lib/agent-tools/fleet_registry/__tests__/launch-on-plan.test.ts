@@ -236,19 +236,15 @@ describe('memberLaunchCommand', () => {
     expect(tool).toBeTruthy();
   });
 
-  // cross-platform-member-credential-inheritance (Mac fleet-member login fix, 2026-07-06):
-  // a member the leader didn't pin defaults to gateway-auto on macOS (so it inherits the
-  // Keychain login via the gateway) instead of the direct system-credential that boots a
-  // headless Mac member logged out. Byte-identical on Linux/Windows; explicit pins always win.
-  describe('defaultMemberAccountRouting — Mac members default to gateway-auto', () => {
-    it('defaults an un-pinned member to "auto" on macOS (routes via the always-on gateway)', () => {
-      expect(defaultMemberAccountRouting(undefined, 'darwin')).toBe('auto');
-      expect(defaultMemberAccountRouting('', 'darwin')).toBe('auto');
+  describe('defaultMemberAccountRouting — omission is the system account everywhere', () => {
+    it('defaults an un-pinned member to "default" on macOS', () => {
+      expect(defaultMemberAccountRouting(undefined, 'darwin')).toBe('default');
+      expect(defaultMemberAccountRouting('', 'darwin')).toBe('default');
     });
 
-    it('keeps the direct system-credential default (undefined) on Linux/Windows', () => {
-      expect(defaultMemberAccountRouting(undefined, 'linux')).toBeUndefined();
-      expect(defaultMemberAccountRouting(undefined, 'win32')).toBeUndefined();
+    it('uses the same explicit system-account value on Linux/Windows', () => {
+      expect(defaultMemberAccountRouting(undefined, 'linux')).toBe('default');
+      expect(defaultMemberAccountRouting(undefined, 'win32')).toBe('default');
     });
 
     it('never overrides an explicit account pin — incl. the "default" escape hatch — on any platform', () => {
@@ -260,10 +256,10 @@ describe('memberLaunchCommand', () => {
       }
     });
 
-    it('the resolved routing flows into --account: a Mac member launch carries --account=auto', () => {
+    it('the resolved routing flows into --account: a Mac member launch carries --account=default', () => {
       const account = defaultMemberAccountRouting(undefined, 'darwin');
       const cmd = memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'p', account });
-      expect(cmd).toContain('--account=auto');
+      expect(cmd).toContain('--account=default');
     });
   });
 

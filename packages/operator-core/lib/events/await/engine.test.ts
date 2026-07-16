@@ -23,7 +23,7 @@ const h = vi.hoisted(() => ({
     expireLapsedAwaits: vi.fn(async () => 0),
     stampAnnouncementsFired: vi.fn(async () => {}),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
-    listActiveAwaitsForKey: vi.fn(async (): Promise<AwaitRow[]> => []),
+    listActiveAwaitsForKey: vi.fn(async (_key: string): Promise<AwaitRow[]> => []),
     cancelAwaitsByIds: vi.fn(async () => 0),
   },
   executeWake: vi.fn(

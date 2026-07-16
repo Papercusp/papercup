@@ -39,6 +39,8 @@ import {
   chooseResumeAccount,
   buildResumeEnv,
   ompTrackedResumeEnv,
+  applyOmpResumeAccountRoute,
+  ompDirectModelForRoute,
   rehealResumeCredentials,
   claudeCredExpiresAt,
   gatewayPinEnv,
@@ -1572,6 +1574,52 @@ describe('psu-launcher arg parsing', () => {
     }
   });
 
+  it('OMP resume route transitions replace auto/pin config and restore direct config on default', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-omp-route-'));
+    try {
+      const globalAgent = join(home, '.omp', 'agent');
+      const sessionAgent = join(home, '.papercusp', 'su-omp-homes', 'session-7', 'agent');
+      mkdirSync(globalAgent, { recursive: true });
+      mkdirSync(sessionAgent, { recursive: true });
+      writeFileSync(join(globalAgent, 'models.yml'), 'providers:\n  anthropic:\n    models: []\n');
+      const session = { agent: 'omp', id: 7, coordOwnerId: 'su-omp', ompThreadId: 'thr' };
+      const env = ompTrackedResumeEnv(session, { home });
+
+      const autoModel = applyOmpResumeAccountRoute({
+        session,
+        env,
+        accountRoute: { mode: 'auto' },
+        model: 'anthropic/claude-opus-4-8:high',
+        home,
+      });
+      expect(autoModel).toBe('papercusp-gateway/claude-opus-4-8');
+      expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).not.toContain('x-papercusp-account');
+
+      const pinModel = applyOmpResumeAccountRoute({
+        session,
+        env,
+        accountRoute: { mode: 'pin', id: 'acct-7' },
+        model: autoModel,
+        home,
+      });
+      expect(pinModel).toBe('papercusp-gateway/claude-opus-4-8');
+      expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).toContain('"x-papercusp-account": "acct-7"');
+
+      const directModel = applyOmpResumeAccountRoute({
+        session,
+        env,
+        accountRoute: { mode: 'default' },
+        model: pinModel,
+        home,
+      });
+      expect(directModel).toBe('anthropic/claude-opus-4-8');
+      expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).toBe('providers:\n  anthropic:\n    models: []\n');
+      expect(ompDirectModelForRoute('ollama/ornith')).toBe('ollama/ornith');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('resumeEnvFor: a FORK takes a fresh coord identity + no adv-row link (concurrent-safe)', () => {
     // Even though the source IS a tracked row (coordOwnerId + id present), the fork
     // must NOT inherit its SID or adv id — otherwise it would collide on the still-
@@ -1608,6 +1656,7 @@ describe('psu-launcher arg parsing', () => {
         { account: 'default', picker: false },
       ),
     ).resolves.toEqual({
+      mode: 'default',
       id: null,
       env: defaultAccountEnv(),
       notice: 'using the default system account (inference gateway skipped).',
@@ -1621,6 +1670,7 @@ describe('psu-launcher arg parsing', () => {
         { account: null, picker: false },
       ),
     ).resolves.toEqual({
+      mode: 'default',
       id: null,
       env: defaultAccountEnv(),
       notice: null,
@@ -1667,17 +1717,14 @@ describe('psu-launcher arg parsing', () => {
     ).rejects.toThrow(/not an allowed pool account.*refusing to fall back/i);
   });
 
-  it('chooseResumeAccount: OMP auto fails closed because only Claude raw resumes support gateway auto', async () => {
-    await expect(
-      withAccountChoices(
-        { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
-        () =>
-          chooseResumeAccount(
-            { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp' },
-            { account: 'auto', picker: false },
-          ),
+  it('chooseResumeAccount: OMP auto remains an explicit config-carried gateway route', async () => {
+    await expect(withAccountChoices(
+      { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+      () => chooseResumeAccount(
+        { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp' },
+        { account: 'auto', picker: false },
       ),
-    ).rejects.toThrow(/auto-routing isn't wired for omp.*refusing to fall back/i);
+    )).resolves.toMatchObject({ mode: 'auto', auto: true, forward: 'auto', provider: 'claude', env: {} });
   });
 
   it('chooseResumeAccount: valid Claude auto remains gateway-only and never carries the default marker', async () => {
@@ -1697,7 +1744,7 @@ describe('psu-launcher arg parsing', () => {
         ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
       },
     });
-    expect((resolved as { env: Record<string, string> }).env).not.toHaveProperty(ACCOUNT_ROUTING_MODE_ENV);
+    expect((resolved as { env: Record<string, string> }).env[ACCOUNT_ROUTING_MODE_ENV]).toBe('auto');
   });
 
   it('buildResumeEnv: resumed psu sessions always carry the agent-session marker', () => {
@@ -1857,10 +1904,7 @@ describe('psu-launcher arg parsing', () => {
       KEEP_ME: 'yes',
     };
     const clean = sanitizeInheritedEnv(contaminatedParent);
-    expect(clean).toEqual({
-      CLAUDE_CODE_OAUTH_TOKEN: 'direct-system-oauth',
-      KEEP_ME: 'yes',
-    });
+    expect(clean).toEqual({ KEEP_ME: 'yes' });
 
     const defaultEnv = { ...clean };
     expect(defaultEnv).not.toHaveProperty('ANTHROPIC_BASE_URL');
@@ -1880,10 +1924,12 @@ describe('psu-launcher arg parsing', () => {
     expect(pinEnv.PAPERCUSP_ACCOUNT_ID).toBe('acct-pin');
   });
 
-  it('sanitizeInheritedEnv preserves a user-supplied direct Anthropic credential', () => {
-    expect(sanitizeInheritedEnv({ ANTHROPIC_AUTH_TOKEN: 'user-direct-token' })).toEqual({
+  it('sanitizeInheritedEnv strips direct/provider credentials so only the explicit route overlay can re-add auth', () => {
+    expect(sanitizeInheritedEnv({
       ANTHROPIC_AUTH_TOKEN: 'user-direct-token',
-    });
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      ANTHROPIC_BEDROCK_BASE_URL: 'https://bedrock.invalid',
+    })).toEqual({});
   });
 
   it('codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin', () => {
@@ -1905,6 +1951,16 @@ describe('psu-launcher arg parsing', () => {
     expect(next).toContain('base_url = "http://127.0.0.1:8788/v1"');
     expect(next).toContain('http_headers = { "x-papercusp-account" = "codex-main" }');
     expect(next).not.toContain('"old"');
+
+    const auto = codexGatewayConfigPatch(next, null, { gatewayOn: true, ownerId: 'su-codex' });
+    expect(auto).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(auto).toContain('"x-papercusp-owner" = "su-codex"');
+    expect(auto).not.toContain('x-papercusp-account');
+
+    const direct = codexGatewayConfigPatch(auto);
+    expect(direct).toContain('# existing config');
+    expect(direct).not.toContain('PAPERCUSP_CODEX_GATEWAY');
+    expect(direct).not.toContain('papercusp-codex-gateway');
   });
 
   it('accountPinnable: gates on gatewayOn + pool membership + session-override (mirrors resolveAccountPin)', () => {
@@ -3546,8 +3602,12 @@ describe('sessionHasTranscript (ghost rows — adv-tracked launches that never p
     expect(sessionHasTranscript({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe(true);
   });
 
-  it('omp: always kept (the thread store is not path-indexed here)', () => {
-    expect(sessionHasTranscript({ agent: 'omp', ompThreadId: 't-1' }, { home })).toBe(true);
+  it('omp: verifies the tracked per-session transcript by native thread id', () => {
+    const dir = join(home, '.papercusp', 'su-omp-homes', 'session-42', 'agent', 'sessions', 'some-project');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '2026-07-16T00-00-00_t-1.jsonl'), '{"type":"session","id":"t-1"}\n');
+    expect(sessionHasTranscript({ agent: 'omp', id: 42, ompThreadId: 't-1' }, { home })).toBe(true);
+    expect(sessionHasTranscript({ agent: 'omp', id: 42, ompThreadId: 'missing' }, { home })).toBe(false);
   });
 });
 
@@ -3629,7 +3689,20 @@ describe('lastActiveModelFor (tail-read the session transcript)', () => {
       expect(lastActiveModelFor({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe('gpt-5.6-sol');
     });
 
-    it('degrades to null: omp, a missing transcript, and a transcript with no model events', () => {
+    it('omp: the newest model_change wins from the tracked per-session store', () => {
+      const threadId = 'omp-thread-7';
+      const f = join(home, '.papercusp', 'su-omp-homes', 'session-42', 'agent', 'sessions', 'project', `2026-07-16T00-00-00_${threadId}.jsonl`);
+      writeJsonl(f, [
+        { type: 'session', id: threadId },
+        { type: 'model_change', model: 'anthropic/claude-sonnet-4-6' },
+        { type: 'model_change', model: 'papercusp-gateway/claude-opus-4-8' },
+      ]);
+      expect(sessionTranscriptFile({ agent: 'omp', id: 42, ompThreadId: threadId }, { home })).toBe(f);
+      expect(lastActiveModelFor({ agent: 'omp', id: 42, ompThreadId: threadId }, { home }))
+        .toBe('papercusp-gateway/claude-opus-4-8');
+    });
+
+    it('degrades to null for a missing transcript or a transcript with no model events', () => {
       expect(lastActiveModelFor({ agent: 'omp', ompThreadId: 't-1' }, { home })).toBe(null);
       expect(lastActiveModelFor({ agent: 'claude', sessionId: UUID, coordOwnerId: 'su-none' }, { home })).toBe(null);
       const owner = 'su-owner-2';
@@ -4297,7 +4370,7 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
       expect(env).toEqual({ ANTHROPIC_API_KEY: 'direct-user-key' });
     });
 
-    it('adds a highest-precedence settings override only for explicit default Claude launches', () => {
+    it('adds a highest-precedence settings override for every explicit Claude route', () => {
       const args = ['--resume', 'session-id'];
       const applied = applyDefaultClaudeAuthSettingsArgs('claude', args, defaultAccountEnv());
       expect(applied.slice(0, 2)).toEqual(['--settings', JSON.stringify(defaultClaudeAuthSettings())]);
@@ -4322,6 +4395,14 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
 
       expect(applyDefaultClaudeAuthSettingsArgs('claude', args, {})).toBe(args);
       expect(applyDefaultClaudeAuthSettingsArgs('omp', args, defaultAccountEnv())).toBe(args);
+
+      const auto = gatewayAutoEnv('claude', 'su-auto');
+      const autoApplied = applyDefaultClaudeAuthSettingsArgs('claude', args, auto);
+      const autoSettings = JSON.parse(autoApplied[1]!);
+      expect(autoSettings.env.ANTHROPIC_BASE_URL).toBe(auto.ANTHROPIC_BASE_URL);
+      expect(autoSettings.env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
+      expect(autoSettings.env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${OWNER_HEADER}: su-auto`);
+      expect(autoSettings.env.CLAUDE_CODE_USE_BEDROCK).toBe('');
     });
   });
 
@@ -4863,7 +4944,7 @@ describe('re-exec-safe permissions (mcp-transport-resilience P-002, 2026-07-13)'
     });
   });
 
-  describe('persistDefaultClaudeAuthSettings (re-exec durable default routing)', () => {
+  describe('persistDefaultClaudeAuthSettings (re-exec durable explicit routing)', () => {
     let dir: string;
     beforeEach(() => {
       dir = mkdtempSync(join(tmpdir(), 'psu-default-auth-'));
@@ -4897,7 +4978,27 @@ describe('re-exec-safe permissions (mcp-transport-resilience P-002, 2026-07-13)'
       expect(written.statusLine).toEqual({ type: 'command', command: 'x' });
     });
 
-    it('does not mutate auto/pinned, non-Claude, or shared-user settings', () => {
+    it('persists an auto route and removes conflicting provider selectors', () => {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+        env: { CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_API_KEY: 'old', KEEP_ME: 'yes' },
+      }));
+      const auto = gatewayAutoEnv('claude', 'su-auto');
+      expect(persistDefaultClaudeAuthSettings({
+        wrapperBin: 'claude',
+        env: { CLAUDE_CONFIG_DIR: dir, ...auto },
+      })).toBe(true);
+      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+      expect(written.env).toMatchObject({
+        KEEP_ME: 'yes',
+        ANTHROPIC_BASE_URL: auto.ANTHROPIC_BASE_URL,
+        ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+        ANTHROPIC_CUSTOM_HEADERS: `${OWNER_HEADER}: su-auto`,
+      });
+      expect(written.env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+      expect(written.env.ANTHROPIC_API_KEY).toBeUndefined();
+    });
+
+    it('does not mutate an unselected route, non-Claude, or shared-user settings', () => {
       expect(
         persistDefaultClaudeAuthSettings({
           wrapperBin: 'claude',
