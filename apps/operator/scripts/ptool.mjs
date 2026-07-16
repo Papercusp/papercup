@@ -25,6 +25,12 @@
  * Scripting:    ptool <group:verb> --json '{...}'  # call directly
  *               ptool --list [filter]              # print the catalog
  *               ptool <group:verb> --workspace=<ws> --harness=<slug>
+ *
+ * When launched inside a tracked psu session, ptool carries PAPERCUSP_SID as
+ * the MCP `client=` identity. That makes it a safe transport fallback when a
+ * client has connected to papercusp-su but deferred every MCP tool schema:
+ * calls still belong to the current session rather than the shared
+ * `su-loopback` fallback identity.
  */
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -250,6 +256,17 @@ function readToken() {
   }
 }
 
+/** Build ptool's superuser MCP URL. Pure and exported so the identity contract
+ *  is regression-tested without opening a transport. */
+export function buildMcpUrl(operatorUrl, { workspace, harness, client } = {}) {
+  const url = new URL(operatorUrl + '/api/mcp');
+  url.searchParams.set('superuser', '1');
+  if (workspace) url.searchParams.set('workspace', workspace);
+  if (harness) url.searchParams.set('harness', harness);
+  if (client) url.searchParams.set('client', client);
+  return url;
+}
+
 /** Connect an MCP client to the operator's superuser endpoint. Returns the
  *  connected client; caller closes it.
  *
@@ -267,10 +284,11 @@ async function connect(operatorUrl, { workspace, harness } = {}) {
   if (!token) {
     throw new Error(`no superuser token at ~/.papercusp/superuser-token — is the operator installed? (run apps/operator/scripts/install-standalone-mcp.sh)`);
   }
-  const url = new URL(operatorUrl + '/api/mcp');
-  url.searchParams.set('superuser', '1');
-  if (workspace) url.searchParams.set('workspace', workspace);
-  if (harness) url.searchParams.set('harness', harness);
+  const url = buildMcpUrl(operatorUrl, {
+    workspace,
+    harness,
+    client: process.env.PAPERCUSP_SID,
+  });
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   });

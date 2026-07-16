@@ -645,6 +645,10 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     await fs.writeFile(path.join(tmpAppRoot, 'prompts', 'papercusp-su.claude.md'), '## CLAUDE tooling');
     await fs.writeFile(path.join(tmpAppRoot, 'prompts', 'papercusp-su.omp.md'), '## OMP tooling');
     await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su.codex.md'),
+      '## CODEX tooling\n\nptool tools:find',
+    );
+    await fs.writeFile(
       path.join(tmpAppRoot, 'prompts', 'papercusp-su-power.tools.md'),
       `# Power base\n\n${MARKER}\n\n## Tail\n`,
     );
@@ -670,11 +674,12 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     expect(power.baseSource).toBe(path.join(tmpAppRoot, 'prompts', 'papercusp-su-power.tools.md'));
   });
 
-  it('agent with no overlay file: marker removed, overlaySource empty', async () => {
+  it('splices the Codex discovery fallback into the rendered playbook', async () => {
     const codex = await renderSuPlaybook({ agent: 'codex', operatorAppRoot: tmpAppRoot });
     expect(codex.text).not.toContain(MARKER);
     expect(codex.text).toContain('# Engineer base');
-    expect(codex.overlaySource).toBe('');
+    expect(codex.text).toContain('ptool tools:find');
+    expect(codex.overlaySource).toBe(path.join(tmpAppRoot, 'prompts', 'papercusp-su.codex.md'));
   });
 
   it('throws when the base profile file is missing', async () => {

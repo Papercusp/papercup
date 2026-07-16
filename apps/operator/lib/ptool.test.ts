@@ -10,6 +10,7 @@ import {
   mergeConvenienceArgs,
   prettyText,
   resultToText,
+  buildMcpUrl,
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
@@ -209,6 +210,25 @@ describe('ptool mergeConvenienceArgs', () => {
 
   it('ignores null flags', () => {
     expect(mergeConvenienceArgs({ x: 1 }, { workspace: null, harness: null }, schema)).toEqual({ x: 1 });
+  });
+});
+
+describe('ptool buildMcpUrl', () => {
+  it('carries the tracked psu session identity into the MCP client query', () => {
+    const url = buildMcpUrl('http://127.0.0.1:9071', {
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+      client: 'su-session-123',
+    });
+    expect(url.pathname).toBe('/api/mcp');
+    expect(url.searchParams.get('superuser')).toBe('1');
+    expect(url.searchParams.get('workspace')).toBe('papercusp-workspace');
+    expect(url.searchParams.get('harness')).toBe('papercusp');
+    expect(url.searchParams.get('client')).toBe('su-session-123');
+  });
+
+  it('omits client for an ordinary untracked terminal invocation', () => {
+    expect(buildMcpUrl('http://127.0.0.1:9071').searchParams.has('client')).toBe(false);
   });
 });
 
