@@ -66,12 +66,35 @@ describe('armInboxWake', () => {
     expect(startAwaitSweeper).toHaveBeenCalledTimes(1);
     const key = inboxWakeKey('su-bee');
     expect(upsertInboxWakeAwait).toHaveBeenCalledWith(expect.objectContaining({ subscriberId: 'su-bee', eventKey: key }));
-    expect(res).toEqual({ awaitId: 7, eventKey: key, handleNote: 'resumable' });
+    expect(res).toEqual({ awaitId: 7, eventKey: key, handleNote: 'resumable', minSleepSec: 60 });
   });
 
   it('default floor: minSleepSec=60 when env unset', async () => {
     await armInboxWake({ ownerId: 'su-bee' });
     expect(upsertInboxWakeAwait).toHaveBeenCalledWith(expect.objectContaining({ minSleepSec: 60 }));
+  });
+
+  // EI-11648: the tool (coord:await-inbox) reported `min_sleep_sec: null` when the
+  // arg was omitted, even though the 60s default is what actually gets armed. The
+  // resolved floor must now be RETURNED so the tool reports what it armed.
+  it('EI-11648: returns the RESOLVED floor (default 60) when minSleepSec is omitted — same value it armed', async () => {
+    const res = await armInboxWake({ ownerId: 'su-bee' });
+    const armed = vi.mocked(upsertInboxWakeAwait).mock.calls[0][0].minSleepSec;
+    expect(res.minSleepSec).toBe(60);
+    expect(res.minSleepSec).toBe(armed); // reported == armed, never null
+  });
+
+  it('EI-11648: returns the explicit floor when minSleepSec is given', async () => {
+    const res = await armInboxWake({ ownerId: 'su-bee', minSleepSec: 12 });
+    expect(res.minSleepSec).toBe(12);
+    expect(res.minSleepSec).toBe(vi.mocked(upsertInboxWakeAwait).mock.calls[0][0].minSleepSec);
+  });
+
+  it('EI-11648: returns the env-override floor when the arg is omitted', async () => {
+    process.env[ENV_KEY] = '300';
+    const res = await armInboxWake({ ownerId: 'su-bee' });
+    expect(res.minSleepSec).toBe(300);
+    expect(res.minSleepSec).toBe(vi.mocked(upsertInboxWakeAwait).mock.calls[0][0].minSleepSec);
   });
 
   it('env override: PAPERCUSP_WATCH_MIN_SLEEP_SEC=300 → minSleepSec=300', async () => {

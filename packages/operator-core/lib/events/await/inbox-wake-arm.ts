@@ -38,6 +38,11 @@ export interface ArmInboxWakeResult {
   /** One line describing the captured wake-path quality (injectable/resumable
    *  vs inbox-degraded) — surfaced so a caller can log how good the wake is. */
   handleNote: string;
+  /** The RESOLVED wake floor (seconds) actually armed on the standing row —
+   *  the explicit `minSleepSec` when given, else the `idleWakeFloorSec()`
+   *  default. Surfaced so `coord:await-inbox` reports the real floor (60s) it
+   *  armed instead of misreporting `null` when the arg was omitted (EI-11648). */
+  minSleepSec: number;
 }
 
 /**
@@ -63,14 +68,18 @@ export async function armInboxWake(input: {
   const { handle, note: handleNote } = await captureWakeHandleForOwner(input.ownerId, {
     planRunId: input.planRunId,
   });
+  // Resolve the effective floor ONCE so the value we arm is the value we report
+  // (EI-11648: previously the tool reported `null` when the arg was omitted, even
+  // though this default floor was the one actually armed on the row).
+  const minSleepSec = input.minSleepSec ?? idleWakeFloorSec();
   const row = await upsertInboxWakeAwait({
     subscriberId: input.ownerId,
     eventKey: key,
     note: input.note ?? 'always-armed inbox-wake (turn-lifecycle-control)',
     wakeHandle: handle,
-    minSleepSec: input.minSleepSec ?? idleWakeFloorSec(),
+    minSleepSec,
   });
-  return { awaitId: row.id, eventKey: key, handleNote };
+  return { awaitId: row.id, eventKey: key, handleNote, minSleepSec };
 }
 
 /** Cancel an agent's standing inbox-wake watch — SessionEnd hygiene (D-003:

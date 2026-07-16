@@ -62,7 +62,7 @@ export default defineTool({
     // You are ALREADY armed at session start (always-arm, D-001) — this refreshes
     // the same standing row's handle + idle note (+ floor) via the shared upsert;
     // it is no longer what makes you wakeable (D-005).
-    const { awaitId, eventKey, handleNote } = await armInboxWake({
+    const { awaitId, eventKey, handleNote, minSleepSec } = await armInboxWake({
       ownerId: identity.ownerId,
       note: clampText(args.note, LIMITS.ANNOTATION) ?? 'idle — awaiting work/direction (deliver-and-wake)',
       minSleepSec: args.min_sleep_sec,
@@ -81,7 +81,9 @@ export default defineTool({
               pattern: eventKey,
               wake: true,
               once: false,
-              min_sleep_sec: args.min_sleep_sec ?? null,
+              // The RESOLVED floor actually armed on the row (EI-11648) — not the
+              // raw arg, which is `null` when omitted even though a 60s default is armed.
+              min_sleep_sec: minSleepSec,
             },
             inbox_wake_key: eventKey,
             wake_handle: handleNote,
