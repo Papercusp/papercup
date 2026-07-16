@@ -880,6 +880,29 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   const runId = `opspawn-${Date.now()}-${randomUUID().slice(0, 6)}`;
   const { sql } = getOrgPg();
   const idemKey = (input.idempotencyKey ?? '').trim() || null;
+  const { backend } = resolveSpawnBackendModel(
+    role,
+    spawnModelSpec ?? undefined,
+    spawnModelBackend ?? undefined,
+  );
+
+  // Resolve an explicit account route before durable admission. Auto/pin are
+  // contracts: if the gateway, pool, provider, or credential cannot honor one,
+  // reject without creating a running nursery row that no child can satisfy.
+  let resolvedGatewayEnv: Record<string, string>;
+  try {
+    resolvedGatewayEnv = await resolveSpawnGatewayEnv({
+      workspaceId: input.workspaceId,
+      slug,
+      ownerId: spawnId,
+      backend,
+      role,
+      model: spawnModelSpec ?? undefined,
+      account: input.accountOverride ?? undefined,
+    });
+  } catch (error) {
+    return fail(`spawn rejected: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // WI-390 layer 1 (SHADOW mode, non-enforcing): log whether the gateway would have
   // deferred this spawn for pool exhaustion — fire-and-forget, never awaited into the
@@ -1015,7 +1038,6 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // AGENT_CMD/AGENT_MODELS for the role); omp resumes by thread id + codex by
   // rollout, so they mint none. The UPDATE is best-effort — a not-yet-migrated DB
   // (session_id from mig 203) must never break a spawn.
-  const { backend } = resolveSpawnBackendModel(role, spawnModelSpec ?? undefined, spawnModelBackend ?? undefined);
   const nativeSessionGuard = backendFeatureGuard(
     interactiveBackendFromSpawnBackend(backend),
     'forced-native-session-id',
@@ -1300,18 +1322,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // provider-filtered account id consumed by its per-spawn CODEX_HOME gateway config; OMP
   // gets no account/gateway env until an OMP adapter exists.
   const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
-  Object.assign(
-    extraEnv,
-    await resolveSpawnGatewayEnv({
-      workspaceId: input.workspaceId,
-      slug,
-      ownerId: spawnId,
-      backend,
-      role, // gateway-priority-tiers: role → admission tier (flag-gated header)
-      model: spawnModelSpec ?? undefined, // P-005/WI-951: per-role Claude model fidelity through the gateway
-      account: input.accountOverride ?? undefined, // account-routing-3-options: explicit pin/auto/default
-    }),
-  );
+  Object.assign(extraEnv, resolvedGatewayEnv);
   // Start the stall-waker poll loop once the gateway is in play (idempotent + unref'd): it watches the
   // gateway for rate-limit sheds and wakes a stalled bee when its account recovers (P-003).
   if (gwOn) ensureStallWakerLoop(input.workspaceId);

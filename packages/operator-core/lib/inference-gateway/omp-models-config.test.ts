@@ -29,6 +29,14 @@ describe('ompGatewayModelsConfig', () => {
     expect(ompGatewayModelsConfig({ provider: 'anthropic', accountId: '   ' })).toBeNull();
   });
 
+  it('emits an unpinned provider for explicit gateway auto mode', () => {
+    const cfg = ompGatewayModelsConfig({ provider: 'anthropic', gatewayOn: true, ownerId: 'su-1', port: 8788 })!;
+    expect(cfg.modelSelector).toBe('papercusp-gateway/claude-sonnet-4-6');
+    expect(cfg.headers).toEqual({ 'x-papercusp-owner': 'su-1' });
+    expect(cfg.content).not.toContain('x-papercusp-account');
+    expect(cfg.content).toContain('baseUrl: "http://127.0.0.1:8788"');
+  });
+
   it('emits a DEDICATED anthropic-wire gateway provider pinned to the account', () => {
     const cfg = ompGatewayModelsConfig({ provider: 'anthropic', accountId: 'acct-7', port: 8788 })!;
     expect(cfg.relPath).toBe(OMP_MODELS_REL_PATH);

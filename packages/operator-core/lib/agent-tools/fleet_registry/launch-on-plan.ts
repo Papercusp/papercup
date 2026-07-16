@@ -311,25 +311,9 @@ export function clampFleetTopUpToCapacity(
   };
 }
 
-/**
- * cross-platform-member-credential-inheritance (Mac fleet-member login fix, 2026-07-06):
- * the account routing an un-pinned fleet member should DEFAULT to, per host platform.
- *
- * A member launched with NO `--account` falls to bootstrap-su's `resolveAccountPin(undefined)`
- * DIRECT system-credential default (`env:{}` — no `ANTHROPIC_BASE_URL`). On Linux/Windows that
- * works: the member's isolated per-session `CLAUDE_CONFIG_DIR` inherits the global
- * `~/.claude/.credentials.json` login via the file reconcile/symlink machinery. On **macOS** the
- * OAuth login lives in the login Keychain keyed PER config-dir suffix (`Claude Code-credentials-…`)
- * and claude DELETES any seeded `.credentials.json`, so a headless member's fresh config dir never
- * matches the default `~/.claude` login → it boots LOGGED OUT (`/login`, "could not proceed") with
- * no human to re-auth it. So on darwin, default an un-pinned member to `'auto'`: it routes through
- * the always-on desktop inference gateway, which owns the Keychain bundle (+ refresh) and whose
- * local-fallback resolves the single default account (`localLoginCredentialRef → keychain:Claude
- * Code-credentials`) — the member authenticates with ZERO per-session login. Fail-soft: gateway off
- * ⇒ `resolveAccountPin('auto')` falls back to the direct default (byte-identical to today). An
- * explicit `--account` (incl. the `'default'`/`'system'` escape hatches) or a seat-pinned account
- * ALWAYS wins. Pure — `platform` injectable for tests.
- */
+/** The owner-facing default is the direct system credential on every host.
+ * Platform-specific credential inheritance is an implementation concern, not
+ * permission to silently change the selected routing mode. */
 export function defaultMemberAccountRouting(
   account: string | undefined,
   _platform: NodeJS.Platform = process.platform,

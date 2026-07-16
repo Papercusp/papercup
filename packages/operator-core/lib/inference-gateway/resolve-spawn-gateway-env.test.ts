@@ -26,7 +26,12 @@ beforeEach(() => {
   h.selectSpawnAccount.mockReset();
   h.loadAccountPool.mockReset();
   h.supportsBearer.mockReset();
-  h.loadAccountPool.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex', credentialRef: 'token:/codex' }] });
+  h.loadAccountPool.mockResolvedValue({
+    accounts: [
+      { id: 'aviynw9', provider: 'claude', credentialRef: 'token:/claude' },
+      { id: 'codex-main', provider: 'codex', credentialRef: 'token:/codex' },
+    ],
+  });
   h.supportsBearer.mockResolvedValue(true);
   delete process.env.PAPERCUSP_GATEWAY_PORT;
 });
@@ -207,6 +212,7 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:8788');
     expect('PAPERCUSP_ACCOUNT_ID' in env).toBe(false);
     expect(env.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('x-papercusp-account');
+    expect(env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
     // 'auto' means "let the gateway pick" — the multi-account selector is bypassed entirely.
     expect(h.selectSpawnAccount).not.toHaveBeenCalled();
   });
@@ -230,10 +236,28 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect('PAPERCUSP_ACCOUNT_ID' in env).toBe(false);
   });
 
-  test('account override is INERT when the gateway is OFF → {} (no routing at all)', async () => {
+  test('explicit auto/pin fail closed when the gateway is OFF', async () => {
     h.getFlag.mockResolvedValue(false);
-    expect(await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', account: 'aviynw9' })).toEqual({});
-    expect(await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', account: 'auto' })).toEqual({});
+    await expect(resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', account: 'aviynw9' }))
+      .rejects.toThrow('refusing default-system fallback');
+    await expect(resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', account: 'auto' }))
+      .rejects.toThrow('refusing default-system fallback');
+  });
+
+  test("OMP account='auto' emits an unpinned gateway registry instead of direct egress", async () => {
+    h.getFlag.mockResolvedValue(true);
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', account: 'auto' });
+    expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-sonnet-4-6');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('papercusp-gateway:');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-owner": "s-1"');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).not.toContain('x-papercusp-account');
+    expect(env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+  });
+
+  test('an explicit pin not present in the provider pool fails closed', async () => {
+    h.getFlag.mockResolvedValue(true);
+    await expect(resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', account: 'missing' }))
+      .rejects.toThrow("account 'missing' is not in the account pool");
   });
 
   test("account='<pool-id>' on a Codex spawn → pins the id (config-file routing), no Anthropic leakage", async () => {

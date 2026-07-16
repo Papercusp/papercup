@@ -982,6 +982,19 @@ function findCodexRollout(root, id) {
   return null;
 }
 
+function findOmpTranscript(root, id) {
+  for (const entry of safeReaddir(root)) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      const hit = findOmpTranscript(path, id);
+      if (hit) return hit;
+    } else if (entry.name.endsWith(`_${id}.jsonl`)) {
+      return path;
+    }
+  }
+  return null;
+}
+
 function trackedCodexSessionsRoot(session, home = homedir()) {
   if (session.id == null) return null;
   return join(home, '.papercusp', 'su-codex-homes', `session-${session.id}`, 'sessions');
@@ -1371,6 +1384,10 @@ export function sessionHasTranscript(session, { home = homedir() } = {}) {
     const sessionsRoot = trackedCodexSessionsRoot(session, home);
     return Boolean(findCodexRollout(sessionsRoot, session.sessionId));
   }
+  if (session.agent === 'omp') {
+    if (!session.ompThreadId) return true;
+    return Boolean(sessionTranscriptFile(session, { home }));
+  }
   return true;
 }
 
@@ -1416,6 +1433,17 @@ export function sessionTranscriptFile(session, { home = homedir() } = {}) {
       if (hit) return hit;
     }
   }
+  if (session.agent === 'omp' && session.ompThreadId) {
+    const roots = [];
+    if (session.id != null) {
+      roots.push(join(home, '.papercusp', 'su-omp-homes', `session-${session.id}`, 'agent', 'sessions'));
+    }
+    roots.push(join(home, '.omp', 'agent', 'sessions'));
+    for (const root of roots) {
+      const hit = findOmpTranscript(root, session.ompThreadId);
+      if (hit) return hit;
+    }
+  }
   return null;
 }
 
@@ -1458,7 +1486,11 @@ export function lastActiveModelFor(session, { home = homedir() } = {}) {
   // A truncated read starts mid-line — drop the partial first line so a stray
   // `"model":"…"` fragment can never half-parse into a wrong answer.
   if (tail.length === LAST_MODEL_TAIL_BYTES) lines.shift();
-  const marker = session.agent === 'codex' ? '"turn_context"' : '"assistant"';
+  const marker = session.agent === 'codex'
+    ? '"turn_context"'
+    : session.agent === 'omp'
+      ? '"model_change"'
+      : '"assistant"';
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (!line.includes(marker) || !line.includes('"model"')) continue; // cheap prefilter
@@ -1467,6 +1499,8 @@ export function lastActiveModelFor(session, { home = homedir() } = {}) {
       const m =
         session.agent === 'codex'
           ? (o?.type === 'turn_context' ? o?.payload?.model : null)
+          : session.agent === 'omp'
+            ? (o?.type === 'model_change' ? (o?.model ?? o?.payload?.model) : null)
           : (o?.type === 'assistant' ? o?.message?.model : null);
       if (typeof m === 'string' && m && m !== '<synthetic>') return m;
     } catch {

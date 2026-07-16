@@ -294,6 +294,23 @@ function ms(v: string | Date | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
+/** EI-13076: the spawns read used to be `.catch(() => [])` — a silently-failing
+ *  query (drizzle's transparent date serializer broke the Date param) fed
+ *  spawns=[] into EVERY tick for the table's whole history, zeroing
+ *  placements/completed/mttc/stuck with no signal anywhere. Fail-soft stays
+ *  (a tick must never break routinesTick), but the failure now logs — once per
+ *  process per distinct message, so a broken instrument can't be mistaken for
+ *  a quiet loop again. */
+const _warnedSpawnReadErrors = new Set<string>();
+function warnSpawnReadError(e: unknown): SpawnRow[] {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (!_warnedSpawnReadErrors.has(msg)) {
+    _warnedSpawnReadErrors.add(msg);
+    console.warn(`[pot-throughput] spawned_agents read FAILED — placements/completed/mttc/stuck will read 0 this tick (further identical errors suppressed): ${msg}`);
+  }
+  return [];
+}
+
 /**
  * Take + persist one throughput tick for a started pot. Best-effort: every PG
  * read/write is guarded, and a failure degrades to `recorded:false` (never
@@ -333,7 +350,7 @@ export async function recordPotThroughputTick(opts: {
         SELECT status, started_at, finished_at, duration_ms, heartbeat_at
           FROM harness_shared.spawned_agents
          WHERE workspace_id = ${ws} AND child_role = 'cup'
-           AND started_at > ${windowStart}`.catch(() => [] as SpawnRow[]),
+           AND started_at > ${windowStart}`.catch(warnSpawnReadError),
       sql<Array<{ tick_at: string | Date }>>`
         SELECT tick_at FROM harness_shared.pot_throughput_ticks
          WHERE workspace_id = ${ws} AND pot_slug = ${opts.potSlug}
