@@ -5,25 +5,26 @@
  * the step implementations use, without importing the heavier step modules.
  */
 
-/** Owner directive: keep every autonomous loop role on the shared sonnet lane.
+/** Owner directive: migrate every autonomous loop role to GPT-5.6 Lua (P-020).
  *  ⚠ RAW API model id ONLY — the scout stateless path (llm-testing/llm-client →
  *  anthropic-direct) passes this string verbatim to the API. Fleet-spec syntax
  *  ('claude-sonnet-5[1m]:high', 'chatgpt:5.5') 404s there, and a 404'd ideator
  *  can surface as a SILENT 'ran/no-ideas' streak, not an error tick — that spec
- *  killed all organic ideation 07-14→07-16 (2.3 days) before EI-13118 caught it. */
-export const DEFAULT_SCOUT_IDEATOR_MODEL = 'claude-sonnet-5';
+ *  killed all organic ideation 07-14→07-16 (2.3 days) before EI-13118 caught it. 
+ *  The Codex model id is `gpt-5.6`; this routes through the Codex backend. */
+export const DEFAULT_SCOUT_IDEATOR_MODEL = 'gpt-5.6';
 
-/** Cheap by default: deterministic novelty already does the load-bearing dedup. */
-export const DEFAULT_SCOUT_CRITIC_MODEL = 'claude-haiku-4-5';
+/** GPT-5.6 Lua for autonomous loop roles (P-020). */
+export const DEFAULT_SCOUT_CRITIC_MODEL = 'gpt-5.6';
 
-/** Synthesis-tier by default: turns survivors into bettable proposals. */
-export const DEFAULT_SCOUT_RECOMBINE_MODEL = 'claude-sonnet-4-6';
+/** Synthesis-tier: GPT-5.6 Lua for autonomous loop roles (P-020). */
+export const DEFAULT_SCOUT_RECOMBINE_MODEL = 'gpt-5.6';
 
-/** Synthesis-tier by default: rewrites an existing draft from Queen feedback. */
-export const DEFAULT_SCOUT_REVISION_MODEL = 'claude-sonnet-4-6';
+/** Synthesis-tier: GPT-5.6 Lua for autonomous loop roles (P-020). */
+export const DEFAULT_SCOUT_REVISION_MODEL = 'gpt-5.6';
 
-/** Synthesis-tier by default: sharpens a proposal into a replay experiment request. */
-export const DEFAULT_SCOUT_EXPERIMENT_MODEL = 'claude-sonnet-4-6';
+/** Synthesis-tier: GPT-5.6 Lua for autonomous loop roles (P-020). */
+export const DEFAULT_SCOUT_EXPERIMENT_MODEL = 'gpt-5.6';
 
 export interface ScoutModelConfig {
   ideator: string;
