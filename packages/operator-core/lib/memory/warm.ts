@@ -20,16 +20,36 @@ function deadline<T>(p: Promise<T>, fallback: T): Promise<T> {
 }
 
 /** Pre-warm the embedder/connection with one throwaway read. `backend` is
- *  injectable for tests; defaults to the configured backend. */
+ *  injectable for tests; defaults to the configured backend.
+ *
+ *  ALWAYS logs its outcome (EI-12962): this warmup ran SILENTLY for weeks
+ *  while the first real chat turn still paid a ~5s cold `available()` +
+ *  a ~5s (timed-out) search — with no log line there was no way to tell
+ *  from a sidecar log whether the warmup ran, failed, or raced boot. One
+ *  line per boot is cheap; debugging a silent no-op is not. */
 export async function warmMemoryEmbedder(backend: MemoryBackend = getMemoryBackend()): Promise<void> {
+  const t0 = Date.now();
   try {
     const avail = await deadline(backend.available(), { ok: false as const, reason: 'warm_timeout' });
-    if (!avail.ok) return;
+    const tAvail = Date.now() - t0;
+    if (!avail.ok) {
+      console.log(
+        `[memory-warm] SKIPPED after available() (${tAvail}ms): ${(avail as { reason?: string }).reason ?? 'not ok'} — the first real turn will pay the cold path`,
+      );
+      return;
+    }
+    const tSearch = Date.now();
     await deadline(
       backend.search('warmup', { scope: '__warmup__', limit: 1 }).then(() => undefined),
       undefined,
     );
-  } catch {
+    console.log(
+      `[memory-warm] done availableMs=${tAvail} searchMs=${Date.now() - tSearch} backend=${backend.name}`,
+    );
+  } catch (err) {
     /* best-effort — a cold/misconfigured embedder must never affect boot */
+    console.log(
+      `[memory-warm] FAILED after ${Date.now() - t0}ms: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
