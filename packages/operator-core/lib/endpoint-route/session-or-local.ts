@@ -19,6 +19,21 @@
 import { getSessionUser, getSessionUserOrDefault, type User } from '../auth';
 import { isLoopbackHost } from './loopback-guard';
 
+/** The request's effective host: the Host header when present, else the URL's
+ *  host — under @hono/node-server the URL host IS derived from the client's
+ *  Host header, so the two agree in real serving (same source loopback-guard
+ *  documents); the fallback matters for synthesized test requests. */
+function requestHost(req: Request): string | null {
+  const header = req.headers.get('host');
+  if (header) return header;
+  try {
+    const host = new URL(req.url).host;
+    return host || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getSessionUserOrLocalDefault(req: Request): Promise<User | null> {
   let user: User | null = null;
   try {
@@ -27,7 +42,7 @@ export async function getSessionUserOrLocalDefault(req: Request): Promise<User |
     user = null;
   }
   if (user) return user;
-  if (!isLoopbackHost(req.headers.get('host'))) return null;
+  if (!isLoopbackHost(requestHost(req))) return null;
   try {
     return await getSessionUserOrDefault(req.headers);
   } catch {
