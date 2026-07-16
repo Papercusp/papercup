@@ -232,9 +232,10 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
  *
  * So render paths no longer read a point-in-time token cache. Each owner gets a
  * tiny ANCHOR — {countStart (last compaction-marker offset), imageExcess,
- * settled (last complete-line offset), sizeSeen} — and every read stats the
- * transcript and scans ONLY the bytes appended since the last read, updating the
- * anchor as markers/images stream past. The returned value equals the full
+ * tureExcess (out-of-context toolUseResult double-write), settled (last
+ * complete-line offset), sizeSeen} — and every read stats the transcript and
+ * scans ONLY the bytes appended since the last read, updating the anchor as
+ * markers/images/toolUseResult fields stream past. The returned value equals the full
  * tail-scan estimate at the current file size, at per-read cost proportional to
  * the append delta (typically KBs) instead of an 8MB tail scan. A compaction is
  * reflected the moment its summary line hits the transcript — no event, no TTL,
@@ -310,11 +311,14 @@ function seedAnchorFromFile(pathStr: string): TranscriptAnchor | null {
       // usage near zero. Counting from `start` keeps the same "≥cap bytes ⇒ over
       // every real limit" conservative signal without the unbounded growth.
       const countStart = idx === -1 ? start : start + idx;
-      const imageExcess = imageExcessIn(view.toString('latin1', idx === -1 ? 0 : idx));
+      const countedView = view.toString('latin1', idx === -1 ? 0 : idx);
+      const imageExcess = imageExcessIn(countedView);
+      const tureExcess = toolUseResultExcessIn(countedView);
       return {
         path: pathStr,
         countStart,
         imageExcess,
+        tureExcess,
         settled: start + settledLen,
         sizeSeen: size,
         at: Date.now(),
@@ -351,9 +355,13 @@ function advanceAnchor(a: TranscriptAnchor, opts: { syncCap?: number } = {}): 'o
       if (idx !== -1) {
         // A compaction landed in this delta: counting restarts at the marker.
         a.countStart = a.settled + idx;
-        a.imageExcess = imageExcessIn(view.toString('latin1', idx));
+        const from = view.toString('latin1', idx);
+        a.imageExcess = imageExcessIn(from);
+        a.tureExcess = toolUseResultExcessIn(from);
       } else {
-        a.imageExcess += imageExcessIn(view.toString('latin1'));
+        const all = view.toString('latin1');
+        a.imageExcess += imageExcessIn(all);
+        a.tureExcess += toolUseResultExcessIn(all);
       }
       a.settled += settledLen;
     }

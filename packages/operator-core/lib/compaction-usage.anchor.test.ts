@@ -141,3 +141,93 @@ describe('anchored incremental context reads (WI-4154)', () => {
     expect(currentContextTokensSyncForOwner('o-unknown')).toBeNull();
   });
 });
+
+/**
+ * EI-12848: Claude Code writes each tool_result's payload into the JSONL line TWICE
+ * — once in the in-context `message.content` tool_result block, and again in the
+ * top-level `toolUseResult` bookkeeping field, which never enters model context.
+ * Counting it at bytes/4 double-counts every tool result (~20% of a tool-heavy
+ * transcript), so a fresh fleet member read 111% of its soft compaction limit right
+ * after a ToolSearch schema preload — before any real work — and compact-looped on
+ * the immovable duplicate. The estimator must discount the toolUseResult bytes.
+ */
+describe('toolUseResult double-write discount (EI-12848)', () => {
+  /** A realistic tool-result JSONL line: an in-context `tool_result` block plus the
+   *  out-of-context top-level `toolUseResult` duplicate (always AFTER `message`),
+   *  then trailing metadata. Returns the exact bytes the estimator must discount
+   *  ([key opening-quote, end-of-line), mirroring the implementation). */
+  function dupToolLine(payloadBytes: number, fill = 'y'): { text: string; discountBytes: number } {
+    const payload = fill.repeat(payloadBytes);
+    const inCtx =
+      `{"parentUuid":"u","type":"user","message":{"role":"user","content":` +
+      `[{"type":"tool_result","content":"${payload}"}]},"uuid":"u2","timestamp":"t"`;
+    const tail = `,"toolUseResult":"${payload}","cwd":"/x"}`;
+    const text = inCtx + tail + '\n';
+    const keyIdx = text.indexOf(',"toolUseResult":');
+    const nlIdx = text.indexOf('\n', keyIdx);
+    return { text, discountBytes: nlIdx - (keyIdx + 1) };
+  }
+
+  it('tokensFromFileSize drops the out-of-context toolUseResult duplicate', () => {
+    // ≥256KB so the scan path (not the stat-only fast path) runs; no compaction
+    // marker, so the whole file is counted from offset 0.
+    const { text, discountBytes } = dupToolLine(240_000);
+    fs.writeFileSync(file, text);
+    const size = fs.statSync(file).size;
+    const est = tokensFromFileSize(file);
+    // Only the in-context bytes remain; the toolUseResult copy is gone.
+    expect(est).toBe(Math.floor((size - discountBytes) / 4));
+    // The buggy raw reading (whole file / 4) is ~one payload higher — the false
+    // over-count that pushed a fresh member over its soft limit.
+    expect(Math.floor(size / 4) - (est as number)).toBeGreaterThan(240_000 / 4 - 100);
+  });
+
+  it('the anchor path matches the full-scan estimator on a double-write line', () => {
+    const { text } = dupToolLine(240_000);
+    fs.writeFileSync(file, text);
+    seedContextAnchorForTests('tur-anchor', file);
+    expect(currentContextTokensSyncForOwner('tur-anchor')).toBe(tokensFromFileSize(file));
+  });
+
+  it('an appended toolUseResult turn is discounted on the very next read', () => {
+    fs.writeFileSync(file, line(400_000)); // 100k tokens of prior context
+    seedContextAnchorForTests('tur-inc', file);
+    expect(currentContextTokensSyncForOwner('tur-inc')).toBe(100_000);
+    const { text, discountBytes } = dupToolLine(300_000); // ~600KB line, half out-of-context
+    fs.appendFileSync(file, text);
+    const got = currentContextTokensSyncForOwner('tur-inc') as number;
+    expect(got).toBe(tokensFromFileSize(file));
+    // The ~300KB toolUseResult copy (≈75k tokens) is NOT added to the estimate.
+    expect(got).toBeLessThan(100_000 + Math.ceil((text.length - discountBytes) / 4) + 10);
+  });
+
+  it('does NOT discount an escaped `toolUseResult` mention the session merely READ (WI-4608 safety)', () => {
+    // The phrase appears as DATA inside an assistant text block — JSON-escaped, so
+    // the real top-level `,"toolUseResult":` key form never occurs. Nothing to drop.
+    const quoted = 'z'.repeat(300_000);
+    const text =
+      `{"type":"assistant","message":{"content":[{"type":"text","text":` +
+      `"a doc said \\"toolUseResult\\":\\"${quoted}\\" is a duplicate"}]}}\n`;
+    fs.writeFileSync(file, text);
+    const size = fs.statSync(file).size;
+    // No discount — counted whole (the escaped mention is real in-context bytes).
+    expect(tokensFromFileSize(file)).toBe(Math.floor(size / 4));
+    expect(text.includes(',"toolUseResult":')).toBe(false);
+  });
+
+  it('an image inside toolUseResult is not DOUBLE-discounted (image path unchanged)', () => {
+    // A toolUseResult carrying a base64 image: the image path keeps ~1600 tok for it
+    // (conservative), and the text discount excludes those image bytes — never both.
+    // ≥256KB so the scan path (not the stat-only fast path) runs.
+    const img = 'A'.repeat(300_000);
+    const text =
+      `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"ok"}]},` +
+      `"timestamp":"t","toolUseResult":{"type":"image","base64":"${img}"},"cwd":"/x"}\n`;
+    fs.writeFileSync(file, text);
+    const est = tokensFromFileSize(file) as number;
+    // Never negative / never over-discounted below zero, and small (the whole line
+    // is out-of-context except the tiny in-context text block + image cap).
+    expect(est).toBeGreaterThanOrEqual(0);
+    expect(est).toBeLessThan(2_500); // ≈ overhead + image cap (1600), NOT +50k raw
+  });
+});
