@@ -105,6 +105,7 @@ describe('computeSoakReport', () => {
       deployLatency: { samples: 2, meanMs: 120000 },
       contextBurn: {
         loopWakes: 400,
+        nonLoopInboxWakes: 0,
         meanWakeChars: 1500,
         maxWakeChars: 5900,
         estMeanWakeTokens: 375,
@@ -148,6 +149,7 @@ describe('computeSoakReport', () => {
       deployLatency: { samples: 2, meanMs: 120000 },
       contextBurn: {
         loopWakes: 0,
+        nonLoopInboxWakes: 0,
         meanWakeChars: null,
         maxWakeChars: null,
         estMeanWakeTokens: null,
@@ -191,6 +193,7 @@ describe('computeSoakReport', () => {
       deployLatency: { samples: 1, meanMs: 20 * 60_000 },
       contextBurn: {
         loopWakes: 900,
+        nonLoopInboxWakes: 0,
         meanWakeChars: WAKE_MEAN_CHAR_BUDGET + 600,
         maxWakeChars: 9000,
         estMeanWakeTokens: 900,
@@ -264,6 +267,7 @@ describe('computeSoakReport', () => {
       deployLatency: { samples: 2, meanMs: 120000 },
       contextBurn: {
         loopWakes: 100,
+        nonLoopInboxWakes: 0,
         meanWakeChars: 1500,
         maxWakeChars: 5900,
         estMeanWakeTokens: 375,
@@ -313,6 +317,7 @@ describe('computeSoakReport', () => {
       deployLatency: { samples: 2, meanMs: 120000 },
       contextBurn: {
         loopWakes: 400,
+        nonLoopInboxWakes: 0,
         meanWakeChars: 1500,
         maxWakeChars: 5900,
         estMeanWakeTokens: 375,
@@ -362,6 +367,7 @@ describe('computeSoakReport', () => {
       deployLatency: { samples: 2, meanMs: 120000 },
       contextBurn: {
         loopWakes: 0,
+        nonLoopInboxWakes: 0,
         meanWakeChars: null,
         maxWakeChars: null,
         estMeanWakeTokens: null,

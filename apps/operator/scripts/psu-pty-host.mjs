@@ -1754,6 +1754,14 @@ export function hostThroughPty(o) {
     command,
     args,
     startedAt: Date.now(),
+    // Interactive-vs-headless advertisement (deterministic-context-carry P-021;
+    // ADDITIVE — absent on files written by older hosts). `bridgeTty:false` = a
+    // headless/piped host (no human TTY bridged) — the only value that classifies
+    // the session 'claude-headless'; absent/true fail-soft to 'claude-interactive'
+    // (psu-pty-discovery.sessionClassForHost) — the SAFE direction, since the
+    // interactive class additionally requires the no-recent-human-input guard
+    // before any cold-by-default wake.
+    bridgeTty,
     // Control-socket capabilities beyond the v1 base set (WI-1804). The operator reads
     // this (psu-pty-discovery.hostSupports) to decide whether to send mode:'compact'
     // (post-compaction auto-continuation) or fall back to a plain /compact turn on an

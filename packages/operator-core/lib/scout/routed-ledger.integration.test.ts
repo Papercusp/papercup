@@ -429,4 +429,107 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       expect(row.outcome).toBe('won');
     });
   });
+
+  // ── GYM-3 (autonomous-loop-prod-audit-2026-07-02 P-013): the gym-rail and
+  //    plan-rail terminal sources this task added. A dedicated cycle isolates
+  //    these assertions from the shared corpus above.
+  describe('GYM-3: gym_qd_archive terminal for Scout-seeded QD niches', () => {
+    const CYCLE = 'gym3-archive';
+
+    beforeAll(async () => {
+      const sql = db.adminSql;
+      // A Scout-seeded candidate that STILL holds its QD niche (the reigning
+      // elite) — router.ts always writes routedRef = `gym:<candidateId>`,
+      // which is NEVER a gym_proposals.id (a compound `${variantId}__${role}`
+      // key) — its only real terminal is the archive itself.
+      await sql`
+        INSERT INTO harness_shared.gym_qd_archive
+          (workspace_id, harness_slug, niche_key, candidate_id, scope, domain, risk, fitness, descriptor, source, updated_at)
+        VALUES
+          (${WS}, ${HARNESS}, 'gym3|held|niche', 'qd-held-1', 'gym3', 'held', 'niche', 0,
+           '{}'::jsonb, 'scout', ${Date.now()})`;
+      await recordRoutedIdea({
+        ideaId: 'i-qd-held', lens: 'analogical', rail: 'gym', routedRef: 'gym:qd-held-1',
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+      // A Scout-seeded candidate that never became (or no longer is) the elite —
+      // no archive row, no gym_proposals row at all.
+      await recordRoutedIdea({
+        ideaId: 'i-qd-lost', lens: 'reframing', rail: 'gym', routedRef: 'gym:qd-lost-1',
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+    }, 60_000);
+
+    it('a candidate still holding its niche classifies won; one that never did (or no longer does) classifies lost', async () => {
+      const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+      expect(report.byLens.analogical).toMatchObject({ won: 1, lost: 0, pending: 0 });
+      expect(report.byLens.reframing).toMatchObject({ won: 0, lost: 1, pending: 0 });
+    });
+
+    it('refreshScoutOutcomes persists both terminals to the ledger', async () => {
+      await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+      const rows = await db.adminSql<{ idea_id: string; outcome: string | null }[]>`
+        SELECT idea_id, outcome FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${WS} AND idea_id IN ('i-qd-held', 'i-qd-lost')`;
+      const byId = new Map(rows.map((r) => [r.idea_id, r.outcome]));
+      expect(byId.get('i-qd-held')).toBe('won');
+      expect(byId.get('i-qd-lost')).toBe('lost');
+    });
+
+    it('a candidate that DID advance to full proposal review stays pending under the archive read (never guessed lost)', async () => {
+      // No archive row for 'qd-underreview-1', but an OPEN (still-pending)
+      // gym_proposals row under the same id — the archive-lost read must defer
+      // to it rather than pre-emptively calling it lost.
+      await db.adminSql`
+        INSERT INTO harness_shared.gym_proposals
+          (id, workspace_id, harness_slug, role, variant_id, proposed_md, status, created_at)
+        VALUES ('qd-underreview-1__worker', ${WS}, ${HARNESS}, 'worker', 'qd-underreview-1', '# v', 'pending', ${Date.now()})`;
+      await recordRoutedIdea({
+        ideaId: 'i-qd-underreview', lens: 'first-principles', rail: 'gym', routedRef: 'gym:qd-underreview-1',
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+      const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+      expect(report.byLens['first-principles']).toMatchObject({ won: 0, lost: 0, pending: 1 });
+    });
+  });
+
+  describe('GYM-3: plan frontmatter status terminal (shipped/superseded, distinct from op_status)', () => {
+    const CYCLE = 'gym3-plan-status';
+
+    beforeAll(async () => {
+      const sql = db.adminSql;
+      // Both plans NEVER ran as a tracked harness op (op_status stays NULL) —
+      // only the plan-store's own lifecycle status resolves them.
+      await sql`
+        INSERT INTO harness_shared.harness_plans
+          (workspace_id, harness_slug, plan_slug, title, status)
+        VALUES
+          (${WS}, ${HARNESS}, 'gym3-shipped-draft', 'A shipped scout plan draft', 'shipped'),
+          (${WS}, ${HARNESS}, 'gym3-superseded-draft', 'A superseded scout plan draft', 'superseded')`;
+      await recordRoutedIdea({
+        ideaId: 'i-plan-shipped', lens: 'analogical', rail: 'plan', routedRef: 'plan:gym3-shipped-draft',
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+      await recordRoutedIdea({
+        ideaId: 'i-plan-superseded', lens: 'reframing', rail: 'plan', routedRef: 'plan:gym3-superseded-draft',
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+    }, 60_000);
+
+    it('status=shipped classifies won; status=superseded classifies lost, both with op_status still NULL', async () => {
+      const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+      expect(report.byLens.analogical).toMatchObject({ won: 1, lost: 0, pending: 0 });
+      expect(report.byLens.reframing).toMatchObject({ won: 0, lost: 1, pending: 0 });
+    });
+
+    it('refreshScoutOutcomes persists both terminals to the ledger', async () => {
+      await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+      const rows = await db.adminSql<{ idea_id: string; outcome: string | null }[]>`
+        SELECT idea_id, outcome FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${WS} AND idea_id IN ('i-plan-shipped', 'i-plan-superseded')`;
+      const byId = new Map(rows.map((r) => [r.idea_id, r.outcome]));
+      expect(byId.get('i-plan-shipped')).toBe('won');
+      expect(byId.get('i-plan-superseded')).toBe('lost');
+    });
+  });
 });

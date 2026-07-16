@@ -418,13 +418,15 @@ export default defineTool({
           // Resumed session ⇒ delta prompt (the session carries the history
           // verbatim); fresh/cold ⇒ the full prompt.
           promptText: resumedTurn ? userPromptTextDelta : userPromptText,
-          // `--session-id` is create-or-resume, so 'force' covers both the
-          // first and later turns of a session; isolateDir pins the stable
-          // config dir the session store lives in.
+          // First turn of a session: 'force' (`--session-id <uuid>`) CREATES
+          // it — create-ONLY: claude-code exits 1 "Session ID … is already in
+          // use" if the id exists (verified live 2026-07-16; the old
+          // "create-or-resume" doc was wrong). Later turns: 'resume' (`-r`).
+          // isolateDir pins the stable config dir the session store lives in.
           ...(brainSession
             ? {
                 sessionId: brainSession.sessionId,
-                sessionMode: 'force' as const,
+                sessionMode: resumedTurn ? ('resume' as const) : ('force' as const),
                 isolateDir: brainSession.dir,
               }
             : {}),

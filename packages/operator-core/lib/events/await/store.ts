@@ -306,6 +306,31 @@ export async function cancelAwaitsForSubscribersOnKeys(
   return rows.length;
 }
 
+/**
+ * Cancel PENDING awaits by exact row id, regardless of subscriber (WI-4957) — for when
+ * the CALLER has already identified specific dead registrations (e.g. every await whose
+ * payload_filter is bound to a candidate sha a checkpoint run was just superseded/killed
+ * for) and needs to retire exactly those rows. Unlike cancelAwaitsForSubscribersOnKeys
+ * (subscriber+key scoped, so it can't distinguish two different payload-bound waits on
+ * the SAME key for the SAME subscriber) or cancelAwait (subscriber-scoped, self-only),
+ * this is a precise by-id cancel — safe here because the caller derived the id set from
+ * a payload-filter match, never a guess. Best-effort shape: returns the count actually
+ * cancelled (already-fired/cancelled rows are silently skipped, not an error).
+ */
+export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    UPDATE harness_shared.event_awaits
+       SET cancelled_at = now()
+     WHERE workspace_id = ${ws} AND id = ANY(${[...ids]})
+       AND fired_at IS NULL AND cancelled_at IS NULL
+    RETURNING id
+  `;
+  return rows.length;
+}
+
 /** Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's). */
 export async function cancelAwait(input: {
   awaitId: number;
