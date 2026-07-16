@@ -35,6 +35,7 @@ import {
   hostSupports,
   injectIntoHost,
   sanitizeKey,
+  sessionClassForHost,
   type PsuPtyHost,
 } from './events/await/psu-pty-discovery';
 import { modelWindowForSpec } from './agent-config-constants';
@@ -256,7 +257,6 @@ export async function startColdBootDrill(
 ): Promise<StartColdBootDrillResult> {
   const deps = startDeps(overrides);
   const ownerId = input.ownerId.trim();
-  const sessionClass = input.sessionClass?.trim() || 'claude-interactive';
   const now = deps.now();
   const interval = Math.max(60_000, input.minIntervalMs ?? DEFAULT_COLD_BOOT_DRILL_INTERVAL_MS);
   if (!ownerId) return { ok: false, error: 'owner_required', note: 'A drill must target the calling session owner.' };
@@ -269,6 +269,12 @@ export async function startColdBootDrill(
       note: 'P-020 drills require a live Claude psu host advertising carry-respawn; no process was cut.',
     };
   }
+  // P-021: default the drill's class from the CANONICAL classifier (the same
+  // sessionClassForHost the cold-by-default fork and compact-reprime consult), so
+  // drill verdicts and live actuation share ONE vocabulary. An explicit caller
+  // class still wins (scoped campaigns), but omitting it can no longer fork the
+  // ledger's class names from the classifier's.
+  const sessionClass = input.sessionClass?.trim() || sessionClassForHost(host);
 
   const active = latestActiveDrill(await deps.readLedger(), ownerId);
   const activeAt = active ? Date.parse(active.ts) : NaN;

@@ -15,6 +15,7 @@ vi.mock('../../../adv-sessions', () => ({
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => false),
+  reanchorAdvSessionNativeId: vi.fn(async () => true),
 }));
 // Keep the (PG-backed) presence module out of this pure argv test — bootstrap-su
 // only dynamic-imports touchHeartbeat from it (WI-1893 removed setPendingFleet).

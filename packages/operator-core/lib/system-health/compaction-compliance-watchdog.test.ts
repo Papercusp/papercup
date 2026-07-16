@@ -986,3 +986,97 @@ describe('implausible-reading sanity clamp (EI-10434)', () => {
     expect(implausibleWarnings).toHaveLength(1);
   });
 });
+
+describe('WI-5075 carry-respawn kill-loop breaker (rapid-refire guard)', () => {
+  const seeded = [
+    {
+      owner_id: 'hot',
+      owner_label: 'su · hot',
+      workspace_id: 'ws-1',
+      compaction_limit: 158_000,
+    },
+  ];
+
+  function armCarryCapableHost() {
+    estimateMock.mockResolvedValue(170_000); // never recovers — the stale-ref signature
+    specMock.mockResolvedValue('sonnet');
+    getFlagMock.mockResolvedValue(true);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-1' });
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn', 'compact'] });
+    hostSupportsMock.mockImplementation(
+      (host: unknown, cap: string) => (host as { caps?: string[] }).caps?.includes(cap) ?? false,
+    );
+    buildOwnerRespawnMock.mockResolvedValue({
+      systemPromptAddendum: 'deterministic carry',
+      firstPrompt: null,
+      budgetChars: 32_000,
+      openOwnerQuestion: { crossesOpenOwnerMessage: false },
+    });
+  }
+
+  it('3 cuts with the estimate never recovering ⇒ no 4th cut, ONE blocker escalation, force rung suppressed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-07-16T12:00:00Z'));
+      armCarryCapableHost();
+
+      // Cuts 1–3 fire (each sweep past the FORCE_RETRY_GRACE_MS suppression).
+      for (let i = 0; i < 3; i += 1) {
+        const out = await checkCompactionCompliance(fakeSql({ seeded }));
+        expect(out.carryRespawned).toEqual(['hot']);
+        vi.setSystemTime(Date.now() + 7 * 60_000);
+      }
+      expect(injectMock).toHaveBeenCalledTimes(3);
+
+      // Sweep 4: the breaker opens — no cut, no force-compact, one escalation.
+      const out4 = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(out4.carryRespawned).toEqual([]);
+      expect(out4.forceCompacted).toEqual([]);
+      expect(injectMock).toHaveBeenCalledTimes(3);
+      expect(openEscalationMock).toHaveBeenCalledTimes(1);
+      const escPayload = openEscalationMock.mock.calls[0]?.[1] as
+        | { severity?: string; summary?: string }
+        | undefined;
+      expect(escPayload?.severity).toBe('blocker');
+      expect(escPayload?.summary).toContain('carry-respawn LOOP');
+
+      // Sweep 5: still suppressed, escalation NOT duplicated.
+      vi.setSystemTime(Date.now() + 7 * 60_000);
+      const out5 = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(out5.carryRespawned).toEqual([]);
+      expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovery below the limit closes the breaker — a later genuine crossing cuts again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-07-16T12:00:00Z'));
+      armCarryCapableHost();
+      for (let i = 0; i < 3; i += 1) {
+        await checkCompactionCompliance(fakeSql({ seeded }));
+        vi.setSystemTime(Date.now() + 7 * 60_000);
+      }
+      // Breaker open.
+      const tripped = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(tripped.carryRespawned).toEqual([]);
+
+      // The owner recovers (a landed cut / compaction finally tracked) — the
+      // streak + escalation dedup clear with the other per-owner state.
+      estimateMock.mockResolvedValue(10_000);
+      vi.setSystemTime(Date.now() + 7 * 60_000);
+      const recovered = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(recovered.overLimit).toEqual([]);
+
+      // A later genuine crossing respawns normally again.
+      estimateMock.mockResolvedValue(170_000);
+      vi.setSystemTime(Date.now() + 7 * 60_000);
+      const again = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(again.carryRespawned).toEqual(['hot']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

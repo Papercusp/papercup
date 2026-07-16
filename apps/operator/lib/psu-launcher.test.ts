@@ -84,6 +84,7 @@ import {
   modelArgsFor,
   reportSessionEnded,
   reportSessionResumed,
+  reportSessionRespawned,
   reportSessionPortDelivery,
   tryRematerializeFromArchive,
   isClaudeConfigDirLaunchReady,
@@ -3750,6 +3751,35 @@ describe('reportSessionResumed (re-activate adv row on resume — best-effort, n
     const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
     await expect(
       reportSessionResumed(42, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-respawn/recycle — best-effort, never rejects)', () => {
+  const freshId = '1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f';
+
+  it('POSTs { advSessionId, sessionId } to bootstrap-su/session-respawned with the bearer', async () => {
+    const calls: Array<{ url: string; opts: { headers: Record<string, string>; body: string } }> = [];
+    const fetchImpl = async (url: string, opts: never) => { calls.push({ url, opts }); return { ok: true }; };
+    await reportSessionRespawned('42', freshId, { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/session-respawned');
+    expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
+    expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 42, sessionId: freshId });
+  });
+
+  it('no adv row id OR no fresh native id → no request (nothing to re-anchor)', async () => {
+    const calls: unknown[] = [];
+    const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { ok: true }; };
+    await reportSessionRespawned(null, freshId, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    await reportSessionRespawned('42', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('swallows transport failures — a respawn must never wait on or fail from the re-anchor', async () => {
+    const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+    await expect(
+      reportSessionRespawned(42, freshId, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
     ).resolves.toBeUndefined();
   });
 });

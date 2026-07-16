@@ -18,7 +18,13 @@ type Vis = 'public' | 'invite' | 'private';
 
 let hives: Map<string, { homeSlug: string; pubkeyBase64: string }>;
 let metas: Map<string, { visibility: Vis }>;
-let projects: Array<{ slug: string; hive_slug?: string; remote_hive?: boolean }>;
+let projects: Array<{
+  slug: string;
+  hive_slug?: string;
+  remote_hive?: boolean;
+  harness_kind?: string;
+  self_repo?: boolean;
+}>;
 
 beforeEach(() => {
   vi.resetModules();
@@ -170,5 +176,55 @@ describe('joinerPotHomeSlug — the member-projection rebind gate', () => {
   it('a non-hive harness → null', async () => {
     projects = [{ slug: 'loner' }];
     expect(await joinerHome('loner')).toBeNull();
+  });
+});
+
+// Regression: WI-3891 stamps a link-joined MEMBER clone entry harness_kind:'hive'
+// + remote_hive:true + self_repo:true (so pot:get/probe:emit recognize it). That
+// member must STILL resolve its declared hive_slug home — resolving to ITSELF
+// bound the A-003 joiner rebind to the member slug and dropped every home-scoped
+// op on the joiner (live-federation-gate content-matrix RED 2026-07-13..16:
+// pot_settings/pot_members never applied; empty roster dropped member content).
+describe('WI-3891-stamped member entry (harness_kind:hive + remote_hive on the MEMBER)', () => {
+  async function joinerHome(slug: string) {
+    const { joinerPotHomeSlug } = await import('./hive-federation');
+    return joinerPotHomeSlug('ws', slug);
+  }
+
+  it('joinerPotHomeSlug resolves the declared hive_slug home, never the member itself', async () => {
+    hives.set('hello-world-pot', { homeSlug: 'hello-world-pot', pubkeyBase64: PUBKEY });
+    projects = [
+      // The exact polluted joiner-registry shape observed live (gate run 2026-07-16):
+      {
+        slug: 'hello-world',
+        hive_slug: 'hello-world-pot',
+        harness_kind: 'hive',
+        remote_hive: true,
+        self_repo: true,
+      },
+      { slug: 'hello-world-pot', harness_kind: 'hive', remote_hive: true },
+    ];
+    expect(await joinerHome('hello-world')).toBe('hello-world-pot');
+  });
+
+  it('resolveHiveSwarmBinding for the stamped member joins the HOME hive topic', async () => {
+    hives.set('hello-world-pot', { homeSlug: 'hello-world-pot', pubkeyBase64: PUBKEY });
+    projects = [
+      {
+        slug: 'hello-world',
+        hive_slug: 'hello-world-pot',
+        harness_kind: 'hive',
+        remote_hive: true,
+        self_repo: true,
+      },
+      { slug: 'hello-world-pot', harness_kind: 'hive', remote_hive: true },
+    ];
+    expect(await resolve('hello-world')).toEqual({ kind: 'hive', hive_pubkey: PUBKEY });
+  });
+
+  it('a true HOME (kind hive, no hive_slug) still resolves to itself', async () => {
+    hives.set('myhive', { homeSlug: 'myhive', pubkeyBase64: PUBKEY });
+    projects = [{ slug: 'myhive', harness_kind: 'hive' }];
+    expect(await resolve('myhive')).toEqual({ kind: 'hive', hive_pubkey: PUBKEY });
   });
 });

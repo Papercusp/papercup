@@ -60,6 +60,7 @@ vi.mock('../../../adv-sessions', () => ({
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => false),
+  reanchorAdvSessionNativeId: vi.fn(async () => true),
 }));
 
 vi.mock('../../../agent-tools/coordination/presence', () => ({

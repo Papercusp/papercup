@@ -935,6 +935,18 @@ export interface ExecuteWakeDeps {
 }
 
 /**
+ * The minimal live-host view the psu-host inject fork needs: the control socket
+ * to write, plus the P-021 class-verdict fields (bridgeTty → session class;
+ * lastInputAt → the active-interactive-exchange guard). A real PsuPtyHost
+ * satisfies it; hermetic tests hand in a literal.
+ */
+type PsuInjectHostView = {
+  sock: string;
+  bridgeTty?: boolean | null;
+  lastInputAt?: number | null;
+};
+
+/**
  * Inject a wake into a live psu-pty host, forking WARM (default) vs COLD
  * (su-cold-auto-mode-2026-07-03 Phase 2). Shared by BOTH executeWake psu-host inject
  * branches (the handle-less always-armed path + the main adv-session path) so the
@@ -1049,13 +1061,13 @@ async function injectPsuHostWake(
 async function injectPsuHostWakeWithReverify(
   d: DeliveryWork,
   warmText: string,
-  findPsuHost: (ownerId: string) => { sock: string } | null,
+  findPsuHost: (ownerId: string) => PsuInjectHostView | null,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
 ): Promise<WakeOutcome | null> {
   let host = findPsuHost(d.subscriberId);
   for (let attempt = 0; host && attempt < 2; attempt += 1) {
-    const outcome = await injectPsuHostWake(d, host.sock, warmText, injectPsuHost, deps);
+    const outcome = await injectPsuHostWake(d, host, warmText, injectPsuHost, deps);
     if (outcome) return outcome;
     // Re-read the owner-scoped discovery record after a miss. Do not reuse the
     // first host object: a live psu host may have rebound its control socket.

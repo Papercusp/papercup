@@ -35,8 +35,30 @@ export interface CompactReprimeInput {
   fleetSlug?: string | null;
 }
 
+/** Test seams for the P-026 retirement gate below. */
+export interface CompactReprimeDeps {
+  /** FLAGS.ENRICHMENT_RETIRE_PROVEN_CLASSES read (default: real flag store). */
+  retireFlagFn?: () => Promise<boolean>;
+  /** The owner's drill-proven session class, or null (default: the real
+   *  su-cold-by-default.carryProvenClassForOwner — live host + drill ledger). */
+  provenClassFn?: (ownerId: string) => Promise<string | null>;
+}
+
 /** The heading the recovery hook's anchor will carry the block under. */
 export const COMPACT_REPRIME_HEADING = 'Memory re-prime (post-compaction, epoch reset)';
+
+/** Real P-026 flag read — lazily imported so tests with a partial flags stub work. */
+async function defaultRetireFlag(): Promise<boolean> {
+  const { FLAGS } = await import('@papercusp/flags');
+  const { getFlag } = await import('@papercusp/flags/server');
+  return getFlag(FLAGS.ENRICHMENT_RETIRE_PROVEN_CLASSES, 'system');
+}
+
+/** Real proven-class read — the shared P-021/P-026 resolver (drill ledger + live host). */
+async function defaultProvenClass(ownerId: string): Promise<string | null> {
+  const { carryProvenClassForOwner } = await import('../su-cold-by-default');
+  return carryProvenClassForOwner(ownerId);
+}
 
 /** Most common non-null harness among the held items — the harness dim. */
 export function dominantHarness(
@@ -59,12 +81,32 @@ export function dominantHarness(
 
 export async function buildCompactReprimeBlock(
   input: CompactReprimeInput,
+  deps: CompactReprimeDeps = {},
 ): Promise<string | null> {
   if (!input.ownerId) return null;
   try {
     const { sql } = getOrgPg();
     // 1) The epoch boundary — always, even if recall below fails.
     await bumpSessionEpoch(sql, input.ownerId);
+
+    // 1b) deterministic-context-carry P-026 (WI-5001): for a session class whose
+    // cold-boot drills prove the deterministic carry SUFFICIENT, the speculative
+    // hole-patch re-prime below is RETIRED — a successor that needed a recall fold
+    // is a BUILDER gap to fix, and the live evidence (post-compaction recall at
+    // 0.023–0.033 cosine) is noise. The epoch bump above deliberately STAYS: it is
+    // the ledger boundary, and later turn-start deltas / explicit memory:search
+    // pulls (the pull-precise path) still work against the fresh epoch. Fail-soft:
+    // any resolution failure keeps the enrichment (today's behavior). Kill-switch:
+    // FLAGS.ENRICHMENT_RETIRE_PROVEN_CLASSES off.
+    try {
+      const retireOn = await (deps.retireFlagFn ?? defaultRetireFlag)();
+      if (retireOn) {
+        const provenClass = await (deps.provenClassFn ?? defaultProvenClass)(input.ownerId);
+        if (provenClass) return null; // carry proven for this class — no speculative fold
+      }
+    } catch {
+      /* fail-soft: keep the enrichment */
+    }
 
     // 2) Rung-0 resolve + re-prime, stamping the NEW epoch.
     const profile = resolveLaunchProfile({

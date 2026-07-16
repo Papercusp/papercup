@@ -81,6 +81,25 @@ function log(msg: string): void {
  */
 const defaultColdAutoEnabled = (): Promise<boolean> => getFlag(FLAGS.SU_COLD_AUTO, 'system');
 
+/**
+ * deterministic-context-carry P-021: the verdict-gated cold-by-default resolver the
+ * wake-executor's psu-host inject fork consults on a NO-carry loop marker (an
+ * explicitly cold-armed loop never reads it). Lazily imported — the module pulls the
+ * drill ledger reader; a warm fleet with the P-021 flag off pays one import and one
+ * flag read per candidate wake, nothing more. Fail-soft false (warm) end to end.
+ */
+const defaultClassDefaultCold = async (host: {
+  bridgeTty?: boolean | null;
+  lastInputAt?: number | null;
+}): Promise<boolean> => {
+  try {
+    const { classDefaultColdForWake } = await import('../../su-cold-by-default');
+    return await classDefaultColdForWake(host);
+  } catch {
+    return false;
+  }
+};
+
 /** Resume-spawn cap per pump tick (a wake = a turn = tokens — pace mass unblocks). */
 function maxResumesPerTick(): number {
   const n = Number(process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK ?? 3);
@@ -611,6 +630,11 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         // su-cold-auto P-007: the cold-auto master gate (default ON, owner-enabled) — only
         // read when a wake carries a cold loop marker. An explicit dep (tests) still wins.
         coldAutoEnabled: deps.coldAutoEnabled ?? defaultColdAutoEnabled,
+        // deterministic-context-carry P-021: the verdict-gated cold-by-default resolver
+        // (kill-switch flag + drill-proven class + no active interactive exchange) —
+        // only read on a no-carry loop marker behind the master gate. Resolved HERE
+        // (like coldAutoEnabled) so wake-executor stays flag-system-free.
+        classDefaultCold: deps.classDefaultCold ?? defaultClassDefaultCold,
       });
 
       if (outcome.kind === 'delivered') {

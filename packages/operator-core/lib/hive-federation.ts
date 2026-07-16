@@ -105,8 +105,19 @@ export async function potHomeSlugForHarness(
   // 2026-07-01, Brief-3 rig).
   const reg = await loadHarnessRegistry(workspaceId, opts);
   const entry = reg.projects.find((x) => x.slug === harnessSlug);
+  // An explicit `hive_slug` declaration WINS over the kind self-check: a true Hive
+  // HOME never declares one, but a JOINER's member clone entry can carry BOTH —
+  // WI-3891 stamps link-joined members `harness_kind:'hive' + remote_hive:true +
+  // self_repo:true` so pot:get/pot:list/probe:emit recognize them. With the kind
+  // check first, such a member resolved as its OWN home, the A-003 joiner rebind
+  // bound hive_members/hive_settings to the MEMBER slug, and every home-scoped op
+  // dropped on the joiner (empty roster/settings; the member-content guard then
+  // dropped cross-member content too) — the live-federation-gate content-matrix
+  // RED 2026-07-13..16 and the WI-1964 joiner work-item-incompleteness class.
+  // hive_slug-first also resolves already-polluted registries correctly, so no
+  // registry repair/migration is needed.
+  if (entry?.hive_slug && entry.hive_slug !== harnessSlug) return entry.hive_slug;
   if (entry?.harness_kind === 'hive') return harnessSlug;
-  if (entry?.hive_slug) return entry.hive_slug;
   // Registry didn't answer — the PG identity row is the fallback discriminator
   // for a hive home with no (or a legacy) registry entry. GUARDED: an
   // unconfigured org-PG must mean "no identity row visible here", never a crash.

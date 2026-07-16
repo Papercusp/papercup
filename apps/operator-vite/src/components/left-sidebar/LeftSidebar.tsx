@@ -30,10 +30,11 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, Inbox as InboxIcon, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
+import { useInboxPendingCount } from './use-inbox-pending';
 // The always-on operator-voice controls that used to sit here (PapercupVoiceBar)
 // are RETIRED (WI-4740, owner ask 2026-07-13): they duplicated the chat
 // sidebar's op-chat-controls row button-for-button, so the chat bar is now the
@@ -62,6 +63,11 @@ const OverwatchTab = lazy(() => import('./OverwatchTab'));
 // sidebar is the quick live-override surface; full workspace settings hold the
 // defaults. Flag-gated (PAPERCUP); hidden until the role is live.
 const PapercupTab = lazy(() => import('./PapercupTab'));
+// 📥 Inbox — the owner's human inbox (EI-13037, owner ask 2026-07-16): coord
+// messages/escalations, approvals & agent questions addressed to YOU, from the
+// SAME plans:attention feed as the /adv Create→Queue, actionable inline. The
+// pending-count badge hook is a separate non-lazy import (hooks can't lazy).
+const InboxTab = lazy(() => import('./InboxTab'));
 
 // `tip` is the hover tooltip (owner ask 2026-06-23) — a one-line "what is this
 // tab for", surfaced via the button's native `title` on hover.
@@ -78,6 +84,9 @@ const TABS = [
   { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
   { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
+  // Inbox sits beside Papercup (owner ask 2026-07-16, EI-13037). 'Inbox' has no
+  // lexicon TermKey — literal in both packs, like Overwatch (D-002).
+  { id: 'inbox', label: (_t: BoundLexicon) => 'Inbox', icon: InboxIcon, tip: (t: BoundLexicon) => `Inbox — decisions, escalations & messages from the ${t('fleet', { lower: true })} that need YOU`, render: (a: boolean) => <InboxTab active={a} /> },
   { id: 'swarm', label: (t: BoundLexicon) => t('fleet'), icon: Users, tip: (t: BoundLexicon) => `The ${t('fleet', { lower: true })} — live roster of SU agents & ${t('contributor', { plural: true, lower: true })} and what each is doing`, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: (_t: BoundLexicon) => 'Peers', icon: AudioLines, tip: (_t: BoundLexicon) => 'Peers — live voice/video channels with other people', render: (a: boolean) => <VoiceTab active={a} /> },
   { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <PotsTab active={a} /> },
@@ -150,6 +159,11 @@ export default function LeftSidebar() {
 
   const pathname = usePathname() ?? '';
   const chromeless = isChromelessPath(pathname);
+
+  // Inbox badge — a LIVE count of decision-tier attention items (derived from
+  // the same plans.attention feed the pane renders; no last-seen bookkeeping).
+  const inboxPending = useInboxPendingCount();
+  const inboxBadge = inboxPending > 99 ? '99+' : String(inboxPending);
 
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
   const [hydrated, setHydrated] = useState(false);
@@ -267,6 +281,9 @@ export default function LeftSidebar() {
                 onClick={() => void setRail({ lsb: true, lst: x.id })}
               >
                 <Icon size={17} aria-hidden="true" />
+                {x.id === 'inbox' && inboxPending > 0 ? (
+                  <span className="pclsb__badge" data-testid="inbox-badge-rail">{inboxBadge}</span>
+                ) : null}
               </button>
             );
           })}
@@ -315,6 +332,9 @@ export default function LeftSidebar() {
                           <Icon size={14} aria-hidden="true" />
                         </span>
                         <span className="pclsb__tab-label">{x.label(t)}</span>
+                        {x.id === 'inbox' && inboxPending > 0 ? (
+                          <span className="pclsb__badge pclsb__badge--tab" data-testid="inbox-badge-tab">{inboxBadge}</span>
+                        ) : null}
                       </button>
                     </Tooltip>
                   );

@@ -40,7 +40,9 @@ import { byAuthorizer, planSections, whyLine } from './queue-authorizer';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 
-const KIND_LABEL: Record<AttentionKind, string> = {
+// Exported for the left-sidebar Inbox pane (EI-13037) — ONE kind→label map so
+// the sidebar rows and the Queue detail can't drift.
+export const KIND_LABEL: Record<AttentionKind, string> = {
   'plan-item': 'item',
   'coord-escalation': 'escalation',
   'coord-message': 'message',

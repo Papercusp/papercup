@@ -93,6 +93,7 @@ vi.mock('../../adv-sessions', () => ({
   recordAdvSession: recordAdvSessionMock,
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => {}),
+  reanchorAdvSessionNativeId: vi.fn(async () => true),
 }));
 vi.mock('../../session-port/store', () => ({
   assertSessionPortStorageReady: vi.fn(async () => undefined),
