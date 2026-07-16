@@ -144,7 +144,15 @@ export type WatchdogSource =
   // in HARNESS_SCOPED_WATCHDOG_SOURCES); no flag gate of its own (the underlying
   // sweep's PAPERCUSP_DEPLOY_STALENESS_THRESHOLD_SEC<=0 kill switch already makes
   // this inert when disabled):
-  | 'release-deploy-staleness';
+  | 'release-deploy-staleness'
+  // EI-13022: a PROTECTIVE HOLD (pot pauseNewWork / kettle:pause) left standing
+  // against a work-COMMANDING steering directive — the 2026-07-15 incident class:
+  // the palette paused pot+kettle 6min after a kettle model-pin death, the pin was
+  // already reconciled, nobody resumed, and the loop sat dark 31h with every
+  // component "working as designed". A hold is a legit owner control, so this
+  // NEVER auto-resumes — it pages, coalesced, once the hold is provably stale
+  // (work-commanding directive + evidence of harm for >= minHoldHours):
+  | 'stale-protective-hold';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -1353,6 +1361,132 @@ export async function collectLoopStalledSignals(sql: Sql, stuckParkSec = 1800): 
   return loopStalledSignalsFromRows(rows);
 }
 
+// ── stale-protective-hold (EI-13022) ─────────────────────────────────────────
+
+/** One pot's hold/direction facts, assembled by the collector (pure-testable input). */
+export interface StaleProtectiveHoldCandidate {
+  installSlug: string;
+  /** pot-level hard gate active: pauseNewWork or a live pausedUntil (isPausedNow). */
+  potHeld: boolean;
+  /** the kettle/overwatch started control bit (kettle:pause clears it). */
+  kettleStarted: boolean;
+  /** directiveSuggestsResume(directive) — explicit resume OR a work-commanding directive. */
+  workCommanded: boolean;
+  /** first ~140 chars of the directive, for the body. */
+  directiveHead: string;
+  /** newest tick's frontier depth. */
+  frontierDepth: number;
+  /** hours since the last tick with placements>0 (null = none in the 24h window). */
+  hoursSinceLastPlacement: number | null;
+  /** how many hours of tick history the window actually covers (age gate input). */
+  windowHours: number;
+  /** hours since the kettle autoloop last fired (null = no kettle row for this pot). */
+  kettleHoursSinceFire: number | null;
+}
+
+/** Pure: stale-hold candidates → signals. A hold is an OWNER control, so this only
+ *  PAGES (never auto-resumes), and only when the hold is provably stale: the
+ *  directive commands work AND the harmed leg has been dark >= minHoldHours. */
+export function staleProtectiveHoldSignalsFromCandidates(
+  cands: StaleProtectiveHoldCandidate[],
+  minHoldHours = 2,
+): WatchdogSignal[] {
+  const signals: WatchdogSignal[] = [];
+  for (const c of cands) {
+    if (!c.workCommanded) continue;
+    const potStale =
+      c.potHeld &&
+      c.frontierDepth > 0 &&
+      c.windowHours >= minHoldHours &&
+      (c.hoursSinceLastPlacement == null || c.hoursSinceLastPlacement >= minHoldHours);
+    // kettle-only leg requires an EXISTING kettle row gone stale — a pot that never
+    // ran a kettle is a different (setup) problem, not a stale hold.
+    const kettleStale =
+      !c.kettleStarted &&
+      c.kettleHoursSinceFire != null &&
+      c.kettleHoursSinceFire >= minHoldHours;
+    if (!potStale && !kettleStale) continue;
+    const holdKind = potStale && kettleStale ? 'pot+kettle' : potStale ? 'pot-pause' : 'kettle-pause';
+    signals.push({
+      source: 'stale-protective-hold' as const,
+      key: `stale-protective-hold:${c.installSlug}:${holdKind}`,
+      title: `Stale protective hold on pot ${c.installSlug} (${holdKind}) contradicts its work-commanding directive`,
+      body:
+        `Watchdog signal (stale-protective-hold, EI-13022 class): pot "${c.installSlug}" has a standing hold ` +
+        `(${holdKind}: potHeld=${c.potHeld}, kettleStarted=${c.kettleStarted}) while its steering directive commands ` +
+        `active work ("${c.directiveHead}"). Evidence: frontier_depth=${c.frontierDepth}, ` +
+        `last placement ${c.hoursSinceLastPlacement == null ? 'none in 24h' : `~${Math.round(c.hoursSinceLastPlacement)}h ago`}, ` +
+        `kettle last fired ${c.kettleHoursSinceFire == null ? 'never/no row' : `~${Math.round(c.kettleHoursSinceFire)}h ago`}. ` +
+        `A hold is a legit owner control — do NOT auto-resume; reconcile deliberately: either lift it ` +
+        `(pot:set-steering { pauseNewWork:false } / kettle:start) or update the directive to say the pause is intended.`,
+      severity: 'major' as const,
+      kind: 'bug' as const,
+      scope: `harness:${c.installSlug}`,
+      paths: ['packages/operator-core/lib/owner-steering.ts', 'packages/operator-core/lib/harness/improvements/watchdog.ts'],
+    });
+  }
+  return signals;
+}
+
+/** stale-protective-hold: pots with tick history whose hold contradicts a
+ *  work-commanding directive for >= minHoldHours (default 2h). Fail-soft per pot. */
+export async function collectStaleProtectiveHoldSignals(
+  sql: Sql,
+  workspaceId: string,
+  opts: { minHoldHours?: number } = {},
+): Promise<WatchdogSignal[]> {
+  const minHoldHours = opts.minHoldHours ?? 2;
+  interface Row {
+    slug: string;
+    frontier_depth: number | null;
+    hours_since_placement: number | null;
+    window_hours: number | null;
+    kettle_hours_since_fire: number | null;
+  }
+  const rows = await sql<Row[]>`
+    WITH pots AS (
+      SELECT pot_slug AS slug,
+             max(tick_at) FILTER (WHERE placements > 0) AS last_placement_at,
+             min(tick_at) AS oldest_tick,
+             (array_agg(frontier_depth ORDER BY tick_at DESC))[1] AS frontier_depth
+        FROM harness_shared.pot_throughput_ticks
+       WHERE workspace_id = ${workspaceId}
+         AND tick_at > now() - interval '24 hours'
+       GROUP BY 1)
+    SELECT p.slug,
+           p.frontier_depth,
+           EXTRACT(EPOCH FROM (now() - p.last_placement_at)) / 3600.0 AS hours_since_placement,
+           EXTRACT(EPOCH FROM (now() - p.oldest_tick)) / 3600.0 AS window_hours,
+           EXTRACT(EPOCH FROM (now() - k.last_fired_at)) / 3600.0 AS kettle_hours_since_fire
+      FROM pots p
+      LEFT JOIN harness_shared.autoloop_state k
+        ON k.workspace_id = ${workspaceId} AND k.harness_slug = p.slug AND k.role = 'kettle'
+     LIMIT 10`;
+  const { getOwnerSteering, directiveSuggestsResume, isPausedNow } = await import('../../owner-steering');
+  const { getOverwatchStarted } = await import('../../overwatch/control-state');
+  const cands: StaleProtectiveHoldCandidate[] = [];
+  for (const r of rows) {
+    try {
+      const steering = await getOwnerSteering(workspaceId, r.slug);
+      const started = await getOverwatchStarted(workspaceId, r.slug);
+      cands.push({
+        installSlug: r.slug,
+        potHeld: isPausedNow(steering, Date.now()),
+        kettleStarted: started,
+        workCommanded: directiveSuggestsResume(steering.directive),
+        directiveHead: (steering.directive ?? '').slice(0, 140),
+        frontierDepth: Number(r.frontier_depth ?? 0),
+        hoursSinceLastPlacement: r.hours_since_placement == null ? null : Number(r.hours_since_placement),
+        windowHours: Number(r.window_hours ?? 0),
+        kettleHoursSinceFire: r.kettle_hours_since_fire == null ? null : Number(r.kettle_hours_since_fire),
+      });
+    } catch {
+      /* fail-soft per pot — a broken steering read never kills the sweep */
+    }
+  }
+  return staleProtectiveHoldSignalsFromCandidates(cands, minHoldHours);
+}
+
 interface StuckPlanRow { harness_slug: string; plan_slug: string; status: string; stale_hours: number }
 /** Pure: stuck-plan rows → signals. */
 export function stuckPlanSignalsFromRows(rows: StuckPlanRow[]): WatchdogSignal[] {
@@ -2295,6 +2429,9 @@ export async function defaultPapercuspCollectors(
     // loop-wake-rate-limit-robustness P1b: an engine loop parked-stalled with a dead/undelivered
     // wake turn (the early, visible signal before the ≥30min stuck-park backstop recovers it).
     { name: 'papercusp-loop-stalled', collect: () => collectLoopStalledSignals(getOrgPg().sql) },
+    // EI-13022: a protective hold (pot pauseNewWork / kettle:pause) left standing against a
+    // work-commanding directive — pages (never auto-resumes) once provably stale.
+    { name: 'papercusp-stale-protective-hold', collect: () => collectStaleProtectiveHoldSignals(getOrgPg().sql, workspaceId) },
     // Hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
     // liveness (stalled dispatchable work), hygiene (reclaim non-execution),
     // safety (systematic ESCALATE volume).
@@ -2468,6 +2605,9 @@ const HARNESS_SCOPED_WATCHDOG_SOURCES: ReadonlySet<WatchdogSource> = new Set([
   // done-without-test is per-harness (scope harness:<slug>): a torn-down benchmark
   // instance's done-without-test items are test debris, not an improvement.
   'done-without-test',
+  // stale-protective-hold is per-pot (scope harness:<slug>): a torn-down benchmark
+  // pot's leftover pause is test debris, not an improvement.
+  'stale-protective-hold',
 ]);
 
 /** A signal is ephemeral-benchmark debris when it is a per-harness source AND any slug it

@@ -252,7 +252,17 @@ export async function overwatchLivenessCheck(
   const time = await getOverwatchTimeWake(sql, installSlug, {
     workspaceId: opts.workspaceId,
   });
-  const armed = Boolean(time?.active && time.nextFireAt);
+  // EI-13022 layer (c): a wedged row is NOT armed. An active row whose
+  // next_fire_at sits far in the PAST means the fire path is skipping it (a
+  // routinesTick normally consumes within seconds) — counting it as "armed"
+  // silences every watchdog seam forever. 10min grace covers tick jitter;
+  // declare's REPLACE semantics make the re-arm safe over the wedged row.
+  const WEDGED_GRACE_MS = 10 * 60_000;
+  const armed = Boolean(
+    time?.active &&
+      time.nextFireAt &&
+      time.nextFireAt.getTime() > now - WEDGED_GRACE_MS,
+  );
   const lastFired = time?.lastFiredAt?.getTime() ?? 0;
   return {
     armed,

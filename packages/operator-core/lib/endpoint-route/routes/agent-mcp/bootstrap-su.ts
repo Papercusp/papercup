@@ -131,9 +131,9 @@ export interface BootstrapSuResult {
   envelopeEnv: Record<string, string>;
   /**
    * psu-account-chooser P-002: a human-readable note about the `--account` request
-   * — confirmed pin ("pinned to account X …") or the fail-soft reason it was skipped
-   * ("--account X ignored: …"). null when no account was requested. The launcher
-   * prints it so the user always knows whether the pin took effect.
+   * after successful resolution — default, auto, or a confirmed pin. An unavailable
+   * explicit nondefault route is returned as an HTTP error instead. null when no
+   * account was requested.
    */
   accountNotice?: string | null;
   /**
@@ -889,8 +889,8 @@ const post = defineTool({
       brain?: boolean;
       /** psu-account-chooser P-002: pin this interactive session to a specific pool
        *  account. Routed through the gateway (gatewaySpawnEnv) when INFERENCE_GATEWAY
-       *  is on + the id is a valid, allowed pool account; fail-soft to the default
-       *  credential + an `accountNotice` otherwise. */
+       *  is on + the id is a valid, allowed pool account. Explicit auto/pin requests
+       *  fail closed when unavailable; default/omitted uses the system login. */
       account?: string | null;
       /** named-su-agent-fleets P-006: the durable slug of a named fleet to JOIN
        *  (member). Folded into PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE on the
@@ -1766,9 +1766,9 @@ const post = defineTool({
       ...(launchedBy ? { PAPERCUSP_LAUNCHED_BY: launchedBy } : {}),
     };
 
-    // psu-account-chooser P-002: when the launch carries an explicit `account`, fold
-    // the gateway-pin env into the envelope (fail-soft — a skipped pin just adds a
-    // notice the launcher prints, never an error).
+    // psu-account-chooser P-002: fold the resolved route into the envelope. For
+    // Claude default this includes the force-system marker; auto/pins carry their
+    // gateway route. Unavailable explicit nondefault routes were rejected above.
     Object.assign(envelopeEnv, accountPin.env);
     // named-su-agent-fleets P-006: fold the fleet membership env (PAPERCUSP_FLEET_SLUG /
     // PAPERCUSP_FLEET_ROLE) right next to the account pin — the presence-write path

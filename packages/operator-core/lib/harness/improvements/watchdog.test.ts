@@ -14,6 +14,7 @@ import {
   collectMigrationDriftSignals,
   routineFailureSignalsFromRows,
   loopStalledSignalsFromRows,
+  staleProtectiveHoldSignalsFromCandidates,
   stuckPlanSignalsFromRows,
   escalationSignalsFromRows,
   circuitOpenSignalsFromRows,
@@ -501,6 +502,53 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals[0].body).toContain('loop-wake-turn-deaths-recorded-as-delivered');
     expect(signals[0].kind).toBe('bug');
     expect(signals[0].scope).toBe('harness:papercusp');
+  });
+
+  it('stale-protective-hold (EI-13022): fires only for a stale hold against a work-commanding directive', () => {
+    const base = {
+      installSlug: 'papercusp',
+      potHeld: true,
+      kettleStarted: false,
+      workCommanded: true,
+      directiveHead: 'Run the full Mug→Cup→Kettle→Blender loop. Place and complete real work',
+      frontierDepth: 38,
+      hoursSinceLastPlacement: 36,
+      windowHours: 24,
+      kettleHoursSinceFire: 31,
+    };
+    // The 2026-07-15 incident shape: pot paused + kettle paused + work-commanding directive.
+    const signals = staleProtectiveHoldSignalsFromCandidates([base]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].source).toBe('stale-protective-hold');
+    expect(signals[0].key).toBe('stale-protective-hold:papercusp:pot+kettle');
+    expect(signals[0].scope).toBe('harness:papercusp');
+    expect(signals[0].kind).toBe('bug');
+    expect(signals[0].body).toContain('do NOT auto-resume');
+
+    // No work-commanding directive → an intentional pause, never a signal.
+    expect(staleProtectiveHoldSignalsFromCandidates([{ ...base, workCommanded: false }])).toHaveLength(0);
+    // Hold present but placements are recent (< minHoldHours) → not yet stale.
+    expect(
+      staleProtectiveHoldSignalsFromCandidates([
+        { ...base, kettleStarted: true, kettleHoursSinceFire: 0.1, hoursSinceLastPlacement: 0.5 },
+      ]),
+    ).toHaveLength(0);
+    // Empty frontier → a pot pause is doing no harm; kettle leg alone still fires.
+    const kettleOnly = staleProtectiveHoldSignalsFromCandidates([{ ...base, frontierDepth: 0 }]);
+    expect(kettleOnly).toHaveLength(1);
+    expect(kettleOnly[0].key).toBe('stale-protective-hold:papercusp:kettle-pause');
+    // A pot that never ran a kettle (no autoloop row) never fires the kettle leg.
+    expect(
+      staleProtectiveHoldSignalsFromCandidates([
+        { ...base, frontierDepth: 0, kettleHoursSinceFire: null },
+      ]),
+    ).toHaveLength(0);
+    // Window too short to prove staleness → no signal (fresh tick history only).
+    expect(
+      staleProtectiveHoldSignalsFromCandidates([
+        { ...base, kettleStarted: true, kettleHoursSinceFire: null, windowHours: 0.5, hoursSinceLastPlacement: null },
+      ]),
+    ).toHaveLength(0);
   });
 
   it('stuck-plan: one signal per stuck plan, keyed by harness+plan', () => {
