@@ -8,11 +8,22 @@ import {
   _resetPromptCatalogForTests,
   getPromptCatalog,
   lookupPrompt,
+  setCapabilityTierResolver,
 } from '@papercusp/tooldef';
+// The capability→tier resolver in @papercusp/tooldef is a MODULE SINGLETON. In
+// production importing @papercusp/agent-mcp registers Papercusp's policy
+// (papercuspTierFor); vitest's setupFiles (test-setup.ts) mirrors that per file.
+// But a cross-file run that leaves that singleton at the engine default 'low'
+// (or any future weakening of vitest isolation) silently reds the tier
+// assertions below (EI-10612: two 2026-07-13 fails where `secrets:read:*`
+// stamped 'low' instead of 'high'). Re-register the resolver in beforeEach so
+// this file's tier expectations are deterministic regardless of file ordering.
+import { papercuspTierFor } from '../capability-tiers-papercusp';
 
 describe('prompt registry', () => {
   beforeEach(() => {
     _resetPromptCatalogForTests();
+    setCapabilityTierResolver(papercuspTierFor);
   });
 
   it('registers a prompt with explicit name', () => {
