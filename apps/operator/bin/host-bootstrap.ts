@@ -923,6 +923,24 @@ export function runBootstrap(): void {
     }
   }
 
+  // Best-effort memory warm-up (memory-backend-improve-and-hybrid P-004a; hoisted
+  // EI-12962): fire one throwaway memory search so the user's first chat turn
+  // doesn't pay the mem0-client + embedder cold-start (~4-5s measured live).
+  // This MUST NOT live inside the backgroundWorkers block below — the DESKTOP
+  // SIDECAR (the process that actually serves the owner's chat) runs with
+  // PAPERCUSP_BACKGROUND_WORKERS=0, so the warmup silently never ran there and
+  // every app launch served a cold first chat turn. Process-local warming is a
+  // duty of ANY chat-serving host; only a utility host (EI-368: onnxruntime is
+  // in the Napi-abort suspect set) skips it. Detached (never awaited); an
+  // import failure is LOGGED, not swallowed — a silent no-op here cost weeks.
+  if (!utilityHost) {
+    void import('@papercusp/operator-core/lib/memory/warm')
+      .then(({ warmMemoryEmbedder }) => warmMemoryEmbedder())
+      .catch((e) =>
+        console.warn('[memory-warm] boot warm-up import failed (non-fatal):', e instanceof Error ? e.message : e),
+      );
+  }
+
   if (backgroundWorkers)
     void (async () => {
     try {
@@ -1017,14 +1035,6 @@ export function runBootstrap(): void {
       // substrate (holepunch natives) — both are in the Napi-abort suspect set
       // and neither serves a short-lived dedicated instance.
       if (utilityHost) return;
-
-      // Best-effort embedder warm-up (memory-backend-improve-and-hybrid P-004a):
-      // fire one throwaway memory search so the user's first turn doesn't pay the
-      // embedder cold-start. Detached (never awaited) and fully self-contained —
-      // warmMemoryEmbedder swallows every error, so it can't affect boot.
-      void import('@papercusp/operator-core/lib/memory/warm')
-        .then(({ warmMemoryEmbedder }) => warmMemoryEmbedder())
-        .catch(() => {});
 
       // The dogfood PG schema + change-notify/capture triggers are defined
       // entirely by migrations (000-baseline + 107/108), now applied above (or
