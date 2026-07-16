@@ -51,7 +51,10 @@ import {
   GATEWAY_OWNER_HEADER,
   GATEWAY_CLIENT_AUTH_TOKEN,
   ACCOUNT_ROUTING_MODE_ENV,
+  CLAUDE_DEFAULT_AUTH_ENV_KEYS,
   defaultAccountEnv,
+  defaultClaudeAuthSettings,
+  applyDefaultClaudeAuthSettingsArgs,
   enforceDefaultClaudeAccount,
   sanitizeInheritedEnv,
   addDirArgs,
@@ -103,6 +106,7 @@ import {
   BRAIN_TOMBSTONE_MESSAGE,
   reExecSafePermissionsFromArgs,
   persistReExecSafePermissions,
+  persistDefaultClaudeAuthSettings,
   fetchWithResilience,
   resolveFallbackOperatorTargets,
   resolveOperatorUrl,
@@ -4151,6 +4155,12 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
         ANTHROPIC_API_KEY: 'old-api-key',
         ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
         ANTHROPIC_OAUTH_TOKEN: 'old-anthropic-oauth',
+        CLAUDE_CODE_USE_BEDROCK: '1',
+        CLAUDE_CODE_USE_VERTEX: '1',
+        CLAUDE_CODE_USE_FOUNDRY: '1',
+        CLAUDE_CODE_USE_MANTLE: '1',
+        CLAUDE_CODE_USE_ANTHROPIC_AWS: '1',
+        CLAUDE_CODE_USE_GATEWAY: '1',
       };
       enforceDefaultClaudeAccount('claude', env);
       expect(env).toEqual({ [ACCOUNT_ROUTING_MODE_ENV]: 'default' });
@@ -4165,6 +4175,23 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
       const env: Record<string, string> = { ANTHROPIC_API_KEY: 'direct-user-key' };
       enforceDefaultClaudeAccount('claude', env);
       expect(env).toEqual({ ANTHROPIC_API_KEY: 'direct-user-key' });
+    });
+
+    it('adds a highest-precedence settings override only for explicit default Claude launches', () => {
+      const args = ['--resume', 'session-id'];
+      const applied = applyDefaultClaudeAuthSettingsArgs('claude', args, defaultAccountEnv());
+      expect(applied.slice(0, 2)).toEqual(args);
+      expect(applied.at(-2)).toBe('--settings');
+      expect(JSON.parse(applied.at(-1)!)).toEqual(defaultClaudeAuthSettings());
+      expect(defaultClaudeAuthSettings().apiKeyHelper).toBe('');
+      expect(Object.keys(defaultClaudeAuthSettings().env)).toEqual([...CLAUDE_DEFAULT_AUTH_ENV_KEYS]);
+      expect(Object.values(defaultClaudeAuthSettings().env).every((value) => value === '')).toBe(true);
+      // Empty OAuth in settings suppresses file/Keychain fallback, so it must
+      // never be part of the secret-free override.
+      expect(defaultClaudeAuthSettings().env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+
+      expect(applyDefaultClaudeAuthSettingsArgs('claude', args, {})).toBe(args);
+      expect(applyDefaultClaudeAuthSettingsArgs('omp', args, defaultAccountEnv())).toBe(args);
     });
   });
 
@@ -4200,6 +4227,22 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
         expect(env[key]).toBe('user-supplied');
         if (key !== 'CLAUDE_CODE_OAUTH_TOKEN') expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
       }
+    });
+
+    it('prefers the live Linux/Windows system credential file over a possibly stale stored setup token', () => {
+      storeClaudeOAuthToken(TOKEN, { home });
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(join(home, '.claude', '.credentials.json'), '{"claudeAiOauth":{"accessToken":"live"}}');
+
+      const linuxEnv: Record<string, string> = {};
+      applyDefaultClaudeOAuthToken('claude', linuxEnv, { home, platform: 'linux' });
+      expect(linuxEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+
+      // macOS's real login is Keychain-backed under a config-dir-specific
+      // suffix, so it still needs the portable stored-token inheritance path.
+      const macEnv: Record<string, string> = {};
+      applyDefaultClaudeOAuthToken('claude', macEnv, { home, platform: 'darwin' });
+      expect(macEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe(TOKEN);
     });
   });
 
@@ -4687,6 +4730,63 @@ describe('re-exec-safe permissions (mcp-transport-resilience P-002, 2026-07-13)'
       });
       expect(ok).toBe(false);
       expect(logs.join('')).toContain('re-exec-safe permissions');
+    });
+  });
+
+  describe('persistDefaultClaudeAuthSettings (re-exec durable default routing)', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'psu-default-auth-'));
+    });
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('removes copied credential/provider settings while preserving unrelated settings', () => {
+      writeFileSync(
+        join(dir, 'settings.json'),
+        JSON.stringify({
+          apiKeyHelper: '/tmp/old-helper',
+          env: {
+            ANTHROPIC_API_KEY: 'old-key',
+            CLAUDE_CODE_OAUTH_TOKEN: 'old-oauth',
+            CLAUDE_CODE_USE_BEDROCK: '1',
+            KEEP_ME: 'yes',
+          },
+          statusLine: { type: 'command', command: 'x' },
+        }),
+      );
+      const ok = persistDefaultClaudeAuthSettings({
+        wrapperBin: 'claude',
+        env: { CLAUDE_CONFIG_DIR: dir, ...defaultAccountEnv() },
+      });
+      expect(ok).toBe(true);
+      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+      expect(written.apiKeyHelper).toBe('');
+      expect(written.env).toEqual({ KEEP_ME: 'yes' });
+      expect(written.statusLine).toEqual({ type: 'command', command: 'x' });
+    });
+
+    it('does not mutate auto/pinned, non-Claude, or shared-user settings', () => {
+      expect(
+        persistDefaultClaudeAuthSettings({
+          wrapperBin: 'claude',
+          env: { CLAUDE_CONFIG_DIR: dir },
+        }),
+      ).toBe(false);
+      expect(
+        persistDefaultClaudeAuthSettings({
+          wrapperBin: 'omp',
+          env: { CLAUDE_CONFIG_DIR: dir, ...defaultAccountEnv() },
+        }),
+      ).toBe(false);
+      expect(
+        persistDefaultClaudeAuthSettings({
+          wrapperBin: 'claude',
+          env: defaultAccountEnv(),
+        }),
+      ).toBe(false);
+      expect(existsSync(join(dir, 'settings.json'))).toBe(false);
     });
   });
 });

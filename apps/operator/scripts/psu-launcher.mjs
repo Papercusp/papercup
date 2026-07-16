@@ -2488,13 +2488,66 @@ export function readStoredClaudeOAuthToken({ home = homedir() } = {}) {
  *   - no token is stored (→ unchanged: keychain/file OAuth login as before).
  * Pure but for the `env` mutation; `home` injectable for tests.
  */
-export function applyDefaultClaudeOAuthToken(wrapperBin, env, { home = homedir() } = {}) {
+export function applyDefaultClaudeOAuthToken(
+  wrapperBin,
+  env,
+  { home = homedir(), platform = process.platform } = {},
+) {
   if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return env;
   if (env.ANTHROPIC_BASE_URL) return env;
   if (env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) return env;
+  // Linux/Windows store the real system `/login` in this file. Prefer it over
+  // the optional setup-token cache: the file is refreshed by Claude itself,
+  // while the cache can be older. macOS is intentionally excluded because its
+  // real login is Keychain-backed and the per-session CLAUDE_CONFIG_DIR uses a
+  // different Keychain suffix (the reason this fallback exists at all).
+  if (platform !== 'darwin' && existsSync(join(home, '.claude', '.credentials.json'))) return env;
   const tok = readStoredClaudeOAuthToken({ home });
   if (tok) env.CLAUDE_CODE_OAUTH_TOKEN = tok;
   return env;
+}
+
+/** Claude settings/env selectors that can redirect a launch away from the
+ * machine's first-party `/login`. Keep this list aligned with
+ * enforceDefaultClaudeAccount and the command-line settings override below.
+ *
+ * CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT written as an empty
+ * `settings.env` value: Claude treats that as an explicit logged-out OAuth
+ * choice and will not fall back to `.credentials.json` / Keychain. The ambient
+ * value is still deleted by enforceDefaultClaudeAccount; copied user settings
+ * are removed by persistDefaultClaudeAuthSettings. */
+export const CLAUDE_DEFAULT_AUTH_ENV_KEYS = Object.freeze([
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_MANTLE',
+  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+  'CLAUDE_CODE_USE_GATEWAY',
+]);
+
+/** Highest-precedence, secret-free Claude settings overlay for an explicit
+ * default-account launch. `--settings` outranks project/local/user settings, so
+ * a stale apiKeyHelper, API key, gateway URL, or cloud-provider selector cannot
+ * silently win over the system login selected in the UI. */
+export function defaultClaudeAuthSettings() {
+  return {
+    apiKeyHelper: '',
+    env: Object.fromEntries(CLAUDE_DEFAULT_AUTH_ENV_KEYS.map((key) => [key, ''])),
+  };
+}
+
+/** Append the default-account settings override at the central wrapper seam
+ * shared by fresh, resume, and fork launches. Pure; exported for regression
+ * coverage. */
+export function applyDefaultClaudeAuthSettingsArgs(wrapperBin, args, env) {
+  const list = Array.isArray(args) ? args : [];
+  if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return list;
+  if (env?.[ACCOUNT_ROUTING_MODE_ENV] !== 'default') return list;
+  return [...list, '--settings', JSON.stringify(defaultClaudeAuthSettings())];
 }
 
 /**
@@ -2526,6 +2579,12 @@ export function enforceDefaultClaudeAccount(wrapperBin, env) {
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_AUTH_TOKEN',
     'ANTHROPIC_OAUTH_TOKEN',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+    'CLAUDE_CODE_USE_FOUNDRY',
+    'CLAUDE_CODE_USE_MANTLE',
+    'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+    'CLAUDE_CODE_USE_GATEWAY',
   ]) {
     delete env[key];
   }
@@ -4008,6 +4067,65 @@ export function persistReExecSafePermissions({ env, args, log = (m) => process.s
 }
 
 /**
+ * Remove copied user-level auth routing from an isolated default-account
+ * session's settings.json. This is the re-exec-durable half of
+ * applyDefaultClaudeAuthSettingsArgs: Claude self-relaunches can drop argv, but
+ * they re-read this file. We DELETE credential env keys instead of persisting
+ * empty values because an empty CLAUDE_CODE_OAUTH_TOKEN suppresses the normal
+ * file/Keychain login fallback.
+ *
+ * The command-line override still handles higher-precedence project/local
+ * settings on the initial launch. Managed settings remain an administrator
+ * policy and intentionally outrank every user launch choice.
+ */
+export function persistDefaultClaudeAuthSettings({
+  wrapperBin,
+  env,
+  log = (m) => process.stderr.write(m),
+}) {
+  try {
+    if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return false;
+    if (env?.[ACCOUNT_ROUTING_MODE_ENV] !== 'default') return false;
+    const dir = (env?.CLAUDE_CONFIG_DIR ?? '').trim();
+    if (!dir) return false;
+    const path = join(dir, 'settings.json');
+    let current = {};
+    try {
+      current = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      current = {};
+    }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) current = {};
+    const settingsEnv =
+      current.env && typeof current.env === 'object' && !Array.isArray(current.env)
+        ? { ...current.env }
+        : {};
+    for (const key of [
+      ...CLAUDE_DEFAULT_AUTH_ENV_KEYS,
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'ANTHROPIC_OAUTH_TOKEN',
+      'PAPERCUSP_ANTHROPIC_URL',
+      'PAPERCUSP_ACCOUNT_ID',
+      'PAPERCUSP_CODEX_GATEWAY',
+    ]) {
+      delete settingsEnv[key];
+    }
+    const next = { ...current, apiKeyHelper: '', env: settingsEnv };
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(next, null, 2));
+    renameSync(tmp, path);
+    return true;
+  } catch (e) {
+    try {
+      log(`psu: could not persist default-account Claude auth settings (${e?.message ?? e}) — launch continues on env/argv enforcement.\n`);
+    } catch {
+      /* diagnostic only */
+    }
+    return false;
+  }
+}
+
+/**
  * Should THIS launch silence Claude Code's own terminal-title writer?
  *
  * WI-3665. Claude Code writes its current topic to the OS title (`✳ Claude Code`, then
@@ -4574,6 +4692,13 @@ function runWrapper({
   // heal it). No-op unless a token was stored (`psu --set-claude-token`) and the
   // session is default-account claude. See applyDefaultClaudeOAuthToken.
   applyDefaultClaudeOAuthToken(wrapperBin, env);
+  // Settings can independently select a cloud provider, API key/helper, or
+  // gateway even after the inherited process env is clean. Add a
+  // highest-precedence override for this launch, and scrub the isolated copied
+  // user settings so a Claude self-reexec (which drops argv) stays on the same
+  // explicit default-account route.
+  args = applyDefaultClaudeAuthSettingsArgs(wrapperBin, args, env);
+  persistDefaultClaudeAuthSettings({ wrapperBin, env });
   // The GitHub Copilot MCP plugin (a Claude plugin OMP also discovers) needs
   // GITHUB_PERSONAL_ACCESS_TOKEN; unset → "Authorization header is badly formatted" (HTTP 400) on
   // every claude/omp launch. Export the gh CLI token when unset (verified it authenticates the MCP).

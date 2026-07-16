@@ -30,6 +30,28 @@ scorecard. Origin: EI-12461 / EI-12455; owner directive
    evidence, not `pass`.
 5. **Cadence:** ≤6h between complete scorecards while the rubric is release-gating.
 
+## Composite verdict (roll-up)
+
+The rubric is a GATE, so the 8 criterion ratings collapse to ONE decision. Take
+the worst rating that applies, in this order:
+
+- **NO-GO** if ANY criterion is `fail`. A composite gate is only as green as its
+  weakest leg — one failing stage means the loop is not a shippable product.
+- **NO-GO** if ANY criterion is `unknown`. A gate cannot certify what it did not
+  measure; `unknown` is a NOT-pass that blocks GO. Resolve it (run the instrument,
+  gather the evidence) rather than shipping past an unmeasured leg — never let
+  `unknown` round up to `pass`.
+- **CONDITIONAL-HOLD** if the worst rating is `at-risk` (no `fail`, no `unknown`):
+  the fix is live but its window has not cleared. GO only with explicit owner
+  sign-off AND a stated clear-by time in evidence; otherwise hold and re-grade
+  when the window clears.
+- **GO** only when EVERY criterion is `pass`.
+
+Leg deference is transitive: `kettle-supervision-health` (c3) and
+`blender-leg-health` (c4) inherit their leg rubric's verdict — a NO-GO on
+`pot-coordination-health` or `blender-release-readiness` is a composite NO-GO,
+never overridden by a fresh-but-incomplete leg scorecard.
+
 ## Per-criterion instruments
 
 ### placement-throughput · `pot-throughput-ticks`
