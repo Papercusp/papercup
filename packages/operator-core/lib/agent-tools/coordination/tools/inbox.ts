@@ -318,7 +318,7 @@ export function classifyInboxFromFilter(
   from: string | undefined | null,
   knownOwnerIds: readonly string[],
 ): { resolvedFrom: string | undefined; unmatched: boolean } {
-  if (!from) return { resolvedFrom: from ?? undefined, unmatched: false };
+  if (!from) return { resolvedFrom: undefined, unmatched: false };
   const resolvedFrom = resolveBestEffort([from], knownOwnerIds)[0] ?? from;
   const unmatched =
     knownOwnerIds.length > 0 && !new Set(knownOwnerIds).has(resolvedFrom);
