@@ -30,10 +30,24 @@ describe('friendlyCupboardError', () => {
     );
   });
 
-  it('maps HTTP 503 to the configuration hint and 5xx to a server-error line', () => {
-    expect(friendlyCupboardError('Error: HTTP 503', 'listings')).toMatch(
-      /PAPERCUSP_CUPBOARD_URL/,
+  it('maps a bare HTTP 503 to reachability copy WITHOUT blaming PAPERCUSP_CUPBOARD_URL', () => {
+    // The proxy collapses every upstream failure into 503; the old copy falsely
+    // blamed an env var that has a working default and misdirected debugging.
+    const msg = friendlyCupboardError('Error: HTTP 503', 'listings');
+    expect(msg).toMatch(/Couldn't reach the Cupboard server/);
+    expect(msg).not.toMatch(/PAPERCUSP_CUPBOARD_URL/);
+  });
+
+  it('surfaces the upstream cause when a 503 carries a detail (cupboardHttpError body)', () => {
+    const msg = friendlyCupboardError(
+      'Error: HTTP 503: TimeoutError: The operation was aborted due to timeout',
+      'listings',
     );
+    expect(msg).toMatch(/TimeoutError: The operation was aborted due to timeout/);
+    expect(msg).not.toMatch(/PAPERCUSP_CUPBOARD_URL/);
+  });
+
+  it('maps 5xx to a server-error line', () => {
     expect(friendlyCupboardError('Error: HTTP 500', 'listings')).toMatch(/HTTP 500/);
   });
 });

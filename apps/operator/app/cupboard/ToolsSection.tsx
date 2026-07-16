@@ -27,7 +27,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Wrench, Plug, Box, AlertTriangle, RefreshCw } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
-import { CupboardErrorState } from './CupboardErrorState';
+import { CupboardErrorState, cupboardHttpError } from './CupboardErrorState';
 
 export type ToolStatusFilter = 'all' | 'available' | 'installable';
 
@@ -133,7 +133,7 @@ export function ToolsSection({
       if (status !== 'all') params.set('status', status);
       if (category) params.set('category', category);
       const res = await fetch(`/api/cupboard/tools?${params}`, { signal: ctrl.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw await cupboardHttpError(res);
       const data = (await res.json()) as ToolsPayload;
       if (!ctrl.signal.aborted) setPayload(data);
     } catch (err) {

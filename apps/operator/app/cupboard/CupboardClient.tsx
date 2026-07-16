@@ -57,7 +57,7 @@ import { HowSharingWorks } from '../_components/HowSharingWorks';
 import { Button } from '../harness/Button';
 import { Tooltip } from '../harness/Tooltip';
 import { CUPBOARD_LISTING_KIND_TONE } from '../harness/theme';
-import { CupboardErrorState } from './CupboardErrorState';
+import { CupboardErrorState, cupboardHttpError } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
 import InstalledPacksSection from './InstalledPacksSection';
 import { useLexicon } from '@/lib/useLexicon';
@@ -224,7 +224,7 @@ export default function CupboardClient() {
       // hive filter, so fetch unfiltered and narrow client-side by hive_pubkey
       // below — page-scoped, like the flat-browse grouping (P-002).
       const res = await fetch(`/api/cupboard/listings?${params}`, { signal: ctrl.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw await cupboardHttpError(res);
       const data = (await res.json()) as { listings: HarnessListing[] };
       if (!ctrl.signal.aborted) {
         setListings((data.listings ?? []).filter(isPubliclyVisible));
