@@ -26,6 +26,7 @@ import { renderInjection, type CoordLineSource } from "../../../coord-schema";
 import { fetchPresenceFleet } from "../presence-fleet";
 import type { RecipientCueScope } from "../cue-authority";
 import { bodyRefWorkItemResolver, hydrateRefs } from "../ref-hydrate-resolve";
+import { resolveBestEffort, knownOwnerIdSet } from "../recipient-resolve";
 import {
   BODY_REF_SNIPPET_CHARS,
   detectEntryBodyRefs,
@@ -297,6 +298,33 @@ export function filterInboxBySender<T extends { from?: unknown }>(
   return entries.filter((e) => e.from === from);
 }
 
+/**
+ * EI-12930: resolve + classify the coord:inbox `from` filter against the SAME roster
+ * resolver coord:send uses, so the two verbs cannot DISAGREE on what an ownerId is. The
+ * SHORT label rosters/injection lines display (`su-b0fbf`) is what an agent naturally has
+ * to hand, but `filterInboxBySender` is STRICT equality against the FULL id — so a short
+ * `from` matched nothing and returned `total: 0`, byte-identical to (and mistaken for) a
+ * genuinely silent peer. This resolves a unique prefix/substring to the full ownerId
+ * (reusing resolveBestEffort — the exact rewrite coord:send's wake path applies) and, when
+ * the resolved id matches NO known agent, flags it `unmatched` so the caller can surface a
+ * LOUD `from_unmatched` signal — making "the filter was malformed" distinguishable from
+ * "the answer is no". PURE core (unit-tested).
+ *
+ * Fail-OPEN: an empty/unavailable roster yields `unmatched: false` (never a false loud
+ * fail), mirroring resolveBestEffort/resolveRecipients' absent-roster discipline. A
+ * nullish/empty `from` is a no-op.
+ */
+export function classifyInboxFromFilter(
+  from: string | undefined | null,
+  knownOwnerIds: readonly string[],
+): { resolvedFrom: string | undefined; unmatched: boolean } {
+  if (!from) return { resolvedFrom: from ?? undefined, unmatched: false };
+  const resolvedFrom = resolveBestEffort([from], knownOwnerIds)[0] ?? from;
+  const unmatched =
+    knownOwnerIds.length > 0 && !new Set(knownOwnerIds).has(resolvedFrom);
+  return { resolvedFrom, unmatched };
+}
+
 export default defineTool({
   name: "coord:inbox",
   description:
@@ -356,6 +384,20 @@ export default defineTool({
       (sessionTier && INBOX_TIER_DEFAULTS[sessionTier]) ??
       INBOX_TIER_DEFAULTS.full;
     const limit = args.limit ?? tierDefaults.limit;
+    // EI-12930: resolve a SHORT ownerId/label `from` (`su-b0fbf`) to the FULL ownerId via
+    // the SAME roster resolver coord:send uses — so a filter that SUCCESSFULLY sent can't
+    // then silently FAIL to find the reply — and flag `from_unmatched` when it matches NO
+    // known agent, so a mistyped filter is never mistaken for a silent peer. One memoized
+    // roster read; only runs when a `from` filter is passed; fail-open on an empty roster.
+    let resolvedFrom = args.from ?? undefined;
+    let fromUnmatched = false;
+    if (args.from) {
+      const known = await knownOwnerIdSet(identity.workspaceId).catch(() => null);
+      ({ resolvedFrom, unmatched: fromUnmatched } = classifyInboxFromFilter(
+        args.from,
+        known ? [...known] : [],
+      ));
+    }
     // Offline-member mailbox (shared-hive-collaboration P-016): before the read,
     // deliver any `@user:`-parked assignment waiting for THIS member into their
     // live inbox, so a returning member sees it in this very response. The drain
@@ -417,14 +459,14 @@ export default defineTool({
     const keepIntents = !!args.include_intents || !!args.from;
     const { kept: intentFiltered, excluded: intentExcluded } = excludeIntentDeclares(
       ambientFiltered as unknown as Array<Record<string, unknown>>,
-      { includeIntents: args.include_intents, from: args.from },
+      { includeIntents: args.include_intents, from: resolvedFrom },
     ) as unknown as { kept: typeof ambientFiltered; excluded: number };
     // EI-7018: honor a strict sender-only `from` filter instead of silently ignoring it (the
     // silent-ignore looked like a hit-less filtered read). Applied post-cache/in-memory so it
     // never collides with the owner-keyed derive cache; it scopes the returned window + the
     // summary counts (byKind/total below run on `filtered`). `all` stays unfiltered for the
     // resolution scan (annotateResolvedConditions).
-    const filtered = filterInboxBySender(intentFiltered, args.from);
+    const filtered = filterInboxBySender(intentFiltered, resolvedFrom);
 
     // EI-6144: fold repeated categorized broadcasts into one ×N row BEFORE the
     // limit slice, so the returned window carries distinct signal instead of a
@@ -458,6 +500,13 @@ export default defineTool({
       intent_excluded: intentExcluded,
       // EI-6144: rows folded into a ×N representative (repeat_count on the row).
       coalesced_dupes: coalescedDupes,
+      // EI-12930: when a `from` filter is passed, echo the FULL ownerId it resolved to
+      // (a short prefix/label is rewritten via the same resolver coord:send uses) and flag
+      // `from_unmatched` when it matches NO known agent — so an empty result from a mistyped
+      // filter is loudly distinct from a genuinely silent peer.
+      ...(args.from
+        ? { from_resolved: resolvedFrom, from_unmatched: fromUnmatched }
+        : {}),
       by_kind: byKind,
       oldest_returned_ts: entries.length ? (entries[0]?.ts ?? null) : null,
       newest_ts: entries.length
@@ -476,7 +525,7 @@ export default defineTool({
       const withIntents = coalesceRepeatedBroadcasts(
         filterInboxBySender(
           ambientFiltered,
-          args.from,
+          resolvedFrom,
         ) as unknown as Array<Record<string, unknown>>,
       );
       injectionEntries = (
