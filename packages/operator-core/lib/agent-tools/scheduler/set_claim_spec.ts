@@ -316,8 +316,15 @@ export default defineTool({
         .describe(
           'harness used by the WRITE-TIME admission preview for a fixed WI-/EI- cohort. Required for a named issue cohort unless the caller is harness-scoped; dynamic/property specs do not need it.',
         ),
+      clear: z
+        .boolean()
+        .optional()
+        .describe(
+          'EI-12830: DELETE the target row instead of setting a spec, so the target falls back to fleet inheritance (bee spec → fleet spec → DEFAULT). Use on a `cupId` to drop a per-bee override that permanently shadows every later fleet-level `{ fleet }` re-steer, or on a `fleet` to retire the whole fleet lane back to default. Idempotent (clearing an absent row reports cleared:false); `spec` is not required (and is ignored) when clear:true. The delete tombstones any hive-federated row so remote peers drop the stale spec too.',
+        ),
       spec: z
         .record(z.string(), z.unknown())
+        .optional()
         .describe(
           'the claim spec: { specVersion, specId, revision, view:{ filter }, rank:{ mode, terms }, limits?, states? } — validated by validateClaimSpec. ' +
             'CONCRETE SHAPES (EI-4832 — get these wrong and the write is rejected): ' +
@@ -334,9 +341,29 @@ export default defineTool({
     })
     .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {
       message: 'pass exactly ONE of cupId (steer one cup) or fleet (steer the whole fleet via inheritance)',
+    })
+    .refine((a) => a.clear === true || a.spec !== undefined, {
+      message: 'spec is required unless clear:true (clear deletes the target row so it falls back to fleet inheritance)',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // EI-12830: CLEAR path — delete the target's per-bee (or fleet-sentinel) row so
+    // it falls back to fleet inheritance (bee → fleet → default). No spec to validate
+    // and no admission preview; the store's DELETE tombstones any hive-federated row.
+    if (args.clear) {
+      const { clearClaimSpec, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
+      const targetBeeId = args.fleet ? fleetSpecBeeKey(args.fleet.trim()) : (args.cupId as string);
+      const cleared = await clearClaimSpec({
+        cupId: targetBeeId,
+        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+      });
+      return {
+        data: {
+          ...cleared,
+          target: args.fleet ? { fleet: args.fleet.trim(), beeKey: targetBeeId } : { cupId: targetBeeId },
+        },
+      };
+    }
     const validated = validateClaimSpec(args.spec);
     if (!validated.ok || !validated.spec) {
       return { data: { ok: false, errors: validated.errors } };

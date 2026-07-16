@@ -184,6 +184,47 @@ export async function setClaimSpec(
   return { ok: true, errors: [], revision: rows[0]?.revision, ...(strandWarning ? { warning: strandWarning } : {}) };
 }
 
+export interface ClearClaimSpecResult {
+  ok: boolean;
+  errors: string[];
+  /** true when a per-bee (or fleet-sentinel) row existed and was deleted; false when
+   *  there was nothing to clear (the call is idempotent). */
+  cleared: boolean;
+}
+
+/**
+ * EI-12830: DELETE a bee's per-bee claim-spec row so it falls back to FLEET
+ * inheritance (getClaimSpec resolution: bee spec → fleet spec → DEFAULT_CLAIM_SPEC).
+ *
+ * The bug this fixes: setClaimSpec could only WRITE/overwrite a bee's spec, never
+ * remove it. Once ANY per-bee spec was ever set on a member (e.g. an initial
+ * per-member dispatch at fleet formation), that member was PERMANENTLY cut off from a
+ * later fleet-level `scheduler:set_claim_spec { fleet }` re-steer — every future
+ * fleet-spec bump was invisible to it (a per-bee spec always WINS over the fleet
+ * spec), so it kept pulling against its own stale cohort forever, reporting a scoped
+ * miss (windDown:true) even while the leader believed it had re-steered the whole
+ * fleet.
+ *
+ * The DELETE's federation capture trigger (mig 438, WHEN OLD.harness_slug IS NOT
+ * NULL) fires a TOMBSTONE to the hive's peers so a remote bee drops the stale row
+ * too — the same tombstone mechanism setClaimSpec uses on a scope downgrade. Also
+ * valid on a `fleet:<slug>` sentinel key (fleetSpecBeeKey) to retire a whole fleet
+ * lane back to DEFAULT_CLAIM_SPEC. Reads under the SAME caller-resolved workspace
+ * partition as setClaimSpec/getClaimSpec (WI-1564).
+ */
+export async function clearClaimSpec(
+  args: { cupId: string; workspaceId?: string },
+  sqlOverride?: OrgSql,
+): Promise<ClearClaimSpecResult> {
+  const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  const sql = sqlOverride ?? getOrgPg().sql;
+  const rows = (await sql`
+    DELETE FROM harness_shared.cup_claim_specs
+     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}
+    RETURNING bee_id`) as { bee_id: string }[];
+  return { ok: true, errors: [], cleared: rows.length > 0 };
+}
+
 /**
  * The sentinel `bee_id` a FLEET-level claim spec is stored under (fleet-scheduler-
  * hardening-2026-07-03 P-002). Reuses `cup_claim_specs` (né `bee_claim_specs`) unchanged — the sentinel can
