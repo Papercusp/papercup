@@ -465,19 +465,30 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     ownerDirectivesBlock,
   });
 
-  // su-cold-auto P-003: a COLD loop stamps a marker on the wake DELIVERY so the wake-executor
-  // forks to a fresh-context RESET / periodic RECYCLE instead of the warm in-place turn.
-  // wakeCount = this fire's 1-based number → the consumer HYBRID cadence recycles every Nth
-  // wake; `harness` (the loop's install_slug) is the carry-note scope key. A WARM loop stamps
-  // NO payload (the whole path is also dormant downstream until the P-007 gate is wired on in
-  // Phase 3).
+  // su-cold-auto P-003: a COLD loop stamps a {carry:'cold', wakeCount, harness} marker on the
+  // wake DELIVERY so the wake-executor forks to a fresh-context RESET / periodic RECYCLE
+  // instead of the warm in-place turn. wakeCount = this fire's 1-based number → the consumer
+  // HYBRID cadence recycles every Nth wake; `harness` (the loop's install_slug) is the
+  // carry-note scope key.
+  //
+  // deterministic-context-carry P-021: a WARM loop now stamps the SAME marker WITHOUT the
+  // carry field ({wakeCount, harness}) — the wake-executor needs it to (a) recognize the
+  // delivery as a LOOP wake at all (an ordinary coord wake must never be cold-by-default
+  // eligible) and (b) scope the carry-note read, when the session's class is drill-proven
+  // cold-by-default. Side effect: readColdLoopMarker(d.payload) is now non-null for warm
+  // loop wakes, so their turn-provenance origin correctly classifies 'loop-fire' instead
+  // of 'wake-pump' (both verified agent-origin — a labeling improvement, not a behavior
+  // fork). decideColdWake still treats carry!=='cold' as warm unless the caller resolved
+  // classDefaultCold, so a warm loop with the P-021 flag off is byte-identical downstream.
   const carry = readLoopCarry(input.payloadTemplate);
-  const coldPayload: { carry: 'cold'; wakeCount: number; harness: string } | undefined =
-    carry === 'cold' ? { carry: 'cold', wakeCount: fireNumber, harness: input.installSlug } : undefined;
+  const loopMarkerPayload: { carry?: 'cold'; wakeCount: number; harness: string } =
+    carry === 'cold'
+      ? { carry: 'cold', wakeCount: fireNumber, harness: input.installSlug }
+      : { wakeCount: fireNumber, harness: input.installSlug };
 
   const fan = await wake([input.targetOwnerId], {
     summary: kickoff,
-    ...(coldPayload ? { payload: coldPayload } : {}),
+    payload: loopMarkerPayload,
     source: `loop:${input.routineId}`,
     workspaceId: input.workspaceId,
   });

@@ -897,6 +897,18 @@ export interface ExecuteWakeDeps {
    *  gate. Read ONLY when a wake carries a `carry:'cold'` loop marker (never on the
    *  warm hot path). */
   coldAutoEnabled?: () => Promise<boolean>;
+  /** deterministic-context-carry P-021: the verdict-gated cold-by-default resolver —
+   *  given the wake target's live host view, decide whether its session CLASS is
+   *  drill-proven cold (COLD_BY_DEFAULT_PROVEN_CLASSES flag + gradeColdBootDrills
+   *  sufficientClasses + no active interactive exchange; su-cold-by-default.ts).
+   *  DEFAULT ()=>false ⇒ only explicitly cold-armed loops ever cold (today's
+   *  behavior) — engine.ts wires the real classDefaultColdForWake, mirroring
+   *  coldAutoEnabled so this module stays flag-system-free. Read ONLY on a loop-
+   *  marked wake with no explicit carry, AFTER the master gate passed. */
+  classDefaultCold?: (host: {
+    bridgeTty?: boolean | null;
+    lastInputAt?: number | null;
+  }) => Promise<boolean>;
   /** Read an su AUTO loop's carry-note — the P-006 cold-start anchor a RESET-CONTEXT /
    *  RECYCLE reconstructs from. Injected for tests; defaults to the real
    *  getLoopCarryNote (carry-note.ts). */
@@ -942,11 +954,12 @@ export interface ExecuteWakeDeps {
  */
 async function injectPsuHostWake(
   d: DeliveryWork,
-  sock: string,
+  host: PsuInjectHostView,
   warmText: string,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
 ): Promise<WakeOutcome | null> {
+  const sock = host.sock;
   const injectWarm = async (): Promise<WakeOutcome | null> => {
     const ok = await injectPsuHost(sock, { mode: 'turn', data: warmText });
     return ok ? { kind: 'delivered', channel: 'psu-socket-inject' } : null;
@@ -955,17 +968,29 @@ async function injectPsuHostWake(
   let decision: ColdWakeDecision = { cold: false, reason: 'warm (cold fork not engaged)' };
   try {
     const marker = readColdLoopMarker(d.payload);
-    // Cheap short-circuit: only a cold-armed loop wake WITH a harness scope can go
-    // cold — otherwise resolve nothing (no flag read, no PG carry-note read) and warm.
-    if (marker?.carry === 'cold' && marker.harness) {
+    // Cheap short-circuit: only a harness-scoped LOOP wake can go cold — either
+    // explicitly cold-armed (carry:'cold') or, P-021, a no-carry loop marker whose
+    // session class is drill-proven cold-by-default. Anything else resolves nothing
+    // (no flag read, no PG carry-note read) and warms.
+    if (marker?.harness && (marker.carry === 'cold' || marker.carry === undefined)) {
       const coldEnabled = await (deps.coldAutoEnabled ?? (async () => false))();
-      const getNote = deps.getLoopCarryNoteFn ?? getLoopCarryNote;
-      // Only pay the carry-note read when the master gate is actually on (P-006's
-      // anchor is moot if cold-auto is disabled).
-      const carryNote = coldEnabled
-        ? await getNote({ harness: marker.harness, ownerId: d.subscriberId, workspaceId: d.workspaceId })
-        : null;
-      decision = decideColdWake({ payload: d.payload, coldEnabled, carryNote });
+      // P-021 verdict route: resolved ONLY behind the master gate, and only for a
+      // loop wake WITHOUT an explicit carry (the opt-in route needs no verdict).
+      // DEFAULT ()=>false keeps the fork dormant until engine.ts wires the real
+      // resolver — mirroring coldAutoEnabled.
+      const classDefaultCold =
+        coldEnabled && marker.carry === undefined
+          ? await (deps.classDefaultCold ?? (async () => false))(host)
+          : false;
+      if (marker.carry === 'cold' || classDefaultCold) {
+        const getNote = deps.getLoopCarryNoteFn ?? getLoopCarryNote;
+        // Only pay the carry-note read when the master gate is actually on (P-006's
+        // anchor is moot if cold-auto is disabled).
+        const carryNote = coldEnabled
+          ? await getNote({ harness: marker.harness, ownerId: d.subscriberId, workspaceId: d.workspaceId })
+          : null;
+        decision = decideColdWake({ payload: d.payload, coldEnabled, carryNote, classDefaultCold });
+      }
     }
   } catch {
     // Any resolution failure ⇒ warm (never let the cold path drop a wake).

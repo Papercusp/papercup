@@ -117,6 +117,24 @@ const forceCompactedAt = new Map<string, number>();
  * older force-compact rung while that cut has a chance to land. */
 const carryRespawnRequestedAt = new Map<string, number>();
 
+/** WI-5075 rapid-refire guard: owner → consecutive carry-respawns fired while the
+ *  owner NEVER recovered below its limit in between. A landed respawn boots a
+ *  near-empty successor, so the estimate MUST drop by the next sweep — a streak
+ *  means the estimate is not tracking the live session (the adv_sessions
+ *  session-ref was not re-anchored: an old-code host, or a regression of the
+ *  WI-5075 class) and each further respawn just executes the kill loop again.
+ *  Cleared on recovery below the limit. */
+const carryRespawnStreak = new Map<string, { count: number; lastAt: number }>();
+/** One loop-detected escalation per owner per process; un-deduped on failure. */
+const carryRespawnLoopEscalated = new Set<string>();
+/** Streak trips at this many respawns with no recovery in between. Three cuts
+ *  (~12–18 min under FORCE_RETRY_GRACE_MS pacing) with the estimate never
+ *  dropping is impossible for a genuinely-refilling session (maxTurn caps a
+ *  single hop; a fresh successor sits far below any soft limit). */
+const CARRY_RESPAWN_MAX_STREAK = 3;
+/** A streak entry older than this is stale history, not an active loop. */
+const CARRY_RESPAWN_STREAK_WINDOW_MS = 30 * 60_000;
+
 /** EI-9982 diagnostic dedup: warn ONCE per owner when findLiveHost() returns null on the
  *  force-compact path. Before this, a no-live-host miss was completely silent — indistinguishable
  *  from (a) the flag being off, (b) the FORCE_RETRY_GRACE_MS suppression window, or (c)
@@ -167,6 +185,8 @@ export function resetForceCompactedForTests(): void {
 /** Test seam (P-018 live carry-respawn). */
 export function resetCarryRespawnForTests(): void {
   carryRespawnRequestedAt.clear();
+  carryRespawnStreak.clear();
+  carryRespawnLoopEscalated.clear();
 }
 
 /** Test seam (EI-9982 diagnostic). */
@@ -326,6 +346,55 @@ function forceCompactContinueNote(est: number, limit: number, forceAt: number, b
     `compacted context: first re-run coord:orient to reconcile live fleet/claim/inbox state, then ` +
     `resume your current unit of work.`
   );
+}
+
+/**
+ * WI-5075: the kill-loop breaker. A carry-respawn streak with no recovery in
+ * between means the context estimate is NOT tracking the live session (the
+ * adv_sessions native-session ref was never re-anchored after the respawn —
+ * old-code host, or a regression). Killing again is the bug, not the remedy:
+ * raise ONE loud escalation and stop cutting until the owner recovers.
+ */
+async function escalateCarryRespawnLoop(
+  ownerId: string,
+  ownerLabel: string,
+  streak: number,
+): Promise<void> {
+  if (carryRespawnLoopEscalated.has(ownerId)) return;
+  carryRespawnLoopEscalated.add(ownerId);
+  console.warn(
+    `[compaction-watchdog] ${ownerLabel} (${ownerId}) CARRY-RESPAWN LOOP detected — ` +
+      `${streak} respawns fired with the context estimate never recovering. Suppressing further ` +
+      `respawns for this owner and escalating (WI-5075).`,
+  );
+  try {
+    const { openEscalation } = await import('../agent-tools/coordination/escalations');
+    await openEscalation(
+      {
+        ownerId: 'compaction-watchdog',
+        ownerLabel: 'system · compaction-watchdog',
+        source: 'principal',
+        workspaceId: null,
+        userId: null,
+      },
+      {
+        severity: 'blocker',
+        summary: `carry-respawn LOOP on ${ownerLabel} (${ownerId}): ${streak} successor cuts with the context estimate never dropping — respawns suppressed`,
+        body:
+          `A landed P-018 carry-respawn boots a near-empty successor, so the owner's context estimate must fall below its limit by the next sweep. ` +
+          `It did not — ${streak} consecutive cuts — which means estimateContextTokensForOwner is still reading the DEAD predecessor's transcript ` +
+          `(harness_shared.adv_sessions.session_id not re-anchored to the successor's fresh native id: a psu host launched before the WI-5075 fix, or a regression of that class). ` +
+          `Each further cut only kills live work. The watchdog has STOPPED respawning this owner until it recovers. ` +
+          `Fix: re-anchor the owner's adv_sessions.session_id to the live native session id (or relaunch the session so the post-fix launcher reports respawns), then verify the estimate drops. (WI-5075)`,
+      },
+    );
+  } catch (e) {
+    // Best-effort — never fail the sweep; un-dedup so the next pass retries.
+    carryRespawnLoopEscalated.delete(ownerId);
+    console.warn(
+      `[compaction-watchdog] carry-respawn-loop escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
 
 /**
@@ -866,6 +935,19 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         const carryRecently =
           lastCarryAt != null && Date.now() - lastCarryAt < FORCE_RETRY_GRACE_MS;
         if (carryRecently) continue;
+        // WI-5075 rapid-refire guard: a respawn streak with NO recovery in
+        // between proves the estimate is pinned to a dead predecessor transcript
+        // — every further cut just re-executes the successor-kill loop. Stop
+        // cutting, escalate once, and skip the force-compact rung too (it would
+        // act on the same untrustworthy estimate).
+        const streakEntry = carryRespawnStreak.get(r.owner_id);
+        const streakLive =
+          streakEntry != null && Date.now() - streakEntry.lastAt < CARRY_RESPAWN_STREAK_WINDOW_MS;
+        const streakCount = streakLive ? streakEntry.count : 0;
+        if (streakCount >= CARRY_RESPAWN_MAX_STREAK) {
+          await escalateCarryRespawnLoop(r.owner_id, r.owner_label, streakCount);
+          continue;
+        }
         const carryWindow = Math.min(
           MODEL_WINDOW_1M,
           Math.max(1, window ?? Math.max(r.compaction_limit, est)),
@@ -879,6 +961,7 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
           )
         ) {
           carryRespawnRequestedAt.set(r.owner_id, Date.now());
+          carryRespawnStreak.set(r.owner_id, { count: streakCount + 1, lastAt: Date.now() });
           out.carryRespawned.push(r.owner_id);
           continue;
         }
@@ -916,6 +999,8 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         overLimitOwners.delete(r.owner_id); // recovered (compacted / back under limit)
         forceCompactedAt.delete(r.owner_id); // re-arm the force for a future crossing
         carryRespawnRequestedAt.delete(r.owner_id); // re-arm the deterministic cut
+        carryRespawnStreak.delete(r.owner_id); // WI-5075: recovery proves tracking works again
+        carryRespawnLoopEscalated.delete(r.owner_id); // re-arm the loop alarm for a future defect
         noHostWarned.delete(r.owner_id); // re-arm the EI-9982 diagnostic for a future crossing
       }
     }
