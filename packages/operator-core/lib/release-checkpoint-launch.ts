@@ -27,6 +27,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
 
@@ -415,6 +416,52 @@ export function stopActiveCheckpointUnit(
   return { stopped: false, reason: r.stderr.trim().slice(0, 300) || `systemctl stop exited ${r.status}` };
 }
 
+/** WI-4957: local mirror of green-checkpoint.ts's `pipelineName` — this operator-core module
+ *  must not depend on apps/operator (wrong dependency direction; apps/operator depends on
+ *  operator-core, not the reverse), so the tiny pure sanitizer is duplicated here exactly like
+ *  agent-tools/release/trace.ts already does for the identical reason. Keep in sync by hand;
+ *  it is a one-line sanitizer that changes essentially never. */
+function checkpointPipelineName(root: string): string {
+  return (path.basename(path.resolve(root)).replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
+}
+
+/**
+ * WI-4957 — retire pending checkpoint-family `events:await` registrations bound (via
+ * candidateSha payload_filter) to a candidate whose run we just KILLED (the EI-9672
+ * `replaceStale` stop below) before it could ever produce a verdict.
+ *
+ * Without this, `checkpoint:await { candidateSha }` registered against that exact
+ * candidate has no way to learn its run is dead — it sleeps on, indistinguishable from
+ * "still judging", until its own timeout. That indistinguishable window is the hazard:
+ * a stray/out-of-order delivery for a sha whose run was superseded must never be
+ * mistakable for a live verdict that could authorize a deploy. See
+ * events/await/engine.ts's cancelSupersededCandidateAwaits for the exact (narrow,
+ * payload-filter-matched) cancellation rule.
+ *
+ * Exported + the 5th positional param of launchDetachedCheckpoint below so this is
+ * injectable/unit-testable without a real events:await store. Best-effort/fail-soft:
+ * never blocks the fresh launch it runs ahead of.
+ */
+export async function cancelStaleCheckpointAwaits(
+  root: string,
+  staleCandidateSha: string,
+): Promise<{ cancelled: number }> {
+  try {
+    const { cancelSupersededCandidateAwaits } = require('./events/await/engine') as typeof import('./events/await/engine');
+    const pipeline = checkpointPipelineName(root);
+    const result = await cancelSupersededCandidateAwaits({
+      keys: ['release:green', `release:green:${pipeline}`, 'green-checkpoint:red', `green-checkpoint:red:${pipeline}`],
+      staleCandidateSha,
+    });
+    return { cancelled: result.cancelled };
+  } catch (e) {
+    console.error(
+      `[release-checkpoint-launch] stale-await cancellation failed (non-fatal — the fresh run still launches): ${e instanceof Error ? e.message : e}`,
+    );
+    return { cancelled: 0 };
+  }
+}
+
 /**
  * Fire the green-checkpoint suite as a DETACHED transient systemd unit. Returns once systemd-run
  * has accepted/refused the unit — the suite's VERDICT is reported on /admin/git (the pipeline
@@ -428,13 +475,15 @@ export function stopActiveCheckpointUnit(
  * anyway, so a re-fire is usually unnecessary (see the tool's guidance).
  *
  * `spawnFn`/`execFn`/`readLogHead` are injectable so the tool handler is unit-testable without
- * launching anything or shelling out to systemctl.
+ * launching anything or shelling out to systemctl. `cancelStaleAwaits` (WI-4957) is likewise
+ * injectable so the replaceStale path's await-cancellation is testable without a real DB.
  */
-export function launchDetachedCheckpoint(
+export async function launchDetachedCheckpoint(
   opts: LaunchCheckpointOpts = {},
   spawnFn: SpawnLike = spawn,
   execFn: ExecSyncLike = defaultExecSync,
   readLogHead: (logPath: string) => string | null = defaultReadLogHead,
+  cancelStaleAwaits: (root: string, staleCandidateSha: string) => Promise<{ cancelled: number }> = cancelStaleCheckpointAwaits,
 ): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
   const unit = checkpointUnitForRoot(root);
@@ -473,6 +522,13 @@ export function launchDetachedCheckpoint(
           // between our stop and now is handled by the normal already_running path below
           // (systemd-run's own collision refusal is still the final backstop either way).
           replacedStale = active;
+          // WI-4957: the run we just killed will NEVER produce a verdict for its candidate —
+          // retire any events:await bound to it now, rather than leaving a wait that can only
+          // ever time out (and, until it does, is indistinguishable from "still judging").
+          // Best-effort: never blocks the fresh launch below.
+          if (active.candidate) {
+            await cancelStaleAwaits(root, active.candidate);
+          }
         } else {
           return Promise.resolve({
             launched: false,

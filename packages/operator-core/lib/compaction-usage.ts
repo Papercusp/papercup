@@ -32,8 +32,11 @@ export interface SessionRef {
 
 /** The raw JSONL key Claude writes on a compaction-summary entry. Text that
  *  merely MENTIONS the key inside a string is escaped (\"isCompactSummary\"),
- *  so matching the raw byte form is unambiguous (EI-6410). */
-const COMPACT_BOUNDARY_MARKER = '"isCompactSummary":true';
+ *  so matching the raw byte form is unambiguous (EI-6410). Exported (WI-4958)
+ *  so the session-audit digest's native-compaction transcript scan counts the
+ *  SAME marker this file's own boundary-scan logic anchors on, instead of a
+ *  second hand-copied literal that could drift out of sync. */
+export const COMPACT_BOUNDARY_MARKER = '"isCompactSummary":true';
 /** Bound the backward boundary scan. Not-found within the cap ⇒ ≥cap bytes
  *  since any compaction ⇒ the estimate is over every real limit anyway. */
 const BOUNDARY_SCAN_CAP = 8 * 1024 * 1024;

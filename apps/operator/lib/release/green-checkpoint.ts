@@ -75,6 +75,11 @@ export interface CheckpointDeps {
     /** Workspace-mapped failures, so a re-run knows the cwd for each file. Feeds the
      *  stale-candidate re-triage; absent ⇒ no re-triage (the red is treated as real). */
     failingFiles?: FailingFile[];
+    /** WI-4957: the FULL-suite output log this run wrote (an exact reference a verdict
+     *  consumer can open directly, rather than re-deriving it from the checkpoint log dir
+     *  and a timestamp). Absent when the write itself failed (best-effort — see the
+     *  realCheckpointDeps writer). */
+    logPath?: string;
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
@@ -156,6 +161,14 @@ export interface CheckpointDeps {
    *  living until its own timeout. */
   emitEvent?(input: { key: string; summary: string; payload: unknown; cancelSiblingKeysFor?: string[] }): Promise<void>;
   log(s: string): void;
+  /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
+   *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
+   *  routine and a manual run racing before WI-1562's proactive refusal existed); `runId`
+   *  is what lets a consumer tell those verdicts apart instead of conflating them by sha
+   *  alone. Threaded into every emitted event payload + the returned CheckpointResult.
+   *  realCheckpointDeps stamps a fresh randomUUID() per process; existing test stubs may
+   *  omit it (payloads then carry `runId: null` rather than throwing). */
+  runId?: string;
 }
 
 export interface CheckpointResult {
@@ -190,6 +203,13 @@ export interface CheckpointResult {
    *  gate is GREEN despite the initial red. Surfaced so the P-009 ledger can tally a
    *  chronically-flaky file and the owner can quarantine it accountably. */
   flakeSuspects?: string[];
+  /** WI-4957: this run's own identity (see CheckpointDeps.runId) — carried on every
+   *  verdict so a consumer can distinguish two runs that happen to judge the same
+   *  candidate, and so an events:await can bind to an EXACT run when that matters. */
+  runId?: string;
+  /** WI-4957: the full-suite output log THIS run wrote, when produced (not-green paths
+   *  only — an advance/up-to-date verdict has no failing suite output to reference). */
+  logPath?: string;
 }
 
 export interface CheckpointRunLock {
@@ -1410,16 +1430,34 @@ async function tryLongestGreenPrefix(
   // EI-10800: AWAITED through the deps.emitEvent seam (was a fire-and-forget `void import`).
   {
     const prefixSummary = `${cfg.releaseRef} advanced to ${prefixTip!.slice(0, 8)} (longest green prefix; tip ${candidate.slice(0, 8)} held red)`;
-    const payload = { sha: prefixTip, from: adv.from, partial: true, redTip: candidate };
     const pipeline = pipelineName(cfg.integrationRoot);
+    // WI-4957: `runId` on the payload (this run's identity) + `pipeline` (was previously
+    // only used to build cancelSiblingKeysFor below, never carried on the payload itself —
+    // a checkpoint:await bound to `pipeline` still lineage-checks via the pipeline-SCOPED
+    // key, but the payload field lets a global-key waiter self-check it without re-deriving
+    // it from the emitter).
+    const payload = { sha: prefixTip, from: adv.from, partial: true, redTip: candidate, pipeline, runId: deps.runId ?? null };
+    const cancelSiblingKeysFor = ['green-checkpoint:red', `green-checkpoint:red:${pipeline}`];
     try {
+      // EI-7646/WI-4957: fire BOTH the global key and the pipeline-scoped one, mirroring the
+      // full-advance path below — a partial advance is still a real green outcome for
+      // `prefixTip`, and a `checkpoint:await { pipeline, candidateSha: prefixTip }` (the
+      // pipeline-scoped, candidate-bound default) must be able to see it. Before this fix
+      // only the global key fired, so a candidate-bound waiter on a partial advance could
+      // hang to its own timeout despite the gate having genuinely resolved for its candidate.
       await deps.emitEvent?.({
         key: 'release:green',
         summary: prefixSummary,
         payload,
         // EI-12457: this candidate resolved green (partial) — a subscriber's still-
         // pending red await for this pipeline can now never legitimately fire.
-        cancelSiblingKeysFor: ['green-checkpoint:red', `green-checkpoint:red:${pipeline}`],
+        cancelSiblingKeysFor,
+      });
+      await deps.emitEvent?.({
+        key: `release:green:${pipeline}`,
+        summary: prefixSummary,
+        payload,
+        cancelSiblingKeysFor,
       });
     } catch (e) {
       deps.log(`warn: release:green (partial) emit failed: ${e instanceof Error ? e.message : e}`);
@@ -1434,6 +1472,7 @@ async function tryLongestGreenPrefix(
     reason: 'advanced-prefix',
     summary: confirm.summary,
     failingTests,
+    ...(deps.runId ? { runId: deps.runId } : {}),
   };
 }
 
@@ -1521,7 +1560,7 @@ export async function runGreenCheckpoint(
 
   deps.log(`checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? 'none'})`);
   await deps.setupTree(candidate);
-  const { green, summary, failingTests, flakeSuspects, failingFiles = [] } = await deps.runGreen(
+  const { green, summary, failingTests, flakeSuspects, failingFiles = [], logPath } = await deps.runGreen(
     cfg.checkpointRoot,
     lastReady,
   );
@@ -1591,7 +1630,20 @@ export async function runGreenCheckpoint(
     {
       const redSummary = `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
       const pipeline = pipelineName(cfg.integrationRoot);
-      const payload = { sha: candidate, from: lastReady ?? null, pipeline, summary: summary + alreadyFixedNote + historicalFlakeNote };
+      // WI-4957: carry the FULL failing-test signature + an exact log reference on the
+      // event payload itself — a consumer previously had only the de-noised `summary`
+      // tail, which is unreliable for anything more precise than "something failed".
+      // `runId` distinguishes this verdict from another run that might judge the same
+      // candidate later (a re-fire, or a routine/manual race).
+      const payload = {
+        sha: candidate,
+        from: lastReady ?? null,
+        pipeline,
+        summary: summary + alreadyFixedNote + historicalFlakeNote,
+        failingTests: failingTests ?? [],
+        logPath: logPath ?? null,
+        runId: deps.runId ?? null,
+      };
       // EI-12457: this candidate resolved red — a subscriber's still-pending green
       // await for this pipeline can now never legitimately fire.
       const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
@@ -1733,6 +1785,8 @@ export async function runGreenCheckpoint(
       failingTests,
       failingTestNames: extractFailingTestNames(summary),
       ...(retriage ? { retriage } : {}),
+      ...(deps.runId ? { runId: deps.runId } : {}),
+      ...(logPath ? { logPath } : {}),
     };
   }
 
@@ -1797,7 +1851,8 @@ export async function runGreenCheckpoint(
   {
     const greenSummary = `${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
     const pipeline = pipelineName(cfg.integrationRoot);
-    const payload = { sha: candidate, from: adv.from, pipeline };
+    // WI-4957: runId (this run's identity) rides the payload alongside sha/from/pipeline.
+    const payload = { sha: candidate, from: adv.from, pipeline, runId: deps.runId ?? null };
     // EI-12457: this candidate resolved green — a subscriber's still-pending red
     // await for this pipeline can now never legitimately fire.
     const cancelSiblingKeysFor = ['green-checkpoint:red', `green-checkpoint:red:${pipeline}`];
@@ -1816,6 +1871,7 @@ export async function runGreenCheckpoint(
     reason: 'advanced',
     summary,
     ...(flakeSuspects?.length ? { flakeSuspects } : {}),
+    ...(deps.runId ? { runId: deps.runId } : {}),
   };
 }
 
@@ -1890,7 +1946,16 @@ export function hasNpmScript(treeDir: string, scriptName: string): boolean {
   }
 }
 
-export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = runCmd): CheckpointDeps {
+export function realCheckpointDeps(
+  cfg: ReleaseConfig,
+  exec: CheckpointExec = runCmd,
+  /** WI-4957: this process's own run identity — defaults to a fresh randomUUID() so every
+   *  real invocation is self-identifying without the CLI having to remember to generate
+   *  one; the CLI still passes its OWN pre-generated id explicitly (see the entrypoint
+   *  below) so the SAME runId appears in both the normal verdict path and the self-watchdog
+   *  emergency-red path, which builds deps separately. */
+  runId: string = randomUUID(),
+): CheckpointDeps {
   const log = (s: string) => console.log(`[green-checkpoint] ${s}`);
   // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
   // a fresh `vitest run <file>` scoped to its workspace, at SINGLE concurrency
@@ -1944,6 +2009,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
   return {
     isolationRun,
     workspaceRerun,
+    runId,
     // EI-10800: the single AWAITED emit seam every gate-verdict now flows through. Was a
     // fire-and-forget `void import(...).then(emit)` inlined at each call site — the green
     // full-advance one raced the process teardown and never woke a `release:green:<pipeline>`
@@ -2100,11 +2166,14 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       // proved undiagnosable post-hoc ("2 non-quarantined task(s) failed" with no test
       // names survived the truncation; 2026-06-06/07 cost five diagnosis round-trips +
       // manual re-runs). One file per run, tiny disk, names every failure forever.
+      // WI-4957: hoisted OUTSIDE the try so a verdict consumer gets an exact log reference
+      // alongside the failing-test names, not just the truncated summary tail.
+      let logPath: string | undefined;
       try {
         const logDir = cfg.checkpointLogDir;
         mkdirSync(logDir, { recursive: true });
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}.log`);
+        logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}.log`);
         writeFileSync(logPath, fullOutput);
         log(`full suite output → ${logPath}`);
         // P-014: prune logs older than 14 days so this dir doesn't grow unbounded.
@@ -2143,6 +2212,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
         failingTests,
         ...(flakeSuspects?.length ? { flakeSuspects } : {}),
         ...(failingFiles.length ? { failingFiles } : {}),
+        ...(logPath ? { logPath } : {}),
       };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
