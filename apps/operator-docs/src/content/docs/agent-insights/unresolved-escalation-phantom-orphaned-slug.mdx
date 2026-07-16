@@ -185,3 +185,38 @@ COALESCE(supervisor_notes,'')<>'' AS has_notes FROM harness_shared.harness_escal
 harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or
 `has_notes=true`; if `harness:escalation` shows notes but the PG row still has `has_esc=true,
 has_notes=false`, your resolve missed the phase.
+
+## The `mcp-dark-int:su-<uuid>` phase — a self-clearing recovery-window phantom (EI-12934 / EI-12059)
+
+A third recurring flavor of this EI, key `escalation:papercusp:mcp-dark-int:su-<uuid>` (phase
+`mcp-dark-int:su-<uuid>`), is written by the **mcp-dark-watchdog INTERACTIVE sweep**
+(`mcp-dark-watchdog.ts` `notifyInteractiveDark`, `INTERACTIVE_PHASE_PREFIX = 'mcp-dark-int:'`)
+when a live interactive `psu` session's tool-call-coupled presence beat goes stale (its MCP
+transport appears severed). Like the `git-sync-watchdog` case, it **self-clears**: the same
+watchdog's recovery sweep (`checkInteractiveMcpDark`, ~L642-653) idempotently nulls the escalation
+on its next pass for any owner **no longer in the dark set** — either the session recovered (a fresh
+beat) OR **ended entirely** (dropped out of the live-hosts list; that end-of-session sweep is the
+2026-07-14 durability follow-up that fixed EI-12059/su-39f079d3). The improvement-watchdog simply
+filed the EI **inside that window**, before the recovery sweep ran. (You will typically see several
+stale `.papercusp/state/escalations/mcp-dark-int_su-*.md` disk mirrors — those are the recovered
+rows' disk side; the PG row is the authority.)
+
+The drill is the same "verify recovery, no manual clear needed if already null" path as
+git-sync-watchdog:
+
+1. **The PG row already shows `has_esc=false`** (escalation IS NULL) for that phase — the recovery
+   sweep cleared it. Verify:
+   ```sql
+   SELECT COALESCE(escalation,'')<>'' AS has_esc, COALESCE(supervisor_notes,'')<>'' AS has_notes
+     FROM harness_shared.harness_escalations
+    WHERE phase = 'mcp-dark-int:su-<uuid>';
+   ```
+2. **Confirm the session is genuinely gone** (not still dark): `su-<uuid>` has **no**
+   `harness_shared.coord_presence` row and **no** `harness_shared.spawned_agents` row.
+   `collectEscalationSignals` gates on `COALESCE(e.escalation,'') <> ''`, so a NULL row is never
+   selected → it cannot re-dispatch.
+3. **Resolve `fixed`** with that evidence (state-only, zero code diff). Do **not** try to "reconnect"
+   anything — the transport-death condition is long gone.
+4. **The durable class-fix** — debouncing `collectEscalationSignals` so it does not file inside the
+   mcp-dark recovery window — touches the **self-improvement loop's own code** (a protected surface),
+   and is the same debounce already filed as **EI-8671** (human-gated). Do NOT auto-fix it.
