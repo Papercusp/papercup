@@ -180,7 +180,7 @@ defineTool({
 defineTool({
   name: "checkpoint:await",
   description:
-    "Sleep until the current pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed → advanced to main) and green-checkpoint:red:<pipeline> (held → not green) so you wake either way, instead of polling for the gate verdict. Pass candidateSha to bind the wait to YOUR exact candidate (EI-12457) — a verdict for a different, superseded SHA (a delayed/queued run) then never wakes you; without it you may wake on ANY candidate's verdict for this pipeline and must lineage-check payload.sha yourself (release:trace does this). Pass pipeline to override; pass global:true only when you intentionally want every co-hosted pipeline verdict. Re-arming automatically retires your own prior pending checkpoint await for this pipeline (a superseded wait from an earlier candidate). Then END YOUR TURN.",
+    "Sleep until the current pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed → advanced to main) and green-checkpoint:red:<pipeline> (held → not green) so you wake either way, instead of polling for the gate verdict. Pass candidateSha to bind the wait to YOUR exact candidate (EI-12457) — a verdict for a different, superseded SHA (a delayed/queued run) then never wakes you; without it you may wake on ANY candidate's verdict for this pipeline and must lineage-check payload.sha yourself (release:trace does this). Pass runId (WI-4957) to bind further to the EXACT run that judged it — matters only when you know two runs might judge the same candidate sha (a re-fire, or a routine/manual race) and must not conflate their verdicts. Pass pipeline to override; pass global:true only when you intentionally want every co-hosted pipeline verdict. Re-arming automatically retires your own prior pending checkpoint await for this pipeline (a superseded wait from an earlier candidate) — and if a checkpoint run for your candidate is later superseded/killed (EI-9672 replaceStale) the platform proactively cancels a candidateSha-bound wait for it rather than leaving it to time out. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You need to know whether the gate went green (your change cleared into main) or is held (a test is red) before proceeding — instead of re-polling dev:pipeline_position / dev:build_status.",
@@ -219,6 +219,17 @@ defineTool({
           "you keep sleeping until the correct candidate resolves or the deadline. Strongly recommended whenever " +
           "you know which commit you are judging (e.g. right after a git-sync:await/deploy).",
       ),
+    runId: z
+      .string()
+      .min(4)
+      .max(64)
+      .optional()
+      .describe(
+        "WI-4957: bind further to the EXACT run (payload.runId, an exact match) that judged your candidate — " +
+          "only needed when two runs might judge the SAME candidate sha (a re-fire, or a routine/manual race) " +
+          "and you must not accept the other one's verdict. Combines with candidateSha (both must match); rarely " +
+          "needed on its own.",
+      ),
     global: z
       .boolean()
       .optional()
@@ -242,10 +253,20 @@ defineTool({
     ];
     const note =
       args.note ??
-      `checkpoint:await${pipeline ? ` [${pipeline}]` : " [global]"}${args.candidateSha ? ` @ ${args.candidateSha.slice(0, 8)}` : ""} — blocked until the green gate resolves`;
+      `checkpoint:await${pipeline ? ` [${pipeline}]` : " [global]"}${args.candidateSha ? ` @ ${args.candidateSha.slice(0, 8)}` : ""}${args.runId ? ` (run ${args.runId.slice(0, 8)})` : ""} — blocked until the green gate resolves`;
+    // WI-4957: candidateSha and runId compose into ONE AND-filter — a payload must satisfy
+    // both when both are given (payloadMatchesFilter/evaluateDataCondition treats a
+    // multi-key MatchMap as an implicit AND, same as every other predicate in this codebase).
+    const payloadFilter =
+      args.candidateSha || args.runId
+        ? {
+            ...(args.candidateSha ? { sha: { startsWith: args.candidateSha } } : {}),
+            ...(args.runId ? { runId: args.runId } : {}),
+          }
+        : undefined;
     return reply(
       await armAwaits(ctx, keys, note, args.timeout_sec, {
-        payloadFilter: args.candidateSha ? { sha: { startsWith: args.candidateSha } } : undefined,
+        payloadFilter,
         // EI-12457: a re-await for this pipeline supersedes any prior pending
         // checkpoint-family wait this same subscriber still holds for it.
         supersedeKeys: keys,

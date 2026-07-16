@@ -259,6 +259,7 @@ import './autoloop/control';
 import './loop/arm';
 import './loop/checkpoint';
 import './loop/end';
+import './loop/session_audit';
 import './loop/soak_report';
 import './loop/status';
 import './loop/transfer';

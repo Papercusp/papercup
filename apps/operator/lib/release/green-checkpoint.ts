@@ -2538,6 +2538,11 @@ if (require.main === module) {
   };
 
   const candidateArg = arg('--candidate');
+  // WI-4957: ONE runId for this whole process, shared by the normal verdict path
+  // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
+  // own event payload independently) — so every event this process could possibly emit
+  // carries the SAME run identity.
+  const runId = randomUUID();
   const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
   if (!lock.acquired) {
     Promise.all([
@@ -2588,10 +2593,15 @@ if (require.main === module) {
           summary:
             `self-watchdog fired after ${Math.round(SELF_WATCHDOG_MS / 60_000)}m with no normal exit — ` +
             `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
+          runId,
         };
         emitResult(red);
         const pipeline = pipelineName(cfg.integrationRoot);
-        const payload = { sha: red.candidate, from: red.from, pipeline, summary: red.summary };
+        // WI-4957: no failing-test signature exists for a watchdog timeout (the suite never
+        // finished) — carry an explicit empty array rather than omitting the field, so a
+        // consumer can tell "ran and found nothing failing" (impossible here) apart from
+        // "never got far enough to know" by checking `reason` rather than a missing key.
+        const payload = { sha: red.candidate, from: red.from, pipeline, summary: red.summary, failingTests: [] as string[], runId };
         // EI-12457: symmetric with the normal red path — cancel any still-pending
         // green await for this pipeline now that this candidate resolved red.
         const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
@@ -2635,7 +2645,7 @@ if (require.main === module) {
       lock.release();
       process.exit(code);
     };
-    runGreenCheckpoint(cfg, realCheckpointDeps(cfg), {
+    runGreenCheckpoint(cfg, realCheckpointDeps(cfg, undefined, runId), {
       candidate: candidateArg,
       noPush: process.argv.includes('--no-push'),
     })

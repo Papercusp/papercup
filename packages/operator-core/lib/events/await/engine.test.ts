@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
     expireLapsedAwaits: vi.fn(async () => 0),
     stampAnnouncementsFired: vi.fn(async () => {}),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
+    listActiveAwaitsForKey: vi.fn(async (): Promise<AwaitRow[]> => []),
+    cancelAwaitsByIds: vi.fn(async () => 0),
   },
   executeWake: vi.fn(
     async (
@@ -44,7 +46,7 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
 
-const { emitAwaitedEvent, pumpWakeDeliveries } = await import('./engine');
+const { emitAwaitedEvent, pumpWakeDeliveries, cancelSupersededCandidateAwaits } = await import('./engine');
 
 function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
   return {
@@ -190,6 +192,62 @@ describe('emitAwaitedEvent — EI-12457: sibling-await cancellation on fire', ()
     const r = await emitAwaitedEvent({ key: 'k', cancelSiblingKeysFor: ['k-red'] });
     expect(r.ok).toBe(true);
     expect(r.woken).toBe(1);
+  });
+});
+
+describe('cancelSupersededCandidateAwaits (WI-4957: a killed run cannot leave a live-looking wait behind)', () => {
+  beforeEach(() => {
+    h.store.listActiveAwaitsForKey.mockReset();
+    h.store.cancelAwaitsByIds.mockReset().mockResolvedValue(0);
+  });
+
+  it('cancels only rows whose payload_filter is bound to the STALE candidate — a global (unbound) wait is left alone', async () => {
+    h.store.listActiveAwaitsForKey.mockImplementation(async (key: string) => {
+      if (key !== 'release:green:papercusp') return [];
+      return [
+        // Bound to the stale candidate — must be cancelled.
+        awaitRow({ id: 11, subscriberId: 'su-bound-stale', payloadFilter: { sha: { startsWith: 'deadbeef' } } }),
+        // Bound to a DIFFERENT candidate — must be left alone.
+        awaitRow({ id: 12, subscriberId: 'su-bound-other', payloadFilter: { sha: { startsWith: 'cafef00d' } } }),
+        // Unbound (global "next verdict, any candidate") — must be left alone; the fresh
+        // run's verdict is exactly what it's still waiting for.
+        awaitRow({ id: 13, subscriberId: 'su-global', payloadFilter: null }),
+      ];
+    });
+    h.store.cancelAwaitsByIds.mockResolvedValueOnce(1);
+
+    const result = await cancelSupersededCandidateAwaits({
+      keys: ['release:green', 'release:green:papercusp', 'green-checkpoint:red', 'green-checkpoint:red:papercusp'],
+      staleCandidateSha: 'deadbeef1234',
+    });
+
+    expect(result).toEqual({ cancelled: 1, ids: [11] });
+    expect(h.store.cancelAwaitsByIds).toHaveBeenCalledTimes(1);
+    expect(h.store.cancelAwaitsByIds).toHaveBeenCalledWith([11]);
+  });
+
+  it('nothing bound to the stale candidate → no cancel call at all', async () => {
+    h.store.listActiveAwaitsForKey.mockResolvedValue([awaitRow({ id: 1, payloadFilter: null })]);
+    const result = await cancelSupersededCandidateAwaits({ keys: ['release:green'], staleCandidateSha: 'deadbeef' });
+    expect(result).toEqual({ cancelled: 0, ids: [] });
+    expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
+  });
+
+  it('a lookup failure on one key degrades to skipping that key, never throws', async () => {
+    h.store.listActiveAwaitsForKey.mockImplementation(async (key: string) => {
+      if (key === 'release:green') throw new Error('db blip');
+      return [awaitRow({ id: 5, payloadFilter: { sha: { startsWith: 'abc123' } } })];
+    });
+    h.store.cancelAwaitsByIds.mockResolvedValueOnce(1);
+    const result = await cancelSupersededCandidateAwaits({ keys: ['release:green', 'release:green:papercusp'], staleCandidateSha: 'abc123456' });
+    expect(result).toEqual({ cancelled: 1, ids: [5] });
+  });
+
+  it('a cancel-store failure degrades to {cancelled:0}, never throws', async () => {
+    h.store.listActiveAwaitsForKey.mockResolvedValue([awaitRow({ id: 5, payloadFilter: { sha: { startsWith: 'abc123' } } })]);
+    h.store.cancelAwaitsByIds.mockRejectedValueOnce(new Error('db down'));
+    const result = await cancelSupersededCandidateAwaits({ keys: ['release:green'], staleCandidateSha: 'abc123456' });
+    expect(result).toEqual({ cancelled: 0, ids: [] });
   });
 });
 

@@ -499,6 +499,54 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(r.reason).toBe('already_running');
     expect(r.replacedStale).toBeUndefined();
   });
+
+  // WI-4957: a stopped run will NEVER produce a verdict for its candidate — any
+  // checkpoint:await bound to it must be proactively retired, not left to time out
+  // indistinguishable from "still judging" (the exact window a stray late verdict could
+  // otherwise be mistaken for a live "go" signal).
+  it('WI-4957: a successfully-stopped stale run triggers cancellation of awaits bound to ITS candidate, BEFORE the fresh run launches', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child);
+    const execFn = staleActiveExecFn(0, 45);
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+    const cancelStaleAwaits = vi.fn(async (_root: string, _staleCandidateSha: string) => ({ cancelled: 2 }));
+
+    const p = launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+      cancelStaleAwaits,
+    );
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(cancelStaleAwaits).toHaveBeenCalledTimes(1);
+    expect(cancelStaleAwaits).toHaveBeenCalledWith('/tree', '11111111');
+    expect(r.launched).toBe(true);
+  });
+
+  it('WI-4957: a FAILED stop never calls cancelStaleAwaits (the run is not proven dead — nothing to retire)', async () => {
+    const spawnFn = vi.fn();
+    const execFn = staleActiveExecFn(1); // stop fails
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+    const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
+
+    await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead, cancelStaleAwaits);
+
+    expect(cancelStaleAwaits).not.toHaveBeenCalled();
+  });
+
+  it('WI-4957: a YOUNG stale run (refused, never stopped) never calls cancelStaleAwaits', async () => {
+    const spawnFn = vi.fn();
+    const execFn = staleActiveExecFn(0, 5); // young — refused before any stop attempt
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+    const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
+
+    await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead, cancelStaleAwaits);
+
+    expect(cancelStaleAwaits).not.toHaveBeenCalled();
+  });
 });
 
 describe('checkpointUnitForRoot (per-root manual gates, 2026-07-01)', () => {

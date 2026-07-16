@@ -245,6 +245,12 @@ export interface CheckpointVerdict {
    *  The routine then MUST NOT record it again — a second `trackGateStall` for one verdict would
    *  double-increment the red streak. Absent/false ⇒ the caller records, exactly as pre-WI-4494. */
   recorded?: boolean;
+  /** WI-4957: this run's own identity (structural mirror of CheckpointResult.runId) —
+   *  distinguishes two runs that happen to judge the same candidate sha. */
+  runId?: string;
+  /** WI-4957: the full-suite output log this run wrote (structural mirror of
+   *  CheckpointResult.logPath), when produced. */
+  logPath?: string;
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
@@ -262,6 +268,11 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   if (v.failingTests?.length) detail.failingTests = v.failingTests.slice(0, 20);
   // load-flake-isolation-2026-06-23: persist the files the gate ABSORBED as load-flakes.
   if (v.flakeSuspects?.length) detail.flakeSuspects = v.flakeSuspects.slice(0, 20);
+  // WI-4957: persist the run identity + exact log reference so /admin/git history (and
+  // gate-verdict-freshness's readers) can tell WHICH run produced this row and open its
+  // full output directly, instead of only the de-noised failing-test names.
+  if (v.runId) detail.runId = v.runId;
+  if (v.logPath) detail.logPath = v.logPath;
   return detail;
 }
 
