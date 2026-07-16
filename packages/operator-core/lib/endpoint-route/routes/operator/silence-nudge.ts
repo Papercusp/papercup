@@ -9,7 +9,7 @@
  */
 import { z } from 'zod';
 import { openRun, registerCard } from '@papercusp/agent-mcp';
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrLocalDefault } from '../../session-or-local';
 import { cardResponseRateAllow } from '../../../card-response-rate-limit';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -32,7 +32,10 @@ export default defineTool({
   path: '/operator/conversations/:id/silence-nudge',
   auth: 'loopback',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
+    // WI-5044: session user OR (loopback-only) the seeded default user — the
+    // desktop webview has no session cookie; the silence-nudge Ready card was
+    // unmintable on the shipping product.
+    const user = await getSessionUserOrLocalDefault(req);
     if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });
 
     const body = (await req.json().catch(() => null)) as Body | null;

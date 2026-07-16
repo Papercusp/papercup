@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../auth', () => ({ getSessionUser: vi.fn() }));
+vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), getSessionUserOrDefault: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(),
   // backup seam (pulled in transitively) reads workspacesRoot at import.
@@ -15,7 +15,7 @@ vi.mock('../telemetry', () => ({
 }));
 
 import { Hono } from 'hono';
-import { getSessionUser } from '../../auth';
+import { getSessionUser, getSessionUserOrDefault } from '../../auth';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   _resetStateChannelForTests,
@@ -73,6 +73,7 @@ describe('GET /api/operator/state-snapshot', () => {
   beforeEach(() => {
     _resetStateChannelForTests();
     vi.mocked(getSessionUser).mockReset();
+    vi.mocked(getSessionUserOrDefault).mockReset();
     vi.mocked(activeWorkspaceId).mockReset();
     vi.mocked(getSessionUser).mockResolvedValue({
       id: 'u1',
@@ -80,16 +81,39 @@ describe('GET /api/operator/state-snapshot', () => {
       display_name: 'Alice',
       has_password: true,
     });
+    vi.mocked(getSessionUserOrDefault).mockResolvedValue({
+      id: 'u0',
+      username: 'default',
+      display_name: 'User',
+      has_password: false,
+    });
     vi.mocked(activeWorkspaceId).mockReturnValue(ws);
     app = new Hono().basePath('/api');
     registerAllRoutes(app);
   });
   afterEach(() => _resetStateChannelForTests());
 
-  it('401 without session', async () => {
+  it('401 without session for a NON-loopback caller (perimeter preserved, WI-5044)', async () => {
     vi.mocked(getSessionUser).mockResolvedValue(null);
-    const res = await app.request('/api/operator/state-snapshot');
+    const res = await app.request('/api/operator/state-snapshot', {
+      headers: { host: 'evil.example.com' },
+    });
     expect(res.status).toBe(401);
+  });
+
+  it('LOOPBACK caller without a session gets the seeded default user — the desktop webview path (WI-5044)', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(null);
+    openRun({ workspaceId: ws, runId: 'rDesk' });
+    setOpenCards('rDesk', [card('d1')]);
+
+    // Hono test requests resolve to http://localhost/… — a loopback host.
+    const res = await app.request('/api/operator/state-snapshot');
+    expect(res.status).toBe(200);
+    const r = openSseReader(res);
+    const first = await r.next(1000);
+    await r.close();
+    expect(first).not.toBeNull();
+    expect(JSON.parse(first!.split('data: ')[1]).runId).toBe('rDesk');
   });
 
   it('initial dump: streams every currently-open run snapshot on connect', async () => {

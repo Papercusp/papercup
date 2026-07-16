@@ -15,7 +15,7 @@ import {
   type VersionedSnapshot,
   type SnapshotDelta,
 } from '@papercusp/agent-mcp';
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrLocalDefault } from '../../session-or-local';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getFlag } from '@papercusp/flags/server';
@@ -41,7 +41,10 @@ export default defineTool({
   // row per connect carries little signal (RFC Q7). Don't record it.
   sampleRate: 0,
   async handler(req) {
-    const user = await getSessionUser(req.headers);
+    // WI-5044: session user OR (loopback-only) the seeded default user — the
+    // desktop webview has no session cookie, and a strict cookie check left
+    // the whole live-card channel dead on the shipping product.
+    const user = await getSessionUserOrLocalDefault(req);
     if (!user) {
       return new Response('unauthorized', { status: 401 });
     }

@@ -7,7 +7,7 @@
  * `auth: 'loopback'` (auth-tier Wave 1) — session check inline.
  */
 import { resolveCardResponse } from '@papercusp/agent-mcp';
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrLocalDefault } from '../../session-or-local';
 import { cardResponseRateAllow } from '../../../card-response-rate-limit';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -24,7 +24,10 @@ export default defineTool({
   path: '/operator/conversations/:id/card-response',
   auth: 'loopback',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
+    // WI-5044: session user OR (loopback-only) the seeded default user — the
+    // desktop webview has no session cookie; a strict cookie check made every
+    // card pick un-postable on the shipping product.
+    const user = await getSessionUserOrLocalDefault(req);
     if (!user) {
       return Response.json({ error: 'unauthorized' }, { status: 401 });
     }
