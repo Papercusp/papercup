@@ -3314,6 +3314,57 @@ export async function onToolCall(
         return raw;
       }
     })();
+    // WI-5031: best-effort `origin` fetch URL for ANY repo shape — ordinary
+    // clone (.git dir), linked worktree (.git file → gitdir → commondir), or
+    // submodule (.git file → gitdir with its own config). null on ANY failure.
+    // Lets the guard tell a stray checkout of the CANONICAL project apart from
+    // an INDEPENDENT repo (papercup-rust-mobile) that merely lives in the
+    // workspace dir. Parses .git/config directly — no git subprocess on the
+    // per-edit hot path. Mirrors the cc hook's _repo_origin_url/_norm_origin
+    // (parity contract; keep in sync).
+    const repoOriginUrl = (repoRoot: string): string | null => {
+      try {
+        const gitEntry = join(repoRoot, '.git');
+        let cfgPath: string;
+        if (statSync(gitEntry).isFile()) {
+          const m = /^gitdir:\s*(.+)$/.exec(readFileSync(gitEntry, 'utf8').trim());
+          if (!m) return null;
+          let gd = m[1].trim();
+          if (!gd.startsWith('/')) gd = join(repoRoot, gd);
+          gd = realpathSync(gd);
+          cfgPath = join(gd, 'config');
+          if (!existsSync(cfgPath)) {
+            // Linked worktree: config lives in the COMMON git dir.
+            const cdPath = join(gd, 'commondir');
+            if (!existsSync(cdPath)) return null;
+            let cd = readFileSync(cdPath, 'utf8').trim();
+            if (!cd.startsWith('/')) cd = join(gd, cd);
+            cfgPath = join(realpathSync(cd), 'config');
+          }
+        } else {
+          cfgPath = join(gitEntry, 'config');
+        }
+        let inOrigin = false;
+        for (const line of readFileSync(cfgPath, 'utf8').split('\n')) {
+          const s = line.trim();
+          if (s.startsWith('[')) inOrigin = s.replace(/\s+/g, '') === '[remote"origin"]';
+          else if (inOrigin && s.includes('=') && s.slice(0, s.indexOf('=')).trim() === 'url') {
+            const v = s.slice(s.indexOf('=') + 1).trim();
+            return v || null;
+          }
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    };
+    const normalizeOriginUrl = (url: string | null): string | null => {
+      if (!url) return null;
+      let u = url.trim().replace(/\/+$/, '');
+      if (u.toLowerCase().endsWith('.git')) u = u.slice(0, -4);
+      const m = /^(?:git@|ssh:\/\/(?:git@)?|https?:\/\/|git:\/\/)([^/:]+)[:/](.*)$/.exec(u);
+      return m ? `${m[1]}/${m[2]}`.toLowerCase() : u.toLowerCase();
+    };
     for (const t of targets) {
       let rr: string;
       try {
@@ -3322,6 +3373,17 @@ export async function onToolCall(
         rr = t.root;
       }
       if (rr !== canonicalTree) {
+        // WI-5031: a sibling is only a stranding hazard when it is a checkout
+        // of the SAME project as the canonical tree — git-sync commits only
+        // the canonical tree, so work left in same-project siblings dies. An
+        // INDEPENDENT repo with a provably different origin remote is
+        // legitimate to edit and falls through to normal lock coordination.
+        // Unreadable origins keep the old refusal (conservative).
+        const sibOrigin = normalizeOriginUrl(repoOriginUrl(t.root));
+        const canonOrigin = normalizeOriginUrl(repoOriginUrl(canonicalTree));
+        if (sibOrigin !== null && canonOrigin !== null && sibOrigin !== canonOrigin) {
+          continue;
+        }
         return {
           block: true,
           reason:
@@ -3329,7 +3391,10 @@ export async function onToolCall(
             `is not the canonical staging tree. Agents edit ONLY the shared ` +
             `staging tree (${canonicalTree}); other worktrees are off-limits ` +
             `because work left in them never reaches the auto-committed tree. ` +
-            `cd into the staging tree and make this edit there.`,
+            `cd into the staging tree and make this edit there. (An INDEPENDENT ` +
+            `sibling repo — one whose \`origin\` remote provably differs from ` +
+            `the canonical tree's — is exempt; this tree's origin matches the ` +
+            `canonical project or could not be read.)`,
         };
       }
     }

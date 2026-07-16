@@ -356,6 +356,66 @@ def find_repo_root(abs_path):
     return None
 
 
+def _repo_origin_url(repo_root):
+    """Best-effort `origin` fetch URL for ANY repo shape — ordinary clone
+    (`.git` dir), linked worktree (`.git` file → gitdir → commondir), or
+    submodule (`.git` file → gitdir with its own config). None on ANY
+    failure (unreadable, no origin remote, broken gitdir). Used by the
+    worktree guard (WI-5031) to tell a stray checkout of the CANONICAL
+    project apart from an independent repo that merely lives in the
+    workspace dir. Parses .git/config directly — no `git` subprocess on
+    the per-edit hot path."""
+    try:
+        git_entry = os.path.join(repo_root, '.git')
+        if os.path.isfile(git_entry):
+            with open(git_entry) as f:
+                m = re.match(r'gitdir:\s*(.+)$', f.read().strip())
+            if not m:
+                return None
+            gd = m.group(1).strip()
+            if not os.path.isabs(gd):
+                gd = os.path.join(repo_root, gd)
+            gd = os.path.realpath(gd)
+            cfg = os.path.join(gd, 'config')
+            if not os.path.exists(cfg):
+                # Linked worktree: config lives in the COMMON git dir.
+                cd_path = os.path.join(gd, 'commondir')
+                if not os.path.exists(cd_path):
+                    return None
+                with open(cd_path) as f:
+                    cd = f.read().strip()
+                if not os.path.isabs(cd):
+                    cd = os.path.join(gd, cd)
+                cfg = os.path.join(os.path.realpath(cd), 'config')
+        else:
+            cfg = os.path.join(git_entry, 'config')
+        url, in_origin = None, False
+        with open(cfg) as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith('['):
+                    in_origin = re.sub(r'\s+', '', s) == '[remote"origin"]'
+                elif in_origin and s.split('=', 1)[0].strip() == 'url':
+                    url = s.split('=', 1)[1].strip() if '=' in s else None
+                    break
+        return url or None
+    except Exception:
+        return None
+
+
+def _norm_origin(url):
+    """Normalize remote-URL spellings to `host/path` so ssh and https forms
+    of the SAME remote compare equal (git@github.com:Org/repo.git ≡
+    https://github.com/Org/repo). None in → None out."""
+    if not url:
+        return None
+    u = url.strip().rstrip('/')
+    if u.lower().endswith('.git'):
+        u = u[:-4]
+    m = re.match(r'^(?:git@|ssh://(?:git@)?|https?://|git://)([^/:]+)[:/](.*)$', u)
+    return (m.group(1) + '/' + m.group(2)).lower() if m else u.lower()
+
+
 # Scope enforcement to the papercup workspace. Its worktrees (papercup,
 # papercup-<topic>, …) are direct children of WORKSPACE_ROOT. We compute
 # lock keys as paths RELATIVE TO each worktree root, so the same logical
@@ -482,13 +542,31 @@ for p in raw_paths:
                 )
         elif (os.path.realpath(os.path.dirname(root)) == workspace_root
                 and _real_root != _canonical_tree):
-            deny(
-                f"worktree guard: refused — you are editing in '{root}', which "
-                f"is not the canonical staging tree. Agents edit ONLY the shared "
-                f"staging tree ({_canonical_tree}); other worktrees are off-limits "
-                f"because work left in them never reaches the auto-committed tree. "
-                f"cd into the staging tree and make this edit there."
-            )
+            # WI-5031: a sibling is only a stranding hazard when it is a
+            # checkout of the SAME project as the canonical tree (papercup-
+            # release, papercup-checkpoint, old feature clones) — git-sync
+            # commits only the canonical tree, so work left in those dies.
+            # An INDEPENDENT repo that merely lives in the workspace dir
+            # (papercup-rust-mobile: own .git, own remote, own commit
+            # discipline) is legitimate to edit; denying it parked the whole
+            # mobile release campaign as needs-human. Deny only when the
+            # sibling's origin remote matches the canonical tree's, or when
+            # either origin is unreadable (conservative: an unprovable
+            # sibling keeps the old refusal).
+            _sib_origin = _norm_origin(_repo_origin_url(root))
+            _canon_origin = _norm_origin(_repo_origin_url(_canonical_tree))
+            if (_sib_origin is None or _canon_origin is None
+                    or _sib_origin == _canon_origin):
+                deny(
+                    f"worktree guard: refused — you are editing in '{root}', which "
+                    f"is not the canonical staging tree. Agents edit ONLY the shared "
+                    f"staging tree ({_canonical_tree}); other worktrees are off-limits "
+                    f"because work left in them never reaches the auto-committed tree. "
+                    f"cd into the staging tree and make this edit there. (An "
+                    f"INDEPENDENT sibling repo — one whose `origin` remote provably "
+                    f"differs from the canonical tree's — is exempt; this tree's "
+                    f"origin matches the canonical project or could not be read.)"
+                )
     except Exception:
         pass  # The guard must never wedge an edit on its own error (fail-open).
 
