@@ -8,6 +8,14 @@ import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+
+/**
+ * Ceiling on the Settings → Memory envelope fetches (WI-5030). Generous enough
+ * to absorb a genuine cold start (GET /api/user/memory/backend measured >12s
+ * cold on source-run operators, ~0.08s bundled) while still guaranteeing the
+ * page resolves to *something* rather than spinning forever.
+ */
+export const META_FETCH_TIMEOUT_MS = 20_000;
 import { Select } from '@/app/harness/Select';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
@@ -104,6 +112,9 @@ export default function MemoryPage() {
   const t = useLexicon();
   const [userId, setUserId] = useState<string | null>(null);
   const [metaLoaded, setMetaLoaded] = useState(false);
+  // EI/WI-5030: why the envelope fetch failed, so a slow/hung backend renders an
+  // actionable error instead of an eternal "Loading…". null = no error.
+  const [metaError, setMetaError] = useState<string | null>(null);
   // Learning-instruction text: a derived-text snapshot (buildLearningInstructions),
   // not a live counter — stays a one-shot REST fetch, same class as the
   // backend/filesystem envelope below (P-013).
@@ -146,9 +157,18 @@ export default function MemoryPage() {
   // below (P-007) and refresh themselves on server-side invalidates.
   const refreshMeta = useCallback(async () => {
     try {
+      setMetaError(null);
+      // WI-5030: these fetches MUST be bounded. `finally` only runs once the
+      // awaited promise SETTLES, so a fetch that hangs (rather than fails)
+      // never sets metaLoaded and the page spins forever with no error and no
+      // recovery — the owner-reported symptom. /api/user/memory/backend is
+      // measurably slow-to-cold on source-run operators (>12s on :3170/:3270
+      // vs 0.08s on bundled :3070), so an unbounded wait is a real hazard, not
+      // a theoretical one. The timeout converts a hang into a rejection, which
+      // the catch below turns into a visible, retryable error.
       const [r, fs] = await Promise.all([
-        fetch('/api/user/memory/backend'),
-        fetch('/api/user/memory/feedback'),
+        fetch('/api/user/memory/backend', { signal: AbortSignal.timeout(META_FETCH_TIMEOUT_MS) }),
+        fetch('/api/user/memory/feedback', { signal: AbortSignal.timeout(META_FETCH_TIMEOUT_MS) }),
       ]);
       if (r.ok) {
         const j = await r.json();
@@ -163,6 +183,16 @@ export default function MemoryPage() {
         setRecallCanary(j.recallCanary?.latest ?? null);
       }
       if (fs.ok) setLearningInstructions((await fs.json()).learning_instructions ?? null);
+    } catch (err) {
+      // A timeout surfaces as TimeoutError; anything else (offline, 5xx-thrown)
+      // lands here too. Either way the user gets a reason + a retry, never a
+      // silent spinner.
+      const timedOut = err instanceof Error && err.name === 'TimeoutError';
+      setMetaError(
+        timedOut
+          ? `The memory backend did not respond within ${Math.round(META_FETCH_TIMEOUT_MS / 1000)}s.`
+          : `Could not load memory settings: ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       setMetaLoaded(true);
     }
@@ -682,6 +712,18 @@ export default function MemoryPage() {
   }, [editingId, editingDraft, onSaveEdit, onDelete, expandedId, setExpandedId, semHits]);
 
   if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
+
+  // WI-5030: the envelope fetch failed or timed out. Say so, and offer a retry
+  // — the page previously had no way to express this and just spun.
+  if (metaError) {
+    return (
+      <div style={{ padding: 32, display: 'grid', gap: 12, justifyItems: 'start' }}>
+        <div style={{ fontWeight: 600 }}>Couldn’t load your memory settings</div>
+        <div style={{ opacity: 0.8 }}>{metaError}</div>
+        <button onClick={() => { setMetaLoaded(false); void refreshMeta(); }}>Retry</button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: 32, maxWidth: 920, display: 'flex', flexDirection: 'column', gap: 16 }}>
