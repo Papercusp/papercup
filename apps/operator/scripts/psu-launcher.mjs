@@ -1960,6 +1960,22 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     // loader, which migrates legacy settings.json INTO config.yml). Same remove-then-append
     // surgery as `eval` above; hosted-model sessions keep the copied config untouched.
     const effModel = model || cfg.match(/modelRoles:[\s\S]*?\n[ \t]+default:[ \t]*([^\s#]+)/)?.[1]?.trim() || null;
+    const localModel = isWeakOmpModel(effModel);
+    // WI-5047: OMP classifies generic provider HTTP 500 / "internal error" responses as
+    // transient and retries them (10 attempts by default). A local llama-server CUDA
+    // allocation failure is process-startup state, not a request-level transient: replaying
+    // the same request immediately only creates a noisy retry storm and hides the original
+    // actionable cudaMalloc error. Papercusp owns this relocated config, so LOCAL sessions
+    // fail loud on the first provider error. Hosted OMP sessions retain the user's/native
+    // retry policy. Remove both supported config spellings before appending the canonical
+    // local-only block so an inherited global retry policy cannot override it.
+    if (localModel) {
+      cfg = cfg
+        .replace(/^retry:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '')
+        .replace(/^retry\.[A-Za-z.]+:.*\n?/gm, '');
+      if (!cfg.endsWith('\n')) cfg += '\n';
+      cfg += 'retry:\n  enabled: false\n';
+    }
     // remoteEndpoint (deterministic-context-carry P-002): route the summarizer's LLM call to
     // the gateway's reserved maintenance lane instead of the session's own backend. The path
     // is LOCKSTEP with operator-core inference-gateway/gateway.ts MAINTENANCE_SUMMARIZE_PATH
@@ -1986,7 +2002,7 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
       ? `?carryOwner=${encodeURIComponent(clientId)}${Number.isFinite(carryBw) && carryBw > 0 ? `&carryWindow=${carryBw}` : ''}`
       : '';
     const remoteEndpointLine = `  remoteEndpoint: "http://127.0.0.1:${gwPort}/maintenance/summarize${carryParams}"\n`;
-    if (isWeakOmpModel(effModel)) {
+    if (localModel) {
       cfg = cfg
         .replace(/^compaction:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '')
         .replace(/^compaction\.[A-Za-z.]+:.*\n?/gm, '');
@@ -2236,6 +2252,11 @@ export const GATEWAY_ACCOUNT_HEADER = 'x-papercusp-account';
  *  GATEWAY_ACCOUNT_HEADER. */
 export const GATEWAY_OWNER_HEADER = 'x-papercusp-owner';
 
+/** Non-secret bearer used only to make a gateway-routed Claude CLI pass its local
+ * login gate. The gateway strips it and injects the selected account's real OAuth.
+ * MUST equal operator-core inference-gateway/spawn-env.ts GATEWAY_CLIENT_AUTH_TOKEN. */
+export const GATEWAY_CLIENT_AUTH_TOKEN = 'papercusp-gateway';
+
 /**
  * The inference-gateway pin env for an account, built CLIENT-SIDE. Pure — exported for tests. Mirrors
  * the server's gatewaySpawnEnv + resolveAccountPin exactly: point the agent at the localhost gateway
@@ -2258,6 +2279,7 @@ export function gatewayPinEnv(account, provider = 'claude', ownerId = undefined)
   if (ownerId) headers.push(`${GATEWAY_OWNER_HEADER}: ${ownerId}`);
   return {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
     ANTHROPIC_CUSTOM_HEADERS: headers.join('\n'),
     PAPERCUSP_ACCOUNT_ID: account,
   };
@@ -2300,7 +2322,10 @@ export function gatewayAutoEnv(provider = 'claude', ownerId = undefined) {
   if (provider !== 'claude') return {};
   const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
   const port = Number.isFinite(p) && p > 0 ? p : 8788;
-  const env = { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` };
+  const env = {
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+  };
   if (ownerId) env.ANTHROPIC_CUSTOM_HEADERS = `${GATEWAY_OWNER_HEADER}: ${ownerId}`;
   return env;
 }
@@ -4173,10 +4198,18 @@ export async function reportSessionPortDelivery(
  *  THIS is the one choke point every psu-launched agent session passes
  *  through — sanitizing here fixes it fleet-wide regardless of what garbage
  *  the launching shell carried in. Non-destructive: only strips the npm
- *  lifecycle vars above (never touches any PAPERCUSP_ variable, nor a PATH
- *  entry the caller explicitly sets after this runs) and PATH segments
- *  naming the release checkout, which an interactive agent session never
- *  legitimately needs. */
+ *  lifecycle vars above and PATH segments naming the release checkout, which
+ *  an interactive agent session never legitimately needs.
+ *
+ * WI-5052: account routing is also launch-envelope state, never ambient shell
+ * state. A gateway-routed Claude session can itself run `psu`; without removing
+ * its inherited ANTHROPIC_BASE_URL / routing headers, a child explicitly launched
+ * as `--account=default` silently remains on the gateway because the default
+ * envelope is intentionally empty. Strip every inference-gateway route marker
+ * here, BEFORE runWrapper overlays the explicit launch envelope. Auto/pin launches
+ * re-add the complete route through gatewayAutoEnv/gatewayPinEnv or bootstrap-su.
+ * Preserve arbitrary direct credentials; remove ANTHROPIC_AUTH_TOKEN only when it
+ * is Papercusp's non-secret gateway sentinel. */
 export function sanitizeInheritedEnv(env) {
   const out = { ...env };
   for (const key of Object.keys(out)) {
@@ -4194,6 +4227,18 @@ export function sanitizeInheritedEnv(env) {
       .split(delimiter)
       .filter((seg) => !seg.includes('/papercup-release/'))
       .join(delimiter);
+  }
+  for (const key of [
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_CUSTOM_HEADERS',
+    'PAPERCUSP_ANTHROPIC_URL',
+    'PAPERCUSP_ACCOUNT_ID',
+    'PAPERCUSP_CODEX_GATEWAY',
+  ]) {
+    delete out[key];
+  }
+  if (out.ANTHROPIC_AUTH_TOKEN === GATEWAY_CLIENT_AUTH_TOKEN) {
+    delete out.ANTHROPIC_AUTH_TOKEN;
   }
   return out;
 }

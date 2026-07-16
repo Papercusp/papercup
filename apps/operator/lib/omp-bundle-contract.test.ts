@@ -27,6 +27,7 @@ import { homedir } from 'node:os';
 const PKG_DIR = join(homedir(), 'node_modules', '@oh-my-pi', 'pi-coding-agent');
 const BUNDLE = join(PKG_DIR, 'dist', 'cli.js');
 const SETTINGS_SCHEMA = join(PKG_DIR, 'dist', 'types', 'config', 'settings-schema.d.ts');
+const PI_AI_FLAGS = join(homedir(), 'node_modules', '@oh-my-pi', 'pi-ai', 'src', 'error', 'flags.ts');
 
 /** Minimum version whose upstream overflow handling we verified end-to-end (2026-07-14). */
 const VERIFIED_MIN_VERSION = [16, 3, 3] as const;
@@ -70,5 +71,20 @@ describe.skipIf(!installed)('installed omp bundle contract (P-003)', () => {
     // P-001: the seeded strategy/threshold keys.
     expect(schema).toContain('thresholdPercent');
     expect(schema).toContain('strategy');
+  });
+
+  it('classifies generic local-server 500/internal errors as retriable and exposes the local retry kill-switch (WI-5047)', () => {
+    // A llama-server cudaMalloc startup failure reaches OMP as a generic HTTP 500 /
+    // internal error. The installed classifier marks that broad class transient, so
+    // Papercusp must use the supported per-session retry.enabled seam to fail loud
+    // instead of replaying the same impossible allocation ten times.
+    const flags = readFileSync(PI_AI_FLAGS, 'utf8');
+    expect(flags).toContain('RETRIABLE_KINDS');
+    expect(flags).toContain('Flag.Transient');
+    expect(flags).toContain('500|502|503|504');
+    expect(flags).toContain('internal.?error');
+    const schema = readFileSync(SETTINGS_SCHEMA, 'utf8');
+    expect(schema).toContain('"retry.enabled"');
+    expect(schema).toContain('"retry.maxRetries"');
   });
 });

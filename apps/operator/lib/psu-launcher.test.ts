@@ -48,6 +48,8 @@ import {
   accountProviderFromChoices,
   GATEWAY_ACCOUNT_HEADER,
   GATEWAY_OWNER_HEADER,
+  GATEWAY_CLIENT_AUTH_TOKEN,
+  sanitizeInheritedEnv,
   addDirArgs,
   forkUnsupportedMessage,
   forkBootstrapBody,
@@ -143,6 +145,7 @@ import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-schedule
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { ownerDesktopNotifyDenyFlag } from '@papercusp/orchestrator/owner-desktop-notify-deny';
 import { ACCOUNT_HEADER, OWNER_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
+import { GATEWAY_CLIENT_AUTH_TOKEN as SERVER_GATEWAY_CLIENT_AUTH_TOKEN } from '@papercusp/operator-core/lib/inference-gateway/spawn-env';
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
 // WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
 // tool boundary carries its own copy). The parity suite below pins them value-for-value.
@@ -557,6 +560,31 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect((written.match(/^eval:/gm) ?? []).length).toBe(1); // exactly one eval: block
     expect(written).not.toMatch(/\n\s+py:\s*true/); // no leftover on-value
     expect(written).toMatch(/\n\s+py:\s*false/);
+  });
+
+  it('disables automatic provider retries for a LOCAL-model session and removes inherited retry policy (WI-5047)', () => {
+    const withRetry =
+      AGENT_CFG.replace('papercusp-gateway/claude-sonnet-4-6', 'ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh') +
+      'retry:\n  enabled: true\n  maxRetries: 10\n  modelFallback: true\n' +
+      'retry.baseDelayMs: 123\n';
+    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withRetry);
+    writeOmpSessionConfigDir('sess1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh' }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect((written.match(/^retry:/gm) ?? []).length).toBe(1);
+    expect(written).toMatch(/^retry:\n\s+enabled:\s*false$/m);
+    expect(written).not.toContain('maxRetries');
+    expect(written).not.toContain('modelFallback');
+    expect(written).not.toContain('retry.baseDelayMs');
+  });
+
+  it('preserves the inherited retry policy for a HOSTED-model session (WI-5047 scope guard)', () => {
+    const withRetry = AGENT_CFG + 'retry:\n  enabled: true\n  maxRetries: 7\n  modelFallback: true\n';
+    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withRetry);
+    writeOmpSessionConfigDir('sess1', { model: 'anthropic/claude-opus-4-8' }, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect((written.match(/^retry:/gm) ?? []).length).toBe(1);
+    expect(written).toMatch(/^retry:\n\s+enabled:\s*true\n\s+maxRetries:\s*7\n\s+modelFallback:\s*true$/m);
+    expect(written).not.toMatch(/^retry:\n\s+enabled:\s*false$/m);
   });
 
   it('seeds shake@70 compaction + gateway remoteEndpoint for a LOCAL-model session (deterministic-context-carry P-001/P-002)', () => {
@@ -1615,9 +1643,14 @@ describe('psu-launcher arg parsing', () => {
     expect(GATEWAY_OWNER_HEADER).toBe(OWNER_HEADER);
   });
 
-  it('gatewayPinEnv: mirrors the server gatewaySpawnEnv (base URL + account header + id)', () => {
+  it('GATEWAY_CLIENT_AUTH_TOKEN stays in LOCKSTEP with server gatewaySpawnEnv', () => {
+    expect(GATEWAY_CLIENT_AUTH_TOKEN).toBe(SERVER_GATEWAY_CLIENT_AUTH_TOKEN);
+  });
+
+  it('gatewayPinEnv: mirrors the complete server gatewaySpawnEnv route', () => {
     const env = gatewayPinEnv('aviynw');
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: aviynw`);
     expect(env.PAPERCUSP_ACCOUNT_ID).toBe('aviynw');
   });
@@ -1654,6 +1687,7 @@ describe('psu-launcher arg parsing', () => {
     // Base URL points at the localhost gateway; crucially NO account header + NO PAPERCUSP_ACCOUNT_ID,
     // so the gateway active()/drain-selects an available account and fails over (vs gatewayPinEnv).
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
     expect(env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
   });
@@ -1675,6 +1709,47 @@ describe('psu-launcher arg parsing', () => {
 
   it('gatewayAutoEnv: WI-4402 — ownerId is ignored for non-claude providers ({} either way)', () => {
     expect(gatewayAutoEnv('codex', 'su-owner')).toEqual({});
+  });
+
+  it('sanitizeInheritedEnv: default is gateway-free while explicit auto/pin overlays restore the complete route (WI-5052)', () => {
+    const contaminatedParent = {
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
+      ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+      ANTHROPIC_CUSTOM_HEADERS: `${ACCOUNT_HEADER}: inherited-account`,
+      PAPERCUSP_ANTHROPIC_URL: 'http://127.0.0.1:8788',
+      PAPERCUSP_ACCOUNT_ID: 'inherited-account',
+      PAPERCUSP_CODEX_GATEWAY: '1',
+      CLAUDE_CODE_OAUTH_TOKEN: 'direct-system-oauth',
+      KEEP_ME: 'yes',
+    };
+    const clean = sanitizeInheritedEnv(contaminatedParent);
+    expect(clean).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: 'direct-system-oauth',
+      KEEP_ME: 'yes',
+    });
+
+    const defaultEnv = { ...clean };
+    expect(defaultEnv).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    expect(defaultEnv).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+    expect(defaultEnv).not.toHaveProperty('PAPERCUSP_ACCOUNT_ID');
+
+    const autoEnv = { ...clean, ...gatewayAutoEnv('claude', 'su-auto') };
+    expect(autoEnv.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(autoEnv.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
+    expect(autoEnv.ANTHROPIC_CUSTOM_HEADERS).toBe(`${OWNER_HEADER}: su-auto`);
+    expect(autoEnv).not.toHaveProperty('PAPERCUSP_ACCOUNT_ID');
+
+    const pinEnv = { ...clean, ...gatewayPinEnv('acct-pin', 'claude', 'su-pin') };
+    expect(pinEnv.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(pinEnv.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
+    expect(pinEnv.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: acct-pin\n${OWNER_HEADER}: su-pin`);
+    expect(pinEnv.PAPERCUSP_ACCOUNT_ID).toBe('acct-pin');
+  });
+
+  it('sanitizeInheritedEnv preserves a user-supplied direct Anthropic credential', () => {
+    expect(sanitizeInheritedEnv({ ANTHROPIC_AUTH_TOKEN: 'user-direct-token' })).toEqual({
+      ANTHROPIC_AUTH_TOKEN: 'user-direct-token',
+    });
   });
 
   it('codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin', () => {
