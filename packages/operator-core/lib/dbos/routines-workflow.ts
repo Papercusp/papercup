@@ -747,10 +747,11 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'agent-facts-expiry-sweep' },
   );
 
-  // GYM-2 (gym-unwedge-scout-novelty-2026-07-02): the chronic-autoloop-failure
-  // escalator — a cycle red >= threshold consecutive fires files ONE observation
-  // per 24h per (harness, role). The fire-gate backoff slows a failing cycle;
-  // this SURFACES it (the gym sat 12 days dead with 72 errors and no witness).
+  // GYM-2 (gym-unwedge-scout-novelty-2026-07-02, generalized across roles by WI-4632):
+  // the chronic-autoloop-failure escalator — a cycle red >= threshold consecutive fires
+  // files ONE observation + requests an immediate overwatch wake, per 24h per (harness,
+  // role). The fire-gate backoff slows a failing cycle; this SURFACES it (the gym sat
+  // 12 days dead with 72 errors and no witness).
   await DBOS.runStep(
     async () => {
       const { autoloopChronicFailureSweep } = await import('../harness/routines/autoloop-chronic-failure');

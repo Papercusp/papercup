@@ -92,6 +92,56 @@ test('renderMugBrief — floor-only (no carry-note) omits the carry-note section
   assert.doesNotMatch(out2, /### Your carry-note/);
 });
 
+// D-002 Layer 1 (queen-memory-hybrid-2026-07-02 L1c / autonomous-loop-prod-audit
+// P-009): the standing-facts fold and the mem0 background-recall fold are both
+// pure additive inputs to the renderer — pinned here at the render level (the
+// wiring that PRODUCES factsFold/memoryFold is pinned in mug-brief-launch.test.ts).
+test('renderMugBrief — standing-facts fold (L1c) renders verbatim, ahead of the carry-journal', () => {
+  const out = renderMugBrief({
+    floor: { frontier: frontier3 },
+    factsFold:
+      '### Standing facts (deterministic — assert via facts:assert, retract when stale)\n' +
+      '• [role:mug] WI-1439 is owner residue — exclude from frontier (expires ~5d)',
+    carryJournal: [{ at: 0, note: 'trajectory note' }],
+  });
+  assert.match(out, /### Standing facts/);
+  assert.match(out, /WI-1439 is owner residue — exclude from frontier/);
+  assert.ok(
+    out.indexOf('### Standing facts') < out.indexOf('### Your carry-journal'),
+    'the facts fold renders before the carry-journal (L1 position fix — the small orientation-critical sections come first)',
+  );
+});
+
+test('renderMugBrief — no factsFold (absent or blank) ⇒ no Standing facts section (graceful degradation)', () => {
+  const out = renderMugBrief({ floor: { frontier: frontier3 } });
+  assert.doesNotMatch(out, /### Standing facts/);
+  const out2 = renderMugBrief({ floor: { frontier: frontier3 }, factsFold: '   \n  ' });
+  assert.doesNotMatch(out2, /### Standing facts/);
+});
+
+test('renderMugBrief — mem0 background recall (L1d) renders after the carry-journal/facts, labeled non-authoritative', () => {
+  const out = renderMugBrief({
+    floor: { frontier: frontier3 },
+    factsFold: '### Standing facts (deterministic — assert via facts:assert, retract when stale)\n• [workspace] fact one',
+    carryJournal: [{ at: 0, note: 'trajectory note' }],
+    memoryFold:
+      '### Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)\n\n- recalled convention',
+  });
+  assert.match(out, /### Background recall/);
+  assert.match(out, /recalled convention/);
+  assert.ok(
+    out.indexOf('### Your carry-journal') < out.indexOf('### Background recall'),
+    'the memory fold renders after the carry-journal (facts → journal → memory ordering)',
+  );
+});
+
+test('renderMugBrief — no memoryFold (absent or blank) ⇒ no Background recall section', () => {
+  const out = renderMugBrief({ floor: { frontier: frontier3 } });
+  assert.doesNotMatch(out, /### Background recall/);
+  const out2 = renderMugBrief({ floor: { frontier: frontier3 }, memoryFold: '  ' });
+  assert.doesNotMatch(out2, /### Background recall/);
+});
+
 // WI-4563 — an empty frontier must be DIAGNOSABLE in the Mug's own launch brief:
 // admission-starvation (federated work withheld by the G2 gate) must read as a
 // DEADLOCK, never the bare "no ready work" that looked like a blind spot for 14 wakes.

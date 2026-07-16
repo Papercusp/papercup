@@ -1,4 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// WI-4632 (GYM-2, generalized across roles): mocks for the impure async sweep tests below —
+// the pure selectChronicFailures/isStaleWatermark/etc. tests above need none of these.
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-test') }));
+vi.mock('../../pot/watchdog', () => ({
+  recentWatchdogFires: vi.fn(),
+  claimWatchdogFire: vi.fn(),
+}));
+vi.mock('../improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
+vi.mock('../../overwatch/wake-bridge', () => ({ requestOverwatchWake: vi.fn() }));
+vi.mock('../../pot/wake', () => ({
+  // Mirrors the real resolvePotHomeSlug's '*'-is-not-concrete rule (pot/wake.ts) without its
+  // env-fallback / canonicalization plumbing — this test only needs the shape the sweep depends on.
+  resolvePotHomeSlug: vi.fn((explicit?: string | null) => {
+    const t = explicit?.trim();
+    return t && t !== '*' ? t : null;
+  }),
+}));
+
 import {
   selectChronicFailures,
   chronicErrorThreshold,
@@ -7,9 +27,14 @@ import {
   isLoopArmOwnerLoop,
   isLoopArmOwnerRole,
   isRedQueenDrillRow,
+  autoloopChronicFailureSweep,
   type AutoloopStateRow,
 } from './autoloop-chronic-failure';
 import { SANDBOX_HARNESS_SLUG } from '../../red-queen/types';
+import { getOrgPg } from '@papercusp/db-org';
+import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
+import { captureImprovement } from '../improvements/capture-core';
+import { requestOverwatchWake } from '../../overwatch/wake-bridge';
 
 const HOUR_MS = 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 6, 3, 12, 0, 0); // 2026-07-03T12:00:00Z
@@ -677,5 +702,156 @@ describe('isRedQueenDrillRow (EI-12429)', () => {
     // the role, not the harness, is the drill worker — but a real harness never carries it, and
     // the guard keys on the harness anyway, so a stray same-named role in a real harness is fine.
     expect(isRedQueenDrillRow({ harness_slug: 'some-real-harness' })).toBe(false);
+  });
+});
+
+describe('autoloopChronicFailureSweep — WI-4632: escalation ALSO wakes overwatch (GYM-2, generalized across roles)', () => {
+  function mockRows(rows: AutoloopStateRow[]): void {
+    const sql = vi.fn(() => Promise.resolve(rows));
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+  }
+
+  beforeEach(() => {
+    vi.mocked(recentWatchdogFires).mockResolvedValue(0);
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    vi.mocked(captureImprovement).mockResolvedValue({} as never);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } });
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env.PAPERCUSP_AUTOLOOP_CHRONIC_THRESHOLD;
+  });
+
+  it('SYNTHETIC error-streak on a fixed system role (streak over threshold): files the observation AND wakes overwatch', async () => {
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'gym-cycle',
+        consecutive_errors: 9,
+        last_status: 'synthetic: injected for WI-4632 escalation test',
+        routine_active: true,
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    const results = await autoloopChronicFailureSweep();
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      harnessSlug: 'papercusp',
+      role: 'gym-cycle',
+      outcome: 'escalated',
+      overwatchWaked: true,
+    });
+    // the observation (D-002's captureImprovement, kind:'bug') is filed exactly once —
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(captureImprovement).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'bug', title: expect.stringContaining('gym-cycle@papercusp') }),
+    );
+    // — AND the overwatch is woken with the same evidence, through the B-07↔B-04 seam.
+    expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
+    expect(requestOverwatchWake).toHaveBeenCalledWith(
+      expect.objectContaining({
+        harness: 'papercusp',
+        workspaceId: 'ws-test',
+        reason: expect.stringContaining('gym-cycle@papercusp'),
+      }),
+    );
+  });
+
+  it('a loop:arm owner-loop breach is suppressed entirely — never files, never wakes (it owns its own dead-owner escalation)', async () => {
+    mockRows([
+      {
+        harness_slug: '*',
+        role: 'loop-su-deadbeef-0000-0000-0000-000000000000',
+        consecutive_errors: 30,
+        last_status: 'loop-stuck-backstop',
+        routine_active: true,
+        routine_target_owner_id: 'su-deadbeef-0000-0000-0000-000000000000',
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    const results = await autoloopChronicFailureSweep();
+
+    expect(results.map((r) => r.outcome)).toEqual(['skipped-loop-arm']);
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(requestOverwatchWake).not.toHaveBeenCalled();
+  });
+
+  it('a wildcard-scoped row with no resolvable pot-home harness: observation still files, wake is a no-op (overwatchWaked:false) — never blocked', async () => {
+    mockRows([
+      {
+        harness_slug: '*', // no concrete pot-home harness for the wake target (resolvePotHomeSlug → null)
+        role: 'director',
+        consecutive_errors: 7,
+        last_status: 'synthetic',
+        routine_active: null,
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    const results = await autoloopChronicFailureSweep();
+
+    expect(results[0]).toMatchObject({ outcome: 'escalated', overwatchWaked: false });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(requestOverwatchWake).not.toHaveBeenCalled();
+  });
+
+  it('debounced (already fired within 24h): never re-files AND never re-wakes overwatch', async () => {
+    vi.mocked(recentWatchdogFires).mockResolvedValue(1);
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'gym-cycle',
+        consecutive_errors: 9,
+        last_status: 'x',
+        routine_active: true,
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    const results = await autoloopChronicFailureSweep();
+
+    expect(results[0].outcome).toBe('debounced');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(requestOverwatchWake).not.toHaveBeenCalled();
+  });
+
+  it('requestOverwatchWake throwing is swallowed: the already-filed observation is NOT undone and the sweep still reports escalated', async () => {
+    vi.mocked(requestOverwatchWake).mockRejectedValue(new Error('boom'));
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'gym-cycle',
+        consecutive_errors: 9,
+        last_status: 'x',
+        routine_active: true,
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    const results = await autoloopChronicFailureSweep();
+
+    expect(results[0]).toMatchObject({ outcome: 'escalated', overwatchWaked: false });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('requestOverwatchWake resolving wired:true but with an error field counts as NOT waked (overwatchWaked:false)', async () => {
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, error: 'launch failed' });
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'gym-cycle',
+        consecutive_errors: 9,
+        last_status: 'x',
+        routine_active: true,
+        last_fired_at: new Date().toISOString(),
+      },
+    ]);
+
+    const results = await autoloopChronicFailureSweep();
+
+    expect(results[0]).toMatchObject({ outcome: 'escalated', overwatchWaked: false });
   });
 });

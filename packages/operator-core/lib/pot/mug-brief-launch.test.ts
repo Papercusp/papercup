@@ -48,6 +48,20 @@ vi.mock('../memory/launch-profile', () => ({
 // (no dependency on a running :8788). Default: unreachable ⇒ the Capacity panel is omitted (fail-soft).
 const fetchGatewayHeadroom = vi.fn(async (..._a: unknown[]) => ({ reachable: false }) as Record<string, unknown>);
 vi.mock('../inference-gateway/observability', () => ({ fetchGatewayHeadroom: (...a: unknown[]) => fetchGatewayHeadroom(...a) }));
+// L1c standing-facts fold (D-002 Layer 1 / queen-memory-hybrid-2026-07-02 / P-009):
+// mocked so the wiring is pinned WITHOUT a live PG facts store; foldFacts/renderFactsFold's
+// own behavior is pinned for real in agent-facts/store.test.ts. Default = no facts (the
+// stub renderer mirrors the real renderFactsFold's "empty in ⇒ '' out" contract).
+const foldFacts = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
+const renderFactsFold = vi.fn((facts: unknown[]) =>
+  Array.isArray(facts) && facts.length > 0
+    ? '### Standing facts (deterministic — assert via facts:assert, retract when stale)\n• stub fact'
+    : '',
+);
+vi.mock('../agent-facts/store', () => ({
+  foldFacts: (...a: unknown[]) => foldFacts(...a),
+  renderFactsFold: (...a: unknown[]) => renderFactsFold(...a),
+}));
 // owner-steering (C-1): default = un-steered (today's behaviour). isPausedNow kept
 // faithful (pure) so the gather's expired-pause normalization is exercised for real.
 const getOwnerSteering = vi.fn(async (..._a: unknown[]) => ({
@@ -338,6 +352,33 @@ test('computeMugWakeBrief — L1d recall is resolver-driven off the top frontier
   const out2 = await computeMugWakeBrief('ws-1', 'papercup');
   assert.ok(out2, 'the brief survives a failed recall');
   assert.doesNotMatch(out2!, /recalled convention/);
+});
+
+// D-002 Layer 1 (queen-memory-hybrid-2026-07-02 L1c / autonomous-loop-prod-audit
+// P-009): the standing-facts ledger fold — queried at workspace + role:mug +
+// this pot's harness scope, folded into the rendered brief, fail-soft.
+test('computeMugWakeBrief — L1c standing-facts fold: queried at workspace + role:mug + harness scope, rendered into the brief', async () => {
+  surveyPot.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getPotCarryJournal.mockResolvedValue([]);
+  foldFacts.mockResolvedValueOnce([{ scope: 'role', scopeRef: 'mug', key: 'wi-1439-residue', body: 'stub' }]);
+  const out = await computeMugWakeBrief('ws-1', 'papercup');
+  assert.ok(out);
+  assert.match(out!, /### Standing facts/);
+  assert.deepEqual(foldFacts.mock.calls[0]?.[0], [
+    { scope: 'workspace' },
+    { scope: 'role', scopeRef: 'mug' },
+    { scope: 'harness', scopeRef: 'papercup' },
+  ]);
+  assert.equal((foldFacts.mock.calls[0]?.[1] as Record<string, unknown> | undefined)?.workspaceId, 'ws-1');
+});
+
+test('computeMugWakeBrief — a flaky standing-facts fold is fail-soft (brief still renders, section omitted)', async () => {
+  surveyPot.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getPotCarryJournal.mockResolvedValue([]);
+  foldFacts.mockRejectedValueOnce(new Error('pg down'));
+  const out = await computeMugWakeBrief('ws-1', 'papercup');
+  assert.ok(out, 'the brief survives a failed facts fold');
+  assert.doesNotMatch(out!, /### Standing facts/);
 });
 
 test('computeMugWakeBrief — empty floor + no carry-note still renders (skip-the-survey signal)', async () => {

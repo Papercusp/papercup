@@ -16,6 +16,14 @@
  * the SAME triage pipeline scout/queen already consume — no parallel alerting
  * system. Kill switch: PAPERCUSP_AUTOLOOP_CHRONIC_THRESHOLD <= 0.
  *
+ * WI-4632 (GYM-2, generalized ACROSS ROLES — not gym-specific): the observation alone is a
+ * mailbox drop that can sit unread for the same reason the underlying cycle went silently dead
+ * — nobody was watching. Each escalation ALSO requests an immediate wake of the overwatch (the
+ * autonomous system-health supervisor) through `overwatch/wake-bridge.ts`'s `requestOverwatchWake`
+ * — the same B-07↔B-04 seam `kettle:start` uses. Fail-soft: an unwired waker, the flag off, or an
+ * unresolvable pot-home harness for a wildcard-scoped row all degrade to a no-op wake, never to a
+ * blocked or un-filed observation (see `overwatchWaked` on the escalated result).
+ *
  * SKIP AN ALREADY-PAUSED ROUTINE (found live: EI-6760/6761/6762 — a loop-arm
  * loop whose owner session died was correctly auto-paused by the pre-existing
  * stuck-park backstop / the WI-1399 dead-owner guard — `harness_shared.routines
@@ -230,6 +238,11 @@ export interface ChronicFailureResult {
   role: string;
   outcome: 'escalated' | 'debounced' | 'skipped-paused' | 'skipped-stale' | 'skipped-loop-arm' | 'skipped-drill' | 'error';
   reason: string;
+  /** Only set on 'escalated': whether the companion overwatch wake (WI-4632) actually fired a
+   *  live wake (`wired: true`, B-04's waker registered) vs a fail-soft no-op (unwired, or no
+   *  resolvable pot-home harness for the row). Observability only — the sweep never fails or
+   *  retries on a missed wake; the filed observation is the durable record regardless. */
+  overwatchWaked?: boolean;
 }
 
 /**
@@ -351,7 +364,34 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
         });
         // claimWatchdogFire already recorded the fire atomically above —
         // no separate recordFire call here (that was the race this closes).
-        results.push({ harnessSlug: b.harness_slug, role: b.role, outcome: 'escalated', reason });
+        //
+        // WI-4632 (GYM-2, generalized): filing the observation alone is a mailbox drop into a
+        // triage pipeline nobody may read for hours — the exact failure mode that let the gym
+        // cycle sit 12 days dead. Also request an immediate OVERWATCH wake (the autonomous
+        // system-health supervisor, a peer to the Mug) through the existing B-07↔B-04 seam
+        // (overwatch/wake-bridge.ts) — the SAME primitive `kettle:start` uses for "wake it now".
+        // Fail-soft by construction: `requestOverwatchWake` never throws (unwired B-04 or the
+        // papercusp-overwatch flag off both degrade to a harmless no-op — the loop's own launch
+        // action self-gates on the flag + the started bit), and a resolution failure (no concrete
+        // pot-home harness for a '*'-scoped row, no PAPERCUSP_POT_HOME_SLUG) just skips the wake —
+        // never blocks or un-escalates the already-filed, durable observation above.
+        let overwatchWaked = false;
+        try {
+          const { requestOverwatchWake } = await import('../../overwatch/wake-bridge');
+          const { resolvePotHomeSlug } = await import('../../pot/wake');
+          const wakeHarness = resolvePotHomeSlug(b.harness_slug, undefined);
+          if (wakeHarness) {
+            const wake = await requestOverwatchWake({
+              reason: `CHRONIC autoloop failure: ${b.role}@${b.harness_slug} red ${b.consecutive_errors} consecutive fires — survey + unwedge (observation filed; read its last_status verbatim first)`,
+              harness: wakeHarness,
+              workspaceId,
+            });
+            overwatchWaked = wake.wired === true && !wake.error;
+          }
+        } catch (e) {
+          console.warn(`[autoloop-chronic] overwatch wake failed (observation still filed): ${e instanceof Error ? e.message : e}`);
+        }
+        results.push({ harnessSlug: b.harness_slug, role: b.role, outcome: 'escalated', reason, overwatchWaked });
       } catch (e) {
         results.push({
           harnessSlug: b.harness_slug,
