@@ -37,6 +37,7 @@ import { ensureStallWakerLoop } from '../inference-gateway/stall-waker-loop';
 import { evaluateOpusBudgetForSpawn } from '../deployment/account-pool-store';
 import { classifyRoleCriticality, type WorkCriticality } from '../opus-budget-governor';
 import { inferBackendFromModelSpec, resolveSpawnBackendModel } from '../harness-invoke-once';
+import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
 import { desktopEnvForHive } from '../agent-tools/computer/desktop-lease';
 import { recordSpawn, finishSpawn } from './spawn-tree';
@@ -816,6 +817,29 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       }
     } catch (e) {
       console.warn(`[operator-spawn] default model steering skipped (fail-soft): ${(e as Error).message}`);
+    }
+  }
+  // account-steering-path fix (autonomous-loop-prod-audit-2026-07-02 P-020): the
+  // branches above only populate `spawnModelSpec` from an EXPLICIT per-spawn
+  // tier/spec or an owner session override (`resolveRoleOwnModelSpec`, itself
+  // null unless the owner configured tiers/ceilings). The common case — a role
+  // with no override, relying purely on the COMMITTED `ROLE_MODEL_DEFAULTS`
+  // floor — leaves `spawnModelSpec` null HERE even though `applyRoleModel`
+  // (deep inside buildInvokeOnce) WILL fall back to that same committed
+  // default for the actual `--model` flag. Without this fallback,
+  // `inferBackendFromModelSpec` never sees a codex-shaped spec, so a role
+  // whose ONLY pin is a codex-family committed default (e.g. mug/cup/kettle's
+  // `gpt-5.6-luna:high`) would launch with the OpenAI model text applied to
+  // the CLAUDE binary — an unrunnable combination (the EI-7/EI-286/EI-12657/
+  // WI-1979 "selected model unavailable" outage class). Scoped narrowly: only
+  // promotes the committed default into `spawnModelSpec` when it actually
+  // resolves to a DIFFERENT backend, so every role whose committed default
+  // stays on the inherited backend (worker/validator/documenter/release-
+  // manager/…) sees byte-identical `spawnModelSpec`/nursery-row behavior.
+  if (!spawnModelSpec) {
+    const committedDefault = roleModelDefault(role);
+    if (committedDefault && inferBackendFromModelSpec(committedDefault)) {
+      spawnModelSpec = committedDefault;
     }
   }
   const inferredBackend = inferBackendFromModelSpec(spawnModelSpec ?? undefined);

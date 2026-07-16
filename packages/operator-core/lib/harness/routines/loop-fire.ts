@@ -287,6 +287,10 @@ export function renderLoopWakeText(opts: {
    *  ABOVE the wall nag, the walls, and the loop contract, in EVERY form:
    *  an owner order outranks the loop's re-injected standing agenda. */
   ownerDirectivesBlock?: string | null;
+  /** WI-5092: true when the carry-note READ FAILED (store error) — suppresses the
+   *  first-carry-note mandate, which must only assert emptiness on a CONFIRMED-empty
+   *  read (a failed read may hide a real note the mandate would nudge an overwrite of). */
+  noteReadFailed?: boolean;
 }): string {
   const block = renderLoopCheckpointBlock(opts.checkpoint, {
     updatedAtMs: opts.checkpointUpdatedAtMs,
@@ -305,7 +309,7 @@ export function renderLoopWakeText(opts: {
   // named, not left hypothetical). block == null always renders the FULL form
   // (isLoopWakeFullForm), so the mandate only needs to ride that branch.
   const noNoteMandate =
-    block == null
+    block == null && !opts.noteReadFailed
       ? '⚠ NO loop:checkpoint carry-note exists for this loop yet. Write the FIRST one before this turn ends — loop:checkpoint { did, left, insight, next } — even on a quiet wake: with no carry-note, a cold wake, a successor, or a post-compaction resume reconstructs this loop from its arm-time goal text alone.'
       : null;
   if (isLoopWakeFullForm(opts.fireNumber, block != null)) {
@@ -431,11 +435,18 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // needs it on every loop, warm or cold. Fail-soft: a read miss ⇒ fire 1 (full form).
   const priorFires = await readFireCount(input.sql, input.routineId).catch(() => 0);
   const fireNumber = priorFires + 1;
+  // WI-5092: a READ FAILURE must stay distinguishable from a CONFIRMED-EMPTY note — the
+  // first-carry-note mandate below asserts "no note exists", which is false (and nudges an
+  // overwrite of a real note) when the carry store merely errored. A failed read keeps the
+  // wake prompt byte-equivalent, exactly as before.
   const checkpointMeta = await getNoteMeta({
     harness: input.installSlug,
     ownerId: input.targetOwnerId,
     workspaceId: input.workspaceId,
-  }).catch(() => ({ note: null, updatedAtMs: null }));
+  }).then(
+    (m) => ({ ...m, readFailed: false }),
+    () => ({ note: null, updatedAtMs: null, readFailed: true }),
+  );
   // P-006: walls render OUTSIDE the truncatable checkpoint body (a commitment
   // clipped off a capped note is a dissolved commitment) — split them out and
   // render the block in every form. The pending turn-settle nag is taken
@@ -476,6 +487,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     walls,
     wallNagLine: nag ? renderWallNagLine(nag) : null,
     ownerDirectivesBlock,
+    noteReadFailed: checkpointMeta.readFailed,
   });
 
   // su-cold-auto P-003: a COLD loop stamps a {carry:'cold', wakeCount, harness} marker on the

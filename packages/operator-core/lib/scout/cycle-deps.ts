@@ -634,6 +634,16 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
           ideated.ideators.find((i) => i.admissionDenial)?.admissionDenial,
         );
       }
+      // EI-13119: persist the per-slot outcomes for the tick ledger — a 'ran/no-ideas'
+      // tick must be distinguishable (quiet corpus vs parse-swallow vs partial failures)
+      // without re-probing the live path from scratch (the 07-14..16 outage class).
+      lastIdeation = ideated.ideators.map((i) => ({
+        lens: i.lens,
+        ok: i.ok,
+        raw: i.raw,
+        produced: i.produced,
+        ...(i.error ? { error: String(i.error).slice(0, 120) } : {}),
+      }));
       return ideated.ideas;
     },
     critique: async (ideas, ctx) =>

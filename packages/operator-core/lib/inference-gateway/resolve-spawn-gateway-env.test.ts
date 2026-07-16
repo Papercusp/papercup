@@ -270,6 +270,20 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(h.selectSpawnAccount).not.toHaveBeenCalled();
   });
 
+  test('an explicit Codex pin with no gateway-usable credential fails closed instead of becoming auto', async () => {
+    h.getFlag.mockResolvedValue(true);
+    h.loadAccountPool.mockResolvedValue({
+      accounts: [{ id: 'codex-main', provider: 'codex', credentialRef: 'garbage-ref' }],
+    });
+    h.supportsBearer.mockResolvedValue(false);
+    await expect(resolveSpawnGatewayEnv({
+      workspaceId: 'ws',
+      slug: 'h',
+      backend: 'codex',
+      account: 'codex-main',
+    })).rejects.toThrow('refusing fallback');
+  });
+
   // ── gateway-priority-tiers-2026-06-22: the role → x-papercusp-priority header (flag-gated) ──
   test('tier flag ON + role → stamps the x-papercusp-priority header from the role', async () => {
     h.getFlag.mockResolvedValue(true); // all flags ON incl. GATEWAY_PRIORITY_TIERS

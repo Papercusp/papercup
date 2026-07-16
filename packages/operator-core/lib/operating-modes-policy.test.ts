@@ -32,6 +32,16 @@ describe('renderModesPolicy — IDEATE grounding pre-pass (P-004)', () => {
     expect(full).toMatch(/[Vv]ary your\s+ideation lens/);
   });
 
+  it('WI-5092: every mode mandates mode:set REGISTRATION on flip (an unregistered mode dies at the next compaction)', () => {
+    // The audited gap: modes honored from directive text alone were never registered, so
+    // peers/orient could not see them and a compaction / cold successor silently dropped
+    // them. Each mode's Turning-ON paragraph now mandates the registry write.
+    expect(full).toContain("mode:set { mode:'auto', reason, ownerDirected:true when the owner said it }");
+    expect(full).toContain("mode:set { mode:'ideate', reason, ownerDirected }");
+    expect(full).toContain("mode:set { mode:'drain', reason, ownerDirected }");
+    expect(full).toMatch(/unregistered mode dies at the next compaction/);
+  });
+
   it('D-005: preserves "no quality gate and no quota — file freely" VERBATIM', () => {
     expect(full).toContain('there is no quality gate and no quota');
     expect(full).toContain('File\n  freely; the owner reviews the history.');

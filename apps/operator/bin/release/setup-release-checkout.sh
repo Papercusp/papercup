@@ -137,13 +137,35 @@ done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --
 # resolve is a pre-existing break, not this copy's regression to chase. Pure shell
 # (no Node) — keeps this script standalone by design.
 unresolved_workspace_pkgs() {
-  local scope pkg
+  local scope pkg src rel
   for scope in @papercusp @papercup; do
     [ -d "$INTEGRATION_ROOT/node_modules/$scope" ] || continue
     while IFS= read -r pkg; do
       [ -n "$pkg" ] || continue
       [ -e "$INTEGRATION_ROOT/node_modules/$scope/$pkg/package.json" ] || continue
       [ -e "$RELEASE_ROOT/node_modules/$scope/$pkg/package.json" ] && continue
+      # EI-13127: a package whose SOURCE is absent from the pinned target tree
+      # cannot be referenced by pinned code (it post-dates the pin — the
+      # integration symlink set reflects staging tip, the release source tree
+      # reflects TARGET_SHA). Reporting it froze EVERY deploy (target AND
+      # rollback refs alike) from the moment a new workspace package landed on
+      # staging until the next green pin included it. Skip it here — the same
+      # discriminator prune_post_pin_workspace_pkgs uses to drop the dangling
+      # symlink. Deliberately inline (not a shared helper): both functions are
+      # sed-extracted standalone by setup-release-checkout-deps.test.ts.
+      # No TARGET_SHA in scope (a caller predating the pin resolution) keeps
+      # the original strict behavior.
+      if [ -n "${TARGET_SHA:-}" ]; then
+        src="$(readlink -f "$INTEGRATION_ROOT/node_modules/$scope/$pkg" 2>/dev/null)" || src=""
+        case "$src" in
+          "$INTEGRATION_ROOT"/*)
+            rel="${src#"$INTEGRATION_ROOT"/}"
+            if [ -z "$(git -C "$INTEGRATION_ROOT" ls-tree "$TARGET_SHA" -- "$rel" 2>/dev/null)" ]; then
+              continue
+            fi
+            ;;
+        esac
+      fi
       printf '%s/%s ' "$scope" "$pkg"
     done < <(ls -1 "$INTEGRATION_ROOT/node_modules/$scope" 2>/dev/null)
   done

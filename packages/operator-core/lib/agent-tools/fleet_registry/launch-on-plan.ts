@@ -1024,7 +1024,7 @@ export default defineTool({
       // fleet-launch-zero-gate-routing-blind (2026-07-09): the healthyAccounts===0 zero-gate
       // applies only to GATEWAY-routed members. Resolve the members' planned routing the same
       // way the launch command will (a seat pins a pool account ⇒ gateway; otherwise
-      // defaultMemberAccountRouting: darwin ⇒ 'auto', else the direct system credential).
+      // defaultMemberAccountRouting selects the direct system credential everywhere).
       const plannedAccount = seatsRequested ? 'auto' : defaultMemberAccountRouting(args.account?.trim() || undefined);
       const gatewayRouted = !!plannedAccount && plannedAccount !== 'default' && plannedAccount !== 'system';
       capacityClamp = clampFleetTopUpToCapacity(openCount, capacity, {
@@ -1120,10 +1120,9 @@ export default defineTool({
         availableBefore: seatResolution.slot.available,
       };
     }
-    // cross-platform-member-credential-inheritance: a member the leader didn't pin (no
-    // --account, no seat account) defaults to gateway-auto routing on macOS so it inherits the
-    // default Keychain login instead of booting logged out (see defaultMemberAccountRouting).
-    // No-op on Linux/Windows and whenever an account/seat pin is already set.
+    // An omitted account is an explicit product default, not a platform heuristic:
+    // every member uses the system/CLI credential unless the owner selected auto
+    // or a named pool account. Existing account/seat choices always win.
     effAccount = defaultMemberAccountRouting(effAccount);
 
     let slot;

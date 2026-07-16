@@ -286,7 +286,7 @@ export async function resolveSpawnGatewayEnv(opts: {
           import('./credential-store'),
         ]);
         const { parseCodexCliRef } = await import('./codex-cli-bridge');
-        const pool = await loadAccountPool(opts.workspaceId);
+        const pool = await loadAccountPool(routingWorkspaceId);
         const acct = pool.accounts.find((a) => a.id === accountId && a.provider === 'codex');
         const usable =
           !!acct && (!!parseCodexCliRef(acct.credentialRef) || (await credentialRefSupportsOpenAiBearer(acct.credentialRef)));

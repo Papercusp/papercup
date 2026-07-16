@@ -84,17 +84,19 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
   });
 
   it('delivers the routine kickoff as the wake-turn text, falling back to the default', async () => {
-    // Explicit kickoff from payload_template.
+    // Explicit kickoff from payload_template. A confirmed-empty carry-note also appends
+    // the WI-5092 first-carry-note mandate (asserted in detail in the render suite below).
     const deps1 = mkDeps();
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X' } }, deps1);
-    expect((deps1.wake as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatchObject({ summary: 'work plan X' });
+    const summary1 = (deps1.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+    expect(summary1.startsWith('work plan X')).toBe(true);
+    expect(summary1).toContain('NO loop:checkpoint carry-note exists for this loop yet');
 
     // No kickoff → the default self-assign-work-items prompt.
     const deps2 = mkDeps();
     await fireLoopWake(baseInput, deps2);
-    expect((deps2.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe(
-      defaultLoopKickoff(baseInput.routineId),
-    );
+    const summary2 = (deps2.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+    expect(summary2.startsWith(defaultLoopKickoff(baseInput.routineId))).toBe(true);
   });
 
   it('appends open owner directives without replacing the routine kickoff', async () => {
@@ -105,9 +107,11 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X' } }, deps);
 
     expect(deps.renderOwnerDirectives).toHaveBeenCalledWith('papercusp-workspace', { sql: undefined });
-    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe(
-      'work plan X\n\n📌 OPEN OWNER DIRECTIVES\n  • #3 "pin it"',
-    );
+    const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+    // Directives ride ABOVE everything after the kickoff; the WI-5092 first-carry-note
+    // mandate (confirmed-empty note here) renders after them.
+    expect(summary.startsWith('work plan X\n\n📌 OPEN OWNER DIRECTIVES\n  • #3 "pin it"')).toBe(true);
+    expect(summary).toContain('NO loop:checkpoint carry-note exists for this loop yet');
   });
 
   it('splices the CURRENT loop:checkpoint into the wake-turn text at fire time (EI-7809)', async () => {
@@ -142,11 +146,17 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(opts.summary).toContain('## Next action\nresume the edit');
   });
 
-  it('keeps the wake prompt byte-equivalent when no loop:checkpoint exists or the read fails', async () => {
+  it('confirmed-empty note ⇒ kickoff + first-carry-note mandate; READ FAILURE stays byte-equivalent (WI-5092)', async () => {
+    // A successful read that finds NO note appends the mandate — the audited gap is a
+    // loop whose carry-note is never written.
     const depsNoNote = mkDeps();
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X' } }, depsNoNote);
-    expect((depsNoNote.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe('work plan X');
+    expect((depsNoNote.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe(
+      'work plan X\n\n⚠ NO loop:checkpoint carry-note exists for this loop yet. Write the FIRST one before this turn ends — loop:checkpoint { did, left, insight, next } — even on a quiet wake: with no carry-note, a cold wake, a successor, or a post-compaction resume reconstructs this loop from its arm-time goal text alone.',
+    );
 
+    // A FAILED read must NOT assert emptiness (a real note may exist behind the error) —
+    // the wake prompt stays byte-equivalent to the kickoff, exactly as before.
     const depsReadFail = mkDeps({
       getLoopCarryNoteWithMeta: vi.fn(async () => {
         throw new Error('carry store down');

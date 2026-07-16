@@ -619,3 +619,91 @@ describe('prune_post_pin_workspace_pkgs (EI-13127)', () => {
     expect(out).not.toContain('in-pin-pkg');
   });
 });
+
+/**
+ * EI-13127 part 2: the prune alone was insufficient — unresolved_workspace_pkgs()
+ * reports MISSING packages as unresolved too (by design, for in-pin packages),
+ * so pruning a post-pin dangling symlink just converted "dangling" to "missing"
+ * and the gate still fataled (observed live on deploy #3, 2026-07-16 23:17Z).
+ * The gate itself now applies the same pin discriminator: a package whose
+ * source is absent from TARGET_SHA is skipped; absent TARGET_SHA keeps the
+ * original strict behavior.
+ */
+describe('unresolved_workspace_pkgs pin-awareness (EI-13127)', () => {
+  let integrationRoot: string;
+  let releaseRoot: string;
+  let targetSha: string;
+
+  function runGate(env: Record<string, string> = {}): string {
+    const wrapper = [
+      'set -uo pipefail',
+      'source <(sed -n "/^unresolved_workspace_pkgs()/,/^}/p" "$SETUP_SCRIPT")',
+      'unresolved_workspace_pkgs',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: integrationRoot,
+        RELEASE_ROOT: releaseRoot,
+        ...env,
+      },
+      encoding: 'utf8',
+    });
+    if (r.status !== 0) throw new Error(`unresolved_workspace_pkgs exited ${r.status}: ${r.stderr}`);
+    return r.stdout.trim();
+  }
+
+  const git2 = (...args: string[]) => {
+    const r = spawnSync(
+      'git',
+      ['-C', integrationRoot, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+      { encoding: 'utf8' },
+    );
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  function addSrc(root: string, pkg: string): void {
+    const dir = join(root, 'libs', 'generic', pkg);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: `@papercusp/${pkg}` }));
+  }
+  function link2(root: string, pkg: string): void {
+    const scopeDir = join(root, 'node_modules', '@papercusp');
+    mkdirSync(scopeDir, { recursive: true });
+    symlinkSync(join('..', '..', 'libs', 'generic', pkg), join(scopeDir, pkg));
+  }
+
+  beforeEach(() => {
+    integrationRoot = realpathSync(mkdtempSync(join(tmpdir(), 'gate-int-')));
+    releaseRoot = realpathSync(mkdtempSync(join(tmpdir(), 'gate-rel-')));
+    git2('init', '-q');
+    addSrc(integrationRoot, 'in-pin-pkg');
+    git2('add', '-A');
+    git2('commit', '-q', '-m', 'pin');
+    targetSha = git2('rev-parse', 'HEAD');
+    addSrc(integrationRoot, 'post-pin-pkg');
+    link2(integrationRoot, 'in-pin-pkg');
+    link2(integrationRoot, 'post-pin-pkg');
+    // Release tree: neither package resolves (both missing entirely — the
+    // post-prune state for post-pin-pkg, an extraction break for in-pin-pkg).
+  });
+
+  afterEach(() => {
+    rmSync(integrationRoot, { recursive: true, force: true });
+    rmSync(releaseRoot, { recursive: true, force: true });
+  });
+
+  it('with TARGET_SHA: reports the in-pin break, SKIPS the post-pin package', () => {
+    const out = runGate({ TARGET_SHA: targetSha });
+    expect(out).toContain('@papercusp/in-pin-pkg');
+    expect(out).not.toContain('post-pin-pkg');
+  });
+
+  it('without TARGET_SHA: original strict behavior — both reported', () => {
+    const out = runGate();
+    expect(out).toContain('@papercusp/in-pin-pkg');
+    expect(out).toContain('@papercusp/post-pin-pkg');
+  });
+});
