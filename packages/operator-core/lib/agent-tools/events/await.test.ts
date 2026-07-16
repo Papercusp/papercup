@@ -29,6 +29,13 @@ vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
 vi.mock('../../events/await/installed-events', () => ({
   readInstalledUnitEvents: vi.fn(async () => []),
 }));
+// EI-13095: the done/unblocked registration latches probe the live item — mocked so
+// the rig stays hermetic (the real module pulls db-org). Defaults ('live'/'blocked')
+// make every existing case register exactly as before.
+vi.mock('../../work-items-events', () => ({
+  liveSettledProbe: vi.fn(async () => ({ verdict: 'live' as const, itemState: 'wip' })),
+  liveBlockedState: vi.fn(async () => 'blocked' as const),
+}));
 
 import awaitTool from './await';
 import { registerAwait } from '../../events/await/store';
@@ -36,6 +43,7 @@ import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
+import { liveSettledProbe } from '../../work-items-events';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
@@ -244,5 +252,42 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(out.await_id).toBe(99); // the await still registers — the guard is advisory
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:orphanKey'));
     warn.mockRestore();
+  });
+});
+
+describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-await incident)', () => {
+  it('awaiting work-item:done:<id> for an ALREADY-settled item answers already_done and registers NOTHING', async () => {
+    vi.mocked(liveSettledProbe).mockResolvedValueOnce({ verdict: 'settled', itemState: 'resolved' });
+    const out = await call({ event: 'work-item:done:WI-5075' });
+    expect(out).toMatchObject({ ok: true, already_done: true, event: 'work-item:done:WI-5075', item_state: 'resolved' });
+    expect(out.advice).toContain('Do not wait');
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(liveSettledProbe).toHaveBeenCalledWith('WI-5075');
+  });
+
+  it('a LIVE item registers exactly as before (the latch only answers on settled)', async () => {
+    const out = await call({ event: 'work-item:done:WI-42' });
+    expect(out.already_done).toBeUndefined();
+    expect(out.await_id).toBe(99);
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('work-item:done:WI-42');
+  });
+
+  it('an UNKNOWN probe (unreadable/ambiguous id) fails OPEN — the registration proceeds', async () => {
+    vi.mocked(liveSettledProbe).mockResolvedValueOnce({ verdict: 'unknown' });
+    const out = await call({ event: 'work-item:done:WI-404' });
+    expect(out.already_done).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('a PATTERN await (work-item:done:*) never probes — patterns can always match a future key', async () => {
+    const out = await call({ event: 'work-item:done:*' });
+    expect(liveSettledProbe).not.toHaveBeenCalled();
+    expect(out.pattern).toBe(true);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-done keys never probe (no per-registration tax on unrelated awaits)', async () => {
+    await call({ event: 'lock:grant:t9' });
+    expect(liveSettledProbe).not.toHaveBeenCalled();
   });
 });

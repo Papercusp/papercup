@@ -210,8 +210,8 @@ export function buildAgentLaunchCommand(opts: {
     'psu',
     '--no-picker',
     // P-012: never leave the account to an interactive picker in a scripted launch.
-    // On darwin an un-pinned member cannot reach the default login (Keychain is keyed
-    // per config-dir), so it routes through the gateway — same rule fleet members use.
+    // Omission is the explicit product default: the system/CLI credential. Gateway
+    // auto-routing requires the caller to say `auto` on every platform.
     `--account=${safe('account', opts.account?.trim() || defaultLaunchAccount(opts.platform))}`,
   ];
   if (opts.mode === 'resume' || opts.mode === 'fork') {
@@ -239,13 +239,12 @@ export function buildAgentLaunchCommand(opts: {
 }
 
 /**
- * The account a scripted launch pins when the caller names none. darwin defaults to
- * `auto` (the gateway owns the Keychain bundle; a fresh per-session config dir can
- * never find the default `~/.claude` login there, so an un-pinned agent boots LOGGED
- * OUT) — the same rule fleet members already use (defaultMemberAccountRouting).
+ * The account a scripted launch uses when the caller names none. The default is
+ * always the system/CLI credential; platform credential mechanics must make that
+ * route work rather than silently changing the user's routing choice.
  */
-export function defaultLaunchAccount(platform: NodeJS.Platform = process.platform): string {
-  return platform === 'darwin' ? 'auto' : 'default';
+export function defaultLaunchAccount(_platform: NodeJS.Platform = process.platform): string {
+  return 'default';
 }
 
 export interface MemberLaunchOpts {

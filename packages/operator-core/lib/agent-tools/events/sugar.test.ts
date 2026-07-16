@@ -218,3 +218,63 @@ describe("checkpoint:await sugar", () => {
     expect(out.superseded).toBe(0);
   });
 });
+
+describe("work-item:await registration latches (EI-13095 — the sugar used to bypass them)", () => {
+  const wiTool = definedTools.find((tool) => tool.name === "work-item:await");
+  if (!wiTool) throw new Error("work-item:await tool was not registered");
+  const callWi = async (args: Record<string, unknown>) => {
+    const res = await wiTool.handler(args as never, ctx);
+    return JSON.parse(res.content[0].text);
+  };
+
+  it("state:'done' on an ALREADY-settled item answers already_done and registers NOTHING (the WI-5075 stranded-await class)", async () => {
+    vi.mocked(liveSettledProbe).mockResolvedValueOnce({ verdict: "settled", itemState: "resolved" });
+    const out = await callWi({ id: "WI-5075", state: "done" });
+    expect(out).toMatchObject({ ok: true, already_done: true, item_state: "resolved" });
+    expect(out.advice).toContain("Do not wait");
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it("state:'done' on a LIVE item registers the done key exactly as before", async () => {
+    const out = await callWi({ id: "WI-42", state: "done" });
+    expect(out.ok).toBe(true);
+    expect(out.already_done).toBeUndefined();
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe("work-item:done:WI-42");
+  });
+
+  it("state:'done' with an UNKNOWN probe (unreadable item) fails OPEN — registers normally", async () => {
+    vi.mocked(liveSettledProbe).mockResolvedValueOnce({ verdict: "unknown" });
+    const out = await callWi({ id: "WI-404", state: "done" });
+    expect(out.already_done).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it("state:'unblocked' on an item with no live blocker answers already_unblocked (the P-006 latch, now applied via sugar too)", async () => {
+    vi.mocked(liveBlockedState).mockResolvedValueOnce("unblocked");
+    const out = await callWi({ id: "WI-7", state: "unblocked" });
+    expect(out).toMatchObject({ ok: true, already_unblocked: true, item_state: "unblocked" });
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it("state:'unblocked' on a SETTLED item also latches (the key can never fire)", async () => {
+    vi.mocked(liveBlockedState).mockResolvedValueOnce("settled");
+    const out = await callWi({ id: "WI-8", state: "unblocked" });
+    expect(out).toMatchObject({ already_unblocked: true, item_state: "settled" });
+    expect(out.advice).toContain("never fire");
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it("state:'unblocked' on a genuinely BLOCKED item registers as before", async () => {
+    const out = await callWi({ id: "WI-9", state: "unblocked" });
+    expect(out.already_unblocked).toBeUndefined();
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe("work-item:unblocked:WI-9");
+  });
+
+  it("state:'any' probes NOTHING (the general status key can always fire again)", async () => {
+    const out = await callWi({ id: "WI-10" });
+    expect(liveSettledProbe).not.toHaveBeenCalled();
+    expect(liveBlockedState).not.toHaveBeenCalled();
+    expect(out.ok).toBe(true);
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe("work-item:status:WI-10");
+  });
+});

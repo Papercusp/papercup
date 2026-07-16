@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1784205491403
+updated_at: 1784241281617
 _body: "content"
 ---
 
@@ -34,4 +34,6 @@ _body: "content"
 [2026-07-13T00:46:00Z] worker EI-10653: condition-staleness-alarm anchored open-duration on ConditionState.first_seen (first-EVER alarm) not the current episode — a FLAPPING condition (fires/recovers/re-fires, e.g. infra-liveness:panel:infra) got reported "OPEN for 1967m" seconds after reopening. Fix: added open_since (first alarm strictly after latest resolution; null when resolved) to computeConditionStates and anchored evaluateStaleConditions on it. Lesson: for a flap-tracked condition, first_seen ≠ how-long-open; use the current-episode start.
 
 [2026-07-16T12:33:00Z] worker EI-11648: "reported floor vs armed floor" mismatch — a helper computed `arg ?? default` for its side-effect (the upsert) but the caller re-derived `arg ?? null` for its report, so an omitted arg was reported as null while the default was actually armed. Fix pattern: resolve the value ONCE in the helper, use it for BOTH the effect and the returned result, and have the reporter surface the returned value — never re-derive a "reported" copy from the raw arg.
+
+[2026-07-16T22:34:00Z] worker EI-13072: a new awaitable event key can have a LIVE emitter yet be false-flagged `unknown_event_key` by events:await's EI-10870 orphan-guard (keyMatchesCatalog) — because the guard consults EVENT_CATALOG (events/await/catalog.ts), NOT the emit sites. Wiring an emitter is not enough: register the `family` in EVENT_CATALOG too, or agents get a scary (false) "nothing will ever fire it — can only TIME OUT" warning + the key is undiscoverable via events:catalog. Fix for spawn-slot:freed:<ws> was pure catalog registration (emitter already fired from operator-spawn + reclaim sweep + boot reconcile).
 

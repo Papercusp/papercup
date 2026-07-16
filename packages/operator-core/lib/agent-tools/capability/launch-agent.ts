@@ -161,7 +161,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe("Account routing: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' ('auto' on macOS, where a per-session config dir cannot reach the Keychain login). Always pinned — a scripted launch must never block on the interactive account picker."),
+      .describe("Account routing: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. Always resolved — a scripted launch must never block on the interactive account picker."),
     model: z.string().max(80).optional().describe('Model override for the launched agent (e.g. an opus/sonnet spec).'),
     extraArgs: z
       .array(z.string().max(200))

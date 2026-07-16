@@ -332,10 +332,10 @@ export function clampFleetTopUpToCapacity(
  */
 export function defaultMemberAccountRouting(
   account: string | undefined,
-  platform: NodeJS.Platform = process.platform,
+  _platform: NodeJS.Platform = process.platform,
 ): string | undefined {
   if (account) return account;
-  return platform === 'darwin' ? 'auto' : account;
+  return 'default';
 }
 
 /** Backward-compatible export for p2p delegated-spawn callers. */
@@ -687,7 +687,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'psu --account routing for EVERY member (account-routing-3-options) — one of three: a POOL ACCOUNT ID (from accounts:list / gateway:status) → pin every member to it via the inference gateway (isolate/concentrate the fleet\'s load; no failover); "auto" → route through the gateway, which auto-selects an available account + fails over; "default" → skip the gateway, use the system / CLI-login credential. OMIT to auto-pick: "auto" on macOS (a headless Mac member can\'t inherit the Keychain login directly, so it routes via the always-on desktop gateway) and "default" elsewhere. (For a multi-account spread, launch in batches with different account ids.) ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.',
+        'psu --account routing for EVERY member (account-routing-3-options) — one of three: a POOL ACCOUNT ID (from accounts:list / gateway:status) → pin every member to it via the inference gateway (isolate/concentrate the fleet\'s load; no failover); "auto" → route through the gateway, which auto-selects an available account + fails over; "default" → skip the gateway, use the system / CLI-login credential. OMIT defaults to "default" on every platform; gateway routing is never selected implicitly. (For a multi-account spread, launch in batches with different account ids.) ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.',
       ),
     workspace: z
       .string()

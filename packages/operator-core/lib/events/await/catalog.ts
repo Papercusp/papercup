@@ -288,6 +288,35 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true, // WI-1830: set-status fires `fleet:drained:<slug>` on the plan-drain edge
     sugar: 'fleet:await-drained',
   },
+  // ── Spawn admission (D-004: over-ceiling queue + await, never silent-drop) ──
+  {
+    family: 'spawn-slot',
+    keyTemplate: 'spawn-slot:freed:<workspace>',
+    // EI-13072: the emitter has fired this key for a long time (announceSpawnSlotFreed
+    // on every spawn completion + the reclaim sweep + boot reconcile), and the
+    // over-ceiling cup:spawn rejection ADVISES awaiting it — but the family was never
+    // registered here, so the EI-10870 orphan-guard flagged every such await
+    // `unknown_event_key` ("nothing will ever fire it — can only TIME OUT"), which was
+    // FALSE, and events:catalog couldn't surface the key at all. Registering the
+    // family (the emitter already exists) both silences the false warning and makes
+    // the sanctioned recovery discoverable. The workspace is IN the key, so a wake is
+    // unambiguously for that workspace's waiters — not payload_filtered; but the wake
+    // is a BROADCAST (re-check-on-wake fairness, not a granted ticket): retry the
+    // spawn on wake and re-check the ceiling.
+    params: [
+      {
+        name: 'workspace',
+        required: true,
+        describe: 'the workspace whose spawn ceiling you are queued behind (the awaitEvent an over-ceiling cup:spawn rejection returns)',
+      },
+    ],
+    describe:
+      'A spawn slot FREED in a workspace — a spawn completed (done/failed/cancelled) or the reclaim sweep freed orphaned rows. Broadcast to all over-ceiling waiters, which re-check the ceiling on retry (re-check-on-wake fairness, not a granted ticket).',
+    emitter:
+      'operator-spawn announceSpawnSlotFreed (packages/operator-core/lib/fleet/operator-spawn.ts) + the reclaim sweep (packages/operator-core/lib/dbos/in-process-periodic.ts) + boot reconcile (packages/operator-core/lib/fleet/spawn-reclaim.ts)',
+    exists: true,
+    replacesPoll: 'busy-waiting / retrying cup:spawn on a loop after an over-ceiling (D-004) rejection',
+  },
   // ── Rate limits (already emit) ────────────────────────────────────────────
   {
     family: 'rate-limit-reset',

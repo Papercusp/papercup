@@ -89,6 +89,12 @@ describe('buildKey', () => {
     expect(buildKey('work-item-created', { severity: 'critical' })).toBe('work-item:created:critical');
   });
 
+  it('spawn-slot interpolates the workspace (EI-13072 — the over-ceiling cup:spawn recovery key)', () => {
+    expect(buildKey('spawn-slot', { workspace: 'papercusp-workspace' })).toBe('spawn-slot:freed:papercusp-workspace');
+    expect(buildKey('spawn-slot', { workspace: 'default' })).toBe('spawn-slot:freed:default');
+    expect(() => buildKey('spawn-slot', {})).toThrow(/requires param 'workspace'/);
+  });
+
   it('throws on an unknown family', () => {
     expect(() => buildKey('nope' as string)).toThrow(/unknown family/);
   });
@@ -119,6 +125,7 @@ describe('renderCatalog', () => {
     expect(byFamily['claim-released'].awaitable_now).toBe(true); // claim:released:<id> — P-105 LANDED (releaseWorkItem)
     expect(byFamily['fleet-drained'].awaitable_now).toBe(true); // fleet:drained:<slug> — WI-1830 LANDED (set-status plan-drain edge)
     expect(byFamily['session-compacted'].awaitable_now).toBe(true); // session:compacted:<owner> — P-103 LANDED (psu-host → emit-session-compacted CLI)
+    expect(byFamily['spawn-slot'].awaitable_now).toBe(true); // spawn-slot:freed:<ws> — EI-13072: emitter has always fired (announceSpawnSlotFreed + reclaim sweep + boot reconcile); only the catalog registration was missing
   });
 });
 
@@ -192,6 +199,17 @@ describe('EI-10870 — keyMatchesCatalog (the orphan-await guard)', () => {
   it('does NOT prefix-match a longer family name (release:green must not swallow release:greenish:x)', () => {
     // Guards the `k.startsWith(prefix)` sloppiness: matching must be on a ':' boundary.
     expect(keyMatchesCatalog('release:greenish:x')).toBe(false);
+  });
+
+  it('EI-13072: spawn-slot:freed:<ws> is NOT an orphan — the over-ceiling cup:spawn recovery await must not be false-flagged unknown_event_key', () => {
+    // The over-ceiling cup:spawn rejection advises `events:await { event:
+    // "spawn-slot:freed:<workspace>" }`, and the emitter has always fired that key.
+    // Before the catalog registration this exact call returned unknown_event_key:true
+    // ("nothing will ever fire it — can only TIME OUT"), stranding the agent on a
+    // recovery it was TOLD to use. Both the concrete repro key and any workspace form
+    // must now resolve to the family.
+    expect(keyMatchesCatalog('spawn-slot:freed:papercusp-workspace')).toBe(true);
+    expect(keyMatchesCatalog('spawn-slot:freed:default')).toBe(true);
   });
 
   it('honours an INSTALLED pack family, so a pack-emitted key is never misreported as an orphan', () => {

@@ -447,7 +447,14 @@ export async function cancelStaleCheckpointAwaits(
   staleCandidateSha: string,
 ): Promise<{ cancelled: number }> {
   try {
-    const { cancelSupersededCandidateAwaits } = require('./events/await/engine') as typeof import('./events/await/engine');
+    // Dynamic ESM import, not require(): a runtime `require()` of a sibling TS module is
+    // NOT reliably resolvable under this repo's ESM/vitest module graph (confirmed live —
+    // it threw `Cannot find module` under vitest even though the file exists, and a
+    // vi.mock on this path silently never applied to it either, since vi.mock only
+    // intercepts the import graph). `import()` is the same seam every other lazy
+    // cross-module load in this release/* code already uses (see green-checkpoint.ts's
+    // deps.emitEvent).
+    const { cancelSupersededCandidateAwaits } = await import('./events/await/engine');
     const pipeline = checkpointPipelineName(root);
     const result = await cancelSupersededCandidateAwaits({
       keys: ['release:green', `release:green:${pipeline}`, 'green-checkpoint:red', `green-checkpoint:red:${pipeline}`],
@@ -478,7 +485,7 @@ export async function cancelStaleCheckpointAwaits(
  * launching anything or shelling out to systemctl. `cancelStaleAwaits` (WI-4957) is likewise
  * injectable so the replaceStale path's await-cancellation is testable without a real DB.
  */
-export async function launchDetachedCheckpoint(
+export function launchDetachedCheckpoint(
   opts: LaunchCheckpointOpts = {},
   spawnFn: SpawnLike = spawn,
   execFn: ExecSyncLike = defaultExecSync,
@@ -525,9 +532,14 @@ export async function launchDetachedCheckpoint(
           // WI-4957: the run we just killed will NEVER produce a verdict for its candidate —
           // retire any events:await bound to it now, rather than leaving a wait that can only
           // ever time out (and, until it does, is indistinguishable from "still judging").
-          // Best-effort: never blocks the fresh launch below.
+          // Deliberately NOT awaited: this function's remaining synchronous steps (build argv,
+          // spawn, attach the child's event listeners) must run in the SAME tick — a caller
+          // that spawns the child and immediately drives its events (every test in this file
+          // does exactly that) would otherwise race a listener that isn't attached yet. The
+          // cancellation itself is already fail-soft/best-effort (see cancelStaleCheckpointAwaits),
+          // so firing it without blocking loses nothing.
           if (active.candidate) {
-            await cancelStaleAwaits(root, active.candidate);
+            void cancelStaleAwaits(root, active.candidate).catch(() => {});
           }
         } else {
           return Promise.resolve({

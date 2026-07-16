@@ -239,6 +239,9 @@ export async function resolveAccountPin(
   // true (a person picking an account means "use THIS one"); autonomous role spawns leave it false so the
   // fleet's soft cache-affinity pin (which yields to liveness/load) is unchanged.
   hardPin: boolean = false,
+  /** Resolved launch model spec, used to keep OMP's generated gateway provider
+   * model-faithful instead of silently selecting its fallback model. */
+  model?: string | null,
 ): Promise<{
   env: Record<string, string>;
   notice: string | null;
@@ -308,11 +311,27 @@ export async function resolveAccountPin(
     if (wantAuto) {
       const expected = accountProviderForInteractiveBackend(agent);
       if (!expected) return fail(`account routing is unsupported for ${agent}`);
+      const [{ loadAccountPool }, { accountProvider }, { getAccountOverride }] = await Promise.all([
+        import('../../../deployment/account-pool-store'),
+        import('../../../deployment/account-pool'),
+        import('../../../deployment/account-session-override'),
+      ]);
+      const pool = await loadAccountPool(workspaceId);
+      const override = await getAccountOverride(workspaceId);
+      const candidates = pool.accounts.filter((candidate) => {
+        if (accountProvider(candidate) !== expected) return false;
+        if (override.excludeAccounts.includes(candidate.id)) return false;
+        return !override.forcedAccounts.length || override.forcedAccounts.includes(candidate.id);
+      });
+      if (!candidates.length) return fail(`no allowed ${expected} account is available in the pool`);
       if (expected === 'claude' && agent !== 'omp') {
         const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
         // ownerId → x-papercusp-owner (attribution + stall-wake); NO accountId → gateway active()/drain + failover.
         return {
-          env: { ...gatewaySpawnEnv(true, { ownerId, priority }) },
+          env: {
+            ...gatewaySpawnEnv(true, { ownerId, priority }),
+            PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto',
+          },
           notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).',
           accountId: null,
           provider: expected,
@@ -334,10 +353,28 @@ export async function resolveAccountPin(
           gatewayAuto: true,
         };
       }
-      // OMP auto-routing needs a per-session models.yml pointing at a specific
-      // account (there is none here), so it is not wired interactively yet.
-      // Fail closed: the operator explicitly chose auto, not the system login.
-      return fail(`auto gateway routing isn't wired for ${agent} yet`);
+      const { ompGatewayModelsConfig, ompModelIdFromSpec } = await import(
+        '../../../inference-gateway/omp-models-config'
+      );
+      const roleModel = ompModelIdFromSpec(model);
+      const config = ompGatewayModelsConfig({
+        gatewayOn: true,
+        provider: 'anthropic',
+        ownerId,
+        priority,
+        models: roleModel ? [roleModel] : undefined,
+      });
+      if (!config) return fail('OMP auto gateway configuration could not be generated');
+      return {
+        env: {
+          PAPERCUSP_OMP_MODELS_YML: config.content,
+          PAPERCUSP_OMP_MODEL_SELECTOR: config.modelSelector,
+        },
+        notice: 'routing OMP through the inference gateway (auto — it selects an available pool account and fails over).',
+        accountId: null,
+        provider: expected,
+        gatewayAuto: true,
+      };
     }
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
     const { accountProvider } = await import('../../../deployment/account-pool');
@@ -360,7 +397,11 @@ export async function resolveAccountPin(
       return {
         // Pass ownerId so the session ALSO sends x-papercusp-owner (not just the account pin) — this lets the
         // gateway attribute the session's routed account (GET /admin/route → the statusline ⇢ <account> chip).
-        env: { ...gatewaySpawnEnv(true, { accountId: id, ownerId, priority, hardPin }), PAPERCUSP_ACCOUNT_ID: id },
+        env: {
+          ...gatewaySpawnEnv(true, { accountId: id, ownerId, priority, hardPin }),
+          PAPERCUSP_ACCOUNT_ID: id,
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin',
+        },
         notice: `pinned to account ${id} (routed through the inference gateway${hardPin ? ', HARD pin — no failover' : ''}).`,
         accountId: id,
         provider,
@@ -371,12 +412,34 @@ export async function resolveAccountPin(
     // the claude CLI's ANTHROPIC_BASE_URL/ANTHROPIC_CUSTOM_HEADERS. OMP pins to a Claude
     // account (provider==='claude') but is delivered the codex-shaped signal, not the
     // claude-CLI env. (omp-account-pinning-gateway-2026-06-29 D-001/D-003)
+    if (agent === 'omp') {
+      const { ompGatewayModelsConfig, ompModelIdFromSpec } = await import(
+        '../../../inference-gateway/omp-models-config'
+      );
+      const roleModel = ompModelIdFromSpec(model);
+      const config = ompGatewayModelsConfig({
+        accountId: id,
+        provider: 'anthropic',
+        ownerId,
+        priority,
+        models: roleModel ? [roleModel] : undefined,
+      });
+      if (!config) return fail('OMP pinned gateway configuration could not be generated');
+      return {
+        env: {
+          PAPERCUSP_ACCOUNT_ID: id,
+          PAPERCUSP_OMP_MODELS_YML: config.content,
+          PAPERCUSP_OMP_MODEL_SELECTOR: config.modelSelector,
+        },
+        notice: `pinned to account ${id} (OMP routed through the inference gateway).`,
+        accountId: id,
+        provider,
+      };
+    }
     return {
       env: { PAPERCUSP_ACCOUNT_ID: id },
       notice:
-        agent === 'omp'
-          ? `pinned to account ${id} (OMP routed through the inference gateway).`
-          : `pinned to Codex account ${id} (routed through the inference gateway).`,
+        `pinned to Codex account ${id} (routed through the inference gateway).`,
       accountId: id,
       provider,
     };
@@ -1247,14 +1310,14 @@ const post = defineTool({
     // adv_sessions row. An explicit auto/pin route is a contract: if it cannot be
     // honored, reject with no ghost session and no side effects instead of silently
     // launching on the default system credential.
-    const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
+    const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true, model);
     if (accountPin.error) {
       return jsonRes({ status: 'error', error: accountPin.error }, 409);
     }
     if (sessionPortContext) {
       const summary = sessionPortContext.row.metadata.summary as SessionPortContractSummary | undefined;
       const expectedAccount = typeof summary?.target?.account === 'string' ? summary.target.account : 'default';
-      const actualAccount = accountPin.accountId ?? 'default';
+      const actualAccount = accountPin.accountId ?? (accountPin.gatewayAuto ? 'auto' : 'default');
       if (actualAccount !== expectedAccount) {
         return jsonRes({
           status: 'error',

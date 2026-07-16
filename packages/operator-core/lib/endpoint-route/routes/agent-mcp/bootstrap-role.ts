@@ -154,6 +154,7 @@ const post = defineTool({
       feature?: string | null;
       plan?: string | null;
       account?: string | null;
+      model?: string | null;
       /** named-su-agent-fleets P-009: the durable slug of a named fleet to JOIN
        *  (member). Folded into PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE on the
        *  spawn env, mirroring bootstrap-su. Ignored when `fleet_name` is present
@@ -197,7 +198,7 @@ const post = defineTool({
     const harnessSlug = body.harness_slug?.trim() || null;
     const feature = body.feature?.trim() || null;
     const plan = body.plan?.trim() || null;
-    const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent);
+    const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, undefined, false, body.model);
     if (accountPin.error) {
       return jsonRes({ status: 'error', error: accountPin.error }, 409);
     }

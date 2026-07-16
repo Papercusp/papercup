@@ -30,6 +30,11 @@ import {
   RUNTIME_OVERHEAD_TOKENS,
   buildContextBudget,
 } from '../../../packages/operator-core/lib/model-context-budget.mjs';
+import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
+import {
+  ompGatewayModelsConfig,
+  ompModelIdFromSpec,
+} from '@papercusp/orchestrator/omp-gateway-config';
 
 export const AGENTS = ['claude', 'omp', 'codex'];
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
@@ -1916,6 +1921,10 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     toolsAllowlist = null,
     operatorUrl = OPERATOR_URL,
     model = null,
+    // Authoritative gateway registry bytes from bootstrap account routing.
+    // When present they replace (not merge with) the user's global registry so
+    // a selected auto/pin route cannot be shadowed by a direct provider entry.
+    modelsYml = null,
     clientId = null,
     backendWindow = null,
     // DETERMINISTIC CARRY cutover (deterministic-context-carry P-017, WI-4845) —
@@ -2080,6 +2089,10 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     let effectiveMaxTokens = null;
     for (const f of ['models.yml', 'models.json', 'models.db', 'auth.json', 'claude-bridge.json', 'config.json', 'SYSTEM.md']) {
       const s = join(srcAgent, f);
+      if (f === 'models.yml' && typeof modelsYml === 'string' && modelsYml.trim()) {
+        writeFileSync(join(dstAgent, f), modelsYml, { mode: 0o600 });
+        continue;
+      }
       if (!existsSync(s)) continue;
       if (clampBare && f === 'models.yml') {
         let text = readFileSync(s, 'utf8');
@@ -2245,6 +2258,50 @@ export function ompTrackedResumeEnv(session, { home = homedir() } = {}) {
   };
 }
 
+export function ompDirectModelForRoute(model) {
+  const value = String(model || '').trim();
+  const match = value.match(/^papercusp-gateway\/(.+)$/i);
+  return match ? `anthropic/${match[1]}` : model;
+}
+
+/** Apply a selected OMP route to the exact per-session registry used by resume.
+ * Auto/pin replace models.yml with the generated gateway provider; default
+ * restores the global direct registry so switching modes is reversible. */
+export function applyOmpResumeAccountRoute({ session, env, accountRoute, model, home = homedir() }) {
+  if (session?.agent !== 'omp') return model;
+  const mode = accountRoute?.mode ?? 'default';
+  const agentDir = env?.PI_CODING_AGENT_DIR;
+  if (!agentDir) {
+    if (mode !== 'default') {
+      throw new Error('selected OMP gateway route cannot be applied: this resume has no isolated session registry; refusing direct/default fallback');
+    }
+    return ompDirectModelForRoute(model);
+  }
+  mkdirSync(agentDir, { recursive: true });
+  const target = join(agentDir, 'models.yml');
+  if (mode === 'default') {
+    const source = join(home, '.omp', 'agent', 'models.yml');
+    if (!existsSync(source)) {
+      throw new Error('default OMP route cannot be restored: ~/.omp/agent/models.yml is missing');
+    }
+    copyFileSync(source, target);
+    return ompDirectModelForRoute(model);
+  }
+  const roleModel = ompModelIdFromSpec(model);
+  const config = ompGatewayModelsConfig({
+    accountId: mode === 'pin' ? accountRoute.id : null,
+    gatewayOn: mode === 'auto',
+    provider: 'anthropic',
+    ownerId: session.coordOwnerId,
+    models: roleModel ? [roleModel] : undefined,
+  });
+  if (!config) {
+    throw new Error(`selected OMP ${mode} route could not be rendered; refusing direct/default fallback`);
+  }
+  writeFileSync(target, config.content, { mode: 0o600 });
+  return config.modelSelector;
+}
+
 /** The per-account routing header the inference gateway reads + the claude CLI forwards (via
  *  ANTHROPIC_CUSTOM_HEADERS). MUST equal the server's `ACCOUNT_HEADER` (gateway.ts) — pinned in
  *  lockstep by a test. Duplicated here (not imported) so the standalone launcher stays dependency-light. */
@@ -2292,6 +2349,7 @@ export function gatewayPinEnv(account, provider = 'claude', ownerId = undefined)
     ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
     ANTHROPIC_CUSTOM_HEADERS: headers.join('\n'),
     PAPERCUSP_ACCOUNT_ID: account,
+    [ACCOUNT_ROUTING_MODE_ENV]: 'pin',
   };
 }
 
@@ -2344,50 +2402,37 @@ export function gatewayAutoEnv(provider = 'claude', ownerId = undefined) {
   const env = {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+    [ACCOUNT_ROUTING_MODE_ENV]: 'auto',
   };
   if (ownerId) env.ANTHROPIC_CUSTOM_HEADERS = `${GATEWAY_OWNER_HEADER}: ${ownerId}`;
   return env;
 }
 
-function tomlEscape(s) {
-  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+export function stripCodexGatewayConfig(configText) {
+  return String(configText || '')
+    .replace(/# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT\n[\s\S]*?# END PAPERCUSP_CODEX_GATEWAY_ROOT\n?/g, '')
+    .replace(/# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER\n[\s\S]*?# END PAPERCUSP_CODEX_GATEWAY_PROVIDER\n?/g, '')
+    .replace(/^\n+/, '');
 }
 
-export function codexGatewayConfigPatch(configText, account) {
-  const providerId = 'papercusp-codex-gateway';
-  const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
-  const port = Number.isFinite(p) && p > 0 ? p : 8788;
-  const strip = (text) =>
-    text
-      .replace(/# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT\n[\s\S]*?# END PAPERCUSP_CODEX_GATEWAY_ROOT\n?/g, '')
-      .replace(/# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER\n[\s\S]*?# END PAPERCUSP_CODEX_GATEWAY_PROVIDER\n?/g, '')
-      .replace(/^\n+/, '');
-  const root = [
-    '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
-    '# Route Codex model traffic through the Papercusp inference gateway account pin.',
-    `model_provider = "${providerId}"`,
-    '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
-    '',
-  ].join('\n');
-  const table = [
-    '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
-    `[model_providers.${providerId}]`,
-    'name = "Papercusp Codex Gateway"',
-    `base_url = "http://127.0.0.1:${port}/v1"`,
-    'wire_api = "responses"',
-    'experimental_bearer_token = "papercusp-gateway"',
-    `http_headers = { "x-papercusp-account" = "${tomlEscape(account)}" }`,
-    '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
-    '',
-  ].join('\n');
-  const stripped = strip(configText || '');
-  return `${root}${stripped.trimEnd()}\n\n${table}`;
+export function codexGatewayConfigPatch(configText, account = null, { gatewayOn = false, ownerId = null } = {}) {
+  const stripped = stripCodexGatewayConfig(configText).trimEnd();
+  const patch = codexGatewayConfigToml(account, { gatewayOn, ownerId });
+  if (!patch.root.length && !patch.tables.length) return stripped ? `${stripped}\n` : '';
+  return `${patch.root.join('\n')}${stripped ? `${stripped}\n\n` : ''}${patch.tables.join('\n')}`;
 }
 
-function applyCodexGatewayPin(codexHome, account) {
+function applyCodexGatewayRoute(codexHome, { mode = 'default', id = null, ownerId = null } = {}) {
   const configPath = join(codexHome, 'config.toml');
   const current = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
-  writeFileSync(configPath, codexGatewayConfigPatch(current, account), { mode: 0o600 });
+  writeFileSync(
+    configPath,
+    codexGatewayConfigPatch(current, mode === 'pin' ? id : null, {
+      gatewayOn: mode === 'auto',
+      ownerId,
+    }),
+    { mode: 0o600 },
+  );
 }
 
 /**
@@ -2567,10 +2612,17 @@ export const CLAUDE_DEFAULT_AUTH_ENV_KEYS = Object.freeze([
  * default-account launch. `--settings` outranks project/local/user settings, so
  * a stale apiKeyHelper, API key, gateway URL, or cloud-provider selector cannot
  * silently win over the system login selected in the UI. */
-export function defaultClaudeAuthSettings() {
+export function defaultClaudeAuthSettings(routeEnv = {}) {
+  const mode = routeEnv?.[ACCOUNT_ROUTING_MODE_ENV] ?? 'default';
+  const routedEnv = Object.fromEntries(CLAUDE_DEFAULT_AUTH_ENV_KEYS.map((key) => [key, '']));
+  if (mode === 'auto' || mode === 'pin') {
+    for (const key of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS']) {
+      if (routeEnv?.[key]) routedEnv[key] = routeEnv[key];
+    }
+  }
   return {
     apiKeyHelper: '',
-    env: Object.fromEntries(CLAUDE_DEFAULT_AUTH_ENV_KEYS.map((key) => [key, ''])),
+    env: routedEnv,
   };
 }
 
@@ -2580,12 +2632,12 @@ export function defaultClaudeAuthSettings() {
 export function applyDefaultClaudeAuthSettingsArgs(wrapperBin, args, env) {
   const list = Array.isArray(args) ? args : [];
   if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return list;
-  if (env?.[ACCOUNT_ROUTING_MODE_ENV] !== 'default') return list;
+  if (!['default', 'auto', 'pin'].includes(env?.[ACCOUNT_ROUTING_MODE_ENV])) return list;
   // Global options must precede subcommands (`claude auth status --settings`
   // is rejected), so prepend rather than append. This is also valid for the
   // normal interactive/resume argv where every remaining token is an option or
   // the optional kickoff prompt.
-  return ['--settings', JSON.stringify(defaultClaudeAuthSettings()), ...list];
+  return ['--settings', JSON.stringify(defaultClaudeAuthSettings(env)), ...list];
 }
 
 /**
@@ -3693,14 +3745,14 @@ export function accountProviderFromChoices(accounts, agent = 'claude') {
 export async function chooseResumeAccount(session, args) {
   const plan = resumeAccountPlan(args);
   if (plan.source === 'none') {
-    return { id: null, env: defaultAccountEnv(), notice: null }; // --no-picker + no --account = system credential
+    return { mode: 'default', id: null, env: defaultAccountEnv(), notice: null }; // --no-picker + no --account = system credential
   }
 
   // account-routing-3-options: the `default` keyword (or '' / none / system) is resolved by NAME —
   // it deliberately skips the gateway, so it needs no pool fetch. (The picker path resolves its
   // keyword AFTER fetching the choices, below.)
   if (!plan.prompt && accountRoutingMode(plan.account) === 'default') {
-    return { id: null, env: defaultAccountEnv(), notice: 'using the default system account (inference gateway skipped).' };
+    return { mode: 'default', id: null, env: defaultAccountEnv(), notice: 'using the default system account (inference gateway skipped).' };
   }
 
   const accounts = await fetchAccountChoices(session.workspaceId, session.agent);
@@ -3708,7 +3760,7 @@ export async function chooseResumeAccount(session, args) {
     // No explicit nondefault choice exists on the prompt path because the picker
     // hides unavailable gateway rows; omission therefore remains the product's
     // default system route. A flag-selected auto/pin is a contract and must fail.
-    if (plan.prompt) return { id: null, env: defaultAccountEnv(), notice: null };
+    if (plan.prompt) return { mode: 'default', id: null, env: defaultAccountEnv(), notice: null };
     throw new Error(
       `--account ${plan.account} could not be honored: inference gateway off / no pool. ` +
         'Refusing to fall back to the default system login.',
@@ -3719,6 +3771,7 @@ export async function chooseResumeAccount(session, args) {
   const mode = accountRoutingMode(requested);
   if (mode === 'default') {
     return {
+      mode: 'default',
       id: null,
       env: defaultAccountEnv(),
       notice: requested ? 'using the default system account (inference gateway skipped).' : null,
@@ -3728,19 +3781,25 @@ export async function chooseResumeAccount(session, args) {
   const provider = accountProviderFromChoices(accounts, session.agent);
 
   if (mode === 'auto') {
-    // Route through the gateway with NO pin — it selects an available account + fails over.
-    // Wired for claude only on the raw resume path (gatewayAutoEnv returns {}
-    // otherwise). An explicit unsupported auto choice fails closed.
-    if (session.agent !== 'claude' || provider !== 'claude') {
+    const expectedProvider = session.agent === 'codex' ? 'codex' : 'claude';
+    if (provider !== expectedProvider) {
       throw new Error(
-        `--account auto could not be honored: gateway auto-routing isn't wired for ${session.agent} yet. ` +
+        `--account auto could not be honored: ${session.agent} requires a ${expectedProvider} account pool. ` +
           'Refusing to fall back to the default system login.',
       );
     }
     // `forward: 'auto'` is the value a TRACKED fork sends to the server (resolveAccountPin) so the
     // fork re-derives the same auto-route — `id` is null here, so the fork's `id` fallback alone
     // would silently drop the choice.
-    return { id: null, auto: true, forward: 'auto', provider, env: gatewayAutoEnv(provider, session.coordOwnerId), notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).' };
+    return {
+      mode: 'auto',
+      id: null,
+      auto: true,
+      forward: 'auto',
+      provider,
+      env: session.agent === 'claude' ? gatewayAutoEnv(provider, session.coordOwnerId) : {},
+      notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).',
+    };
   }
 
   // mode === 'pin'
@@ -3757,7 +3816,15 @@ export async function chooseResumeAccount(session, args) {
         'Refusing to fall back to the default system login.',
     );
   }
-  return { id, provider, env: gatewayPinEnv(id, provider, session.coordOwnerId), notice: `pinned to ${provider === 'codex' ? 'Codex ' : ''}account ${id} (routed through the inference gateway).` };
+  return {
+    mode: 'pin',
+    id,
+    provider,
+    env: session.agent === 'claude'
+      ? gatewayPinEnv(id, provider, session.coordOwnerId)
+      : { PAPERCUSP_ACCOUNT_ID: id },
+    notice: `pinned to ${provider === 'codex' ? 'Codex ' : ''}account ${id} (routed through the inference gateway).`,
+  };
 }
 
 /** Sentinel for the "no feature" picker row (optional-feature roles). */
@@ -4128,7 +4195,8 @@ export function persistDefaultClaudeAuthSettings({
 }) {
   try {
     if (!/(^|\/)claude(-su)?$/.test(String(wrapperBin || ''))) return false;
-    if (env?.[ACCOUNT_ROUTING_MODE_ENV] !== 'default') return false;
+    const mode = env?.[ACCOUNT_ROUTING_MODE_ENV];
+    if (!['default', 'auto', 'pin'].includes(mode)) return false;
     const dir = (env?.CLAUDE_CONFIG_DIR ?? '').trim();
     if (!dir) return false;
     const path = join(dir, 'settings.json');
@@ -4153,6 +4221,11 @@ export function persistDefaultClaudeAuthSettings({
     ]) {
       delete settingsEnv[key];
     }
+    if (mode === 'auto' || mode === 'pin') {
+      for (const key of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS']) {
+        if (env[key]) settingsEnv[key] = env[key];
+      }
+    }
     const next = { ...current, apiKeyHelper: '', env: settingsEnv };
     const tmp = `${path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(next, null, 2));
@@ -4160,7 +4233,7 @@ export function persistDefaultClaudeAuthSettings({
     return true;
   } catch (e) {
     try {
-      log(`psu: could not persist default-account Claude auth settings (${e?.message ?? e}) — launch continues on env/argv enforcement.\n`);
+      log(`psu: could not persist explicit-route Claude auth settings (${e?.message ?? e}) — launch continues on env/argv enforcement.\n`);
     } catch {
       /* diagnostic only */
     }
@@ -4475,17 +4548,14 @@ export function sanitizeInheritedEnv(env) {
       .join(delimiter);
   }
   for (const key of [
-    'ANTHROPIC_BASE_URL',
-    'ANTHROPIC_CUSTOM_HEADERS',
+    ...CLAUDE_DEFAULT_AUTH_ENV_KEYS,
     'PAPERCUSP_ANTHROPIC_URL',
     'PAPERCUSP_ACCOUNT_ID',
     'PAPERCUSP_CODEX_GATEWAY',
     ACCOUNT_ROUTING_MODE_ENV,
+    'CLAUDE_CODE_OAUTH_TOKEN',
   ]) {
     delete out[key];
-  }
-  if (out.ANTHROPIC_AUTH_TOKEN === GATEWAY_CLIENT_AUTH_TOKEN) {
-    delete out.ANTHROPIC_AUTH_TOKEN;
   }
   return out;
 }
@@ -4977,11 +5047,6 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
   // use -e. Stable path, only added when actually installed.
   const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
-  const { bin, args } = resumeArgsFor(session, { coordExtPath, fork, addDir, allowSubagents, model });
-  if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
-  // notify-send lockout rides resumeArgsFor for claude already; nothing extra here.
-  // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
-  if (passthrough.length) args.push(...passthrough);
 
   // Identity + workspace scope survive the resume (see resumeEnvFor) — except a
   // FORK, which deliberately takes a fresh coord identity + no adv-row link so it
@@ -5036,9 +5101,29 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
   } else if (session.agent === 'codex' && session.id != null) {
     env.CODEX_HOME = join(homedir(), '.papercusp', 'su-codex-homes', `session-${session.id}`);
   }
-  if (session.agent === 'codex' && accountEnv?.provider === 'codex' && accountEnv?.id && env.CODEX_HOME) {
-    applyCodexGatewayPin(env.CODEX_HOME, accountEnv.id);
+  let resumeModel = model;
+  if (session.agent === 'omp') {
+    resumeModel = applyOmpResumeAccountRoute({ session, env, accountRoute: accountEnv, model });
   }
+  if (session.agent === 'codex' && env.CODEX_HOME) {
+    applyCodexGatewayRoute(env.CODEX_HOME, {
+      mode: accountEnv?.mode ?? 'default',
+      id: accountEnv?.id ?? null,
+      ownerId: session.coordOwnerId ?? null,
+    });
+  }
+
+  const { bin, args } = resumeArgsFor(session, {
+    coordExtPath,
+    fork,
+    addDir,
+    allowSubagents,
+    model: resumeModel,
+  });
+  if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
+  // notify-send lockout rides resumeArgsFor for claude already; nothing extra here.
+  // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
+  if (passthrough.length) args.push(...passthrough);
 
   // Surface the successfully resolved account route. Unavailable explicit
   // auto/pin choices already threw, so this can never describe a silent fallback.
@@ -5251,7 +5336,7 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
   };
 }
 
-export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet, fleetRole, fleetName, fleetScheme } = {}) {
+export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, model, fleet, fleetRole, fleetName, fleetScheme } = {}) {
   return {
     role,
     agent,
@@ -5260,6 +5345,7 @@ export function roleBootstrapBody({ role, agent, workspace, harness, feature, pl
     feature,
     plan,
     ...(account ? { account } : {}),
+    ...(model ? { model } : {}),
     ...(fleet ? { fleet } : {}),
     ...(fleetRole ? { fleet_role: fleetRole } : {}),
     ...(fleetName ? { fleet_name: fleetName } : {}),
@@ -6120,7 +6206,7 @@ async function roleFlow(args, role, rolesMeta) {
 
   const res = await api('/api/agent-mcp/console/bootstrap-role', {
     method: 'POST',
-    body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet: args.fleet, fleetRole: args.fleetRole, fleetName: args.fleetName, fleetScheme: args.fleetScheme })),
+    body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, model: args.model, fleet: args.fleet, fleetRole: args.fleetRole, fleetName: args.fleetName, fleetScheme: args.fleetScheme })),
   });
   // WI-1408 (fleet-join-startup-assertion): a requested fleet must have actually
   // registered — see assertFleetJoined's doc comment.
@@ -6131,6 +6217,9 @@ async function roleFlow(args, role, rolesMeta) {
   // resume use. claude/codex role hooks are user-level / baked into the codex home.
   const roleCoordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const roleCoordExtPath = res.agent === 'omp' && existsSync(roleCoordExt) ? roleCoordExt : undefined;
+  const roleModel = res.agent === 'omp'
+    ? (res.envelopeEnv?.PAPERCUSP_OMP_MODEL_SELECTOR || args.model)
+    : args.model;
   // Launch preflight (context-trimming-tiers P-016/P-018): persona-append
   // assertion + window guard — fail loud BEFORE spawning a doomed session.
   try {
@@ -6156,7 +6245,7 @@ async function roleFlow(args, role, rolesMeta) {
     // P-019/D-007: thread --model into the role launch argv (claude branch splits
     // effort via modelArgsFor). Without this the spec was env-only (PAPERCUSP_MODEL,
     // title hooks) and the session ran the saved default model.
-    model: args.model,
+    model: roleModel,
   });
   if (args.addDir?.length && res.agent === 'omp') {
     console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');
@@ -6164,6 +6253,19 @@ async function roleFlow(args, role, rolesMeta) {
   // First-class --add-dir (claude/codex) + generic `--` passthrough, forwarded to the
   // backend CLI after psu's role flags — parity with the su (launchFreshSu) + resume paths.
   const roleArgs = [...launchArgs, ...addDirArgs(res.agent, args.addDir || []), ...(args.passthrough || [])];
+  let roleOmpConfigDir = null;
+  if (res.agent === 'omp' && res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML) {
+    roleOmpConfigDir = writeOmpSessionConfigDir(res.sessionId, {
+      discoveryOff: true,
+      model: roleModel,
+      modelsYml: res.envelopeEnv.PAPERCUSP_OMP_MODELS_YML,
+      clientId: res.envelopeEnv?.PAPERCUSP_SID || null,
+      interactive: !!process.stdout.isTTY,
+    });
+    if (!roleOmpConfigDir) {
+      throw new Error('psu: could not materialize the selected OMP account route; refusing direct/default fallback');
+    }
+  }
   console.error(
     `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : (res.planSlug ? `plan ${res.planSlug}` : 'no feature')}` +
       `  ·  ${res.harnessSlug ? `harness ${res.harnessSlug}` : 'workspace-level (no harness)'}  ·  session ${res.sessionId ?? '?'}`,
@@ -6182,8 +6284,12 @@ async function roleFlow(args, role, rolesMeta) {
     // live model object like Claude's statusline stdin). Omitted when no --model (default).
     envelopeEnv: {
       ...res.envelopeEnv,
+      ...(roleOmpConfigDir ? {
+        PI_CONFIG_DIR: roleOmpConfigDir,
+        PI_CODING_AGENT_DIR: join(homedir(), roleOmpConfigDir, 'agent'),
+      } : {}),
       PAPERCUSP_AGENT_SESSION: '1',
-      ...(args.model ? { PAPERCUSP_MODEL: args.model } : {}),
+      ...(roleModel ? { PAPERCUSP_MODEL: roleModel } : {}),
       // P-014 (agent-managed-compaction): mechanical compaction backstop for a [1m]
       // role session — CC's CLAUDE_CODE_AUTO_COMPACT_WINDOW at ~120% of its soft limit.
       // No-op for non-claude / non-[1m] (see autoCompactWindowEnv).
@@ -6580,8 +6686,11 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // picker) opts THIS su launch back in. See suLaunchArgs / NO_SUBAGENTS_DENY_FLAG.
     allowSubagents: args.allowSubagents,
   });
+  const launchModel = res.agent === 'omp'
+    ? (res.envelopeEnv?.PAPERCUSP_OMP_MODEL_SELECTOR || args.model)
+    : args.model;
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
-  const extra = suWrapperExtraArgs(res.agent, { model: args.model, resumeSession: args.resumeSession });
+  const extra = suWrapperExtraArgs(res.agent, { model: launchModel, resumeSession: args.resumeSession });
   if (args.addDir?.length && res.agent === 'omp') {
     console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');
   }
@@ -6665,7 +6774,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   if (res.agent === 'omp') {
     const advisory = ompDefaultModelAdvisory();
     if (advisory) console.error(advisory);
-    const effectiveModel = args.model || ompDefaultModel();
+    const effectiveModel = launchModel || ompDefaultModel();
     // effectiveWindow probe (deterministic-context-carry P-005): for a LOCAL model, read the
     // live per-slot n_ctx from the gateway's backend probe so the per-session registry is
     // clamped to min(configured, live) — never trusting a hand-set number the backend has
@@ -6681,7 +6790,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // ESCAPE HATCH (dynamic-tool-surface D-010): --context-size=full opts OUT of the
       // seed — eager-load the whole catalog with discovery OFF (latency-critical broad-tool
       // task / debugging). Everything else defaults to the seed below.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow, interactive: !args.headless && !!process.stdout.isTTY });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel, modelsYml: res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML || null, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow, interactive: !args.headless && !!process.stdout.isTTY });
       if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
     } else {
@@ -6702,9 +6811,12 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       if (spine.length !== OMP_CORE_MCP_TOOL_NAMES.length) {
         console.error(`psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${OMP_CORE_MCP_TOOL_NAMES.length - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`);
       }
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow, interactive: !args.headless && !!process.stdout.isTTY });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel, modelsYml: res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML || null, clientId: res.envelopeEnv?.PAPERCUSP_SID || null, backendWindow, interactive: !args.headless && !!process.stdout.isTTY });
       if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
       else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
+    }
+    if (res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML && !ompPiConfigDir) {
+      throw new Error('psu: could not materialize the selected OMP account route; refusing direct/default fallback');
     }
   }
 
@@ -6752,7 +6864,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // PAPERCUSP_MODEL: the launch model spec, exported so the codex/omp title hook can
       // render the model in the terminal title (WI-1963 title-parity — those CLIs have no
       // live model object like Claude's statusline stdin). Omitted when no --model (default).
-      ...(args.model ? { PAPERCUSP_MODEL: args.model } : {}),
+      ...(launchModel ? { PAPERCUSP_MODEL: launchModel } : {}),
       // fleet-auto-mode (WI-1356): mark the running session as AUTO so the persona +
       // hooks read it at runtime (the durable prompt directive + turn-1 kickoff come
       // from bootstrap-su via the `auto` body field). Default on for `--fleet`.
