@@ -168,9 +168,20 @@ export function coerceCompletionShape(raw: unknown): unknown {
  * though they DID say how it was checked (repro: WI-4223, 2026-07-12). Merge
  * any such siblings INTO the completion object, filling only fields the
  * nested object didn't already set — an explicit nested value always wins,
- * never clobbered by a flat sibling. No siblings found (or `completion` isn't
- * a plain object, e.g. still a raw JSON string awaiting `coerceCompletionShape`)
- * → returned unchanged, same reference, exactly like before.
+ * never clobbered by a flat sibling.
+ *
+ * EI-13016: EI-9930 only merged siblings when `completion` was ALREADY a plain
+ * object, bailing whenever it was a bare string ("left for coerceCompletionShape")
+ * — but coerceCompletionShape runs on the `completion` VALUE alone and never sees
+ * the top-level siblings, so they were still dropped. The live repro was exactly
+ * `{ id, state, tests: "…", completion: "<prose>" }` (WI-5069, 2026-07-16): the
+ * string completion coerced to `{ summary }`, the flat `tests` was stripped by the
+ * object schema, terminalCompletionEvidence stayed null, and the verificationWarning
+ * demanding `tests` became UNSATISFIABLE (re-sending with `tests` populated changed
+ * nothing). So when siblings exist and `completion` is a string, coerce it to its
+ * object shape HERE first, then merge — the flat siblings survive in both cases. A
+ * string that cannot become an object (empty/whitespace) is left for validation to
+ * reject. No siblings found → returned unchanged, same reference, exactly like before.
  */
 export function gatherFlatCompletion(args: unknown): unknown {
   if (!isPlainObject(args)) return args;
@@ -186,10 +197,15 @@ export function gatherFlatCompletion(args: unknown): unknown {
   }
 
   if (args.completion !== undefined) {
-    if (!found || !isPlainObject(args.completion)) return args;
+    if (!found) return args;
+    // EI-13016: coerce a bare-string `completion` to its object shape so the flat
+    // siblings can be merged in (a plain object is passed through by coerceCompletionShape
+    // unchanged). An un-objectifiable value (e.g. an empty string) → bail, leave for validation.
+    const base = coerceCompletionShape(args.completion);
+    if (!isPlainObject(base)) return args;
     const out: Record<string, unknown> = { ...args };
     for (const f of COMPLETION_FIELDS) delete out[f];
-    out.completion = { ...flat, ...(args.completion as Record<string, unknown>) };
+    out.completion = { ...flat, ...base };
     return out;
   }
 

@@ -12,7 +12,7 @@
  *     rubric, reduced to a worst-case pass/fail/unknown verdict (reuses the existing
  *     `rubrics`/`scorecards` read paths — no new rubric machinery);
  *   - a hard OPERATIONAL GATE component — deploy-pin staleness, reusing the already-
- *     written (but previously unwired) `evaluateDeployStaleness` pure decision +ther
+ *     written (but previously unwired) `evaluateDeployStaleness` pure decision + the
  *     `git-ops` primitives this package already ships.
  *
  * `buildPapercuspReleaseProfile` assembles every ACTIVE `releaseGating` rubric plus the
@@ -34,8 +34,7 @@ import {
   type ReleaseProfileSpec,
   type ReleaseProfileVerdict,
 } from '@papercusp/release-profile';
-import { getRubric as defaultGetRubric } from '@papercusp/operator-core/lib/rubrics';
-import { listRubrics as defaultListRubrics } from '@papercusp/operator-core/lib/rubrics';
+import { getRubric as defaultGetRubric, listRubrics as defaultListRubrics } from '@papercusp/operator-core/lib/rubrics';
 import { listScorecards as defaultListScorecards, type ScorecardRow } from '@papercusp/operator-core/lib/scorecards';
 import { readRunningGeneration as defaultReadRunningGeneration } from '@papercusp/operator-core/lib/scout/generation-watermark';
 import { currentSha as defaultCurrentSha, commitUnixTime as defaultCommitUnixTime, commitsBetween as defaultCommitsBetween } from './git-ops';
