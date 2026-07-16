@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const identity = vi.hoisted(() => ({ ownerId: 'su-me', workspaceId: 'ws-1' }));
 const flag = vi.hoisted(() => ({ schedulerSpecClaim: true }));
-const fleet = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[] }));
+const fleet = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
 
 vi.mock('@papercusp/flags', () => ({
   FLAGS: { SCHEDULER_SPEC_CLAIM: 'scheduler.spec.claim' },
@@ -50,12 +50,14 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   reconcileFleetScopeClaims: vi.fn(async () => ({ scope: fleet.scope, quarantinedIds: fleet.quarantinedIds })),
-  fleetScopedMiss: (scope: any, quarantinedIds: string[]) => ({
+  readFleetPauseState: vi.fn(async () => ({ windingDown: fleet.windingDown, reason: fleet.pauseReason })),
+  fleetScopedMiss: (scope: any, quarantinedIds: string[], opts?: { pausedReason?: string | null }) => ({
     ok: false,
-    error: 'scoped miss',
+    error: opts?.pausedReason !== undefined ? `paused: ${opts.pausedReason ?? ''}` : 'scoped miss',
     fleetScope: { fleet: scope.fleetSlug, specId: scope.record.spec.specId, revision: scope.record.spec.revision },
     quarantinedIds,
     windDown: true,
+    ...(opts?.pausedReason !== undefined ? { paused: true } : {}),
   }),
 }));
 
@@ -89,6 +91,8 @@ beforeEach(() => {
   flag.schedulerSpecClaim = true;
   fleet.scope = null;
   fleet.quarantinedIds = [];
+  fleet.windingDown = false;
+  fleet.pauseReason = null;
   getNextForBeeM.mockResolvedValue({
     workItem: { id: 'WI-lane', assignee: 'su-me' } as never,
     claimedUnder: { specId: 'fleet-bugs', revision: 3 },
@@ -181,6 +185,24 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
     const b = await body({ harness: 'papercusp' });
     expect(b).toMatchObject({ ok: false, windDown: true, quarantinedIds: ['WI-out'] });
     expect(getNextForBeeM).toHaveBeenCalledOnce();
+    expect(claimNextM).not.toHaveBeenCalled();
+  });
+
+  // EI-12832: a member woken during a fleet pause (control_state='winding-down')
+  // must stand down — self-select floors BEFORE any claim, whatever the spec matches.
+  it('EI-12832: a winding-down fleet floors self-select — paused miss, no pull', async () => {
+    fleet.scope = {
+      ownerId: 'su-me',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
+    };
+    fleet.windingDown = true;
+    fleet.pauseReason = 'owner pause';
+
+    const b = await body({ harness: 'papercusp' });
+    expect(b).toMatchObject({ ok: false, windDown: true, paused: true });
+    expect(getNextForBeeM).not.toHaveBeenCalled();
     expect(claimNextM).not.toHaveBeenCalled();
   });
 });

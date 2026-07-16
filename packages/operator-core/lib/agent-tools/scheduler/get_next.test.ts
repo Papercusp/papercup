@@ -12,7 +12,7 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 
-const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[] }));
+const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
 const getNextM = vi.hoisted(() => vi.fn());
 
 vi.mock('../coordination/identity', () => ({
@@ -28,12 +28,14 @@ vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
 });
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   reconcileFleetScopeClaims: vi.fn(async () => ({ scope: scopeState.scope, quarantinedIds: scopeState.quarantinedIds })),
-  fleetScopedMiss: (scope: any, quarantinedIds: string[]) => ({
+  readFleetPauseState: vi.fn(async () => ({ windingDown: scopeState.windingDown, reason: scopeState.pauseReason })),
+  fleetScopedMiss: (scope: any, quarantinedIds: string[], opts?: { pausedReason?: string | null }) => ({
     ok: false,
-    error: 'scoped miss; no generic fallback',
+    error: opts?.pausedReason !== undefined ? `paused: ${opts.pausedReason ?? ''}` : 'scoped miss; no generic fallback',
     fleetScope: { fleet: scope.fleetSlug, source: scope.record.source },
     quarantinedIds,
     windDown: true,
+    ...(opts?.pausedReason !== undefined ? { paused: true } : {}),
   }),
 }));
 
@@ -87,6 +89,8 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     vi.clearAllMocks();
     scopeState.scope = null;
     scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
     getNextM.mockResolvedValue(null);
   });
 
@@ -115,5 +119,22 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     const b = JSON.parse(out.content[0]!.text);
     expect(b).toMatchObject({ ok: false, windDown: true, quarantinedIds: ['WI-out'] });
     expect(getNextM).toHaveBeenCalledOnce();
+  });
+
+  // EI-12832: a member woken during a fleet pause (control_state='winding-down')
+  // must stand down — the self-select path floors BEFORE it pulls, whatever the spec matches.
+  it('EI-12832: a winding-down fleet floors self-select — paused miss, no pull', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
+    };
+    scopeState.windingDown = true;
+    scopeState.pauseReason = 'owner pause';
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as { content: Array<{ text: string }> };
+    const b = JSON.parse(out.content[0]!.text);
+    expect(b).toMatchObject({ ok: false, windDown: true, paused: true });
+    expect(getNextM).not.toHaveBeenCalled();
   });
 });
