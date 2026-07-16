@@ -803,7 +803,10 @@ export function writeInteractiveClaudeConfig(opts: {
  *
  * The check keys on `.claude.json` because it is both the file that gates the
  * wizard and the one only the mirror provides:
- *   - a SYMLINK ⇒ the mirror linked the user's real config in. READY.
+ *   - a SYMLINK THAT RESOLVES ⇒ the mirror linked the user's real config in.
+ *     READY. (A DANGLING one is not: `lstat` still reports a symlink, so the
+ *     check must read THROUGH it — a link whose target was deleted/relocated
+ *     gives claude nothing, which is the same wizard by a different door.)
  *   - a real file WITH `mcpServers` ⇒ a P-020 pruned fleet copy (filtered, but
  *     complete). READY — and reported ready deliberately, so a re-ensure never
  *     silently UN-prunes a context-trimmed member.
@@ -818,9 +821,10 @@ export function writeInteractiveClaudeConfig(opts: {
 export function isInteractiveClaudeConfigReady(configDir: string): boolean {
   try {
     const path = join(configDir, '.claude.json');
-    if (lstatSync(path).isSymbolicLink()) return true;
-    const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown> | null;
-    return !!cfg && typeof cfg === 'object' && cfg.mcpServers != null;
+    const entry = lstatSync(path); // throws when absent
+    const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown> | null; // throws when dangling
+    if (!cfg || typeof cfg !== 'object') return false;
+    return entry.isSymbolicLink() || cfg.mcpServers != null;
   } catch {
     return false; // absent, dangling, or corrupt — re-materialize over it
   }
@@ -858,6 +862,14 @@ export function ensureInteractiveClaudeConfig(opts: {
   const configDir = sessionClaudeConfigDir(opts.sid);
   if (isInteractiveClaudeConfigReady(configDir)) return { configDir, repaired: false };
   try {
+    // Clear the `.claude.json` we just judged NOT launch-ready, or the mirror
+    // cannot replace it: `linkInto` is `present()`-skipped (deliberately — a
+    // re-materialize must not double-link), so claude's own first-run stub would
+    // BLOCK its own repair and the dir would stay tool-less forever. Only ever
+    // reached for a dir the ready-check rejected: a stub (claude's, not the
+    // user's — losing its accrued state is the point), a dangling link, or a
+    // corrupt file. A healthy or pruned dir returned above, untouched.
+    rmSync(join(configDir, '.claude.json'), { force: true });
     writeInteractiveClaudeConfig({ sid: opts.sid, home: opts.home });
     return { configDir, repaired: true };
   } catch {

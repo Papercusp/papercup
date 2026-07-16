@@ -31,7 +31,9 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import {
+  ensureInteractiveClaudeConfig,
   ensureOnboardingComplete,
+  isInteractiveClaudeConfigReady,
   RECOVER_HOOK,
   RECOVER_INTENT,
   RECOVER_PLAYBOOK,
@@ -748,5 +750,129 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
       PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
     });
     expect(out).toBe('');
+  });
+});
+
+/**
+ * EI-12938 (owner-reported 2026-07-16): "psu --resume prompted me to login; I
+ * exited the dialog, re-ran it, and then it was fine."
+ *
+ * The launch-READINESS contract. A session's CLAUDE_CONFIG_DIR is built by one
+ * of three writers, and only `writeInteractiveClaudeConfig` yields a dir a HUMAN
+ * can launch into:
+ *   - `writeSpawnClaudeConfig(persistentDir)` — a bee/plan-run: creds symlink only;
+ *   - `rematerializeSession` — an archived session restored: the transcript only;
+ *   - the mirror — everything.
+ * The first two have no `.claude.json`, and THAT (not `.credentials.json`, which
+ * `psu --resume` already re-heals) is where claude keeps oauthAccount /
+ * onboarding / trust / the user-level MCP servers. So an interactive resume of
+ * such a dir boots the first-run wizard despite a healthy system login — and
+ * then mints its own stub config, which is why the SECOND attempt stops
+ * prompting while silently running with no MCP and no lock hooks.
+ *
+ * These pin: not-ready is DETECTED (incl. the stub — "it works now" is not
+ * "it's fixed"), the repair produces a real launch-ready dir WITHOUT eating the
+ * restored transcript, and a healthy dir is left alone (no re-link churn, no
+ * un-pruning a context-trimmed member).
+ */
+describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just a transcript', () => {
+  // Every case starts from a realistic source HOME — the whole question is
+  // whether the SESSION dir mirrors it.
+  beforeEach(() => seedHome(home));
+
+  /** The dir `rematerializeSession` leaves behind: the transcript, nothing else. */
+  function seedRematerializedDir(sid: string): string {
+    const dir = sessionClaudeConfigDir(sid);
+    mkdirSync(join(dir, 'projects', 'proj-hash'), { recursive: true });
+    writeFileSync(join(dir, 'projects', 'proj-hash', 'restored-uuid.jsonl'), '{"restored":1}');
+    return dir;
+  }
+
+  it('a rematerialized (transcript-only) dir is NOT ready — the exact repro', () => {
+    const dir = seedRematerializedDir('su-remat');
+    expect(existsSync(join(dir, '.claude.json'))).toBe(false);
+    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+  });
+
+  it("a bee's creds-symlink-only dir (writeSpawnClaudeConfig shape) is NOT ready", () => {
+    const dir = sessionClaudeConfigDir('su-bee');
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(join(home, '.claude', '.credentials.json'), join(dir, '.credentials.json'));
+    // A VALID credential + no account state is precisely the trap: auth looks fine.
+    expect(existsSync(join(dir, '.credentials.json'))).toBe(true);
+    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+  });
+
+  it('the stub .claude.json claude mints on a first-run boot is NOT ready (an account, but no MCP)', () => {
+    const dir = seedRematerializedDir('su-stub');
+    // Verbatim shape of the file the owner's attempt-1 left behind: oauthAccount
+    // present (so attempt 2 stops prompting), mcpServers absent (so it is a
+    // TOOL-LESS session). Accepting this as "ready" is the subtler bug.
+    writeFileSync(
+      join(dir, '.claude.json'),
+      JSON.stringify({ oauthAccount: { emailAddress: 'owner@example.com' }, userID: 'abc' }),
+    );
+    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+  });
+
+  it('ensure repairs a rematerialized dir into a launch-ready one — account state, hooks, MCP, transcript kept', () => {
+    const dir = seedRematerializedDir('su-fix');
+    const { configDir, repaired } = ensureInteractiveClaudeConfig({ sid: 'su-fix', home });
+    expect(configDir).toBe(dir);
+    expect(repaired).toBe(true);
+    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
+    // .claude.json — the file that gates the wizard AND carries the user-level
+    // MCP servers — is linked to the user's real config.
+    expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(dir, '.claude.json'))).toBe(join(home, '.claude.json'));
+    expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8')).mcpServers).toHaveProperty('papercusp-su');
+    // The lock/coord hooks the shared tree depends on.
+    expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')).hooks).toBeTruthy();
+    // The credential symlink, resolving to the real login.
+    expect(readlinkSync(join(dir, '.credentials.json'))).toBe(join(home, '.claude', '.credentials.json'));
+    // The whole point of the resume: the restored transcript must survive the repair.
+    expect(readFileSync(join(dir, 'projects', 'proj-hash', 'restored-uuid.jsonl'), 'utf8')).toBe('{"restored":1}');
+    // …and stay ISOLATED — the repair must not re-link projects/ to the shared store.
+    expect(existsSync(join(dir, 'projects', 'proj-hash', 'peer-uuid.jsonl'))).toBe(false);
+  });
+
+  it('ensure repairs the first-run stub too (so a "working" second attempt is not left tool-less)', () => {
+    const dir = seedRematerializedDir('su-stub2');
+    writeFileSync(join(dir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'o@e.com' } }));
+    expect(ensureInteractiveClaudeConfig({ sid: 'su-stub2', home }).repaired).toBe(true);
+    expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8')).mcpServers).toHaveProperty('papercusp-su');
+  });
+
+  it('a healthy mirror is ready → ensure no-ops (byte-identical, no re-link churn)', () => {
+    writeInteractiveClaudeConfig({ sid: 'su-healthy', home });
+    const dir = sessionClaudeConfigDir('su-healthy');
+    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
+    const before = lstatSync(join(dir, '.claude.json')).mtimeMs;
+    expect(ensureInteractiveClaudeConfig({ sid: 'su-healthy', home }).repaired).toBe(false);
+    expect(lstatSync(join(dir, '.claude.json')).mtimeMs).toBe(before);
+  });
+
+  it('a P-020 pruned fleet dir is ready → an ensure never silently UN-prunes it', () => {
+    writeInteractiveClaudeConfig({ sid: 'su-pruned', home, prunePlugins: true });
+    const dir = sessionClaudeConfigDir('su-pruned');
+    const json = join(dir, '.claude.json');
+    // The pruned copy is a REAL file (it lost write-passthrough on purpose) that
+    // still carries mcpServers — complete, just filtered.
+    expect(lstatSync(json).isSymbolicLink()).toBe(false);
+    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
+    expect(ensureInteractiveClaudeConfig({ sid: 'su-pruned', home }).repaired).toBe(false);
+    expect(lstatSync(json).isSymbolicLink()).toBe(false); // still pruned, not re-linked
+    expect(JSON.parse(readFileSync(json, 'utf8')).mcpServers).not.toHaveProperty('playwright');
+  });
+
+  it('never throws on a hopeless dir — a launch must never fail on config repair', () => {
+    expect(isInteractiveClaudeConfigReady('/nope/does/not/exist')).toBe(false);
+    // A dangling .claude.json symlink (the source config was deleted under it).
+    const dir = sessionClaudeConfigDir('su-dangle');
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(join(home, 'gone.json'), join(dir, '.claude.json'));
+    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+    expect(() => ensureInteractiveClaudeConfig({ sid: 'su-dangle', home })).not.toThrow();
   });
 });
