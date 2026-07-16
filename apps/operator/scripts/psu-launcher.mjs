@@ -391,8 +391,8 @@ export function parseArgs(argv) {
     //   • auto      → route through the gateway with NO pin; it picks an available account + fails over
     //   • default (or omitted) → skip the gateway, use the system / CLI-login credential (THE DEFAULT)
     // Threaded to bootstrap-su (resolveAccountPin) for a fresh launch / tracked fork; resolved
-    // client-side (chooseResumeAccount) for an in-place resume. Fail-soft to the default credential
-    // when the gateway is off or the id is unknown/disallowed.
+    // client-side (chooseResumeAccount) for an in-place resume. Explicit auto/pin choices fail
+    // closed when unavailable; only default/omitted may use the system login.
     else if (a === '--account') pendingAccount = true;
     else if (a.startsWith('--account=')) out.account = a.slice('--account='.length);
     // named-su-agent-fleets P-006: pin this session into a named fleet (`psu
@@ -3474,9 +3474,10 @@ async function pickPlan(workspace, harness) {
  * psu-account-chooser P-005: pick a pool account to pin this session to (gateway
  * routing), or the default credential. Returns the account id, or null for "no pin"
  * — INCLUDING when the picker is hidden: gateway off, an empty pool, or any fetch
- * error (fail-soft — the account step never blocks a launch). The "default" row is
- * FIRST so hitting enter keeps today's behavior; accounts blocked by the active
- * session-override are shown disabled (the server would reject them anyway).
+ * error. The picker can only return default when no nondefault routes are
+ * available; explicit `--account auto|<pin>` flags are validated separately and
+ * fail closed. The "default" row is FIRST so hitting enter keeps today's behavior;
+ * accounts blocked by the active session-override are shown disabled.
  */
 /** The account-pin choices the gateway offers for a workspace (gatewayOn + pool + session-override).
  *  Live `/options` endpoint — deployed everywhere, unlike a bespoke pin endpoint (deploy-skew safe).
@@ -3730,7 +3731,7 @@ export async function chooseResumeAccount(session, args) {
     // Route through the gateway with NO pin — it selects an available account + fails over.
     // Wired for claude only on the raw resume path (gatewayAutoEnv returns {}
     // otherwise). An explicit unsupported auto choice fails closed.
-    if (provider !== 'claude') {
+    if (session.agent !== 'claude' || provider !== 'claude') {
       throw new Error(
         `--account auto could not be honored: gateway auto-routing isn't wired for ${session.agent} yet. ` +
           'Refusing to fall back to the default system login.',
@@ -4999,8 +5000,8 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
     applyCodexGatewayPin(env.CODEX_HOME, accountEnv.id);
   }
 
-  // Surface whether the account re-pin took effect (or the fail-soft reason it
-  // was skipped) so a resume is never silently unpinned — mirrors launchFreshSu.
+  // Surface the successfully resolved account route. Unavailable explicit
+  // auto/pin choices already threw, so this can never describe a silent fallback.
   if (accountEnv?.notice) console.error(`psu: account — ${accountEnv.notice}`);
   // Re-activate the tracked adv row that the prior exit stamped `ended` (a no-POST
   // resume reuses the original identity + row, so without this the running agent
@@ -5331,7 +5332,8 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     `psu: forking claude ${session.sessionId} → tracked session #${res.sessionId ?? '?'} (${forkId}) in ${session.cwd}  (${bin} ${forkArgs.join(' ')})`,
   );
   console.error('psu: the fork is a NEW tracked session — it appears in `psu --resume`; the original is untouched.');
-  // Surface the account pin outcome the POST resolved (fold or fail-soft reason).
+  // Surface the account route the POST resolved. Explicit nondefault failures are
+  // HTTP errors now, so a tracked fork never silently falls back to system login.
   if (res.accountNotice) console.error(`psu: account — ${res.accountNotice}`);
   // Run in the ORIGINAL's cwd (the seeded transcript is keyed by it); the fresh
   // bootstrap envelope (config dir / coord id / MCP) makes it a proper SU session

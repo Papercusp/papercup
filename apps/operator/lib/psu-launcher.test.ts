@@ -1626,6 +1626,79 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
+  const withAccountChoices = async (accounts: Record<string, unknown>, run: () => Promise<unknown>) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ accounts }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    try {
+      return await run();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  };
+
+  it('chooseResumeAccount: explicit auto fails closed when the gateway route is unavailable', async () => {
+    await expect(
+      withAccountChoices(
+        { gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+        () =>
+          chooseResumeAccount(
+            { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-auto' },
+            { account: 'auto', picker: false },
+          ),
+      ),
+    ).rejects.toThrow(/refusing to fall back to the default system login/i);
+  });
+
+  it('chooseResumeAccount: an invalid named pin fails closed instead of returning the default marker', async () => {
+    await expect(
+      withAccountChoices(
+        { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+        () =>
+          chooseResumeAccount(
+            { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-pin' },
+            { account: 'not-allowed', picker: false },
+          ),
+      ),
+    ).rejects.toThrow(/not an allowed pool account.*refusing to fall back/i);
+  });
+
+  it('chooseResumeAccount: OMP auto fails closed because only Claude raw resumes support gateway auto', async () => {
+    await expect(
+      withAccountChoices(
+        { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+        () =>
+          chooseResumeAccount(
+            { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp' },
+            { account: 'auto', picker: false },
+          ),
+      ),
+    ).rejects.toThrow(/auto-routing isn't wired for omp.*refusing to fall back/i);
+  });
+
+  it('chooseResumeAccount: valid Claude auto remains gateway-only and never carries the default marker', async () => {
+    const resolved = await withAccountChoices(
+      { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+      () =>
+        chooseResumeAccount(
+          { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-auto' },
+          { account: 'auto', picker: false },
+        ),
+    );
+    expect(resolved).toMatchObject({
+      auto: true,
+      forward: 'auto',
+      env: {
+        ANTHROPIC_BASE_URL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:/),
+        ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+      },
+    });
+    expect((resolved as { env: Record<string, string> }).env).not.toHaveProperty(ACCOUNT_ROUTING_MODE_ENV);
+  });
+
   it('buildResumeEnv: resumed psu sessions always carry the agent-session marker', () => {
     const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
     expect(buildResumeEnv(session)).toEqual({
@@ -4173,19 +4246,11 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
       storeClaudeOAuthToken(TOKEN, { home });
       const env: Record<string, string> = {
         ...defaultAccountEnv(),
-        ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
-        ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-account: old-pin',
+        ...Object.fromEntries(CLAUDE_DEFAULT_AUTH_ENV_KEYS.map((key) => [key, `old-${key}`])),
         PAPERCUSP_ACCOUNT_ID: 'old-pin',
         CLAUDE_CODE_OAUTH_TOKEN: 'old-oauth',
-        ANTHROPIC_API_KEY: 'old-api-key',
-        ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
-        ANTHROPIC_OAUTH_TOKEN: 'old-anthropic-oauth',
-        CLAUDE_CODE_USE_BEDROCK: '1',
-        CLAUDE_CODE_USE_VERTEX: '1',
-        CLAUDE_CODE_USE_FOUNDRY: '1',
-        CLAUDE_CODE_USE_MANTLE: '1',
-        CLAUDE_CODE_USE_ANTHROPIC_AWS: '1',
-        CLAUDE_CODE_USE_GATEWAY: '1',
+        PAPERCUSP_ANTHROPIC_URL: 'http://127.0.0.1:8788',
+        PAPERCUSP_CODEX_GATEWAY: '1',
       };
       enforceDefaultClaudeAccount('claude', env);
       expect(env).toEqual({ [ACCOUNT_ROUTING_MODE_ENV]: 'default' });
@@ -4211,6 +4276,16 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
       expect(defaultClaudeAuthSettings().apiKeyHelper).toBe('');
       expect(Object.keys(defaultClaudeAuthSettings().env)).toEqual([...CLAUDE_DEFAULT_AUTH_ENV_KEYS]);
       expect(Object.values(defaultClaudeAuthSettings().env).every((value) => value === '')).toBe(true);
+      expect(CLAUDE_DEFAULT_AUTH_ENV_KEYS).toEqual(
+        expect.arrayContaining([
+          'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+          'CLAUDE_CODE_API_BASE_URL',
+          'ANTHROPIC_UNIX_SOCKET',
+          'ANTHROPIC_BEDROCK_BASE_URL',
+          'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+          'ANTHROPIC_VERTEX_BASE_URL',
+        ]),
+      );
       // Empty OAuth in settings suppresses file/Keychain fallback, so it must
       // never be part of the secret-free override.
       expect(defaultClaudeAuthSettings().env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
