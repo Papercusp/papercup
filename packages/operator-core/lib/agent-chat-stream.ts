@@ -83,3 +83,6 @@ export type { AgentBackend, ChatEvent, RunAgentChatOptions, TurnError, TurnProvi
 // test-loaded operator module trips vitest's `@/`-alias resolution on the transitive agent-config
 // chain).
 export { classifyHttpError, classifyTurnError, probeStatelessTransport };
+// WI-5071: converse needs the runner's effective-backend resolution (session
+// reuse is a claude-code-only lever) — re-exported through the same shim.
+export { resolveBackend };

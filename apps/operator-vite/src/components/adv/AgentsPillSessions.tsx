@@ -17,7 +17,7 @@
  *     (the ChatConversation.tsx sentinel + reentry-lock pattern).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryState } from 'nuqs';
+import { parseAsBoolean, useQueryState } from 'nuqs';
 import {
   computeFacets,
   facetPredicate,
@@ -694,7 +694,14 @@ export function InactiveSessionsSection({
   activeOwnerIds: ReadonlySet<string>;
   nowMs: number;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  // User-meaningful expand/collapse state goes in the URL (nuqs), never
+  // useState (repo convention) — this ALSO fixes WI-3881: AgentsRunningPill
+  // returns null (unmounting this whole subtree) whenever the live-roster
+  // sync query transiently reports zero running agents, and a plain
+  // useState here reset to collapsed on the next remount. A nuqs-backed
+  // value lives in the URL independent of the component's mount lifecycle,
+  // so it survives that unmount/remount cycle.
+  const [expanded, setExpanded] = useQueryState('agentsInactiveOpen', parseAsBoolean.withDefault(false));
   const [rows, setRows] = useState<EndedSessionRow[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -758,7 +765,7 @@ export function InactiveSessionsSection({
         className="pc-agents-sessions__toggle"
         data-testid="inactive-sessions-toggle"
         aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => void setExpanded(!expanded)}
       >
         <span aria-hidden>{expanded ? '▾' : '▸'}</span> View inactive sessions
         {expanded && visible.length > 0 ? (

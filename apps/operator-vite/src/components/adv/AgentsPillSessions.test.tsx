@@ -7,14 +7,38 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: [] }] }) }));
 vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
 vi.mock('@/app/harness/AgentInspectorModal', () => ({ default: () => null }));
 vi.mock('@/app/harness/AgentThinkingStream', () => ({ ThinkingDot: () => null }));
-// SessionSearchResults (WI-4734 tests below) is URL-backed via nuqs; the suite
-// runs without a NuqsAdapter, so mirror AgentsRunningPill.test.tsx's mock.
-vi.mock('nuqs', () => ({ useQueryState: () => [null, vi.fn()] }));
+// SessionSearchResults (WI-4734 tests below) AND InactiveSessionsSection's
+// expand toggle (WI-3881) are URL-backed via nuqs; the suite runs without a
+// NuqsAdapter. Unlike AgentsRunningPill.test.tsx's single-value stub, this
+// file exercises MULTIPLE independent nuqs keys at once (agentsWindow,
+// agentsFacets, agentsInactiveOpen) in the same render tree, so it needs a
+// real per-key keyed store — a stub that ignores `key` and returns one
+// shared value would make those three collapse into each other. The store is
+// reset in the top-level afterEach below so a test that expands the section
+// doesn't leak that into the next (unlike real nuqs, which the URL would
+// legitimately carry forward — but each `it()` here should start clean).
+const nuqsStore = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
+vi.mock('nuqs', () => ({
+  ...nuqsParsers,
+  useQueryState: (key: string, parser?: { defaultValue?: unknown }) => {
+    if (!(key in nuqsStore.state)) nuqsStore.state[key] = parser?.defaultValue ?? null;
+    return [
+      nuqsStore.state[key],
+      (v: unknown) => {
+        nuqsStore.state[key] = typeof v === 'function'
+          ? (v as (prev: unknown) => unknown)(nuqsStore.state[key])
+          : v;
+        return Promise.resolve(true);
+      },
+    ];
+  },
+}));
 
 import {
   appendEndedPage,
@@ -268,6 +292,42 @@ describe('InactiveSessionsSection row layout (WI-4195 r3 — name not truncated 
     expect(count.textContent).toContain('(2+)');
     // It reuses the active roster's group-count class so it looks identical.
     expect(count.className).toContain('pc-agents-roster__group-count');
+  });
+});
+
+describe('InactiveSessionsSection expand persistence across a remount (WI-3881)', () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('stays expanded after the section is unmounted and remounted (mirrors AgentsRunningPill returning null mid live-roster-refresh)', async () => {
+    vi.stubGlobal('IntersectionObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, sessions: [], hasMore: false, nextBefore: null }),
+    })));
+
+    const { unmount } = render(
+      <InactiveSessionsSection activeOwnerIds={new Set()} nowMs={Date.parse('2026-07-09T02:00:00Z')} />,
+    );
+    expect(screen.getByTestId('inactive-sessions-toggle').getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByTestId('inactive-sessions-toggle'));
+    expect(screen.getByTestId('inactive-sessions-toggle').getAttribute('aria-expanded')).toBe('true');
+
+    // Simulate the parent (AgentsRunningPill) unmounting the WHOLE subtree —
+    // e.g. `running.length === 0` transiently during a live-roster sync
+    // invalidation — and then remounting it once fresh data arrives. A plain
+    // `useState` would reset `expanded` to false here; the nuqs-backed value
+    // must not, because it lives in the URL, not this component instance.
+    unmount();
+    render(<InactiveSessionsSection activeOwnerIds={new Set()} nowMs={Date.parse('2026-07-09T02:00:01Z')} />);
+
+    expect(screen.getByTestId('inactive-sessions-toggle').getAttribute('aria-expanded')).toBe('true');
   });
 });
 

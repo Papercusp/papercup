@@ -36,8 +36,17 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
-import { runAgentChat } from '../../agent-chat-stream';
+import { runAgentChat, resolveBackend } from '../../agent-chat-stream';
 import { readAgentConfig, surfaceBackend, surfaceModel } from '../../agent-config';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import {
+  getChatBrainSession,
+  hashSystemPrompt,
+  invalidateChatBrainSession,
+  recordChatBrainTurn,
+  type ChatBrainSession,
+} from './converse-session';
 import { selfUrl } from '../../self-url';
 import { checkBudget, recordSpend, shouldBypassOperatorBudget } from '../../operator-budget';
 import { parseOperatorTurn } from '../../operator-converse-tags';
@@ -198,6 +207,29 @@ export default defineTool({
     const tTurnStart = Date.now();
     const turnModality: 'voice' | 'text' = input.modality === 'voice' ? 'voice' : 'text';
 
+    // WI-5071 brain-session reuse eligibility — resolved BEFORE the prompt
+    // build because it changes the prompt layout (memoryInUser moves the
+    // per-turn-varying recall out of the system prompt so the system stays
+    // byte-stable across a session's turns). claude-code only: the other
+    // backends either have no on-disk session store (anthropic-direct) or
+    // are not wired for it (omp/codex). The per-surface backend override is
+    // resolved here (and reused below) instead of after the build.
+    const operatorBackend = await surfaceBackend('operator');
+    const convId =
+      typeof input.conversationId === 'string' && input.conversationId.trim()
+        ? input.conversationId
+        : null;
+    let sessionReuseOn = false;
+    if (convId && resolveBackend({ promptText: '', backend: operatorBackend }) === 'claude-code') {
+      try {
+        // NOTE: getFlag is async — await it (EI-13014: a bare truthy check on
+        // the returned Promise reads as permanently-enabled).
+        sessionReuseOn = (await getFlag(FLAGS.OPERATOR_CHAT_SESSION_REUSE, 'operator-converse')) === true;
+      } catch {
+        sessionReuseOn = false;
+      }
+    }
+
     // Build the prompt up-front. This dominates wall-clock when mem0
     // is healthy (search hits one or two times). Failures inside
     // buildOperatorPrompt are swallowed best-effort already; an
@@ -209,7 +241,7 @@ export default defineTool({
     // `--system-prompt @file` for the system part so the brain
     // assumes the Operator identity instead of meta-commenting on
     // the persona as a document handed to it (2026-05-21 root cause).
-    const { systemPromptText, userPromptText } = await buildOperatorPrompt(
+    const { systemPromptText, userPromptText, userPromptTextDelta } = await buildOperatorPrompt(
       {
         messages: input.messages,
         trigger: input.trigger,
@@ -223,10 +255,22 @@ export default defineTool({
         // Sentinel re-home seam: 'operator' (default) is unchanged;
         // 'sentinel' loads the Sentinel persona set.
         role: input.role,
+        // WI-5071: keep the system prompt byte-stable for session reuse.
+        memoryInUser: sessionReuseOn,
       } satisfies OperatorConverseInput,
       sessionUser,
     );
     const buildPromptMs = Date.now() - tTurnStart;
+
+    // WI-5071: resolve (or mint) this conversation's claude session. A hash
+    // drift (persona/catalog/prefs change), age/turn-cap expiry, or a prior
+    // invalidation all come back `resumed: false` ⇒ this turn sends the FULL
+    // prompt into a fresh session; `resumed: true` ⇒ the DELTA prompt only.
+    let brainSession: ChatBrainSession | null =
+      sessionReuseOn && convId
+        ? getChatBrainSession(convId, hashSystemPrompt(systemPromptText))
+        : null;
+    let turnSessionMode: 'cold' | 'fresh-session' | 'resumed' = 'cold';
 
     // Budget gate. operator-converse fires on every user turn AND
     // self-fired silence-ladder triggers AND through ask_operator
@@ -343,9 +387,10 @@ export default defineTool({
     // Resolve the brain model once per turn: env > agent-config
     // models['operator'] > pinned Anthropic default.
     const brainModel = await resolveBrainModel();
-    // Per-surface backend override (/settings/agent). undefined → inherit the
-    // global $AGENT_BACKEND that applyToProcessEnv mirrors from agent-config.
-    const operatorBackend = await surfaceBackend('operator');
+    // Per-surface backend override (/settings/agent) — `operatorBackend` is
+    // resolved ONCE at the top of the handler (WI-5071 needs it pre-prompt-
+    // build); undefined → inherit the global $AGENT_BACKEND that
+    // applyToProcessEnv mirrors from agent-config.
     // Per-surface model override (OQ3) wins over the pinned brain default
     // — needed when the per-surface backend is one the default model id
     // (anthropic/claude-opus-4-7) doesn't resolve on (e.g. codex).
@@ -359,9 +404,30 @@ export default defineTool({
     // (2026-05-21: operator returned blank turns under codex flakiness.)
     const MAX_BRAIN_ATTEMPTS = 2;
     for (let attempt = 1; attempt <= MAX_BRAIN_ATTEMPTS; attempt++) {
+      // WI-5071: a blank attempt on a session (resumed OR fresh) must not eat
+      // the retry too — drop the session and run the retry fully cold with
+      // the full prompt, exactly the pre-session behavior.
+      if (attempt > 1 && brainSession && convId) {
+        invalidateChatBrainSession(convId, `blank turn on attempt ${attempt - 1}`);
+        brainSession = null;
+      }
+      const resumedTurn = !!brainSession?.resumed;
+      turnSessionMode = brainSession ? (resumedTurn ? 'resumed' : 'fresh-session') : 'cold';
       try {
         for await (const ev of runAgentChat({
-          promptText: userPromptText,
+          // Resumed session ⇒ delta prompt (the session carries the history
+          // verbatim); fresh/cold ⇒ the full prompt.
+          promptText: resumedTurn ? userPromptTextDelta : userPromptText,
+          // `--session-id` is create-or-resume, so 'force' covers both the
+          // first and later turns of a session; isolateDir pins the stable
+          // config dir the session store lives in.
+          ...(brainSession
+            ? {
+                sessionId: brainSession.sessionId,
+                sessionMode: 'force' as const,
+                isolateDir: brainSession.dir,
+              }
+            : {}),
           systemPromptText,
           model: operatorModel,
           backend: operatorBackend,
@@ -455,6 +521,12 @@ export default defineTool({
       throw new Error('operator brain produced no output (agent backend failure)');
     }
 
+    // WI-5071: output committed on a session-backed turn — bump the marker so
+    // the NEXT turn resumes (turnCount 0 → 1 is what flips `resumed` on).
+    if (brainSession && convId && (assembled.trim() || emittedToolCall)) {
+      recordChatBrainTurn(convId);
+    }
+
     // Per-turn latency split (reply-latency instrumentation, grade-loop
     // 2026-07-16). buildPromptMs = prompt assembly (mem0 + role files);
     // firstEventMs = agent-backend spawn + connect + LLM time-to-first-event;
@@ -464,7 +536,7 @@ export default defineTool({
         `firstEventMs=${firstEventAt !== null ? firstEventAt - tTurnStart : -1} ` +
         `totalMs=${Date.now() - tTurnStart} model=${operatorModel} ` +
         `modality=${turnModality} emittedToolCall=${emittedToolCall} ` +
-        `assembledChars=${assembled.length}`,
+        `assembledChars=${assembled.length} session=${turnSessionMode}`,
     );
 
     // WI-4950 class observability: a turn that enumerated options in prose

@@ -302,6 +302,32 @@ export async function buildOperatorPrompt(
     historySections.push(`## Conversation history (oldest first; last ${messages.length} turns)\n\n${transcript}`);
   }
 
+  // WI-5071 delta-only tail: the CURRENT user utterance reaches the brain via
+  // the history transcript above (its last [user] entries) — the trigger
+  // section only says "the user just said something", it never carries the
+  // text. A resumed session already holds every PRIOR turn but has not seen
+  // the messages since its last reply, so the delta prompt must carry exactly
+  // that tail (everything after the last assistant message) or the brain gets
+  // a turn with no utterance at all. Full-prompt turns skip this section —
+  // the transcript already contains the tail.
+  const newTurnMessages = (() => {
+    let lastAssistant = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') {
+        lastAssistant = i;
+        break;
+      }
+    }
+    return messages.slice(lastAssistant + 1);
+  })();
+  const deltaOnlySections: string[] = [];
+  if (newTurnMessages.length > 0) {
+    deltaOnlySections.push(
+      `## New message(s) this turn\n\n` +
+        newTurnMessages.map((m) => `[${m.role}]\n${m.content}`).join('\n\n'),
+    );
+  }
+
   // WI-5071: with memoryInUser the varying recall blocks ride in the USER
   // prompt (present in BOTH the full and delta variants) so the system
   // prompt stays byte-stable for session reuse + prompt-cache hits.
@@ -459,7 +485,7 @@ Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT as
   return {
     systemPromptText: systemSections.join('\n\n---\n\n'),
     userPromptText: [...historySections, ...userSections].join('\n\n---\n\n'),
-    userPromptTextDelta: userSections.join('\n\n---\n\n'),
+    userPromptTextDelta: [...deltaOnlySections, ...userSections].join('\n\n---\n\n'),
   };
 }
 
