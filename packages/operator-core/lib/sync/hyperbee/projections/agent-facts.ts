@@ -72,6 +72,15 @@ export function isAgentFactWireRow(input: unknown): input is AgentFactWireRow {
   if (!isString(r.expires_at)) return false;
   if (!isStringOrNull(r.retracted_at)) return false;
   if (!isString(r.created_by)) return false;
+  // mig 574 additions — optional (pre-574 history ops omit them), but when
+  // present they must be well-typed or the op is refused as malformed.
+  if (r.audience_scope !== undefined && !isStringOrNull(r.audience_scope)) return false;
+  if (
+    r.source_provenance !== undefined &&
+    r.source_provenance !== null &&
+    (typeof r.source_provenance !== 'object' || Array.isArray(r.source_provenance))
+  )
+    return false;
   return true;
 }
 
@@ -133,16 +142,22 @@ async function writeToPg(
   const sourceHive = origin === 'remote' ? (authorPubkey || 'unknown-remote') : null;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
+  // mig 574 columns — absent on pre-574 wire ops ⇒ NULL. source_provenance is
+  // jsonb: bind via the canonical `${json-string}::text::jsonb` form (see the
+  // postgres-js-jsonb-binding agent-insight); NULL passes through the casts.
+  const audienceScope = row.audience_scope ?? null;
+  const sourceProvenance = row.source_provenance != null ? JSON.stringify(row.source_provenance) : null;
   await sql`
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref,
        created_by, expires_at, retracted_at, shareable,
-       author_pubkey, origin, fed_ts, source_hive)
+       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.scope}, ${row.scope_ref},
        ${row.key}, ${row.body}, ${row.source_ref}, ${row.created_by},
        ${row.expires_at}::timestamptz, ${row.retracted_at}::timestamptz, true,
-       ${authorPubkey}, ${origin}, ${fedTs}, ${sourceHive})
+       ${authorPubkey}, ${origin}, ${fedTs}, ${sourceHive},
+       ${audienceScope}, ${sourceProvenance}::text::jsonb)
     ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))
     DO UPDATE SET
       body          = EXCLUDED.body,
@@ -152,6 +167,8 @@ async function writeToPg(
       author_pubkey = EXCLUDED.author_pubkey,
       origin        = EXCLUDED.origin,
       fed_ts        = EXCLUDED.fed_ts,
+      audience_scope    = EXCLUDED.audience_scope,
+      source_provenance = EXCLUDED.source_provenance,
       updated_at    = now()
     WHERE harness_shared.fed_order_key(NULL, EXCLUDED.fed_ts)
       >= harness_shared.fed_order_key(NULL, harness_shared.agent_facts.fed_ts)

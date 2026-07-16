@@ -109,6 +109,17 @@ const PROVENANCE = new Set<string>([
  * (findings-B.md B-002). A bare entry (no REVIEW tag) is a settled local column.
  */
 const NOT_FEDERATED: Record<string, Record<string, string>> = {
+  engineer_issues: {
+    // Issue-family priority (mig 588): the shared-backlog rank is per-machine
+    // dispatch state today — the same family as harness_features_consolidated's
+    // assignee_rank/rank_writer per-bee ordering (settled local, never content).
+    // REVIEW(remaining-lanes P-201): whether backlog priority should federate is
+    // part of the work-distribution activation posture decision
+    // (p2p-public-release-remaining-lanes-2026-07-16 P-201) — tracked there, not
+    // silently ignored.
+    feature_order:
+      'per-machine dispatch/backlog rank (same family as assignee_rank) — cross-machine priority is a work-distribution-activation question (REVIEW: remaining-lanes P-201)',
+  },
   harness_features_consolidated: {
     // Settled local — re-derived / machine-local / index / work-state, never content:
     working_users: 'derived projection of feature_working_set (recomputed locally per peer)',

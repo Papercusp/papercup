@@ -36,6 +36,16 @@ export interface MemoryWireRow {
   /** ISO timestamps as text on the wire (PG casts on write). */
   created_at: string;
   updated_at: string;
+  /** mig 578 temporal-lite validity — belief-time semantics are CONTENT, not
+   *  per-machine lifecycle: a peer's recall must honor supersession/invalidity
+   *  or it surfaces superseded memories as live. ISO text on the wire; ALL
+   *  OPTIONAL — pre-578 history ops lack them (absent ⇒ NULL). */
+  valid_at?: string | null;
+  invalid_at?: string | null;
+  /** UUID of the superseding memory (resolves on any peer that also received
+   *  that memory's own federated row; dangling until then — same semantics as
+   *  the local store). */
+  superseded_by?: string | null;
 }
 
 function isString(v: unknown): v is string {
@@ -54,6 +64,12 @@ export function isMemoryWireRow(input: unknown): input is MemoryWireRow {
   if (!isRecord(r.payload)) return false;
   if (!isString(r.created_at)) return false;
   if (!isString(r.updated_at)) return false;
+  // mig 578 temporal-lite additions — optional (pre-578 ops omit them), but when
+  // present they must be string|null or the op is refused as malformed.
+  for (const k of ['valid_at', 'invalid_at', 'superseded_by'] as const) {
+    const v = r[k];
+    if (v !== undefined && v !== null && typeof v !== 'string') return false;
+  }
   return true;
 }
 
@@ -163,18 +179,24 @@ async function writeToPg(
   await sql`
     INSERT INTO harness_shared.memory_canonical
       (id, payload, created_at, updated_at, harness_slug,
-       author_pubkey, origin, fed_ts, source_hive)
+       author_pubkey, origin, fed_ts, source_hive,
+       valid_at, invalid_at, superseded_by)
     VALUES
       (${row.id}, ${JSON.stringify(row.payload)}::text::jsonb, ${row.created_at}::timestamptz,
        ${row.updated_at}::timestamptz, ${row.harness_slug}, ${authorPubkey}, ${origin},
-       ${fedTs}, ${sourceHive})
+       ${fedTs}, ${sourceHive},
+       ${row.valid_at ?? null}::timestamptz, ${row.invalid_at ?? null}::timestamptz,
+       ${row.superseded_by ?? null}::uuid)
     ON CONFLICT (workspace_id, id, coalesce(source_hive, ''))
     DO UPDATE SET
       payload       = EXCLUDED.payload,
       updated_at    = EXCLUDED.updated_at,
       author_pubkey = EXCLUDED.author_pubkey,
       origin        = EXCLUDED.origin,
-      fed_ts        = EXCLUDED.fed_ts
+      fed_ts        = EXCLUDED.fed_ts,
+      valid_at      = EXCLUDED.valid_at,
+      invalid_at    = EXCLUDED.invalid_at,
+      superseded_by = EXCLUDED.superseded_by
     WHERE harness_shared.fed_order_key(NULL, EXCLUDED.fed_ts)
       >= harness_shared.fed_order_key(NULL, harness_shared.memory_canonical.fed_ts)
   `;

@@ -859,6 +859,15 @@ function toAgentFactValue(row: Record<string, unknown>): AgentFactWireRow {
     expires_at: String(row.expires_at ?? ''),
     retracted_at: strOrNull(row.retracted_at),
     created_by: String(row.created_by ?? ''),
+    // mig 574: audience constraint + verified-provenance stamp are CONTENT — a
+    // peer must honor the author's audience restriction in its own folds, and
+    // the provenance stamp rides opaquely (receiver shape-guards it), same
+    // pass-through pattern as gym's outcome_record.
+    audience_scope: strOrNull(row.audience_scope),
+    source_provenance:
+      row.source_provenance && typeof row.source_provenance === 'object' && !Array.isArray(row.source_provenance)
+        ? (row.source_provenance as Record<string, unknown>)
+        : null,
   };
 }
 
@@ -917,6 +926,12 @@ function toMemoryValue(row: Record<string, unknown>): MemoryWireRow {
         : {},
     created_at: String(row.created_at ?? ''),
     updated_at: String(row.updated_at ?? ''),
+    // mig 578 temporal-lite: belief-time validity is CONTENT (a peer's recall
+    // must honor supersession/invalidity), unlike the per-machine quality/decay
+    // lifecycle columns which stay local (NOT_FEDERATED['memory_canonical']).
+    valid_at: strOrNull(row.valid_at),
+    invalid_at: strOrNull(row.invalid_at),
+    superseded_by: strOrNull(row.superseded_by),
   };
 }
 
