@@ -1,0 +1,131 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCache } from '@papercusp/cache';
+
+import { getMemoryBlockBounded } from './injection-block-cache';
+
+/** A controllable build: counts calls, resolves/rejects on demand. */
+function controlledBuild(block: string | null = '## Operator memory') {
+  let calls = 0;
+  const releases: Array<{ resolve: (v: string | null) => void; reject: (e: Error) => void }> = [];
+  const build = (): Promise<string | null> => {
+    calls += 1;
+    return new Promise<string | null>((resolve, reject) => {
+      releases.push({ resolve, reject });
+    });
+  };
+  return {
+    build,
+    calls: () => calls,
+    resolveAll: () => {
+      for (const r of releases.splice(0)) r.resolve(block);
+    },
+    rejectAll: (e: Error) => {
+      for (const r of releases.splice(0)) r.reject(e);
+    },
+  };
+}
+
+describe('getMemoryBlockBounded', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('cold miss under the deadline returns the built block and caches it', async () => {
+    const cache = createCache({ clock: () => Date.now() });
+    const under = controlledBuild('BLOCK');
+    const p = getMemoryBlockBounded('ws', 'papercup:u1:c1', under.build, { cache, deadlineMs: 2000 });
+    under.resolveAll();
+    await expect(p).resolves.toBe('BLOCK');
+    expect(under.calls()).toBe(1);
+  });
+
+  it('cold miss past the deadline resolves null this turn, and the in-flight build serves the next', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = createCache({ clock: () => Date.now() });
+    const under = controlledBuild('LATE-BLOCK');
+    const p = getMemoryBlockBounded('ws', 'papercup:u1:c1', under.build, { cache, deadlineMs: 2000 });
+    await vi.advanceTimersByTimeAsync(2001);
+    await expect(p).resolves.toBeNull();
+    expect(under.calls()).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeded the 2000ms prompt-build deadline'));
+
+    // The abandoned single-flight build completes and lands in cache…
+    under.resolveAll();
+    await vi.advanceTimersByTimeAsync(0);
+    // …so the next turn serves it instantly (stale — soft TTL 0), while a
+    // background revalidate runs with THIS turn's query.
+    const next = controlledBuild('NEXT-BLOCK');
+    await expect(
+      getMemoryBlockBounded('ws', 'papercup:u1:c1', next.build, { cache, deadlineMs: 2000 }),
+    ).resolves.toBe('LATE-BLOCK');
+    expect(next.calls()).toBe(1); // background revalidate with the new query
+  });
+
+  it('serves the previous turn instantly and pipelines the current query (soft TTL 0)', async () => {
+    const cache = createCache({ clock: () => Date.now() });
+    const turn1 = controlledBuild('V1');
+    const p1 = getMemoryBlockBounded('ws', 'papercup:u1:c1', turn1.build, { cache, deadlineMs: 2000 });
+    turn1.resolveAll();
+    await expect(p1).resolves.toBe('V1');
+
+    // Turn 2: instant stale serve of V1; V2 builds in the background.
+    const turn2 = controlledBuild('V2');
+    await expect(
+      getMemoryBlockBounded('ws', 'papercup:u1:c1', turn2.build, { cache, deadlineMs: 2000 }),
+    ).resolves.toBe('V1');
+    expect(turn2.calls()).toBe(1);
+    turn2.resolveAll();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Turn 3 sees V2.
+    const turn3 = controlledBuild('V3');
+    await expect(
+      getMemoryBlockBounded('ws', 'papercup:u1:c1', turn3.build, { cache, deadlineMs: 2000 }),
+    ).resolves.toBe('V2');
+  });
+
+  it('a build failure resolves null (section omitted) and never rejects', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = createCache({ clock: () => Date.now() });
+    const under = controlledBuild();
+    const p = getMemoryBlockBounded('ws', 'papercup:u1:c1', under.build, { cache, deadlineMs: 2000 });
+    under.rejectAll(new Error('store down'));
+    await expect(p).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('block build failed (omitting the section):'),
+      'store down',
+    );
+  });
+
+  it('caches a null (no-hits / degraded) block so the store is not re-probed on the blocking path', async () => {
+    const cache = createCache({ clock: () => Date.now() });
+    const under = controlledBuild(null);
+    const p = getMemoryBlockBounded('ws', 'papercup:u1:c1', under.build, { cache, deadlineMs: 2000 });
+    under.resolveAll();
+    await expect(p).resolves.toBeNull();
+    // Next turn: instant null (stale serve), background revalidate — never a blocking probe.
+    const next = controlledBuild(null);
+    await expect(
+      getMemoryBlockBounded('ws', 'papercup:u1:c1', next.build, { cache, deadlineMs: 2000 }),
+    ).resolves.toBeNull();
+    expect(next.calls()).toBe(1);
+  });
+
+  it('keys by scope — different conversations never share stale recall', async () => {
+    const cache = createCache({ clock: () => Date.now() });
+    const a = controlledBuild('A');
+    const b = controlledBuild('B');
+    const pa = getMemoryBlockBounded('ws', 'papercup:u1:conv-a', a.build, { cache, deadlineMs: 2000 });
+    const pb = getMemoryBlockBounded('ws', 'papercup:u1:conv-b', b.build, { cache, deadlineMs: 2000 });
+    a.resolveAll();
+    b.resolveAll();
+    await expect(pa).resolves.toBe('A');
+    await expect(pb).resolves.toBe('B');
+    expect(a.calls()).toBe(1);
+    expect(b.calls()).toBe(1);
+  });
+});

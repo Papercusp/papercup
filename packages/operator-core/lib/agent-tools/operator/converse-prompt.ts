@@ -219,15 +219,43 @@ export async function buildOperatorPrompt(
   // build on a ~22s p50 turn. Running them in parallel halves the prompt-build
   // wall clock; section ORDER in the prompt is unchanged (memory is pushed
   // before sentinel below).
-  const memBlockPromise = buildMemoryContextBlock({
-    userId: sessionUser?.id ?? null,
-    workspaceId: activeWorkspaceId(),
-    harnessSlugs,
-    queryContext: lastUserContext(messages, 3),
-    // The Sentinel's recall heading mirrors the operator one but names its own role
-    // so an injected fact reads as the Sentinel's memory, not "Operator memory".
-    ...(role === 'papercup' ? { heading: 'Sentinel memory (relevant entries)' } : {}),
-  });
+  //
+  // P-010: the build sits behind the operator SWR cache with the caller's wait
+  // deadline-capped (getMemoryBlockBounded). buildMemoryContextBlock's internal
+  // 5s per-op cap saturated on every search miss on a loaded box (pass-7 drill:
+  // searchMs 5001–5114) — a typed turn paid 5s AND injected nothing. Now a turn
+  // serves the previous build instantly (soft TTL 0 ⇒ always revalidate with
+  // THIS turn's query in background) or gives up the section after the cold
+  // deadline; a sentinel_scan turn has no human waiting, so it takes a generous
+  // deadline and warms the cache for typed turns instead.
+  const memBlockPromise: Promise<string | null> = (async () => {
+    try {
+      const { getMemoryBlockBounded } = await import('../../memory/injection-block-cache');
+      // Stale recall must never bleed across a different role/user/conversation.
+      const memScopeKey = `${role}:${sessionUser?.id ?? 'anon'}:${input.conversationId ?? 'window'}`;
+      return await getMemoryBlockBounded(
+        activeWorkspaceId(),
+        memScopeKey,
+        () =>
+          buildMemoryContextBlock({
+            userId: sessionUser?.id ?? null,
+            workspaceId: activeWorkspaceId(),
+            harnessSlugs,
+            queryContext: lastUserContext(messages, 3),
+            // The Sentinel's recall heading mirrors the operator one but names its own role
+            // so an injected fact reads as the Sentinel's memory, not "Operator memory".
+            ...(role === 'papercup' ? { heading: 'Sentinel memory (relevant entries)' } : {}),
+          }),
+        input.trigger === 'sentinel_scan' ? { deadlineMs: 60_000 } : undefined,
+      );
+    } catch (err) {
+      console.warn(
+        '[converse-prompt] memory block build failed (omitting the section):',
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
+  })();
 
   // SENTINEL read-context. The Sentinel watches the WHOLE
   // system, so it walks in already understanding the live state — escalations,

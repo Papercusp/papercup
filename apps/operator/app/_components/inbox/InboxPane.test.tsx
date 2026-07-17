@@ -210,14 +210,24 @@ describe('<InboxPane>', () => {
     expect(seed).not.toContain('coord-message:d1');
   });
 
-  it('buildDiscussDraft folds kind, location, title and a bounded report excerpt', () => {
+  it('buildDiscussDraft folds kind, location, title and a bounded report digest', () => {
+    // report is a STRUCTURED ReportBlock (title + plan rows), flattened to a
+    // one-liner-per-plan digest and capped at 600 chars.
     const draft = buildDiscussDraft(
-      mkItem('d9', { planSlug: 'plan-y', report: 'x'.repeat(700) } as Partial<AttentionItem>),
+      mkItem('d9', {
+        planSlug: 'plan-y',
+        report: {
+          title: 'Fleet report',
+          plans: [{ title: 'Rate-limit v2', status: 'active', summary: 'x'.repeat(700) }],
+        },
+      } as Partial<AttentionItem>),
     );
     expect(draft).toContain('message — plan plan-y · harness papercusp');
     expect(draft).toContain('Title of d9');
-    expect(draft).toContain('x'.repeat(600));
-    expect(draft).not.toContain('x'.repeat(601));
+    expect(draft).toContain('Fleet report');
+    expect(draft).toContain('Rate-limit v2 [active]');
+    expect(draft).toContain('x'.repeat(500)); // digest present…
+    expect(draft).not.toContain('x'.repeat(601)); // …but bounded at 600 total
   });
 
   it('shows the inbox-zero empty state when nothing needs the owner', () => {

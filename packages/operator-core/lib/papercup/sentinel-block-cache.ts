@@ -24,7 +24,7 @@
  * pre-existing try/catch at the converse-prompt call site.
  */
 
-import type { Cache } from '@papercusp/cache';
+import { getOrSetBounded, type Cache } from '@papercusp/cache';
 import { getOperatorCache } from '../cache/instance';
 
 /** Serve-stale-and-revalidate after this long — one sentinel_scan cadence. */
@@ -61,43 +61,34 @@ export async function getSentinelBlockBounded(
   const cache = opts.cache ?? getOperatorCache();
   const deadlineMs = opts.deadlineMs ?? SENTINEL_BLOCK_COLD_DEADLINE_MS;
 
-  const built = cache.getOrSet<string | null>(workspaceId, `sentinel-block:${scopeKey}`, build, {
-    softTtlMs: opts.softTtlMs ?? SENTINEL_BLOCK_SOFT_TTL_MS,
-    hardTtlMs: opts.hardTtlMs ?? SENTINEL_BLOCK_HARD_TTL_MS,
-    tags: [SENTINEL_BLOCK_CACHE_TAG],
-    // An empty/null block is still a completed gather — cache it so a quiet
-    // system doesn't re-pay the full gather every turn.
-    cacheEmpty: true,
-  });
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<typeof DEADLINE>((resolve) => {
-    timer = setTimeout(() => resolve(DEADLINE), deadlineMs);
-  });
-  try {
-    const winner = await Promise.race([built, deadline]);
-    if (winner === DEADLINE) {
-      // The single-flight build keeps running and will serve the NEXT turn;
-      // this turn proceeds without the section. Detach the abandoned await so
-      // a late rejection can't surface as an unhandled rejection.
-      built.catch(() => undefined);
-      console.warn(
-        `[sentinel-context] gather exceeded the ${deadlineMs}ms prompt-build deadline — ` +
-          'omitting the section this turn; the in-flight build will serve the next one (P-009).',
-      );
-      return null;
-    }
-    return winner;
-  } catch (err) {
+  const res = await getOrSetBounded<string | null>(
+    cache,
+    workspaceId,
+    `sentinel-block:${scopeKey}`,
+    build,
+    {
+      deadlineMs,
+      softTtlMs: opts.softTtlMs ?? SENTINEL_BLOCK_SOFT_TTL_MS,
+      hardTtlMs: opts.hardTtlMs ?? SENTINEL_BLOCK_HARD_TTL_MS,
+      tags: [SENTINEL_BLOCK_CACHE_TAG],
+      // An empty/null block is still a completed gather — cache it so a quiet
+      // system doesn't re-pay the full gather every turn.
+      cacheEmpty: true,
+    },
+  );
+  if (res.ok) return res.value;
+  if (res.reason === 'deadline') {
+    // The single-flight build keeps running and will serve the NEXT turn;
+    // this turn proceeds without the section.
     console.warn(
-      '[sentinel-context] block build failed (omitting the section):',
-      err instanceof Error ? err.message : String(err),
+      `[sentinel-context] gather exceeded the ${deadlineMs}ms prompt-build deadline — ` +
+        'omitting the section this turn; the in-flight build will serve the next one (P-009).',
     );
     return null;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
   }
+  console.warn(
+    '[sentinel-context] block build failed (omitting the section):',
+    res.error instanceof Error ? res.error.message : String(res.error),
+  );
+  return null;
 }
-
-/** Sentinel value for a deadline win — never a legal block (blocks are string|null). */
-const DEADLINE: unique symbol = Symbol('sentinel-block-deadline');

@@ -155,9 +155,9 @@ describe('runScoutRevisionCycle (P-001 targeted revision)', () => {
 
 describe('revise helpers', () => {
   it('DEFAULT_REVISION_MODEL is the synthesis-tier model', () => {
-    // model-switch (autonomous-loop-prod-audit-2026-07-02 P-020): scout's model
-    // constants moved to gpt-5.6 alongside the rest of the gym/loop layer.
-    expect(DEFAULT_REVISION_MODEL).toBe('gpt-5.6');
+    // P-020's gpt-5.6 CANNOT apply to scout: the ChatGPT-subscription codex
+    // credential rejects it outright (see models.ts) — scout stays anthropic.
+    expect(DEFAULT_REVISION_MODEL).toBe('claude-sonnet-4-6');
   });
 
   it('looksLikePlanMarkdown requires frontmatter + the slug', () => {
