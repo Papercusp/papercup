@@ -104,10 +104,23 @@ vi.mock('../OperatorActiveToggle', () => ({
 vi.mock('../voice/VoiceButton', () => ({
   VoiceButton: () => <button type="button">Voice</button>,
 }));
+const inboxState = { pending: 0 };
+vi.mock('../inbox/use-inbox-pending', () => ({
+  useInboxPendingCount: () => inboxState.pending,
+}));
+vi.mock('../inbox/InboxPane', () => ({
+  default: ({ onDiscussInChat }: { onDiscussInChat: () => void }) => (
+    <div data-testid="inbox-pane">
+      <button type="button" data-testid="inbox-pane-discuss" onClick={onDiscussInChat} />
+    </div>
+  ),
+}));
+
 const localStorageState = new Map<string, string>();
 
 beforeEach(() => {
   voiceModeState.muted = false;
+  inboxState.pending = 0;
   setVoiceOutputMutedSpy.mockReset();
   localStorageState.clear();
   Object.defineProperty(window, 'localStorage', {
@@ -385,5 +398,40 @@ describe('OperatorChatSidebar collapse behavior', () => {
       expect(document.documentElement.style.getPropertyValue('--op-chat-w')).toBe('420px');
     });
     expect(document.body.classList.contains('op-chat-collapsed')).toBe(false);
+  });
+});
+describe('Inbox face (EI-13037, owner placement 2026-07-16)', () => {
+  it('renders the Inbox toggle LEFT of (before) the Papercup button', () => {
+    render(<OperatorChatSidebar />);
+    const inbox = screen.getByTestId('op-chat-inbox-toggle');
+    const papercup = document.querySelector('.op-chat-papercup-toggle');
+    expect(papercup).toBeTruthy();
+    // Inbox must PRECEDE Papercup in the header's DOM order.
+    expect(inbox.compareDocumentPosition(papercup!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows the live pending badge (99+ cap) on the toggle and the collapsed rail', () => {
+    inboxState.pending = 132;
+    render(<OperatorChatSidebar />);
+    expect(screen.getByTestId('op-chat-inbox-badge').textContent).toBe('99+');
+    expect(screen.getByLabelText('132 inbox items need you').textContent).toBe('99+');
+  });
+
+  it('renders no badge at zero pending', () => {
+    render(<OperatorChatSidebar />);
+    expect(screen.queryByTestId('op-chat-inbox-badge')).toBeNull();
+  });
+
+  it('toggling Inbox swaps the body to the inbox pane; its Discuss flips back to the chat', async () => {
+    render(<OperatorChatSidebar />);
+    expect(screen.getByTestId('operator-chat')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('op-chat-inbox-toggle'));
+    expect(await screen.findByTestId('inbox-pane')).toBeTruthy();
+    expect(screen.queryByTestId('operator-chat')).toBeNull();
+    // The pane's Discuss action (chat seed staged inside the pane) returns
+    // the view to the chat, where the composer consumes the seed.
+    fireEvent.click(screen.getByTestId('inbox-pane-discuss'));
+    await waitFor(() => expect(screen.getByTestId('operator-chat')).toBeTruthy());
+    expect(screen.queryByTestId('inbox-pane')).toBeNull();
   });
 });
