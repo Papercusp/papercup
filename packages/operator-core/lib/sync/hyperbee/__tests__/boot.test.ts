@@ -2107,6 +2107,102 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     expect(sessions[2]!.close).not.toHaveBeenCalled();
     expect(repairEvents()).toHaveLength(3); // no 4th entry
   });
+
+  // EI-13317 rung (b): the gate-run-050615 forensics found the repair-on-detect
+  // mechanism above firing correctly but NOT sticking — the SAME log re-stalls
+  // after its 3-attempt session-repair budget is spent, and the handler above
+  // (`if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) return;`) silently no-ops
+  // forever past that point. This covers the escalation added on top: repair
+  // EXHAUSTION + a re-stall now forces a topic-level rejoin (the same lever
+  // rung (a)'s severed-link escalation uses — swarm.ts's `SwarmHandle.forceRejoin`
+  // — triggered here off replication-liveness instead of zero-live-peers).
+  it('EI-13317 rung (b): once the session-repair budget is EXHAUSTED and the log re-stalls anyway, escalates to a forced topic rejoin — rate-limited harness-wide', async () => {
+    const workspaceId = 'ws-repair-rejoin-13317';
+    const harnessSlug = 's-repair-rejoin-13317';
+    const keyHex = 'ab'.repeat(32);
+
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const fresh = fakeCloseableRemoteLog(k);
+      sessions.push(fresh);
+      return fresh;
+    });
+
+    // A spy-able fake swarm so `swarmHandle.forceRejoin()` (leave()+join()) is
+    // directly observable — this exercises the NEW external caller (boot.ts's
+    // repair-exhaustion path) invoking the SAME extracted lever the severed-
+    // link ladder (rung (a)) already uses internally.
+    const leaveSpy = vi.fn(() => {});
+    const joinSpy = vi.fn(() => ({ flushed: async () => {}, refresh: () => {} }));
+    const swarm: HyperswarmLike = {
+      join: joinSpy,
+      leave: leaveSpy,
+      on: () => {},
+      off: () => {},
+      connections: [],
+    };
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      openRemoteLogOverride,
+      swarmBinding: { kind: 'topic', topic_hex: 'cd'.repeat(32) },
+      swarmOverride: swarm,
+    });
+    cleanups.push(() => handle.close());
+
+    const stale = fakeCloseableRemoteLog(keyHex);
+    handle.admitted.set(keyHex, stale);
+
+    async function fireEpisodeAndDrain(): Promise<void> {
+      sampleReplicationLiveness(
+        workspaceId,
+        harnessSlug,
+        { keyHex, knownLength: 0, swarmConnections: 1 },
+        { graceMs: 0 },
+      );
+      await handle.mergeNow();
+    }
+
+    function exhaustedEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair_exhausted' as BootHistoryKind],
+      });
+    }
+
+    // Burn the 3-attempt session-repair budget first (same pattern as the
+    // coverage above), re-arming the edge-triggered axis between each.
+    await fireEpisodeAndDrain();
+    for (const _attempt of [2, 3]) {
+      dropReplicationLogState(workspaceId, harnessSlug, keyHex);
+      await fireEpisodeAndDrain();
+    }
+    expect(sessions).toHaveLength(3);
+    const joinCallsBeforeExhaustion = joinSpy.mock.calls.length;
+
+    // ── Attempt 4 — EXHAUSTED and re-stalled: no 4th session repair, but a
+    // topic-level forced rejoin fires instead. ──
+    dropReplicationLogState(workspaceId, harnessSlug, keyHex);
+    await fireEpisodeAndDrain();
+    expect(sessions).toHaveLength(3); // no additional session repair
+    expect(exhaustedEvents()).toHaveLength(1);
+    expect(exhaustedEvents()[0]!.message).toContain('3/3');
+    expect(leaveSpy).toHaveBeenCalledTimes(1);
+    expect(joinSpy.mock.calls.length).toBe(joinCallsBeforeExhaustion + 1);
+
+    // ── A second exhausted episode within the cooldown window does NOT fire
+    // a second rejoin — a harness-wide rate limit, not per-log, since several
+    // stalling logs on one topic must not each trigger their own leave+join. ──
+    dropReplicationLogState(workspaceId, harnessSlug, keyHex);
+    await fireEpisodeAndDrain();
+    expect(exhaustedEvents()).toHaveLength(1); // unchanged — cooldown gates it
+    expect(leaveSpy).toHaveBeenCalledTimes(1); // unchanged
+  });
 });
 
 describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {

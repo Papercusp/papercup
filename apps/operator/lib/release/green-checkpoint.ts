@@ -2151,7 +2151,7 @@ export function realCheckpointDeps(
       // made `npm --workspace @papercusp/operator-vite run build` die with "No workspaces
       // found" on every per-hive gate, holding that hive's `main` forever (oddsmith).
       const spaWorkspace = cfg.spaBuildWorkspace;
-      if (r.code === 0 && typecheckOk && spaWorkspace) {
+      if (r.code === 0 && typecheckOk && lintMigrationsOk && spaWorkspace) {
         // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a
         // cryptic CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such
         // markers in globals.css (a bad git-sync auto-merge — the live-merge resolver

@@ -262,4 +262,46 @@ describe('joinHarnessSwarm severed-link escalation ladder (EI-13317)', () => {
     // The escalation (and rejoin) still proceeded despite the callback throwing.
     expect(f.leaves).toHaveLength(1);
   });
+
+  // EI-13317 rung (b): `forceRejoin()` extracts the escalation ladder's own
+  // leave+rejoin action onto the handle so an EXTERNAL caller (boot.ts's
+  // WI-3684 repair-exhaustion path) can invoke the identical lever WITHOUT
+  // waiting for — or being gated by — the zero-live-peers severed-link timer
+  // above. Covered independently of boot.ts's wiring (see boot.test.ts's
+  // "EI-13317 rung (b)" case for the end-to-end repair-exhaustion trigger).
+  it('handle.forceRejoin() performs the SAME leave+rejoin NOW, independent of severedEscalationMs / the fast-window clock', async () => {
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    const onSeveredLink = vi.fn();
+    const handle = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      // A LONG severed threshold — if forceRejoin() were secretly routed
+      // through the timer-gated ladder this would never fire within the test.
+      severedEscalationMs: 10 * 60_000,
+      onSeveredLink,
+    });
+    handles.push(handle);
+
+    expect(f.joins).toHaveLength(1); // just the initial join
+    expect(f.leaves).toHaveLength(0);
+
+    await handle.forceRejoin();
+
+    expect(f.leaves).toHaveLength(1);
+    expect(f.leaves[0]).toBe(TOPIC);
+    expect(f.joins).toHaveLength(2); // a fresh discovery session
+    // The severed-link callback is NOT involved — forceRejoin is a raw lever,
+    // not a re-implementation of the ladder's own signal.
+    expect(onSeveredLink).not.toHaveBeenCalled();
+
+    // Callable repeatedly — no internal rate-limit of its own (the CALLER is
+    // expected to pace it; boot.ts's repair-exhaustion path applies its own
+    // harness-wide cooldown on top).
+    await handle.forceRejoin();
+    expect(f.leaves).toHaveLength(2);
+    expect(f.joins).toHaveLength(3);
+  });
 });
