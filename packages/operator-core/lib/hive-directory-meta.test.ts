@@ -51,6 +51,13 @@ describe('hive-directory-meta (P-004 persistence)', () => {
     await expect(saveOwnedHiveMeta(meta({ potId: 'h1', visibility: 'invite' }))).rejects.toThrow(/inviteSecret/);
   });
 
+  it('rejects a missing potId (poisons the registry under the literal key "undefined")', async () => {
+    await expect(
+      saveOwnedHiveMeta(meta({ potId: undefined as unknown as string })),
+    ).rejects.toThrow(/potId is required/);
+    expect(await listOwnedHiveMeta()).toHaveLength(0);
+  });
+
   it('accepts invite visibility WITH a secret', async () => {
     await saveOwnedHiveMeta(meta({ potId: 'h1', visibility: 'invite', inviteSecret: 's' }));
     expect((await getOwnedHiveMeta('h1'))?.inviteSecret).toBe('s');
