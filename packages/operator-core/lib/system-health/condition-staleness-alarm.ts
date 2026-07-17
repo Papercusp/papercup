@@ -41,6 +41,7 @@ import {
   type EscalationRecord,
 } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 
 export const CONDITION_STALENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:condition-staleness-alarm',
@@ -106,6 +107,81 @@ export function evaluateStaleConditions(
   return out;
 }
 
+// ── EI-14072 guard #2: reconcile a stuck-open row against verified-healthy signal ──
+//
+// Guard #1 (conditions.ts's batched `resolves_conditions` handling) fixes the
+// specific bug that STARTED this ticket, but a stuck-open condition row can also
+// arise from any OTHER dropped/never-sent resolution (a broadcast that silently
+// failed, a watchdog restart between resolve+broadcast, …) — the class the
+// waiver's follow-up asked for, not just this one instance. This reconciler is
+// the durable backstop: independent of whether a resolution broadcast ever
+// arrived, if the underlying signal is VERIFIED healthy right now, the row gets
+// cleared.
+//
+// Scope: the `infra-liveness:*` condition family (panel:overwatch, panel:bees,
+// dead-routines, queen-dark, overwatch-dark, health-tick-stale, accounts-starved,
+// pg-restarted, autoloop-fire-stale:*, and the panel:* catch-all) — every
+// condition liveness-alarm.ts's own `evaluateLivenessAlarm` sources, so "is the
+// signal healthy" is the SAME live computation the watchdog itself alarms from;
+// this can never disagree with it. (Other condition families — e.g.
+// `git-sync-stall:*` — have their own distinct source watchdog and are NOT
+// covered here; extending this registry to them is a natural follow-up, not
+// bundled into this fix to keep the health-check semantics per-family honest.)
+
+const INFRA_LIVENESS_PREFIX = 'infra-liveness:';
+
+/**
+ * PURE: of the currently-OPEN condition states, which ones have a VERIFIED-healthy
+ * underlying signal right now, per `healthByKey` (already resolved by the caller).
+ * A key absent from `healthByKey` (unknown / not a family this tick checked) is
+ * left alone — fail-open, this must never falsely clear a condition it couldn't
+ * verify. Exported so "healthy signal ⇒ reconciled" is unit-testable independent
+ * of how health gets computed.
+ */
+export function selectReconcilableConditions(
+  states: readonly ConditionState[],
+  healthByKey: ReadonlyMap<string, boolean>,
+): string[] {
+  const out: string[] = [];
+  for (const s of states) {
+    if (!s.open) continue;
+    if (healthByKey.get(s.condition_key) === true) out.push(s.condition_key);
+  }
+  return out;
+}
+
+/**
+ * Default health source for the `infra-liveness:*` family: recompute a FRESH
+ * SystemHealth snapshot and re-run the exact `evaluateLivenessAlarm` the source
+ * watchdog fires from (liveness-alarm.ts) — so this reconciler can never disagree
+ * with "is this infra-liveness signal actually firing right now". Any open
+ * `infra-liveness:<sig>` key whose `<sig>` is NOT in the freshly-computed firing
+ * set is verified healthy. Fail-soft: a read error leaves every key unset
+ * (unknown), never a false clear.
+ */
+async function defaultReadInfraLivenessHealth(
+  openInfraKeys: readonly string[],
+): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  if (openInfraKeys.length === 0) return out;
+  try {
+    const [{ computeSystemHealth }, { evaluateLivenessAlarm }, { activeWorkspaceId }] = await Promise.all([
+      import('./compute'),
+      import('./liveness-alarm'),
+      import('../workspace-registry'),
+    ]);
+    const health = await computeSystemHealth(activeWorkspaceId());
+    const firing = new Set(evaluateLivenessAlarm(health, null, {}).map((s) => s.key));
+    for (const key of openInfraKeys) {
+      const sig = key.slice(INFRA_LIVENESS_PREFIX.length);
+      out.set(key, !firing.has(sig));
+    }
+  } catch {
+    // Unknown → leave unset (fail-open, never a false clear).
+  }
+  return out;
+}
+
 const SUMMARY_PREFIX = '[condition-stale] ';
 
 /** Derive a legacy (no explicit signature) record's signature from its summary prefix. */
@@ -138,16 +214,35 @@ export interface ConditionStalenessDeps {
   now?: () => number;
   staleMs?: number;
   debounceMs?: number;
+  /** EI-14072 guard #2: resolve the health of currently-open `infra-liveness:*`
+   *  condition keys. Default = `defaultReadInfraLivenessHealth` (a fresh
+   *  computeSystemHealth + evaluateLivenessAlarm re-check). Injectable so tests
+   *  never hit real I/O. */
+  readHealthByKey?: (openInfraKeys: readonly string[]) => Promise<Map<string, boolean>>;
+  /** EI-14072 guard #2: broadcast the reconciled keys' recovery so the NEXT
+   *  computeConditionStates read (and every other reader) also sees them closed —
+   *  not just this tick's local view. Default = the real
+   *  `broadcastSevereEventResolvedMany`. */
+  broadcastResolvedMany?: (input: { conditionKeys: string[]; summary: string }) => Promise<boolean>;
 }
 
 /**
- * One tick: fold current condition envelopes → state, find conditions stuck open past
- * `staleMs`, auto-resolve any prior stale-reminder whose condition cleared (or is no longer
- * stale), and fire a durably-deduped + debounced reminder for every new stale signature.
+ * One tick: fold current condition envelopes → state, RECONCILE any open
+ * `infra-liveness:*` row whose underlying signal is verified healthy right now
+ * (EI-14072 guard #2 — the durable backstop for a dropped/never-sent resolution,
+ * independent of guard #1's batched-resolution fix), find conditions stuck open
+ * past `staleMs`, auto-resolve any prior stale-reminder whose condition cleared
+ * (or is no longer stale), and fire a durably-deduped + debounced reminder for
+ * every new stale signature.
  */
 export async function runConditionStalenessTick(
   deps: ConditionStalenessDeps = {},
-): Promise<{ fired: StaleConditionSignal[]; signals: StaleConditionSignal[]; resolved: string[] }> {
+): Promise<{
+  fired: StaleConditionSignal[];
+  signals: StaleConditionSignal[];
+  resolved: string[];
+  reconciled: string[];
+}> {
   const now = (deps.now ?? Date.now)();
   const readStates =
     deps.readStates ?? (async () => computeConditionStates(await readConditionEnvelopes()));
@@ -164,13 +259,46 @@ export async function runConditionStalenessTick(
       resolveEscalation({ msg_id, choice, note, resolver: CONDITION_STALENESS_IDENTITY.ownerId }));
   const staleMs = deps.staleMs ?? DEFAULT_STALE_OPEN_MS;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const readHealthByKey = deps.readHealthByKey ?? defaultReadInfraLivenessHealth;
+  const broadcastResolvedMany = deps.broadcastResolvedMany ?? broadcastSevereEventResolvedMany;
 
   let states: ConditionState[];
   try {
     states = await readStates();
   } catch {
     // A read failure must never crash the request worker nor look like "all clear".
-    return { fired: [], signals: [], resolved: [] };
+    return { fired: [], signals: [], resolved: [], reconciled: [] };
+  }
+
+  // Reconcile (EI-14072 guard #2) BEFORE staleness evaluation, so a condition we
+  // just healed this tick never also earns a staleness reminder in the same pass.
+  const reconciled: string[] = [];
+  const openInfraKeys = states
+    .filter((s) => s.open && s.condition_key.startsWith(INFRA_LIVENESS_PREFIX))
+    .map((s) => s.condition_key);
+  let healthByKey = new Map<string, boolean>();
+  try {
+    healthByKey = await readHealthByKey(openInfraKeys);
+  } catch {
+    healthByKey = new Map();
+  }
+  const toReconcile = selectReconcilableConditions(states, healthByKey);
+  if (toReconcile.length > 0) {
+    try {
+      const ok = await broadcastResolvedMany({
+        conditionKeys: toReconcile,
+        summary:
+          `[condition-reconciler] ${toReconcile.length} condition(s) cleared — underlying signal ` +
+          `verified healthy (no matching resolution had landed): ${toReconcile.join(', ')}.`,
+      });
+      if (ok) reconciled.push(...toReconcile);
+    } catch {
+      /* a broadcast failure must never crash the request worker */
+    }
+    if (reconciled.length > 0) {
+      const reconciledSet = new Set(reconciled);
+      states = states.map((s) => (reconciledSet.has(s.condition_key) ? { ...s, open: false } : s));
+    }
   }
 
   const signals = evaluateStaleConditions(states, now, staleMs);
@@ -230,7 +358,7 @@ export async function runConditionStalenessTick(
       /* an alarm-send failure must never crash the request worker */
     }
   }
-  return { fired, signals, resolved };
+  return { fired, signals, resolved, reconciled };
 }
 
 /**

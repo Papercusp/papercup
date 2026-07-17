@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 let tmpHome: string;
 let origHome: string | undefined;
+let origPapercuspHome: string | undefined;
 let serve: typeof import("./serve");
 
 const pcDir = () => join(tmpHome, ".papercusp");
@@ -34,17 +35,26 @@ const lockFile = () => join(pcDir(), "operator.lock");
 
 beforeAll(async () => {
   origHome = process.env.HOME;
+  origPapercuspHome = process.env.PAPERCUSP_HOME;
   tmpHome = mkdtempSync(join(tmpdir(), "serve-test-"));
   // os.homedir() honours $HOME on POSIX, so the module's path constants bind
   // to tmpHome at import. Restore the real HOME afterwards — the constants are
   // already captured, so the rest of the process is unaffected.
   process.env.HOME = tmpHome;
+  // EI-13917: PAPERCUSP_DIR now honors PAPERCUSP_HOME BEFORE homedir() — clear
+  // it here too, or the module binds its path constants to whatever
+  // PAPERCUSP_HOME the CALLING process happens to have exported (e.g. this
+  // very psu/fleet session's own per-workspace state dir) instead of tmpHome.
+  delete process.env.PAPERCUSP_HOME;
   serve = await import("./serve");
   process.env.HOME = origHome;
+  if (origPapercuspHome !== undefined) process.env.PAPERCUSP_HOME = origPapercuspHome;
 });
 
 afterAll(() => {
   process.env.HOME = origHome;
+  if (origPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+  else process.env.PAPERCUSP_HOME = origPapercuspHome;
   try {
     rmSync(tmpHome, { recursive: true, force: true });
   } catch {

@@ -74,36 +74,53 @@ export function computeConditionStates(
   for (const e of envelopes) {
     const ts = typeof e["ts"] === "string" ? (e["ts"] as string) : null;
     if (!ts) continue;
-    const resolves = e["resolves_condition"];
-    if (typeof resolves === "string" && resolves) {
-      const s = byKey.get(resolves);
-      if (s) {
-        if (!s.resolved_at || ts > s.resolved_at) {
-          s.resolved_at = ts;
-          s.resolved_summary =
-            typeof e["summary"] === "string" ? (e["summary"] as string) : null;
+    // EI-14072: a resolution can name ONE key (`resolves_condition`, singular —
+    // broadcastSevereEventResolved) or SEVERAL at once (`resolves_conditions`,
+    // plural array — broadcastSevereEventResolvedMany, EI-9030b's batched
+    // "RECOVERED (a, b, c)" broadcast). Both must close EVERY key they name —
+    // mirroring coord:inbox's `annotateResolvedConditions`, which already reads
+    // both. This fold used to read ONLY the singular field, so a batched
+    // recovery closed just its first key and left every other key it named
+    // stuck open:true forever (feeding false condition-staleness escalations —
+    // WI-2965's actor).
+    const resolveKeys = new Set<string>();
+    const resolvesSingle = e["resolves_condition"];
+    if (typeof resolvesSingle === "string" && resolvesSingle) resolveKeys.add(resolvesSingle);
+    const resolvesMany = e["resolves_conditions"];
+    if (Array.isArray(resolvesMany)) {
+      for (const k of resolvesMany) if (typeof k === "string" && k) resolveKeys.add(k);
+    }
+    if (resolveKeys.size > 0) {
+      for (const resolves of resolveKeys) {
+        const s = byKey.get(resolves);
+        if (s) {
+          if (!s.resolved_at || ts > s.resolved_at) {
+            s.resolved_at = ts;
+            s.resolved_summary =
+              typeof e["summary"] === "string" ? (e["summary"] as string) : null;
+          }
+          // This recovery CLOSES the current open episode: the next alarm strictly
+          // after it opens a fresh one (guarded so an out-of-order resolution older
+          // than the current episode's open can't wrongly close it).
+          if (s.open_since !== null && ts >= s.open_since) s.open_since = null;
+        } else {
+          // A resolution for a key we never saw alarm (log GC ate the alarm, or
+          // a partial window). Record it resolved so it never reads as open.
+          byKey.set(resolves, {
+            condition_key: resolves,
+            open: false,
+            from: typeof e["from"] === "string" ? (e["from"] as string) : "",
+            category: null,
+            first_seen: ts,
+            open_since: null,
+            last_seen: ts,
+            alarm_count: 0,
+            latest_summary: null,
+            resolved_at: ts,
+            resolved_summary:
+              typeof e["summary"] === "string" ? (e["summary"] as string) : null,
+          });
         }
-        // This recovery CLOSES the current open episode: the next alarm strictly
-        // after it opens a fresh one (guarded so an out-of-order resolution older
-        // than the current episode's open can't wrongly close it).
-        if (s.open_since !== null && ts >= s.open_since) s.open_since = null;
-      } else {
-        // A resolution for a key we never saw alarm (log GC ate the alarm, or
-        // a partial window). Record it resolved so it never reads as open.
-        byKey.set(resolves, {
-          condition_key: resolves,
-          open: false,
-          from: typeof e["from"] === "string" ? (e["from"] as string) : "",
-          category: null,
-          first_seen: ts,
-          open_since: null,
-          last_seen: ts,
-          alarm_count: 0,
-          latest_summary: null,
-          resolved_at: ts,
-          resolved_summary:
-            typeof e["summary"] === "string" ? (e["summary"] as string) : null,
-        });
       }
       continue;
     }

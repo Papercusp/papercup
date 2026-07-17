@@ -16,8 +16,25 @@
  * papercusp-systems-abstraction-2026-05-29) plus the in-process cache.
  */
 import { resolvePgUrl } from '@papercusp/embedded-pg-discovery';
+import { join } from 'node:path';
 
 const NATIVE_FALLBACK = 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+
+/**
+ * EI-13917: the generic resolver (by design, domain-free) resolves a
+ * RELATIVE `discoveryFile.path` under `os.homedir()` — but honors an
+ * ABSOLUTE path as-is. `PAPERCUSP_HOME` is the Papercusp-specific isolation
+ * escape hatch (packages/operator-core/lib/papercusp-root.ts) — when a
+ * caller has scoped its own PAPERCUSP_HOME (an isolated gate/smoke-test
+ * instance, a per-workspace fleet session), its discovery file must live
+ * under THAT dir, never the box-wide `~/.papercusp/`. Mirrors the matching
+ * fix in connection.ts / serve.ts / host-platform's desktop.ts.
+ */
+function discoveryFilePath(): string {
+  return process.env.PAPERCUSP_HOME
+    ? join(process.env.PAPERCUSP_HOME, 'embedded-pg.json')
+    : '.papercusp/embedded-pg.json';
+}
 
 let cached: { url: string; source: string } | null = null;
 
@@ -46,7 +63,7 @@ export function getHarnessAdminUrlWithSource(): { url: string; source: string } 
 
   const { url, source } = resolvePgUrl({
     envVars: ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'],
-    discoveryFile: { path: '.papercusp/embedded-pg.json' },
+    discoveryFile: { path: discoveryFilePath() },
     fallbackUrl: NATIVE_FALLBACK,
   });
 

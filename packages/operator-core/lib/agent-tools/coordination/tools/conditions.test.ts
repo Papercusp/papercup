@@ -66,6 +66,22 @@ const resolution = (m: number, key: string, summary = `recovered ${key}`) => ({
   condition_key: key,
   resolves_condition: key,
 });
+/** EI-9030b batched resolution — broadcastSevereEventResolvedMany's shape:
+ *  `resolves_conditions` (plural array) naming every key it supersedes, PLUS the
+ *  singular `resolves_condition`/`condition_key` stamped to the first key only
+ *  (byte-compat for a reader that only knows the singular shape). */
+const resolutionMany = (m: number, keys: string[], summary = `RECOVERED (${keys.join(", ")})`) => ({
+  ts: at(m),
+  msg_id: `rm-${m}`,
+  from: "system-watchdog",
+  to: ["*"],
+  kind: "message",
+  category: "severe-event-resolved",
+  summary,
+  resolves_conditions: keys,
+  resolves_condition: keys[0],
+  condition_key: keys[0],
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -111,6 +127,27 @@ describe("computeConditionStates (pure)", () => {
       open_since: at(3),
       last_seen: at(3),
     });
+  });
+
+  it("EI-14072: a batched resolution naming N keys (resolves_conditions) closes EVERY named key, not just the first", () => {
+    const states = computeConditionStates([
+      alarm(1, "panel:workItems"),
+      alarm(1, "dead-routines"),
+      alarm(1, "infra-liveness:panel:overwatch"),
+      resolutionMany(5, ["panel:workItems", "dead-routines", "infra-liveness:panel:overwatch"]),
+    ]);
+    const byKey = new Map(states.map((s) => [s.condition_key, s]));
+    for (const key of ["panel:workItems", "dead-routines", "infra-liveness:panel:overwatch"]) {
+      expect(byKey.get(key)).toMatchObject({ open: false, resolved_at: at(5), open_since: null });
+    }
+  });
+
+  it("EI-14072: a batched resolution for keys never seen still records each resolved, never open", () => {
+    const states = computeConditionStates([resolutionMany(2, ["ghost-a", "ghost-b"])]);
+    expect(states).toHaveLength(2);
+    for (const st of states) {
+      expect(st).toMatchObject({ open: false, resolved_at: at(2) });
+    }
   });
 
   it("a resolution for a never-seen key records resolved, never open", () => {
