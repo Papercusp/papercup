@@ -618,6 +618,81 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     warn.mockRestore();
   });
 
+  it('WI-5165: a peer process\'s SELF-ADMITTED entry (self_repo + remote_hive) does NOT trip the owner-checkout guard — re-admit proceeds so THIS process boots the substrate', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The packaged-install race (0.0.12 clean-VM repro): a request-only env sidecar won the
+    // self-admit race and registered {self_repo:true, remote_hive:true} (EI-8793 stamps
+    // self_repo on the canonical clone) but was FORBIDDEN from booting the substrate; the
+    // main operator's fresh read then saw self_repo, took the guard, and nobody ever booted —
+    // the restored 855MB corestore never merged and the pot shipped as an empty shell. The
+    // guard must only protect the owner dev checkout: self_repo WITHOUT remote_hive.
+    const loadRegistry = vi.fn(async (_ws: string, opts?: { fresh?: boolean }) =>
+      opts?.fresh
+        ? {
+            projects: [
+              {
+                slug: PAPERCUSP_HIVE_SLUG,
+                path: '/installs/clones/papercusp',
+                self_repo: true,
+                remote_hive: true,
+              },
+            ],
+          }
+        : { projects: [] as Array<{ slug: string }> },
+    );
+    const selfAdmitCanonical = vi.fn(async () => ({
+      state: 'admitted' as const,
+      slug: PAPERCUSP_HIVE_SLUG,
+      path: '/installs/clones/papercusp',
+    }));
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      loadRegistry,
+      joinCanonical: vi.fn(async () => ({ state: 'skipped' as const, slug: null, reason: 'owner offline' })),
+      restoreSeed: vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] })),
+      restoreDeferredGitSeed: vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] })),
+      selfAdmitCanonical,
+    });
+
+    const res = await bootstrapPapercuspHive(deps);
+
+    expect(res).toMatchObject({ state: 'cloned-and-created', slug: PAPERCUSP_HIVE_SLUG });
+    expect(selfAdmitCanonical).toHaveBeenCalledOnce(); // idempotent re-admit — NOT skipped
+    expect(deps.bootActiveWorkspace).toHaveBeenCalledOnce(); // the substrate boots in THIS process
+    warn.mockRestore();
+  });
+
+  it('WI-5165: step-1 already-present on a remote_hive entry RE-RUNS the startup boot-all ("present" ≠ "booted")', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Same race, later pass: the entry pre-exists (a peer self-admitted), so step-1
+    // short-circuits — but this process's startup boot-all ran BEFORE the registration
+    // existed, so nothing has opened the restored corestore. already-present must
+    // best-effort re-run the (idempotent) boot-all for the remote_hive shape.
+    const deps = spyDeps({
+      loadRegistry: vi.fn(async () => ({
+        projects: [
+          { slug: PAPERCUSP_HIVE_SLUG, path: '/installs/clones/papercusp', self_repo: true, remote_hive: true },
+        ],
+      })),
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('already-present');
+    expect(deps.bootActiveWorkspace).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('WI-5165: step-1 already-present on an OWNER checkout (no remote_hive) leaves the substrate to the startup boot-all', async () => {
+    const deps = spyDeps({
+      loadRegistry: vi.fn(async () => ({
+        projects: [{ slug: PAPERCUSP_HIVE_SLUG, path: '/home/dev/papercusp', self_repo: true }],
+      })),
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('already-present');
+    expect(deps.bootActiveWorkspace).not.toHaveBeenCalled();
+  });
+
   it('WI-3232: git seed still deferred offline STILL self-admits (data-only) + schedules a code back-fill retry', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const joinCanonical = vi.fn(async () => ({

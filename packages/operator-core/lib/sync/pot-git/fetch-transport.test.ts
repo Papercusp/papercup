@@ -100,3 +100,25 @@ describe('serveUploadPack — scope-repo serve gate', () => {
     expect(res.stderr).not.toContain(REFUSAL_MARK);
   });
 });
+
+describe('fetchOverDuplex — pre-destroyed duplex (WI-3496)', () => {
+  it('fails fast (code -1) on an already-destroyed duplex instead of hanging to the ceiling', async () => {
+    // The openHiveGitDuplexToDevice "no live dial path" contract hands callers
+    // a duplex whose 'error' already fired into its own no-op listener ticks
+    // before fetchOverDuplex could attach one — the sync .destroyed check must
+    // catch it, or the fetch burns the full outer timeout (live-observed 120s
+    // per G-8 bootstrap tick on the rig).
+    const { fetchOverDuplex } = await import('./fetch-transport');
+    const dead = new PassThrough();
+    dead.on('error', () => {});
+    dead.destroy(new Error('no live connection to device xyz'));
+    const started = Date.now();
+    const res = await fetchOverDuplex('/nonexistent/repo.git', dead, ['+refs/*:refs/*'], {
+      timeoutMs: 10_000,
+    });
+    expect(res.code).toBe(-1);
+    expect(res.timedOut).toBe(false);
+    expect(res.stderr).toContain('duplex already destroyed before fetch began');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});

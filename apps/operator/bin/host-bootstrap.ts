@@ -309,7 +309,15 @@ export function runBootstrap(): void {
     // after restarts, instead of baking the current dynamic port into child env.
     startPackagedMcpProxy();
 
-    void (async () => {
+    // WI-5165: ONLY the process that may boot the substrate runs the hive bootstrap.
+    // A packaged install runs several desktop-flagged operators (the main one plus the
+    // dev-source env sidecars, which set PAPERCUSP_BACKGROUND_WORKERS=0 and log to
+    // /dev/null); all of them used to race this block. A request-only sidecar could WIN
+    // the self-admit race — registering the pot — then fail its own substrate boot on
+    // boot-all's request-only-host guard, while the main operator saw the entry as
+    // "already-present" and never booted either: the seeded pot shipped as an empty
+    // shell (0 work items / plans despite the restored 855MB corestore).
+    if (backgroundWorkersEnabled()) void (async () => {
       try {
         if (!(await getFlag(FLAGS.DOGFOOD_PAPERCUSP_POT, 'system'))) return;
         const { startBootstrapPapercuspHive } = await import(

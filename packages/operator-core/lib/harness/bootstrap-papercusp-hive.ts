@@ -307,6 +307,33 @@ async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug:
   }
 }
 
+/**
+ * Best-effort re-run of the startup substrate boot-all (the WI-3232 bf97d fix — see the
+ * rationale at the self-admit call site). Idempotent: an already-booted harness
+ * short-circuits `alreadyBooted`, so calling it on a path where the substrate may
+ * already be up costs one registry read. Never fails the bootstrap; a restart heals.
+ */
+async function bestEffortBootActiveWorkspace(
+  deps: Pick<BootstrapPapercuspHiveDeps, 'bootActiveWorkspace'>,
+  why: string,
+): Promise<void> {
+  try {
+    const bootActive =
+      deps.bootActiveWorkspace ??
+      (async () =>
+        (await import('../sync/hyperbee/boot-all')).bootAllHarnessesForActiveWorkspace());
+    const r = await bootActive();
+    console.warn(
+      `[papercusp-hive] ${why} substrate boot: attempted=${r?.attempted ?? '?'} ` +
+        `booted=${r?.booted ?? '?'} alreadyBooted=${r?.alreadyBooted ?? '?'} failed=${r?.failed ?? '?'}`,
+    );
+  } catch (e) {
+    console.warn(
+      `[papercusp-hive] ${why} substrate boot failed (non-fatal; retry next boot): ${(e as Error)?.message ?? e}`,
+    );
+  }
+}
+
 export async function defaultSelfAdmitCanonical(
   invite: CanonicalHiveInvite,
   record?: BootstrapPapercuspHiveDeps['recordProgress'],
@@ -897,6 +924,15 @@ export async function bootstrapPapercuspHive(
       // announce). A transient api.github.com timeout here must NOT fail an
       // otherwise-complete workspace setup — warn and proceed; the next boot re-shares.
       await bestEffortShare('shareExisting', shareExisting);
+      // WI-5165: "already present" does NOT imply "already booted". On a packaged
+      // install this entry can pre-exist from a PEER process's self-admit (several
+      // desktop-flagged operators race this bootstrap, and a request-only env sidecar
+      // can register the pot while being forbidden from booting the substrate) — and
+      // THIS process's startup boot-all ran before the registration existed, so nothing
+      // ever opened the restored corestore and the pot rendered as an empty shell.
+      // Scoped to the remote_hive (self-admitted / joined) shape; an owner dev
+      // checkout's substrate is the startup boot-all's job.
+      if (existing.remote_hive) await bestEffortBootActiveWorkspace(deps, 'already-present');
       return { state: 'already-present', slug: PAPERCUSP_HIVE_SLUG, path: existing.path };
     }
   } catch {
@@ -1031,21 +1067,7 @@ export async function bootstrapPapercuspHive(
           // boot-all review). Call the PUBLIC boot-all with NO per-call overrides so it inherits
           // the startup module bootHarness/skipSendSideWiring routing. Best-effort: never fails the
           // bootstrap; a restart still heals it.
-          try {
-            const bootActive =
-              deps.bootActiveWorkspace ??
-              (async () =>
-                (await import('../sync/hyperbee/boot-all')).bootAllHarnessesForActiveWorkspace());
-            const r = await bootActive();
-            console.warn(
-              `[papercusp-hive] self-admit substrate boot: attempted=${r?.attempted ?? '?'} ` +
-                `booted=${r?.booted ?? '?'} alreadyBooted=${r?.alreadyBooted ?? '?'} failed=${r?.failed ?? '?'}`,
-            );
-          } catch (e) {
-            console.warn(
-              `[papercusp-hive] self-admit substrate boot failed (non-fatal; retry next boot): ${(e as Error)?.message ?? e}`,
-            );
-          }
+          await bestEffortBootActiveWorkspace(deps, 'self-admit');
           record('clone', 'done', { detail: 'offline seed self-admit' });
           record('submodules', 'skipped', { detail: 'seed restore' });
           return { state: 'cloned-and-created', slug: selfRes.slug, path: selfRes.path };

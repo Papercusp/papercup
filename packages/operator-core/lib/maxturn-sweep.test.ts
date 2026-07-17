@@ -196,6 +196,28 @@ describe('runMaxTurnSweep — staged by default, fail-soft when armed', () => {
     expect(out.ran).toBe(true);
   });
 
+  it('onCell fires once per DRIVEN cell (ok AND error, never staged), and an observer throw never fails the sweep', async () => {
+    const driver = vi.fn(async (cell: SweepCell) => {
+      if (cell.maxTurnTargetTokens === 25_000) throw new Error('drone spawn 503');
+      return okMetrics();
+    });
+    const seen: Array<{ cellId: string; status: string }> = [];
+    const onCell = vi.fn(async (r: { cellId: string; status: string }) => {
+      seen.push({ cellId: r.cellId, status: r.status });
+      throw new Error('observer disk full'); // must never fail the sweep
+    });
+    const armed = await runMaxTurnSweep({ axes: tinyAxes, armed: true, driver, onCell });
+    expect(armed.ran).toBe(true);
+    const driven = armed.results.filter((r) => r.status !== 'staged');
+    expect(seen).toEqual(driven.map((r) => ({ cellId: r.cellId, status: r.status })));
+    expect(seen.some((s) => s.status === 'error')).toBe(true);
+
+    const firedForArmedRun = onCell.mock.calls.length;
+    const staged = await runMaxTurnSweep({ axes: tinyAxes, armed: false, onCell });
+    expect(staged.results.every((r) => r.status === 'staged')).toBe(true);
+    expect(onCell).toHaveBeenCalledTimes(firedForArmedRun); // unchanged — staged cells never fire it
+  });
+
   it('clamps repeats to ≥ 1 and threads it to the driver', async () => {
     const seen: number[] = [];
     const driver = vi.fn(async (_c: SweepCell, _cfg: unknown, opts: { repeats: number }) => {

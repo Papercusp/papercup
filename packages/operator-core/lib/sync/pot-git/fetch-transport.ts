@@ -257,6 +257,20 @@ export function fetchOverDuplex(
     }, opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
     timer.unref?.();
 
+    // FAIL FAST on an ALREADY-destroyed duplex (WI-3496 rig finding): the
+    // 'error' listener above only covers a destroy that happens AFTER this
+    // call — a pre-destroyed decoy stub (openHiveGitDuplexToDevice's "no live
+    // dial path" contract) emitted its 'error' ticks ago into its own no-op
+    // listener, before callers like bootstrapFromPeer (which awaits
+    // dropQuarantine/listNamespaces first) ever reach here. Without this
+    // check such a fetch hangs the FULL outer ceiling (live-observed: every
+    // G-8 cold-join burned 120s per tick instead of failing fast).
+    if (duplex.destroyed) {
+      stderr += '\nduplex already destroyed before fetch began (no live dial path)';
+      finish(-1);
+      return;
+    }
+
     server.on('error', () => {});
     // The bridge (git's ext helper) connects here; wire it to the caller's duplex.
     server.on('connection', (conn) => {

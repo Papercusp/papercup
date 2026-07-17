@@ -94,6 +94,8 @@ export function fullAxes(opts: { sessionClass?: SweepSessionClass; targetTokens?
     ? DEFAULT_MAXTURN_TARGETS_TOKENS.filter((t) => t === opts.targetTokens)
     : DEFAULT_MAXTURN_TARGETS_TOKENS;
   if (sessionClasses.length === 0 || maxTurnTargetsTokens.length === 0) return null;
+  // Unfiltered ⇒ the canonical axes object itself (callers compare identity).
+  if (opts.sessionClass == null && opts.targetTokens == null) return DEFAULT_SWEEP_AXES;
   return {
     maxTurnTargetsTokens,
     sessionClasses,

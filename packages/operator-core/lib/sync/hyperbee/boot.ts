@@ -3416,11 +3416,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         },
         // P-201 (p2p-git-live-activation-2026-07-09): register the hive-git
         // serve plane only for a harness actually bound to a hive home — a
-        // non-hive harness (hiveHomeProjectionSlug null) never wires it, so it
-        // stays byte-for-byte unchanged. Per-request mode gating (legacy vs
+        // non-hive harness (both home resolutions undefined) never wires it, so
+        // it stays byte-for-byte unchanged. Per-request mode gating (legacy vs
         // bridged/p2p-only) happens live inside the wiring itself.
-        ...(hiveHomeProjectionSlug
-          ? { hiveGitServe: { potHomeSlug: hiveHomeProjectionSlug, workspaceId: opts.workspaceId } }
+        // WI-3496 rig finding: `hiveHomeProjectionSlug` alone is the JOINER
+        // rebind (null for the hive OWNER — the same owner-side asymmetry
+        // WI-559/FED-1 and WI-2105 fixed for the content projections), so the
+        // owner never wired serve OR dial and every cross-machine pot-git
+        // fetch involving the owner hung to the client's 120s timeout (its
+        // channel-open had no pair()). `?? contentGuardHiveHome` resolves the
+        // hive-home for ANY hive-peered harness (owner home + owned-hive
+        // member harness included), exactly like the scoped-apply fallback.
+        ...(hiveHomeProjectionSlug ?? contentGuardHiveHome
+          ? {
+              hiveGitServe: {
+                potHomeSlug: (hiveHomeProjectionSlug ?? contentGuardHiveHome)!,
+                workspaceId: opts.workspaceId,
+              },
+            }
           : {}),
         // WI-3583: register the device-pubkey -> live-socket dial registry
         // alongside the serve plane, same hive-only gate — P-204's
@@ -3433,7 +3446,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // signs our announce — the peer's serve-side verifies it before
         // binding `selfDevicePubkeyBase64` to the live socket, so a scope-repo
         // fetch can be authorized against a PROVEN device identity.
-        ...(hiveHomeProjectionSlug
+        // WI-3496: same owner-side gate fix as hiveGitServe above — without it
+        // the owner never sent a hello, so joiners could never resolve the
+        // owner's device to a socket (G-8 cold-join structurally impossible).
+        ...(hiveHomeProjectionSlug ?? contentGuardHiveHome
           ? { hiveGitDial: { selfDevicePubkeyBase64: identity.devicePubkeyBase64, sign: signOurAnnounce } }
           : {}),
         onPeerConnected: (keyHex) => {
