@@ -25,7 +25,7 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { ITEM_STATUSES, maskFences, parsePlan, type Importance } from './parser';
+import { ITEM_STATUSES, maskFences, parsePlan, NOTE_SUFFIX_RE, type Importance } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { emitPlanItemDoneEvent } from './plan-item-events';
 import { isPlanDrained, emitFleetDrainedForPlan } from '../../fleet-drained-events';
@@ -315,9 +315,12 @@ export async function releaseTodoClaim(opts: {
 
 /** The marker `flipStatusInBody` injects for a caller-supplied `note` (EI-384) —
  *  matches from the marker to end-of-line so a REPEAT call replaces the whole
- *  previously-injected note instead of appending another one. Exported only for
- *  the note-replacement test below; not part of the tool's public surface. */
-export const NOTE_MARKER_RE = /\s*—\s*note:.*$/;
+ *  previously-injected note instead of appending another one. Re-exported (as
+ *  the historical local name) from the canonical `@papercusp/plan-parser`
+ *  definition (EI-522) — the parser needs this SAME pattern to exclude a
+ *  note's free prose from structured D-NNN ref extraction, so it is now the
+ *  single source of truth; this file must never redefine its own copy. */
+export const NOTE_MARKER_RE = NOTE_SUFFIX_RE;
 
 export function flipStatusInBody(
   body: string,

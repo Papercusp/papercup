@@ -177,6 +177,50 @@ describe('P-006 — domain-first hive-native picker layout (flag on)', () => {
   });
 });
 
+// ── EI-544 — the picker-step modal must be dismissible (Escape / backdrop) ──
+// Repro: the top-level picker grid has no Cancel/Close button by design (the
+// inner form steps DO have Back/Cancel) — it relies entirely on Radix's
+// built-in Escape + click-outside dismissal reaching Modal's onOpenChange(false)
+// → handleClose()'s atomic `setNav({ create: false, picker: null })`. A live
+// E2E repro found BOTH paths silently no-op in the packaged app.
+describe('EI-544 — picker-step dismissal (Escape / backdrop click)', () => {
+  it('Escape closes the picker (fires the atomic create:false+picker:null write)', async () => {
+    const user = userEvent.setup();
+    const { urlUpdates } = renderPicker();
+    // Sanity: we are on the top-level grid step (no Cancel/Close button here).
+    screen.getByRole('heading', { name: 'Add a Hive' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(urlUpdates.length).toBeGreaterThan(0));
+    const last = urlUpdates[urlUpdates.length - 1];
+    expect(last.get('create')).not.toBe('true');
+    expect(last.get('picker')).toBeNull();
+  });
+
+  it('clicking the backdrop (outside the dialog content) closes the picker', async () => {
+    const user = userEvent.setup();
+    const { urlUpdates, container } = renderPicker();
+    screen.getByRole('heading', { name: 'Add a Hive' });
+    // Radix renders the overlay as a sibling of Dialog.Content inside the
+    // portal (document.body, not `container` — Modal always uses Dialog.Portal).
+    const overlay = document.querySelector('[data-radix-popper-content-wrapper], .pc-modal-content')
+      ?.parentElement?.previousElementSibling;
+    // Fall back to querying the overlay by its known fixed-inset styling if the
+    // sibling walk above doesn't land (Radix's exact DOM shape can shift):
+    const backdrop =
+      (overlay as HTMLElement | null) ??
+      Array.from(document.body.querySelectorAll('div')).find(
+        (el) => el.getAttribute('data-anim') === 'fade',
+      );
+    expect(backdrop).toBeTruthy();
+    await user.click(backdrop as Element);
+    await waitFor(() => expect(urlUpdates.length).toBeGreaterThan(0));
+    const last = urlUpdates[urlUpdates.length - 1];
+    expect(last.get('create')).not.toBe('true');
+    expect(last.get('picker')).toBeNull();
+    void container; // unused when the sibling-walk path is taken
+  });
+});
+
 // ── P-006 — New work hive (domain-generic-hive Brief 3) ─────────────────────
 
 describe('P-006 — New work hive', () => {

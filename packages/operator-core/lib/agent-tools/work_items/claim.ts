@@ -26,6 +26,7 @@ import {
   admitWorkItemForFleetTarget,
   notifyFleetScopeRefusal,
 } from '../../scheduler/fleet-scope-admission';
+import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
 
 interface ClaimItem {
   id: string;

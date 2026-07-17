@@ -598,3 +598,23 @@ describe('evaluateDerivedVerdict (EI-12150)', () => {
     expect(findings).toEqual([]);
   });
 });
+
+describe('plans:lint — unknown_decision_ref (EI-522)', () => {
+  it('does not flag a cross-plan D-NNN cited only in a set-status-injected note\'s free prose', async () => {
+    const raw = planWith('') /* no Promote section needed */ .replace(
+      '- **P-001** `todo` do a thing',
+      '- **P-001** `done` do a thing — note: back-refs added to other-plan D-025, another-plan D-011',
+    );
+    const report = await lint(raw);
+    expect(codes(report.warnings)).not.toContain('unknown_decision_ref');
+  });
+
+  it('still flags a GENUINE unknown local decision ref (not inside a note)', async () => {
+    const raw = planWith('').replace(
+      '- **P-001** `todo` do a thing',
+      '- **P-001** `todo` do a thing → D-099',
+    );
+    const report = await lint(raw);
+    expect(codes(report.warnings)).toContain('unknown_decision_ref');
+  });
+});

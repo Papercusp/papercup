@@ -188,3 +188,31 @@ export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef):
     return { checkpoint: null, updatedAtMs: null };
   }
 }
+
+/** A claim-time checkpoint hint: only present when a PRIOR holder actually left one. */
+export interface ClaimTimeCheckpointHint {
+  checkpoint: string;
+  checkpointAgeMs: number | null;
+}
+
+/**
+ * EI-529: surface a claimed item's in-flight checkpoint AT CLAIM TIME, not only on
+ * a separate work_items:get lookup. A dispatcher/reaper re-assigning a work-item
+ * whose prior holder went quiet (dead session, host restart, session recycle) has
+ * no signal that the prior holder may have already FINISHED the work — the fresh
+ * claimant silently re-implements a shipped deliverable (the EI-529 pattern, hit 4×
+ * in one session: WI-58, and three unnamed briefs, each cost a "verify it's not
+ * already done" detour the claim response itself could have prompted). Mirrors the
+ * EI-7252 fix that did the same for work_items:get. Fails soft — never throws, and
+ * returns null (not an empty-string checkpoint object) when nothing was ever
+ * written, so a normal fresh claim's response is unaffected.
+ */
+export async function getClaimTimeCheckpointHint(
+  ref: WorkItemCheckpointRef,
+): Promise<ClaimTimeCheckpointHint | null> {
+  const { checkpoint, updatedAtMs } = await getWorkItemCheckpointWithMeta(ref).catch(
+    () => ({ checkpoint: null, updatedAtMs: null }) as WorkItemCheckpointWithMeta,
+  );
+  if (!checkpoint) return null;
+  return { checkpoint, checkpointAgeMs: updatedAtMs != null ? Math.max(0, Date.now() - updatedAtMs) : null };
+}

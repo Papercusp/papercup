@@ -321,6 +321,17 @@ export default defineTool({
         .then((m) => m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }))
         .catch(() => null);
     }
+    // EI-529: this is the primary self-pull surface (every fleet member / cup claims
+    // through it) — surface a prior holder's checkpoint AT CLAIM TIME so a re-dispatch
+    // after a dead/quiet session doesn't silently re-implement already-shipped work.
+    // Omitted entirely when null (the common case: no prior holder ever checkpointed).
+    let checkpointHint: import('../../work-item-checkpoint').ClaimTimeCheckpointHint | null = null;
+    if (res?.workItem) {
+      const wi = res.workItem as { id: string; harness?: string | null };
+      checkpointHint = await import('../../work-item-checkpoint')
+        .then((m) => m.getClaimTimeCheckpointHint({ harness: wi.harness ?? null, workItemId: wi.id, workspaceId: ident.workspaceId }))
+        .catch(() => null);
+    }
     // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
     // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
     // for claimable work are mutually exclusive, and a pre-claim await left armed (e.g. this claim
@@ -373,6 +384,14 @@ export default defineTool({
                   ...(warning ? { warning } : {}),
                   ...(routingHint ? { routingHint } : {}),
                   ...(memory ? { memory } : {}),
+                  ...(checkpointHint
+                    ? {
+                        checkpoint: checkpointHint.checkpoint,
+                        checkpointAgeMs: checkpointHint.checkpointAgeMs,
+                        checkpointWarning:
+                          'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
+                      }
+                    : {}),
                 }
               : reconciliation.scope
                 ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { cooldownDiag })

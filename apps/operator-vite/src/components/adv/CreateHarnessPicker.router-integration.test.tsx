@@ -77,4 +77,36 @@ describe('CreateHarnessPicker close × real adapter (stuck-modal regression)', (
     expect(window.location.search).not.toContain('picker=hive-invite');
     await waitFor(() => expect(screen.queryByText('Add a Hive')).toBeNull());
   });
+
+  // EI-544: the E2E repro was specifically on the TOP-LEVEL PICKER GRID step
+  // (?create=true, NO ?picker — the picker-step has no Cancel/Close button by
+  // design and relies entirely on Escape/backdrop). The test above only covers
+  // a NON-grid step (?picker=hive-invite); pin the grid-step case separately in
+  // case the two steps ever diverge in how Modal/Radix mounts them.
+  it('Escape on the TOP-LEVEL PICKER GRID (no ?picker) clears ?create; the modal unmounts', async () => {
+    mountAt('/?create=true');
+    await waitFor(() => expect(screen.getByText('Add a Hive')).toBeTruthy());
+    expect(window.location.search).toContain('create=true');
+
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => expect(window.location.search).not.toContain('create=true'));
+    await waitFor(() => expect(screen.queryByText('Add a Hive')).toBeNull());
+  });
+
+  it('a backdrop click on the picker grid step also closes it', async () => {
+    mountAt('/?create=true');
+    await waitFor(() => expect(screen.getByText('Add a Hive')).toBeTruthy());
+
+    // Radix mounts the Overlay as the `data-anim="fade"` sibling ahead of the
+    // Dialog.Content inside the Portal (document.body).
+    const backdrop = Array.from(document.body.querySelectorAll('div')).find(
+      (el) => el.getAttribute('data-anim') === 'fade',
+    );
+    expect(backdrop).toBeTruthy();
+    fireEvent.click(backdrop as Element);
+
+    await waitFor(() => expect(window.location.search).not.toContain('create=true'));
+    await waitFor(() => expect(screen.queryByText('Add a Hive')).toBeNull());
+  });
 });
