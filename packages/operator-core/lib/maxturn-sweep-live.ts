@@ -70,6 +70,24 @@ import { newestTranscriptUnderOwner } from './claude-sessions';
  *  extractor looks for in ASSISTANT output (never user/kickoff lines). */
 export const SWEEP_TASK_DONE_MARKER = '⟦maxturn-sweep:task-done⟧';
 
+/** account-routing-3-options (the same lever cup:spawn / fleet launch expose):
+ *  how a spawned cell session's model calls are routed.
+ *    - `'auto'`     → through the inference gateway, auto-selecting an available
+ *                     pool account WITH failover (the standing fleet behavior).
+ *    - `<pool-id>`  → hard-pin to that pool account via the gateway (no failover).
+ *    - `'default'`  → SKIP the gateway, use the system CLI-login credential.
+ *  The union is documentary — psu-launcher validates the concrete value. */
+export type SweepAccountRouting = 'auto' | 'default' | (string & {});
+
+/** The sweep DEFAULTS to gateway auto-routing. Omitting `--account` sends every
+ *  cell in `'default'` mode — through the ONE shared CLI credential with no
+ *  failover — which starves under a multi-hundred-cell campaign: tail cells
+ *  spawn but land zero API turns, yielding all-null-but-`'ok'` rows while the
+ *  7-account gateway pool sits idle (root-caused 2026-07-17, WI-5003; the fleet
+ *  runs on `--account=auto` for exactly this reason). Owner directive
+ *  [owner:Avi 2026-07-17 "pin them to the gateway"]. */
+export const DEFAULT_SWEEP_ACCOUNT_ROUTING: SweepAccountRouting = 'auto';
+
 /** Per-repeat wall-clock cap. A cell that cannot finish its benchmark inside this
  *  is captured with whatever transcript it produced (metrics still extract). */
 export const DEFAULT_SWEEP_TASK_TIMEOUT_MS = 10 * 60_000;
@@ -321,6 +339,11 @@ export interface SweepSpawnInput {
    *  transcript unfindable). See apps/operator/scripts/psu-launcher.mjs's own
    *  "ALWAYS harness-scope a fresh launch" comment (agent-tools/capability/launch-agent.ts). */
   harness: string;
+  /** account-routing-3-options: how THIS cell's model calls are routed — see
+   *  {@link SweepAccountRouting}. The driver defaults it to
+   *  {@link DEFAULT_SWEEP_ACCOUNT_ROUTING} ('auto' = gateway) so a campaign
+   *  spreads across the pool with failover instead of starving one credential. */
+  account: SweepAccountRouting;
 }
 
 /** Pure: the psu-launcher.mjs argv for one sweep cell repeat. Split out so the
@@ -344,6 +367,12 @@ export function buildSweepSpawnArgs(input: SweepSpawnInput, repoRoot: string): s
     // server-minted owner — its doors override never applied and its transcript
     // was unfindable. The flag makes bootstrap-su use OUR owner id.
     `--owner-id=${input.ownerId}`,
+    // account-routing-3-options (owner 2026-07-17 "pin them to the gateway"): route
+    // every cell through the inference gateway ('auto' default) instead of psu's
+    // no-flag 'default' mode (single CLI credential, no failover — starved the
+    // 2026-07-17 campaign's tail cells to all-null-but-ok, WI-5003). Emitted
+    // ALWAYS/explicitly so the routing is never an implicit fall-through.
+    `--account=${input.account}`,
     `--kickoff=${input.kickoff}`,
   ];
 }
@@ -390,6 +419,10 @@ export interface HeadlessCellDriverDeps {
   /** Harness slug to bootstrap each cell session under (default 'papercusp' —
    *  see SweepSpawnInput.harness for why this must never be omitted). */
   harness?: string;
+  /** account-routing-3-options for every cell session (default
+   *  {@link DEFAULT_SWEEP_ACCOUNT_ROUTING} = 'auto', i.e. the inference gateway
+   *  with failover). Set to a pool-id to pin, or 'default' to skip the gateway. */
+  account?: SweepAccountRouting;
 }
 
 function defaultMintOwnerId(cell: SweepCell, repeat: number): string {
@@ -499,6 +532,7 @@ export function makeHeadlessPsuCellDriver(deps: HeadlessCellDriverDeps = {}): Ce
   const pollIntervalMs = deps.pollIntervalMs ?? 5_000;
   const repoRoot = deps.repoRoot ?? process.cwd();
   const harness = deps.harness ?? 'papercusp';
+  const account = deps.account ?? DEFAULT_SWEEP_ACCOUNT_ROUTING;
   const spawnSession = deps.spawnSession ?? ((input: SweepSpawnInput) => defaultSpawnSession(input, repoRoot));
 
   return async (cell: SweepCell, config: CellConfig, opts: { repeats: number }) => {
@@ -511,7 +545,7 @@ export function makeHeadlessPsuCellDriver(deps: HeadlessCellDriverDeps = {}): Ce
       try {
         await prepare(workDir, cell);
         const kickoff = buildBenchmarkKickoff(task, cell, workDir);
-        const handle = spawnSession({ ownerId, kickoff, workDir, cellId: cell.cellId, timeoutMs, harness });
+        const handle = spawnSession({ ownerId, kickoff, workDir, cellId: cell.cellId, timeoutMs, harness, account });
 
         // Mid-run transcript poll (EI-13277): snapshot the transcript WHILE the
         // child lives — a headless session's store can be cleaned at host end, so

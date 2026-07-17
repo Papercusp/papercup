@@ -360,7 +360,7 @@ describe('runBootstrapLeg', () => {
     expect(openHiveGitDuplexToDeviceMock.mock.calls[0][1]).toBe(PEER_DEVICE);
     expect(openHiveGitDuplexToDeviceMock.mock.calls[1][1]).toBe(PEER_DEVICE_2);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
-    const patch = JSON.parse(unsafeMock.mock.calls[0][1] as string);
+    const patch = JSON.parse((unsafeMock.mock.calls[0][1] as unknown[])[1] as string);
     expect(patch.bootstrap.ok).toBe(true);
   });
 
@@ -375,7 +375,7 @@ describe('runBootstrapLeg', () => {
       .mockImplementationOnce(bootstrapOutcome({ ok: true, namespaces: ['abcd1234'], skippedExisting: [], skippedSelf: null, stderr: '' }));
     await runBootstrapLeg(SLUG, WS);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(2); // first failed → tried the second
-    const patch = JSON.parse(unsafeMock.mock.calls[0][1] as string);
+    const patch = JSON.parse((unsafeMock.mock.calls[0][1] as unknown[])[1] as string);
     expect(patch.bootstrap.ok).toBe(true); // the final (successful) outcome wins
   });
 
@@ -415,7 +415,7 @@ describe('runBootstrapLeg', () => {
       expect(warnMsg).toBeTruthy();
       expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:no-path`);
       expect(warnMsg).toContain(`${PEER_DEVICE_2.slice(0, 8)}:no-path`);
-      const patch = JSON.parse(unsafeMock.mock.calls[0][1] as string);
+      const patch = JSON.parse((unsafeMock.mock.calls[0][1] as unknown[])[1] as string);
       expect(patch.bootstrap.ok).toBe(false);
     } finally {
       warnSpy.mockRestore();
