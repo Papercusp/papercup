@@ -31,7 +31,8 @@ export default defineTool({
     when: 'Use to place a background autonomous worker on new work: a cup, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="cup" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
     notWhen:
       'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-cup.',
-    chaining: 'cup:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
+    chaining:
+      'harness:list first if unsure of the slug (EI-391) → cup:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -54,7 +55,11 @@ export default defineTool({
         .min(1)
         .max(80)
         .optional()
-        .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),
+        .describe(
+          'Registry slug of the harness to spawn into. Optional only when exactly one harness is registered. ' +
+            "Unsure of the slug? Call `harness:list` FIRST rather than guessing — an unregistered slug is rejected " +
+            'only AFTER the spawn attempt, wasting it (though the rejection does include the full registered list) (EI-391).',
+        ),
       role: z
         .string()
         .min(1)

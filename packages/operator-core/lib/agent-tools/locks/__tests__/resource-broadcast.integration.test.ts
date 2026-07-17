@@ -82,6 +82,12 @@ describe('resource broadcasts (named-resource drain)', async () => {
     const inboxB = await readInbox(holderB);
     expect(inboxA.some((m) => m.from === src.ownerId && /draining/i.test(m.summary ?? ''))).toBe(true);
     expect(inboxB.some((m) => m.from === src.ownerId && /draining/i.test(m.summary ?? ''))).toBe(true);
+    // EI-386: ambient-classified so category-aware prose consumers (coord:inbox,
+    // the neologism miner, …) can recognize this templated system notice without
+    // reinventing text-pattern dedup.
+    expect(
+      inboxA.some((m) => m.from === src.ownerId && (m as { category?: string }).category === 'resource-locks'),
+    ).toBe(true);
   });
 
   it.skipIf(!live)('back-up targets the waiters, not the whole fleet (A4)', async () => {
@@ -94,6 +100,9 @@ describe('resource broadcasts (named-resource drain)', async () => {
     // The waiter who was refused while it was held gets the back-up.
     const waiterInbox = await readInbox(waiter);
     expect(waiterInbox.some((m) => m.from === src.ownerId && /back up/i.test(m.summary ?? ''))).toBe(true);
+    expect(
+      waiterInbox.some((m) => m.from === src.ownerId && (m as { category?: string }).category === 'resource-locks'),
+    ).toBe(true);
     // A bystander who never waited is NOT spammed (the old ['*'] firehose is gone).
     const bystanderInbox = await readInbox(bystander);
     expect(bystanderInbox.some((m) => m.from === src.ownerId && /back up/i.test(m.summary ?? ''))).toBe(false);

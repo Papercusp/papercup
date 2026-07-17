@@ -108,6 +108,13 @@ const AMBIENT_CATEGORIES = new Set([
   "service-health",
   "agent-governor",
   "doc-drift",
+  // EI-386: named-resource drain/back-up templates (resource-broadcast.ts) —
+  // stamped for classification consistency with the others above. In practice
+  // these are always sent to specific holders/waiters, never `to: ['*']`, so
+  // isAmbientBroadcast's broadcast-only guard (below) keeps them visible to
+  // the recipient who must act; this entry only takes effect if a future
+  // caller ever genuinely broadcasts one to '*'.
+  "resource-locks",
 ]);
 
 const DEFAULT_INBOX_LIMIT = 50;

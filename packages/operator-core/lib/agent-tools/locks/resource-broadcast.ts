@@ -42,6 +42,14 @@ export async function broadcastResourceDrainStart(params: {
         // Already-automated lifecycle (coord-lifecycle-automation D-003 restart/resource):
         // mark it so the categorizer credits it + coord:inbox treats it as signal.
         extra: { auto: true, lifecycle: 'restart-resource' },
+        // EI-386: ambient-classify the templated system prose (a synthetic
+        // one-shot `drain-X-<ts>-N` sender re-emits this verbatim per drain) so
+        // coord:inbox / coalescing / any other category-aware prose consumer can
+        // recognize + fold it instead of reinventing text-pattern dedup (the
+        // neologism miner's digit-normalized dedup workaround). Still targeted
+        // (never `to: ['*']`), so it stays VISIBLE to the holder who must act —
+        // isAmbientBroadcast's broadcast-only guard is unaffected.
+        category: 'resource-locks',
       });
     }
   } catch {
@@ -65,6 +73,8 @@ export async function broadcastResourceBackUp(params: {
       body: `${params.source.ownerLabel} finished its exclusive hold on "${params.resource}". You were waiting on it — acquire it again with locks:acquire_resource.`,
       // Already-automated lifecycle (coord-lifecycle-automation D-003 restart/resource).
       extra: { auto: true, lifecycle: 'restart-resource' },
+      // EI-386: same ambient classification as the drain-start notice above.
+      category: 'resource-locks',
     });
   } catch {
     // best-effort

@@ -83,9 +83,20 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
       WHERE harness_slug = '${slug.replace(/'/g, "''")}'
       WITH CHECK OPTION;
 
-    -- Column defaults so writers that omit these on INSERT pass through
-    -- (matches migration 116). harness_slug satisfies WITH CHECK OPTION.
-    ALTER VIEW ${schema}.agent_chats ALTER COLUMN workspace_id SET DEFAULT 'default';
+    -- Column defaults so writers that omit these on INSERT pass through.
+    -- harness_slug satisfies WITH CHECK OPTION.
+    --
+    -- NO workspace_id DEFAULT here, deliberately (WI-5243 / the WI-5125 class).
+    -- This block used to mirror migration 116's workspace_id SET DEFAULT
+    -- 'default', which made every writer that omitted the column file its row
+    -- under the WRONG tenant while the INSERT still reported success — 181
+    -- unreadable agent_chats rows, surfacing as a chat panel that spun forever.
+    -- The active workspace is only knowable IN-PROCESS, so a literal here is a
+    -- guess. Writers stamp it explicitly (activeWorkspaceId()), and
+    -- harness_shared.fill_workspace_id_from_projects() is the BEFORE INSERT
+    -- derive-net. Migration 616 dropped these defaults from existing schemas;
+    -- re-adding one here would silently reintroduce the bug for every NEW
+    -- harness (which is exactly how this scaffolder cloned it in the first place).
     ALTER VIEW ${schema}.agent_chats ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
     ALTER VIEW ${schema}.agent_chats ALTER COLUMN created_at SET DEFAULT (extract(epoch FROM now()) * 1000)::bigint;
     ALTER VIEW ${schema}.agent_chats ALTER COLUMN updated_at SET DEFAULT (extract(epoch FROM now()) * 1000)::bigint;
@@ -99,7 +110,6 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
       WHERE harness_slug = '${slug.replace(/'/g, "''")}'
       WITH CHECK OPTION;
 
-    ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN workspace_id SET DEFAULT 'default';
     ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
     ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN created_at SET DEFAULT (extract(epoch FROM now()) * 1000)::bigint;
     ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN body SET DEFAULT '';
@@ -110,7 +120,6 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
       WHERE harness_slug = '${slug.replace(/'/g, "''")}'
       WITH CHECK OPTION;
 
-    ALTER VIEW ${schema}.directive_summaries ALTER COLUMN workspace_id SET DEFAULT 'default';
     ALTER VIEW ${schema}.directive_summaries ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
     ALTER VIEW ${schema}.directive_summaries ALTER COLUMN source SET DEFAULT 'ceo';
     ALTER VIEW ${schema}.directive_summaries ALTER COLUMN summary SET DEFAULT '';
@@ -121,7 +130,6 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
       WHERE harness_slug = '${slug.replace(/'/g, "''")}'
       WITH CHECK OPTION;
 
-    ALTER VIEW ${schema}.messages ALTER COLUMN workspace_id SET DEFAULT 'default';
     ALTER VIEW ${schema}.messages ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
 
     CREATE OR REPLACE VIEW ${schema}.executed_actions AS
@@ -129,7 +137,6 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
       WHERE harness_slug = '${slug.replace(/'/g, "''")}'
       WITH CHECK OPTION;
 
-    ALTER VIEW ${schema}.executed_actions ALTER COLUMN workspace_id SET DEFAULT 'default';
     ALTER VIEW ${schema}.executed_actions ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
 
     GRANT SELECT, INSERT, UPDATE, DELETE ON

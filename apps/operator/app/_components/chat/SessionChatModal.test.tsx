@@ -8,6 +8,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
+// jsdom-vs-virtualization seam (same as ChatConversation.test.tsx): the real
+// @tanstack/react-virtual renders nothing without real layout, and the
+// scroll-to-bottom / load-earlier effects need stand-ins for APIs jsdom lacks.
+const scrollToIndexSpy = vi.fn();
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: (opts: { count: number }) => ({
+    getVirtualItems: () => Array.from({ length: opts.count }, (_, i) => ({ index: i, key: `vk-${i}`, start: i * 64, size: 64 })),
+    getTotalSize: () => opts.count * 64,
+    measureElement: () => {},
+    scrollToIndex: scrollToIndexSpy,
+  }),
+}));
+
 type Handlers = Record<string, (data: string, ev?: unknown) => void>;
 let captured: { handlers: Handlers; onError?: (e: Error) => void; url: string } | null = null;
 const closeSpy = vi.fn();
@@ -35,6 +48,10 @@ beforeEach(() => {
   closeSpy.mockClear();
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
+  Element.prototype.scrollIntoView = vi.fn();
+  vi.stubGlobal('IntersectionObserver', class {
+    observe() {} unobserve() {} disconnect() {}
+  });
 });
 afterEach(() => {
   cleanup();
