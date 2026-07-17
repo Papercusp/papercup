@@ -152,12 +152,24 @@ beforeEach(() => {
 });
 
 describe('runBootstrapLeg', () => {
-  it('self-gates as a no-op when the local repo already has a PEER namespace (warm repo)', async () => {
-    listNamespacesMock.mockResolvedValue(['abcd1234']);
+  it('self-gates as a no-op when the local repo already has a peer MEMBER namespace (warm repo)', async () => {
+    // Warm = the namespace of an attested member device other than self —
+    // the mocked deviceNamespaceKey is base64→hex, so PEER_DEVICE's hex it is.
+    const peerHex = Buffer.from(PEER_DEVICE, 'base64').toString('hex');
+    listNamespacesMock.mockResolvedValue([peerHex]);
     await runBootstrapLeg(SLUG, WS);
     expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
-    expect(listHiveMembersMock).not.toHaveBeenCalled();
     expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
+  });
+
+  it('WI-3496 part 2: a non-member namespace (github-ingress, same-tick earlier leg) does NOT count as warm — still bootstraps', async () => {
+    // runGithubBridgeLeg runs BEFORE this leg in the same tick and writes a
+    // locally-synthesized ingress namespace on the very first tick of a
+    // GitHub-bridged repo — counting it as warm made every bridged pot skip
+    // G-8 cold-join forever (live-caught on the P-302 rig).
+    listNamespacesMock.mockResolvedValue(['1n6re551n6re55deadbeef00']);
+    await runBootstrapLeg(SLUG, WS);
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
   });
 
   it('G-8 cold start (WI-3496): ensures the bare store exists BEFORE reading namespaces', async () => {

@@ -1440,18 +1440,6 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     const actor = await resolveUsageActor();
     const selfDevicePubkey = actor?.devicePubkey;
 
-    // Warm means "already seeded from a PEER" — our own namespace doesn't
-    // count (own-head-publish creates it locally; treating it as warm would
-    // permanently skip the cold-join whenever own-head ever ran first).
-    let selfNamespaceKey: string | undefined;
-    try {
-      selfNamespaceKey = selfDevicePubkey ? deviceNamespaceKey(selfDevicePubkey) : undefined;
-    } catch {
-      selfNamespaceKey = undefined; // malformed self pubkey — treat every namespace as peer
-    }
-    const peerNamespaces = (await listNamespaces(repoPath)).filter((n) => n !== selfNamespaceKey);
-    if (peerNamespaces.length > 0) return; // warm repo — nothing to bootstrap
-
     const members = await listHiveMembers(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
@@ -1460,6 +1448,30 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
 
     const peerDevicePubkeyBase64 = memberDevicePubkeysBase64.find((d) => d !== selfDevicePubkey);
     if (!peerDevicePubkeyBase64) return; // no member peer other than self yet — nothing to seed from
+
+    // Warm means "already seeded from a PEER MEMBER's device" — nothing else
+    // counts. Our own namespace is local (own-head-publish), and the
+    // github-ingress namespace is ALSO locally synthesized (runGithubBridgeLeg
+    // runs BEFORE this leg in the same tick, so on a GitHub-bridged repo the
+    // very first tick writes the ingress namespace before we ever check —
+    // live-caught on the WI-3496 rig: counting it made every bridged pot skip
+    // G-8 cold-join forever). So the gate intersects the store's namespaces
+    // with the ATTESTED MEMBER devices (excluding self): only a real peer
+    // member's namespace proves a prior seed. A stale member-set false-cold
+    // just re-runs bootstrapFromPeer, which is rewind-safe by contract.
+    const memberNamespaceKeys = new Set(
+      memberDevicePubkeysBase64
+        .filter((d) => d !== selfDevicePubkey)
+        .flatMap((d) => {
+          try {
+            return [deviceNamespaceKey(d)];
+          } catch {
+            return []; // malformed attestation pubkey — never counts as warm
+          }
+        }),
+    );
+    const existing = await listNamespaces(repoPath);
+    if (existing.some((n) => memberNamespaceKeys.has(n))) return; // warm — already seeded from a peer member
 
     // DIAL-REGISTRY (WI-3583) — see module doc above. Real per-device dial
     // once this harness has a live swarm topic; falls back to the same
