@@ -188,6 +188,41 @@ describe('git seed provider', () => {
     ).rejects.toThrow();
   });
 
+  it('restores an encrypted seed from a READ-ONLY seed dir (packaged /usr/lib layout) and leaves no plaintext behind', async () => {
+    // WI-5179: a packaged install's seed dir is a root-owned read-only resource
+    // (/usr/lib/<Product>/seed). Decrypted bundles must materialize OUTSIDE it —
+    // writing <seed>/.decrypted EACCES'd on every offline install, so the code
+    // half never restored (and would have parked a private repo's plaintext next
+    // to the installer payload).
+    const src = tmpDir('gseed-ro-src-');
+    await initRepo(src);
+    writeFileSync(join(src, 'secret.txt'), 'private repo contents');
+    await g(src, ['add', '.']);
+    await g(src, ['commit', '-qm', 'secret']);
+
+    const provider = createGitSeedProvider();
+    const staging = tmpDir('gseed-ro-stage-');
+    const key = generateSeedKey();
+    const { entry, payload } = await provider.cut({
+      sourceRepoDir: src,
+      stagingDir: staging,
+      originUrl: 'https://github.com/Papercusp/papercup',
+      encryption: { key, keyRef: { via: 'epoch', potId: 'papercusp', epoch: 1 } },
+    });
+
+    await exec('chmod', ['-R', 'a-w', staging]);
+    try {
+      const target = join(tmpDir('gseed-ro-tgt-'), 'checkout');
+      await provider.restore(entry, payload, { targetRepoDir: target, decryptionKey: key });
+      expect(readFileSync(join(target, 'secret.txt'), 'utf8')).toBe('private repo contents');
+      // Nothing landed inside the seed dir: no plaintext at rest, hash intact.
+      expect(existsSync(join(staging, '.decrypted'))).toBe(false);
+      expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+    } finally {
+      await exec('chmod', ['-R', 'u+w', staging]);
+    }
+  });
+
   it('skips a submodule declared in .gitmodules but NOT checked out (no spawn ENOENT)', async () => {
     // Repro of the real cut failure: .gitmodules can declare a submodule whose
     // working tree was never initialized (e.g. the RETIRED libs/zero-harness).

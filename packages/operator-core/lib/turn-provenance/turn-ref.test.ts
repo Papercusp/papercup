@@ -57,6 +57,23 @@ describe('formatTurnRef / parseTurnRefs', () => {
     const [parsed] = parseTurnRefs(`carried forward per ${ref}`);
     expect(parsed.quote).toBeUndefined();
   });
+
+  // Two quoted directives whose combined span exceeds the lookback window: the
+  // window clips the FIRST quote's opening char, and an unanchored scan then
+  // pairs its leftover closing quote with the second quote's opener — the
+  // extracted "claim" becomes the prose BETWEEN the directives and the lint
+  // flags a genuine owner quote as fabricated (seen live 2026-07-17).
+  it('a clipped earlier quote must not shift pairing — the second ref still gets ITS adjacent quote', () => {
+    const q1 = 'continue with all the remaining steps required to finish these remaining items';
+    const q2 = 'put yourself on auto mode and continue where you left off';
+    const ref1 = formatTurnRef(SID, '2026-07-17T04:50:14.437Z');
+    const ref2 = formatTurnRef(SID, '2026-07-17T07:16:26.253Z');
+    const text = `Authority:\n- owner directive "${q1}" ${ref1}\n- AUTO mode owner-directed "${q2}" ${ref2}`;
+    const parsed = parseTurnRefs(text);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0].quote).toBe(q1);
+    expect(parsed[1].quote).toBe(q2);
+  });
 });
 
 describe('quoteMatchesTurn', () => {

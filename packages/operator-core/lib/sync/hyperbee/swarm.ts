@@ -1183,11 +1183,24 @@ export async function joinHarnessSwarm(
             lastEscalationMs = now;
             const topicHex = opts.topic.toString('hex');
             const info: SeveredLinkInfo = { topicHex, severedMs };
-            console.error(
-              `[swarm] ⚠ topic ${topicHex.slice(0, 16)}… severed for ${Math.round(severedMs / 1000)}s ` +
-                'despite refresh() ticking — forcing a fresh topic leave+rejoin ' +
-                '(the local discovery session likely holds stale DHT announce/lookup state).',
-            );
+            // The loud signal is diagnostic-only — a throwing/misbehaving
+            // console (a custom transport, a test harness that turns
+            // console.error into a hard failure) must NEVER prevent the
+            // actual recovery action below from running. Same VITEST-gating
+            // convention as topic-gossip.ts's diagnostic logs (this codebase
+            // relies on `onSeveredLink`/callbacks as the test-observable
+            // signal, not console scraping).
+            try {
+              if (!process.env.VITEST) {
+                console.error(
+                  `[swarm] ⚠ topic ${topicHex.slice(0, 16)}… severed for ${Math.round(severedMs / 1000)}s ` +
+                    'despite refresh() ticking — forcing a fresh topic leave+rejoin ' +
+                    '(the local discovery session likely holds stale DHT announce/lookup state).',
+                );
+              }
+            } catch {
+              /* diagnostic-only; swallow */
+            }
             fireSeveredLinkSafely(opts.onSeveredLink, info);
             void Promise.resolve(opts.swarm.leave(opts.topic))
               .then(() => {

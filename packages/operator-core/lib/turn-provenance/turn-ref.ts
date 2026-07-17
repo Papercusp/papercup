@@ -69,9 +69,14 @@ function findAdjacentQuote(text: string, matchStart: number, matchEnd: number): 
   // fall back to one immediately before it (`"…" [turn:…]`).
   const afterMatch = after.match(/^\s*[:\]]*\s*"([^"]{3,600})"/);
   if (afterMatch) return afterMatch[1];
-  const beforeMatches = [...before.matchAll(/"([^"]{3,600})"/g)];
-  const last = beforeMatches[beforeMatches.length - 1];
-  return last ? last[1] : undefined;
+  // The before-fallback must be END-ANCHORED (quote, then ≤60 non-quote label
+  // chars, then the ref): a "last quoted run anywhere in the window" scan is
+  // parity-poisoned when the window boundary clips an EARLIER quote's opening
+  // char — the leftover closing quote pairs with the next quote's opener and
+  // the extracted "claim" becomes the prose BETWEEN two directives (seen live
+  // on a two-directive carry note spanning >200 chars, 2026-07-17).
+  const beforeMatch = before.match(/"([^"]{3,600})"[^"]{0,60}$/);
+  return beforeMatch ? beforeMatch[1] : undefined;
 }
 
 export function parseTurnRefs(text: string | null | undefined): TurnRef[] {

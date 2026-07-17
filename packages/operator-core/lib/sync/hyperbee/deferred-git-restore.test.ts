@@ -159,14 +159,19 @@ describe('triggerDeferredGitRestore', () => {
     expect(res).toEqual({ ran: true, restored: [], stillDeferred: ['git'] });
   });
 
-  it('a restore that reports the store not-ok ⇒ stays deferred (cold path)', async () => {
+  it('a restore that reports the store not-ok ⇒ stays deferred (cold path) AND the reason reaches the log', async () => {
+    // WI-5179: the reason was dropped here, so a packaged install's every-boot
+    // failure ('gave up after retries') had no visible cause in any log.
     const restore = vi.fn(async (): Promise<RestoreHiveSeedResult> => ({ ran: true, outcomes: [{ kind: 'git', ok: false, reason: 'decrypt' }], deferred: [] }));
+    const log = vi.fn();
     const res = await triggerDeferredGitRestore({
       ...dirs,
       epochKeyProvider: providerWith(KEY),
       readManifest: async () => manifestWithEncryptedGit('epoch'),
       restore,
+      log,
     });
     expect(res).toEqual({ ran: true, restored: [], stillDeferred: ['git'] });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('cold-pathing: decrypt'));
   });
 });

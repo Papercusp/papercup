@@ -483,7 +483,14 @@ async function defaultRestoreDeferredGitSeed(
     targetStoreDir,
     targetRepoDir,
     epochKeyProvider,
-    log: (msg) => record?.('clone', 'running', { detail: msg.replace(/^\[seed\]\s*/, 'seed: ') }),
+    log: (msg) => {
+      const detail = msg.replace(/^\[seed\]\s*/, 'seed: ');
+      // WI-5179 (EI-12881 family): mirror to the console — recordProgress is the
+      // only sink otherwise, so serve.log showed 'gave up after retries' with the
+      // actual failure reason (e.g. the read-only seed-dir EACCES) invisible.
+      console.warn(`[papercusp-hive] ${detail}`);
+      record?.('clone', 'running', { detail });
+    },
   });
   // EI-8793: the moment the git seed actually lands, seed the joiner-side
   // git-sync routine for the canonical clone — this activates the

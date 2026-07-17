@@ -142,6 +142,23 @@ export interface CreateTopicGossipOpts<Frame> {
   fastWindowMs?: number;
   /** Steady-state keepalive cadence once the fast window lapses (ms). Default DEFAULT_SLOW_REFRESH_MS. */
   slowRefreshMs?: number;
+  /**
+   * EI-13317 escalation ladder: once a topic HAD a paired channel and then
+   * sits at ZERO paired channels for this long — despite the refresh()
+   * self-heal loop actively ticking — force a topic-level leave+rejoin (a
+   * fresh discovery session/DHT announce) and fire `onSeveredLink`. Mirrors
+   * swarm.ts's `severedEscalationMs` (see its doc for the forensics). Default
+   * `DEFAULT_SEVERED_ESCALATION_MS`. `0` disables the escalation entirely
+   * (byte-identical pre-EI-13317 behavior).
+   */
+  severedEscalationMs?: number;
+  /**
+   * EI-13317 observability: fires when the severed-link escalation trips
+   * (see `severedEscalationMs`) — the LOUD signal a persistently-severed
+   * topic requires instead of silently freezing. Best-effort; a throw is
+   * swallowed.
+   */
+  onSeveredLink?: (info: GossipSeveredLinkInfo) => void;
 }
 
 /**
@@ -240,6 +257,11 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           if (!process.env.VITEST) {
             console.warn(`[topic-gossip:${opts.protocol}] paired on topic ${topicHex}`);
           }
+          // EI-13317: this topic has now genuinely paired at least once —
+          // only a topic that HAD a peer is worth escalating when it later
+          // sits at zero (a topic that's never paired yet may just have no
+          // peer online, which the ladder should not act on).
+          st.everPaired = true;
           sendOurs();
         },
         onclose: () => {
@@ -326,6 +348,7 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       refreshMs,
       () => {
         const now = Date.now();
+        const severedEscalationMs = opts.severedEscalationMs ?? DEFAULT_SEVERED_ESCALATION_MS;
         for (const st of topics.values()) {
           const inFastWindow = now - st.fastWindowStartMs < fastWindowMs;
           const slowDue = now - st.lastRefreshMs >= slowRefreshMs;
@@ -335,6 +358,55 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
             void Promise.resolve(st.discovery?.refresh?.()).catch(() => {});
           } catch {
             /* best-effort per topic */
+          }
+
+          // ── EI-13317 escalation ladder ──
+          // Mirrors swarm.ts's severed-link escalation (see its doc for the
+          // forensics): refresh() alone does not recover a link severed by a
+          // one-side restart. Once this topic HAS paired before
+          // (`everPaired`) and now sits at ZERO paired channels for
+          // `severedEscalationMs` despite refresh() ticking, force a fresh
+          // topic leave+rejoin and fire the loud health signal.
+          if (severedEscalationMs > 0) {
+            const severedMs = now - st.fastWindowStartMs;
+            const genuinelySevered = st.everPaired && st.channels.size === 0;
+            if (
+              genuinelySevered &&
+              severedMs >= severedEscalationMs &&
+              now - st.lastEscalationMs >= severedEscalationMs
+            ) {
+              st.lastEscalationMs = now;
+              const topicHex = st.topic.toString('hex');
+              const info: GossipSeveredLinkInfo = { topicHex, severedMs };
+              // Diagnostic-only — never let a throwing/misbehaving console
+              // transport block the actual recovery action below.
+              try {
+                if (!process.env.VITEST) {
+                  console.error(
+                    `[topic-gossip:${opts.protocol}] ⚠ topic ${topicHex.slice(0, 16)}… severed for ` +
+                      `${Math.round(severedMs / 1000)}s despite refresh() ticking — forcing a fresh ` +
+                      'topic leave+rejoin (the discovery session likely holds stale DHT state).',
+                  );
+                }
+              } catch {
+                /* diagnostic-only; swallow */
+              }
+              try {
+                opts.onSeveredLink?.(info);
+              } catch {
+                /* diagnostic-only callback; swallow */
+              }
+              void Promise.resolve(opts.swarm.leave(st.topic))
+                .then(() => {
+                  st.discovery = opts.swarm.join(st.topic, { server: true, client: true }) as DiscoveryLike;
+                  // A fresh join re-arms the fast window too.
+                  st.fastWindowStartMs = Date.now();
+                })
+                .catch(() => {
+                  // best-effort — a failed rejoin is retried at the next
+                  // escalation tick (lastEscalationMs already advanced).
+                });
+            }
           }
         }
       },
@@ -372,6 +444,8 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
         channels: new Set(),
         fastWindowStartMs: Date.now(),
         lastRefreshMs: 0,
+        everPaired: false,
+        lastEscalationMs: 0,
       };
       topics.set(hex, st);
       // A topic joined after connections exist still gets its channel everywhere.
