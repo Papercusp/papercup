@@ -433,79 +433,19 @@ function issueKindsForFallback(filter: FilterNode | undefined): readonly IssueFa
 }
 
 /**
- * True iff the filter tree contains an explicit `id` leaf ANYWHERE (any combinator
- * shape — unlike issueKindsForFallback's conservative all/leaf-only walk, this one
- * recurses through any/not too, because the answer here is binary: does an id
- * constraint exist at all, not what it narrows to).
- *
- * An `id IN (...)` / `id = ...` leaf names a fixed, CLOSED-WORLD set of items by
- * identity — e.g. a leader's hand-curated drain list (bug-drain-resume-0712-class
- * specs). Unlike a `kind` constraint, there is no wider "family" for such a spec to
- * fall back to: once every named id is claimed/terminal, the spec's scope is
- * genuinely exhausted. But `issueKindsForFallback` only ever recognizes a `kind`
- * leaf as a lane constraint — an id-only spec has no `kind` leaf at all, so it
- * returned `undefined` (no constraint to carry over) and tier 3 silently widened to
- * claim ANY open issue-family row in the whole harness. Proven live 2026-07-12
- * (EI-10062 and its long duplicate trail: EI-9887/9888/9896/10002/10040): a
- * bug-drain fleet's explicit id-allowlist spec, once drained, started serving
- * unrelated `change`-kind feature/research items from a completely different
- * work-stream. Fix: when the spec names an explicit id set, tier 3 must not widen
- * at all — exhausting a closed-world list means nothing left, not "try anything".
- *
- * Only a POSITIVE identity match (`=` / `in`) counts as such a set. A NEGATIVE
- * `id != X` leaf is the opposite shape — it excludes one id from an otherwise-open
- * (often kind-restricted) set and must NOT disable tier 3: a `kind in [bug,change]
- * AND id != reserved` spec still has a real, unbounded issue lane to widen into
- * once its feature-family tiers miss (regression-tested by the pre-existing
- * "tier 3: an issue-kind spec narrows issue fallback instead of claiming an older
- * task" case).
- *
- * EI-14172-adjacent (backlog-drain-clean@6, 2026-07-17): `!=` is not the only way
- * to write a negative id exclusion — `{ not: { field:'id', op:'in', value:[...] } }`
- * (a fleet leader's "exclude these 2 already-handled ids" clause, e.g. `not:{id in
- * [WI-5245, WI-5246]}`) is the SAME negative-exclusion shape wearing the `not`
- * combinator instead of the `!=` op. The naive `return walk(node.not)` recurses
- * into the inner leaf and evaluates it AS IF IT WERE UN-NEGATED — `{field:'id',
- * op:'in'}` alone reads as a positive closed-world allowlist, so a `not`-wrapped
- * exclusion was misclassified as "the spec names an explicit id set", which then
- * (positiveIdCohortIds correctly returning null for a not-wrapped leaf — it isn't
- * a bare/all-nested positive leaf) hit the fully-conservative "id constraint
- * exists but its exact set can't be safely extracted" branch and skipped tier 3
- * ENTIRELY — a whole issue-family fleet (10 members) silently starved with a
- * genuinely wide-open, unbounded issue lane sitting right there. Nothing under a
- * `not` can EVER express a positive closed-world identity set — by definition its
- * negation is an open-world exclusion — so a leaf reached via `not` must never
- * count here, regardless of the leaf's own op.
- */
-function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
-  if (!filter) return false;
-  function walk(node: FilterNode): boolean {
-    if (isLeaf(node)) return node.field === 'id' && (node.op === '=' || node.op === 'in');
-    if ('all' in node) return node.all.some(walk);
-    if ('any' in node) return node.any.some(walk);
-    // A `not` is a negation of whatever it wraps — even a bare `{field:'id',
-    // op:'in'}` inside it is an EXCLUSION (id NOT IN [...]), never a positive
-    // closed-world allowlist. Do not recurse into it as if it were unnegated.
-    return false;
-  }
-  return walk(filter);
-}
-
-/**
- * WI-5258 companion to {@link filterHasIdConstraint}: extract the ids a `not`-wrapped id
+ * WI-5258/WI-5275 companion to tier 3's id handling above: extract the ids a `not`-wrapped id
  * leaf NEGATIVELY excludes — `{ not: { field:'id', op:'='|'in', value:[...] } }`, bare or
  * directly inside a top-level `all` (the same conservative bare/all-only shapes
  * {@link positiveIdCohortIds} and {@link issueKindsForFallback} handle; deeper nesting under
  * `any`/`not` is left alone rather than guessed at). Multiple such leaves union (excluding
  * from set A and set B excludes A∪B).
  *
- * Once filterHasIdConstraint correctly stops disabling tier 3 for a spec like this, the
- * exclusion itself must still be HONORED — `claimNextIssueWorkItem` only ever received
- * `issueKinds` + `ids` (the POSITIVE cohort), with no way to see a negative exclusion, so
- * without this a fleet's "already-handled, skip these" ids came right back through the
- * fallback (caught by this WI's own regression test before it shipped: tier 3 claimed the
- * excluded id, not the other open one). Threaded into `claimNextIssueWorkItem`'s
- * `excludeIds` opt.
+ * The exclusion must be HONORED regardless of whether a positive id set was also extracted —
+ * `claimNextIssueWorkItem` only ever received `issueKinds` + `ids` (the POSITIVE cohort), with
+ * no way to see a negative exclusion, so without this a fleet's "already-handled, skip these"
+ * ids came right back through the fallback (caught by this WI's own regression test before it
+ * shipped: tier 3 claimed the excluded id, not the other open one). Threaded into
+ * `claimNextIssueWorkItem`'s `excludeIds` opt.
  */
 function negativeIdExclusions(filter: FilterNode | undefined): string[] {
   function idLeafValues(node: FilterNode): string[] | null {
@@ -776,31 +716,55 @@ export async function getNextWorkItem(
   // and always reported a false drain. Fix: extract the literal id set (when the shape allows
   // it — positiveIdCohortIds) and THREAD it through tier 3 so it narrows to exactly those ids,
   // instead of either ignoring the constraint (the original leak) or refusing to run at all.
-  // Only fall back to skipping tier 3 (the fully-conservative EI-10062 behavior) when an id
-  // constraint exists but its exact set can't be safely extracted (nested in an any/not).
+  //
+  // WI-5275 (live incident, 2026-07-17, backlog-drain-clean@12): the "when it can't be safely
+  // extracted, skip tier 3 entirely" fallback above was ITSELF the bug, not just a conservative
+  // edge case. It fires whenever an `id` leaf appears ANYWHERE in the tree (formerly detected by
+  // the now-removed `filterHasIdConstraint`, which recursed into `any`) — but an id leaf reached
+  // through a positive `any` (OR) branch does NOT establish a closed-world identity set at all:
+  // `id in [...] OR <broad-condition>` WIDENS admission (admits strictly MORE than
+  // <broad-condition> alone), it never narrows it. The live fleet spec here was exactly this
+  // shape — `any: [{id in [WI-5270, WI-5272]}, {not: <p2p-title exclusion>}]`, ANDed with a
+  // `kind in [bug,change,task,feature]` leaf — a normal, wide-open drain-spec pinning two extra
+  // ids as a widening exception. Because the id leaf could not be *safely extracted* from that
+  // `any` (positiveIdCohortIds correctly refuses to guess), the old code treated "can't extract"
+  // as "conservatively skip tier 3 altogether" — which meant tier 3 (the ONLY path that serves
+  // bug/change/task work; the feature-family tiers 1/2 structurally cannot see issue-family rows)
+  // NEVER ran for this spec, permanently starving the WHOLE fleet of its entire non-p2p
+  // bug/change/task backlog (hundreds of genuinely admissible, unclaimed items) while
+  // scheduler:get_next kept reporting a clean drain.
+  //
+  // Fix: stop gating tier 3 on "does an id leaf exist anywhere". Just narrow by `ids` whenever
+  // positiveIdCohortIds can SAFELY extract a genuine closed-world set (bare leaf, or ANDed at
+  // the top level via `all` — unchanged, still exactly EI-10062/WI-4309's guarantee); otherwise
+  // run tier 3 UNRESTRICTED by id (kind-narrowed when issueKindsForFallback can extract one) and
+  // rely on the SAME safety net a no-id-leaf spec already depends on: getNextForBee's mandatory
+  // post-claim `matchesWorkItemClaimSpec` re-check against the FULL filter tree (which correctly
+  // evaluates `any`/`not` OR/NOT semantics, unlike this SQL-side narrowing) + its bounded
+  // release-and-retry loop. This can never violate a genuine closed-world allowlist (that shape
+  // is still always safely extracted and threaded through), and it can never serve a
+  // spec-violating item (the post-claim check releases and retries) — it only stops the
+  // ENTIRE-lane starvation that a merely-inconvenient-to-extract id leaf used to cause.
   if (!claimed && (await schedulerIssuesClaimableEnabled())) {
-    const hasIdConstraint = filterHasIdConstraint(spec.view.filter);
-    const idValues = hasIdConstraint ? (positiveIdCohortIds(spec.view.filter) ?? undefined) : undefined;
-    if (!hasIdConstraint || idValues) {
-      const issueKinds = issueKindsForFallback(spec.view.filter);
-      // WI-5258: a positive allowlist (idValues) and a negative exclusion are mutually
-      // exclusive in practice (a spec that already names a closed-world positive set has
-      // nothing left to additionally exclude), but thread both regardless — the query
-      // ANDs them, so an empty excludeIds is simply a no-op.
-      const excludeIds = negativeIdExclusions(spec.view.filter);
-      claimed = await claimNextIssueWorkItem(
-        {
-          harness: opts.harness,
-          assignee: bee.assignee,
-          states: effectiveStates,
-          swarmId: opts.swarmId,
-          excludeRedundant: opts.excludeRedundant,
-          rigAvailable: opts.rigAvailable,
-        },
-        ws,
-        { issueKinds, ids: idValues, excludeIds: excludeIds.length ? excludeIds : undefined },
-      );
-    }
+    const idValues = positiveIdCohortIds(spec.view.filter) ?? undefined;
+    const issueKinds = issueKindsForFallback(spec.view.filter);
+    // WI-5258: a positive allowlist (idValues) and a negative exclusion are mutually
+    // exclusive in practice (a spec that already names a closed-world positive set has
+    // nothing left to additionally exclude), but thread both regardless — the query
+    // ANDs them, so an empty excludeIds is simply a no-op.
+    const excludeIds = negativeIdExclusions(spec.view.filter);
+    claimed = await claimNextIssueWorkItem(
+      {
+        harness: opts.harness,
+        assignee: bee.assignee,
+        states: effectiveStates,
+        swarmId: opts.swarmId,
+        excludeRedundant: opts.excludeRedundant,
+        rigAvailable: opts.rigAvailable,
+      },
+      ws,
+      { issueKinds, ids: idValues, excludeIds: excludeIds.length ? excludeIds : undefined },
+    );
   }
 
   if (!claimed) return null;

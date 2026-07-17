@@ -747,14 +747,28 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect(r?.workItem.id).toBe('EI-bare-leaf-target');
   });
 
-  // WI-4309 conservatism check: when the id leaf is nested in an `any`/`not` shape,
-  // idValuesForFallback deliberately does NOT attempt extraction (same conservative-shapes
-  // rationale as issueKindsForFallback/widenPastKind) — tier 3 stays fully skipped, same as
-  // EI-10062's original fix, rather than guess a possibly-wrong narrowed set. This is a
-  // known, accepted limitation (documented on idValuesForFallback), not a regression target.
-  it('tier 3 (WI-4309 conservatism): an id constraint nested in `any` still skips tier 3 entirely (no unsafe guess)', async () => {
+  // WI-5275 (live incident, 2026-07-17, backlog-drain-clean@12): an id leaf nested in an
+  // `any` (OR) branch is a WIDENING exception, not a closed-world narrowing constraint — the
+  // OLD code (the now-removed filterHasIdConstraint) treated ANY id leaf found anywhere in the
+  // tree as "the spec names an explicit id set", and since positiveIdCohortIds correctly
+  // refuses to extract a set from an `any` shape, the ladder fell into "can't safely extract ⇒
+  // skip tier 3 entirely" — permanently starving the WHOLE fleet of its entire bug/change/task
+  // backlog (tier 3 is the ONLY path that serves issue-family work) whenever a spec pinned even
+  // one extra id via an `any` clause, exactly the live backlog-drain-clean@12 shape. The fix:
+  // tier 3 always runs; it narrows by `ids` only when positiveIdCohortIds can safely extract a
+  // genuine closed-world set (unchanged EI-10062/WI-4309 guarantee below), and otherwise leans
+  // on the same post-claim `matchesWorkItemClaimSpec` + bounded release-and-retry safety net a
+  // no-id-leaf spec already depends on to enforce full OR/AND correctness.
+  it('tier 3 (WI-5275): an id leaf nested in `any` no longer starves tier 3 — it still serves a matching item', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
-    await seedIssue('EI-any-named', { state: 'open', createdTs: 100, kind: 'bug' });
+    // Oldest, but matches NEITHER branch of the `any` (kind='task', id not in the allowlist) —
+    // proves the post-claim safety net still enforces full-filter correctness even though tier
+    // 3's SQL-side query can't narrow by the `any` shape: this row gets claimed-then-released
+    // (not served) despite ranking first by age.
+    await seedIssue('EI-wrong', { state: 'open', createdTs: 1, kind: 'task' });
+    // Newer, but matches the `any`'s id branch (kind='task' so it does NOT match the kind
+    // branch either — only the id leaf admits it).
+    await seedIssue('EI-any-named', { state: 'open', createdTs: 100, kind: 'task' });
     const s = spec({
       specVersion: '1.0',
       specId: 'id-allowlist-any-shape',
@@ -769,11 +783,8 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       },
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     });
-    // filterHasIdConstraint sees the id leaf (it recurses into `any`) so tier 3's "is there an
-    // id constraint at all" check is true; idValuesForFallback refuses to extract from `any`
-    // (extracting only the id branch would silently drop the `kind` branch's OR semantics), so
-    // tier 3 is skipped entirely — a conservative miss, not a wrong-item claim.
-    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-any-named');
   });
 
   // backlog-drain-clean@6 live incident (2026-07-17): a fleet leader's spec excluded 2
