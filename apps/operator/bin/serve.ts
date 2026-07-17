@@ -35,18 +35,35 @@
  *   PAPERCUSP_USE_EMBEDDED_PG=0   attach external PG via HARNESS_*_DATABASE_URL instead
  *   PAPERCUSP_SERVE_UI=1          force the SPA on even under serve (default off here)
  */
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { homedir } from 'node:os';
-import { createServer as createNetServer, connect as netConnect } from 'node:net';
-import { join } from 'node:path';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, realpathSync } from 'node:fs';
-import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
-import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
-import { runShutdownWithDeadline } from '../lib/shutdown-deadline';
-import { getBuildInfo } from '@papercusp/operator-core/lib/build-info';
-import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
-import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { homedir } from "node:os";
+import {
+  createServer as createNetServer,
+  connect as netConnect,
+} from "node:net";
+import { join } from "node:path";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  mkdirSync,
+  realpathSync,
+} from "node:fs";
+import {
+  mkdir,
+  writeFile,
+  readFile,
+  rm,
+  rename,
+  chmod,
+} from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { ensureToolPathEnv } from "@papercusp/operator-core/lib/tool-path";
+import { runShutdownWithDeadline } from "../lib/shutdown-deadline";
+import { getBuildInfo } from "@papercusp/operator-core/lib/build-info";
+import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identity";
+import { managedSetInterval } from "@papercusp/scheduled-registry";
 // The three sidecar entrypoints (substrate / spawner / inference-gateway) are
 // imported DYNAMICALLY inside main(), never here — same as host-bootstrap,
 // host-handler and embedded-pg below. Each is reachable only from its own
@@ -60,10 +77,10 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 // init, so the packaged bundle is unchanged in shape and only the eager
 // evaluation goes away.
 
-const PAPERCUSP_DIR = join(homedir(), '.papercusp');
-const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
-const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, 'embedded-pg.json');
-const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, 'superuser-token');
+const PAPERCUSP_DIR = join(homedir(), ".papercusp");
+const OPERATOR_JSON = join(PAPERCUSP_DIR, "operator.json");
+const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, "embedded-pg.json");
+const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, "superuser-token");
 // WI-3287: a packaged env-sidecar sibling (env-operator-launcher.ts's bundled
 // spawn — prod/staging running request-only alongside the primary, EI-126)
 // re-execs THIS SAME serve.mjs under the SAME $HOME, identified by
@@ -81,7 +98,7 @@ const ENV_OPERATOR_ID = process.env.PAPERCUSP_ENV_OPERATOR_ID || null;
  *  re-import (serve.ts has non-idempotent module-load side effects — DBOS
  *  workflow registration — that a `vi.resetModules()` re-import re-triggers). */
 export function lockFileNameForEnvId(envOperatorId: string | null): string {
-  return envOperatorId ? `operator.lock.env-${envOperatorId}` : 'operator.lock';
+  return envOperatorId ? `operator.lock.env-${envOperatorId}` : "operator.lock";
 }
 const LOCK_PATH = join(PAPERCUSP_DIR, lockFileNameForEnvId(ENV_OPERATOR_ID));
 // WI-2644: was `process.env.npm_package_version ?? '0.1.0-dev'` — npm never
@@ -126,7 +143,7 @@ export function pidAlive(pid: number): boolean {
     return true;
   } catch (e) {
     // ESRCH = no such process; EPERM = exists but not ours.
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
+    return (e as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -143,7 +160,10 @@ export function pidAlive(pid: number): boolean {
  * portable across whatever the OS reparents orphans to (traditionally pid
  * 1, but not guaranteed) — ANY change means our original parent is gone.
  */
-export function isOrphanedFromParent(originalPpid: number, currentPpid: number): boolean {
+export function isOrphanedFromParent(
+  originalPpid: number,
+  currentPpid: number,
+): boolean {
   return originalPpid > 0 && currentPpid !== originalPpid;
 }
 
@@ -156,10 +176,10 @@ export function isOrphanedFromParent(originalPpid: number, currentPpid: number):
  * no such parent contract and legitimately outlives its launching shell.
  */
 export function startParentDeathWatch(onOrphaned: () => void): void {
-  if (process.env.PAPERCUSP_DESKTOP !== '1') return;
+  if (process.env.PAPERCUSP_DESKTOP !== "1") return;
   const originalPpid = process.ppid;
   managedSetInterval(
-    'serve-desktop-parent-death-watch',
+    "serve-desktop-parent-death-watch",
     5000,
     () => {
       if (isOrphanedFromParent(originalPpid, process.ppid)) {
@@ -169,25 +189,33 @@ export function startParentDeathWatch(onOrphaned: () => void): void {
         onOrphaned();
       }
     },
-    { category: 'watchdog' },
+    { category: "watchdog" },
   );
 }
 
 /** Read the current operator.json discovery, or null. */
 export function readOperatorDiscovery(): OperatorDiscovery | null {
   try {
-    const j = JSON.parse(readFileSync(OPERATOR_JSON, 'utf8')) as Partial<OperatorDiscovery>;
-    if (typeof j?.httpUrl === 'string' && j.httpUrl && typeof j.pid === 'number') {
+    const j = JSON.parse(
+      readFileSync(OPERATOR_JSON, "utf8"),
+    ) as Partial<OperatorDiscovery>;
+    if (
+      typeof j?.httpUrl === "string" &&
+      j.httpUrl &&
+      typeof j.pid === "number"
+    ) {
       return {
         httpUrl: j.httpUrl,
         port: Number(j.port) || 0,
-        token: typeof j.token === 'string' ? j.token : null,
+        token: typeof j.token === "string" ? j.token : null,
         pid: j.pid,
         processIdentity:
-          typeof j.processIdentity === 'string' && j.processIdentity ? j.processIdentity : null,
+          typeof j.processIdentity === "string" && j.processIdentity
+            ? j.processIdentity
+            : null,
         startedAt: Number(j.startedAt) || 0,
-        version: typeof j.version === 'string' ? j.version : 'unknown',
-        sha: typeof j.sha === 'string' && j.sha ? j.sha : null,
+        version: typeof j.version === "string" ? j.version : "unknown",
+        sha: typeof j.sha === "string" && j.sha ? j.sha : null,
       };
     }
   } catch {
@@ -201,7 +229,7 @@ async function httpAlive(httpUrl: string, timeoutMs = 1500): Promise<boolean> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    await fetch(httpUrl + '/api/', { signal: ctrl.signal });
+    await fetch(httpUrl + "/api/", { signal: ctrl.signal });
     return true;
   } catch {
     return false;
@@ -224,7 +252,7 @@ async function httpAlive(httpUrl: string, timeoutMs = 1500): Promise<boolean> {
  * behavior rather than force a needless restart on every ensure.
  */
 export function buildIdentityMismatch(
-  existing: Pick<OperatorDiscovery, 'sha' | 'version'>,
+  existing: Pick<OperatorDiscovery, "sha" | "version">,
   mine: { sha: string | null; version: string },
 ): boolean {
   if (existing.sha && mine.sha) return existing.sha !== mine.sha;
@@ -260,13 +288,13 @@ export async function terminateForeignOperator(
   opts: { graceMs?: number; killWaitMs?: number } = {},
 ): Promise<boolean> {
   try {
-    process.kill(pid, 'SIGTERM');
+    process.kill(pid, "SIGTERM");
   } catch {
     return true; // already gone
   }
   if (await waitForExit(pid, opts.graceMs ?? 5000)) return true;
   try {
-    process.kill(pid, 'SIGKILL');
+    process.kill(pid, "SIGKILL");
   } catch {
     return true; // raced to death
   }
@@ -283,22 +311,34 @@ export async function terminateForeignOperator(
  * recurrence guard.
  */
 export async function reconcileEnsure(
-  mine: { sha: string | null; version: string } = { sha: BUILD_SHA, version: VERSION },
+  mine: { sha: string | null; version: string } = {
+    sha: BUILD_SHA,
+    version: VERSION,
+  },
 ): Promise<OperatorDiscovery | null> {
   const existing = readOperatorDiscovery();
-  if (!existing || !pidAlive(existing.pid) || !(await httpAlive(existing.httpUrl))) return null;
+  if (
+    !existing ||
+    !pidAlive(existing.pid) ||
+    !(await httpAlive(existing.httpUrl))
+  )
+    return null;
   if (!buildIdentityMismatch(existing, mine)) {
-    log(`already running (pid ${existing.pid}) at ${existing.httpUrl} — reusing`);
+    log(
+      `already running (pid ${existing.pid}) at ${existing.httpUrl} — reusing`,
+    );
     return existing;
   }
   log(
     `refusing to adopt pid ${existing.pid} at ${existing.httpUrl}: build mismatch ` +
-      `(running sha=${existing.sha ?? 'unknown'} version=${existing.version}, ` +
-      `mine sha=${mine.sha ?? 'unknown'} version=${mine.version}) — this is the silent ` +
+      `(running sha=${existing.sha ?? "unknown"} version=${existing.version}, ` +
+      `mine sha=${mine.sha ?? "unknown"} version=${mine.version}) — this is the silent ` +
       `no-op-update bug (EI-9002); terminating the stale operator and cold-starting fresh`,
   );
   if (!(await terminateForeignOperator(existing.pid))) {
-    log(`stale operator pid ${existing.pid} outlived SIGKILL — it still holds port ${existing.port}`);
+    log(
+      `stale operator pid ${existing.pid} outlived SIGKILL — it still holds port ${existing.port}`,
+    );
   }
   return null;
 }
@@ -306,7 +346,7 @@ export async function reconcileEnsure(
 /** Read the superuser bearer token if present. */
 export function readToken(): string | null {
   try {
-    const t = readFileSync(SUPERUSER_TOKEN, 'utf8').trim();
+    const t = readFileSync(SUPERUSER_TOKEN, "utf8").trim();
     return t || null;
   } catch {
     return null;
@@ -323,14 +363,16 @@ export function readToken(): string | null {
 // keeps the address stable across restarts; pinned clients then ride through a
 // restart on their normal connection retry (operator-discovery.mjs
 // fetchResilient) instead of pointing at a dead port forever.
-const OPERATOR_PORT_MEMORY = join(PAPERCUSP_DIR, 'operator-port.json');
+const OPERATOR_PORT_MEMORY = join(PAPERCUSP_DIR, "operator-port.json");
 
 /** Last successfully-bound HTTP port, or null. Unlike operator.json (unlinked
  *  on every shutdown), operator-port.json survives — it is the memory that
  *  makes the port sticky. */
 export function readRememberedPort(): number | null {
   try {
-    const j = JSON.parse(readFileSync(OPERATOR_PORT_MEMORY, 'utf8')) as { port?: unknown };
+    const j = JSON.parse(readFileSync(OPERATOR_PORT_MEMORY, "utf8")) as {
+      port?: unknown;
+    };
     const p = Number(j?.port);
     if (Number.isInteger(p) && p > 0 && p < 65536) return p;
   } catch {
@@ -344,7 +386,7 @@ export function portAvailable(port: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = createNetServer();
     probe.unref();
-    probe.once('error', () => resolve(false));
+    probe.once("error", () => resolve(false));
     probe.listen(port, host, () => probe.close(() => resolve(true)));
   });
 }
@@ -360,11 +402,13 @@ export async function resolveStickyPort(
   hostname: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
-  if (env.PAPERCUSP_DESKTOP !== '1') return hinted;
+  if (env.PAPERCUSP_DESKTOP !== "1") return hinted;
   const remembered = readRememberedPort();
   if (!remembered || remembered === hinted) return hinted;
   if (!(await portAvailable(remembered, hostname))) {
-    log(`remembered operator port ${remembered} is taken — using launcher hint ${hinted}`);
+    log(
+      `remembered operator port ${remembered} is taken — using launcher hint ${hinted}`,
+    );
     return hinted;
   }
   log(
@@ -453,17 +497,20 @@ export function acquireColdStartLock(retried = false): boolean {
     // ~/.papercusp may not exist yet on a fresh machine, and this runs before
     // any other writer mkdir's it — create it owner-only first.
     mkdirSync(PAPERCUSP_DIR, { recursive: true, mode: 0o700 });
-    writeFileSync(LOCK_PATH, String(process.pid), { flag: 'wx' });
+    writeFileSync(LOCK_PATH, String(process.pid), { flag: "wx" });
     return true;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-    const ownerPid = Number((() => {
-      try {
-        return readFileSync(LOCK_PATH, 'utf8').trim();
-      } catch {
-        return '';
-      }
-    })()) || 0;
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const ownerPid =
+      Number(
+        (() => {
+          try {
+            return readFileSync(LOCK_PATH, "utf8").trim();
+          } catch {
+            return "";
+          }
+        })(),
+      ) || 0;
     // Our own pid = we already hold it; never reclaim out from under
     // ourselves.
     if (ownerPid === process.pid) return false;
@@ -474,8 +521,8 @@ export function acquireColdStartLock(retried = false): boolean {
     // own cmdline contains "papercusp" and occupied the reclaimed pid,
     // wedging boot exactly like the stale lock it was checking for).
     const ownerIsServe =
-      pidAlive(ownerPid)
-      && /serve\.(mjs|ts)/i.test(processCommandLine(ownerPid) ?? '');
+      pidAlive(ownerPid) &&
+      /serve\.(mjs|ts)/i.test(processCommandLine(ownerPid) ?? "");
     if (ownerIsServe) return false;
     if (retried) return false;
     try {
@@ -489,7 +536,7 @@ export function acquireColdStartLock(retried = false): boolean {
 
 export function releaseColdStartLock(): void {
   try {
-    const owner = Number(readFileSync(LOCK_PATH, 'utf8').trim()) || 0;
+    const owner = Number(readFileSync(LOCK_PATH, "utf8").trim()) || 0;
     if (owner === process.pid) unlinkSync(LOCK_PATH);
   } catch {
     /* already gone */
@@ -498,12 +545,16 @@ export function releaseColdStartLock(): void {
 
 /** Default migrations dir: repo `libs/papercusp/libs/db/sql` relative to this file. */
 function defaultSqlDir(): string {
-  return fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql', import.meta.url));
+  return fileURLToPath(
+    new URL("../../../libs/papercusp/libs/db/sql", import.meta.url),
+  );
 }
 
 /** The embedded-PG data dir as ensurePostgres resolves it (env or default). */
 function resolvedPgDataDir(): string {
-  return process.env.PAPERCUSP_PG_DATA_DIR ?? join(PAPERCUSP_DIR, 'embedded-pg-data');
+  return (
+    process.env.PAPERCUSP_PG_DATA_DIR ?? join(PAPERCUSP_DIR, "embedded-pg-data")
+  );
 }
 
 /**
@@ -514,18 +565,21 @@ function resolvedPgDataDir(): string {
  */
 export function sigintPostmasterSync(dataDir: string): void {
   try {
-    const raw = readFileSync(join(dataDir, 'postmaster.pid'), 'utf8');
-    const pid = Number((raw.split('\n')[0] ?? '').trim());
+    const raw = readFileSync(join(dataDir, "postmaster.pid"), "utf8");
+    const pid = Number((raw.split("\n")[0] ?? "").trim());
     if (Number.isInteger(pid) && pid > 0) {
       log(`fast-shutdown signal to postmaster pid=${pid}`);
-      process.kill(pid, 'SIGINT');
+      process.kill(pid, "SIGINT");
     }
   } catch {
     /* no postmaster.pid / already gone */
   }
 }
 
-export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+export async function writeJsonAtomic(
+  path: string,
+  value: unknown,
+): Promise<void> {
   // ~/.papercusp holds credentials — operator.json carries the superuser bearer
   // token, embedded-pg.json carries a DSN with the PG password (the `url` field
   // can't be redacted; external clients connect with it). Keep the dir + files
@@ -549,11 +603,11 @@ interface PgHandle {
  * /proc/<pid>/cmdline; macOS falls back to `ps`. */
 function processCommandLine(pid: number): string | null {
   try {
-    if (process.platform === 'linux') {
-      return readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ');
+    if (process.platform === "linux") {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
     }
-    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
-      encoding: 'utf8',
+    return execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
+      encoding: "utf8",
     });
   } catch {
     return null;
@@ -568,10 +622,13 @@ function processCommandLine(pid: number): string | null {
  * pid can already belong to an unrelated live process) and `/proc/<pid>/cmdline`
  * can read empty under load. Never throws.
  */
-export async function isPortAccepting(port: number, timeoutMs = 750): Promise<boolean> {
+export async function isPortAccepting(
+  port: number,
+  timeoutMs = 750,
+): Promise<boolean> {
   if (!Number.isInteger(port) || port <= 0) return false;
   return new Promise<boolean>((resolve) => {
-    const sock = netConnect({ host: '127.0.0.1', port });
+    const sock = netConnect({ host: "127.0.0.1", port });
     let done = false;
     const finish = (v: boolean) => {
       if (done) return;
@@ -580,9 +637,9 @@ export async function isPortAccepting(port: number, timeoutMs = 750): Promise<bo
       resolve(v);
     };
     sock.setTimeout(timeoutMs);
-    sock.once('connect', () => finish(true));
-    sock.once('timeout', () => finish(false));
-    sock.once('error', () => finish(false));
+    sock.once("connect", () => finish(true));
+    sock.once("timeout", () => finish(false));
+    sock.once("error", () => finish(false));
   });
 }
 
@@ -607,15 +664,15 @@ export async function sweepOrphanPostgres(
   dataDir: string,
   logFn: (m: string) => void = log,
 ): Promise<void> {
-  const pidFile = join(dataDir, 'postmaster.pid');
+  const pidFile = join(dataDir, "postmaster.pid");
   let raw: string;
   try {
-    raw = readFileSync(pidFile, 'utf8');
+    raw = readFileSync(pidFile, "utf8");
   } catch {
     return; // No lockfile, no orphan to worry about.
   }
   // postmaster.pid format: PID is line 1.
-  const pidStr = (raw.split('\n')[0] ?? '').trim();
+  const pidStr = (raw.split("\n")[0] ?? "").trim();
   const pid = Number(pidStr);
   if (!Number.isInteger(pid) || pid <= 0) {
     // WI-3822: an unclean shutdown (power loss, host crash, VM reset, OOM)
@@ -632,7 +689,7 @@ export async function sweepOrphanPostgres(
     // the dir; leave it alone and let the start fail loudly rather than
     // silently orphaning a live server.
     logFn(`sweepOrphanPostgres: malformed pid '${pidStr}' in ${pidFile}`);
-    const recordedPort = Number((raw.split('\n')[3] ?? '').trim()) || 0;
+    const recordedPort = Number((raw.split("\n")[3] ?? "").trim()) || 0;
     if (recordedPort > 0 && (await isPortAccepting(recordedPort))) {
       logFn(
         `sweepOrphanPostgres: pid unparseable but :${recordedPort} is accepting — ` +
@@ -641,7 +698,7 @@ export async function sweepOrphanPostgres(
       return;
     }
     logFn(
-      `sweepOrphanPostgres: unparseable postmaster.pid and :${recordedPort || '?'} not accepting — ` +
+      `sweepOrphanPostgres: unparseable postmaster.pid and :${recordedPort || "?"} not accepting — ` +
         `unlinking ${pidFile}`,
     );
     try {
@@ -654,7 +711,9 @@ export async function sweepOrphanPostgres(
   if (!pidAlive(pid)) {
     // Stale lockfile from a crashed prior session — embedded-postgres usually
     // handles this itself, but unlink eagerly to be safe.
-    logFn(`sweepOrphanPostgres: stale postmaster.pid (pid=${pid} dead), unlinking`);
+    logFn(
+      `sweepOrphanPostgres: stale postmaster.pid (pid=${pid} dead), unlinking`,
+    );
     try {
       unlinkSync(pidFile);
     } catch {
@@ -664,7 +723,7 @@ export async function sweepOrphanPostgres(
   }
   // Live: confirm it's actually a postgres pointed at OUR data dir before
   // terminating.
-  const cmdline = processCommandLine(pid) ?? '';
+  const cmdline = processCommandLine(pid) ?? "";
   const isPg = /postgres|embedded-pg/i.test(cmdline);
   if (!isPg || !cmdline.includes(dataDir)) {
     // The pid is alive but does NOT look like our postgres. Two cases, and BOTH
@@ -679,7 +738,7 @@ export async function sweepOrphanPostgres(
     // that no postgres is actually accepting on the recorded port. If something
     // IS listening, a real server holds the dir (or a genuine port clash) and
     // we must NOT unlink; surface it by leaving the start to fail loudly.
-    const recordedPort = Number((raw.split('\n')[3] ?? '').trim()) || 0;
+    const recordedPort = Number((raw.split("\n")[3] ?? "").trim()) || 0;
     if (recordedPort > 0 && (await isPortAccepting(recordedPort))) {
       logFn(
         `sweepOrphanPostgres: pid ${pid} is alive but not our postgres, yet :${recordedPort} ` +
@@ -689,7 +748,7 @@ export async function sweepOrphanPostgres(
       return;
     }
     logFn(
-      `sweepOrphanPostgres: pid ${pid} alive but not our postgres and :${recordedPort || '?'} ` +
+      `sweepOrphanPostgres: pid ${pid} alive but not our postgres and :${recordedPort || "?"} ` +
         `not accepting — stale postmaster.pid (postgres dead, pid reused); unlinking ${pidFile}`,
     );
     try {
@@ -699,9 +758,11 @@ export async function sweepOrphanPostgres(
     }
     return;
   }
-  logFn(`sweepOrphanPostgres: killing orphaned postgres pid=${pid} holding ${dataDir}`);
+  logFn(
+    `sweepOrphanPostgres: killing orphaned postgres pid=${pid} holding ${dataDir}`,
+  );
   try {
-    process.kill(pid, 'SIGTERM');
+    process.kill(pid, "SIGTERM");
   } catch {
     /* raced to death */
   }
@@ -711,7 +772,7 @@ export async function sweepOrphanPostgres(
   }
   if (pidAlive(pid)) {
     try {
-      process.kill(pid, 'SIGKILL');
+      process.kill(pid, "SIGKILL");
     } catch {
       /* raced */
     }
@@ -725,23 +786,23 @@ export async function sweepOrphanPostgres(
 
 /** Start (or attach to) Postgres and ensure HARNESS_ADMIN_DATABASE_URL is set. */
 async function ensurePostgres(): Promise<PgHandle | null> {
-  if (process.env.PAPERCUSP_USE_EMBEDDED_PG === '0') {
+  if (process.env.PAPERCUSP_USE_EMBEDDED_PG === "0") {
     const admin = process.env.HARNESS_ADMIN_DATABASE_URL;
     if (!admin) {
       throw new Error(
-        'PAPERCUSP_USE_EMBEDDED_PG=0 requires HARNESS_ADMIN_DATABASE_URL (and HARNESS_DATABASE_URL) to be set.',
+        "PAPERCUSP_USE_EMBEDDED_PG=0 requires HARNESS_ADMIN_DATABASE_URL (and HARNESS_DATABASE_URL) to be set.",
       );
     }
     log(`attaching to external Postgres via HARNESS_ADMIN_DATABASE_URL`);
     return null; // external PG; nothing for us to manage/stop
   }
 
-  const { startEmbeddedPostgresServer } = await import(
-    '@papercusp/embedded-postgres-server'
-  );
+  const { startEmbeddedPostgresServer } =
+    await import("@papercusp/embedded-postgres-server");
   const port = Number(process.env.PAPERCUSP_PG_PORT ?? 5532);
   const dataDir =
-    process.env.PAPERCUSP_PG_DATA_DIR ?? join(PAPERCUSP_DIR, 'embedded-pg-data');
+    process.env.PAPERCUSP_PG_DATA_DIR ??
+    join(PAPERCUSP_DIR, "embedded-pg-data");
   const dbSqlDir = process.env.PAPERCUSP_PG_SQL_DIR ?? defaultSqlDir();
   // Pre-migrated PGDATA seed (first-boot fast path). When present + the data dir
   // is fresh, embedded-postgres-server extracts it instead of running initdb +
@@ -749,8 +810,12 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   const seedPath = process.env.PAPERCUSP_PG_SEED_PATH;
 
   log(`starting embedded Postgres on :${port} (data=${dataDir})`);
-  if (!existsSync(dbSqlDir)) log(`warning: migrations dir not found at ${dbSqlDir}`);
-  if (seedPath && existsSync(seedPath)) log(`pre-migrated seed available at ${seedPath} (used only on a fresh data dir)`);
+  if (!existsSync(dbSqlDir))
+    log(`warning: migrations dir not found at ${dbSqlDir}`);
+  if (seedPath && existsSync(seedPath))
+    log(
+      `pre-migrated seed available at ${seedPath} (used only on a fresh data dir)`,
+    );
 
   // Kill/clear any orphaned postgres from a prior unclean exit before the
   // fresh start — otherwise the spawn fails with "lock file already exists"
@@ -763,8 +828,11 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   // + agents, so it takes a gentler RAM slice (see deriveDatabaseTuning). Without
   // this the desktop's embedded PG runs on laptop-sized stock defaults
   // (max_connections=100 / shared_buffers=128MB), which a busy fleet exhausts.
-  const { deriveDatabaseTuning, databaseTuningToSettings, detectResourceSignals } =
-    await import('@papercusp/resource-profile');
+  const {
+    deriveDatabaseTuning,
+    databaseTuningToSettings,
+    detectResourceSignals,
+  } = await import("@papercusp/resource-profile");
   const extraPostgresSettings = databaseTuningToSettings(
     deriveDatabaseTuning(detectResourceSignals({ embeddedPg: true })),
   );
@@ -794,7 +862,10 @@ async function ensurePostgres(): Promise<PgHandle | null> {
     },
   }).catch((e: unknown) => {
     if (lastPgFatalLine && (!(e instanceof Error) || !e.message)) {
-      throw new Error(`embedded postgres failed to start: ${lastPgFatalLine.trim()}`, { cause: e });
+      throw new Error(
+        `embedded postgres failed to start: ${lastPgFatalLine.trim()}`,
+        { cause: e },
+      );
     }
     throw e;
   })) as PgHandle;
@@ -812,7 +883,7 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   // database step red while embedded PG is healthy (found live on Windows
   // 2026-06-11). PG_PORT likewise: the launcher's value is a HINT; record
   // the port actually bound.
-  process.env.PAPERCUSP_USE_EMBEDDED_PG = '1';
+  process.env.PAPERCUSP_USE_EMBEDDED_PG = "1";
   process.env.PAPERCUSP_PG_PORT = String(pg.port);
 
   // Write the embedded-pg discovery file (the latent-bug fix). The generic
@@ -832,19 +903,17 @@ async function main(): Promise<void> {
   // serve.mjs with PAPERCUSP_SUBSTRATE_SIDECAR_MODE=1 instead of `npx tsx`-ing a
   // .ts the bundle doesn't contain. Divert to the sidecar JSON-RPC server BEFORE
   // any embedded-PG / operator boot; the net server keeps the process alive.
-  if (process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1') {
-    const { runSubstrateSidecarServer } = await import(
-      '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server'
-    );
+  if (process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === "1") {
+    const { runSubstrateSidecarServer } =
+      await import("@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server");
     runSubstrateSidecarServer();
     return;
   }
   // PACKAGED spawner-sidecar (WI-344 ③): same re-exec divert for the agent-spawn
   // sidecar — serve.mjs is re-execed with PAPERCUSP_SPAWNER_SIDECAR_MODE=1.
-  if (process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1') {
-    const { runSpawnerSidecarServer } = await import(
-      '@papercusp/operator-core/lib/fleet/spawner-sidecar-server'
-    );
+  if (process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === "1") {
+    const { runSpawnerSidecarServer } =
+      await import("@papercusp/operator-core/lib/fleet/spawner-sidecar-server");
     runSpawnerSidecarServer();
     return;
   }
@@ -852,10 +921,9 @@ async function main(): Promise<void> {
   // same re-exec divert — embed-sidecar-spawn.ts re-execs THIS bundled
   // serve.mjs with PAPERCUSP_EMBED_SIDECAR_MODE=1. The loopback HTTP server
   // keeps the process alive.
-  if (process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1') {
-    const { runEmbedSidecarServer } = await import(
-      '@papercusp/operator-core/lib/memory/embed-sidecar-server'
-    );
+  if (process.env.PAPERCUSP_EMBED_SIDECAR_MODE === "1") {
+    const { runEmbedSidecarServer } =
+      await import("@papercusp/operator-core/lib/memory/embed-sidecar-server");
     runEmbedSidecarServer();
     return;
   }
@@ -865,25 +933,24 @@ async function main(): Promise<void> {
   // disk). Mirror bin.ts's fatal policy: a startup failure exits 1 so the
   // supervisor's respawn loop restarts us, fail-closed. The gateway's HTTP
   // server keeps the process alive after a successful start.
-  if (process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === '1') {
-    const { runGatewaySidecarMain, gatewayLogLine } = await import(
-      '@papercusp/operator-core/lib/inference-gateway/sidecar-main'
-    );
+  if (process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === "1") {
+    const { runGatewaySidecarMain, gatewayLogLine } =
+      await import("@papercusp/operator-core/lib/inference-gateway/sidecar-main");
     runGatewaySidecarMain().catch((e) => {
       try {
         gatewayLogLine(`fatal: ${(e as Error)?.stack || String(e)}`);
       } catch {
-        console.error('[inference-gateway] fatal:', e);
+        console.error("[inference-gateway] fatal:", e);
       }
       process.exit(1);
     });
     return;
   }
   const args = new Set(process.argv.slice(2));
-  const ensure = args.has('--ensure');
+  const ensure = args.has("--ensure");
   // Headless by default; --ui (or a pre-set PAPERCUSP_SERVE_UI) keeps the SPA.
-  if (!args.has('--ui') && process.env.PAPERCUSP_SERVE_UI == null) {
-    process.env.PAPERCUSP_SERVE_UI = '0';
+  if (!args.has("--ui") && process.env.PAPERCUSP_SERVE_UI == null) {
+    process.env.PAPERCUSP_SERVE_UI = "0";
   }
 
   // Guarantee the user's CLI tools (git, gh credential-helper, kopia, …) are on
@@ -900,12 +967,15 @@ async function main(): Promise<void> {
   // Runs on darwin even without PAPERCUSP_SIDECAR_BIN (a GUI-launched sidecar
   // still has the minimal launchd PATH); on Linux we keep prior behavior (only
   // recompose when the launcher trimmed PATH via PAPERCUSP_SIDECAR_BIN).
-  if (process.platform !== 'win32' && (process.env.PAPERCUSP_SIDECAR_BIN || process.platform === 'darwin')) {
+  if (
+    process.platform !== "win32" &&
+    (process.env.PAPERCUSP_SIDECAR_BIN || process.platform === "darwin")
+  ) {
     ensureToolPathEnv();
   }
 
   const hostname =
-    process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
+    process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? "127.0.0.1";
   // EI-11342: an env-sidecar (ENV_OPERATOR_ID set) must never fall back to the
   // baked 3070 default — it would squat the prod operator's port on this box.
   const honoPortHint = resolveHonoPortHint(process.env, ENV_OPERATOR_ID);
@@ -921,7 +991,7 @@ async function main(): Promise<void> {
   if (ensure) {
     const reuse = await reconcileEnsure();
     if (reuse) {
-      process.stdout.write(JSON.stringify(reuse) + '\n');
+      process.stdout.write(JSON.stringify(reuse) + "\n");
       return;
     }
   }
@@ -940,7 +1010,9 @@ async function main(): Promise<void> {
   // — it must never wander onto the PRIMARY's remembered sticky port (which
   // operator-port.json records for the primary alone; siblings must not read
   // OR write it — see the OPERATOR_JSON/OPERATOR_PORT_MEMORY guard below).
-  const port = ENV_OPERATOR_ID ? honoPortHint : await resolveStickyPort(honoPortHint, hostname);
+  const port = ENV_OPERATOR_ID
+    ? honoPortHint
+    : await resolveStickyPort(honoPortHint, hostname);
   const httpUrl = `http://${hostname}:${port}`;
 
   // Cold-start race guard.
@@ -952,12 +1024,12 @@ async function main(): Promise<void> {
         const d = readOperatorDiscovery();
         if (d && pidAlive(d.pid) && (await httpAlive(d.httpUrl))) {
           log(`another serve won the race (pid ${d.pid}) — reusing`);
-          process.stdout.write(JSON.stringify(d) + '\n');
+          process.stdout.write(JSON.stringify(d) + "\n");
           return;
         }
       }
     }
-    throw new Error('another `serve` holds the cold-start lock; aborting');
+    throw new Error("another `serve` holds the cold-start lock; aborting");
   }
 
   let pg: PgHandle | null = null;
@@ -993,7 +1065,8 @@ async function main(): Promise<void> {
     // (shutdown-deadline.test.ts) — see shutdown-deadline.ts.
     runShutdownWithDeadline({
       deadlineMs: 4000,
-      onForceExit: () => log(`${sig} — shutdown deadline exceeded; force-exiting`),
+      onForceExit: () =>
+        log(`${sig} — shutdown deadline exceeded; force-exiting`),
       syncCleanup: () => {
         try {
           server?.close?.();
@@ -1019,12 +1092,12 @@ async function main(): Promise<void> {
       exit: (code) => process.exit(code),
     });
   };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
   // EI-8894: a hard-killed desktop parent (launchctl kickstart -k, pkill -9,
   // a crash) never sends us SIGTERM — self-detect the reparenting and run
   // the SAME graceful teardown instead of surviving as an orphan.
-  startParentDeathWatch(() => shutdown('PARENT_DEATH'));
+  startParentDeathWatch(() => shutdown("PARENT_DEATH"));
 
   try {
     pg = await ensurePostgres();
@@ -1043,14 +1116,16 @@ async function main(): Promise<void> {
     // exportResolvedPortEnv).
     exportResolvedPortEnv(port);
 
-    const { runBootstrap } = await import('./host-bootstrap');
-    const { handler } = await import('./host-handler');
-    const { serve } = await import('@hono/node-server');
+    const { runBootstrap } = await import("./host-bootstrap");
+    const { handler } = await import("./host-handler");
+    const { serve } = await import("@hono/node-server");
 
     runBootstrap();
 
     server = serve({ fetch: handler, port, hostname }, async (info) => {
-      log(`listening on http://${hostname}:${info.port} (UI ${process.env.PAPERCUSP_SERVE_UI === '0' ? 'OFF' : 'ON'})`);
+      log(
+        `listening on http://${hostname}:${info.port} (UI ${process.env.PAPERCUSP_SERVE_UI === "0" ? "OFF" : "ON"})`,
+      );
       // WI-3287: OPERATOR_JSON/OPERATOR_PORT_MEMORY are THE PRIMARY's discovery
       // records — Tauri's `--ensure` reuse check, the sticky-port memory, and
       // every external `--operator-url` consumer key off this ONE fixed path.
@@ -1074,9 +1149,14 @@ async function main(): Promise<void> {
         try {
           // Port memory for the next boot (sticky port — see resolveStickyPort).
           // Optional state: a failed write must never affect the running boot.
-          await writeJsonAtomic(OPERATOR_PORT_MEMORY, { port: info.port, updatedAt: Date.now() });
+          await writeJsonAtomic(OPERATOR_PORT_MEMORY, {
+            port: info.port,
+            updatedAt: Date.now(),
+          });
         } catch (e) {
-          log(`could not persist port memory (${(e as Error).message}) — next restart re-picks`);
+          log(
+            `could not persist port memory (${(e as Error).message}) — next restart re-picks`,
+          );
         }
       }
     }) as unknown as { close?: () => void };
@@ -1116,7 +1196,7 @@ if (invokedDirectly) {
       e instanceof Error
         ? (e.stack ?? e.message)
         : e === undefined
-          ? '(no error object — an upstream rejection carried no reason; check the PG boot log, e.g. the embedded-pg data dir\'s log file or serve.log tail, for the actual FATAL)'
+          ? "(no error object — an upstream rejection carried no reason; check the PG boot log, e.g. the embedded-pg data dir's log file or serve.log tail, for the actual FATAL)"
           : (() => {
               try {
                 return JSON.stringify(e);
@@ -1124,7 +1204,7 @@ if (invokedDirectly) {
                 return String(e);
               }
             })();
-    console.error('[serve] fatal:', detail);
+    console.error("[serve] fatal:", detail);
     process.exit(1);
   });
 }

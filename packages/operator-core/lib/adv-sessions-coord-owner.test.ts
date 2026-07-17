@@ -90,4 +90,20 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     expect(values).toContain('ws9'); // scope param interpolated
     expect(values).toContain(10); // limit
   });
+
+  it('listEndedAdvSessions excludes handleless terminal wrappers from agent history (WI-5103)', async () => {
+    const sql = mockSql(async () => []);
+    const mod = await import('./adv-sessions');
+    await mod.listEndedAdvSessions({ workspaceId: 'ws9', limit: 30 });
+
+    const strings = sql.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    const query = strings ? Array.from(strings).join(' ? ') : '';
+    // `/api/adv/sessions/ended` feeds the Agents-running inactive dropdown.
+    // A `resume · …` console-launch wrapper has none of these three handles,
+    // so it must never reach the UI as an unclickable pseudo-session. Each real
+    // backend remains represented by the handle its transcript viewer accepts.
+    expect(query).toContain("NULLIF(BTRIM(session_id), '') IS NOT NULL");
+    expect(query).toContain("NULLIF(BTRIM(omp_thread_id), '') IS NOT NULL");
+    expect(query).toContain("OR agent = 'codex'");
+  });
 });

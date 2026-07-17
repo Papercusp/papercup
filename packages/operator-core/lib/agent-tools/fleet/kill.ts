@@ -86,7 +86,10 @@ export interface KillDeps {
   alive?: (pid: number) => boolean;
   /** Resolve+cancel a nursery target (spawn_id or session_owner). Returns null
    *  when the target is not a nursery spawn. */
-  cancelNursery?: (target: string, reason: string) => Promise<{ spawn_id: string; cancelled: string[]; processes_aborted: number } | null>;
+  cancelNursery?: (
+    target: string,
+    reason: string,
+  ) => Promise<{ spawn_id: string; cancelled: string[]; processes_aborted: number } | null>;
   /** Purge stale presence after the psu-host authority proves a target is gone. */
   clearPresence?: (ownerId: string) => Promise<void>;
   /** Append an audit row. */
@@ -144,7 +147,9 @@ const defaultReadProc = (pid: number): ProcInfo | null => {
       environHas: (marker: string) => Boolean(readEnviron()?.includes(marker)),
       environmentValue: (name: string) => {
         const prefix = `${name}=`;
-        const entry = readEnviron()?.split('\n').find((line) => line.startsWith(prefix));
+        const entry = readEnviron()
+          ?.split('\n')
+          .find((line) => line.startsWith(prefix));
         return entry ? entry.slice(prefix.length) : null;
       },
     };
@@ -212,16 +217,29 @@ async function stopPid(
 export async function killOne(input: KillOneInput, deps: KillDeps): Promise<KillOneResult> {
   const audit = deps.audit ?? (async () => {});
   const readProc = deps.readProc ?? defaultReadProc;
-  const prims = { kill: deps.kill ?? defaultKill, alive: deps.alive ?? defaultAlive, sleep: deps.sleep ?? defaultSleep };
+  const prims = {
+    kill: deps.kill ?? defaultKill,
+    alive: deps.alive ?? defaultAlive,
+    sleep: deps.sleep ?? defaultSleep,
+  };
 
   if (input.target === input.actor) {
-    return { ok: false, target: input.target, code: 'self_kill_refused', error: 'refusing to kill your own session — end your turn / loop:end instead' };
+    return {
+      ok: false,
+      target: input.target,
+      code: 'self_kill_refused',
+      error: 'refusing to kill your own session — end your turn / loop:end instead',
+    };
   }
 
   // ── leg 1: nursery (headless) — the existing cancel machinery, reused ──
   const nursery = await (deps.cancelNursery?.(input.target, input.reason).catch(() => null) ?? Promise.resolve(null));
   if (nursery) {
-    await audit('fleet.kill_nursery', input.target, { reason: input.reason, spawn_id: nursery.spawn_id, cancelled: nursery.cancelled.length });
+    await audit('fleet.kill_nursery', input.target, {
+      reason: input.reason,
+      spawn_id: nursery.spawn_id,
+      cancelled: nursery.cancelled.length,
+    });
     return {
       ok: true,
       target: input.target,
@@ -290,7 +308,11 @@ export async function closeTerminalPid(
   deps: Pick<KillDeps, 'readProc' | 'kill' | 'alive' | 'sleep'>,
 ): Promise<{ ok: boolean; pid: number; closed?: boolean; error?: string }> {
   const readProc = deps.readProc ?? defaultReadProc;
-  const prims = { kill: deps.kill ?? defaultKill, alive: deps.alive ?? defaultAlive, sleep: deps.sleep ?? defaultSleep };
+  const prims = {
+    kill: deps.kill ?? defaultKill,
+    alive: deps.alive ?? defaultAlive,
+    sleep: deps.sleep ?? defaultSleep,
+  };
   const info = readProc(pid);
   if (!info) return { ok: false, pid, error: 'pid not found' };
   const recordedIdentity = info.environmentValue(CONSOLE_IDENTITY_ENV);
@@ -315,9 +337,9 @@ export async function closeTerminalPid(
     const current = readProc(pid);
     return Boolean(
       current &&
-        current.processIdentity === recordedIdentity &&
-        current.environHas(ENV_MARKER) &&
-        current.environmentValue(CONSOLE_IDENTITY_ENV) === recordedIdentity,
+      current.processIdentity === recordedIdentity &&
+      current.environHas(ENV_MARKER) &&
+      current.environmentValue(CONSOLE_IDENTITY_ENV) === recordedIdentity,
     );
   };
   if (!stillSameConsole()) return { ok: false, pid, error: 'refused: process identity changed before signal delivery' };
@@ -391,23 +413,38 @@ export default defineTool({
     'KILL an agent — desktop OR headless — through one verb. Desktop psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Headless nursery cup/bee: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.',
   guidance: {
     when: 'Winding down a fleet member for real (not just ending its turn — that is turn:interrupt), removing a dead member\'s stale window, or stopping a headless cup. "Close that agent\'s terminal" / "kill that bee" both land here.',
-    notWhen: 'To END A TURN but keep the agent alive — turn:interrupt. To cancel a whole nursery subtree by spawn id with full bulk semantics — fleet:cancel (fleet:kill delegates to the same machinery for a single headless target).',
-    chaining: 'coord:presence / fleet:assignments (find the ownerId) → fleet:kill { owner, reason } . Stale windows: fleet:kill { terminal_pids:[…], reason }.',
+    notWhen:
+      'To END A TURN but keep the agent alive — turn:interrupt. To cancel a whole nursery subtree by spawn id with full bulk semantics — fleet:cancel (fleet:kill delegates to the same machinery for a single headless target).',
+    chaining:
+      'coord:presence / fleet:assignments (find the ownerId) → fleet:kill { owner, reason } . Stale windows: fleet:kill { terminal_pids:[…], reason }.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      owner: z.string().min(1).optional().describe('One agent to kill, by coord ownerId (n=1 shorthand for owners:[id]). Desktop psu member or headless nursery spawn — the tool resolves which.'),
+      owner: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'One agent to kill, by coord ownerId (n=1 shorthand for owners:[id]). Desktop psu member or headless nursery spawn — the tool resolves which.',
+        ),
       owners: z.array(z.string().min(1)).min(1).max(20).optional().describe('Many agents to kill (1–20).'),
       terminal_pids: z
         .array(z.number().int().positive())
         .min(1)
         .max(20)
         .optional()
-        .describe('Close ORPHANED fleet terminal windows by tab-shell pid (the agent already exited; the window sits at a shell). Validated against the papercusp console marker — arbitrary host pids are refused.'),
-      close_terminal: z.boolean().optional().describe('Desktop targets: also close the terminal window (default true). false = kill the agent, leave its window open at a shell for inspection. Ignored for headless targets (no terminal).'),
+        .describe(
+          'Close ORPHANED fleet terminal windows by tab-shell pid (the agent already exited; the window sits at a shell). Validated against the papercusp console marker — arbitrary host pids are refused.',
+        ),
+      close_terminal: z
+        .boolean()
+        .optional()
+        .describe(
+          'Desktop targets: also close the terminal window (default true). false = kill the agent, leave its window open at a shell for inspection. Ignored for headless targets (no terminal).',
+        ),
       reason: softText(4000).describe('Why — REQUIRED; goes to the audit row (who → whom / kind / outcome).'),
       workspace: z.string().max(120).optional(),
     })

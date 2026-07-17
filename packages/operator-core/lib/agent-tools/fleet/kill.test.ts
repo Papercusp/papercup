@@ -30,17 +30,14 @@ function makeProcTree(
   const readProc = (pid: number): ProcInfo | null => {
     const n = nodes[pid];
     if (!n || !alive.has(pid)) return null;
-    const processIdentity =
-      n.processIdentity === undefined ? `linux:test-boot:${pid}` : n.processIdentity;
-    const consoleIdentity =
-      n.consoleIdentity === undefined && n.env ? processIdentity : n.consoleIdentity;
+    const processIdentity = n.processIdentity === undefined ? `linux:test-boot:${pid}` : n.processIdentity;
+    const consoleIdentity = n.consoleIdentity === undefined && n.env ? processIdentity : n.consoleIdentity;
     return {
       ppid: n.ppid,
       cmdline: n.cmdline,
       processIdentity,
       environHas: (marker: string) => marker === 'PAPERCUSP_HARNESS_SLUG=' && Boolean(n.env),
-      environmentValue: (name: string) =>
-        name === 'PAPERCUSP_CONSOLE_IDENTITY' ? consoleIdentity ?? null : null,
+      environmentValue: (name: string) => (name === 'PAPERCUSP_CONSOLE_IDENTITY' ? (consoleIdentity ?? null) : null),
     };
   };
   const kill = (pid: number, signal: NodeJS.Signals): boolean => {
@@ -259,7 +256,7 @@ describe('closeTerminalPid (orphaned windows)', () => {
 
 describe('kernel process identity parsing', () => {
   it('reads Linux starttime field 22 after a comm containing spaces and parens', () => {
-    const stat = '42 (odd process) name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 987654 19';
+    const stat = '42 (odd process) name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654 20';
     expect(linuxStartTicksFromProcStat(stat)).toBe('987654');
     expect(linuxProcessIdentityFromStat('boot-abc\n', stat)).toBe('linux:boot-abc:987654');
   });

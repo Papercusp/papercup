@@ -12,7 +12,10 @@ export function linuxStartTicksFromProcStat(stat: string): string | null {
   const close = stat.lastIndexOf(')');
   if (close < 0) return null;
   // Text after comm starts at field 3 (state); starttime is field 22 => index 19.
-  const fields = stat.slice(close + 1).trim().split(/\s+/);
+  const fields = stat
+    .slice(close + 1)
+    .trim()
+    .split(/\s+/);
   const ticks = fields[19];
   return ticks && /^\d+$/.test(ticks) ? ticks : null;
 }

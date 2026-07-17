@@ -951,10 +951,18 @@ export async function latestLiveAdvSessionByLabel(
 }
 
 /**
- * Recently-ended adv_sessions — the durable history half of the live-roster
- * view (the active half is the presence-driven mergeRoster). Scoped to a
- * workspace when given, else cross-workspace. Most-recently-ended first.
- * adv-sessions-live-roster P-003.
+ * Recently-ended, inspectable agent sessions — the durable history half of the
+ * live-roster view (the active half is the presence-driven mergeRoster).
+ *
+ * A console launch records an outer terminal-wrapper row before `psu` starts
+ * or resumes the real agent. Those wrappers intentionally have no agent,
+ * coord owner, or native transcript handle. They are useful lifecycle audit
+ * records, but they are not agent sessions and cannot open in the transcript
+ * inspector. Keep them out of this agent-history feed instead of rendering a
+ * dead `resume · …` row in the Agents running popover (WI-5103 / EI-13166).
+ *
+ * Scoped to a workspace when given, else cross-workspace. Most-recently-ended
+ * first. adv-sessions-live-roster P-003.
  */
 export async function listEndedAdvSessions(
   opts: { workspaceId?: string | null; limit?: number; before?: string | null } = {},
@@ -993,6 +1001,14 @@ export async function listEndedAdvSessions(
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
+         -- Match the transcript handles understood by endedSessionStreamUrl:
+         -- Claude/native UUID, OMP thread id, or Codex's per-row CODEX_HOME.
+         -- In particular, this excludes handleless console-launch wrappers.
+         AND (
+           NULLIF(BTRIM(session_id), '') IS NOT NULL
+           OR NULLIF(BTRIM(omp_thread_id), '') IS NOT NULL
+           OR agent = 'codex'
+         )
          AND (${ws}::text IS NULL OR workspace_id = ${ws})
          AND (${before}::timestamptz IS NULL OR ended_at < ${before}::timestamptz)
        ORDER BY ended_at DESC
