@@ -16,6 +16,7 @@ const ctx = (over: Partial<GlanceTipContext> = {}): GlanceTipContext => ({
   wakeDefault: 'auto',
   stagedTotal: 0,
   selfOwnerId: 'su-caller',
+  selfStagedCount: 0,
   beesRunning: 0,
   governorPausedKeys: [],
   state: {},
@@ -41,10 +42,11 @@ describe('evaluateTips — default rules', () => {
     expect(tips[0].text).not.toContain('staged');
   });
 
-  it('staged wakes under auto → the release tip scoped to the CALLER (release_all is per-agent, EI-7696)', () => {
-    const tips = evaluateTips(ctx({ stagedTotal: 1, selfOwnerId: 'su-caller' }));
+  it('staged wakes under auto, ALL the caller\'s own → the release tip quotes the caller\'s own count (release_all is per-agent, EI-7696)', () => {
+    const tips = evaluateTips(ctx({ stagedTotal: 1, selfOwnerId: 'su-caller', selfStagedCount: 1 }));
     expect(tips.map((t) => t.id)).toEqual(['staged-wakes-under-auto']);
     expect(tips[0].text).toContain('1 staged wake ');
+    expect(tips[0].text).toContain('of yours');
     expect(tips[0].command).toBe('/mcp__papercusp-su__tool:coord:wake-queue action=release_all agent=su-caller');
     expect(tips[0].invoke).toEqual({
       tool: 'coord:wake-queue',
@@ -58,6 +60,33 @@ describe('evaluateTips — default rules', () => {
     expect(tips[0].text).toContain('1 staged wake ');
     expect(tips[0].command).toBeNull();
     expect(tips[0].invoke).toBeNull();
+  });
+
+  it('EI-13229: fleet-wide staged wakes exist but NONE are the caller\'s own → text says so, no command promising a release that would release 0', () => {
+    const tips = evaluateTips(ctx({ stagedTotal: 7, selfOwnerId: 'su-caller', selfStagedCount: 0 }));
+    expect(tips.map((t) => t.id)).toEqual(['staged-wakes-under-auto']);
+    // Must quote the FLEET total (7) here, since that's the number being
+    // described — but must NOT offer a release_all command/invoke, since
+    // running it for `su-caller` would release 0 (the mismatch this bug
+    // report was filed over: a tip said "7 staged wakes", release_all found
+    // and released none).
+    expect(tips[0].text).toContain('7 staged wakes');
+    expect(tips[0].text).toContain('none are yours');
+    expect(tips[0].command).toBeNull();
+    expect(tips[0].invoke).toBeNull();
+  });
+
+  it('EI-13229: the caller\'s own count (not the fleet total) is what a self-scoped release tip must quote', () => {
+    // Fleet has 7 staged fleet-wide, but this caller only has 2 of their own —
+    // the tip must quote 2 (what release_all will actually drain for them),
+    // never 7.
+    const tips = evaluateTips(ctx({ stagedTotal: 7, selfOwnerId: 'su-caller', selfStagedCount: 2 }));
+    expect(tips[0].text).toContain('2 staged wakes');
+    expect(tips[0].text).not.toContain('7');
+    expect(tips[0].invoke).toEqual({
+      tool: 'coord:wake-queue',
+      args: { action: 'release_all', agent: 'su-caller' },
+    });
   });
 
   it('governor pause → tip for every audience including bees', () => {

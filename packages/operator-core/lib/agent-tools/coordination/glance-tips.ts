@@ -48,6 +48,16 @@ export interface GlanceTipContext {
    * emit a command that's guaranteed to fail with `agent-required`.
    */
   selfOwnerId: string | null;
+  /**
+   * EI-13229: the CALLER's OWN staged-wake count (0 when `selfOwnerId` is
+   * null, or resolvable but has nothing staged) — distinct from `stagedTotal`
+   * (fleet-wide). `coord:wake-queue`'s `release_all` drains ONLY the named
+   * `agent`'s queue, so a tip that quotes `stagedTotal` while emitting a
+   * self-scoped release command can promise a release count the call will
+   * never actually deliver (reported: "7 staged wakes" tip, `release_all`
+   * found 0 — the fleet total, not the caller's own).
+   */
+  selfStagedCount: number;
   /** Nursery spawns currently running with a fresh heartbeat. */
   beesRunning: number;
   /** Governor bucket keys currently paused (e.g. 'anthropic:opus'). */
@@ -104,18 +114,33 @@ export const DEFAULT_TIP_RULES: readonly TipRule[] = [
     audiences: ['user', 'su', 'mug'],
     when: (c) => c.wakeDefault === 'auto' && c.stagedTotal > 0,
     render: (c) => {
-      const text = `${plural(c.stagedTotal, 'staged wake')} won't fire by themselves — release:`;
       // EI-7696: release_all is PER-AGENT (coord:wake-queue rejects it with
-      // `agent-required` when omitted) while stagedTotal is a FLEET-WIDE count —
-      // so the ready-made command can only ever release the CALLER's own queue,
-      // never "everyone's". Emit it ONLY when we know who the caller is; a null
-      // selfOwnerId (no single identifiable owner) falls back to text-only
-      // rather than a command that's guaranteed to fail.
-      if (!c.selfOwnerId) return { text };
+      // `agent-required` when omitted) — so the ready-made command can only
+      // ever release the CALLER's own queue, never "everyone's". Emit it ONLY
+      // when we know who the caller is; a null selfOwnerId (no single
+      // identifiable owner) falls back to text-only.
+      if (!c.selfOwnerId) {
+        return { text: `${plural(c.stagedTotal, 'staged wake')} won't fire by themselves — release:` };
+      }
+      // EI-13229: the text MUST quote whatever count `release_all agent=<self>`
+      // will actually drain — the caller's OWN count, never the fleet-wide
+      // `stagedTotal`. Quoting the fleet total here (as this rule used to)
+      // produced a tip claiming "7 staged wakes" whose immediate
+      // `release_all` found and released 0 (the 7 belonged to OTHER agents),
+      // an authoritative-action/status-tip disagreement.
+      if (c.selfStagedCount > 0) {
+        return {
+          text: `${plural(c.selfStagedCount, 'staged wake')} of yours won't fire by themselves — release:`,
+          command: `/mcp__papercusp-su__tool:coord:wake-queue action=release_all agent=${c.selfOwnerId}`,
+          invoke: { tool: 'coord:wake-queue', args: { action: 'release_all', agent: c.selfOwnerId } },
+        };
+      }
+      // Fleet-wide total is > 0 (the `when` gate) but NONE are the caller's
+      // own — say so explicitly instead of implying an actionable command
+      // that would release nothing for THIS caller (no command/invoke: there
+      // is nothing of the caller's own to release).
       return {
-        text,
-        command: `/mcp__papercusp-su__tool:coord:wake-queue action=release_all agent=${c.selfOwnerId}`,
-        invoke: { tool: 'coord:wake-queue', args: { action: 'release_all', agent: c.selfOwnerId } },
+        text: `${plural(c.stagedTotal, 'staged wake')} fleet-wide, none are yours — release_all only drains your own queue.`,
       };
     },
   },

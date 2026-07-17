@@ -210,11 +210,17 @@ export default defineTool({
       selfOwnerId = null;
     }
 
+    // EI-13229: the caller's OWN staged count (0 when unresolvable or simply
+    // has nothing staged) — distinct from the fleet-wide `stagedTotal` above.
+    // `stagedByOwner` is already read for the roster badge; no extra query.
+    const selfStagedCount = selfOwnerId ? (stagedByOwner.get(selfOwnerId) ?? 0) : 0;
+
     const tips = evaluateTips({
       audience,
       wakeDefault,
       stagedTotal,
       selfOwnerId,
+      selfStagedCount,
       beesRunning,
       governorPausedKeys: governorPaused.map((g) => g.key),
       state: args.state ?? {},
