@@ -47,6 +47,36 @@ import { useConfirmDialog } from '../harness/useConfirmDialog';
 
 const POLL_INTERVAL_MS = 10 * 60 * 1000; // 10m
 
+/** Mirrors the Rust `UpdateDownloadProgressPayload` (main.rs) emitted on the
+ *  `update-download-progress` webview event during install_update/revert_to's
+ *  download phase. `total` is null when the release host omitted
+ *  Content-Length (rare) — the bar falls back to a byte-count-only display. */
+interface DownloadProgress {
+  downloaded: number;
+  total: number | null;
+}
+
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
+
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '0 B';
+  let v = n;
+  let unit = 0;
+  while (v >= 1024 && unit < BYTE_UNITS.length - 1) {
+    v /= 1024;
+    unit += 1;
+  }
+  return `${v.toFixed(unit === 0 ? 0 : 1)} ${BYTE_UNITS[unit]}`;
+}
+
+/** "1.2 GB / 3.4 GB (35%)", or just the downloaded count when the host never
+ *  sent a total. */
+function fmtProgress(p: DownloadProgress): string {
+  if (!p.total || p.total <= 0) return fmtBytes(p.downloaded);
+  const pct = Math.min(100, Math.round((p.downloaded / p.total) * 100));
+  return `${fmtBytes(p.downloaded)} / ${fmtBytes(p.total)} (${pct}%)`;
+}
+
 type Channel = 'alpha' | 'beta' | 'stable';
 
 const CHANNELS: readonly Channel[] = ['alpha', 'beta', 'stable'];
@@ -114,6 +144,45 @@ function detectClientPlatform(): { target: string; arch: string } {
   return { target, arch };
 }
 
+/** WI-5011: a real progress bar for install_update/revert_to's download
+ *  phase, replacing the bare "Installing…"/"Reverting…" spinner text that
+ *  previously gave no feedback for a multi-GB, multi-minute download.
+ *  `progress === null` (no chunk has landed yet, or the listener never
+ *  attached) falls back to an indeterminate bar + "Starting download…" so
+ *  the caller never has to branch on progress being absent. */
+function DownloadProgressBar({ progress }: { progress: DownloadProgress | null }) {
+  const pct = progress?.total ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100)) : null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div
+        role="progressbar"
+        aria-valuenow={pct ?? undefined}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        style={{
+          height: 5,
+          borderRadius: 3,
+          background: 'var(--border, #2a2a2a)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            height: '100%',
+            width: pct === null ? '35%' : `${pct}%`,
+            borderRadius: 3,
+            background: 'var(--accent, #2d7a40)',
+            transition: 'width 150ms ease-out',
+          }}
+        />
+      </div>
+      <span style={{ fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+        {progress ? fmtProgress(progress) : 'Starting download…'}
+      </span>
+    </div>
+  );
+}
+
 function fmtDate(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return '';
@@ -129,6 +198,12 @@ export default function UpdateChip() {
   // The tag currently being reverted to (null = idle) — gates re-entry and
   // drives the per-row button label/disabled state.
   const [reverting, setReverting] = useState<string | null>(null);
+  // Download progress for the in-flight install/revert (WI-5011). Populated
+  // from the `update-download-progress` webview event Rust emits while
+  // `download_and_install` streams bytes; null before the first chunk lands
+  // or once installing/reverting clears (so a stale bar never lingers into
+  // the next attempt).
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [open, setOpen] = useState(false);
   const [channel, setChannel] = useState<Channel>('alpha');
   const [savingChannel, setSavingChannel] = useState(false);
@@ -141,6 +216,32 @@ export default function UpdateChip() {
   useEffect(() => {
     setDesktop(isDesktop());
   }, []);
+
+  // Subscribe to download-progress events for the lifetime of the chip (not
+  // just while installing/reverting) — installUpdate() fires the download
+  // almost immediately after invoke(), so a listener registered only inside
+  // onInstall/onRevert would race the first chunk. Cheap: the event fires
+  // only during an active install/revert, never in steady state.
+  useEffect(() => {
+    if (!desktop) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<DownloadProgress>('update-download-progress', (event) => {
+        setProgress(event.payload);
+      }),
+    ).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    }).catch(() => {
+      /* no listener available (e.g. very old webview) — falls back to the
+       * plain spinner copy below */
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [desktop]);
 
   const refreshVersion = useCallback(() => {
     appVersion().then(setVersion).catch(() => {});
@@ -304,6 +405,7 @@ export default function UpdateChip() {
       confirmLabel: 'Install and restart',
     })) return;
     setInstalling(true);
+    setProgress(null);
     try {
       await installUpdate();
       // The promise typically never resolves — Tauri restarts the process.
@@ -324,6 +426,7 @@ export default function UpdateChip() {
         toast.error(`install failed: ${msg}`);
       }
       setInstalling(false);
+      setProgress(null);
     }
   }, [installing, info, askConfirm]);
 
@@ -341,6 +444,7 @@ export default function UpdateChip() {
       confirmLabel: 'Revert',
     })) return;
     setReverting(entry.tag);
+    setProgress(null);
     try {
       await revertTo(entry.tag);
       // revert_to ends in app.restart(); if we're still here the swap didn't
@@ -354,6 +458,7 @@ export default function UpdateChip() {
         toast.error(`Revert to v${entry.version} failed: ${msg}`);
       }
       setReverting(null);
+      setProgress(null);
     }
   }, [reverting, askConfirm]);
 
@@ -488,6 +593,7 @@ export default function UpdateChip() {
             >
               {installing ? 'Installing…' : `Install v${info!.new_version} and restart`}
             </button>
+            {installing && <DownloadProgressBar progress={progress} />}
           </>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -539,58 +645,60 @@ export default function UpdateChip() {
                 key={e.tag}
                 style={{
                   display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 8,
+                  flexDirection: 'column',
+                  gap: 4,
                   padding: '6px 8px',
                   borderRadius: 5,
                   background: e.is_current ? 'color-mix(in srgb, var(--accent, #2d7a40), transparent 88%)' : 'transparent',
                   border: '1px solid transparent',
                 }}
               >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontWeight: 600 }}>v{e.version}</span>
-                    <span
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontWeight: 600 }}>v{e.version}</span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: 'var(--fg-mute, #888)',
+                          border: '1px solid var(--border, #2a2a2a)',
+                          borderRadius: 4,
+                          padding: '0 5px',
+                          textTransform: 'capitalize',
+                        }}
+                      >
+                        {e.channel}
+                      </span>
+                    </div>
+                    <div style={{ color: 'var(--fg-mute, #888)', fontSize: 11 }}>{fmtDate(e.pub_date)}</div>
+                  </div>
+                  {e.is_current ? (
+                    <span style={{ color: 'var(--accent, #2d7a40)', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      ● Current
+                    </span>
+                  ) : e.installable ? (
+                    <button
+                      type="button"
+                      onClick={() => void onRevert(e)}
+                      disabled={reverting !== null}
                       style={{
-                        fontSize: 11,
-                        color: 'var(--fg-mute, #888)',
+                        background: 'transparent',
                         border: '1px solid var(--border, #2a2a2a)',
-                        borderRadius: 4,
-                        padding: '0 5px',
-                        textTransform: 'capitalize',
+                        color: 'var(--fg-mute, #aaa)',
+                        padding: '3px 9px',
+                        borderRadius: 5,
+                        cursor: reverting !== null ? 'default' : 'pointer',
+                        opacity: reverting !== null && reverting !== e.tag ? 0.5 : 1,
+                        font: 'inherit',
+                        fontSize: 12,
+                        whiteSpace: 'nowrap',
                       }}
                     >
-                      {e.channel}
-                    </span>
-                  </div>
-                  <div style={{ color: 'var(--fg-mute, #888)', fontSize: 11 }}>{fmtDate(e.pub_date)}</div>
+                      {reverting === e.tag ? 'Reverting…' : 'Revert'}
+                    </button>
+                  ) : null}
                 </div>
-                {e.is_current ? (
-                  <span style={{ color: 'var(--accent, #2d7a40)', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
-                    ● Current
-                  </span>
-                ) : e.installable ? (
-                  <button
-                    type="button"
-                    onClick={() => void onRevert(e)}
-                    disabled={reverting !== null}
-                    style={{
-                      background: 'transparent',
-                      border: '1px solid var(--border, #2a2a2a)',
-                      color: 'var(--fg-mute, #aaa)',
-                      padding: '3px 9px',
-                      borderRadius: 5,
-                      cursor: reverting !== null ? 'default' : 'pointer',
-                      opacity: reverting !== null && reverting !== e.tag ? 0.5 : 1,
-                      font: 'inherit',
-                      fontSize: 12,
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {reverting === e.tag ? 'Reverting…' : 'Revert'}
-                  </button>
-                ) : null}
+                {reverting === e.tag && <DownloadProgressBar progress={progress} />}
               </li>
             ))}
           </ul>
@@ -668,7 +776,11 @@ export default function UpdateChip() {
             }}
           >
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
-            {installing ? 'Installing…' : `Update to v${info!.new_version}`}
+            {installing
+              ? progress?.total
+                ? `Installing… ${Math.min(100, Math.round((progress.downloaded / progress.total) * 100))}%`
+                : 'Installing…'
+              : `Update to v${info!.new_version}`}
           </button>
           </Tooltip>
         )}

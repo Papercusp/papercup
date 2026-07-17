@@ -5118,6 +5118,89 @@ tauri-agent-tools console-monitor --port <port> --token <tok> --duration 30000 -
 
 For “is the console clean now?”, query **all three** and reconcile.
 
+# A literal workspace_id DEFAULT on a consolidated view silently mis-tenants every write
+
+> Why a per-harness view's `ALTER COLUMN workspace_id SET DEFAULT 'default'` makes writes succeed with the wrong tenant — and why the UI showed an eternal spinner instead of an error.
+
+**Symptom (owner-reported, 2026-07-16 → WI-5125):** clicking **Chat** on a work item spun on `loading chat…` **forever**. No error, no timeout, no console fault.
+
+**Two independent bugs stacked**, which is why it looked like a hang rather than a fault. Both are general traps; neither is chat-specific.
+
+## Bug 1 — the literal DEFAULT makes a wrong write look like a right one
+
+[Section titled “Bug 1 — the literal DEFAULT makes a wrong write look like a right one”](#bug-1--the-literal-default-makes-a-wrong-write-look-like-a-right-one)
+
+`agent_chats` (like `messages`, `executed_actions`, `agent_runs`, `supervisor_notes`, `directive_summaries`, `feature_audit`) is a per-harness **auto-updatable view** over a `harness_shared.*_consolidated` table. Every consolidation migration ended with:
+
+```sql
+-- migration 116, and 118/119/120/170 in the same shape
+ALTER VIEW <schema>.agent_chats ALTER COLUMN workspace_id SET DEFAULT 'default';
+```
+
+The comment above it read *“Column DEFAULTs so writers that omit these on INSERT still pass through”*. `harness_slug` and `created_at` genuinely can be defaulted that way — the view knows its own slug, and `now()` is always right. **`workspace_id` cannot.** The active workspace is only known **in-process** (the request’s `x-papercusp-workspace` header → ALS, or the process pin — see `activeWorkspaceId()`); a static literal in the DDL is a *guess*, and it is wrong for every workspace except `default`.
+
+So `createChat` omitted the column, the view filled `'default'`, and the INSERT **returned success**. 181/181 rows were mis-tenanted. Meanwhile the UI reads `agentChats.detail { id, workspaceId }` **scoped to the live workspace**, matched zero rows, and could never see the row it had just created.
+
+The contrast that proves it: `harness_features_consolidated` has **no** such view default — its writers pass `workspace_id` explicitly — and its 1520 rows carry the correct workspace. The literal default is not a convenience; it is the bug.
+
+> **Rule.** A column whose correct value is only knowable at request time must be stamped **explicitly by the writer**. Defaulting it in DDL converts a loud `NOT NULL` violation into a silent wrong-tenant write. If you want a safety net, make the net *derive* the value — never assert a literal.
+
+### The net that already existed
+
+[Section titled “The net that already existed”](#the-net-that-already-existed)
+
+`harness_shared.fill_workspace_id_from_projects()` — a `BEFORE INSERT` trigger that derives `workspace_id` from the harness slug when it arrives NULL/empty — was already attached to `work_items`, `harness_issues_consolidated` and `contributor_usage_events`. The 7 later consolidations each hand-rolled a literal default instead of reusing it. Migration **616** drops the literals and attaches that existing trigger to all 7.
+
+**But the trigger is a net, not the fix.** It reads `harness_shared.projects`, which on this box is a near-empty legacy registry (7 rows; it does not even contain `papercusp`) — so for the reported case it resolves right back to `'default'`. Check where a derive-trigger actually reads from before trusting it; an elegant-looking trigger-only fix here would have been a **no-op that still looked correct**.
+
+### Gotchas when changing these views
+
+[Section titled “Gotchas when changing these views”](#gotchas-when-changing-these-views)
+
+* **Ownership is not uniform.** \~240 harness schemas: most views are owned by `harness_admin` (the migration role), but `harness_org*`, `harness_papercup`, `harness_restart`, `harness_sheets*` are owned by `postgres_app`. `ALTER VIEW` requires ownership, so **one un-owned view aborts the whole migration** unless you wrap each `ALTER` in `EXCEPTION WHEN insufficient_privilege` and `RAISE NOTICE`.
+* **Lock window.** `ALTER TABLE … DROP DEFAULT` needs ACCESS EXCLUSIVE, and a long-running `session_archive_files` COPY holds `AccessShareLock` on these tables for minutes. Use a **short** `lock_timeout` and retry — never queue an ACCESS EXCLUSIVE behind it, because every new reader then queues behind *you*.
+
+## Bug 2 — `useSyncQuery` reports “no rows” as neither data nor error
+
+[Section titled “Bug 2 — useSyncQuery reports “no rows” as neither data nor error”](#bug-2--usesyncquery-reports-no-rows-as-neither-data-nor-error)
+
+This is what turned a data fault into an eternal spinner, and it applies to **every** `useSyncQuery` consumer:
+
+```ts
+// zero rows resolves as:  { data: [], loading: false, error: null }
+```
+
+`ChatPanel.loadChat` set `chat` only when a row existed, and `loadError` only when `error` was set. **Resolved-but-empty matched neither branch**, so `chat` stayed null and `if (!chat) return <spinner/>` rendered forever. The panel had no bug in its error path — it simply had no *empty* path.
+
+> **Rule.** With `useSyncQuery`, `data: []` is a **real, terminal outcome**, not a loading state. Branch on all three: loading · error · resolved-and-empty. If a component renders a spinner whenever data is falsy, it will hang forever the first time a read legitimately returns nothing — and it will look like a network hang, sending you to the wrong layer entirely.
+>
+> Related: a **retry** button must `invalidate()` (refetch). Re-running a loader that reads the same cached rows re-derives the identical failure — a retry that cannot retry.
+
+## How to tell these apart fast
+
+[Section titled “How to tell these apart fast”](#how-to-tell-these-apart-fast)
+
+The spinner points at the transport; the fault was in the data. Skip the layer guessing and ask the DB who owns the rows:
+
+```sql
+-- Does the row exist, and under WHICH tenant?
+SELECT workspace_id, count(*) FROM harness_shared.agent_chats_consolidated GROUP BY 1;
+
+
+-- Compare against a table known to stamp correctly:
+SELECT workspace_id, count(*) FROM harness_shared.harness_features_consolidated GROUP BY 1;
+```
+
+A table whose rows are **all** `'default'` while its siblings carry real workspaces is this bug. Then replay the UI’s exact read — it is the shortest path from symptom to proof:
+
+```bash
+curl -s "http://127.0.0.1:3070/api/zero-harness/rest-query?name=agentChats.detail\
+&args=%7B%22id%22%3A%22<uuid>%22%2C%22workspaceId%22%3A%22papercusp-workspace%22%7D"
+# rows: [] → the row is mis-tenanted (or absent). Not a transport problem.
+```
+
+`:3070` serves the **release** checkout, so it reflects DATA fixes immediately but never your local code changes — verify code on `:3170` after `dev:restart { target: 'staging' }`.
+
 # Context estimator: toolUseResult is a double-write that never enters context
 
 > The transcript-bytes/4 context estimator must discount the top-level toolUseResult field — Claude Code writes each tool_result payload twice, and only message.content enters context.
@@ -11516,6 +11599,50 @@ A file failing since BEFORE the break window, with the gate green meanwhile, is 
 * **Quiet-cut**: the run judges the newest commit **≥240s old** — fire too soon after your fix commit and the verdict is on the PRE-fix candidate. Wait out the window (`until [ $(($(date +%s) - $(git log -1 --format=%ct))) -ge 245 ]; do sleep 15; done`).
 * `checkpoint:await` with no args arms `release:green`/`green-checkpoint:red` **globally** — a wake may be ANOTHER pipeline’s verdict (lineage-check `payload.sha`/`payload.pipeline` before acting). Since EI-7646, pass `{ pipeline: 'papercusp' }` (the integration root’s basename) to arm the pipeline-scoped keys and wake only on YOUR gate.
 * The gate ABSORBS load-flakes (red under 8-fork load, green on isolated re-run) — an absorbed advance lists `flakeSuspects`; don’t chase those as real reds.
+
+# Gate red on a QUARANTINED file — suspect phantom workspace attribution, not the quarantine
+
+> A green-checkpoint red whose only failing test is quarantined is a parser-attribution bug signature, not proof that per-file quarantine entries don't work. Diagnosis recipe + the 2026-07-17 fix.
+
+**Per-file quarantine entries (`<workspace>::<file-glob>`) DO gate the v1 verdict.** If a green-checkpoint run reds while its only failing test is covered by a `quarantine.txt` per-file entry, do NOT conclude “per-file quarantine is informational only” — that folk belief circulated in fleet memory and was this bug observed without a root cause.
+
+## The signature (incident 2026-07-17, run d945e8e3)
+
+[Section titled “The signature (incident 2026-07-17, run d945e8e3)”](#the-signature-incident-2026-07-17-run-d945e8e3)
+
+* Verdict JSON: `green:false`, `failingTests: []` (emptied!), and the summary carries `Quarantined out of v1 gate verdict: <the file>`.
+* Re-triage says `unknown — no named failing tests — cannot re-run at tip` with `autoRefire:false` — the self-heal path is dead in the same breath.
+* The gate log names ONE failing test, and it matches a `quarantine.txt` per-file glob (e.g. `@papercusp/operator-core::lib/sync/hyperbee/**`).
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+The affected-runner’s gate path (`AFFECTED_RETRY_FAILED`, `scripts/affected-tests.mjs`) captures each task’s stdout/stderr and block-flushes them after exit. Vitest’s “Failed Tests” epilogue (` FAIL <file> > <case>` rows) can therefore land in the merged log AFTER a LATER workspace’s `>>> <ws> :: npm run` header. `parseFailingFilesByWorkspace` (apps/operator/lib/release/green-checkpoint.ts) attributed such a displaced row to the foreign header — a **phantom `{workspace, file}` pair**. Quarantine matching is workspace-scoped, so the phantom escaped the glob, `quarantinedLabels.length !== failingFiles.length`, `allFailuresQuarantined` stayed false, and the run held red on a failure the gate is explicitly configured to ignore (main sat 111 commits behind).
+
+## The fix (2026-07-17, EI-13381)
+
+[Section titled “The fix (2026-07-17, EI-13381)”](#the-fix-2026-07-17-ei-13381)
+
+`parseFailingFilesByWorkspace` now pre-scans `❯` rollup rows — child stdout printed inside the child’s own section, so their attribution is trustworthy — and a bare `FAIL` row may only INTRODUCE a file the rollups never named (the genuine transform/setup-error case, which emits no rollup). It can never re-attribute a rollup-named file to whatever section its displaced epilogue landed in. Regression tests: `green-checkpoint.test.ts` (“does NOT re-attribute a rollup-named file via a displaced FAIL epilogue row…”).
+
+## Diagnosis recipe for the next weird gate red
+
+[Section titled “Diagnosis recipe for the next weird gate red”](#diagnosis-recipe-for-the-next-weird-gate-red)
+
+Replay the exact run log through the real parsers — takes seconds and removes all guesswork:
+
+```bash
+npx tsx -e "
+import { parseFailingFilesByWorkspace, extractFailingTests, parseTestQuarantine, applyTestQuarantine } from './apps/operator/lib/release/green-checkpoint.ts';
+import { readFileSync } from 'node:fs';
+const out = readFileSync('<newest ~/.papercusp/checkpoint-logs/*.log>','utf8');
+console.log(parseFailingFilesByWorkspace(out));
+console.log(applyTestQuarantine(out, extractFailingTests(out), parseTestQuarantine(readFileSync('quarantine.txt','utf8'))));
+"
+```
+
+A file attributed to a workspace that doesn’t contain it = phantom attribution. Related: [gate-red-break-window-triage](/internal/docs/agent-insights/gate-red-break-window-triage) (stale-candidate reds), the quiet-cut note there for which commit a run judges.
 
 # Inference admission control loop — gateway priority tiers (sink) + Mug capacity dispatch (source)
 
@@ -31646,6 +31773,74 @@ The creds live where the federation harness’s do — see [`hetzner-cross-machi
 
 * **$0 local parity** — 3 Swarms, real loopback HTTP authority RPC: no-kill ⇒ exactly-once (zero double-claims, no starvation, no fail-open); kill-authority ⇒ fail-open observed, deterministic reconcile, no starvation, no surviving double-completion.
 * **Real Hetzner (paid, 2026-06-09)** — 3 Swarms across 2 cpx31 frames in `ash` (authority isolated on frame 0). The survivors’ claims crossed the real machine boundary to the authority (remote-authority RPCs), the authority was killed mid-run, the survivors failed open, `reconcileAll` resolved every contested item to a single deterministic winner, and the whole backlog was completed (no starvation). **0 leaked VMs** after.
+
+# A severed hyperswarm link between hive machines does not self-heal — restart the wedged side
+
+> After one side of a 2-machine hive restarts, the peer-log/presence-gossip swarm link can sever PERMANENTLY — neither side re-dials/re-announces. Diagnose with the 4-step evidence chain, then restart the WEDGED side (the one that has been up longest), not the fresh one.
+
+A 2-machine hive (e.g. tower ↔ Mac VM) links its two `bg-host`/sidecar processes over a hyperswarm topic (`topic-gossip:<pot>/hive-presence`) that carries presence gossip, peer-log federation (coord messages, federated events, delivery receipts, claim specs), and hypercore replication. **When one side restarts, that link can sever permanently — not a bounded freeze that self-heals.** Verified live on the tower↔VM rig (session su-18f2f, 2026-07-17 01:4x–03:2xZ EDT); full forensics in EI-13317 and `docs/plans/CUTOVER-presence-gossip-2026-07-16.md` § LIVE drill scoreboard.
+
+## The failure shape
+
+[Section titled “The failure shape”](#the-failure-shape)
+
+Earlier observations described this as a “\~13-minute post-restart peer-log freeze” that self-heals. **That is wrong — or at least not the whole story.** In the live drill:
+
+* A restart pairing where BOTH sides come up fresh (near-simultaneous tower `bg-host` + VM sidecar boot) reconnects cleanly within \~100s.
+* A restart of only ONE side (the VM sidecar rebooted alone) severed the link at \~22:49 and it **never re-established on its own**. One transient reconnect existed \~22:57 — long enough to replicate a backlog in one direction — then dropped and never returned. That transient carried the earlier fleet to believe it was a bounded self-heal; it wasn’t — it was a lucky, temporary reconnect.
+* A second VM sidecar reboot at 23:13 (a fresh dial, fresh announce) still did **not** reconnect after 6+ minutes of watching. The surviving side (tower `bg-host`, up since 22:35) was not accepting/answering discovery even though its own gossip broadcast timer kept running against zero channels.
+* Only a restart of the **surviving/wedged** side (tower `bg-host` at 23:24) recreated the both-sides-fresh configuration and reconnected within \~2 minutes.
+
+So: **a fresh dial from the fresh side cannot rescue a wedged peer.** The side that has been up the longest since its own last wire/reboot is the one holding stale swarm state, and only restarting *that* side clears it.
+
+## The signature — confirm this before acting
+
+[Section titled “The signature — confirm this before acting”](#the-signature--confirm-this-before-acting)
+
+Don’t guess from “coordination seems dark” — confirm the severed-link signature on BOTH machines before treating it as this failure mode:
+
+1. **Frozen remote presence rows.** `shared_presence` rows for the *other* machine stop advancing — their age climbs monotonically instead of re-stamping every few seconds. Check both sides (`dev:pg_query` against `shared_presence WHERE pot_slug = '<pot>'`).
+
+2. **Zero open gossip channels, continuously, on both sides.** Grep both processes’ logs for the topic-gossip broadcast line — it keeps firing on its own timer but reports `0 channel(s) open`:
+
+   ```plaintext
+   [topic-gossip:<pot>/hive-presence] broadcast … 0 channel(s) open
+   ```
+
+   This appears on BOTH the fresh side’s serve log and the wedged side’s `bg-host` journal — it is not one-sided.
+
+3. **Frozen inbound apply.** The receiving side’s `coord_event_log` (or equivalent federated-event ledger) stops advancing — `max(ts)` sticks at the moment of severance.
+
+4. **Zero sockets between the machines.** `ss -tnp` / `ss -aunp` (whichever transport the swarm uses) shows no active connection between the two hosts’ processes.
+
+Rule out the two usual false leads before concluding it’s this bug:
+
+* **The DHT fixture is not the cause.** A dedicated DHT bootstrap/fixture service (e.g. `papercup-isolated-dht.service`) staying up across the restart is expected and irrelevant — it survives every restart in this failure and is not what’s severed.
+* **No sibling process is quietly holding the link.** Check adjacent services on the surviving machine (e.g. a `dev-api`/`staging-api` journal) for any topic-gossip/swarm lines — in the verified drill, they carried none, ruling out a second process as the actual link holder.
+
+## The recovery lever: restart the WEDGED side, not the fresh one
+
+[Section titled “The recovery lever: restart the WEDGED side, not the fresh one”](#the-recovery-lever-restart-the-wedged-side-not-the-fresh-one)
+
+Once the signature is confirmed, the fix is a targeted restart of the side that has been up longest since its own presence loop last wired (its OWN `shared_presence` self-rows will be stamped only at that old wire time, not recently) — typically the tower `bg-host`, since the VM sidecar is the one that usually gets bounced during normal work. Restarting the already-fresh side again (another VM reboot) does nothing — proven: a fresh VM re-dial could not reach the stale tower `bg-host` for 6+ minutes, while a tower `bg-host` restart reconnected in \~2 minutes.
+
+```plaintext
+dev:restart { target: 'bg-host', confirm: true }
+```
+
+Coordinate this restart — it freezes the coordination rails for the duration of the swarm rejoin (observed \~13 minutes in the ordinary case; see EI-13307 on the missing coalescing/debounce for repeated `bg-host` restarts, which can chain these freezes back to back if multiple agents restart it independently within that window). Announce a fleet hold before firing it, same as any other `bg-host` restart.
+
+## Data is safe — this is an availability outage, not a data-loss one
+
+[Section titled “Data is safe — this is an availability outage, not a data-loss one”](#data-is-safe--this-is-an-availability-outage-not-a-data-loss-one)
+
+While severed, remote agents are unaddressable and cross-machine coordination is fully dark (presence gossip, peer-log federation, delivery receipts, claim specs) — but nothing is lost. Backlog catch-up across the rejoin is lossless: a delivery receipt authored during the severed window federated intact once the link reconnected. Treat this purely as an availability problem to fix quickly, not as a data-recovery problem.
+
+## What’s still open
+
+[Section titled “What’s still open”](#whats-still-open)
+
+The underlying swarm rejoin/re-announce lifecycle bug — why the surviving side neither re-announces nor re-dials after a peer drops — is tracked as **EI-13317** (root-cause fix pending; suspected area: announce-refresh cadence vs. connection lifetime, and whether the gossip channel and hypercore replication share reconnect logic, since the one transient 22:57 reconnect carried replication but zero gossip channels). The related restart-storm issue (repeated `bg-host` restarts during a drill compounding the outage because `dev:restart` doesn’t coalesce `bg-host` targets the way it does `staging`) is tracked as **EI-13307**. Until EI-13317 lands a durable fix, treat every persistent (>5 min) severed link the same way: confirm the signature, then restart the wedged side.
 
 # SwarmBench integration + the gateway's OpenAI-compatible /v1/chat/completions path
 
@@ -71385,6 +71580,40 @@ Per-plugin caps (§9.4.1, §9.4.2) catch a single misbehaving plugin. They don�
 **Not built:** there is no `audit.system_pressure` table, no global daily/per-minute LLM budget, and no “system at 87% of daily budget” UI indicator. The intended design was for all system caps to emit pressure metrics to `audit.system_pressure` so operators could see when they regularly run close to a limit and a UI could surface stress.
 
 *Intended:* per-plugin caps would interact with system caps multiplicatively, not additively — a plugin could hit either ceiling first, and authors should size per-plugin caps assuming the (unbuilt) system cap might constrain them earlier than their own.
+
+### 9.5 Routine groups
+
+[Section titled “9.5 Routine groups”](#95-routine-groups)
+
+**Partially implemented.** This section is a CHARTER (WI-5019, owner-directed 2026-07-15) — the membership + governance rules for one named group. The GROUP MECHANICS (group metadata on the routines registry, group-scoped list/rollup/pause) are tracked separately as WI-5018 and are not yet built; until they land, “group” membership below is a roster this doc maintains by hand, not a queryable field.
+
+A **routine group** is a named, stewarded collection of routines that share a purpose — grouped so they can be reasoned about, reviewed, and (once WI-5018 lands) paused/rolled-up together, rather than as N unrelated cron entries an operator has to rediscover one at a time.
+
+#### 9.5.1 The `self-improvement` group
+
+[Section titled “9.5.1 The self-improvement group”](#951-the-self-improvement-group)
+
+Owner-chartered 2026-07-15 (“i want to create a self improving group for the routines”). Purpose: every routine whose JOB is to OBSERVE the live system and FILE improvement candidates — as opposed to a routine that does the system’s actual work (git-sync, green-checkpoint, blueprint dispatch, …).
+
+**Day-one members** (pre-existing, scattered under this charter — the group has real members from day one, it is not aspirational):
+
+* `rubric-staleness-watchdog` (`packages/operator-core/lib/rubric-staleness-watchdog.ts`) — flags rubrics whose scoring signal has gone stale.
+* `scorecard-emission-pulse` (`packages/operator-core/lib/scorecard-emission-pulse.ts`) — periodic scorecard-freshness emission.
+* the recipes sweep + candidates miners (`packages/operator-core/lib/agent-tools/recipes/sweep.ts`, `candidates.ts`) — mine `code:run` call patterns into reusable recipes.
+* the `knowledge_packs` sweep — mines durable knowledge-pack candidates from repeated agent findings.
+* the improvements watchdog + auto-policy (`packages/operator-core/lib/agent-tools/improvements/watchdog-status.ts`, `digest.ts`, `learning-loops.ts`) — the auto/human triage tiering for filed observations.
+* dark-flag expiry (`DARK_FLAGS_REVIEW_BY` on `KNOWN_DARK_FLAGS`, `libs/flags/src/production-defaults.test.ts`) — surfaces a dark flag that has outlived its review-by date.
+* the test-quarantine auto-mechanism (3-strikes-in-7-days) — files a de-quarantine follow-up when a flake self-resolves or lingers.
+
+**New members, tracked as their own work items**: the invalid-args miner (aggregates `tool_invocations` invalid-input rows into candidates — WI-5017); auto-audit of issue closes populating `engineer_issues.auditVerdict`; auto-checkpoint-nudge at HIGH contextPressure (both surfaced by the 2026-07-15 leader session audit). A routine joins this group by being a self-improvement SENSOR per the principle below and getting listed here (until WI-5018’s group metadata makes membership a field instead of a roster).
+
+**Two design principles** (binding on every member, present and future):
+
+1. **Sensors, not actuators.** A self-improvement routine OBSERVES and FILES (`improvements:capture` / `work_items:create`); it never self-modifies the system directly. The actuator stays the existing improvements pipeline — its blueprint, its tests, its release-manager gate. That pipeline IS the safety boundary; a member routine that reaches around it (writing code, flipping a flag, editing config) is out of charter and must be pulled from the group.
+
+2. **The group prunes itself.** Every member records its yield — candidates filed vs. accepted vs. shipped. A steward review (cadence: to be set once WI-5018’s group metadata carries a `review_cadence` field; interim default is quarterly, tracked by hand) drops or retunes low-yield miners. Without this, the self-improvement group becomes exactly the unbounded-growth problem it exists to manage — self-improvement includes the willingness to kill your own low-value routines.
+
+**Steward:** unassigned — the owner has not yet named one; until then this charter’s upkeep (adding new sensor members, running the yield review) defaults to whichever agent next touches a member routine, per the reuse-first / extend-don’t-fork discipline.
 
 # Scaffold failure recovery
 

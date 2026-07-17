@@ -6,6 +6,10 @@
  *      auto-capture red tests / failing smokes / repeated tool errors / down
  *      services as kind=bug improvements. Capture only (search-first dedup +
  *      per-tick cap); builds nothing.
+ *   - `improvement-invalid-args-miner` (weekly): WI-5017 — aggregates
+ *      tool_invocations invalid-input rows by (tool, offending key) and files a
+ *      recurring pattern as a kind=change improvement (an alias candidate, a
+ *      confusing schema field, or an agent-prior drift). Capture only.
  *   - `improvement-implement` (every 30 min): the auto-implement loop (Phase 3).
  *      ADDITIONALLY gated by the `papercusp-improvement-auto-implement` flag
  *      (default OFF) AND a configured PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS (D-006);
@@ -40,6 +44,11 @@ const ROUTINES = [
   // deterministic type-route on untriaged open items — routing metadata only
   // (never rejects, never dispatches), so it arms with the safe tier.
   { name: 'improvement-triage', target: 'system:improvement-triage', cron: '0 0 */6 * * *', arm: 'safe' }, // every 6 h
+  // WI-5017: aggregates tool_invocations invalid-input rows into (tool, offending
+  // key) recurrence signals — capture only (kind=change), so it arms with the
+  // safe tier like the watchdog/triage passes. Weekly: the signal is a slow
+  // cross-agent DX pattern, not something sub-hour freshness would help.
+  { name: 'improvement-invalid-args-miner', target: 'system:improvement-invalid-args-miner', cron: '0 0 4 * * 0', arm: 'safe' }, // weekly, Sun 04:00
   { name: 'improvement-implement', target: 'system:improvement-implement', cron: '0 */30 * * * *', arm: 'owner' }, // every 30 min
 ] as const;
 

@@ -168,3 +168,70 @@ emit pressure metrics to `audit.system_pressure` so operators could see when the
 limit and a UI could surface stress.
 
 Intended: per-plugin caps would interact with system caps multiplicatively, not additively — a plugin could hit either ceiling first, and authors should size per-plugin caps assuming the (unbuilt) system cap might constrain them earlier than their own.
+
+### 9.5 Routine groups
+
+Partially implemented. This section is a CHARTER (WI-5019,
+owner-directed 2026-07-15) — the
+membership + governance rules for one named group. The GROUP MECHANICS
+(group metadata on the routines registry, group-scoped list/rollup/pause) are
+tracked separately as WI-5018 and are not yet built; until they land, "group"
+membership below is a roster this doc maintains by hand, not a queryable
+field.
+
+A routine group is a named, stewarded collection of routines
+that share a purpose — grouped so they can be reasoned about, reviewed, and
+(once WI-5018 lands) paused/rolled-up together, rather than as N unrelated
+cron entries an operator has to rediscover one at a time.
+
+#### 9.5.1 The `self-improvement` group
+
+Owner-chartered 2026-07-15 ("i want to create a self improving group for the
+routines"). Purpose: every routine whose JOB is to OBSERVE the live system
+and FILE improvement candidates — as opposed to a routine that does the
+system's actual work (git-sync, green-checkpoint, blueprint dispatch, …).
+
+Day-one members (pre-existing, scattered under this
+charter — the group has real members from day one, it is not aspirational):
+
+rubric-staleness-watchdog (packages/operator-core/lib/rubric-staleness-watchdog.ts) — flags rubrics whose scoring signal has gone stale.
+scorecard-emission-pulse (packages/operator-core/lib/scorecard-emission-pulse.ts) — periodic scorecard-freshness emission.
+the recipes sweep + candidates miners (packages/operator-core/lib/agent-tools/recipes/sweep.ts, candidates.ts) — mine code:run call patterns into reusable recipes.
+the knowledge\_packs sweep — mines durable knowledge-pack candidates from repeated agent findings.
+the improvements watchdog + auto-policy (packages/operator-core/lib/agent-tools/improvements/watchdog-status.ts, digest.ts, learning-loops.ts) — the auto/human triage tiering for filed observations.
+dark-flag expiry (DARK\_FLAGS\_REVIEW\_BY on KNOWN\_DARK\_FLAGS, libs/flags/src/production-defaults.test.ts) — surfaces a dark flag that has outlived its review-by date.
+the test-quarantine auto-mechanism (3-strikes-in-7-days) — files a de-quarantine follow-up when a flake self-resolves or lingers.
+
+New members, tracked as their own work items: the
+invalid-args miner (aggregates tool\_invocations invalid-input
+rows into candidates — WI-5017); auto-audit of issue closes populating
+engineer\_issues.auditVerdict; auto-checkpoint-nudge at HIGH
+contextPressure (both surfaced by the 2026-07-15 leader session audit). A
+routine joins this group by being a self-improvement SENSOR per the
+principle below and getting listed here (until WI-5018's group metadata
+makes membership a field instead of a roster).
+
+Two design principles (binding on every member, present and future):
+
+Sensors, not actuators. A self-improvement routine
+OBSERVES and FILES (improvements:capture /
+work\_items:create); it never self-modifies the system
+directly. The actuator stays the existing improvements pipeline — its
+blueprint, its tests, its release-manager gate. That pipeline IS the
+safety boundary; a member routine that reaches around it (writing code,
+flipping a flag, editing config) is out of charter and must be pulled from
+the group.
+
+The group prunes itself. Every member records its yield —
+candidates filed vs. accepted vs. shipped. A steward review (cadence: to
+be set once WI-5018's group metadata carries a
+review\_cadence field; interim default is quarterly, tracked
+by hand) drops or retunes low-yield miners. Without this, the
+self-improvement group becomes exactly the unbounded-growth problem it
+exists to manage — self-improvement includes the willingness to kill your
+own low-value routines.
+
+Steward: unassigned — the owner has not yet named one;
+until then this charter's upkeep (adding new sensor members, running the
+yield review) defaults to whichever agent next touches a member routine, per
+the reuse-first / extend-don't-fork discipline.

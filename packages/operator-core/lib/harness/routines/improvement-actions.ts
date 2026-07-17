@@ -57,6 +57,7 @@ import { runRecurrenceEscalation } from '../improvements/recurrence-escalation';
 import { buildDigest, type ScoredItem } from '../improvements/digest';
 import { triageIdea } from '../improvements/triage';
 import { applyTriageDecision, selectUntriaged, type ApplyTriageInput, type ApplyTriageResult } from '../improvements/triage-core';
+import { runInvalidArgsMinerTick } from '../improvements/invalid-args-miner';
 
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
 export const IMPROVEMENT_RUNNER_ASSIGNEE = 'improvement-runner';
@@ -258,6 +259,27 @@ registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
   } catch (e) {
     console.warn('[improvement-triage] recurrence escalation failed:', e instanceof Error ? e.message : e);
   }
+});
+
+// ── WI-5017: the weekly invalid-args miner (capture only) ────────────────────
+// Mines harness_shared.tool_invocations invalid-input rows into (tool, offending
+// key) aggregates and files a recurring pattern as a kind=change improvement —
+// see invalid-args-miner.ts for the full rationale. Weekly cadence (not the
+// 15-min watchdog tick): the signal is a slow-accumulating cross-agent DX
+// pattern, not something needing sub-hour freshness.
+registerSystemAction('improvement-invalid-args-miner', async (ctx: SystemActionCtx) => {
+  const windowDays = intFromEnv('PAPERCUSP_INVALID_ARGS_MINER_WINDOW_DAYS', 7, { min: 1 });
+  const minDistinctOwners = intFromEnv('PAPERCUSP_INVALID_ARGS_MINER_MIN_OWNERS', 3, { min: 1 });
+  const minOccurrences = intFromEnv('PAPERCUSP_INVALID_ARGS_MINER_MIN_OCCURRENCES', 10, { min: 1 });
+  const maxPerTick = intFromEnv('PAPERCUSP_INVALID_ARGS_MINER_MAX_PER_TICK', 5, { min: 0 });
+  const result = await runInvalidArgsMinerTick(ctx.workspaceId, { windowDays, minDistinctOwners, minOccurrences, maxPerTick });
+  console.log(
+    `[improvement-invalid-args-miner] scanned ${result.scanned} invalid-input row(s) → ${result.candidates} ` +
+      `(tool,key) pair(s) cleared the recurrence bar, captured ${result.captured.length}` +
+      (result.captured.length ? ` (${result.captured.join(', ')})` : '') +
+      `, ${result.declined} duplicate(s) declined` +
+      (result.failed ? `, ${result.failed} capture(s) FAILED` : ''),
+  );
 });
 
 // ── Phase 3: the auto-implement loop (flag-gated OFF) ────────────────────────

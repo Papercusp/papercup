@@ -30,6 +30,7 @@
 
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { machineFingerprint } from './identity/device-keychain-id';
 
 /** The system identity the owner-key-missing escalation is attributed to. */
 const OWNER_KEY_HEALTH_IDENTITY: AgentIdentity = {
@@ -68,34 +69,86 @@ function dedupKey(workspaceId: string, potSlug: string): string {
   return `${workspaceId}::${potSlug}`;
 }
 
+/**
+ * WI investigation (2026-07-17, tower-side owner-key-missing alarm): the
+ * escalation summary previously carried NO indication of which physical
+ * box / process emitted it. `sendMessage`'s broadcast has no host field, so a
+ * responder reading "🔴 owner key MISSING for owned hive X" cannot tell
+ * whether this is the canonical release/staging host, a peer joiner box
+ * (the WI-5108 non-owner-box class), or a stray ad-hoc dev/test operator
+ * instance running background workers on the SAME machine as the real
+ * owner (proven live: neither the :3070 nor :3170 canonical host actually
+ * runs cross-hive-boot — both are request-only clusters per EI-126 — so a
+ * firing alert is, in practice, always coming from a THIRD process).
+ * Tagging every escalation with a stable per-machine fingerprint + the
+ * emitting PID/port turns "which box is this?" from an hour of `ssh` +
+ * `journalctl` forensics into reading the alert.
+ */
+function emittingBoxTag(): string {
+  const port = process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT;
+  return `${machineFingerprint()}#pid${process.pid}${port ? `:${port}` : ''}`;
+}
+
 /** Hives we've already escalated; cleared by clearOwnedHiveKeyHealth on recovery. */
 const signaled = new Set<string>();
 
-/** The default escalation: coord broadcast (the floor) + a toast row (best-effort). */
+/**
+ * The toast_log row IS the persistent cross-restart dedup floor
+ * (`defaultRecentlyAlerted` below reads it back) — if this write never lands,
+ * `recentlyAlerted` fails open FOREVER for this hive and every subsequent
+ * boot/process on ANY box re-alerts freely, no matter how loud the 6h
+ * cooldown comment claims it should be. WI investigation (2026-07-17):
+ * confirmed LIVE that `cross-hive-boot` fires this escalation at the
+ * earliest phase of boot-all — before `getOrgPg()`'s admin client can
+ * reliably resolve (the exact "background workers that booted before the
+ * desktop wrote a new embedded-pg.json" race `getOrgPg`'s own doc comment
+ * already names) — while the write itself is structurally fine (a manual
+ * insert with the identical shape lands cleanly once PG is up). A single
+ * short retry survives that boot-time window without blocking boot: the
+ * caller (`signalOwnedHiveKeyMissing`) already fires this fully
+ * fire-and-forget (`void … .catch(() => {})` at the cross-hive-boot call
+ * site), so a multi-second delay here costs nothing.
+ */
+async function insertOwnerKeyToast(ref: OwnedHiveKeyMissingRef, summary: string): Promise<void> {
+  const { getOrgPg, generated } = await import('@papercusp/db-org');
+  const { db } = getOrgPg();
+  await db.insert(generated.toastLogInHarnessShared).values({
+    level: 'error',
+    message: 'Hive owner key missing',
+    description: `${summary} Restore this box's hive identity key (or re-own the hive) — until then the hive stays dark for its members.`,
+    harnessSlug: ref.potSlug,
+    createdAt: Date.now(),
+    actionLabel: 'Open Insights',
+    actionHref: '/adv?tab=insights',
+  });
+}
+
+const TOAST_RETRY_DELAY_MS = 5000;
+
+async function insertOwnerKeyToastWithRetry(
+  ref: OwnedHiveKeyMissingRef,
+  summary: string,
+  attemptsLeft = 1,
+): Promise<void> {
+  try {
+    await insertOwnerKeyToast(ref, summary);
+  } catch {
+    if (attemptsLeft <= 0) return; // PG still not ready / write failed — the coord broadcast is the floor
+    await new Promise((resolve) => setTimeout(resolve, TOAST_RETRY_DELAY_MS));
+    await insertOwnerKeyToastWithRetry(ref, summary, attemptsLeft - 1);
+  }
+}
+
+/** The default escalation: coord broadcast (the floor) + a toast row (best-effort, retried). */
 async function defaultEscalate(ref: OwnedHiveKeyMissingRef, summary: string): Promise<void> {
   await sendMessage(OWNER_KEY_HEALTH_IDENTITY, {
     to: ['*'],
     summary,
     category: 'hive-owner-health',
   }).catch(() => {});
-  // Toast row — the notification panel / notifications:recent rail. PG may not be
-  // ready this early in boot, so the whole write is best-effort; the coord
-  // broadcast above is the floor.
-  try {
-    const { getOrgPg, generated } = await import('@papercusp/db-org');
-    const { db } = getOrgPg();
-    await db.insert(generated.toastLogInHarnessShared).values({
-      level: 'error',
-      message: 'Hive owner key missing',
-      description: `${summary} Restore this box's hive identity key (or re-own the hive) — until then the hive stays dark for its members.`,
-      harnessSlug: ref.potSlug,
-      createdAt: Date.now(),
-      actionLabel: 'Open Insights',
-      actionHref: '/adv?tab=insights',
-    });
-  } catch {
-    /* PG not ready / write failed — the coord broadcast is the floor */
-  }
+  // Toast row — the notification panel / notifications:recent rail, AND the
+  // persistent cross-restart dedup floor `defaultRecentlyAlerted` reads back.
+  await insertOwnerKeyToastWithRetry(ref, summary).catch(() => {});
 }
 
 /**
@@ -174,7 +227,7 @@ export async function signalOwnedHiveKeyMissing(
 
   const summary =
     `🔴 owner key MISSING for owned hive ${ref.workspaceId}/${ref.potSlug} (${ref.context}) — ` +
-    `this box owns the hive but loadHivePubkey returned null, so it cannot sign or serve it.`;
+    `this box (${emittingBoxTag()}) owns the hive but loadHivePubkey returned null, so it cannot sign or serve it.`;
   try {
     d.warn(`[hive-owner-key-health] ${summary}`);
   } catch {
@@ -214,7 +267,7 @@ export async function signalHiveKeyDivergent(
   signaled.add(k);
   const summary =
     `🔴 hive identity key DIVERGENT for ${ref.workspaceId}/${ref.potSlug} (${ref.context}) — ` +
-    `this box holds ${ref.heldPubkey.slice(0, 12)}… but the hive's canonical identity is ` +
+    `this box (${emittingBoxTag()}) holds ${ref.heldPubkey.slice(0, 12)}… but the hive's canonical identity is ` +
     `${ref.canonicalPubkey.slice(0, 12)}…. This is the WI-1981 epoch-poison class: delete the ` +
     `divergent key from EVERY keychain tier (OS keychain AND the encrypted-file dirs — ` +
     `PAPERCUSP_IDENTITY_DIR and legacy ~/.papercusp/identity), remove any ` +

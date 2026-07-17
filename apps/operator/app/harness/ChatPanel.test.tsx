@@ -82,8 +82,52 @@ function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
 afterEach(() => {
   cleanup();
   syncRows = [];
+  syncLoading = false;
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+});
+
+/**
+ * WI-5125 — the owner-reported "loading chat… forever" bug.
+ *
+ * The chat row existed but carried a different workspace_id, so the panel's
+ * workspace-scoped read matched ZERO rows. `useSyncQuery` reports that as
+ * `{ data: [], error: null }` — no row AND no error — which matched neither of
+ * loadChat's branches, so `chat` stayed null and the panel rendered its spinner
+ * forever with no way out.
+ *
+ * The distinction these tests pin: STILL-LOADING must keep spinning, but
+ * RESOLVED-AND-EMPTY is a real, reportable outcome. Empty is never eternal.
+ */
+describe('ChatPanel — resolved-but-empty is an error, not an eternal spinner (WI-5125)', () => {
+  it('surfaces a not-found fault when the subscription settles with zero rows', async () => {
+    syncRows = [];
+    syncLoading = false;
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+    expect(await screen.findByText(/chat not found/i)).toBeTruthy();
+    // The spinner must be GONE — its persistence IS the reported bug.
+    expect(screen.queryByText(/loading chat/i)).toBeNull();
+  });
+
+  it('still shows the spinner while the subscription is genuinely loading', async () => {
+    syncRows = [];
+    syncLoading = true;
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+    // Empty + loading is NOT a fault — don't cry not-found mid-flight.
+    expect(await screen.findByText(/loading chat/i)).toBeTruthy();
+    expect(screen.queryByText(/chat not found/i)).toBeNull();
+  });
+
+  it('retry REFETCHES rather than re-reading the same cached emptiness', async () => {
+    syncRows = [];
+    syncLoading = false;
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+    await screen.findByText(/chat not found/i);
+    fireEvent.click(screen.getByText('retry'));
+    // Without this the button re-derives the identical failure from cache and
+    // the panel is just as stuck — only with a louder message.
+    expect(invalidateSpy).toHaveBeenCalled();
+  });
 });
 
 describe('ChatPanel — failed turn (EI-577)', () => {

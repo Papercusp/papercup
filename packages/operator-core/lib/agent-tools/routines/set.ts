@@ -20,6 +20,7 @@ interface RoutineSnap {
   payloadTemplate: Record<string, unknown>;
   active: boolean;
   nextFireAtIso: string | null;
+  groupSlug: string | null;
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -51,14 +52,16 @@ export default defineTool({
   name: 'routines:set',
   profile: 'engineer',
   description:
-    "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, scout, …) without raw SQL: change its cron, its active flag (active:false = PAUSE, active:true = RESUME), its trigger_config, and/or DEEP-merge a patch into its payload_template (the routine's own run knobs — e.g. the scout singleton's payload.budget.maxIdeators). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
+    "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, scout, …) without raw SQL: change its cron, its active flag (active:false = PAUSE, active:true = RESUME), its trigger_config, its GROUP (group — metadata only, see routines:groups), and/or DEEP-merge a patch into its payload_template (the routine's own run knobs — e.g. the scout singleton's payload.budget.maxIdeators). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
   capability: 'operator:write',
   guidance: {
-    when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps), or retune a routine\'s RUN KNOBS (payloadTemplate — e.g. the scout singleton\'s budget.maxIdeators / models.ideator) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
-    notWhen: 'For a harness blueprint autoloop, use autoloop:control. To just SEE routines, routines:list. (These routine rows are their own store; they do not appear in config:list-overrides.)',
+    when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps), assign/clear its group (group — WI-5018 routines grouping), or retune a routine\'s RUN KNOBS (payloadTemplate — e.g. the scout singleton\'s budget.maxIdeators / models.ideator) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
+    notWhen: 'For a harness blueprint autoloop, use autoloop:control. To just SEE routines, routines:list. To pause/resume a WHOLE group at once, routines:group-set. (These routine rows are their own store; they do not appear in config:list-overrides.)',
     chaining: 'routines:list first to get the exact name + installSlug; routines:list after to confirm the change.',
     seeAlso: [
       'routines:list (get the exact name + installSlug first)',
+      'routines:groups (see/manage the group registry)',
+      'routines:group-set (bulk pause/resume a whole group)',
       'autoloop:control (a harness blueprint autoloop instead)',
     ],
   },
@@ -78,6 +81,14 @@ export default defineTool({
       .record(z.string(), z.unknown())
       .optional()
       .describe("DEEP-merge this patch into the routine's payload_template — the routine's own run knobs (e.g. the scout singleton's payload.budget.maxIdeators / payload.models.ideator). Nested plain objects merge, so { payload: { budget: { maxIdeators: 4 } } } retunes ONE key without disturbing payload.models or payload.cadence; arrays and scalars replace. Previously the only way to change these was the raw UPDATE harness_shared.routines the playbook forbids (WI-4482)."),
+    group: z
+      .string()
+      .max(120)
+      .nullable()
+      .optional()
+      .describe(
+        'Assign this routine to a routine group (WI-5018 — metadata + management ONLY, never fires anything). Pass a slug (e.g. "health") to assign — the group is auto-created in harness_shared.routine_groups with blank metadata if it does not exist yet (fill it in via routines:groups). Pass null to clear (ungroup).',
+      ),
     dryRun: z.boolean().optional(),
   }),
   async handler(args, ctx) {
@@ -88,9 +99,10 @@ export default defineTool({
       args.cron === undefined &&
       args.active === undefined &&
       args.triggerConfig === undefined &&
-      args.payloadTemplate === undefined
+      args.payloadTemplate === undefined &&
+      args.group === undefined
     ) {
-      throw new Error('set requires cron, active, triggerConfig, and/or payloadTemplate');
+      throw new Error('set requires cron, active, triggerConfig, payloadTemplate, and/or group');
     }
     // Validate the cron BEFORE touching anything — a typo must not silently kill a routine.
     if (args.cron !== undefined && !computeNextFireAt(args.cron, new Date())) {
@@ -102,8 +114,8 @@ export default defineTool({
     const slug = args.installSlug ?? operatorHomeHarnessSlug();
 
     const readSnap = async (): Promise<RoutineSnap> => {
-      const rows = await sql<Array<{ trigger_config: Record<string, unknown> | null; payload_template: Record<string, unknown> | null; active: boolean; next_fire_at: Date | null }>>`
-        SELECT trigger_config, payload_template, active, next_fire_at
+      const rows = await sql<Array<{ trigger_config: Record<string, unknown> | null; payload_template: Record<string, unknown> | null; active: boolean; next_fire_at: Date | null; group_slug: string | null }>>`
+        SELECT trigger_config, payload_template, active, next_fire_at, group_slug
           FROM harness_shared.routines
          WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${args.name}
          LIMIT 1`;
@@ -115,16 +127,27 @@ export default defineTool({
         payloadTemplate: r.payload_template ?? {},
         active: r.active,
         nextFireAtIso: nextIso,
+        groupSlug: r.group_slug ?? null,
       };
     };
 
     const writeSnap = async (snap: RoutineSnap): Promise<void> => {
+      // Auto-create the group (blank metadata) on first assignment — the FK
+      // (workspace_id, group_slug) -> routine_groups requires the row to exist;
+      // routines:groups is where a steward fills in description/steward/cadence.
+      if (snap.groupSlug) {
+        await sql`
+          INSERT INTO harness_shared.routine_groups (workspace_id, slug)
+          VALUES (${ws}, ${snap.groupSlug})
+          ON CONFLICT (workspace_id, slug) DO NOTHING`;
+      }
       await sql`
         UPDATE harness_shared.routines
            SET trigger_config = ${JSON.stringify(snap.triggerConfig)}::text::jsonb,
                payload_template = ${JSON.stringify(snap.payloadTemplate)}::text::jsonb,
                active = ${snap.active},
                next_fire_at = ${snap.nextFireAtIso}::timestamptz,
+               group_slug = ${snap.groupSlug},
                updated_at = now()
          WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${args.name}`;
     };
@@ -159,6 +182,7 @@ export default defineTool({
             payloadTemplate,
             active: args.active ?? prev.active,
             nextFireAtIso: nextIso,
+            groupSlug: args.group !== undefined ? args.group : prev.groupSlug,
           };
           await writeSnap(next);
           return next;
@@ -169,6 +193,7 @@ export default defineTool({
           const ok =
             cur.active === next.active &&
             (args.cron === undefined || (cur.triggerConfig as { cron?: string }).cron === args.cron) &&
+            (args.group === undefined || cur.groupSlug === next.groupSlug) &&
             // The payload merge must actually be READABLE back, not just written — a silent
             // no-op write here would leave the caller believing a live knob was retuned.
             (args.payloadTemplate === undefined ||
@@ -179,11 +204,13 @@ export default defineTool({
           current: {
             cron: (prev.triggerConfig as { cron?: string }).cron ?? null,
             active: prev.active,
+            group: prev.groupSlug,
             ...(args.payloadTemplate !== undefined ? { payloadTemplate: prev.payloadTemplate } : {}),
           },
           proposed: {
             cron: args.cron ?? ((prev.triggerConfig as { cron?: string }).cron ?? null),
             active: args.active ?? prev.active,
+            group: args.group !== undefined ? args.group : prev.groupSlug,
             ...(args.payloadTemplate !== undefined
               ? { payloadTemplate: deepMergePlain(prev.payloadTemplate, args.payloadTemplate) }
               : {}),

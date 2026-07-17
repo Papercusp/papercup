@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   signalOwnedHiveKeyMissing,
   clearOwnedHiveKeyHealth,
@@ -6,6 +6,24 @@ import {
   _resetOwnerKeyHealthForTests,
   type OwnerKeyHealthDeps,
 } from './hive-owner-key-health';
+
+// Hoisted mocks for the DEFAULT-deps path (defaultEscalate) — used only by the
+// "WI investigation 2026-07-17" describe block below, which exercises the
+// real toast-write-with-retry logic instead of an injected fake `escalate`.
+const insertValuesMock = vi.hoisted(() => vi.fn());
+vi.mock('./agent-tools/coordination/messages', () => ({
+  sendMessage: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({
+    db: {
+      insert: () => ({
+        values: insertValuesMock,
+      }),
+    },
+  }),
+  generated: { toastLogInHarnessShared: {} },
+}));
 
 /**
  * Hermetic tests for the deduped owner-key-missing health signal
@@ -136,5 +154,72 @@ describe('signalOwnedHiveKeyMissing', () => {
     await signalOwnedHiveKeyMissing({ workspaceId: 'w', potSlug: 'h', context: 'c' }, q);
     await signalOwnedHiveKeyMissing({ workspaceId: 'w', potSlug: 'h', context: 'c' }, q);
     expect(escalate).toHaveBeenCalledTimes(1); // second call deduped despite the first throwing
+  });
+
+  // WI investigation (2026-07-17): the coord broadcast carries no host field,
+  // so a firing alert previously gave no way to tell which physical box /
+  // process emitted it (proven live: neither the :3070 nor :3170 canonical
+  // host actually runs cross-hive-boot, so a real firing is always some
+  // THIRD process). The summary now stamps a per-machine fingerprint + PID.
+  it('DIAGNOSABILITY: the summary carries a per-box identity tag (host fingerprint + pid)', async () => {
+    const { deps } = fakeDeps();
+    let capturedSummary = '';
+    const q: OwnerKeyHealthDeps = {
+      ...deps,
+      escalate: async (_ref, summary) => {
+        capturedSummary = summary;
+      },
+    };
+    await signalOwnedHiveKeyMissing({ workspaceId: 'w', potSlug: 'h', context: 'cross-hive-boot' }, q);
+    // still carries the pre-existing, load-bearing substrings…
+    expect(capturedSummary).toContain('w/h');
+    expect(capturedSummary).toContain('cross-hive-boot');
+    // …plus a diagnosable box identity: `#pid<N>`.
+    expect(capturedSummary).toMatch(/#pid\d+/);
+  });
+});
+
+// WI investigation (2026-07-17): defaultEscalate's toast_log write is the
+// PERSISTENT cross-restart dedup floor (defaultRecentlyAlerted reads it
+// back) — confirmed live that it silently failed on every real firing
+// (2026-07-15..16) because cross-hive-boot calls it at the earliest phase of
+// boot, before getOrgPg()'s admin client reliably resolves. These tests
+// exercise the DEFAULT deps path (real defaultEscalate) with @papercusp/db-org
+// mocked, to prove the retry recovers from exactly that transient failure
+// instead of losing the dedup floor for the full 6h cooldown window.
+describe('signalOwnedHiveKeyMissing — default escalate toast retry', () => {
+  beforeEach(() => {
+    _resetOwnerKeyHealthForTests();
+    insertValuesMock.mockReset();
+    vi.useFakeTimers();
+  });
+
+  it('RETRY: a transient toast-write failure (boot-time PG-not-ready) is retried and lands', async () => {
+    insertValuesMock.mockRejectedValueOnce(new Error('PG not ready this early in boot'));
+    insertValuesMock.mockResolvedValueOnce(undefined);
+
+    const firedPromise = signalOwnedHiveKeyMissing(
+      { workspaceId: 'w', potSlug: 'h', context: 'cross-hive-boot' },
+      { warn: () => {}, recentlyAlerted: async () => false }, // isolate: exercise the real toast write, not the persistent-read leg
+    );
+    // Let the first (failing) insert attempt run, then fast-forward past the retry delay.
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(await firedPromise).toBe(true);
+    expect(insertValuesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a second consecutive failure exhausts the single retry without throwing', async () => {
+    insertValuesMock.mockRejectedValue(new Error('still not ready'));
+    const firedPromise = signalOwnedHiveKeyMissing(
+      { workspaceId: 'w', potSlug: 'h2', context: 'cross-hive-boot' },
+      { warn: () => {}, recentlyAlerted: async () => false },
+    );
+    await vi.advanceTimersByTimeAsync(6000);
+    await expect(firedPromise).resolves.toBe(true); // best-effort: never throws into the caller
+    expect(insertValuesMock).toHaveBeenCalledTimes(2); // 1 initial + 1 retry, then gives up
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 });

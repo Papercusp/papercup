@@ -54,6 +54,8 @@ import {
 } from '../../sync/pot-git/ref-announce';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
 import { hiveGitRepoPath, listNamespaces } from '../../sync/pot-git/storage';
+import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
+import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer } from '../../sync/pot-git/bootstrap';
 import { openHiveGitDuplexToDevice } from '../../sync/pot-git/peer-dial-registry';
 import { Duplex } from 'node:stream';
@@ -1216,6 +1218,18 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     await runCheckpointedStep('git-sync:bootstrap', () => runBootstrapLeg(slug, workspaceId));
   }
 
+  // G-2a (WI-5146): on ANY non-legacy hive, publish THIS device's own worktree
+  // branch head into its own namespace in the bare store — the `git push rad`
+  // analogue and the FIRST link every leg below consumes. MUST run after the
+  // bootstrap leg (own-head-first would warm a genuinely cold store and
+  // permanently skip G-8's one-shot cold-join) and before ref-announce (so the
+  // same tick that ingests a new head signs + announces it). The G-10 publish
+  // guard runs INSIDE the tick, before the ref write makes objects servable.
+  // Own checkpoint so a resumed fire never re-publishes past it.
+  if (gate.hiveGitMode) {
+    await runCheckpointedStep('git-sync:own-head-publish', () => runOwnHeadPublishLeg(slug, workspaceId, cfg.branch));
+  }
+
   // p2p-git-live-activation P-202: on ANY non-legacy hive (bridged OR
   // p2p-only), one ref-announce-tick pass per git-sync tick — publish this
   // device's own namespace advance (if any) hive-wide, then process any
@@ -1308,6 +1322,63 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
     });
   } catch (e) {
     console.warn(`[git-sync] ${slug}: github-bridge pass failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** The G-2a own-head publish leg of one non-legacy-hive git-sync tick
+ *  (WI-5146): resolve this device + the harness worktree and run ONE
+ *  own-head-publish pass — worktree branch head → own namespace in the
+ *  (hive, repo) bare store, G-10-guarded inside the tick. Best-effort like
+ *  its sibling legs: never throws; a guard REFUSAL is logged loudly (a
+ *  planted secret silently un-published is exactly the failure G-10 exists
+ *  to make visible) and recorded on the routine metadata. */
+async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: string | undefined): Promise<void> {
+  try {
+    let entry: ProjectEntry | undefined;
+    try {
+      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+    } catch {
+      return; // registry unreadable — next tick retries
+    }
+    if (!entry?.path) return;
+    const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!potHomeSlug) return;
+
+    const actor = await resolveUsageActor();
+    if (!actor?.devicePubkey) return; // gh unauthenticated — no device identity to publish as
+
+    const outcome = await runOwnHeadPublishTick({
+      potHomeSlug,
+      repoKey: slug,
+      worktreePath: entry.path,
+      branch,
+      devicePubkeyBase64: actor.devicePubkey,
+    });
+    if (outcome.refused) {
+      console.warn(
+        `[git-sync] ${slug}: own-head publish REFUSED — ${describePublishRefusal(outcome.refused)}; ` +
+          `head ${outcome.headSha?.slice(0, 12)} NOT published (namespace ref unchanged, nothing servable)`,
+      );
+    }
+    if (outcome.errors.length) {
+      console.warn(`[git-sync] ${slug}: own-head publish reported errors: ${outcome.errors.join('; ').slice(0, 500)}`);
+    }
+    if (outcome.changed) {
+      console.log(
+        `[git-sync] ${slug}: own-head published ${outcome.branch}@${outcome.headSha?.slice(0, 12)} into own namespace`,
+      );
+    }
+    await patchRoutineMetadata(slug, {
+      own_head_publish: {
+        at: Date.now(),
+        changed: outcome.changed,
+        branch: outcome.branch,
+        sha: outcome.headSha,
+        refused: outcome.refused?.refusalCode ?? null,
+      },
+    });
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: own-head publish leg failed: ${e instanceof Error ? e.message : e}`);
   }
 }
 
