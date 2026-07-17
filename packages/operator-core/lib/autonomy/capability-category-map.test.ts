@@ -48,6 +48,9 @@ describe('capability→category map: specific-over-group overrides', () => {
     // conversations: group default is escalations, promote overrides
     ['conversations:promote', 'ideation-intake'],
     ['conversations:answer', 'escalations'],
+    // improvements: group default ideation-intake, set-auto-policy overrides to implementation (WI-5252)
+    ['improvements:set-auto-policy', 'implementation'],
+    ['improvements:triage', 'ideation-intake'],
     // plans: group default plan-governance, attention overrides to inbox
     ['plans:attention', 'inbox-triage'],
     ['plans:set-status', 'plan-governance'],

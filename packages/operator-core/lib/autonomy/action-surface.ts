@@ -281,10 +281,10 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     category: 'implementation',
     reversibility: 'reversible',
     authority: 'system',
-    queenVerbs: ['work_items:create', 'improvements:resolve'],
-    humanSurface: 'Improvement → implement-lane dispatch (consume-edges)',
-    coverage: 'partial',
-    notes: 'The implement-lane dispatch is driven by the orchestrator promote-policy + improvement triage, not a single owner-facing "approve this implementation" verb. work_items:create(feature) + triage approve the work; this needs an actual design decision (what does "approve" mean distinct from create+triage?), scoped out of EI-458 (whose other two P-016 partials are now covered) into its own follow-up: WI-5252.',
+    queenVerbs: ['improvements:set-auto-policy'],
+    humanSurface: 'Improvement digest — auto-implement policy (autoKinds graduation, dispatch ceilings)',
+    coverage: 'covered',
+    notes: 'WI-5252 (EI-458 follow-up, resolved): re-audited — the design question was "what does approve mean distinct from create+triage?". Answer: per-idea create+triage is NOT a separate approval — it is already fully realized by ideation.triage-improvement\'s decision (improvements:triage{decision:"place"}) plus the mechanical work_items:create realization, the same decision→execution-boundary pattern plan.convert-item-to-work already covers with one verb. The GENUINE distinct "approve auto-implement" action is the one a human/Mug actually exercises with no per-item review at all: improvements:set-auto-policy (autoKinds graduation, maxPerRun/maxAttempts, tighten-only protected-path/keyword additions) — already Queen-accessible (mug/architect/operator roles), audited + one-call-revertible. It was simply missing from this audit; capability-category-map.ts now carries a specific override (cat:improvements-auto-policy, before the generic improvements: → ideation-intake rule) so it resolves to `implementation`, matching this row.',
   },
 
   // ── review & merge ───────────────────────────────────────────────────────────────

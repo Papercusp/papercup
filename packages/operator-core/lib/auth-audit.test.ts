@@ -46,9 +46,19 @@ beforeAll(async () => {
 
 afterEach(async () => {
   if (pgClient) {
+    // EI-13994: scope the cleanup to THIS file's own randomized SENTINEL_USER,
+    // never a broad `LIKE 'vitest_audit_%'` prefix match. This suite runs
+    // against the SHARED live dev PG alongside the whole fleet — a broad
+    // prefix delete doesn't just clean up after itself, it also deletes rows
+    // any OTHER concurrent run of this exact file (a parallel gate run, a
+    // manual dev `test:affected`) has just inserted under ITS OWN
+    // differently-randomized-but-same-prefixed SENTINEL_USER — "rows gone by
+    // assertion time" is exactly this cross-run cleanup collision, not real
+    // PG contention. SENTINEL_USER is already unique per run; scoping the
+    // cleanup to it is what actually makes that uniqueness isolating.
     await pgClient.query(
-      `DELETE FROM harness_shared.auth_audit_log WHERE username LIKE $1`,
-      ['vitest_audit_%'],
+      `DELETE FROM harness_shared.auth_audit_log WHERE username = $1`,
+      [SENTINEL_USER],
     );
   }
 });

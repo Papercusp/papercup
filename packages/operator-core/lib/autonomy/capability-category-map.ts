@@ -122,6 +122,12 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   // ── work-prioritization ──
   { id: 'cat:work-items', on: TRIGGER, when: { action: { matches: '^work_items:' } }, fire: 'work-prioritization', meta: { reason: 'work-item priority / reorder / state' } },
 
+  // ── implementation — improvements:set-auto-policy override BEFORE improvements: group ──
+  // (WI-5252: the auto-implement risk-policy/graduation dial is a DISTINCT human-driving
+  // action from generic idea triage — it governs WHICH changes dispatch with no per-item
+  // review at all, so it belongs to `implementation`, not `ideation-intake`.)
+  { id: 'cat:improvements-auto-policy', on: TRIGGER, when: { action: { matches: '^improvements:set-auto-policy' } }, fire: 'implementation', meta: { reason: 'graduates/tunes the auto-implement dispatch policy (autoKinds, dispatch ceilings, protected-path/keyword tightening) — the actual "approve auto-implement" lever, distinct from per-idea triage' } },
+
   // ── ideation & intake — conversations:promote override BEFORE conversations: group ──
   { id: 'cat:conversations-promote', on: TRIGGER, when: { action: { matches: '^conversations:promote' } }, fire: 'ideation-intake', meta: { reason: 'promotes a conversation to tracked work' } },
   { id: 'cat:scout', on: TRIGGER, when: { action: { matches: '^blender:' } }, fire: 'ideation-intake', meta: { reason: 'grades a Scout idea' } },

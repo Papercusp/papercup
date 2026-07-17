@@ -113,6 +113,13 @@ describe('action surface — coverage (P-016)', () => {
     expect(partialCoverage().map((p) => p.id)).not.toContain('escalations.answer-card');
   });
 
+  it('the implement-approval partial (WI-5252, EI-458 follow-up) is now covered by improvements:set-auto-policy', () => {
+    const row = ACTION_SURFACE.find((a) => a.id === 'implementation.dispatch-auto-implement');
+    expect(row?.coverage).toBe('covered');
+    expect(row?.queenVerbs).toEqual(['improvements:set-auto-policy']);
+    expect(partialCoverage().map((p) => p.id)).not.toContain('implementation.dispatch-auto-implement');
+  });
+
   it('partialCoverage() returns only partial rows', () => {
     expect(partialCoverage().every((p) => p.coverage === 'partial')).toBe(true);
   });

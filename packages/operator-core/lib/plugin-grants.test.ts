@@ -45,8 +45,19 @@ beforeAll(async () => {
 
 afterEach(async () => {
   if (pgClient) {
+    // EI-13994: scope the cleanup to THIS file's own randomized TEST_PLUGIN,
+    // never a broad `LIKE 'vitest-plugin-%'` prefix match. This suite runs
+    // against the SHARED live dev PG alongside the whole fleet — a broad
+    // prefix delete here doesn't just clean up after itself, it also nukes
+    // any OTHER concurrent run of this exact file (a parallel gate run, a
+    // manual dev `test:affected`) that happens to be mid-test with its own
+    // differently-randomized-but-same-prefixed TEST_PLUGIN, causing rows to
+    // vanish out from under that other run's assertions (the flake this
+    // ticket describes). TEST_PLUGIN is already unique per run; scoping the
+    // cleanup to it is what actually makes that uniqueness isolating.
     await pgClient.query(
-      `DELETE FROM harness_shared.plugin_capability_grants WHERE plugin_name LIKE 'vitest-plugin-%'`,
+      `DELETE FROM harness_shared.plugin_capability_grants WHERE plugin_name = $1`,
+      [TEST_PLUGIN],
     );
   }
 });
