@@ -82,3 +82,11 @@
 # observed. De-quarantine follow-up: WI-5263 (confirm stable under normal load,
 # harden if needed, remove this line).
 @papercusp/db-org::src/engineer-issues-view-dml.integration.test.ts
+
+# WI-5187 (2026-07-17): flipRate 0.455 over 12 runs (5/11 consecutive transitions).
+# All 5 recent failures are infra/load flakes (2x concurrent PG backend crash during
+# framework-role-ensure, 1x shared dev PG "in recovery mode", 2x hook timeout under
+# load) -- no assertion failures observed. De-quarantine follow-up: WI-5266 (confirm
+# stable under normal load, check if already covered by the WI-5262-class shared-
+# substrate hardening, remove this line).
+@papercusp/operator-core::lib/work-items-audit-no-evidence.integration.test.ts

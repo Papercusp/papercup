@@ -2317,6 +2317,34 @@ export function __simulateUtterance(
 // can read back a voice reply without a mic. Set in speak() below.
 let __lastSpokenForTest: { text: string; role: string; at: number } | null = null;
 
+/**
+ * WI-5174 (owner repro 2026-07-17): "spoken question answered in TEXT chat
+ * only — reply not spoken aloud". speak() has FIVE silent early-returns
+ * (unsupported / mode-off / output-muted / realtime-active / not-the-leader-
+ * tab) and every one of them looked identical to the owner: correct reply,
+ * no audio, nothing in devtools to say why. Root-caused several PLAUSIBLE
+ * gates (isVoiceOutputMuted's persisted mute surviving silently across
+ * sessions; a genuine ~250ms boot-election race where bootVoiceLeader sets
+ * `available:true` synchronously before the election resolves 250ms later,
+ * so a speak() fired in that narrow window reads a false-follower state) but
+ * could NOT pin down which one fired for this specific incident without
+ * either polluting the owner's live conversation thread with a driven test
+ * utterance or reading their real (non-isolated) browser profile's
+ * localStorage — neither safe to do from here. So: instrument every silent
+ * gate instead of guessing further. `__lastSilencedForTest` mirrors
+ * `__lastSpokenForTest` (captures the last reason speak() DIDN'T speak) and
+ * every gate below emits a console.debug breadcrumb — the next occurrence is
+ * diagnosable from live devtools/log capture instead of reproducing this
+ * same "no leads" investigation from scratch.
+ */
+let __lastSilencedForTest: { reason: string; text: string; at: number } | null = null;
+
+function silenceSpeak(reason: string, text: string): void {
+  __lastSilencedForTest = { reason, text, at: Date.now() };
+  // eslint-disable-next-line no-console
+  console.debug(`[voice] speak() silenced (${reason}):`, text.slice(0, 120));
+}
+
 // Expose an injection + read-back hook for the agent-e2e bridge — dev-shell ONLY
 // (gated on the desktop dev wrapper). There is otherwise no headless way to drive
 // a conversational voice turn: simulate(text) fires the full dispatch
@@ -2328,6 +2356,9 @@ if (
   (window as unknown as { __pcVoiceTest?: unknown }).__pcVoiceTest = {
     simulate: (t: string) => __simulateUtterance(t),
     lastSpoken: () => __lastSpokenForTest,
+    // WI-5174: WHY didn't the last reply speak? Mirrors lastSpoken() but for
+    // the negative case — one of speak()'s 5 silent gates (see silenceSpeak).
+    lastSilenced: () => __lastSilencedForTest,
     // Voice mode gates the whole utterance dispatch (VoiceAppBridge returns
     // when mode is 'off'), and the UI toggle is the only production way to
     // flip it — headless verification needs this seam (WI-4838 live-verify).
@@ -2353,7 +2384,10 @@ export function speak(
   // Dev test seam: record the reply text regardless of the gates below (we want
   // the brain's reply even on a tab that won't emit TTS). See __lastSpokenForTest.
   __lastSpokenForTest = { text, role, at: Date.now() };
-  if (!state.supported) return;
+  if (!state.supported) {
+    silenceSpeak('tts-unsupported', text);
+    return;
+  }
   if (!options.force) {
     // Normal path: voice mode must be on AND we must be the leader tab.
     // Test/preview buttons in /settings/voice pass force:true to bypass.
@@ -2362,10 +2396,16 @@ export function speak(
     //  silenced EVERY non-forced spoken reply — the root cause of "voice
     //  gives no audible response". Voice-mode-on is the real gate; Phase 1 of
     //  sentinel-tui-shared-backend-and-cards routes replies through here.)
-    if (state.mode === 'off') return;
+    if (state.mode === 'off') {
+      silenceSpeak('voice-mode-off', text);
+      return;
+    }
     // Voice-output mute (the voice-bar speaker toggle, owner 2026-06-23):
     // silence spoken replies without leaving voice mode. force:true bypasses.
-    if (isVoiceOutputMuted()) return;
+    if (isVoiceOutputMuted()) {
+      silenceSpeak('output-muted', text);
+      return;
+    }
   }
   // Aria-live publish — independent of TTS engine + leader election so
   // screen-reader users always see the same content the leader speaks.
@@ -2380,13 +2420,19 @@ export function speak(
   // the aria-live publish above so screen readers still see the text.
   // Callers who genuinely need to override (test buttons in
   // /settings/voice) already pass force:true.
-  if (realtimeSession && !options.force && !options.allowDuringRealtime) return;
+  if (realtimeSession && !options.force && !options.allowDuringRealtime) {
+    silenceSpeak('realtime-session-active', text);
+    return;
+  }
   // Leader-election gate (v4 §2i): only the leader tab actually emits TTS.
   // Followers are silent; aria-live still publishes so screen-readers in any
   // tab see the text.
   try {
     const leader = getVoiceLeaderState();
-    if (leader.available && !leader.isLeader && !options.force) return;
+    if (leader.available && !leader.isLeader && !options.force) {
+      silenceSpeak('not-leader-tab', text);
+      return;
+    }
   } catch { /* leader module not yet loaded — fall through and speak */ }
   synthQueue.push({
     text,
