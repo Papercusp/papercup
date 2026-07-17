@@ -159,8 +159,48 @@ test('renderMugBrief — WI-4563: an empty frontier with ZERO quarantined still 
   assert.doesNotMatch(out, /ADMISSION-STARVED/);
 });
 
+// EI-13695 — the reconcile lane: attempted items a dead cup left un-converged are
+// rendered with their checkpoint heads and an explicit converge-don't-place rubric,
+// NEVER folded into the fresh frontier list.
+test('renderMugBrief — reconcile lane renders count + checkpoint heads with the converge rubric (EI-13695)', () => {
+  const out = renderMugBrief({
+    floor: {
+      frontier: [],
+      frontierReconcile: 2,
+      reconcileRows: [
+        {
+          feature_id: 'WI-5132',
+          harness_slug: 'papercup',
+          title: 'finished but un-converged',
+          item_kind: 'feature',
+          checkpoint_head: '## WI-5132 COMPLETED — VERIFIED COMPLETE, 107/107 tests',
+          checkpoint_updated_ts: Date.now() - 5 * 60_000,
+        },
+      ],
+    },
+  });
+  assert.match(out, /Reconcile — 2 attempted item\(s\)/);
+  assert.match(out, /WI-5132/);
+  assert.match(out, /COMPLETED — VERIFIED COMPLETE/);
+  assert.match(out, /verify \+ `work_items:complete`/);
+  // The reconcile item must not leak into the fresh-frontier section.
+  assert.match(out, /empty — no ready work to place/);
+});
+
+test('renderMugBrief — no reconcile section when the slice is empty (EI-13695)', () => {
+  const out = renderMugBrief({ floor: { frontier: [], frontierReconcile: 0, reconcileRows: [] } });
+  assert.doesNotMatch(out, /Reconcile — /);
+});
+
 test('floorFromSurvey — threads frontierQuarantined through from the survey (WI-4563)', () => {
-  const floor = floorFromSurvey({ frontier: [], plans: [], frontierBlocked: 0, frontierQuarantined: 4 });
+  const floor = floorFromSurvey({
+    frontier: [],
+    plans: [],
+    frontierBlocked: 0,
+    frontierQuarantined: 4,
+    frontierReconcile: 0,
+    reconcileRows: [],
+  });
   assert.equal(floor.frontierQuarantined, 4);
 });
 
@@ -544,7 +584,14 @@ test('renderMugBrief — no potSlug: the anchor line and the scope caveat are bo
 });
 
 test('floorFromSurvey — maps survey frontier/plans/blocked and merges watchdog signals (P-005 reuse)', () => {
-  const survey = { frontier: frontier3, plans: [], frontierBlocked: 4, frontierQuarantined: 0 };
+  const survey = {
+    frontier: frontier3,
+    plans: [],
+    frontierBlocked: 4,
+    frontierQuarantined: 0,
+    frontierReconcile: 0,
+    reconcileRows: [],
+  };
   const cups: BriefCup[] = [{ id: 'b1', load: 1, alive: true }];
   const floor = floorFromSurvey(survey, { wokeBy: 'timer', cups });
   assert.equal(floor.frontier, frontier3);

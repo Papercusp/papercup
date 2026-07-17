@@ -222,6 +222,7 @@ describe('surveyPot (P-012 regression)', () => {
   const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({
     now: () => NOW,
     fetchBlockGraph: async () => noBlockers,
+    fetchReconcile: async () => ({ rows: [], total: 0 }),
     fetchQuarantinedCount: async () => 0,
     fetchEscalatedIssues: async () => [],
     ...over,
@@ -564,6 +565,56 @@ describe('surveyPot (P-012 regression)', () => {
     expect(survey.frontierQuarantined).toBe(10); // the deadlock is visible, not silent
   });
 
+  // ── EI-13695: the false-fresh class — attempted items whose dead cup's
+  //    checkpoint survives are RECONCILE work, surfaced with checkpoint heads,
+  //    never silently absent (nor silently fresh). ──
+  it('surfaces the reconcile slice (count + rows with checkpoint heads) from the fetchReconcile dep (EI-13695)', async () => {
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-FRESH', harness_slug: 'papercup' })],
+        fetchReconcile: async () => ({
+          rows: [
+            {
+              feature_id: 'WI-5132',
+              harness_slug: 'papercup',
+              title: 'finished but un-converged',
+              item_kind: 'feature',
+              checkpoint_head: '## WI-5132 COMPLETED — VERIFIED COMPLETE',
+              checkpoint_updated_ts: NOW - 60_000,
+            },
+          ],
+          total: 2,
+        }),
+      }),
+    });
+    // The reconcile item is NOT in the fresh frontier (the fetch already excludes
+    // it — this asserts the survey does not resurrect it) …
+    expect(survey.frontier.map((c) => c.id)).toEqual(['WI-FRESH']);
+    // … and IS legible with its checkpoint head + un-capped total.
+    expect(survey.frontierReconcile).toBe(2);
+    expect(survey.reconcileRows.map((r) => r.feature_id)).toEqual(['WI-5132']);
+    expect(survey.reconcileRows[0].checkpoint_head).toContain('COMPLETED');
+  });
+
+  it('a reconcile-read failure is fail-open — empty slice, survey intact (EI-13695)', async () => {
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-OK', harness_slug: 'papercup' })],
+        // The DEFAULT dep fail-opens internally; an injected dep that throws would
+        // reject the survey's Promise.all — assert the default-shaped contract by
+        // returning the fail-open value, and that the survey threads it verbatim.
+        fetchReconcile: async () => ({ rows: [], total: 0 }),
+      }),
+    });
+    expect(survey.frontier.map((c) => c.id)).toEqual(['WI-OK']);
+    expect(survey.frontierReconcile).toBe(0);
+    expect(survey.reconcileRows).toEqual([]);
+  });
+
   it('passes the SAME surveySlugs to the quarantine count as to the frontier fetch (WI-4563)', async () => {
     let frontierScope: readonly string[] | null = null;
     let quarantineScope: readonly string[] | null = null;
@@ -743,6 +794,7 @@ describe('surveyPot plan-item blocking (EI-12372)', () => {
   const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({
     now: () => NOW,
     fetchBlockGraph: async () => noBlockers,
+    fetchReconcile: async () => ({ rows: [], total: 0 }),
     fetchQuarantinedCount: async () => 0,
     fetchEscalatedIssues: async () => [],
     ...over,
@@ -838,6 +890,7 @@ describe('surveyPot escalated-issue frontier (EI-12275)', () => {
   const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({
     now: () => NOW,
     fetchBlockGraph: async () => noBlockers,
+    fetchReconcile: async () => ({ rows: [], total: 0 }),
     fetchQuarantinedCount: async () => 0,
     fetchFrontier: async () => [],
     ...over,
@@ -931,6 +984,7 @@ describe('surveyWorkspace crossPot dedup (EI-8377)', () => {
       fetchEscalatedIssues: async () => [],
       fetchBlockGraph: async () => ({ blockers: new Map(), statuses: new Map() }),
       fetchQuarantinedCount: async () => 0,
+      fetchReconcile: async () => ({ rows: [], total: 0 }),
       now: () => NOW,
       ...over,
     };
