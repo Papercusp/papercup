@@ -3,6 +3,7 @@ import {
   evaluateStaleConditions,
   runConditionStalenessTick,
   selectReconcilableConditions,
+  selectAbsentConditions,
   _resetConditionStalenessDebounce,
 } from './condition-staleness-alarm';
 import type { ConditionState } from '../agent-tools/coordination/tools/conditions';
@@ -104,6 +105,68 @@ describe('evaluateStaleConditions (pure)', () => {
       45 * 60_000,
     );
     expect(sigs.map((s) => s.conditionKey).sort()).toEqual(['a', 'b']);
+  });
+
+  it('EI-15182: an OPEN+stale condition whose last_seen has also gone SIGNAL-ABSENT never fires — regardless of family', () => {
+    // first_seen/open_since/last_seen all pinned to the same very-old instant:
+    // stuck open per staleMs (60min > 45min), AND last_seen is 60min old —
+    // beyond a 45min absenceMs — so nobody has re-observed this signal recently.
+    const now = Date.parse('2026-07-05T01:00:00.000Z');
+    const goneQuiet = mkState({ condition_key: 'git-sync-stall:dummy-pot-0707' });
+    expect(evaluateStaleConditions([goneQuiet], now, 45 * 60_000, 45 * 60_000)).toEqual([]);
+  });
+
+  it('EI-15182: an OPEN+stale condition with a RECENT last_seen still fires (absenceMs alone does not suppress an actively-observed signal)', () => {
+    const now = Date.parse('2026-07-05T01:00:00.000Z'); // 60min since open_since
+    const activelyFiring = mkState({
+      condition_key: 'embed-exhaustion:openai_billing',
+      last_seen: new Date(now - 60_000).toISOString(), // re-alarmed 1min ago
+    });
+    // staleMs=45min (still stuck open), absenceMs=90min (last_seen 1min old, well within it).
+    const sigs = evaluateStaleConditions([activelyFiring], now, 45 * 60_000, 90 * 60_000);
+    expect(sigs).toHaveLength(1);
+    expect(sigs[0].conditionKey).toBe('embed-exhaustion:openai_billing');
+  });
+});
+
+describe('selectAbsentConditions (pure — EI-15182 guard #3, family-agnostic)', () => {
+  it('an OPEN condition whose last_seen exceeds absenceMs is absent', () => {
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const states = [
+      mkState({ condition_key: 'single-primary:split-brain-primary', last_seen: '2026-07-11T02:13:00.000Z' }),
+    ];
+    expect(selectAbsentConditions(states, now, 2 * 60 * 60_000)).toEqual(['single-primary:split-brain-primary']);
+  });
+
+  it('an OPEN condition whose last_seen is within absenceMs is NOT absent', () => {
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const states = [mkState({ last_seen: new Date(now - 30 * 60_000).toISOString() })];
+    expect(selectAbsentConditions(states, now, 2 * 60 * 60_000)).toEqual([]);
+  });
+
+  it('an already-RESOLVED condition is never flagged absent, even with an ancient last_seen', () => {
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const states = [
+      mkState({ open: false, resolved_at: '2026-07-11T00:00:00.000Z', last_seen: '2026-07-11T00:00:00.000Z' }),
+    ];
+    expect(selectAbsentConditions(states, now, 2 * 60 * 60_000)).toEqual([]);
+  });
+
+  it('covers every family — not just infra-liveness', () => {
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const stale = '2026-07-11T00:10:00.000Z';
+    const states = [
+      mkState({ condition_key: 'git-sync-stall:dummy-pot-0707', last_seen: stale, open_since: stale, first_seen: stale }),
+      mkState({ condition_key: 'git-sync-stall:quartermaster-hive', last_seen: stale, open_since: stale, first_seen: stale }),
+      mkState({ condition_key: 'embed-exhaustion:daily_cap', last_seen: stale, open_since: stale, first_seen: stale }),
+      mkState({ condition_key: 'infra-liveness:pg-restarted', last_seen: stale, open_since: stale, first_seen: stale }),
+    ];
+    expect(selectAbsentConditions(states, now, 2 * 60 * 60_000).sort()).toEqual([
+      'embed-exhaustion:daily_cap',
+      'git-sync-stall:dummy-pot-0707',
+      'git-sync-stall:quartermaster-hive',
+      'infra-liveness:pg-restarted',
+    ]);
   });
 });
 

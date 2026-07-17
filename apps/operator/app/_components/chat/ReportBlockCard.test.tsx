@@ -8,8 +8,8 @@
  * Plan: report-cards-inbox-reconciliation-2026-06-05 (P-006; formerly
  * structured-report-protocol P-007's OperatorReportCard test).
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 
 afterEach(() => cleanup());
 
@@ -57,5 +57,40 @@ describe('ReportBlockCard', () => {
   it('renders nothing when there are no plans', () => {
     const { container } = render(<ReportBlockCard report={{ plans: [] }} />);
     expect(container.querySelector('.report-block-card')).toBeNull();
+  });
+
+  // deterministic-status-cards-2026-07-17 P-003/D-004: the curator card's
+  // actionable drill-in — the row `ref` renders as a real button.
+  const curatorCard: ReportBlock = {
+    plans: [
+      {
+        title: 'Fleet status',
+        items: [
+          { text: '**Blocked** [infra-liveness] — no bees running', status: 'blocked', ref: 'escalation:e1' },
+          { text: 'a row with no ref', status: 'wip' },
+        ],
+      },
+    ],
+  };
+
+  it('renders a drill-in button for a row with a ref when onDrillIn is provided, and fires it with the ref', () => {
+    const onDrillIn = vi.fn();
+    render(<ReportBlockCard report={curatorCard} onDrillIn={onDrillIn} />);
+    const btn = screen.getByRole('button', { name: /open/i });
+    expect(btn).toBeTruthy();
+    fireEvent.click(btn);
+    expect(onDrillIn).toHaveBeenCalledWith('escalation:e1');
+  });
+
+  it('renders NO drill-in for a row without a ref (only the ref row gets a button)', () => {
+    const onDrillIn = vi.fn();
+    const { container } = render(<ReportBlockCard report={curatorCard} onDrillIn={onDrillIn} />);
+    // exactly one drill button (the ref row), not one per row.
+    expect(container.querySelectorAll('.report-block-item-drill')).toHaveLength(1);
+  });
+
+  it('renders inert (no buttons) when onDrillIn is omitted — the inbox/report uses are unchanged', () => {
+    const { container } = render(<ReportBlockCard report={curatorCard} />);
+    expect(container.querySelector('.report-block-item-drill')).toBeNull();
   });
 });

@@ -1385,11 +1385,14 @@ export function OperatorConversationProvider({
             !(typeof t.id === "string" && known.has(t.id)),
         );
         if (missed.length === 0) return history;
+        // NOTE: this SSE-history backfill reconciler projects only
+        // {id,seq,role,text} (no source/report), so it can't carry a curator
+        // card — that's fine, the card arrives via the primary live-tail
+        // (append_message) path; this is a text-only catch-up backstop.
         const mapped: ChatMessage[] = missed.map((t) => ({
           role: t.role as "user" | "assistant",
           content: t.text as string,
           id: typeof t.id === "string" ? t.id : undefined,
-          report: reportForTurn(t),
         }));
         // Deliberately NOT bumping newestLoadedSeqRef: the sync reconciler
         // still owes these turns to the UI and dedupes them by id/seq.

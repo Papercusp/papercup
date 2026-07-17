@@ -65,6 +65,15 @@ const DEFAULT_STALE_OPEN_MS = 45 * 60_000; // 45min: long enough that the source
 const DEFAULT_DEBOUNCE_MS = 30 * 60_000; // re-nudge at most every 30min while still stale
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 
+// EI-15182: family-agnostic "has anyone actually observed this signal recently"
+// threshold. Every source watchdog sweeps well under an hour (git-sync-stall
+// 15min, single-primary-check 3min, the system-watchdog family ~10min per
+// EI-15182's own evidence); embed-exhaustion is event-driven but still re-fires
+// per outage window far more often than this. 2h gives every real watchdog
+// several missed sweeps of margin before we treat its signal as gone quiet, while
+// still being tiny next to the DAYS of staleness this bug actually produces.
+const DEFAULT_SIGNAL_ABSENCE_MS = 2 * 60 * 60_000;
+
 /**
  * PURE: which currently-OPEN conditions have been open longer than `staleMs`, as of `now`.
  * A condition already resolved (per computeConditionStates) never appears here, regardless
@@ -83,6 +92,7 @@ export function evaluateStaleConditions(
   states: readonly ConditionState[],
   now: number,
   staleMs: number = DEFAULT_STALE_OPEN_MS,
+  absenceMs: number = DEFAULT_SIGNAL_ABSENCE_MS,
 ): StaleConditionSignal[] {
   const out: StaleConditionSignal[] = [];
   for (const s of states) {
@@ -93,6 +103,16 @@ export function evaluateStaleConditions(
     if (!Number.isFinite(openSinceMs)) continue;
     const ageMs = now - openSinceMs;
     if (ageMs <= staleMs) continue;
+    // EI-15182: never re-page about a condition nobody has actually re-observed
+    // recently. A row stuck open:true forever because its source watchdog simply
+    // stopped emitting (dead/quiet pot, a one-shot event that never got an
+    // explicit RECOVERED broadcast) has nothing new to report — the SAME check
+    // the resolve-on-absence reconciler (runConditionStalenessTick, below) uses
+    // to actually close the row. This check is independent of whether that
+    // reconciler's broadcast succeeded this tick — suppression never depends on
+    // a network call landing.
+    const lastSeenMs = Date.parse(s.last_seen);
+    if (Number.isFinite(lastSeenMs) && now - lastSeenMs > absenceMs) continue;
     out.push({
       key: `stale-condition:${s.condition_key}`,
       conditionKey: s.condition_key,
@@ -129,6 +149,34 @@ export function evaluateStaleConditions(
 // bundled into this fix to keep the health-check semantics per-family honest.)
 
 const INFRA_LIVENESS_PREFIX = 'infra-liveness:';
+
+/**
+ * PURE (EI-15182 guard #3): of the currently-OPEN condition states, which
+ * ones have gone SIGNAL-ABSENT — no new alarm observed (`last_seen`) in over
+ * `absenceMs` — as of `now`. Unlike `selectReconcilableConditions` (guard #2,
+ * infra-liveness-only, requires a live health re-check), this needs no
+ * per-family knowledge: a source watchdog that is still actually observing a
+ * problem re-alarms on every sweep (every source in this codebase sweeps well
+ * under an hour), so a `last_seen` this stale means the watchdog stopped
+ * emitting for this key altogether — dead/quiet pot, a one-shot event that
+ * never got an explicit RECOVERED broadcast, or the process that used to hit
+ * this code path simply stopped running. Applies to EVERY condition family
+ * (git-sync-stall:*, single-primary:*, embed-exhaustion:*, infra-liveness:*, …).
+ */
+export function selectAbsentConditions(
+  states: readonly ConditionState[],
+  now: number,
+  absenceMs: number,
+): string[] {
+  const out: string[] = [];
+  for (const s of states) {
+    if (!s.open) continue;
+    const lastSeenMs = Date.parse(s.last_seen);
+    if (!Number.isFinite(lastSeenMs)) continue;
+    if (now - lastSeenMs > absenceMs) out.push(s.condition_key);
+  }
+  return out;
+}
 
 /**
  * PURE: of the currently-OPEN condition states, which ones have a VERIFIED-healthy
@@ -217,6 +265,12 @@ export interface ConditionStalenessDeps {
   now?: () => number;
   staleMs?: number;
   debounceMs?: number;
+  /** EI-15182 guard #3: family-agnostic resolve-on-absence threshold — an open
+   *  condition whose `last_seen` is older than this is treated as a signal that
+   *  has gone quiet (no watchdog sweep has re-observed it) and is auto-resolved
+   *  + never re-paged, regardless of which family sourced it. Default =
+   *  DEFAULT_SIGNAL_ABSENCE_MS. */
+  absenceMs?: number;
   /** EI-14072 guard #2: resolve the health of currently-open `infra-liveness:*`
    *  condition keys. Default = `defaultReadInfraLivenessHealth` (a fresh
    *  computeSystemHealth + evaluateLivenessAlarm re-check). Injectable so tests
@@ -233,10 +287,15 @@ export interface ConditionStalenessDeps {
  * One tick: fold current condition envelopes → state, RECONCILE any open
  * `infra-liveness:*` row whose underlying signal is verified healthy right now
  * (EI-14072 guard #2 — the durable backstop for a dropped/never-sent resolution,
- * independent of guard #1's batched-resolution fix), find conditions stuck open
- * past `staleMs`, auto-resolve any prior stale-reminder whose condition cleared
- * (or is no longer stale), and fire a durably-deduped + debounced reminder for
- * every new stale signature.
+ * independent of guard #1's batched-resolution fix), RECONCILE any open row of
+ * ANY family whose signal has gone quiet — no alarm re-observed in over
+ * `absenceMs` (EI-15182 guard #3 — resolve-on-absence, the durable fix for a
+ * condition whose source watchdog simply stopped emitting and never sent an
+ * explicit RECOVERED), find conditions stuck open past `staleMs` (excluding any
+ * that guard #3 has already ruled signal-absent, belt-and-suspenders), auto-
+ * resolve any prior stale-reminder whose condition cleared (or is no longer
+ * stale), and fire a durably-deduped + debounced reminder for every new stale
+ * signature.
  */
 export async function runConditionStalenessTick(
   deps: ConditionStalenessDeps = {},
@@ -262,6 +321,7 @@ export async function runConditionStalenessTick(
       resolveEscalation({ msg_id, choice, note, resolver: CONDITION_STALENESS_IDENTITY.ownerId }));
   const staleMs = deps.staleMs ?? DEFAULT_STALE_OPEN_MS;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const absenceMs = deps.absenceMs ?? DEFAULT_SIGNAL_ABSENCE_MS;
   const readHealthByKey = deps.readHealthByKey ?? defaultReadInfraLivenessHealth;
   const broadcastResolvedMany = deps.broadcastResolvedMany ?? broadcastSevereEventResolvedMany;
 
@@ -273,9 +333,11 @@ export async function runConditionStalenessTick(
     return { fired: [], signals: [], resolved: [], reconciled: [] };
   }
 
-  // Reconcile (EI-14072 guard #2) BEFORE staleness evaluation, so a condition we
-  // just healed this tick never also earns a staleness reminder in the same pass.
+  // Reconcile BEFORE staleness evaluation, so a condition we just healed this
+  // tick never also earns a staleness reminder in the same pass.
   const reconciled: string[] = [];
+
+  // ── EI-14072 guard #2: infra-liveness family, verified against a live health re-check ──
   const openInfraKeys = states
     .filter((s) => s.open && s.condition_key.startsWith(INFRA_LIVENESS_PREFIX))
     .map((s) => s.condition_key);
@@ -285,16 +347,16 @@ export async function runConditionStalenessTick(
   } catch {
     healthByKey = new Map();
   }
-  const toReconcile = selectReconcilableConditions(states, healthByKey);
-  if (toReconcile.length > 0) {
+  const toReconcileHealth = selectReconcilableConditions(states, healthByKey);
+  if (toReconcileHealth.length > 0) {
     try {
       const ok = await broadcastResolvedMany({
-        conditionKeys: toReconcile,
+        conditionKeys: toReconcileHealth,
         summary:
-          `[condition-reconciler] ${toReconcile.length} condition(s) cleared — underlying signal ` +
-          `verified healthy (no matching resolution had landed): ${toReconcile.join(', ')}.`,
+          `[condition-reconciler] ${toReconcileHealth.length} condition(s) cleared — underlying signal ` +
+          `verified healthy (no matching resolution had landed): ${toReconcileHealth.join(', ')}.`,
       });
-      if (ok) reconciled.push(...toReconcile);
+      if (ok) reconciled.push(...toReconcileHealth);
     } catch {
       /* a broadcast failure must never crash the request worker */
     }
@@ -304,7 +366,38 @@ export async function runConditionStalenessTick(
     }
   }
 
-  const signals = evaluateStaleConditions(states, now, staleMs);
+  // ── EI-15182 guard #3: family-agnostic resolve-on-absence ──
+  // Independent of guard #2 (no per-family health-check needed, and covers
+  // every family, not just infra-liveness): an open condition whose last_seen
+  // itself has gone stale beyond `absenceMs` means nobody has re-observed its
+  // signal in a long time. Broadcast its resolution so every OTHER reader
+  // (coord:conditions, a peer's own fold) also sees it closed durably, not
+  // just suppressed in this tick's local view.
+  const absentKeys = selectAbsentConditions(states, now, absenceMs);
+  if (absentKeys.length > 0) {
+    try {
+      const ok = await broadcastResolvedMany({
+        conditionKeys: absentKeys,
+        summary:
+          `[condition-reconciler] ${absentKeys.length} condition(s) auto-resolved — no new alarm ` +
+          `observed in over ${Math.round(absenceMs / 60_000)}m (signal absence, EI-15182): ` +
+          `${absentKeys.join(', ')}.`,
+      });
+      if (ok) {
+        reconciled.push(...absentKeys);
+        const absentSet = new Set(absentKeys);
+        states = states.map((s) => (absentSet.has(s.condition_key) ? { ...s, open: false } : s));
+      }
+    } catch {
+      /* a broadcast failure must never crash the request worker */
+    }
+  }
+
+  // evaluateStaleConditions independently re-checks last_seen against
+  // `absenceMs` (belt-and-suspenders): even if the broadcast above failed —
+  // network hiccup, `ok:false` — an absent condition is NEVER re-paged this
+  // tick regardless of whether the durable resolution landed.
+  const signals = evaluateStaleConditions(states, now, staleMs, absenceMs);
   const currentSigs = new Set(signals.map((s) => s.key));
 
   let openBySig = new Map<string, EscalationRecord[]>();
