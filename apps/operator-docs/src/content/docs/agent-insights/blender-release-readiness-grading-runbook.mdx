@@ -34,6 +34,50 @@ criteria `pass`**. `at-risk`, `fail`, or `unknown` is NO-GO. An empty window
 never certifies health, and old evidence does not substitute for an on-demand
 drill.
 
+## Scope, machine mappings, grading boundary & relationship to the composite profile
+
+(Made explicit 2026-07-17, rubric-system-and-auto-loop-release-profile-2026-07-15
+P-008 — the same statement is also folded into the rubric itself, appended onto
+the `generation-parity` criterion's `method` field via `rubrics:amend`, so it
+travels with the live rubric object, not just this doc.)
+
+- **Scope.** This rubric grades ONLY the scout/blender learning pipeline
+  (ideation → routing → grading → learning). It does **not** grade Mug/Pot
+  placement, Cup lifecycle/restart durability, Kettle supervision,
+  owner/autonomy controls, deploy/release-pipeline integrity, or production
+  soak — those are each their own dedicated component rubric
+  (`mug-pot-coordination-health`, `cup-lifecycle-durability`,
+  `kettle-supervision-health`, `autonomy-owner-controls`,
+  `release-integrity-health`, `production-soak-health`; all ratified under
+  this plan's P-007).
+- **Machine mappings.** Every criterion's evidence is measured against the
+  **running bg-host generation** (`papercup-bg-host.service`;
+  `runningGeneration{sha,hostStartedAt}` echoed by `blender:success-metrics`)
+  — never the `:3070`/`:3170` operator/deploy hosts. When cross-checking
+  `gradedGeneration`, compare against the bg-host's `ActiveEnterTimestamp`,
+  not a deploy-host timestamp.
+- **Grading boundary.** GO for this leg requires ONE complete, fresh (≤6h)
+  scorecard rating all seven criteria `pass`; `at-risk`/`fail`/`unknown` on
+  ANY single criterion is a whole-rubric NO-GO — an average across criteria
+  never substitutes for the worst one (see also the per-criterion GRADING
+  BOUNDARY notes inline below).
+- **Relationship to the composite profile.** This rubric is exactly ONE LEG,
+  composed in **two independent places**:
+  1. the manually-graded `autoloop-release-readiness` rubric, where it is the
+     `blender-leg-health` criterion — a NO-GO here is transitively a
+     composite NO-GO, never overridden by a fresher-but-incomplete leg
+     scorecard (see
+     [autoloop-release-readiness-grading-runbook](/internal/docs/agent-insights/autoloop-release-readiness-grading-runbook));
+  2. the mechanical `apps/operator/lib/release/release-profile.ts`
+     `buildAutoloopReleaseProfile` (P-008), which composes this rubric's own
+     scorecard via `rubricReleaseComponent('blender-release-readiness')`
+     alongside the 6 P-007 component rubrics + the deploy-staleness hard
+     gate, applying its own independent staleness/lineage refusal.
+
+  A red here therefore blocks public auto-loop release through **two
+  independent paths at once** — grading it dishonestly, or letting it go
+  stale, does not get around either gate.
+
 **v2 machinery this runbook assumes** (all landed in
 rubric-system-hardening-2026-07-14):
 

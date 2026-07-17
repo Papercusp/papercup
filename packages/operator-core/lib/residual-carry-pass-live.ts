@@ -30,6 +30,7 @@ import {
 
 const RESIDUAL_LEDGER_FILE = 'residual-carry-samples.events.jsonl';
 const RESIDUAL_LEDGER_MAX_BYTES = 1024 * 1024;
+const RESIDUAL_RETIRED_CLASSES_FILE = 'residual-carry-retired-classes.json';
 
 /** Whole-call deadline for the reserved-lane request (loopback admission + upstream generation). */
 export const RESIDUAL_LLM_TIMEOUT_MS = 30_000;
@@ -156,6 +157,120 @@ export async function reportResidualCarrySamples(
   return scoreResidualMissRate(await readLedger(), params);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Retirement actuation (D-010's third live leg) — D-002/D-010: "the LLM residual
+// pass is transitional and retires per session class on ~0 miss-rate evidence".
+// Legs 1 (llmFn) and 2 (the real-boundary sampling harness, below) accumulate the
+// corpus scoreResidualMissRate reads; THIS is the leg that actually STOPS paying
+// for the pass on a class once that evidence clears the gate. Per D-001 ("changes
+// are deliberate decisions, never runtime feedback"), scoreResidualMissRate's
+// `retire` verdict is only ever a RECOMMENDATION — retiring a class is a discrete,
+// explicit, evidence-gated action (session:carry-drill op:'retire' calls
+// retireResidualClass only after independently confirming the class's live report
+// says retire:true), never applied automatically off the raw score. A tiny bounded
+// JSON map (not a JSONL ledger — retirements are rare, keyed, mutable state, not an
+// append-only event stream) alongside the sample ledger in the SAME PSU_PTY_DIR
+// convention this feature already established (one durable-state directory).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One class's retirement record — the evidence pinned at the moment of the decision. */
+export interface RetiredResidualClass {
+  sessionClass: string;
+  retiredAt: string;
+  /** ownerId of the agent/operator that called the retirement (never automated). */
+  retiredBy: string;
+  /** The gate evidence snapshot that justified retiring (n, missRate, errorCount) —
+   *  pinned so a later audit can see WHY without re-deriving it from a ledger that
+   *  keeps growing. */
+  evidence: { n: number; missRate: number; errorCount: number };
+  note?: string;
+}
+
+export function residualRetiredClassesPath(dir: string = PSU_PTY_DIR): string {
+  return join(dir, RESIDUAL_RETIRED_CLASSES_FILE);
+}
+
+/** Read the retired-class map. Fail-soft to {} — a missing/corrupt file means
+ *  "nothing retired yet", never a throw that would silently re-enable sampling
+ *  fleet-wide by crashing the caller. */
+export async function readRetiredResidualClasses(
+  dir: string = PSU_PTY_DIR,
+): Promise<Record<string, RetiredResidualClass>> {
+  try {
+    const raw = await fs.readFile(residualRetiredClassesPath(dir), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, RetiredResidualClass>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeRetiredResidualClasses(
+  map: Record<string, RetiredResidualClass>,
+  dir: string = PSU_PTY_DIR,
+): Promise<boolean> {
+  try {
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await fs.writeFile(residualRetiredClassesPath(dir), `${JSON.stringify(map, null, 2)}\n`, { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type RetireResidualClassResult =
+  | { ok: true; record: RetiredResidualClass }
+  | { ok: false; error: string };
+
+/**
+ * Retire the residual pass for ONE session class. The CALLER (session:carry-drill
+ * op:'retire') is responsible for confirming the class's live miss-rate report says
+ * retire:true before calling this — this function itself does not re-derive the
+ * gate so it stays a pure write once the decision is made, but it DOES require a
+ * non-trivial evidence snapshot so a retirement can never be recorded with no basis.
+ */
+export async function retireResidualClass(
+  sessionClass: string,
+  meta: { retiredBy: string; evidence: { n: number; missRate: number; errorCount: number }; note?: string },
+  dir: string = PSU_PTY_DIR,
+): Promise<RetireResidualClassResult> {
+  const cls = sessionClass.trim();
+  if (!cls) return { ok: false, error: 'sessionClass required' };
+  if (!meta.retiredBy?.trim()) return { ok: false, error: 'retiredBy required' };
+  if (!meta.evidence || meta.evidence.n <= 0) return { ok: false, error: 'evidence with n>0 required — retirement must be evidence-backed' };
+
+  const map = await readRetiredResidualClasses(dir);
+  const record: RetiredResidualClass = {
+    sessionClass: cls,
+    retiredAt: new Date().toISOString(),
+    retiredBy: meta.retiredBy,
+    evidence: meta.evidence,
+    ...(meta.note ? { note: meta.note } : {}),
+  };
+  map[cls] = record;
+  if (!(await writeRetiredResidualClasses(map, dir))) return { ok: false, error: 'write-failed' };
+  return { ok: true, record };
+}
+
+/** Un-retire a class (reversibility — a bad call or a regression can always resume
+ *  sampling). Returns whether the class was actually retired before this call. */
+export async function unretireResidualClass(sessionClass: string, dir: string = PSU_PTY_DIR): Promise<boolean> {
+  const cls = sessionClass.trim();
+  const map = await readRetiredResidualClasses(dir);
+  if (!(cls in map)) return false;
+  delete map[cls];
+  await writeRetiredResidualClasses(map, dir);
+  return true;
+}
+
+export async function isResidualClassRetired(sessionClass: string, dir: string = PSU_PTY_DIR): Promise<boolean> {
+  const map = await readRetiredResidualClasses(dir);
+  return sessionClass in map;
+}
+
 // ── P-019 live leg 2: the per-class sampling harness over REAL boundaries ─────
 // D-010 landed the llmFn seam (leg 1) but left "the per-class sampling harness
 // over real compaction boundaries" unwired — so the retirement corpus never
@@ -199,6 +314,11 @@ export interface MaintenanceResidualSampleDeps {
    *  null on miss/error ⇒ the row falls back to the legacy `gateway-<agent>` label, so a
    *  corpus row is never lost to a classifier fault. */
   resolveCanonicalClass: (ownerId: string) => Promise<string | null>;
+  /** Retirement actuation (D-010 leg 3): true ⇒ the class has been explicitly
+   *  retired (session:carry-drill op:'retire') and sampling is skipped — no LLM
+   *  call, no ledger row. Fail-soft to `false` on a read fault (never silently
+   *  stop sampling a class that was never actually retired). */
+  isRetired: (sessionClass: string) => Promise<boolean>;
   now: () => number;
 }
 
@@ -224,6 +344,13 @@ function sampleDeps(overrides: Partial<MaintenanceResidualSampleDeps>): Maintena
         return null;
       }
     },
+    isRetired: async (sessionClass) => {
+      try {
+        return await isResidualClassRetired(sessionClass);
+      } catch {
+        return false;
+      }
+    },
     now: Date.now,
     ...overrides,
   };
@@ -231,7 +358,7 @@ function sampleDeps(overrides: Partial<MaintenanceResidualSampleDeps>): Maintena
 
 export type MaintenanceResidualSampleResult = {
   sampled: boolean;
-  reason: 'ok' | 'rate-limited' | 'non-interactive' | 'append-failed' | 'owner-missing';
+  reason: 'ok' | 'rate-limited' | 'non-interactive' | 'append-failed' | 'owner-missing' | 'retired';
   sessionClass?: string;
   material?: boolean;
   parseError?: boolean;
@@ -261,6 +388,10 @@ export async function runMaintenanceResidualSample(
   const agent = await deps.resolveAgent(ownerId);
   const canonical = await deps.resolveCanonicalClass(ownerId);
   const sessionClass = canonical ?? `gateway-${agent ?? 'unknown'}`;
+
+  // Retirement actuation (D-010 leg 3): checked FIRST — a retired class must never
+  // pay for an LLM call again, regardless of interactivity or rate-limit state.
+  if (await deps.isRetired(sessionClass)) return { sampled: false, reason: 'retired', sessionClass };
   if (!input.interactive) return { sampled: false, reason: 'non-interactive', sessionClass };
 
   // Per-owner cost guard: one sample per RESIDUAL_SAMPLE_MIN_INTERVAL_MS.

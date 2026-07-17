@@ -43,9 +43,14 @@ coordination features only … work on this plan from start to finish"]).
   A TRANSIENT connection existed ~22:57 (long enough for v2t backlog → tower, the
   "self-clear") then dropped. NOT the DHT fixture (up since 20:11, survived all restarts);
   NOT a sibling process (dev/staging APIs hold no gossip topics — checked journals). The
-  ~13-min "self-heal" window is exceeded (>20 min). Recovery lever fired: VM sidecar
-  re-booted 23:13 EDT (pid 55147) — the 22:35 pattern (fresh announce both sides) is the
-  one configuration that connected cleanly. bg-host still NOT restarted [peer:63834 custody].
+  ~13-min "self-heal" window is exceeded (>20 min). Recovery levers: VM sidecar re-booted
+  23:13 EDT (pid 55147) — did NOT reconnect in 6+ min ⇒ the wedged side is the TOWER
+  bg-host's swarm state; coordinated bg-host restart fired 23:24 EDT (dev:restart
+  target:bg-host, fence_seq 18, under my own renewed fleet hold mrodfe2y…, ~00:15 EDT)
+  to recreate the both-sides-fresh configuration — the only one that ever connected
+  cleanly. BOTH EIs FILED: **EI-13307** (bg-host dev:restart no-coalescing, major) +
+  **EI-13317** (swarm link does not re-establish after one-side restart — full forensics,
+  critical). Rejoin watcher running (presence freshness + receipt landing).
 - **HRW FLIPPED + GRADUATED ✓ (23:05–23:08 EDT)**: pg-override ON in BOTH stores (tower
   MCP flags:set + VM vmcall, both `backend:pg-override`); types.ts DARK_FLAGS entry removed
   (default now true); production-defaults.test.ts PRE_INVERSION entry removed + offCount

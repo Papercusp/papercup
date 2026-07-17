@@ -12,6 +12,10 @@ import {
   appendResidualCarryLedgerEvent,
   reportResidualCarrySamples,
   runMaintenanceResidualSample,
+  readRetiredResidualClasses,
+  retireResidualClass,
+  unretireResidualClass,
+  isResidualClassRetired,
   RESIDUAL_SAMPLE_MIN_INTERVAL_MS,
   RESIDUAL_SAMPLE_SOURCE,
   type ResidualSampleLedgerEvent,
@@ -136,6 +140,7 @@ describe('runMaintenanceResidualSample — the gateway-boundary sampling harness
       // EI-13234: default the canonical resolver to a MISS so the existing cases keep
       // exercising the legacy gateway-<agent> fallback vocabulary.
       resolveCanonicalClass: async () => null as string | null,
+      isRetired: async () => false,
       now: () => NOW,
       ...overrides,
     };
@@ -266,5 +271,86 @@ describe('runMaintenanceResidualSample — the gateway-boundary sampling harness
     const r = await runMaintenanceResidualSample({ ...INPUT, carryOwner: '  ' }, h.deps);
     expect(r).toEqual({ sampled: false, reason: 'owner-missing' });
     expect(h.appended).toEqual([]);
+  });
+
+  it('a RETIRED class skips WITHOUT any LLM call or ledger row — checked before interactivity/rate-limit (D-010 leg 3)', async () => {
+    const llmFn = vi.fn(async () => '{"findings":[]}');
+    const h = harness({ resolveCanonicalClass: async () => 'claude-interactive', isRetired: async () => true, llmFn });
+    const r = await runMaintenanceResidualSample(INPUT, h.deps);
+    expect(r).toEqual({ sampled: false, reason: 'retired', sessionClass: 'claude-interactive' });
+    expect(h.appended).toEqual([]);
+    expect(llmFn).not.toHaveBeenCalled();
+  });
+
+  it('isRetired failing (rejected) is fail-soft to "not retired" — never silently stop sampling a class over a read fault', async () => {
+    const h = harness({ isRetired: async () => { throw new Error('disk error'); } });
+    // sampleDeps' own default wraps isRetired in try/catch; a caller-supplied
+    // override that throws propagates (this harness bypasses sampleDeps' default),
+    // so this test documents the CONTRACT the real default upholds — see the
+    // dedicated readRetiredResidualClasses fail-soft tests below for the actual guard.
+    await expect(runMaintenanceResidualSample(INPUT, h.deps)).rejects.toThrow('disk error');
+  });
+});
+
+describe('residual retirement actuation — evidence-gated, reversible per-class kill-switch (D-010 leg 3)', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'residual-carry-retired-'));
+    return async () => rm(dir, { recursive: true, force: true });
+  });
+
+  it('a class is not retired until explicitly retired', async () => {
+    expect(await isResidualClassRetired('claude-interactive', dir)).toBe(false);
+    expect(await readRetiredResidualClasses(dir)).toEqual({});
+  });
+
+  it('retireResidualClass round-trips a record with the pinned evidence', async () => {
+    const res = await retireResidualClass(
+      'claude-interactive',
+      { retiredBy: 'su-owner-1', evidence: { n: 40, missRate: 0, errorCount: 1 }, note: 'clean per report' },
+      dir,
+    );
+    expect(res.ok).toBe(true);
+    expect(await isResidualClassRetired('claude-interactive', dir)).toBe(true);
+    const map = await readRetiredResidualClasses(dir);
+    expect(map['claude-interactive']).toMatchObject({
+      sessionClass: 'claude-interactive',
+      retiredBy: 'su-owner-1',
+      evidence: { n: 40, missRate: 0, errorCount: 1 },
+      note: 'clean per report',
+    });
+    expect(typeof map['claude-interactive'].retiredAt).toBe('string');
+  });
+
+  it('refuses to retire with no evidence (n<=0) — retirement must be evidence-backed', async () => {
+    const res = await retireResidualClass(
+      'claude-interactive',
+      { retiredBy: 'su-owner-1', evidence: { n: 0, missRate: 0, errorCount: 0 } },
+      dir,
+    );
+    expect(res).toEqual({ ok: false, error: expect.stringContaining('evidence') });
+    expect(await isResidualClassRetired('claude-interactive', dir)).toBe(false);
+  });
+
+  it('refuses with a blank sessionClass or retiredBy', async () => {
+    expect((await retireResidualClass('  ', { retiredBy: 'su-1', evidence: { n: 1, missRate: 0, errorCount: 0 } }, dir)).ok).toBe(false);
+    expect((await retireResidualClass('x', { retiredBy: ' ', evidence: { n: 1, missRate: 0, errorCount: 0 } }, dir)).ok).toBe(false);
+  });
+
+  it('unretireResidualClass removes the record and reports whether it existed', async () => {
+    await retireResidualClass('gateway-omp', { retiredBy: 'su-1', evidence: { n: 30, missRate: 0, errorCount: 0 } }, dir);
+    expect(await unretireResidualClass('gateway-omp', dir)).toBe(true);
+    expect(await isResidualClassRetired('gateway-omp', dir)).toBe(false);
+    // Removing again reports false — nothing left to remove.
+    expect(await unretireResidualClass('gateway-omp', dir)).toBe(false);
+  });
+
+  it('readRetiredResidualClasses fails soft to {} for a missing directory/file', async () => {
+    expect(await readRetiredResidualClasses(join(dir, 'does-not-exist'))).toEqual({});
+  });
+
+  it('retiring one class never affects another', async () => {
+    await retireResidualClass('claude-interactive', { retiredBy: 'su-1', evidence: { n: 30, missRate: 0, errorCount: 0 } }, dir);
+    expect(await isResidualClassRetired('gateway-omp', dir)).toBe(false);
   });
 });

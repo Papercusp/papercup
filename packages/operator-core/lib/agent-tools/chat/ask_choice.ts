@@ -46,6 +46,17 @@ const optionSchema = z.object({
   style: z.enum(['default', 'primary', 'danger']).optional(),
 });
 
+const optionsArraySchema = z
+  .array(optionSchema, {
+    error:
+      'chat:ask_choice needs `options`: 1-6 clickable choices, each { id, label }. For an OPEN-ENDED question (describe / paste), use plain text instead.',
+  })
+  .min(
+    1,
+    'chat:ask_choice needs at least one option (each { id, label }) — provide 2-3 for a yes/no or pick-one decision.',
+  )
+  .max(MAX_OPTIONS, `chat:ask_choice accepts at most ${MAX_OPTIONS} options.`);
+
 const argsSchema = z.object({
   // Caller-DX (watchdog P-006): actionable validation messages — an empty
   // `options` array previously failed with a bare "Array must contain at least
@@ -72,16 +83,30 @@ const argsSchema = z.object({
       }
       return v;
     },
-    z
-      .array(optionSchema, {
-        error:
-          'chat:ask_choice needs `options`: 1-6 clickable choices, each { id, label }. For an OPEN-ENDED question (describe / paste), use plain text instead.',
-      })
-      .min(
-        1,
-        'chat:ask_choice needs at least one option (each { id, label }) — provide 2-3 for a yes/no or pick-one decision.',
-      )
-      .max(MAX_OPTIONS, `chat:ask_choice accepts at most ${MAX_OPTIONS} options.`),
+    z.union([
+      optionsArraySchema,
+      // The string form must ALSO be part of the schema TYPE, not only the
+      // preprocess: the calling harness validates the model's raw input
+      // against the ADVERTISED JSON schema before the server's zod ever
+      // runs, and the preprocess-only form advertises array-only — so the
+      // string slip was rejected client-side and the model reported the
+      // card tool as down (operator_turns seq 12076, 2026-07-17). At
+      // runtime the preprocess above has already parsed any valid
+      // JSON-array string, so this branch only catches — and clearly
+      // rejects — strings that are not a JSON array.
+      z
+        .string()
+        .refine(
+          (s) => {
+            try {
+              return Array.isArray(JSON.parse(s));
+            } catch {
+              return false;
+            }
+          },
+          'chat:ask_choice `options` given as a string must be a JSON array of { id, label } objects.',
+        ),
+    ]),
   ),
   /** Multi-select. Default false (radio: one pick commits). */
   multi: z.boolean().optional(),
@@ -160,9 +185,15 @@ export default defineTool({
       };
     }
 
+    // The union's string branch exists for the ADVERTISED schema; any string
+    // that survives it is a valid JSON array (and in practice the preprocess
+    // has already parsed it), so this narrow never rejects at runtime.
+    const optionsArray = Array.isArray(args.options)
+      ? args.options
+      : optionsArraySchema.parse(JSON.parse(args.options));
     const normalized = {
       ...args,
-      options: args.options.map((o) => ({ ...o, id: o.id.toLowerCase() })),
+      options: optionsArray.map((o) => ({ ...o, id: o.id.toLowerCase() })),
     };
     const knownIds = normalized.options.map((o) => o.id) as [string, ...string[]];
     const idSchema = z.enum(knownIds);

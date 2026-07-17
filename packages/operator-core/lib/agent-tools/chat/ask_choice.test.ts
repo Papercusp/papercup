@@ -421,4 +421,14 @@ describe('argsSchema — stringified options coercion (operator_turns seq 11831,
     const parsed = schema.parse({ question: 'q?', options: [{ id: 'a', label: 'A' }] });
     expect((parsed.options as Array<{ id: string }>)[0]).toMatchObject({ id: 'a', label: 'A' });
   });
+
+  it('ADVERTISES the string form too — the calling harness validates raw input against the advertised JSON schema before zod runs (seq 12076)', async () => {
+    const { toArgsJsonSchema } = await import('@papercusp/tooldef');
+    const js = toArgsJsonSchema('chat:ask_choice', (askChoiceTool as { args: never }).args) as {
+      properties?: { options?: { anyOf?: Array<{ type?: string }> } };
+    };
+    const branches = js.properties?.options?.anyOf ?? [];
+    expect(branches.some((b) => b.type === 'array')).toBe(true);
+    expect(branches.some((b) => b.type === 'string')).toBe(true);
+  });
 });

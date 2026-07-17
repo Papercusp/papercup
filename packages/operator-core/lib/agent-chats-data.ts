@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { getLegacyClient } from '@papercusp/db-org';
 import { getKnownRoles } from './known-roles';
+import { activeWorkspaceId } from './workspace-registry';
 
 export interface TranscriptToolCall {
   name: string;
@@ -232,10 +233,19 @@ export async function listChats(input: ListChatsInput): Promise<Result<{ chats: 
       Math.max(1, Math.trunc(input.limit ?? LIST_CHATS_DEFAULT_LIMIT)),
     );
     const offset = Math.max(0, Math.trunc(input.offset ?? 0));
+    // Workspace-scope the list (WI-5125). The per-harness `agent_chats` view
+    // filters on harness_slug ALONE, so an unscoped list returns rows from EVERY
+    // workspace that shares the slug. That is not cosmetic: openFeatureChat's
+    // reuse-before-create picks an existing chat off this list, so a foreign
+    // (e.g. 'default'-stamped) row would be handed to ChatPanel, whose
+    // workspace-scoped detail read then matches nothing — the infinite
+    // "loading chat…" spinner, reproduced even with a correct create path.
+    // Scoping here keeps the list consistent with the agentChats.* resolvers.
+    const ws = activeWorkspaceId();
     const sql = input.includeArchived
-      ? `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats ORDER BY updated_at DESC LIMIT ? OFFSET ?`
-      : `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
-    const rows = (await db.prepare(sql).all(limit, offset)) as Array<Record<string, unknown>>;
+      ? `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+      : `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats WHERE workspace_id = ? AND archived_at IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
+    const rows = (await db.prepare(sql).all(ws, limit, offset)) as Array<Record<string, unknown>>;
     return { ok: true, data: { chats: rows.map(rowToChatSummary) } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to list chats: ${(e as Error).message}` };
@@ -295,12 +305,20 @@ export async function createChat(
 
   try {
     const db = dbForSlug(input.slug);
+    // Stamp the LIVE workspace explicitly (WI-5125). The per-harness agent_chats
+    // view used to carry `ALTER COLUMN workspace_id SET DEFAULT 'default'`, so
+    // omitting the column here silently filed every chat under 'default' — while
+    // the operator UI reads agent_chats_consolidated scoped to the active
+    // workspace, which then matched ZERO rows and spun on "loading chat…"
+    // forever. Migration 616 drops that literal default; this is the other half:
+    // the workspace is only known in-process (the live registry / request ALS),
+    // so the writer must pass it. Same pattern as harness_features' writers.
     await db
       .prepare(
-        `INSERT INTO agent_chats (id, role, feature_id, title, transcript)
-         VALUES (?, ?, ?, ?, ?::jsonb)`,
+        `INSERT INTO agent_chats (id, workspace_id, role, feature_id, title, transcript)
+         VALUES (?, ?, ?, ?, ?, ?::jsonb)`,
       )
-      .run(id, input.role, input.feature_id ?? null, title, '[]');
+      .run(id, activeWorkspaceId(), input.role, input.feature_id ?? null, title, '[]');
     const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(id)) as Record<
       string,
       unknown

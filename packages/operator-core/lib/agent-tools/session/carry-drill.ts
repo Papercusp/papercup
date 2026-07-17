@@ -8,7 +8,12 @@ import {
   startColdBootDrill,
   verifyColdBootDrill,
 } from '../../cold-boot-drill-live';
-import { reportResidualCarrySamples } from '../../residual-carry-pass-live';
+import {
+  reportResidualCarrySamples,
+  readRetiredResidualClasses,
+  retireResidualClass,
+  unretireResidualClass,
+} from '../../residual-carry-pass-live';
 
 const argsSchema = z.discriminatedUnion('op', [
   z.object({
@@ -29,18 +34,30 @@ const argsSchema = z.discriminatedUnion('op', [
     drillId: z.string().trim().min(1).max(200).optional(),
     sessionClass: z.string().trim().min(1).max(120).optional(),
   }),
+  // P-019 retirement actuation (D-010 leg 3): a discrete, evidence-gated action —
+  // never applied automatically off scoreResidualMissRate's raw recommendation
+  // (D-001). Requires the class's OWN live report to already say retire:true.
+  z.object({
+    op: z.literal('retire'),
+    sessionClass: z.string().trim().min(1).max(120),
+    note: z.string().trim().max(500).optional(),
+  }),
+  z.object({
+    op: z.literal('unretire'),
+    sessionClass: z.string().trim().min(1).max(120),
+  }),
 ]);
 
 export default defineTool({
   name: 'session:carry-drill',
   description:
-    'Opt-in cold-boot chaos drill for THIS session: force a clean-boundary deterministic carry-respawn, mechanically grade what the successor searched for, verify a drill left every durable lifecycle leg, or report per-class sufficiency + terminal outcomes. Destructive start is default-off and rate-limited.',
+    'Opt-in cold-boot chaos drill for THIS session: force a clean-boundary deterministic carry-respawn, mechanically grade what the successor searched for, verify a drill left every durable lifecycle leg, report per-class sufficiency + the P-019 residual-pass miss-rate corpus, or retire/unretire the residual pass for a session class once its own report shows retire:true. Destructive start is default-off and rate-limited.',
   capability: 'coord:write',
   guidance: {
     when:
-      'P-020 carry validation only. Call start at a clean boundary; the fresh successor follows the injected marker and calls grade at its next clean boundary.',
+      'P-020 carry validation, or (op:retire/unretire) P-019 residual-pass retirement once a class clears the miss-rate gate. Call start at a clean boundary; the fresh successor follows the injected marker and calls grade at its next clean boundary.',
     notWhen:
-      'Routine compaction or ordinary session recovery — use session:request-compaction. Never start while an owner message is unanswered or work is uncheckpointed.',
+      'Routine compaction or ordinary session recovery — use session:request-compaction. Never start while an owner message is unanswered or work is uncheckpointed. Never retire a class without first reading its report — the tool refuses if the class is not yet evidence-clear.',
     seeAlso: ['session:request-compaction', 'coord:orient'],
   },
   requirePrincipal: false,
@@ -65,10 +82,39 @@ export default defineTool({
                 drillId: args.drillId,
                 sessionClass: args.sessionClass,
               })
-            : // op:'report' — drill sufficiency + terminal outcomes, PLUS the P-019
-              // residual miss-rate corpus (per-class retire verdicts, D-010): the two
-              // halves of P-022's per-class retirement evidence on one surface.
-              { ...(await reportColdBootDrills()), residual: await reportResidualCarrySamples() };
+            : args.op === 'retire'
+              ? await (async () => {
+                  const report = await reportResidualCarrySamples();
+                  const cls = report.perClass.find((c) => c.sessionClass === args.sessionClass);
+                  if (!cls || !cls.retire) {
+                    return {
+                      ok: false as const,
+                      error: 'insufficient-evidence',
+                      sessionClass: args.sessionClass,
+                      stats: cls ?? null,
+                      params: report.params,
+                    };
+                  }
+                  return retireResidualClass(
+                    args.sessionClass,
+                    {
+                      retiredBy: identity.ownerId,
+                      evidence: { n: cls.n, missRate: cls.missRate, errorCount: cls.errorCount },
+                      note: args.note,
+                    },
+                  );
+                })()
+              : args.op === 'unretire'
+                ? { ok: true as const, removed: await unretireResidualClass(args.sessionClass) }
+                : // op:'report' — drill sufficiency + terminal outcomes, PLUS the P-019
+                  // residual miss-rate corpus (per-class retire verdicts, D-010) and the
+                  // classes already retired: the three halves of P-022's per-class
+                  // retirement evidence on one surface.
+                  {
+                    ...(await reportColdBootDrills()),
+                    residual: await reportResidualCarrySamples(),
+                    retiredClasses: await readRetiredResidualClasses(),
+                  };
     const failed = 'ok' in result && result.ok === false;
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result) }],

@@ -88,7 +88,7 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
   const localTurnsRef = useRef(0);
   const streamingRef = useRef(false);
 
-  const { data: detailRows, error: detailError, invalidate: invalidateDetail } = useSyncQuery<{
+  const { data: detailRows, error: detailError, loading: detailLoading, invalidate: invalidateDetail } = useSyncQuery<{
     harnessSlug: string;
     id: string;
     role: string;
@@ -136,8 +136,24 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
       setLoadError(null);
       return;
     }
-    if (detailError) setLoadError(detailError.message);
-  }, [detailError, detailRows]);
+    if (detailError) {
+      setLoadError(detailError.message);
+      return;
+    }
+    // RESOLVED-BUT-EMPTY (WI-5125): the subscription settled and the chat row
+    // genuinely isn't readable — `useSyncQuery` reports that as
+    // `{ data: [], error: null }`, which matches NEITHER branch above. Without
+    // this, `chat` stays null and the panel spins on "loading chat…" FOREVER
+    // (the owner-reported symptom: the row existed but carried a different
+    // workspace_id, so the scoped read returned zero rows and the UI showed a
+    // spinner rather than a fault). Empty is a real, reportable outcome — never
+    // an eternal loading state.
+    if (!detailLoading && Array.isArray(detailRows) && detailRows.length === 0) {
+      setLoadError(
+        'chat not found — it may have been archived, or it belongs to a different workspace',
+      );
+    }
+  }, [detailError, detailLoading, detailRows]);
 
   useEffect(() => { void loadChat(); }, [loadChat]);
 
@@ -301,7 +317,19 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
       <div className="chat-panel chat-panel--error">
         <AlertTriangle size={14} /> Failed to load chat: {loadError}
         <Tooltip label="Retry loading the chat transcript">
-          <button className="chat-panel__retry" onClick={() => void loadChat()}>retry</button>
+          {/* Retry must REFETCH, not just re-read the cached rows: loadChat()
+              reads the subscription's current data, so on a resolved-but-empty
+              or errored result it would re-derive the same failure without ever
+              going back to the server. invalidateDetail() re-runs the query. */}
+          <button
+            className="chat-panel__retry"
+            onClick={() => {
+              setLoadError(null);
+              invalidateDetail();
+            }}
+          >
+            retry
+          </button>
         </Tooltip>
       </div>
     );

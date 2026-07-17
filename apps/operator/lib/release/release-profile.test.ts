@@ -11,12 +11,16 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildPapercuspReleaseProfile,
+  buildAutoloopReleaseProfile,
+  evaluateAutoloopReleaseProfile,
   classifyRatingForGate,
   deployStalenessGateComponent,
   evaluatePapercuspReleaseProfile,
   rubricReleaseComponent,
   worstCaseVerdict,
   DEFAULT_RUBRIC_STALE_AFTER_MS,
+  AUTOLOOP_COMPONENT_RUBRIC_REFS,
+  AUTOLOOP_RELEASE_PROFILE_REF,
 } from './release-profile';
 import { evaluateReleaseProfile } from '@papercusp/release-profile';
 import type { Rubric } from '@papercusp/operator-core/lib/rubrics';
@@ -301,6 +305,95 @@ describe('buildPapercuspReleaseProfile / evaluatePapercuspReleaseProfile — end
       gateOpts: {
         // deployedSha matches the running generation ('gen-sha-1') so this case isolates
         // the STALENESS gate — not a lineage mismatch, which is covered by its own test above.
+        deps: {
+          deployedSha: async () => 'gen-sha-1',
+          currentSha: async () => 'candidate-sha',
+          commitUnixTime: async () => Math.floor(Date.now() / 1000) - 20 * 3_600,
+          commitsBetween: async () => Array.from({ length: 50 }, (_, i) => `c${i}`),
+        },
+        thresholds: { maxPinAgeMs: 6 * 3_600_000, maxCommitsBehind: 20 },
+      },
+    });
+    expect(verdict.go).toBe(false);
+    expect(verdict.components.find((c) => c.key === 'gate:deploy-staleness')?.verdict).toBe('fail');
+  });
+});
+
+describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P-008 scoped auto-loop profile', () => {
+  const healthyGateOpts = {
+    deps: {
+      deployedSha: async () => 'gen-sha-1',
+      currentSha: async () => 'gen-sha-1',
+      commitUnixTime: async () => Math.floor(Date.now() / 1000) - 60,
+      commitsBetween: async () => [],
+    },
+  };
+  const healthyDeps = {
+    readRunningGeneration: async () => ({ sha: 'gen-sha-1', hostStartedAt: null }),
+    getRubric: async (ref: string) => rubric({ rubricId: ref }),
+  };
+  const healthyScorecard = scorecardRow({ gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null } });
+
+  it('composes EXACTLY the fixed 7-rubric set + the deploy-staleness gate — never auto-discovery', async () => {
+    const spec = await buildAutoloopReleaseProfile({
+      deps: healthyDeps,
+      gateOpts: healthyGateOpts,
+      rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
+    });
+    expect(spec.profileRef).toBe(AUTOLOOP_RELEASE_PROFILE_REF);
+    expect(spec.components).toHaveLength(AUTOLOOP_COMPONENT_RUBRIC_REFS.length + 1); // 7 rubrics + 1 gate
+    expect(AUTOLOOP_COMPONENT_RUBRIC_REFS).toEqual([
+      'blender-release-readiness',
+      'mug-pot-coordination-health',
+      'cup-lifecycle-durability',
+      'kettle-supervision-health',
+      'autonomy-owner-controls',
+      'release-integrity-health',
+      'production-soak-health',
+    ]);
+    const keys = spec.components.map((c) => c.key);
+    for (const ref of AUTOLOOP_COMPONENT_RUBRIC_REFS) expect(keys).toContain(`rubric:${ref}`);
+    expect(keys).toContain('gate:deploy-staleness');
+  });
+
+  it('GOes when every leg rubric passes and the deploy gate is fresh', async () => {
+    const verdict = await evaluateAutoloopReleaseProfile({
+      deps: healthyDeps,
+      gateOpts: healthyGateOpts,
+      evaluateOpts: { now: NOW },
+      rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
+    });
+    expect(verdict.go).toBe(true);
+  });
+
+  it('REFUSES GO when the blender leg alone fails, even with every other leg + the gate healthy', async () => {
+    const verdict = await evaluateAutoloopReleaseProfile({
+      deps: healthyDeps,
+      gateOpts: healthyGateOpts,
+      evaluateOpts: { now: NOW },
+      rubricOpts: {
+        deps: {
+          listScorecards: async (opts: { rubricRef: string }) =>
+            opts.rubricRef === 'blender-release-readiness'
+              ? [scorecardRow({ ratings: { c1: { rating: 'broken', evidence: 'e' }, c2: { rating: 'pass', evidence: 'e' } }, gradedGeneration: { sha: 'gen-sha-1', hostStartedAt: null } })]
+              : [healthyScorecard],
+        },
+      },
+    });
+    expect(verdict.go).toBe(false);
+    expect(verdict.components.find((c) => c.key === 'rubric:blender-release-readiness')?.verdict).toBe('fail');
+    // every other leg stayed healthy — the refusal is attributable to the one failing leg, not a broad break
+    for (const ref of AUTOLOOP_COMPONENT_RUBRIC_REFS.filter((r) => r !== 'blender-release-readiness')) {
+      expect(verdict.components.find((c) => c.key === `rubric:${ref}`)?.verdict).toBe('pass');
+    }
+  });
+
+  it('REFUSES GO on the deploy-staleness gate alone, even with every leg rubric healthy', async () => {
+    const verdict = await evaluateAutoloopReleaseProfile({
+      deps: healthyDeps,
+      evaluateOpts: { now: NOW },
+      rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
+      gateOpts: {
         deps: {
           deployedSha: async () => 'gen-sha-1',
           currentSha: async () => 'candidate-sha',

@@ -296,7 +296,55 @@ const messagesRoute = defineTool({
         } catch { /* best-effort */ }
       }
 
-      const promptText = `${r.text}${lockNotice}${planContextSection}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
+      // Work-item dossier + carry-note (WI-5125). A chat opened from a work
+      // item's Chat button used to arrive knowing NOTHING about that item: the
+      // plan-context block above only fires for plan-derived features, so a WI-*
+      // chat agent had to be told its own task by the user. The autonomous cup
+      // waking on the same item already gets this precomputed — item text, the
+      // linked plan item, the `blocks` edges it gates, topics, recent thread
+      // comments, the peer roster, standing facts — via computeCupWakeDossier,
+      // plus any in-flight checkpoint. Reuse BOTH here (rather than growing a
+      // second chat-only context builder) so the human's chat agent and the
+      // autonomous worker reason from the SAME world-state and cannot drift.
+      //
+      // Both are best-effort with an explicit timeout: this runs inline on the
+      // chat turn, so a slow/wedged read must degrade the CONTEXT, never hang or
+      // fail the reply. Anything missing simply leaves the agent with its tools.
+      let dossierSection = '';
+      if (chat.feature_id) {
+        const budgetMs = 3_000;
+        const withBudget = <T,>(p: Promise<T>): Promise<T | null> =>
+          Promise.race([
+            p.catch(() => null),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs).unref?.()),
+          ]);
+        try {
+          const [{ computeCupWakeDossier }, { getWorkItemCheckpoint }] = await Promise.all([
+            import('../../../pot/cup-wake-dossier'),
+            import('../../../work-item-checkpoint'),
+          ]);
+          const ws = activeWorkspaceId();
+          const [dossier, checkpoint] = await Promise.all([
+            withBudget(
+              computeCupWakeDossier({ workspaceId: ws, harness: slug, workItemId: chat.feature_id }),
+            ),
+            withBudget(
+              getWorkItemCheckpoint({ workspaceId: ws, harness: slug, workItemId: chat.feature_id }),
+            ),
+          ]);
+          if (dossier && dossier.trim()) dossierSection += `\n---\n\n${dossier.trim()}\n`;
+          if (checkpoint && checkpoint.trim()) {
+            dossierSection +=
+              `\n---\n\n## In-flight checkpoint for ${chat.feature_id}\n\n` +
+              'The last carry-note written on this item — what the agent working it had ' +
+              'done, what was left, and any gotchas. It is a SNAPSHOT and may be stale; ' +
+              'trust the live item state above where they disagree.\n\n' +
+              `${checkpoint.trim()}\n`;
+          }
+        } catch { /* best-effort — the agent still has its read tools */ }
+      }
+
+      const promptText = `${r.text}${lockNotice}${planContextSection}${dossierSection}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
       assembled = { text: promptText, runId: r.meta.runId };
     } catch (e) {
       return Response.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, { status: 500 });

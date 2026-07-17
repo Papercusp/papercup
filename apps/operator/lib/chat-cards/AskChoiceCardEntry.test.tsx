@@ -19,14 +19,18 @@ vi.mock('@/app/_components/chat/AskChoiceCard', () => ({
     answered,
     onResponse,
   }: {
-    args: { question: string };
+    args: { question: string; options?: unknown };
     answered?: { picks: unknown[]; declined?: boolean };
     onResponse: (response:
       | { action: 'submit'; picks: Array<{ option_id: string; label: string }> }
       | { action: 'decline' }
     ) => void;
   }) => (
-    <div data-testid="card" data-answered={answered ? 'true' : 'false'}>
+    <div
+      data-testid="card"
+      data-answered={answered ? 'true' : 'false'}
+      data-options={Array.isArray(args.options) ? String(args.options.length) : 'invalid'}
+    >
       {args.question}
       <button
         data-testid="submit"
@@ -105,6 +109,29 @@ describe('AskChoiceCardEntry (chat:ask_choice registry glue)', () => {
     expect(card.getAttribute('data-answered')).toBe('true');
     fireEvent.click(screen.getByTestId('submit'));
     expect(onAnswer).toHaveBeenCalledWith({ picks: [{ option_id: 'a', label: 'A' }] });
+  });
+
+  it('renders from STRINGIFIED options — the model encoding slip persisted raw (operator_turns seq 12076)', () => {
+    const onAnswer = vi.fn();
+    const node = renderCard('chat:ask_choice', {
+      args: {
+        question: 'Q',
+        options: '[{"id":"a","label":"A"},{"id":"b","label":"B"}]',
+      },
+      onAnswer,
+    });
+    expect(node).not.toBeNull();
+    renderResult(node);
+    expect(screen.getByTestId('card').getAttribute('data-options')).toBe('2');
+  });
+
+  it('still declines to render when the options string is not a JSON array', () => {
+    expect(
+      renderCard('chat:ask_choice', {
+        args: { question: 'Q', options: 'not json' },
+        onAnswer: vi.fn(),
+      }),
+    ).toBeNull();
   });
 
   it('bridges Skip/decline to a persisted declined answer payload (WI-4976)', () => {

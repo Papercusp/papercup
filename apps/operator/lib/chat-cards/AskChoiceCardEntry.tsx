@@ -20,13 +20,25 @@ type AskChoicePayload = {
 
 registerCard<AskChoiceArgs>('chat:ask_choice', ({ args, answered, onAnswer }) => {
   if (!args || typeof args !== 'object') return null;
-  if (!args.question || !Array.isArray(args.options) || args.options.length === 0) {
+  // Models sometimes stringify the options array (`options: "[{…}]"`) and the
+  // persisted turn stores the model's RAW input (operator_turns seq 12076) —
+  // parse it here or the card for such a row silently never renders.
+  let options: unknown = args.options;
+  if (typeof options === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(options);
+      if (Array.isArray(parsed)) options = parsed;
+    } catch {
+      /* fall through to the bad-payload return */
+    }
+  }
+  if (!args.question || !Array.isArray(options) || options.length === 0) {
     // Bad payload — let the consumer's default chip render instead.
     return null;
   }
   return (
     <AskChoiceCard
-      args={args}
+      args={options === args.options ? args : { ...args, options: options as AskChoiceArgs['options'] }}
       answered={answered as AskChoiceAnswered | undefined}
       onResponse={(response) => {
         if (response.action === 'submit') {

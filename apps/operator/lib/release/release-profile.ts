@@ -306,3 +306,88 @@ export async function evaluatePapercuspReleaseProfile(
   const spec = await buildPapercuspReleaseProfile(opts);
   return evaluateReleaseProfile(spec, opts.evaluateOpts);
 }
+
+// ─── the PUBLIC AUTO-LOOP release profile ───────────────────────────────────────────
+//
+// rubric-system-and-auto-loop-release-profile-2026-07-15 P-008. `buildPapercuspReleaseProfile`
+// above auto-discovers EVERY active releaseGating rubric in the workspace — which, now that
+// per-product rubrics exist (desktop-voice-release-readiness, papercup-chat-release-readiness,
+// mobile-app-release-readiness, …), would mix unrelated products into one monolithic GO/NO-GO.
+// The auto-loop product (Mug → Cup → Kettle → Blender) needs its OWN scoped profile: exactly
+// the blender leg (P-006) plus the 6 component rubrics P-007 ratified, plus the strict live
+// deploy-staleness gate P-006 already wired — nothing else auto-discovered in.
+
+export const AUTOLOOP_RELEASE_PROFILE_REF = 'papercusp-autoloop-public-release-readiness';
+
+/** The exact rubric refs this profile composes — Blender (P-006) + the 6 auto-loop
+ *  component rubrics P-007 ratified. A fixed list, not auto-discovery: this profile is
+ *  scoped to ONE product, not "every releaseGating rubric that happens to exist". */
+export const AUTOLOOP_COMPONENT_RUBRIC_REFS = [
+  'blender-release-readiness',
+  'mug-pot-coordination-health',
+  'cup-lifecycle-durability',
+  'kettle-supervision-health',
+  'autonomy-owner-controls',
+  'release-integrity-health',
+  'production-soak-health',
+] as const;
+
+export interface BuildAutoloopReleaseProfileDeps {
+  getRubric?: typeof defaultGetRubric;
+  listScorecards?: typeof defaultListScorecards;
+  readRunningGeneration?: typeof defaultReadRunningGeneration;
+}
+
+export interface BuildAutoloopReleaseProfileOpts {
+  profileRef?: string;
+  /** Extra components (e.g. a future P-009 addition) to compose alongside the fixed
+   *  rubric set + the deploy-staleness gate. */
+  extraComponents?: ComponentSpec[];
+  rubricOpts?: Omit<RubricComponentOpts, 'mandatory'>;
+  gateOpts?: DeployStalenessGateOpts;
+  deps?: BuildAutoloopReleaseProfileDeps;
+}
+
+/**
+ * Assemble the public auto-loop release profile: the fixed 7-rubric set
+ * ({@link AUTOLOOP_COMPONENT_RUBRIC_REFS}) + the deploy-staleness hard gate (the "strict
+ * live gate" — a real-time operational check, not a periodically-graded scorecard),
+ * stamped with the RUNNING generation as `expectedLineage` so evidence graded against a
+ * stale/different generation is refused as 'lineage-mismatch', exactly like the general
+ * profile above.
+ */
+export async function buildAutoloopReleaseProfile(
+  opts: BuildAutoloopReleaseProfileOpts = {},
+): Promise<ReleaseProfileSpec> {
+  const readRunningGenerationFn = opts.deps?.readRunningGeneration ?? defaultReadRunningGeneration;
+  const generation = await readRunningGenerationFn();
+
+  // Merge opts.rubricOpts.deps FIRST, then fall back to the profile-level opts.deps /
+  // module defaults — a caller injecting rubricOpts.deps.listScorecards (the per-test
+  // fixture path) must win over the generic default, exactly like buildPapercuspReleaseProfile.
+  const rubricDeps = {
+    ...opts.rubricOpts?.deps,
+    getRubric: opts.rubricOpts?.deps?.getRubric ?? opts.deps?.getRubric ?? defaultGetRubric,
+    listScorecards: opts.rubricOpts?.deps?.listScorecards ?? opts.deps?.listScorecards ?? defaultListScorecards,
+  };
+
+  return {
+    profileRef: opts.profileRef ?? AUTOLOOP_RELEASE_PROFILE_REF,
+    ...(generation.sha ? { expectedLineage: { sha: generation.sha } } : {}),
+    components: [
+      ...AUTOLOOP_COMPONENT_RUBRIC_REFS.map((ref) => rubricReleaseComponent(ref, { ...opts.rubricOpts, deps: rubricDeps })),
+      deployStalenessGateComponent(opts.gateOpts),
+      ...(opts.extraComponents ?? []),
+    ],
+  };
+}
+
+/** Build + evaluate the public auto-loop release profile in one call. `evaluateOpts`
+ *  threads through to the generic evaluator (e.g. an injectable `now` for deterministic
+ *  tests). */
+export async function evaluateAutoloopReleaseProfile(
+  opts: BuildAutoloopReleaseProfileOpts & { evaluateOpts?: EvaluateReleaseProfileOpts } = {},
+): Promise<ReleaseProfileVerdict> {
+  const spec = await buildAutoloopReleaseProfile(opts);
+  return evaluateReleaseProfile(spec, opts.evaluateOpts);
+}
