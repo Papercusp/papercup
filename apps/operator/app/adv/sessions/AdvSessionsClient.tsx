@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
@@ -629,7 +630,7 @@ export default function AdvSessionsClient() {
     const result = await launchAgent({
       slug: null,
       planSlug: row.planSlug,
-      label: row.label ?? row.planSlug ?? `fresh-${row.id}`,
+      label: row.label ? agentDisplayLabel(row.label, t) : row.planSlug ?? `fresh-${row.id}`,
     });
     if (result.ok) {
       toast.success('Agent launched (fresh session).', { duration: 3000 });
@@ -639,7 +640,7 @@ export default function AdvSessionsClient() {
     } else {
       toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
     }
-  }, []);
+  }, [t]);
 
   // Option B — resume an OMP session by id. The id is tracked
   // automatically: we prefer the row's PG-recorded `ompThreadId`
@@ -679,7 +680,7 @@ export default function AdvSessionsClient() {
     const result = await launchAgent({
       slug: null,
       planSlug: row.planSlug,
-      label: row.label ?? row.planSlug ?? `resume-${row.id}`,
+      label: row.label ? agentDisplayLabel(row.label, t) : row.planSlug ?? `resume-${row.id}`,
       resumeSessionId: id,
     });
     if (result.ok) {
@@ -690,7 +691,7 @@ export default function AdvSessionsClient() {
     } else {
       toast.error(`Resume failed: ${result.error ?? 'unknown error'}`);
     }
-  }, [resolveResumeId]);
+  }, [resolveResumeId, t]);
 
   // P-025: derive the harness slug for each session via its plan.
   // Sessions don't carry a harness column; the join is plan → harness.
@@ -924,8 +925,8 @@ export default function AdvSessionsClient() {
                                 {row.agent ?? row.mode}
                               </span>
                               {row.role ? (
-                                <span className="pc-adv-sessions__role-chip" title={`role: ${row.role}`}>
-                                  {row.role}
+                                <span className="pc-adv-sessions__role-chip" title={`role: ${agentRoleLabel(row.role, t)}`}>
+                                  {agentRoleLabel(row.role, t)}
                                 </span>
                               ) : null}
                               {row.feature ? (
@@ -947,7 +948,7 @@ export default function AdvSessionsClient() {
                                 </span>
                               ) : null}
                               <span className="pc-adv-sessions__row-label">
-                                {row.label ?? row.terminalBin ?? `#${row.id}`}
+                                {row.label ? agentDisplayLabel(row.label, t) : row.terminalBin ?? `#${row.id}`}
                               </span>
                               <span className="pc-adv-sessions__row-times">
                                 {formatCardDateTime(row.startedAt)}
@@ -1943,6 +1944,7 @@ function SessionDetail({
   searchLoading: boolean;
   onRefresh: () => void;
 }) {
+  const t = useLexicon();
   if (!row) {
     return (
       <aside className="pc-adv-sessions__detail">
@@ -1956,7 +1958,9 @@ function SessionDetail({
   }
 
   const state = stateData?.state ?? null;
-  const title = row.label || row.planSlug || state?.header.title || `Session #${row.id}`;
+  const title = row.label
+    ? agentDisplayLabel(row.label, t)
+    : row.planSlug || state?.header.title || `Session #${row.id}`;
 
   return (
     <aside className="pc-adv-sessions__detail">

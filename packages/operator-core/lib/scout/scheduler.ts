@@ -71,7 +71,7 @@ export interface ScoutCycleLike {
    * raw>0 produced:0 (grounding/shape filter drops) vs ok:false (spec/transport) —
    * instead of requiring a live re-probe of the LLM path (the 07-14..16 outage class).
    */
-  ideators?: readonly { lens: string; ok: boolean; raw: number; produced: number; error?: string }[];
+  ideators?: readonly { lens: string; ok: boolean; raw: number; produced: number; error?: string; textHead?: string; textLen?: number; outputTokens?: number }[];
 }
 
 /**

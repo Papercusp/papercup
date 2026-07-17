@@ -289,6 +289,10 @@ export interface IdeationSlotOutcome {
   raw: number;
   produced: number;
   error?: string;
+  /** EI-13119: response-text head, present only on ok-but-zero-raw slots. */
+  textHead?: string;
+  textLen?: number;
+  outputTokens?: number;
 }
 
 export function buildScoutCycleDeps(
@@ -673,6 +677,7 @@ export function buildScoutCycleDeps(
         raw: i.raw,
         produced: i.produced,
         ...(i.error ? { error: String(i.error).slice(0, 120) } : {}),
+        ...(i.textHead !== undefined ? { textHead: i.textHead, textLen: i.textLen, outputTokens: i.outputTokens } : {}),
       }));
       return ideated.ideas;
     },

@@ -463,6 +463,17 @@ const invoke = defineTool({
     // keeps route registration side-effect-free; the cost is a one-time async import.
     const { spawnInvokeOnce } = await import('../../../dbos/orchestrator-runner');
     const env: Record<string, string> = suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {};
+    // Instance-config env-transport parity (cloud-deployment P-008): spawnInvokeOnce
+    // attaches HARNESS_CONFIG_JSON only when the spawn env names the install
+    // (HARNESS_SLUG + PAPERCUSP_WORKSPACE_ID — buildPipelineExtraEnv stamps them on the
+    // DBOS pipeline path). This HTTP /invoke route — the SECOND spawn chokepoint — never
+    // stamped them, so route-launched roles (kettle/mug/blueprint-run) ran with an EMPTY
+    // instance config and fell through to committed role-model defaults: a pot-level
+    // configOverride (aiBackend.roles.<role>.model) silently never reached them, which
+    // kept kettle@papercusp hard-down on a claude-unreachable model id even after the
+    // registry pin (2026-07-17 outage; evidence on WI-5102).
+    env.HARNESS_SLUG = project.slug;
+    env.PAPERCUSP_WORKSPACE_ID = activeWorkspaceId();
     // EI-7871 (WI-3082 follow-up): this /invoke route is the ONE chokepoint every
     // launch-blueprint spawn traverses (queen via bpkind=hive, overwatch via
     // bpkind=overwatch, doc-steward/sentinel/scan/deploy/audit/merge-resolution/

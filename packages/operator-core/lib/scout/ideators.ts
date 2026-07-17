@@ -215,6 +215,12 @@ export interface IdeatorRunInfo {
   ok: boolean;
   error?: string;
   admissionDenial?: AdmissionDenial;
+  /** EI-13119: present only when a SUCCESSFUL call parsed to zero raw ideas — the head of
+   *  the actual response text, so the tick ledger shows WHAT came back (truncation /
+   *  refusal / format drift) instead of an undiagnosable `raw: 0`. */
+  textHead?: string;
+  textLen?: number;
+  outputTokens?: number;
 }
 
 export interface RunIdeatorsResult {
@@ -396,6 +402,12 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
             produced: ideas.length,
             raw: rawArr.length,
             ok: true,
+            // EI-13119 escalation: a successful call that parses to ZERO raw ideas is the
+            // silent-outage shape — keep enough of the actual response to diagnose from the
+            // tick ledger (truncation vs refusal vs format drift) without a live re-probe.
+            ...(rawArr.length === 0
+              ? { textHead: (res.text ?? '').slice(0, 200), textLen: (res.text ?? '').length, outputTokens: res.outputTokens }
+              : {}),
           },
           ideas,
           cost: res.costUsd ?? 0,
