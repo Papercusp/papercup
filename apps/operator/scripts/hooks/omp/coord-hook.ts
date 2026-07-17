@@ -1193,6 +1193,71 @@ export function destructiveGitDenyReason(op: string): string {
   );
 }
 
+/**
+ * EI-13135 — systemd user-manager exit/kill guard: a TypeScript mirror of the
+ * Claude+Codex PreToolUse shell hook's Python guard
+ * (pretooluse-bash-resource-gate.sh) — fix one, fix both.
+ *
+ * `systemctl --user exit` (or `start exit.target`) tears down the WHOLE
+ * shared user@<uid> manager in one shot — bg-host, :3070, :3170, the
+ * inference gateway, git-sync, mcp-proxy, every timer/watchdog, and every
+ * OTHER live agent session's scope, all at once. Confirmed root cause of a
+ * ~15min fleet-wide outage on 2026-07-16 (EI-13135): the manager logged
+ * "Activating special unit exit.target" and exited 0/SUCCESS, and every
+ * papercusp service stayed dead until an owner-authorized
+ * `sudo systemctl start user@1000.service` recovered it. `loginctl
+ * terminate-user`/`kill-user` and `systemctl stop|kill user@<uid>.service`
+ * are the same class (they too tear down every unit under that user at
+ * once) — same deny.
+ *
+ * Deliberately NOT gated on isAgentSession(), mirroring the tauri-agent-tools
+ * guard above: EI-7872 established the marker is silently unset in exactly
+ * the fleet-launched sessions this must protect, and unlike the git-guard the
+ * protected resource here is the whole HOST's service plane, not a working
+ * tree — there is no legitimate reason for ANY session driven through this
+ * hook to tear it down.
+ */
+const SYSTEMD_EXIT_RE = /^systemctl\b(?:\s+--user)?\s+(?:start\s+exit\.target|exit)\b(?:\s|$)/;
+const SYSTEMD_HALT_RE = /^systemctl\b(?:\s+--user)?\s+(?:halt|poweroff)\b(?:\s|$)/;
+const LOGINCTL_KILL_RE = /^loginctl\b\s+(?:terminate-user|kill-user)\b(?:\s|$)/;
+const SYSTEMD_USER_SERVICE_STOP_RE = /^systemctl\b\s+(?:stop|kill)\s+user@\d+\.service\b(?:\s|$)/;
+const EXIT_GUARD_WRAP_STRIP_RE =
+  /^\s*(?:sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\w+(?:\s+\d+)?)*|xargs(?:\s+-\w+)*|rtk|time|command|nohup|exec|setsid|nocorrect|stdbuf|doas|nocache)\s+/;
+
+/** Returns the offending op name if `command` contains a systemd
+ *  user-manager exit/kill op at command position in any
+ *  `;`/`&`/`|`/newline-separated segment, else `null`. Exported for tests. */
+export function systemdExitCommandOp(command: string): string | null {
+  for (const rawSegment of command.split(/[;&|\n]/)) {
+    let seg = stripShellQuotes(rawSegment.trim());
+    for (let i = 0; i < 8; i++) {
+      const next = seg.replace(EXIT_GUARD_WRAP_STRIP_RE, '');
+      if (next === seg) break;
+      seg = next;
+    }
+    if (SYSTEMD_EXIT_RE.test(seg)) return 'systemctl --user exit';
+    if (SYSTEMD_HALT_RE.test(seg)) return 'systemctl --user halt/poweroff';
+    if (LOGINCTL_KILL_RE.test(seg)) return 'loginctl terminate-user/kill-user';
+    if (SYSTEMD_USER_SERVICE_STOP_RE.test(seg)) return 'systemctl stop/kill user@<uid>.service';
+  }
+  return null;
+}
+
+/** The refusal reason for a blocked systemd exit/kill op — mirrors the shell
+ *  hook's `_EXIT_GUARD_DENY` message verbatim so both enforcement points give
+ *  the agent identical advice. */
+export function systemdExitDenyReason(op: string): string {
+  return (
+    `systemd user-manager exit/kill guard (EI-13135): \`${op}\` would tear down ` +
+    'the ENTIRE shared user@<uid> service plane in one shot — bg-host, :3070, ' +
+    ":3170, the inference gateway, git-sync, mcp-proxy, every timer/watchdog, " +
+    "and every OTHER live agent session's scope, all at once. This caused a " +
+    '~15min fleet-wide outage on 2026-07-16 (EI-13135). There is no ' +
+    'legitimate agent reason to do this — if you mean to restart one specific ' +
+    'papercusp service, use the blessed wrapper (dev:restart) instead.'
+  );
+}
+
 export interface ToolCallEvent {
   type: 'tool_call';
   toolName: string;
@@ -3212,6 +3277,13 @@ export async function onToolCall(
     const bashCmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
     const tauriDenial = tauriTargetDenial(bashCmd);
     if (tauriDenial) return { block: true, reason: tauriDenial };
+
+    // EI-13135 — systemd user-manager exit/kill guard. Deliberately NOT gated
+    // on isAgentSession(), same rationale as the tauri-agent-tools guard just
+    // above: the protected resource is the whole host's service plane, not
+    // scoped to a tree or a fragile session marker.
+    const exitOp = systemdExitCommandOp(bashCmd);
+    if (exitOp) return { block: true, reason: systemdExitDenyReason(exitOp) };
   }
 
   // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010): an

@@ -24,6 +24,8 @@ import {
   collapseDigestNotifies,
   destructiveGitCommandOp,
   destructiveGitDenyReason,
+  systemdExitCommandOp,
+  systemdExitDenyReason,
   detectSymlinkedPaths,
   reportActivity,
   reportActivityResult,
@@ -489,6 +491,100 @@ describe('destructiveGitDenyReason', () => {
     expect(reason).toContain('shared-tree guard');
     expect(reason).toContain('git reset --hard');
     expect(reason).toContain('git checkout -- <that.one.file>');
+  });
+});
+
+describe('systemdExitCommandOp (EI-13135, command-position systemd exit/kill match)', () => {
+  // See the Claude/Codex mirror in cc/__tests__/bash-resource-gate.test.ts — same
+  // contract, driven through the shell hook there and the TS predicate here.
+  it.each([
+    ['systemctl --user exit', 'systemctl --user exit', 'systemctl --user exit'],
+    ['systemctl exit (no --user flag)', 'systemctl exit', 'systemctl --user exit'],
+    ['systemctl --user start exit.target', 'systemctl --user start exit.target', 'systemctl --user exit'],
+    ['systemctl --user halt', 'systemctl --user halt', 'systemctl --user halt/poweroff'],
+    ['systemctl --user poweroff', 'systemctl --user poweroff', 'systemctl --user halt/poweroff'],
+    ['loginctl terminate-user', 'loginctl terminate-user marsh-office', 'loginctl terminate-user/kill-user'],
+    ['loginctl kill-user', 'loginctl kill-user 1000', 'loginctl terminate-user/kill-user'],
+    ['systemctl stop user@<uid>.service', 'systemctl stop user@1000.service', 'systemctl stop/kill user@<uid>.service'],
+    ['systemctl kill user@<uid>.service', 'systemctl kill user@1000.service', 'systemctl stop/kill user@<uid>.service'],
+    ['sudo-prefixed exit', 'sudo systemctl --user exit', 'systemctl --user exit'],
+    ['compound && exit', 'cd /tmp && systemctl --user exit', 'systemctl --user exit'],
+    ['compound ; halt', 'echo done ; systemctl --user halt', 'systemctl --user halt/poweroff'],
+    ['newline-separated', 'true\nsystemctl --user exit', 'systemctl --user exit'],
+    ['rtk-wrapped', 'rtk systemctl --user exit', 'systemctl --user exit'],
+    ['time-wrapped', 'time systemctl --user exit', 'systemctl --user exit'],
+    ['env-wrapped', 'env FOO=bar systemctl --user exit', 'systemctl --user exit'],
+  ])('flags %s', (_label, command, expectedOp) => {
+    expect(systemdExitCommandOp(command)).toBe(expectedOp);
+  });
+
+  it.each([
+    ['status is not exit', 'systemctl --user status papercup-staging-api.service'],
+    ['restart a real service is not exit', 'systemctl --user restart papercup-staging-api.service'],
+    ['stop a real service is not the user@ class', 'systemctl --user stop papercup-vite.service'],
+    ['"exit" only in a commit message, not command position', 'git commit -m "handle process exit"'],
+    ['"systemctl --user exit" inside a quoted string, not command position', 'echo "systemctl --user exit"'],
+    ['a stop of an unrelated numbered service (not user@)', 'systemctl stop worker@1000.service'],
+    ['ordinary command', 'ls -la'],
+  ])('never flags %s', (_label, command) => {
+    expect(systemdExitCommandOp(command)).toBeNull();
+  });
+});
+
+describe('systemdExitDenyReason (EI-13135)', () => {
+  it('names the op + the incident + the blessed alternative', () => {
+    const reason = systemdExitDenyReason('systemctl --user exit');
+    expect(reason).toContain('EI-13135');
+    expect(reason).toContain('systemctl --user exit');
+    expect(reason).toContain('dev:restart');
+  });
+});
+
+describe('onToolCall systemd exit/kill guard (EI-13135, UNCONDITIONAL — no agent marker needed)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    _resetToolCallCacheForTests();
+    delete process.env.PAPERCUSP_AGENT_SESSION; // prove it fires WITHOUT the marker
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  it('blocks systemctl --user exit with NO agent-session marker set', async () => {
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'exit-1',
+      input: { command: 'systemctl --user exit' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('EI-13135');
+  });
+
+  it('blocks even WITH the agent-session marker set (unconditional, not an OR-gate on it)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'exit-2',
+      input: { command: 'loginctl kill-user 1000' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('EI-13135');
+  });
+
+  it('allows an ordinary systemctl status call', async () => {
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'exit-3',
+      input: { command: 'systemctl --user status papercup-staging-api.service' },
+    });
+    expect(r.block).toBeUndefined();
   });
 });
 

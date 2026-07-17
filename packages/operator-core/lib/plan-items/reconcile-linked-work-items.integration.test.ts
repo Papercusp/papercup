@@ -59,7 +59,9 @@ const h3 = vi.hoisted(() => ({
 }));
 vi.mock('../agent-tools/plans/source', () => ({ getPlanRow: h3.getPlanRow }));
 
-const { reconcileLinkedWorkItemsForPlanItem } = await import('./reconcile-linked-work-items');
+const { reconcileLinkedWorkItemsForPlanItem, reconcileOrphanedPlanItemWorkItems } = await import(
+  './reconcile-linked-work-items'
+);
 
 const WS = DEFAULT_COORD_WORKSPACE;
 let rootSql: postgres.Sql;
@@ -119,6 +121,32 @@ function stub(over: Partial<StubWorkItem> & { id: string }): StubWorkItem {
   };
   h2.items.set(wi.id, wi);
   return wi;
+}
+
+/**
+ * Insert a REAL base-table work-item row carrying a `payload.plan_item` stamp — the
+ * source the periodic sweep's candidate query AND findAllLinkedWorkItems's stamp
+ * backstop both read (getWorkItem is still the mock, so pair each with a `stub`).
+ * `scalarShape` reproduces production's jsonb-STRING-scalar payload binding (the
+ * `to_jsonb(text)` shape createWorkItem writes); `false` stores a plain jsonb object
+ * — the normalized-payload CASE must handle BOTH (this is what the pre-existing
+ * "stamp path not covered" NOTE left unproven).
+ */
+async function insertWorkItemRow(o: {
+  id: string;
+  kind: 'feature' | 'bug';
+  status: string;
+  planSlug: string;
+  itemId: string;
+  harness?: string;
+  scalarShape?: boolean;
+}) {
+  const inner = JSON.stringify({ plan_item: { plan_slug: o.planSlug, item_id: o.itemId } });
+  const payload = o.scalarShape ? rootSql`to_jsonb(${inner}::text)` : rootSql`${inner}::jsonb`;
+  await rootSql`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, payload, created_ts, updated_ts)
+    VALUES (${WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status}, ${payload}, 0, 0)`;
 }
 
 describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
@@ -256,5 +284,125 @@ describe('reconcileLinkedWorkItemsForPlanItem — stale-read guard (EI-8970)', (
     const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-010' });
 
     expect(result.reconciled).toEqual(['WI-noindex']);
+  });
+});
+
+describe('reconcileLinkedWorkItemsForPlanItem — dropped plan item (EI-14693)', () => {
+  it('maps a `dropped` plan item to `deprecated` for a feature-family linked item', async () => {
+    stub({ id: 'F-drop', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-d1', srcRef: 'sheets#F-drop', srcKind: 'feature' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-d1', status: 'dropped' }] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-d1' });
+
+    expect(result.reconciled).toEqual(['F-drop']);
+    expect(setWorkItemState).toHaveBeenCalledWith('F-drop', 'deprecated', expect.anything());
+  });
+
+  it('maps a `dropped` plan item to `closed` for an issue-family linked item', async () => {
+    stub({ id: 'WI-drop', state: 'open', family: 'issue', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-d2', srcRef: 'WI-drop' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-d2', status: 'dropped' }] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-d2' });
+
+    expect(result.reconciled).toEqual(['WI-drop']);
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'WI-drop',
+      'closed',
+      expect.objectContaining({ by: 'system:plan-item-reconcile' }),
+    );
+  });
+
+  it('the reaction path (no knownTerminalStatus) still BAILS when the item is neither done nor dropped', async () => {
+    stub({ id: 'WI-todo', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-d3', srcRef: 'WI-todo' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-d3', status: 'todo' }] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-d3' });
+
+    expect(result.reconciled).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)', () => {
+  it('heals BOTH a feature and an issue orphan of an already-`done` plan item (both jsonb payload shapes)', async () => {
+    // Real base-table rows carrying the stamp (the candidate + stamp-backstop source)
+    // + matching stub entries (getWorkItem/setWorkItemState are mocked).
+    await insertWorkItemRow({ id: 'F-sweep', kind: 'feature', status: 'todo', planSlug: 'psweep', itemId: 'P-100', scalarShape: true });
+    await insertWorkItemRow({ id: 'WI-sweep', kind: 'bug', status: 'open', planSlug: 'psweep', itemId: 'P-100', scalarShape: false });
+    stub({ id: 'F-sweep', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    stub({ id: 'WI-sweep', harness: 'sheets', state: 'open', family: 'issue', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-100', status: 'done' }] });
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.candidatePlanItems).toBe(1);
+    expect(result.terminalPlanItems).toBe(1);
+    expect(result.reconciled.sort()).toEqual(['F-sweep', 'WI-sweep']);
+    expect(setWorkItemState).toHaveBeenCalledWith('F-sweep', 'passed', expect.anything());
+    expect(setWorkItemState).toHaveBeenCalledWith('WI-sweep', 'resolved', expect.anything());
+  });
+
+  it('maps a `dropped` plan item to deprecated/closed in the sweep too', async () => {
+    await insertWorkItemRow({ id: 'F-swdrop', kind: 'feature', status: 'todo', planSlug: 'psd', itemId: 'P-1', scalarShape: false });
+    stub({ id: 'F-swdrop', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'dropped' }] });
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.reconciled).toEqual(['F-swdrop']);
+    expect(setWorkItemState).toHaveBeenCalledWith('F-swdrop', 'deprecated', expect.anything());
+  });
+
+  it('is FAIL-CLOSED: a candidate whose plan item is still `wip` is left untouched', async () => {
+    await insertWorkItemRow({ id: 'F-open', kind: 'feature', status: 'todo', planSlug: 'popen', itemId: 'P-1', scalarShape: false });
+    stub({ id: 'F-open', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'wip' }] });
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.candidatePlanItems).toBe(1);
+    expect(result.terminalPlanItems).toBe(0);
+    expect(result.reconciled).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('is FAIL-CLOSED: a candidate whose plan cannot be resolved (getPlanRow → null) is left untouched', async () => {
+    await insertWorkItemRow({ id: 'F-noplan', kind: 'feature', status: 'todo', planSlug: 'pnull', itemId: 'P-1', scalarShape: false });
+    stub({ id: 'F-noplan', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue(null);
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.terminalPlanItems).toBe(0);
+    expect(result.reconciled).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('does NOT enumerate an already-terminal work-item as a candidate (non-terminal predicate)', async () => {
+    await insertWorkItemRow({ id: 'F-term', kind: 'feature', status: 'passed', planSlug: 'pterm', itemId: 'P-1', scalarShape: false });
+    await insertWorkItemRow({ id: 'WI-term', kind: 'bug', status: 'resolved', planSlug: 'pterm', itemId: 'P-2', scalarShape: false });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }, { id: 'P-2', status: 'done' }] });
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.candidatePlanItems).toBe(0);
+    expect(result.reconciled).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('skips a candidate carrying independent in-flight progress (lastProgressAt)', async () => {
+    await insertWorkItemRow({ id: 'F-active', kind: 'feature', status: 'wip', planSlug: 'pact', itemId: 'P-1', scalarShape: false });
+    stub({ id: 'F-active', harness: 'sheets', state: 'wip', family: 'feature', lastProgressAt: '2026-07-10T00:00:00Z' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }] });
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.terminalPlanItems).toBe(1);
+    expect(result.reconciled).toEqual([]);
+    expect(result.skippedInFlight).toEqual(['F-active']);
+    expect(setWorkItemState).not.toHaveBeenCalled();
   });
 });
