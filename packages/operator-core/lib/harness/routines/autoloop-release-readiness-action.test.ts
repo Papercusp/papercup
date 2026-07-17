@@ -6,14 +6,16 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const assertFactMock = vi.fn(async () => ({}) as never);
-const emitAwaitedEventMock = vi.fn(async () => ({ ok: true, key: 'k', woken: 0, notified: [], msgId: null, waiters: 0 }) as never);
+const assertFactMock = vi.fn(async (_arg: Record<string, unknown>) => ({}) as never);
+const emitAwaitedEventMock = vi.fn(
+  async (_arg: Record<string, unknown>) => ({ ok: true, key: 'k', woken: 0, notified: [], msgId: null, waiters: 0 }) as never,
+);
 
 vi.mock('../../agent-facts/store', () => ({
-  assertFact: (...args: unknown[]) => assertFactMock(...args),
+  assertFact: (arg: Record<string, unknown>) => assertFactMock(arg),
 }));
 vi.mock('../../events/await/engine', () => ({
-  emitAwaitedEvent: (...args: unknown[]) => emitAwaitedEventMock(...args),
+  emitAwaitedEvent: (arg: Record<string, unknown>) => emitAwaitedEventMock(arg),
 }));
 
 import {
@@ -22,11 +24,11 @@ import {
   AUTOLOOP_RELEASE_READINESS_FACT_KEY,
   AUTOLOOP_RELEASE_PASS_EVENT_KEY,
 } from './autoloop-release-readiness-action';
-import { getSystemAction } from './system-actions';
+import { getSystemAction, type SystemActionCtx } from './system-actions';
 
 const RESULT_MARKER = '__AUTOLOOP_RELEASE_PROFILE_RESULT__';
 
-function ctx(): Parameters<NonNullable<ReturnType<typeof getSystemAction>>>[0] {
+function ctx(): SystemActionCtx {
   return { installSlug: 'papercusp', workspaceId: 'ws-test', triggerConfig: {}, payloadTemplate: null };
 }
 
@@ -93,6 +95,7 @@ describe('system:autoloop-release-readiness-monitor', () => {
   });
 
   it('neither asserts nor emits when the evaluator run produced no parseable verdict', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     setAutoloopReleaseReadinessRunner(async () => ({ code: 1, stdout: 'garbage, no marker', stderr: 'boom' }));
 
     const action = getSystemAction('autoloop-release-readiness-monitor');
@@ -100,9 +103,12 @@ describe('system:autoloop-release-readiness-monitor', () => {
 
     expect(assertFactMock).not.toHaveBeenCalled();
     expect(emitAwaitedEventMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 
   it('never throws when assertFact rejects (non-fatal, still tries the event on go:true)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     assertFactMock.mockRejectedValueOnce(new Error('db down'));
     const verdict = { go: true, reason: 'ok', profileRef: 'x', evaluatedAt: 'now', components: [] };
     setAutoloopReleaseReadinessRunner(async () => ({
@@ -114,5 +120,7 @@ describe('system:autoloop-release-readiness-monitor', () => {
     const action = getSystemAction('autoloop-release-readiness-monitor');
     await expect(action!(ctx())).resolves.not.toThrow();
     expect(emitAwaitedEventMock).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 });

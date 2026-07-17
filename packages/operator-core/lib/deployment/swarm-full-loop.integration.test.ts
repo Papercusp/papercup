@@ -26,7 +26,7 @@
  *     Needs HCLOUD_TOKEN + HETZNER_SSH_KEY_ID + HETZNER_SSH_IDENTITY_FILE.
  */
 
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { resolve } from 'node:path';
 import createTestnet from 'hyperdht/testnet.js';
 import { localLoopLauncher, sshLoopLauncher, type SshLoopSlotSpec } from './p2p-perf-tier3/loop-launcher';
@@ -41,9 +41,12 @@ const NINETY_MIN = 90 * 60_000;
 // real shared-fleet concurrency this produced a captured EADDRINUSE on a spawned
 // loop-agent.ts child, surfacing as a "Swarm never became ready" failure with the
 // real cause swallowed (see run-full-loop.ts's notReady diagnostic, also fixed
-// this ticket). Probe-and-reserve a genuinely free 50-port block instead (5
-// scenarios below × 3 Swarms each, offsets 0/10/20/30/40 ⇒ ports up to base+42).
-let LOCAL_BASE_PORT: number;
+// this ticket). Each scenario below probes its OWN small (count:3) free block
+// right before use, via findFreeBasePort — reserving one wide contiguous span
+// up front is more likely to snag an already-taken port somewhere inside it on
+// a busy box (proven by swarm-claim-dispatch.integration.test.ts's sibling fix,
+// where a 150-wide upfront reservation genuinely failed to find a free span).
+const LOCAL_RANGE = { rangeStart: 48_500, rangeEnd: 49_900 } as const;
 
 type Testnet = { bootstrap: Array<{ host: string; port: number }>; destroy(): Promise<void> };
 const testnets: Testnet[] = [];
@@ -58,15 +61,12 @@ async function localBootstrap(): Promise<Array<{ host: string; port: number }>> 
 }
 
 describe('full shared-hive loop — $0 local parity (3 Swarms, testnet DHT, loopback authority RPC)', () => {
-  beforeAll(async () => {
-    LOCAL_BASE_PORT = await findFreeBasePort({ count: 50, rangeStart: 48_500, rangeEnd: 49_900 });
-  }, 30_000);
-
   it(
     'HAPPY PATH: Queen steers → both bees claim in steered order → fake pipelines → CDC convergence → Queen turn 2 sees remote completions',
     async () => {
       const bootstrap = await localBootstrap();
-      const launcher = localLoopLauncher({ count: 3, basePort: LOCAL_BASE_PORT, log: () => {} });
+      const basePort = await findFreeBasePort({ count: 3, ...LOCAL_RANGE });
+      const launcher = localLoopLauncher({ count: 3, basePort, log: () => {} });
       const v = await runFullLoop({
         launcher,
         scenario: { kind: 'happy' },
@@ -110,7 +110,8 @@ describe('full shared-hive loop — $0 local parity (3 Swarms, testnet DHT, loop
     'PARTITION mid-feature: cut bee fails open → double-claims tolerated → heal → reconcile one deterministic winner per item, convergence resumes',
     async () => {
       const bootstrap = await localBootstrap();
-      const launcher = localLoopLauncher({ count: 3, basePort: LOCAL_BASE_PORT + 10, log: () => {} });
+      const basePort = await findFreeBasePort({ count: 3, ...LOCAL_RANGE });
+      const launcher = localLoopLauncher({ count: 3, basePort, log: () => {} });
       const v = await runFullLoop({
         launcher,
         scenario: { kind: 'partition', targetIndex: 2, healAfterMs: 3_000 },
@@ -143,7 +144,8 @@ describe('full shared-hive loop — $0 local parity (3 Swarms, testnet DHT, loop
     'KILL-AUTHORITY mid-run: survivors fail open, no starvation, zero double-completions after reconcile; Queen (slot 1) turn 2 still sees everything',
     async () => {
       const bootstrap = await localBootstrap();
-      const launcher = localLoopLauncher({ count: 3, basePort: LOCAL_BASE_PORT + 20, log: () => {} });
+      const basePort = await findFreeBasePort({ count: 3, ...LOCAL_RANGE });
+      const launcher = localLoopLauncher({ count: 3, basePort, log: () => {} });
       const v = await runFullLoop({
         launcher,
         scenario: { kind: 'kill-authority', killSettleMs: 300 },
@@ -179,7 +181,8 @@ describe('full shared-hive loop — $0 local parity (3 Swarms, testnet DHT, loop
     'LEASE-STEAL mid-pipeline: stalled lease lapses → peer steals + completes → zombie completes anyway → D-007 adoption picks the LEASE-CURRENT winner; zombie observed the abort signal',
     async () => {
       const bootstrap = await localBootstrap();
-      const launcher = localLoopLauncher({ count: 3, basePort: LOCAL_BASE_PORT + 30, log: () => {} });
+      const basePort = await findFreeBasePort({ count: 3, ...LOCAL_RANGE });
+      const launcher = localLoopLauncher({ count: 3, basePort, log: () => {} });
       const v = await runFullLoop({
         launcher,
         scenario: { kind: 'lease-steal', stallIndex: 2, stallMs: 7_000, ttlSec: 2 },
@@ -220,7 +223,8 @@ describe('full shared-hive loop — $0 local parity (3 Swarms, testnet DHT, loop
     'REVOKE mid-run (EI-284): authority refuses the revoked Swarm with caller_revoked; zero post-revocation grants; live Swarms finish the backlog',
     async () => {
       const bootstrap = await localBootstrap();
-      const launcher = localLoopLauncher({ count: 3, basePort: LOCAL_BASE_PORT + 40, log: () => {} });
+      const basePort = await findFreeBasePort({ count: 3, ...LOCAL_RANGE });
+      const launcher = localLoopLauncher({ count: 3, basePort, log: () => {} });
       const v = await runFullLoop({
         launcher,
         scenario: { kind: 'revoke', revokeIndex: 2 },

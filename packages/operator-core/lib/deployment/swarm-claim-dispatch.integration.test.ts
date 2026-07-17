@@ -31,7 +31,7 @@
  *     (+ opt HETZNER_E2E_SERVER_TYPE=cpx31, CLAIM_E2E_FRAMES, CLAIM_E2E_SWARMS, P2P_PERF_HETZNER_LOCATIONS).
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { resolve } from 'node:path';
 import { localClaimLauncher, sshClaimLauncher, type SshClaimSlotSpec } from './p2p-perf-tier3/claim-launcher';
 import { runClaimDispatch } from './p2p-perf-tier3/run-claim-dispatch';
@@ -45,18 +45,18 @@ const NINETY_MIN = 90 * 60_000;
 // shared box) already bound in the same window — it never checked. Probe-and-
 // reserve a genuinely free block instead (see free-port-base.ts; found + fixed
 // via a captured EADDRINUSE on swarm-full-loop.integration.test.ts's identical
-// pattern). 2 scenarios below, offsets 0/100, count=3 ⇒ ports up to base+102.
-let LOCAL_BASE_PORT: number;
+// pattern). Each scenario below probes its OWN small (count:3) block right
+// before use — cheaper and more reliable than reserving one big contiguous
+// span up front (a wide span is much more likely to hit an already-taken port
+// somewhere inside it on a busy box, per the first version of this fix).
+const RANGE = { rangeStart: 47_000, rangeEnd: 48_500 } as const;
 
 describe('≥3-Swarm claim dispatch — $0 local parity (no cloud, no SSH)', () => {
-  beforeAll(async () => {
-    LOCAL_BASE_PORT = await findFreeBasePort({ count: 150, rangeStart: 47_000, rangeEnd: 48_500 });
-  }, 30_000);
-
   it(
     'NO-KILL: 3 Swarms claim DIFFERENT items off one backlog → exactly-once, no starvation',
     async () => {
-      const launcher = localClaimLauncher({ count: 3, basePort: LOCAL_BASE_PORT, log: () => {} });
+      const basePort = await findFreeBasePort({ count: 3, ...RANGE });
+      const launcher = localClaimLauncher({ count: 3, basePort, log: () => {} });
       const v = await runClaimDispatch({
         launcher,
         backlogSize: 15,
@@ -88,7 +88,8 @@ describe('≥3-Swarm claim dispatch — $0 local parity (no cloud, no SSH)', () 
   it(
     'KILL-AUTHORITY mid-run: survivors fail open → deterministic reconcile, no starvation, no surviving double-completion',
     async () => {
-      const launcher = localClaimLauncher({ count: 3, basePort: LOCAL_BASE_PORT + 100, log: () => {} });
+      const basePort = await findFreeBasePort({ count: 3, ...RANGE });
+      const launcher = localClaimLauncher({ count: 3, basePort, log: () => {} });
       const v = await runClaimDispatch({
         launcher,
         backlogSize: 15,

@@ -56,13 +56,21 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     (typeof planItem.item === 'string' && planItem.item) ||
     null;
   const createdMs = Date.parse(item.createdAt);
+  // WI-5272: quarantine/de-quarantine-family items (testing:flakiness) stamp a single
+  // `payload.filePath` string, not the plural `payload.paths` array most other creators
+  // use — fold it in so a `paths`-based spec filter can see it too. Without this, a claim
+  // spec has no structural signal to distinguish "a de-quarantine item whose TITLE happens
+  // to name a file under lib/memory/**" from a genuine p2p/federation/rig item, and falls
+  // back to an unreliable title-substring glob (see the *federation* false-positive class:
+  // WI-5184/WI-5270 refused admission for merely naming federation-slug-stamp.test.ts).
+  const filePathPaths = typeof payload.filePath === 'string' && payload.filePath ? [payload.filePath] : [];
   return {
     id: item.id,
     title: item.title,
     kind: item.kind,
     priority: item.priority,
     tags: [...new Set([...strings(payload.tags), ...topicTags])],
-    paths: strings(payload.paths),
+    paths: [...new Set([...strings(payload.paths), ...filePathPaths])],
     plan,
     planItem: itemId ? [itemId] : strings(payload.source_plan_item_ids),
     age: Number.isFinite(createdMs) ? createdMs : null,
