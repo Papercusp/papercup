@@ -311,6 +311,41 @@ export interface SweepSpawnInput {
   workDir: string;
   cellId: string;
   timeoutMs: number;
+  /** Harness slug to bootstrap the session under (WI-5003 live-canary finding,
+   *  2026-07-17): omitting `--harness` makes psu-launcher skip the su bootstrap
+   *  entirely and boot a PLAIN claude session — which never seeds the per-session
+   *  CLAUDE_CONFIG_DIR, so the transcript lands under the shared ~/.claude store
+   *  instead of ~/.papercusp/session-claude/<ownerId>/… and
+   *  newestTranscriptUnderOwner finds nothing even though the session ran the
+   *  benchmark task to completion (reproduced live: 12/12 unit files written,
+   *  transcript unfindable). See apps/operator/scripts/psu-launcher.mjs's own
+   *  "ALWAYS harness-scope a fresh launch" comment (agent-tools/capability/launch-agent.ts). */
+  harness: string;
+}
+
+/** Pure: the psu-launcher.mjs argv for one sweep cell repeat. Split out so the
+ *  WI-5003 `--harness` fix (and any future flag) is unit-testable without a
+ *  real spawn. */
+export function buildSweepSpawnArgs(input: SweepSpawnInput, repoRoot: string): string[] {
+  return [
+    join(repoRoot, 'apps/operator/scripts/psu-launcher.mjs'),
+    // --agent is REQUIRED by psu-launcher (it exits immediately with a usage error
+    // otherwise) — caught by the WI-5002 live canary: the cell died in 262ms with
+    // "no transcript" because this arg was missing and stdio:'ignore' hid the message.
+    '--agent=claude',
+    '--headless',
+    '--yes',
+    // WI-5003: without --harness, psu boots a PLAIN claude (skips su bootstrap
+    // entirely) and never seeds the per-session CLAUDE_CONFIG_DIR the transcript
+    // lookup below depends on — see the field doc on SweepSpawnInput.harness.
+    `--harness=${input.harness}`,
+    // Pre-pin the session's coord owner (WI-5002/EI-13277): the launch envelope
+    // overrides the inherited PAPERCUSP_SID, so canary run 2 executed as a
+    // server-minted owner — its doors override never applied and its transcript
+    // was unfindable. The flag makes bootstrap-su use OUR owner id.
+    `--owner-id=${input.ownerId}`,
+    `--kickoff=${input.kickoff}`,
+  ];
 }
 
 /** A running cell session: `done` settles when the child exits (or times out);
@@ -352,6 +387,9 @@ export interface HeadlessCellDriverDeps {
   pollIntervalMs?: number;
   /** Repo root for the default spawner (default: process.cwd()). */
   repoRoot?: string;
+  /** Harness slug to bootstrap each cell session under (default 'papercusp' —
+   *  see SweepSpawnInput.harness for why this must never be omitted). */
+  harness?: string;
 }
 
 function defaultMintOwnerId(cell: SweepCell, repeat: number): string {
@@ -385,21 +423,7 @@ async function defaultPrepareWorkDir(workDir: string, cell: SweepCell): Promise<
 function defaultSpawnSession(input: SweepSpawnInput, repoRoot: string): SweepSessionHandle {
   const child = nodeSpawn(
     'node',
-    [
-      join(repoRoot, 'apps/operator/scripts/psu-launcher.mjs'),
-      // --agent is REQUIRED by psu-launcher (it exits immediately with a usage error
-      // otherwise) — caught by the WI-5002 live canary: the cell died in 262ms with
-      // "no transcript" because this arg was missing and stdio:'ignore' hid the message.
-      '--agent=claude',
-      '--headless',
-      '--yes',
-      // Pre-pin the session's coord owner (WI-5002/EI-13277): the launch envelope
-      // overrides the inherited PAPERCUSP_SID, so canary run 2 executed as a
-      // server-minted owner — its doors override never applied and its transcript
-      // was unfindable. The flag makes bootstrap-su use OUR owner id.
-      `--owner-id=${input.ownerId}`,
-      `--kickoff=${input.kickoff}`,
-    ],
+    buildSweepSpawnArgs(input, repoRoot),
     {
       cwd: input.workDir,
       env: { ...process.env, PAPERCUSP_SID: input.ownerId },
@@ -474,6 +498,7 @@ export function makeHeadlessPsuCellDriver(deps: HeadlessCellDriverDeps = {}): Ce
   const timeoutMs = deps.taskTimeoutMs ?? DEFAULT_SWEEP_TASK_TIMEOUT_MS;
   const pollIntervalMs = deps.pollIntervalMs ?? 5_000;
   const repoRoot = deps.repoRoot ?? process.cwd();
+  const harness = deps.harness ?? 'papercusp';
   const spawnSession = deps.spawnSession ?? ((input: SweepSpawnInput) => defaultSpawnSession(input, repoRoot));
 
   return async (cell: SweepCell, config: CellConfig, opts: { repeats: number }) => {
@@ -486,7 +511,7 @@ export function makeHeadlessPsuCellDriver(deps: HeadlessCellDriverDeps = {}): Ce
       try {
         await prepare(workDir, cell);
         const kickoff = buildBenchmarkKickoff(task, cell, workDir);
-        const handle = spawnSession({ ownerId, kickoff, workDir, cellId: cell.cellId, timeoutMs });
+        const handle = spawnSession({ ownerId, kickoff, workDir, cellId: cell.cellId, timeoutMs, harness });
 
         // Mid-run transcript poll (EI-13277): snapshot the transcript WHILE the
         // child lives — a headless session's store can be cleaned at host end, so

@@ -663,7 +663,8 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       await seedFeature(db.sql, 'F-1');
       await seedFeature(db.sql, 'F-2');
       const res = await backfillLocalState(fakeHandle(), db.sql, { maxEnqueueBeforeBail: 0 });
-      expect(res).toMatchObject({ skipped: false, enqueued: 2, bailed: undefined });
+      expect(res).toMatchObject({ skipped: false, enqueued: 2 });
+      expect(res.bailed).toBeUndefined();
     });
   });
 });

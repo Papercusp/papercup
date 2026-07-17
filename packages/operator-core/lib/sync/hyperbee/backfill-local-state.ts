@@ -260,24 +260,34 @@ export async function backfillLocalState(
   }
 
   // ── engineer_issues candidate count (fed-reanchor B5 — separate scope shape) ──
-  let eiTotal = 0;
-  let eiScopePredicate: postgres.PendingQuery<postgres.Row[]> | null = null;
+  // NB: the scope predicate is built INLINE at each use site (not hoisted into a
+  // variable) — a nested `pg\`...\`` fragment's type isn't worth risking a
+  // cross-branch type-widening mismatch for; `eiOperatorOwnedHere` (a plain
+  // boolean) is all that needs to survive between the count query and the later
+  // enqueue query.
   const eiUnswept = opts.force || !doneTargets.has('engineer_issues');
-  if (eiUnswept && workspaceId && workspaceId !== '*') {
+  const eiApplicable = Boolean(eiUnswept && workspaceId && workspaceId !== '*');
+  let eiTotal = 0;
+  let eiOperatorOwnedHere = false;
+  if (eiApplicable) {
     const [{ home }] = await pg<{ home: string | null }[]>`
       SELECT CASE WHEN count(*) = 1 THEN min(pot_home_slug) ELSE NULL END AS home
         FROM harness_shared.pots WHERE workspace_id = ${workspaceId}`;
-    const operatorOwnedHere = home != null && home === harnessSlug;
-    eiScopePredicate = operatorOwnedHere
-      ? pg`(c.scope = ${'harness:' + harnessSlug} OR c.scope = 'operator')`
-      : pg`c.scope = ${'harness:' + harnessSlug}`;
+    eiOperatorOwnedHere = home != null && home === harnessSlug;
 
-    const [{ total }] = await pg<{ total: number }[]>`
-      SELECT count(*)::int AS total
-        FROM harness_shared.engineer_issues c
-       WHERE c.workspace_id = ${workspaceId}
-         AND COALESCE(c.origin, 'local') = 'local'
-         AND ${eiScopePredicate}`;
+    const [{ total }] = eiOperatorOwnedHere
+      ? await pg<{ total: number }[]>`
+          SELECT count(*)::int AS total
+            FROM harness_shared.engineer_issues c
+           WHERE c.workspace_id = ${workspaceId}
+             AND COALESCE(c.origin, 'local') = 'local'
+             AND (c.scope = ${'harness:' + harnessSlug} OR c.scope = 'operator')`
+      : await pg<{ total: number }[]>`
+          SELECT count(*)::int AS total
+            FROM harness_shared.engineer_issues c
+           WHERE c.workspace_id = ${workspaceId}
+             AND COALESCE(c.origin, 'local') = 'local'
+             AND c.scope = ${'harness:' + harnessSlug}`;
     eiTotal = total;
   }
 
@@ -303,7 +313,7 @@ export async function backfillLocalState(
 
   let enqueued = 0;
   let dropped = 0;
-  let anyTargetsConsidered = candidates.length > 0 || eiUnswept;
+  const anyTargetsConsidered = candidates.length > 0 || eiApplicable;
 
   for (const { tableName, keyCol, scopeCol, total } of candidates) {
     if (total === 0) {
@@ -360,30 +370,47 @@ export async function backfillLocalState(
   // (scope = 'harness:<harnessSlug>'), PLUS operator-scope rows iff this harness is the
   // workspace's single Hive home (the canonical "operator coordination rides the
   // kind:'hive' home"). Stamp harness_slug into the row jsonb for the projection demux.
-  if (eiUnswept && workspaceId && workspaceId !== '*') {
-    if (eiTotal > 0 && eiScopePredicate) {
+  if (eiApplicable) {
+    if (eiTotal > 0) {
       const take = budget === Number.POSITIVE_INFINITY ? eiTotal : Math.min(eiTotal, budget);
       dropped += eiTotal - take;
       if (take > 0) {
-        const inserted = await pg<{ key: string }[]>`
-          INSERT INTO harness_shared.substrate_outbox
-            (workspace_id, harness_slug, table_name, op, key, row, ts, op_hlc, drained_at)
-          SELECT
-            ${workspaceId}, ${harnessSlug}, 'engineer_issues', 'put',
-            c.issue_id::text,
-            to_jsonb(c) || jsonb_build_object('harness_slug', ${harnessSlug}::text),
-            -- mig 446 symmetry (see the features INSERT above): thread the row's
-            -- own fed_ts/fed_hlc so backfilled issues carry their genuine LWW key
-            -- instead of a boot-time re-stamp that would clobber newer peers.
-            CASE WHEN c.fed_hlc IS NOT NULL THEN COALESCE(c.fed_ts, ${now}) ELSE ${now} END,
-            c.fed_hlc, NULL
-            FROM harness_shared.engineer_issues c
-           WHERE c.workspace_id = ${workspaceId}
-             AND COALESCE(c.origin, 'local') = 'local'
-             AND ${eiScopePredicate}
-           ORDER BY c.issue_id
-           LIMIT ${take}
-          RETURNING key`;
+        const inserted = eiOperatorOwnedHere
+          ? await pg<{ key: string }[]>`
+              INSERT INTO harness_shared.substrate_outbox
+                (workspace_id, harness_slug, table_name, op, key, row, ts, op_hlc, drained_at)
+              SELECT
+                ${workspaceId}, ${harnessSlug}, 'engineer_issues', 'put',
+                c.issue_id::text,
+                to_jsonb(c) || jsonb_build_object('harness_slug', ${harnessSlug}::text),
+                CASE WHEN c.fed_hlc IS NOT NULL THEN COALESCE(c.fed_ts, ${now}) ELSE ${now} END,
+                c.fed_hlc, NULL
+                FROM harness_shared.engineer_issues c
+               WHERE c.workspace_id = ${workspaceId}
+                 AND COALESCE(c.origin, 'local') = 'local'
+                 AND (c.scope = ${'harness:' + harnessSlug} OR c.scope = 'operator')
+               ORDER BY c.issue_id
+               LIMIT ${take}
+              RETURNING key`
+          : await pg<{ key: string }[]>`
+              INSERT INTO harness_shared.substrate_outbox
+                (workspace_id, harness_slug, table_name, op, key, row, ts, op_hlc, drained_at)
+              SELECT
+                ${workspaceId}, ${harnessSlug}, 'engineer_issues', 'put',
+                c.issue_id::text,
+                to_jsonb(c) || jsonb_build_object('harness_slug', ${harnessSlug}::text),
+                -- mig 446 symmetry (see the features INSERT above): thread the row's
+                -- own fed_ts/fed_hlc so backfilled issues carry their genuine LWW key
+                -- instead of a boot-time re-stamp that would clobber newer peers.
+                CASE WHEN c.fed_hlc IS NOT NULL THEN COALESCE(c.fed_ts, ${now}) ELSE ${now} END,
+                c.fed_hlc, NULL
+                FROM harness_shared.engineer_issues c
+               WHERE c.workspace_id = ${workspaceId}
+                 AND COALESCE(c.origin, 'local') = 'local'
+                 AND c.scope = ${'harness:' + harnessSlug}
+               ORDER BY c.issue_id
+               LIMIT ${take}
+              RETURNING key`;
         enqueued += inserted.length;
         if (budget !== Number.POSITIVE_INFINITY) budget -= inserted.length;
       }
