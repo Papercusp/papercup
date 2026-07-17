@@ -213,6 +213,118 @@ export function diagnoseHealthTickStall(
 }
 
 /**
+ * EI-15006 — the gating context for the `panel:bees` "no bees running" signal.
+ *
+ * A raw `bees.running === 0` is NOT by itself a fault: an idle-by-design pot (no
+ * cup-placeable work + healthy capacity + other agents alive) legitimately runs
+ * zero cups. The old gate suppressed the false positive ONLY when the raw survey
+ * `frontier` was exactly 0 — but the survey frontier can carry non-cup / su-domain
+ * / long-stuck residue (or read 0 while the spawner is genuinely DOWN), so it both
+ * (a) FALSE-fired a blocker→human page during normal idle (the incident: frontier
+ * 6, all su-domain, 9 su agents alive, dispatchBudget 20) AND (b) FALSE-suppressed
+ * a genuine spawner-down when the frontier happened to be empty. This context lets
+ * the predicate distinguish the three cases the alarm must get right.
+ */
+export interface BeesLivenessContext {
+  /** Admissible cup-placeable frontier being left UNPLACED — the pot's FRESH,
+   *  non-stuck placeable feature-family frontier (`frontier - frontierStuck`,
+   *  the same "placeable" definition reconcilePausedQueen/queenPlacementStalled
+   *  use). >0 means real cup work is waiting while 0 bees run ⇒ genuine starvation. */
+  cupPlaceableFrontier: number;
+  /** Live bee-tier dispatch budget (spare cup-tier admission slots) from the
+   *  gateway capacity oracle. null = unknown (gateway off/unreachable) — treated
+   *  fail-safe (never forces a page on its own; see `beesIdleByDesign`). */
+  dispatchBudget: number | null;
+  /** The gateway is inside its fresh-restart recovery window — capacity reads are
+   *  unreliable, so 0 bees during it is not proof of a healthy idle. */
+  restartRecovering: boolean;
+  /** Any OTHER agent is alive (su fleet / other bees / the Mug loop). If so the
+   *  spawn+inference engine is demonstrably working, so 0 bees is a placement
+   *  DECISION, not an infra outage. false ⇒ the spawner cannot be proven live. */
+  otherAgentsAlive: boolean;
+}
+
+/**
+ * PURE: is `bees.running === 0` the correct IDLE-BY-DESIGN state (⇒ informational,
+ * NO blocker→human page)? True only when ALL hold:
+ *   - no admissible cup-placeable frontier is being left unplaced, AND
+ *   - the gateway is not mid-restart, AND
+ *   - some other agent is alive (the spawner/engine is provably live), AND
+ *   - capacity is not KNOWN-exhausted (dispatchBudget, when readable, is > 0).
+ *
+ * Any other shape ⇒ NOT idle-by-design ⇒ the signal fires: real cup work waiting
+ * (starvation), or the spawner is not provably live (down / recovering / no other
+ * agent alive), or the cup tier is known-full while zero bees run (a leaked/stuck
+ * slot). `dispatchBudget === null` (gateway off/unreachable) is deliberately
+ * fail-safe — it does NOT by itself force a page, because a pot with the gateway
+ * disabled must still be able to sit idle; the other-agents-alive proof carries it.
+ */
+export function beesIdleByDesign(ctx: BeesLivenessContext): boolean {
+  if (ctx.cupPlaceableFrontier > 0) return false; // real cup work unplaced → starvation, not idle
+  if (ctx.restartRecovering) return false; // gateway restarting → capacity unproven
+  if (!ctx.otherAgentsAlive) return false; // spawner/engine not provably live
+  if (ctx.dispatchBudget !== null && ctx.dispatchBudget <= 0) return false; // cup tier KNOWN-full while 0 bees run → anomaly
+  return true; // 0 bees, no cup work, engine alive, capacity not known-exhausted → correct idle
+}
+
+/**
+ * PURE: derive the non-capacity legs of {@link BeesLivenessContext} from a health
+ * snapshot, folding in the gateway-sourced capacity legs. Kept pure (capacity is
+ * injected) so the whole gate is unit-testable without I/O.
+ */
+export function beesLivenessFromHealth(
+  health: SystemHealth,
+  capacity: { dispatchBudget: number | null; restartRecovering: boolean },
+): BeesLivenessContext {
+  const wf = health.panels.workFeed?.data;
+  const frontier = wf?.frontier ?? 0;
+  const frontierStuck = wf?.frontierStuck ?? 0;
+  const cupPlaceableFrontier = Math.max(0, frontier - frontierStuck);
+  const suLive = health.panels.suFleet?.data?.live ?? 0;
+  const beesAlive = health.panels.bees?.data?.alive ?? 0;
+  const queenAlive = health.crossMonitor?.queenAlive === true;
+  return {
+    cupPlaceableFrontier,
+    dispatchBudget: capacity.dispatchBudget,
+    restartRecovering: capacity.restartRecovering,
+    otherAgentsAlive: suLive > 0 || beesAlive > 0 || queenAlive,
+  };
+}
+
+/**
+ * Fetch the cup(bee)-tier dispatch budget + fresh-restart flag from the gateway
+ * capacity oracle (the SAME `buildCapacityReport` the Mug's placement clamp reads,
+ * so this can never disagree with what placement sees). Fail-soft: any error /
+ * gateway-off ⇒ `{ dispatchBudget: null, restartRecovering: false }` (unknown —
+ * `beesIdleByDesign` then relies on the other-agents-alive proof).
+ */
+async function readGatewayBeeCapacity(): Promise<{ dispatchBudget: number | null; restartRecovering: boolean }> {
+  try {
+    const [{ fetchGatewayHeadroom }, { buildCapacityReport }] = await Promise.all([
+      import('../inference-gateway/observability'),
+      import('../fleet/capacity-dispatch'),
+    ]);
+    const hr = await fetchGatewayHeadroom({ timeoutMs: 1200 });
+    const report = buildCapacityReport(hr, { clampArmed: false });
+    return { dispatchBudget: report.dispatchBudget, restartRecovering: report.restartRecovering };
+  } catch {
+    return { dispatchBudget: null, restartRecovering: false };
+  }
+}
+
+/**
+ * Build the full {@link BeesLivenessContext} for a health snapshot: the pure
+ * snapshot legs + a live gateway-capacity fetch. Used by BOTH the source alarm
+ * (`runLivenessAlarmTick`) AND the condition-staleness RECONCILER
+ * (`defaultReadInfraLivenessHealth`) so the two can never drift on whether the
+ * `panel:bees` signal is firing. Fail-soft (never throws).
+ */
+export async function readBeesLivenessContext(health: SystemHealth): Promise<BeesLivenessContext> {
+  const capacity = await readGatewayBeeCapacity();
+  return beesLivenessFromHealth(health, capacity);
+}
+
+/**
  * PURE: derive the critical supervision signals from a SystemHealth snapshot.
  * `snapshotAgeMs` is the age of `lastSystemHealth` at evaluation (null = the
  * snapshot was computed fresh this tick, so staleness is not a signal).
@@ -230,6 +342,11 @@ export function evaluateLivenessAlarm(
     /** EI-11841: typed evidence for a stale health tick, computed by the request-path
      *  caller while the last successful snapshot is still available. */
     stallDiagnosis?: HealthTickStallDiagnosis;
+    /** EI-15006: cup-placeable-frontier + capacity gating for the `panel:bees`
+     *  "no bees running" signal. Omitted ⇒ the LEGACY EI-2146 gate (suppress only
+     *  when the raw survey frontier is 0) — kept so an old/pure caller never
+     *  regresses; the live source + reconciler always thread this. */
+    beesLiveness?: BeesLivenessContext;
   } = {},
 ): AlarmSignal[] {
   const staleMs = opts.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
@@ -412,15 +529,26 @@ export function evaluateLivenessAlarm(
   const coveredKeys = new Set(['workFeed', 'queen', 'tokens']);
   for (const panel of Object.values(health.panels)) {
     if (panel.status !== 'crit' || coveredKeys.has(panel.key)) continue;
-    // EI-2146 #3: suppress the no-bees-while-idle FALSE POSITIVE. A fleet with
-    // zero bees running is CORRECT when there is no placeable work — the
-    // placement frontier is empty — so it is an idle fleet, not an infra fault.
-    // Only the specific no-bees case is gated; a bees-crit for any OTHER reason
-    // (e.g. a cursed placement, or real frontier work waiting) still surfaces.
-    if (panel.key === 'bees') {
-      const running = health.panels.bees?.data?.running;
-      const frontier = health.panels.workFeed?.data?.frontier;
-      if (running === 0 && frontier === 0) continue;
+    // EI-2146 #3 + EI-15006: suppress the no-bees-while-idle FALSE POSITIVE.
+    // A fleet with zero bees running is CORRECT when the pot is idle by design —
+    // no admissible cup-placeable frontier is being left unplaced AND capacity is
+    // healthy (spawner/engine provably live) — so it is an idle fleet, not an
+    // infra fault. Only the specific no-bees case is gated; a bees-crit for any
+    // OTHER reason (a cursed placement while bees run: running > 0) still surfaces.
+    if (panel.key === 'bees' && health.panels.bees?.data?.running === 0) {
+      // EI-15006: with the threaded cup-placeable + capacity context, suppress
+      // ONLY the idle-by-design case (no cup work + spawner provably live +
+      // capacity not known-exhausted). A genuine spawner-down / cup-work-waiting
+      // / cup-tier-full shape still fires — the two false-directions the raw
+      // `frontier === 0` gate got wrong (false page during idle; false SILENCE of
+      // a real spawner-down when the frontier read empty).
+      if (opts.beesLiveness) {
+        if (beesIdleByDesign(opts.beesLiveness)) continue;
+      } else if (health.panels.workFeed?.data?.frontier === 0) {
+        // LEGACY EI-2146 gate for a caller that did not thread the context (an
+        // old/pure evaluator) — byte-identical to the pre-EI-15006 behavior.
+        continue;
+      }
     }
     signals.push({ key: `panel:${panel.key}`, severity: 'blocker', summary: `${panel.label}: ${panel.summary}` });
   }
@@ -610,6 +738,11 @@ export interface AlarmDeps {
    *  expected-predicate can extend the same reader). Fail-soft → []: a read
    *  failure must never crash the request worker nor synthesize a false alarm. */
   readAutoloopFireRows?: (ws: string) => Promise<AutoloopFireRow[]>;
+  /** EI-15006: read the cup(bee)-tier dispatch budget + fresh-restart flag from the
+   *  gateway capacity oracle, for the `panel:bees` idle-by-design gate. Default =
+   *  `readGatewayBeeCapacity` (a live gateway fetch, fail-soft to unknown). Injected
+   *  by tests to exercise the gate hermetically without real gateway I/O. */
+  readBeeCapacity?: () => Promise<{ dispatchBudget: number | null; restartRecovering: boolean }>;
 }
 
 async function defaultReadRoutineEngineLiveness(nowMs: number): Promise<RoutineEngineLiveness> {
