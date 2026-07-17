@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   evaluateStaleConditions,
   runConditionStalenessTick,
+  selectReconcilableConditions,
   _resetConditionStalenessDebounce,
 } from './condition-staleness-alarm';
 import type { ConditionState } from '../agent-tools/coordination/tools/conditions';
@@ -106,6 +107,48 @@ describe('evaluateStaleConditions (pure)', () => {
   });
 });
 
+describe('selectReconcilableConditions (pure — EI-14072 guard #2)', () => {
+  it('an OPEN condition whose key is verified healthy (true) is reconcilable', () => {
+    const states = [mkState({ condition_key: 'infra-liveness:panel:overwatch' })];
+    const healthByKey = new Map([['infra-liveness:panel:overwatch', true]]);
+    expect(selectReconcilableConditions(states, healthByKey)).toEqual(['infra-liveness:panel:overwatch']);
+  });
+
+  it('an OPEN condition verified UNhealthy (false) is left alone', () => {
+    const states = [mkState({ condition_key: 'infra-liveness:panel:overwatch' })];
+    const healthByKey = new Map([['infra-liveness:panel:overwatch', false]]);
+    expect(selectReconcilableConditions(states, healthByKey)).toEqual([]);
+  });
+
+  it('an OPEN condition with NO health entry (unknown/unchecked family) is left alone — fail-open', () => {
+    const states = [mkState({ condition_key: 'git-sync-stall:papercusp' })];
+    expect(selectReconcilableConditions(states, new Map())).toEqual([]);
+  });
+
+  it('an already-RESOLVED condition is never reconciled, even if marked healthy', () => {
+    const states = [mkState({ condition_key: 'infra-liveness:panel:overwatch', open: false, resolved_at: '2026-07-05T00:05:00.000Z' })];
+    const healthByKey = new Map([['infra-liveness:panel:overwatch', true]]);
+    expect(selectReconcilableConditions(states, healthByKey)).toEqual([]);
+  });
+
+  it('multiple open+healthy keys are all reconciled', () => {
+    const states = [
+      mkState({ condition_key: 'infra-liveness:panel:overwatch' }),
+      mkState({ condition_key: 'infra-liveness:panel:bees' }),
+      mkState({ condition_key: 'infra-liveness:dead-routines', open: false, resolved_at: 'x' }),
+    ];
+    const healthByKey = new Map([
+      ['infra-liveness:panel:overwatch', true],
+      ['infra-liveness:panel:bees', true],
+      ['infra-liveness:dead-routines', true],
+    ]);
+    expect(selectReconcilableConditions(states, healthByKey).sort()).toEqual([
+      'infra-liveness:panel:bees',
+      'infra-liveness:panel:overwatch',
+    ]);
+  });
+});
+
 describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors liveness-alarm EI-2146 shape)', () => {
   beforeEach(() => _resetConditionStalenessDebounce());
 
@@ -200,7 +243,12 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
         throw new Error('db unavailable');
       },
     };
-    await expect(runConditionStalenessTick(deps)).resolves.toEqual({ fired: [], signals: [], resolved: [] });
+    await expect(runConditionStalenessTick(deps)).resolves.toEqual({
+      fired: [],
+      signals: [],
+      resolved: [],
+      reconciled: [],
+    });
   });
 
   it('an escalate failure never crashes the tick (best-effort)', async () => {
@@ -217,5 +265,85 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
     const r = await runConditionStalenessTick(deps);
     // Still reported as a signal + a fire attempt, even though the send itself failed.
     expect(r.signals.map((s) => s.key)).toEqual(['stale-condition:git-sync-stall:papercusp']);
+  });
+
+  it('EI-14072 guard #2: an open+stale infra-liveness row with a VERIFIED-healthy signal is reconciled — broadcast fires, and it is NOT also flagged stale this same tick', async () => {
+    const broadcasts: Array<{ conditionKeys: string[]; summary: string }> = [];
+    const stuck = mkState({
+      condition_key: 'infra-liveness:panel:overwatch',
+      first_seen: '2026-07-05T00:00:00.000Z',
+      open_since: '2026-07-05T00:00:00.000Z',
+      last_seen: '2026-07-05T00:00:00.000Z',
+    });
+    const deps = {
+      readStates: async () => [stuck],
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async () => {
+        throw new Error('escalate should NOT be called for a reconciled key');
+      },
+      now: () => Date.parse('2026-07-05T01:00:00.000Z'), // 60min open — would be stale
+      staleMs: 45 * 60_000,
+      readHealthByKey: async (keys: readonly string[]) =>
+        new Map(keys.map((k) => [k, true])), // verified healthy
+      broadcastResolvedMany: async (input: { conditionKeys: string[]; summary: string }) => {
+        broadcasts.push(input);
+        return true;
+      },
+    };
+    const r = await runConditionStalenessTick(deps);
+    expect(r.reconciled).toEqual(['infra-liveness:panel:overwatch']);
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]!.conditionKeys).toEqual(['infra-liveness:panel:overwatch']);
+    // The reconciled key must NOT also earn a staleness reminder in the same tick.
+    expect(r.signals).toEqual([]);
+    expect(r.fired).toEqual([]);
+  });
+
+  it('EI-14072 guard #2: an open+stale infra-liveness row whose signal is VERIFIED unhealthy is left open and still fires the staleness reminder', async () => {
+    const stuck = mkState({
+      condition_key: 'infra-liveness:panel:overwatch',
+      first_seen: '2026-07-05T00:00:00.000Z',
+      open_since: '2026-07-05T00:00:00.000Z',
+      last_seen: '2026-07-05T00:00:00.000Z',
+    });
+    const escalated: string[] = [];
+    const deps = {
+      readStates: async () => [stuck],
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async (input: { summary: string }) => {
+        escalated.push(input.summary);
+      },
+      now: () => Date.parse('2026-07-05T01:00:00.000Z'),
+      staleMs: 45 * 60_000,
+      readHealthByKey: async (keys: readonly string[]) => new Map(keys.map((k) => [k, false])),
+      broadcastResolvedMany: async () => {
+        throw new Error('must not be called — nothing verified healthy');
+      },
+    };
+    const r = await runConditionStalenessTick(deps);
+    expect(r.reconciled).toEqual([]);
+    expect(r.fired.map((s) => s.key)).toEqual(['stale-condition:infra-liveness:panel:overwatch']);
+    expect(escalated).toHaveLength(1);
+  });
+
+  it('EI-14072 guard #2: a non-infra-liveness key is never passed to readHealthByKey (family-scoped)', async () => {
+    const seenKeys: string[][] = [];
+    const stuck = mkState({ condition_key: 'git-sync-stall:papercusp' });
+    const deps = {
+      readStates: async () => [stuck],
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async () => {},
+      now: () => Date.parse('2026-07-05T01:00:00.000Z'),
+      staleMs: 45 * 60_000,
+      readHealthByKey: async (keys: readonly string[]) => {
+        seenKeys.push([...keys]);
+        return new Map();
+      },
+    };
+    await runConditionStalenessTick(deps);
+    expect(seenKeys).toEqual([[]]);
   });
 });
