@@ -98,6 +98,7 @@ import cupboardInstallBlueprint from './cupboard-install-blueprint';
 import cupboardPublishBlueprint from './cupboard-publish-blueprint';
 import cupboardInstallTemplate from './cupboard-install-template';
 import cupboardPublishTemplate from './cupboard-publish-template';
+import cupboardInstallApp from './cupboard-install-app';
 import harnessSpec from './harness/spec';
 import harnessBlueprintParams from './harness/blueprint-params';
 import harnessWorkItems from './harness/work-items';
@@ -629,6 +630,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(cupboardPublishBlueprint as AnyRoute),
   ...flatten(cupboardInstallTemplate as AnyRoute),
   ...flatten(cupboardPublishTemplate as AnyRoute),
+  ...flatten(cupboardInstallApp as AnyRoute),
   ...flatten(harnessSpec as AnyRoute[]),
   ...flatten(harnessBlueprintParams as AnyRoute[]),
   ...flatten(harnessWorkItems as AnyRoute[]),

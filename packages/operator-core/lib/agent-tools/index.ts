@@ -1105,6 +1105,10 @@ import './cupboard/install-plugin';
 // loopback POST /cupboard/install-template route). Completes the install-leg
 // symmetry: plugin/pack · blueprint · template all install from the Cupboard by ask.
 import './cupboard/install-template';
+// cupboard-app-distribution-2026-07-14 P-008 — the agent-callable bundle-app
+// install (cupboard:install-app over bundle-app-install-io.ts, shared with the
+// loopback POST /cupboard/install-app route).
+import './cupboard/install-app';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).

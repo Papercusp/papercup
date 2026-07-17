@@ -221,6 +221,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__cupboard:install-plugin',
   'mcp__agentmcp__cupboard:install-blueprint',
   'mcp__agentmcp__cupboard:install-template',
+  'mcp__agentmcp__cupboard:install-app',
   'mcp__agentmcp__cupboard:unpublish',
   'mcp__agentmcp__discovery:set_pot',
   'mcp__agentmcp__blueprint:publish',

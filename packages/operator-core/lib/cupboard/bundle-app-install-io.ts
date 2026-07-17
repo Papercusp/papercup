@@ -214,7 +214,7 @@ export async function installBundleAppFromCupboard(
 
   let manifest: BundleAppManifest;
   try {
-    manifest = await fetchBundleManifest({ githubUrl, listingRef }, { cloneRepo: gitCloneShallow, tmpDir });
+    manifest = await fetchBundleManifest({ githubUrl, listingRef }, { cloneRepo: gitCloneShallow, tmpDir: tmpdir });
   } catch (e) {
     if (e instanceof BundleManifestError) return { ok: false, status: e.status, error: e.message };
     return { ok: false, status: 500, error: 'manifest fetch failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
@@ -255,7 +255,7 @@ export async function reviewBundleAppFromCupboard(
 
   let manifest: BundleAppManifest;
   try {
-    manifest = await fetchBundleManifest({ githubUrl, listingRef }, { cloneRepo: gitCloneShallow, tmpDir });
+    manifest = await fetchBundleManifest({ githubUrl, listingRef }, { cloneRepo: gitCloneShallow, tmpDir: tmpdir });
   } catch (e) {
     if (e instanceof BundleManifestError) return { ok: false, status: e.status, error: e.message };
     return { ok: false, status: 500, error: 'manifest fetch failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
