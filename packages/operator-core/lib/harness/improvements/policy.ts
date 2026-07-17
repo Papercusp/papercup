@@ -294,6 +294,15 @@ export const INFRA_SIGNAL_SOURCES: readonly string[] = [
   // product idea a worker can code-fix — misrouting it to ideaType:product/triageDecision:place
   // was the second half of the mis-triage this closes.
   'loop-stalled',
+  // EI-805: a stalled-feature signal ("dispatchable work in harness X is not being picked
+  // up") means the autonomous loop (routine tick → blueprint-run → dispatch) is not
+  // reaching that harness — the fix is always the routines/DBOS scheduler + dispatch
+  // machinery (an explicit STOP surface for auto-implement), never an inline code change.
+  // EI-287 burned 4 consecutive auto-implement dispatch attempts re-confirming this same
+  // non-auto-fixable root cause before a worker manually routed it needs-human each time;
+  // this makes the routing automatic instead of relying on every dispatch attempt to
+  // rediscover it.
+  'stalled-feature',
 ];
 
 /** Paths that mean the fix lives in the ENVIRONMENT, not papercusp code. PROPOSED (P-004). */

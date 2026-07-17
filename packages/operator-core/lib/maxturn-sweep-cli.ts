@@ -25,7 +25,15 @@
  *   tsx maxturn-sweep-cli.ts --repeats 3 --execute
  *
  * Flags: --execute | --full | --repeats <n> | --session-class <ornith-drone|
- *        gateway-claude-drone|interactive> | --target-tokens <n> | --out <file>
+ *        gateway-claude-drone|interactive> | --target-tokens <n> | --out <file> |
+ *        --account <auto|default|pool-id>
+ *
+ * --account (account-routing-3-options, owner 2026-07-17 "pin them to the gateway"):
+ * how each driven cell's model calls route. DEFAULTS to 'auto' — through the
+ * inference gateway with pool failover — NOT psu's no-flag 'default' mode (the one
+ * shared CLI credential, no failover), which starved the campaign's tail cells to
+ * all-null rows while the pool sat idle (WI-5003). Pass a pool-id to hard-pin, or
+ * 'default' to deliberately bypass the gateway.
  *
  * With --full, --session-class / --target-tokens NARROW the matrix (the chunking
  * lever: run a multi-hour campaign class-by-class instead of one un-resumable
@@ -54,7 +62,11 @@ import {
   type SweepRunResult,
   type SweepScoreReport,
 } from './maxturn-sweep';
-import { makeHeadlessPsuCellDriver } from './maxturn-sweep-live';
+import {
+  makeHeadlessPsuCellDriver,
+  DEFAULT_SWEEP_ACCOUNT_ROUTING,
+  type SweepAccountRouting,
+} from './maxturn-sweep-live';
 
 /** Injectable seams for `main` — default to the real wiring; tests override
  *  both to drive the CLI's arg-handling/preview branches against stubs. */
@@ -132,6 +144,12 @@ export async function main(deps: MaxTurnSweepCliDeps = {}): Promise<number> {
   const targetTokensRaw = valueOf(argv, '--target-tokens');
   const targetTokens = targetTokensRaw != null ? Number(targetTokensRaw) : undefined;
   const outFile = valueOf(argv, '--out');
+  // account-routing-3-options (owner 2026-07-17 "pin them to the gateway ... this
+  // should be a configurable setting"): --account <auto|default|pool-id> picks how
+  // every driven cell's model calls route. DEFAULTS to 'auto' (gateway w/ failover)
+  // — NOT psu's no-flag 'default' (one CLI credential) that starved the campaign
+  // (WI-5003). The value passes through to psu-launcher, which validates it.
+  const account = (valueOf(argv, '--account') ?? DEFAULT_SWEEP_ACCOUNT_ROUTING) as SweepAccountRouting;
 
   const axes = full ? fullAxes({ sessionClass, targetTokens }) : canaryAxes({ sessionClass, targetTokens });
   if (axes === null) {
@@ -153,11 +171,12 @@ export async function main(deps: MaxTurnSweepCliDeps = {}): Promise<number> {
       JSON.stringify(
         {
           mode: 'plan-only',
+          account,
           cellCount: preview.cells.length,
           reachableCount: preview.reachableCount,
           unreachableCells: preview.unreachableCells,
           cells: preview.cells,
-          hint: '--execute actually drives this matrix live (spawns real headless sessions, spends real tokens). Not passed here — nothing ran.',
+          hint: `--execute actually drives this matrix live (spawns real headless sessions via --account=${account}, spends real tokens). Not passed here — nothing ran.`,
         },
         null,
         2,
@@ -166,7 +185,7 @@ export async function main(deps: MaxTurnSweepCliDeps = {}): Promise<number> {
     return 0;
   }
 
-  const driver = makeDriver();
+  const driver = makeDriver({ account });
   // --out <file>: append each DRIVEN cell as one JSONL row the moment it resolves, so a
   // killed multi-hour campaign keeps every completed cell (score later from the file).
   // Re-create the parent dir on EVERY append: scratch pruners can delete it mid-campaign,
@@ -186,6 +205,7 @@ export async function main(deps: MaxTurnSweepCliDeps = {}): Promise<number> {
     JSON.stringify(
       {
         mode: full ? 'live-full' : 'live-canary',
+        account,
         ran: result.ran,
         reachableCount: result.reachableCount,
         results: result.results,

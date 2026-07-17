@@ -153,6 +153,14 @@ describe('classifyImprovement — infra-environment never auto (EI-408 / D-002 /
     expect(classifyImprovement(cand({ id: 'i5', kind: 'bug', title: 'embed 429', watchdogKey: 'repeated-tool-error:memory:search:rate-limit' })).tier).toBe('human');
     expect(infraEnvironmentHit({ watchdogKey: 'repeated-tool-error:memory:search:rate-limit' })).toMatch(/rate-limit/);
   });
+  it('stalled-feature signal class is infra too (EI-805: the fix is the dispatch/scheduler machinery, never an inline code change)', () => {
+    const d = classifyImprovement(
+      cand({ id: 'i7', kind: 'bug', title: 'Dispatchable work in harness hive-canary is not being picked up', watchdogKey: 'stalled-feature:stalled:hive-canary' }),
+    );
+    expect(d.tier).toBe('human');
+    expect(d.protectedHit).toMatch(/stalled-feature/);
+    expect(infraEnvironmentHit({ watchdogKey: 'stalled-feature:stalled:some-harness' })).toMatch(/stalled-feature/);
+  });
   it('infra beats graduation — even with every kind graduated, an infra item stays human', () => {
     const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change', 'feature'] };
     const d = classifyImprovement(cand({ id: 'i5', kind: 'bug', watchdogKey: 'service-down:openai' }), graduated);

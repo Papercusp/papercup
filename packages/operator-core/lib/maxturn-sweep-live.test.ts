@@ -175,7 +175,7 @@ describe('buildSweepSpawnArgs — WI-5003 live-canary finding', () => {
     // benchmark task to completion. Reproduced live 2026-07-17: 12/12 unit files
     // written, transcript unfindable, because this flag was missing.
     const args = buildSweepSpawnArgs(
-      { ownerId: 'su-sweep-x-r1-abc', kickoff: 'do the thing', workDir: '/tmp/x', cellId: 'x', timeoutMs: 1000, harness: 'papercusp' },
+      { ownerId: 'su-sweep-x-r1-abc', kickoff: 'do the thing', workDir: '/tmp/x', cellId: 'x', timeoutMs: 1000, harness: 'papercusp', account: 'auto' },
       '/repo',
     );
     expect(args).toContain('--harness=papercusp');
@@ -188,10 +188,30 @@ describe('buildSweepSpawnArgs — WI-5003 live-canary finding', () => {
 
   it('threads a non-default harness through', () => {
     const args = buildSweepSpawnArgs(
-      { ownerId: 'su-sweep-y-r1-def', kickoff: 'k', workDir: '/tmp/y', cellId: 'y', timeoutMs: 1000, harness: 'some-other-harness' },
+      { ownerId: 'su-sweep-y-r1-def', kickoff: 'k', workDir: '/tmp/y', cellId: 'y', timeoutMs: 1000, harness: 'some-other-harness', account: 'auto' },
       '/repo',
     );
     expect(args).toContain('--harness=some-other-harness');
+  });
+
+  // account-routing-3-options (owner 2026-07-17 "pin them to the gateway"): the
+  // no-flag 'default' mode routes every cell through the ONE shared CLI credential
+  // (no failover), which starved the 2026-07-17 campaign's tail cells to
+  // all-null-but-ok rows while the 7-account gateway pool sat idle (WI-5003).
+  it('ALWAYS emits --account so gateway routing is never an implicit fall-through', () => {
+    const args = buildSweepSpawnArgs(
+      { ownerId: 'su-sweep-z-r1-ghi', kickoff: 'k', workDir: '/tmp/z', cellId: 'z', timeoutMs: 1000, harness: 'papercusp', account: 'auto' },
+      '/repo',
+    );
+    expect(args).toContain('--account=auto');
+  });
+
+  it('threads a pinned pool-account id through (hard-pin variant)', () => {
+    const args = buildSweepSpawnArgs(
+      { ownerId: 'su-sweep-w-r1-jkl', kickoff: 'k', workDir: '/tmp/w', cellId: 'w', timeoutMs: 1000, harness: 'papercusp', account: 'aviynw7' },
+      '/repo',
+    );
+    expect(args).toContain('--account=aviynw7');
   });
 });
 
@@ -247,6 +267,34 @@ describe('makeHeadlessPsuCellDriver — the seam-injected cell run', () => {
     expect(deps.spawnSession).toHaveBeenCalledTimes(3);
     expect(deps.clearOverride).toHaveBeenCalledTimes(3);
     expect(metrics.taskSuccessRate).toBe(1);
+  });
+
+  // account-routing-3-options (owner 2026-07-17 "pin them to the gateway"): the
+  // driver defaults every cell to gateway auto-routing, and a caller can override
+  // it (pin a pool-id / bypass with 'default').
+  it('threads account into the spawn input — DEFAULTS to gateway auto-routing when unset', async () => {
+    const { deps } = stubDeps();
+    let seenAccount: string | undefined;
+    deps.spawnSession = vi.fn((input: { ownerId: string; account?: string }) => {
+      seenAccount = input.account;
+      return { done: Promise.resolve(), terminate: vi.fn() };
+    });
+    // deps.account omitted ⇒ the driver supplies DEFAULT_SWEEP_ACCOUNT_ROUTING.
+    const driver = makeHeadlessPsuCellDriver(deps);
+    await driver(cell, config, { repeats: 1, now: Date.now });
+    expect(seenAccount).toBe('auto');
+  });
+
+  it('threads an explicit account override (pinned pool-id) into every spawn', async () => {
+    const { deps } = stubDeps();
+    let seenAccount: string | undefined;
+    deps.spawnSession = vi.fn((input: { ownerId: string; account?: string }) => {
+      seenAccount = input.account;
+      return { done: Promise.resolve(), terminate: vi.fn() };
+    });
+    const driver = makeHeadlessPsuCellDriver({ ...deps, account: 'aviynw7' });
+    await driver(cell, config, { repeats: 1, now: Date.now });
+    expect(seenAccount).toBe('aviynw7');
   });
 
   it('a missing transcript THROWS (runMaxTurnSweep captures it as the cell error) — and the override is STILL cleared', async () => {

@@ -160,10 +160,42 @@ describe('main() — --execute arms the live driver', () => {
 
     expect(code).toBe(0);
     expect(makeDriver).toHaveBeenCalledTimes(1);
+    // account-routing-3-options: with no --account, the driver is built for gateway
+    // auto-routing (NOT psu's no-flag 'default' that starved the campaign — WI-5003).
+    expect(makeDriver).toHaveBeenCalledWith({ account: 'auto' });
     expect(score).toHaveBeenCalledWith([cellResult]);
     const printed = JSON.parse(out.mock.calls[0][0] as string);
     expect(printed.mode).toBe('live-canary');
+    expect(printed.account).toBe('auto');
     expect(printed.ran).toBe(true);
+  });
+
+  it('--account <mode> overrides the routing (pins the driver to a pool account)', async () => {
+    const runSweep = vi.fn(async () => stubSweepResult({ ran: true, results: [], reachableCount: 0 }));
+    const makeDriver = vi.fn(() => vi.fn() as never);
+    const out = vi.fn();
+    const code = await main({
+      argv: ['--execute', '--account', 'aviynw7'],
+      runSweep,
+      makeDriver,
+      score: vi.fn(() => stubReport()),
+      out,
+    });
+    expect(code).toBe(0);
+    expect(makeDriver).toHaveBeenCalledWith({ account: 'aviynw7' });
+    expect(JSON.parse(out.mock.calls[0][0] as string).account).toBe('aviynw7');
+  });
+
+  it('--account default deliberately bypasses the gateway (escape hatch preserved)', async () => {
+    const makeDriver = vi.fn(() => vi.fn() as never);
+    await main({
+      argv: ['--execute', '--account', 'default'],
+      runSweep: vi.fn(async () => stubSweepResult({ ran: true, results: [], reachableCount: 0 })),
+      makeDriver,
+      score: vi.fn(() => stubReport()),
+      out: vi.fn(),
+    });
+    expect(makeDriver).toHaveBeenCalledWith({ account: 'default' });
   });
 
   it('reports live-full + exit 1 when --full --execute assembles but nothing ran', async () => {
