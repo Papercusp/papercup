@@ -303,6 +303,35 @@ async function defaultProbeAgentRuntime(model: string | undefined): Promise<{ re
 }
 
 /**
+ * Default honor-time account resolution (WI-5316): read THIS host's registered
+ * claude pool (dynamic import keeps the inference-gateway graph off the sync
+ * projection's import path) and hand it to the pure resolver. FAIL-OPEN on a
+ * pool-load error — keep the requested account rather than block a valid host on
+ * a transient PG blip (same philosophy as the WI-5306 runtime probe's fail-open).
+ */
+async function defaultResolveHonorAccount(
+  requestedAccount: string,
+  workspaceId: string,
+): Promise<HonorAccountResolution> {
+  let poolIds: string[] | null;
+  try {
+    const { resolveAccountPool } = await import('../inference-gateway/account-resolver');
+    const pool = await resolveAccountPool(workspaceId, 'claude');
+    // Exclude the `local` fallback: it means "no registered pool account", which is
+    // exactly the state psu's gateway auto/pin route refuses.
+    poolIds = pool.filter((a) => a.source !== 'local-fallback').map((a) => a.accountId);
+  } catch {
+    poolIds = null;
+  }
+  if (poolIds === null) return { ok: true, account: requestedAccount };
+  const ids = poolIds;
+  return resolveHonorAccountCore(requestedAccount, {
+    listPoolAccountIds: async () => ids,
+    localLoginPresent: () => localClaudeLoginPresent(),
+  });
+}
+
+/**
  * The default spawner — the launch-from-seats machinery, loaded lazily so the
  * projection layer's import of THIS module stays light (the agent-tools graph
  * only loads when a spawn is actually happening).
@@ -364,9 +393,10 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
     harness: req.potHomeSlug,
     plan: req.planSlug,
     model: req.launch.model,
-    // Same cross-platform-member-credential-inheritance default as fleet:launch-on-plan: an
-    // un-pinned member honored on a macOS host routes via the gateway (inherits the Keychain
-    // login) instead of booting logged out. Gated on THIS (honoring) host's platform.
+    // req.launch.account is already RESOLVED against this host's gateway pool at
+    // honor time (Gate 4.6 / WI-5316): 'auto' only survives when a pool account
+    // exists, else it was downgraded to 'default' or refused. defaultMemberAccountRouting
+    // is the empty→'default' safety net (resolution always passes a concrete value).
     account: defaultMemberAccountRouting(req.launch.account ?? undefined),
     seat: req.seatRef,
     launchContext: launchContextPath,
@@ -433,6 +463,7 @@ export async function honorSpawnRequestFromProjection(
   const spawnMembers = deps.spawnMembers ?? defaultSpawnMembers;
   const emitReceipt = deps.emitReceipt ?? emitP2pReceipt;
   const probeAgentRuntime = deps.probeAgentRuntime ?? defaultProbeAgentRuntime;
+  const resolveHonorAccount = deps.resolveHonorAccount ?? defaultResolveHonorAccount;
   const nowMs = deps.nowMs ?? Date.now;
 
   const record = parseWorkOfferRecordJson(args.row.record_json);
@@ -524,6 +555,22 @@ export async function honorSpawnRequestFromProjection(
     return refuse('agent_runtime_missing', runtime.detail, 'refused:agent_runtime_missing');
   }
 
+  // Gate 4.6 (WI-5316): resolve the seat's --account against THIS host's gateway
+  // pool. A seat authored AUTO becomes --account=auto, which psu refuses on a host
+  // with an empty pool (silent dead member, sibling of WI-5306). The honoring host
+  // is authoritative: downgrade auto→default when the pool is empty but a local
+  // login exists, or refuse LOUDLY (federated receipt) when genuinely unfulfillable
+  // (empty pool + no login, or a pin this host lacks). Refused from the null
+  // disposition, so no 'honoring' claim dangles.
+  const acct = await resolveHonorAccount(resolution.launch.account, args.workspaceId);
+  if (!acct.ok) {
+    return refuse(acct.code, acct.detail, `refused:${acct.code}`);
+  }
+  if (acct.note) {
+    console.log(`[delegated-spawn-honor] ${args.row.offer_id}: ${acct.note}`);
+  }
+  const resolvedLaunch = { ...resolution.launch, account: acct.account };
+
   // Gate 5: the atomic claim — exactly one hook invocation spawns.
   const claimed = await setDisposition(
     args.workspaceId,
@@ -545,7 +592,7 @@ export async function honorSpawnRequestFromProjection(
       planSlug: payload.planSlug,
       count: payload.count,
       seatRef: slot.ref,
-      launch: resolution.launch,
+      launch: resolvedLaunch,
       launchContext: payload.launchContext,
       requesterOwnerId: payload.requesterOwnerId,
       requestOfferId: args.row.offer_id,

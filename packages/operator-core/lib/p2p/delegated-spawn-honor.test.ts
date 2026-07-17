@@ -21,6 +21,11 @@ import {
   probeAgentBinResolvable,
   type DelegatedSpawnHonorDeps,
 } from './delegated-spawn-honor';
+import {
+  honorAccountRoutingMode,
+  localClaudeLoginPresent,
+  resolveHonorAccount,
+} from './honor-account-resolution';
 import { seatOfferId } from './offer-store-publish';
 import type { SeatSlot } from '../fleet/seat-accounting';
 import type { WorkOfferStoreRecord } from './offer-store-schema';
@@ -152,6 +157,10 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
   // TEST host has `claude`/`omp` on its login PATH (WI-5306). The absent-runtime
   // path is covered by its own test that injects a failing probe.
   const probeAgentRuntime = vi.fn(async () => ({ resolved: true, detail: 'ok' }));
+  // Pass-through account resolution by default (WI-5316) so honor tests neither hit
+  // PG (the real pool loader) nor depend on the TEST host's login — the account the
+  // seat pins survives verbatim. The downgrade/refuse paths get their own tests.
+  const resolveHonorAccount = vi.fn(async (requestedAccount: string) => ({ ok: true as const, account: requestedAccount }));
   const d: DelegatedSpawnHonorDeps = {
     hostAccepts: vi.fn(async () => true),
     resolveActor: vi.fn(async () => ({ githubUserId: UID_B })) as any,
@@ -162,10 +171,11 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     spawnMembers,
     emitReceipt,
     probeAgentRuntime,
+    resolveHonorAccount,
     nowMs: () => NOW,
     ...over,
   };
-  return { d, setDisposition, spawnMembers, emitReceipt, probeAgentRuntime };
+  return { d, setDisposition, spawnMembers, emitReceipt, probeAgentRuntime, resolveHonorAccount };
 }
 
 const ARGS = { workspaceId: WS, potHomeSlug: HOME, row: row() };
@@ -282,6 +292,134 @@ describe('honorSpawnRequestFromProjection', () => {
         refusal: expect.objectContaining({ code: 'agent_runtime_missing' }),
       }),
     );
+  });
+
+  it('an unfulfillable seat account ⇒ refused:account_unfulfillable + receipt, never claimed or spawned (WI-5316)', async () => {
+    const resolveHonorAccount = vi.fn(async () => ({
+      ok: false as const,
+      code: 'account_unfulfillable' as const,
+      detail: "seat requests --account=auto but this host has no registered claude pool account AND no usable local login",
+    }));
+    const { d, setDisposition, spawnMembers, emitReceipt } = deps({ resolveHonorAccount });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({
+      outcome: 'refused',
+      code: 'account_unfulfillable',
+    });
+    // Resolved with the account the seat pins ('auto' here) + this workspace.
+    expect(resolveHonorAccount).toHaveBeenCalledWith('auto', WS);
+    // Refused from the null disposition, before the 'honoring' claim — no phantom spawn.
+    expect(spawnMembers).not.toHaveBeenCalled();
+    expect(setDisposition).toHaveBeenCalledTimes(1);
+    expect(setDisposition).toHaveBeenCalledWith(
+      WS,
+      HOME,
+      UID_A,
+      'spawnreq-0123456789abcdef',
+      'refused:account_unfulfillable',
+      undefined,
+      undefined,
+    );
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'refusal',
+        action: 'delegated-seat:spawn',
+        refusal: expect.objectContaining({ code: 'account_unfulfillable' }),
+      }),
+    );
+  });
+
+  it('a downgraded account (auto→default) threads into the spawn launch, not the raw seat account (WI-5316)', async () => {
+    const resolveHonorAccount = vi.fn(async () => ({
+      ok: true as const,
+      account: 'default',
+      downgradedFrom: 'auto' as const,
+      note: 'downgraded --account=auto → default: no registered claude pool account',
+    }));
+    const { d, spawnMembers } = deps({ resolveHonorAccount });
+    const res = await honorSpawnRequestFromProjection(ARGS, d);
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(spawnMembers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // the seat is AUTO, but the honor-resolved account overrides it
+        seatRef: 'haiku:low:AUTO',
+        launch: { model: 'haiku:low', account: 'default' },
+      }),
+    );
+  });
+});
+
+// ── WI-5316: honor-time account resolution (pure) ────────────────────────────
+
+describe('honorAccountRoutingMode (WI-5316, pure — mirrors psu accountRoutingMode)', () => {
+  it('classifies the direct-login keywords as default', () => {
+    for (const v of ['', 'default', 'none', 'system', 'DEFAULT', '  system  ', null, undefined]) {
+      expect(honorAccountRoutingMode(v)).toBe('default');
+    }
+  });
+  it('classifies auto / gateway as auto, everything else as a pin', () => {
+    expect(honorAccountRoutingMode('auto')).toBe('auto');
+    expect(honorAccountRoutingMode('GATEWAY')).toBe('auto');
+    expect(honorAccountRoutingMode('aviynw6')).toBe('pin');
+    expect(honorAccountRoutingMode('pool-account-3')).toBe('pin');
+  });
+});
+
+describe('localClaudeLoginPresent (WI-5316)', () => {
+  it('darwin ⇒ assumed present (Keychain login, not the disk bundle)', () => {
+    expect(localClaudeLoginPresent({ platform: 'darwin', fileExists: () => false })).toBe(true);
+  });
+  it('linux/wsl ⇒ true iff ~/.claude/.credentials.json exists', () => {
+    const home = '/home/x';
+    expect(
+      localClaudeLoginPresent({ platform: 'linux', home, fileExists: (p) => p === '/home/x/.claude/.credentials.json' }),
+    ).toBe(true);
+    expect(localClaudeLoginPresent({ platform: 'linux', home, fileExists: () => false })).toBe(false);
+    expect(localClaudeLoginPresent({ platform: 'win32', home, fileExists: () => false })).toBe(false);
+  });
+});
+
+describe('resolveHonorAccount (WI-5316, pure core)', () => {
+  const withPool = (ids: string[], login = true) => ({
+    listPoolAccountIds: async () => ids,
+    localLoginPresent: () => login,
+  });
+
+  it('default route is always fulfillable (no pool needed)', async () => {
+    const listPoolAccountIds = vi.fn(async () => [] as string[]);
+    expect(await resolveHonorAccount('default', { listPoolAccountIds, localLoginPresent: () => true })).toEqual({
+      ok: true,
+      account: 'default',
+    });
+    expect(await resolveHonorAccount('', { listPoolAccountIds, localLoginPresent: () => false })).toEqual({
+      ok: true,
+      account: 'default',
+    });
+    // never even looks at the pool
+    expect(listPoolAccountIds).not.toHaveBeenCalled();
+  });
+
+  it('auto with a non-empty pool ⇒ keeps auto', async () => {
+    expect(await resolveHonorAccount('auto', withPool(['acct-1']))).toEqual({ ok: true, account: 'auto' });
+  });
+
+  it('auto with an empty pool + a local login ⇒ DOWNGRADES to default (the live-proven fix)', async () => {
+    const r = await resolveHonorAccount('auto', withPool([], true));
+    expect(r).toMatchObject({ ok: true, account: 'default', downgradedFrom: 'auto' });
+    expect((r as { note: string }).note).toContain('auto');
+  });
+
+  it('auto with an empty pool + NO local login ⇒ refuses account_unfulfillable', async () => {
+    const r = await resolveHonorAccount('auto', withPool([], false));
+    expect(r).toMatchObject({ ok: false, code: 'account_unfulfillable' });
+    expect((r as { detail: string }).detail).toContain('cannot authenticate');
+  });
+
+  it('a pin present in this host pool ⇒ keeps the pin; absent ⇒ refuses (never substituted)', async () => {
+    expect(await resolveHonorAccount('acct-2', withPool(['acct-1', 'acct-2']))).toEqual({ ok: true, account: 'acct-2' });
+    const r = await resolveHonorAccount('acct-9', withPool(['acct-1'], true));
+    expect(r).toMatchObject({ ok: false, code: 'account_unfulfillable' });
+    // a pin is NOT downgraded to default even though a login exists
+    expect((r as { detail: string }).detail).toContain('acct-9');
   });
 });
 
