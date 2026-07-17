@@ -318,17 +318,18 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     expect(applyRoleModel('claude -p --model haiku', 'director')).toBe('claude -p --model haiku');
   });
 
-  it('P-012 model-tier policy: execution tier → sonnet, autonomous-loop tier → gpt-5.6-luna:high, without env', () => {
+  it('P-012 model-tier policy: execution tier → sonnet, autonomous-loop tier → sonnet[1m]:high, without env', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet[1m]');
     expect(applyRoleModel('claude -p', 'validator')).toBe('claude -p --model sonnet[1m]');
     expect(applyRoleModel('claude -p', 'documenter')).toBe('claude -p --model sonnet[1m]');
-    // P-020 (autonomous-loop-prod-audit-2026-07-02): cup/scanner/judge moved OFF the
-    // haiku volume tier onto the autonomous-loop GPT-5.6 Luna floor — no role
-    // currently occupies haiku (ROLE_MODEL_DEFAULTS comment).
-    expect(applyRoleModel('claude -p --model opus', 'cup')).toBe('claude -p --model gpt-5.6-luna --effort high');
-    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model gpt-5.6-luna --effort high');
-    expect(applyRoleModel('claude -p', 'judge')).toBe('claude -p --model gpt-5.6-luna --effort high');
+    // WI-4623 revert (owner decision 2026-07-16): cup/scanner/judge sit on the
+    // autonomous-loop sonnet-5 trimmed floor — the BARE `sonnet[1m]:high`, NOT the
+    // P-020 gpt-5.6-luna:high — so they run on the claude CLI. No role currently
+    // occupies the haiku volume tier (ROLE_MODEL_DEFAULTS comment).
+    expect(applyRoleModel('claude -p --model opus', 'cup')).toBe('claude -p --model sonnet[1m] --effort high');
+    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model sonnet[1m] --effort high');
+    expect(applyRoleModel('claude -p', 'judge')).toBe('claude -p --model sonnet[1m] --effort high');
     // Escalation stays explicit: an AGENT_MODELS entry overrides the tier.
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:high' }));
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model opus[1m] --effort high');
@@ -360,37 +361,35 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     expect(resolveSpawnBackendModel('release-manager')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
   });
 
-  // model-switch-2026-07-15: the pot's judgment/control-loop layer (queen, bees,
-  // mug, kettle/overwatch, sentinel, operator) moved off gpt-5.4/codex-ChatGPT to
-  // the latest sonnet at 1M-window + high effort (via the gateway) —
-  // ROLE_MODEL_DEFAULTS pins the spec WITH the `[1m]` marker already embedded, so
-  // normalizeModelSpec (idempotent — a no-op when `[1m]` is already present) does
-  // not need to inject it separately. EI-12657: the spec is the BARE `sonnet[1m]`,
-  // NOT the versioned shorthand `sonnet-5[1m]` — `sonnet-5` is not a resolvable
-  // alias, so the CLI/gateway reach an unrunnable upstream id and every autonomous
-  // spawn dies before its first turn. Regression guard: WI-4623's prior attempt
-  // left the orchestrator-level resolveModel test asserting the OLD `kettle:
-  // 'sonnet'` default (invoke.test.ts) — this is the exec-boundary (applyRoleModel)
-  // twin, asserted per-role so a regression on any ONE role names itself.
-  it('the P-020 autonomous-loop roles resolve to gpt-5.6-luna:high --effort high without env', () => {
+  // WI-4623 (owner decision 2026-07-16, relayed by su-d838f112): the pot's
+  // judgment/control-loop layer (queen, bees, mug, kettle/overwatch, sentinel) sits
+  // on the latest sonnet at 1M-window + high effort — REVERTING the P-020
+  // gpt-5.6-luna:high migration (WI-4640) that hard-downed kettle. ROLE_MODEL_DEFAULTS
+  // pins the spec WITH the `[1m]` marker already embedded, so normalizeModelSpec
+  // (idempotent — a no-op when `[1m]` is already present) does not re-inject it.
+  // ⚠ EI-12657: the spec is the BARE `sonnet[1m]`, NOT the versioned shorthand
+  // `sonnet-5[1m]` — `sonnet-5` is not a resolvable alias (validateCloudModelSpec
+  // rejects it), so it would reach the CLI/gateway as an unrunnable upstream id and
+  // every autonomous spawn would die before its first turn. Asserted per-role at the
+  // exec boundary (applyRoleModel) so a regression on any ONE role names itself.
+  it('the autonomous-loop roles resolve to sonnet[1m] --effort high on the claude backend (WI-4623 revert)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     // `operator` is DELIBERATELY excluded — it's the interactive brain surface, not
-    // an autonomous-loop role, and P-020 left it with no committed default (the
-    // orchestrator's own invoke.test.ts pins `resolveModel({}, 'operator')` === '').
+    // an autonomous-loop role, and it has no committed default (the orchestrator's
+    // own invoke.test.ts pins `resolveModel({}, 'operator')` === '').
     for (const role of ['queen', 'bee', 'mug', 'kettle', 'overwatch', 'sentinel']) {
-      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model gpt-5.6-luna --effort high');
+      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model sonnet[1m] --effort high');
     }
     expect(applyRoleModel('claude -p', 'operator')).toBe('claude -p');
     // the committed default still applies when AGENT_MODELS is set for OTHER roles only
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model gpt-5.6-luna --effort high');
-    // resolveSpawnBackendModel keys it to the gpt-5.6-luna bucket on the CODEX
-    // backend: the committed default is a Codex-only id, so the effective-spec
-    // inference (WI-4640) swaps the spawn off the claude CLI (which 404s it) —
-    // and the governor bucket must follow the backend the spawn really hits.
+    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model sonnet[1m] --effort high');
+    // resolveSpawnBackendModel keys it to the sonnet[1m] bucket on the CLAUDE backend:
+    // a bare-sonnet committed default is NOT codex-shaped, so no backend swap fires —
+    // the spawn stays on the claude CLI (the whole point of the WI-4623 revert).
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'codex', model: 'gpt-5.6-luna' });
+    expect(resolveSpawnBackendModel('mug')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
   });
 
   // WI-4640 runtime casualty (2026-07-17): kettle@papercusp went hard-down when

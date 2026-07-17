@@ -14,8 +14,15 @@
  *  - Each enqueued outbox row mirrors the capture trigger: `table_name`,
  *    `op='put'`, `key`=feature_id/issue_id, `row`=to_jsonb(row), workspace_id,
  *    harness_slug, `ts`, `drained_at` NULL.
- *  - IDEMPOTENT: writes a `backfill_done` marker into `substrate_meta`; a second
- *    call returns `{ skipped: true }` and enqueues 0 additional rows.
+ *  - IDEMPOTENT, PER-TARGET (WI-971 gap 2): each target gets its own
+ *    `backfill_done:<table>` marker in `substrate_meta`; a second call with
+ *    every target already marked returns `{ skipped: true }` and enqueues 0
+ *    additional rows. A pre-existing LEGACY flat `backfill_done` marker is
+ *    migrated (one time, no re-enqueue) into per-table markers for the
+ *    targets that existed under the old scheme.
+ *  - ENQUEUE BAIL CAP (WI-971 gap 2 condition (b)): if the candidate row total
+ *    across unswept targets exceeds `maxEnqueueBeforeBail`, nothing is
+ *    enqueued and no target is marked done (retryable on a later boot).
  *  - Per-author cap (cap-and-warn): `maxOpsPerAuthor` caps the enqueue and
  *    `console.warn`s a `peer_capped`-style message naming how many were dropped.
  */
@@ -115,6 +122,21 @@ async function seedEngineerIssue(
        ${`EI ${id}`}, ${opts.origin ?? 'local'}, ${opts.fed_ts ?? null}, ${opts.fed_hlc ?? null})`;
 }
 
+/** WI-971 gap 1: plan_item_assignments backfill target (mig 140 DDL shape). */
+async function seedAssignment(
+  sql: postgres.Sql,
+  planSlug: string,
+  itemId: string,
+  opts: { origin?: string; workspace_id?: string; harness_slug?: string; assignee?: string } = {},
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.plan_item_assignments
+      (workspace_id, harness_slug, plan_slug, item_id, assignee_name, assigned_by_user, origin)
+    VALUES
+      (${opts.workspace_id ?? WS}, ${opts.harness_slug ?? SLUG}, ${planSlug}, ${itemId},
+       ${opts.assignee ?? 'bee-1'}, 'su-test', ${opts.origin ?? 'local'})`;
+}
+
 async function outboxRows(sql: postgres.Sql) {
   return sql<{
     table_name: string;
@@ -130,6 +152,15 @@ async function outboxRows(sql: postgres.Sql) {
   }[]>`
     SELECT table_name, op, key, workspace_id, harness_slug, ts, op_hlc, drained_at, row
       FROM harness_shared.substrate_outbox ORDER BY id`;
+}
+
+/** Per-table markers currently set for (WS, SLUG) — WI-971 gap 2. */
+async function markerTables(sql: postgres.Sql): Promise<string[]> {
+  const rows = await sql<{ key: string }[]>`
+    SELECT key FROM harness_shared.substrate_meta
+     WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND key LIKE 'backfill_done:%'
+     ORDER BY key`;
+  return rows.map((r) => r.key.slice('backfill_done:'.length));
 }
 
 describe('backfillLocalState (Stage 4, real PG)', () => {
@@ -195,6 +226,22 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         fed_hlc        TEXT,
         PRIMARY KEY (workspace_id, pot_home_slug, github_user_id)
       );
+      -- WI-971 gap 1 fixture (mig 140 real DDL shape, trimmed to the columns the
+      -- backfill's SELECT / to_jsonb touch — fed_key is the GENERATED key column the
+      -- live capture trigger (mig 145) also keys on).
+      CREATE TABLE harness_shared.plan_item_assignments (
+        workspace_id     TEXT NOT NULL,
+        harness_slug     TEXT NOT NULL,
+        plan_slug        TEXT NOT NULL,
+        item_id          TEXT NOT NULL,
+        assignee_name    TEXT,
+        assigned_by_user TEXT,
+        origin           TEXT NOT NULL DEFAULT 'local',
+        fed_ts           BIGINT,
+        fed_hlc          TEXT,
+        fed_key          TEXT GENERATED ALWAYS AS ((plan_slug || ':') || item_id) STORED,
+        PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
+      );
       -- engineer_issues is the unified ei compat VIEW (created by the helper above); the
       -- backfill's issue block reads it + derives the federation slug from scope (operator
       -- resolves via hives).
@@ -236,13 +283,14 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     await db.sql`TRUNCATE harness_shared.harness_plans `;
     await db.sql`TRUNCATE harness_shared.pot_settings `;
     await db.sql`TRUNCATE harness_shared.pot_members `;
+    await db.sql`TRUNCATE harness_shared.plan_item_assignments `;
     await db.sql`TRUNCATE harness_shared.work_items `;
     await db.sql`TRUNCATE harness_shared.pots `;
     await db.sql`TRUNCATE harness_shared.substrate_outbox  RESTART IDENTITY`;
     await db.sql`TRUNCATE harness_shared.substrate_meta `;
   });
 
-  it('enqueues exactly the local feature + issue + plan rows (not remote, not other harnesses), writes the marker', async () => {
+  it('enqueues exactly the local feature + issue + plan rows (not remote, not other harnesses), writes per-target markers', async () => {
     // 4 local features + 2 local issues + 2 local plans for THIS harness.
     await seedFeature(db.sql, 'F-1');
     await seedFeature(db.sql, 'F-2');
@@ -297,14 +345,24 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     expect(f1?.row?.title).toBe('T F-1');
     expect(f1?.row?.origin).toBe('local');
 
-    // The marker is written.
-    const [{ value }] = await db.sql<{ value: string }[]>`
-      SELECT value FROM harness_shared.substrate_meta
-       WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND key = 'backfill_done'`;
-    expect(value).toBeTruthy();
+    // WI-971 gap 2: every target (including the empty ones — pot_settings,
+    // pot_members, plan_item_assignments) gets its OWN per-table marker, not one
+    // flat 'backfill_done' key.
+    const markers = await markerTables(db.sql);
+    expect(markers).toEqual(
+      [
+        'engineer_issues',
+        'harness_features_consolidated',
+        'harness_issues_consolidated',
+        'harness_plans',
+        'plan_item_assignments',
+        'pot_members',
+        'pot_settings',
+      ].sort(),
+    );
   });
 
-  it('a second call is a no-op (marker present → skipped, 0 added rows)', async () => {
+  it('a second call is a no-op (every target marked → skipped, 0 added rows)', async () => {
     await seedFeature(db.sql, 'F-1');
     await seedFeature(db.sql, 'F-2');
     const first = await backfillLocalState(fakeHandle(), db.sql);
@@ -321,7 +379,7 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     expect((await outboxRows(db.sql)).length).toBe(2);
   });
 
-  it('force ignores the marker and re-enqueues the current local rows for release seed refreshes', async () => {
+  it('force ignores every marker and re-enqueues the current local rows for release seed refreshes', async () => {
     await seedFeature(db.sql, 'F-1');
     const first = await backfillLocalState(fakeHandle(), db.sql);
     expect(first).toMatchObject({ skipped: false, enqueued: 1 });
@@ -366,14 +424,12 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       warnSpy.mockRestore();
     }
 
-    // Marker still written so a re-boot doesn't re-enqueue the capped backfill.
-    const [{ value }] = await db.sql<{ value: string }[]>`
-      SELECT value FROM harness_shared.substrate_meta
-       WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND key = 'backfill_done'`;
-    expect(value).toBeTruthy();
+    // Markers still written (incl. the capped target) so a re-boot doesn't re-enqueue.
+    const markers = await markerTables(db.sql);
+    expect(markers).toContain('harness_features_consolidated');
   });
 
-  it('no local rows → enqueues 0, still writes the marker (idempotent on empty)', async () => {
+  it('no local rows → enqueues 0, still writes every target marker (idempotent on empty)', async () => {
     await seedFeature(db.sql, 'F-REMOTE', { origin: 'remote' });
     const res = await backfillLocalState(fakeHandle(), db.sql);
     expect(res.skipped).toBe(false);
@@ -404,11 +460,13 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       expect(r.row?.harness_slug).toBe(SLUG); // stamped for the projection demux
     }
 
-    // Now make THIS harness the workspace's single Hive home + clear the marker so a
-    // re-backfill picks up the operator-scope row too.
+    // Now make THIS harness the workspace's single Hive home + clear ONLY the
+    // engineer_issues per-table marker (WI-971 gap 2: markers are per-target now)
+    // so a re-backfill picks up the operator-scope row too, without re-sweeping
+    // every other already-done target.
     await db.sql`INSERT INTO harness_shared.pots (workspace_id, pot_home_slug) VALUES (${WS}, ${SLUG})`;
     await db.sql`TRUNCATE harness_shared.substrate_outbox  RESTART IDENTITY`;
-    await db.sql`DELETE FROM harness_shared.substrate_meta WHERE key = 'backfill_done'`;
+    await db.sql`DELETE FROM harness_shared.substrate_meta WHERE key = 'backfill_done:engineer_issues'`;
 
     const res2 = await backfillLocalState(fakeHandle(), db.sql);
     expect(res2.skipped).toBe(false);
@@ -492,5 +550,120 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     // Stage-3 drain mints a fresh HLC (matches mig 446's `fed_hlc IS NULL → now()`).
     expect(Number(unstamped?.ts)).toBe(BOOT);
     expect(unstamped?.op_hlc).toBeNull();
+  });
+
+  // ── WI-971 gap 1: plan_item_assignments was simply missing from BACKFILL_TARGETS ──
+  describe('WI-971 gap 1 — plan_item_assignments backfill', () => {
+    it('enqueues local pre-existing plan_item_assignments rows (not remote, not other harnesses)', async () => {
+      await seedAssignment(db.sql, 'plan-a', 'P-1');
+      await seedAssignment(db.sql, 'plan-a', 'P-2');
+      await seedAssignment(db.sql, 'plan-b', 'P-1', { origin: 'remote' }); // echo-loop guard
+      await seedAssignment(db.sql, 'plan-c', 'P-1', { harness_slug: 'other' }); // other harness
+
+      const res = await backfillLocalState(fakeHandle(), db.sql);
+      expect(res.skipped).toBe(false);
+
+      const rows = (await outboxRows(db.sql)).filter((r) => r.table_name === 'plan_item_assignments');
+      // fed_key is the generated `plan_slug:item_id` column — the SAME key the live
+      // capture trigger (mig 145) uses, so receive-side projection demux is identical.
+      expect(rows.map((r) => r.key).sort()).toEqual(['plan-a:P-1', 'plan-a:P-2']);
+      for (const r of rows) {
+        expect(r.workspace_id).toBe(WS);
+        expect(r.harness_slug).toBe(SLUG);
+        expect(r.row?.assignee_name).toBe('bee-1');
+      }
+
+      const markers = await markerTables(db.sql);
+      expect(markers).toContain('plan_item_assignments');
+    });
+
+    it('LEGACY MARKER MIGRATION: a harness with a pre-existing FLAT backfill_done marker does NOT re-sweep already-covered tables, but DOES backfill the newly-added plan_item_assignments target', async () => {
+      // Simulate a harness that ran the OLD (pre-per-target) backfill: a feature row
+      // that "already federated" under the flat scheme (so re-sweeping it would be a
+      // visible regression — a real peer could already have consumed the equivalent
+      // live op, and a duplicate/stale re-enqueue risks a spurious LWW clobber), plus
+      // the flat marker itself, with NO per-table markers yet.
+      await seedFeature(db.sql, 'F-OLD');
+      await db.sql`
+        INSERT INTO harness_shared.substrate_meta (workspace_id, harness_slug, key, value)
+        VALUES (${WS}, ${SLUG}, 'backfill_done', '1700000000000')`;
+
+      // A genuinely NEW target relative to the legacy set: a plan_item_assignments row
+      // that predates this fix landing (or predates mig 145) — this is exactly the
+      // row that was permanently stuck before gap 1.
+      await seedAssignment(db.sql, 'plan-new', 'P-1');
+
+      const res = await backfillLocalState(fakeHandle(), db.sql);
+      expect(res.skipped).toBe(false);
+
+      const rows = await outboxRows(db.sql);
+      // F-OLD is NOT re-enqueued (legacy marker covers harness_features_consolidated).
+      expect(rows.find((r) => r.key === 'F-OLD')).toBeUndefined();
+      // The new target IS enqueued.
+      const assignmentRows = rows.filter((r) => r.table_name === 'plan_item_assignments');
+      expect(assignmentRows.map((r) => r.key)).toEqual(['plan-new:P-1']);
+
+      // Every legacy-covered target now has its OWN per-table marker (migrated from
+      // the flat one), stamped with the flat marker's original value/timestamp.
+      const legacyMarkerRow = await db.sql<{ value: string }[]>`
+        SELECT value FROM harness_shared.substrate_meta
+         WHERE workspace_id = ${WS} AND harness_slug = ${SLUG}
+           AND key = 'backfill_done:harness_features_consolidated'`;
+      expect(legacyMarkerRow[0]?.value).toBe('1700000000000');
+
+      const markers = await markerTables(db.sql);
+      expect(markers).toEqual(
+        [
+          'engineer_issues',
+          'harness_features_consolidated',
+          'harness_issues_consolidated',
+          'harness_plans',
+          'plan_item_assignments',
+          'pot_members',
+          'pot_settings',
+        ].sort(),
+      );
+
+      // A subsequent call is now fully a no-op — everything (legacy-migrated AND
+      // the newly-backfilled target) is marked done.
+      const second = await backfillLocalState(fakeHandle(), db.sql);
+      expect(second.skipped).toBe(true);
+      expect(second.enqueued).toBe(0);
+    });
+  });
+
+  // ── WI-971 gap 2 condition (b): don't flood an already-backlogged outbox ──────
+  describe('WI-971 gap 2(b) — enqueue bail cap', () => {
+    it('bails (nothing enqueued, no target marked done) when the candidate total exceeds the cap, and a later call (once the cap allows it) succeeds', async () => {
+      await seedFeature(db.sql, 'F-1');
+      await seedFeature(db.sql, 'F-2');
+      await seedFeature(db.sql, 'F-3');
+
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let res: Awaited<ReturnType<typeof backfillLocalState>>;
+      try {
+        res = await backfillLocalState(fakeHandle(), db.sql, { maxEnqueueBeforeBail: 2 });
+      } finally {
+        errSpy.mockRestore();
+      }
+      expect(res).toMatchObject({ skipped: false, enqueued: 0, dropped: 0, bailed: true, candidateTotal: 3 });
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('BAIL'));
+
+      // Nothing enqueued, no marker written — fully retryable.
+      expect((await outboxRows(db.sql)).length).toBe(0);
+      expect(await markerTables(db.sql)).toEqual([]);
+
+      // A later call under a cap that now covers the candidate total succeeds normally.
+      const retried = await backfillLocalState(fakeHandle(), db.sql, { maxEnqueueBeforeBail: 100 });
+      expect(retried.bailed).toBeFalsy();
+      expect(retried.enqueued).toBe(3);
+    });
+
+    it('maxEnqueueBeforeBail: 0 disables the bail cap entirely', async () => {
+      await seedFeature(db.sql, 'F-1');
+      await seedFeature(db.sql, 'F-2');
+      const res = await backfillLocalState(fakeHandle(), db.sql, { maxEnqueueBeforeBail: 0 });
+      expect(res).toMatchObject({ skipped: false, enqueued: 2, bailed: undefined });
+    });
   });
 });

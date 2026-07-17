@@ -1151,16 +1151,16 @@ export const FLAGS = {
   // switches lockAuthorityFor/lockAuthorityForHive's winner-selection algorithm from
   // the single global argmin(device_pubkey) (D-005, one peer is EVERY scope's
   // authority) to per-scope-key RENDEZVOUS HASHING (HRW — authority/rendezvous-
-  // authority.ts, proven in isolation, NOT yet wired live). OFF ⇒ selectAuthorityFromRows
-  // argmin, today's byte-identical behavior. ON ⇒ selectAuthorityRendezvous
-  // (argmax HRW weight over `scopeKey`, defaulting to the harness/hive slug when no
-  // finer-grained scopeKey is threaded through by a caller — so existing call sites
-  // work unchanged, they just get HRW's peer picked instead of argmin's). Ships dark:
-  // a live cutover of the lock/claim serialization point across the whole fleet needs
-  // an attended multi-peer verify (confirm authority resolution + failover still agree
-  // byte-identical across peers before flipping the shared coordination primitive) —
-  // the CLAUDE.md "reversible cutover kill-switch" dark case, not "finished, ship it".
-  // Listed in KNOWN_DARK_FLAGS (cutover).
+  // authority.ts). OFF ⇒ selectAuthorityFromRows argmin, pre-cutover byte-identical
+  // behavior (the tested rollback path). ON ⇒ selectAuthorityRendezvous (argmax HRW
+  // weight over `scopeKey`, defaulting to the harness/hive slug when no finer-grained
+  // scopeKey is threaded through by a caller — so existing call sites work unchanged,
+  // they just get HRW's peer picked instead of argmin's).
+  // GRADUATED 2026-07-17 (superseding the stale "ships dark" note this comment used to
+  // carry — see the full graduation rationale + drill evidence near KNOWN_DARK_FLAGS
+  // below, watermark 27→29): the attended multi-peer same-inputs verify ran on the
+  // tower↔VM rig and passed, so this is now DEFAULT ON, not dark. NOT in
+  // KNOWN_DARK_FLAGS.
   HRW_RENDEZVOUS_AUTHORITY: "papercusp-hrw-rendezvous-authority",
   // workspace-data-isolation-leaks-2026-06-17 F-E1 (PHASE 1): scope the routines
   // upsert's ON CONFLICT to (workspace_id, install_slug, name) so a hive in workspace

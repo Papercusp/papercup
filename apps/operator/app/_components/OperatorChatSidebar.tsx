@@ -857,13 +857,29 @@ const OP_CHAT_SIDEBAR_CSS = `
   color: var(--fg);
 }
 
-/* Five faces + the voice controls do not fit the 360px default width. The
-   labels on the two ADDED faces are what yields first (they are the newest and
-   the most tooltip-explained); the three original faces keep theirs, so the
-   header the owner already knows is unchanged at every width. Drag the sidebar
-   wider and the labels come back. Container query, not a media query: the
-   sidebar is drag-resized independently of the viewport. */
-@container op-chat (max-width: 460px) {
+/* Five faces + the voice controls do not fit one header row at any width the
+   sidebar is actually used at, so the ADDED faces collapse to icon-only pills
+   and let their labels go — the three original faces keep theirs.
+
+   The 860px threshold is MEASURED, not guessed (WI-5162, in the Tauri shell at
+   1280x800). Label widths by sidebar width, `potLabel:wordmark:fleetLabel`:
+       360→0:0:0   460→0:0:0   560→4:2:0   700→37:35:15   900→65:62:32
+   i.e. this row is ALREADY over-subscribed before these two faces exist: at the
+   360px default the "Pot Health" label (WI-4789) and the Papercup wordmark
+   (WI-4793) are flex-squeezed to ZERO width and render as icons regardless.
+   They only reach full size around 900px. Below 860 there is no room for a face
+   label, and a squeezed 0-width label is worse than none — it keeps its padding
+   and gap, so the pill reads as a lopsided icon. Cutting it cleanly ALSO hands
+   the space back to the original labels (measured: at 700px, potLabel 37→53).
+   Drag the sidebar past 860 and the face labels appear.
+
+   (The underlying crush is pre-existing and NOT fixed here — that would mean
+   re-opening the one-header-line decision (WI-4738) uninvited. Filed separately
+   with these measurements.)
+
+   A container query, not a media query: the sidebar is drag-resized
+   independently of the viewport, so its own inline size is what decides. */
+@container op-chat (max-width: 860px) {
   .op-chat-header-main .op-chat-face-toggle .op-chat-pot-toggle-label {
     display: none;
   }
