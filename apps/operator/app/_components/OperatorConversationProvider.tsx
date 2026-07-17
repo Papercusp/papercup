@@ -105,8 +105,24 @@ interface OperatorTurnRow {
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: number;
+  /** Who authored the turn (the wire already carries it, turnRowToWire). The
+   *  curator's status turns are `system`; the operator's own turns are
+   *  text_typed/voice_*. deterministic-status-cards-2026-07-17 P-003. */
+  source?: "text_typed" | "voice_stt" | "voice_tts" | "system";
   tools?: ChatToolCall[] | null;
   report?: ParsedReport | null;
+}
+
+/** deterministic-status-cards-2026-07-17 P-003: map a turn's `report` onto
+ *  ChatMessage.report ONLY for a curator `source:'system'` turn — so `report`
+ *  present ⟺ a curator status CARD (renders in the chat via ReportBlockCard).
+ *  The operator's OWN `<report>` turns (text_typed/voice_tts) still route to the
+ *  Inbox and never set this, keeping chat conversation. */
+function reportForTurn(t: {
+  source?: string | null;
+  report?: ParsedReport | null;
+}): ParsedReport | undefined {
+  return t.source === "system" && t.report ? t.report : undefined;
 }
 
 // ─── State + actions ────────────────────────────────────────────────────
@@ -1025,6 +1041,7 @@ export function OperatorConversationProvider({
           id: typeof t.id === "string" ? t.id : undefined,
           seq: typeof t.seq === "number" ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
+          report: reportForTurn(t),
         })),
         lastTurnAtMs: turns[turns.length - 1].createdAt ?? 0,
       });
@@ -1068,6 +1085,7 @@ export function OperatorConversationProvider({
           id: typeof t.id === "string" ? t.id : undefined,
           seq: typeof t.seq === "number" ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
+          report: reportForTurn(t),
         })),
       });
     }
@@ -1195,6 +1213,7 @@ export function OperatorConversationProvider({
           id: typeof t.id === "string" ? t.id : undefined,
           seq: typeof t.seq === "number" ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
+          report: reportForTurn(t),
         },
       });
       newestLoadedSeqRef.current = t.seq;
@@ -1370,6 +1389,7 @@ export function OperatorConversationProvider({
           role: t.role as "user" | "assistant",
           content: t.text as string,
           id: typeof t.id === "string" ? t.id : undefined,
+          report: reportForTurn(t),
         }));
         // Deliberately NOT bumping newestLoadedSeqRef: the sync reconciler
         // still owes these turns to the UI and dedupes them by id/seq.
