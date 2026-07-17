@@ -98,11 +98,13 @@ export async function sendToSessionOwner(ownerId: string, body: string): Promise
  *  (it only skips that when `streamUrl` is already truthy at call time). */
 function LiveSessionChat({
   streamUrl,
+  agentName,
   onSend,
   sending,
   sendError,
 }: {
   streamUrl: string;
+  agentName: string;
   onSend: (text: string) => void;
   sending: boolean;
   sendError: string | null;
@@ -128,6 +130,7 @@ function LiveSessionChat({
       onSend={onSend}
       banner={banner}
       error={sendError}
+      agentName={agentName}
     />
   );
 }
@@ -191,7 +194,8 @@ export default function SessionChatModal({
   };
 
   const open = sessionOwnerId !== null;
-  const title = `Chat — ${ownerLabel || sessionOwnerId || 'agent session'}`;
+  const agentName = ownerLabel || sessionOwnerId || 'agent session';
+  const title = `Chat — ${agentName}`;
 
   return (
     <Modal
@@ -216,7 +220,13 @@ export default function SessionChatModal({
         ) : !resolved ? (
           <div style={BANNER_STYLE}>No recent Claude session found for this agent.</div>
         ) : streamUrl ? (
-          <LiveSessionChat streamUrl={streamUrl} onSend={handleSend} sending={sending} sendError={sendError} />
+          <LiveSessionChat
+            streamUrl={streamUrl}
+            agentName={agentName}
+            onSend={handleSend}
+            sending={sending}
+            sendError={sendError}
+          />
         ) : null}
         {sentOk ? <div style={BANNER_STYLE}>Sent — the agent is woken if it's live.</div> : null}
       </div>

@@ -742,19 +742,34 @@ export function deriveKickoffPrompt(opts: {
   /** drain-mode P-003: DRAIN launch — the DRAIN activation REPLACES the plain AUTO
    *  one (DRAIN implies AUTO; the directive carries the posture itself). */
   drainMode?: boolean;
+  /** kickoff-prompt-absorption P-004: the backend this launch runs on — picks the
+   *  kickoff guard profile via kickoffGuardProfileForAgent ('lean' for claude,
+   *  whose guards are structural; 'full' for omp/codex/unknown). Omitted ⇒ 'full'
+   *  (byte-identical to the pre-P-004 kickoff). */
+  agent?: string | null;
+  /** kickoff-prompt-absorption P-001/P-004: the server already armed this member's
+   *  engine loop at boot — the AUTO activation swaps its "MUST ARM A LOOP" clause
+   *  for the one-line "already armed" notice. Omitted/false ⇒ the full self-arm
+   *  instruction (the fallback path for a leader / unplanned / arm-failed boot). */
+  loopAutoArmed?: boolean;
 }): string | null {
   const base = opts.planSlug
-    ? deriveLaunchPromptText(null, opts.autoMode, {
-        slug: opts.planSlug,
-        harness: opts.harnessSlug ?? null,
-      })
+    ? deriveLaunchPromptText(
+        null,
+        opts.autoMode,
+        {
+          slug: opts.planSlug,
+          harness: opts.harnessSlug ?? null,
+        },
+        kickoffGuardProfileForAgent(opts.agent),
+      )
     : opts.launchContextPath
       ? LAUNCH_CONTEXT_KICKOFF
       : null;
   const activation = opts.drainMode
     ? [DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE]
     : opts.autoMode
-      ? [AUTO_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE]
+      ? [autoModeDirective(opts.loopAutoArmed === true), CONTEXT_DISCIPLINE_DIRECTIVE]
       : [];
   return activation.length ? [...activation, base].filter(Boolean).join('\n\n') : base;
 }
@@ -1950,7 +1965,17 @@ const post = defineTool({
     // ./launch-prompt, so the two never drift.
     const kickoffPrompt = sessionPortContext
       ? null
-      : deriveKickoffPrompt({ planSlug, harnessSlug, autoMode, launchContextPath, drainMode });
+      : deriveKickoffPrompt({
+          planSlug,
+          harnessSlug,
+          autoMode,
+          launchContextPath,
+          drainMode,
+          // P-004: backend picks the guard profile; the P-001 arm outcome picks
+          // the AUTO activation variant (block above — never assume armed).
+          agent,
+          loopAutoArmed: loopAutoArm?.armed === true,
+        });
 
     const result: BootstrapSuResult = {
       status: 'ok',

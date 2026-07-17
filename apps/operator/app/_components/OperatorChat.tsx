@@ -79,6 +79,18 @@ interface Props {
    */
   conversationId?: string;
   workspaceId?: string;
+
+  /**
+   * Display name substituted into the default empty-state title + composer
+   * placeholder copy (both hardcode "Papercup" otherwise). Override when this
+   * conversation ISN'T with Papercup — e.g. the direct session-chat popup
+   * (owner-inbox-single-pane-2026-07-17 P-007, SessionChatModal) reuses this
+   * same component for a live chat with an arbitrary su agent. The props
+   * audit that generalized this component for that reuse (D-005) found every
+   * OTHER prop already generic (messages/busy/onSend et al.) — this was the
+   * one hardcoded bit of copy standing in the way of a second caller.
+   */
+  agentName?: string;
 }
 
 const STARTING_PROMPTS = [
@@ -102,7 +114,7 @@ const STARTING_PROMPTS = [
 export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
-  conversationId, workspaceId,
+  conversationId, workspaceId, agentName = 'Papercup',
 }: Props) {
   // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
   // consume a staged seed on mount (the usual path — the chat body was
@@ -208,12 +220,17 @@ export function OperatorChat({
         </>
       }
       emptyState={{
-        title: 'Papercup',
+        title: agentName,
         body: passive
           ? 'In passive mode. Type below to wake them.'
           : 'Tell me what you want to inspect, scan, or unblock.',
         icon: OperatorLogoMark,
-        extra: (
+        // The starting prompts are Papercup-specific ("scan workspaces", "review
+        // blockers" — operator-scoped asks). A non-Papercup caller (SessionChatModal
+        // messaging an arbitrary su agent) has no business drafting these — they'd be
+        // actively misleading there, not just off-brand — so gate the whole panel on
+        // agentName rather than showing it unconditionally.
+        extra: agentName === 'Papercup' ? (
           <div className="op-chat-empty-panel" aria-label="Quick draft prompts">
             <div className="op-chat-empty-panel-head">
               <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />
@@ -235,10 +252,10 @@ export function OperatorChat({
               ))}
             </div>
           </div>
-        ),
+        ) : undefined,
       }}
       labelForRole={() => ''}
-      inputPlaceholder={passive ? 'Type to wake Papercup…' : 'Reply to Papercup…'}
+      inputPlaceholder={passive ? `Type to wake ${agentName}…` : `Reply to ${agentName}…`}
       inputValue={input}
       onInputChange={setInput}
       onSubmit={submit}

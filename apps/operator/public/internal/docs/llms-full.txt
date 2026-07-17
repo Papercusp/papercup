@@ -5146,6 +5146,8 @@ The contrast that proves it: `harness_features_consolidated` has **no** such vie
 
 > **Rule.** A column whose correct value is only knowable at request time must be stamped **explicitly by the writer**. Defaulting it in DDL converts a loud `NOT NULL` violation into a silent wrong-tenant write. If you want a safety net, make the net *derive* the value — never assert a literal.
 
+**This is now linted (WI-5243).** `findLiteralTenantDefault` in `scripts/lint-migrations.mjs` fails any enforced-era migration that sets a literal default on `workspace_id` / `hive_slug` / `tenant_id`, and the repo-wide scan runs inside `lint-migrations.test.ts` — so `npm run test:affected` (which the green-checkpoint gate runs) catches a reintroduction automatically. A *derived* default (`current_setting(...)`) is legitimate and is not flagged. Note the lint scans **raw** text, unlike its siblings: these `ALTER`s live inside a per-schema `DO $$ … $$` loop that `stripSqlBodies` removes, so a stripped scan would pass — that false green is the whole bug.
+
 ### The net that already existed
 
 [Section titled “The net that already existed”](#the-net-that-already-existed)
@@ -5201,6 +5203,19 @@ curl -s "http://127.0.0.1:3070/api/zero-harness/rest-query?name=agentChats.detai
 ```
 
 `:3070` serves the **release** checkout, so it reflects DATA fixes immediately but never your local code changes — verify code on `:3170` after `dev:restart { target: 'staging' }`.
+
+## Where the explicit stamp lives now
+
+[Section titled “Where the explicit stamp lives now”](#where-the-explicit-stamp-lives-now)
+
+Every live writer into these per-harness views passes `activeWorkspaceId()`:
+
+* `agent-chats-data.ts` — `createChat` (and `listChats` is workspace-scoped, which closes a second route to the same spinner: `openFeatureChat`’s reuse-before-create otherwise hands `ChatPanel` a foreign chat id).
+* `execute-action.ts` — `messages` (×2), `executed_actions`, `supervisor_notes`, `directive_summaries`. The active workspace is correct for the *recipient’s* row too: cross-workspace dispatch is unsupported in v1, so caller and recipient always share a workspace.
+* `harness-agent-runs.ts` — already stamped explicitly; it was the model to copy.
+* `feature_audit` — only `_retired` code writes it.
+
+**Correct stamping does not break the readers.** These views filter on `harness_slug` alone (no workspace predicate), so a correctly-stamped row is still visible to every existing reader — verified before/after against `messages_consolidated`, which carries fleet comms.
 
 # Context estimator: toolUseResult is a double-write that never enters context
 
@@ -31026,6 +31041,58 @@ That is the full circuit: **file → grade → wake → revise → outcome → p
 * [The Scout loop](/internal/docs/system/scout-loop/) — the automated engine this loop is the agent-driven twin of; its **su-ideate parity** section maps the stages side by side.
 * `modes/registry.ts` — the IDEATE + GRADE mode contracts (the binding text su reads on entering the mode).
 * `operating-modes-policy.ts` — `renderModesPolicy('full')` renders the ritual into the full-tier operating-modes clause; the fleet tier omits it.
+
+# The su owner-ask convention, and why enforcement is per-client (D-002)
+
+> Every client-agnostic convention "an owner-directed question must ride a durable channel" — but each of Claude Code / OMP / Codex can enforce it to a different degree, because they expose different hook surfaces. This page is the capability matrix behind that decision (D-002, owner-inbox-single-pane-2026-07-17).
+
+## The convention (D-001, universal — binds every su session regardless of client)
+
+[Section titled “The convention (D-001, universal — binds every su session regardless of client)”](#the-convention-d-001-universal--binds-every-su-session-regardless-of-client)
+
+An owner-directed question must ride a **durable, machine-readable channel**, never just a prose sentence at the end of a turn:
+
+1. **Preferred:** `coord:escalate` with structured `options[]` — this already renders as an answerable `AskChoiceCard` in the owner’s Inbox (`apps/operator/app/_components/inbox/InboxPane.tsx`), and answering it round-trips back to the asking session.
+2. **Floor:** an `<ask>` block (`question`, `options[]`, `refs[]`) in `@papercusp/chat-protocol`, living beside the existing `<report>` block (D-001 of `owner-inbox-single-pane-2026-07-17`; parser/schema is P-003’s lane in `libs/generic/chat-protocol`).
+
+A bare turn-ending question in prose — no escalation, no tagged block — is **invisible** to the unified owner Inbox this plan builds. The owner may never see it; the asking session sits blocked on a reply that never surfaces anywhere the owner is looking.
+
+## Why enforcement can’t be uniform: the per-client hook reality (verified 2026-07-17)
+
+[Section titled “Why enforcement can’t be uniform: the per-client hook reality (verified 2026-07-17)”](#why-enforcement-cant-be-uniform-the-per-client-hook-reality-verified-2026-07-17)
+
+The three su backends expose genuinely different hook surfaces — this was verified in-repo, not assumed, before D-002 was written:
+
+| Client          | Turn-end / Stop hook?                                                                                                                                                                                                                              | What it can do about an unstructured ask                                                                                                                                                                                                                                                                                                                |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude Code** | Yes — `Stop` hook (blockable), plus `Notification` and the full `PreToolUse`/`PostToolUse` set (`apps/operator/scripts/hooks/cc/*`)                                                                                                                | **Hard enforce.** Parse the final turn for a structured mirror; if a question-shaped ending has none, **BOUNCE the stop** with a corrective reason (narrow, loop-guarded — P-001). `PreToolUse` also mirrors `AskUserQuestion`/`ExitPlanMode` dialogs into a coord escalation directly.                                                                 |
+| **OMP**         | Yes — `turn_end` (`apps/operator/scripts/hooks/omp/coord-hook.ts`)                                                                                                                                                                                 | **Soft enforce.** No blocking primitive at turn boundary, but `turn_end` can capture the final turn text, ingest it (P-002’s endpoint), and inject a `followUp` nudge (`deliverAs:'followUp'`) on the *next* turn when the prior one ended in an unstructured ask.                                                                                      |
+| **Codex**       | **No.** `role-codex-home.ts` / the codex hook surface is `PreToolUse`/`PostToolUse` only — there is no turn-end/Stop-equivalent event today. (An upstream `notify` turn-complete channel reportedly exists but is **unverified against our pin**.) | **Convention only.** Nothing mirrors or bounces an unstructured Codex ask; the watcher (P-002, transcript-based) is the *only* backstop — it detects a pending `AskUserQuestion`/permission `tool_use` with no `tool_result` and surfaces “session blocked on owner” client-agnostically, but that’s a liveness signal, not an ask-quality enforcement. |
+
+## D-002: this asymmetry is a decision, not a bug
+
+[Section titled “D-002: this asymmetry is a decision, not a bug”](#d-002-this-asymmetry-is-a-decision-not-a-bug)
+
+> **Enforcement is PER-CLIENT-CAPABILITY; the convention is UNIVERSAL.** Claude = hard Stop-bounce; OMP = turn\_end capture + followUp corrective nudge; Codex = convention + watcher only. The Codex prose-question gap is a **recorded decision**, not a bug to file later.
+
+Concretely: don’t file an EI/bug for “Codex doesn’t bounce unstructured asks the way Claude does” — that’s expected, tracked here, and will only change if Codex ships a genuine turn-end hook upstream (at which point this page and the OMP-style extension become the template). What Codex sessions DO get today:
+
+* The convention itself, delivered via the same playbook text every client loads (`apps/operator/prompts/papercusp-su-{engineer,power}.tools.md` — “An owner-directed question MUST ride a durable channel”).
+* The P-002 transcript watcher’s blocked-session detection, which is client-agnostic (works off the stored transcript, not a hook).
+* A note in `role-codex-home.ts`’s own header pointing here, so anyone extending the Codex home-materialization path sees the gap in context.
+
+## D-003 reminder: mirror, never suppress
+
+[Section titled “D-003 reminder: mirror, never suppress”](#d-003-reminder-mirror-never-suppress)
+
+Every hook in this system **copies** an ask into the coordination substrate; none of them touch what the terminal actually shows. The goal is “the Inbox is sufficient”, never “the terminal goes dark” — a bounce is a *correction* (try again, structured), not a silent drop.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* Plan `owner-inbox-single-pane-2026-07-17` (D-001 through D-008) — the full design this matrix serves.
+* [turn-provenance-owner-vs-agent](/internal/docs/agent-insights/turn-provenance-owner-vs-agent) — the companion protocol for verifying *who* a turn came from, relevant once an inbox reply is relayed back into an asking session (D-006).
 
 # Where the su persona lives and how it reaches a live session
 

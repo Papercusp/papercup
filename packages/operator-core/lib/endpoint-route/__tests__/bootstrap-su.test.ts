@@ -1237,3 +1237,73 @@ describe('deriveKickoffPrompt (EI-5503 + WI-1962 + WI-1356 — the turn-1 kickof
     expect(deriveKickoffPrompt({ planSlug: null, autoMode: false, launchContextPath: null })).toBeNull();
   });
 });
+
+describe('deriveKickoffPrompt — kickoff-prompt-absorption P-004 (guard profile + auto-arm notice)', () => {
+  it("loopAutoArmed swaps the AUTO activation's MUST-ARM clause for the already-armed notice", async () => {
+    const { deriveKickoffPrompt, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED } =
+      await import('../routes/agent-mcp/bootstrap-su');
+    const armed = deriveKickoffPrompt({
+      planSlug: 'p1',
+      autoMode: true,
+      launchContextPath: null,
+      loopAutoArmed: true,
+    });
+    expect(armed).toContain(AUTO_MODE_DIRECTIVE_LOOP_ARMED);
+    expect(armed).not.toContain('MUST ARM');
+    expect(armed).toContain('ALREADY ARMED');
+    // Omitted / false ⇒ the full self-arm instruction (the fallback path).
+    const fallback = deriveKickoffPrompt({ planSlug: 'p1', autoMode: true, launchContextPath: null });
+    expect(fallback).toContain(AUTO_MODE_DIRECTIVE);
+    expect(fallback).toContain('MUST ARM');
+  });
+
+  it('autoModeDirective picks by arm outcome (never assume armed)', async () => {
+    const { autoModeDirective, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED } =
+      await import('../routes/agent-mcp/bootstrap-su');
+    expect(autoModeDirective(true)).toBe(AUTO_MODE_DIRECTIVE_LOOP_ARMED);
+    expect(autoModeDirective(false)).toBe(AUTO_MODE_DIRECTIVE);
+  });
+
+  it("agent:'claude' gets the lean plan kickoff (orient pointer, absorbed guards dropped)", async () => {
+    const { deriveKickoffPrompt } = await import('../routes/agent-mcp/bootstrap-su');
+    const k = deriveKickoffPrompt({
+      planSlug: 'p1',
+      harnessSlug: 'papercusp',
+      autoMode: true,
+      launchContextPath: null,
+      agent: 'claude',
+    });
+    expect(k).toContain('advance the plan `p1`');
+    expect(k).toContain('coord:orient');
+    expect(k).toContain('planSlug: "p1"');
+    expect(k).not.toContain('NOT hunt for a plan file'); // → P-003b plans-read hook (WI-5229)
+    expect(k).not.toContain('NameError'); // → P-003a unknown-tool referral (EI-9011)
+  });
+
+  it('omp (ornith/local) and codex keep the full weak-model guard text', async () => {
+    const { deriveKickoffPrompt } = await import('../routes/agent-mcp/bootstrap-su');
+    for (const agent of ['omp', 'codex', undefined]) {
+      const k = deriveKickoffPrompt({
+        planSlug: 'p1',
+        autoMode: true,
+        launchContextPath: null,
+        agent,
+      });
+      expect(k).toContain('plans:get');
+      expect(k).toContain('NOT hunt for a plan file');
+    }
+  });
+
+  it('DRAIN is unaffected by loopAutoArmed (leaders are never auto-armed; DRAIN sequences its own bring-up)', async () => {
+    const { deriveKickoffPrompt, DRAIN_MODE_DIRECTIVE } = await import('../routes/agent-mcp/bootstrap-su');
+    const k = deriveKickoffPrompt({
+      planSlug: null,
+      autoMode: true,
+      launchContextPath: null,
+      drainMode: true,
+      loopAutoArmed: true,
+    });
+    expect(k).toContain(DRAIN_MODE_DIRECTIVE);
+    expect(k).not.toContain('ALREADY ARMED');
+  });
+});

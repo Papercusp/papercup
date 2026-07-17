@@ -82,6 +82,27 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
     expect(screen.getByTestId('empty-body').textContent).toMatch(/passive mode/i);
   });
 
+  it('defaults the empty-state title + composer placeholder to "Papercup"', () => {
+    render(<OperatorChat {...baseProps({ passive: false })} />);
+    expect(lastProps.emptyState.title).toBe('Papercup');
+    expect(lastProps.inputPlaceholder).toBe('Reply to Papercup…');
+  });
+
+  it('agentName (owner-inbox-single-pane P-007) overrides the empty-state title + placeholder, active and passive', () => {
+    const { rerender } = render(<OperatorChat {...baseProps({ passive: false, agentName: 'su · live-1' })} />);
+    expect(lastProps.emptyState.title).toBe('su · live-1');
+    expect(lastProps.inputPlaceholder).toBe('Reply to su · live-1…');
+
+    rerender(<OperatorChat {...baseProps({ passive: true, agentName: 'su · live-1' })} />);
+    expect(lastProps.inputPlaceholder).toBe('Type to wake su · live-1…');
+  });
+
+  it('hides the Papercup-specific "Quick draft prompts" panel when agentName is overridden — those prompts are wrong for a different agent', () => {
+    render(<OperatorChat {...baseProps({ agentName: 'su · live-1' })} />);
+    expect(lastProps.emptyState.extra).toBeUndefined();
+    expect(screen.queryByText('Scan workspaces')).toBeNull();
+  });
+
   it('quick-draft prompt buttons populate the composer input', () => {
     render(<OperatorChat {...baseProps()} />);
     // The empty-state extra panel renders the three starting-prompt rows.

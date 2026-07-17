@@ -141,6 +141,23 @@ describe('doSendMessage — recipient harness existence (WI-385)', () => {
     expect(inserts()[0].query).toContain('harness_target.messages');
   });
 
+  // WI-5243 (the WI-5125 class). The per-harness `messages` view used to carry
+  // `ALTER COLUMN workspace_id SET DEFAULT 'default'`, so omitting the column
+  // filed the row under the WRONG tenant and STILL reported success — the same
+  // silent mis-tenanting that left 181 agent_chats rows unreadable and showed the
+  // owner a chat panel spinning forever. The active workspace is only knowable
+  // in-process, so the writer must stamp it; nothing in the SQL can catch this.
+  it('stamps workspace_id explicitly on the message INSERT — never leaves it to a view default', async () => {
+    H.state.existingSchemas.add('harness_target');
+    const r = await dispatchAction(CALLER, action({ to: ['target'] }));
+    expect(r.ok).toBe(true);
+    const ins = inserts()[0];
+    expect(ins.query).toMatch(/INSERT INTO harness_target\.messages\s*\(\s*workspace_id\b/);
+    // $1 is the workspace — a real id, not the 'default' the view used to assume.
+    expect(typeof ins.params[0]).toBe('string');
+    expect(ins.params[0]).toBeTruthy();
+  });
+
   it('a multi-recipient batch with one missing recipient fails ATOMICALLY (no partial insert)', async () => {
     H.state.existingSchemas.add('harness_real');
     const r = await dispatchAction(CALLER, action({ to: ['real', 'ghost'] }));
