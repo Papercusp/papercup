@@ -1698,7 +1698,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           `(${REPAIR_MAX_ATTEMPTS_PER_LOG}/${REPAIR_MAX_ATTEMPTS_PER_LOG}) and re-stalled ` +
           `(${episode.kind}) — forcing topic rejoin`,
       );
-      console.error(
+      // console.info (not .error/.warn) — matches the repair-on-detect success
+      // log just below (drainRepairQueue) which is also unguarded: this file's
+      // vitest suite runs under vitest-fail-on-console (shouldFailOnError/Warn),
+      // and this diagnostic is meant to be always-on/grep-able in production
+      // logs (same rationale as that line), not a test-suppressed console.error.
+      console.info(
         `[replication-liveness] repair-exhausted: forcing topic rejoin ` +
           `log=${episode.logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${episode.kind}`,
       );

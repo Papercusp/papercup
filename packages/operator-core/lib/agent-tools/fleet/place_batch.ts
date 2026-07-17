@@ -14,7 +14,11 @@
  * (placement-affinity.ts / batch-placement.ts); this tool is the gather→plan→
  * execute wrapper. Each placement is isolated (one failure never aborts the
  * batch), and warm-inject obeys the woken:0 ladder (a bee with no armed wake is
- * released + re-placed as a fresh spawn — queen.md "climb the ladder").
+ * released + re-placed as a fresh spawn — queen.md "climb the ladder"). EI-490:
+ * a woken:0 warm-inject target is ALSO auto-reaped (its nursery subtree
+ * cancelled, freeing the concurrency slot it was zombie-squatting on) — the
+ * Queen no longer has to manually fleet:tree → discover woken:0 → fleet:cancel
+ * each dead row before headroom frees up; `summary.reaped` reports the count.
  *
  * Scale past the fleet ceiling (~16) is bounded by the credential pool, not this
  * tool (D-006): a batch larger than headroom simply spawns up to the ceiling and
@@ -519,8 +523,10 @@ export async function executeBatch(opts: {
   const placements: PlacementResult[] = [];
   // EI-490: dedupe auto-reap per bee — several tasks in one batch can target the
   // SAME dead warm-inject bee; cancel its nursery row (and grant the freed slot)
-  // only once, not once per task.
+  // only once, not once per task. `reapedBeesOk` is the successfully-cancelled
+  // subset (surfaced in the summary); `reapedBees` alone just dedupes attempts.
   const reapedBees = new Set<string>();
+  const reapedBeesOk = new Set<string>();
 
   const doSpawn = async (task: PlacementTask, reason: string, climbedFrom?: string): Promise<PlacementResult> => {
     if (awaitEvent) {
@@ -632,7 +638,10 @@ export async function executeBatch(opts: {
             reason: 'EI-490: auto-reaped by fleet:place_batch — warm-inject wake undelivered (woken:0), zombie nursery row',
             actor,
           }).catch(() => false);
-          if (reaped) extraSpawnBudget++;
+          if (reaped) {
+            extraSpawnBudget++;
+            reapedBeesOk.add(bee);
+          }
         }
         if (extraSpawnBudget > 0 && !awaitEvent) {
           extraSpawnBudget--;
@@ -661,6 +670,10 @@ export async function executeBatch(opts: {
     unplaced: count('unplaced'),
     deferred: count('deferred'),
     failed: count('spawn-failed') + count('error'),
+    // EI-490: zombie nursery rows auto-reaped this batch (woken:0 → cancelSubtree),
+    // freeing their concurrency slot without the Queen manually fleet:cancel-ing
+    // each one. Omitted when zero — byte-identical to today for the common case.
+    ...(reapedBeesOk.size > 0 ? { reaped: reapedBeesOk.size } : {}),
   };
 
   // EI-1611: group + subscribe AFTER every placement has landed — never on the

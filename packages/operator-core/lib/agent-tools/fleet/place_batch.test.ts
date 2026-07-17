@@ -187,6 +187,10 @@ function makeDeps(over: Partial<Record<keyof ExecuteBatchDeps, AnyMock>> = {}) {
     wakeRecipients: over.wakeRecipients ?? vi.fn(async () => ({ woken: 1 })),
     ensureGroupTopic: over.ensureGroupTopic ?? vi.fn(async () => ({ topic: {}, created: true, notified: 0 })),
     subscribeGroupTopic: over.subscribeGroupTopic ?? vi.fn(async () => ({})),
+    // EI-490: default to "nothing reaped" so every pre-existing test (none of
+    // which cares about auto-reap) keeps its original woken:0 behavior byte-
+    // identical; the dedicated reap tests below override this to `true`.
+    cancelDeadBee: over.cancelDeadBee ?? vi.fn(async () => false),
   };
   return { fns, deps: fns as unknown as ExecuteBatchDeps };
 }
@@ -283,6 +287,83 @@ describe('executeBatch — placement execution', () => {
     expect(fns.spawnAgentInHarness).not.toHaveBeenCalled();
     expect(r.placements[0]).toMatchObject({ task: 'WI-4', action: 'unplaced', bee: 's-asleep' });
     expect(r.placements[0].reason).toMatch(/no spawn headroom/);
+  });
+
+  // EI-490: fleet:place_batch reported "no spawn headroom" against zombie nursery
+  // rows without ever freeing them — the Queen had to manually fleet:tree → discover
+  // woken:0 → fleet:cancel each one. woken:0 now auto-reaps the dead bee's nursery
+  // row and grants the freed slot back to the SAME batch.
+  describe('woken:0 auto-reap (EI-490)', () => {
+    it('at zero headroom, a successful reap frees a slot the SAME task climbs the ladder with', async () => {
+      const { fns, deps } = makeDeps({
+        wakeRecipients: vi.fn(async () => ({ woken: 0 })),
+        cancelDeadBee: vi.fn(async () => true),
+      });
+      const r = await run(
+        plan([{ task: task('WI-6'), disposition: 'warm-inject', bee: 's-zombie', rank: 0, reason: 'affinity' }]),
+        deps,
+        0, // zero headroom going in — only the reap makes a spawn possible
+      );
+      expect(fns.cancelDeadBee).toHaveBeenCalledTimes(1);
+      expect(fns.cancelDeadBee).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 'ws-1', spawnId: 's-zombie', reason: expect.stringMatching(/woken:0/) }),
+      );
+      expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1); // the reaped slot let it climb
+      expect(r.placements[0]).toMatchObject({ task: 'WI-6', action: 'spawned', climbed_from: 's-zombie' });
+      expect(r.summary.spawned).toBe(1);
+      expect(r.summary.reaped).toBe(1);
+    });
+
+    it('a FAILED reap attempt grants no bonus slot — still unplaced, reason unchanged', async () => {
+      const { fns, deps } = makeDeps({
+        wakeRecipients: vi.fn(async () => ({ woken: 0 })),
+        cancelDeadBee: vi.fn(async () => false),
+      });
+      const r = await run(
+        plan([{ task: task('WI-7'), disposition: 'warm-inject', bee: 's-zombie', rank: 0, reason: 'affinity' }]),
+        deps,
+        0,
+      );
+      expect(fns.cancelDeadBee).toHaveBeenCalledTimes(1);
+      expect(fns.spawnAgentInHarness).not.toHaveBeenCalled();
+      expect(r.placements[0]).toMatchObject({ task: 'WI-7', action: 'unplaced', bee: 's-zombie' });
+      expect(r.placements[0].reason).toBe('warm-inject undelivered (woken:0); no spawn headroom — released to the frontier');
+      expect(r.summary.reaped).toBeUndefined();
+    });
+
+    it('a rejected cancelDeadBee call is swallowed (best-effort) — never throws, still unplaced', async () => {
+      const { fns, deps } = makeDeps({
+        wakeRecipients: vi.fn(async () => ({ woken: 0 })),
+        cancelDeadBee: vi.fn(async () => { throw new Error('pg down'); }),
+      });
+      const r = await run(
+        plan([{ task: task('WI-8'), disposition: 'warm-inject', bee: 's-zombie', rank: 0, reason: 'affinity' }]),
+        deps,
+        0,
+      );
+      expect(r.placements[0]).toMatchObject({ task: 'WI-8', action: 'unplaced', bee: 's-zombie' });
+      expect(r.summary.reaped).toBeUndefined();
+    });
+
+    it('several tasks targeting the SAME dead bee reap it only ONCE, granting only one bonus slot', async () => {
+      const { fns, deps } = makeDeps({
+        wakeRecipients: vi.fn(async () => ({ woken: 0 })),
+        cancelDeadBee: vi.fn(async () => true),
+      });
+      const r = await run(
+        plan([
+          { task: task('WI-9a'), disposition: 'warm-inject', bee: 's-zombie', rank: 0, reason: 'affinity' },
+          { task: task('WI-9b'), disposition: 'warm-inject', bee: 's-zombie', rank: 0, reason: 'affinity' },
+        ]),
+        deps,
+        0,
+      );
+      expect(fns.cancelDeadBee).toHaveBeenCalledTimes(1); // deduped — not once per task
+      expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1); // only ONE bonus slot was freed
+      expect(r.summary.spawned).toBe(1);
+      expect(r.summary.unplaced).toBe(1);
+      expect(r.summary.reaped).toBe(1);
+    });
   });
 
   it('inject-race: the item is claimed by another agent first → inject-raced, no send', async () => {

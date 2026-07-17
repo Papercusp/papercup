@@ -182,7 +182,15 @@ export type BootHistoryKind =
   | 'dht_universe_ok'
   | 'dht_universe_mismatch'
   | 'replication_repair'
-  | 'replication_repair_failed';
+  | 'replication_repair_failed'
+  // EI-13317 rung (b): the WI-3684 session-level repair budget
+  // (REPAIR_MAX_ATTEMPTS_PER_LOG) is exhausted for a log AND it re-stalled
+  // anyway — escalated to a topic-level forced rejoin (swarm.ts's
+  // SwarmHandle.forceRejoin) rather than silently no-op'ing forever.
+  | 'replication_repair_exhausted'
+  // The forced-rejoin escalation itself threw (swarm.leave/join failure) —
+  // distinct from 'replication_repair_failed' (a session re-attach failure).
+  | 'replication_repair_rejoin_failed';
 
 export interface BootHistoryEntry {
   ts: number;
