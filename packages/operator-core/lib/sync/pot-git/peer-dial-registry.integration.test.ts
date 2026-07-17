@@ -26,7 +26,7 @@ import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/sr
 import { insertHiveIfAbsent } from '../../hive-store';
 import { defaultRunGit, ensurePotGitRepo } from './storage';
 import { fetchOverDuplex } from './fetch-transport';
-import { wireHiveGitServe } from './serve-wiring';
+import { openHiveGitFetchDuplex, wireHiveGitServe } from './serve-wiring';
 import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
 import { wireHiveGitDial, resolvePotGitPeerSocket, openHiveGitDuplexToDevice, _testing } from './peer-dial-registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
@@ -300,6 +300,98 @@ describe('pot-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ove
     expect(resolvePotGitPeerSocket(TOPIC, CLIENT_DEVICE)).toBeDefined();
     clientSocket.destroy();
     await waitFor(() => resolvePotGitPeerSocket(TOPIC, CLIENT_DEVICE) === undefined);
+  });
+});
+
+describe('WI-3496 drill regression: opens rejected by a not-yet-wired peer RECOVER once the peer wires (dead-channel-cache eviction + muxer-level config)', () => {
+  // The live two-machine drill measured a ~100s skew between the two boxes'
+  // pot-git wirings: the early side's channel.open() reached a peer whose
+  // protomux was LIVE (it rejects unknown opens) but whose pot-git serve/dial
+  // were not wired yet. Pre-fix, the rejected (closed) channel stayed cached
+  // per (muxer, topic) forever, poisoning BOTH directions: the early side's
+  // re-wires resolved to the dead channel, and the late side's eventual open
+  // hit the pair() notifier, which ALSO resolved to the dead state and created
+  // no protomux channel — so protomux rejected it right back. Deadlock, and
+  // (EI-13317) no reconnect ever heals it.
+  const TOPIC2 = Buffer.alloc(32, 22);
+  let root2: string;
+  let sockPath2: string;
+  let server2: Server;
+  let aSocket: Socket;
+  let aDuplex: Duplex;
+  let bWire: (() => void) | null = null;
+
+  beforeAll(async () => {
+    root2 = await mkdtemp(join(tmpdir(), 'hgdial-race-'));
+    sockPath2 = join(root2, 'link.sock');
+    server2 = createServer({ allowHalfOpen: true }, (srvConn) => {
+      srvConn.on('error', () => {});
+      const d = frameWrap(srvConn);
+      // Simulate the drill's boot-order race: B's muxer EXISTS (protomux is
+      // parsing the connection and rejects unknown channel opens) but pot-git
+      // serve/dial are NOT wired yet — the tower's state while its swarm joins
+      // were still booting.
+      const muxStream = d as unknown as { userData?: unknown };
+      const mux = Protomux.from(muxStream as never);
+      if (!muxStream.userData) muxStream.userData = mux;
+      bWire = () => {
+        wireAllCorked(d, () => {
+          wireHiveGitServe(d, TOPIC2, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+          wireHiveGitDial(d, TOPIC2, SERVER_DEVICE, signAsServer);
+        });
+      };
+    });
+    await new Promise<void>((r) => server2.listen(sockPath2, () => r()));
+    aSocket = await new Promise<Socket>((resolve, reject) => {
+      const s = connect({ path: sockPath2, allowHalfOpen: true });
+      s.once('connect', () => resolve(s));
+      s.once('error', reject);
+    });
+    aSocket.on('error', () => {});
+    aDuplex = frameWrap(aSocket);
+    // A (the early side) wires BOTH planes immediately — its opens will be
+    // protomux-rejected by the unwired B.
+    wireAllCorked(aDuplex, () => {
+      wireHiveGitServe(aDuplex, TOPIC2, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+      wireHiveGitDial(aDuplex, TOPIC2, CLIENT_DEVICE, signAsClient);
+    });
+    // Let A's opens reach B and be rejected (loopback round-trip: ms).
+    await new Promise((r) => setTimeout(r, 500));
+  });
+
+  afterAll(async () => {
+    try {
+      server2.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      aSocket.destroy();
+    } catch {
+      /* ignore */
+    }
+    await rm(root2, { recursive: true, force: true });
+  });
+
+  it('openHiveGitFetchDuplex fails SOFT (fast destroyed duplex) while the peer is unwired — never the 120s hang', async () => {
+    const d = await Promise.race([
+      openHiveGitFetchDuplex(aDuplex, TOPIC2, { repoKey: 'repo-1' }),
+      new Promise<null>((r) => setTimeout(() => r(null), 3000)),
+    ]);
+    expect(d, 'openHiveGitFetchDuplex hung instead of failing soft on a rejected channel').not.toBeNull();
+    expect((d as Duplex).destroyed).toBe(true);
+  });
+
+  it('hellos flow and BOTH registries populate once the late peer finally wires', async () => {
+    expect(resolvePotGitPeerSocket(TOPIC2, SERVER_DEVICE)).toBeUndefined();
+    expect(resolvePotGitPeerSocket(TOPIC2, CLIENT_DEVICE)).toBeUndefined();
+    bWire!();
+    // B's own channel-opens hit A's pair() notifiers: with eviction the dead
+    // states are GONE, so fresh channels pair, and the muxer-level dial config
+    // lets A's re-created (pair-materialized) channel still SIGN + send its
+    // hello and register B's — bidirectional recovery with no reconnect.
+    await waitFor(() => resolvePotGitPeerSocket(TOPIC2, SERVER_DEVICE) !== undefined);
+    await waitFor(() => resolvePotGitPeerSocket(TOPIC2, CLIENT_DEVICE) !== undefined);
   });
 });
 
