@@ -75,13 +75,6 @@
 # De-quarantine follow-up: WI-5256 (root-cause + fix + remove this line).
 @papercusp/operator-core::lib/provision/render-templates.integration.test.ts
 
-# WI-5201 (2026-07-17): flipRate 0.375 over 33 runs (12/32 consecutive transitions).
-# All 4 recent failures are infra/load flakes (2x shared dev PG "in recovery mode"
-# during framework-role-ensure, 2x afterEach/testcontainer hook timeout under load) --
-# no assertion failures observed. De-quarantine follow-up: WI-5262 (confirm stable
-# under normal load, harden if needed, remove this line).
-@papercusp/operator-core::lib/agent-tools/work_items/work-items-tools.integration.test.ts
-
 # WI-5189 (2026-07-17): flipRate 0.455 over 12 runs (5/11 consecutive transitions).
 # All 4 recent failures are infra/load flakes (2x hook timeout under load, 1x shared
 # dev PG "not yet accepting connections" during recovery, 1x testcontainers

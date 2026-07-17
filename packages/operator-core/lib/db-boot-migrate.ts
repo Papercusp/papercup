@@ -54,7 +54,23 @@ export interface BootMigrateResult {
 export async function applyPendingMigrationsAtBoot(): Promise<BootMigrateResult | null> {
   if (_ran) return null;
   _ran = true;
+  return applyPendingMigrationsNow();
+}
 
+/**
+ * EI-13992: the UNGUARDED core of {@link applyPendingMigrationsAtBoot} — no
+ * `_ran` singleton, safe to call from any per-invocation caller (not just
+ * once-per-process boot). Extracted so the green-checkpoint gate can apply
+ * pending migrations to the live dev PG as a PREFLIGHT, independent of
+ * operator boot: the self-sustaining deadlock this closes is "gate red →
+ * main frozen → db-boot-migrate (boot-only) never re-fires → dev PG stays
+ * behind → tests asserting new columns fail → gate stays red". A gate run
+ * happens on its own schedule regardless of whether main is frozen, so
+ * applying migrations HERE — every run, not just at boot — means the dev PG
+ * can never drift far enough behind to red-pin the gate on missing-column
+ * failures again. Same idempotent runner (the schema_migrations tracker
+ * makes a re-run with nothing pending a fast no-op); never throws. */
+export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | null> {
   const sqlDir = resolveSqlDir();
   if (!sqlDir) {
     console.warn('[boot-migrate] sql dir not found — skipping boot apply');

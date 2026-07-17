@@ -93,6 +93,16 @@ export interface BeeContext {
 
 export interface GetNextOpts {
   harness: string;
+  /**
+   * WI-5261: the caller's already-resolved workspace (e.g. resolveClaimSpecWorkspace's
+   * output in getNextForBee) — explicitly threaded through so tier 1/2/3 don't have to
+   * re-derive it via activeWorkspaceId()/issuesScopeWorkspace(), which depend on the
+   * AsyncLocalStorage request-scope still being intact at the exact moment of the call.
+   * Undefined ⇒ unchanged legacy behavior (falls back to activeWorkspaceId() /
+   * issuesScopeWorkspace() exactly as before) — purely additive, no breaking change for
+   * callers (tests, other entry points) that don't pass one.
+   */
+  workspaceId?: string;
   /** THIS Swarm's id — when set, the affinity/redundancy FLOORS honor it (per-Hive lease). */
   swarmId?: string;
   /** Skip high-stakes (redundancy > 1) items (redundancy flag on). */
@@ -682,7 +692,12 @@ export async function getNextWorkItem(
   opts: GetNextOpts,
 ): Promise<GetNextResult | null> {
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  // WI-5261: prefer the caller's explicitly-resolved workspace (threaded via opts.workspaceId)
+  // over re-deriving it here — activeWorkspaceId() depends on the AsyncLocalStorage request
+  // scope still being intact at this exact point in the async call chain (tool handler ->
+  // getNextForBee -> here -> tier 3's claimNextIssueWorkItem), several awaits deep. Falls back
+  // to the legacy activeWorkspaceId() when omitted (unchanged behavior for other callers).
+  const ws = opts.workspaceId ?? activeWorkspaceId();
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
 
   // drain-claim-spec-hardening-2026-07-13 D-002 (fixes EI-11300): `states` is drain-wide

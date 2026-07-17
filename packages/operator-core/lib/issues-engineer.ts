@@ -199,8 +199,32 @@ onFlagChange((key) => {
  *  refresh through `getFlag`, which reads the PG-backed override (cross-process-correct).
  *  The sync contract is preserved; the value converges within one getFlag round-trip. */
 export function issuesScopeWorkspace(): string {
+  return resolveIssuesScopeWorkspace();
+}
+
+/**
+ * WI-5261: {@link issuesScopeWorkspace} with an optional EXPLICIT override for the
+ * "active workspace" leg, for a caller that has already resolved its own workspace and
+ * wants to avoid re-deriving it via `activeWorkspaceId()` — which depends on the
+ * AsyncLocalStorage request-scope still being intact at the exact point of the call,
+ * several `await`s deep into a call chain (get_next tool handler -> getNextForBee ->
+ * getNextWorkItem -> claimNextIssueWorkItem). A dropped/lost ALS scope silently falls
+ * through to `activeWorkspaceId()`'s own DEFAULT_WORKSPACE_ID fallback ('default'), and
+ * since real issue-family rows live under the REAL workspace (never under 'default' for
+ * a workspace-scoped install), that makes `wi.workspace_id = $issueWs` match nothing —
+ * a hard, deterministic, restart-immune zero (confirmed live for papercusp-workspace,
+ * 2026-07-17).
+ *
+ * The ISSUES_PER_WORKSPACE flag-gate is UNCHANGED: when the flag is off, issues still
+ * live under the legacy shared `default` coord workspace regardless of what the caller
+ * passes — `explicitActiveWorkspaceId` only ever substitutes for the "flag is ON, use
+ * the active workspace" leg, never the gate itself. Omitted ⇒ byte-identical to the
+ * original `issuesScopeWorkspace()` (falls back to `activeWorkspaceId()`).
+ */
+export function resolveIssuesScopeWorkspace(explicitActiveWorkspaceId?: string): string {
   if (Date.now() - issuesFlagReadAtMs > ISSUES_FLAG_TTL_MS) void refreshIssuesPerWorkspace();
-  return issuesPerWorkspaceOn ? activeWorkspaceId() : DEFAULT_COORD_WORKSPACE;
+  if (!issuesPerWorkspaceOn) return DEFAULT_COORD_WORKSPACE;
+  return explicitActiveWorkspaceId ?? activeWorkspaceId();
 }
 
 /**
