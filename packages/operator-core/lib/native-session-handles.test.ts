@@ -4,6 +4,8 @@ import type { AdvSessionRow } from './adv-sessions';
 import {
   nativeSessionHandleForAdvSession,
   nativeSessionHandleForSpawnedAgent,
+  claudeHandleAfterRematerializeAttempt,
+  type ClaudeNativeSessionHandle,
 } from './native-session-handles';
 
 const adv = (overrides: Partial<AdvSessionRow> = {}): AdvSessionRow => ({
@@ -136,5 +138,44 @@ describe('nativeSessionHandleForSpawnedAgent', () => {
       exactResumeSupported: true,
       missingReason: null,
     });
+  });
+});
+
+describe('claudeHandleAfterRematerializeAttempt (WI-5226 / EI-308 gap 2)', () => {
+  const handle: ClaudeNativeSessionHandle = {
+    backend: 'claude',
+    source: 'adv_sessions',
+    ownerId: 'su-1',
+    sessionId: 'sess-1',
+    configDir: '/home/x/.papercusp/session-claude/su-1',
+    exactResumeSupported: true,
+    missingReason: null,
+  };
+
+  it('leaves the handle untouched when the transcript is already present on disk', () => {
+    const out = claudeHandleAfterRematerializeAttempt(handle, { presentOnDisk: true, rematerialized: false });
+    expect(out).toEqual(handle);
+  });
+
+  it('leaves exactResumeSupported true when a rematerialize attempt restored the file', () => {
+    const out = claudeHandleAfterRematerializeAttempt(handle, { presentOnDisk: false, rematerialized: true });
+    expect(out).toEqual(handle);
+  });
+
+  it('downgrades exactResumeSupported with a missingReason when neither present nor restorable', () => {
+    const out = claudeHandleAfterRematerializeAttempt(handle, {
+      presentOnDisk: false,
+      rematerialized: false,
+      rematReason: 'not_archived',
+    });
+    expect(out.exactResumeSupported).toBe(false);
+    expect(out.missingReason).toBe('session transcript was cleaned up and could not be restored (not_archived)');
+    // the rest of the handle is preserved
+    expect(out).toMatchObject({ backend: 'claude', sessionId: 'sess-1', configDir: handle.configDir });
+  });
+
+  it('downgrades without a parenthetical when no rematReason is given', () => {
+    const out = claudeHandleAfterRematerializeAttempt(handle, { presentOnDisk: false, rematerialized: false });
+    expect(out.missingReason).toBe('session transcript was cleaned up and could not be restored');
   });
 });

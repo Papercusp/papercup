@@ -102,3 +102,13 @@ grew `answerAttentionItem` once Answer became a real InputCard submit path):
 
 See the plan `inbox-cards-unification-2026-05-31` and the predecessor
 `planning-attention-importance-2026-05-31` (P-017, superseded).
+
+## Related: the reply now routes back to a live asker
+
+`owner-inbox-single-pane-2026-07-17` (P-006) extends `resolveAttentionAction`'s
+escalation branch to also deliver the reply straight to a *live* asker's coord
+inbox (with authoritative `coord-inject:owner` turn-provenance) instead of
+relying solely on the resolve path's own notification — see
+[owner-inbox-single-pane-capture-architecture](/agent-insights/owner-inbox-single-pane-capture-architecture)
+for the full capture → adapter → reply-routing → chat-popup pipeline this
+pane now sits inside.

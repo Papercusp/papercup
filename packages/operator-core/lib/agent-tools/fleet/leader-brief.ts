@@ -226,8 +226,11 @@ export default defineTool({
     'current claims (doing/workItemIds/queuedCount/load), healthy loop state (monitoring|waiting|' +
     'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
-    '(ok|high|critical), bench state (parkedOn), and benchSuggestion (EI-9943: alive+speaking ' +
-    'but not advancing, not yet benched — nudge toward fleet:bench). Scoped to ONE fleet ' +
+    '(ok|high|critical), bench state (parkedOn), benchSuggestion (EI-9943: alive+speaking ' +
+    'but not advancing, not yet benched — nudge toward fleet:bench), and unownedCriticals ' +
+    '(WI-5213: open critical-severity work-items with no assignee, aged past the bar, that ' +
+    'this fleet\'s claim spec would admit — filing alone did not surface EI-13306 for 8h; this does). ' +
+    'Scoped to ONE fleet ' +
     '(yours by default) instead of the whole workspace roster fleet:assignments returns. ' +
     'Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise repeats ' +
     'every monitor wake.',
@@ -242,7 +245,8 @@ export default defineTool({
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on, instead of live-loop-polling.',
+      'fleet:bench it onto the gate it is actually blocked on, instead of live-loop-polling. A nonzero ' +
+      '`unownedCriticals` → work_items:claim it (yourself or steer a member) before it recurs.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
@@ -326,6 +330,14 @@ export default defineTool({
     await decorateContextPressure(grouped).catch(() => {});
     await decorateUnansweredDirected(grouped).catch(() => {});
     await decorateCoordDeafness(grouped).catch(() => {});
+    // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
+    // failures already fail soft to `[]` inside readUnownedCriticalsForFleet.
+    const unownedCriticals: UnownedCriticalCandidate[] = await readUnownedCriticalsForFleet({
+      fleet,
+      harness: args.harness,
+      workspaceId,
+      ageHours: args.unowned_critical_age_hours,
+    });
     const nowMs = Date.now();
     const members = grouped.map((a) => projectMember(a, nowMs));
     const self = resolveSelfRef(ctx);
@@ -354,6 +366,10 @@ export default defineTool({
       // WI-3818: make any incomplete canonical roster read explicit to callers
       // instead of silently presenting a partial membership list.
       degraded_roster_legs: rosterResult.degradedLegs,
+      // WI-5213: unowned criticals (filing is not fixing) THIS fleet's claim
+      // spec would admit — >0 here means an escalation the leader should act
+      // on (reclaim/reassign/nudge), not weather to wait out.
+      unowned_criticals: unownedCriticals.length,
     };
     return {
       data: {
@@ -361,6 +377,7 @@ export default defineTool({
         ...(self ? { self } : {}),
         summary,
         members: markedMembers,
+        ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
       },
     };
   },

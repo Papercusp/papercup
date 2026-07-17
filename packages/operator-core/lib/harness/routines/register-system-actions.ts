@@ -188,6 +188,14 @@
  *     vitest/playwright already feed on their own routine cadence. Self-gates to
  *     the operator-home installSlug (the desktop shell only exists there). Seeded
  *     ACTIVE (seed-cargo-test-routine.ts) — read-only w.r.t. the repo, safe live.
+ *   - `system:autoloop-release-readiness-monitor` — WI-5144 (follow-up from WI-4964 /
+ *     rubric-system-and-auto-loop-release-profile-2026-07-15 P-011). Hourly (:15)
+ *     evaluateAutoloopReleaseProfile() run (shells out to apps/operator/lib/release/
+ *     run-autoloop-release-profile.ts — operator-core must not import the apps/operator
+ *     tier, same layering as system:green-checkpoint/system:release-trigger). Records
+ *     the verdict as a workspace fact every tick; emits the `release-pass:autoloop`
+ *     awaited event ONLY on go:true. Seeded INACTIVE
+ *     (seed-autoloop-release-readiness-routine.ts --active to arm).
  */
 import '../git-sync/git-sync-action';
 // `system:foreign-git-sync` — the P-109 foreign-workspace commit lane (a
@@ -295,3 +303,12 @@ import './hive-git-gc-action';
 // entry when FLAGS.SUPERVISOR_AUTO_RESTART (default ON) && entry.autoRestart, with uniform
 // flap-damping; report-only otherwise. Seeded ACTIVE by seed-supervision-reconcile-routine.ts.
 import './supervision-reconcile-action';
+// WI-5144 (follow-up from WI-4964 / rubric-system-and-auto-loop-release-profile-
+// 2026-07-15 P-011): `system:autoloop-release-readiness-monitor` — hourly cadence for
+// evaluateAutoloopReleaseProfile() (apps/operator/lib/release/release-profile.ts,
+// previously only ever run ad-hoc). Shells out to the standalone
+// run-autoloop-release-profile.ts CLI (operator-core must not import the apps/operator
+// tier); records the verdict as a workspace fact every tick, emits
+// `release-pass:autoloop` only on go:true. Seeded INACTIVE
+// (seed-autoloop-release-readiness-routine.ts --active to arm).
+import './autoloop-release-readiness-action';
