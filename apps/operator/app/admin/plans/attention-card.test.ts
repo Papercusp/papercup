@@ -88,6 +88,16 @@ const escNoOptions = item({
   actions: [{ id: 'resolve', label: 'Resolve', primary: true }, { id: 'chat', label: 'Chat' }],
   ref: { kind: 'coord-escalation', msgId: 'm9', options: [] },
 });
+// P-009 (owner-inbox-single-pane-2026-07-17) E2E finding: a coord-escalation
+// asked BY a live agent (ownerAgentId set) — the AskChoiceCard/P-008 path a
+// P-001 <ask> block mirror actually produces.
+const escWithAsker = item({
+  kind: 'coord-escalation',
+  status: 'open',
+  ownerAgentId: 'su-probe-1',
+  actions: [{ id: 'resolve', label: 'Resolve', primary: true }, { id: 'chat', label: 'Chat' }],
+  ref: { kind: 'coord-escalation', msgId: 'm10', options: [{ id: 'ok', label: 'OK' }] },
+});
 const message = item({
   kind: 'coord-message',
   status: 'message',
@@ -290,6 +300,35 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
   it('escalation with no options → choice "resolved"', async () => {
     await resolveAttentionAction(escNoOptions, 'resolve');
     expect(resolveEscalation).toHaveBeenCalledWith({ msg_id: 'm9', choice: 'resolved' });
+  });
+
+  // P-009 (owner-inbox-single-pane-2026-07-17) E2E finding: picking a named
+  // escalation option resolved the escalation but never told the asker — a
+  // silent close for exactly the AskChoiceCard flow P-008 built. Fixed to
+  // mirror replyToAttentionItem's best-effort deliverInboxReply.
+  it('escalation named option resolve ALSO delivers + wakes a LIVE asker (P-009 fix)', async () => {
+    const r = await resolveAttentionAction(escWithAsker, 'ok');
+    expect(resolveEscalation).toHaveBeenCalledWith({ msg_id: 'm10', choice: 'ok' });
+    expect(deliverInboxReply).toHaveBeenCalledWith(
+      expect.objectContaining({ askerId: 'su-probe-1', text: 'OK', planSlug: 'p' }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.live).toBe(true);
+    expect(r.woken).toBe(1);
+  });
+
+  it('escalation resolve with no asker (ownerAgentId null) skips delivery — same as before', async () => {
+    const r = await resolveAttentionAction(escWithOptions, 'retry');
+    expect(deliverInboxReply).not.toHaveBeenCalled();
+    expect(r.resolved).toBe(true);
+    expect(r.live).toBeUndefined();
+  });
+
+  it('escalation reply-delivery fault never surfaces as a failed resolve', async () => {
+    vi.mocked(deliverInboxReply).mockRejectedValueOnce(new Error('network blip'));
+    const r = await resolveAttentionAction(escWithAsker, 'ok');
+    expect(resolveEscalation).toHaveBeenCalledWith({ msg_id: 'm10', choice: 'ok' });
+    expect(r.resolved).toBe(true);
   });
 
   it('message ack → ackCoordMessage({msg_id})', async () => {

@@ -156,6 +156,11 @@ function refField(item: AttentionItem, key: string): string {
 export interface ResolveResult {
   /** True when the item's backing record was changed (card → answered). */
   resolved: boolean;
+  /** Set only when a reply-delivery attempt was made (coord-escalation named-option
+   *  resolve, or replyToAttentionItem): true when the asker was live and woken. */
+  live?: boolean;
+  /** Set alongside `live` — how many live sessions the reply woke. */
+  woken?: number;
 }
 
 /**
@@ -177,11 +182,39 @@ export async function resolveAttentionAction(
     // NAVIGATE_ACTION_IDS, a typo'd adapter id) must NOT fall through to a
     // generic resolve — that silently closes a real owner gate (the Discuss
     // incident, EI-13037).
-    const named = escalationOptions(item).some((o) => o.id === optionId);
-    if (!named && optionId !== 'resolve' && optionId !== 'mark-done') return { resolved: false };
-    const choice = named ? optionId : 'resolved';
+    const namedOpt = escalationOptions(item).find((o) => o.id === optionId);
+    if (!namedOpt && optionId !== 'resolve' && optionId !== 'mark-done') return { resolved: false };
+    const choice = namedOpt ? namedOpt.id : 'resolved';
     const res = await resolveEscalation({ msg_id: refField(item, 'msgId'), choice });
     if (res?.error) throw new Error(res.error);
+    // P-009 E2E finding (owner-inbox-single-pane-2026-07-17): picking a NAMED
+    // option (the AskChoiceCard path P-008 built) resolved the escalation
+    // server-side but NEVER reached the asker — only the free-text Answer
+    // path (replyToAttentionItem, conversation/plan-item only) delivered a
+    // woken, provenance-stamped reply (D-006/D-007). An agent that asked via
+    // <ask>{"options":[...]}</ask> (the P-001 Stop-hook mirror's own
+    // documented wire shape) got its escalation silently closed with no
+    // reply ever reaching it — reproduced live via a probe session whose
+    // turn-provenance ledger never gained a coord-inject:owner entry after
+    // an inbox operator clicked its option. Mirror replyToAttentionItem's
+    // best-effort delivery here too, so a named-option resolve is no longer
+    // a silent close. Never throws — a delivery hiccup must not surface as a
+    // failed resolve; the resolve above already succeeded.
+    const askerId = item.ownerAgentId;
+    const replyText = namedOpt?.label ?? (optionId === 'mark-done' ? 'Resolved' : 'Resolved');
+    if (askerId) {
+      try {
+        const reply = await deliverInboxReply({
+          askerId,
+          text: replyText,
+          summary: `Owner answered your ${item.kind} (${item.id})`,
+          planSlug: item.planSlug ?? undefined,
+        });
+        if (!reply.error) return { resolved: true, live: reply.live, woken: reply.woken };
+      } catch {
+        // best-effort — fall through to the plain resolved result below.
+      }
+    }
     return { resolved: true };
   }
 
