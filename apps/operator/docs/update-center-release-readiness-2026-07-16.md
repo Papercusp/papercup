@@ -15,7 +15,7 @@
 | Platform | Forward update | Revert (rollback) | DB grace (fwd + down) | Channel/degradation | **Go/No-Go** |
 |---|---|---|---|---|---|
 | **Linux (x86_64)** | ✅ PASS | ✅ PASS | ✅ PASS | ✅ PASS | **GO** |
-| **macOS** | — | — | — | — | **BLOCKED (build)** |
+| **macOS** | artifact+manifest ✅ verified | — | — | protocol-sim ✅ | **SCOPED GO** (see below) |
 | **Windows** | artifact ✅ signed | — | — | (server-side ✅) | **PENDING VM E2E** |
 
 ## Linux — GO (fully exercised end-to-end)
@@ -58,12 +58,50 @@ artifact + a sha-verified genuine `0.0.10` for rollback.
 now marks `0.0.11` ● Current in the popover), WI-5008 (Revert resolves off the
 release host, not dead GitHub), WI-5010 (unreachable-vs-no-releases messaging).
 
-## macOS — PENDING (blocked on artifact, not on a defect)
+## macOS — SCOPED verification done; literal GUI click-through deferred (owner-review item)
 
-P-020/021/022 need a `.app.tar.gz` + `.sig` from the authoritative cut. The isolated
-rig + drive method is ready; the moment a mac artifact exists it can be staged and run
-(same local-rail, zero-outward-write method). **Owner-relevant:** this is a build-artifact
-dependency in the release-cut lane (su-b0fbf), not a testing blocker on my side.
+**P-020 (artifact, DONE):** the `0.0.11` `.app.tar.gz` + `.sig` landed (2026-07-17 17:08Z)
+and is fully verified — `gitDirty:false`, sha256 + minisign signature PASS
+(`bin/verify-provenance.sh`), host string + buildSha (`c5d1caf3`) + version independently
+re-confirmed with `LC_ALL=C grep` directly on the extracted binary (belt-and-suspenders,
+not just the automated gate). Staged to a local test rail (`http://127.0.0.1:8044` on the
+mac VM) serving a hand-written `latest.json`.
+
+**P-021 (in-app update E2E) — SCOPED, not the literal click-through.** Mid-drive, the
+isolated-`$HOME` E2E rig collided with another agent's live rig sharing the same mac VM
+(the app's `shared_sidecar_home()==real_home()` design silently takes over the shared
+sidecar/Postgres when an isolation attempt doesn't fully take — filed as **EI-14941**).
+The incident was resolved cleanly with no data loss (root cause: `open` doesn't propagate
+an env override across this VM's unusually slow — GPU-less-WKWebView — boot sequence,
+so a short `launchctl setenv` window reverts before the child process forks). Repeating
+the live-rig attempt risked colliding a second time with another agent's active
+~20:30Z-critical-path work, so — per fleet-lead ruling — the literal "install → click
+update → relaunch → revert" pass is **deferred to a coordinated clean window** on that VM,
+and a narrower, still-real verification was substituted for this report:
+
+- The rail's `latest.json` **signature field is byte-identical** to the actual `.sig` file
+  shipped with the verified `0.0.11` artifact (not hand-typed/approximated).
+- The rail's `latest.json` is **byte-identical** to what the production
+  `buildLatestManifest()` function (`libs/generic/tauri-release-kit`) generates from the
+  same inputs — confirmed by importing and running the real function, not reimplementing it.
+- The real, exported update-check decision functions (`visibleChannels`, `platformKeyFor`,
+  `resolveChannel` from `updates-manifest.ts`) were imported live and run against the
+  staged manifest: a `0.0.8` client on `darwin-x86_64`/`darwin-aarch64` with no channel
+  param resolves to **200 OFFER → 0.0.11** with the correct signature + URL; a `0.0.11`
+  client resolves to **204 up_to_date**; an unsupported platform resolves to **404**.
+
+This confirms the manifest/signature/update-check *mechanism* is correct end-to-end for
+macOS, but does **not** substitute for actually clicking through the update in a running
+GUI and watching it relaunch — that remains open pending a safe VM window.
+
+**P-022 (DB spot-checks) — BLOCKED**, same reason: this needs a real running app driving
+an actual migration/rollback, which the protocol-level verification above cannot stand in
+for. Flagged for the same clean-window pass as the literal P-021 GUI leg.
+
+**Owner-relevant ask:** is the scoped mechanism-level verification above sufficient to
+call macOS GO for this release, with the literal click-through + DB spot-check following
+in a scheduled window — or should macOS wait for the full pass before shipping? (Raised by
+fleet lead su-19c9c729 per their ruling on this incident.)
 
 ## Windows — artifact validated; VM E2E pending
 
@@ -88,12 +126,20 @@ dependency in the release-cut lane (su-b0fbf), not a testing blocker on my side.
    produces no Server-role artifacts, so the Server tray poller has nothing to poll.
    Not a blocker for the **GUI** release; flag it if the Server product ships on the
    same cadence.
-2. **macOS + Windows** are the only remaining go/no-go inputs. Both are ready to run
-   against the local rail as soon as the authoritative cut yields their artifacts.
+2. **macOS** — the artifact + manifest/update-check mechanism is verified (see above), but
+   the literal GUI click-through + DB spot-checks (P-021 full pass / P-022) are deferred to
+   a coordinated clean window on the shared mac VM (avoiding a repeat of the EI-14941
+   collision with another agent's live rig). Needs an explicit owner call on whether the
+   scoped verification is sufficient to ship on, per the ask above.
+3. **Windows** is the only remaining go/no-go input needing VM E2E, pending WSL
+   co-tenancy sequencing on that VM (tracked separately).
 
 ## Bottom line
 
 **Linux desktop Update Center is GO for public release** — forward update, rollback,
 DB migration grace in both directions, and the full channel/degradation matrix are all
-exercised and passing on the `0.0.11` candidate. macOS and Windows are GO-pending purely
-on their build artifacts, with the test harness staged and waiting.
+exercised and passing on the `0.0.11` candidate. **macOS** artifact + manifest/update-check
+mechanism is verified; the literal in-app click-through and DB spot-checks await a
+coordinated window on the shared test VM (owner input requested on whether to ship on the
+scoped verification meanwhile). **Windows** is GO-pending purely on VM E2E scheduling, with
+the test harness staged and waiting.
