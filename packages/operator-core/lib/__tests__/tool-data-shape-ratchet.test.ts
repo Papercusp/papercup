@@ -167,6 +167,19 @@ for (const file of TOOL_FILES) {
 //
 // If you are here because the gate is red again: migrate a batch and lower this
 // further — do NOT just bump it.
+//
+// 2026-07-17 (WI-5170, su-d838f): reds at 441 from ordinary fleet churn (9 tools of
+// growth since the 07-14 batch consumed the headroom). Paid off in the intended
+// currency again — 9 more mechanical single-return, no-isError tools migrated to
+// `{ data: obj }`: activity/recent, autoloop/status, capability/{grant-role,
+// revoke-role}, conversation/append, cross_harness/{inbox,outbox,recent_activity,
+// supervisor_notes}. Each checked for a direct-handler test reading the legacy
+// content[0].text shape (none — candidates with such tests were deliberately left
+// for a batch that repoints them too) and for an isError branch (none — filtered
+// out up front). Real count 441 → 432; ceiling STAYS 440, restoring 8 slots of
+// churn headroom without a bump. ~97 same-shape mechanical candidates remain
+// (single return, no isError, no content[0] test) — the next red should take ten
+// of those and LOWER this.
 const BASELINE = 440;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
