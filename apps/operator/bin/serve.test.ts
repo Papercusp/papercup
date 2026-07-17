@@ -97,6 +97,25 @@ describe("startParentDeathWatch (EI-8894)", () => {
     ).not.toThrow();
     expect(fired).toBe(false);
   });
+
+  it("honors the headless-rig opt-out (PAPERCUSP_PARENT_DEATH_WATCH=0) even in desktop mode", () => {
+    // Headless rig frames set PAPERCUSP_DESKTOP=1 for production parity but
+    // launch from a shell that exits right after spawn — without the opt-out
+    // the watch kills the sidecar mid-boot (2026-07-16 local-matrix gate RED).
+    process.env.PAPERCUSP_DESKTOP = "1";
+    process.env.PAPERCUSP_PARENT_DEATH_WATCH = "0";
+    try {
+      let fired = false;
+      expect(() =>
+        serve.startParentDeathWatch(() => {
+          fired = true;
+        }),
+      ).not.toThrow();
+      expect(fired).toBe(false);
+    } finally {
+      delete process.env.PAPERCUSP_PARENT_DEATH_WATCH;
+    }
+  });
 });
 
 describe("writeJsonAtomic + readOperatorDiscovery", () => {

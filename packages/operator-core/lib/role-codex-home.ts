@@ -346,27 +346,30 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * shell/MCP tool names. The launcher passes `--dangerously-bypass-hook-trust`
  * because this home contains only Papercusp-managed hooks.
  *
- * COORD PUSH HOOK (SU only) — NOT inert. When `coordSid` is given (SU sessions
- * pass their session id), we ALSO add a PostToolUse coord-inbox hook. Unlike
- * PreToolUse, codex's PostToolUse DOES fire for Bash / `apply_patch` / MCP
- * calls (developers.openai.com/codex/hooks), so the SU agent gets new
- * coord:inbox messages injected mid-turn — the codex counterpart of the
- * Claude global-settings coord entry. We BAKE PAPERCUSP_SID=<coordSid>: codex
- * doesn't env-expand config, and the hook both gates on and addresses its
- * inbox by PAPERCUSP_SID, which must equal the `&client=<sid>` baked into the
- * SU MCP url. Role sessions get no coord hook (they coordinate via
- * messages:feature_*, not the SU coord bus).
+ * ACTIVITY HOOK (su + role), COORD-FOLDING for SU — NOT inert when
+ * `activitySid` is given. The codex leg of the cross-CLI ACTIVITY BRIDGE
+ * (papercusp-worker-integration-2026-06-04, D-002/D-003): every PostToolUse
+ * mirrors the worker's native tool call into harness_shared.agent_activity →
+ * the pui fleet view + curator. codex's PostToolUse fires for edits + Bash +
+ * MCP, so this is reliable on codex. We BAKE PAPERCUSP_SID=<activitySid> +
+ * PAPERCUSP_AGENT=codex because codex hands hooks a minimal env (the same
+ * reason the lock hooks bake their values). Fires for BOTH su AND role
+ * sessions — role sessions ARE workers, so their activity belongs in the
+ * fleet view.
  *
- * ACTIVITY HOOK (su + role) — NOT inert when `activitySid` is given. The codex
- * leg of the cross-CLI ACTIVITY BRIDGE (papercusp-worker-integration-2026-06-04,
- * D-002/D-003): every PostToolUse mirrors the worker's native tool call into
- * harness_shared.agent_activity → the pui fleet view + curator. codex's
- * PostToolUse fires for edits + Bash + MCP, so this is reliable on codex. We
- * BAKE PAPERCUSP_SID=<activitySid> + PAPERCUSP_
- * AGENT=codex because codex hands hooks a minimal env (the same reason coord +
- * the lock hooks bake their values). Unlike the coord hook this fires for BOTH
- * su AND role sessions — role sessions ARE workers, so their activity belongs in
- * the fleet view.
+ * Since EI-11405 (coordination-hook-rpc-fanout-collapse-2026-07-16) this SAME
+ * hook ALSO carries the coord:inbox PUSH that used to be a separate
+ * posttooluse-coord-inbox.sh entry: the script sends a delta-aware
+ * `hook_bundle` cursor on `activity:report` and folds any NEW coord:inbox
+ * messages into the SAME response (packages/operator-core/lib/agent-tools/
+ * activity/hook-bundle.ts) — one round trip instead of two, mid-turn delivery
+ * parity with the Claude global-settings coord entry. When `coordSid` is
+ * given (SU sessions only) the fold stays ON (the script's default). Role
+ * sessions get NO coord fold — they coordinate via messages:feature_*, not
+ * the SU coord bus — so a role-only registration (activitySid without
+ * coordSid) bakes PAPERCUSP_COORD_FOLD=0, which keeps that session on the
+ * original detached, zero-added-latency report-only path (no hook_bundle
+ * built, no synchronous wait).
  *
  * OBJECTIVE-TITLE HOOK (su + role) — NOT inert when `objectiveSid` is given. The
  * codex leg of the SESSION-OBJECTIVE DISPLAY (session-objective-display-2026-06-22,
@@ -406,31 +409,19 @@ export function writeCodexLockHooks(
     },
   ];
 
-  // SU coord push hook (matcher `.*` — every PostToolUse-eligible tool, for
-  // max cadence). Baked PAPERCUSP_SID = the session's coord identity.
-  const coord = join(dir, 'posttooluse-coord-inbox.sh');
-  if (opts.coordSid && existsSync(coord)) {
-    postToolUse.push({
-      matcher: '.*',
-      hooks: [
-        {
-          type: 'command',
-          command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_SID=${shellSingleQuote(opts.coordSid)} ${coord}`,
-        },
-      ],
-    });
-  }
-
-  // Activity-bridge hook (matcher `.*`). Baked PAPERCUSP_SID = the session's
-  // identity (the activity owner/pane key) + PAPERCUSP_AGENT=codex.
+  // Activity-bridge hook (matcher `.*`), coord-folding when `coordSid` is ALSO
+  // given (SU sessions only — see the header doc for the EI-11405 merge).
+  // Baked PAPERCUSP_SID = the session's identity (the activity owner/pane key
+  // AND the coord identity when folding) + PAPERCUSP_AGENT=codex.
   const activity = join(dir, 'posttooluse-activity-report.sh');
   if (opts.activitySid && existsSync(activity)) {
+    const coordFold = opts.coordSid ? '' : ' PAPERCUSP_COORD_FOLD=0';
     postToolUse.push({
       matcher: '.*',
       hooks: [
         {
           type: 'command',
-          command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} ${activity}`,
+          command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)}${coordFold} ${activity}`,
         },
       ],
     });
@@ -582,7 +573,8 @@ export function writeRoleCodexHome(opts: {
   // hooks so its edits are coordinated (the role home previously had none,
   // a silent gap). Launcher must pass --dangerously-bypass-hook-trust. A role
   // session is a WORKER, so it also reports to the activity bridge (under its
-  // session identity); no coord-inbox hook (roles don't ride the SU coord bus).
+  // session identity); no coordSid → the merged hook's coord fold stays OFF
+  // (PAPERCUSP_COORD_FOLD=0, roles don't ride the SU coord bus).
   const hooksInstalled = writeCodexLockHooks(codexHome, {
     lockSid: opts.sid,
     activitySid: opts.sid,
@@ -856,10 +848,11 @@ export function writeSuCodexHome(opts: {
   ].join('\n');
   writeFileSync(configPath, toml, { mode: 0o600 });
 
-  // SU sessions also get the coord-inbox PUSH hook (new coord:inbox messages
-  // injected mid-turn, parity with the Claude global-settings coord entry) AND
-  // the activity-bridge hook (an SU/engineer session is a worker too) — both
-  // keyed to the session id.
+  // SU sessions pass coordSid so the merged activity hook's coord fold stays
+  // ON (new coord:inbox messages folded into the SAME activity:report round
+  // trip, parity with the Claude global-settings coord entry, EI-11405) — an
+  // SU/engineer session is a worker too, so it gets the activity bridge either
+  // way; both keyed to the session id.
   const hooksInstalled = writeCodexLockHooks(codexHome, {
     lockSid: opts.sid,
     coordSid: opts.sid,

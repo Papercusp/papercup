@@ -31,9 +31,11 @@ coordination features only … work on this plan from start to finish"]).
   re-dial at 22:51 did NOT clear it; tower journal shows NO papercusp peer_connected since
   22:48 — the VM's dial is not reaching the current bg-host gen (suspect: sibling tower
   process wins the connection, or stale isolated-DHT announces on fixture :49838).
-  Prior gens recovered in ~15 min. KNOWN LEVER: another `dev:restart {target:'bg-host'}`
-  re-rolls it (recovery observed gen 22:14). Peer restart storm is held off by my fleet
-  broadcast (msg mrobhb9z…, ~60 min hold from 22:26 EDT).
+  Prior gens recovered in ~15 min. **RESOLVED 22:57 EDT: SELF-CLEARED — rail-watch reported
+  BOTH-RAILS-UP after 780s (t2v=1 v2t=1). Do NOT restart bg-host now (a restart re-opens a
+  ~13-min freeze); the ~13-min self-recovery matches a swarm/DHT refresh cycle. Next: verify
+  V3 msg mrobxkzz… delivered via backlog + receipt row, then proceed.** Peer restart storm
+  held off by my fleet broadcast (msg mrobhb9z…, ~60 min hold from 22:26 EDT).
 - **HRW next**: `resolveUseHrwRendezvous` reads getFlag PER-CALL (lock-authority.ts:163) —
   flip needs NO reboot. Same-inputs verify done: both machines' fresh pot_slug='papercusp'
   candidate sets = {IXfGu216EI…(tower), Lm1ABoMRKV…(VM)}, same code (VM runs tower-built
