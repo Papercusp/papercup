@@ -71,6 +71,22 @@ clears its placeholder before the real rename, so you never end up with two rows
 
 Worked example: `libs/papercusp/libs/db/sql/531-rename-hive-coordination-health-rubric-to-pot.sql`.
 
+## Since WI-3617: an invalid seeder-owned row self-heals (but the migration rule stands)
+
+On 2026-07-17 a DB-recovery pass left the live `pot-coordination-health` row with
+`template_data = NULL` under `owner='first-party-bundle'` — invisible to every read
+(`planRowToRubric` nulls invalid rows) yet, under the raw-slug no-clobber check,
+permanently blocking its own re-seed. The seed decision core (`rubricsNeedingSeed`)
+now RECLAIMS a row that is both seeder-owned AND schema-invalid: it counts as
+needing seed and `proposeRubric` upserts the bundle content over it on the next
+rubrics read. A half-authored row under any real owner still blocks, invalid or
+not. This makes the wedge class self-healing, but a rename migration must STILL
+clear the placeholder first — a raced placeholder is usually *valid* (the seeder
+writes full bundle content), so the reclaim never fires for it, and its lack of
+ratification lineage is the reason it must not become the renamed row's identity.
+Repair worked example (placeholder clear + tenant-scoped rename + content re-sync):
+`libs/papercusp/libs/db/sql/621-repair-pot-coordination-health-rubric-row.sql`.
+
 ## Why this lives here and not as a TS helper
 
 Migrations are plain, standalone `.sql` files applied by the migration runner —

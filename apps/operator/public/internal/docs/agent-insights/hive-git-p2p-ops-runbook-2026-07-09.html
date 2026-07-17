@@ -71,7 +71,7 @@
 		})();
 	</script> </sl-sidebar-state-persist> <div class="md:sl-hidden"> <div class="mobile-preferences sl-flex astro-y7ehbkho"> <div class="social-icons astro-y7ehbkho">  </div> <starlight-theme-select>  <label style="--sl-select-width: 6.25em" class="astro-bnwok5g3"> <span class="sr-only astro-bnwok5g3">Select theme</span> <svg aria-hidden="true" class="icon label-icon astro-bnwok5g3 astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg> <select autocomplete="off" class="astro-bnwok5g3"> <option value="dark" class="astro-bnwok5g3">Dark</option><option value="light" class="astro-bnwok5g3">Light</option><option value="auto" selected class="astro-bnwok5g3">Auto</option> </select> <svg aria-hidden="true" class="icon caret astro-bnwok5g3 astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg> </label> </starlight-theme-select>  <script>
 	StarlightThemeProvider.updatePickers();
-</script>   </div> </div> </div> </div> </nav> <div class="main-frame astro-2pnnd2tz">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-dnhm3vak"> <aside class="right-sidebar-container print:hidden astro-dnhm3vak"> <div class="right-sidebar astro-dnhm3vak"> <div class="lg:sl-hidden astro-sh2uhkrs"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-7bgemepd"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-7bgemepd"><details id="starlight__mobile-toc" class="astro-7bgemepd"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-7bgemepd"><span class="toggle sl-flex astro-7bgemepd">On this page<svg aria-hidden="true" class="caret astro-7bgemepd astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-7bgemepd"></span></summary><div class="dropdown astro-7bgemepd"><ul class="isMobile astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#what-this-covers" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">What this covers</span> </a> <ul class="isMobile astro-wig33ucl" style="--depth: 1;"> <li class="astro-wig33ucl" style="--depth: 1;"> <a href="#where-things-actually-stand-2026-07-09--read-this-before-assuming-a-leg-is-live" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Where things actually stand (2026-07-09) — read this before assuming a leg is live</span> </a>  </li> </ul> </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#mode-flip--rollback" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Mode flip + rollback</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#integrator-lease--epoch-semantics--whats-real-today-whats-a-known-simplification" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Integrator lease + epoch semantics — what’s real today, what’s a known simplification</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#divergence-triage-github-bridge-mode-only" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Divergence triage (github-bridge mode only)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#sigrefs-rejection-reasons-acceptfetchedsigrefs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">sigrefs rejection reasons (acceptFetchedSigrefs)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#drill-re-run-instructions" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Drill re-run instructions</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#watchdog-interplay-under-commit-only-mode--verified-no-fix-needed" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Watchdog interplay under commit-only mode — verified, no fix needed</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#kill-switch--rollback-summary-one-line-version" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Kill-switch / rollback summary (one-line version)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#live-rig-diagnostic-gotchas-from-the-2026-07-0609-fed-plane-outage" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Live-rig diagnostic gotchas (from the 2026-07-06→09 fed-plane outage)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#named-hop-pipeline-observability-p-012-fleet-reliability-verification-2026-07-10" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Named-hop pipeline observability (P-012, fleet-reliability-verification-2026-07-10)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#refs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Refs</span> </a>  </li> </ul></div></details></nav></mobile-starlight-toc><script type="module" src="/internal/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.hwBsy0Mo.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-sh2uhkrs"><div class="sl-container astro-sh2uhkrs"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#what-this-covers" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">What this covers</span> </a> <ul class="astro-wig33ucl" style="--depth: 1;"> <li class="astro-wig33ucl" style="--depth: 1;"> <a href="#where-things-actually-stand-2026-07-09--read-this-before-assuming-a-leg-is-live" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Where things actually stand (2026-07-09) — read this before assuming a leg is live</span> </a>  </li> </ul> </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#mode-flip--rollback" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Mode flip + rollback</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#integrator-lease--epoch-semantics--whats-real-today-whats-a-known-simplification" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Integrator lease + epoch semantics — what’s real today, what’s a known simplification</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#divergence-triage-github-bridge-mode-only" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Divergence triage (github-bridge mode only)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#sigrefs-rejection-reasons-acceptfetchedsigrefs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">sigrefs rejection reasons (acceptFetchedSigrefs)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#drill-re-run-instructions" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Drill re-run instructions</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#watchdog-interplay-under-commit-only-mode--verified-no-fix-needed" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Watchdog interplay under commit-only mode — verified, no fix needed</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#kill-switch--rollback-summary-one-line-version" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Kill-switch / rollback summary (one-line version)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#live-rig-diagnostic-gotchas-from-the-2026-07-0609-fed-plane-outage" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Live-rig diagnostic gotchas (from the 2026-07-06→09 fed-plane outage)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#named-hop-pipeline-observability-p-012-fleet-reliability-verification-2026-07-10" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Named-hop pipeline observability (P-012, fleet-reliability-verification-2026-07-10)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#refs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Refs</span> </a>  </li> </ul></nav></starlight-toc><script type="module" src="/internal/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.FuRcXuRY.js"></script></div></div> </div> </aside> <div class="main-pane astro-dnhm3vak">  <main data-pagefind-body class="astro-6kzpinbh" lang="en" dir="ltr">    <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <h1 id="_top" class="astro-f4aqcfpu">hive-git P2P ops runbook — mode flip/rollback, integrator/epoch, divergence, sigrefs, drill</h1> </div> </div> <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <div class="sl-markdown-content"> <div class="sl-heading-wrapper level-h2"><h2 id="what-this-covers">What this covers</h2><a class="sl-anchor-link" href="#what-this-covers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What this covers”</span></a></div>
+</script>   </div> </div> </div> </div> </nav> <div class="main-frame astro-2pnnd2tz">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-dnhm3vak"> <aside class="right-sidebar-container print:hidden astro-dnhm3vak"> <div class="right-sidebar astro-dnhm3vak"> <div class="lg:sl-hidden astro-sh2uhkrs"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-7bgemepd"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-7bgemepd"><details id="starlight__mobile-toc" class="astro-7bgemepd"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-7bgemepd"><span class="toggle sl-flex astro-7bgemepd">On this page<svg aria-hidden="true" class="caret astro-7bgemepd astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-7bgemepd"></span></summary><div class="dropdown astro-7bgemepd"><ul class="isMobile astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#what-this-covers" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">What this covers</span> </a> <ul class="isMobile astro-wig33ucl" style="--depth: 1;"> <li class="astro-wig33ucl" style="--depth: 1;"> <a href="#where-things-actually-stand-updated-2026-07-17--every-phase-2-leg-is-now-wired" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Where things actually stand (updated 2026-07-17 — every Phase-2 leg is now wired)</span> </a>  </li> </ul> </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#mode-flip--rollback" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Mode flip + rollback</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#integrator-lease--epoch-semantics--whats-real-today-whats-a-known-simplification" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Integrator lease + epoch semantics — what’s real today, what’s a known simplification</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#divergence-triage-github-bridge-mode-only" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Divergence triage (github-bridge mode only)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#sigrefs-rejection-reasons-acceptfetchedsigrefs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">sigrefs rejection reasons (acceptFetchedSigrefs)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#drill-re-run-instructions" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Drill re-run instructions</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#watchdog-interplay-under-commit-only-mode--verified-no-fix-needed" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Watchdog interplay under commit-only mode — verified, no fix needed</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#kill-switch--rollback-summary-one-line-version" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Kill-switch / rollback summary (one-line version)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#live-rig-diagnostic-gotchas-from-the-2026-07-0609-fed-plane-outage" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Live-rig diagnostic gotchas (from the 2026-07-06→09 fed-plane outage)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#named-hop-pipeline-observability-p-012-fleet-reliability-verification-2026-07-10" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Named-hop pipeline observability (P-012, fleet-reliability-verification-2026-07-10)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#refs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Refs</span> </a>  </li> </ul></div></details></nav></mobile-starlight-toc><script type="module" src="/internal/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.hwBsy0Mo.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-sh2uhkrs"><div class="sl-container astro-sh2uhkrs"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#what-this-covers" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">What this covers</span> </a> <ul class="astro-wig33ucl" style="--depth: 1;"> <li class="astro-wig33ucl" style="--depth: 1;"> <a href="#where-things-actually-stand-updated-2026-07-17--every-phase-2-leg-is-now-wired" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Where things actually stand (updated 2026-07-17 — every Phase-2 leg is now wired)</span> </a>  </li> </ul> </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#mode-flip--rollback" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Mode flip + rollback</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#integrator-lease--epoch-semantics--whats-real-today-whats-a-known-simplification" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Integrator lease + epoch semantics — what’s real today, what’s a known simplification</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#divergence-triage-github-bridge-mode-only" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Divergence triage (github-bridge mode only)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#sigrefs-rejection-reasons-acceptfetchedsigrefs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">sigrefs rejection reasons (acceptFetchedSigrefs)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#drill-re-run-instructions" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Drill re-run instructions</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#watchdog-interplay-under-commit-only-mode--verified-no-fix-needed" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Watchdog interplay under commit-only mode — verified, no fix needed</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#kill-switch--rollback-summary-one-line-version" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Kill-switch / rollback summary (one-line version)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#live-rig-diagnostic-gotchas-from-the-2026-07-0609-fed-plane-outage" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Live-rig diagnostic gotchas (from the 2026-07-06→09 fed-plane outage)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#named-hop-pipeline-observability-p-012-fleet-reliability-verification-2026-07-10" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Named-hop pipeline observability (P-012, fleet-reliability-verification-2026-07-10)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#refs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Refs</span> </a>  </li> </ul></nav></starlight-toc><script type="module" src="/internal/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.FuRcXuRY.js"></script></div></div> </div> </aside> <div class="main-pane astro-dnhm3vak">  <main data-pagefind-body class="astro-6kzpinbh" lang="en" dir="ltr">    <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <h1 id="_top" class="astro-f4aqcfpu">hive-git P2P ops runbook — mode flip/rollback, integrator/epoch, divergence, sigrefs, drill</h1> </div> </div> <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <div class="sl-markdown-content"> <div class="sl-heading-wrapper level-h2"><h2 id="what-this-covers">What this covers</h2><a class="sl-anchor-link" href="#what-this-covers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What this covers”</span></a></div>
 <p>The P2P git replication plane (<code dir="auto">packages/operator-core/lib/sync/pot-git/</code>, ~30
 modules — storage/namespaces, sigrefs, fetch-transport, the integrator, the
 GitHub bridge, worktree-bridge, gc, secrets-guard) plus its ONE production
@@ -83,42 +83,74 @@ reasons you’ll see in logs, how to re-run the drill, and why the stall watchdo
 does not need special-casing for commit-only members.</p>
 <p>Plan: <code dir="auto">p2p-git-live-activation-2026-07-09</code> (P-501). Design doc:
 <code dir="auto">docs/plans/p2p-git-research-2026-07-01.md</code>.</p>
-<div class="sl-heading-wrapper level-h3"><h3 id="where-things-actually-stand-2026-07-09--read-this-before-assuming-a-leg-is-live">Where things actually stand (2026-07-09) — read this before assuming a leg is live</h3><a class="sl-anchor-link" href="#where-things-actually-stand-2026-07-09--read-this-before-assuming-a-leg-is-live"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where things actually stand (2026-07-09) — read this before assuming a leg is live”</span></a></div>
-<p>Only <strong>two legs are wired into production</strong> (<code dir="auto">git-sync-action.ts::handleGitSync</code>,
-gated on <code dir="auto">gate.hiveGitMode !== undefined</code>, i.e. any non-<code dir="auto">legacy</code> hive):</p>
-<ul>
-<li><strong>github-bridge tick</strong> (<code dir="auto">runGithubBridgeLeg</code> → <code dir="auto">runGithubBridgeTick</code>) — only
-when <code dir="auto">hiveGit.mode === 'bridged'</code> AND <code dir="auto">FLAGS.GITHUB_BRIDGE</code> is on (default ON).</li>
-<li><strong>integrator tick</strong> (<code dir="auto">runIntegratorLeg</code> → <code dir="auto">runIntegratorTick</code>) — on <strong>any</strong>
-non-<code dir="auto">legacy</code> mode (<code dir="auto">bridged</code> or <code dir="auto">p2p-only</code>). This merges member namespace
-heads into the integrator’s own <code dir="auto">staging</code> namespace-ref and announces the
-advance (<code dir="auto">STAGING_ADVANCE_EVENT_KEY</code>) fed-wide.</li>
-</ul>
-<p><strong>NOT wired into production yet</strong> (code exists, tested in isolation, no caller
-from <code dir="auto">git-sync-action.ts</code> or any routine/tick):</p>
-<ul>
-<li><strong>serve plane</strong> (<code dir="auto">serve-wiring.ts</code> / <code dir="auto">serveUploadPack</code>) — nothing hands it a
-live hive-swarm Protomux connection today (P-201).</li>
-<li><strong>announce→fetch driver</strong> (<code dir="auto">ref-announce-tick.ts</code>) — nobody calls it on a
-schedule; ref announcements are not yet driving a peer fetch (P-202).</li>
-<li><strong>worktree-bridge driver</strong> (<code dir="auto">worktree-bridge.ts</code> / <code dir="auto">worktree-advance.ts</code>) —
-the integrator’s staging-advance event has no consumer that fast-forwards a
-member’s actual working tree yet (P-204).</li>
-<li><strong>gc</strong> (<code dir="auto">gc.ts</code>) — no scheduled caller (G-9, P-205).</li>
-<li><strong>secrets-guard on the P2P publish path</strong> — <code dir="auto">secrets-guard.ts</code> is already
-used by <code dir="auto">github-egress.ts</code> / <code dir="auto">foreign-mirror-quarantine.ts</code> / the hyperbee
-outbox, but not yet by the (still-unwired) P2P serve/announce publish path
-(G-10, P-205).</li>
-</ul>
-<p>So today, flipping a hive’s <code dir="auto">hiveGit.mode</code> to <code dir="auto">bridged</code> gets you: member
-git-sync goes commit-only, the bridge writer alone pushes GitHub, and the
-integrator computes a <code dir="auto">staging</code> ref in its own namespace — but <strong>nothing yet
-fetches that ref onto another machine’s disk or fast-forwards a worktree from
-it</strong>. <code dir="auto">p2p-only</code> mode today is a <strong>no-op beyond commit-only</strong> (no bridge, no
-peer replication driver) — do not flip a hive to <code dir="auto">p2p-only</code> expecting live
-cross-machine sync until P-201/P-202/P-204 land. Re-verify this section against
+<div class="sl-heading-wrapper level-h3"><h3 id="where-things-actually-stand-updated-2026-07-17--every-phase-2-leg-is-now-wired">Where things actually stand (updated 2026-07-17 — every Phase-2 leg is now wired)</h3><a class="sl-anchor-link" href="#where-things-actually-stand-updated-2026-07-17--every-phase-2-leg-is-now-wired"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where things actually stand (updated 2026-07-17 — every Phase-2 leg is now wired)”</span></a></div>
+<p><strong>All of P-201..P-205 have landed.</strong> <code dir="auto">git-sync-action.ts::handleGitSync</code> runs
+the following legs, in this order, on every tick of any non-<code dir="auto">legacy</code> hive
+(<code dir="auto">gate.hiveGitMode</code> truthy) — each is its own <code dir="auto">runCheckpointedStep</code> so a
+resumed fire never re-runs a leg it already completed this tick:</p>
+<ol>
+<li><strong>bootstrap</strong> (<code dir="auto">runBootstrapLeg</code>, G-8, P-205/WI-3591) — a genuinely cold
+local mirror (zero <code dir="auto">refs/namespaces/*</code>) seeds every namespace a peer holds
+over a real socket duplex, before anything below needs to read local state.
+Self-gates to a fast no-op the instant ANY namespace exists locally — safe
+across repeated mode flips, no re-seed ever re-attempted.</li>
+<li><strong>own-head-publish</strong> (<code dir="auto">runOwnHeadPublishLeg</code>, G-2a, WI-5146) — publish this
+device’s own worktree branch head into its own namespace (the <code dir="auto">git push rad</code> analogue). The G-10 <strong>secrets-guard publish gate</strong>
+(<code dir="auto">publish-guard.ts</code> → <code dir="auto">secrets-guard.ts</code>’s <code dir="auto">scanForSecrets</code>) runs INSIDE
+this leg, before the ref write makes the objects servable — a planted
+credential in a new text blob is refused here, not downstream.</li>
+<li><strong>ref-announce</strong> (<code dir="auto">runRefAnnounceLeg</code> → <code dir="auto">runRefAnnouncePublishTick</code> +
+<code dir="auto">runRefAnnounceReceiveTick</code>, P-202) — publish this device’s own namespace
+advance hive-wide (sigrefs-signed), then ingest any pending peer
+ref-announcements into the local mirror (verify via <code dir="auto">acceptFetchedSigrefs</code>,
+see the rejection-reasons table below) — this is the <strong>live announce→fetch
+driver</strong> the 2026-07-09 draft of this doc said didn’t exist yet.</li>
+<li><strong>integrator</strong> (<code dir="auto">runIntegratorLeg</code> → <code dir="auto">runIntegratorTick</code>, P-203) — the
+lease holder merges member namespace heads into <code dir="auto">staging</code> + announces the
+advance fed-wide; every other member’s tick is a fast, correct no-op
+(<code dir="auto">skipped: 'not-integrator'</code>). See “Integrator lease + epoch semantics”
+below — the <strong>lease-holder gate landed</strong> since the 07-09 draft; the
+epoch-<strong>granting</strong> protocol has not.</li>
+<li><strong>worktree-bridge</strong> (<code dir="auto">runWorktreeBridgeLeg</code> → <code dir="auto">runWorktreeBridgeTick</code>,
+P-204) — every member (including the integrator’s own machine) consumes
+pending <code dir="auto">hive-git:staging-advance</code> announcements and ff-advances its local
+worktree (G-7c: never <code dir="auto">reset --hard</code>; G-7b: refuses when dirty ∩ incoming
+≠ ∅). This is the <strong>live worktree-bridge driver</strong> the 07-09 draft said had
+no consumer yet.</li>
+<li><strong>github-bridge</strong> (<code dir="auto">runGithubBridgeLeg</code> → <code dir="auto">runGithubBridgeTick</code>) — still
+gated on <code dir="auto">hiveGit.mode === 'bridged'</code> AND <code dir="auto">FLAGS.GITHUB_BRIDGE</code> (default
+ON); unchanged from the original draft.</li>
+</ol>
+<p>Additionally, <strong>serve plane</strong> (<code dir="auto">serve-wiring.ts::wireHiveGitServe</code> /
+<code dir="auto">serveUploadPack</code>, P-201) is wired onto the live hive-swarm Protomux
+connection via <code dir="auto">packages/operator-core/lib/sync/hyperbee/swarm.ts</code> +
+<code dir="auto">peer-dial-registry.ts</code> — a peer’s fetch duplex is now actually served, not
+just unit-tested in isolation. <strong>gc</strong> (<code dir="auto">gcHiveGitRepo</code>, G-9) runs as a
+scheduled <code dir="auto">tier:ephemeral</code> <code dir="auto">system:hive-git-gc</code> routine
+(<code dir="auto">hive-git-gc-action.ts</code>), armed automatically the moment a hive flips off
+<code dir="auto">legacy</code> (<code dir="auto">hive-git-gc-routine.ts</code>, called from the mode-flip path in
+<code dir="auto">hive-git-mode.ts</code>) — not a bare <code dir="auto">setInterval</code>, and self-gates to a no-op on a
+<code dir="auto">legacy</code> hive.</p>
+<p>So today, flipping a hive’s <code dir="auto">hiveGit.mode</code> to <code dir="auto">bridged</code> (or <code dir="auto">p2p-only</code>) gets
+you the <strong>full single-authority replication loop</strong>: commit → own-head-publish
+(secrets-scanned) → sigrefs-signed announce → peer fetch+verify → integrator
+merge (lease-gated) → staging-advance → every member’s worktree ff-advances
+→ gc bounds the namespace-ref growth. <code dir="auto">p2p-only</code> mode is <strong>no longer a
+bare no-op beyond commit-only</strong> — it now drives real peer replication; only
+the GitHub bridge leg additionally requires <code dir="auto">bridged</code> mode.</p>
+<p><strong>What is still NOT proven live</strong>, per the plan’s Phase 3 drill
+(<code dir="auto">p2p-git-live-activation-2026-07-09</code>, <code dir="auto">## Now</code>): the mechanics above are
+proven in-process (drill LEGS MODE/A/B/C/D/F all green, single-box) and, as
+of P-302 (2026-07-17), the cold-join bootstrap leg (G-8) has been proven on
+the REAL 2-machine rig too. Still open: <strong>Leg E (P-306)</strong> — flip a real hive
+to <code dir="auto">bridged</code> and confirm the commit-only watchdog analysis below holds under
+genuine multi-machine wall-clock/network timing (currently only
+static-verified); <strong>Leg G (P-308)</strong> chaos (integrator-kill mid-advance, PG
+blip, lease failover) — needs legs A-F live under one genuine multi-machine
+run first. Re-verify this section against
 <code dir="auto">git log -p -- packages/operator-core/lib/harness/git-sync/git-sync-action.ts</code>
-before trusting it; wiring lands leg-by-leg (see the plan’s <code dir="auto">## Now</code>).</p>
+and the plan’s <code dir="auto">## Now</code> before trusting it; the remaining gap is REAL-RIG
+proof, not missing wiring.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="mode-flip--rollback">Mode flip + rollback</h2><a class="sl-anchor-link" href="#mode-flip--rollback"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Mode flip + rollback”</span></a></div>
 <p>The mode lives in the <strong>federated <code dir="auto">hive_settings</code> store</strong>, key <code dir="auto">hiveGit.mode</code>,
 one owner-side write reaches every member machine’s next tick (no re-seed
@@ -144,23 +176,34 @@ closed would silence a healthy legacy hive’s pushes on the same blip — a
 strictly worse failure mode.</li>
 </ul>
 <p><strong>Verifying a flip took effect:</strong> read
-<code dir="auto">harness_shared.routines.metadata</code> for the hive’s <code dir="auto">system:git-sync</code> row —
-<code dir="auto">metadata->'github_bridge'</code> (bridged mode) and <code dir="auto">metadata->'integrator'</code>
-(<code dir="auto">{epoch, seq, at}</code>, any non-legacy mode) only populate once a tick has
-actually run the corresponding leg. No leg activity within ~2 routine
-intervals after a flip means the routine hasn’t fired yet, not that the flip
-failed — check <code dir="auto">metadata->>'last_synced_at'</code> first.</p>
+<code dir="auto">harness_shared.routines.metadata</code> for the hive’s <code dir="auto">system:git-sync</code> row — each
+leg writes its own key, all only populating once a tick has actually run that
+leg: <code dir="auto">metadata->'bootstrap'</code> (<code dir="auto">{ok, namespaceCount, skippedExisting, at}</code>),
+<code dir="auto">metadata->'own_head_publish'</code> (<code dir="auto">{changed, branch, sha, refused, at}</code> — a
+non-null <code dir="auto">refused</code> is the G-10 secrets-guard refusing a publish),
+<code dir="auto">metadata->'ref_announce'</code> (<code dir="auto">{lastEventId, budgetStates, at}</code>),
+<code dir="auto">metadata->'integrator'</code> (<code dir="auto">{epoch, seq, at}</code>),
+<code dir="auto">metadata->'worktree_bridge'</code> (<code dir="auto">{lastEventId, epochSeq, stagingSha, at}</code>), and
+<code dir="auto">metadata->'github_bridge'</code> (bridged mode only). No leg activity within ~2
+routine intervals after a flip means the routine hasn’t fired yet, not that
+the flip failed — check <code dir="auto">metadata->>'last_synced_at'</code> first.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="integrator-lease--epoch-semantics--whats-real-today-whats-a-known-simplification">Integrator lease + epoch semantics — what’s real today, what’s a known simplification</h2><a class="sl-anchor-link" href="#integrator-lease--epoch-semantics--whats-real-today-whats-a-known-simplification"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Integrator lease + epoch semantics — what’s real today, what’s a known simplification”</span></a></div>
 <p>The integrator (<code dir="auto">lib/sync/pot-git/integrator.ts</code>, called by
 <code dir="auto">runIntegratorLeg</code>/<code dir="auto">runIntegratorTick</code>) is the mechanism that turns N member
 namespace heads into one <code dir="auto">staging</code> ref:</p>
 <ul>
-<li><strong>Who runs it:</strong> intended to be the <strong>lock-authority lease holder only</strong>
-(one machine at a time). <code dir="auto">runIntegratorLeg</code> does not yet check lease
-ownership itself — read the code before assuming a specific machine is
-“the integrator” in a multi-machine run; today it runs the same on every
-non-legacy member’s tick (each computes its OWN integration in its own
-namespace independently — see storage note below).</li>
+<li><strong>Who runs it — the lease-holder gate IS wired:</strong>
+<code dir="auto">runIntegratorTick</code>’s <code dir="auto">isIntegrator</code> check (default
+<code dir="auto">lockAuthorityForHive(potHomeSlug).isSelf</code> — <code dir="auto">lib/authority/lock-authority.ts</code>)
+decides, every tick, whether THIS machine is the current integrator. That
+authority resolution is a <strong>deterministic election</strong> (lowest live
+<code dir="auto">device_pubkey</code>, or HRW rendezvous when that mode is on) over the hive’s
+live Swarms/presence rows — not a held token. A non-integrator’s tick
+returns <code dir="auto">{ skipped: 'not-integrator' }</code> and does nothing; only the elected
+machine actually merges + publishes. On a single machine (no remote Swarms
+in presence) the check is a no-op-to-self (<code dir="auto">isSelf: true</code> always), which is
+why a solo dev-box run never notices this gate exists — it matters once a
+second machine’s presence is visible.</li>
 <li><strong>Merge policy</strong> (<code dir="auto">integrateMemberHeads</code>, deterministic by device-hex sort):
 a member head already an ancestor of staging → skip; staging behind the
 head → fast-forward; heads diverged → bare-repo 3-way merge
@@ -184,13 +227,16 @@ epoch 1 and both integrate independently with no fence between them.
 machines</strong> — it only fences a single machine’s own re-announcements.</li>
 <li><strong>Storage note:</strong> the integrator publishes to
 <code dir="auto">refs/namespaces/&#x3C;integratorDeviceHex>/refs/heads/staging</code> — its OWN
-namespace, not a shared top-level ref. Multiple machines each running the
-integrator leg independently (today’s reality, no lease check) produce
-MULTIPLE staging refs, one per machine, that other machines have no fetch
-driver to even see yet (P-202/P-204 unwired). This is expected and
-harmless pre-Phase-3: it becomes a real correctness question only once
-fetch + worktree-bridge are wired and multiple integrators could be live
-concurrently.</li>
+namespace, not a shared top-level ref. Now that the lease-holder gate is
+wired, only the elected machine’s namespace carries a <em>live</em> staging ref at
+any moment — a prior integrator’s namespace ref simply stops advancing once
+the election moves off it (no ref is deleted or rewritten on handoff). Every
+member’s worktree-bridge leg (P-204) follows the <code dir="auto">hive-git:staging-advance</code>
+fed-event, which names the emitting device’s namespace explicitly, so a
+stale-authority’s namespace is never mistakenly fetched from once a newer
+advance has fired. This becomes a real correctness question only in a
+genuine multi-machine authority HANDOFF mid-flight — see the epoch-granting
+gap immediately below.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="divergence-triage-github-bridge-mode-only">Divergence triage (github-bridge mode only)</h2><a class="sl-anchor-link" href="#divergence-triage-github-bridge-mode-only"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Divergence triage (github-bridge mode only)”</span></a></div>
 <p>The bridge (<code dir="auto">bridged</code> mode) writes ONE <code dir="auto">harness_escalations</code> row per hive on
@@ -280,11 +326,76 @@ assert</strong> (wiring has landed) or an explicit <strong>SKIP-with-reason</str
 silent green) — the SKIP census IS the release evidence for what’s still
 unproven. Run it locally against a throwaway test hive:</p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">cd</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">papercusp-desktop</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">bin/hive-git-drill.sh</span><span style="--0:#D6DEEB;--1:#403F53">                 </span><span style="--0:#919F9F;--1:#5F636F"># uses the newest built .deb by default</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">KEEP_UP</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">1</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">bin/hive-git-drill.sh</span><span style="--0:#D6DEEB;--1:#403F53">        </span><span style="--0:#919F9F;--1:#5F636F"># leave the sidecar(s) up for inspection after</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="cd papercusp-desktopbin/hive-git-drill.sh                 # uses the newest built .deb by defaultKEEP_UP=1 bin/hive-git-drill.sh        # leave the sidecar(s) up for inspection after"><div></div></button></div></figure></div>
-<p>As each owning lane’s wiring lands (P-201 serve → P-202 announce/fetch → P-204
-worktree-bridge → P-205 gc/secrets), flip its corresponding SKIP to a live
-assert <strong>in this same script</strong> — it is designed to go leg-by-leg green with
-zero re-authoring. Do not hand-author a second drill script for a leg this one
-already scaffolds a SKIP for.</p>
+<p><strong>Current leg census (2026-07-17):</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>leg</th><th>plan item</th><th>status</th><th>proves</th></tr></thead><tbody><tr><td>MODE</td><td>—</td><td>live</td><td><code dir="auto">hiveGit.mode</code> round-trip legacy → bridged → rollback → legacy (the fail-open delete)</td></tr><tr><td>A</td><td>P-302</td><td>live</td><td>G-8 cold-clone bootstrap: a fresh joiner seeds every namespace a peer holds, over a real socket duplex</td></tr><tr><td>B</td><td>P-303</td><td>live</td><td>G-3 announce-driven fetch: announce → fetch → sigrefs accept → heads reconcile, over a real socket duplex</td></tr><tr><td>C</td><td>P-304</td><td>live</td><td>trust/tamper drill: relay-lie detection, rollback refusal (G-4b), non-member scope-serve-gate refusal</td></tr><tr><td>D</td><td>P-305</td><td>live</td><td>integrator computes + publishes canonical staging; a non-steer head lands in the real PG integration-requests queue; the other machine’s worktree ff-advances</td></tr><tr><td>E</td><td>P-306</td><td><strong>SKIP</strong></td><td>GitHub bridge live under REAL multi-machine wall-clock/network timing — needs the 2nd rig machine; the commit-only watchdog analysis below is static-verified only</td></tr><tr><td>F</td><td>P-307</td><td>live</td><td>G-9 gc keep-work/last-N/departed-member archival + G-10 secrets/oversized-blob guard, real bare repos</td></tr><tr><td>G</td><td>P-308</td><td><strong>SKIP</strong></td><td>chaos (integrator-kill mid-advance, PG blip, lease failover) — needs A-F live under ONE genuine multi-machine run first</td></tr></tbody></table>
+<p>Legs MODE/A-D/F run <strong>single-box, in-process</strong> (real production code paths,
+fake/local transport) — sufficient to prove the mechanics, not sufficient to
+close E/G, which need the actual 2-machine rig
+(<code dir="auto">docs/plans/LIVE-1-rig-runbook-2026-07-02.md</code>). As of P-302 (2026-07-17) leg
+A’s underlying mechanism (G-8 cold-join) has ALSO been proven on the real rig
+— see the plan’s <code dir="auto">## Now</code> for the live-rig evidence trail; that proof lives on
+the plan, not duplicated into this drill script. Do not hand-author a second
+drill script for a leg this one already scaffolds — flip its SKIP to a live
+assert in this same file as rig proof lands.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="watchdog-interplay-under-commit-only-mode--verified-no-fix-needed">Watchdog interplay under commit-only mode — verified, no fix needed</h2><a class="sl-anchor-link" href="#watchdog-interplay-under-commit-only-mode--verified-no-fix-needed"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Watchdog interplay under commit-only mode — verified, no fix needed”</span></a></div>
 <p>A <code dir="auto">bridged</code>/<code dir="auto">p2p-only</code> hive’s members go <strong>commit-only</strong> (git-sync stops
 pushing origin; the bridge writer alone pushes). The natural worry: will the
@@ -395,6 +506,9 @@ or key, not just a generic verb).</p>
 <p>Plan <code dir="auto">p2p-git-live-activation-2026-07-09</code>; design doc
 <code dir="auto">docs/plans/p2p-git-research-2026-07-01.md</code>; the drill
 <code dir="auto">papercusp-desktop/bin/hive-git-drill.sh</code> (P-301); <code dir="auto">hive-git-mode.ts</code>,
-<code dir="auto">integrator.ts</code>, <code dir="auto">integrator-tick.ts</code>, <code dir="auto">sigrefs.ts</code>, <code dir="auto">github-divergence.ts</code>,
-<code dir="auto">git-sync-stall-watchdog.ts</code>; <code dir="auto">stage-stall-log.ts</code> (P-012, named-hop pipeline
-observability), plan <code dir="auto">fleet-reliability-verification-2026-07-10</code>.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-10T22:00:22.000Z">Jul 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/hermetic-invoke-dispatch-testing.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Test agent-dispatch loops hermetically: point PAPERCUSP_OPERATOR_BASE at an in-test HTTP server</span> </span> </a> <a href="/internal/docs/agent-insights/hlc-merge-vs-fed-ts-guard-divergence.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">HLC merge order must match the PG fed_ts LWW guard (or cells diverge)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+<code dir="auto">integrator.ts</code>, <code dir="auto">integrator-tick.ts</code>, <code dir="auto">ref-announce-tick.ts</code>,
+<code dir="auto">worktree-bridge-tick.ts</code>, <code dir="auto">serve-wiring.ts</code>, <code dir="auto">gc.ts</code>, <code dir="auto">publish-guard.ts</code>,
+<code dir="auto">sigrefs.ts</code>, <code dir="auto">github-divergence.ts</code>, <code dir="auto">lock-authority.ts</code> (the
+<code dir="auto">lockAuthorityForHive</code> integrator-lease election), <code dir="auto">git-sync-stall-watchdog.ts</code>;
+<code dir="auto">stage-stall-log.ts</code> (P-012, named-hop pipeline observability), plan
+<code dir="auto">fleet-reliability-verification-2026-07-10</code>.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-10T22:00:22.000Z">Jul 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/hermetic-invoke-dispatch-testing.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Test agent-dispatch loops hermetically: point PAPERCUSP_OPERATOR_BASE at an in-test HTTP server</span> </span> </a> <a href="/internal/docs/agent-insights/hlc-merge-vs-fed-ts-guard-divergence.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">HLC merge order must match the PG fed_ts LWW guard (or cells diverge)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

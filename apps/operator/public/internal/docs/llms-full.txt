@@ -13337,24 +13337,24 @@ The P2P git replication plane (`packages/operator-core/lib/sync/pot-git/`, \~30 
 
 Plan: `p2p-git-live-activation-2026-07-09` (P-501). Design doc: `docs/plans/p2p-git-research-2026-07-01.md`.
 
-### Where things actually stand (2026-07-09) — read this before assuming a leg is live
+### Where things actually stand (updated 2026-07-17 — every Phase-2 leg is now wired)
 
-[Section titled “Where things actually stand (2026-07-09) — read this before assuming a leg is live”](#where-things-actually-stand-2026-07-09--read-this-before-assuming-a-leg-is-live)
+[Section titled “Where things actually stand (updated 2026-07-17 — every Phase-2 leg is now wired)”](#where-things-actually-stand-updated-2026-07-17--every-phase-2-leg-is-now-wired)
 
-Only **two legs are wired into production** (`git-sync-action.ts::handleGitSync`, gated on `gate.hiveGitMode !== undefined`, i.e. any non-`legacy` hive):
+**All of P-201..P-205 have landed.** `git-sync-action.ts::handleGitSync` runs the following legs, in this order, on every tick of any non-`legacy` hive (`gate.hiveGitMode` truthy) — each is its own `runCheckpointedStep` so a resumed fire never re-runs a leg it already completed this tick:
 
-* **github-bridge tick** (`runGithubBridgeLeg` → `runGithubBridgeTick`) — only when `hiveGit.mode === 'bridged'` AND `FLAGS.GITHUB_BRIDGE` is on (default ON).
-* **integrator tick** (`runIntegratorLeg` → `runIntegratorTick`) — on **any** non-`legacy` mode (`bridged` or `p2p-only`). This merges member namespace heads into the integrator’s own `staging` namespace-ref and announces the advance (`STAGING_ADVANCE_EVENT_KEY`) fed-wide.
+1. **bootstrap** (`runBootstrapLeg`, G-8, P-205/WI-3591) — a genuinely cold local mirror (zero `refs/namespaces/*`) seeds every namespace a peer holds over a real socket duplex, before anything below needs to read local state. Self-gates to a fast no-op the instant ANY namespace exists locally — safe across repeated mode flips, no re-seed ever re-attempted.
+2. **own-head-publish** (`runOwnHeadPublishLeg`, G-2a, WI-5146) — publish this device’s own worktree branch head into its own namespace (the `git push rad` analogue). The G-10 **secrets-guard publish gate** (`publish-guard.ts` → `secrets-guard.ts`’s `scanForSecrets`) runs INSIDE this leg, before the ref write makes the objects servable — a planted credential in a new text blob is refused here, not downstream.
+3. **ref-announce** (`runRefAnnounceLeg` → `runRefAnnouncePublishTick` + `runRefAnnounceReceiveTick`, P-202) — publish this device’s own namespace advance hive-wide (sigrefs-signed), then ingest any pending peer ref-announcements into the local mirror (verify via `acceptFetchedSigrefs`, see the rejection-reasons table below) — this is the **live announce→fetch driver** the 2026-07-09 draft of this doc said didn’t exist yet.
+4. **integrator** (`runIntegratorLeg` → `runIntegratorTick`, P-203) — the lease holder merges member namespace heads into `staging` + announces the advance fed-wide; every other member’s tick is a fast, correct no-op (`skipped: 'not-integrator'`). See “Integrator lease + epoch semantics” below — the **lease-holder gate landed** since the 07-09 draft; the epoch-**granting** protocol has not.
+5. **worktree-bridge** (`runWorktreeBridgeLeg` → `runWorktreeBridgeTick`, P-204) — every member (including the integrator’s own machine) consumes pending `hive-git:staging-advance` announcements and ff-advances its local worktree (G-7c: never `reset --hard`; G-7b: refuses when dirty ∩ incoming ≠ ∅). This is the **live worktree-bridge driver** the 07-09 draft said had no consumer yet.
+6. **github-bridge** (`runGithubBridgeLeg` → `runGithubBridgeTick`) — still gated on `hiveGit.mode === 'bridged'` AND `FLAGS.GITHUB_BRIDGE` (default ON); unchanged from the original draft.
 
-**NOT wired into production yet** (code exists, tested in isolation, no caller from `git-sync-action.ts` or any routine/tick):
+Additionally, **serve plane** (`serve-wiring.ts::wireHiveGitServe` / `serveUploadPack`, P-201) is wired onto the live hive-swarm Protomux connection via `packages/operator-core/lib/sync/hyperbee/swarm.ts` + `peer-dial-registry.ts` — a peer’s fetch duplex is now actually served, not just unit-tested in isolation. **gc** (`gcHiveGitRepo`, G-9) runs as a scheduled `tier:ephemeral` `system:hive-git-gc` routine (`hive-git-gc-action.ts`), armed automatically the moment a hive flips off `legacy` (`hive-git-gc-routine.ts`, called from the mode-flip path in `hive-git-mode.ts`) — not a bare `setInterval`, and self-gates to a no-op on a `legacy` hive.
 
-* **serve plane** (`serve-wiring.ts` / `serveUploadPack`) — nothing hands it a live hive-swarm Protomux connection today (P-201).
-* **announce→fetch driver** (`ref-announce-tick.ts`) — nobody calls it on a schedule; ref announcements are not yet driving a peer fetch (P-202).
-* **worktree-bridge driver** (`worktree-bridge.ts` / `worktree-advance.ts`) — the integrator’s staging-advance event has no consumer that fast-forwards a member’s actual working tree yet (P-204).
-* **gc** (`gc.ts`) — no scheduled caller (G-9, P-205).
-* **secrets-guard on the P2P publish path** — `secrets-guard.ts` is already used by `github-egress.ts` / `foreign-mirror-quarantine.ts` / the hyperbee outbox, but not yet by the (still-unwired) P2P serve/announce publish path (G-10, P-205).
+So today, flipping a hive’s `hiveGit.mode` to `bridged` (or `p2p-only`) gets you the **full single-authority replication loop**: commit → own-head-publish (secrets-scanned) → sigrefs-signed announce → peer fetch+verify → integrator merge (lease-gated) → staging-advance → every member’s worktree ff-advances → gc bounds the namespace-ref growth. `p2p-only` mode is **no longer a bare no-op beyond commit-only** — it now drives real peer replication; only the GitHub bridge leg additionally requires `bridged` mode.
 
-So today, flipping a hive’s `hiveGit.mode` to `bridged` gets you: member git-sync goes commit-only, the bridge writer alone pushes GitHub, and the integrator computes a `staging` ref in its own namespace — but **nothing yet fetches that ref onto another machine’s disk or fast-forwards a worktree from it**. `p2p-only` mode today is a **no-op beyond commit-only** (no bridge, no peer replication driver) — do not flip a hive to `p2p-only` expecting live cross-machine sync until P-201/P-202/P-204 land. Re-verify this section against `git log -p -- packages/operator-core/lib/harness/git-sync/git-sync-action.ts` before trusting it; wiring lands leg-by-leg (see the plan’s `## Now`).
+**What is still NOT proven live**, per the plan’s Phase 3 drill (`p2p-git-live-activation-2026-07-09`, `## Now`): the mechanics above are proven in-process (drill LEGS MODE/A/B/C/D/F all green, single-box) and, as of P-302 (2026-07-17), the cold-join bootstrap leg (G-8) has been proven on the REAL 2-machine rig too. Still open: **Leg E (P-306)** — flip a real hive to `bridged` and confirm the commit-only watchdog analysis below holds under genuine multi-machine wall-clock/network timing (currently only static-verified); **Leg G (P-308)** chaos (integrator-kill mid-advance, PG blip, lease failover) — needs legs A-F live under one genuine multi-machine run first. Re-verify this section against `git log -p -- packages/operator-core/lib/harness/git-sync/git-sync-action.ts` and the plan’s `## Now` before trusting it; the remaining gap is REAL-RIG proof, not missing wiring.
 
 ## Mode flip + rollback
 
@@ -13375,7 +13375,7 @@ await setHiveGitMode(workspaceId, hiveHomeSlug, null);        // ROLLBACK: delet
 * `mode → null` (or any settings-store outage) instantly restores **today’s behavior byte-for-byte**: every member’s git-sync pushes origin directly again per `decideGitSyncPush`’s existing rules, no bridge, no integrator pass. Legacy hives are provably unaffected by this whole plane (they never read a truthy mode).
 * **Do not “fix” the fail-open by making it fail-closed.** A PG blip on a BRIDGED hive briefly re-enabling member push is an *accepted risk* (`hive-git-mode.ts` header comment) — both the member and the bridge writer push FF-only + CAS, so at worst one push wins and the other is rejected noisily (a divergence signal, see below), never silent corruption. Failing closed would silence a healthy legacy hive’s pushes on the same blip — a strictly worse failure mode.
 
-**Verifying a flip took effect:** read `harness_shared.routines.metadata` for the hive’s `system:git-sync` row — `metadata->'github_bridge'` (bridged mode) and `metadata->'integrator'` (`{epoch, seq, at}`, any non-legacy mode) only populate once a tick has actually run the corresponding leg. No leg activity within \~2 routine intervals after a flip means the routine hasn’t fired yet, not that the flip failed — check `metadata->>'last_synced_at'` first.
+**Verifying a flip took effect:** read `harness_shared.routines.metadata` for the hive’s `system:git-sync` row — each leg writes its own key, all only populating once a tick has actually run that leg: `metadata->'bootstrap'` (`{ok, namespaceCount, skippedExisting, at}`), `metadata->'own_head_publish'` (`{changed, branch, sha, refused, at}` — a non-null `refused` is the G-10 secrets-guard refusing a publish), `metadata->'ref_announce'` (`{lastEventId, budgetStates, at}`), `metadata->'integrator'` (`{epoch, seq, at}`), `metadata->'worktree_bridge'` (`{lastEventId, epochSeq, stagingSha, at}`), and `metadata->'github_bridge'` (bridged mode only). No leg activity within \~2 routine intervals after a flip means the routine hasn’t fired yet, not that the flip failed — check `metadata->>'last_synced_at'` first.
 
 ## Integrator lease + epoch semantics — what’s real today, what’s a known simplification
 
@@ -13383,11 +13383,11 @@ await setHiveGitMode(workspaceId, hiveHomeSlug, null);        // ROLLBACK: delet
 
 The integrator (`lib/sync/pot-git/integrator.ts`, called by `runIntegratorLeg`/`runIntegratorTick`) is the mechanism that turns N member namespace heads into one `staging` ref:
 
-* **Who runs it:** intended to be the **lock-authority lease holder only** (one machine at a time). `runIntegratorLeg` does not yet check lease ownership itself — read the code before assuming a specific machine is “the integrator” in a multi-machine run; today it runs the same on every non-legacy member’s tick (each computes its OWN integration in its own namespace independently — see storage note below).
+* **Who runs it — the lease-holder gate IS wired:** `runIntegratorTick`’s `isIntegrator` check (default `lockAuthorityForHive(potHomeSlug).isSelf` — `lib/authority/lock-authority.ts`) decides, every tick, whether THIS machine is the current integrator. That authority resolution is a **deterministic election** (lowest live `device_pubkey`, or HRW rendezvous when that mode is on) over the hive’s live Swarms/presence rows — not a held token. A non-integrator’s tick returns `{ skipped: 'not-integrator' }` and does nothing; only the elected machine actually merges + publishes. On a single machine (no remote Swarms in presence) the check is a no-op-to-self (`isSelf: true` always), which is why a solo dev-box run never notices this gate exists — it matters once a second machine’s presence is visible.
 * **Merge policy** (`integrateMemberHeads`, deterministic by device-hex sort): a member head already an ancestor of staging → skip; staging behind the head → fast-forward; heads diverged → bare-repo 3-way merge (`git merge-tree --write-tree`, no worktree) → clean merge commit (2 parents) or, on conflict, **skip that head and report it** — a conflicting member’s own next publish must rebase onto the new staging. One bad/ conflicting head never blocks integrating the others.
 * **Epoch fencing (G-5d) IS wired**: every staging-advance announcement carries `{epoch, seq}`, monotonically increasing, so a stale/duplicate advance is fenced by strict `(epoch, seq)` order at the receiving end.
 * **Epoch GRANTING (the lease handoff itself) is NOT wired yet** — this is a **known simplification** flagged directly in `runIntegratorLeg`’s doc comment: today’s `epoch` is persisted once per `(hive, repo)` for the life of the routine’s own metadata row and only `seq` advances within it. That is correct and safe for a **single-authority dev-box run** (only one epoch is ever in play), but a genuine multi-machine lock-authority HANDOFF (via the G-0 handoff-token library) must be wired in **before** the Phase 3 live 2-machine drill (P-301+) — otherwise two machines can each believe they hold epoch 1 and both integrate independently with no fence between them. **Do not treat today’s epoch as proof of single-writer safety across machines** — it only fences a single machine’s own re-announcements.
-* **Storage note:** the integrator publishes to `refs/namespaces/<integratorDeviceHex>/refs/heads/staging` — its OWN namespace, not a shared top-level ref. Multiple machines each running the integrator leg independently (today’s reality, no lease check) produce MULTIPLE staging refs, one per machine, that other machines have no fetch driver to even see yet (P-202/P-204 unwired). This is expected and harmless pre-Phase-3: it becomes a real correctness question only once fetch + worktree-bridge are wired and multiple integrators could be live concurrently.
+* **Storage note:** the integrator publishes to `refs/namespaces/<integratorDeviceHex>/refs/heads/staging` — its OWN namespace, not a shared top-level ref. Now that the lease-holder gate is wired, only the elected machine’s namespace carries a *live* staging ref at any moment — a prior integrator’s namespace ref simply stops advancing once the election moves off it (no ref is deleted or rewritten on handoff). Every member’s worktree-bridge leg (P-204) follows the `hive-git:staging-advance` fed-event, which names the emitting device’s namespace explicitly, so a stale-authority’s namespace is never mistakenly fetched from once a newer advance has fired. This becomes a real correctness question only in a genuine multi-machine authority HANDOFF mid-flight — see the epoch-granting gap immediately below.
 
 ## Divergence triage (github-bridge mode only)
 
@@ -13434,7 +13434,20 @@ bin/hive-git-drill.sh                 # uses the newest built .deb by default
 KEEP_UP=1 bin/hive-git-drill.sh        # leave the sidecar(s) up for inspection after
 ```
 
-As each owning lane’s wiring lands (P-201 serve → P-202 announce/fetch → P-204 worktree-bridge → P-205 gc/secrets), flip its corresponding SKIP to a live assert **in this same script** — it is designed to go leg-by-leg green with zero re-authoring. Do not hand-author a second drill script for a leg this one already scaffolds a SKIP for.
+**Current leg census (2026-07-17):**
+
+| leg  | plan item | status   | proves                                                                                                                                                             |
+| ---- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| MODE | —         | live     | `hiveGit.mode` round-trip legacy → bridged → rollback → legacy (the fail-open delete)                                                                              |
+| A    | P-302     | live     | G-8 cold-clone bootstrap: a fresh joiner seeds every namespace a peer holds, over a real socket duplex                                                             |
+| B    | P-303     | live     | G-3 announce-driven fetch: announce → fetch → sigrefs accept → heads reconcile, over a real socket duplex                                                          |
+| C    | P-304     | live     | trust/tamper drill: relay-lie detection, rollback refusal (G-4b), non-member scope-serve-gate refusal                                                              |
+| D    | P-305     | live     | integrator computes + publishes canonical staging; a non-steer head lands in the real PG integration-requests queue; the other machine’s worktree ff-advances      |
+| E    | P-306     | **SKIP** | GitHub bridge live under REAL multi-machine wall-clock/network timing — needs the 2nd rig machine; the commit-only watchdog analysis below is static-verified only |
+| F    | P-307     | live     | G-9 gc keep-work/last-N/departed-member archival + G-10 secrets/oversized-blob guard, real bare repos                                                              |
+| G    | P-308     | **SKIP** | chaos (integrator-kill mid-advance, PG blip, lease failover) — needs A-F live under ONE genuine multi-machine run first                                            |
+
+Legs MODE/A-D/F run **single-box, in-process** (real production code paths, fake/local transport) — sufficient to prove the mechanics, not sufficient to close E/G, which need the actual 2-machine rig (`docs/plans/LIVE-1-rig-runbook-2026-07-02.md`). As of P-302 (2026-07-17) leg A’s underlying mechanism (G-8 cold-join) has ALSO been proven on the real rig — see the plan’s `## Now` for the live-rig evidence trail; that proof lives on the plan, not duplicated into this drill script. Do not hand-author a second drill script for a leg this one already scaffolds — flip its SKIP to a live assert in this same file as rig proof lands.
 
 ## Watchdog interplay under commit-only mode — verified, no fix needed
 
@@ -13487,7 +13500,7 @@ This is now a **shared primitive**, not a one-off: `packages/operator-core/lib/s
 
 [Section titled “Refs”](#refs)
 
-Plan `p2p-git-live-activation-2026-07-09`; design doc `docs/plans/p2p-git-research-2026-07-01.md`; the drill `papercusp-desktop/bin/hive-git-drill.sh` (P-301); `hive-git-mode.ts`, `integrator.ts`, `integrator-tick.ts`, `sigrefs.ts`, `github-divergence.ts`, `git-sync-stall-watchdog.ts`; `stage-stall-log.ts` (P-012, named-hop pipeline observability), plan `fleet-reliability-verification-2026-07-10`.
+Plan `p2p-git-live-activation-2026-07-09`; design doc `docs/plans/p2p-git-research-2026-07-01.md`; the drill `papercusp-desktop/bin/hive-git-drill.sh` (P-301); `hive-git-mode.ts`, `integrator.ts`, `integrator-tick.ts`, `ref-announce-tick.ts`, `worktree-bridge-tick.ts`, `serve-wiring.ts`, `gc.ts`, `publish-guard.ts`, `sigrefs.ts`, `github-divergence.ts`, `lock-authority.ts` (the `lockAuthorityForHive` integrator-lease election), `git-sync-stall-watchdog.ts`; `stage-stall-log.ts` (P-012, named-hop pipeline observability), plan `fleet-reliability-verification-2026-07-10`.
 
 # The pot:* tool namespace — local pot lifecycle
 
@@ -27518,6 +27531,12 @@ END $$;
 This is idempotent and safe regardless of which order the two processes land in: if the seeder hasn’t raced yet, the `DELETE` is a no-op; if it has, the migration clears its placeholder before the real rename, so you never end up with two rows.
 
 Worked example: `libs/papercusp/libs/db/sql/531-rename-hive-coordination-health-rubric-to-pot.sql`.
+
+## Since WI-3617: an invalid seeder-owned row self-heals (but the migration rule stands)
+
+[Section titled “Since WI-3617: an invalid seeder-owned row self-heals (but the migration rule stands)”](#since-wi-3617-an-invalid-seeder-owned-row-self-heals-but-the-migration-rule-stands)
+
+On 2026-07-17 a DB-recovery pass left the live `pot-coordination-health` row with `template_data = NULL` under `owner='first-party-bundle'` — invisible to every read (`planRowToRubric` nulls invalid rows) yet, under the raw-slug no-clobber check, permanently blocking its own re-seed. The seed decision core (`rubricsNeedingSeed`) now RECLAIMS a row that is both seeder-owned AND schema-invalid: it counts as needing seed and `proposeRubric` upserts the bundle content over it on the next rubrics read. A half-authored row under any real owner still blocks, invalid or not. This makes the wedge class self-healing, but a rename migration must STILL clear the placeholder first — a raced placeholder is usually *valid* (the seeder writes full bundle content), so the reclaim never fires for it, and its lack of ratification lineage is the reason it must not become the renamed row’s identity. Repair worked example (placeholder clear + tenant-scoped rename + content re-sync): `libs/papercusp/libs/db/sql/621-repair-pot-coordination-health-rubric-row.sql`.
 
 ## Why this lives here and not as a TS helper
 
