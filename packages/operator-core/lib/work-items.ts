@@ -319,7 +319,11 @@ export async function nextWorkItemId(): Promise<string> {
   return rows[0].id;
 }
 
-function issueToWorkItem(i: EngineerIssue): WorkItem {
+/** Exported (WI-5213) so a targeted, server-side-filtered `listIssues` read (e.g.
+ *  severity='critical') can be projected into the SAME `WorkItem` shape
+ *  `matchesWorkItemClaimSpec` expects, without re-deriving this mapping or paying
+ *  `listWorkItems`'s recency-capped, unfiltered-by-severity cross-family scan. */
+export function issueToWorkItem(i: EngineerIssue): WorkItem {
   const externalBlockers = readExternalBlockers(i.payload);
   return {
     id: i.id,

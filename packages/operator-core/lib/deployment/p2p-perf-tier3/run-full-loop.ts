@@ -258,7 +258,21 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
   // 2. Ready + full substrate mesh.
   const readys = await Promise.all(handles.map((h) => h.waitFor('ready', readyTimeoutMs)));
   const notReady = readys.map((r, i) => (r ? null : i)).filter((i): i is number => i !== null);
-  if (notReady.length) throw new Error(`runFullLoop: Swarm(s) ${notReady.join(',')} never became ready`);
+  if (notReady.length) {
+    // WI-5185: waitFor resolves null on EITHER a genuine timeout OR the child
+    // process closing early (e.g. an uncaught bind/bootstrap failure — main()'s
+    // top-level catch in loop-agent.ts emits a structured {evt:'error',message}
+    // line before process.exit(1)). Surface that line when present so a future
+    // "never became ready" failure carries its real cause instead of forcing
+    // another blind re-run/instrumentation pass to find out why.
+    const detail = notReady
+      .map((i) => {
+        const errEvt = handles[i].events.find((e) => e.evt === 'error') as { message?: string } | undefined;
+        return `${i}${errEvt?.message ? ` (${errEvt.message})` : ' (no error event — likely a genuine timeout)'}`;
+      })
+      .join(', ');
+    throw new Error(`runFullLoop: Swarm(s) ${detail} never became ready`);
+  }
   log(`all ${swarmCount} Swarms ready; hive topic ${hivePubkey.slice(0, 12)}…`);
 
   // Deterministic mesh: announces are PER-CONNECTION (no gossip), so distribute every

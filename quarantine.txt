@@ -71,3 +71,11 @@
 # normal load, harden if needed, remove this line).
 @papercusp/operator-core::lib/agent-tools/coordination/coord-authority-hardening.integration.test.ts
 
+# WI-5184 (2026-07-17): flipRate 0.625 over 9 runs (5/8 consecutive transitions:
+# pass, pass, fail, pass, fail, fail, fail, pass, fail). NOT part of the p2p/
+# shared-hive/federation v1-scope exclusion above -- this is memory/, an
+# unrelated subsystem that merely has "federation" in its filename. De-quarantine
+# follow-up: WI-5270 (confirm real race vs infra/load flake, harden or fix, then
+# remove this line -- do not quarantine-and-forget).
+@papercusp/operator-core::lib/memory/federation-slug-stamp.integration.test.ts
+
