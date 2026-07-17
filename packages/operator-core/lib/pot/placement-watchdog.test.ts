@@ -25,6 +25,7 @@ import {
   isUnitTerminal,
   isStuckBlockerState,
   isUnitParked,
+  isHeldByLiveNonCupAssignee,
   placementConfig,
   reconcilePotPlacements,
   resolveMugOwners,
@@ -547,6 +548,10 @@ describe('evaluatePlacement — EI-865 the breaker LATCHES (it does NOT re-fire)
     );
   });
 
+  // EI-14404 — the IO shell (reconcileOnePot) now also feeds `hasLiveHolder: true`
+  // for a live NON-cup assignee (isHeldByLiveNonCupAssignee, tested standalone
+  // below), so THIS same guarantee also clears a curse held by a live SU/operator
+  // session, not only a re-placed cup.
   it('the curse CLEARS when a LIVE cup re-claims the unit (a fix + re-place that took)', () => {
     expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, hasLiveHolder: true }), CFG).kind).toBe(
       'healthy',
@@ -563,6 +568,31 @@ describe('evaluatePlacement — EI-865 the breaker LATCHES (it does NOT re-fire)
     // The reconcile writes status='cursed'; the NEXT sweep then latches (no second breaker).
     const after = evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3 }), CFG);
     expect(after.kind).toBe('latched');
+  });
+});
+
+describe('isHeldByLiveNonCupAssignee — EI-14404 (SU/operator reroute clears a false cursed-placement flag)', () => {
+  const isCupOwner = (id: string) => id.startsWith('cup-');
+
+  it('true: taken_by is set, is not a cup, and is in the live-alias set', () => {
+    expect(isHeldByLiveNonCupAssignee('su-abe513', isCupOwner, new Set(['su-abe513']))).toBe(true);
+  });
+
+  it('false: taken_by is null/undefined (nothing assigned)', () => {
+    expect(isHeldByLiveNonCupAssignee(null, isCupOwner, new Set(['su-abe513']))).toBe(false);
+    expect(isHeldByLiveNonCupAssignee(undefined, isCupOwner, new Set(['su-abe513']))).toBe(false);
+  });
+
+  it('false: taken_by IS a cup owner — the existing cup-liveness path owns this case', () => {
+    expect(isHeldByLiveNonCupAssignee('cup-42', isCupOwner, new Set(['cup-42']))).toBe(false);
+  });
+
+  it('false: taken_by is a non-cup assignee but NOT in the live-alias set (dead/absent SU session — stays cursed)', () => {
+    expect(isHeldByLiveNonCupAssignee('su-dead-session', isCupOwner, new Set(['su-abe513']))).toBe(false);
+  });
+
+  it('false: empty live-alias set', () => {
+    expect(isHeldByLiveNonCupAssignee('su-abe513', isCupOwner, new Set())).toBe(false);
   });
 });
 

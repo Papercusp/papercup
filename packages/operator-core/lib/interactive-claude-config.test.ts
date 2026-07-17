@@ -907,6 +907,14 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
       'endpoint-route/routes/harness/streams.ts',
       'read-only transcript follow for the UI: restores a file to TAIL it, never launches an agent.',
     ],
+    [
+      'adv-agent-detail.ts',
+      'WI-5226 (EI-308 gap 2): best-effort rematerialize purely so the agent DOSSIER\'s ' +
+        '"exact resume: supported" indicator is accurate for an already-ENDED session — a ' +
+        'read-side existence check + restore for display, never a launch. The actual resume ' +
+        'launch (console-launcher.ts / adv/sessions.ts) rematerializes+ensures again on its ' +
+        'own leg, already covered above.',
+    ],
   ]);
 
   /** The definition site, not a caller. */

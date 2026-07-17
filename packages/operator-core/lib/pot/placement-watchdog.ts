@@ -259,7 +259,10 @@ export interface PlacementObservation {
   /** The unit reached a terminal state. */
   unitTerminal: boolean;
   /** A LIVE cup currently holds/serves this non-terminal unit (re-placement took,
-   *  or the original is still working). */
+   *  or the original is still working) — OR (EI-14404) the unit's `taken_by` is a
+   *  live NON-CUP session (an SU/operator agent working it outside the cup fleet
+   *  entirely). Either way there is demonstrable live progress, so the placement
+   *  is healthy — not cursed/stranded/breaker-tripped. */
   hasLiveHolder: boolean;
   /** Failed (item-pathology) placements already recorded for this unit (0 if never
    *  placed) — the 3-strike `breakerThreshold` counter. */
@@ -549,6 +552,39 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
     nextInfraLossCount: obs.infraLossCount,
     reason: 'serving cup dead/stalled and the unit is not terminal',
   };
+}
+
+// ── EI-14404 pure predicate: live non-cup assignee ─────────────────────────────
+
+/**
+ * EI-14404 — a unit's CURRENT assignee (`taken_by`) may be a LIVE session that is
+ * not a cup at all: an SU/operator agent that pulled the item off the cup fleet
+ * entirely (capability-gated work correctly rerouted, not a cup-lane failure).
+ * Before this, `hasLiveHolder` only ever checked cup liveness, so once the 3-strike
+ * breaker had already tripped (or trips while the non-cup assignee is working it —
+ * the cup-side view sees no live cup either way), `evaluatePlacement`'s cursed latch
+ * (`placementStatus === 'cursed' → 'latched'`) held the item cursed FOREVER: the
+ * unit never re-enters the cup-liveness path that would clear it, because the whole
+ * point of the reroute is that no cup is ever placed on it again. Concrete
+ * (2026-07-17): WI-3232 and WI-4480 both sat `cursed, fail_count:3` while actively,
+ * correctly owned by a live SU session — the Mug re-investigated them every wake
+ * with no cup action available (pure per-wake churn).
+ *
+ * Pure: true when `takenBy` is set, is NOT a known cup owner/spawn id, and is a
+ * member of the caller-supplied live-alias set — the SAME "is this owner alive"
+ * definition `summarizeOpenPlacements` already uses for its own `working` bucket
+ * (`liveHolderFragment`: a fresh `coord_presence` heartbeat, or a running/restarting
+ * nursery row), reused here rather than reinvented so the two "is it actually being
+ * worked" reads can never drift apart.
+ */
+export function isHeldByLiveNonCupAssignee(
+  takenBy: string | null | undefined,
+  isCupOwner: (ownerId: string) => boolean,
+  liveAliases: ReadonlySet<string>,
+): boolean {
+  if (!takenBy) return false;
+  if (isCupOwner(takenBy)) return false;
+  return liveAliases.has(takenBy);
 }
 
 // ── EI-1524/1518 pure decider: stale cursed/stranded escalation GC ────────────
@@ -1112,6 +1148,23 @@ export async function reconcileOnePot(
        WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${ids})`;
     const unitById = new Map<string, UnitRow>(unitRows.map((u) => [u.feature_id, u]));
 
+    // EI-14404 — resolve liveness for every distinct assignee (`taken_by`) up front,
+    // the SAME live-alias definition `summarizeOpenPlacements` uses (fresh
+    // coord_presence heartbeat, or a running/restarting nursery row). Scoped to just
+    // this sweep's taken_by values (bounded, not a table scan). Cup owners are ALSO
+    // in this set — harmless, `isHeldByLiveNonCupAssignee` excludes them via
+    // `cupByOwner` so a live cup keeps going through its existing, more nuanced
+    // `deriveCupLiveness` path, not this one.
+    const takenByIds = [...new Set(unitRows.map((u) => u.taken_by).filter((v): v is string => Boolean(v)))];
+    const liveAssigneeAliases = new Set<string>();
+    if (takenByIds.length > 0) {
+      const graceSec = Math.max(1, Math.round(STALE_CLAIM_GRACE_MS / 1000));
+      const liveRows = await sql<{ alias: string }[]>`
+        WITH live_holder AS (${liveHolderFragment(sql, graceSec)})
+        SELECT DISTINCT alias FROM live_holder WHERE alias = ANY(${takenByIds})`;
+      for (const r of liveRows) liveAssigneeAliases.add(r.alias);
+    }
+
     for (const unitId of ids) {
       const unit = unitById.get(unitId);
       const existing = placeById.get(unitId);
@@ -1121,7 +1174,17 @@ export async function reconcileOnePot(
       const anchor = cupRows.find((b) => b.feature_id === unitId);
       const anchorCup = anchor ? cupByOwner.get(anchor.session_owner || anchor.spawn_id) : undefined;
       const servingCup = holder ?? anchorCup;
-      const hasLiveHolder = holder?.liveness === 'live' || anchorCup?.liveness === 'live';
+      // EI-14404 — a live NON-CUP assignee (an SU/operator session that pulled this
+      // unit off the cup fleet) counts as a live holder too, so a cursed/latched item
+      // clears the moment it is genuinely, actively held outside the cup lane —
+      // instead of staying latched forever because no cup can ever re-anchor it.
+      const heldByLiveNonCupAssignee = isHeldByLiveNonCupAssignee(
+        unit?.taken_by,
+        (id) => cupByOwner.has(id),
+        liveAssigneeAliases,
+      );
+      const hasLiveHolder =
+        holder?.liveness === 'live' || anchorCup?.liveness === 'live' || heldByLiveNonCupAssignee;
       // WI-233 — only meaningful when there is no live holder (the failed path): was the
       // serving cup a slow-but-alive false reclaim rather than a genuine failure?
       const servingCupReclaimedWhileActive =
@@ -1170,6 +1233,20 @@ export async function reconcileOnePot(
               existing.escalation_msg_id,
               unitId,
               `auto-resolved: work-item ${unitId} has a live serving cup; recovery is making progress again`,
+            );
+          }
+          // EI-14404 — a previously cursed/latched item can now reach `healthy` via a
+          // LIVE NON-CUP assignee (heldByLiveNonCupAssignee), not only a re-placed cup.
+          // Close out any open cursed advisory the same way: the breaker's concern (no
+          // live progress) is resolved, so a per-item escalation the owner can't act on
+          // for a correctly-rerouted item shouldn't linger open.
+          if (existing?.status === 'cursed' && existing.escalation_msg_id) {
+            await resolvePlacementEscalation(
+              existing.escalation_msg_id,
+              unitId,
+              heldByLiveNonCupAssignee
+                ? `auto-resolved: work-item ${unitId} is actively held by a live non-cup (SU/operator) session — routed off the cup fleet, not a cursed placement`
+                : `auto-resolved: work-item ${unitId} has a live serving cup again`,
             );
           }
           await upsertPlacement(sql, {
