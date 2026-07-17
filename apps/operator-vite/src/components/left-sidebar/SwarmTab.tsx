@@ -369,7 +369,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
           </span>
           <div className="pclsb-row__main">
             <div className="pclsb-row__title" title={a.ownerId}>
-              {displayName(a)}
+              {displayName(a, t)}
             </div>
             <div className="pclsb-row__sub" title={a.intent || undefined}>
               {a.intent || g?.intent || 'no declared intent'}

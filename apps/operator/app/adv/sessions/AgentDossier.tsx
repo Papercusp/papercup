@@ -20,6 +20,8 @@
 import { useSyncQuery } from '@papercusp/sync';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot } from '@/app/coord/presence-ui';
+import { useLexicon } from '@/lib/useLexicon';
+import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
 
 // ── Server DTO mirror (apps/operator/lib/adv-agent-detail.ts). Inlined, not
@@ -188,6 +190,7 @@ export default function AgentDossier({
   entry: RosterEntry | null;
   onClose: () => void;
 }): React.JSX.Element {
+  const lex = useLexicon();
   const { detail, error, loading } = useAgentDetail(ownerId);
   const locks = detail?.locks;
   const coord = detail?.coord;
@@ -210,7 +213,7 @@ export default function AgentDossier({
           <span className="pc-roster__badge" data-client={client}>
             {client || '—'}
           </span>
-          {entry?.role ? <span className="pc-roster__chip">{entry.role}</span> : null}
+          {entry?.role ? <span className="pc-roster__chip">{agentRoleLabel(entry.role, lex)}</span> : null}
           {entry?.feature ? (
             <span className="pc-roster__chip pc-roster__chip--feature">{entry.feature}</span>
           ) : null}
@@ -224,7 +227,7 @@ export default function AgentDossier({
       </header>
 
       <div className="pc-dossier__id" title={ownerId}>
-        {entry?.label || ownerId}
+        {entry?.label ? agentDisplayLabel(entry.label, lex) : ownerId}
       </div>
 
       {entry ? (

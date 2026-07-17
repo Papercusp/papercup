@@ -9,6 +9,8 @@
  */
 import { useSyncQuery } from '@papercusp/sync';
 import { Table, type TableColumn } from '../harness/Table';
+import { useLexicon } from '@/lib/useLexicon';
+import { agentDisplayLabel, agentRoleLabel } from '../harness/agent-display';
 
 interface FleetStatusRow {
   ownerId: string;
@@ -31,6 +33,7 @@ function formatLastActive(secAgo: number | null): string {
 }
 
 export default function FleetStatusPanel() {
+  const lex = useLexicon();
   const { data, error, loading } = useSyncQuery<FleetStatusRow>({
     queryName: 'fleet.status',
     args: {},
@@ -63,7 +66,7 @@ export default function FleetStatusPanel() {
     <Table
       className="pc-fleet-status"
       caption={`${rows.length} live agent${rows.length === 1 ? '' : 's'}`}
-      columns={COLUMNS}
+      columns={columnsFor(lex)}
       rows={rows}
       getRowKey={(row) => row.ownerId}
     />
@@ -73,9 +76,10 @@ export default function FleetStatusPanel() {
 /** Column defs for the fleet-status table (shared design-primitives Table —
  *  WI-3537, replacing the hand-rolled native table markup that redded the
  *  design-primitives lint). Module-scope: pure renders, no component state. */
-const COLUMNS: TableColumn<FleetStatusRow>[] = [
-  { key: 'agent', header: 'Agent', render: (row) => row.label },
-  { key: 'role', header: 'Role', render: (row) => row.role ?? '—' },
+function columnsFor(lex: ReturnType<typeof useLexicon>): TableColumn<FleetStatusRow>[] {
+  return [
+  { key: 'agent', header: 'Agent', render: (row) => agentDisplayLabel(row.label, lex) },
+  { key: 'role', header: 'Role', render: (row) => row.role ? agentRoleLabel(row.role, lex) : '—' },
   {
     key: 'fleet',
     header: 'Fleet',
@@ -84,4 +88,5 @@ const COLUMNS: TableColumn<FleetStatusRow>[] = [
   { key: 'claim', header: 'Current claim', render: (row) => row.planSlug ?? row.intent ?? '—' },
   { key: 'state', header: 'State', render: (row) => row.sessionState ?? '—' },
   { key: 'last-activity', header: 'Last activity', render: (row) => formatLastActive(row.lastActiveSecAgo) },
-];
+  ];
+}

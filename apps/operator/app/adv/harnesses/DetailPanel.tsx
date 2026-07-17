@@ -21,6 +21,7 @@ import { issueAction, issueActionStatus, type IssueActionKind } from './harness-
 import { WORK_ITEMS_PAGE, type WorkItemRow } from './WorkItemsPanel';
 import type { WorkingAgent } from './AdvAgentsPanel';
 import { runOutcome } from './run-outcome';
+import { agentDisplayLabel, agentRoleLabel } from '../../harness/agent-display';
 
 const FEATURE_STATUSES: FeatureStatus[] = [
   'todo',
@@ -241,11 +242,11 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     } else if (workItem) {
       api.setTitle(`Detail · ${workItem.id}`);
     } else if (agent) {
-      api.setTitle(`Detail · ${agent.name ?? agent.label ?? agent.agentId}`);
+      api.setTitle(`Detail · ${agentDisplayLabel(agent.name ?? agent.label ?? agent.agentId, t)}`);
     } else {
       api.setTitle('Detail');
     }
-  }, [api, pinnedId, feature, issue, workItem, agent]);
+  }, [api, pinnedId, feature, issue, workItem, agent, t]);
 
   if (!slug) {
     return <Empty>Pick a {t('pot', { lower: true })} to inspect its work items.</Empty>;
@@ -319,6 +320,7 @@ export function AgentDetail({
   onSelect: (id: string) => void;
   onBack?: () => void;
 }) {
+  const lex = useLexicon();
   const liveness = livenessFromHeartbeat(agent.heartbeatAt ?? '');
   // Work-item-shaped ids cross-link into their own detail; anything else
   // (plan items, lock paths…) renders as plain text.
@@ -329,7 +331,7 @@ export function AgentDetail({
       <header className="pc-adv-detail__header">
         <BackChip onBack={onBack} />
         <div className="pc-adv-detail__id">{agent.agentId}</div>
-        <div className="pc-adv-detail__title">{agent.name ?? agent.label ?? agent.agentId}</div>
+        <div className="pc-adv-detail__title">{agentDisplayLabel(agent.name ?? agent.label ?? agent.agentId, lex)}</div>
         {/* Presence/drive/load live on the meta line — the kind pill was
             already here, so the old field-row section only duplicated it. */}
         <div className="pc-adv-detail__meta">
@@ -596,6 +598,7 @@ function FeatureDetail({
   onStartEdit: () => void;
   onCloseEdit: () => void;
 }) {
+  const lex = useLexicon();
   const [working, setWorking] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[] | null>(null);
   const [notesOpen, setNotesOpen] = useState(false);
@@ -816,7 +819,7 @@ function FeatureDetail({
                 return (
                   <div key={r.runId} className="pc-adv-detail__run-block">
                     <div className="pc-adv-detail__run">
-                      <span className="pc-adv-detail__run-role">{r.role}</span>
+                      <span className="pc-adv-detail__run-role">{agentRoleLabel(r.role, lex)}</span>
                       <span className="pc-adv-detail__run-time">{fmtAgo(r.ts)}</span>
                       <span className="pc-adv-detail__run-right">
                         {r.costUsd != null && Number(r.costUsd) > 0 && (

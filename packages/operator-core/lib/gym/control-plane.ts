@@ -350,6 +350,31 @@ export async function decideProposal(
       actor: 'gym:accept',
       summary: `gym proposal accepted → ${result.proposal.role}@${q.harnessSlug}`,
     });
+    // NOV-4 champion escalation (autonomous-loop-prod-audit-2026-07-02 P-016 /
+    // WI-4636): "gym champions auto-file improvement work items into the queen
+    // frontier" — an accepted champion is exactly the kind of "does this pattern
+    // generalize?" judgment call the Queen's ordinary triage backlog exists for.
+    // Best-effort, strictly AFTER the accept has already committed: a capture
+    // failure here must never roll back or fail the promotion.
+    try {
+      const { escalateChampionToQueenFrontier } = await import('./champion-escalation');
+      await escalateChampionToQueenFrontier({
+        proposalId: result.proposal.id,
+        harnessSlug: q.harnessSlug,
+        role: result.proposal.role,
+        cycle: result.proposal.cycle,
+        variantId: result.proposal.variantId,
+        devAnchorDelta: result.proposal.devAnchorDelta,
+        costDelta: result.proposal.costDelta,
+        probeStatus: result.proposal.probeStatus,
+      });
+    } catch (err) {
+       
+      console.warn(
+        '[gym/control-plane] champion-escalation capture failed (accept unaffected):',
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   return result;
 }

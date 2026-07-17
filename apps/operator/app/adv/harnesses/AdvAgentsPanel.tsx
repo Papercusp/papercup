@@ -33,6 +33,7 @@ import { AgentKindPill, AGENT_KIND_GLYPH } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { useLexicon } from '@/lib/useLexicon';
+import { agentDisplayLabel, agentRoleLabel } from '../../harness/agent-display';
 import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
 
 // Compact legend for the kind pills (owner ask 2026-06-11) — same order as
@@ -259,7 +260,7 @@ function WorkingView({
       filter: { type: 'text', accessor: (r) => r.name ?? r.label ?? r.agentId },
       render: ({ row }) => (
         <span style={CELL_TRUNCATE} title={row.intent || row.agentId}>
-          {row.name ?? row.label ?? row.agentId}
+          {agentDisplayLabel(row.name ?? row.label ?? row.agentId, t)}
         </span>
       ),
     },
@@ -447,6 +448,7 @@ function RunsView({
   api: PanelComponentProps['api'];
   viewTabs: ReactNode;
 }) {
+  const t = useLexicon();
   const { agents, loading, error, refresh } = useHarnessAgents(slug);
   // showAll persists in the URL (nuqs) so it survives reload + is agent-driveable.
   const [showAll, setShowAll] = useQueryState('agentsAll', parseAsBoolean.withDefault(false));
@@ -495,7 +497,7 @@ function RunsView({
                 style={{ background: rs.solid }}
                 aria-hidden
               />
-              {rs.label.toLowerCase()}
+              {agentRoleLabel(row.role, t, { lower: true }) || rs.label.toLowerCase()}
             </span>
           );
         },

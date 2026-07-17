@@ -18,6 +18,8 @@ import { useCallback, useMemo } from 'react';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
 import { Select } from '@/app/harness/Select';
+import { useLexicon } from '@/lib/useLexicon';
+import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import AgentDossier from './AgentDossier';
 import { useRosterData } from './SessionsRosterContext';
 import './SessionsRosterView.css';
@@ -256,6 +258,7 @@ function RosterRow({
   selected: boolean;
   onSelect: (ownerId: string) => void;
 }): React.JSX.Element {
+  const lex = useLexicon();
   const client = e.agent ?? shortSource(e.source);
   const extraFiles = e.currentFiles.length - 6;
   return (
@@ -279,7 +282,7 @@ function RosterRow({
         <span className="pc-roster__badge" data-client={client}>
           {client}
         </span>
-        {e.role ? <span className="pc-roster__chip">{e.role}</span> : null}
+        {e.role ? <span className="pc-roster__chip">{agentRoleLabel(e.role, lex)}</span> : null}
         {e.feature ? (
           <span className="pc-roster__chip pc-roster__chip--feature">{e.feature}</span>
         ) : null}
@@ -293,7 +296,7 @@ function RosterRow({
           </span>
         ))}
         <span className="pc-roster__label" title={e.ownerId}>
-          {e.label || e.ownerId.slice(0, 14)}
+          {e.label ? agentDisplayLabel(e.label, lex) : e.ownerId.slice(0, 14)}
         </span>
         {e.revoked ? (
           <span className="pc-roster__chip pc-roster__chip--warn" title="session token revoked">
@@ -386,6 +389,7 @@ function FilterBar({
   roleOptions: string[];
   onChange: (next: RosterFilters) => void;
 }): React.JSX.Element {
+  const lex = useLexicon();
   const active = hasActiveFilters(filters);
   return (
     <div className="pc-roster__filters">
@@ -420,7 +424,7 @@ function FilterBar({
         disabled={roleOptions.length === 0}
         options={[
           { value: ANY, label: 'any role' },
-          ...roleOptions.map((r) => ({ value: r, label: r })),
+          ...roleOptions.map((r) => ({ value: r, label: agentRoleLabel(r, lex) })),
         ]}
       />
       <input
@@ -537,6 +541,7 @@ export function SessionsRosterList({
   showStale?: boolean;
   onToggleStale?: () => void;
 }): React.JSX.Element {
+  const lex = useLexicon();
   const { data, error, loading } = useRosterData();
   const rawActive: RosterEntry[] = data?.active ?? [];
   const ended: EndedRow[] = data?.ended ?? [];
@@ -666,11 +671,11 @@ export function SessionsRosterList({
                     <span className="pc-roster__badge" data-client={r.agent ?? ''}>
                       {shortSource(r.agent ?? '')}
                     </span>
-                    {r.role ? <span className="pc-roster__chip">{r.role}</span> : null}
+                    {r.role ? <span className="pc-roster__chip">{agentRoleLabel(r.role, lex)}</span> : null}
                     {r.feature ? (
                       <span className="pc-roster__chip pc-roster__chip--feature">{r.feature}</span>
                     ) : null}
-                    <span className="pc-roster__label">{r.label || `#${r.id}`}</span>
+                    <span className="pc-roster__label">{r.label ? agentDisplayLabel(r.label, lex) : `#${r.id}`}</span>
                     <span className="pc-roster__age">ended {formatRelativeUpdated(r.endedAt)}</span>
                   </div>
                 </li>

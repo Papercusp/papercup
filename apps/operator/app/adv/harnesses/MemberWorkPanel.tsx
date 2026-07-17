@@ -30,6 +30,8 @@ import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { AgentKindPill } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
+import { useLexicon } from '@/lib/useLexicon';
+import { agentDisplayLabel } from '../../harness/agent-display';
 import type { WorkingAgent } from './AdvAgentsPanel';
 
 // The selected-row tint — the same recipe AdvAgentsPanel / WorkItemsPanel use.
@@ -78,6 +80,7 @@ function memberLiveness(liveCount: number, lastHeartbeatAt: string | null): Live
 }
 
 export default function MemberWorkPanel({ params, api }: PanelComponentProps) {
+  const lex = useLexicon();
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
 
   // user-meaningful state → URL (nuqs). `mw`-prefixed so the filter doesn't
@@ -209,7 +212,7 @@ export default function MemberWorkPanel({ params, api }: PanelComponentProps) {
                           <AgentKindPill kind={a.agentPaneKind} size="xs" />
                         </span>
                         <span className="pc-memberwork__aname" title={a.intent || a.agentId}>
-                          {a.name ?? a.label ?? a.agentId}
+                          {agentDisplayLabel(a.name ?? a.label ?? a.agentId, lex)}
                         </span>
                         <span
                           className="pc-memberwork__doing"
