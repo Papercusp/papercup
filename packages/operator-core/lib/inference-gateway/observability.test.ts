@@ -38,6 +38,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   codex: { requests: 0, upstream429: 0, failovers: 0, errors: 0 },
   beeFacing503: { egressExhausted: 0, tokenStall: 0 },
   pausedUntil: 0,
+  pausedActuallyEnforced: false,
   cache: { read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0, hitRate: 0, byAccount: {} },
   ...over,
 });

@@ -27,6 +27,13 @@ custom themes** swap the same variables (see [Themes](#themes--frost--black--cus
 This page is the reference for what exists, **the contract agents must follow**,
 and how to change it.
 
+<Aside type="caution" title="Not the same system as design-phase:list_tokens (EI-604)">
+`design-phase:list_tokens` reads a stale, disconnected light-mode `react-tailwind`
+palette — it does **not** reflect the tokens on this page. This page (the
+`design-tokens/*.tokens.json` → `_semantic.css` pipeline below) is the operator's
+real, live token system. Use this page for any operator UI token work.
+</Aside>
+
 <Aside type="danger" title="The one rule: never hardcode a brand color">
 Components must reference a **semantic `var(--…)` token**, never a brand
 primitive (`--sky-400`, `--sky-300`, …) and never a raw sky literal (`#38bdf8`,
