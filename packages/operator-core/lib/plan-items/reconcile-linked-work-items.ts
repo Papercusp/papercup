@@ -220,10 +220,9 @@ export async function reconcileLinkedWorkItemsForPlanItem(
         // between the read above and now) must not break the sweep.
       }
     }
-  } catch (e) {
+  } catch {
     // DB hiccup — this is a best-effort sweep, never a hard dependency of the
     // plan-item flip that triggered it.
-    console.error('[reconcile-debug]', e);
   }
   return out;
 }

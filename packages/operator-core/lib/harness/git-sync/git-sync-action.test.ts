@@ -76,8 +76,20 @@ mkdirSync(noGitDir, { recursive: true });
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
 const runGitSyncMock = vi.fn(async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({ status: 'nothing', oversized: [], contentErrors: [] }));
+// The stash-check sweep (checkForNewStashes) also imports discoverSubmodulesRecursive
+// from this module — without it on the mock, its best-effort catch console.warns and
+// vitest-fail-on-console reds every test whose tick reaches the sweep (EI-14928 class:
+// a mock missing a newly-consumed export). Empty submodule list → the sweep scans only
+// the (mkdtemp) super repo, finds no stashes, and no-ops.
 vi.mock('./run-git-sync', () => ({
   runGitSync: (...a: unknown[]) => runGitSyncMock(a[0] as string, a[1] as Record<string, unknown>),
+  discoverSubmodulesRecursive: async (): Promise<string[]> => [],
+  listStashEntries: async (): Promise<unknown[]> => [],
+  newStashEntries: (): unknown[] => [],
+  // The action also pulls these for its bounded git plumbing; the sweep paths
+  // exercised here never reach them with empty stash/submodule sets.
+  runGitBounded: async () => ({ code: 0, stdout: '', stderr: '' }),
+  gitTimeoutMsFor: () => 30_000,
 }));
 
 // EI-438 content-guard kill-switch flag — default ON; a test can flip it to exercise
@@ -186,9 +198,10 @@ const fireBreadcrumbs = (): Array<Record<string, unknown>> =>
   allRoutinePatches().filter((p) => 'fire_started_at' in p);
 
 /** JSONB patches applied to the routine's metadata (recordOutcome + resolver markers) —
- *  the WI-1416 fire_started_at breadcrumb excluded so outcome assertions stay focused. */
+ *  the WI-1416 fire_started_at breadcrumb and the stash-check's per-tick
+ *  known_stash_shas baseline excluded so outcome assertions stay focused. */
 const routinePatches = (): Array<Record<string, unknown>> =>
-  allRoutinePatches().filter((p) => !('fire_started_at' in p));
+  allRoutinePatches().filter((p) => !('fire_started_at' in p) && !('known_stash_shas' in p));
 
 /** Escalation upserts (conflict + error kinds), with the parsed body. */
 const escalationUpserts = (): Array<{ text: string; params: unknown[]; body: Record<string, unknown> }> =>

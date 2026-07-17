@@ -138,11 +138,16 @@ async function insertWorkItemRow(o: {
   itemId: string;
   harness?: string;
 }) {
-  const inner = JSON.stringify({ plan_item: { plan_slug: o.planSlug, item_id: o.itemId } });
+  // jsonb_build_object (NOT `${jsonString}::jsonb`) — postgres.js binds a JS string
+  // under a ::jsonb cast as a jsonb STRING-SCALAR, not an object, which then trips
+  // the engineer_issues view's `(payload - '_ei')` ("cannot delete from scalar").
+  // Production payloads are object-shaped (verified live), so build an object here.
   await rootSql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, status, payload, created_ts, updated_ts)
-    VALUES (${WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status}, ${inner}::jsonb, 0, 0)`;
+    VALUES (${WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status},
+            jsonb_build_object('plan_item', jsonb_build_object('plan_slug', ${o.planSlug}::text, 'item_id', ${o.itemId}::text)),
+            0, 0)`;
 }
 
 describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {

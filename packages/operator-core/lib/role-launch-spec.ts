@@ -63,6 +63,7 @@ import { composeLaunchContext } from './su-launch-context';
 import { lintInstructionText, type InstructionLintReport } from './instruction-lint';
 import { readSuperuserToken } from './superuser-token';
 import { papercuspPathForWorkspace } from './papercusp-root';
+import { canonicalCoordRole } from './agent-tools/coordination/roles';
 
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
@@ -97,6 +98,23 @@ export interface BuildRoleLaunchSpecInput {
   extras?: readonly string[];
   /** Signed-URL TTL; defaults to the signer's 24h. */
   ttlSec?: number;
+  /**
+   * Initial MCP tool-surface size (context-trimming-tiers / WI-4608): 'trimmed'
+   * seeds the signed MCP URL with `?tools=<CORE_MCP_TOOL_NAMES>` (the same
+   * dynamic-tool-surface seed buildSuLaunchSpec applies for a su session) so the
+   * launched agent's FIRST tools/list carries the ~19-tool core spine instead of
+   * the whole ~581-tool catalog — the seed GROWS at runtime via ctx.activateTools
+   * (tools:find), it is not a hard cap. 'full' forces the whole catalog (today's
+   * unconditional behaviour for every role).
+   *
+   * Omitted → AUTO-SELECT: 'trimmed' for the autonomous pot-decider roles ('mug'/
+   * 'kettle', canonicalized via canonicalCoordRole — so 'queen'/'overwatch' also
+   * match) since these are long-running, frequently-relaunched, model-window-
+   * constrained sessions whose repeated "Prompt is too long" deaths (WI-4608)
+   * trace to ALWAYS loading the full catalog up front with no default trim; every
+   * OTHER role keeps 'full' — byte-identical to before this option existed.
+   */
+  contextSize?: 'full' | 'trimmed' | null;
 }
 
 export interface RoleLaunchSpec {
@@ -148,6 +166,10 @@ export interface RoleLaunchSpec {
    * so a woken session keeps its role-scoped tool surface.
    */
   sessionMcpDir: string;
+  /** The RESOLVED context size (explicit input, or the role-based auto-select —
+   *  see `BuildRoleLaunchSpecInput.contextSize`). Diagnostic + lets a caller
+   *  surface it (mirrors `LaunchSpec.personaTier` on the su path). */
+  contextSize: 'full' | 'trimmed';
 }
 
 /**
@@ -170,6 +192,15 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     const { tierMenuRuntimeLines } = await import('./fleet/model-tiers');
     extras = [...(input.extras ?? []), ...(await tierMenuRuntimeLines())];
   }
+
+  // WI-4608: role-based context-size default. Canonicalize first — a caller
+  // may still pass the pre-rename spelling ('queen'/'overwatch'; roles.ts's
+  // POT_RENAME_ROLE_MAP), and the auto-select must match either spelling the
+  // same way canonicalCoordRole is used everywhere else in this launch path.
+  const canonicalRoleForContextSize = canonicalCoordRole(input.role);
+  const contextSize: 'full' | 'trimmed' =
+    input.contextSize ??
+    (canonicalRoleForContextSize === 'mug' || canonicalRoleForContextSize === 'kettle' ? 'trimmed' : 'full');
 
   // Launch-mechanics identity (P-002): the per-session coord/lock owner +
   // forced native session id. Minted HERE (the one primitive) — not by each
@@ -286,6 +317,12 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   // self-deadlock class the SU path already eliminated (P-022).
   params.set('client', sid);
   if (featureId) params.set('feature', featureId);
+  // WI-4608: the SAME dynamic-tool-surface seed lever buildSuLaunchSpec applies —
+  // `tools` is NOT in the signed-param allowlist (spawn-signing-core.ts), so it is
+  // safe to set before or after signing; set it here so it rides the same params
+  // object the rest of the URL is built from. `getSessionSurface` grows the seed
+  // at runtime (tools:find / ctx.activateTools), so this never hard-caps the role.
+  if (contextSize === 'trimmed') params.set('tools', CORE_MCP_TOOL_NAMES.join(','));
   await signSpawnParams(params, input.ttlSec ? { ttlSec: input.ttlSec } : {});
   // WI-573: route the spawned agent's MCP through the resilient proxy when the env opts in
   // (PAPERCUSP_MCP_PROXY_BASE), else the operator base unchanged. Survives a :3070 deploy restart.
@@ -308,6 +345,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     nativeSessionId,
     claudeConfigDir: sessionClaudeConfigDir(sid),
     sessionMcpDir: sessionMcpDir(sid),
+    contextSize,
   };
 }
 
