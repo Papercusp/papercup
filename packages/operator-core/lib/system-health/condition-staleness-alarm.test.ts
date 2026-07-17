@@ -409,4 +409,134 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
     await runConditionStalenessTick(deps);
     expect(seenKeys).toEqual([[]]);
   });
+
+  it('EI-15182 guard #3: a signal-absent condition of ANY family is auto-resolved (broadcast fires) and never flagged stale this same tick', async () => {
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const staleTs = '2026-07-11T00:10:00.000Z'; // ~6.8d old — the real dummy-pot-0707 evidence
+    const goneQuiet = mkState({
+      condition_key: 'git-sync-stall:dummy-pot-0707',
+      first_seen: staleTs,
+      open_since: staleTs,
+      last_seen: staleTs,
+    });
+    const broadcasts: Array<{ conditionKeys: string[]; summary: string }> = [];
+    const deps = {
+      readStates: async () => [goneQuiet],
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async () => {
+        throw new Error('escalate should NOT be called for a signal-absent condition');
+      },
+      now: () => now,
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+      readHealthByKey: async () => new Map<string, boolean>(), // git-sync-stall is not infra-liveness — never consulted
+      broadcastResolvedMany: async (input: { conditionKeys: string[]; summary: string }) => {
+        broadcasts.push(input);
+        return true;
+      },
+    };
+    const r = await runConditionStalenessTick(deps);
+    expect(r.reconciled).toEqual(['git-sync-stall:dummy-pot-0707']);
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]!.conditionKeys).toEqual(['git-sync-stall:dummy-pot-0707']);
+    expect(r.signals).toEqual([]);
+    expect(r.fired).toEqual([]);
+  });
+
+  it('EI-15182 guard #3: a signal-absent condition is suppressed EVEN when the reconcile broadcast fails (suppression never depends on the broadcast landing)', async () => {
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const staleTs = '2026-07-09T00:00:00.000Z';
+    const goneQuiet = mkState({
+      condition_key: 'embed-exhaustion:openai_billing',
+      first_seen: staleTs,
+      open_since: staleTs,
+      last_seen: staleTs,
+    });
+    const deps = {
+      readStates: async () => [goneQuiet],
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async () => {
+        throw new Error('escalate should NOT be called for a signal-absent condition');
+      },
+      now: () => now,
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+      broadcastResolvedMany: async () => {
+        throw new Error('broadcast fails — the durable resolve never lands this tick');
+      },
+    };
+    const r = await runConditionStalenessTick(deps);
+    // Not durably reconciled (the broadcast failed) but STILL never paged.
+    expect(r.reconciled).toEqual([]);
+    expect(r.signals).toEqual([]);
+    expect(r.fired).toEqual([]);
+  });
+
+  it('EI-15182 guard #3: an EXISTING open stale-reminder escalation auto-resolves once its condition goes signal-absent (stops the re-page)', async () => {
+    const store = makeStore();
+    const staleTs = '2026-07-11T02:13:00.000Z';
+    const stuck = mkState({
+      condition_key: 'single-primary:split-brain-primary',
+      first_seen: staleTs,
+      open_since: staleTs,
+      last_seen: staleTs,
+    });
+    // Tick #1: while the fixture's `now` is still within absenceMs of last_seen,
+    // the condition is stale-but-observed and earns a real open reminder.
+    const t1Now = Date.parse('2026-07-11T03:30:00.000Z'); // 77min after open_since — stale; last_seen 77min old too
+    const deps = {
+      readStates: async () => [stuck],
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      now: () => t1Now,
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000, // 77min < 2h: not yet signal-absent
+      broadcastResolvedMany: async () => true,
+    };
+    const t1 = await runConditionStalenessTick(deps);
+    expect(t1.fired.map((s) => s.key)).toEqual(['stale-condition:single-primary:split-brain-primary']);
+    expect(store.openCount()).toBe(1);
+
+    // Tick #2, days later: nobody ever re-alarmed (last_seen unchanged) — now
+    // well past absenceMs. The prior escalation must auto-resolve.
+    _resetConditionStalenessDebounce();
+    const t2Now = Date.parse('2026-07-17T21:00:00.000Z');
+    const t2 = await runConditionStalenessTick({ ...deps, now: () => t2Now });
+    expect(t2.resolved.length).toBe(1);
+    expect(t2.fired).toEqual([]);
+    expect(store.openCount()).toBe(0);
+  });
+
+  it('EI-15182 recurrence guard: ZERO escalations for a batch of conditions that are EITHER signal-absent OR already resolved in the store — across every family', async () => {
+    const now = Date.parse('2026-07-17T21:00:00.000Z');
+    const staleTs = '2026-07-10T00:00:00.000Z';
+    const states = [
+      // signal-absent, never explicitly resolved (the dummy-pot-0707 class):
+      mkState({ condition_key: 'git-sync-stall:dummy-pot-0707', first_seen: staleTs, open_since: staleTs, last_seen: staleTs }),
+      mkState({ condition_key: 'git-sync-stall:quartermaster-hive', first_seen: staleTs, open_since: staleTs, last_seen: staleTs }),
+      mkState({ condition_key: 'embed-exhaustion:daily_cap', first_seen: staleTs, open_since: staleTs, last_seen: staleTs }),
+      mkState({ condition_key: 'infra-liveness:pg-restarted', first_seen: staleTs, open_since: staleTs, last_seen: staleTs }),
+      // already resolved in the store (open:false) — must never fire regardless of age:
+      mkState({ condition_key: 'infra-liveness:panel:overwatch', open: false, resolved_at: '2026-07-17T09:37:00.000Z', last_seen: staleTs }),
+    ];
+    const deps = {
+      readStates: async () => states,
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async () => {
+        throw new Error('escalate must NEVER be called in this scenario');
+      },
+      now: () => now,
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+      readHealthByKey: async () => new Map<string, boolean>(),
+      broadcastResolvedMany: async () => true,
+    };
+    const r = await runConditionStalenessTick(deps);
+    expect(r.fired).toEqual([]);
+    expect(r.signals).toEqual([]);
+  });
 });

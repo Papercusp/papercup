@@ -498,6 +498,107 @@ describe("sweepOrphanPostgres", () => {
   });
 });
 
+describe("detectRunningSharedPg (EI-14941)", () => {
+  const dataDir = () => join(tmpHome, "shared-pg-data");
+  const embeddedPgJson = () => join(pcDir(), "embedded-pg.json");
+  const pidFile = () => join(dataDir(), "postmaster.pid");
+  const logs: string[] = [];
+  const logFn = (m: string) => logs.push(m);
+
+  const adminUrlFor = (port: number) =>
+    `postgresql://harness_admin:harness_admin_pwd@localhost:${port}/papercusp`;
+
+  // Write the two on-disk records a live shared PG leaves: ~/.papercusp/embedded-pg.json
+  // (owner operator pid + port + admin url) and <dataDir>/postmaster.pid (pid on line 1,
+  // port on line 4 — PG's real format). `recordedPort` lets a test force a mismatch.
+  const writeRecords = (ownerPid: number, port: number, recordedPort = port) => {
+    mkdirSync(pcDir(), { recursive: true });
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(
+      embeddedPgJson(),
+      JSON.stringify({
+        url: adminUrlFor(port),
+        port,
+        pid: ownerPid,
+        startedAt: Date.now(),
+      }),
+    );
+    writeFileSync(pidFile(), `${ownerPid}\n${dataDir()}\n0\n${recordedPort}\n`);
+  };
+
+  const withListener = async (
+    fn: (port: number) => Promise<void>,
+  ): Promise<void> => {
+    const { createServer } = await import("node:net");
+    const srv = createServer();
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const port = (srv.address() as import("node:net").AddressInfo).port;
+    try {
+      await fn(port);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  };
+
+  afterEach(() => {
+    logs.length = 0;
+    rmSync(dataDir(), { recursive: true, force: true });
+    rmSync(embeddedPgJson(), { force: true });
+  });
+
+  it("returns null when there is no embedded-pg.json (nothing to attach to)", async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    expect(await serve.detectRunningSharedPg(dataDir(), logFn)).toBeNull();
+  });
+
+  it("ATTACHES to a live PG owned by a DIFFERENT, still-alive operator (the multi-tenant collision)", async () => {
+    await withListener(async (port) => {
+      // process.ppid is alive and != our pid → a live "foreign" owner.
+      writeRecords(process.ppid, port);
+      const got = await serve.detectRunningSharedPg(dataDir(), logFn);
+      expect(got).toEqual({
+        port,
+        ownerPid: process.ppid,
+        adminUrl: adminUrlFor(port),
+      });
+      expect(logs.join("\n")).toMatch(/will attach, not take over/);
+    });
+  });
+
+  it("returns null when the recorded owner operator is DEAD (normal restart / orphan → sweep+start)", async () => {
+    await withListener(async (port) => {
+      writeRecords(2 ** 30, port); // dead owner pid
+      expect(await serve.detectRunningSharedPg(dataDir(), logFn)).toBeNull();
+    });
+  });
+
+  it("returns null when the owner is OUR OWN pid (not a foreign owner)", async () => {
+    await withListener(async (port) => {
+      writeRecords(process.pid, port);
+      expect(await serve.detectRunningSharedPg(dataDir(), logFn)).toBeNull();
+    });
+  });
+
+  it("returns null when nothing is accepting on the recorded port (PG not actually up)", async () => {
+    const { createServer } = await import("node:net");
+    const probe = createServer();
+    await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+    const deadPort = (probe.address() as import("node:net").AddressInfo).port;
+    await new Promise<void>((r) => probe.close(() => r())); // free it → nothing accepts
+    writeRecords(process.ppid, deadPort);
+    expect(await serve.detectRunningSharedPg(dataDir(), logFn)).toBeNull();
+  });
+
+  it("returns null when postmaster.pid's recorded port disagrees with embedded-pg.json (stale record) — even though a listener IS up", async () => {
+    await withListener(async (port) => {
+      // embedded-pg.json says `port` (and something accepts there), but the
+      // on-disk postmaster.pid records a DIFFERENT port → not ground-truth ours.
+      writeRecords(process.ppid, port, port + 1);
+      expect(await serve.detectRunningSharedPg(dataDir(), logFn)).toBeNull();
+    });
+  });
+});
+
 describe("isPortAccepting", () => {
   it("is true for a live listener and false for a free port", async () => {
     const { createServer } = await import("node:net");

@@ -807,6 +807,72 @@ export async function sweepOrphanPostgres(
   }
 }
 
+/** The port PG recorded on line 4 of `<dataDir>/postmaster.pid` (0 if absent/unparseable). */
+function readPostmasterRecordedPort(dataDir: string): number {
+  try {
+    const raw = readFileSync(join(dataDir, "postmaster.pid"), "utf8");
+    return Number((raw.split("\n")[3] ?? "").trim()) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * (EI-14941) Detect a healthy embedded Postgres that a DIFFERENT, still-alive
+ * operator already owns for THIS data dir — so we ATTACH to it instead of
+ * hijacking it.
+ *
+ * The foot-gun this closes: on a shared sidecar home (multiple operators sharing
+ * one `$HOME` → the same embedded-pg data dir — e.g. an "isolated" test rig whose
+ * HOME override silently failed to propagate), the cold-start path used to
+ * `sweepOrphanPostgres` (SIGKILL the running postmaster) and restart PG on a
+ * fresh launcher-hint port. That silently breaks every consumer baked to the OLD
+ * port — a totally unrelated live operator loses DB connectivity while its HTTP
+ * process keeps looking healthy (the live incident on the shared mac VM,
+ * 2026-07-17).
+ *
+ * We attach ONLY when a foreign owner genuinely holds it, which is precisely the
+ * multi-tenant collision and NEVER the normal single-user desktop (there the
+ * recorded owner pid is either our own or a dead prior session):
+ *   - `~/.papercusp/embedded-pg.json` names an operator pid that is ALIVE and is
+ *     NOT us (a live foreign owner — distinguishes this from a clean-restart
+ *     orphan, whose owner has exited);
+ *   - the on-disk `postmaster.pid` in this data dir records the SAME port
+ *     (ground truth that a live postmaster holds THIS dir, not a stale record);
+ *   - that port is actually accepting TCP (the PG is really up).
+ * Any check failing ⇒ null ⇒ the caller falls through to the unchanged
+ * sweep+cold-start path.
+ */
+export async function detectRunningSharedPg(
+  dataDir: string,
+  logFn: (m: string) => void = log,
+): Promise<{ port: number; ownerPid: number; adminUrl: string } | null> {
+  let rec: { pid?: unknown; port?: unknown; url?: unknown } | null = null;
+  try {
+    rec = JSON.parse(readFileSync(EMBEDDED_PG_JSON, "utf8"));
+  } catch {
+    return null; // no PG discovery record → nothing to attach to
+  }
+  const ownerPid = Number(rec?.pid);
+  const pgPort = Number(rec?.port);
+  const adminUrl = typeof rec?.url === "string" ? rec.url : "";
+  if (!Number.isInteger(ownerPid) || ownerPid <= 0) return null;
+  if (!Number.isInteger(pgPort) || pgPort <= 0 || pgPort >= 65536) return null;
+  if (!adminUrl) return null;
+  // Our own record, or an owner that has exited — NOT a live foreign owner. Let
+  // the normal sweep+cold-start reclaim the dir (also avoids attaching to a PG
+  // that is mid-shutdown during a fast single-user restart).
+  if (ownerPid === process.pid || !pidAlive(ownerPid)) return null;
+  // Ground truth: a live postmaster genuinely holds THIS data dir on that port.
+  if (readPostmasterRecordedPort(dataDir) !== pgPort) return null;
+  if (!(await isPortAccepting(pgPort))) return null;
+  logFn(
+    `detectRunningSharedPg: live shared Postgres on :${pgPort} owned by still-alive ` +
+      `operator pid ${ownerPid} holds ${dataDir} — will attach, not take over (EI-14941)`,
+  );
+  return { port: pgPort, ownerPid, adminUrl };
+}
+
 /** Start (or attach to) Postgres and ensure HARNESS_ADMIN_DATABASE_URL is set. */
 async function ensurePostgres(): Promise<PgHandle | null> {
   if (process.env.PAPERCUSP_USE_EMBEDDED_PG === "0") {
@@ -839,6 +905,46 @@ async function ensurePostgres(): Promise<PgHandle | null> {
     log(
       `pre-migrated seed available at ${seedPath} (used only on a fresh data dir)`,
     );
+
+  // (EI-14941) If a DIFFERENT, still-alive operator already owns a healthy
+  // Postgres for this data dir (the shared-sidecar-home multi-tenant case),
+  // ATTACH to it on its existing port instead of sweeping+restarting it on a
+  // fresh port — the latter silently severs every consumer baked to the old
+  // port. We take NO ownership: like the external-PG branch above, return null
+  // so shutdown never sweeps or SIGINTs a postmaster we don't own. Never fires
+  // on a normal single-user desktop (recorded owner is our own pid or a dead
+  // prior session).
+  const shared = await detectRunningSharedPg(dataDir);
+  if (shared) {
+    process.env.HARNESS_ADMIN_DATABASE_URL = shared.adminUrl;
+    if (!process.env.HARNESS_DATABASE_URL) {
+      try {
+        const u = new URL(shared.adminUrl);
+        u.username = "harness_app";
+        u.password = "harness_app_pwd";
+        process.env.HARNESS_DATABASE_URL = u.toString();
+      } catch {
+        /* keep admin-only if the stored URL won't parse */
+      }
+    }
+    process.env.PAPERCUSP_USE_EMBEDDED_PG = "1";
+    process.env.PAPERCUSP_PG_PORT = String(shared.port);
+    let dbName = "papercusp";
+    try {
+      dbName = new URL(shared.adminUrl).pathname.replace(/^\//, "") || dbName;
+    } catch {
+      /* keep default for the readiness marker only */
+    }
+    log(
+      `attaching to already-running shared embedded Postgres on :${shared.port} ` +
+        `(owner operator pid ${shared.ownerPid} still alive) — NOT taking it over ` +
+        `(EI-14941); our shutdown leaves it running`,
+    );
+    // Preserve the readiness marker the desktop smoke harness greps
+    // (federation-asserts.sh fed_wait_boot); main() only logs it when we OWN pg.
+    log(`embedded Postgres ready on localhost:${shared.port} db=${dbName}`);
+    return null;
+  }
 
   // Kill/clear any orphaned postgres from a prior unclean exit before the
   // fresh start — otherwise the spawn fails with "lock file already exists"
