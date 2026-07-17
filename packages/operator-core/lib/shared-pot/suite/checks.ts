@@ -282,7 +282,16 @@ async function checkFileLockRouting(runId: string): Promise<CheckResult> {
   const now = 1_700_000_000_000;
   const HARNESS = `__hivetest_h_${runId}`;
   const HIVE = `__hivetest_route_${runId}`;
-  const forced = { domainToHarnessSlug: () => HARNESS, now: () => now, skipRemotePeersFastPath: true };
+  // WI-5190: HRW_RENDEZVOUS_AUTHORITY graduated to default-ON 2026-07-17 — without
+  // pinning it, resolveUseHrwRendezvous() reads the LIVE flag and this check
+  // silently started exercising selectAuthorityRendezvous's hash-based winner
+  // instead of the row-argmin selectAuthorityFromRows this check's fixtures were
+  // written against, breaking the hive-fail-open sub-assertion. This check's job
+  // is file-claim ROUTING SCOPE (P-009: hive vs harness vs local) — WHICH authority
+  // algorithm picks the peer within a tier is exercised by its own dedicated
+  // suite (rendezvous-authority.test.ts), so pin it OFF here to keep this check
+  // isolated to what it actually tests, independent of that unrelated flag.
+  const forced = { domainToHarnessSlug: () => HARNESS, now: () => now, skipRemotePeersFastPath: true, useHrwRendezvous: false };
 
   // Hive member, we are the authority (no remote Swarm) → local.
   let ranLocal = false;
