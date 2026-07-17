@@ -15,8 +15,8 @@
 | Platform | Forward update | Revert (rollback) | DB grace (fwd + down) | Channel/degradation | **Go/No-Go** |
 |---|---|---|---|---|---|
 | **Linux (x86_64)** | ✅ PASS | ✅ PASS | ✅ PASS | ✅ PASS | **GO** |
-| **macOS** | — | — | — | — | **PENDING artifact** |
-| **Windows** | — | — | — | — | **PENDING artifact** |
+| **macOS** | — | — | — | — | **BLOCKED (build)** |
+| **Windows** | artifact ✅ signed | — | — | (server-side ✅) | **PENDING VM E2E** |
 
 ## Linux — GO (fully exercised end-to-end)
 
@@ -65,10 +65,22 @@ rig + drive method is ready; the moment a mac artifact exists it can be staged a
 (same local-rail, zero-outward-write method). **Owner-relevant:** this is a build-artifact
 dependency in the release-cut lane (su-b0fbf), not a testing blocker on my side.
 
-## Windows — PENDING (blocked on artifact + a VM disk issue)
+## Windows — artifact validated; VM E2E pending
 
-P-030/031/032 need a `-setup.exe` + `.sig`; the Windows build VM additionally has a
-low-disk escalation open in the cut lane. Same ready-to-run posture as macOS.
+- **P-030 (artifact)** — the Windows GUI `-setup.exe` **exists and is validly signed**:
+  `Papercusp GUI_0.0.11_x64-setup.exe` (1.9 GB) + `.sig` cryptographically **VERIFY=PASS**
+  against the baked updater pubkey (keyid `449908a7d47d3a5d`, the same key that signed
+  the passing Linux artifact). Build provenance is clean: `gitDirty:false`, gitHead
+  `8e5411de`, buildSha `da9e455e-9f4917b9` (matches the Linux 0.0.11 operator sha). The
+  Server `-setup.exe` also verifies. So the Windows auto-update artifact will pass the
+  updater's signature check.
+- **Server-side manifest resolution** for a Windows client is covered by the same
+  platform-agnostic manifest path proven on Linux (`platformKeyFor` accepts `windows`;
+  the channel/degradation matrix is platform-independent).
+- **P-031/P-032 (Windows-native in-app update + revert + DB spot-checks)** — the only
+  remaining Windows gap; these require driving the actual swap on the **Windows VM**
+  (`ssh :2223`), which additionally has a low-disk escalation open in the cut lane.
+  Not doable from Linux; owned by the cut lane (su-b0fbf).
 
 ## Gaps / recommendations
 

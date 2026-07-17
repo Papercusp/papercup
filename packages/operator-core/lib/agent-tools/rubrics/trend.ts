@@ -14,6 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { scorecardTrend } from '../../scorecards';
+import { rejectRubricRefIdConflict, resolveRubricRefAlias } from './_ref-alias';
 
 export default defineTool({
   name: 'rubrics:trend',
@@ -35,31 +36,39 @@ export default defineTool({
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({
-    rubricRef: z.string().describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric)'),
-    sourceHive: z.string().optional().describe('restrict the trend to one source-hive'),
-    since: z
-      .string()
-      .optional()
-      .describe('ISO timestamp — only scorecards filed at/after this (the trend window); omit for all'),
-    limit: z
-      .number()
-      .int()
-      .positive()
-      .max(500)
-      .optional()
-      .describe('max scorecards to aggregate (newest-first read; default 500)'),
-    includeSeries: z
-      .boolean()
-      .optional()
-      .describe(
-        'also return each criterion\'s chronological series as RLE runs {rating, from, to, n} (default false — the summary fields are the payload)',
-      ),
-  }),
+  args: z
+    .object({
+      rubricRef: z.string().optional().describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric; alias: rubricId)'),
+      rubricId: z.string().optional().describe('alias for rubricRef (EI-11400)'),
+      sourceHive: z.string().optional().describe('restrict the trend to one source-hive'),
+      since: z
+        .string()
+        .optional()
+        .describe('ISO timestamp — only scorecards filed at/after this (the trend window); omit for all'),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(500)
+        .optional()
+        .describe('max scorecards to aggregate (newest-first read; default 500)'),
+      includeSeries: z
+        .boolean()
+        .optional()
+        .describe(
+          'also return each criterion\'s chronological series as RLE runs {rating, from, to, n} (default false — the summary fields are the payload)',
+        ),
+    })
+    .superRefine(rejectRubricRefIdConflict)
+    .refine((a) => Boolean(resolveRubricRefAlias({ rubricRef: a.rubricRef, rubricId: a.rubricId })), {
+      message: 'pass `rubricRef` or `rubricId` (required)',
+    }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
+    // Resolve alias to canonical name
+    const rubricRef = resolveRubricRefAlias({ rubricRef: args.rubricRef, rubricId: args.rubricId });
     const trend = await scorecardTrend({
-      rubricRef: args.rubricRef,
+      rubricRef: rubricRef!,
       sourceHive: args.sourceHive,
       since: args.since,
       limit: args.limit,

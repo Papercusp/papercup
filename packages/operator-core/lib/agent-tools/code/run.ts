@@ -23,6 +23,7 @@ import {
   effectiveDispatchWorkspace,
   synthesizeDispatchPrincipal,
 } from '../../endpoint-route/routes/transport/role-principal-caps';
+import { rejectScriptCodeConflict, resolveScriptAlias } from './_script-alias';
 
 /**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
@@ -83,60 +84,75 @@ export default defineTool({
   // AGENT_ROLES is the complete built-in role universe; keep the companion tools (code:tools,
   // recipes:run/search/list/get) and CODE_RUN_CAPABLE_ROLES (the batch-nudge audience) in lockstep.
   agentRoles: [...AGENT_ROLES],
-  args: z.object({
-    script: z
-      .string()
-      .min(1)
-      .max(20_000)
-      .describe(
-        'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
-          'No setTimeout/setInterval (not ambient in this sandbox) — use `await sleep(ms)` for a ' +
-          'short bounded delay (e.g. write-then-reverify) instead.',
-      ),
-    title: z
-      .string()
-      .max(120)
-      .optional()
-      .describe(
-        'Short title for the reusable RECIPE saved on a successful run — make it discoverable ' +
-          'by other agents (e.g. "triage stale work-items"). Optional: a fallback is derived ' +
-          'from the script when omitted.',
-      ),
-    description: z
-      .string()
-      .max(2_000)
-      .optional()
-      .describe(
-        'One/two lines on what this recipe does + when to reuse it. Optional: derived from the ' +
-          'tool-set when omitted.',
-      ),
-    dryRun: z
-      .boolean()
-      .optional()
-      .describe('Preview: record effect:write tool calls without executing them (reads still run).'),
-    timeoutSec: z
-      .number()
-      .int()
-      .min(1)
-      .max(120)
-      .optional()
-      .describe(
-        `Wall-clock budget (default 30s). EI-9239: code:run has no run_in_background — every call is ` +
-          `foreground, and the papercusp-su MCP transport hard-caps a foreground call at ~55s regardless ` +
-          `of this value. A request above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is clamped down to it ` +
-          `so the script gets a clean internal script_timeout (with whatever it returned so far) instead ` +
-          `of an opaque transport request_timeout — the script itself may keep running server-side past ` +
-          `that, but this call will not see the result. For work that genuinely needs longer, split it ` +
-          `into multiple code:run calls or fall back to individual tool calls.`,
-      ),
-  }),
+  args: z
+    .object({
+      script: z
+        .string()
+        .min(1)
+        .max(20_000)
+        .optional()
+        .describe(
+          'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+            'No setTimeout/setInterval (not ambient in this sandbox) — use `await sleep(ms)` for a ' +
+            'short bounded delay (e.g. write-then-reverify) instead. Alias: code (EI-11400).',
+        ),
+      code: z
+        .string()
+        .min(1)
+        .max(20_000)
+        .optional()
+        .describe('Alias for script (EI-11400)'),
+      title: z
+        .string()
+        .max(120)
+        .optional()
+        .describe(
+          'Short title for the reusable RECIPE saved on a successful run — make it discoverable ' +
+            'by other agents (e.g. "triage stale work-items"). Optional: a fallback is derived ' +
+            'from the script when omitted.',
+        ),
+      description: z
+        .string()
+        .max(2_000)
+        .optional()
+        .describe(
+          'One/two lines on what this recipe does + when to reuse it. Optional: derived from the ' +
+            'tool-set when omitted.',
+        ),
+      dryRun: z
+        .boolean()
+        .optional()
+        .describe('Preview: record effect:write tool calls without executing them (reads still run).'),
+      timeoutSec: z
+        .number()
+        .int()
+        .min(1)
+        .max(120)
+        .optional()
+        .describe(
+          `Wall-clock budget (default 30s). EI-9239: code:run has no run_in_background — every call is ` +
+            `foreground, and the papercusp-su MCP transport hard-caps a foreground call at ~55s regardless ` +
+            `of this value. A request above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is clamped down to it ` +
+            `so the script gets a clean internal script_timeout (with whatever it returned so far) instead ` +
+            `of an opaque transport request_timeout — the script itself may keep running server-side past ` +
+            `that, but this call will not see the result. For work that genuinely needs longer, split it ` +
+            `into multiple code:run calls or fall back to individual tool calls.`,
+        ),
+    })
+    .superRefine(rejectScriptCodeConflict)
+    .refine((a) => Boolean(resolveScriptAlias({ script: a.script, code: a.code })), {
+      message: 'pass `script` or `code` (required)',
+    }),
   async handler(args, ctx) {
+    // Resolve alias to canonical name
+    const script = resolveScriptAlias({ script: args.script, code: args.code })!;
+    
     const all = listAllProjectedTools();
     // Scope the facade to tools this agent's role may call (mirrors the dispatcher role-allowlist);
     // exclude code:run itself so a script cannot recursively nest code-mode.
     const allowed = roleScopedToolNames(all, ctx.role, new Set(['code:run']));
 
-    const result = await runToolOrchestration(args.script, {
+    const result = await runToolOrchestration(script, {
       ctx,
       // Thread the host's REAL dispatch deps (B-CX-DEPS): inner tool calls route through
       // the same dispatcher pipeline as any MCP `tools/call` — so they are recordInvocation-
