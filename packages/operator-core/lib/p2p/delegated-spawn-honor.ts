@@ -63,6 +63,11 @@ import {
 } from './offer-store-schema';
 import { seatOfferId } from './offer-store-publish';
 import { emitP2pReceipt } from './receipts';
+import {
+  resolveHonorAccount as resolveHonorAccountCore,
+  localClaudeLoginPresent,
+  type HonorAccountResolution,
+} from './honor-account-resolution';
 import type { OrgSql } from '../work-items';
 
 /** How long a spawn-request stays honorable after its publisher-clock stamp. */
@@ -201,6 +206,15 @@ export interface DelegatedSpawnHonorDeps {
    * the runtime, instead of the member phantom-"opening" and never joining.
    */
   probeAgentRuntime?: (model: string | undefined) => Promise<{ resolved: boolean; detail: string }>;
+  /**
+   * WI-5316: resolve the seat's `--account` selection against THIS host's gateway
+   * pool BEFORE claiming/spawning. A seat authored `AUTO` becomes `--account=auto`,
+   * which psu refuses on a host with an empty pool → silent dead member (sibling of
+   * WI-5306). Default {@link defaultResolveHonorAccount} downgrades auto→default when
+   * the pool is empty but a local login exists, or refuses (`account_unfulfillable`,
+   * federated receipt) when genuinely unfulfillable.
+   */
+  resolveHonorAccount?: (requestedAccount: string, workspaceId: string) => Promise<HonorAccountResolution>;
   nowMs?: () => number;
   honorWindowMs?: number;
 }

@@ -28,11 +28,9 @@ import { renderCard } from '@/lib/chat-cards';
 import { CHAT_SEED_EVENT, consumePendingChatSeed, readChatDraft, writeChatDraft } from './inbox/chat-seed';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { Tooltip } from '../harness/Tooltip';
-import { useQueryState, parseAsString } from 'nuqs';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { ReportBlockCard } from './chat/ReportBlockCard';
-import { drillInRefToInbox } from './chat/curator-card-drill-in';
 
 interface Props {
   /** Conversation messages, oldest first. */
@@ -96,6 +94,15 @@ interface Props {
    * one hardcoded bit of copy standing in the way of a second caller.
    */
   agentName?: string;
+
+  /**
+   * deterministic-status-cards-2026-07-17 P-003: drill-in router for a curator
+   * status card's row `ref`. Supplied by the PARENT (OperatorChatSidebar), which
+   * owns the nuqs inbox navigation — so this component stays provider-free +
+   * unit-testable. Omit ⇒ card rows render without an Open action (e.g. reuse in
+   * a context with no inbox to navigate to).
+   */
+  onDrillIn?: (ref: string) => void;
 }
 
 const STARTING_PROMPTS = [
@@ -119,7 +126,7 @@ const STARTING_PROMPTS = [
 export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
-  conversationId, workspaceId, agentName = 'Papercup',
+  conversationId, workspaceId, agentName = 'Papercup', onDrillIn,
 }: Props) {
   // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
   // consume a staged seed on mount (the usual path — the chat body was
@@ -208,27 +215,19 @@ export function OperatorChat({
   // deterministic-status-cards-2026-07-17 P-003: the CURATOR's deterministic
   // status turns (ChatMessage.report, mapped only for source:'system') render
   // as a structured card here — in place of their flattened markdown lines —
-  // with each row's drill-in ref as a real action. The operator's OWN <report>
-  // still routes to the Inbox (its turns never set ChatMessage.report). Flag-
-  // gated: OFF → renderReport returns null → the plain-text content renders
-  // byte-identically (the clean kill-switch).
+  // with each row's drill-in ref as a real action (routed by the parent's
+  // `onDrillIn`, which owns the nuqs inbox nav — keeping this component
+  // provider-free + unit-testable). The operator's OWN <report> still routes to
+  // the Inbox (its turns never set ChatMessage.report). Flag-gated: OFF →
+  // renderReport returns null → the plain-text content renders byte-identically
+  // (the clean kill-switch).
   const curatorCardsOn = useFlag(FLAGS.CURATOR_STATUS_CARDS);
-  const [, setView] = useQueryState('opcv', parseAsString);
-  const [, setInboxSel] = useQueryState('opcis', parseAsString);
-  const handleDrillIn = useCallback(
-    (ref: string) => {
-      const sel = drillInRefToInbox(ref);
-      void setView('inbox');
-      void setInboxSel(sel);
-    },
-    [setView, setInboxSel],
-  );
   const renderReport = useCallback(
     (msg: ChatMessage): ReactNode | null => {
       if (!curatorCardsOn || !msg.report) return null;
-      return <ReportBlockCard report={msg.report} onDrillIn={handleDrillIn} />;
+      return <ReportBlockCard report={msg.report} onDrillIn={onDrillIn} />;
     },
-    [curatorCardsOn, handleDrillIn],
+    [curatorCardsOn, onDrillIn],
   );
 
   return (

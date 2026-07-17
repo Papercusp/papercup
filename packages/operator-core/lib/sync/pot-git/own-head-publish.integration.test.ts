@@ -96,6 +96,8 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
 
     const repoPath = hiveGitRepoPath(HIVE, REPO_KEY);
     expect(await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`)).toBe(sha);
+    // The canonical WORK_REF alias the integrator gates on moves with it.
+    expect(await readNamespaceRef(repoPath, dev, 'refs/heads/work')).toBe(sha);
     expect(await listNamespaces(repoPath)).toHaveLength(1);
     // The published commit is a real, connected object in the shared ODB.
     const type = await git(['cat-file', '-t', sha], repoPath);
@@ -128,6 +130,7 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     expect(out.headSha).toBe(sha2);
     const repoPath = hiveGitRepoPath(HIVE, REPO_KEY);
     expect(await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`)).toBe(sha2);
+    expect(await readNamespaceRef(repoPath, dev, 'refs/heads/work')).toBe(sha2);
   });
 
   it('G-10 refuses a planted credential: ref unchanged, nothing newly advertised', async () => {

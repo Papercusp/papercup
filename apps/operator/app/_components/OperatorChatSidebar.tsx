@@ -25,8 +25,9 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
 import { ChevronLeft, ChevronRight, ClipboardList, Inbox as InboxIcon, Volume2, VolumeX } from 'lucide-react';
-import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
+import { drillInRefToInbox } from './chat/curator-card-drill-in';
 import { PotHealthPane } from './PotHealthPane';
 import { useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
@@ -292,6 +293,18 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const potOpen = view === 'pot';
   const inboxOpen = view === 'inbox';
   const plansOpen = view === 'plans';
+  // deterministic-status-cards-2026-07-17 P-003: a curator status card's
+  // drill-in opens the inbox (opcv=inbox) and selects the referenced item
+  // (opcis). Owned here (this component holds the nuqs view state) and passed
+  // into OperatorChat, which stays provider-free.
+  const [, setInboxSel] = useQueryState('opcis', parseAsString);
+  const handleCardDrillIn = useCallback(
+    (ref: string) => {
+      void setView('inbox');
+      void setInboxSel(drillInRefToInbox(ref));
+    },
+    [setView, setInboxSel],
+  );
   // The lit extra face, if any — drives both the pill state and the body swap.
   const activeFace = extraFaces.find((f) => f.id === view) ?? null;
   // Live decision-tier count (shared plans.attention sync feed) — badge on
@@ -508,6 +521,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
             onAnswerChoice={conv.answerChoice}
             conversationId={conv.conversationId ?? undefined}
             workspaceId={workspaceId}
+            onDrillIn={handleCardDrillIn}
           />
         )}
         {/* M6: askUserLocal renderer host. Mounted once per sidebar so any

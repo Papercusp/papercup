@@ -103,9 +103,20 @@ async function collectGateableHeads(
   memberDevicePubkeysBase64: string[],
   runGit: RunGit,
 ): Promise<GateableHead[]> {
+  // Members publish their CHECKED-OUT branch ref (own-head-publish G-2a) and —
+  // since the WI-3499 live drill — the canonical WORK_REF alias alongside it.
+  // A namespace written by a pre-alias publisher only has the branch ref, so
+  // when WORK_REF is absent fall back to the store's default-branch ref;
+  // without the fallback such a member is silently invisible to the gate
+  // (live-caught on the tower↔mac rig: every ns had only refs/heads/master).
+  const head = await runGit(['symbolic-ref', '-q', 'HEAD'], repoPath);
+  const defaultRef = head.code === 0 ? head.stdout.trim() : null;
   const out: GateableHead[] = [];
   for (const dev of memberDevicePubkeysBase64) {
-    const sha = await readNamespaceRef(repoPath, dev, WORK_REF, runGit);
+    let sha = await readNamespaceRef(repoPath, dev, WORK_REF, runGit);
+    if (!sha && defaultRef && defaultRef !== WORK_REF) {
+      sha = await readNamespaceRef(repoPath, dev, defaultRef, runGit);
+    }
     if (sha) out.push({ devicePubkeyBase64: dev, sha });
   }
   return out;

@@ -43,6 +43,7 @@ import {
   readNamespaceRef,
   writeNamespaceRef,
 } from './storage';
+import { WORK_REF } from './integrator';
 import {
   checkPublishGuard,
   type PublishGuardCaps,
@@ -174,6 +175,28 @@ export async function runOwnHeadPublishTick(
   } catch (e) {
     errors.push(`namespace ref CAS write failed: ${e instanceof Error ? e.message : e}`);
     return { ran: true, changed: false, branch, headSha, priorSha, refused: null, errors };
+  }
+
+  // The integrator gates member heads at the canonical WORK_REF, not the
+  // branch-named ref — publish the alias too, over the same guarded range.
+  // Best-effort: the branch ref is already servable, and the integrator's
+  // default-branch fallback covers an alias miss.
+  if (branchRef !== WORK_REF) {
+    try {
+      const workPrior = await readNamespaceRef(repoPath, input.devicePubkeyBase64, WORK_REF, runGit);
+      if (workPrior !== headSha) {
+        await writeNamespaceRef(
+          repoPath,
+          input.devicePubkeyBase64,
+          WORK_REF,
+          headSha,
+          runGit,
+          workPrior ?? undefined,
+        );
+      }
+    } catch (e) {
+      errors.push(`WORK_REF alias write failed (branch ref published): ${e instanceof Error ? e.message : e}`);
+    }
   }
   return { ran: true, changed: true, branch, headSha, priorSha, refused: null, errors };
 }

@@ -100,7 +100,7 @@ function ReportItemRow({
           type="button"
           className="report-block-item-drill"
           onClick={() => onDrillIn(item.ref!)}
-          title={`Open ${item.ref}`}
+          aria-label={`Open ${item.ref}`}
         >
           Open ↗
         </button>

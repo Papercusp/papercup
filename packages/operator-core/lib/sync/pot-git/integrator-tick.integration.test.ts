@@ -176,4 +176,30 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
     expect(out.integration?.advanced).toBe(false);
     expect(out.announcement).toBeNull();
   });
+
+  it('a namespace with only a branch-named ref (pre-WORK_REF-alias publisher) still gates via the default-branch fallback', async () => {
+    // Live publishers write the checked-out branch ref; only post-alias code
+    // also writes WORK_REF. The gate must not silently skip such a member.
+    const devC = makeDevice();
+    const defaultRef = (await defaultRunGit(['symbolic-ref', '-q', 'HEAD'], repo)).stdout.trim();
+    expect(defaultRef).toMatch(/^refs\/heads\//);
+    const head = await commit(repo, { 'legacy.txt': 'y' });
+    await writeNamespaceRef(repo, devC.pubBase64, defaultRef, head);
+
+    const out = await runIntegratorTick({
+      potHomeSlug: 'hive-i',
+      workspaceId: 'ws-1',
+      repoKey: 'repo-1',
+      memberDevicePubkeysBase64: [devC.pubBase64],
+      integratorDevicePubkeyBase64: integrator.pubBase64,
+      epoch: 1,
+      priorSeq: 1,
+      sign: integrator.sign,
+      resolveTier: () => 'message',
+      deps: { isIntegrator: async () => true, sql: fakeSql() },
+    });
+
+    // Seen (fallback read) and queued as below-steer — not invisible.
+    expect(out.gated).toEqual({ integrated: 0, queued: 1, errors: 0 });
+  });
 });
