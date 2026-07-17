@@ -60,7 +60,7 @@ import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coord
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
-import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
+import { resolveWorkspaceHiveScope, type WorkspaceHiveScope } from '../coordination/federation-scope';
 import { listWorkOffers } from '../../p2p/offer-store';
 import { publishSpawnRequest } from '../../p2p/spawn-request-publish';
 import { listFederatedFleetMembers } from '../../sync/hyperbee/session-presence-store';
@@ -643,6 +643,42 @@ export function remotePlacementUnsupportedArgs(args: Record<string, unknown>): s
   return REMOTE_PLACEMENT_UNSUPPORTED_ARGS.filter((k) => args[k] !== undefined);
 }
 
+/**
+ * Pure (WI-5211): pick the ONE shared hive whose federated seat-offers a
+ * placement:'remote' launch consumes. Exactly-one workspaces resolve alone; on a
+ * multi-hive workspace an explicit `hive` wins (validated against the shared set),
+ * else the plan's `harness` disambiguates when it names a shared hive — the same
+ * disambiguator resource:delegate uses on the offer-publishing side.
+ */
+export function resolveRemotePlacementHive(
+  scope: WorkspaceHiveScope,
+  explicitHive: string | undefined,
+  harness: string | null,
+): { ok: true; homeSlug: string } | { ok: false; error: string } {
+  if (scope.kind === 'none') {
+    return {
+      ok: false,
+      error:
+        'this workspace has NO shared hive — seat-offers federate over a shared hive, so cross-machine placement needs one (publish or join the hive first)',
+    };
+  }
+  const candidates = scope.kind === 'one' ? [scope.homeSlug] : scope.candidates;
+  const hive = explicitHive?.trim();
+  if (hive) {
+    if (candidates.includes(hive)) return { ok: true, homeSlug: hive };
+    return {
+      ok: false,
+      error: `hive \`${hive}\` is not one of this workspace's shared hives (${candidates.join(', ')}) — seat-offers only federate over a shared hive`,
+    };
+  }
+  if (scope.kind === 'one') return { ok: true, homeSlug: scope.homeSlug };
+  if (harness && candidates.includes(harness)) return { ok: true, homeSlug: harness };
+  return {
+    ok: false,
+    error: `this workspace has ${candidates.length} shared hives (${candidates.join(', ')}) — pass \`hive\` to pick the one whose delegated seat-offers this fleet uses (resource:delegate named the same hive when the seats were offered)`,
+  };
+}
+
 /** One remote machine's open seat-offer, summarized for distribution. */
 export interface RemoteSeatOfferSummary {
   publisher: number;
@@ -759,6 +795,12 @@ export default defineTool({
       .optional()
       .describe(
         "Where members run (default 'local': this machine, exactly as before). 'remote' places members on the OTHER machines that delegated agent_slot seats to this fleet (their federated seat-offers): `count` is spread round-robin across those machines — 1 per machine first, so count 2 across 2 machines lands 1 member on EACH — publishing one SIGNED spawn-request per target (the fleet:request_remote_spawn chain, which stays the single-target/explicit-pick door). ASYNC: members arrive only after each host's owner-authority accept-delegated-seats gate admits the request (a gate-off host lets it expire after 60 min); watch arrivals via fleet:status / coord:presence, refusals via p2p:trace. Each machine's delegated slot pins the member's model+effort+account and the host owns the window shape, so agent/model/account/seat/headless/carry/display/per-member-brief args are REFUSED with 'remote'; `launchContext` still applies (sent as brief text, ≤8000 chars).",
+      ),
+    hive: z
+      .string()
+      .optional()
+      .describe(
+        "placement:'remote' on a MULTI-hive workspace: which shared hive's federated seat-offers to place onto (mirror of resource:delegate's `hive`). Defaults to the single shared hive, else to `harness` when that names a shared hive; otherwise the call refuses and lists the candidates.",
       ),
     headless: z
       .boolean()
@@ -1167,11 +1209,9 @@ export default defineTool({
     // its own seat caps (delegated-spawn-honor gates 4/5) before spawning.
     if (remotePlacement) {
       const scope = await resolveWorkspaceHiveScope(workspaceId);
-      if (scope.kind !== 'one') {
-        return err(
-          `seat-offers federate over the ONE shared hive and this workspace has ${scope.kind === 'none' ? 'none' : 'several'} — cross-machine placement needs a single shared hive`,
-        );
-      }
+      const hivePick = resolveRemotePlacementHive(scope, args.hive, harness);
+      if (!hivePick.ok) return err(hivePick.error);
+      const hiveHomeSlug = hivePick.homeSlug;
       // This machine's OWN delegation must never receive a spawn-request (the honor
       // hook fires only on REMOTE apply — a self-request would sit forever), so
       // identify self and exclude own offers. Best-effort: identity unavailable ⇒
@@ -1191,7 +1231,7 @@ export default defineTool({
       }
       let seatOffers;
       try {
-        seatOffers = await listWorkOffers(workspaceId, scope.homeSlug, {
+        seatOffers = await listWorkOffers(workspaceId, hiveHomeSlug, {
           fleetSlug,
           kind: 'seat',
           status: 'open',

@@ -27,6 +27,7 @@ import launchOnPlan, {
   renderMemberBaseline,
   distributeRemotePlacement,
   remotePlacementUnsupportedArgs,
+  resolveRemotePlacementHive,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -664,5 +665,39 @@ describe("placement arg + remotePlacementUnsupportedArgs (WI-5211)", () => {
     ]);
     // Explicitly-passed false still counts as passed — the honoring host owns the shape.
     expect(remotePlacementUnsupportedArgs({ fromSeats: false })).toEqual(['fromSeats']);
+  });
+});
+
+// WI-5211 follow-up: a MULTI-hive workspace must not refuse placement:'remote'
+// outright — `hive` (or the plan's `harness`) disambiguates, mirroring
+// resource:delegate's offer-publishing side.
+describe('resolveRemotePlacementHive (WI-5211 — multi-hive disambiguation)', () => {
+  const many = { kind: 'many' as const, candidates: ['hello-world-3-pot', 'papercusp', 'test-hive-2'] };
+
+  it('exactly-one workspace resolves alone, with or without a matching explicit hive', () => {
+    const one = { kind: 'one' as const, homeSlug: 'papercusp' };
+    expect(resolveRemotePlacementHive(one, undefined, null)).toEqual({ ok: true, homeSlug: 'papercusp' });
+    expect(resolveRemotePlacementHive(one, 'papercusp', null)).toEqual({ ok: true, homeSlug: 'papercusp' });
+  });
+
+  it('multi-hive: explicit hive wins when it names a shared hive', () => {
+    expect(resolveRemotePlacementHive(many, 'papercusp', null)).toEqual({ ok: true, homeSlug: 'papercusp' });
+  });
+
+  it('multi-hive: falls back to the harness when it names a shared hive', () => {
+    expect(resolveRemotePlacementHive(many, undefined, 'papercusp')).toEqual({ ok: true, homeSlug: 'papercusp' });
+  });
+
+  it('refuses with the candidate list when nothing disambiguates', () => {
+    const res = resolveRemotePlacementHive(many, undefined, 'not-a-hive');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('papercusp');
+  });
+
+  it('refuses an explicit hive outside the shared set (never guesses), and a no-shared-hive workspace', () => {
+    const bad = resolveRemotePlacementHive(many, 'private-hive', 'papercusp');
+    expect(bad.ok).toBe(false);
+    const none = resolveRemotePlacementHive({ kind: 'none' }, 'papercusp', 'papercusp');
+    expect(none.ok).toBe(false);
   });
 });
