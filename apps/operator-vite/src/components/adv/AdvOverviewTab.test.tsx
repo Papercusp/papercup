@@ -35,6 +35,10 @@ vi.mock('nuqs', () => ({
 vi.mock('./FleetRateControl', () => ({
   default: () => <div data-testid="fleet-rate-control" />,
 }));
+vi.mock('@/lib/useLexicon', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/lexicon')>('@papercusp/lexicon');
+  return { useLexicon: () => actual.lexiconFor('classic') };
+});
 
 let planListResult: Record<string, unknown> = { data: { plans: [] }, loading: false, error: null, refresh: vi.fn() };
 let attentionResult: Record<string, unknown> = { data: { groups: [] }, loading: false, error: null, refresh: vi.fn() };
@@ -280,6 +284,7 @@ describe('AdvOverviewTab component', () => {
         presenceRow({ ownerId: 'o1', intent: 'wiring the sync query', agentRole: 'worker', agoMs: 0 }),
         presenceRow({ ownerId: 'o2', ownerLabel: 'architect-1', intent: '', agoMs: 120_000 }), // idle
         presenceRow({ ownerId: 'o3', intent: 'gone', agoMs: 900_000 }), // stale-by-heartbeat
+        presenceRow({ ownerId: 'o4', ownerLabel: 'overwatch', agentRole: 'queen', intent: '', agoMs: 0 }),
       ],
       loading: false,
     };
@@ -290,6 +295,10 @@ describe('AdvOverviewTab component', () => {
     render(<AdvOverviewTab />);
     expect(await screen.findByText('wiring the sync query')).toBeTruthy();
     expect(screen.getByText('architect-1')).toBeTruthy(); // ownerLabel fallback when no intent
+    expect(screen.getByText('Kettle')).toBeTruthy();
+    expect(screen.getByText('Mug')).toBeTruthy();
+    expect(screen.queryByText('overwatch')).toBeNull();
+    expect(screen.queryByText('queen')).toBeNull();
     expect(screen.queryByText('gone')).toBeNull(); // stale (old heartbeat) filtered out
     // 'worker' appears as both the roster role tag (agentRole) and the activity actor.
     expect(screen.getAllByText('worker').length).toBeGreaterThanOrEqual(2);

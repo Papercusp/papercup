@@ -14,6 +14,8 @@ import {
   type ItemStatus,
 } from '@/app/admin/plans/plans-api';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
+import { useLexicon } from '@/lib/useLexicon';
 
 /**
  * Brief 23 — the Overview / dashboard: the default landing surface of /adv.
@@ -171,6 +173,7 @@ export function selectLiveAgents(
 }
 
 export default function AdvOverviewTab() {
+  const lex = useLexicon();
   // Writers only (parseAsString) — AdvShell owns the canonical enum parser, so
   // writing a plain string round-trips identically. Mirrors AdvNowRunning.
   const [, setActiveTab] = useQueryState('tab', parseAsString);
@@ -345,15 +348,18 @@ export default function AdvOverviewTab() {
           emptyLabel="No live agents"
           onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.agents)}
         >
-          {liveAgents.map((a) => (
-            <div key={a.ownerId} className="pc-overview__row">
-              <span className="pc-overview__row-dot" data-live={a.liveness} aria-hidden />
-              <span className="pc-overview__row-title" title={a.intent || a.label}>
-                {a.intent || a.label}
-              </span>
-              {a.role && <span className="pc-overview__row-tag">{a.role}</span>}
-            </div>
-          ))}
+          {liveAgents.map((a) => {
+            const label = agentDisplayLabel(a.label, lex);
+            return (
+              <div key={a.ownerId} className="pc-overview__row">
+                <span className="pc-overview__row-dot" data-live={a.liveness} aria-hidden />
+                <span className="pc-overview__row-title" title={a.intent || label}>
+                  {a.intent || label}
+                </span>
+                {a.role && <span className="pc-overview__row-tag">{agentRoleLabel(a.role, lex)}</span>}
+              </div>
+            );
+          })}
         </OverviewTile>
 
         <OverviewTile

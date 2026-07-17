@@ -462,6 +462,7 @@ function FilesInPlaySection({
   selectedAgent: string | null;
   onSelect: (ownerId: string) => void;
 }): React.JSX.Element | null {
+  const lex = useLexicon();
   if (files.length === 0) return null;
   const contended = files.filter((f) => f.contended).length;
   return (
@@ -485,7 +486,7 @@ function FilesInPlaySection({
               {f.agents.map((a) => {
                 const client = a.agent ?? shortSource(a.source);
                 return (
-                  <Tooltip key={a.ownerId} label={`${client} · ${a.label || a.ownerId}${isZombie(a) ? ' · zombie' : ''}`}><button
+                  <Tooltip key={a.ownerId} label={`${client} · ${a.label ? agentDisplayLabel(a.label, lex) : a.ownerId}${isZombie(a) ? ' · zombie' : ''}`}><button
 
                     type="button"
                     className="pc-files__agent"
