@@ -675,6 +675,33 @@ const searchTranscripts = defineTool({
     const limitRaw = Number(url.searchParams.get('limit') ?? 30);
     const hitLimit = Math.min(50, Math.max(1, Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 30));
 
+    // owner-plans-single-pane-2026-07-17 P-006: `?plan=<slug>` scopes the
+    // search to ONE plan's sessions — the plan popup's Sessions-tab search.
+    // We resolve the plan's session HANDLES (claude session_id + omp thread id,
+    // via the same listPlanSessions two-leg attribution the popup's list uses)
+    // and filter the engine's turn-hits to them post-search. Handle-based (not
+    // owner-classification-based) so it stays independent of the roster join
+    // and needs no new engine capability. Absent → unscoped (today's behavior).
+    const planScope = (url.searchParams.get('plan') ?? '').trim().slice(0, 200);
+    let allowedHandles: Set<string> | null = null;
+    if (planScope) {
+      const { listPlanSessions } = await import('../../../adv-sessions');
+      const planSessions = await listPlanSessions(planScope, { workspaceId: null });
+      allowedHandles = new Set<string>();
+      for (const s of planSessions) {
+        if (s.sessionId) allowedHandles.add(s.sessionId);
+        if (s.ompThreadId) allowedHandles.add(s.ompThreadId);
+      }
+      // A plan with no recorded session handles can match nothing — short-circuit
+      // (an empty allow-set would filter every hit out anyway).
+      if (allowedHandles.size === 0) {
+        return new Response(
+          JSON.stringify({ ok: true, query: q, plan: planScope, totalHits: 0, sessions: [] }),
+          { status: 200, headers: JSON_HEADERS },
+        );
+      }
+    }
+
     // ── Recency (owner ask 2026-07-12): recency is a first-class variable for
     // THIS search, so it composes across three tiers ──────────────────────────
     // 1. HARD FILTER — ?since / ?until (ISO) → engine SearchFilters window
@@ -766,12 +793,16 @@ const searchTranscripts = defineTool({
     // after the 408 already went out (2026-07-09 incident: 34–69s server
     // burn past the 30s budget under host load). Abort → throw → the route
     // stack's aborted-catch path returns the 408.
+    // P-006: when plan-scoped, search WIDER (the plan filter runs post-search,
+    // so a narrow top-N could be entirely non-plan hits) then keep hitLimit
+    // after filtering. Capped so it never blows the engine budget.
+    const engineLimit = allowedHandles ? Math.min(200, hitLimit * 6) : hitLimit;
     const { results } = await runHybridSearch(sources, {
       sql,
       query: q,
       workspaceId: activeWorkspaceId(),
       scopeFilter: null,
-      limit: hitLimit,
+      limit: engineLimit,
       mode: 'hybrid',
       embedder,
       embedTimeoutMs,
@@ -794,6 +825,8 @@ const searchTranscripts = defineTool({
     for (const r of results) {
       const ref = parseTurnRef(r.source_id);
       if (!ref) continue;
+      // P-006 plan-scope: drop hits whose session isn't one of this plan's.
+      if (allowedHandles && !allowedHandles.has(ref.sessionId)) continue;
       turnHits.push({
         sourceKind: ref.sourceKind,
         sessionId: ref.sessionId,
@@ -833,7 +866,10 @@ const searchTranscripts = defineTool({
     }
     mark('metadataHydration');
 
-    const groups = groupHitsBySession(turnHits);
+    // Group per session; when plan-scoped we searched wide, so keep the top
+    // hitLimit SESSIONS after grouping (groups are already score-desc).
+    const groupsAll = groupHitsBySession(turnHits);
+    const groups = allowedHandles ? groupsAll.slice(0, hitLimit) : groupsAll;
     // Await the t0-started roster (usually already settled — it ran concurrent
     // with the search) + the hit-dependent session-row hydration.
     const [{ active }, sessionRows] = await Promise.all([
@@ -857,7 +893,7 @@ const searchTranscripts = defineTool({
     const sessions = classifySessionGroups(groups, active, sessionRows);
     mark('classify');
     return new Response(
-      JSON.stringify({ ok: true, query: q, totalHits: turnHits.length, sessions, _stageTimingsMs: stageTimingsMs }),
+      JSON.stringify({ ok: true, query: q, plan: planScope || undefined, totalHits: turnHits.length, sessions, _stageTimingsMs: stageTimingsMs }),
       { status: 200, headers: JSON_HEADERS },
     );
   },

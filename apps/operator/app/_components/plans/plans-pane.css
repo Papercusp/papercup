@@ -1,0 +1,153 @@
+/* PlansPane + PlanPopupModal + PlanSessionsTab
+   (owner-plans-single-pane-2026-07-17) — the simplified plan-tracking face of
+   the op-chat sidebar, its plan popup, and the popup's per-plan Sessions tab.
+   Token vocabulary matches inbox-pane.css (var(--fg)/--fg-mute/--border/--bg-3
+   with the same fallbacks) so the two sidebar faces read as a matched set. */
+
+/* ── PlansPane (sidebar list) ─────────────────────────────────────────── */
+.plans-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px 10px 10px;
+}
+.plans-pane__bar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.plans-pane__search {
+  flex: 1; min-width: 0; padding: 4px 9px; border-radius: 8px;
+  font-size: 12px; color: var(--fg, #e7e7ea);
+  background: var(--bg-3, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+}
+.plans-pane__search::placeholder { color: var(--fg-mute, #8a8a91); }
+.plans-pane__finished-toggle {
+  flex: 0 0 auto; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  font-size: 10.5px; font-weight: 650;
+  color: var(--fg-mute, #c2c2c9); background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+}
+.plans-pane__finished-toggle:hover { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
+.plans-pane__finished-toggle.is-on {
+  color: #fb923c; border-color: color-mix(in srgb, #fb923c 55%, transparent);
+  background: color-mix(in srgb, #fb923c 12%, transparent);
+}
+.plans-pane__empty { margin: 4px 2px; font-size: 11.5px; line-height: 1.45; color: var(--fg-mute, #8a8a91); }
+.plans-pane__list {
+  list-style: none; margin: 0; padding: 0; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
+  overflow-y: auto; flex: 1 1 auto;
+}
+.plans-pane__row {
+  width: 100%; min-width: 0; display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; text-align: left; cursor: pointer;
+  border-radius: 8px; border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+  background: transparent; color: var(--fg, #e7e7ea);
+}
+.plans-pane__row:hover { background: var(--bg-3, rgba(255, 255, 255, 0.05)); border-color: var(--fg-mute, #6d6d74); }
+.plans-pane__row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.plans-pane__row-title {
+  min-width: 0; font-size: 12px; line-height: 1.3; font-weight: 550;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.plans-pane__row-sub { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--fg-mute, #8a8a91); min-width: 0; }
+.plans-pane__row-harness { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plans-pane__row-ago { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.plans-pane__row-badges { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
+.plans-pane__badge {
+  display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--fg-mute, #c2c2c9);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12)); background: var(--bg-3, rgba(255, 255, 255, 0.05));
+}
+.plans-pane__badge--needs {
+  color: #fecaca; border-color: color-mix(in srgb, var(--bad, #f87171) 55%, transparent);
+  background: color-mix(in srgb, var(--bad, #f87171) 16%, transparent);
+}
+.plans-pane__badge--live {
+  color: #bbf7d0; border-color: color-mix(in srgb, var(--good, #34d399) 50%, transparent);
+  background: color-mix(in srgb, var(--good, #34d399) 14%, transparent);
+}
+.plans-pane__badge--progress { opacity: 0.85; }
+
+/* ── PlanPopupModal ───────────────────────────────────────────────────── */
+.plan-popup { display: flex; flex-direction: column; }
+.plan-popup__header {
+  display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+  padding: 9px 12px; border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+}
+.plan-popup__title {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 650; color: var(--fg, #e7e7ea);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.plan-popup__tabs { flex: 0 0 auto; display: flex; gap: 2px; }
+.plan-popup__tab {
+  padding: 3px 12px; border-radius: 999px; cursor: pointer; font-size: 11.5px; font-weight: 600;
+  color: var(--fg-mute, #c2c2c9); background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+}
+.plan-popup__tab:hover { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
+.plan-popup__tab.is-on {
+  color: #fb923c; border-color: color-mix(in srgb, #fb923c 55%, transparent);
+  background: color-mix(in srgb, #fb923c 12%, transparent);
+}
+.plan-popup__close {
+  flex: 0 0 auto; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px; cursor: pointer; font-size: 13px;
+  color: var(--fg-mute, #8a8a91); background: transparent; border: 1px solid transparent;
+}
+.plan-popup__close:hover { color: var(--fg, #e7e7ea); background: var(--bg-3, rgba(255, 255, 255, 0.06)); }
+/* PlanDetail relies on a scrolling parent (.pc-plans__main) — give it one so
+   the read-mode preview + action strip never clip inside the modal box. */
+.plan-popup__body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 14px 14px; }
+
+/* ── PlanSessionsTab ──────────────────────────────────────────────────── */
+.plan-sessions { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 14px; overflow: hidden; }
+.plan-sessions__bar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.plan-sessions__search {
+  flex: 1; min-width: 0; padding: 5px 10px; border-radius: 8px; font-size: 12.5px;
+  color: var(--fg, #e7e7ea); background: var(--bg-3, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+}
+.plan-sessions__search::placeholder { color: var(--fg-mute, #8a8a91); }
+.plan-sessions__launch {
+  flex: 0 0 auto; padding: 5px 11px; border-radius: 8px; cursor: pointer; font-size: 11.5px; font-weight: 650;
+  color: var(--fg, #e7e7ea); background: var(--bg-3, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
+}
+.plan-sessions__launch:hover:not(:disabled) { border-color: var(--accent, #8b5cf6); color: var(--accent, #a78bfa); }
+.plan-sessions__launch:disabled { opacity: 0.6; cursor: default; }
+.plan-sessions__results, .plan-sessions__list { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+.plan-sessions__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.plan-sessions__empty { margin: 6px 2px; font-size: 12px; color: var(--fg-mute, #8a8a91); }
+.plan-sessions__empty--error { color: var(--bad, #f87171); }
+.plan-sessions__row {
+  width: 100%; min-width: 0; display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; text-align: left; cursor: pointer;
+  border-radius: 8px; border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+  background: transparent; color: var(--fg, #e7e7ea);
+}
+.plan-sessions__row:hover:not(:disabled) { background: var(--bg-3, rgba(255, 255, 255, 0.05)); border-color: var(--fg-mute, #6d6d74); }
+.plan-sessions__row:disabled { opacity: 0.5; cursor: default; }
+.plan-sessions__row--hit { flex-direction: column; align-items: stretch; gap: 4px; }
+.plan-sessions__row-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
+.plan-sessions__row-title {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 12.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.plan-sessions__row-sub { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.plan-sessions__row-ago { flex: 0 0 auto; font-size: 10.5px; color: var(--fg-mute, #8a8a91); font-variant-numeric: tabular-nums; }
+.plan-sessions__live-dot { flex: 0 0 auto; color: var(--good, #34d399); font-size: 9px; line-height: 1; }
+.plan-sessions__tag {
+  padding: 0 6px; border-radius: 999px; font-size: 9px; font-weight: 650; text-transform: uppercase;
+  color: var(--fg-mute, #c2c2c9);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12)); background: var(--bg-3, rgba(255, 255, 255, 0.05));
+}
+.plan-sessions__tag--claim { color: #fcd34d; border-color: color-mix(in srgb, var(--warn, #fbbf24) 45%, transparent); }
+.plan-sessions__excerpt {
+  font-size: 11px; line-height: 1.4; color: var(--fg-mute, #b4b4bb);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.plan-sessions__excerpt mark { background: color-mix(in srgb, #fbbf24 32%, transparent); color: inherit; border-radius: 2px; padding: 0 1px; }

@@ -379,6 +379,35 @@ describe('runBootstrapLeg', () => {
     expect(patch.bootstrap.ok).toBe(true); // the final (successful) outcome wins
   });
 
+  it('surfaces the peer refuse reason in the dialLog when a LIVE dial fails (duplex.errored)', async () => {
+    // The dialing box already RECEIVES the peer's refuse over the wire
+    // (serve-wiring handleRefuse destroys the client duplex with
+    // `pot-git serve refused: <reason>`), retained on `duplex.errored`. The
+    // tick log must show it so the reverse-leg cause is diagnosable HERE — not
+    // only via a cross-machine serve.log read (P-303 drill 2026-07-17).
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+      // A live socket that carries a retained destroy-error, exactly as a
+      // refused FrameDuplex does (`.errored` set synchronously by .destroy(err)).
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => ({
+        on: (_ev: string, _cb: () => void) => {},
+        destroyed: false,
+        errored: new Error('pot-git serve refused: no-such-repo'),
+      }));
+      bootstrapFromPeerMock.mockImplementation(
+        bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'duplex already destroyed before fetch began (no live dial path)' }),
+      );
+      await runBootstrapLeg(SLUG, WS);
+      const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick reported errors'));
+      expect(warnMsg).toBeTruthy();
+      expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:failed(pot-git serve refused: no-such-repo)`);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('caps live fetch attempts at MAX_LIVE_ATTEMPTS (3) even with more failing candidates', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

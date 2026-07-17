@@ -271,12 +271,19 @@ export async function reconcileFleetScopeClaims(args: {
  * not by the claim spec being genuinely empty.
  */
 export interface CooldownMissDiagnosis {
-  /** Rows that match spec + floors once the cooldown-assignee leg is dropped. */
+  /** Rows that match spec + every OTHER floor and are excluded SPECIFICALLY by this
+   *  bee's own release-cooldown floor (last_released_by = me AND still within the
+   *  cooldown window) — i.e. the true SET DIFFERENCE between the with-cooldown and
+   *  without-cooldown floors, not a bare without-cooldown count (WI-5303: the prior
+   *  bare count over-attributed rows excluded by a different floor / a TOCTOU race
+   *  to cooldown). */
   cooldownExcluded: number;
   /** Earliest cooldown expiry (ms since epoch) among this bee's own recently-released
-   *  matching rows, or null when none of the matching rows were released by this bee
-   *  (cooldownExcluded > 0 can still hold — e.g. another floor + cooldown both apply to
-   *  different rows — so the count and the expiry are reported independently). */
+   *  matching rows that are STILL within the cooldown window. Always non-null when
+   *  cooldownExcluded > 0 (both are now computed from the same restricted row set —
+   *  WI-5303: previously an unrestricted MIN could lock onto an already-expired
+   *  release and report an expiry stuck in the past, i.e. a cooldownExpirySec of 0
+   *  forever). */
   earliestExpiryMs: number | null;
 }
 
@@ -294,6 +301,14 @@ export interface CooldownMissDiagnosis {
  * ANNOTATION on the already-failed claim, not a second claim attempt, so tier-1 fidelity is
  * enough to catch the dominant livelock shape (a bee's own just-released rows sorting back
  * to the top of a stable rank).
+ *
+ * WI-5303 fix: the row set is restricted, up front, to rows this bee itself released AND
+ * that are still inside the cooldown window (`last_released_at >= now() - cooldown`) — the
+ * exact predicate the WITH-cooldown floor uses to EXCLUDE a row. That makes `cnt` the true
+ * set difference (rows the without-cooldown floor admits that the with-cooldown floor does
+ * not, attributable to cooldown alone — not to a different floor or a race), and `earliest`
+ * (MIN release time among only-still-active rows) can never lock onto an already-expired
+ * release, so the derived `cooldownExpirySec` can never be stuck at 0 while cnt > 0.
  *
  * FAILS SOFT, same philosophy as `buildMissDiagnosis` (agent-tools/scheduler/get_next.ts):
  * any query error returns null — a diagnosis only ever annotates a miss, it must never be
@@ -313,6 +328,8 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
     const { sql } = getOrgPg();
     const { claimFloorsWhereSql, releaseCooldownSec } = await import('../work-items');
     const { compileFilter } = await import('./get-next');
+    const cooldownSec = releaseCooldownSec();
+    if (cooldownSec <= 0) return null;
     // The WITHOUT-cooldown leg: identical floors, `cooldownAssignee` simply omitted so
     // that clause compiles to `TRUE` (see claimFloorsWhereSql) instead of excluding this
     // bee's recently-released rows.
@@ -322,16 +339,22 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
       states: args.states ?? spec.states,
     });
     const filter = compileFilter(sql, spec.view.filter);
+    // WI-5303: restrict directly to the rows the WITH-cooldown floor would exclude for
+    // THIS bee (self-released, still within the window) — same query, same filter, plus
+    // the exact cooldown-exclusion predicate — instead of a bare without-cooldown count.
     const rows = await sql<{ cnt: number; earliest: Date | null }[]>`
       SELECT count(*)::int AS cnt,
-             MIN(last_released_at) FILTER (WHERE last_released_by = ${args.scope.ownerId}) AS earliest
+             MIN(last_released_at) AS earliest
         FROM harness_shared.harness_features_consolidated
        WHERE ${floorsNoCooldown}
-         AND ${filter}`;
+         AND ${filter}
+         AND last_released_by = ${args.scope.ownerId}
+         AND last_released_at IS NOT NULL
+         AND last_released_at >= now() - make_interval(secs => ${cooldownSec})`;
     const cnt = rows[0]?.cnt ?? 0;
     if (cnt === 0) return null;
     const earliest = rows[0]?.earliest ?? null;
-    const earliestExpiryMs = earliest ? new Date(earliest).getTime() + releaseCooldownSec() * 1000 : null;
+    const earliestExpiryMs = earliest ? new Date(earliest).getTime() + cooldownSec * 1000 : null;
     return { cooldownExcluded: cnt, earliestExpiryMs };
   } catch {
     return null;
