@@ -20,7 +20,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { COORD_ROLES } from '../coordination/roles';
+import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { evaluateSignals, knownSignals, type SignalContext } from '../../gym/primitives';
 import { SANDBOX_WORKSPACE_ID } from '../../red-queen/types';
 import type { DrillOutcome as RedQueenDrillOutcome } from '../../red-queen/types';
@@ -96,7 +96,7 @@ export default defineTool({
   // EXCLUDED so [...COORD_ROLES] doesn't leak it. Other coord roles are unchanged.
   // Overwatch excluded too (overwatch-role-2026-06-15): not a gym evaluator, and this
   // gates on harness:read which the overwatch carries — the allowlist is the gate.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
+  agentRoles: QUEEN_PLACEMENT_ROLES,
   args: z.object({
     signals: z.array(z.string()).min(1).describe("Signal names from the target blueprint's gym.signals"),
     preTests: z.array(testResult).optional().describe("The repo's own tests run BEFORE the change"),

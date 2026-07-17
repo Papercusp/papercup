@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { planBatchPlacement, type BatchPlacementPlan, type PlacementDecision } from '../../fleet/batch-placement';
 import { gatherFrontier, gatherLiveBees } from '../../fleet/placement-gather';
@@ -111,7 +111,7 @@ export default defineTool({
   // Placement is the Queen's (or operator's) surface — same carve-out as cup:spawn:
   // the worker-bee + the watch-only sentinel are excluded (they don't place agents).
   // Overwatch excluded too (overwatch-role-2026-06-15 D-001): it does not place work.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
+  agentRoles: QUEEN_PLACEMENT_ROLES,
   args: z.object({
     tasks: z
       .array(z.string().min(1).max(120))

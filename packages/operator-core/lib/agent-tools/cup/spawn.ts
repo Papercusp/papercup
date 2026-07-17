@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { softText, clampText, LIMITS } from '../limits';
 
@@ -46,7 +46,7 @@ export default defineTool({
   // does not PLACE agents — placement is the Mug's, the papercup raises alarms
   // (unify-launch-mechanics D-004). Same carve-out as cup. Overwatch excluded too
   // (overwatch-role-2026-06-15 D-001): it NUDGES the Mug to re-place, never places.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
+  agentRoles: QUEEN_PLACEMENT_ROLES,
   args: z
     .object({
       harness: z

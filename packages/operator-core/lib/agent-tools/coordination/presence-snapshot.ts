@@ -18,22 +18,20 @@
  */
 
 import { activeWorkspaceId } from '../../workspace-registry';
-import { listRecordedLiveSessions } from '../../adv-sessions';
-import { listPresence, sweepStalePresence, probeProcessLiveness } from './presence';
+import { listRecordedLiveSessions, recordedLiveOwnerIds } from '../../adv-sessions';
+import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
-import { reconcileRosterSources, RECORDED_SESSION_SOURCE } from './recorded-sessions';
+import { reconcileRosterSources } from './recorded-sessions';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
 import { fetchPresenceFleet, type FleetMembership } from './presence-fleet';
 import { createHash } from 'node:crypto';
 import { toStableRosterRow, deltaEligibleProjection, type RosterRow } from './presence-payload';
 import {
   fetchWakeability,
-  deriveSessionState,
-  isHardStale,
-  needsLivenessConfirmation,
   overrideIntentStaleForSessionState,
   type WakeabilitySignals,
 } from './presence-wakeability';
+import { deriveVerdict } from './liveness-oracle';
 import { deriveContextPressure } from './context-pressure';
 import { writeWatermark } from './watermarks';
 import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
@@ -292,6 +290,7 @@ export async function assemblePresenceSnapshot(
   const localAllIds = scoped.filter((r) => !isFederated(r)).map((r) => r.ownerId);
   let joins = new Map<string, PresenceTier1Joins>();
   let wakeability = new Map<string, WakeabilitySignals>();
+  let recordedLive = new Set<string>();
   let onDesktopOwners = new Set<string>();
   let viewerAttachedOwners = new Set<string>();
   // Named-fleet membership (P-005): the SOFT coord_presence label, joined in per-owner
@@ -308,6 +307,15 @@ export async function assemblePresenceSnapshot(
     fetchWakeability(localAllIds)
       .then((m) => {
         wakeability = m;
+      })
+      .catch(() => {}),
+    // Session-log authority leg (unification P-002): owners whose recorded
+    // adv_session is live rescue a not-wakeable row to `recorded` instead of
+    // `ended` — the SAME leg fleet:assignments has applied since EI-6374, now
+    // uniform here via the oracle's deriveVerdict. Best-effort like every join.
+    recordedLiveOwnerIds(localAllIds)
+      .then((s) => {
+        recordedLive = s;
       })
       .catch(() => {}),
     // On-desktop (live OS window) owners — best-effort, box-local (empty on a
@@ -334,57 +342,50 @@ export async function assemblePresenceSnapshot(
       .catch(() => {}),
   ]);
 
-  /** Attach the P-001 wakeability signals. A federated/unknown row has no local
-   *  entry → sessionState/wakeable stay absent (emitted as null by toStableRosterRow). */
+  /** Attach the P-001 wakeability signals via the shared liveness oracle
+   *  (presence-derivation-unification-2026-07-17 P-002): deriveVerdict is the
+   *  ONE place all input legs (stale + wakeable + liveTurn + hardStale + pid
+   *  probe + recorded + claimsHeld) meet deriveSessionState, so this surface
+   *  can never drift from fleet:status / fleet:assignments / the send-miss
+   *  path. A federated/unknown row has no local wakeability entry →
+   *  sessionState/wakeable stay absent (emitted as null by toStableRosterRow). */
   const nowMs = Date.now();
   const withWakeability = (r: RosterRow): RosterRow => {
     const w = wakeability.get(r.ownerId);
     if (!w) return r;
-    // A session-log-derived row (P-001) is AUTHORITATIVELY live (its adv_sessions
-    // ended_at IS NULL) but, until it self-registers a coord await, has no
-    // inbox-wake → it is `recorded` (alive, not inbox-wake-dispatchable), NOT
-    // `ended` (which means dead/relaunch). A recorded session that HAS begun
-    // registering (a live await exists → wakeable) derives normally below.
-    const recordedLiveOnly = r.source === RECORDED_SESSION_SOURCE && !w.wakeable;
-    // fleet-liveness-zombie-await-2026-07-07: a reboot/SIGKILL leaves a live
-    // wake-await, so a dead row would otherwise stay `parked`; the DEAD-ceiling
-    // check forces an hour-cold heartbeat to `ended` even while wakeable.
-    const hardStale = isHardStale(r.heartbeatAt ? Date.parse(r.heartbeatAt) : null, nowMs);
-    // WI-3898 P1: for a row whose supervisor beat reported a LOCAL pid/host
-    // (see presence.ts's file-header note), a direct kill(pid, 0) probe is a
-    // definitive OS-level observation — far faster than waiting on hardStale's
-    // 30-minute ceiling. `=== false` only: `null` (remote host / no pid /
-    // EPERM) is inconclusive and must never force `ended`.
-    const pidConfirmedDead = probeProcessLiveness({ host: r.host, pid: r.pid }) === false;
     // Tier-1 adds this join only for state derivation; it is deliberately not
     // part of the emitted RosterRow payload.
     const claimsHeld =
       (r.claimedItems?.length ?? 0) > 0 ||
       (((r as RosterRow & { workItemClaims?: string[] }).workItemClaims?.length ?? 0) > 0);
-    const sessionState: RosterRow['sessionState'] = recordedLiveOnly
-      ? 'recorded'
-      : deriveSessionState({
-          stale: !!r.stale,
-          wakeable: w.wakeable,
-          liveTurn: w.liveTurn,
-          hardStale,
-          pidConfirmedDead,
-          claimsHeld,
-        });
+    const v = deriveVerdict(
+      {
+        ownerId: r.ownerId,
+        heartbeatAt: r.heartbeatAt,
+        stale: !!r.stale,
+        host: r.host,
+        pid: r.pid,
+        source: r.source,
+        claimsHeld,
+      },
+      w,
+      recordedLive,
+      nowMs,
+    );
     return {
       ...r,
-      wakeable: w.wakeable,
-      sessionState,
+      wakeable: v.wakeable,
+      sessionState: v.sessionState,
       // WI-4400: a draining/suspect row is not safe to classify from one stale
       // read. Expose the confirmation nudge on the shared snapshot so
       // coord:presence and coord:inbox re-bootstrap agree.
-      confirmLiveness: needsLivenessConfirmation(sessionState),
+      confirmLiveness: v.confirmLiveness,
       // EI-9262: sessionState (wakeability + activity end-marker) converges to
       // parked/ended far faster than the 30-minute intentStale activity clock —
       // the instant it does, the declared intent must read as unreliable too, so
       // a reader never sees a fresh-looking "still working on X" for an agent
       // that has already stopped taking turns.
-      intentStale: overrideIntentStaleForSessionState(r.intentStale ?? null, sessionState),
+      intentStale: overrideIntentStaleForSessionState(r.intentStale ?? null, v.sessionState),
     };
   };
 

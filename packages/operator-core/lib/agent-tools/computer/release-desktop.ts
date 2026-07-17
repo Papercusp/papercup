@@ -6,7 +6,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { COORD_ROLES } from '../coordination/roles';
+import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { hiveDesktop, releaseHiveDesktop } from './desktop-lease';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -30,7 +30,7 @@ export default defineTool({
   },
   capability: 'harness:write',
   requirePrincipal: false,
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
+  agentRoles: QUEEN_PLACEMENT_ROLES,
   args: z
     .object({
       pot: z.string().min(1).max(120).describe("The pot's home-harness slug whose desktop to release."),

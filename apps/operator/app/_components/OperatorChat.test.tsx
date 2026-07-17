@@ -8,7 +8,7 @@
  * composerExtra, banner, onSubmit) so we can assert its own logic without the
  * virtualized transcript. Heavy children (cards, logo, Tooltip) are stubbed.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 
@@ -53,8 +53,13 @@ vi.mock('./OperatorLogoMark', () => ({ OperatorLogoMark: () => null }));
 vi.mock('../harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
+}));
 
 import { OperatorChat } from './OperatorChat';
+import { toast } from 'sonner';
+import { CardAnswerError } from './OperatorConversationProvider';
 
 function baseProps(over: Record<string, any> = {}) {
   return { messages: [], busy: false, passive: false, onSend: vi.fn(), ...over };
@@ -140,6 +145,91 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
       toolIndex: 0,
       picks: [],
       declined: true,
+    });
+  });
+
+  // ── WI-5175 — a card click ALWAYS produces feedback ───────────────────
+  // Owner repro 2026-07-17: "I clicked one of the options but nothing
+  // happened." Every branch below used to return silently or log to the
+  // console, which the user never sees — indistinguishable from a dead
+  // button. These lock in that each one now SAYS something.
+  describe('card answer never fails silently', () => {
+    // The suite-level afterEach clears render state but not the toast spies —
+    // without this, one test's toast leaks into the next one's assertions.
+    // The console.warn spy is deliberate: the handler still logs the raw error
+    // for devtools (the toast is for the USER, the log is for us), and this
+    // repo fails tests that warn without expecting it.
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      vi.mocked(toast.error).mockClear();
+      vi.mocked(toast.info).mockClear();
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => warnSpy.mockRestore());
+
+    const card = { name: 'chat:ask_choice', input: { question: 'Q', options: [] } };
+    const renderCardFor = (msg: Record<string, any>, props: Record<string, any> = {}) => {
+      render(<OperatorChat {...baseProps(props)} />);
+      lastProps.renderToolCard(card, msg, 0);
+    };
+
+    it('tells the user when the message has no seq yet (answer has nowhere to land)', () => {
+      const onAnswerChoice = vi.fn();
+      // seq undefined — the turn has not persisted yet.
+      renderCardFor({ role: 'assistant', content: '' }, { onAnswerChoice });
+      lastCardProps.onAnswer({ picks: [{ option_id: 'a', label: 'A' }] });
+      expect(onAnswerChoice).not.toHaveBeenCalled();
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringMatching(/still saving/i),
+      );
+    });
+
+    it('tells the user when the surface has no answer handler at all', () => {
+      renderCardFor({ role: 'assistant', content: '', seq: 42 }, {});
+      lastCardProps.onAnswer({ picks: [{ option_id: 'a', label: 'A' }] });
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringMatching(/interactive/i),
+      );
+    });
+
+    it('surfaces an already-answered card as info (the card reconciles to the truth)', async () => {
+      const onAnswerChoice = vi
+        .fn()
+        .mockRejectedValue(
+          new CardAnswerError('This question was already answered.', 'already_answered'),
+        );
+      renderCardFor({ role: 'assistant', content: '', seq: 42 }, { onAnswerChoice });
+      lastCardProps.onAnswer({ picks: [{ option_id: 'a', label: 'A' }] });
+      await vi.waitFor(() => {
+        expect(vi.mocked(toast.info)).toHaveBeenCalledWith(
+          'This question was already answered.',
+        );
+      });
+      expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+    });
+
+    it('surfaces an expired card as an error the user can actually read', async () => {
+      const onAnswerChoice = vi
+        .fn()
+        .mockRejectedValue(
+          new CardAnswerError("This question has expired — it's no longer open.", 'expired'),
+        );
+      renderCardFor({ role: 'assistant', content: '', seq: 42 }, { onAnswerChoice });
+      lastCardProps.onAnswer({ picks: [{ option_id: 'a', label: 'A' }] });
+      await vi.waitFor(() => {
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+          expect.stringMatching(/expired/i),
+        );
+      });
+    });
+
+    it('surfaces an unexpected failure rather than swallowing it into the console', async () => {
+      const onAnswerChoice = vi.fn().mockRejectedValue(new Error('network exploded'));
+      renderCardFor({ role: 'assistant', content: '', seq: 42 }, { onAnswerChoice });
+      lastCardProps.onAnswer({ picks: [{ option_id: 'a', label: 'A' }] });
+      await vi.waitFor(() => {
+        expect(vi.mocked(toast.error)).toHaveBeenCalledWith('network exploded');
+      });
     });
   });
 });

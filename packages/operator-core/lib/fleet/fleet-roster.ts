@@ -25,12 +25,11 @@ import {
 } from '../agent-tools/coordination/presence-tier1';
 import {
   fetchWakeability,
-  deriveSessionState,
-  isHardStale,
-  needsLivenessConfirmation,
   type SessionState,
   type WakeabilitySignals,
 } from '../agent-tools/coordination/presence-wakeability';
+import { deriveVerdict } from '../agent-tools/coordination/liveness-oracle';
+import { recordedLiveOwnerIds } from '../adv-sessions';
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
 import {
   listLiveSessionPresence,
@@ -73,6 +72,9 @@ export interface FleetFoldPresence {
   fleetRole: string | null;
   userId: string | null;
   stale: boolean;
+  /** Supervisor-beat pid (WI-3898 P1) — enables the oracle's local kill(pid,0)
+   *  probe, exactly like coord:presence (unification P-003). */
+  pid?: number | null;
   federated?: boolean;
 }
 
@@ -164,6 +166,7 @@ export function foldFleetRoster(
   tier1: Map<string, PresenceTier1Joins>,
   nowMs: number,
   wakeability: Map<string, WakeabilitySignals> = new Map(),
+  recordedLive: ReadonlySet<string> = new Set<string>(),
 ): FleetRosterEntry[] {
   const presById = new Map(presence.map((p) => [p.ownerId, p]));
   const asgById = new Map(assignments.map((a) => [a.agentId, a]));
@@ -173,39 +176,47 @@ export function foldFleetRoster(
     const p = presById.get(id) ?? null;
     const base = asgById.get(id) ?? (p ? assignmentFromPresence(p) : null);
     if (!base) continue;
-    // EI-5858: derive the coordinator-facing sessionState from wakeability the SAME
-    // way coord:presence does, and GATE `alive` on it. `fleet:status.alive` used to
-    // be pure heartbeat-freshness, so a cleanly-`ended` session read `alive:true` for
-    // the ~10-min stale window (a leader treated 6 dead agents as working). A row with
-    // no wakeability entry (a federated peer, or the read unavailable) keeps its
-    // heartbeat-derived `alive` and a null sessionState (state unknown).
+    // EI-5858 → unification P-003: derive the coordinator-facing sessionState via
+    // the shared liveness oracle (deriveVerdict) — the SAME derivation
+    // coord:presence uses, now including the pid probe + the recorded
+    // session-log rescue this surface used to skip — and GATE `alive` on it.
+    // A row with no wakeability entry (a federated peer, or the read
+    // unavailable) keeps its heartbeat-derived `alive` and a null sessionState
+    // (state unknown).
     const w = wakeability.get(id);
     const stale = p ? p.stale : !base.alive;
-    // fleet-liveness-zombie-await-2026-07-07: a reboot-killed member leaves an
-    // un-cancelled wake-await, so `wakeable` alone would pin it to `parked`
-    // (counted a live member) forever. Feed the DEAD-ceiling check so an
-    // hour-cold heartbeat is authoritatively `ended` regardless of that zombie await.
-    const hbMs = (p?.heartbeatAt ?? base.heartbeatAt) ? Date.parse((p?.heartbeatAt ?? base.heartbeatAt)!) : null;
     const tier = tier1.get(id);
     const claimsHeld =
       base.load > 0 ||
       (tier?.claimedItems?.length ?? 0) > 0 ||
       (tier?.workItemClaims?.length ?? 0) > 0;
-    const sessionState: SessionState | null = w
-      ? deriveSessionState({
-          stale,
-          wakeable: w.wakeable,
-          liveTurn: w.liveTurn,
-          hardStale: isHardStale(hbMs, nowMs),
-          claimsHeld,
-        })
+    const v = w
+      ? deriveVerdict(
+          {
+            ownerId: id,
+            heartbeatAt: p?.heartbeatAt ?? base.heartbeatAt,
+            stale,
+            host: p?.host,
+            pid: p?.pid,
+            claimsHeld,
+          },
+          w,
+          recordedLive,
+          nowMs,
+        )
       : null;
-    const alive = sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining' ? false : base.alive;
+    const sessionState: SessionState | null = v?.sessionState ?? null;
+    const alive =
+      sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining'
+        ? false
+        : sessionState === 'recorded'
+          ? true
+          : base.alive;
     out.push({
       ...base,
       alive,
       sessionState,
-      confirmLiveness: needsLivenessConfirmation(sessionState),
+      confirmLiveness: v?.confirmLiveness ?? null,
       ownerLabel: p?.ownerLabel ?? base.label,
       source: p?.source ?? null,
       host: p?.host ?? null,
@@ -316,6 +327,7 @@ async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): 
       fleetRole: f?.fleetRole ?? null,
       userId: r.userId,
       stale: r.stale,
+      pid: r.pid,
     };
   });
   if (!opts.workspaceId) return local;
@@ -334,7 +346,7 @@ async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): 
  *  errored) and fell back to an empty/default value — WI-3818 observability,
  *  so a caller can tell "this roster may be incomplete" instead of silently
  *  trusting a possibly-partial fold. Empty array ⇒ every leg answered fully. */
-export type FleetRosterDegradedLeg = 'presence' | 'tier1' | 'assignments' | 'wakeability';
+export type FleetRosterDegradedLeg = 'presence' | 'tier1' | 'assignments' | 'wakeability' | 'recorded';
 
 export interface ListFleetRosterResult {
   entries: FleetRosterEntry[];
@@ -389,9 +401,19 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
       label: 'fleet-roster:wakeability',
     }),
   ]);
+  // Session-log authority leg (unification P-003): rescues a not-wakeable
+  // member whose recorded adv_session is live to `recorded` instead of `ended`
+  // — the leg fleet:assignments has had since EI-6374, now uniform here via
+  // the oracle's deriveVerdict. Best-effort like every other leg.
+  const recordedResult = await withBoundedTimeout(recordedLiveOwnerIds(localIds), {
+    fallback: new Set<string>(),
+    timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+    label: 'fleet-roster:recorded',
+  });
   if (tier1Result.degraded) degradedLegs.push('tier1');
   if (rowsResult.degraded) degradedLegs.push('assignments');
   if (wakeabilityResult.degraded) degradedLegs.push('wakeability');
+  if (recordedResult.degraded) degradedLegs.push('recorded');
 
   // A degraded `assignments` leg naturally drops the heaviest per-member detail
   // first (WI-3818's "drop queued detail first" fallback): foldFleetRoster

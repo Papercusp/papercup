@@ -72,6 +72,27 @@ export const COORD_ROLES = [
 ] as const;
 
 /**
+ * EI-145 (part 2): the Queen/Mug-only PLACEMENT/steering allowlist — COORD_ROLES
+ * minus the read-mostly agents (cup/papercup/papercup-deep/kettle) whose caps are
+ * read+nudge-only and must never gain a placement/gym/desktop-provisioning tool.
+ *
+ * Before this constant existed, ~10 tool files (fleet/place_batch, gym/judge,
+ * gym/signals, cup/spawn, computer/list-desktops, computer/release-desktop,
+ * computer/provision-desktop, experiment/catalog, experiment/run,
+ * experiment/results) each re-spread the IDENTICAL inline predicate
+ * `COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep'
+ * && r !== 'kettle')` — the exact copy-paste foot-gun EI-145 warned about: a future
+ * Queen-only tool reaching for `[...COORD_ROLES]` (or re-typing this filter with one
+ * exclusion missing) silently re-leaks a placement/gym/provisioning tool to a
+ * read-mostly role. ONE shared array closes that: every site imports this instead
+ * of re-deriving it, so the "AUTH INVARIANT" test in roles.test.ts only has to hold
+ * in one place to hold everywhere.
+ */
+export const QUEEN_PLACEMENT_ROLES = COORD_ROLES.filter(
+  (r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle',
+);
+
+/**
  * pot-rename D-007 map (old role id → canonical new id) — the same mapping
  * migration 519 (`519-pot-rename-slice2-role-contract.sql`) backfilled into
  * every DB column (spawned_agents.child_role, agent_usage_samples.role, …)

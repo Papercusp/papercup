@@ -38,6 +38,22 @@ function hasDockedSurface(strategy: string): boolean {
 
 export default function TerminalDivider() {
   const enabled = useFlag(FLAGS.TERMINAL_DIVIDER);
+  // WI-3388 live-verify (2026-07-17): the dock's own gate (FLAGS.TESTING,
+  // relayed to Rust by NativeTerminalGate — see its module doc) opens
+  // ASYNCHRONOUSLY relative to this component's mount: NativeTerminalGate is
+  // a JSX sibling, so its `native_terminal_set_enabled` invoke and this
+  // component's own `nativeTerminalStatus` check are dispatched in the same
+  // tick with no ordering guarantee on which Tauri command completes first —
+  // and `native_terminal_status` reports strategy:"disabled" outright
+  // whenever the gate isn't open yet (main.rs `native_terminal_status`),
+  // regardless of the real backend. A one-shot check that loses that race
+  // never gets a second look, so the divider silently never appears — and a
+  // LIVE flip of FLAGS.TESTING from /admin/features (no reload) is not a
+  // race at all, it's a GUARANTEED miss, since nothing here used to react to
+  // it. Depending on the same reactive `testing` value NativeTerminalGate
+  // relays turns both the boot race and the live-flip case into a normal
+  // re-render: this effect re-fires exactly when the gate could have opened.
+  const testing = useFlag(FLAGS.TESTING);
   const [tauri] = useState(() => isTauri());
   const [docked, setDocked] = useState(false);
   const [layout, setLayout] = useState<TerminalLayout | null>(null);
@@ -49,18 +65,34 @@ export default function TerminalDivider() {
   useEffect(() => {
     if (!tauri || !enabled) return;
     let cancelled = false;
+    // Bounded retry (belt-and-suspenders on top of the `testing` dependency
+    // above): NativeTerminalGate's own `native_terminal_set_enabled` invoke
+    // can still be in flight the instant `testing` flips, since it's a
+    // SEPARATE async command with no ordering guarantee against this one —
+    // a short backoff absorbs that last sliver of the race without polling
+    // indefinitely once the gate is genuinely closed (FLAGS.TESTING off).
+    const RETRY_DELAYS_MS = [150, 400, 900];
     void (async () => {
-      const status = await commands.nativeTerminalStatus();
-      if (cancelled) return;
-      setDocked(hasDockedSurface(status.strategy));
-      if (!hasDockedSurface(status.strategy)) return;
-      const l = await commands.terminalGetLayout();
-      if (!cancelled) setLayout(l);
+      for (let attempt = 0; ; attempt++) {
+        const status = await commands.nativeTerminalStatus();
+        if (cancelled) return;
+        const isDocked = hasDockedSurface(status.strategy);
+        setDocked(isDocked);
+        if (isDocked) {
+          const l = await commands.terminalGetLayout();
+          if (!cancelled) setLayout(l);
+          return;
+        }
+        const delay = RETRY_DELAYS_MS[attempt];
+        if (delay == null) return;
+        await new Promise((r) => setTimeout(r, delay));
+        if (cancelled) return;
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [tauri, enabled]);
+  }, [tauri, enabled, testing]);
 
   const flushPendingFraction = useCallback(() => {
     rafRef.current = null;

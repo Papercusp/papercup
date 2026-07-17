@@ -15,6 +15,15 @@ const admissionMocks = vi.hoisted(() => ({
   releaseWorkItem: vi.fn(),
   sendMessage: vi.fn(),
   getFleet: vi.fn(),
+  // EI-13520: diagnoseFleetScopeCooldownMiss's own seam-level dependencies —
+  // claimFloorsWhereSql/releaseCooldownSec (work-items.ts) + compileFilter
+  // (get-next.ts) are mocked here so the test asserts the WIRING (right args in,
+  // right count/expiry out) instead of replicating postgres.js's nested tagged-
+  // template fragment composition in a fake sql tag.
+  claimFloorsWhereSql: vi.fn(),
+  releaseCooldownSec: vi.fn(),
+  compileFilter: vi.fn(),
+  sql: vi.fn(),
 }));
 
 vi.mock('./claim-spec-store', () => ({
@@ -29,6 +38,11 @@ vi.mock('../fleet/assignments', () => ({
 vi.mock('../work-items', () => ({
   getWorkItem: admissionMocks.getWorkItem,
   releaseWorkItem: admissionMocks.releaseWorkItem,
+  claimFloorsWhereSql: admissionMocks.claimFloorsWhereSql,
+  releaseCooldownSec: admissionMocks.releaseCooldownSec,
+}));
+vi.mock('./get-next', () => ({
+  compileFilter: admissionMocks.compileFilter,
 }));
 vi.mock('../agent-tools/coordination/messages', () => ({
   sendMessage: admissionMocks.sendMessage,
@@ -36,9 +50,13 @@ vi.mock('../agent-tools/coordination/messages', () => ({
 vi.mock('../agent-fleets-store', () => ({
   getFleet: admissionMocks.getFleet,
 }));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: admissionMocks.sql }),
+}));
 
 import {
   admitWorkItemForFleetTarget,
+  diagnoseFleetScopeCooldownMiss,
   fleetScopedMiss,
   readFleetPauseState,
   reconcileFleetScopeClaims,
@@ -287,6 +305,114 @@ describe('fleet scope assignment admission (P-016)', () => {
         'papercusp-workspace',
       );
       expect(state).toEqual({ windingDown: false, reason: null });
+    });
+  });
+
+  // EI-13520: scheduler:get_next reported a release-cooldown exclusion as "no claimable
+  // work-item matched fleet scope" — blaming the spec for a miss that was actually a
+  // per-bee cooldown floor, driving a real fleet livelock of leader re-authoring a spec
+  // that was never the cause. diagnoseFleetScopeCooldownMiss re-attributes the miss;
+  // fleetScopedMiss surfaces it with an honest message + do-not-re-author advice.
+  describe('EI-13520: cooldown-only miss re-attribution', () => {
+    const cooldownScope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member' as const,
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'bugs-rev4',
+          revision: 4,
+          view: { filter: { field: 'kind', op: '=' as const, value: 'bug' } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+        },
+        revision: 4,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+
+    beforeEach(() => {
+      admissionMocks.claimFloorsWhereSql.mockReturnValue('FLOORS_NO_COOLDOWN');
+      admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
+      admissionMocks.releaseCooldownSec.mockReturnValue(300);
+    });
+
+    it('returns the cooldown-excluded count + earliest expiry when rows match sans the cooldown floor', async () => {
+      const releasedAt = new Date('2026-07-17T07:00:00.000Z');
+      admissionMocks.sql.mockResolvedValue([{ cnt: 3, earliest: releasedAt }]);
+
+      const diag = await diagnoseFleetScopeCooldownMiss({
+        scope: cooldownScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+      });
+
+      expect(diag).toEqual({ cooldownExcluded: 3, earliestExpiryMs: releasedAt.getTime() + 300_000 });
+      // The defining assertion: the WITHOUT-cooldown floors call must NOT thread this
+      // bee's ownerId as cooldownAssignee — that is precisely the leg being dropped.
+      const floorsOpts = admissionMocks.claimFloorsWhereSql.mock.calls[0]?.[1];
+      expect(floorsOpts).toMatchObject({ harness: 'papercusp', workspaceId: 'papercusp-workspace' });
+      expect(floorsOpts?.cooldownAssignee).toBeUndefined();
+    });
+
+    it('returns null (no diagnosis) when nothing matches even without the cooldown floor', async () => {
+      admissionMocks.sql.mockResolvedValue([{ cnt: 0, earliest: null }]);
+      const diag = await diagnoseFleetScopeCooldownMiss({
+        scope: cooldownScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+      });
+      expect(diag).toBeNull();
+    });
+
+    it('returns null when the spec has no view filter (nothing to diagnose)', async () => {
+      const diag = await diagnoseFleetScopeCooldownMiss({
+        scope: { ...cooldownScope, record: { ...cooldownScope.record, spec: { ...cooldownScope.record.spec, view: {} } } },
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+      });
+      expect(diag).toBeNull();
+      expect(admissionMocks.sql).not.toHaveBeenCalled();
+    });
+
+    it('FAILS SOFT: a query error degrades to null, never throws (annotation only, like buildMissDiagnosis)', async () => {
+      admissionMocks.sql.mockRejectedValue(new Error('pg unavailable'));
+      const diag = await diagnoseFleetScopeCooldownMiss({
+        scope: cooldownScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+      });
+      expect(diag).toBeNull();
+    });
+
+    it('fleetScopedMiss reattributes a cooldown-only miss: honest message, cooldownOnly flag, do-not-re-author advice', () => {
+      const miss = fleetScopedMiss(cooldownScope, [], {
+        cooldownDiag: { cooldownExcluded: 3, earliestExpiryMs: Date.now() + 42_000 },
+      });
+      expect(miss).toMatchObject({ windDown: true, cooldownOnly: true, cooldownExcluded: 3 });
+      expect(miss.paused).toBeUndefined();
+      expect(miss.error).toMatch(/YOUR OWN release-cooldown floor/);
+      expect(miss.error).not.toMatch(/NOT allowed to fall through to the generic backlog/);
+      expect(miss.advice).toMatch(/Do NOT report this as a scope problem/);
+      expect(miss.advice).not.toMatch(/report the scoped miss to the fleet leader/);
+    });
+
+    it('fleetScopedMiss keeps the ORIGINAL scope-mismatch message when cooldownDiag is null/absent (no false reattribution)', () => {
+      const miss = fleetScopedMiss(cooldownScope, [], { cooldownDiag: null });
+      expect(miss.cooldownOnly).toBeUndefined();
+      expect(miss.error).toMatch(/NOT allowed to fall through to the generic backlog/);
+    });
+
+    it('a paused miss NEVER reattributes to cooldown, even if a cooldownDiag is passed (pause explains the miss fully)', () => {
+      const miss = fleetScopedMiss(cooldownScope, [], {
+        pausedReason: 'owner pause',
+        cooldownDiag: { cooldownExcluded: 5, earliestExpiryMs: Date.now() + 1_000 },
+      });
+      expect(miss.paused).toBe(true);
+      expect(miss.cooldownOnly).toBeUndefined();
+      expect(miss.error).toMatch(/winding-down/);
     });
   });
 });

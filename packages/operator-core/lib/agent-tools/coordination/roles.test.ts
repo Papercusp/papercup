@@ -11,7 +11,7 @@
  * failing `role_not_allowed` for a bee-role-scoped URL with no other signal. Pin it.
  */
 import { describe, test, expect } from 'vitest';
-import { COORD_ROLES } from './roles';
+import { COORD_ROLES, QUEEN_PLACEMENT_ROLES } from './roles';
 
 describe('COORD_ROLES', () => {
   test('bee is a coord role (P-001 — improvements:capture + work_items:* resolve for a bee URL)', () => {
@@ -53,19 +53,17 @@ describe('COORD_ROLES', () => {
 
   test('AUTH INVARIANT (pot-rename P2): COORD_ROLES + the read-mostly exclusion admit mug but exclude cup/papercup/kettle', () => {
     // Every Queen-only write tool (fleet/place_batch, gym/*, experiment/*,
-    // computer/*-desktop, bee/spawn) filters COORD_ROLES with THIS exact predicate.
-    // The member-flip (adding the twins to COORD_ROLES) and this literal must move in
-    // lockstep — otherwise a renamed read-mostly agent silently gains placement/gym
-    // access (a tsc-invisible privilege escalation). Predicate-level so it stays a
-    // fast unit test (the tool files carry the literal verbatim; grep keeps them in sync).
-    const readMostlyExcluded = (r: string) =>
-      r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle';
-    const admitted = COORD_ROLES.filter(readMostlyExcluded);
+    // computer/*-desktop, cup/spawn) imports QUEEN_PLACEMENT_ROLES (EI-145 part 2 —
+    // previously each re-derived the identical inline filter; now ONE shared array,
+    // so this single test holding is enough for every site to hold in lockstep —
+    // no more "the tool files carry the literal verbatim; grep keeps them in sync").
     for (const excluded of ['cup', 'papercup', 'papercup-deep', 'kettle']) {
-      expect(admitted, `${excluded} must be excluded from Queen-only tools`).not.toContain(excluded);
+      expect(QUEEN_PLACEMENT_ROLES, `${excluded} must be excluded from Queen-only tools`).not.toContain(
+        excluded,
+      );
     }
     // placement/judgement is the Queen's — she keeps access.
-    expect(admitted).toContain('mug');
+    expect(QUEEN_PLACEMENT_ROLES).toContain('mug');
   });
 
   test(

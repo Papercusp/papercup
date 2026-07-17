@@ -76,7 +76,7 @@ async function seed(
        created_ts, updated_ts, source_plan_slug, title, payload)
     VALUES (${opts.harness ?? H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
        ${opts.takenBy ?? null}, ${WS}, 0, 0, ${opts.plan ?? null}, ${id},
-       ${opts.payload ? db.sql.json(opts.payload) : null})`;
+       ${opts.payload ? db.sql.json(opts.payload as postgres.JSONValue) : null})`;
 }
 
 const KIND_ALL: FilterNode = { field: 'kind', op: 'in', value: ['bug', 'change', 'task', 'feature'] };

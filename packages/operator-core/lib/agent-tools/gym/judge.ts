@@ -17,7 +17,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { COORD_ROLES } from '../coordination/roles';
+import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { judgeGymRun, rubricFromBlueprintGym, type GymScore, type JudgeLlmCall } from '../../gym/primitives';
 
 /** The (partial) rubric an agent may pass — same shape as a target's blueprint.gym.rubric. */
@@ -74,7 +74,7 @@ export default defineTool({
   // Overwatch excluded too (overwatch-role-2026-06-15): it watches+nudges, it is not a
   // gym evaluator — and gym:judge gates on harness:read which the overwatch DOES carry,
   // so the allowlist (not the cap) is what keeps this off its surface.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
+  agentRoles: QUEEN_PLACEMENT_ROLES,
   args: z.object({
     intent: z.string().min(1).describe('The high-level intent the work should have achieved'),
     projectContext: z.string().describe('Repo/project summary the judge weighs spec-gaps against'),

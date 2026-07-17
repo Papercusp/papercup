@@ -17,6 +17,8 @@
  *   • SET … / SELECT pg_catalog.set_config(…)      → DROP (psql/session noise)
  *   • CREATE SCHEMA                                 → CREATE SCHEMA IF NOT EXISTS
  *   • CREATE TABLE                                  → CREATE TABLE IF NOT EXISTS
+ *                                                     + ALTER TABLE … ADD COLUMN IF NOT EXISTS
+ *                                                       (one per column — see COLUMN DRIFT below)
  *   • CREATE SEQUENCE                               → CREATE SEQUENCE IF NOT EXISTS
  *   • CREATE [UNIQUE] INDEX                         → … IF NOT EXISTS
  *   • CREATE FUNCTION                               → CREATE OR REPLACE FUNCTION
@@ -39,8 +41,228 @@
  *         is the Phase-1 squash — deliberately NOT done here while sql/ churns)
  */
 
+/**
+ * COLUMN DRIFT — why every CREATE TABLE also emits per-column ADD COLUMN.
+ *
+ * `CREATE TABLE IF NOT EXISTS` is idempotent only in the "table is absent, or
+ * already has EXACTLY this shape" sense. Against a populated DB whose table
+ * pre-exists with an OLDER shape it is a silent NO-OP: the missing column is
+ * never added, and the first later statement that references it (an index, a
+ * constraint) fails — taking the whole baseline transaction, and the boot, with
+ * it. That breaks requirement 2 above, which the generated header states as a
+ * promise ("safe to re-apply against an ALREADY populated DB").
+ *
+ * WI-5216 (2026-07-17) is that failure, live: a pre-squash embedded-pg data dir
+ * (born 2026-06-01, one day before the baseline squash) carried the OLD
+ * `harness_shared.adv_sessions` — no `coord_owner_id`. Its schema_migrations had
+ * the old 0xx filenames but not `000-baseline.sql`, so the runner saw the
+ * baseline as PENDING and applied it: `CREATE TABLE IF NOT EXISTS adv_sessions`
+ * skipped (table present), then
+ *   CREATE INDEX … adv_sessions_coord_owner_idx … (coord_owner_id)
+ * raised `column "coord_owner_id" does not exist`. Embedded-pg's runner is
+ * fail-loud, so serve.mjs exited 1 — five times, into the respawn cap, then
+ * "giving up". The desktop Server sat operator-less for ~7h; the user-visible
+ * symptom was the Quick Panel global shortcut appearing to do nothing (the
+ * palette had no origin to load from).
+ *
+ * That DB could never self-heal: `adv_sessions.coord_owner_id` exists ONLY in
+ * the baseline — NO migration in sql/ adds it — and the baseline sorts FIRST
+ * (000), so its failure aborted the run before 107+ could do anything anyway.
+ *
+ * The repair: after each CREATE TABLE, emit `ALTER TABLE … ADD COLUMN IF NOT
+ * EXISTS` for every column. On a fresh DB the CREATE made them all, so each is a
+ * catalog-check no-op. On a drifted DB the missing column is ADDED, and the
+ * index/constraint that follows now resolves — the table converges to the
+ * baseline shape instead of wedging boot.
+ *
+ * NOT NULL is deliberately STRIPPED from the emitted ADD COLUMN (never from the
+ * CREATE TABLE, which still carries it):
+ *   • Fresh DB — CREATE TABLE already applied NOT NULL; the ADD COLUMN no-ops,
+ *     so nothing is weakened. This is the overwhelmingly common path.
+ *   • Drifted DB — `ADD COLUMN … NOT NULL` with no DEFAULT is a hard ERROR when
+ *     the table has rows (PG cannot invent a value), which would re-wedge the
+ *     boot this fix exists to prevent. Adding it NULLABLE converges the
+ *     STRUCTURE (indexes/queries resolve) and leaves the nullability tightening
+ *     — which needs a real backfill decision — to an explicit migration. A
+ *     nullable column is a strictly better outcome than a dead operator.
+ * A DEFAULT is preserved, so a defaulted column still lands fully-formed.
+ */
+
 /** A DO-block dollar tag chosen to never collide with dumped content. */
 const GUARD_TAG = '$baseline_guard$';
+
+/** Table-level constraint items in a CREATE TABLE body — not columns, so no ADD COLUMN. */
+const TABLE_CONSTRAINT_RE = /^\s*(CONSTRAINT|PRIMARY\s+KEY|UNIQUE|CHECK|FOREIGN\s+KEY|EXCLUDE|LIKE)\b/i;
+
+/**
+ * Split a CREATE TABLE body on TOP-LEVEL commas — commas nested inside parens
+ * belong to a type (`numeric(10,2)`) or an expression (`CHECK (x = ANY (ARRAY[…]))`),
+ * not to the column list. String/dollar-quote aware for DEFAULT literals.
+ */
+export function splitTopLevelCommas(body: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let depth = 0;
+  let inSingle = false;
+  let dollarTag: string | null = null;
+  let i = 0;
+  while (i < body.length) {
+    const ch = body[i];
+    if (dollarTag !== null) {
+      if (ch === '$' && body.startsWith(dollarTag, i)) {
+        buf += dollarTag;
+        i += dollarTag.length;
+        dollarTag = null;
+        continue;
+      }
+      buf += ch;
+      i += 1;
+      continue;
+    }
+    if (inSingle) {
+      buf += ch;
+      i += 1;
+      if (ch === "'") {
+        if (body[i] === "'") {
+          buf += "'";
+          i += 1;
+        } else inSingle = false;
+      }
+      continue;
+    }
+    if (ch === '$') {
+      const m = /^\$[A-Za-z0-9_]*\$/.exec(body.slice(i));
+      if (m) {
+        dollarTag = m[0];
+        buf += dollarTag;
+        i += dollarTag.length;
+        continue;
+      }
+    }
+    if (ch === "'") {
+      inSingle = true;
+      buf += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) {
+      const t = buf.trim();
+      if (t) out.push(t);
+      buf = '';
+      i += 1;
+      continue;
+    }
+    buf += ch;
+    i += 1;
+  }
+  const tail = buf.trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
+/**
+ * Strip a top-level `NOT NULL` (paren-depth 0 only, so an inline
+ * `CHECK (x IS NOT NULL)` keeps its own NOT NULL). See COLUMN DRIFT above.
+ */
+export function stripTopLevelNotNull(def: string): string {
+  let out = '';
+  let depth = 0;
+  let i = 0;
+  while (i < def.length) {
+    const ch = def[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    if (depth === 0) {
+      const m = /^NOT\s+NULL\b/i.exec(def.slice(i));
+      if (m) {
+        i += m[0].length;
+        continue;
+      }
+    }
+    out += ch;
+    i += 1;
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Parse `CREATE TABLE [IF NOT EXISTS] <name> ( <body> ) [suffix]` → the table
+ * name + the top-level body items. Returns null when the shape isn't a plain
+ * column-list CREATE TABLE (e.g. `… PARTITION OF parent`, which has no list of
+ * its own to backfill).
+ */
+export function parseCreateTable(code: string): { table: string; items: string[] } | null {
+  const head = /^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w."]+)\s*\(/i.exec(code);
+  if (!head) return null;
+  const open = code.indexOf('(', head.index + head[0].length - 1);
+  if (open === -1) return null;
+  // Walk to the matching close paren (quote-aware) to isolate the column list.
+  let depth = 0;
+  let inSingle = false;
+  let dollarTag: string | null = null;
+  let close = -1;
+  for (let i = open; i < code.length; i += 1) {
+    const ch = code[i];
+    if (dollarTag !== null) {
+      if (ch === '$' && code.startsWith(dollarTag, i)) {
+        i += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
+    if (inSingle) {
+      if (ch === "'") {
+        if (code[i + 1] === "'") i += 1;
+        else inSingle = false;
+      }
+      continue;
+    }
+    if (ch === '$') {
+      const m = /^\$[A-Za-z0-9_]*\$/.exec(code.slice(i));
+      if (m) {
+        dollarTag = m[0];
+        i += m[0].length - 1;
+        continue;
+      }
+    }
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close === -1) return null;
+  return { table: head[1], items: splitTopLevelCommas(code.slice(open + 1, close)) };
+}
+
+/**
+ * The per-column `ALTER TABLE … ADD COLUMN IF NOT EXISTS` repair statements for
+ * a CREATE TABLE. Empty when the statement has no plain column list. See the
+ * COLUMN DRIFT note above for why NOT NULL is stripped and DEFAULT kept.
+ */
+export function columnBackfillStatements(code: string): string[] {
+  const parsed = parseCreateTable(code);
+  if (!parsed) return [];
+  const out: string[] = [];
+  for (const item of parsed.items) {
+    if (TABLE_CONSTRAINT_RE.test(item)) continue; // table constraint, not a column
+    const m = /^\s*("[^"]+"|[A-Za-z_][\w$]*)\s+([\s\S]+)$/.exec(item);
+    if (!m) continue; // not a parseable column def — leave it to the CREATE TABLE
+    const def = stripTopLevelNotNull(m[2]);
+    if (!def) continue;
+    out.push(`ALTER TABLE ${parsed.table} ADD COLUMN IF NOT EXISTS ${m[1]} ${def}`);
+  }
+  return out;
+}
 
 /**
  * Split SQL into top-level statements (trailing `;` stripped), respecting
@@ -159,8 +381,16 @@ export function transformStatement(stmt: string, onUnknown?: (token: string) => 
   if (/^\s*CREATE\s+SCHEMA\s+(?!IF\s+NOT\s+EXISTS)/i.test(code)) {
     return code.replace(/^(\s*CREATE\s+SCHEMA\s+)/i, '$1IF NOT EXISTS ');
   }
-  if (/^\s*CREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS)/i.test(code)) {
-    return code.replace(/^(\s*CREATE\s+TABLE\s+)/i, '$1IF NOT EXISTS ');
+  // CREATE TABLE → IF NOT EXISTS, PLUS a per-column ADD COLUMN IF NOT EXISTS
+  // repair pass. The IF NOT EXISTS alone silently no-ops against a pre-existing
+  // OLDER table, leaving a missing column to blow up the next index/constraint
+  // that references it (WI-5216). See the COLUMN DRIFT note at the top.
+  if (/^\s*CREATE\s+TABLE\s/i.test(code)) {
+    const created = /^\s*CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s/i.test(code)
+      ? code
+      : code.replace(/^(\s*CREATE\s+TABLE\s+)/i, '$1IF NOT EXISTS ');
+    const backfill = columnBackfillStatements(created);
+    return backfill.length ? `${created};\n${backfill.join(';\n')}` : created;
   }
   if (/^\s*CREATE\s+SEQUENCE\s+(?!IF\s+NOT\s+EXISTS)/i.test(code)) {
     return code.replace(/^(\s*CREATE\s+SEQUENCE\s+)/i, '$1IF NOT EXISTS ');

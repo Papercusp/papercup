@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listTests } from '@papercusp/eval-battery';
-import { COORD_ROLES } from '../coordination/roles';
+import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { registerExperimentDescriptors } from '../../experiment/descriptors';
 
 export default defineTool({
@@ -33,7 +33,7 @@ export default defineTool({
   // Mirror gym:signals — the Queen-side self-improvement surface; the worker-bee +
   // sentinel are excluded so [...COORD_ROLES] doesn't leak it. Overwatch excluded too
   // (overwatch-role-2026-06-15): not an experiment surface, and it carries harness:read.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
+  agentRoles: QUEEN_PLACEMENT_ROLES,
   args: z.object({
     kind: z
       .enum(['component', 'whole-instance', 'whole-hive', 'replay', 'drill'])
