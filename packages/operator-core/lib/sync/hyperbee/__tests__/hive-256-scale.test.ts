@@ -88,6 +88,9 @@ describe('P-009 — 256-peer scale (synthetic data-plane soak)', () => {
       resolveSelf: async () => null, // this box has no swarm identity ⇒ pick the argmin peer
       now: () => T,
       staleMs: DEFAULT_AUTHORITY_STALE_MS,
+      // HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; these
+      // @256 tests assert the argmin ROLLBACK path, so pin it OFF.
+      useHrwRendezvous: false,
     });
     expect(a.liveCount).toBe(M);
     const winner = a.isSelf ? null : a.peer?.devicePubkey;
@@ -109,6 +112,7 @@ describe('P-009 — 256-peer scale (synthetic data-plane soak)', () => {
       resolveSelf: async () => null,
       now: () => T,
       staleMs: DEFAULT_AUTHORITY_STALE_MS,
+      useHrwRendezvous: false, // argmin-hijack assertion — pin the rollback path
     });
     const winner = a.isSelf ? null : a.peer?.devicePubkey;
     expect(winner).toBe(pk(1)); // dead dev-0000 excluded by the freshness cut; lowest LIVE wins

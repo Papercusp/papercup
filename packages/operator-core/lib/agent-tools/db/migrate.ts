@@ -72,6 +72,16 @@ export default defineTool({
     file: z.string().min(1).describe('Absolute path to the .sql migration file to apply.'),
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),
+    escalate: z
+      .boolean()
+      .optional()
+      .describe(
+        'EI-13299: when the real apply is WITHHELD (no PAPERCUSP_ALLOW_DB_MIGRATE), also raise a blocker ' +
+          'coord:escalate to a human carrying the exact ready-to-run command — the fast sanctioned path for an ' +
+          'urgent, already-committed migration when you have no shell/PG access of your own (a cup) and the ' +
+          'normal deploy pipeline is blocked. Default false (a routine withheld confirm stays silent). Repeated ' +
+          'escalations for the SAME file coalesce onto one open escalation instead of flooding the inbox.',
+      ),
   }),
   async handler(args, ctx) {
     if (!args.confirm) {
@@ -113,17 +123,57 @@ export default defineTool({
           // deploy re-runs the file (a lock-contending re-run can trip a
           // deploy's lock_timeout) — always include the INSERT in the same BEGIN/COMMIT.
           const url = getHarnessAdminUrl();
+          const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n\\i ${args.file}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(args.file)}', '<sha256 of the file bytes, e.g. sha256sum ${args.file}>');\nCOMMIT;\nSQL`;
+          // EI-13299: escalate:true is the sanctioned fast path when the caller
+          // (typically a cup with no shell/PG access at all) has no other way to
+          // get an urgent, already-committed migration applied while the deploy
+          // gate is red. Fail-soft — a notification hiccup must never turn an
+          // otherwise-successful drain+withhold response into an error, mirroring
+          // attention-notify.ts's "each channel independently fail-safe" contract.
+          let escalation: { escalated: boolean; msg_id?: string; ts?: string; error?: string } = {
+            escalated: false,
+          };
+          if (args.escalate) {
+            try {
+              const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
+              const harnessSlug =
+                typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+              const rec = await openEscalation(coordIdentity, {
+                severity: 'blocker',
+                summary: `db:migrate withheld for ${path.basename(args.file)} — ${ownerLabel} needs a human/su to apply it (no PAPERCUSP_ALLOW_DB_MIGRATE, no shell/PG access of their own)`,
+                body:
+                  `Requester: ${ownerId} (${ownerLabel})\n` +
+                  `File: ${args.file}\n` +
+                  `exclusive(db-schema) is ALREADY held + drained under this request (safe to apply now).\n\n` +
+                  `Ready-to-run command (fill in the sha256 first — sha256sum ${args.file}):\n${readyCommand}\n\n` +
+                  `Why this fired: the requester called db:migrate with escalate:true, meaning the normal apply ` +
+                  `path (PAPERCUSP_ALLOW_DB_MIGRATE, or the release deploy pipeline's boot-apply) is unavailable ` +
+                  `or blocked (e.g. the deploy gate is red) and the migration is urgent.`,
+                ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
+                meta: {
+                  subjectSignature: `db-migrate-withheld:${path.basename(args.file)}`,
+                  ...(harnessSlug ? { harnessSlug } : {}),
+                },
+              });
+              escalation = { escalated: true, msg_id: rec.msg_id, ts: rec.ts };
+            } catch (e) {
+              escalation = { escalated: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          }
           return json({
             ok: true,
             drained: true,
             applied: false,
             note: 'Drain complete, but apply WITHHELD — set PAPERCUSP_ALLOW_DB_MIGRATE=1 on the operator host to enable the real psql apply.',
+            escalation,
             fallback: {
               why: 'PAPERCUSP_ALLOW_DB_MIGRATE is a deliberate owner-authority safety rail (like PAPERCUSP_ALLOW_DEV_RESTART) — it cannot be set by an agent call, only by the host operator process env.',
               caution:
                 'You already hold exclusive(db-schema) + the drain completed, so applying by hand here is coordinated and safe AS LONG AS you record the schema_migrations row in the SAME transaction as the DDL — a bare `psql -f` without it leaves the migration unrecorded, so every future deploy/boot re-applies the file (a lock-contending re-run can trip a deploy lock_timeout).',
-              command: `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n\\i ${args.file}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(args.file)}', '<sha256 of the file bytes, e.g. sha256sum ${args.file}>');\nCOMMIT;\nSQL`,
+              command: readyCommand,
               note: 'sha256 must match createHash(\'sha256\').update(<raw file text>).digest(\'hex\') (embedded-postgres-server/src/migration-runner.js) — `sha256sum <file>` on the exact file bytes gives the same value.',
+              escalateHint:
+                'No shell/PG access to run this yourself (a cup) and it is genuinely urgent? Re-call db:migrate with escalate:true instead of improvising a hand-off.',
             },
           });
         }

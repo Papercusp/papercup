@@ -179,6 +179,8 @@ function wirePair() {
 }
 
 // Deps that resolve B as the authority (lowest device_pubkey), self = A.
+// HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; this file's
+// fixtures depend on argmin electing B, so pin the rollback path.
 const NOW = 1_700_000_000_000;
 const requesterDeps: LockAuthorityDeps = {
   now: () => NOW,
@@ -187,6 +189,7 @@ const requesterDeps: LockAuthorityDeps = {
     { device_pubkey: B_SELF, github_user_id: 1, machine_label: 'authority-B', last_seen_ms: NOW - 1000 },
     { device_pubkey: A_SELF, github_user_id: 2, machine_label: 'requester-A', last_seen_ms: NOW - 1000 },
   ],
+  useHrwRendezvous: false,
 };
 
 /** The unified op-result type so routeToAuthority<T> infers one T for both the

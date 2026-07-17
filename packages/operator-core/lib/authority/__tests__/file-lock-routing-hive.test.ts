@@ -20,10 +20,13 @@ const row = (pk: string) => ({ device_pubkey: pk, github_user_id: 1, machine_lab
 beforeEach(() => __resetRemotePeersCacheForTests());
 
 // Force authority resolution (bypass the no-remote-peers fast-path) for the routing tests.
+// HRW_RENDEZVOUS_AUTHORITY defaults ON since its 2026-07-17 graduation; these routing
+// fixtures assert argmin winners, so pin the rollback path.
 const forced = {
   domainToHarnessSlug: () => 'repo-a',
   now: () => NOW,
   skipRemotePeersFastPath: true,
+  useHrwRendezvous: false,
 };
 
 describe('routeFileLockOp — Hive-aware (P-009)', () => {
@@ -143,6 +146,7 @@ describe('routeFileLockOp — global resolver seam + defaults', () => {
         harnessToHiveSlug: () => null,
         fetchPresenceRows: async (h) => { expect(h).toBe('repo-a'); return [row('aaa')]; },
         resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }),
+        useHrwRendezvous: false, // fixture expects the argmin winner (aaa ≠ self)
       },
     );
     expect(r.via).toBe('fail-open'); // global resolver mapped /repo → repo-a → routed to the (remote) authority

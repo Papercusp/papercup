@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   checkResourceAction: vi.fn(async () => ({ applied: false })),
   recordResourceAction: vi.fn(async () => undefined),
   inWorkspaceTxn: vi.fn(async (_domain: unknown, _owner: unknown, fn: (tx: unknown) => unknown) => fn({})),
+  openEscalation: vi.fn(async () => ({ msg_id: 'msg-esc-1', ts: '2026-07-17T00:00:00.000Z' })),
 }));
 
 vi.mock('node:child_process', () => ({ spawnSync: h.spawnSync }));
@@ -32,6 +33,7 @@ vi.mock('../locks/identity', () => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-test', ownerLabel: 'su-test', workspaceId: 'default' }),
 }));
+vi.mock('../coordination/escalations', () => ({ openEscalation: h.openEscalation }));
 vi.mock('../../embedded-pg-discovery', () => ({
   getHarnessAdminUrl: () => 'postgres://admin-url/db',
 }));
@@ -61,6 +63,7 @@ beforeEach(() => {
   h.readFileSync.mockReset().mockReturnValue('CREATE TABLE foo (id int);\n');
   h.checkResourceAction.mockReset().mockResolvedValue({ applied: false });
   h.recordResourceAction.mockReset().mockResolvedValue(undefined);
+  h.openEscalation.mockReset().mockResolvedValue({ msg_id: 'msg-esc-1', ts: '2026-07-17T00:00:00.000Z' });
   delete process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
 });
 
@@ -86,6 +89,40 @@ describe('db:migrate — withheld (PAPERCUSP_ALLOW_DB_MIGRATE unset)', () => {
     expect(out.fallback.command).toContain('BEGIN;');
     expect(out.fallback.command).toContain('COMMIT;');
     expect(h.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('EI-13299: a routine withheld confirm (no escalate) never raises a coord:escalate', async () => {
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.escalation).toEqual({ escalated: false });
+    expect(h.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('EI-13299: escalate:true raises a blocker coord:escalate carrying the ready-to-run command, keyed per-file for coalescing', async () => {
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true, escalate: true }, CTX),
+    );
+    expect(out.applied).toBe(false);
+    expect(out.escalation).toMatchObject({ escalated: true, msg_id: 'msg-esc-1', ts: '2026-07-17T00:00:00.000Z' });
+
+    expect(h.openEscalation).toHaveBeenCalledTimes(1);
+    const [identity, input] = h.openEscalation.mock.calls[0];
+    expect(identity).toMatchObject({ ownerId: 'su-test' });
+    expect(input.severity).toBe('blocker');
+    expect(input.summary).toContain('999-fake.sql');
+    expect(input.body).toContain('BEGIN;');
+    expect(input.body).toContain('INSERT INTO harness_shared.schema_migrations');
+    expect(input.meta.subjectSignature).toBe('db-migrate-withheld:999-fake.sql');
+  });
+
+  it('EI-13299: a failed escalation is fail-soft — the withheld response still succeeds, with the error surfaced', async () => {
+    h.openEscalation.mockRejectedValueOnce(new Error('coord log unavailable'));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true, escalate: true }, CTX),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(false);
+    expect(out.escalation.escalated).toBe(false);
+    expect(out.escalation.error).toContain('coord log unavailable');
   });
 });
 

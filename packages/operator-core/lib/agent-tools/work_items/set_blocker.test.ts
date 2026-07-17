@@ -117,6 +117,123 @@ describe('work_items:set_blocker', () => {
     );
   });
 
+  it('EI-13301: feature-family clear restores blocked→todo and the response reflects POST-write state', async () => {
+    const blocker = {
+      kind: 'human',
+      capability: 'physical-device',
+      ref: 'rig-vm',
+      summary: 'VM busy',
+      status: 'active',
+      createdAt: '2026-07-17T03:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-07-17T03:00:00.000Z',
+    };
+    // The item is ALREADY parked 'blocked' (a prior set_blocker call did this) — the
+    // clear call below must restore it, and the RETURNED workItem must show the
+    // post-restore state, not this pre-write snapshot.
+    const item = {
+      id: 'WI-1',
+      family: 'feature',
+      kind: 'feature',
+      state: 'blocked',
+      harness: 'papercup',
+      payload: { externalBlockers: [blocker] },
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+    setWorkItemStateWithAliasInfo.mockResolvedValue({
+      workItem: { ...item, state: 'todo' },
+      aliased: false,
+      requestedState: 'todo',
+      appliedState: 'todo',
+    });
+
+    const out = await one({
+      id: 'WI-1',
+      kind: 'human',
+      ref: 'rig-vm',
+      clear: true,
+      evidence: 'VM idle now',
+    });
+    expect(out.ok).toBe(true);
+    expect(out.activeBlockers).toEqual([]);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'WI-1',
+      'todo',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+    // Defect 2 regression: the returned workItem must be the POST-write ('todo')
+    // snapshot, not the stale pre-write ('blocked') one merge returned.
+    expect(out.workItem.state).toBe('todo');
+  });
+
+  it('EI-13301 backstop: retries the restore when the primary attempt leaves state stuck at blocked', async () => {
+    // Simulates the race/no-op EI-13301 reported: the primary todo-restore call fires
+    // (updated.state was 'blocked') but its OWN result still reports 'blocked' (a
+    // no-op write, or a concurrent write raced it) — the backstop must detect the
+    // still-blocked, zero-active-blocker combination and retry rather than returning
+    // a stranded item.
+    const blocker = {
+      kind: 'human',
+      capability: 'physical-device',
+      ref: 'rig-vm',
+      summary: 'VM busy',
+      status: 'active',
+      createdAt: '2026-07-17T03:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-07-17T03:00:00.000Z',
+    };
+    const item = {
+      id: 'WI-1',
+      family: 'feature',
+      kind: 'feature',
+      state: 'blocked',
+      harness: 'papercup',
+      payload: { externalBlockers: [blocker] },
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+    setWorkItemStateWithAliasInfo
+      .mockResolvedValueOnce({
+        // primary restore attempt: no-op, still 'blocked'
+        workItem: { ...item, state: 'blocked' },
+        aliased: false,
+        requestedState: 'todo',
+        appliedState: 'blocked',
+      })
+      .mockResolvedValueOnce({
+        // backstop retry: succeeds
+        workItem: { ...item, state: 'todo' },
+        aliased: false,
+        requestedState: 'todo',
+        appliedState: 'todo',
+      });
+
+    const out = await one({
+      id: 'WI-1',
+      kind: 'human',
+      ref: 'rig-vm',
+      clear: true,
+      evidence: 'VM idle now',
+    });
+    expect(out.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(2);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenLastCalledWith(
+      'WI-1',
+      'todo',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+    // The stranding this backstop exists to prevent: never return 'blocked' with zero
+    // active blockers.
+    expect(out.workItem.state).toBe('todo');
+  });
+
   it('AUTO authority history-clears approval without parking the item', async () => {
     const item = {
       id: 'WI-1',

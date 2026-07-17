@@ -155,6 +155,10 @@ export default defineTool({
           return { ok: false as const, id: input.id, error: 'blocker payload write did not return the work-item' };
         }
 
+        // EI-13301 fix: `finalWorkItem` tracks the POST-transition snapshot so the
+        // response never reports pre-write state (Defect 2 — a caller that trusts the
+        // return value couldn't see the item had just been parked/restored).
+        let finalWorkItem = updated;
         let lifecycle: unknown = null;
         try {
           if (active.length > 0) {
@@ -174,6 +178,25 @@ export default defineTool({
               reason: `external blocker ${input.kind}:${input.ref} cleared`,
             });
           }
+          if (lifecycle && typeof lifecycle === 'object' && 'workItem' in lifecycle) {
+            const lifecycleItem = (lifecycle as { workItem?: typeof updated }).workItem;
+            if (lifecycleItem) finalWorkItem = lifecycleItem;
+          }
+          // EI-13301 Defect 1 backstop: state:'blocked' must never survive with zero
+          // active blockers — that combination is invisible to claim_next/scheduler:get_next
+          // AND carries no blocker explaining the exclusion (a stranded item nobody can
+          // find). If the branches above didn't clear it for any reason (a race with a
+          // concurrent write, an unhandled family/state combination, …), force the
+          // restore now rather than leaving the item silently orphaned.
+          if (active.length === 0 && finalWorkItem.state === 'blocked') {
+            const restored = await setWorkItemStateWithAliasInfo(
+              input.id,
+              finalWorkItem.family === 'feature' ? 'todo' : 'open',
+              { harness: input.harness, by: identity.ownerId },
+            );
+            if (restored.workItem) finalWorkItem = restored.workItem;
+            lifecycle = lifecycle ?? restored;
+          }
         } catch (error) {
           return {
             ok: false as const,
@@ -188,7 +211,7 @@ export default defineTool({
           ok: true as const,
           id: input.id,
           changed: true,
-          workItem: updated,
+          workItem: finalWorkItem,
           activeBlockers: active,
           blockerHistory: history.blockers,
           capabilityDispositions: active.map((blocker) => externalBlockerCapabilityPolicy(blocker.capability)),

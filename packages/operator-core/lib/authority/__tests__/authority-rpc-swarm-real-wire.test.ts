@@ -350,7 +350,9 @@ describe('option-(c) protomux authority-RPC transport serializes a contended loc
       setPeerRpcTransport(transportReq);
 
       // Requester deps: fixed clock, self = A, presence has BOTH peers (so argmin =
-      // B = the authority), eviction disabled. No real PG.
+      // B = the authority), eviction disabled. No real PG. HRW_RENDEZVOUS_AUTHORITY
+      // defaults ON since its 2026-07-17 graduation — pin the argmin rollback path
+      // this fixture's B-is-authority premise depends on.
       const NOW = 1_700_000_000_000;
       const requesterDeps: LockAuthorityDeps = {
         now: () => NOW,
@@ -360,6 +362,7 @@ describe('option-(c) protomux authority-RPC transport serializes a contended loc
           { device_pubkey: authId.devicePubkey, github_user_id: authId.userId, machine_label: 'authority-B', last_seen_ms: NOW - 1000 },
           { device_pubkey: reqId.devicePubkey, github_user_id: reqId.userId, machine_label: 'requester-A', last_seen_ms: NOW - 1000 },
         ],
+        useHrwRendezvous: false,
       };
 
       // ── Wait until the authority-rpc channel has PAIRED over the real wire and
