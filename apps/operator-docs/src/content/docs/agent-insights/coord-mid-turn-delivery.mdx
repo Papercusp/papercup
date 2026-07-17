@@ -5,7 +5,7 @@ discovered: 2026-06-01
 tags: [coord, hooks, posttooluse, omp, codex, prompt-cache, mid-turn, inbox, locks]
 status: active
 documents:
-  - apps/operator/scripts/hooks/cc/posttooluse-coord-inbox.sh
+  - apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh
   - apps/operator/scripts/psu-pty-host.mjs
   - packages/operator-core/lib/agent-tools/locks/acquire.ts
 plans:
@@ -27,22 +27,35 @@ timer); the **system** rides the tool stream.
 
 ## Per client — three mechanisms, one behavior
 
+**EI-11405 (coordination-hook-rpc-fanout-collapse-2026-07-16):** the Claude/Codex
+mechanism used to be a SEPARATE `posttooluse-coord-inbox.sh` PostToolUse hook —
+its own unconditional `coord:inbox` round trip on EVERY tool call, alongside the
+detached-fire-and-forget `posttooluse-activity-report.sh`. That was ~2 automatic
+round trips per manual tool call. The two are now MERGED: `posttooluse-activity-
+report.sh` sends a delta-aware `hook_bundle` cursor (`{generation, since_ts}`) on
+its `activity:report` call, and the server folds a fresh `coord:inbox` snapshot
+into the SAME response ONLY when the coordination generation actually advanced
+(`packages/operator-core/lib/agent-tools/activity/hook-bundle.ts`) — one round
+trip, and an O(1) (no extra query) response whenever nothing changed. The old
+standalone script is deleted.
+
 | Client | Where | Mechanism |
 | --- | --- | --- |
-| **Claude** | `~/.claude/settings.json` PostToolUse, matcher `*` | `apps/operator/scripts/hooks/cc/posttooluse-coord-inbox.sh` → `hookSpecificOutput.additionalContext` (exit 0, **no** `decision`). |
-| **Codex** | per-session `$CODEX_HOME/hooks.json` PostToolUse, matcher `.*` (**SU sessions only**) | same script, written by `role-codex-home.ts` `writeSuCodexHome` with a **baked `PAPERCUSP_SID`**. Current Codex fires PostToolUse for **Bash / apply_patch / MCP** (not WebSearch), and the same hooks file also carries PreToolUse lock/resource gates for `apply_patch`/shell. |
-| **OMP** | `coord-hook.ts` `tool_result` handler | `pollInboxDelta()` → `pi.sendMessage(…, { deliverAs: 'steer' })`. `ToolResultEvent` carries no content, so steer-append is the vector (not content-replacement). |
+| **Claude** | `~/.claude/settings.json` PostToolUse, matcher `*` | `apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh` → `hookSpecificOutput.additionalContext` (exit 0, **no** `decision`). Always coord-folding (the fold gate `PAPERCUSP_COORD_FOLD` defaults ON). |
+| **Codex** | per-session `$CODEX_HOME/hooks.json` PostToolUse, matcher `.*` | same script, written by `role-codex-home.ts`. `writeSuCodexHome` bakes a `PAPERCUSP_SID` and leaves the coord fold ON (SU sessions); `writeRoleCodexHome` also bakes a `PAPERCUSP_SID` but sets `PAPERCUSP_COORD_FOLD=0` — a role session still reports activity, just without the coord fold (roles coordinate via `messages:feature_*`, not the SU coord bus) and keeps the original detached, zero-added-latency report path. Current Codex fires PostToolUse for **Bash / apply_patch / MCP** (not WebSearch), and the same hooks file also carries PreToolUse lock/resource gates for `apply_patch`/shell. |
+| **OMP** | `coord-hook.ts` `tool_result` handler | `reportActivityResult()` sends the SAME `hook_bundle` cursor on its own `activity:report` call (OMP had this shape since before the merge — the CC port brings Claude/Codex to parity) → `consumeActivityHookBundle()` → `pi.sendMessage(…, { deliverAs: 'followUp' })`. |
 
 The shell hook **gates on `PAPERCUSP_SID`** (psu sessions only) + the su-token,
 so a plain `claude`/`codex` on the box no-ops. `owner == PAPERCUSP_SID`, which is
 the same id baked into the agent's MCP `&client=`, so the hook reads the *right*
 inbox/watermark.
 
-Current hook shape (2026-06-25): the shell hook is a dumb pipe. It calls
-`coord:inbox` with `since_ts`, advances the local cursor to the server's
+Current hook shape (2026-07-16): the shell hook is a dumb pipe for the FOLDED
+surface. It sends `hook_bundle{generation, since_ts}`, advances the local cursor
+to the server's `generation` (only on a COMPLETE fold) + the inbox fold's
 `summary.newest_ts`, and injects the server-rendered `injection` block verbatim.
 Formatting, capping, and the `[coord+N]` layout live on the server side rather
-than being duplicated in `posttooluse-coord-inbox.sh`.
+than being duplicated in the hook.
 
 **Context-gauge on the no-mail path (P-015).** Even when there are *no* new
 coord entries, the hook now surfaces the server-rendered `context_gauge` string
@@ -75,12 +88,20 @@ nudges are an *optimization*; the wake + escalation-ladder legs are the
 
 ## The cursor / dedup protocol
 
-- **Per-owner cursor.** Claude/Codex: a local file `coord-cursor-<owner>.json`
-  in `~/.papercusp/locks-cache/`. OMP: a module var seeded at `turn_start` to
-  the newest ts surfaced, advanced on each `tool_result`, persisted to the
+- **Per-owner cursor.** Claude/Codex: a local file
+  `activity-hook-bundle-<owner>.json` in `~/.papercusp/locks-cache/`, holding
+  `{generation, since_ts}` (EI-11405 — was `coord-cursor-<owner>.json` with just
+  `since_ts`, back when this was the standalone coord-inbox hook). OMP: a
+  module var (`_hookBundleGeneration` + `_midTurnCursor`) seeded at `turn_start`
+  to the newest ts surfaced, advanced on each `tool_result`, persisted to the
   watermark at `turn_end`.
 - **First run seeds to "now"** and injects nothing — the session-start
   `coord:inbox` already showed the backlog; only *new* arrivals inject.
+- **Generation only advances on a COMPLETE fold.** A partial hydrate (e.g. the
+  server's glance query failed but inbox succeeded) resets the persisted
+  generation to null so the NEXT call retries a FULL hydrate instead of wrongly
+  believing it is caught up (mirrors `consumeActivityHookBundle`'s
+  `bundle.complete ? bundle.generation : null`).
 - Each message injects **exactly once** (cursor advances past it); newest are
   shown when capping (8), older summarized as a count.
 - **Fail-open + best-effort:** operator unreachable / no baseline → no-op, never
@@ -117,8 +138,10 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
 - **No MCP `tools/list_changed`** is emitted, so a tool-surface change (add/remove
   a verb) leaves *running* agent sessions with a **stale cached catalog** until
   they relaunch. New sessions are correct.
-- **Codex coord hook is SU-only** (pipeline-role sessions coordinate via
-  `messages:send`/`inbox`, not the SU coord bus) and activates server-side on the
+- **Codex coord fold is SU-only** (pipeline-role sessions coordinate via
+  `messages:send`/`inbox`, not the SU coord bus) — expressed since EI-11405 as
+  `PAPERCUSP_COORD_FOLD=0` baked into a role session's activity-report hook
+  command, not a separate hook's absence — and activates server-side on the
   next operator restart (the `:3070` host has no hot-reload).
 - **Codex managed-PTY turn injection needs a longer submit settle than Claude,
   plus a redundant submit.**

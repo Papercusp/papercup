@@ -77,6 +77,7 @@ function Probe() {
           <div
             key={`${message.id ?? "none"}-${index}`}
             data-role={message.role}
+            data-seq={typeof message.seq === "number" ? message.seq : "none"}
           >
             {message.content}
           </div>
@@ -159,6 +160,44 @@ describe("OperatorConversationProvider streamed say projection", () => {
         .getByTestId("messages")
         .querySelectorAll('[data-role="assistant"]'),
     ).toHaveLength(1);
+  });
+
+  it("backfills the persisted seq onto in-session messages so a streamed chat:ask_choice card is answerable without a reload (P-011)", async () => {
+    const generationFn: GenerationFn = vi.fn(async () => ({
+      chunks: (async function* () {
+        yield "<say>Pick one of these.</say>";
+      })(),
+    }));
+
+    render(
+      <OperatorConversationProvider generationFn={generationFn}>
+        <Probe />
+      </OperatorConversationProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+
+    // Both the optimistic user turn and the streamed assistant turn must
+    // end up with the server-assigned seq — OperatorChat's onAnswer gate
+    // (`typeof msg.seq !== 'number'`) silently drops card clicks on a
+    // seq-less message.
+    await waitFor(() => {
+      const rows = [
+        ...screen.getByTestId("messages").querySelectorAll("[data-role]"),
+      ];
+      const user = rows.filter((r) => r.getAttribute("data-role") === "user");
+      const assistant = rows.filter(
+        (r) => r.getAttribute("data-role") === "assistant",
+      );
+      expect(user).toHaveLength(1);
+      expect(assistant).toHaveLength(1);
+      expect(Number(user[0].getAttribute("data-seq"))).toBeGreaterThanOrEqual(
+        100,
+      );
+      expect(
+        Number(assistant[0].getAttribute("data-seq")),
+      ).toBeGreaterThanOrEqual(100);
+    });
   });
 
   it("removes an uncommitted streamed row when the stream errors", async () => {

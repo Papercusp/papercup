@@ -167,15 +167,11 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // Deliberate new dark flag, not inversion drift. Count 18 → 19; well under
   // DARK_FLAGS_HIGH_WATERMARK (22).
   'papercusp-own-log-fork-auto-recovery',
-  // 2026-07-10 (WI-1491) — papercusp-hrw-rendezvous-authority (cross-machine-coord-
-  // parity-and-trust-2026-07-01 P-021 live cutover, case: cutover): flips
-  // lockAuthorityFor/lockAuthorityForHive's winner rule from the global argmin to
-  // per-scope-key HRW rendezvous hashing. Deliberate new dark flag, not inversion
-  // drift — same class as papercusp-presence-gossip (a live coordination-primitive
-  // cutover needs every peer computing the SAME winner, so it ships dark until an
-  // attended multi-peer verify). Count 19 → 20; well under DARK_FLAGS_HIGH_WATERMARK
-  // (22).
-  'papercusp-hrw-rendezvous-authority',
+  // 2026-07-17 — papercusp-hrw-rendezvous-authority GRADUATED default-ON (LIVE-1
+  // P-059 drill, coordination lane): the attended multi-peer verify its dark entry
+  // required ran on the tower↔VM rig (identical fresh candidate sets + the same
+  // tower-built code on both machines) and the flag flipped ON in both stores.
+  // Entry removed (the set shrinks). Count 20 → 19 relative to this list's history.
   // 2026-07-10 (EI-9064 dark-flag-age sweep, su-043a1) — NOT a new post-inversion
   // darkening: the FIFTH instance of the same bug-fix class as papercusp-watchdog-
   // auto-close / papercusp-substrate-sidecar / papercusp-reclaim-stalled /
@@ -482,7 +478,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // explicit owner direction. Count 31 → 30.
     // 2026-07-16 — papercusp-presence-gossip graduated default-ON: LIVE-1 P-059
     // tower↔VM 2-machine verify met the cutover dark-entry gate. Count 30 → 29.
-    expect(offCount).toBe(29);
+    // 2026-07-17 — papercusp-hrw-rendezvous-authority graduated default-ON: the
+    // same LIVE-1 P-059 drill's multi-peer same-inputs verify met its cutover
+    // dark-entry gate; flag flipped ON in both machines' stores. Count 29 → 28.
+    expect(offCount).toBe(28);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

@@ -8,7 +8,9 @@
  * loses, mid-flight and permanently for the life of the process:
  *
  *   - PreToolUse  pretooluse-locks-acquire.sh   → edits on the FLEET-SHARED tree take NO lock
- *   - PostToolUse posttooluse-coord-inbox.sh    → directed peer messages are never delivered
+ *   - PostToolUse posttooluse-activity-report.sh → directed peer messages are never delivered
+ *     (mid-turn coord:inbox delivery is folded into this hook since EI-11405 —
+ *     coordination-hook-rpc-fanout-collapse-2026-07-16; it was posttooluse-coord-inbox.sh)
  *   - UserPromptSubmit userpromptsubmit-memory.sh     → no turn-start memory recall
  *   - UserPromptSubmit userpromptsubmit-provenance.sh → no owner-vs-agent turn-provenance stamps
  *   - SessionStart (the recover hook)           → no post-compaction epoch bump, so the dedup

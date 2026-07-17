@@ -31,7 +31,7 @@ const GLOBAL_SETTINGS = {
   theme: 'dark',
   hooks: {
     PreToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'pretooluse-locks-acquire.sh' }] }],
-    PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'posttooluse-coord-inbox.sh' }] }],
+    PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'posttooluse-activity-report.sh' }] }],
     UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'userpromptsubmit-memory.sh' }] }],
     SessionStart: [{ hooks: [{ type: 'command', command: 'lifecycle-report.sh' }] }],
     SessionEnd: [{ hooks: [{ type: 'command', command: 'lifecycle-report.sh' }] }],

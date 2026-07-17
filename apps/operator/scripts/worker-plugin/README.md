@@ -8,9 +8,10 @@ a Claude user can wire them up with `claude plugin install` instead of running
 It bundles the **hooks** of the cross-CLI worker integration:
 
 - **file-lock coordination** (Pre/PostToolUse `locks:*`)
-- **coord-inbox injection** (PostToolUse — new messages mid-turn)
 - **the activity bridge** (PostToolUse `activity:report` — mirrors every native tool
-  call into `harness_shared.agent_activity` → the pui fleet view + curator)
+  call into `harness_shared.agent_activity` → the pui fleet view + curator), which
+  ALSO folds in new `coord:inbox` messages mid-turn on the same round trip
+  (EI-11405 — the standalone coord-inbox hook this used to pair with is retired)
 - **the named-resource Bash gate**
 
 ## Scope + honest limitations (read before relying on it)

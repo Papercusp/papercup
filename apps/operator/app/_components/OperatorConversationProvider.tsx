@@ -200,7 +200,16 @@ type Action =
   | { type: "set_mode"; mode: OperatorMode }
   | { type: "set_sub"; sub: SubState }
   | { type: "append_message"; message: ChatMessage }
-  | { type: "replace_message_id"; oldId: string; newId: string }
+  | { type: "replace_message_id"; oldId: string; newId: string; seq?: number }
+  /**
+   * Backfill the persisted seq onto a local message identified by id.
+   * A message created in-session (optimistic user turn, streamed
+   * assistant turn) has no seq until the server echoes it back — and
+   * OperatorChat's onAnswer gate (`typeof msg.seq !== 'number'`)
+   * silently drops chat:ask_choice clicks on a seq-less message, so a
+   * card streamed live was unanswerable until a full reload (P-011).
+   */
+  | { type: "set_message_seq"; id: string; seq: number }
   | { type: "append_assistant_delta"; id: string; text: string }
   | { type: "finalize_assistant_stream"; id: string; message: ChatMessage }
   | { type: "remove_message_id"; id: string }
@@ -255,7 +264,18 @@ function reducer(state: State, action: Action): State {
       const idx = state.messages.findIndex((m) => m.id === action.oldId);
       if (idx < 0) return state;
       const next = state.messages.slice();
-      next[idx] = { ...next[idx], id: action.newId };
+      next[idx] = {
+        ...next[idx],
+        id: action.newId,
+        ...(typeof action.seq === "number" ? { seq: action.seq } : {}),
+      };
+      return { ...state, messages: next };
+    }
+    case "set_message_seq": {
+      const idx = state.messages.findIndex((m) => m.id === action.id);
+      if (idx < 0 || state.messages[idx].seq === action.seq) return state;
+      const next = state.messages.slice();
+      next[idx] = { ...next[idx], seq: action.seq };
       return { ...state, messages: next };
     }
     case "update_message_tools": {
@@ -1097,13 +1117,24 @@ export function OperatorConversationProvider({
         continue;
       }
       if (typeof t.id === "string" && localIds.has(t.id)) {
+        // Backfill seq onto the id-matched local row (the streamed
+        // assistant turn after persistTurn's id-swap) — the reducer
+        // no-ops when it already matches.
+        if (typeof t.seq === "number") {
+          dispatch({ type: "set_message_seq", id: t.id, seq: t.seq });
+        }
         newestLoadedSeqRef.current = t.seq;
         continue;
       }
       const optKey = `${t.role}\x00${t.text}`;
       const optId = optimisticByKey.get(optKey);
       if (optId) {
-        dispatch({ type: "replace_message_id", oldId: optId, newId: t.id });
+        dispatch({
+          type: "replace_message_id",
+          oldId: optId,
+          newId: t.id,
+          ...(typeof t.seq === "number" ? { seq: t.seq } : {}),
+        });
         optimisticByKey.delete(optKey);
         newestLoadedSeqRef.current = t.seq;
         continue;
@@ -1220,7 +1251,10 @@ export function OperatorConversationProvider({
                 type: "replace_message_id",
                 oldId: optimisticId,
                 newId: realId,
+                ...(typeof seq === "number" ? { seq } : {}),
               });
+            } else if (optimisticId && typeof seq === "number") {
+              dispatch({ type: "set_message_seq", id: optimisticId, seq });
             }
             return;
           } catch (err) {
