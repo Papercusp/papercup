@@ -811,6 +811,29 @@ impl OperatorClient {
             .to_string())
     }
 
+    /// Triage-resolve one attention item (EI-50: TUI parity with the desktop
+    /// detail-pane's inbox Resolve) via the /api/admin/inbox proxy
+    /// (inbox:triage `{ itemId, action: "resolve", note }`). Generic across
+    /// every attention kind — the same overlay the desktop uses, so no
+    /// per-kind branching is needed here. `note` is required by the tool on
+    /// resolve; caller must not pass an empty string.
+    pub async fn resolve_inbox_item(&self, item_id: &str, note: &str) -> Result<()> {
+        let payload = serde_json::json!({
+            "itemId": item_id,
+            "action": "resolve",
+            "note": note,
+        });
+        let v = self.post_json("/api/admin/inbox/triage", payload).await?;
+        if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
+            let err = v
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("triage_failed");
+            return Err(anyhow!("resolve failed: {err}"));
+        }
+        Ok(())
+    }
+
     pub async fn harnesses(&self) -> Result<Vec<HarnessRef>> {
         let v = self.get_json("/api/harness/projects/lite").await?;
         Ok(serde_json::from_value::<ProjectsResponse>(v)

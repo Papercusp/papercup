@@ -31,6 +31,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { withPgRetry } from '../pg-transient-retry';
 import { frontierPlacementKindClause } from '../datatype-frontier-placement';
 import { autoPickableWhereSql } from '../work-items-admission';
+import { claimHoldExclusionSql, needsHumanExclusionSql, crossMachineRigExclusionSql } from '../work-items';
 import { loadHarnessRegistry } from '../harness-registry';
 import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/source';
 import { reconcileStartStatus, isTerminalPlanStatus } from '../agent-tools/plans/plan-start-state';
@@ -469,16 +470,24 @@ export async function fetchFrontierRows(
   const rows = await sql<FrontierRow[]>`
     SELECT feature_id, harness_slug, title, item_kind, created_ts, feature_order,
            source_plan_slug AS plan_slug, payload
-      FROM harness_shared.harness_features_consolidated f
+      FROM harness_shared.harness_features_consolidated wi
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       -- EI-13501: a claim-held item (payload._claimHold — the SAME general-purpose
+       -- "do not self-place" marker claimFloorsWhereSql already honors for the scheduler
+       -- claim path, e.g. a leader-held feature or an owner GO/NO-GO gate) is structurally
+       -- NOT cup-placeable. Without this the Mug's own frontier count disagreed with what
+       -- claim_next/scheduler:get_next would actually serve — every item in the live feature
+       -- frontier was claim-held on 2026-07-17 (WI-321/357/662/1281/1774), so this floor was
+       -- previously a 100% false-positive "N ready to place" signal, not an edge case.
+       AND ${claimHoldExclusionSql(sql)}
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.pot_placements p
-          WHERE p.workspace_id = f.workspace_id
-            AND p.work_item_id = f.feature_id
+          WHERE p.workspace_id = wi.workspace_id
+            AND p.work_item_id = wi.feature_id
             AND p.status = 'cursed'
             AND p.fail_count >= ${breakerThreshold}
             -- Scope the curse to THIS pot's own installs (papercup→papercusp migration follow-up,
@@ -535,17 +544,28 @@ export async function fetchEscalatedIssueFrontierRows(
     SELECT feature_id, harness_slug, title, item_kind, created_ts, feature_order,
            source_plan_slug AS plan_slug, payload,
            COALESCE(payload -> '_ei' ->> 'severity', 'minor') AS severity
-      FROM harness_shared.work_items f
+      FROM harness_shared.work_items wi
      WHERE workspace_id = ${workspaceId}
        AND item_kind IN ('bug', 'change', 'task')
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
        AND COALESCE(payload -> '_ei' ->> 'severity', 'minor') IN ('critical', 'major')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       -- EI-13501: this escalated-issue slice grew up alongside the feature frontier
+       -- (see fetchFrontierRows) and never inherited the self-select exclusion floors
+       -- claimNextIssueWorkItem already enforces for the SAME kinds — so an item that is
+       -- structurally cup-forbidden (owner-decision/needs-human, an explicit GO/NO-GO
+       -- claim-hold, or last-mile LIVE-rig/VM verification) still counted as a "ready to
+       -- place" frontier item, driving recurring false Mug-dark blocker escalations
+       -- (live-verified 2026-07-17: 4/10 of the current escalated-issue frontier carried
+       -- payload.needsHuman:true). Mirror the SAME three floors, one source of truth.
+       AND ${needsHumanExclusionSql(sql)}
+       AND ${claimHoldExclusionSql(sql)}
+       AND ${crossMachineRigExclusionSql(sql, false)}
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.pot_placements p
-          WHERE p.workspace_id = f.workspace_id
-            AND p.work_item_id = f.feature_id
+          WHERE p.workspace_id = wi.workspace_id
+            AND p.work_item_id = wi.feature_id
             AND p.status = 'cursed'
             AND p.fail_count >= ${breakerThreshold}
             ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
@@ -586,16 +606,20 @@ export async function countPlaceableFrontier(
   const breakerThreshold = placementConfig().breakerThreshold;
   const rows = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
-      FROM harness_shared.harness_features_consolidated f
+      FROM harness_shared.harness_features_consolidated wi
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       -- EI-13501: MUST mirror fetchFrontierRows' claim-hold exclusion (this count
+       -- gates starvation/throughput signals — the same drift class this comment
+       -- already warns about for the checkpoint exclusion below).
+       AND ${claimHoldExclusionSql(sql)}
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.pot_placements p
-          WHERE p.workspace_id = f.workspace_id
-            AND p.work_item_id = f.feature_id
+          WHERE p.workspace_id = wi.workspace_id
+            AND p.work_item_id = wi.feature_id
             AND p.status = 'cursed'
             AND p.fail_count >= ${breakerThreshold}
             -- Scope the curse to THIS pot's own installs (papercup→papercusp migration follow-up,
@@ -690,8 +714,8 @@ export async function countQuarantinedFrontier(
 function hasWorkItemCheckpointSql(sql: postgres.Sql) {
   return sql`EXISTS (
     SELECT 1 FROM harness_shared.carry_notes cn
-     WHERE cn.workspace_id = f.workspace_id
-       AND cn.scope IN ('workitem:' || f.harness_slug || ':' || f.feature_id, 'workitem:*:' || f.feature_id)
+     WHERE cn.workspace_id = wi.workspace_id
+       AND cn.scope IN ('workitem:' || wi.harness_slug || ':' || wi.feature_id, 'workitem:*:' || wi.feature_id)
        AND btrim(cn.note) <> '')`;
 }
 

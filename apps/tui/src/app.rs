@@ -600,6 +600,19 @@ pub enum PaletteCommand {
         title: String,
         body: String,
     },
+    /// `:resolve <note>` / `:res <note>` — triage-resolve the SELECTED inbox
+    /// item (EI-50: the TUI inbox could render every attention kind but had no
+    /// affordance to resolve any of them, unlike the desktop detail-pane).
+    /// Mirrors `MessageOwner`'s pure-parser / resolve-at-Enter split: `item_id`
+    /// is None at parse, filled in from the selected inbox item by the palette
+    /// Enter handler. Dispatches `inbox:triage { itemId, action: "resolve",
+    /// note }` — the same generic attention-item triage POST the desktop
+    /// detail-pane uses, so it works across every kind (operator-report,
+    /// escalation, plan-item, …) without per-kind branching.
+    TriageResolve {
+        item_id: Option<String>,
+        note: String,
+    },
     /// `:stack` — gather the work area into one stacked group (dockview D-008).
     /// Resolved to `DockCmd::Stack` against the live topology at Enter.
     Stack,
@@ -757,6 +770,13 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
             item_ref: None,
             title: String::new(),
             body: arg,
+        }),
+        // `:resolve <note>` / `:res <note>` — triage-resolve the SELECTED inbox
+        // item (EI-50). `item_id` None at parse; resolved from the selection at
+        // Enter, mirroring `:message`.
+        "resolve" | "res" if !arg.is_empty() => Some(PaletteCommand::TriageResolve {
+            item_id: None,
+            note: arg,
         }),
         // ── dockview dock-verbs (Brief 50 / D-008) ──
         // `:stack` — gather the work area into one stacked group.
@@ -5139,6 +5159,27 @@ impl App {
                                     self.push_notif(crate::models::Notif {
                                         level: "error".to_string(),
                                         message: "message: no inbox item selected (Inbox tab)"
+                                            .to_string(),
+                                        harness: None,
+                                        ts: None,
+                                    });
+                                    Action::Render
+                                }
+                            }
+                        }
+                        // `:resolve <note>` (EI-50) — resolve the SELECTED inbox
+                        // item; no selection → an error notif, not a half-scoped
+                        // dispatch (mirrors `:message` immediately above).
+                        Some(PaletteCommand::TriageResolve { note, .. }) => {
+                            match self.selected_inbox() {
+                                Some(it) => Action::Workbench(PaletteCommand::TriageResolve {
+                                    item_id: Some(it.id.clone()),
+                                    note,
+                                }),
+                                None => {
+                                    self.push_notif(crate::models::Notif {
+                                        level: "error".to_string(),
+                                        message: "resolve: no inbox item selected (Inbox tab)"
                                             .to_string(),
                                         harness: None,
                                         ts: None,

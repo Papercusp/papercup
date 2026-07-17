@@ -70,7 +70,7 @@ ORDER BY tick_at;
 excluding ticks where the pool is genuinely walled (see capacity-admission).
 `fail` = sustained stuck runs, or zero placements all window with a nonempty frontier.
 
-Two measurement caveats (2026-07-16):
+Three measurement caveats:
 
 * **Instrument history starts 2026-07-16 \~22:42Z.** Every tick before that recorded
   placements/completed/mttc/stuck as 0/null unconditionally — the feeding query threw on
@@ -83,6 +83,17 @@ Two measurement caveats (2026-07-16):
   30-60min windows (does the frontier DRAIN? do placements appear at all?), and check
   bg-host journal `pool-shed` lines first: a tick GAP is the load-shed guardrail pausing
   the ticker (EI-13108), not a dead Mug.
+* **`frontier_depth` is READY depth only from 2026-07-17 \~06:00Z** (EI-12461). Before
+  that it was the placeable-SHAPED count — `todo`+unassigned+admissible but *including*
+  rows whose `blocked_by` / plan-item chain was unsatisfied. A dependency-chained wave
+  therefore ticked `frontier_depth≈14` through \~2.5h of CORRECT zero placement
+  (2026-07-17 02:44–05:19Z) and scorecard EI-13660 failed placement-throughput on a
+  phantom stall; the Mug's own survey saw ready=2 (both cup-forbidden) the whole time.
+  Post-fix, `detail.frontierBlocked` + `detail.frontierPlaceableShaped` record what
+  readiness withheld. Grading a window that spans pre-fix ticks: cross-check any
+  "stuck run" against the Mug wake transcripts (`adv_sessions` label
+  `pot · <slug>/mug`) before calling it starvation — `frontier_depth>0` alone did not
+  mean placeable-now.
 
 ### cup-execution-health · `cup-keeper-runs`
 

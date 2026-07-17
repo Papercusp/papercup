@@ -412,6 +412,123 @@ describe('WI-3496 drill regression: opens rejected by a not-yet-wired peer RECOV
   });
 });
 
+describe('WI-5210 fence-25 regression: a one-sided hello gap heals WITHOUT a reconnect (global wired-topic sign config + reciprocal hello + heal sweep)', () => {
+  // The live incident (P-303 Leg B): connection churn left the surviving
+  // muxer without its own wireHiveGitDial(topic) call — the wire had landed
+  // on an earlier, since-dead connection. The pair-materialized channel could
+  // RECEIVE the peer's hello (WI-3496's receive-side fallbacks) but never
+  // SIGN/SEND its own (`cfg.topics` gate), so ONE fetch direction stayed dead
+  // for hours while the other worked, and nothing ever retried.
+  const TOPIC_CHURN = Buffer.alloc(32, 44); // wired only on a DEAD connection
+  const TOPIC_OTHER = Buffer.alloc(32, 55); // the only topic wired on the live muxer
+  const TOPIC_STUCK = Buffer.alloc(32, 66); // unwired at receive time; wired later
+  let root3: string;
+  let sockPath3: string;
+  let server3: Server;
+  const serverDuplexes: Duplex[] = [];
+  const clientSockets: Socket[] = [];
+
+  const connect3 = async (): Promise<{ socket: Socket; duplex: Duplex }> => {
+    const arrived = serverDuplexes.length;
+    const socket = await new Promise<Socket>((resolve, reject) => {
+      const s = connect({ path: sockPath3, allowHalfOpen: true });
+      s.once('connect', () => resolve(s));
+      s.once('error', reject);
+    });
+    socket.on('error', () => {});
+    clientSockets.push(socket);
+    await waitFor(() => serverDuplexes.length > arrived);
+    return { socket, duplex: frameWrap(socket) };
+  };
+
+  beforeAll(async () => {
+    root3 = await mkdtemp(join(tmpdir(), 'hgdial-heal-'));
+    sockPath3 = join(root3, 'link.sock');
+    server3 = createServer({ allowHalfOpen: true }, (srvConn) => {
+      srvConn.on('error', () => {});
+      serverDuplexes.push(frameWrap(srvConn));
+    });
+    await new Promise<void>((r) => server3.listen(sockPath3, () => r()));
+  });
+
+  afterAll(async () => {
+    try {
+      server3.close();
+    } catch {
+      /* ignore */
+    }
+    for (const s of clientSockets) {
+      try {
+        s.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    await rm(root3, { recursive: true, force: true });
+  });
+
+  it('a channel pair-materialized on a muxer never wired for its topic still ANNOUNCES itself (the dead direction of fence-25)', async () => {
+    // c1: B wires TOPIC_CHURN — then the connection dies (the churn casualty).
+    // This is the only wireHiveGitDial(TOPIC_CHURN) B ever makes, so only the
+    // process-global wiredTopicConfig remembers the identity for it.
+    const c1 = await connect3();
+    const b1 = serverDuplexes[0];
+    wireAllCorked(b1, () => {
+      wireHiveGitDial(b1, TOPIC_CHURN, SERVER_DEVICE, signAsServer);
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    c1.socket.destroy();
+
+    // c2: the surviving connection — B wires ONLY the unrelated TOPIC_OTHER
+    // here (registers the muxer's pair notifier + per-muxer socket config,
+    // exactly the VM's surviving-connection state).
+    const c2 = await connect3();
+    const b2 = serverDuplexes[1];
+    wireAllCorked(b2, () => {
+      wireHiveGitDial(b2, TOPIC_OTHER, SERVER_DEVICE, signAsServer);
+    });
+    // A wires TOPIC_CHURN on its side of c2 → B pair-materializes the channel
+    // on a muxer whose cfg.topics does NOT contain it. Pre-fix, B registered
+    // A's hello but never sent its own: A's resolve below never succeeded.
+    wireAllCorked(c2.duplex, () => {
+      wireHiveGitDial(c2.duplex, TOPIC_CHURN, CLIENT_DEVICE, signAsClient);
+    });
+    await waitFor(() => resolvePotGitPeerSocket(TOPIC_CHURN, CLIENT_DEVICE) !== undefined);
+    await waitFor(() => resolvePotGitPeerSocket(TOPIC_CHURN, SERVER_DEVICE) !== undefined);
+  });
+
+  it('the heal sweep completes a handshake that got stuck BEFORE the topic identity was known — no reconnect needed', async () => {
+    // c4: B wires only TOPIC_OTHER (pair notifier live); NOBODY has wired
+    // TOPIC_STUCK anywhere yet, so B's pair-materialized channel for it can
+    // receive but has no identity to answer with — the stuck state.
+    const c4 = await connect3();
+    const b4 = serverDuplexes[2];
+    wireAllCorked(b4, () => {
+      wireHiveGitDial(b4, TOPIC_OTHER, SERVER_DEVICE, signAsServer);
+    });
+    wireAllCorked(c4.duplex, () => {
+      wireHiveGitDial(c4.duplex, TOPIC_STUCK, CLIENT_DEVICE, signAsClient);
+    });
+    await waitFor(() => resolvePotGitPeerSocket(TOPIC_STUCK, CLIENT_DEVICE) !== undefined);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(resolvePotGitPeerSocket(TOPIC_STUCK, SERVER_DEVICE)).toBeUndefined();
+
+    // B now wires TOPIC_STUCK on a NEW connection (c5) — the global config
+    // learns the identity, but c4's stuck channel state is untouched by it.
+    const c5 = await connect3();
+    const b5 = serverDuplexes[3];
+    wireAllCorked(b5, () => {
+      wireHiveGitDial(b5, TOPIC_STUCK, SERVER_DEVICE, signAsServer);
+    });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // One sweep heals the LIVE stuck state on c4: seeds identity from the
+    // global config and sends the overdue hello over the existing channel.
+    _testing.healSweep();
+    await waitFor(() => resolvePotGitPeerSocket(TOPIC_STUCK, SERVER_DEVICE) !== undefined);
+  });
+});
+
 describe('pot-git peer-dial-registry unit-level (no swarm — direct registry manipulation)', () => {
   afterAll(() => {
     _testing.reset();
