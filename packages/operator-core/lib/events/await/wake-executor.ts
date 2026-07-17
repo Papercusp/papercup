@@ -81,7 +81,12 @@ import {
   renderColdWakeInjection,
   type ColdWakeDecision,
 } from '../../su-cold-loop';
-import { getLoopCarryNote } from '../../carry-note';
+import {
+  getLoopCarryNote,
+  getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
+  splitCarryNoteWalls,
+} from '../../carry-note';
+import { renderLoopWallsBlock } from '../../harness/routines/loop-fire';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
@@ -924,6 +929,12 @@ export interface ExecuteWakeDeps {
     ownerId: string;
     workspaceId?: string;
   }) => Promise<string | null>;
+  /** EI-10935: read an su AUTO loop's carry-note WITH its write-instant, used at
+   *  ACTUAL delivery time (not just fire time) by {@link rehydrateLoopWakeText}
+   *  to re-check whether a queued/staged delivery's pre-rendered checkpoint/
+   *  walls text is still current. Injected for tests; defaults to the real
+   *  getLoopCarryNoteWithMeta (carry-note.ts). */
+  getLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
   /** compaction-continuity-hardening-2026-07-07 P-003: assemble the subscriber's
    *  carry BRIEF (held work-items + checkpoints, standing facts/walls, armed awaits,
    *  fleet pointer) appended to a COLD injection after the carry-note. Injected for

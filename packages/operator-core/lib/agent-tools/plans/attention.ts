@@ -337,6 +337,7 @@ export default defineTool({
                 const mm = m as typeof m & {
                   auto?: unknown;
                   lifecycle?: unknown;
+                  report?: unknown;
                 };
                 items.push(
                   coordMessageToAttention({
@@ -360,6 +361,11 @@ export default defineTool({
                     // broadcast) is a genuine ping → Decision.
                     directToOwner:
                       Array.isArray(m.to) && m.to.includes("human"),
+                    // agent-report-cards-2026-07-17 P-002: a structured report card
+                    // (coord:send `report`, stamped on the envelope) — passed RAW;
+                    // the adapter re-validates it through parseReportBlock and
+                    // renders it as a 📋 card in the Inbox detail pane.
+                    report: mm.report,
                   }),
                 );
               }

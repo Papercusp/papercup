@@ -36,6 +36,23 @@ import { IMPLEMENTS_REL } from './convert';
 import { getWorkItem, setWorkItemState, isSettledWorkItemState, type WorkItem } from '../work-items';
 import { getPlanRow } from '../agent-tools/plans/source';
 
+/** The two TERMINAL plan-item statuses this reconciler heals (mirrors
+ *  `isTerminalStatus` in agent-tools/plans/set-status.ts) and the settled
+ *  work-item state each maps onto, per family:
+ *   - `done`    → the work SHIPPED   → feature `passed`     / issue `resolved`
+ *   - `dropped` → the work ABANDONED → feature `deprecated` / issue `closed`
+ *  The `dropped` half is EI-14693's extension: the transition reaction only ever
+ *  fired on `done` (reconcile-rule.ts), so a WI linked to a `dropped` plan item
+ *  was NEVER reconciled — the periodic sweep below closes that gap too. */
+const TERMINAL_PLAN_ITEM_TARGET = {
+  done: { feature: 'passed', issue: 'resolved' },
+  dropped: { feature: 'deprecated', issue: 'closed' },
+} as const;
+type TerminalPlanItemStatus = keyof typeof TERMINAL_PLAN_ITEM_TARGET;
+function isTerminalPlanItemStatus(s: string | null | undefined): s is TerminalPlanItemStatus {
+  return s === 'done' || s === 'dropped';
+}
+
 /** One plan item that just transitioned to `done` (or an equivalent terminal
  *  status) — the minimal identity reconciliation needs. */
 export interface CompletedPlanItem {

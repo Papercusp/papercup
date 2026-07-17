@@ -302,6 +302,10 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
     // Ack always; Discuss routes to the sender or a fresh harness chat (DiscussPanel).
     actions: [{ id: 'ack', label: 'Acknowledge', primary: true }, DISCUSS],
     ref: { kind: 'coord-message', msgId: m.msgId },
+    // agent-report-cards P-002: the validated ReportBlock rides the item so the
+    // Inbox detail pane renders it natively (ReportBlockCard) — same field the
+    // operator-report adapter sets; absent when the message carries no card.
+    ...(report ? { report } : {}),
   };
 }
 
