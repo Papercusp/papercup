@@ -98,6 +98,26 @@ async function buildMissDiagnosis(args: {
       workspaceId: resolvedWorkspace,
     }).catch(() => null);
 
+    // WI-5276: getNextForBee fails CLOSED before any claim query when the caller is
+    // mid-fleet-transition (source 'default' + a named fleetSlug marker: the latest
+    // membership fact names a fleet whose sentinel spec is missing/invalid). The
+    // member-role shape returns a fleetScopedMiss upstream, but a non-member role
+    // (e.g. just promoted to leader of the new fleet — the original WI-4770 incident)
+    // reaches THIS diagnosis, which would otherwise report pool counts as if the
+    // items were reachable ("N pass the floors") while the true cause is the guard.
+    // Mirror getNextForBee's own check order: this guard fires before concurrency.
+    if (rec?.source === 'default' && rec.fleetSlug) {
+      return {
+        error:
+          `${STATIC}. Diagnosis: you are mid-fleet-transition — your latest membership fact names ` +
+          `fleet '${rec.fleetSlug}' but no valid per-bee or inherited fleet claim spec exists, so ` +
+          `self-select fails CLOSED (WI-4770) regardless of pool size. Escape: have the leader install ` +
+          `the fleet sentinel (scheduler:set_claim_spec { fleet }), set your own per-bee spec, or ` +
+          `fleet:leave to settle to solo default pulls.`,
+        diagnosis: { fleetTransitionBlocked: true, fleetSlug: rec.fleetSlug },
+      };
+    }
+
     // EI-12095: getNextForBee short-circuits BEFORE the claim query whenever the caller
     // already holds >= its spec's maxConcurrentClaims (default 1) — a parked/held item
     // still counts (it retains `taken_by`). That miss has NOTHING to do with pool/floor
