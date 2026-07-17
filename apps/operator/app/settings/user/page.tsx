@@ -175,6 +175,7 @@ export default function UserSettingsPage() {
   // Password change UI
   const [currentPw, setCurrentPw] = useState('');
   const [nextPw, setNextPw] = useState('');
+  const [setupToken, setSetupToken] = useState('');
   const [pwBusy, setPwBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -254,20 +255,27 @@ export default function UserSettingsPage() {
         body: JSON.stringify({
           current: user?.has_password ? currentPw : null,
           next: nextPw || null,
+          // EI-347: only meaningful (and only sent) while the account has no
+          // password yet — the server ignores/doesn't need it once one exists.
+          ...(user?.has_password ? {} : { setupToken }),
         }),
       });
       if (!r.ok) {
         const j = await r.json();
-        toast.error(`Password change failed: ${j.error}`);
+        if (j.error === 'setup_token_required') {
+          toast.error('Setup code missing or incorrect — check the Papercusp server log for the code printed at startup.');
+        } else {
+          toast.error(`Password change failed: ${j.error}`);
+        }
         return;
       }
       toast.success(nextPw ? 'Password updated' : 'Password removed');
-      setCurrentPw(''); setNextPw('');
+      setCurrentPw(''); setNextPw(''); setSetupToken('');
       await refresh();
     } finally {
       setPwBusy(false);
     }
-  }, [user?.has_password, currentPw, nextPw, refresh]);
+  }, [user?.has_password, currentPw, nextPw, setupToken, refresh]);
 
   if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
 
@@ -311,6 +319,21 @@ export default function UserSettingsPage() {
                 type="password"
                 value={currentPw}
                 onChange={(e) => setCurrentPw(e.target.value)}
+                style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4 }}
+              />
+            </label>
+          )}
+          {!user.has_password && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span>Setup code</span>
+              <span style={{ color: 'var(--fg-mute)', fontSize: 12 }}>
+                Printed to the Papercusp server log/console when it started up
+                (one-time, only needed for the very first password).
+              </span>
+              <input
+                type="text"
+                value={setupToken}
+                onChange={(e) => setSetupToken(e.target.value)}
                 style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4 }}
               />
             </label>

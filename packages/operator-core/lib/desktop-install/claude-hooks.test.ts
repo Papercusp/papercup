@@ -14,15 +14,18 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
   it('registers every CC hook on its correct event(s) + the statusline', () => {
     const cfg = mergeClaudeHookSettings({}, DEST, { isClaudeSettings: true });
 
-    // PreToolUse: lock-acquire (Edit|Write|MultiEdit) + activity-pre (*) + bash-gate (Bash), in install order.
+    // PreToolUse: lock-acquire (Edit|Write|MultiEdit) + activity-pre (*) + bash-gate (Bash)
+    // + plans-read-guard (Read|Grep, P-003(b)), in install order.
     expect(commandsFor(cfg, 'PreToolUse')).toEqual([
       `${DEST}/pretooluse-locks-acquire.sh`,
       `${DEST}/pretooluse-activity-report.sh`,
       `${DEST}/pretooluse-bash-resource-gate.sh`,
+      `${DEST}/pretooluse-plans-read-guard.sh`,
     ]);
     expect(cfg.hooks.PreToolUse[0].matcher).toBe('Edit|Write|MultiEdit');
     expect(cfg.hooks.PreToolUse[1].matcher).toBe('*'); // activity-pre
     expect(cfg.hooks.PreToolUse[2].matcher).toBe('Bash');
+    expect(cfg.hooks.PreToolUse[3].matcher).toBe('Read|Grep');
 
     // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge
     // (in install order). The separate coord-inbox entry is retired — merged into activity.

@@ -157,3 +157,34 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     env,
   };
 }
+
+/**
+ * Hermeticity (real-mode auth) — EI-232: a Claude-Code launcher session
+ * carries its OWN per-session CLAUDE_CONFIG_DIR + nested-session markers
+ * (psu-isolation). Every gym runnable spawns its gym-operator with
+ * `{ ...process.env, ...spec.env, ...overrides }`, which inherits those
+ * launcher-session vars — and once inside the hermetic gym-operator, every
+ * spawned `claude -p` real-mode agent then reads the LAUNCHER's per-session
+ * config dir instead of the user-global `~/.claude`, and auths against the
+ * launcher session's rotating OAuth: every real-mode `decide` invoke exits 1
+ * with "Failed to authenticate. API Error: 401 Invalid authentication
+ * credentials" (observed live in the hive-loop-e2e P-007 real run). Fake
+ * mode is immune (no auth), which is why no gym runnable caught this until a
+ * real-mode run did. The production fleet's own spawns run with none of
+ * these vars set — this scrub just matches that.
+ *
+ * Call this on the FINAL merged child env object (after `{ ...process.env,
+ * ...spec.env, ...overrides }`), not on `spec.env` alone — the leak comes
+ * from the `...process.env` spread, so deleting from `spec.env` before the
+ * merge would not remove it from the result.
+ *
+ * Mutates `env` in place (matches Node's `spawn({ env })` call shape) and
+ * also returns it for chaining.
+ */
+export function scrubLauncherClaudeSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  delete env.CLAUDE_CONFIG_DIR;
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+  delete env.CLAUDECODE;
+  return env;
+}

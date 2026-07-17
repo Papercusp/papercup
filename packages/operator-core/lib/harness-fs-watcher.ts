@@ -715,6 +715,77 @@ async function reconcileAll(state: WatcherState): Promise<void> {
 }
 
 /**
+ * EI-255 mitigation: periodically fully RECYCLE (stop + rebuild from scratch)
+ * the watcher, to bound any accumulation of closed-but-retained chokidar
+ * handles across the many incremental add()/unwatch() reconcile cycles this
+ * long-lived process-singleton runs over its lifetime. Heap-profiled 2026-06-10:
+ * 23,448 retained FSEventWrap/FSWatcher/Stats/FSEvent objects vs only 1,845
+ * LIVE inotify watch descriptors after ~2h18m uptime — a ~12x overhead that
+ * never gets released by chokidar's own `.unwatch()` bookkeeping.
+ *
+ * This is a DEFENSE-IN-DEPTH BOUND, not a proven, independently-verified
+ * root-cause fix: the suspected mechanism (chokidar 4.x's internal per-path
+ * maps not fully releasing closed watcher objects across repeated add/unwatch
+ * cycles) has not been confirmed via a live before/after heap-diff — that
+ * verification needs CDP access to a running instance (kill -USR1 + a
+ * HeapProfiler snapshot, as the original P-004 audit did), which a future
+ * profiling pass should do. What IS certain: closing every handle and
+ * rebuilding fresh, on a bounded cadence, cannot leave MORE than one recycle
+ * period's worth of accumulation outstanding, regardless of exactly which
+ * layer is retaining references. A brief (sub-reconcile-tick) gap in live fs-
+ * event coverage during the swap is expected and already tolerated by the
+ * existing 60s reconcile backstop (this file's own documented mitigation for
+ * dropped events under load — see the module header).
+ */
+const WATCHER_RECYCLE_INTERVAL_MS = 4 * 60 * 60_000; // 4h
+let recycleTimerStarted = false;
+
+function ensureWatcherRecycleTimer(): void {
+  if (recycleTimerStarted) return;
+  recycleTimerStarted = true;
+  managedSetInterval('harness-fs-watcher-recycle', WATCHER_RECYCLE_INTERVAL_MS, () => {
+    if (!_g.__harnessFsWatcher) return; // nothing running — nothing to recycle
+    stopHarnessFsWatcher();
+    void ensureHarnessFsWatcher().catch((e) =>
+      console.warn('[harness-fs-watcher] periodic recycle failed:', (e as Error)?.message ?? e),
+    );
+  }, { category: 'global-sweep' });
+}
+
+// SIGTERM/SIGINT cleanup — registered ONCE (module-level), never per watcher
+// instantiation. Previously `ensureHarnessFsWatcher()` called `process.once(...)`
+// on every (re)start, which was harmless as long as the watcher was only ever
+// started once per process — but the periodic recycle above calls
+// ensureHarnessFsWatcher() repeatedly over a long-lived process's life, and
+// `.once()` listeners that never FIRE (no SIGTERM arrives) never self-remove,
+// so that pattern would itself accumulate a NEW listener on `process` (a
+// permanent, always-alive object) every recycle — trading one leak for
+// another. `stopHarnessFsWatcher()` already re-reads the current global state
+// fresh each call, so ONE pair of standing listeners is correct regardless of
+// how many times the watcher has been recycled since.
+let shutdownHandlersRegistered = false;
+
+function ensureShutdownHandlers(): void {
+  if (shutdownHandlersRegistered) return;
+  shutdownHandlersRegistered = true;
+  process.on('SIGTERM', stopHarnessFsWatcher);
+  process.on('SIGINT', stopHarnessFsWatcher);
+}
+
+// Exported for exactly one purpose: a unit test proving the "registered once,
+// ever" guards actually hold under repeated calls (the regression this fix
+// targets) without needing to boot a real chokidar/PG-backed watcher.
+export { ensureWatcherRecycleTimer, ensureShutdownHandlers };
+
+/** Test-only: reset the module-level "registered once" guards so a test can
+ *  exercise ensureWatcherRecycleTimer()/ensureShutdownHandlers() idempotency
+ *  from a clean slate (mirrors __resetWorkspaceFallbackWarnings' pattern). */
+export function __resetHarnessFsWatcherSingletonGuardsForTests(): void {
+  recycleTimerStarted = false;
+  shutdownHandlersRegistered = false;
+}
+
+/**
  * Idempotent. Starts the watcher on first call; subsequent calls return
  * the existing state. Safe to call from any /api/harness/* route.
  */
@@ -813,10 +884,10 @@ export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
   // the watcher started.
   void reconcileAll(state).catch(() => {});
 
-  // SIGTERM cleanup. SIGINT (Ctrl-C in dev) too.
-  const shutdown = () => stopHarnessFsWatcher();
-  process.once('SIGTERM', shutdown);
-  process.once('SIGINT', shutdown);
+  // SIGTERM/SIGINT cleanup (registered once, ever — see ensureShutdownHandlers'
+  // doc comment) + the EI-255 periodic full-recycle bound (also registered once).
+  ensureShutdownHandlers();
+  ensureWatcherRecycleTimer();
 
   _g.__harnessFsWatcher = state;
   return state;

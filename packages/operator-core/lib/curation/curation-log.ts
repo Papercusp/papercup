@@ -24,6 +24,12 @@ export interface SurfacedEntry {
   id: string;
   /** The signal kind (for audit / the reactive-graph view). */
   kind: string;
+  /** The signal's title at surface-time (P-003: backs the recovery diff — a
+   *  `cleared:<id>` line needs the ORIGINAL title, and the source row that
+   *  produced it may already be gone by the time it clears). Optional so
+   *  callers that don't care about recovery (or don't have a title) still
+   *  compile; a NULL title just means the eventual cleared-line has none. */
+  title?: string;
 }
 
 /**
@@ -61,15 +67,67 @@ export async function recordSurfaced(
     for (const e of entries) {
       await tx`
         INSERT INTO harness_shared.operator_curation_log
-          (workspace_id, signal_id, kind, policy_version, surfaced_at)
-        VALUES (${workspaceId}, ${e.id}, ${e.kind}, ${policyVersion}, now())
+          (workspace_id, signal_id, kind, policy_version, title, surfaced_at)
+        VALUES (${workspaceId}, ${e.id}, ${e.kind}, ${policyVersion}, ${e.title ?? null}, now())
         ON CONFLICT (workspace_id, signal_id) DO UPDATE
           SET surfaced_at = EXCLUDED.surfaced_at,
               kind = EXCLUDED.kind,
-              policy_version = EXCLUDED.policy_version
+              policy_version = EXCLUDED.policy_version,
+              title = EXCLUDED.title
       `;
     }
   });
+}
+
+/** A previously-surfaced recoverable (escalation/blocker-kind) signal that has
+ *  not yet had a corresponding `cleared:<id>` recorded SINCE it last
+ *  surfaced. Backs P-003 (recovery close-the-loop): the curation loop diffs
+ *  this set against the current gather to find what just disappeared. */
+export interface OpenRecoverableEntry {
+  id: string;
+  kind: string;
+  title: string | null;
+}
+
+/** Kinds treated as "recoverable" (D-004 always-surface, never-batch kinds
+ *  whose disappearance is worth a "✓ cleared" line). Health-panel `crit`
+ *  signals (P-002) map to kind 'blocker', so they fall in here for free. */
+export const RECOVERABLE_KINDS: readonly string[] = ['escalation', 'blocker'];
+
+/**
+ * Rows of a recoverable kind that are still considered OPEN: they were
+ * surfaced, and either no `cleared:<id>` row exists yet, or the last clear
+ * predates the row's own last surface (i.e. it re-surfaced since — a genuine
+ * reopen, not a flap). This is the flap guard (D-002 stable-id contract +
+ * plan P-003): once `cleared:<id>` is recorded, the SAME id will not be
+ * re-offered as "open" again until it is freshly re-surfaced (a strictly
+ * later `surfaced_at`), so a rapid disappear/reappear/disappear cycle can
+ * only ever emit ONE cleared line per genuine re-surface.
+ */
+export async function loadOpenRecoverable(
+  kinds: readonly string[] = RECOVERABLE_KINDS,
+  limit = 200,
+): Promise<OpenRecoverableEntry[]> {
+  if (kinds.length === 0) return [];
+  const workspaceId = activeWorkspaceId();
+  const cap = Math.max(1, Math.min(limit, 1000));
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<{ signal_id: string; kind: string; title: string | null }[]>`
+      SELECT o.signal_id, o.kind, o.title
+        FROM harness_shared.operator_curation_log o
+       WHERE o.workspace_id = ${workspaceId}
+         AND o.kind = ANY(${kinds}::text[])
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.operator_curation_log c
+            WHERE c.workspace_id = o.workspace_id
+              AND c.signal_id = 'cleared:' || o.signal_id
+              AND c.surfaced_at >= o.surfaced_at
+         )
+       ORDER BY o.surfaced_at DESC
+       LIMIT ${cap}
+    `;
+  });
+  return rows.map((r) => ({ id: r.signal_id, kind: r.kind, title: r.title }));
 }
 
 /** Diagnostic: recent curation-log rows (newest first), for the audit view. */

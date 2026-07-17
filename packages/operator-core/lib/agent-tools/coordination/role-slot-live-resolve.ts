@@ -26,7 +26,9 @@
  * changes from the legacy park-for-future-spawn behavior.
  */
 import { listPresence } from './presence';
-import { fetchWakeability, deriveSessionState, isHardStale } from './presence-wakeability';
+import { fetchWakeability } from './presence-wakeability';
+import { deriveVerdict } from './liveness-oracle';
+import { recordedLiveOwnerIds } from '../../adv-sessions';
 import { canonicalCoordRole } from './roles';
 
 /**
@@ -75,19 +77,31 @@ export async function resolveLiveRoleHolders(
   try {
     wakeability = await fetchWakeability(candidates.map((r) => r.ownerId));
   } catch {
-    /* fail-soft: no wakeability signal — deriveSessionState below still holds on stale/hardStale */
+    /* fail-soft: no wakeability signal — deriveVerdict below still holds on stale/hardStale */
   }
+  const recordedLive = await recordedLiveOwnerIds(candidates.map((r) => r.ownerId)).catch(
+    () => new Set<string>(),
+  );
   const nowMs = Date.now();
   return candidates
     .filter((r) => {
       const w = wakeability.get(r.ownerId) ?? { wakeable: false, liveTurn: false };
-      const hardStale = isHardStale(r.heartbeatAt ? Date.parse(r.heartbeatAt) : null, nowMs);
-      const state = deriveSessionState({
-        stale: r.stale,
-        wakeable: w.wakeable,
-        liveTurn: w.liveTurn,
-        hardStale,
-      });
+      // Unification P-003: ONE derivation via the shared oracle (pid probe +
+      // recorded rescue included — a just-launched slot-holder is `recorded`,
+      // not dropped as `ended`).
+      const state = deriveVerdict(
+        {
+          ownerId: r.ownerId,
+          heartbeatAt: r.heartbeatAt,
+          stale: r.stale,
+          host: r.host,
+          pid: r.pid,
+          source: r.source,
+        },
+        w,
+        recordedLive,
+        nowMs,
+      ).sessionState;
       return state !== 'ended';
     })
     .map((r) => r.ownerId);

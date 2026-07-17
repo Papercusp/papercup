@@ -24,6 +24,8 @@ vi.mock('../../auth', () => ({
   updateDisplayName: vi.fn(),
 }));
 vi.mock('../../auth-audit', () => ({ recordAuthEvent: vi.fn() }));
+// EI-347: the setup-token gate for password-less accounts — set per-test.
+vi.mock('../../auth-setup-token', () => ({ verifySetupToken: vi.fn() }));
 vi.mock('../../auth-rate-limit', () => ({
   // checkSoft/checkHard return a result object — set per-test in beforeEach.
   checkSoftPerIp: vi.fn(),
@@ -52,6 +54,7 @@ import {
 } from '../../auth';
 import { checkSoftPerIp, checkHardPerUser } from '../../auth-rate-limit';
 import { getFlag } from '@papercusp/flags/server';
+import { verifySetupToken } from '../../auth-setup-token';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -81,6 +84,9 @@ beforeEach(() => {
   vi.mocked(getFlag).mockResolvedValue(false);
   vi.mocked(checkSoftPerIp).mockResolvedValue({ ok: true, retryAfterS: undefined });
   vi.mocked(checkHardPerUser).mockResolvedValue({ ok: true, retryAfterS: undefined });
+  // Default USER already has_password:true, so this never gates the existing tests;
+  // set explicitly true so a stray call still "passes" unless a test wants it to fail.
+  vi.mocked(verifySetupToken).mockReturnValue(true);
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -189,6 +195,38 @@ describe('POST /auth/change-password', () => {
     const res = await app.request('/auth/change-password', json({ current: 'a', next: 'b' }));
     expect(res.status).toBe(200);
     expect(res.headers.get('set-cookie') ?? '').toContain('papercusp_session=tok_abc');
+  });
+
+  describe('EI-347: setup-token gate for a password-less account', () => {
+    const NO_PW_USER = { ...USER, has_password: false };
+
+    it('rejects with 403 when the target has no password and the setup token is missing/wrong', async () => {
+      vi.mocked(getSessionUserOrDefault).mockResolvedValue(NO_PW_USER);
+      vi.mocked(verifySetupToken).mockReturnValue(false);
+      const res = await app.request('/auth/change-password', json({ current: null, next: 'b' }));
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'setup_token_required' });
+      expect(changePassword).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the target has no password and the setup token is correct', async () => {
+      vi.mocked(getSessionUserOrDefault).mockResolvedValue(NO_PW_USER);
+      vi.mocked(verifySetupToken).mockReturnValue(true);
+      const res = await app.request(
+        '/auth/change-password',
+        json({ current: null, next: 'b', setupToken: 'whatever-verifySetupToken-is-mocked-to-accept' }),
+      );
+      expect(res.status).toBe(200);
+      expect(changePassword).toHaveBeenCalledWith('u1', null, 'b');
+    });
+
+    it('never requires the setup token once the account already has a password', async () => {
+      // USER (has_password:true) is the beforeEach default; no setupToken in the body at all.
+      vi.mocked(verifySetupToken).mockReturnValue(false);
+      const res = await app.request('/auth/change-password', json({ current: 'a', next: 'b' }));
+      expect(res.status).toBe(200);
+      expect(changePassword).toHaveBeenCalledWith('u1', 'a', 'b');
+    });
   });
 });
 

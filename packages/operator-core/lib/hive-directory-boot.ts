@@ -434,6 +434,24 @@ export async function wireHiveDirectoryForWorkspace(
   // (no vitest short-circuit) so this bites in every process, tests included.
   const requestOnly = opts.requestOnly ?? requestOnlyHost();
   if (!opts.swarm && requestOnly) {
+    // EI-13590/WI-953 diagnosability: this early-return used to be completely
+    // silent — a process with PAPERCUSP_BACKGROUND_WORKERS=0 (explicit, or
+    // inherited ambiently from a calling shell that never overrode it — the
+    // from-repo two-instance smoke's own launcher was doing exactly that) or
+    // PAPERCUSP_HONO_PORT=3170 would NEVER wire setHiveDirectoryTransport, so
+    // every later announce threw an opaque "device keychain not wired"
+    // (hive-directory-deps.ts) with zero trace back to the actual cause. Loud
+    // on purpose (not gated behind !VITEST like the neighboring catch-warn) —
+    // a request-only host correctly skipping this is a real, useful fact to
+    // see once per process, not spam.
+
+    console.warn(
+      `[hive-directory] boot-join SKIPPED for workspace ${workspaceId}: requestOnlyHost()===true ` +
+        `(PAPERCUSP_BACKGROUND_WORKERS=${process.env.PAPERCUSP_BACKGROUND_WORKERS ?? '<unset>'}, ` +
+        `PAPERCUSP_HONO_PORT=${process.env.PAPERCUSP_HONO_PORT ?? '<unset>'}) — this process will never ` +
+        `announce/discover hives; every publish's sign() will throw "device keychain not wired" until a ` +
+        `caller passes an explicit swarm or the env is corrected.`,
+    );
     return null;
   }
   try {

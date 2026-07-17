@@ -304,7 +304,18 @@ export interface AgentAssignment {
   /** Adopted agent-NAME, when any of its claims carry one. */
   name: string | null;
   present: boolean;
+  /** The liveness verdict-gated flag: starts as the fleet_assignment view's
+   *  heartbeat-freshness and is DOWNGRADED by reconcileWakeability /
+   *  reconcileRecordedSessions when the oracle says ended/suspect/draining
+   *  (unification P-008: read `sessionState` for the full truth; `alive` is
+   *  its boolean projection, kept for compat — the raw freshness signal is
+   *  `heartbeatFresh`). */
   alive: boolean;
+  /** RAW heartbeat freshness (within PRESENCE_STALE_MS) — a process-keepalive
+   *  signal, NOT a liveness verdict (unification P-008). Never downgraded by
+   *  the oracle, so a warm-dead session reads heartbeatFresh:true +
+   *  sessionState:'ended'. Optional: presence-only synthesizers may omit it. */
+  heartbeatFresh?: boolean;
   heartbeatAt: string | null;
   /** Self-declared intent (presence). */
   intent: string;
@@ -424,6 +435,7 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
     if (r.source === 'presence') {
       g.present = true;
       g.alive = r.holderAlive;
+      g.heartbeatFresh = r.holderAlive;
       g.heartbeatAt = r.holderHeartbeatAt;
       g.intent = r.detail;
       g.declaredPlanSlug = r.planSlug;
@@ -452,6 +464,7 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
       if (r.holderPresent) {
         g.present = true;
         g.alive = g.alive || r.holderAlive;
+        g.heartbeatFresh = (g.heartbeatFresh ?? false) || r.holderAlive;
         g.heartbeatAt = g.heartbeatAt ?? r.holderHeartbeatAt;
         g.intent = g.intent || (r.holderIntent ?? '');
         g.declaredPlanSlug = g.declaredPlanSlug ?? r.holderPlanSlug;

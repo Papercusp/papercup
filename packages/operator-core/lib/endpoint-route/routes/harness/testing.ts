@@ -49,7 +49,11 @@ interface HarnessTestRow {
   id: string;
   summary: string;
   file: string;
-  framework: 'playwright' | 'vitest' | 'pytest';
+  // Mirrors TestItem.framework in ./tests.ts (same on-disk .papercusp/tests.json
+  // schema) — 'cargo'/'shell' added alongside it (EI-299) so a Rust-desktop-gate
+  // or raw-script row here isn't miscast; this route only reads/displays status,
+  // it doesn't dispatch a runner.
+  framework: 'playwright' | 'vitest' | 'pytest' | 'cargo' | 'shell';
   coversVALs: string[];
   status: 'passing' | 'failing' | 'skipped' | 'not_run';
   lastRunTs: number;

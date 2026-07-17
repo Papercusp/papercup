@@ -67,6 +67,10 @@ describe('User-protection gate — live readFrontierFeatures G2 gate (real PG, P
           origin           TEXT NOT NULL DEFAULT 'local',
           audit_verdict    TEXT,
           source_plan_slug TEXT,
+          -- EI-203: attempts cap on failing-feature re-dispatch — readFrontierFeatures
+          -- now reads both (see orchestrator-loop.ts DEFAULT_MAX_FAILING_ATTEMPTS).
+          attempts             BIGINT DEFAULT 0,
+          needs_human_review   BOOLEAN DEFAULT false,
           PRIMARY KEY (harness_slug, feature_id)
         );
         CREATE TABLE harness_shared.harness_plans (

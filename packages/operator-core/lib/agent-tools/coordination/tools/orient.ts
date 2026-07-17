@@ -216,6 +216,27 @@ export interface OrientResult {
    *  side cursor, surface 'orient:planEvents'); `total` is still fresh. Absent
    *  `unchanged` ⇒ normal full delivery (baseline, changed, or no cursor injected). */
   planEvents?: { total: number; recent: unknown[]; unchanged?: boolean } | null;
+  /** WI-5228 (kickoff-prompt-absorption-2026-07-17 P-002): orient-first plan
+   *  bootstrap. For a PLAN-BOUND caller — `planSlug` was passed, or (when
+   *  omitted) the self row's `declaredPlanSlug` already sitting on `me`
+   *  (fleet:assignments' presence-sourced self-declared current plan)
+   *  resolves one — folds the plan's `## Now` block + the next actionable
+   *  item + the caller's own claim state within that plan, so a plan-bound
+   *  kickoff can reduce to "call coord:orient" with no separate
+   *  plans:get/plans:items round-trip. `nextActionable` is the first item
+   *  with `effectiveStatus:'todo'`, no unresolved blockers, and
+   *  `needsHuman:false` (the same admissibility plans:get already computes)
+   *  — null when nothing qualifies (plan fully claimed/blocked/done).
+   *  `myClaims` is ALSO derived from the already-fetched `me` (no extra
+   *  round-trip beyond plans:get itself). null on failure or no resolvable
+   *  plan; absent only when this leg never ran (a monitor tick). */
+  planNow?: {
+    planSlug: string;
+    state: string | null;
+    next: string | null;
+    nextActionable: { id: string; title: string; phase: string | null } | null;
+    myClaims: string[];
+  } | null;
   /** Reusable code:run recipes relevant to `intent`/`memoryQuery` (recipes:search) —
    *  compact identity/similarity plus the exact authority-preserving runArgs.
    *  Reuse via runArgs instead of hand-looping or re-authoring. Entity-bound
@@ -834,6 +855,78 @@ export async function composeOrient(
     } catch {
       result.planEvents = null;
     }
+  }
+
+  // ── WI-5228 (kickoff-prompt-absorption-2026-07-17 P-002): orient-first plan
+  // bootstrap. Resolve the EFFECTIVE plan slug — the explicit arg, else (for a
+  // plan-BOUND session that didn't repeat it) the SELF row's `declaredPlanSlug`
+  // already sitting on `me` (fleet:assignments' presence-sourced "self-declared
+  // current plan" — no extra IO: reusing the SAME leg fetched + bounded above,
+  // never a fresh session-brief/DB read of our own) — then fold that plan's
+  // `## Now` block, the next actionable item, and the caller's own claim state
+  // within it. `myClaims` is ALSO derived from `me`. This costs exactly one
+  // extra call (plans:get) on the common plan-bound path. EI-8300: skipped on a
+  // monitor tick like the other plan/fleet legs. WI-3818: bounded like every
+  // other fan-out leg — a slow plans:get must never block orient past budget.
+  if (!monitor) {
+    type SelfAgentRow = {
+      isSelf?: boolean;
+      declaredPlanSlug?: string | null;
+      claims?: Array<{ planSlug: string | null; id: string | null }>;
+    };
+    const meAgentsForPlan = (me as { agents?: SelfAgentRow[] } | undefined)?.agents ?? [];
+    const selfRow = meAgentsForPlan.find((a) => a.isSelf);
+    const planNowResult = await withBoundedTimeout(
+      (async () => {
+        const effectivePlanSlug: string | null = args.planSlug ?? selfRow?.declaredPlanSlug ?? null;
+        if (!effectivePlanSlug) return null;
+        const planRes = (await call('plans:get', {
+          slug: effectivePlanSlug,
+          ...(args.harness ? { harness: args.harness } : {}),
+        })) as
+          | {
+              results?: Array<{
+                now?: { state?: string | null; next?: string | null } | null;
+                items?: Array<{
+                  id: string;
+                  text: string;
+                  phase?: string | null;
+                  effectiveStatus?: string;
+                  unresolvedBlockers?: unknown[];
+                  needsHuman?: boolean;
+                }>;
+              }>;
+            }
+          | undefined;
+        const p = planRes?.results?.[0];
+        if (!p) return null;
+        const nextActionableItem =
+          (p.items ?? []).find(
+            (it) =>
+              it.effectiveStatus === 'todo' &&
+              (it.unresolvedBlockers?.length ?? 0) === 0 &&
+              !it.needsHuman,
+          ) ?? null;
+        const myClaims = (selfRow?.claims ?? [])
+          .filter((c) => c.planSlug === effectivePlanSlug && c.id)
+          .map((c) => c.id as string);
+        return {
+          planSlug: effectivePlanSlug,
+          state: p.now?.state ?? null,
+          next: p.now?.next ?? null,
+          nextActionable: nextActionableItem
+            ? { id: nextActionableItem.id, title: nextActionableItem.text, phase: nextActionableItem.phase ?? null }
+            : null,
+          myClaims,
+        };
+      })(),
+      {
+        fallback: null as OrientResult['planNow'],
+        timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS,
+        label: 'orient:planNow',
+      },
+    );
+    result.planNow = planNowResult.value;
   }
 
   // ── fleet legs (full mode only) — the caller's fleet was resolved ONCE above

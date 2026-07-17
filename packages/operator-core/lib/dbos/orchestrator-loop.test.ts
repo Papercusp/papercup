@@ -298,7 +298,7 @@ describe('computeFrontier — frontier dispatch (P-042)', () => {
     computeFrontier(features, planPriority, owned, slots).toStart;
 
   test('empty → nothing', () => {
-    expect(computeFrontier([], NO_PLANS, NONE, 4)).toEqual({ toStart: [], stuck: false });
+    expect(computeFrontier([], NO_PLANS, NONE, 4)).toEqual({ toStart: [], stuck: false, capped: [] });
   });
 
   test('picks only needs-work statuses (todo/failing + pending/failed aliases)', () => {
@@ -438,6 +438,54 @@ describe('computeFrontier — frontier dispatch (P-042)', () => {
     expect(computeFrontier(features, NO_PLANS, NONE, 4, new Set(['todo']))).toEqual({
       toStart: [],
       stuck: false,
+      capped: [],
+    });
+  });
+
+  // ── EI-203: attempts cap ─────────────────────────────────────────────────
+  describe('EI-203: attempts cap on failing-feature re-dispatch', () => {
+    test('a feature under the cap is dispatched normally', () => {
+      const features = [f('F-1', 'failing', { attempts: 5 })];
+      const r = computeFrontier(features, NO_PLANS, NONE, 4, undefined, 6);
+      expect(r.toStart).toEqual(['F-1']);
+      expect(r.capped).toEqual([]);
+    });
+
+    test('a feature AT the cap is excluded from toStart and reported as newly capped', () => {
+      const features = [f('F-1', 'failing', { attempts: 6 })];
+      const r = computeFrontier(features, NO_PLANS, NONE, 4, undefined, 6);
+      expect(r.toStart).toEqual([]);
+      expect(r.capped).toEqual(['F-1']);
+    });
+
+    test('a feature already needsHumanReview is excluded and NOT re-reported as newly capped', () => {
+      const features = [f('F-1', 'failing', { attempts: 9, needsHumanReview: true })];
+      const r = computeFrontier(features, NO_PLANS, NONE, 4, undefined, 6);
+      expect(r.toStart).toEqual([]);
+      expect(r.capped).toEqual([]); // already flagged in an earlier tick — no repeat report
+    });
+
+    test('a capped feature still blocks its dependents (stays in the blocker graph)', () => {
+      const features = [
+        f('F-1', 'failing', { attempts: 6 }),
+        f('F-2', 'todo', { blockedBy: ['F-1'] }),
+      ];
+      const r = computeFrontier(features, NO_PLANS, NONE, 4, undefined, 6);
+      expect(r.toStart).toEqual([]); // F-1 capped (excluded), F-2 still blocked by non-terminal F-1
+      expect(r.capped).toEqual(['F-1']);
+    });
+
+    test('a capped feature counts toward `stuck` like a blocked one', () => {
+      const features = [f('F-1', 'failing', { attempts: 6 })];
+      const r = computeFrontier(features, NO_PLANS, NONE, 4, undefined, 6);
+      expect(r.stuck).toBe(true); // work remains (the capped feature) but nothing is actually startable
+    });
+
+    test('a fresh todo feature (attempts 0, default) is never capped by a realistic threshold', () => {
+      const features = [f('F-1', 'todo')];
+      const r = computeFrontier(features, NO_PLANS, NONE, 4, undefined, 6);
+      expect(r.toStart).toEqual(['F-1']);
+      expect(r.capped).toEqual([]);
     });
   });
 });

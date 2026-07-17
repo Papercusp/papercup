@@ -21,9 +21,10 @@ import {
   partition,
   SALIENCE_POLICY_VERSION,
   type ClassifiedSignal,
+  type FleetSignal,
 } from './salience-policy';
 import { gatherFleetSignals, type FleetReaders } from './fleet-signals';
-import type { SurfacedEntry } from './curation-log';
+import type { SurfacedEntry, OpenRecoverableEntry } from './curation-log';
 
 // ── Cadence / backoff constants (the "faster when busy, slower when quiet" rule)
 /** The adaptive interval floor — how often a busy workspace re-curates. */
@@ -43,6 +44,12 @@ export interface CurationDeps {
   recordSurfaced: (entries: readonly SurfacedEntry[], policyVersion: string) => Promise<void>;
   /** Emit one curated message into the operator's single voice. */
   surface: (text: string) => Promise<unknown>;
+  /** P-003 recovery close-the-loop: previously-surfaced escalation/blocker
+   *  signals still considered OPEN (per `curation-log.loadOpenRecoverable`'s
+   *  flap guard). Diffed against the current gather each tick to compute
+   *  `cleared:<id>` signals. Optional + defaults to "none" so every existing
+   *  caller/fake (pre-P-003) keeps compiling without recovery behavior. */
+  loadOpenRecoverable?: () => Promise<OpenRecoverableEntry[]>;
   /** Injectable clock (tests). */
   now?: () => number;
   /** Dedup window passed to loadSurfaced. */
@@ -76,6 +83,8 @@ const KIND_MARKER: Record<string, string> = {
   decision: '❓',
   completion: '✓',
   progress: '·',
+  health: '🩺',
+  cleared: '✓',
 };
 
 const KIND_LABEL: Record<string, string> = {
@@ -84,6 +93,8 @@ const KIND_LABEL: Record<string, string> = {
   decision: 'Decision needed',
   completion: 'Done',
   progress: 'Progress',
+  health: 'System health',
+  cleared: 'Cleared',
 };
 
 /** Format ONE always-surface signal into a calm line, with the drill-in ref
@@ -115,14 +126,50 @@ export function formatBatchDigest(batch: readonly ClassifiedSignal[]): string {
   const completed = counts.get('completion') ?? 0;
   if (progressed) parts.push(`${progressed} item${progressed === 1 ? '' : 's'} progressed`);
   if (completed) parts.push(`${completed} completed`);
+  const health = counts.get('health') ?? 0;
+  if (health) parts.push(`${health} health warning${health === 1 ? '' : 's'}`);
   // Any other kinds that slipped into the batch bucket.
   for (const [k, n] of counts) {
-    if (k === 'progress' || k === 'completion') continue;
+    if (k === 'progress' || k === 'completion' || k === 'health') continue;
     parts.push(`${n} ${k}`);
   }
   const header = `📋 Fleet update — ${parts.join(' · ') || `${batch.length} updates`}`;
   const sample = batch.slice(0, 3).map((c) => `· ${c.signal.title}`);
   return [header, ...sample].join('\n');
+}
+
+/**
+ * P-003 recovery close-the-loop: diff the previously-OPEN recoverable
+ * (escalation/blocker-kind) signals against this tick's current gather.
+ * Anything open-but-absent gets a `cleared:<id>` signal — "✓ cleared —
+ * <title>" — computed here (never emitted by a `FleetReaders` source, since
+ * it is a fact about the ABSENCE of a source row, not a row itself). Pure:
+ * no I/O, so it's directly unit-testable.
+ *
+ * Only ever draws from `RECOVERABLE_KINDS` (escalation/blocker), which per
+ * `baseDisposition` are ALWAYS 'surface', never 'batch' — so every candidate
+ * here was, by construction, actually surfaced (never a batch-only item),
+ * satisfying the plan's "only for signals that actually surfaced" rule with
+ * no extra filtering.
+ */
+export function computeClearedSignals(
+  currentSignalIds: ReadonlySet<string>,
+  openRecoverable: readonly OpenRecoverableEntry[],
+  now: () => number = Date.now,
+): FleetSignal[] {
+  const nowIso = new Date(now()).toISOString();
+  const out: FleetSignal[] = [];
+  for (const o of openRecoverable) {
+    if (currentSignalIds.has(o.id)) continue; // still open — not cleared
+    out.push({
+      id: `cleared:${o.id}`,
+      kind: 'cleared',
+      title: o.title ?? o.id,
+      ref: o.id,
+      ts: nowIso,
+    });
+  }
+  return out;
 }
 
 /**
@@ -132,8 +179,12 @@ export async function runCurationTick(
   deps: CurationDeps,
   opts: RunTickOptions = {},
 ): Promise<CurationTickResult> {
-  const signals = await gatherFleetSignals(deps.readers);
+  const gathered = await gatherFleetSignals(deps.readers);
   const alreadySurfaced = await deps.loadSurfaced(deps.windowMs);
+  const openRecoverable = deps.loadOpenRecoverable ? await deps.loadOpenRecoverable() : [];
+  const currentIds = new Set(gathered.map((s) => s.id));
+  const cleared = computeClearedSignals(currentIds, openRecoverable, deps.now);
+  const signals = cleared.length > 0 ? [...gathered, ...cleared] : gathered;
   const verdicts = classifyAll(signals, { alreadySurfaced });
   const { surfaceNow, batch, hasUrgent } = partition(signals, verdicts);
   const canEmitDigest =
@@ -149,7 +200,7 @@ export async function runCurationTick(
     const text = formatSurfaceMessage(surfaceNow);
     await deps.surface(text);
     messages.push(text);
-    for (const c of surfaceNow) recorded.push({ id: c.signal.id, kind: c.signal.kind });
+    for (const c of surfaceNow) recorded.push({ id: c.signal.id, kind: c.signal.kind, title: c.signal.title });
   }
 
   // 2) Routine batch → ONE digest, only when the workflow allows it this tick.
@@ -164,7 +215,7 @@ export async function runCurationTick(
       messages.push(text);
       digestEmitted = true;
       batchedCount = batch.length;
-      for (const c of batch) recorded.push({ id: c.signal.id, kind: c.signal.kind });
+      for (const c of batch) recorded.push({ id: c.signal.id, kind: c.signal.kind, title: c.signal.title });
     } else {
       deferredBatchCount = batch.length;
     }

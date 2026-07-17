@@ -8,6 +8,7 @@
  * Ported from app/api/operator/conversations/[id]/turn-answer/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { askChoiceOptionIds } from '../../../ask-choice-options';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -85,10 +86,17 @@ export default defineTool({
         if (tool.answered) {
           return { kind: 'already_answered' as const, answered: tool.answered };
         }
-        const args = (tool.input ?? tool.args) as { options?: Array<{ id?: string }> } | undefined;
-        const knownIds = new Set(
-          (args?.options ?? []).map((o) => o?.id).filter((s): s is string => !!s),
-        );
+        // WI-5175: `options` is the model's RAW input and may be a JSON STRING
+        // rather than an array. The previous `(args?.options ?? []).map(...)`
+        // assumed an array — `??` only catches null/undefined, so a string fell
+        // through and `.map` threw, 500ing the click as
+        // "turn-answer failed: ((intermediate value) ?? []).map is not a function".
+        // askChoiceOptionIds coerces (shared with the render path, so the two
+        // can't drift apart again) and returns an empty set when the payload is
+        // unusable — which the size check below already treats as "can't
+        // validate", never as "reject the pick".
+        const args = (tool.input ?? tool.args) as { options?: unknown } | undefined;
+        const knownIds = askChoiceOptionIds(args?.options);
         if (knownIds.size > 0) {
           const unknown = picks.filter((p) => !knownIds.has(p.option_id)).map((p) => p.option_id);
           if (unknown.length > 0) {

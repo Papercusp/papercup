@@ -83,6 +83,16 @@ describe('chat:ask_choice handler', () => {
     expect((r.content[0] as { text: string }).text).toMatch(/no_chat_surface/);
   });
 
+  it('EI-288: sets a long timeoutSec (600s) matching other human-interaction tools, not the framework 60s default', () => {
+    // This tool BLOCKS on a real human clicking a card, which can easily
+    // take >60s — without an explicit override the dispatch-stack default
+    // (`exec.tool.timeoutSec ?? 60`) fires an abort at 60s while ctx.askUser
+    // keeps waiting and eventually resolves anyway, surfacing a spurious
+    // "exceeded timeout of 60s (handler returned but signal had aborted)"
+    // watchdog error (EI-288: observed 15/25 recent calls before this fix).
+    expect((askChoiceTool as any).timeoutSec).toBe(600);
+  });
+
   it('single-select: blocks until user submits; returns picked option', async () => {
     openRun({ workspaceId: ws, runId: 'r-ac' });
 
@@ -430,5 +440,27 @@ describe('argsSchema — stringified options coercion (operator_turns seq 11831,
     const branches = js.properties?.options?.anyOf ?? [];
     expect(branches.some((b) => b.type === 'array')).toBe(true);
     expect(branches.some((b) => b.type === 'string')).toBe(true);
+  });
+});
+
+// EI-289 regression: the watchdog-reported symptom was a BARE zod message
+// ("Too small: expected array to have >=1 items") on an empty `options`
+// array, giving the caller no idea what to supply. That reflects OLD
+// behavior — the schema (present since this file's creation, per the
+// "Caller-DX (watchdog P-006)" comment above optionsArraySchema) has always
+// carried a custom actionable .min(1, …) message. Pin it so a future schema
+// edit can't silently regress back to the bare zod default.
+describe('argsSchema — empty options gets an actionable message (EI-289)', () => {
+  const schema = (askChoiceTool as { args: { parse: (v: unknown) => unknown } }).args;
+
+  it('rejects an empty options array with the actionable custom message, not the bare zod default', () => {
+    try {
+      schema.parse({ question: 'q?', options: [] });
+      throw new Error('expected schema.parse to throw');
+    } catch (err) {
+      const message = String(err);
+      expect(message).toContain('chat:ask_choice needs at least one option');
+      expect(message).not.toContain('Too small: expected array to have');
+    }
   });
 });

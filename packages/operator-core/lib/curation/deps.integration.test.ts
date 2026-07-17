@@ -52,6 +52,32 @@ describe('curation deps production readers (real PG)', () => {
          ${new Date(T_DEDUP)}, 'improvement-hygiene', NULL),
         (${WS}, 'operator', 'operator', 'Still-open friction', 'open',
          ${new Date(T_ISSUE)}, NULL, NULL)`;
+
+    // P-001 (curation-signal-gaps-2026-07-17): status='blocked' work_items, one
+    // with a typed external blocker (the "why" comes from its summary) and one
+    // bare (falls back to the item's own summary).
+    const blockerPayload = JSON.stringify({
+      externalBlockers: [
+        {
+          kind: 'human',
+          capability: 'credential',
+          ref: 'cred:vendor-x-api-key',
+          summary: 'waiting on the vendor X API key',
+          status: 'active',
+          createdAt: new Date(T_ISSUE).toISOString(),
+          createdBy: 'agent-1',
+          updatedAt: new Date(T_ISSUE).toISOString(),
+        },
+      ],
+    });
+    await sql`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, summary, status, updated_ts, payload)
+      VALUES
+        (${WS}, 'papercup', 'F-BLOCKED-TYPED', 'Needs the vendor key', 'irrelevant body', 'blocked',
+         ${T_ISSUE}, ${blockerPayload}::text::jsonb),
+        (${WS}, 'papercup', 'F-BLOCKED-BARE', 'Bare-blocked item', 'stuck on a design call', 'blocked',
+         ${T_DEDUP}, NULL)`;
   }, 120_000);
 
   afterAll(async () => {
@@ -76,6 +102,33 @@ describe('curation deps production readers (real PG)', () => {
         userRequested: true,
         ref: 'wi:papercup#F-GENUINE',
         ts: new Date(T_FEATURE).toISOString(),
+      },
+    ]);
+  });
+
+  it('surfaces status=blocked work_items — typed external-blocker reason preferred, else the item summary (P-001)', async () => {
+    const blocked = await buildFleetReaders().blocked();
+    // Newest-first (updated_ts DESC): T_DEDUP (30m ago) is more recent than T_ISSUE
+    // (60m ago), so F-BLOCKED-BARE sorts before F-BLOCKED-TYPED.
+    // ref is BARE `<harness>#<id>` — fleet-signals.ts's blk mapping adds the
+    // 'wi:' prefix itself (mirrors the plan-item-blocked source's bare ref);
+    // prefixing here too double-stamps it 'wi:wi:...' (caught live on staging).
+    expect(blocked).toEqual([
+      {
+        ref: 'papercup#F-BLOCKED-BARE',
+        harness: 'papercup',
+        title: 'Bare-blocked item',
+        reason: 'stuck on a design call',
+        workItemId: 'F-BLOCKED-BARE',
+        ts: new Date(T_DEDUP).toISOString(),
+      },
+      {
+        ref: 'papercup#F-BLOCKED-TYPED',
+        harness: 'papercup',
+        title: 'Needs the vendor key',
+        reason: 'waiting on the vendor X API key',
+        workItemId: 'F-BLOCKED-TYPED',
+        ts: new Date(T_ISSUE).toISOString(),
       },
     ]);
   });

@@ -24,7 +24,9 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { PRESENCE_STALE_MS } from '../coordination/presence';
-import { fetchWakeability, deriveSessionState, isHardStale } from '../coordination/presence-wakeability';
+import { fetchWakeability } from '../coordination/presence-wakeability';
+import { deriveVerdict } from '../coordination/liveness-oracle';
+import { recordedLiveOwnerIds } from '../../adv-sessions';
 
 /** Prose commonly carries an abbreviated id (the 4-8 hex-char `ownerLabel`
  *  prefix, e.g. "su-2c799") rather than the full UUID-suffixed ownerId — match
@@ -79,21 +81,24 @@ export async function decorateAgentLiveness(text: string | null | undefined): Pr
     }
     if (matchesByToken.size > 0) {
       const ownerIds = [...matchesByToken.values()].map((m) => m[0]!.owner_id);
-      const wakeability = await fetchWakeability(ownerIds);
+      const [wakeability, recordedLive] = await Promise.all([
+        fetchWakeability(ownerIds),
+        recordedLiveOwnerIds(ownerIds).catch(() => new Set<string>()),
+      ]);
       const now = Date.now();
       for (const [token, matches] of matchesByToken) {
         const row = matches[0]!;
         const w = wakeability.get(row.owner_id) ?? { wakeable: false, liveTurn: false };
         const heartbeatMs = Date.parse(row.heartbeat_at);
         const stale = !Number.isFinite(heartbeatMs) || now - heartbeatMs > PRESENCE_STALE_MS;
-        // fleet-liveness-zombie-await-2026-07-07: an hour-cold heartbeat is dead
-        // even if a reboot left its wake-await live (else it decorates as parked).
-        const state = deriveSessionState({
-          stale,
-          wakeable: w.wakeable,
-          liveTurn: w.liveTurn,
-          hardStale: isHardStale(Number.isFinite(heartbeatMs) ? heartbeatMs : null, now),
-        });
+        // Unification P-003: ONE derivation via the shared oracle (hardStale
+        // zombie ceiling + recorded rescue included).
+        const state = deriveVerdict(
+          { ownerId: row.owner_id, heartbeatAt: row.heartbeat_at, stale },
+          w,
+          recordedLive,
+          now,
+        ).sessionState;
         const lastActiveMs = row.last_active_at ? Date.parse(row.last_active_at) : heartbeatMs;
         tagByToken.set(token, formatLivenessTag(state, Number.isFinite(lastActiveMs) ? lastActiveMs : null));
       }

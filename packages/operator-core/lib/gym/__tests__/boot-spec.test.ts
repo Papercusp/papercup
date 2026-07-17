@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildGymOperatorBootSpec, type GymOperatorBootConfig } from '../boot-spec';
+import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv, type GymOperatorBootConfig } from '../boot-spec';
 
 /**
  * P-001 "minimal bootable unit": the dedicated gym-operator is ONE headless
@@ -109,5 +109,37 @@ describe('buildGymOperatorBootSpec', () => {
     });
     expect(pinned.env.AGENT_CMD).toBe('claude -p');
     expect(JSON.parse(pinned.env.AGENT_MODELS)).toEqual({ worker: 'claude-sonnet-4-6' });
+  });
+});
+
+describe('scrubLauncherClaudeSessionEnv (EI-232)', () => {
+  it('deletes every launcher Claude-Code session var so a real-mode gym agent auths against ~/.claude, not the launcher session', () => {
+    const leaked: NodeJS.ProcessEnv = {
+      PATH: '/usr/bin',
+      CLAUDE_CONFIG_DIR: '/home/agent/.papercusp/session-claude/su-abc123',
+      CLAUDE_CODE_SESSION_ID: 'su-abc123',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDECODE: '1',
+    };
+    const scrubbed = scrubLauncherClaudeSessionEnv(leaked);
+    expect(scrubbed.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(scrubbed.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+    expect(scrubbed.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(scrubbed.CLAUDECODE).toBeUndefined();
+    // Untouched vars survive.
+    expect(scrubbed.PATH).toBe('/usr/bin');
+  });
+
+  it('mutates the passed object in place AND returns it (matches spawn({env}) call shape)', () => {
+    const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: '/leaked' };
+    const returned = scrubLauncherClaudeSessionEnv(env);
+    expect(returned).toBe(env);
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it('is a no-op (no throw) when none of the four vars are present', () => {
+    const env: NodeJS.ProcessEnv = { PATH: '/usr/bin' };
+    expect(() => scrubLauncherClaudeSessionEnv(env)).not.toThrow();
+    expect(env).toEqual({ PATH: '/usr/bin' });
   });
 });

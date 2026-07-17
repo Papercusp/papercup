@@ -15,7 +15,16 @@
  * private key in plain text. Acceptable for Phase 1b; a full Tauri
  * stronghold plugin can replace tier 3 if the threat model demands it.
  *
- * All functions are pure async; no module-level side effects.
+ * Runtime caching (WI-5218): keychainLoad was measured at ~34% of bg-host CPU
+ * (2026-07-17 profile) — every epoch-key unwrap on the substrate hot path
+ * re-spawned `secret-tool` AND the macOS-only `security` CLI (both ENOENT on a
+ * Linux box; fork/exec of a multi-GB process runs on the event-loop thread) and
+ * re-ran a 210k-iteration PBKDF2, starving the event loop (loop-governor
+ * lag-recoveries 30-50/h). So this module now keeps three in-memory memos:
+ * successful/not_found load results (TTL'd; invalidated by store/delete),
+ * a single-flight map so concurrent loads of one id share a read, and a
+ * backend-availability flag so a missing CLI binary is never re-spawned.
+ * io_error/decryption_failed results are NEVER cached (retry must see the disk).
  *
  * Service name for OS keychain entries defaults to `papercusp-device-keypair`;
  * callers (e.g. the hive keypair) pass their own to namespace a different key
@@ -64,6 +73,33 @@ export type KeychainError =
 
 export type KeychainResult<T> = { kind: 'ok'; value: T } | { kind: 'error'; error: KeychainError };
 
+// ─── load cache / single-flight / backend availability (WI-5218) ─────────────
+
+const LOAD_OK_TTL_MS = 5 * 60_000;
+const LOAD_NOT_FOUND_TTL_MS = 30_000; // a key stored by ANOTHER process becomes visible within this bound
+const loadCache = new Map<string, { result: KeychainResult<Buffer>; expiresAt: number }>();
+const inflightLoads = new Map<string, Promise<KeychainResult<Buffer>>>();
+// Bumped by store/delete: an in-flight load that started before the bump must
+// not populate the cache with its (possibly pre-mutation) result.
+let cacheEpoch = 0;
+// Flips false on the first ENOENT for that CLI — a binary that isn't installed
+// will not appear mid-process; never spawn it again.
+const backendAvailable = { secretTool: true, securityCli: true };
+
+function loadCacheKey(serviceName: string, keychainId: string): string {
+  return serviceName + '\0' + keychainId;
+}
+
+// Callers receive a fresh Buffer per hit so a mutated result can't poison the cache.
+function cloneLoadResult(r: KeychainResult<Buffer>): KeychainResult<Buffer> {
+  return r.kind === 'ok' ? { kind: 'ok', value: Buffer.from(r.value) } : r;
+}
+
+function invalidateLoadCache(serviceName: string, keychainId: string): void {
+  cacheEpoch += 1;
+  loadCache.delete(loadCacheKey(serviceName, keychainId));
+}
+
 // ─── public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -77,6 +113,7 @@ export async function keychainStore(
 ): Promise<void> {
   const b64 = privateKeyDer.toString('base64');
 
+  invalidateLoadCache(serviceName, keychainId);
   if (await trySecretTool('store', keychainId, b64, serviceName)) return;
   if (await trySecurityCli('store', keychainId, b64, serviceName)) return;
   await fileStore(keychainId, privateKeyDer);
@@ -89,6 +126,34 @@ export async function keychainStore(
 export async function keychainLoad(
   keychainId: string,
   serviceName: string = SERVICE_NAME,
+): Promise<KeychainResult<Buffer>> {
+  const key = loadCacheKey(serviceName, keychainId);
+  const hit = loadCache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return cloneLoadResult(hit.result);
+  const pending = inflightLoads.get(key);
+  if (pending) return pending.then(cloneLoadResult);
+
+  const epochAtStart = cacheEpoch;
+  const p = keychainLoadUncached(keychainId, serviceName)
+    .then((r) => {
+      if (cacheEpoch === epochAtStart) {
+        if (r.kind === 'ok') {
+          loadCache.set(key, { result: cloneLoadResult(r), expiresAt: Date.now() + LOAD_OK_TTL_MS });
+        } else if (r.error.kind === 'not_found') {
+          loadCache.set(key, { result: r, expiresAt: Date.now() + LOAD_NOT_FOUND_TTL_MS });
+        }
+        // io_error / decryption_failed: uncached — the next call retries the disk.
+      }
+      return r;
+    })
+    .finally(() => inflightLoads.delete(key));
+  inflightLoads.set(key, p);
+  return p.then(cloneLoadResult);
+}
+
+async function keychainLoadUncached(
+  keychainId: string,
+  serviceName: string,
 ): Promise<KeychainResult<Buffer>> {
   const secTool = await trySecretTool('load', keychainId, '', serviceName);
   if (secTool !== null) {
@@ -112,6 +177,7 @@ export async function keychainDelete(
   keychainId: string,
   serviceName: string = SERVICE_NAME,
 ): Promise<void> {
+  invalidateLoadCache(serviceName, keychainId);
   await trySecretTool('delete', keychainId, '', serviceName);
   await trySecurityCli('delete', keychainId, '', serviceName);
   await fileDelete(keychainId);
@@ -125,6 +191,7 @@ async function trySecretTool(
   value: string,
   serviceName: string = SERVICE_NAME,
 ): Promise<string | null> {
+  if (!backendAvailable.secretTool) return null;
   try {
     if (op === 'store') {
       await execFile('secret-tool', [
@@ -154,8 +221,12 @@ async function trySecretTool(
     return null;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    // ENOENT = binary not found; "No matching secret" = not_found for load
-    if (/ENOENT|not found|command not found/i.test(msg)) return null;
+    // ENOENT = binary not installed — remember, so it is never spawned again.
+    if ((err as { code?: string }).code === 'ENOENT' || /ENOENT/.test(msg)) {
+      backendAvailable.secretTool = false;
+      return null;
+    }
+    if (/not found|command not found/i.test(msg)) return null;
     if (op === 'load' && /No matching secret/i.test(msg)) return '';
     return null;
   }
@@ -169,6 +240,9 @@ async function trySecurityCli(
   value: string,
   serviceName: string = SERVICE_NAME,
 ): Promise<string | null> {
+  // The `security` CLI exists only on macOS — spawning it anywhere else is a
+  // guaranteed ENOENT (and fork/exec cost) per call.
+  if (process.platform !== 'darwin' || !backendAvailable.securityCli) return null;
   try {
     if (op === 'store') {
       await execFile('security', [
@@ -200,7 +274,11 @@ async function trySecurityCli(
     return null;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (/ENOENT|not found|command not found/i.test(msg)) return null;
+    if ((err as { code?: string }).code === 'ENOENT' || /ENOENT/.test(msg)) {
+      backendAvailable.securityCli = false;
+      return null;
+    }
+    if (/not found|command not found/i.test(msg)) return null;
     // macOS exits 44 when the item doesn't exist
     if (op === 'load' && /The specified item could not be found|exit code 44/i.test(msg)) return '';
     return null;

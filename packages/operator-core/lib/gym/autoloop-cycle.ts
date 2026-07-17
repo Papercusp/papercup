@@ -36,7 +36,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
 import { readGymGates } from '../gym-gates';
-import { buildGymOperatorBootSpec } from './boot-spec';
+import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv } from './boot-spec';
 import { createGymRunnerPorts } from './runner-ports';
 import { buildLoopDeps, type LoopTask } from './loop-deps';
 import { runOptimizationLoop, type LoopResult } from './loop';
@@ -272,7 +272,9 @@ export async function runOneAutoloopCycle(
     log(`booting gym-operator on :${PORT} (mode=${FAKE ? 'fake' : 'real'}, log → ${opLogPath}) …`);
     operator = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
-      env: { ...process.env, ...spec.env, PAPERCUSP_FLEET_SANDBOX: '0', PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0', NODE_ENV: 'production', PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' },
+      // EI-232: scrub the launcher Claude-Code session's env so real-mode gym
+      // agents auth against ~/.claude, not this session's per-session config dir.
+      env: scrubLauncherClaudeSessionEnv({ ...process.env, ...spec.env, PAPERCUSP_FLEET_SANDBOX: '0', PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0', NODE_ENV: 'production', PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' }),
       stdio: ['ignore', logFd, logFd],
       detached: true,
     });

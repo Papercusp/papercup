@@ -168,6 +168,14 @@ export interface BootstrapSuResult {
    * interactive human picker launch still opens at an empty prompt.
    */
   kickoffPrompt?: string | null;
+  /**
+   * kickoff-prompt-absorption-2026-07-17 P-001: whether the server auto-armed
+   * this member's engine loop at boot (`autoArmFleetMemberLoop`) — persistence
+   * instead of relying solely on the kickoff prompt's in-context self-arm
+   * instruction. `null` = not attempted (a leader, an unplanned session, or a
+   * non-auto launch); otherwise `{ armed, reason, loopName? }` per the helper.
+   */
+  loopAutoArm?: { armed: boolean; reason: string; loopName?: string } | null;
   /** Versioned source-of-truth model budget. The launcher preflight and
    * session-port preview consume this exact shape instead of re-deriving a
    * backend window from model-name heuristics. */
@@ -1580,6 +1588,30 @@ const post = defineTool({
       promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${AUTO_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
     }
 
+    // kickoff-prompt-absorption-2026-07-17 P-001: auto-arm a plan-bound fleet
+    // MEMBER's engine loop server-side, right here — the moment its fleet
+    // membership is durably registered (stampFleetMembershipAtBoot, above) —
+    // instead of leaving it to AUTO_MODE_DIRECTIVE's in-prompt "you must self-arm"
+    // instruction alone. Idempotent (never clobbers an existing loop); a silent
+    // no-op for a leader, an unplanned session, or a non-auto launch. Best-effort:
+    // never fails the boot — the kickoff instruction remains the fallback path.
+    let loopAutoArm: { armed: boolean; reason: string; loopName?: string } | null = null;
+    if (autoMode && fleetPin.fleetSlug && harnessSlug) {
+      try {
+        const { autoArmFleetMemberLoop } = await import('../../../harness/routines/loop');
+        loopAutoArm = await autoArmFleetMemberLoop({
+          workspaceId: workspace,
+          ownerId: sid,
+          harnessSlug,
+          planSlug,
+          fleetSlug: fleetPin.fleetSlug,
+          fleetRole: fleetPin.fleetRole,
+        });
+      } catch (e: any) {
+        loopAutoArm = { armed: false, reason: `error: ${e?.message ?? e}` };
+      }
+    }
+
     // P-022: compile the ACTUAL launch-time mode/route/scope precedence into a
     // machine-readable trace. This does not delete the generic conditional
     // playbook clauses (a later mode transition may need them); it explicitly
@@ -1908,6 +1940,10 @@ const post = defineTool({
       fleetNotice: fleetPin.notice,
       fleetSlug: fleetPin.fleetSlug,
       fleetRole: fleetPin.fleetRole,
+      // kickoff-prompt-absorption-2026-07-17 P-001: whether the server auto-armed
+      // this member's engine loop at boot (null = not attempted — a leader, an
+      // unplanned session, or a non-auto launch).
+      loopAutoArm,
       kickoffPrompt,
       contextBudget,
       sessionPortKickoffFile: sessionPortContext?.row.artifactPath ?? null,

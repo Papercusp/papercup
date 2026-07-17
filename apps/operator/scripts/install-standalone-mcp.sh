@@ -246,6 +246,13 @@ CC_OBJECTIVE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-objective-title.sh"
 # entry, matcher "Bash"; fail-open + a local keyword pre-filter so the vast
 # majority of commands never hit the operator.
 CC_BASH_GATE_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-bash-resource-gate.sh"
+# PreToolUse plans-read guard (kickoff-prompt-absorption-2026-07-17, P-003(b)):
+# teach `plans:get` at the point of failure when a Read/Grep targets a
+# docs/plans/*.md file — that on-disk markdown is a PROJECTION of the live
+# plan store, missing computed effectiveStatus/decisions/links. Its own
+# settings entry, matcher "Read|Grep"; fail-open, narrowly scoped (see the
+# script's own header for what it deliberately does NOT cover).
+CC_PLANS_GUARD_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-plans-read-guard.sh"
 # PostToolUse + Stop/SessionEnd hook: the PER-TURN VERIFY-not-CREATE work-item
 # BACKSTOP (enforce-system-on-generic-work-2026-06-29, P-019). Marks a session that
 # edited workspace code; at turn/session end, if the session holds no objective in
@@ -762,6 +769,43 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+# Merge the plans-read guard as its OWN PreToolUse entry (matcher "Read|Grep").
+# Idempotent: drops any prior entry pointing at our script. No workspace-root
+# threading needed — the hook is a pure path-pattern match on its own input.
+#   $1 = settings.json path
+merge_plans_read_guard_hook() {
+  python3 - "$1" "$CC_PLANS_GUARD_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, guard = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {guard, os.path.basename(guard)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
+arr.append({'matcher': 'Read|Grep',
+            'hooks': [{'type': 'command', 'command': guard}]})
+hooks['PreToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
 # OMP looks for its MCP server config at ~/.omp/agent/mcp.json. The
 # directory may not exist on a fresh OMP install — create it.
 OMP_CONFIG_DIR="${HOME}/.omp/agent"
@@ -1103,6 +1147,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/pretooluse-bash-resource-gate.sh" "$CC_BASH_GATE_HOOK"
     chmod 755 "$CC_BASH_GATE_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-plans-read-guard.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/pretooluse-plans-read-guard.sh" "$CC_PLANS_GUARD_HOOK"
+    chmod 755 "$CC_PLANS_GUARD_HOOK"
+  fi
   if [ -f "${CC_HOOK_SRC_DIR}/workitem-verify-nudge.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/workitem-verify-nudge.sh" "$CC_WORKITEM_NUDGE_HOOK"
     chmod 755 "$CC_WORKITEM_NUDGE_HOOK"
@@ -1138,6 +1186,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_WORKITEM_NUDGE_HOOK" ] && merge_workitem_nudge_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_STATUSLINE" ] && merge_statusline "$CLAUDE_SETTINGS"
   [ -x "$CC_BASH_GATE_HOOK" ] && merge_bash_gate_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_PLANS_GUARD_HOOK" ] && merge_plans_read_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_PROVENANCE_HOOK" ] && merge_provenance_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_TURN_MEMORY_HOOK" ] && merge_turn_memory_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_TURN_JOURNAL_HOOK" ] && merge_turn_journal_hook "$CLAUDE_SETTINGS"

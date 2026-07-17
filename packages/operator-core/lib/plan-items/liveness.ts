@@ -39,8 +39,7 @@ import {
   type LivenessMode,
 } from './claims';
 import { workGroupExists, isWorkGroupMember } from './work-group';
-import { getPresence, PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
-import { fetchWakeability, deriveSessionState, type SessionState } from '../agent-tools/coordination/presence-wakeability';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 // ── 1. Liveness mode (shared-ness) ──────────────────────────────────────────────
 
@@ -128,12 +127,13 @@ export function priorHolderStillLive(
  *  is unknown (no row / a lookup failure) — treated as "can't tell", never a warning. */
 async function sessionStateForOwner(ownerId: string): Promise<SessionState | null> {
   try {
-    const presence = await getPresence(ownerId);
-    if (!presence) return null;
-    const stale = Date.now() - Date.parse(presence.heartbeatAt) > PRESENCE_STALE_MS;
-    const wake = await fetchWakeability([ownerId]);
-    const signals = wake.get(ownerId) ?? { wakeable: false, liveTurn: false };
-    return deriveSessionState({ stale, wakeable: signals.wakeable, liveTurn: signals.liveTurn });
+    // Unification P-003: ONE derivation via the shared oracle — the old
+    // hand-rolled call fed no hardStale, so a reboot-killed holder with a
+    // zombie wake-await read `parked` here and triggered a takeover warning
+    // for a dead session (the F2 bug class).
+    const { resolveSessionStates } = await import('../agent-tools/coordination/liveness-oracle');
+    const verdicts = await resolveSessionStates([{ ownerId }], { hydratePerId: true });
+    return verdicts.get(ownerId)?.sessionState ?? null;
   } catch {
     return null; // best-effort — never blocks or fails the claim
   }

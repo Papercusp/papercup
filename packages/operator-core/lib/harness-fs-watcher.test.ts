@@ -12,8 +12,13 @@
  * future change that re-introduces an over-broad ignore pattern fails
  * here instead of in production.
  */
-import { describe, it, expect } from 'vitest';
-import { isWatcherIgnored } from './harness-fs-watcher';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  isWatcherIgnored,
+  ensureShutdownHandlers,
+  ensureWatcherRecycleTimer,
+  __resetHarnessFsWatcherSingletonGuardsForTests,
+} from './harness-fs-watcher';
 
 // The real production predicate (exported for exactly this). No re-implement
 // → no drift: a change to WATCHER_IGNORED_RE is tested directly.
@@ -292,6 +297,46 @@ describe('harness-fs-watcher: workspace-tagged project resolution (EI-107)', () 
 // return nothing whose anchor dir doesn't exist inside the project.
 // ---------------------------------------------------------------------------
 import { watchedPaths, topWatchPaths } from './harness-fs-watcher';
+
+// EI-255: a periodic full-recycle mitigation calls ensureHarnessFsWatcher()
+// repeatedly over a long-lived process's life. Proving the "registered once,
+// ever" guards actually hold under repeated calls is the regression this
+// fix targets — previously `process.once('SIGTERM', shutdown)` was called on
+// every (re)start, which would accumulate a NEW listener on the (permanent,
+// always-alive) `process` object every recycle, since a `.once()` listener
+// that never fires never self-removes.
+describe('harness-fs-watcher: singleton guards are idempotent (EI-255)', () => {
+  afterEach(() => {
+    // Real process-level listeners were attached — remove them so this test
+    // file doesn't leak SIGTERM/SIGINT handlers onto the shared vitest process.
+    process.removeAllListeners('SIGTERM');
+    process.removeAllListeners('SIGINT');
+    __resetHarnessFsWatcherSingletonGuardsForTests();
+  });
+
+  it('ensureShutdownHandlers registers exactly one SIGTERM/SIGINT listener no matter how many times it is called', () => {
+    __resetHarnessFsWatcherSingletonGuardsForTests();
+    const beforeTerm = process.listenerCount('SIGTERM');
+    const beforeInt = process.listenerCount('SIGINT');
+    ensureShutdownHandlers();
+    ensureShutdownHandlers();
+    ensureShutdownHandlers();
+    expect(process.listenerCount('SIGTERM')).toBe(beforeTerm + 1);
+    expect(process.listenerCount('SIGINT')).toBe(beforeInt + 1);
+  });
+
+  it('ensureWatcherRecycleTimer is safe to call repeatedly (idempotent registration)', () => {
+    __resetHarnessFsWatcherSingletonGuardsForTests();
+    // managedSetInterval is itself idempotent-by-name (re-arming silently
+    // replaces), so this just proves the call is safe + doesn't throw across
+    // repeats — the module-level guard is belt-and-suspenders on top of that.
+    expect(() => {
+      ensureWatcherRecycleTimer();
+      ensureWatcherRecycleTimer();
+      ensureWatcherRecycleTimer();
+    }).not.toThrow();
+  });
+});
 
 describe('harness-fs-watcher: existence-anchored watch paths', () => {
   it('returns NO paths for a project whose root does not exist', () => {

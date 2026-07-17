@@ -169,7 +169,18 @@ function shellSingleQuote(value: string): string {
 
 function nativeSessionCommand(handle: NativeSessionHandle): string | null {
   if (handle.backend === 'claude') {
-    return handle.sessionId ? `claude --resume ${handle.sessionId}` : null;
+    if (!handle.sessionId) return null;
+    // EI-308: a bare `claude --resume <id>` looks in the DEFAULT
+    // CLAUDE_CONFIG_DIR and finds nothing — the transcript lives under the
+    // per-session dir (~/.papercusp/session-claude/<ownerId>), mirroring why
+    // the codex branch below already prefixes CODEX_HOME. Without this, the
+    // exact command this dossier hands the user to copy-paste would fail
+    // with a confusing "no conversation found" error — the same class of
+    // wrong-by-construction resume command this ticket exists to fix.
+    if (handle.configDir) {
+      return `CLAUDE_CONFIG_DIR=${shellSingleQuote(handle.configDir)} claude --resume ${handle.sessionId}`;
+    }
+    return `claude --resume ${handle.sessionId}`;
   }
   if (handle.backend === 'codex') {
     if (!handle.codexHome) return null;

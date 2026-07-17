@@ -13,6 +13,7 @@ const EMPTY: FleetReaders = {
   decisions: async () => [],
   completions: async () => [],
   progress: async () => [],
+  health: async () => [],
 };
 
 function readers(over: Partial<FleetReaders>): FleetReaders {
@@ -97,6 +98,20 @@ describe('gatherFleetSignals — normalization', () => {
     expect(signals.map((s) => s.id)).toContain('completion:h#F-1');
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it('maps health panels: crit → blocker kind, warn → health kind, stable ids (P-002)', async () => {
+    const signals = await gatherFleetSignals(
+      readers({
+        health: async () => [
+          { panelId: 'queen', status: 'crit', label: 'Mug', summary: 'stalled 47m', ts: '2026-07-17T03:00:00Z' },
+          { panelId: 'infra', status: 'warn', label: 'Infra', summary: 'disk at 88%', ts: '2026-07-17T02:00:00Z' },
+        ],
+      }),
+    );
+    const byId = new Map(signals.map((s) => [s.id, s]));
+    expect(byId.get('health:queen')).toMatchObject({ kind: 'blocker', title: 'Mug: stalled 47m', ref: 'health:queen' });
+    expect(byId.get('health:infra')).toMatchObject({ kind: 'health', title: 'Infra: disk at 88%', ref: 'health:infra' });
   });
 
   it('sorts newest-first by ts', async () => {

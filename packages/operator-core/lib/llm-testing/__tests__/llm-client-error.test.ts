@@ -10,12 +10,17 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
 
 const events: unknown[] = [];
+// EI-315: captures the opts of the LAST runAgentChat call so a test can assert on the
+// priority label threaded through (the anthropic-direct path has no HTTP layer to spy
+// on the way the codex-gateway test spies on `fetch`).
+let lastRunAgentChatOpts: Record<string, unknown> | undefined;
 
 vi.mock('../../agent-chat-stream', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../agent-chat-stream')>();
   return {
     ...orig,
-    runAgentChat: async function* () {
+    runAgentChat: async function* (opts: Record<string, unknown>) {
+      lastRunAgentChatOpts = opts;
       yield* events as never[];
     },
   };
@@ -92,7 +97,7 @@ describe('llmCall backend selection', () => {
         method: 'POST',
         headers: expect.objectContaining({
           authorization: 'Bearer papercusp-gateway',
-          'x-papercusp-priority': 'scout',
+          'x-papercusp-priority': 'llm-testing',
         }),
       }),
     );
@@ -173,5 +178,41 @@ describe('llmCall subprocess error surfacing', () => {
     );
     expect(isLlmCallError(err)).toBe(true);
     if (isLlmCallError(err)) expect(err.turn.class).toBe('rate_limited');
+  });
+});
+
+describe('llmCall priority default (EI-315: llm-testing lane starvation)', () => {
+  it('defaults the anthropic-direct path to the "llm-testing" priority label when the caller sets none', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'ok', tokensIn: 1, tokensOut: 1, costUsd: 0 });
+    lastRunAgentChatOpts = undefined;
+    const { llmCall } = await import('../llm-client');
+    await llmCall({
+      system: 's',
+      messages: [{ role: 'user', content: 'u' }],
+      model: 'claude-haiku-4-5-20251001',
+      maxTokens: 8,
+    });
+    // Before this fix, an unset priority rode `undefined` through to the gateway's
+    // `tierOf()`, which falls back to the bottom `default` band (tier 5) — the most
+    // aggressively AIMD-shed lane, and the literal root cause of this item's
+    // "17/17 attempts 429-capped over 7h". It must now land in the shared gym/benchmark
+    // batch band (tier 4) instead.
+    expect(lastRunAgentChatOpts?.priority).toBe('llm-testing');
+  });
+
+  it('an explicit caller priority still wins over the llm-testing default', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'ok', tokensIn: 1, tokensOut: 1, costUsd: 0 });
+    lastRunAgentChatOpts = undefined;
+    const { llmCall } = await import('../llm-client');
+    await llmCall({
+      system: 's',
+      messages: [{ role: 'user', content: 'u' }],
+      model: 'claude-haiku-4-5-20251001',
+      maxTokens: 8,
+      priority: 'gym',
+    });
+    expect(lastRunAgentChatOpts?.priority).toBe('gym');
   });
 });

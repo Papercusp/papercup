@@ -3379,6 +3379,51 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                 },
               })
           : undefined);
+      // The early-boot hive-home resolve (`resolvedPotHomeSlug`, ~L956) is
+      // deliberately fail-open (`catch → undefined`), so ONE transient
+      // PG/registry hiccup during boot silently latches hiveGitServe +
+      // hiveGitDial OFF for the ENTIRE process lifetime: the box wires every
+      // other topic's planes on new connections but never this one's, and every
+      // bootstrap fetch fails 'no live dial path' until an unrelated restart.
+      // (Investigated as the suspected fence-26 / P-303 reverse-leg cause
+      // 2026-07-17 — that incident turned out to be a WI-183 zombie connection
+      // instead, but the latch is real and stays fixed.) Unlatch here, at join
+      // time (joinForBinding also runs on rejoin/rekey — a genuinely later
+      // moment than the early-boot read): serve needs the home slug, so
+      // re-resolve it with bounded retries ({ fresh } past attempt 0 to dodge a
+      // poisoned operator-state cache, WI-1378) and record the terminal failure
+      // LOUDLY instead of dropping it. An explicit test override is
+      // authoritative — no retry, its early-boot answer stands.
+      let hiveGitHomeSlug = hiveHomeProjectionSlug ?? contentGuardHiveHome;
+      if (
+        hiveGitHomeSlug == null &&
+        bindingResolvesHiveHomeProjection(binding) &&
+        !opts.potHomeSlugForHarnessOverride
+      ) {
+        for (let attempt = 0; attempt < 3 && hiveGitHomeSlug == null; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, attempt === 1 ? 1_000 : 4_000));
+          try {
+            const { potHomeSlugForHarness } = await import('../../hive-federation');
+            hiveGitHomeSlug =
+              (await potHomeSlugForHarness(
+                opts.workspaceId,
+                opts.harnessSlug,
+                attempt > 0 ? { fresh: true } : undefined,
+              )) ?? undefined;
+          } catch {
+            // transient read failure — retry (that transiency latching the
+            // planes off is exactly the defect this loop exists to close)
+          }
+        }
+        if (hiveGitHomeSlug == null) {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'merge_error',
+            'hiveGit home-resolve failed after join-time retries — pot-git SERVE stays off for this join (dial is binding-gated and unaffected)',
+          );
+        }
+      }
       swarmHandle = await joinHarnessSwarm({
         store,
         topic,
@@ -3427,10 +3472,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // channel-open had no pair()). `?? contentGuardHiveHome` resolves the
         // hive-home for ANY hive-peered harness (owner home + owned-hive
         // member harness included), exactly like the scoped-apply fallback.
-        ...(hiveHomeProjectionSlug ?? contentGuardHiveHome
+        ...(hiveGitHomeSlug
           ? {
               hiveGitServe: {
-                potHomeSlug: (hiveHomeProjectionSlug ?? contentGuardHiveHome)!,
+                potHomeSlug: hiveGitHomeSlug,
                 workspaceId: opts.workspaceId,
               },
             }
@@ -3449,7 +3494,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // WI-3496: same owner-side gate fix as hiveGitServe above — without it
         // the owner never sent a hello, so joiners could never resolve the
         // owner's device to a socket (G-8 cold-join structurally impossible).
-        ...(hiveHomeProjectionSlug ?? contentGuardHiveHome
+        // The dial plane needs NO resolved home slug — only "is this a
+        // hive/topic binding", a pure function of the binding we are joining —
+        // so gate it on the binding alone instead of the PG-dependent slug
+        // resolve (fail-open at boot), which could latch dial off for the
+        // process lifetime on one transient read failure; serve above keeps
+        // the slug gate (it genuinely needs the slug), hardened by the
+        // join-time retry.
+        ...(bindingResolvesHiveHomeProjection(binding)
           ? { hiveGitDial: { selfDevicePubkeyBase64: identity.devicePubkeyBase64, sign: signOurAnnounce } }
           : {}),
         onPeerConnected: (keyHex) => {

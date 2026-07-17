@@ -132,6 +132,18 @@ suite:
   settings intact. Last run: staging snapshot `53191` / kopia
   `57da08e7ced063167af3f591d6469455e...`; strict temp-DB restore/import
   checklist passed; fixes committed in `7ee61c4e5a62`.
+  **Re-run 2026-07-17**: `papercusp-workspace` pre-deploy snapshot / kopia
+  `ac6b94a7e151bf36ca0a5b7d87e9f156`; restore-to-clone (`backup:restore`)
+  passed non-destructively. The temp-DB **import** step hit two real gaps —
+  tracked as [EI-13868](#): (1) PG18's `\restrict`/`\unrestrict` dump wrapper
+  desyncs psql's COPY parser partway through and eventually OOMs — strip
+  those two lines (`sed -i '/^\restrict /d; /^\unrestrict /d'`) before
+  importing a self-generated trusted dump; (2) `harness_admin` lacks
+  `CREATE EXTENSION` so every `vector`-typed table (work\_items, plans,
+  features, escalations, …) fails to create — import as the PG superuser
+  instead. With both applied, row counts for work\_items/harness\_plans/
+  engineer\_issues/harness\_features\_consolidated/backup\_snapshots matched
+  live within normal \~20min drift under active fleet load.
 * **Perf/stability soak (P-010, WI-3209 — in progress as of this
   checklist)**: a bounded (>=2h) soak under agent load asserting on
   `loop_lag_p95_ms` / `rss_mb` ledger columns for RSS growth + event-loop-lag

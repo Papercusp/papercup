@@ -25,7 +25,7 @@ import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
-import { buildGymOperatorBootSpec } from './boot-spec';
+import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv } from './boot-spec';
 import { waitForOperatorReady } from './operator-ready';
 import { collectTrace } from './collector';
 import { distillTrace } from './distill';
@@ -102,7 +102,13 @@ async function main(): Promise<void> {
     log(`booting gym-operator on :${PORT} (log → ${opLogPath}) …`);
     operator = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
-      env: {
+      // EI-232: scrub the launcher Claude-Code session's env so a real-mode gym
+      // agent (should this smoke ever be pointed at one) auths against
+      // ~/.claude, not this session's per-session config dir. This runnable is
+      // fake-agent-only today (agentCmd above is always FAKE_AGENT), so the
+      // leak is currently dormant here — scrubbed anyway for consistency with
+      // every other gym runnable's spawn.
+      env: scrubLauncherClaudeSessionEnv({
         ...process.env,
         ...spec.env,
         PAPERCUSP_FLEET_SANDBOX: '0',
@@ -111,7 +117,7 @@ async function main(): Promise<void> {
         // Autoloop OFF — the smoke starts the pipeline EXPLICITLY (deterministic) via
         // the admin route + superuser token (the real gym wiring), not the 30s tick.
         PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none',
-      },
+      }),
       stdio: ['ignore', logFd, logFd],
       detached: true, // own process group → teardown kills the whole npx→node tree
     });

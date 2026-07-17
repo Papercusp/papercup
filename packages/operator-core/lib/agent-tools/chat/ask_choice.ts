@@ -153,6 +153,18 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
+  // EI-288: this tool BLOCKS on a real human clicking a card — it can
+  // legitimately take much longer than the framework's generic 60s
+  // per-tool default (dispatch-stack.ts: `exec.tool.timeoutSec ?? 60`).
+  // Without an explicit override, any call where the user took >60s to
+  // respond had its abort signal fire at 60s while ctx.askUser kept
+  // waiting and eventually resolved anyway — surfacing as a spurious
+  // "exceeded timeout of 60s (handler returned but signal had aborted)"
+  // watchdog error even though nothing was actually broken (observed 15/25
+  // recent calls). Match the other human-interaction tools that already
+  // set this (operator/converse.ts, architect/chat.ts, agent_chats/chat.ts,
+  // oracle/chat.ts, operator/sentinel-converse.ts all use 600s).
+  timeoutSec: 600,
   // Available in both text and voice. Voice users hear fallbackText
   // (announce-only) by default; opt in to spoken answering via
   // voiceAnswerable:true on single-select cards. Plan §C.4.

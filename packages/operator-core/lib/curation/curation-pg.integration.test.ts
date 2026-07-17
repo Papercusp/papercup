@@ -39,7 +39,7 @@ vi.mock('../workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => WS };
 });
 
-const { recordSurfaced, loadRecentSurfaced, listRecentCuration } = await import('./curation-log');
+const { recordSurfaced, loadRecentSurfaced, listRecentCuration, loadOpenRecoverable } = await import('./curation-log');
 const { readCurationState, writeCurationState } = await import('./curation-state');
 const { BASE_INTERVAL_SECONDS } = await import('./curation-loop');
 
@@ -64,6 +64,7 @@ beforeAll(async () => {
   await rootSql.unsafe(`DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
   await rootSql.unsafe(`DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
   await rootSql.unsafe(readMigration('151-operator-curation.sql')).simple();
+  await rootSql.unsafe(readMigration('618-curation-log-title.sql')).simple();
   h.sql = rootSql;
 }, 90_000);
 
@@ -106,6 +107,50 @@ describe('operator_curation_log', () => {
 
   it('recordSurfaced with no entries is a no-op', async () => {
     await expect(recordSurfaced([], 'curator-v1')).resolves.toBeUndefined();
+  });
+
+  it('records + round-trips a title (P-003)', async () => {
+    await recordSurfaced([{ id: 'blocked:wi:h#title', kind: 'blocker', title: 'W1 wedged on vendor key' }], 'curator-v1');
+    const rows = await rootSql<{ title: string | null }[]>`
+      SELECT title FROM harness_shared.operator_curation_log
+       WHERE workspace_id = ${WS} AND signal_id = 'blocked:wi:h#title'
+    `;
+    expect(rows[0].title).toBe('W1 wedged on vendor key');
+  });
+});
+
+describe('loadOpenRecoverable (P-003 recovery close-the-loop)', () => {
+  it('returns a surfaced blocker/escalation not yet cleared', async () => {
+    await recordSurfaced([{ id: 'blocked:wi:h#open1', kind: 'blocker', title: 'still stuck' }], 'curator-v1');
+    const open = await loadOpenRecoverable();
+    const row = open.find((o) => o.id === 'blocked:wi:h#open1');
+    expect(row).toMatchObject({ id: 'blocked:wi:h#open1', kind: 'blocker', title: 'still stuck' });
+  });
+
+  it('excludes a kind outside RECOVERABLE_KINDS (e.g. progress/decision)', async () => {
+    await recordSurfaced([{ id: 'progress:notrecoverable', kind: 'progress', title: 'routine' }], 'curator-v1');
+    const open = await loadOpenRecoverable();
+    expect(open.find((o) => o.id === 'progress:notrecoverable')).toBeUndefined();
+  });
+
+  it('excludes an id once its cleared:<id> counterpart is recorded (fires once)', async () => {
+    await recordSurfaced([{ id: 'blocked:wi:h#open2', kind: 'blocker', title: 'flaky' }], 'curator-v1');
+    let open = await loadOpenRecoverable();
+    expect(open.some((o) => o.id === 'blocked:wi:h#open2')).toBe(true);
+
+    await recordSurfaced([{ id: 'cleared:blocked:wi:h#open2', kind: 'cleared', title: 'flaky' }], 'curator-v1');
+    open = await loadOpenRecoverable();
+    expect(open.some((o) => o.id === 'blocked:wi:h#open2')).toBe(false);
+  });
+
+  it('flap guard: re-surfacing AFTER a clear makes it open again (genuine reopen, not noise)', async () => {
+    // open2 was cleared in the previous test; re-surfacing it now (a fresh,
+    // later surfaced_at) must un-exclude it — the NOT EXISTS check compares
+    // timestamps, not just row existence.
+    await recordSurfaced([{ id: 'blocked:wi:h#open2', kind: 'blocker', title: 'flaky, reopened' }], 'curator-v1');
+    const open = await loadOpenRecoverable();
+    const row = open.find((o) => o.id === 'blocked:wi:h#open2');
+    expect(row).toMatchObject({ title: 'flaky, reopened' });
   });
 });
 

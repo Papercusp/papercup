@@ -45,7 +45,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
-import { buildGymOperatorBootSpec } from './boot-spec';
+import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv } from './boot-spec';
 import { materializeBlueprintTriggers } from '../blueprint/materialize-triggers';
 import { maskDsn } from './autoloop-cycle';
 import { assembleRawTrace } from './collector';
@@ -409,15 +409,15 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
       PAPERCUSP_DBOS_ROUTINES_CRONTAB: '*/10 * * * * *',
       PAPERCUSP_DBOS_PIPELINE_MAX_TURNS: String(MAX_TURNS),
     };
-    // Hermeticity (real mode auth): a Claude-Code launcher session carries its
-    // OWN per-session CLAUDE_CONFIG_DIR + nested-session markers. If those leak
-    // into the gym operator, every spawned `claude -p` agent auths against the
-    // LAUNCHER session's rotating OAuth and 401s mid-run (observed live). The
-    // production fleet's spawns run with the user-global ~/.claude — match it.
-    delete childEnv.CLAUDE_CONFIG_DIR;
-    delete childEnv.CLAUDE_CODE_SESSION_ID;
-    delete childEnv.CLAUDE_CODE_ENTRYPOINT;
-    delete childEnv.CLAUDECODE;
+    // Hermeticity (real mode auth, EI-232): a Claude-Code launcher session
+    // carries its OWN per-session CLAUDE_CONFIG_DIR + nested-session markers.
+    // If those leak into the gym operator, every spawned `claude -p` agent
+    // auths against the LAUNCHER session's rotating OAuth and 401s mid-run
+    // (observed live). The production fleet's spawns run with the
+    // user-global ~/.claude — match it. (Shared with every other gym
+    // runnable's spawn via boot-spec.ts — this was the original fix site;
+    // the others were found still leaking and scrubbed the same way.)
+    scrubLauncherClaudeSessionEnv(childEnv);
     // Explicit credential-dir OVERRIDE (the deliberate cousin of the accidental
     // leak above): when the user-global ~/.claude is headless-broken (`claude -p`
     // sends a server-rejected access token and never refreshes — observed

@@ -13,11 +13,13 @@ import type { WakeabilitySignals } from '../agent-tools/coordination/presence-wa
 import type { FleetAssignmentRow } from './assignments';
 import type { FleetFoldPresence } from './fleet-roster';
 
-const { fetchPresenceTier1Mock, fetchWakeabilityMock, listFleetAssignmentsMock } = vi.hoisted(() => ({
-  fetchPresenceTier1Mock: vi.fn(),
-  fetchWakeabilityMock: vi.fn(),
-  listFleetAssignmentsMock: vi.fn(),
-}));
+const { fetchPresenceTier1Mock, fetchWakeabilityMock, listFleetAssignmentsMock, recordedLiveOwnerIdsMock } =
+  vi.hoisted(() => ({
+    fetchPresenceTier1Mock: vi.fn(),
+    fetchWakeabilityMock: vi.fn(),
+    listFleetAssignmentsMock: vi.fn(),
+    recordedLiveOwnerIdsMock: vi.fn(),
+  }));
 
 vi.mock('../agent-tools/coordination/presence-tier1', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../agent-tools/coordination/presence-tier1')>();
@@ -30,6 +32,12 @@ vi.mock('../agent-tools/coordination/presence-wakeability', async (importOrigina
 vi.mock('./assignments', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./assignments')>();
   return { ...actual, listFleetAssignments: listFleetAssignmentsMock };
+});
+// The recorded-session rescue leg (unification P-003) hits adv_sessions PG —
+// mock it like the other non-injectable legs so this file stays PG-free.
+vi.mock('../adv-sessions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../adv-sessions')>();
+  return { ...actual, recordedLiveOwnerIds: recordedLiveOwnerIdsMock };
 });
 
 // Imported AFTER the mocks so the mocked bindings are the ones wired in.
@@ -64,6 +72,10 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     fetchPresenceTier1Mock.mockReset();
     fetchWakeabilityMock.mockReset();
     listFleetAssignmentsMock.mockReset();
+    recordedLiveOwnerIdsMock.mockReset();
+    // Default: the recorded leg answers promptly with "nobody recorded-live" —
+    // the pre-existing tests' degradedLegs expectations stay exact.
+    recordedLiveOwnerIdsMock.mockResolvedValue(new Set<string>());
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -138,6 +150,26 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     await vi.advanceTimersByTimeAsync(FLEET_ROSTER_SUBREAD_TIMEOUT_MS);
     const result = await resultPromise;
     expect(result.degradedLegs.sort()).toEqual(['tier1', 'wakeability']);
+    expect(result.entries).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
+  it('degrades the recorded-session leg independently while everything else answers', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    recordedLiveOwnerIdsMock.mockReturnValue(neverSettles<Set<string>>());
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      readPresence: async () => [pres('su-1')],
+    });
+    await vi.advanceTimersByTimeAsync(FLEET_ROSTER_SUBREAD_TIMEOUT_MS);
+    const result = await resultPromise;
+    expect(result.degradedLegs).toEqual(['recorded']);
+    // The rescue leg degrading must never drop the roster itself — entries
+    // still fold from presence + assignments, just without the recorded rescue.
     expect(result.entries).toHaveLength(1);
     warnSpy.mockRestore();
   });

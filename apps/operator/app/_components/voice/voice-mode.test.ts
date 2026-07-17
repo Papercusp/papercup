@@ -187,6 +187,155 @@ describe('voice-mode', () => {
   });
 });
 
+// ── WI-5174 — spoken output never fails silently ──────────────────────────
+// Owner repro 2026-07-17: "they replied a fine response but it showed up in the
+// text chat and wasn't spoken out loud like it should have been." Evidence
+// showed kokoro DID return 200 + WAV bytes, so the failure was strictly in
+// client-side playback — where every branch resolved silently and the queue
+// advanced as if it had spoken. These lock in that a failure to SPEAK always
+// tells the user, via the same papercusp:voiceTimeout channel VoiceButton
+// already toasts.
+describe('WI-5174: spoken playback failures are surfaced, not swallowed', () => {
+  interface Harness {
+    mod: typeof import('./voice-mode');
+    toasts: Array<{ phase: string; message: string }>;
+    restore: () => void;
+  }
+
+  /**
+   * Drive one utterance through synthViaAdapter with a scripted Audio stub.
+   * `audioBehavior` decides how playback resolves; `fetchOk` decides whether the
+   * TTS route returns bytes at all.
+   */
+  async function runUtterance(opts: {
+    fetchOk?: boolean;
+    status?: number;
+    audioBehavior?: 'ok' | 'play-rejects' | 'play-rejects-autoplay' | 'onerror' | 'throws';
+  }): Promise<Harness> {
+    const { fetchOk = true, status = 200, audioBehavior = 'ok' } = opts;
+    vi.resetModules();
+    const g = globalThis as any;
+    const origFetch = g.fetch;
+    const origAudio = g.Audio;
+    const origCreate = g.URL?.createObjectURL;
+    const origRevoke = g.URL?.revokeObjectURL;
+    const origDispatch = g.dispatchEvent;
+
+    const toasts: Array<{ phase: string; message: string }> = [];
+    g.dispatchEvent = (e: any) => {
+      if (e?.type === 'papercusp:voiceTimeout' && e.detail) toasts.push(e.detail);
+      return true;
+    };
+    g.fetch = vi.fn(async () => {
+      if (audioBehavior === 'throws') throw new Error('network down');
+      return { ok: fetchOk, status, blob: async () => ({}) } as any;
+    });
+    g.URL.createObjectURL = () => 'blob:x';
+    g.URL.revokeObjectURL = () => {};
+    g.Audio = class {
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      src = '';
+      constructor(u: string) { this.src = u; }
+      play(): Promise<void> {
+        if (audioBehavior === 'onerror') { this.onerror?.(); return Promise.resolve(); }
+        if (audioBehavior === 'play-rejects') return Promise.reject(new Error('boom'));
+        if (audioBehavior === 'play-rejects-autoplay') {
+          const err = new Error('play() failed because the user did not interact first');
+          err.name = 'NotAllowedError';
+          return Promise.reject(err);
+        }
+        this.onended?.();
+        return Promise.resolve();
+      }
+      pause() {}
+    };
+
+    const mod = await import('./voice-mode');
+    mod.initVoiceMode();
+    mod.speak('the harness is green', 'system:operator', 'polite', { force: true });
+    // Let the async adapter path run: fetch → blob → Audio → play/settle.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    return {
+      mod,
+      toasts,
+      restore: () => {
+        g.fetch = origFetch;
+        g.Audio = origAudio;
+        g.dispatchEvent = origDispatch;
+        if (origCreate) g.URL.createObjectURL = origCreate; else delete g.URL.createObjectURL;
+        if (origRevoke) g.URL.revokeObjectURL = origRevoke; else delete g.URL.revokeObjectURL;
+      },
+    };
+  }
+
+  it('stays silent when playback actually succeeds (no false alarm)', async () => {
+    const h = await runUtterance({ audioBehavior: 'ok' });
+    try {
+      expect(h.toasts).toHaveLength(0);
+    } finally { h.restore(); }
+  });
+
+  it('tells the user when play() is rejected — the exact WI-5174 shape', async () => {
+    const h = await runUtterance({ audioBehavior: 'play-rejects' });
+    try {
+      expect(h.toasts).toHaveLength(1);
+      expect(h.toasts[0].phase).toBe('playback');
+      expect(h.toasts[0].message).toMatch(/couldn't be played/i);
+    } finally { h.restore(); }
+  });
+
+  it('names autoplay blocking specifically so the user acts on the right problem', async () => {
+    const h = await runUtterance({ audioBehavior: 'play-rejects-autoplay' });
+    try {
+      expect(h.toasts).toHaveLength(1);
+      expect(h.toasts[0].message).toMatch(/click anywhere/i);
+      // Must NOT send the user hunting speakers/output devices.
+      expect(h.toasts[0].message).not.toMatch(/couldn't be played/i);
+    } finally { h.restore(); }
+  });
+
+  it('tells the user when the audio element errors', async () => {
+    const h = await runUtterance({ audioBehavior: 'onerror' });
+    try {
+      expect(h.toasts).toHaveLength(1);
+      expect(h.toasts[0].phase).toBe('playback');
+    } finally { h.restore(); }
+  });
+
+  it('tells the user when the TTS route returns non-ok (no bytes to play)', async () => {
+    const h = await runUtterance({ fetchOk: false, status: 503 });
+    try {
+      expect(h.toasts).toHaveLength(1);
+      expect(h.toasts[0].message).toMatch(/couldn't generate speech/i);
+      expect(h.toasts[0].message).toContain('503');
+    } finally { h.restore(); }
+  });
+
+  it('tells the user when the adapter throws outright', async () => {
+    const h = await runUtterance({ audioBehavior: 'throws' });
+    try {
+      expect(h.toasts).toHaveLength(1);
+      expect(h.toasts[0].message).toMatch(/playback failed/i);
+    } finally { h.restore(); }
+  });
+
+  it('throttles a persistently broken sink to one toast, not one per utterance', async () => {
+    const h = await runUtterance({ audioBehavior: 'play-rejects' });
+    try {
+      // Two more failing utterances inside the throttle window.
+      h.mod.speak('second reply', 'system:operator', 'polite', { force: true });
+      await new Promise((r) => setTimeout(r, 0));
+      h.mod.speak('third reply', 'system:operator', 'polite', { force: true });
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(h.toasts).toHaveLength(1);
+    } finally { h.restore(); }
+  });
+});
+
 // Always-on wake-phrase gate (voice-public-release-readiness-2026-07-12 P-004).
 // The always-on local loop hears EVERYTHING; the gate forwards only
 // wake-phrase-prefixed utterances or follow-ups inside the conversation

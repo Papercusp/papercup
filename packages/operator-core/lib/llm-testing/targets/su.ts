@@ -364,6 +364,10 @@ export class SuTarget implements ChatTarget {
   readonly behaviors: string[];
   /** Eval variant knob (test-gym-apiary P-001): prompt overlay + configDelta.sutModel. */
   readonly supportsVariants = true;
+  /** EI-336: the real, canonical tool names this target's catalog offers the
+   *  SUT — handed to the judge so a "fabricated tool name" claim is checked
+   *  against ground truth instead of the judge's imperfect memory. */
+  readonly toolNames: readonly string[];
   private readonly catalog: BuiltCatalog;
   private readonly loadSystemPrompt: () => string;
 
@@ -371,6 +375,7 @@ export class SuTarget implements ChatTarget {
     this.id = opts.id ?? 'su';
     this.behaviors = opts.behaviors ?? BEHAVIORS;
     this.catalog = opts.catalog ?? buildCatalog();
+    this.toolNames = [...this.catalog.canonicalBySanitized.values()];
     this.loadSystemPrompt = opts.loadSystemPrompt ?? loadPlaybook;
   }
 

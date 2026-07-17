@@ -12,7 +12,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { materializeLoop, getLoopStatus, deactivateLoop, loopRoutineName, LOOP_WAKE_ACTION } from './loop';
+import {
+  materializeLoop,
+  getLoopStatus,
+  deactivateLoop,
+  loopRoutineName,
+  autoArmFleetMemberLoop,
+  LOOP_WAKE_ACTION,
+} from './loop';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -329,5 +336,126 @@ describe('loop surface round-trip (real PG)', () => {
     expect(rows[0]).toMatchObject({ install_slug: '*', active: true, payload_template: { kickoff: 'second' } });
     expect(rows[1]).toMatchObject({ install_slug: HARNESS, active: false });
     expect(await getLoopStatus(OWNER, { sql })).toMatchObject({ harnessSlug: '*', intervalSec: 600, active: true });
+  });
+});
+
+describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, real PG)', () => {
+  const MEMBER_OWNER = 'su-fleet-member-test';
+  const PLAN_SLUG = 'backlog-drain-2026-07-16';
+  const FLEET_SLUG = 'backlog-drain';
+
+  it('arms a fresh member/plan-bound member: a real routine row lands and getLoopStatus reads it back active', async () => {
+    const res = await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: MEMBER_OWNER,
+      harnessSlug: HARNESS,
+      planSlug: PLAN_SLUG,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'member',
+      sql,
+    });
+    expect(res.armed).toBe(true);
+    expect(res.reason).toBe('armed');
+    expect(res.loopName).toBe(loopRoutineName(MEMBER_OWNER));
+
+    const status = await getLoopStatus(MEMBER_OWNER, { sql });
+    expect(status).not.toBeNull();
+    expect(status).toMatchObject({
+      name: loopRoutineName(MEMBER_OWNER),
+      ownerId: MEMBER_OWNER,
+      active: true,
+      intervalSec: 60, // LOOP_INTERVAL_FLOOR_SEC — the AUTO-mode standing default
+    });
+    const r = await rawRow(MEMBER_OWNER);
+    expect(r!.payload_template!.kickoff).toContain(PLAN_SLUG);
+    expect(r!.payload_template!.kickoff).toContain(FLEET_SLUG);
+  });
+
+  it('is idempotent: calling it again against the now-active loop reports already-armed and does NOT mutate the row', async () => {
+    await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: MEMBER_OWNER,
+      harnessSlug: HARNESS,
+      planSlug: PLAN_SLUG,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'member',
+      sql,
+    });
+    const before = await rawRow(MEMBER_OWNER);
+
+    const second = await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: MEMBER_OWNER,
+      harnessSlug: HARNESS,
+      // A different plan/fleet on the second call — proves the existing armed
+      // loop is left COMPLETELY untouched (never re-derives a new goal/kickoff),
+      // not merely that a second call is a same-input no-op.
+      planSlug: 'some-other-plan',
+      fleetSlug: 'some-other-fleet',
+      fleetRole: 'member',
+      sql,
+    });
+    expect(second).toEqual({ armed: false, reason: 'already-armed', loopName: loopRoutineName(MEMBER_OWNER) });
+
+    const after = await rawRow(MEMBER_OWNER);
+    expect(after).toEqual(before); // byte-identical — never clobbered
+  });
+
+  it('never arms a fleet LEADER, and never touches the routines table for one', async () => {
+    const res = await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: 'su-fleet-leader-test',
+      harnessSlug: HARNESS,
+      planSlug: PLAN_SLUG,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'leader',
+      sql,
+    });
+    expect(res).toEqual({ armed: false, reason: 'not-a-member' });
+    expect(await getLoopStatus('su-fleet-leader-test', { sql })).toBeNull();
+  });
+
+  it('never arms an unplanned member (no plan to derive a goal from)', async () => {
+    const res = await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: 'su-unplanned-member-test',
+      harnessSlug: HARNESS,
+      planSlug: null,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'member',
+      sql,
+    });
+    expect(res).toEqual({ armed: false, reason: 'no-plan-bound' });
+    expect(await getLoopStatus('su-unplanned-member-test', { sql })).toBeNull();
+  });
+
+  it("re-arming a DIFFERENT member's own existing loop after loop:end (inactive) re-activates it, not merely already-armed", async () => {
+    // First arm normally, then end it (mirrors a member self-retuning: loop:end + re-arm) —
+    // autoArmFleetMemberLoop should treat an INACTIVE existing loop as armable, not as a
+    // live clobber target (only an ACTIVE loop short-circuits).
+    const OTHER = 'su-fleet-member-reended-test';
+    await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: OTHER,
+      harnessSlug: HARNESS,
+      planSlug: PLAN_SLUG,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'member',
+      sql,
+    });
+    expect(await deactivateLoop(OTHER, { sql })).toBe(true);
+    expect((await getLoopStatus(OTHER, { sql }))!.active).toBe(false);
+
+    const res = await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: OTHER,
+      harnessSlug: HARNESS,
+      planSlug: PLAN_SLUG,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'member',
+      sql,
+    });
+    expect(res.armed).toBe(true);
+    expect((await getLoopStatus(OTHER, { sql }))!.active).toBe(true);
   });
 });

@@ -25,6 +25,13 @@ import {
   fetchPresenceTier1,
   type PresenceTier1Joins,
 } from '../agent-tools/coordination/presence-tier1';
+import {
+  fetchWakeability,
+  type SessionState,
+  type WakeabilitySignals,
+} from '../agent-tools/coordination/presence-wakeability';
+import { deriveVerdict } from '../agent-tools/coordination/liveness-oracle';
+import { recordedLiveOwnerIds } from '../adv-sessions';
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
 
 /** The presence fields the fold needs — structurally a `PresenceRecord` (local)
@@ -44,6 +51,9 @@ export interface FoldPresence {
   potSlug: string | null;
   userId: string | null;
   stale: boolean;
+  /** Supervisor-beat pid (WI-3898 P1) — enables the oracle's local kill(pid,0)
+   *  probe, exactly like coord:presence (unification P-007). */
+  pid?: number | null;
   federated?: boolean;
 }
 
@@ -59,6 +69,12 @@ export interface HiveRosterEntry extends AgentAssignment {
   potSlug: string | null;
   userId: string | null;
   federated: boolean;
+  /** Unification P-007: the coordinator-facing verdict, derived by the SAME
+   *  liveness oracle as coord:presence / fleet:status — this surface used to
+   *  serve heartbeat-only `alive` with no sessionState at all (audit F6).
+   *  null for a federated peer / when the wakeability read is unavailable. */
+  sessionState: SessionState | null;
+  confirmLiveness: boolean | null;
   // ── Tier-1 (P-003) — populated for local agents; null/empty for federated peers
   lastActiveSecAgo: number | null;
   claimedItems: string[];
@@ -125,6 +141,8 @@ export function foldHiveRoster(
   assignments: AgentAssignment[],
   tier1: Map<string, PresenceTier1Joins>,
   nowMs: number,
+  wakeability: Map<string, WakeabilitySignals> = new Map(),
+  recordedLive: ReadonlySet<string> = new Set<string>(),
 ): HiveRosterEntry[] {
   const presById = new Map(presence.map((p) => [p.ownerId, p]));
   const asgById = new Map(assignments.map((a) => [a.agentId, a]));
@@ -134,8 +152,47 @@ export function foldHiveRoster(
     const p = presById.get(id) ?? null;
     const base = asgById.get(id) ?? (p ? assignmentFromPresence(p) : null);
     if (!base) continue;
+    // Unification P-007: derive the coordinator-facing sessionState via the
+    // shared liveness oracle and GATE `alive` on it — this fold used to serve
+    // heartbeat-only `alive` (audit F6), so a cleanly-ended session read alive
+    // for the ~10-min warm window in the Queen survey + spawn dossier. A row
+    // with no wakeability entry keeps heartbeat-derived `alive` + null state.
+    const w = wakeability.get(id);
+    const tier = tier1.get(id);
+    const claimsHeld =
+      base.load > 0 ||
+      (tier?.claimedItems?.length ?? 0) > 0 ||
+      (tier?.workItemClaims?.length ?? 0) > 0;
+    const v = w
+      ? deriveVerdict(
+          {
+            ownerId: id,
+            heartbeatAt: p?.heartbeatAt ?? base.heartbeatAt,
+            stale: p ? p.stale : !base.alive,
+            host: p?.host,
+            pid: p?.pid,
+            claimsHeld,
+          },
+          w,
+          recordedLive,
+          nowMs,
+        )
+      : null;
+    const sessionState: SessionState | null = v?.sessionState ?? null;
+    const alive =
+      sessionState === 'ended' || sessionState === 'suspect' || sessionState === 'draining'
+        ? false
+        : sessionState === 'recorded'
+          ? true
+          : base.alive;
     out.push({
       ...base,
+      alive,
+      // P-008: the RAW freshness signal under its honest name — never gated by
+      // the verdict (a warm-dead session is heartbeatFresh:true + ended).
+      heartbeatFresh: v?.heartbeatFresh ?? (p ? !p.stale : base.alive),
+      sessionState,
+      confirmLiveness: v?.confirmLiveness ?? null,
       ownerLabel: p?.ownerLabel ?? base.label,
       source: p?.source ?? null,
       host: p?.host ?? null,
@@ -254,12 +311,17 @@ export async function listHiveRoster(opts: ListHiveRosterOpts): Promise<HiveRost
   const presence = filterPresenceToHive(presenceAll, potSlug, includeUnattributed);
   const inHive = new Set(presence.map((p) => p.ownerId));
   const localIds = presence.filter((p) => !p.federated).map((p) => p.ownerId);
-  const [tier1, rows] = await Promise.all([
+  // Wakeability + recorded legs are best-effort (unification P-007): a failed
+  // read degrades to the legacy heartbeat-only `alive` + null sessionState,
+  // never breaks the roster (the same posture as fleet-roster's bounded legs).
+  const [tier1, rows, wakeability, recordedLive] = await Promise.all([
     fetchPresenceTier1(localIds),
     listFleetAssignments({ workspaceId }),
+    fetchWakeability(localIds).catch(() => new Map<string, WakeabilitySignals>()),
+    recordedLiveOwnerIds(localIds).catch(() => new Set<string>()),
   ]);
   const assignments = groupByAgent(rows).filter((a) => inHive.has(a.agentId));
-  return foldHiveRoster(presence, assignments, tier1, Date.now());
+  return foldHiveRoster(presence, assignments, tier1, Date.now(), wakeability, recordedLive);
 }
 
 /** Convenience: the lean dossier snapshot in one call (listHiveRoster +

@@ -8,10 +8,18 @@
  *
  * Source map (all read-only; never edits work-items.ts):
  *   escalations  → coord listEscalations({status:'open'})  (severity split in fleet-signals)
- *   blocked      → coord getAllBlockedPlanItems()           (plan-items blocked by open issues)
+ *   blocked      → coord getAllBlockedPlanItems() (plan-items blocked by open issues)
+ *                  + hfc/work_items rows with status='blocked' (P-001,
+ *                  curation-signal-gaps-2026-07-17 — an item an agent parked
+ *                  blocked via work_items:set_state/set_blocker was previously
+ *                  invisible to the digest unless a plan item also named it)
  *   decisions    → coord handoffs-to-human + hfc needs_human_review / needs_design
  *   completions  → hfc status='done' (recent), provenance via created_by_github_user_id
  *   progress     → coord plan-events (recent, discrete transitions)
+ *   health       → computeSystemHealth panels at warn/crit (P-002,
+ *                  curation-signal-gaps-2026-07-17 — the deterministic Health-tab
+ *                  aggregation, read via the cached `getSystemHealth()` surface;
+ *                  never a second aggregation, D-006/plan-decision)
  *
  * NOTE (v1): coord readers operate on the coord workspace; hfc reads on the
  * active workspace. On the single-workspace dev box these coincide. The work_item
@@ -25,9 +33,12 @@ import { listEscalations } from '../agent-tools/coordination/escalations';
 import { listHandoffs } from '../agent-tools/coordination/handoffs';
 import { readPlanEvents } from '../agent-tools/coordination/plan-events';
 import { getAllBlockedPlanItems } from '../issue-blocks-merge';
-import { loadRecentSurfaced, recordSurfaced } from './curation-log';
+import { activeExternalBlockers } from '../external-blockers';
+import { loadRecentSurfaced, recordSurfaced, loadOpenRecoverable } from './curation-log';
 import { surfaceCuratedMessage } from './curation-surface';
 import { planEventProgressTitle } from './plan-event-title';
+import { getSystemHealth } from '../system-health/compute';
+import type { SystemHealth } from '../system-health/types';
 import type {
   FleetReaders,
   RawEscalation,
@@ -35,6 +46,7 @@ import type {
   RawDecision,
   RawCompletion,
   RawProgress,
+  RawHealthPanel,
 } from './fleet-signals';
 import type { CurationDeps } from './curation-loop';
 
@@ -55,8 +67,60 @@ async function readEscalations(): Promise<RawEscalation[]> {
   }));
 }
 
+/** Cap for the direct work_items status='blocked' scan (P-001) — mirrors the
+ *  ~50-row bound the other structured-status readers (readDecisions,
+ *  readCompletions) already use, so the digest never floods on a large backlog. */
+const BLOCKED_WORK_ITEMS_LIMIT = 50;
+
+/** Blocked work_items (P-001, curation-signal-gaps-2026-07-17): rows an agent
+ *  parked `status='blocked'` directly (work_items:set_state / set_blocker),
+ *  independent of whether a plan item names them — the existing
+ *  getAllBlockedPlanItems() source only sees a block that flows through an
+ *  open engineer_issue → coord_links 'blocks' → plan_item edge, so a bare
+ *  blocked feature/work-item with no plan-item link was invisible to the
+ *  digest. `reason` prefers the typed external-blocker summaries
+ *  (work_items:set_blocker) — the actual "why" — falling back to the item's
+ *  own summary/description, then a generic marker.
+ */
+async function readBlockedWorkItems(): Promise<RawBlockedItem[]> {
+  const ws = activeWorkspaceId();
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    { harness_slug: string; feature_id: string; title: string | null; summary: string | null; payload: unknown; updated_ts: string | null }[]
+  >`
+    SELECT harness_slug, feature_id, title, summary, payload, updated_ts::text
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${ws}
+       AND status = 'blocked'
+     ORDER BY updated_ts DESC NULLS LAST
+     LIMIT ${BLOCKED_WORK_ITEMS_LIMIT}
+  `;
+  return rows.map((r) => {
+    const active = activeExternalBlockers(r.payload);
+    const reason = active.length > 0
+      ? active.map((b) => b.summary).join('; ')
+      : (r.summary?.trim() || 'marked blocked');
+    return {
+      // BARE `<harness>#<id>` — fleet-signals.ts's blk mapping unconditionally
+      // prepends 'wi:' itself (`ref: \`wi:${b.ref}\``, mirroring the existing
+      // plan-item-blocked source's bare ref). Prefixing here too double-stamped
+      // the drill-in ref as `wi:wi:<harness>#<id>` (caught live on staging via
+      // curation:feed against a real blocked WI-3388 row, P-004 verification).
+      ref: `${r.harness_slug}#${r.feature_id}`,
+      harness: r.harness_slug,
+      title: r.title?.trim() || r.feature_id,
+      reason,
+      workItemId: r.feature_id,
+      ts: r.updated_ts ? new Date(Number(r.updated_ts)).toISOString() : undefined,
+    };
+  });
+}
+
 async function readBlocked(): Promise<RawBlockedItem[]> {
-  const blocked = await getAllBlockedPlanItems();
+  const [blocked, workItemBlocked] = await Promise.all([
+    getAllBlockedPlanItems(),
+    readBlockedWorkItems(),
+  ]);
   const out: RawBlockedItem[] = [];
   for (const [ref, issueIds] of blocked) {
     out.push({
@@ -65,6 +129,7 @@ async function readBlocked(): Promise<RawBlockedItem[]> {
       reason: `blocked by ${issueIds.length} open issue${issueIds.length === 1 ? '' : 's'}: ${issueIds.join(', ')}`,
     });
   }
+  out.push(...workItemBlocked);
   return out;
 }
 
@@ -172,6 +237,39 @@ async function readProgress(): Promise<RawProgress[]> {
   return out.slice(0, 25);
 }
 
+/**
+ * PURE mapper: `SystemHealth` panels → `RawHealthPanel[]` (P-002). Only
+ * `warn`/`crit` panels are signal-worthy (an `ok`/`unknown` panel emits
+ * nothing — "stay silent", mirroring the salience policy's own stance); a
+ * panel covered by an active owner ack (`applyHealthAcks`, health-tab-v2
+ * P-004) is excluded too — the owner already acknowledged it, so re-nagging
+ * every curation tick would defeat the ack. Exported + pure so it's directly
+ * unit-testable with a fake `SystemHealth` object (no PG / no
+ * `computeSystemHealth`'s 20-collector aggregation needed).
+ */
+export function mapHealthPanelsToRaw(health: SystemHealth): RawHealthPanel[] {
+  const ts = new Date(health.evaluatedAt).toISOString();
+  const out: RawHealthPanel[] = [];
+  for (const panel of Object.values(health.panels)) {
+    if (panel.ack) continue;
+    if (panel.status !== 'warn' && panel.status !== 'crit') continue;
+    out.push({ panelId: panel.key, status: panel.status, label: panel.label, summary: panel.summary, ts });
+  }
+  return out;
+}
+
+/** System-health source (P-002): reads the SAME cached `SystemHealth`
+ *  snapshot the Health tab renders (`getSystemHealth()` — a live tick only
+ *  when the cache is stale; D-006, never a second aggregation). Fail-soft:
+ *  `getSystemHealth` returns null when the `SYSTEM_HEALTH_TAB` flag is off,
+ *  and any thrown error is caught by `gatherFleetSignals`'s `safe()` wrapper
+ *  — either way this degrades to `[]`, never killing the curation tick. */
+async function readHealth(): Promise<RawHealthPanel[]> {
+  const health = await getSystemHealth();
+  if (!health) return [];
+  return mapHealthPanelsToRaw(health);
+}
+
 /** The production source bag. */
 export function buildFleetReaders(): FleetReaders {
   return {
@@ -180,6 +278,7 @@ export function buildFleetReaders(): FleetReaders {
     decisions: readDecisions,
     completions: readCompletions,
     progress: readProgress,
+    health: readHealth,
   };
 }
 
@@ -190,5 +289,8 @@ export function buildCurationDeps(): CurationDeps {
     loadSurfaced: (windowMs) => loadRecentSurfaced(windowMs),
     recordSurfaced: (entries, policyVersion) => recordSurfaced(entries, policyVersion),
     surface: (text) => surfaceCuratedMessage(text),
+    // P-003 recovery close-the-loop: escalation/blocker signals still OPEN
+    // per the curation-log flap guard, diffed against this tick's gather.
+    loadOpenRecoverable: () => loadOpenRecoverable(),
   };
 }

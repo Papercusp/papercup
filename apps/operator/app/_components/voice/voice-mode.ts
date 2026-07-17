@@ -2121,6 +2121,40 @@ function dispatchNoAudioToast(): void {
   } catch { /* ignore */ }
 }
 
+/**
+ * WI-5174 (owner repro 2026-07-17: "they replied a fine response but it showed
+ * up in the text chat and wasn't spoken out loud").
+ *
+ * Fire the spoken-output-failed toast. Every failure inside synthViaAdapter used
+ * to be swallowed (`if (!r.ok) return`, `onerror → resolve()`,
+ * `play().catch(() => resolve())`, `catch { /* ignore *​/ }`), so the synth queue
+ * advanced as though the utterance had been SPOKEN. The reply still rendered in
+ * the transcript, which is exactly the owner's symptom: text appears, no audio,
+ * and nothing anywhere says why. Speech that fails to play must SAY so.
+ *
+ * Reuses the existing papercusp:voiceTimeout channel — VoiceButton toasts any
+ * phase it doesn't special-case, so no new listener/surface is needed.
+ *
+ * Throttled: a broken audio sink fails on EVERY utterance, and one toast per
+ * reply would be its own bug.
+ */
+let lastPlaybackWarnAt = 0;
+const PLAYBACK_WARN_THROTTLE_MS = 30_000;
+
+function dispatchSpeechPlaybackToast(message: string): void {
+  if (typeof window === 'undefined') return;
+  const now = Date.now();
+  if (now - lastPlaybackWarnAt < PLAYBACK_WARN_THROTTLE_MS) return;
+  lastPlaybackWarnAt = now;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('papercusp:voiceTimeout', {
+        detail: { phase: 'playback', message },
+      }),
+    );
+  } catch { /* ignore */ }
+}
+
 /** Fire the "no transcript" toast — the mic worked but no words came back. */
 function dispatchNoTranscriptToast(): void {
   if (typeof window === 'undefined') return;
@@ -2454,7 +2488,13 @@ async function synthViaAdapter(text: string, role: string): Promise<void> {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ engine, text, voiceId }),
     });
-    if (!r.ok) return;
+    if (!r.ok) {
+      // The TTS route itself failed — no audio bytes exist to play.
+      dispatchSpeechPlaybackToast(
+        `Couldn't generate speech (${engine} returned ${r.status}) — the reply is in the chat.`,
+      );
+      return;
+    }
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     if (adapterAudio) {
@@ -2464,11 +2504,39 @@ async function synthViaAdapter(text: string, role: string): Promise<void> {
     const a = new Audio(url);
     adapterAudio = a;
     await new Promise<void>((resolve) => {
-      a.onended = () => { URL.revokeObjectURL(url); resolve(); };
-      a.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-      void a.play().catch(() => resolve());
+      // onerror and play()'s rejection can BOTH fire for one utterance; settle
+      // once so a single failure yields a single toast and a single revoke.
+      let settled = false;
+      const settle = (failure?: string): void => {
+        if (settled) return;
+        settled = true;
+        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+        if (failure) dispatchSpeechPlaybackToast(failure);
+        resolve();
+      };
+      a.onended = () => settle();
+      a.onerror = () => settle("The spoken reply couldn't be played — the reply is in the chat.");
+      void a.play().catch((err: unknown) => {
+        // Autoplay policy is the one recoverable case and needs its own words:
+        // the browser refused because no user gesture has unlocked audio yet.
+        // "Check your speakers" would send the user hunting the wrong problem.
+        const name = err instanceof Error ? err.name : '';
+        const autoplayBlocked = /NotAllowedError|SecurityError/i.test(
+          `${name} ${err instanceof Error ? err.message : String(err)}`,
+        );
+        settle(
+          autoplayBlocked
+            ? 'Audio is blocked until you interact with the window — click anywhere, then try again.'
+            : "The spoken reply couldn't be played — the reply is in the chat.",
+        );
+      });
     });
-  } catch { /* ignore — keep queue flowing */ }
+  } catch (e) {
+    // Never swallow: the queue keeps flowing either way, but the user is told.
+    dispatchSpeechPlaybackToast(
+      `Speech playback failed (${e instanceof Error ? e.name : 'error'}) — the reply is in the chat.`,
+    );
+  }
 }
 
 /**

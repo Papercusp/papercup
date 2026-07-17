@@ -10,6 +10,7 @@
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T2.1.
  */
 
+import { coerceAskChoiceOptions } from '@papercusp/operator-core/lib/ask-choice-options';
 import { AskChoiceCard, type AskChoiceArgs, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
 import { registerCard } from './registry';
 
@@ -23,15 +24,11 @@ registerCard<AskChoiceArgs>('chat:ask_choice', ({ args, answered, onAnswer }) =>
   // Models sometimes stringify the options array (`options: "[{…}]"`) and the
   // persisted turn stores the model's RAW input (operator_turns seq 12076) —
   // parse it here or the card for such a row silently never renders.
-  let options: unknown = args.options;
-  if (typeof options === 'string') {
-    try {
-      const parsed: unknown = JSON.parse(options);
-      if (Array.isArray(parsed)) options = parsed;
-    } catch {
-      /* fall through to the bad-payload return */
-    }
-  }
+  // WI-5175: this coercion is SHARED with the answer path (turn-answer.ts).
+  // It used to be inline here only, so the card rendered while the server's
+  // uncoerced `(args?.options ?? []).map(...)` 500'd on the click. One helper,
+  // both readers — otherwise they drift apart again.
+  const options: unknown = coerceAskChoiceOptions(args.options) ?? args.options;
   if (!args.question || !Array.isArray(options) || options.length === 0) {
     // Bad payload — let the consumer's default chip render instead.
     return null;

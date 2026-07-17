@@ -19,12 +19,24 @@ vi.mock('@papercusp/db-org', () => ({
   upsertRoutine: upsertRoutineSpy,
 }));
 
+// autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001) reads the
+// LOOPS flag and best-effort arms an inbox-wake — both mocked so its unit tests
+// stay pure (no PG, no live flag resolver).
+const { getFlagSpy, armInboxWakeSpy } = vi.hoisted(() => ({
+  getFlagSpy: vi.fn(async () => true),
+  armInboxWakeSpy: vi.fn(async () => ({ awaitId: 1, eventKey: 'k', handleNote: 'n', minSleepSec: 60 })),
+}));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagSpy }));
+vi.mock('@papercusp/flags', () => ({ FLAGS: { LOOPS: 'papercusp-loops' } }));
+vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: armInboxWakeSpy }));
+
 import {
   materializeLoop,
   buildLoopWakePrompt,
   detectDrivenWorkItemId,
   loopRoutineName,
   computeLoopStall,
+  autoArmFleetMemberLoop,
   LOOP_WAKE_ACTION,
   LOOP_INTERVAL_FLOOR_SEC,
 } from './loop';
@@ -376,6 +388,102 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     });
     const input = upsertRoutineSpy.mock.calls[0][1];
     expect(input.nextFireAt.getTime()).toBe(now.getTime() + 60_000);
+  });
+});
+
+describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', () => {
+  const baseOpts = {
+    workspaceId: 'ws',
+    ownerId: 'su-member-1',
+    harnessSlug: 'papercusp',
+    planSlug: 'backlog-drain-2026-07-16',
+    fleetSlug: 'backlog-drain',
+    fleetRole: 'member',
+  };
+
+  // A minimal fake tagged-template sql matching the shared sqlStub's contract
+  // (always resolves []) — sufficient for both getLoopStatuses' SELECT (0 rows
+  // ⇒ not-armed) and materializeLoop's FOR-UPDATE existing-check (0 rows ⇒ the
+  // insert branch, which routes through the mocked `upsertRoutine` regardless
+  // of which sql instance was passed in).
+  const emptySql = (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]);
+
+  beforeEach(() => {
+    getFlagSpy.mockReset().mockResolvedValue(true);
+    armInboxWakeSpy.mockReset().mockResolvedValue({ awaitId: 1, eventKey: 'k', handleNote: 'n', minSleepSec: 60 });
+  });
+
+  it('skips a LEADER — never auto-arms outside the member role', async () => {
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, fleetRole: 'leader', sql: emptySql as any });
+    expect(res).toEqual({ armed: false, reason: 'not-a-member' });
+    expect(getFlagSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips an UNPLANNED member — nothing to derive a goal from', async () => {
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, planSlug: null, sql: emptySql as any });
+    expect(res).toEqual({ armed: false, reason: 'no-plan-bound' });
+    expect(getFlagSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips when the papercusp-loops flag is OFF', async () => {
+    getFlagSpy.mockResolvedValue(false);
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: emptySql as any });
+    expect(res).toEqual({ armed: false, reason: 'loops-disabled' });
+    expect(getFlagSpy).toHaveBeenCalledWith('papercusp-loops', 'system');
+  });
+
+  it('reports (not throws) when the flag check itself errors', async () => {
+    getFlagSpy.mockRejectedValue(new Error('resolver down'));
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: emptySql as any });
+    expect(res.armed).toBe(false);
+    expect(res.reason).toContain('flag-check-failed');
+    expect(res.reason).toContain('resolver down');
+  });
+
+  it('happy path: arms via materializeLoop and skips the live inbox-wake leg under an injected test sql', async () => {
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: emptySql as any });
+    expect(res.armed).toBe(true);
+    expect(res.reason).toBe('armed');
+    expect(res.loopName).toBe('loop-su-member-1');
+    // The goal names the plan + fleet so the wake prompt orients the member.
+    const insertInput = upsertRoutineSpy.mock.calls.at(-1)?.[1];
+    expect(insertInput.payloadTemplate.kickoff).toContain('backlog-drain-2026-07-16');
+    expect(insertInput.payloadTemplate.kickoff).toContain('backlog-drain');
+    expect(insertInput.targetOwnerId).toBe('su-member-1');
+    // The test-sql seam bypasses the live-singleton-only armInboxWake leg entirely.
+    expect(armInboxWakeSpy).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent: an existing ACTIVE loop for this owner is never clobbered', async () => {
+    const activeRow = {
+      install_slug: 'papercusp',
+      name: 'loop-su-member-1',
+      active: true,
+      reschedule_interval_sec: 60,
+      target_owner_id: 'su-member-1',
+      payload_template: { kickoff: 'existing kickoff' },
+      fire_count: 3,
+      last_fired_at: null,
+      parked: false,
+      next_fire_at: null,
+      parked_ms: null,
+      last_delivery_outcome: null,
+      consecutive_errors: 0,
+      lifecycle_completed_at: null,
+      presence_last_active_at: null,
+    };
+    // Classify by query text: the DISTINCT-ON status read gets the active row;
+    // everything else (materializeLoop would never even run past the early
+    // return, but keep it inert regardless) gets [].
+    const statusSql = (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join(' ? ');
+      if (/DISTINCT ON/.test(text)) return Promise.resolve([activeRow]);
+      return Promise.resolve([]);
+    };
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: statusSql as any });
+    expect(res).toEqual({ armed: false, reason: 'already-armed', loopName: 'loop-su-member-1' });
+    expect(upsertRoutineSpy).not.toHaveBeenCalled();
+    expect(armInboxWakeSpy).not.toHaveBeenCalled();
   });
 });
 

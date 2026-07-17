@@ -498,6 +498,9 @@ const CC_HOOK_FILES = [
   'statusline-fleet.sh',
   'posttooluse-objective-title.sh',
   'pretooluse-bash-resource-gate.sh',
+  // kickoff-prompt-absorption-2026-07-17 P-003(b): teach `plans:get` at the
+  // point of failure when a Read/Grep targets a docs/plans/*.md projection.
+  'pretooluse-plans-read-guard.sh',
   'workitem-verify-nudge.sh',
   // turn-provenance-owner-vs-agent-2026-07-11 P-003: classify every submitted
   // prompt against the injectors' envelope+nonce ledger → additionalContext
@@ -1308,7 +1311,7 @@ function replaceOurHookEntries(arr: HookEntry[], ours: readonly string[], fresh:
  * Non-destructive, idempotent merge of the papercusp CC hooks + fleet statusline into a Claude
  * `settings.json` object (mutated + returned). FAITHFUL TS port of the merge_lock_hooks /
  * merge_coord_hook / merge_activity_hook / merge_lifecycle_hooks / merge_workitem_nudge_hook /
- * merge_statusline / merge_bash_gate_hook python helpers in
+ * merge_statusline / merge_bash_gate_hook / merge_plans_read_guard_hook python helpers in
  * apps/operator/scripts/install-standalone-mcp.sh — KEEP THE TWO IN SYNC. For each event, any prior
  * entry pointing at OUR script (by full path OR basename) is dropped then a fresh one appended,
  * preserving every other user hook. `statusLine` is set only when absent or already ours (never
@@ -1390,6 +1393,12 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-bash-resource-gate.sh'), {
       matcher: 'Bash',
       hooks: cmd('pretooluse-bash-resource-gate.sh'),
+    });
+  // merge_plans_read_guard_hook — PreToolUse, matcher 'Read|Grep' (P-003(b)).
+  if (has('pretooluse-plans-read-guard.sh'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-plans-read-guard.sh'), {
+      matcher: 'Read|Grep',
+      hooks: cmd('pretooluse-plans-read-guard.sh'),
     });
   // merge_provenance_hook — UserPromptSubmit, no matcher (fires on every prompt).
   // turn-provenance-owner-vs-agent-2026-07-11 P-003: verified owner-vs-agent stamps.

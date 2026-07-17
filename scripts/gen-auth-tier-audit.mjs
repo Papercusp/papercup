@@ -61,6 +61,18 @@ function* walk(dir) {
   }
 }
 
+// EI-323: the regex scan below only recognizes a LITERAL `path: '...'` /
+// `method: 'GET'` — a factory-built route (e.g. config-files.ts's
+// jsonConfigRoutes, which sets `path: opts.routePath`) or a PATH-const
+// catch-all (`path: PATH`) matches neither regex and is silently dropped
+// from the review table with no signal that anything was skipped. This
+// counter makes that under-reporting VISIBLE (the cheap "at minimum" fix
+// from the ticket) without attempting the bigger ALL_ROUTES-import rewrite,
+// which pulls in the full runtime registry (DB clients etc.) from a plain
+// node script — a larger, separately-reviewable change.
+let skippedNonLiteral = 0;
+const skippedBlocks = [];
+
 function scanFile(abs) {
   const text = readFileSync(abs, 'utf8');
   const rel = relative(ROOT, abs);
@@ -76,7 +88,19 @@ function scanFile(abs) {
     // tooldef-auth Phase 3), i.e. NOT public.
     const auth = block.match(/auth:\s*'([a-z-]+)'/)?.[1]
       ?? (/auth:\s*\{/.test(block) ? 'trust' : 'principal (default)');
-    if (!path || !method) continue; // tool-only defs (no HTTP projection)
+    if (!path || !method) {
+      // Distinguish "no HTTP projection" (a tool-only defineTool, expected
+      // and common) from "HAS a method/path key but it's non-literal" (the
+      // silent-gap case this ticket is about) by checking whether a
+      // `method:`/`path:` KEY is present at all, just not string-literal.
+      const hasMethodKey = /method:\s*[A-Za-z_$]/.test(block);
+      const hasPathKey = /path:\s*[A-Za-z_$]/.test(block);
+      if (hasMethodKey || hasPathKey) {
+        skippedNonLiteral += 1;
+        skippedBlocks.push(rel);
+      }
+      continue;
+    }
     out.push({ file: rel, method, path, auth, fileGated });
   }
   return out;
@@ -114,6 +138,17 @@ lines.push('> `W1` is the mutating→loopback default; `W2` reads stay public.')
 lines.push('');
 lines.push(`Total HTTP-projected routes scanned: **${rows.length}**`);
 lines.push('');
+if (skippedNonLiteral > 0) {
+  const uniqueFiles = [...new Set(skippedBlocks)];
+  lines.push(
+    `> ⚠ **${skippedNonLiteral} block(s) with a non-literal \`method\`/\`path\` were SKIPPED** ` +
+      '(a factory-built route or a `path: SOME_CONST` catch-all — this static regex scan only ' +
+      'recognizes string literals, EI-323). The table below is INCOMPLETE for these files; audit ' +
+      'them by hand:',
+  );
+  for (const f of uniqueFiles) lines.push(`> - \`${f}\``);
+  lines.push('');
+}
 lines.push('| wave | routes |');
 lines.push('|---|---|');
 for (const [w, n] of Object.entries(counts).sort()) lines.push(`| ${w} | ${n} |`);
@@ -125,6 +160,16 @@ for (const r of rows) {
 }
 lines.push('');
 const doc = lines.join('\n');
+
+if (skippedNonLiteral > 0) {
+  // Visible on every run (both --check and generate) — a warning, not a
+  // failure: this is a known static-scan limitation (doc says so too), not
+  // a regression to gate CI on. See the EI-323 comment on scanFile above.
+  console.warn(
+    `gen-auth-tier-audit: WARNING — ${skippedNonLiteral} block(s) with a non-literal method/path ` +
+      `were skipped (silent under-reporting risk, EI-323): ${[...new Set(skippedBlocks)].join(', ')}`,
+  );
+}
 
 if (process.argv.includes('--check')) {
   let current = '';

@@ -155,6 +155,7 @@ describe('AgentDossier', () => {
             source: 'spawned_agents',
             ownerId: 'su-1',
             sessionId: 'claude-uuid-1',
+            configDir: '/home/user/.papercusp/session-claude/su-1',
             exactResumeSupported: true,
             missingReason: null,
           },
@@ -163,9 +164,37 @@ describe('AgentDossier', () => {
       />,
     );
     expect(getByText('Native Session')).toBeTruthy();
-    expect(getByText('claude --resume claude-uuid-1')).toBeTruthy();
+    // EI-308: the resume command must set CLAUDE_CONFIG_DIR — a bare
+    // `claude --resume <id>` looks in the default config dir and finds
+    // nothing, which is exactly the "copy-pasted command fails" trap this
+    // ticket exists to close.
+    expect(
+      getByText("CLAUDE_CONFIG_DIR='/home/user/.papercusp/session-claude/su-1' claude --resume claude-uuid-1"),
+    ).toBeTruthy();
     expect(getByText('spawned_agents')).toBeTruthy();
     expect(getByText('supported')).toBeTruthy();
+  });
+
+  it('EI-308: falls back to a bare claude --resume command when configDir is unknown', () => {
+    const { getByText } = render(
+      <AgentDossier
+        ownerId="su-1"
+        entry={entry({
+          sessionId: 'claude-uuid-2',
+          nativeSession: {
+            backend: 'claude',
+            source: 'spawned_agents',
+            ownerId: 'su-1',
+            sessionId: 'claude-uuid-2',
+            configDir: null,
+            exactResumeSupported: true,
+            missingReason: null,
+          },
+        })}
+        onClose={() => {}}
+      />,
+    );
+    expect(getByText('claude --resume claude-uuid-2')).toBeTruthy();
   });
 
   it('prefers the lazy detail native session when it has a Codex rollout id', async () => {

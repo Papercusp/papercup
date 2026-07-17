@@ -36,6 +36,19 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
+// Unification P-003: liveness-decoration now derives through the shared oracle,
+// whose recorded-session rescue leg reads adv_sessions. Without this mock the
+// REAL recordedLiveOwnerIds runs against the catch-all getOrgPg sql mock above
+// (which returns the presence fixture rows for EVERY query), leaking the fixture
+// owner into the recorded-live set and rescuing ENDED fixtures to RECORDED.
+vi.mock('../../adv-sessions', async (orig) => {
+  const actual = await orig<typeof import('../../adv-sessions')>();
+  return {
+    ...actual,
+    recordedLiveOwnerIds: async () => new Set<string>(),
+  };
+});
+
 vi.mock('../coordination/presence-wakeability', async (orig) => {
   const actual = await orig<typeof import('../coordination/presence-wakeability')>();
   return {

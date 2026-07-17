@@ -108,6 +108,20 @@ export default defineTool({
             'Omit = the standing fleet behavior (gateway auto-route when the pool is on). ' +
             'ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.',
         ),
+      timeoutMs: z
+        .number()
+        .int()
+        .min(60_000)
+        .max(7_200_000)
+        .optional()
+        .describe(
+          'EI-350: per-spawn invoke-timeout override in ms (SIGTERM budget before the child is killed). ' +
+            "Default (unset) is the role's standing budget (PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS, currently " +
+            '45 min) — plenty for most work, but a known-long task (a large multi-file refactor, a slow ' +
+            'test-suite pass) can exhaust it mid-edit with no graceful wind-down, leaving a partial edit in ' +
+            'the shared tree and an orphaned claim. Set this HIGHER for such a spawn (bounded [1min, 2h]) ' +
+            'rather than letting the default guillotine it.',
+        ),
       extras: z
         .array(z.string().max(500))
         .max(16)
@@ -264,6 +278,9 @@ export default defineTool({
       // account-routing-3-options: explicit per-spawn routing (pool-id pin / auto / default). Honored
       // for any caller role — the Mug places, but routing is operational, not a model lever.
       accountOverride: args.account ?? null,
+      // EI-350: per-spawn invoke-timeout override — already plumbed all the way to
+      // spawnInvokeOnce (audit P-015/EI-172); this is the last-mile schema exposure.
+      timeoutMs: args.timeoutMs ?? null,
       extras: args.extras,
       parentSpawnId,
       parentRole: ctx.role ?? 'operator',

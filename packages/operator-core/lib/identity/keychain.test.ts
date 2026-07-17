@@ -18,6 +18,7 @@ import { join } from 'node:path';
 let TMP_HOME: string;
 let origHome: string | undefined;
 let origIdentityDir: string | undefined;
+let execFileCalls = 0;
 
 beforeEach(() => {
   vi.resetModules();
@@ -27,9 +28,12 @@ beforeEach(() => {
   process.env.HOME = TMP_HOME; // os.homedir() honors $HOME on POSIX -> default identity dir = $HOME/.papercusp/identity
   delete process.env.PAPERCUSP_IDENTITY_DIR;
   // Make the OS keychain CLIs look uninstalled so both tiers fall through to the file backend.
+  execFileCalls = 0;
   vi.doMock('node:child_process', () => ({
-    execFile: (_cmd: string, _args: string[], _opts: unknown, cb: (e: Error) => void) =>
-      cb(Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })),
+    execFile: (_cmd: string, _args: string[], _opts: unknown, cb: (e: Error) => void) => {
+      execFileCalls += 1;
+      cb(Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
+    },
   }));
 });
 
@@ -188,5 +192,31 @@ describe('keychain (encrypted-file fallback)', () => {
     } finally {
       rmSync(primaryDir, { recursive: true, force: true });
     }
+  });
+
+  it('caches loads and remembers a missing CLI backend — no re-spawn per call (WI-5218)', async () => {
+    const { keychainStore, keychainLoad } = await loadKeychain();
+    await keychainStore('hot:id', Buffer.from('key-a'));
+    const first = await keychainLoad('hot:id');
+    expect(first).toEqual({ kind: 'ok', value: Buffer.from('key-a') });
+    const callsAfterFirst = execFileCalls;
+    // A CLI that ENOENT'd once is remembered as unavailable: repeated loads
+    // spawn NOTHING further (this was ~34% of bg-host CPU — WI-5218).
+    await keychainLoad('hot:id');
+    await keychainLoad('hot:id');
+    expect(execFileCalls).toBe(callsAfterFirst);
+    expect(callsAfterFirst).toBeLessThanOrEqual(2);
+    // And the result itself is cache-served: still ok after the backing file is gone.
+    rmSync(encPath('hot:id'), { force: true });
+    const cached = await keychainLoad('hot:id');
+    expect(cached).toEqual({ kind: 'ok', value: Buffer.from('key-a') });
+  });
+
+  it('store invalidates the load cache — a rotated key is visible immediately (WI-5218)', async () => {
+    const { keychainStore, keychainLoad } = await loadKeychain();
+    await keychainStore('rot:id', Buffer.from('v1'));
+    expect(await keychainLoad('rot:id')).toEqual({ kind: 'ok', value: Buffer.from('v1') });
+    await keychainStore('rot:id', Buffer.from('v2'));
+    expect(await keychainLoad('rot:id')).toEqual({ kind: 'ok', value: Buffer.from('v2') });
   });
 });

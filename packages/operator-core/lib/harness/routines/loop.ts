@@ -639,3 +639,99 @@ export async function getLoopStatuses(
 export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): Promise<LoopStatus | null> {
   return (await getLoopStatuses([ownerId], opts)).get(ownerId) ?? null;
 }
+
+/**
+ * kickoff-prompt-absorption-2026-07-17 P-001 — arm a fleet MEMBER's engine loop
+ * SERVER-SIDE at boot, the moment its fleet membership registers, instead of
+ * relying on the kickoff prompt's "you must self-arm" instruction (AUTO_MODE_
+ * DIRECTIVE in bootstrap-su.ts) — a compliance domain text alone can't
+ * guarantee. Persistence leaves the compliance domain and becomes a structural
+ * boot-time effect.
+ *
+ * Scope, deliberately narrow:
+ *   - MEMBER only, never the leader — a leader's arming is part of a more
+ *     involved, explicitly-sequenced bring-up (e.g. DRAIN's canary-first
+ *     leadership-then-arm order); auto-arming ahead of that could race it.
+ *   - PLAN-bound only — the goal is derived from the bound plan; with no plan
+ *     there is nothing to derive one from, so this is a silent no-op (the
+ *     kickoff's self-arm instruction still applies for an unplanned member).
+ *   - IDEMPOTENT — never clobbers an existing loop for this owner (self-armed,
+ *     armed on a prior boot, or already retuned): a live active loop is left
+ *     completely untouched. The member can always `loop:end` + re-arm to retune.
+ *   - Respects the same `papercusp-loops` feature gate `loop:arm` itself checks.
+ *
+ * Best-effort: any failure here must never fail the launch — the kickoff's
+ * self-arm instruction is the fallback path exactly like today.
+ */
+export async function autoArmFleetMemberLoop(opts: {
+  workspaceId: string;
+  ownerId: string;
+  harnessSlug: string;
+  planSlug: string | null;
+  fleetSlug: string;
+  fleetRole: string | null;
+  /** Test seam: an injected PG connection (createOrgTestDb().adminSql). When
+   *  supplied, the live-singleton-only `armInboxWake` best-effort leg is SKIPPED
+   *  (it has no `sql` override of its own and always targets the real org pool —
+   *  calling it against a test DB would exercise/pollute live infra, not the
+   *  isolated one under test). Omitted in production ⇒ today's live behaviour. */
+  sql?: Sql;
+}): Promise<{ armed: boolean; reason: string; loopName?: string }> {
+  if (opts.fleetRole !== 'member') return { armed: false, reason: 'not-a-member' };
+  if (!opts.planSlug) return { armed: false, reason: 'no-plan-bound' };
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    if (!(await getFlag(FLAGS.LOOPS, 'system'))) {
+      return { armed: false, reason: 'loops-disabled' };
+    }
+  } catch (e) {
+    return { armed: false, reason: `flag-check-failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  try {
+    const existing = await getLoopStatus(opts.ownerId, { sql: opts.sql });
+    if (existing?.active) return { armed: false, reason: 'already-armed', loopName: existing.name };
+
+    const intervalSec = LOOP_INTERVAL_FLOOR_SEC; // 60s — the AUTO-mode standing default cadence
+    const goal = `Drive plan \`${opts.planSlug}\` per your member role in fleet \`${opts.fleetSlug}\` (coord:orient to pull your lane).`;
+    const kickoff = buildLoopWakePrompt({
+      ownerId: opts.ownerId,
+      intervalSec,
+      harness: opts.harnessSlug,
+      goal,
+      mode: 'work',
+    });
+    const loop = await materializeLoop({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      ownerId: opts.ownerId,
+      intervalSec,
+      kickoff,
+      sql: opts.sql,
+    });
+    // Wake-reachability is INTRINSIC to arming a loop (mirrors loop:arm's own
+    // tool-level step) — without this the routine exists but can't reach the
+    // member as a fresh turn until its FIRST natural wake re-arms it. Best-effort:
+    // the loop is already armed; a watch-arm hiccup must not fail the boot.
+    // Skipped under an injected test `sql` — see the `sql` param doc above.
+    if (!opts.sql) {
+      try {
+        const { armInboxWake } = await import('../../events/await/inbox-wake-arm');
+        await armInboxWake({
+          ownerId: opts.ownerId,
+          workspaceId: opts.workspaceId,
+          note: `auto-armed inbox-wake (${loop.name})`,
+        });
+      } catch (e) {
+        console.warn(
+          `[autoArmFleetMemberLoop] inbox-wake arm failed (loop still armed): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+    return { armed: true, reason: 'armed', loopName: loop.name };
+  } catch (e) {
+    return { armed: false, reason: `error: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}

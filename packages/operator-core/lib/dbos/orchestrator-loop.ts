@@ -124,6 +124,33 @@ export function setAuditorLaneFns(
 const NEEDS_WORK: ReadonlySet<string> = new Set(['todo', 'failing', 'pending', 'failed']);
 
 /**
+ * EI-203: hard ceiling on consecutive same-failure re-dispatches. Confirmed bug
+ * (2026-07-17): NOTHING previously capped this — a feature that keeps landing
+ * back in `failing` was re-selected by computeFrontier and handed a fresh DBOS
+ * epoch by `ensureFeaturePipeline` every 30s tick (or immediately on
+ * `refillHarnessOnSettle`) FOREVER, burning a full director+worker+curator run
+ * each time. `harness_shared.work_items.attempts` already exists for exactly
+ * this (and already drives the debugger-gate threshold in
+ * orchestrator-runner.ts), but the legacy bump path
+ * (`libs/papercusp/packages/orchestrator/src/state-pg.ts` `setFeatureStatusPg`)
+ * writes the unqualified `harness_features` name, which is a READ-ONLY
+ * fallback view on a consolidated-only operator (497-harness-features-shared-
+ * fallback-view.sql) — verified empirically that every feature on this harness
+ * reads `attempts = 0` regardless of status, so that path never actually
+ * increments it here. This dispatch loop now owns bumping/resetting `attempts`
+ * itself (writing the REAL base table `harness_shared.work_items` directly —
+ * see `bumpOrResetAttempts` below) rather than depending on that dead path.
+ * Deliberately higher than the debugger's default threshold (3) so the
+ * debugger gets a shot at auto-recovery first. Env override for tuning.
+ */
+const DEFAULT_MAX_FAILING_ATTEMPTS = 6;
+function resolveMaxFailingAttempts(): number {
+  const raw = process.env.PAPERCUSP_MAX_FAILING_ATTEMPTS;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MAX_FAILING_ATTEMPTS;
+}
+
+/**
  * Check if a task deadline has passed. Correctly handles both ISO string and Date
  * object deadlines by converting them to the same type before comparison.
  *
@@ -218,6 +245,10 @@ export interface FrontierFeature {
   sourcePlan: string | null;
   /** feature_order — null when unset (ordered last within its plan group). */
   order: number | null;
+  /** EI-203: harness_shared.work_items.attempts — consecutive same-failure re-dispatch count. Optional (default 0) so an older caller that doesn't populate it is unaffected. */
+  attempts?: number;
+  /** EI-203: harness_shared.work_items.needs_human_review — already durably parked out of auto-dispatch. Optional (default false). */
+  needsHumanReview?: boolean;
 }
 
 /**
@@ -243,6 +274,16 @@ export interface FrontierFeature {
  * `readiness` is the dispatchable-status set — the blueprint's declared
  * `dispatch.readiness` (D-005), defaulting to the legacy `NEEDS_WORK` set so an
  * undeclared policy is byte-equivalent to the pre-lift behavior.
+ *
+ * EI-203 attempts cap: a feature that is otherwise ready per status/blockers is
+ * EXCLUDED from `toStart` (never occupies a dispatch slot, never re-enters the
+ * pipeline) once it is already `needsHumanReview` OR its `attempts` has reached
+ * `maxAttempts` — but it stays in the full `features` set fed to `selectReady`,
+ * so it still correctly satisfies/blocks its own dependents (readiness is
+ * status-based, unaffected by this split; only SELECTION is). `capped` returns
+ * the ids that just NEWLY crossed the cap this call (not yet `needsHumanReview`)
+ * so the caller can durably flag them — an already-flagged feature is silently
+ * re-excluded every tick with no repeat write.
  */
 export function computeFrontier(
   features: readonly FrontierFeature[],
@@ -250,12 +291,28 @@ export function computeFrontier(
   owned: ReadonlySet<string>,
   slots: number,
   readiness: ReadonlySet<string> = NEEDS_WORK,
-): { toStart: string[]; stuck: boolean } {
+  maxAttempts: number = resolveMaxFailingAttempts(),
+): { toStart: string[]; stuck: boolean; capped: string[] } {
   // Readiness is the SHARED predicate (frontier-readiness.ts) the Queen's
   // placement survey reuses verbatim (W-01/D-002) — a feature is ready iff its
   // status is dispatchable, it isn't owned (in-flight), and every blocked_by is
   // satisfied (terminal or absent). ORDERING below stays orchestrator-specific.
-  const { ready, blocked } = selectReady(features, owned, readiness);
+  const { ready: readyRaw, blocked } = selectReady(features, owned, readiness);
+
+  // EI-203: split off attempts-capped / already-flagged features BEFORE grouping,
+  // so they never fill a dispatch slot. `capped` (the return value) carries only
+  // the NEWLY-crossed ones — already-`needsHumanReview` features are excluded
+  // here too but omitted from the return (no repeat flag-write needed).
+  const capped: string[] = [];
+  const ready: FrontierFeature[] = [];
+  for (const f of readyRaw) {
+    if (f.needsHumanReview === true) continue; // already parked in an earlier tick
+    if ((f.attempts ?? 0) >= maxAttempts) {
+      capped.push(f.id);
+      continue;
+    }
+    ready.push(f);
+  }
 
   // Group ready by plan ('' = manual / no source_plan).
   const groups = new Map<string, FrontierFeature[]>();
@@ -286,9 +343,11 @@ export function computeFrontier(
   }
 
   const toStart = slots > 0 ? ordered.slice(0, slots) : [];
-  // stuck = dispatchable, non-owned work remains (ready+blocked) but none is ready
-  // — the P-044 stuck-wave signal. `blocked.length` carries the "remains" half.
-  return { toStart, stuck: ready.length === 0 && blocked.length > 0 };
+  // stuck = dispatchable, non-owned work remains (ready+blocked+capped) but none is
+  // actually startable — the P-044 stuck-wave signal. EI-203: a capped feature
+  // counts toward "remains" the same way a blocked one does (it needs a human, not
+  // another automatic retry) so the frontier doesn't read as falsely idle.
+  return { toStart, stuck: ready.length === 0 && (blocked.length > 0 || capped.length > 0), capped };
 }
 
 /** Explicit opt-out sentinels (e.g. the shared dev box, to avoid flooding it). */
@@ -577,6 +636,76 @@ export function harnessDispatchesLocally(project: Pick<ProjectEntry, 'deployment
 }
 
 /**
+ * EI-203: durably flag newly attempts-capped features `needs_human_review = true`
+ * on the REAL base table (`harness_shared.work_items` — see the DEFAULT_MAX_
+ * FAILING_ATTEMPTS doc comment for why NOT the legacy `harness_features` name).
+ * Idempotent (WHERE excludes already-true rows) and best-effort — a write
+ * failure here must never sink dispatch; the feature just gets re-evaluated
+ * (and re-excluded, since computeFrontier already dropped it this tick) next
+ * time regardless.
+ */
+async function flagNeedsHumanReview(
+  pg: ReturnType<typeof postgres>,
+  workspaceId: string,
+  slug: string,
+  ids: readonly string[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    await pg`
+      UPDATE harness_shared.work_items
+         SET needs_human_review = true, updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${slug}
+         AND feature_id = ANY(${ids})
+         AND needs_human_review IS NOT TRUE
+    `;
+    console.warn(
+      `[dbos-orchestrator] ${slug} EI-203: ${ids.length} feature(s) hit the failing-attempts cap ` +
+        `(${resolveMaxFailingAttempts()}) — flagged needs_human_review, excluded from auto-dispatch: ${ids.join(', ')}`,
+    );
+  } catch (err) {
+    console.warn(`[dbos-orchestrator] ${slug} EI-203 flagNeedsHumanReview failed (non-fatal):`, (err as Error).message);
+  }
+}
+
+/**
+ * EI-203: bump or reset a feature's `attempts` counter around a genuine NEW
+ * pipeline start (never on a `reuse` of an already-live pipeline — no new
+ * attempt occurred). `wasFailing` = the feature's status at candidate-select
+ * time this tick: still `failing` → this is another consecutive same-failure
+ * retry, bump; anything else (a fresh `todo`/reopened dispatch) → reset to 0
+ * so an unrelated past failing streak doesn't count against a feature that has
+ * since moved on. Best-effort, never sinks dispatch.
+ */
+async function bumpOrResetAttempts(
+  pg: ReturnType<typeof postgres>,
+  workspaceId: string,
+  slug: string,
+  featureId: string,
+  wasFailing: boolean,
+): Promise<void> {
+  try {
+    if (wasFailing) {
+      await pg`
+        UPDATE harness_shared.work_items
+           SET attempts = COALESCE(attempts, 0) + 1, updated_ts = ${Date.now()}
+         WHERE workspace_id = ${workspaceId} AND harness_slug = ${slug} AND feature_id = ${featureId}
+      `;
+    } else {
+      await pg`
+        UPDATE harness_shared.work_items
+           SET attempts = 0, updated_ts = ${Date.now()}
+         WHERE workspace_id = ${workspaceId} AND harness_slug = ${slug} AND feature_id = ${featureId}
+           AND COALESCE(attempts, 0) <> 0
+      `;
+    }
+  } catch (err) {
+    console.warn(`[dbos-orchestrator] ${slug}/${featureId} EI-203 bumpOrResetAttempts failed (non-fatal):`, (err as Error).message);
+  }
+}
+
+/**
  * Dispatch for ONE harness: read eligible (non-owned) features, fill the free
  * slots up to the harness's own concurrency `cap`, and `ensureFeaturePipeline`
  * each. Used by both the periodic sweep and the on-completion refill seam (#1).
@@ -643,7 +772,7 @@ export async function dispatchOneHarness(
     // per-install config.
     const { cap, overCostCap, readiness } = await resolveHarnessDispatchGate(pg, slug, workspaceId);
     const slots = overCostCap ? 0 : Math.max(0, cap - liveCount);
-    const { toStart, stuck } = computeFrontier(features, planPriority, owned, slots, readiness);
+    const { toStart, stuck, capped } = computeFrontier(features, planPriority, owned, slots, readiness);
     if (overCostCap) console.log(`[dbos-orchestrator] ${slug} over maxCostUsd — skipping new pipelines`);
     if (stuck) {
       console.warn(
@@ -651,11 +780,20 @@ export async function dispatchOneHarness(
           `(all remaining features are blocked or failing)`,
       );
     }
+    // EI-203: durably park the newly attempts-capped features so they stay
+    // excluded on every future tick too (computeFrontier already dropped them
+    // THIS tick from `features`' own needsHumanReview/attempts fields — this
+    // just makes that exclusion durable). Best-effort; never sinks dispatch.
+    await flagNeedsHumanReview(pg, workspaceId, slug, capped);
     // P-044: the retired wave-advance sweep used to raise an I-WAVE-* issue when a
     // wave couldn't drain. Preserve that observability in the frontier model — a
     // persistent (idempotent) I-STUCK issue while stuck, auto-cleared when work
     // becomes ready again. Best-effort; never sinks dispatch.
     if (!overCostCap) await raiseOrClearStuckSignal(slug, workspaceId, stuck).catch(() => {});
+    // EI-203: lookup for bumpOrResetAttempts below — the feature's status AT
+    // CANDIDATE-SELECT time this tick (before any pipeline runs and possibly
+    // changes it).
+    const statusById = new Map(features.map((f) => [f.id, f.status] as const));
     const started: string[] = [];
     // P-007/P-008 (decentralized-dispatch-scaling, flag-gated default-OFF): demote the
     // orchestrator from SOLE global dispatcher to one Swarm's executor — computeFrontier
@@ -683,7 +821,13 @@ export async function dispatchOneHarness(
       // Pass the tick's own workspaceId so the pipeline pins THIS workspace rather
       // than the volatile active one (which can differ from the harness's home).
       const r = await ensureFeaturePipeline(slug, fid, workspaceId, claim);
-      if (r.started) started.push(fid);
+      if (r.started) {
+        started.push(fid);
+        // EI-203: count this genuine new epoch only when it's another consecutive
+        // same-failure retry; reset otherwise (a `reuse` of an already-live
+        // pipeline is not a new attempt, so this only fires under `r.started`).
+        await bumpOrResetAttempts(pg, workspaceId, slug, fid, statusById.get(fid) === 'failing');
+      }
     }
     return { harness: slug, started };
   } catch (err) {
@@ -720,6 +864,8 @@ export async function readFrontierFeatures(
       status: string;
       feature_order: number | null;
       source_plan: string | null;
+      attempts: number | bigint | null;
+      needs_human_review: boolean | null;
     }>
   >`
     SELECT feature_id, status, feature_order,
@@ -730,7 +876,11 @@ export async function readFrontierFeatures(
            -- harness_shared.work_items is the qualified consolidated surface, which
            -- always exposes source_plan_slug, so this is robust even for harnesses
            -- whose SELECT*-frozen per-harness view predates the column.
-           COALESCE(source_plan_slug, metadata->>'source_plan') AS source_plan
+           COALESCE(source_plan_slug, metadata->>'source_plan') AS source_plan,
+           -- EI-203: read straight off the base table so computeFrontier can cap
+           -- consecutive same-failure re-dispatch — see bumpOrResetAttempts below
+           -- for who writes these.
+           attempts, needs_human_review
       FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${slug}
@@ -777,6 +927,8 @@ export async function readFrontierFeatures(
     blockedBy: edgeBlockers.get(r.feature_id) ?? [],
     sourcePlan: r.source_plan,
     order: r.feature_order,
+    attempts: Number(r.attempts ?? 0),
+    needsHumanReview: r.needs_human_review === true,
   }));
 }
 

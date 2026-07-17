@@ -213,7 +213,7 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
   const { papercuspPathForWorkspace } = await import('../papercusp-root');
   const { createFleetIfAbsent } = await import('../agent-fleets-store');
   const { buildConsoleEnvelope } = await import('../console-launcher');
-  const { spawnConsole } = await import('../console-spawn');
+  const { spawnConsole, spawnHeadless } = await import('../console-spawn');
   const { memberLaunchCommand, defaultMemberAccountRouting, composeMemberLaunchContext, isOmpLocalModel } = await import(
     '../agent-tools/fleet_registry/launch-on-plan'
   );
@@ -271,7 +271,7 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
     seat: req.seatRef,
     launchContext: launchContextPath,
   });
-  const results = await Promise.all(
+  const consoleResults = await Promise.all(
     Array.from({ length: req.count }, (_v, i) =>
       spawnConsole({
         envelope: { ...base, greetingCmd: command, cwd: base.cwd },
@@ -280,6 +280,26 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
         scheme: null,
       }),
     ),
+  );
+  // WI-5211: a delegated host is often HEADLESS — a rig VM stuck at the loginwindow,
+  // a WSL distro with no display — and spawnConsole hard-fails there ("no X display" /
+  // no GUI session), which used to refuse the whole request as spawn_failed even
+  // though the member runs fine windowless. Fall back PER MEMBER to spawnHeadless
+  // (the same SpawnConsoleResult shape launch-on-plan's headless path uses); the
+  // member logs under the workspace's fleet-logs dir instead of opening a window.
+  const results = await Promise.all(
+    consoleResults.map(async (r, i) => {
+      if (r.status === 'ok') return r;
+      try {
+        return await spawnHeadless({
+          envelope: { ...base, greetingCmd: command, cwd: base.cwd },
+          label: `${req.fleetSlug} · delegated ${i + 1}/${req.count} (${req.requestOfferId}, headless-fallback)`,
+          logDir: join(papercuspPathForWorkspace(req.workspaceId), 'fleet-logs'),
+        });
+      } catch {
+        return r; // keep the original console failure — it names the real fault
+      }
+    }),
   );
   let opened = 0;
   let firstError: string | null = null;

@@ -589,14 +589,15 @@ export default defineTool({
   name: 'plans:promote',
   profile: 'engineer',
   description:
-    "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks the plan's from_items as done. A wave declaring `spawn_child` is routed into a NEWLY-SPAWNED child harness instead (scaffold → auto-synthesized seed plan → import → start; preview reports the would-be child). Always emits a `plan_event` of kind=promoted.",
+    "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks its from_items done. A wave declaring `spawn_child` is routed into a NEWLY-SPAWNED child harness instead (scaffold → auto-synthesized seed plan → import → start; preview reports the would-be child). Emits `plan_event` kind=promoted.",
   guidance: {
     when: 'A plan is ready to enter the harness — you and the human have settled the feature list and acceptance criteria.',
     notWhen:
       'Routine plan edits — plans:set-now / plans:add-item already cover those. Mid-debate — promote only once the design is settled. ' +
-      'ANTI-OVER-SPAWN (D-001, promote-spawn-child-harness): a `spawn_child` wave is justified ONLY when the work crosses a repo/worktree boundary or needs its own lifecycle/done-definition — same-repo sub-work stays as plain features in the current harness (the dispatcher already runs feature pipelines concurrently; a child harness buys no extra parallelism, only overhead). When in doubt, do NOT spawn.',
+      'ANTI-OVER-SPAWN (D-001, promote-spawn-child-harness): a `spawn_child` wave is justified ONLY when the work crosses a repo/worktree boundary or needs its own lifecycle/done-definition — same-repo sub-work stays as plain features in the current harness (a child harness buys no extra parallelism, only overhead). When in doubt, do NOT spawn.',
     chaining:
-      'spawn_child waves: re-run with apply:false first — the preview lists the child slug, seed plan, and feature count with zero side effects. A partially-failed spawn (see `spawned_children[].warnings`) is retried by simply re-promoting (idempotent: scaffold/seed/import/start all upsert or no-op).',
+      'spawn_child waves: re-run with apply:false first — the preview lists slug/seed/count, no side effects. A partially-failed spawn (`spawned_children[].warnings`) is retried by re-promoting (idempotent). ' +
+      'Apply rewrites the plan doc (stale-CAS for any queued set-content) — reload plans:get first.',
   },
   capability: 'coord:write',
   requirePrincipal: false,

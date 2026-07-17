@@ -135,7 +135,15 @@ async function llmCallViaCodexGateway(opts: LlmCallOpts, model: string | undefin
     headers: {
       authorization: `Bearer ${CODEX_GATEWAY_AUTH}`,
       'content-type': 'application/json',
-      'x-papercusp-priority': opts.priority ?? 'scout',
+      // EI-315: an unlabeled llm-testing call used to default to 'scout' (tier 1 — WRONG
+      // direction, falsely elevating batch test traffic ahead of real interactive/Queen
+      // work) here, while the anthropic-direct path below fell to the map's bottom `default`
+      // band (tier 5 — the actual starvation this item reported: 17/17 attempts 429-capped
+      // over 7h). Both are fixed the same way: label unset test traffic 'llm-testing', which
+      // DEFAULT_GATEWAY_PRIORITY_MAP now maps to tier 4 — the same batch band as `gym`/
+      // `benchmark`, high enough to stop being first-shed but never ahead of real interactive
+      // work.
+      'x-papercusp-priority': opts.priority ?? 'llm-testing',
     },
     body: JSON.stringify(body),
     signal: opts.signal,
@@ -223,7 +231,17 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     // the `x-papercusp-priority` header on the in-process anthropic-direct call so
     // the pacing gateway tiers this caller (e.g. 'scout' → tier 1) instead of the
     // first-shed default band. No-op for the subprocess backends.
-    priority: opts.priority,
+    // EI-315: this used to pass `opts.priority` through UNDEFAULTED — every llm-testing
+    // scenario run (sim-user + judge calls) is unlabeled, so it fell through tierOf()'s
+    // fallback to the map's bottom `default` band (tier 5), the most aggressively AIMD-shed
+    // tier under fleet load. That's the literal root cause of "17/17 attempts 429-capped over
+    // 7h": llm-testing traffic was competing for gateway slots from the WORST possible
+    // priority band. Defaulting to 'llm-testing' (mapped to tier 4, alongside `gym`/
+    // `benchmark` — DEFAULT_GATEWAY_PRIORITY_MAP) gives it the same batch-lane floor those
+    // callers already get, without a new dedicated account/quota (the original 2026-06-11
+    // triage's proposed fix, gated on an owner capacity decision that predates this tier
+    // system entirely — gateway-priority-tiers-2026-06-22 landed after this item was filed).
+    priority: opts.priority ?? 'llm-testing',
     // WI-4475 / EI-11417: `governorMaxWaitMs` bounds the process-local governor;
     // `onAdmitted` observes that local permit, while `onResponseStart` fires only after the
     // request has also cleared the inference gateway and response headers arrive. A caller's
@@ -233,7 +251,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     onResponseStart: opts.onResponseStart,
     // Usage attribution: the priority label already names the caller ('gym',
     // 'scout'); reuse it so this client's header samples stop being anonymous.
-    usageAttribution: { role: opts.priority ?? 'llm-client' },
+    usageAttribution: { role: opts.priority ?? 'llm-testing' },
     // Isolate subprocess-backend spawns (LLM_TEST_BACKEND=claude-code) from
     // the host ~/.claude. No-op for the default `anthropic-direct` backend (HTTP, no
     // subprocess). Without this, each sim-user/judge `claude` spawn does a

@@ -2,15 +2,28 @@
  * POST /api/auth/change-password — change the current user's password
  * and re-issue a session (changePassword invalidates all sessions).
  *
- * Ported from app/api/auth/change-password/route.ts. `auth: 'public'` —
+ * Ported from app/api/auth/change-password/route.ts. `auth: 'loopback'` —
  * resolves the user with the seeded-`default`-user fallback: the desktop
  * webview is cookie-less (EI-338), so a strict session check left the
  * change-password form permanently 401 on desktop installs. Safe because
  * `changePassword` independently verifies the CURRENT password before
  * changing it (bad_password path) — a caller without the old password
  * still can't take over the account.
+ *
+ * EI-347: that "safe because current-password is verified" claim is FALSE for
+ * the freshly-seeded `default` user specifically — its `password_hash` is NULL,
+ * and `changePassword` skips the current-password check entirely in that state
+ * (there is no current password to check). Loopback binding narrows the caller
+ * to local processes, but "local process" is not "the app's own operator" — any
+ * local caller could otherwise permanently claim the unconfigured account. When
+ * the target has no password yet, this now ALSO requires `setupToken` (see
+ * `auth-setup-token.ts`) — a random value printed to the operator's own console
+ * at boot, which a caller with mere network reachability to the loopback port
+ * cannot read. Once a password is set this extra gate no longer applies (the
+ * normal current-password check is back in force for that account).
  */
 import { getSessionUserOrDefault, changePassword, login, SESSION_COOKIE } from '../../../auth';
+import { verifySetupToken } from '../../../auth-setup-token';
 import { recordAuthEvent } from '../../../auth-audit';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
@@ -34,6 +47,20 @@ export default defineTool({
     const body = await req.json().catch(() => null);
     const current = typeof body?.current === 'string' ? body.current : null;
     const next = typeof body?.next === 'string' ? body.next : null;
+    const setupToken = typeof body?.setupToken === 'string' ? body.setupToken : null;
+
+    // EI-347: the account has no password yet (current_hash is null), so
+    // changePassword's own current-password check is a no-op — require the
+    // boot-printed setup token as the ONLY gate standing between a bare
+    // loopback-reachable caller and permanently claiming this account.
+    if (!user.has_password && !verifySetupToken(setupToken)) {
+      void recordAuthEvent({
+        kind: 'change_password_failed',
+        username: user.username, ip, userAgent, ok: false,
+        errorCode: 'setup_token_required',
+      });
+      return Response.json({ error: 'setup_token_required' }, { status: 403 });
+    }
 
     try {
       await changePassword(user.id, current, next);

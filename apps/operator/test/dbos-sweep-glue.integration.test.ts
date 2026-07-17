@@ -209,16 +209,21 @@ beforeAll(async () => {
   await pg.unsafe(`
     CREATE SCHEMA IF NOT EXISTS harness_shared;
     CREATE TABLE harness_shared.harness_features_consolidated (
-      harness_slug     TEXT NOT NULL,
-      feature_id       TEXT NOT NULL,
-      status           TEXT NOT NULL,
-      metadata         JSONB,
-      workspace_id     TEXT,
-      feature_order    INT,
-      item_kind        TEXT NOT NULL DEFAULT 'feature',
-      origin           TEXT,
-      audit_verdict    TEXT,
-      source_plan_slug TEXT,
+      harness_slug        TEXT NOT NULL,
+      feature_id          TEXT NOT NULL,
+      status               TEXT NOT NULL,
+      metadata             JSONB,
+      workspace_id         TEXT,
+      feature_order        INT,
+      item_kind            TEXT NOT NULL DEFAULT 'feature',
+      origin                TEXT,
+      audit_verdict        TEXT,
+      source_plan_slug     TEXT,
+      -- EI-203: attempts cap on failing-feature re-dispatch — readFrontierFeatures
+      -- now reads both (see orchestrator-loop.ts DEFAULT_MAX_FAILING_ATTEMPTS).
+      attempts             BIGINT DEFAULT 0,
+      needs_human_review   BOOLEAN DEFAULT false,
+      updated_ts           BIGINT,
       PRIMARY KEY (workspace_id, harness_slug, feature_id)
     );
     -- Plans are PG-canonical (plans-pg-canonical-migration-2026-06-03): the

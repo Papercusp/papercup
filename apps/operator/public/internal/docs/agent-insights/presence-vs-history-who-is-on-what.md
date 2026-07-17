@@ -112,3 +112,36 @@ exists, use the table above; when you see `coord:roster` in your toolset, prefer
   `@topic:` / `@plan:` audience, is the durable *ever* record.
 * If the question has *ever / was / missed / history* in it, do not reach for a state
   tool.
+
+## One verdict, many lenses (presence-derivation-unification-2026-07-17)
+
+Every liveness read now derives through ONE oracle
+(`packages/operator-core/lib/agent-tools/coordination/liveness-oracle.ts` —
+`deriveVerdict` / `resolveSessionStates`), assembling ALL input legs the same
+way for every surface: heartbeat staleness, inbox-wake wakeability, the
+agent\_activity liveTurn + `■ session ended` marker, the PRESENCE\_DEAD\_MS (30m)
+zombie-await ceiling, the local `kill(pid,0)` probe, the adv\_sessions
+recorded-session rescue, claims-held (suspect vs ended), and — opt-in for
+known-psu-hosted cohorts — the psu-pty host authority. A cross-surface parity
+test (`liveness-parity.test.ts`, P-001) pins the contract.
+
+| Surface                                                             | Verdict field              | Raw-freshness field | Notes                                                                                                                                           |
+| ------------------------------------------------------------------- | -------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coord:presence` / coord:inbox re-bootstrap / sync `presence` query | `sessionState`             | `stale` (row flag)  | The reference read; never emitted `alive`.                                                                                                      |
+| `fleet:status` members\[]                                           | `sessionState`             | `heartbeatFresh`    | `alive` RETIRED from this payload (P-008).                                                                                                      |
+| `fleet:assignments` / coord:orient `me` fold                        | `sessionState`             | `heartbeatFresh`    | `alive` kept as the verdict-gated boolean projection (TUI compat) — never heartbeat-only anymore.                                               |
+| `coord:roster` view=live                                            | `sessionState`             | `stale`             | Same snapshot as coord:presence.                                                                                                                |
+| `coord:roster` view=claims                                          | `sessionState`             | `heartbeatFresh`    | Now reconciled through the same oracle (was heartbeat-only — F1).                                                                               |
+| `fleet:leader-brief`                                                | `sessionState` + `verdict` | —                   | Its psu-host rule now lives IN the oracle (`applyPsuHostAuthority`).                                                                            |
+| coord:send / handoff / dispatch MISS report                         | `sessionState`             | —                   | Full-leg oracle with per-id presence hydration (was `parked`-for-zombies — F2).                                                                 |
+| fleet:list availability + `@fleet:` audience expansion              | (filtered)                 | —                   | Oracle-dead owners excluded: counts drop ended/suspect/draining; audience drops ended/suspect only (a draining agent still gets durable sends). |
+| hive roster / Queen survey / spawn dossier                          | `sessionState`             | `heartbeatFresh`    | Was heartbeat-only `alive` (F6).                                                                                                                |
+
+Reading rules: **`sessionState` is the ONLY liveness verdict.** Any
+`heartbeatFresh` (or legacy `stale`) field is process-keepalive recency — a
+warm-dead session reads `heartbeatFresh: true` + `sessionState: 'ended'`.
+The UI's LivenessDot scale (live/idle/stale) and coverage labels
+(free/reserved/alive/progressing/stalled/dead) are display projections, never
+independent derivations (D-001). Write-side reclaim graces stay time-based
+policy, structurally pinned to the same constants
+(`liveness-constants-drift.test.ts`, D-002/P-009).

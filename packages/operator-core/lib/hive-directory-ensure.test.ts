@@ -95,6 +95,12 @@ describe('ensureHiveDirectoryWired', () => {
     vi.doMock('./sync/hyperbee/local-announce-identity', () => ({ resolveLocalAnnounceIdentity }));
     vi.doMock('./hive-directory-meta', () => ({ listOwnedHiveMeta: vi.fn(async () => []) }));
 
+    // EI-13590/WI-953 diagnosability fix: this gate firing is now a LOUD,
+    // deliberate console.warn (previously silent — the exact silence that let
+    // a from-repo smoke's ambient-env leak burn two full runs with no trace
+    // back to the cause). Spy + assert it fires with the actual env values.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
     const { ensureHiveDirectoryWired, __resetHiveDirectoryWiring } = await import('./hive-directory-boot');
     __resetHiveDirectoryWiring();
 
@@ -103,5 +109,9 @@ describe('ensureHiveDirectoryWired', () => {
     await expect(ensureHiveDirectoryWired('ws', { force: true })).resolves.toBeNull();
     expect(getSharedSwarm).not.toHaveBeenCalled();
     expect(resolveLocalAnnounceIdentity).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[hive-directory] boot-join SKIPPED for workspace ws: requestOnlyHost()===true'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('PAPERCUSP_BACKGROUND_WORKERS=0'));
   });
 });

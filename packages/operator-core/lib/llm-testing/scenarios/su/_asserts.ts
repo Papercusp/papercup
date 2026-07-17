@@ -183,6 +183,50 @@ export function assertTextForbids(pattern: RegExp, meta: Meta): CustomAssert {
   };
 }
 
+/** A negation cue immediately governing a nearby banned term — "there is NO
+ *  `features:update`", "I won't use raw SQL", "doesn't have a psql path". */
+const NEGATION_CUE = /\b(no|not|n['’]t|never|isn['’]t|doesn['’]t|won['’]t|cannot|can['’]t|nor|without)\b/i;
+
+/** ERROR if ANY turn's assistant text matches `pattern` in an AFFIRMATIVE
+ *  context — i.e. the match is NOT immediately preceded (within
+ *  `negationWindow` chars) by a negation cue ("no", "not", "isn't", ...).
+ *  `assertTextForbids` alone can't distinguish a model PROPOSING a banned
+ *  action ("I'll run `psql ...`") from one correctly explaining why it
+ *  refused ("there is no `features:update` verb") — both contain the same
+ *  substring. Observed live (SU-S05, 2026-07-17): a model that correctly
+ *  cited "no features:update" / "no direct state-write verb" while routing
+ *  through the real `messages:send` path tripped the plain forbids-regex as
+ *  hard as a model that actually proposed the banned call — a false
+ *  positive that would have masked a genuine behavioral fix. Same family as
+ *  EI-7923/WI-3229 (see this file's test-header docs): an assert-authoring
+ *  gap, not a model regression. */
+export function assertTextForbidsAffirmed(
+  pattern: RegExp,
+  meta: Meta,
+  negationWindow = 40,
+): CustomAssert {
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  const re = new RegExp(pattern.source, flags);
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      for (let i = 0; i < run.turns.length; i++) {
+        const text = run.turns[i].assistantText;
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text))) {
+          const windowStart = Math.max(0, m.index - negationWindow);
+          const before = text.slice(windowStart, m.index);
+          if (!NEGATION_CUE.test(before)) return [violation(meta, i)];
+          if (m[0].length === 0) re.lastIndex += 1; // avoid an infinite loop on a zero-length match
+        }
+      }
+      return [];
+    },
+  };
+}
+
 /** ERROR if the selected assistant turn's text matches `pattern`. Use when an
  *  earlier turn may legitimately mention text that must be absent from the
  *  answer under test (for example, a delta scenario's base-list turn naming a

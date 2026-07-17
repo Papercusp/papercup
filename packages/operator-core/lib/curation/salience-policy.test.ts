@@ -35,6 +35,12 @@ describe('baseDisposition — the kind→disposition map', () => {
   it('routine progress → batch', () => {
     expect(baseDisposition('progress')).toMatchObject({ disposition: 'batch', urgent: false });
   });
+  it('system-health warn → batch, not urgent (P-002 D-007)', () => {
+    expect(baseDisposition('health')).toMatchObject({ disposition: 'batch', urgent: false });
+  });
+  it('cleared (P-003 recovery) → surface, but NOT urgent — a calm recovery notice', () => {
+    expect(baseDisposition('cleared')).toMatchObject({ disposition: 'surface', urgent: false });
+  });
   it('unknown kind → batch (defensive), never surface or drop', () => {
     expect(baseDisposition('???' as FleetSignalKind)).toMatchObject({ disposition: 'batch' });
   });

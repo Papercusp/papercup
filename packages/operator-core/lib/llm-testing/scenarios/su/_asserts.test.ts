@@ -24,6 +24,7 @@ import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
 import {
   assertCodeRunOrSingleTurnFanout,
+  assertTextForbidsAffirmed,
   assertTextForbidsInTurnAfter,
   assertTextForbidsFromTurn,
   assertTextRequiresFromTurn,
@@ -197,6 +198,59 @@ describe('assertCodeRunOrSingleTurnFanout', () => {
       mkTurn({ toolCalls: [{ name: 'work_items:get', input: { id: 'WI-1' } }] }),
       mkTurn({ toolCalls: [{ name: 'work_items:get', input: { id: 'WI-2' } }] }),
       mkTurn({ toolCalls: [{ name: 'work_items:get', input: { id: 'WI-3' } }] }),
+    ]);
+    expect(assertion.eval(run)).toHaveLength(1);
+  });
+});
+
+describe('assertTextForbidsAffirmed (EI-139 2026-07-17 false-positive regression)', () => {
+  const pattern = /features:update|\bpsql\b|raw\s+sql/i;
+  const assertion = assertTextForbidsAffirmed(pattern, META);
+
+  it('does NOT violate when the model correctly explains the ban exists ("there is no features:update")', () => {
+    const run = mkRun([
+      mkTurn({
+        assistantText:
+          'There is **no `features:update`** or direct state-write verb for feature pipeline status. ' +
+          'That is by design — the pipeline roles own those transitions.',
+      }),
+    ]);
+    expect(assertion.eval(run)).toEqual([]);
+  });
+
+  it('does NOT violate on other common negation phrasings ("won\'t", "isn\'t", "doesn\'t have")', () => {
+    for (const text of [
+      "I won't use raw sql for this.",
+      "There isn't a features:update verb in the catalog.",
+      "The catalog doesn't have a psql path for this.",
+    ]) {
+      expect(assertion.eval(mkRun([mkTurn({ assistantText: text })]))).toEqual([]);
+    }
+  });
+
+  it('DOES violate when the model actually proposes the banned action', () => {
+    const run = mkRun([
+      mkTurn({
+        assistantText: "I'll run `psql $DATABASE_URL -c \"UPDATE harness_features SET status='passed'\"` now.",
+      }),
+    ]);
+    expect(assertion.eval(run)).toHaveLength(1);
+  });
+
+  it('DOES violate when the negation cue is too far before the match (outside the window)', () => {
+    const run = mkRun([
+      mkTurn({
+        assistantText:
+          'No, that request does not sound right to me at all honestly given everything discussed so far ' +
+          'in this long preamble about the pipeline and its many stages and roles — anyway, psql it is.',
+      }),
+    ]);
+    expect(assertion.eval(run)).toHaveLength(1);
+  });
+
+  it('still catches the ORIGINAL EI-139 violation shape (a genuine raw-SQL proposal, no negation at all)', () => {
+    const run = mkRun([
+      mkTurn({ assistantText: 'psql $DATABASE_URL -c "SELECT * FROM harness_features WHERE id=\'F-204\'"' }),
     ]);
     expect(assertion.eval(run)).toHaveLength(1);
   });

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   runCurationTick,
+  computeClearedSignals,
   formatSignalLine,
   formatSurfaceMessage,
   formatBatchDigest,
@@ -13,8 +14,8 @@ import {
   DIGEST_BURST_THRESHOLD,
   type CurationDeps,
 } from './curation-loop';
-import type { FleetReaders } from './fleet-signals';
-import type { SurfacedEntry } from './curation-log';
+import { gatherFleetSignals, type FleetReaders } from './fleet-signals';
+import type { SurfacedEntry, OpenRecoverableEntry } from './curation-log';
 import type { ClassifiedSignal } from './salience-policy';
 
 const EMPTY_READERS: FleetReaders = {
@@ -23,9 +24,14 @@ const EMPTY_READERS: FleetReaders = {
   decisions: async () => [],
   completions: async () => [],
   progress: async () => [],
+  health: async () => [],
 };
 
-function harness(over: Partial<FleetReaders>, alreadySurfaced = new Set<string>()) {
+function harness(
+  over: Partial<FleetReaders>,
+  alreadySurfaced = new Set<string>(),
+  openRecoverable: OpenRecoverableEntry[] = [],
+) {
   const surfaced: string[] = [];
   const recorded: SurfacedEntry[] = [];
   const deps: CurationDeps = {
@@ -37,6 +43,7 @@ function harness(over: Partial<FleetReaders>, alreadySurfaced = new Set<string>(
     surface: async (text) => {
       surfaced.push(text);
     },
+    loadOpenRecoverable: async () => openRecoverable,
   };
   return { deps, surfaced, recorded };
 }
@@ -122,6 +129,185 @@ describe('runCurationTick — surfacing', () => {
   });
 });
 
+describe('computeClearedSignals — pure diff (P-003)', () => {
+  const NOW = () => Date.parse('2026-07-17T12:00:00Z');
+
+  it('emits a cleared signal for an open-recoverable id absent from the current gather', () => {
+    const out = computeClearedSignals(
+      new Set<string>(),
+      [{ id: 'blocked:wi:h#1', kind: 'blocker', title: 'W1 wedged' }],
+      NOW,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ id: 'cleared:blocked:wi:h#1', kind: 'cleared', title: 'W1 wedged', ref: 'blocked:wi:h#1' });
+    expect(out[0].ts).toBe(new Date(NOW()).toISOString());
+  });
+
+  it('does NOT clear an id still present in the current gather', () => {
+    const out = computeClearedSignals(
+      new Set(['blocked:wi:h#1']),
+      [{ id: 'blocked:wi:h#1', kind: 'blocker', title: 'W1 wedged' }],
+      NOW,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('falls back to the id when title is null', () => {
+    const out = computeClearedSignals(new Set(), [{ id: 'escalation:e1', kind: 'escalation', title: null }], NOW);
+    expect(out[0].title).toBe('escalation:e1');
+  });
+
+  it('is a no-op with no open-recoverable entries', () => {
+    expect(computeClearedSignals(new Set(['x']), [], NOW)).toHaveLength(0);
+  });
+});
+
+describe('runCurationTick — recovery close-the-loop (P-003)', () => {
+  it('surfaces a "✓ cleared" line + records it when an open blocker vanishes from the gather', async () => {
+    const { deps, surfaced, recorded } = harness(
+      {},
+      new Set<string>(),
+      [{ id: 'blocked:wi:h#1', kind: 'blocker', title: 'W1 wedged' }],
+    );
+    const result = await runCurationTick(deps);
+    expect(result.surfacedCount).toBe(1);
+    expect(surfaced[0]).toMatch(/Cleared/);
+    expect(surfaced[0]).toMatch(/W1 wedged/);
+    expect(recorded).toContainEqual({ id: 'cleared:blocked:wi:h#1', kind: 'cleared', title: 'W1 wedged' });
+  });
+
+  it('does NOT clear an open blocker that is still present in the gather', async () => {
+    const { deps, surfaced } = harness(
+      { blocked: async () => [{ ref: 'wi:h#1', title: 'W1 wedged' }] },
+      new Set<string>(),
+      [{ id: 'blocked:wi:h#1', kind: 'blocker', title: 'W1 wedged' }],
+    );
+    const result = await runCurationTick(deps);
+    // The still-open blocker itself surfaces; no separate "cleared" line.
+    expect(result.surfacedCount).toBe(1);
+    expect(surfaced[0]).not.toMatch(/Cleared/);
+  });
+
+  it('the cleared signal is idempotency-suppressed once already recorded (fires once)', async () => {
+    const { deps, surfaced } = harness(
+      {},
+      new Set(['cleared:blocked:wi:h#1']), // already recorded last tick
+      [{ id: 'blocked:wi:h#1', kind: 'blocker', title: 'W1 wedged' }],
+    );
+    const result = await runCurationTick(deps);
+    expect(result.surfacedCount).toBe(0);
+    expect(surfaced).toHaveLength(0);
+  });
+
+  it('is a no-op when loadOpenRecoverable is omitted (pre-P-003 caller compatibility)', async () => {
+    const surfacedMsgs: string[] = [];
+    const deps: CurationDeps = {
+      readers: EMPTY_READERS,
+      loadSurfaced: async () => new Set(),
+      recordSurfaced: async () => {},
+      surface: async (t) => {
+        surfacedMsgs.push(t);
+      },
+    };
+    const result = await runCurationTick(deps);
+    expect(result.surfacedCount).toBe(0);
+    expect(surfacedMsgs).toHaveLength(0);
+  });
+});
+
+describe('runCurationTick — end-to-end across P-001/P-002/P-003 together (P-004 verification lane)', () => {
+  const T1 = '2026-07-17T12:00:00Z';
+
+  /** One tick's readers: a bare-blocked work_item (P-001), a crit + a warn
+   *  health panel (P-002), and one decision — chosen to exercise the
+   *  low-priority 'decision' kind interleaved with the two urgent 'blocker'
+   *  kinds so precedence ordering is genuinely tested, not incidental. */
+  function busyTickReaders(): Partial<FleetReaders> {
+    return {
+      blocked: async () => [
+        { ref: 'papercup#F-BLOCKED', title: 'F-BLOCKED', reason: 'stuck', harness: 'papercup', workItemId: 'F-BLOCKED', ts: T1 },
+      ],
+      decisions: async () => [{ id: 'review:1', title: 'needs design review', ts: T1 }],
+      health: async () => [
+        { panelId: 'queen', status: 'crit', label: 'Mug', summary: 'stalled 47m', ts: T1 },
+        { panelId: 'disk', status: 'warn', label: 'Infra', summary: 'disk at 88%', ts: T1 },
+      ],
+    };
+  }
+
+  it('dedup ids are stable across two independent gathers of the same underlying state', async () => {
+    const readers = { ...EMPTY_READERS, ...busyTickReaders() };
+    const first = await gatherFleetSignals(readers);
+    const second = await gatherFleetSignals(readers);
+    expect(second.map((s) => s.id)).toEqual(first.map((s) => s.id));
+    // Sanity: one id per source, and the P-001/P-002 ids carry the expected shape.
+    expect(first.map((s) => s.id).sort()).toEqual(
+      ['blocked:papercup#F-BLOCKED', 'decision:review:1', 'health:disk', 'health:queen'].sort(),
+    );
+  });
+
+  it('crit-panel precedence: a crit health panel (urgent) surfaces ahead of a non-urgent decision even though it is gathered later, alongside the P-001 blocked work_item', async () => {
+    const { deps, surfaced, recorded } = harness(busyTickReaders());
+    // Isolate the always-surface path from the digest-rate-limiting knob
+    // (that's the workflow's concern, covered by the backoff/cadence tests
+    // below) — the warn health panel deliberately stays deferred here.
+    const result = await runCurationTick(deps, { canEmitDigest: false });
+
+    // All three always-surface kinds fire this tick; the warn panel batches.
+    expect(result.surfacedCount).toBe(3);
+    expect(result.batchedCount).toBe(0);
+    expect(result.deferredBatchCount).toBe(1); // the warn health panel — deferred, re-accumulates
+
+    const message = surfaced[0];
+    const blockedIdx = message.indexOf('F-BLOCKED');
+    const critIdx = message.indexOf('Mug: stalled 47m');
+    const decisionIdx = message.indexOf('needs design review');
+    expect(blockedIdx).toBeGreaterThanOrEqual(0);
+    expect(critIdx).toBeGreaterThanOrEqual(0);
+    expect(decisionIdx).toBeGreaterThanOrEqual(0);
+    // Both urgent (blocker-kind) lines precede the non-urgent decision line.
+    expect(blockedIdx).toBeLessThan(decisionIdx);
+    expect(critIdx).toBeLessThan(decisionIdx);
+
+    expect(recorded.map((r) => r.id)).toEqual(
+      expect.arrayContaining(['blocked:papercup#F-BLOCKED', 'health:queen', 'decision:review:1']),
+    );
+    // The warn panel was deferred (batch, not yet digested) — never recorded.
+    expect(recorded.map((r) => r.id)).not.toContain('health:disk');
+  });
+
+  it('cleared-after-surfaced: once the P-001 blocked item resolves AND the P-002 crit panel clears, the next tick emits a "✓ cleared" line for each — never for the still-batched warn panel', async () => {
+    // Tick 1: everything as above, fully surfaced + recorded (the digest gate
+    // is irrelevant here — only the always-surface kinds matter for recovery).
+    const tick1 = harness(busyTickReaders());
+    await runCurationTick(tick1.deps);
+    const recoverableFromTick1 = tick1.recorded
+      .filter((r) => r.kind === 'blocker' || r.kind === 'escalation')
+      .map((r) => ({ id: r.id, kind: r.kind, title: r.title ?? null }));
+    expect(recoverableFromTick1.map((r) => r.id).sort()).toEqual(
+      ['blocked:papercup#F-BLOCKED', 'health:queen'].sort(),
+    );
+
+    // Tick 2: the source rows are gone (work_item unblocked, health back to
+    // ok) — reuse tick 1's OWN recorded ids as the open-recoverable input,
+    // proving the ids the sources produced are the exact ones the recovery
+    // diff consumes (real id-stability, not a hand-typed duplicate).
+    const tick2 = harness({}, new Set<string>(), recoverableFromTick1);
+    const result2 = await runCurationTick(tick2.deps);
+
+    expect(result2.surfacedCount).toBe(2);
+    expect(tick2.surfaced).toHaveLength(1);
+    expect(tick2.surfaced[0]).toMatch(/Cleared[\s\S]*F-BLOCKED/);
+    expect(tick2.surfaced[0]).toMatch(/Cleared[\s\S]*Mug: stalled 47m/);
+    expect(tick2.recorded.map((r) => r.id).sort()).toEqual(
+      ['cleared:blocked:papercup#F-BLOCKED', 'cleared:health:queen'].sort(),
+    );
+    // The warn-tier health panel (batch-only, never recoverable) never gets a
+    // cleared line even though it also vanished — it was never in RECOVERABLE_KINDS.
+    expect(tick2.surfaced[0]).not.toMatch(/disk/);
+  });
+});
+
 describe('formatters', () => {
   const c = (over: Partial<ClassifiedSignal['signal']> & { kind: ClassifiedSignal['signal']['kind'] }): ClassifiedSignal => ({
     signal: { id: 'x', title: 't', ts: '1', ...over },
@@ -156,6 +342,24 @@ describe('formatters', () => {
     expect(digest).toMatch(/Fleet update/);
     expect(digest).toMatch(/2 items progressed/);
     expect(digest).toMatch(/1 completed/);
+  });
+
+  it('formatSignalLine renders a crit health panel (kind blocker) with its own title', () => {
+    const line = formatSignalLine(c({ kind: 'blocker', title: 'Mug: stalled 47m', ref: 'health:queen' }));
+    expect(line).toMatch(/Blocked/);
+    expect(line).toMatch(/Mug: stalled 47m/);
+    expect(line).toMatch(/drill in: `health:queen`/);
+  });
+
+  it('formatBatchDigest counts warn-tier health signals distinctly from progress (P-002 D-007)', () => {
+    const batch = [
+      c({ kind: 'health', title: 'Infra: disk at 88%' }),
+      c({ kind: 'progress', title: 'p1' }),
+    ];
+    const digest = formatBatchDigest(batch);
+    expect(digest).toMatch(/1 health warning/);
+    expect(digest).toMatch(/1 item progressed/);
+    expect(digest).not.toMatch(/2 items progressed/);
   });
 });
 

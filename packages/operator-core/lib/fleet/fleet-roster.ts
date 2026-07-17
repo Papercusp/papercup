@@ -219,6 +219,9 @@ export function foldFleetRoster(
     out.push({
       ...base,
       alive,
+      // P-008: the RAW freshness signal under its honest name — never gated by
+      // the verdict (a warm-dead session is heartbeatFresh:true + ended).
+      heartbeatFresh: v?.heartbeatFresh ?? !stale,
       sessionState,
       confirmLiveness: v?.confirmLiveness ?? null,
       ownerLabel: p?.ownerLabel ?? base.label,
@@ -384,7 +387,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   const inFleet = new Set(presence.map((p) => p.ownerId));
   const localIds = presence.filter((p) => !p.federated).map((p) => p.ownerId);
 
-  const [tier1Result, rowsResult, wakeabilityResult] = await Promise.all([
+  const [tier1Result, rowsResult, wakeabilityResult, recordedResult] = await Promise.all([
     withBoundedTimeout(fetchPresenceTier1(localIds), {
       fallback: new Map<string, PresenceTier1Joins>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
@@ -404,16 +407,18 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:wakeability',
     }),
+    // Session-log authority leg (unification P-003): rescues a not-wakeable
+    // member whose recorded adv_session is live to `recorded` instead of
+    // `ended` — the leg fleet:assignments has had since EI-6374, now uniform
+    // here via the oracle's deriveVerdict. Best-effort like every other leg,
+    // and IN the same parallel fan-out (a serial extra leg would add up to a
+    // whole extra SUBREAD_TIMEOUT of latency to every roster read).
+    withBoundedTimeout(recordedLiveOwnerIds(localIds), {
+      fallback: new Set<string>(),
+      timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+      label: 'fleet-roster:recorded',
+    }),
   ]);
-  // Session-log authority leg (unification P-003): rescues a not-wakeable
-  // member whose recorded adv_session is live to `recorded` instead of `ended`
-  // — the leg fleet:assignments has had since EI-6374, now uniform here via
-  // the oracle's deriveVerdict. Best-effort like every other leg.
-  const recordedResult = await withBoundedTimeout(recordedLiveOwnerIds(localIds), {
-    fallback: new Set<string>(),
-    timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
-    label: 'fleet-roster:recorded',
-  });
   if (tier1Result.degraded) degradedLegs.push('tier1');
   if (rowsResult.degraded) degradedLegs.push('assignments');
   if (wakeabilityResult.degraded) degradedLegs.push('wakeability');

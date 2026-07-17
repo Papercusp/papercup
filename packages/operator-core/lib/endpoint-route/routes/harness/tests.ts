@@ -2,7 +2,7 @@
  * Per-phase tests tab:
  *
  *   GET  /api/harness/:slug/tests              — list tests for the resolved phase
- *   POST /api/harness/:slug/tests/:id/run      — execute a test via playwright/vitest/pytest; update status
+ *   POST /api/harness/:slug/tests/:id/run      — execute a test via playwright/vitest/pytest/cargo/shell; update status
  *
  * V1 ship-state gate: both routes return 404 when FLAGS.HARNESS_PHASES is
  * off — the tests tab is phase-coupled per the harness-phases plan.
@@ -19,17 +19,42 @@ import { type ProjectEntry } from '../../../harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '../../../harness-phases';
 import { defineTool } from '@papercusp/agent-mcp';
 
-interface TestItem {
+export interface TestItem {
   id: string;
   summary: string;
+  /**
+   * For 'playwright' | 'vitest' | 'pytest': a repo-relative test file path,
+   * passed straight to the runner. For 'cargo': the repo-relative directory
+   * containing the crate's Cargo.toml (cargo runs `cargo test` from that
+   * directory — there is no single-file equivalent, since cargo organizes
+   * tests by crate/target, not by source file). For 'shell': a repo-relative
+   * path to an executable script, run directly via `bash` (so the +x bit
+   * isn't required) from the worktree root.
+   */
   file: string;
-  framework: 'playwright' | 'vitest' | 'pytest';
+  framework: 'playwright' | 'vitest' | 'pytest' | 'cargo' | 'shell';
   coversVALs: string[];
   status: 'passing' | 'failing' | 'skipped' | 'not_run';
   lastRunTs: number;
   durationMs: number;
   phase: Phase;
   kind?: 'contract' | 'edge';
+}
+
+/** Resolve the (bin, args, cwd) to execFileSync for one TestItem's framework. */
+export function buildRunCommand(t: TestItem, wtPath: string): { bin: string; args: string[]; cwd: string } {
+  switch (t.framework) {
+    case 'playwright':
+      return { bin: 'npx', args: ['playwright', 'test', t.file], cwd: wtPath };
+    case 'vitest':
+      return { bin: 'npx', args: ['vitest', 'run', t.file], cwd: wtPath };
+    case 'pytest':
+      return { bin: 'pytest', args: [t.file], cwd: wtPath };
+    case 'cargo':
+      return { bin: 'cargo', args: ['test'], cwd: join(wtPath, t.file) };
+    case 'shell':
+      return { bin: 'bash', args: [join(wtPath, t.file)], cwd: wtPath };
+  }
 }
 
 function readTests(project: ProjectEntry, phase: Phase): TestItem[] {
@@ -93,12 +118,8 @@ const runTest = defineTool({
     let ok = false;
     let output = '';
     try {
-      const cmd =
-        t.framework === 'playwright' ? ['npx', ['playwright', 'test', t.file]]
-        : t.framework === 'vitest'   ? ['npx', ['vitest', 'run', t.file]]
-        :                              ['pytest', [t.file]];
-      const [bin, args] = cmd as [string, string[]];
-      output = execFileSync(bin, args, { cwd: wtPath, encoding: 'utf8', timeout: 120_000, stdio: ['ignore', 'pipe', 'pipe'] });
+      const { bin, args, cwd } = buildRunCommand(t, wtPath);
+      output = execFileSync(bin, args, { cwd, encoding: 'utf8', timeout: 120_000, stdio: ['ignore', 'pipe', 'pipe'] });
       ok = true;
     } catch (e: any) {
       output = String(e?.stdout ?? '') + String(e?.stderr ?? '');

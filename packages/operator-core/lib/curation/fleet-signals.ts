@@ -76,6 +76,24 @@ export interface RawProgress {
   ts: string;
 }
 
+/**
+ * A `computeSystemHealth` panel currently at `warn` or `crit` (P-002,
+ * curation-signal-gaps-2026-07-17). `ok`/`unknown` panels never reach here —
+ * the production reader (`deps.ts`) filters to signal-worthy statuses only,
+ * and an owner-acked panel (`HealthPanel.ack`) is excluded too (re-surfacing
+ * an already-acked condition every tick would defeat the ack).
+ */
+export interface RawHealthPanel {
+  /** The `PanelKey` (e.g. 'queen', 'infra') — the stable per-tick identity. */
+  panelId: string;
+  status: 'warn' | 'crit';
+  /** Panel label, e.g. "Mug", "Infra". */
+  label: string;
+  /** The panel's own one-line human summary. */
+  summary: string;
+  ts: string;
+}
+
 /** The injectable source bag. Each returns already-fetched, lightly-shaped rows. */
 export interface FleetReaders {
   escalations(): Promise<RawEscalation[]>;
@@ -83,6 +101,8 @@ export interface FleetReaders {
   decisions(): Promise<RawDecision[]>;
   completions(): Promise<RawCompletion[]>;
   progress(): Promise<RawProgress[]>;
+  /** P-002 system-health source: warn/crit `computeSystemHealth` panels. */
+  health(): Promise<RawHealthPanel[]>;
 }
 
 /** Map an escalation's severity onto a FleetSignal kind:
@@ -110,12 +130,13 @@ async function safe<T>(fn: () => Promise<T[]>, label: string): Promise<T[]> {
  * `id` (first-wins) and sorted newest-first. Pure over the injected readers.
  */
 export async function gatherFleetSignals(readers: FleetReaders): Promise<FleetSignal[]> {
-  const [esc, blk, dec, cmp, prog] = await Promise.all([
+  const [esc, blk, dec, cmp, prog, hlt] = await Promise.all([
     safe(() => readers.escalations(), 'escalations'),
     safe(() => readers.blocked(), 'blocked'),
     safe(() => readers.decisions(), 'decisions'),
     safe(() => readers.completions(), 'completions'),
     safe(() => readers.progress(), 'progress'),
+    safe(() => readers.health(), 'health'),
   ]);
 
   const signals: FleetSignal[] = [];
@@ -183,6 +204,19 @@ export async function gatherFleetSignals(readers: FleetReaders): Promise<FleetSi
       harness: p.harness,
       ref: p.ref,
       ts: p.ts,
+    });
+  }
+
+  // P-002: crit → 'blocker' (always-surface, urgent — the fleet's operation is
+  // genuinely blocked); warn → 'health' (batch-tier, D-007 — NOT 'progress',
+  // which would misrepresent a health warning as routine work advancing).
+  for (const h of hlt) {
+    signals.push({
+      id: `health:${h.panelId}`,
+      kind: h.status === 'crit' ? 'blocker' : 'health',
+      title: `${h.label}: ${h.summary}`,
+      ref: `health:${h.panelId}`,
+      ts: h.ts,
     });
   }
 

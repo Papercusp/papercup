@@ -24,7 +24,7 @@
 
 /** Version stamped on every surfaced row so "why did this surface?" is always
  *  answerable (the reactive-graph / audit trail). Bump on a policy change. */
-export const SALIENCE_POLICY_VERSION = 'curator-v1';
+export const SALIENCE_POLICY_VERSION = 'curator-v3';
 
 /**
  * The normalized, structured unit the curator reasons over. Produced by
@@ -44,7 +44,18 @@ export type FleetSignalKind =
   /** A work_item reached a terminal done/resolved state. */
   | 'completion'
   /** Routine progress (a subscribed work_item update / plan-event). */
-  | 'progress';
+  | 'progress'
+  /** P-002 system-health source: a `warn`-tier `computeSystemHealth` panel
+   *  (D-007 — batch-tier, NOT `progress`: folding a health warning into the
+   *  "N items progressed" digest count would misrepresent it). A `crit`-tier
+   *  panel surfaces as kind 'blocker' instead (always-surface, urgent — a
+   *  crit system-health condition genuinely blocks the fleet's operation). */
+  | 'health'
+  /** P-003 recovery close-the-loop: a previously-surfaced escalation/blocker
+   *  (incl. a P-002 crit health panel, which surfaces as kind 'blocker') is
+   *  no longer present in the current gather — computed by the loop as a
+   *  diff over `curation-log`, never emitted by a `FleetReaders` source. */
+  | 'cleared';
 
 export interface FleetSignal {
   /** Stable dedup key, e.g. `escalation:<msgId>`, `wi-done:<harness>#<id>`.
@@ -120,6 +131,14 @@ export function baseDisposition(
         : { disposition: 'batch', urgent: false, reason: 'fleet-internal completion — batch' };
     case 'progress':
       return { disposition: 'batch', urgent: false, reason: 'routine progress — batch' };
+    case 'health':
+      // A warn-tier system-health panel — a heads-up, not a fire-alarm; crit
+      // panels never reach here (they're emitted as kind 'blocker').
+      return { disposition: 'batch', urgent: false, reason: 'system-health warn — batch' };
+    case 'cleared':
+      // A calm recovery notice, not a fire-alarm — always surface (the owner
+      // should learn a blocker/escalation resolved), never urgent.
+      return { disposition: 'surface', urgent: false, reason: 'recovery — previously-surfaced signal cleared' };
     default:
       // Defensive: unknown kinds are batched, never surfaced or dropped.
       return { disposition: 'batch', urgent: false, reason: 'unknown kind — batch (defensive)' };

@@ -190,11 +190,13 @@ export default defineTool({
         label: m.ownerLabel ?? m.label,
         fleetRole: m.fleetRole,
         intent: m.intent,
-        // EI-5858: `alive` is now gated on wakeability (an `ended` session no longer
-        // reads alive:true off a still-warm heartbeat); `sessionState` surfaces the
-        // full live | parked | ended truth so a leader isn't fooled by a warm-but-idle
-        // or dead session. Read sessionState, not a bare `alive`, for "is X working".
-        alive: m.alive,
+        // P-008 (presence-derivation-unification-2026-07-17): the ambiguous
+        // `alive` boolean is RETIRED from this payload. `sessionState` is the
+        // verdict (live | parked | draining | suspect | ended | recorded);
+        // `heartbeatFresh` is the RAW keepalive-freshness signal under its
+        // honest name (a warm-dead session reads heartbeatFresh:true +
+        // sessionState:'ended'). Read sessionState for "is X working".
+        heartbeatFresh: m.heartbeatFresh ?? m.alive,
         sessionState: m.sessionState,
         lastActiveSecAgo: m.lastActiveSecAgo,
         doing: m.doing,

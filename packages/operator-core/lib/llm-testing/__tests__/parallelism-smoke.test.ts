@@ -27,7 +27,19 @@
 import { describe, expect, it } from 'vitest';
 
 import { dispatchProjectedTool } from '@papercusp/agent-mcp';
-import type { ProjectedTool, UnifiedToolContext } from '@papercusp/agent-mcp';
+import type { DispatchProjectedDeps, ProjectedTool, UnifiedToolContext } from '@papercusp/agent-mcp';
+
+/**
+ * EI-262: the stub `recordInvocation` hooks below used to hand-declare their
+ * own narrow `input` shape (`{ metadataJson, ctx }`), which silently drifted
+ * out of sync with `DispatchProjectedDeps.recordInvocation`'s real (now
+ * larger) required-fields shape and started failing `tsc --noEmit` with no
+ * runtime symptom. Deriving the param type from the real interface instead
+ * means a future signature change fails loudly INSIDE this file (a clear
+ * "property X does not exist" at the point of use) rather than an opaque
+ * "argument not assignable" error at the `dispatchProjectedTool` call site.
+ */
+type RecordInvocationInput = Parameters<NonNullable<DispatchProjectedDeps['recordInvocation']>>[0];
 
 function makeTool(name: string): ProjectedTool {
   return {
@@ -68,10 +80,12 @@ describe('parallelism smoke (plan §9.3)', () => {
     const recorded: Array<{ uiClientId: unknown; spawn: string }> = [];
 
     const deps = {
-      recordInvocation: async (input: { metadataJson: Record<string, unknown> | null; ctx: UnifiedToolContext }) => {
+      recordInvocation: async (input: RecordInvocationInput) => {
         recorded.push({
           uiClientId: input.metadataJson?.uiClientId,
-          spawn: input.ctx.spawnId,
+          // spawnId is optional on UnifiedToolContext; makeCtx() below always
+          // sets a real one, so the fallback is defensive, not load-bearing.
+          spawn: input.ctx.spawnId ?? '',
         });
       },
     };
@@ -93,7 +107,7 @@ describe('parallelism smoke (plan §9.3)', () => {
     const checked: Array<{ wantId: string; sawId: unknown }> = [];
 
     const deps = {
-      recordInvocation: async (input: { metadataJson: Record<string, unknown> | null; ctx: UnifiedToolContext }) => {
+      recordInvocation: async (input: RecordInvocationInput) => {
         checked.push({
           wantId: input.ctx.uiClientId ?? '',
           sawId: input.metadataJson?.uiClientId,

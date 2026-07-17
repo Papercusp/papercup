@@ -76,6 +76,34 @@ describe('cup:spawn tool — over-ceiling slot-wait projection (D-004)', () => {
   });
 });
 
+describe('cup:spawn tool — per-spawn timeout override (EI-350)', () => {
+  it('threads a declared timeoutMs through to spawnAgentInHarness verbatim', async () => {
+    h.spawnAgentInHarness.mockResolvedValue({
+      ok: true, spawnId: 's-6-to', harness: 'papercup', projectDir: '/tmp', error: null,
+    });
+    await (spawnTool as any).handler(
+      { role: 'cup', harness: 'papercup', timeoutMs: 5_400_000 },
+      CTX,
+    );
+    expect(h.spawnAgentInHarness.mock.calls[0][0].timeoutMs).toBe(5_400_000);
+  });
+
+  it('omits timeoutMs (passes null) when the caller does not set it — the runner default applies', async () => {
+    h.spawnAgentInHarness.mockResolvedValue({
+      ok: true, spawnId: 's-7-to', harness: 'papercup', projectDir: '/tmp', error: null,
+    });
+    await (spawnTool as any).handler({ role: 'cup', harness: 'papercup' }, CTX);
+    expect(h.spawnAgentInHarness.mock.calls[0][0].timeoutMs).toBeNull();
+  });
+
+  it('rejects a timeoutMs outside the [1min, 2h] bound', () => {
+    const args = (spawnTool as any).args as { safeParse: (v: unknown) => { success: boolean } };
+    expect(args.safeParse({ role: 'cup', timeoutMs: 1_000 }).success).toBe(false); // < 1min
+    expect(args.safeParse({ role: 'cup', timeoutMs: 999_000_000 }).success).toBe(false); // > 2h
+    expect(args.safeParse({ role: 'cup', timeoutMs: 5_400_000 }).success).toBe(true); // 90min, in-bound
+  });
+});
+
 describe("cup:spawn tool — workspace resolution never records the '*' wildcard (EI-112)", () => {
   it("an unscoped-SU identity (workspaceId='*') resolves to the active workspace, not '*'", async () => {
     h.spawnAgentInHarness.mockResolvedValue({
