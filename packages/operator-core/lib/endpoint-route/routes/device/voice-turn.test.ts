@@ -105,6 +105,19 @@ function brainYielding(assembled: string): void {
   });
 }
 
+/** A stub that streams raw `delta` chunks (tag protocol included) before `done`. */
+function brainStreaming(chunks: string[], assembled: string): void {
+  dispatchMock.mockImplementation(async function* () {
+    for (const text of chunks) {
+      yield { kind: 'event', name: 'delta', data: { text } };
+    }
+    yield {
+      kind: 'done',
+      result: { content: [{ text: JSON.stringify({ totalCost: 0.001, assembled }) }] },
+    };
+  });
+}
+
 function turnReq(): Request {
   return new Request('http://127.0.0.1/device/voice/turn', {
     method: 'POST',

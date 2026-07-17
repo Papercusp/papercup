@@ -214,6 +214,7 @@ const META_PATTERN_CATEGORIES = [
   'owner-correction',
   'knowledge-reuse-gap',
   'plan-health',
+  'recent-commit',
 ] as const;
 
 /**

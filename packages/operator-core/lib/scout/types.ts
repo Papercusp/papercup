@@ -118,7 +118,13 @@ export type MetaPatternCategory =
   | 'knowledge-reuse-gap'
   // P-011: plan lifecycle coherence and stale planning backlog (separate from
   // the watchdog's already-covered stuck operational execution signal).
-  | 'plan-health';
+  | 'plan-health'
+  // autonomous-loop-prod-audit-2026-07-02 NOV-2 / WI-4635: recent-commit churn
+  // hotspots (repo-relative area rollup of recently-touched file paths) — an
+  // EXOGENOUS entropy stimulus distinct from the tracked-completions view, so
+  // ideation also sees where the tree is actively morphing right now even when
+  // no work-item tracked the edit.
+  | 'recent-commit';
 
 /**
  * A grounded meta-pattern: a cross-corpus regularity (not a single capture),
@@ -217,6 +223,12 @@ export interface CorpusDigest {
   /** PLAN HEALTH (P-011) — lifecycle/index drift, drained-but-unclosed plans,
    *  and stale draft/ready backlog (`ref` = `plan-health:*`). */
   planHealth?: MetaPattern[];
+  /** RECENT-COMMIT CHURN (NOV-2 / WI-4635) — repo-area rollup of recently-touched
+   *  file paths (`ref` = `commit-churn:<area>`), independent of whether any of that
+   *  churn was tracked by a work-item. OPTIONAL: populated by the cycle seam
+   *  (cycle-deps readCorpus), like watchdogHealth; absent on a non-git checkout or
+   *  a git-read failure (fail-soft). */
+  recentCommits?: MetaPattern[];
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS fired cycle's persisted digest snapshot
    *  carried (scout_digest_snapshots, migration 582). {@link renderDigest}

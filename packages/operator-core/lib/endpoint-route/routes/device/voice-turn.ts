@@ -16,7 +16,9 @@
  *   3. the SAME brain leg as /device/operator/converse: fast `papercup`
  *      persona when the humanFacingRole pref says so, shared operator
  *      conversation persistence (phone/desktop/TUI in lock-step, D-006)
- *                                                     → SSE `delta`s
+ *                              → SSE `delta`s (clean per-sentence text —
+ *                                the raw tag-protocol stream never hits
+ *                                the wire, EI-13172)
  *   4. per-sentence kokoro TTS while the brain is STILL streaming
  *      (voice-turn-sentences extractor; tags are never spoken)
  *                                                     → SSE `audio` events
@@ -220,6 +222,14 @@ const voiceTurn = defineTool({
           sink.event('tts_state', { ok: false, error: resolvedEngine.error });
         }
         const extractor = createSentenceExtractor();
+        // Raw brain deltas carry the operator tag protocol (<say>, <sleep>, …)
+        // and the phone renders delta text verbatim (EI-13172) — so the wire
+        // gets the extractor's CLEAN sentences, the same text the audio
+        // events speak, never the raw stream.
+        let deltaSeq = 0;
+        const emitDelta = (sentence: string): void => {
+          sink.event('delta', { text: (deltaSeq++ === 0 ? '' : ' ') + sentence });
+        };
         let ttsChain: Promise<void> = Promise.resolve();
         let audioSeq = 0;
         const speak = (sentence: string): void => {
@@ -290,12 +300,16 @@ const voiceTurn = defineTool({
             brainDeadline.observeEvent();
             if (ctrl.signal.aborted) break;
             if (ev.kind === 'event') {
-              emitToSseSink(sink, tool, ev.name, ev.data);
               if (ev.name === 'delta') {
                 const text = (ev.data as { text?: unknown })?.text;
                 if (typeof text === 'string' && text) {
-                  for (const sentence of extractor.feed(text)) speak(sentence);
+                  for (const sentence of extractor.feed(text)) {
+                    emitDelta(sentence);
+                    speak(sentence);
+                  }
                 }
+              } else {
+                emitToSseSink(sink, tool, ev.name, ev.data);
               }
             } else if (ev.kind === 'done') {
               try {
@@ -330,7 +344,10 @@ const voiceTurn = defineTool({
             return;
           }
 
-          for (const sentence of extractor.flush()) speak(sentence);
+          for (const sentence of extractor.flush()) {
+            emitDelta(sentence);
+            speak(sentence);
+          }
           await ttsChain.catch(() => {});
 
           // ── persist the assistant turn (clean say, same as text path) ─

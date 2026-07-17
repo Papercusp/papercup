@@ -92,6 +92,29 @@ classification and adds a cut-time assertion that every emitted entry's URL cont
    graduated). A cold-boot race can leave the webview idle even with `finished_at`
    set — the "Launch setup" click unsticks it.
 
+## Safety boundary for Update / Revert E2E
+
+Never run the destructive updater/revert flow from a copied host home under
+Xvfb. A copied `operator.json`, heartbeat, console marker, socket, or embedded
+database can contain PIDs that name unrelated live processes on the host. On
+2026-07-16 that pattern ended three graphical sessions by signaling the live
+user systemd process group.
+
+The canonical Linux route is the existing clean-room VM:
+
+```sh
+cd papercusp-desktop/scripts/linux-test-vm
+PAPERCUSP_E2E_RELEASE_HOST=http://10.0.2.2:8043 \
+  ./vmctl updater-e2e /path/to/Papercusp-baseline.AppImage
+./vmctl gui updater
+```
+
+The command resets a dedicated overlay, proves the guest boot ID differs from
+the host, copies only the AppImage, launches with an empty guest `HOME`, and
+validates the new `operator.json` process-birth identity against guest `/proc`.
+Update and Revert are then driven inside the SPICE guest. Host `.papercusp`
+state is never an input to this test.
+
 ## Cutting a release the updater will accept
 
 - Tags are `desktop-v<semver>-<channel>` (e.g. `desktop-v0.0.7-alpha`).
