@@ -112,6 +112,34 @@ async function collectEvents(res: Response, timeoutMs: number): Promise<string[]
   return events;
 }
 
+/** Same reader loop as collectEvents, but keeps every named event (not just
+ *  state-snapshot) — used by the run-meta assertions below. */
+async function collectAllEvents(res: Response, timeoutMs: number): Promise<string[]> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  const events: string[] = [];
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const readPromise = reader.read();
+    const timed = await Promise.race([
+      readPromise,
+      new Promise<null>((r) => setTimeout(() => r(null), deadline - Date.now())),
+    ]);
+    if (!timed) break;
+    if (timed.done) break;
+    buf += decoder.decode(timed.value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      events.push(block);
+    }
+  }
+  await reader.cancel().catch(() => {});
+  return events;
+}
+
 describe('POST /api/agent-mcp/operator-converse — state-snapshot fan-out', () => {
   it('TEXT mode: does NOT subscribe; cross-conversation snapshots stay out', async () => {
     const res = await post({ messages: [], trigger: 'user_message' });
@@ -160,6 +188,33 @@ describe('POST /api/agent-mcp/operator-converse — state-snapshot fan-out', () 
     const payload = JSON.parse(events[0].split('data: ')[1]);
     expect(payload.runId).toBe('voice-run');
     expect(payload.snapshot.openCards.some((c: { fallbackText?: string }) => c.fallbackText === 'spoken text')).toBe(true);
+  });
+});
+
+describe('POST /api/agent-mcp/operator-converse — run-meta (WI-5023)', () => {
+  // WI-5023: the route intentionally forwards state-snapshot cards onto THIS
+  // stream only for modality='voice' — text-mode observers (llm-testing's
+  // OperatorTarget) must instead watch the separate
+  // GET /operator/state-snapshot channel, scoped to this turn's own runId.
+  // `run-meta` is the (additive-only) mechanism that hands them that runId;
+  // it must fire on EVERY modality, first, before any card traffic.
+  it('emits run-meta with a runId on a TEXT turn (no modality forward, but still correlatable)', async () => {
+    const res = await post({ messages: [], trigger: 'user_message' });
+    const events = await collectAllEvents(res, 300);
+    const runMeta = events.find((b) => b.includes('event: run-meta'));
+    expect(runMeta).toBeDefined();
+    const payload = JSON.parse(runMeta!.split('data: ')[1]);
+    expect(typeof payload.runId).toBe('string');
+    expect(payload.runId.length).toBeGreaterThan(0);
+  });
+
+  it('emits run-meta on a VOICE turn too, distinct from the state-snapshot forward', async () => {
+    const res = await post({ messages: [], trigger: 'user_message', modality: 'voice' });
+    const events = await collectAllEvents(res, 300);
+    const runMeta = events.find((b) => b.includes('event: run-meta'));
+    expect(runMeta).toBeDefined();
+    const payload = JSON.parse(runMeta!.split('data: ')[1]);
+    expect(typeof payload.runId).toBe('string');
   });
 });
 

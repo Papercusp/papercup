@@ -118,6 +118,18 @@ export default defineTool({
       setup: async (sink) => {
         sink.onClose(() => ctrl.abort());
 
+        // WI-5023: expose this turn's own card-correlator runId up front, on
+        // every modality. Purely additive (a new event name; nothing existing
+        // changes) and scoped to THIS request's own id — it does not forward
+        // any card/state data itself, so it cannot leak another conversation's
+        // cards. It lets a caller that wants to observe cards in TEXT mode
+        // (production text UI already does this over its own separate
+        // GET /operator/state-snapshot subscription; the llm-testing harness
+        // needs the same runId to scope that subscription to its own turn)
+        // correlate without widening what THIS stream forwards.
+        const runId = globalThis.crypto.randomUUID();
+        sink.event('run-meta', { runId });
+
         let offStateChannel: (() => void) | null = null;
         if (body.modality === 'voice') {
           offStateChannel = subscribeWorkspace(workspaceId, (vs) => {
@@ -165,7 +177,7 @@ export default defineTool({
           },
           workspaceId,
           role,
-          runId: globalThis.crypto.randomUUID(),
+          runId,
           spawnId: globalThis.crypto.randomUUID(),
           transport: 'in_process',
           uiClientId: body.uiClientId ?? null,
