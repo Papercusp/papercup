@@ -66,3 +66,7 @@
 # WI-5209 (2026-07-17): flipRate 0.409 over 23 runs (9/22 consecutive transitions).
 # De-quarantine follow-up: WI-5254 (root-cause + fix + remove this line).
 @papercusp/operator-core::lib/curation/curation-state.integration.test.ts
+
+# WI-5208 (2026-07-17): flipRate 0.375 over 9 runs (3/8 consecutive transitions).
+# De-quarantine follow-up: WI-5255 (root-cause + fix + remove this line).
+@papercusp/operator-core::lib/memory/session-epoch-cross-port.integration.test.ts
