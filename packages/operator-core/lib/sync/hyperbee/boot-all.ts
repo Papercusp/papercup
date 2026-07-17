@@ -802,21 +802,56 @@ export async function bootSingleHarness(
     // `rawBoot` to null here, typing the guarded promise as `never`)
     const lateBoot = rawBoot as Promise<BootedHarnessHandle> | null;
     if (lateBoot && errMsg.startsWith('boot timeout')) {
+      // EI-13317/EI-13521 re-entrancy fix: the `finally` below used to delete
+      // this harness's `inflight` reservation the INSTANT the artificial
+      // timeout won the race — before the real boot (lateBoot) had settled.
+      // Any OTHER caller for the same (workspaceId, harnessSlug) landing in
+      // that zombie window saw neither `handles` nor `inflight` and launched a
+      // SECOND, independent `bootHarness()` call for the SAME corestore —
+      // contending for the same lock/I/O and making ITS OWN boot more likely to
+      // also blow its timeout budget. Under real contention this is a
+      // self-reinforcing pile-up: repeated competing boots, each one resetting
+      // the per-boot repair-ladder closures (checkReplicationStall /
+      // repairAttempts in boot.ts) back to zero, which is why the
+      // forceRejoin/rung(a,b) escalation could never accumulate enough strikes
+      // to fire (root-caused live on gate run 174333: the same log key fired
+      // "repair-on-detect ... attempt 1/3" twice, never progressing).
+      //
+      // Fix: re-point `inflight[k]` at the REAL boot (lateBoot) instead of
+      // deleting it. A re-entrant caller's `inflight.get(k)` (above, at the
+      // top of this function) now finds `lateBoot` and attaches to — awaits —
+      // the SAME pending real boot, getting its late-adopt outcome, instead of
+      // starting a competing one. The caller-facing contract is unchanged:
+      // THIS call still returns the 30s timeout failure immediately below;
+      // only the dedup bookkeeping moves to track the real boot's lifecycle.
+      inflight.set(k, lateBoot);
+
+      console.info(
+        `[hyperbee-substrate] (${k}) zombie window entered after '${errMsg}' — ` +
+          'a re-entrant caller for this harness will attach to the in-flight real boot instead of racing a new one',
+      );
       void lateBoot
         .then(async (handle) => {
-          if (!handles.has(k) && !inflight.has(k)) {
+          // `inflight` is now guaranteed to be pointing at THIS lateBoot (no
+          // other path can replace it while it's pending — a re-entrant call
+          // attaches via the `existing` branch above rather than starting a
+          // fresh boot), so `handles.has(k)` is the only remaining supersession
+          // signal: something OUTSIDE this function (e.g. a direct
+          // `_setHandleForTests`, or a future out-of-band caller) claimed the
+          // slot first.
+          if (!handles.has(k)) {
             handles.set(k, handle);
             if (evictionTrackingEnabled) {
               lastAccess.set(k, Date.now());
               evicted.delete(k);
             }
-             
+
             console.info(
               `[hyperbee-substrate] (${k}) late boot ADOPTED after '${errMsg}' — registering handle + wiring send-side`,
             );
             if (!skipSendSideWiring) await ensureSendSideWired(handle, opts.wireSendSide);
           } else {
-             
+
             console.info(
               `[hyperbee-substrate] (${k}) late boot superseded by a newer boot — closing it to release the corestore`,
             );
@@ -825,6 +860,14 @@ export async function bootSingleHarness(
         })
         .catch(() => {
           // late failure — bootHarnessSubstrate's own cleanup applies
+        })
+        .finally(() => {
+          // Leak guard (design constraint): only clear OUR OWN reservation —
+          // if something newer already replaced it, that owns its own cleanup.
+          // `lateBoot` (a normal awaited bootHarness() call) is guaranteed to
+          // settle, so this `finally` always eventually runs — the harness
+          // never wedges permanently reserved.
+          if (inflight.get(k) === lateBoot) inflight.delete(k);
         });
     }
     return {
@@ -834,7 +877,10 @@ export async function bootSingleHarness(
       error: errMsg,
     };
   } finally {
-    inflight.delete(k);
+    // Only delete OUR OWN reservation — the timeout branch above may already
+    // have re-pointed `inflight[k]` at the real boot (lateBoot); in that case
+    // this must NOT clobber it (its own `.finally()` above owns that cleanup).
+    if (inflight.get(k) === bootPromise) inflight.delete(k);
   }
 }
 

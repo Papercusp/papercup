@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 import {
   decodeQueryValue,
   searchObjectToParams,
-  applyNuqsToSearch,
+  composedSearchToObject,
 } from './nuqs-tanstack-router-adapter';
 
 describe('decodeQueryValue — type-faithful nuqs→TanStack decode', () => {
@@ -82,43 +82,30 @@ describe('searchObjectToParams — typed search → nuqs URLSearchParams', () =>
   });
 });
 
-describe('applyNuqsToSearch — watched-key merge over the validated search', () => {
-  it("preserves TanStack's native typed params nuqs does not watch", () => {
-    const next = applyNuqsToSearch(
-      { dock: 1, foo: 'bar' },
-      ['foo'],
-      new URLSearchParams('foo=baz'),
-    );
+describe('composedSearchToObject — the composed flush state → next search object', () => {
+  // The composed URLSearchParams IS the complete next search (unfiltered
+  // snapshot + every pending update applied by nuqs's global queue) — native
+  // params survive by being in the snapshot, not by merging over prev. See the
+  // adapter header's FLUSH SCOPE note (the plan-popup-close regression).
+  it("carries TanStack's native typed params through the compose", () => {
+    const next = composedSearchToObject(new URLSearchParams('dock=1&foo=baz'));
     expect(next).toEqual({ dock: 1, foo: 'baz' });
   });
 
-  it('applies a nuqs deletion by dropping the watched key', () => {
-    const next = applyNuqsToSearch(
-      { foo: 'x', keep: 9 },
-      ['foo'],
-      new URLSearchParams(''),
-    );
+  it('a key absent from the composed state (deleted by the flush) does not survive', () => {
+    const next = composedSearchToObject(new URLSearchParams('keep=9'));
     expect(next).toEqual({ keep: 9 });
     expect('foo' in next).toBe(false);
   });
 
-  it('decodes overlaid values to their typed form (true, not "true")', () => {
-    const next = applyNuqsToSearch({}, ['flag', 'n'], new URLSearchParams('flag=true&n=42'));
+  it('decodes values to their typed form (true, not "true")', () => {
+    const next = composedSearchToObject(new URLSearchParams('flag=true&n=42'));
     expect(next.flag).toBe(true);
     expect(next.n).toBe(42);
   });
 
-  it('groups repeated watched keys into an array', () => {
-    const next = applyNuqsToSearch({}, ['tag'], new URLSearchParams('tag=a&tag=b'));
+  it('groups repeated keys into an array', () => {
+    const next = composedSearchToObject(new URLSearchParams('tag=a&tag=b'));
     expect(next.tag).toEqual(['a', 'b']);
-  });
-
-  it('overlays nuqs state on top of a stale watched value in prev', () => {
-    const next = applyNuqsToSearch(
-      { sel: 'old', other: 'untouched' },
-      ['sel'],
-      new URLSearchParams('sel=new'),
-    );
-    expect(next).toEqual({ sel: 'new', other: 'untouched' });
   });
 });

@@ -201,6 +201,12 @@ import '../git-sync/git-sync-action';
 // `system:foreign-git-sync` — the P-109 foreign-workspace commit lane (a
 // SEPARATE routine from canonical git-sync by ratified design Q3).
 import './foreign-git-sync-action';
+// `system:sweep-orphaned-foreign-harnesses` — WI-1937/P-406 item 3: the
+// ephemeral-harness ORPHAN-REGISTRY cleanup sweep (registerEphemeralForeignHarness
+// rows left behind by a missed deregister). NOT the same as P-104's H12/H13
+// superviseForeignSessions liveness/orphan-ORIGIN sweep (foreign-supervision.ts),
+// which is a separate, still-unwired gap tracked apart from this one.
+import './sweep-orphaned-foreign-harnesses-action';
 // papercusp-dogfood-phase7-pr-lifecycle P-042 (un-vaporware, PR-1): `system:pr-poll`
 // — per-harness inbound-PR poll daemon (notice PR → track → trigger reviewer →
 // decideAutoReview → auto-approve/merge). Seeded INACTIVE; the pr-reviewer-settings

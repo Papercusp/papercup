@@ -252,6 +252,51 @@ describe('boot-all — substrate orchestrator', () => {
     expect(late.close).toHaveBeenCalled();
   });
 
+  // EI-13317/EI-13521 re-entrancy fix: before this fix, a caller landing in the
+  // zombie window (after the artificial timeout rejects, before the real boot
+  // settles) saw neither `handles` nor `inflight` for the harness and started a
+  // SECOND, independent bootHarness() call for the SAME corestore — contending
+  // for the same lock/I/O and self-reinforcing the timeout pile-up under load
+  // (root-caused live on gate run 174333: 18 boot timeouts / 10 late-adopts on
+  // one rig, and the forceRejoin repair ladder in boot.ts never escalating past
+  // "attempt 1/3" because each competing boot reset its closure state to zero).
+  it('EI-13317/EI-13521: a re-entrant caller inside the zombie window attaches to the SAME real boot — never a second competing one', async () => {
+    const h = fakeHandle('ws-9', 'race-window');
+    const bootHarness = vi.fn(
+      () => new Promise<BootedHarnessHandle>((res) => setTimeout(() => res(h), 40)),
+    );
+
+    // Caller A times out at 5ms; the real boot (40ms) is still running detached.
+    const a = await bootSingleHarness('ws-9', 'race-window', {
+      timeoutMs: 5,
+      bootHarness,
+      resolveSwarmBinding: async () => null,
+      skipSendSideWiring: true,
+    });
+    expect(a.state).toBe('failed');
+    expect(a.error).toMatch(/^boot timeout/);
+
+    // Caller B arrives INSIDE the zombie window (before the 40ms real boot
+    // settles). Before the fix it would find no reservation and call
+    // bootHarness a second time; after the fix it attaches to the same
+    // in-flight real boot and gets its outcome.
+    const b = await bootSingleHarness('ws-9', 'race-window', {
+      timeoutMs: 5,
+      bootHarness,
+      resolveSwarmBinding: async () => null,
+      skipSendSideWiring: true,
+    });
+    expect(b.state).toBe('already-booted');
+
+    // The real boot factory was invoked exactly ONCE — never a second,
+    // competing boot for the same corestore.
+    expect(bootHarness).toHaveBeenCalledOnce();
+
+    await new Promise((res) => setTimeout(res, 80));
+    // Late-adopt still registers the handle exactly once.
+    expect(getBootedHarness('ws-9', 'race-window')).toBe(h);
+  });
+
   it('bootAllHarnessesForActiveWorkspace returns 0 attempts for empty workspace list', async () => {
     const result = await bootAllHarnessesForActiveWorkspace({
       workspaceIds: [],
