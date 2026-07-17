@@ -36,8 +36,10 @@ function makeProcTree(
       ppid: n.ppid,
       cmdline: n.cmdline,
       processIdentity,
-      environHas: (marker: string) => marker === 'PAPERCUSP_HARNESS_SLUG=' && Boolean(n.env),
-      environmentValue: (name: string) => (name === 'PAPERCUSP_CONSOLE_IDENTITY' ? (consoleIdentity ?? null) : null),
+      environmentValue: (name: string) => {
+        if (name === 'PAPERCUSP_HARNESS_SLUG') return n.env ? 'test-harness' : null;
+        return name === 'PAPERCUSP_CONSOLE_IDENTITY' ? (consoleIdentity ?? null) : null;
+      },
     };
   };
   const kill = (pid: number, signal: NodeJS.Signals): boolean => {

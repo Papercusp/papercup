@@ -56,9 +56,6 @@ import { readProcessIdentity } from '../../process-identity';
  *  shell's cmdline while psu is still running. */
 const CONSOLE_MARKER = '.papercup-console-active';
 
-/** Env marker that SURVIVES the tab shell's `exec $SHELL -l` (cmdline does not)
- *  — the validation gate for closing a stale window by pid. */
-const ENV_MARKER = 'PAPERCUSP_HARNESS_SLUG=';
 const CONSOLE_IDENTITY_ENV = 'PAPERCUSP_CONSOLE_IDENTITY';
 
 const KILL_WAIT_POLLS = 6;
@@ -71,7 +68,6 @@ export interface ProcInfo {
   cmdline: string | null;
   /** Current kernel-backed boot + process-start identity. */
   processIdentity: string | null;
-  environHas: (marker: string) => boolean;
   environmentValue: (name: string) => string | null;
 }
 
@@ -144,7 +140,6 @@ const defaultReadProc = (pid: number): ProcInfo | null => {
       ppid: Number.isFinite(ppid) ? ppid : null,
       cmdline,
       processIdentity: readProcessIdentity(pid),
-      environHas: (marker: string) => Boolean(readEnviron()?.includes(marker)),
       environmentValue: (name: string) => {
         const prefix = `${name}=`;
         const entry = readEnviron()
@@ -316,7 +311,7 @@ export async function closeTerminalPid(
   const info = readProc(pid);
   if (!info) return { ok: false, pid, error: 'pid not found' };
   const recordedIdentity = info.environmentValue(CONSOLE_IDENTITY_ENV);
-  const marked = info.environHas(ENV_MARKER) && Boolean(recordedIdentity);
+  const marked = Boolean(info.environmentValue('PAPERCUSP_HARNESS_SLUG')) && Boolean(recordedIdentity);
   if (!marked || !info.processIdentity || recordedIdentity !== info.processIdentity) {
     return {
       ok: false,
@@ -338,7 +333,7 @@ export async function closeTerminalPid(
     return Boolean(
       current &&
       current.processIdentity === recordedIdentity &&
-      current.environHas(ENV_MARKER) &&
+      Boolean(current.environmentValue('PAPERCUSP_HARNESS_SLUG')) &&
       current.environmentValue(CONSOLE_IDENTITY_ENV) === recordedIdentity,
     );
   };
