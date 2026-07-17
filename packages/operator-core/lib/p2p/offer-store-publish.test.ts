@@ -102,6 +102,32 @@ describe('publishSeatOfferForDelegation — fail-soft gates', () => {
     }
   });
 
+  it('WI-5211 multi-hive: hiveOverride naming a shared hive → publishes THERE (no longer skipped)', async () => {
+    const { d, putRecord } = deps({
+      resolveScope: vi.fn(async () => ({ kind: 'many' as const, candidates: ['papercusp', 'hello-world-3-pot'] })),
+    });
+    const r = await publishSeatOfferForDelegation({ ...OPTS, hiveOverride: 'papercusp' }, d);
+    expect(r).toMatchObject({ ok: true, changed: true });
+    expect(putRecord).toHaveBeenCalledTimes(1);
+    expect(putRecord.mock.calls[0]![0].potHomeSlug).toBe('papercusp');
+  });
+
+  it('WI-5211: hiveOverride that is NOT a shared hive here → skipped hive_not_shared, nothing authored', async () => {
+    const { d, putRecord } = deps({
+      resolveScope: vi.fn(async () => ({ kind: 'many' as const, candidates: ['papercusp', 'hello-world-3-pot'] })),
+    });
+    const r = await publishSeatOfferForDelegation({ ...OPTS, hiveOverride: 'not-a-hive' }, d);
+    expect(r).toEqual({ ok: false, skipped: 'hive_not_shared:not-a-hive' });
+    expect(putRecord).not.toHaveBeenCalled();
+  });
+
+  it('WI-5211: hiveOverride is IGNORED on a single-hive workspace (still publishes to the sole hive)', async () => {
+    const { d, putRecord } = deps(); // default resolveScope → kind:'one', homeSlug HOME
+    const r = await publishSeatOfferForDelegation({ ...OPTS, hiveOverride: HOME }, d);
+    expect(r).toMatchObject({ ok: true, changed: true });
+    expect(putRecord.mock.calls[0]![0].potHomeSlug).toBe(HOME);
+  });
+
   it('no workspace / no gh identity → skipped (never forge a publisher)', async () => {
     const { d: d1 } = deps();
     expect(await publishSeatOfferForDelegation({ ...OPTS, workspaceId: null }, d1)).toEqual({

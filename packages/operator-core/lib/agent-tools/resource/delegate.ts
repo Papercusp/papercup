@@ -73,6 +73,12 @@ export interface DelegateResourceInput {
   remove?: boolean;
   /** The setting host's numeric GitHub id (display/audit). */
   createdByGithubUserId?: number | null;
+  /** WI-5211: the shared-hive home slug to advertise an agent_slot seat in when
+   *  this workspace hosts MORE THAN ONE shared hive. Without it a multi-hive
+   *  workspace can't disambiguate and the seat-offer publish silently skips, so
+   *  the seat is invisible to a fleet owner on another machine. Ignored for a
+   *  single-hive workspace and for account/gpu kinds. */
+  hive?: string;
 }
 
 export type DelegateResourceResult =
@@ -150,6 +156,7 @@ export async function delegateResource(
           count: args.count,
           paused: args.paused,
           removed: args.removed,
+          ...(input.hive ? { hiveOverride: input.hive } : {}),
         }),
       )
       .catch(() => {});
@@ -235,6 +242,13 @@ export default defineTool({
       .describe("agent_slot: gateway account the seats bill to; omit for 'AUTO' (gateway picks from the fleet's pool)"),
     status: z.enum(['active', 'paused']).optional().describe("pause a delegation without removing it (default 'active')"),
     remove: z.boolean().optional().describe("revoke the delegation for (fleet, kind, ref) instead of setting it"),
+    hive: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'agent_slot: shared-hive home slug to advertise the seat in when THIS workspace has >1 shared hive (without it the cross-machine seat-offer publish can\'t disambiguate and silently skips). Ignored on a single-hive workspace.',
+      ),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -260,6 +274,7 @@ export default defineTool({
       account: args.account,
       status: args.status,
       remove: args.remove,
+      hive: args.hive,
       createdByGithubUserId,
     });
 
