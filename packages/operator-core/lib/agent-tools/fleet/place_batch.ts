@@ -125,7 +125,7 @@ export default defineTool({
       .describe('Pull the OPEN unassigned backlog from this member harness (priority order) when `tasks` is not given. Also the spawn target for fresh cups.'),
     max: z.number().int().min(1).max(64).optional().describe('Hard cap on total placements this batch (default 32 / frontier size).'),
     brief: softText(LIMITS.BRIEF).optional().describe('Situational overlay applied to every placement (spawn prompt + warm-inject body) — the context the cups are MISSING, not a restatement of the work-item. Auto-truncated to 16000 chars if longer.'),
-    tier: z.string().max(40).optional().describe('Model tier for fresh spawns (quick/standard/deep/max — see your tier menu). Omit for the cup role default.'),
+    tier: z.string().max(40).optional().describe('Model tier for fresh spawns (quick/standard/deep/luna/max — see your tier menu). Omit for the cup role default.'),
     inject_load_threshold: z.number().int().min(1).max(20).optional().describe('A cup whose projected load reaches this is no longer a warm-inject target (default 3).'),
     min_inject_affinity: z.number().min(0).max(100).optional().describe('Minimum affinity score to warm-inject vs fresh-spawn (default 1 ≈ one fully-fired low-tier signal).'),
     max_inject_per_bee: z.number().int().min(1).max(10).optional().describe('Max items to warm-inject onto one cup in this batch (default 2).'),

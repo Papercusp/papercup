@@ -2877,7 +2877,7 @@ async fn fetch_hive_directory(tx: UnboundedSender<Event>) {
             let _ = tx.send(Event::HiveDirectory(rows));
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("hive-directory: {e}")));
+            let _ = tx.send(Event::Error(format!("pot directory: {e}")));
         }
     }
 }

@@ -79,6 +79,52 @@ const CHROMELESS_PATH_PREFIXES: readonly string[] = [
 // GSAP intro-easing equivalent (power3.out ≈ quart-out).
 const INTRO_EASE: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
+const HEADER_QUOTE = 'Nothing Is So Painful To The Human Mind As A Great And Sudden Change';
+const HEADER_QUOTE_DELAY_MS = 950;
+const HEADER_QUOTE_CHARACTER_MS = 24;
+
+function AnimatedHeaderQuote({ animateQuote }: { animateQuote: boolean }) {
+  const [text, setText] = useState(() => (animateQuote ? '' : HEADER_QUOTE));
+  const [settled, setSettled] = useState(() => !animateQuote);
+
+  useEffect(() => {
+    if (!animateQuote) {
+      setText(HEADER_QUOTE);
+      setSettled(true);
+      return;
+    }
+
+    let characterIndex = 0;
+    let timer: number | undefined;
+    setText('');
+    setSettled(false);
+
+    const typeNextCharacter = () => {
+      characterIndex += 1;
+      setText(HEADER_QUOTE.slice(0, characterIndex));
+
+      if (characterIndex < HEADER_QUOTE.length) {
+        timer = window.setTimeout(typeNextCharacter, HEADER_QUOTE_CHARACTER_MS);
+      } else {
+        setSettled(true);
+      }
+    };
+
+    timer = window.setTimeout(typeNextCharacter, HEADER_QUOTE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [animateQuote]);
+
+  return (
+    <span
+      className={`pc-header-quote pc-header-quote--hud${settled ? ' is-settled' : ''}${animateQuote ? '' : ' is-static'}`}
+      aria-hidden="true"
+    >
+      <span className="pc-header-quote-text">{text}</span>
+      <span className="pc-header-quote-caret" />
+    </span>
+  );
+}
+
 export default function ChromeShell() {
   const headerRef = useRef<HTMLElement | null>(null);
   const pathname = usePathname() ?? '';
@@ -172,7 +218,7 @@ export default function ChromeShell() {
           <RouteLink href="/" className="brand pc-header-brand-wrap" aria-label="papercusp" {...mainNavJumpGateProps}>
             <AnimatedPapercuspCup />
           </RouteLink>
-          <span className="pc-header-quote pc-header-quote--hud" data-quote="Nothing Is So Painful To The Human Mind As A Great And Sudden Change">Nothing Is So Painful To The Human Mind As A Great And Sudden Change</span>
+          <AnimatedHeaderQuote animateQuote={fancyEffectsEnabled} />
         </div>
         <div className="pc-header-center">
           {onAdv ? (

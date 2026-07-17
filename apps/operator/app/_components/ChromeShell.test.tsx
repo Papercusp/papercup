@@ -12,14 +12,18 @@
  *   - OPERATOR_CHAT_SIDEBAR gating: the revived OperatorChatSidebar renders
  *     iff ITS flag is on (independent of TESTING); OracleDock + Tutorial
  *     stay retired regardless of flags
+ *   - the website-matched header quote types on the measured cadence and
+ *     settles immediately when motion/effects are disabled
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 
 /* ── Hook mocks (controllable per-test) ────────────────────────────── */
 let pathname = '/';
 let testingFlag = false;
 let operatorChatSidebarFlag = false;
+let fancyEffectsEnabled = false;
+let reducedMotion = false;
 vi.mock('@/lib/router-compat/navigation', () => ({
   usePathname: () => pathname,
 }));
@@ -32,7 +36,7 @@ vi.mock('@/lib/flag-hooks', () => ({
 }));
 vi.mock('@/lib/visual-effects', () => ({
   reconcileVisualEffectsMode: vi.fn(),
-  useFancyEffectsEnabled: () => false,
+  useFancyEffectsEnabled: () => fancyEffectsEnabled,
 }));
 vi.mock('@/lib/theme', () => ({ reconcileActiveTheme: vi.fn() }));
 vi.mock('@papercusp/operator-core/lib/shortcut-registry', () => ({
@@ -46,7 +50,7 @@ vi.mock('@papercusp/flags', () => ({
   },
 }));
 vi.mock('motion', () => ({ animate: vi.fn(() => ({ stop: vi.fn() })), stagger: vi.fn(() => 0) }));
-vi.mock('motion/react', () => ({ useReducedMotion: () => false }));
+vi.mock('motion/react', () => ({ useReducedMotion: () => reducedMotion }));
 vi.mock('@papercusp/operator-core/lib/lazy-with-retry', () => ({
   // ChromeShell only renders lazy docks behind a deferred idle gate / Suspense;
   // a never-resolving lazy keeps them from mounting in the test (fallback=null).
@@ -85,8 +89,13 @@ beforeEach(() => {
   pathname = '/';
   testingFlag = false;
   operatorChatSidebarFlag = false;
+  fancyEffectsEnabled = false;
+  reducedMotion = false;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe('ChromeShell', () => {
   it('renders null on a chromeless route (/pi)', () => {
@@ -109,6 +118,41 @@ describe('ChromeShell', () => {
     expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'DEV' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'GitHub' })).toBeTruthy();
+  });
+
+  it('types the header quote on the papercusp.com cadence, then settles', () => {
+    vi.useFakeTimers();
+    fancyEffectsEnabled = true;
+    const quote = 'Nothing Is So Painful To The Human Mind As A Great And Sudden Change';
+    const { container } = render(<ChromeShell />);
+    const wrapper = container.querySelector('.pc-header-quote');
+    const text = container.querySelector('.pc-header-quote-text');
+
+    expect(text?.textContent).toBe('');
+    expect(wrapper?.classList.contains('is-settled')).toBe(false);
+
+    act(() => vi.advanceTimersByTime(949));
+    expect(text?.textContent).toBe('');
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(text?.textContent).toBe('N');
+
+    act(() => vi.advanceTimersByTime((quote.length - 1) * 24));
+    expect(text?.textContent).toBe(quote);
+    expect(wrapper?.classList.contains('is-settled')).toBe(true);
+    expect(wrapper?.classList.contains('is-static')).toBe(false);
+  });
+
+  it('renders the complete settled quote immediately when reduced motion is enabled', () => {
+    fancyEffectsEnabled = true;
+    reducedMotion = true;
+    const { container } = render(<ChromeShell />);
+    const wrapper = container.querySelector('.pc-header-quote');
+    const text = container.querySelector('.pc-header-quote-text');
+
+    expect(text?.textContent).toBe('Nothing Is So Painful To The Human Mind As A Great And Sudden Change');
+    expect(wrapper?.classList.contains('is-settled')).toBe(true);
+    expect(wrapper?.classList.contains('is-static')).toBe(true);
   });
 
   it('renders the OPS CTA as a navigable link when NOT on /adv', () => {

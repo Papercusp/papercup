@@ -439,7 +439,10 @@ fn draw_directory(f: &mut Frame, app: &App, area: Rect) {
         Theme::block(trust_section_title(Trust::Gossip, tail), true),
         &format!(
             "   {:<24}{:<15}{:<27}{}",
-            "hive", "owner", "description", "harnesses"
+            app.lexicon.lex("pot").to_lowercase(),
+            "owner",
+            "description",
+            "harnesses"
         ),
     );
     let list = List::new(items)
@@ -621,9 +624,9 @@ mod tests {
                 .collect()
         };
         let mut app = App::new();
-        // Empty: the solo-hive hint mentions both trust classes.
+        // Empty: the solo-node hint mentions both trust classes.
         let text = render(&app);
-        assert!(text.contains("flies solo"));
+        assert!(text.contains("runs solo"));
         assert!(text.contains("federated"));
         assert!(text.contains("gossip"));
         // Populated: the federated section badge + tier + the row columns.

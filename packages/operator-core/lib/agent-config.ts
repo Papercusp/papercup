@@ -79,7 +79,7 @@ export interface AgentConfig {
   surfaceModels?: Partial<Record<SurfaceKey, string>>;
   /** User-defined model-tier menu, ordered WEAKEST → STRONGEST (the order is
       the strength ranking the floor/ceiling clamp uses). Empty = the
-      committed DEFAULT_MODEL_TIERS (quick/standard/deep/max). The queen's
+      committed DEFAULT_MODEL_TIERS (quick/standard/deep/luna/max). The queen's
       cup:spawn `tier` arg resolves against this menu — see
       fleet/model-tiers.ts (queen-model-tier-selection-2026-06-11). */
   tiers?: ModelTier[];

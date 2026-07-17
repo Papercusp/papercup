@@ -3895,7 +3895,7 @@ mod tests {
         assert!(text.contains("Sentinel"), "Operator→Sentinel");
         assert!(text.contains("Colony"), "Fleet→Colony");
         assert!(text.contains("Hives"), "Pots→Hives");
-        assert!(text.contains("Swarm"), "Nodes→Swarm");
+        assert_eq!(Tab::Hives.label(&app.lexicon), "Swarms", "Nodes→Swarms");
         assert!(text.contains("Comb"), "Cupboard→Comb");
         // A tab with no lexicon term keeps its classic title.
         assert!(text.contains("Inbox"));

@@ -399,7 +399,7 @@ export interface OperatorSpawnInput {
   /**
    * Per-spawn model escalation (queen-model-tier-selection-2026-06-11).
    * `tier` names an entry in the user-defined tier menu (AgentConfig.tiers,
-   * default quick/standard/deep/max) — resolved + clamped to [role floor,
+   * default quick/standard/deep/luna/max) — resolved + clamped to [role floor,
    * role ceiling] by resolveTierSpec. `modelSpec` is a direct
    * `<modelId>[:<effort>]` spec (operator/human escape hatch — NOT exposed to
    * the queen, whose lever is tier names only). When both are set, the

@@ -269,7 +269,7 @@ mod tests {
         // ☕ (Mug) is a double-width glyph — the test backend pads a cell after it
         // (same as the 🍵 cup glyph below), so assert glyph + label separately.
         assert!(s.contains("☕"), "mug glyph: {s}");
-        assert!(s.contains("queen su-75cee"), "queen header: {s}");
+        assert!(s.contains("Mug su-75cee"), "mug header: {s}");
         assert!(
             s.contains("Watchdog wake (boot) (×30)"),
             "coalesced count: {s}"
@@ -278,7 +278,7 @@ mod tests {
         // (asserted separately: the 🍵 glyph is double-width, so the test
         // backend pads a cell between it and the label)
         assert!(s.contains("🍵"), "cup glyph: {s}");
-        assert!(s.contains("bee su-664d2 — 1 staged"), "bee header: {s}");
+        assert!(s.contains("Cup su-664d2 — 1 staged"), "cup header: {s}");
         // ×1 rows render WITHOUT a count suffix.
         assert!(s.contains("Queen placement — WI-108"), "{s}");
         assert!(!s.contains("WI-108 (×1)"), "no ×1 suffix: {s}");

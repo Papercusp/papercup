@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 /** Throwaway: ADD an additive 'opus46' model tier (spec claude-opus-4-6:xhigh) to the operator's
  *  AgentConfig so the su-independent bench launcher can pin its bee to Opus 4.6 (XBENCH_TIER=opus46)
- *  WITHOUT touching the fleet's existing tiers (quick/standard/deep/max stay as-is). Reversible:
+ *  WITHOUT touching the fleet's existing tiers (quick/standard/deep/luna/max stay as-is). Reversible:
  *  re-run with REMOVE=1 to drop it. Persists to operator_state('operator_agent_config'); restart
  *  :3170 after so its readAgentConfig picks up the new tier. */
 import { readAgentConfig, writeAgentConfig } from '../agent-config';
