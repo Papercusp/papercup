@@ -66,6 +66,22 @@ machines before treating it as this failure mode:
 4. **Zero sockets between the machines.** `ss -tnp` / `ss -aunp` (whichever transport the
    swarm uses) shows no active connection between the two hosts' processes.
 
+**Fastest disambiguator — run the probes FIRST.** `bin/vm-rig/probe-rev.sh` +
+`bin/vm-rig/probe-fwd.sh` give a definitive live round-trip verdict in ~15s each; only
+when they FAIL does the restart lever below apply. On 2026-07-17 ~20:54Z (su-0e484126)
+legs 2–4 all appeared to match — `coord_event_log` remote rows frozen 3.4h,
+`hive-presence` gossip broadcasting into `0 channel(s) open`, `ss`/`netstat` showing no
+inter-machine sockets — yet both probes PASSED in seconds: the link was fine. The
+false reads: the VM had merely stopped *authoring* coord messages after its own
+serve.mjs restart (frozen inbound ≠ frozen replication); hyperswarm's UDX rides
+**unconnected UDP sockets that `ss`/`netstat` per-peer greps cannot see** (and
+`conntrack` may not be installed), so leg 4 needs the probes, not socket greps; and
+`dogfood-substrate-status` can report `bootedCount: 0` on the bg-host while the engine
+is demonstrably live in-process (outbox draining, corestore fd open — a separate
+status-seam false-negative, filed 2026-07-17). Leg 1 is the strong guard: **remote
+`shared_presence` rows re-stamping fresh (age < ~1 min) mean the link is ALIVE** —
+never restart through that signal.
+
 Rule out the two usual false leads before concluding it's this bug:
 
 - **The DHT fixture is not the cause.** A dedicated DHT bootstrap/fixture service
