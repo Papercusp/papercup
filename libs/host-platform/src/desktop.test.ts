@@ -18,9 +18,16 @@ describe('desktopHostPlatform', () => {
     envSnapshot.PAPERCUSP_PG_URL = process.env.PAPERCUSP_PG_URL;
     envSnapshot.HOME = process.env.HOME;
     envSnapshot.USERPROFILE = process.env.USERPROFILE;
+    envSnapshot.PAPERCUSP_HOME = process.env.PAPERCUSP_HOME;
     delete process.env.HARNESS_ADMIN_DATABASE_URL;
     delete process.env.DATABASE_URL;
     delete process.env.PAPERCUSP_PG_URL;
+    // EI-13917: the discovery-file lookup now honors PAPERCUSP_HOME (the
+    // established isolation escape hatch) BEFORE os.homedir() — clear it here
+    // too, or these tests silently read whatever PAPERCUSP_HOME the CALLING
+    // process happens to have exported (e.g. a psu/fleet session's per-
+    // workspace state dir) instead of the isolated tmp home below.
+    delete process.env.PAPERCUSP_HOME;
     // os.homedir() honors $HOME on POSIX / %USERPROFILE% on Windows, so this
     // repoints the ~/.papercusp/embedded-pg.json discovery lookup at an empty
     // tmp home. Without it these tests read the REAL home dir and go red on any
