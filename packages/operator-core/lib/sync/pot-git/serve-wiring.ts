@@ -278,6 +278,22 @@ function statesFor(mux: object): Map<string, ChannelState> {
   return m;
 }
 
+/** Per-(muxer, topic) serve registration that SURVIVES the onclose eviction in
+ *  `ensureChannel` (WI-3496/WI-5177 drill): `wireHiveGitServe` runs once per
+ *  connection, so a channel re-created after a close (or materialized by the
+ *  lazy `pair()` notifier) would otherwise have `serverConfig` null forever and
+ *  refuse every inbound req `not-serving`. */
+const serveConfigByMuxer = new WeakMap<object, Map<string, { serverConfig: PotGitServeConfig; socket: unknown }>>();
+
+function serveConfigsFor(mux: object): Map<string, { serverConfig: PotGitServeConfig; socket: unknown }> {
+  let m = serveConfigByMuxer.get(mux);
+  if (!m) {
+    m = new Map();
+    serveConfigByMuxer.set(mux, m);
+  }
+  return m;
+}
+
 /** Muxers on which the lazy-accept `pair()` notifier (below) is already
  *  registered — pair() is idempotent to call twice, but this avoids
  *  redundant re-registration on every `resolveMuxStream` call. */
@@ -456,6 +472,15 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   if (state) return state;
   state = newState();
   states.set(topicHex, state);
+  // Seed from the muxer-level serve config (see serveConfigByMuxer): a channel
+  // re-created after the onclose eviction below — or materialized by the lazy
+  // `pair()` notifier before `wireHiveGitServe`'s register() ran — must still
+  // serve; `wireHiveGitServe` runs once per connection and never back-fills.
+  const kept = serveConfigByMuxer.get(mux as unknown as object)?.get(topicHex);
+  if (kept) {
+    state.serverConfig = kept.serverConfig;
+    state.socket = kept.socket;
+  }
   const channel = mux.createChannel({
     protocol: POT_GIT_PROTOCOL,
     id: topic,
@@ -464,6 +489,16 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
     },
     onclose: () => {
       failAllSessions(state!);
+      // WI-3496/WI-5177 drill: same dead-channel-cache class as
+      // peer-dial-registry.ts — a closed channel cached forever poisons this
+      // (muxer, topic): our next openHiveGitFetchDuplex resolves to a dead
+      // channel whose `waitOpened` NEVER resolves (the 120s-ceiling hang), and
+      // the remote's re-open is protomux-REJECTED via the pair() notifier
+      // resolving to the dead state. Flush waiters (callers re-check
+      // `state.opened`) and evict so the next use re-creates a live channel.
+      const waiters = state!.openedWaiters.splice(0);
+      for (const w of waiters) w();
+      if (states.get(topicHex) === state) states.delete(topicHex);
     },
   });
   if (!channel) {
@@ -554,6 +589,9 @@ export function wireHiveGitServe(socket: unknown, topic: Buffer, config: PotGitS
     const { mux, opened } = resolveMuxStream(socket, topic);
     const register = (): void => {
       try {
+        // Persist per-muxer FIRST (survives channel eviction — see
+        // serveConfigByMuxer), then mirror onto the live state.
+        serveConfigsFor(mux as unknown as object).set(topic.toString('hex'), { serverConfig: config, socket });
         const state = ensureChannel(mux, topic);
         state.serverConfig = config;
         state.socket = socket;
@@ -592,10 +630,27 @@ export async function openHiveGitFetchDuplex(
       () => {},
       () => {},
     );
+    // Fail-soft: callers check `.destroyed`, they never attach 'error' — an
+    // unswallowed destroy(err) becomes an uncaught exception on next tick
+    // (same footgun peer-dial-registry.ts's openHiveGitDuplexToDevice fixed).
+    d.on('error', () => {});
     d.destroy(new Error('pot-git: could not open the serve channel'));
     return d;
   }
   await waitOpened(state);
+  if (!state.opened) {
+    // The channel closed WITHOUT ever opening (remote side not wired yet —
+    // protomux rejected our open; WI-3496 drill boot-order race). The onclose
+    // handler evicted it, so the NEXT attempt re-creates a live channel; this
+    // attempt fails soft instead of hanging to the caller's outer timeout.
+    const d = new FrameDuplex(
+      () => {},
+      () => {},
+    );
+    d.on('error', () => {});
+    d.destroy(new Error('pot-git: serve channel closed before opening (peer not wired yet — will retry)'));
+    return d;
+  }
   const messages = state.messages;
   const id = state.nextClientId++;
   const duplex = new FrameDuplex(

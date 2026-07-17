@@ -177,6 +177,29 @@ function statesFor(mux: object): Map<string, ChannelState> {
   return m;
 }
 
+/** Per-MUXER dial identity/config, hoisted OUT of per-topic ChannelState
+ *  (WI-3496/WI-5177 live-drill finding): a channel re-created after a close
+ *  (see the onclose eviction below) or materialized early by the lazy `pair()`
+ *  notifier would otherwise have `selfDevicePubkeyBase64`/`sign`/`localSocket`
+ *  all null FOREVER — `wireHiveGitDial` runs once per connection, so nothing
+ *  ever back-fills them, the hello is never sent, and a received hello is
+ *  dropped for want of a socket. One record per muxer is correct: every topic
+ *  on a connection shares the same device identity and the same socket. */
+interface MuxerDialConfig {
+  selfDevicePubkeyBase64: string;
+  sign: (bytes: Buffer) => Promise<Buffer> | Buffer;
+  socket: unknown;
+  /** Topics `wireHiveGitDial` was EXPLICITLY called for on this muxer — the
+   *  only topics we will SIGN a hello for on a pair-materialized channel. A
+   *  remote can open a channel with an ARBITRARY id; never produce a signature
+   *  over a topic this box did not itself join+wire. */
+  topics: Set<string>;
+  /** Re-dial attempts per topicHex for never-opened closes (reset on open). */
+  retries: Map<string, number>;
+}
+
+const dialConfigByMuxer = new WeakMap<object, MuxerDialConfig>();
+
 /** Muxers on which the lazy-accept `pair()` notifier is already registered —
  *  `pair()` is idempotent to call twice, but this avoids redundant
  *  re-registration on every `resolveMuxStream` call. */
@@ -233,23 +256,46 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   if (state) return state;
   state = newState();
   states.set(topicHex, state);
+  // Seed from the muxer-level dial config (see MuxerDialConfig): a channel
+  // materialized by the lazy `pair()` notifier — or re-created after the
+  // onclose eviction below — must still be able to send its hello (self+sign,
+  // only for topics this box explicitly wired) and register a received one
+  // (localSocket), even though `wireHiveGitDial` will never run again for
+  // this connection.
+  const cfg = dialConfigByMuxer.get(mux as unknown as object);
+  if (cfg) {
+    state.localSocket = cfg.socket;
+    if (cfg.topics.has(topicHex)) {
+      state.selfDevicePubkeyBase64 = cfg.selfDevicePubkeyBase64;
+      state.sign = cfg.sign;
+    }
+  }
   dbg('[HGDEBUG-dial] ensureChannel: calling createChannel', { topicHex });
   const channel: ProtomuxChannel | null = mux.createChannel({
     protocol: POT_GIT_HELLO_PROTOCOL,
     id: topic,
     onopen: () => {
       dbg('[HGDEBUG-dial] onopen fired', { topicHex });
+      dialConfigByMuxer.get(mux as unknown as object)?.retries.delete(topicHex);
       state!.opened = true;
       const waiters = state!.openedWaiters.splice(0);
       for (const w of waiters) w();
       maybeSendHello(state!, topic);
     },
     onclose: () => {
-      dbg('[HGDEBUG-dial] onclose fired', { topicHex });
+      dbg('[HGDEBUG-dial] onclose fired', { topicHex, everOpened: state!.opened });
       if (state!.remoteDevicePubkey) registryFor(topicHex).delete(state!.remoteDevicePubkey);
       if (state!.localSocket && typeof state!.localSocket === 'object') {
         verifiedDeviceBySocket.delete(state!.localSocket as object);
       }
+      // WI-3496/WI-5177 live-drill root cause: a closed channel cached forever
+      // poisons this (muxer, topic) BOTH ways — our own re-wires resolve to a
+      // dead channel that can never open, and the remote's re-open hits the
+      // `pair()` notifier, whose ensureChannel ALSO resolves to the dead state
+      // and creates no protomux channel, so protomux REJECTS the remote's open.
+      // Evict so the next dial / pair notification re-creates a live channel.
+      if (states.get(topicHex) === state) states.delete(topicHex);
+      maybeScheduleRedial(mux, topic, topicHex, state!);
     },
   });
   dbg('[HGDEBUG-dial] createChannel returned', { topicHex, channel: !!channel });
@@ -273,23 +319,65 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
         return;
       }
       state!.remoteDevicePubkey = v.device_pubkey;
-      // `localSocket` is set by `wireHiveGitDial`'s register() — normally
-      // already populated by the time a peer's hello arrives (both run at
-      // connection-open time), but if a hello genuinely races ahead of it,
-      // fail soft (drop this hello) rather than register a `null` socket;
-      // the registry then simply stays "not yet resolvable" for this device,
-      // matching every other not-connected-yet case.
+      // `localSocket` is normally set by `wireHiveGitDial`'s register() (or
+      // seeded from the muxer dial config above). If BOTH are missing — a
+      // pair-materialized channel on a muxer `wireHiveGitDial` never ran on —
+      // fall back to the muxer's own stream: it IS the connection, and
+      // `openHiveGitFetchDuplex`/`resolveMuxStream` resolve it back to the
+      // same shared Protomux, so a registry entry built on it dials fine.
+      // (WI-3496 drill: the old drop-on-null path silently discarded every
+      // verified hello on such channels, leaving the registry empty.)
+      if (!state!.localSocket) {
+        state!.localSocket =
+          dialConfigByMuxer.get(mux as unknown as object)?.socket ??
+          (mux as unknown as { stream?: unknown }).stream ??
+          null;
+      }
       if (state!.localSocket) {
         registryFor(topicHex).set(v.device_pubkey, state!.localSocket);
         if (typeof state!.localSocket === 'object') {
           verifiedDeviceBySocket.set(state!.localSocket as object, v.device_pubkey);
         }
+      } else {
+        dbg('[HGDEBUG-dial] verified hello had NO resolvable socket — not registered', { topicHex });
       }
     },
   });
   channel.open();
   dbg('[HGDEBUG-dial] channel.open() called', { topicHex });
   return state;
+}
+
+/** Backoff for re-dialing a channel that closed WITHOUT EVER OPENING — i.e.
+ *  the remote protomux-rejected our open because its side of this topic wasn't
+ *  wired yet (boot-order race: the WI-3496 drill measured a ~100s skew between
+ *  the two machines' swarm wirings). Reconnects are rare (EI-13317), so an
+ *  unhealed race is effectively permanent — a short capped retry converts it
+ *  into a self-healing blip. A channel that closed AFTER opening is normal
+ *  teardown and is never re-dialed (the next connection re-wires it). */
+const REDIAL_DELAYS_MS = [5_000, 20_000, 60_000];
+
+function maybeScheduleRedial(mux: Protomux, topic: Buffer, topicHex: string, closed: ChannelState): void {
+  if (closed.opened) return;
+  const muxKey = mux as unknown as object;
+  const cfg = dialConfigByMuxer.get(muxKey);
+  if (!cfg || !cfg.topics.has(topicHex)) return;
+  const stream = (mux as unknown as { stream?: { destroyed?: boolean } }).stream;
+  if (stream?.destroyed) return;
+  const attempt = cfg.retries.get(topicHex) ?? 0;
+  if (attempt >= REDIAL_DELAYS_MS.length) return;
+  cfg.retries.set(topicHex, attempt + 1);
+  const t = setTimeout(() => {
+    try {
+      if (stream?.destroyed) return;
+      if (statesFor(muxKey).has(topicHex)) return; // already re-materialized (pair notifier / re-wire)
+      dbg('[HGDEBUG-dial] re-dial after never-opened close', { topicHex, attempt: attempt + 1 });
+      ensureChannel(mux, topic);
+    } catch {
+      /* best-effort */
+    }
+  }, REDIAL_DELAYS_MS[attempt]);
+  (t as { unref?: () => void }).unref?.();
 }
 
 /** Resolve the shared Protomux for a connection socket — corestore attaches it
@@ -353,6 +441,20 @@ export function wireHiveGitDial(
     dbg('[HGDEBUG-dial] wireHiveGitDial called', { self: selfDevicePubkeyBase64.slice(0, 8) });
     const { mux, opened } = resolveMuxStream(socket);
     dbg('[HGDEBUG-dial] resolved mux', { hasOpened: !!opened });
+    // Record the muxer-level dial config SYNCHRONOUSLY (before the async
+    // register below) so a pair-materialized or re-created channel for this
+    // topic can send/register hellos on its own — see MuxerDialConfig.
+    const muxKey = mux as unknown as object;
+    let cfg = dialConfigByMuxer.get(muxKey);
+    if (!cfg) {
+      cfg = { selfDevicePubkeyBase64, sign, socket, topics: new Set(), retries: new Map() };
+      dialConfigByMuxer.set(muxKey, cfg);
+    } else {
+      cfg.selfDevicePubkeyBase64 = selfDevicePubkeyBase64;
+      cfg.sign = sign;
+      cfg.socket = socket;
+    }
+    cfg.topics.add(topic.toString('hex'));
     const register = (): void => {
       try {
         dbg('[HGDEBUG-dial] register() running');
