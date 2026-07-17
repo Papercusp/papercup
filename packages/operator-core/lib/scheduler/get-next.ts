@@ -482,6 +482,46 @@ function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
 }
 
 /**
+ * WI-5258 companion to {@link filterHasIdConstraint}: extract the ids a `not`-wrapped id
+ * leaf NEGATIVELY excludes — `{ not: { field:'id', op:'='|'in', value:[...] } }`, bare or
+ * directly inside a top-level `all` (the same conservative bare/all-only shapes
+ * {@link positiveIdCohortIds} and {@link issueKindsForFallback} handle; deeper nesting under
+ * `any`/`not` is left alone rather than guessed at). Multiple such leaves union (excluding
+ * from set A and set B excludes A∪B).
+ *
+ * Once filterHasIdConstraint correctly stops disabling tier 3 for a spec like this, the
+ * exclusion itself must still be HONORED — `claimNextIssueWorkItem` only ever received
+ * `issueKinds` + `ids` (the POSITIVE cohort), with no way to see a negative exclusion, so
+ * without this a fleet's "already-handled, skip these" ids came right back through the
+ * fallback (caught by this WI's own regression test before it shipped: tier 3 claimed the
+ * excluded id, not the other open one). Threaded into `claimNextIssueWorkItem`'s
+ * `excludeIds` opt.
+ */
+function negativeIdExclusions(filter: FilterNode | undefined): string[] {
+  function idLeafValues(node: FilterNode): string[] | null {
+    if (!isLeaf(node) || node.field !== 'id' || (node.op !== '=' && node.op !== 'in')) return null;
+    const raw = Array.isArray(node.value) ? node.value : [node.value];
+    return raw.map(String);
+  }
+  function notExclusion(node: FilterNode): string[] | null {
+    if (isLeaf(node) || !('not' in node)) return null;
+    return idLeafValues(node.not);
+  }
+  if (!filter) return [];
+  const out = new Set<string>();
+  const direct = notExclusion(filter);
+  if (direct) {
+    direct.forEach((v) => out.add(v));
+  } else if (!isLeaf(filter) && 'all' in filter) {
+    for (const node of filter.all) {
+      const vals = notExclusion(node);
+      if (vals) vals.forEach((v) => out.add(v));
+    }
+  }
+  return [...out];
+}
+
+/**
  * Recursively compile the filter combinator tree to ONE parameterized `sql` fragment.
  * `all` ⇒ AND, `any` ⇒ OR, `not` ⇒ NOT; a leaf ⇒ {@link compileLeaf}. An undefined
  * filter ⇒ `TRUE` (the empty view — every floor-eligible item).
@@ -728,6 +768,11 @@ export async function getNextWorkItem(
     const idValues = hasIdConstraint ? (positiveIdCohortIds(spec.view.filter) ?? undefined) : undefined;
     if (!hasIdConstraint || idValues) {
       const issueKinds = issueKindsForFallback(spec.view.filter);
+      // WI-5258: a positive allowlist (idValues) and a negative exclusion are mutually
+      // exclusive in practice (a spec that already names a closed-world positive set has
+      // nothing left to additionally exclude), but thread both regardless — the query
+      // ANDs them, so an empty excludeIds is simply a no-op.
+      const excludeIds = negativeIdExclusions(spec.view.filter);
       claimed = await claimNextIssueWorkItem(
         {
           harness: opts.harness,
@@ -738,7 +783,7 @@ export async function getNextWorkItem(
           rigAvailable: opts.rigAvailable,
         },
         ws,
-        { issueKinds, ids: idValues },
+        { issueKinds, ids: idValues, excludeIds: excludeIds.length ? excludeIds : undefined },
       );
     }
   }

@@ -3126,6 +3126,8 @@ export async function claimNextIssueWorkItem(
   // feature-family table and can't match an issue-family id). Undefined ⇒ no id constraint
   // (or one the caller couldn't safely extract) ⇒ unrestricted, as before.
   const idFilter = opts.ids?.length ? [...opts.ids] : undefined;
+  // WI-5258: the negative counterpart of idFilter — ids the spec explicitly excludes.
+  const excludeIdFilter = opts.excludeIds?.length ? [...opts.excludeIds] : undefined;
   // Mig 499: the SAME release-cooldown floor claimFloorsWhereSql applies for the
   // feature family (mig 485/EI-6956) — without it, an agent that releases an
   // issue-family item immediately re-claims that EXACT row on its very next
@@ -3142,6 +3144,8 @@ export async function claimNextIssueWorkItem(
           AND wi.workspace_id = ${issueWs}
           -- WI-4309: narrow to the spec's closed-world id set, when one was extracted.
           AND ${idFilter ? sql`wi.feature_id = ANY(${idFilter}::text[])` : sql`TRUE`}
+          -- WI-5258: exclude ids the spec negatively excludes (a not-wrapped id leaf).
+          AND ${excludeIdFilter ? sql`NOT (wi.feature_id = ANY(${excludeIdFilter}::text[]))` : sql`TRUE`}
           AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
           AND (wi.taken_by IS NULL OR wi.taken_by = '')
           AND wi.status = ANY(${[...states]}::text[])
