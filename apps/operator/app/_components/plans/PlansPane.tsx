@@ -32,6 +32,7 @@ import { useMemo } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useDebouncedValue } from '@/app/harness/picker-kit';
 import {
   bucketOf,
   usePlanList,
@@ -134,6 +135,12 @@ export default function PlansPane() {
   const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
   const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
   const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
+  // The input updates ?plq on every keystroke (instant), but the EXPENSIVE
+  // consumer — buildGlanceRows re-filtering + re-rendering the whole (up to
+  // ~500-row) unvirtualized list — reads this DEBOUNCED value, so typing stays
+  // responsive and the heavy re-render runs once typing settles. Same lesson
+  // the Create dock's PlanRail learned (a fresh filter per keystroke lagged ~1s).
+  const debouncedQuery = useDebouncedValue(query, 200);
 
   const planList = usePlanList({});
   const { items: attentionItems, loading: attentionLoading } = useInboxAttention();
@@ -171,12 +178,12 @@ export default function PlansPane() {
     () =>
       buildGlanceRows({
         plans: plans ?? [],
-        query,
+        query: debouncedQuery,
         showFinished,
         needsYouByPlan,
         liveByPlan,
       }),
-    [plans, query, showFinished, needsYouByPlan, liveByPlan],
+    [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan],
   );
 
   const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
@@ -210,7 +217,7 @@ export default function PlansPane() {
         <div className="plans-pane__empty">Loading plans…</div>
       ) : rows.length === 0 ? (
         <div className="plans-pane__empty">
-          {query.trim()
+          {debouncedQuery.trim()
             ? 'No plans match the search.'
             : showFinished
               ? 'No plans yet.'
