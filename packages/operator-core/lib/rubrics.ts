@@ -49,7 +49,12 @@ import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-loc
 import { recordPlanRevision } from './agent-tools/plans/revisions';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
-import { listLocalRubrics, rubricsNeedingSeed } from './cupboard/rubric-store';
+import {
+  listLocalRubrics,
+  rubricsNeedingSeed,
+  FIRST_PARTY_RUBRIC_SEED_OWNER,
+  type ExistingRubricRow,
+} from './cupboard/rubric-store';
 
 export type RubricStatus = 'proposed' | 'active' | 'retired';
 export const RUBRIC_STATUSES: readonly RubricStatus[] = ['proposed', 'active', 'retired'];
@@ -303,9 +308,11 @@ async function queryRubricPlans(): Promise<Rubric[]> {
 // the cold-start fix: a fresh install has ZERO rubric rows until this runs.
 
 /** The recorded plan owner for a seeded rubric (createdBy/proposedBy/ratifiedBy in
- *  reads). The content VERSION lives in the bundle (rubric.json/listing.json), not in
- *  template_data — rubricTemplateDataSchema is .strict() and a version field there
- *  would fail loud; v1 has no upgrade semantics anyway (existing rows always win).
+ *  reads). Defined in cupboard/rubric-store.ts (the seed decision core gates on it);
+ *  re-exported here for the established import surface. The content VERSION lives in
+ *  the bundle (rubric.json/listing.json), not in template_data —
+ *  rubricTemplateDataSchema is .strict() and a version field there would fail loud;
+ *  v1 has no upgrade semantics anyway (existing rows always win).
  *
  *  ⚠ Renaming a first-party rubric's on-disk dir? This seeder WILL race you: the
  *  moment the new dir is on disk with no plan row under the new id yet, any lazy
@@ -313,10 +320,14 @@ async function queryRubricPlans(): Promise<Rubric[]> {
  *  placeholder row owner=FIRST_PARTY_RUBRIC_SEED_OWNER under the NEW id — ahead of
  *  whatever DB migration renames the real row. That migration must DELETE a
  *  same-id owner=FIRST_PARTY_RUBRIC_SEED_OWNER placeholder before renaming the real
- *  row into place. Full writeup + copy-paste SQL:
+ *  row into place. (Since WI-3617 the seed also RECLAIMS a seeder-owned row whose
+ *  template_data fails the schema — so a wedged placeholder self-heals on a later
+ *  read instead of blocking its own repair forever — but the migration rule stands:
+ *  the placeholder squatting the new id has no ratification lineage and must not
+ *  survive as the renamed row's identity.) Full writeup + copy-paste SQL:
  *  agent-insights/renaming-a-first-party-rubric-races-the-cold-start-seeder
  *  (EI-8912 / WI-3618, worked example: sql/531-rename-hive-coordination-health-rubric-to-pot.sql). */
-export const FIRST_PARTY_RUBRIC_SEED_OWNER = 'first-party-bundle';
+export { FIRST_PARTY_RUBRIC_SEED_OWNER };
 
 type RubricSeedState = 'pending' | 'running' | 'done';
 let rubricSeedState: RubricSeedState = 'pending';
@@ -326,18 +337,24 @@ export function __resetRubricSeedStateForTests(): void {
   rubricSeedState = 'pending';
 }
 
-/** Raw slug existence set for the no-clobber check. Deliberately NOT planRowToRubric
- *  (which nulls out rows with invalid template_data): even a half-authored rubric plan
- *  row must block the seed rather than be silently overwritten. THROWS on a DB error so
- *  the caller can defer the seed instead of mistaking "unreachable" for "empty". */
-async function existingRubricPlanSlugs(): Promise<Set<string>> {
+/** Existing rubric plan rows for the no-clobber check, with the validity flag the seed
+ *  decision core gates its reclaim exception on (see rubricsNeedingSeed). Deliberately
+ *  raw rows, NOT planRowToRubric (which nulls out invalid rows): a half-authored row
+ *  under a real owner must still block the seed rather than be silently overwritten —
+ *  only a seeder-owned invalid row is reclaimable. THROWS on a DB error so the caller
+ *  can defer the seed instead of mistaking "unreachable" for "empty". */
+async function existingRubricPlanRows(): Promise<ExistingRubricRow[]> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ plan_slug: string }[]>`
-    SELECT plan_slug
+  const rows = await sql<{ plan_slug: string; owner: string | null; template_data: unknown }[]>`
+    SELECT plan_slug, owner, template_data
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${rubricsScopeWorkspace()}
        AND template = ${RUBRIC_TEMPLATE_NAME}`;
-  return new Set(rows.map((r) => r.plan_slug));
+  return rows.map((r) => ({
+    rubricId: r.plan_slug,
+    owner: r.owner,
+    valid: rubricTemplateDataSchema.safeParse(r.template_data).success,
+  }));
 }
 
 /**
@@ -360,7 +377,7 @@ export async function ensureFirstPartyRubricsSeeded(): Promise<void> {
   try {
     const bundled = listLocalRubrics();
     if (bundled.length > 0) {
-      const missing = rubricsNeedingSeed(bundled, await existingRubricPlanSlugs());
+      const missing = rubricsNeedingSeed(bundled, await existingRubricPlanRows());
       for (const r of missing) {
         try {
           await proposeRubric({

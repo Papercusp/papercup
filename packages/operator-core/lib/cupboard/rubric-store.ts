@@ -215,15 +215,41 @@ export function readLocalRubricMethod(r: Pick<LocalRubric, 'dir'>): string | nul
   }
 }
 
+/** The recorded plan owner for a seeded rubric (createdBy/proposedBy/ratifiedBy in
+ *  reads). Lives here (not rubrics.ts) so the seed decision core below can gate on it
+ *  without an import cycle; rubrics.ts re-exports it. */
+export const FIRST_PARTY_RUBRIC_SEED_OWNER = 'first-party-bundle';
+
+/** An existing workspace rubric plan row, as the seed decision core sees it. `valid` is
+ *  whether template_data parses against rubricTemplateDataSchema — computed by the
+ *  caller (rubrics.ts owns the schema). */
+export interface ExistingRubricRow {
+  rubricId: string;
+  owner: string | null;
+  valid: boolean;
+}
+
 /**
  * The seed's PURE decision core (unit-tested without a DB): which bundled rubrics need
  * seeding into the workspace store. No-clobber: any rubricId already present in the
  * workspace (any status — active, proposed, retired, even a half-authored row) always
  * wins, so a re-run against a seeded store returns [] (idempotence).
+ *
+ * The ONE exception (WI-3617 wedge, 2026-07-17): a row that is BOTH seeder-owned
+ * (owner=FIRST_PARTY_RUBRIC_SEED_OWNER) AND invalid (template_data fails the schema)
+ * is reclaimed — it can only be a wedged placeholder (a raced rename, a broken
+ * restore), it holds no ratified content to lose, it is invisible to reads
+ * (planRowToRubric nulls it), and left in place it blocks its own repair forever.
+ * A half-authored row under any REAL owner still blocks, invalid or not.
  */
 export function rubricsNeedingSeed(
   bundled: LocalRubric[],
-  existingRubricIds: ReadonlySet<string>,
+  existing: readonly ExistingRubricRow[],
 ): LocalRubric[] {
-  return bundled.filter((r) => !existingRubricIds.has(r.rubricId));
+  const blocking = new Set(
+    existing
+      .filter((e) => e.valid || e.owner !== FIRST_PARTY_RUBRIC_SEED_OWNER)
+      .map((e) => e.rubricId),
+  );
+  return bundled.filter((r) => !blocking.has(r.rubricId));
 }
