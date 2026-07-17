@@ -27,6 +27,16 @@ beforeEach(() => {
   const g = globalThis as any;
   g.window = globalThis;
 
+  // Force voice-leader into its single-tab fallback (isLeader:true, no channel).
+  // Node's global BroadcastChannel delivers on the REAL event loop, outside
+  // fake-timer control, and vi.resetModules() leaves prior tests' voice-leader
+  // module copies alive with their channel listeners attached — an old elected
+  // copy answers the fresh copy's announce with a leader heartbeat, and whether
+  // it lands inside the 250ms announce window decides leader-vs-follower (a
+  // follower tears the full-agent session down → load-dependent gate flake).
+  // Election mechanics are covered by voice-leader.test.ts's fake channel.
+  delete g.BroadcastChannel;
+
   // Real, minimal event bus — voice-mode dispatches CustomEvents we assert.
   const listeners = new Map<string, Set<(e: any) => void>>();
   g.addEventListener = (type: string, cb: (e: any) => void) => {
@@ -244,9 +254,18 @@ describe('response timeout', () => {
       const mod = await loadVoiceMode();
       mod.setVoiceMode('always-on');
       // Let the single-tab voice-leader election settle. A follower must stay
-      // silent; this test exercises the elected full-agent tab.
-      await vi.advanceTimersByTimeAsync(300);
-      expect(mod.getOperatorVoiceSessionUiState().active).toBe(true);
+      // silent; this test exercises the elected full-agent tab. Even with the
+      // single-tab fallback forced (BroadcastChannel deleted in beforeEach —
+      // the root cause of the 2026-07-17 gate flake, see there), the attach
+      // path still crosses real async a fixed fake-time hop can assert past
+      // under CPU contention. vi.waitFor advances the fake clock per probe AND
+      // yields the event loop, so probe until attached instead of hopping 300ms.
+      await vi.waitFor(
+        () => {
+          expect(mod.getOperatorVoiceSessionUiState().active).toBe(true);
+        },
+        { timeout: 5000, interval: 50 },
+      );
       expect(mod.getVoiceState().mode).toBe('always-on');
       expect(mod.isVoiceOutputMuted()).toBe(false);
 
