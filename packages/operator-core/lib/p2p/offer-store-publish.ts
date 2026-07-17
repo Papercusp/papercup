@@ -117,6 +117,15 @@ export interface PublishSeatOfferOpts {
   paused?: boolean;
   /** The delegation was revoked → the offer publishes status 'cancelled'. */
   removed?: boolean;
+  /** WI-5211 multi-hive disambiguator: the pot-home slug to advertise the seat
+   *  in when the workspace hosts MORE THAN ONE shared hive. Without it a
+   *  multi-hive workspace resolves `scope.kind:'many'` and the publish silently
+   *  skips (`no_single_shared_hive:many`) — so a delegated seat is invisible to
+   *  a fleet owner on another machine. Mirrors coord:send's `scope:'hive'`
+   *  forcing. Validated against the workspace's actual shared-hive set; a slug
+   *  that isn't a shared hive here is refused (`hive_not_shared`), never
+   *  published to a private/absent hive. Ignored on a single-hive workspace. */
+  hiveOverride?: string;
   sql?: Sql;
 }
 
@@ -139,7 +148,21 @@ export async function publishSeatOfferForDelegation(
 
   if (!opts.workspaceId) return { ok: false, skipped: 'no_workspace' };
   const scope = await resolveScope(opts.workspaceId);
-  if (scope.kind !== 'one') {
+  // Resolve WHICH hive to advertise the seat in. Default: the sole shared hive.
+  // WI-5211: on a multi-hive workspace the caller MUST disambiguate via
+  // `hiveOverride` — validated against the workspace's real shared-hive set so a
+  // seat can never be published to a private/absent hive.
+  const sharedHomeSlugs =
+    scope.kind === 'one' ? [scope.homeSlug] : scope.kind === 'many' ? scope.candidates : [];
+  let homeSlug: string;
+  if (opts.hiveOverride) {
+    if (!sharedHomeSlugs.includes(opts.hiveOverride)) {
+      return { ok: false, skipped: `hive_not_shared:${opts.hiveOverride}` };
+    }
+    homeSlug = opts.hiveOverride;
+  } else if (scope.kind === 'one') {
+    homeSlug = scope.homeSlug;
+  } else {
     return { ok: false, skipped: `no_single_shared_hive:${scope.kind}` };
   }
   const actor = await resolveActor();
@@ -164,7 +187,7 @@ export async function publishSeatOfferForDelegation(
   });
   const existing = await getRecord(
     opts.workspaceId,
-    scope.homeSlug,
+    homeSlug,
     actor.githubUserId,
     offerId,
     opts.sql,
@@ -219,7 +242,7 @@ export async function publishSeatOfferForDelegation(
 
   const res = await putRecord({
     workspaceId: opts.workspaceId,
-    potHomeSlug: scope.homeSlug,
+    potHomeSlug: homeSlug,
     selfGithubUserId: actor.githubUserId,
     record,
     signer,
