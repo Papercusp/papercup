@@ -57,7 +57,8 @@ export function buildDiscussDraft(i: AttentionItem): string {
     .join(' · ');
   const report = typeof i.report === 'string' && i.report.trim() ? `\n\n${i.report.trim().slice(0, 600)}` : '';
   return (
-    `About this inbox item (${kindLabel}${where ? ` — ${where}` : ''}, ref ${i.kind}:${i.id}):\n` +
+    // i.id already carries the kind prefix (e.g. "coord-message:m1") — don't re-prepend it.
+    `About this inbox item (${kindLabel}${where ? ` — ${where}` : ''}, ref ${i.id}):\n` +
     `"${i.title}"${report}\n\n` +
     `Can you explain what this needs from me and help me resolve it?`
   );

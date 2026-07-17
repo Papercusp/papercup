@@ -204,7 +204,10 @@ describe('<InboxPane>', () => {
     const seed = consumePendingChatSeed();
     expect(seed).toContain('Title of d1');
     expect(seed).toContain('plan plan-x');
-    expect(seed).toContain('ref coord-message:d1');
+    // The ref is the item id verbatim — real feed ids already carry the kind
+    // prefix ("coord-message:m…"), so the draft must not re-prepend i.kind.
+    expect(seed).toContain('ref d1)');
+    expect(seed).not.toContain('coord-message:d1');
   });
 
   it('buildDiscussDraft folds kind, location, title and a bounded report excerpt', () => {
