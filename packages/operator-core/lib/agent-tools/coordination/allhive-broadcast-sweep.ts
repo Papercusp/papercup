@@ -187,7 +187,7 @@ async function writeAllHiveAuditRow(d: DetectedAllHiveBroadcast): Promise<void> 
   await sql`
     INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
     VALUES (${id}, ${Date.now()}, ${d.from}, ${ALLHIVE_AUDIT_ACTION}, ${d.msgId},
-            ${JSON.stringify(details)}::jsonb, ${d.workspaceId})
+            ${JSON.stringify(details)}::text::jsonb, ${d.workspaceId})
   `;
 }
 

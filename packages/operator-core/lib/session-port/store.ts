@@ -131,7 +131,7 @@ export async function createPreparedSessionPort(input: Omit<
       (${input.id}, ${input.workspaceId}, ${input.idempotencyKey}, ${input.protocolVersion}, ${input.sourceAdvSessionId},
        ${input.sourceBackend}, ${input.targetBackend}, ${input.targetModel}, ${input.sourceHash},
        ${input.normalizedHash}, ${input.renderedHash}, ${input.tokenHash}, ${input.artifactPath},
-       ${JSON.stringify(input.metadata)}::jsonb, ${input.expiresAt})
+       ${JSON.stringify(input.metadata)}::text::jsonb, ${input.expiresAt})
     ON CONFLICT (workspace_id, idempotency_key) DO NOTHING
     RETURNING *`;
   if (rows[0]) return mapRow(rows[0]);
@@ -162,7 +162,7 @@ export async function transitionSessionPort(
        SET status = ${to},
            target_adv_session_id = COALESCE(${fields.targetAdvSessionId ?? null}, target_adv_session_id),
            error = ${fields.error ?? null},
-           metadata = metadata || ${JSON.stringify(fields.metadata ?? {})}::jsonb,
+           metadata = metadata || ${JSON.stringify(fields.metadata ?? {})}::text::jsonb,
            pending_at = CASE WHEN ${to} = 'pending' THEN COALESCE(pending_at, now()) ELSE pending_at END,
            delivered_at = CASE WHEN ${to} = 'delivered' THEN COALESCE(delivered_at, now()) ELSE delivered_at END,
            failed_at = CASE WHEN ${to} IN ('failed', 'expired') THEN COALESCE(failed_at, now()) ELSE failed_at END

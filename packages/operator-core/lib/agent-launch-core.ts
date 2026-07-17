@@ -481,7 +481,7 @@ export async function recordAgentLaunchResult(opts: {
     const { sql } = getOrgPg();
     await sql`
       UPDATE harness_shared.agent_launch_idempotency
-         SET summary = ${JSON.stringify(opts.summary)}::jsonb
+         SET summary = ${JSON.stringify(opts.summary)}::text::jsonb
        WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
     `;
   } catch (e) {

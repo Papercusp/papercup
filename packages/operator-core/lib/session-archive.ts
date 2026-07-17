@@ -631,7 +631,7 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
                   ${stamp.owner}, ${stamp.harness_slug}, ${stamp.cwd},
                   ${stamp.adv_session_id}, ${stamp.session_root}, ${stamp.file_count},
                   ${stamp.bytes_raw}, ${stamp.bytes_stored},
-                  ${JSON.stringify(stamp.manifest)}::jsonb, ${stamp.archived_by})
+                  ${JSON.stringify(stamp.manifest)}::text::jsonb, ${stamp.archived_by})
           ON CONFLICT (workspace_id, source_kind, session_id) DO UPDATE SET
             owner = COALESCE(EXCLUDED.owner, harness_shared.session_archives.owner),
             harness_slug = COALESCE(EXCLUDED.harness_slug, harness_shared.session_archives.harness_slug),

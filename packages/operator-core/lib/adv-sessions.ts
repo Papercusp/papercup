@@ -680,7 +680,7 @@ export async function updateAdvSessionPortStatus(
   const rows = await sql<{ id: number }[]>`
     UPDATE harness_shared.adv_sessions
        SET port_status = ${status},
-           port_metadata = COALESCE(port_metadata, '{}'::jsonb) || ${JSON.stringify(metadata)}::jsonb,
+           port_metadata = COALESCE(port_metadata, '{}'::jsonb) || ${JSON.stringify(metadata)}::text::jsonb,
            ended_at = CASE WHEN ${status} = 'failed' THEN COALESCE(ended_at, now()) ELSE ended_at END
      WHERE id = ${id} AND workspace_id = ${workspaceId}
      RETURNING id`;

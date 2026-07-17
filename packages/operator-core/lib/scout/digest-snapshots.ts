@@ -48,7 +48,7 @@ export async function persistDigestSnapshot(opts: {
       (workspace_id, install_slug, cycle_id, watermark_at, digest)
     VALUES (${ws}, ${opts.installSlug ?? null}, ${opts.cycleId ?? null},
             ${opts.watermarkAt ? opts.watermarkAt.toISOString() : null},
-            ${JSON.stringify(opts.digest)}::jsonb)`;
+            ${JSON.stringify(opts.digest)}::text::jsonb)`;
   await sql`
     DELETE FROM harness_shared.scout_digest_snapshots
      WHERE workspace_id = ${ws}

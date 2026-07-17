@@ -115,9 +115,9 @@ describe('ensureFleetMemberWakeAuto — fleet-member wake immunity (WI-2185)', (
 describe('EI-597 idempotent-skip — repeated set-to-same-value skips the write', () => {
   it('setDefaultWakeMode is a no-op INSERT/UPDATE when already at the target', async () => {
     await setDefaultWakeMode('manual');
-    expect(kv.sql).toHaveBeenCalledTimes(1); // the one real write
+    expect(kv.sql).toHaveBeenCalledTimes(2); // 1 read (idempotent check) + 1 real write
     await setDefaultWakeMode('manual'); // repeat — already manual
-    expect(kv.sql).toHaveBeenCalledTimes(2); // +1 read, NO extra INSERT/UPDATE
+    expect(kv.sql).toHaveBeenCalledTimes(3); // +1 read only, NO extra INSERT/UPDATE
     expect(await getDefaultWakeMode()).toBe('manual');
   });
   it('setDefaultWakeMode still writes when the value actually changes', async () => {

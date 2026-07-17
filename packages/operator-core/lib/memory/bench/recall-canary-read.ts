@@ -160,7 +160,7 @@ export async function saveRecallCanarySet(
        COALESCE((SELECT max(version) FROM harness_shared.memory_live_recall_canary_set
                   WHERE workspace_id = ${workspaceId}), 0) + 1,
        ${input.backend},
-       ${JSON.stringify(input.pairs)}::jsonb,
+       ${JSON.stringify(input.pairs)}::text::jsonb,
        ${input.pairs.length},
        ${input.baselineRAt10})
     RETURNING id, version

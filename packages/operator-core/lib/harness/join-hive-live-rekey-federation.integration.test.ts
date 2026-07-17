@@ -527,7 +527,7 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
           (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations)
         VALUES (
           ${WORKSPACE_ID}, ${potSlug}, ${idOwner.userId}, 'owner',
-          ${JSON.stringify([{ device_pubkey: idOwner.devicePubkey }])}::jsonb
+          ${JSON.stringify([{ device_pubkey: idOwner.devicePubkey }])}::text::jsonb
         )
         ON CONFLICT (workspace_id, pot_home_slug, github_user_id) DO UPDATE
           SET device_attestations = EXCLUDED.device_attestations

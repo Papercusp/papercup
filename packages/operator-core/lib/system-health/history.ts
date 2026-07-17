@@ -82,7 +82,7 @@ export async function recordHealthHistory(prev: SystemHealth | null, next: Syste
   const atIso = new Date(next.evaluatedAt).toISOString();
   await sql`
     INSERT INTO harness_shared.system_health_ticks (workspace_id, at, overall, statuses)
-    VALUES (${next.workspaceId}, ${atIso}, ${next.overall}, ${JSON.stringify(statuses)}::jsonb)
+    VALUES (${next.workspaceId}, ${atIso}, ${next.overall}, ${JSON.stringify(statuses)}::text::jsonb)
     ON CONFLICT (workspace_id, at) DO NOTHING`;
   const transitions = diffHealthTransitions(prev, next);
   for (const t of transitions) {

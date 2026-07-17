@@ -1893,7 +1893,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
            SET metadata = jsonb_set(
              COALESCE(metadata, '{}'::jsonb),
              '{integrator}',
-             ${JSON.stringify({ epoch, seq: outcome.announcement.seq, at: Date.now() })}::jsonb
+             ${JSON.stringify({ epoch, seq: outcome.announcement.seq, at: Date.now() })}::text::jsonb
            )
          WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
       `;

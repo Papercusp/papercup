@@ -312,7 +312,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${input.sourceRef ?? null}, ${input.createdBy},
        now() + make_interval(secs => ${ttl}), ${input.shareable === true},
        ${audienceScope},
-       ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::jsonb)
+       ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb)
     ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))
     DO UPDATE SET body = EXCLUDED.body,
                   source_ref = EXCLUDED.source_ref,
