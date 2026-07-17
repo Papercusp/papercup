@@ -22,13 +22,14 @@ vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test:${k}`,
 }));
 // Stub the lazy tab panels with trivial markers — their own surfaces are tested
-// separately (MugTab / OverwatchTab / SwarmTab / VoiceTab / PotsTab).
+// separately (MugTab / OverwatchTab / PotsTab).
 vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-accounts" /> }));
 vi.mock('./MugTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
 vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwatch" /> }));
-vi.mock('./SwarmTab', () => ({ default: () => <div data-testid="panel-swarm" /> }));
-vi.mock('./VoiceTab', () => ({ default: () => <div data-testid="panel-voice" /> }));
 vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
+// SwarmTab / VoiceTab are deliberately NOT stubbed: this rail no longer mounts
+// them at all (WI-5162 — they are op-chat sidebar faces now). A stub here would
+// hide a regression that re-added them. See the "moved out" test below.
 
 import LeftSidebar from './LeftSidebar';
 
@@ -112,15 +113,15 @@ describe('<LeftSidebar> shell', () => {
     expect(rail.getAttribute('data-collapsed')).toBe('true');
     expect(screen.queryByTestId('panel-queen')).toBeNull();
     // The collapsed expand-rail icon buttons are present.
-    expect(screen.getByTestId('left-sidebar-rail-swarm')).toBeTruthy();
+    expect(screen.getByTestId('left-sidebar-rail-hives')).toBeTruthy();
   });
 
   it('clicking a tab switches the active panel and writes ?lst', async () => {
     const { lastQuery } = renderRail();
-    fireEvent.click(screen.getByTestId('left-sidebar-tab-swarm'));
-    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('swarm'));
-    expect(await screen.findByTestId('panel-swarm')).toBeTruthy();
-    expect(lastQuery()).toContain('lst=swarm');
+    fireEvent.click(screen.getByTestId('left-sidebar-tab-hives'));
+    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('hives'));
+    expect(await screen.findByTestId('panel-hives')).toBeTruthy();
+    expect(lastQuery()).toContain('lst=hives');
   });
 
   it('the collapse button writes ?lsb=false', async () => {
@@ -132,23 +133,23 @@ describe('<LeftSidebar> shell', () => {
   it('a collapsed icon-rail button expands AND selects its tab atomically (one write)', async () => {
     // ?lsb default is `true`, so the URL omits lsb=true once re-opened; assert the
     // observable rail state instead — both the expand (collapsed=false) AND the tab
-    // selection (data-tab=voice) must land from the single setRail write.
+    // selection (data-tab=accounts) must land from the single setRail write.
     renderRail('?lsb=false');
     expect(screen.getByTestId('left-sidebar').getAttribute('data-collapsed')).toBe('true');
-    fireEvent.click(screen.getByTestId('left-sidebar-rail-voice'));
+    fireEvent.click(screen.getByTestId('left-sidebar-rail-accounts'));
     await waitFor(() => {
       const rail = screen.getByTestId('left-sidebar');
       expect(rail.getAttribute('data-collapsed')).toBe('false');
-      expect(rail.getAttribute('data-tab')).toBe('voice');
+      expect(rail.getAttribute('data-tab')).toBe('accounts');
     });
-    expect(await screen.findByTestId('panel-voice')).toBeTruthy();
+    expect(await screen.findByTestId('panel-accounts')).toBeTruthy();
   });
 
   it('the expand control is the TOPMOST collapsed-rail button and re-expands to the last pane without switching tabs (WI-4800)', async () => {
-    renderRail('?lsb=false&lst=swarm');
+    renderRail('?lsb=false&lst=hives');
     const rail = screen.getByTestId('left-sidebar');
     expect(rail.getAttribute('data-collapsed')).toBe('true');
-    expect(rail.getAttribute('data-tab')).toBe('swarm');
+    expect(rail.getAttribute('data-tab')).toBe('hives');
     // The expand control is the FIRST button in the collapsed rail (topmost) —
     // the mirror of the collapse chevron, not buried under the tab icons.
     const railEl = document.querySelector('.pclsb__expand-rail');
@@ -160,7 +161,31 @@ describe('<LeftSidebar> shell', () => {
     await waitFor(() => {
       expect(rail.getAttribute('data-collapsed')).toBe('false');
     });
-    expect(rail.getAttribute('data-tab')).toBe('swarm');
+    expect(rail.getAttribute('data-tab')).toBe('hives');
+  });
+
+  // WI-5162 (owner ask 2026-07-17): Fleet + Peers MOVED to the op-chat sidebar,
+  // right of the 🫖 Pot Health button. They must be gone from this rail —
+  // expanded tabs AND collapsed icon rail — or the owner sees them in two
+  // places at once, which is exactly what the move was meant to end.
+  it('no longer hosts the Fleet or Peers tabs — they moved to the op-chat sidebar (WI-5162)', () => {
+    H.overwatchOn = true;
+    renderRail();
+    for (const gone of ['swarm', 'voice']) {
+      expect(screen.queryByTestId(`left-sidebar-tab-${gone}`)).toBeNull();
+      expect(screen.queryByTestId(`left-sidebar-rail-${gone}`)).toBeNull();
+    }
+    // The steering/settings tabs this rail kept are all still here.
+    for (const kept of ['accounts', 'queen', 'overwatch', 'hives']) {
+      expect(screen.getByTestId(`left-sidebar-tab-${kept}`)).toBeTruthy();
+    }
+  });
+
+  // A bookmarked ?lst=swarm must not wedge the rail on a tab that no longer
+  // exists: the nuqs literal parser rejects it and falls back to the default.
+  it('falls back to the default tab for a stale ?lst pointing at a moved tab (WI-5162)', () => {
+    renderRail('?lst=swarm');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen');
   });
 
   it('hides the Overwatch tab while the OVERWATCH flag is off', () => {

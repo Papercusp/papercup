@@ -103,16 +103,21 @@ describe('resolveHiveReleaseGate', () => {
     expect(resolveHiveReleaseGate(makeHiveDir('coding-factory'))?.enabled).toBe(true);
   });
 
-  it('WI-5164: no explicit integrationBranch knob → falls back to the passed registryDefaultBranch, not a hardcoded staging', async () => {
+  it('WI-5164: no explicit integrationBranch knob (coding-factory, what create_from_repo actually ' +
+    'extends) → falls back to the passed registryDefaultBranch, not a hardcoded staging', async () => {
+    // NOTE: the top-level `coding` blueprint (used above) bakes `releaseGate.integrationBranch:
+    // staging` in EXPLICITLY — its fallback branch of the ternary is never reached. The real
+    // create_from_repo path extends `coding-factory` (detectionToOverride), which carries no
+    // releaseGate knob at all — that's the blueprint this fix actually matters for.
     const { resolveHiveReleaseGate } = await import('./hive-release-env');
-    const gate = resolveHiveReleaseGate(makeHiveDir('coding'), 'master');
+    const gate = resolveHiveReleaseGate(makeHiveDir('coding-factory'), 'master');
     expect(gate?.integrationBranch).toBe('master');
   });
 
   it('WI-5164: an EXPLICIT blueprint integrationBranch knob still wins over registryDefaultBranch', async () => {
     const { resolveHiveReleaseGate } = await import('./hive-release-env');
     const gate = resolveHiveReleaseGate(
-      makeHiveDir('coding', { extraKnobs: '  releaseGate:\n    integrationBranch: custom-branch' }),
+      makeHiveDir('coding-factory', { extraKnobs: '  releaseGate:\n    integrationBranch: custom-branch' }),
       'master',
     );
     expect(gate?.integrationBranch).toBe('custom-branch');
@@ -120,7 +125,7 @@ describe('resolveHiveReleaseGate', () => {
 
   it('WI-5164: no registryDefaultBranch passed → keeps the old staging fallback (back-compat)', async () => {
     const { resolveHiveReleaseGate } = await import('./hive-release-env');
-    const gate = resolveHiveReleaseGate(makeHiveDir('coding'));
+    const gate = resolveHiveReleaseGate(makeHiveDir('coding-factory'));
     expect(gate?.integrationBranch).toBe('staging');
   });
 });
