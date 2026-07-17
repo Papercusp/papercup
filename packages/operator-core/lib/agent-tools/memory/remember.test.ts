@@ -26,7 +26,11 @@ vi.mock('../../auth', () => ({
 vi.mock('@papercusp/agent-mcp', () => ({
   defineTool: (def: unknown) => def,
 }));
-vi.mock('@papercusp/db-org', () => ({
+// Spread the real module so pure exports (e.g. `generated`, the drizzle schema
+// namespace autoloop.ts derefs at module scope) survive the mock — a minimal
+// stub breaks at COLLECTION when any transitive import touches them (EI-14868).
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),
 }));
 // EI-10355: the user memory-PAUSE gate. Stubbed to "not paused" here so these
