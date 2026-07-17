@@ -434,4 +434,90 @@ describe('Inbox face (EI-13037, owner placement 2026-07-16)', () => {
     await waitFor(() => expect(screen.getByTestId('operator-chat')).toBeTruthy());
     expect(screen.queryByTestId('inbox-pane')).toBeNull();
   });
+
+  // WI-5162 (owner ask 2026-07-17): the Fleet + Peers panes moved out of the
+  // middle rail and into THIS sidebar, "to the right of the kettle button" —
+  // the 🫖 Pot Health toggle. Their panes live in operator-vite and cannot be
+  // imported up-layer, so they arrive as `faces` descriptors; these tests use
+  // stand-ins for the same reason the real ones are injected.
+  describe('extra faces (WI-5162)', () => {
+    const faces = [
+      {
+        id: 'fleet',
+        label: 'Fleet',
+        tip: 'The fleet — live roster',
+        icon: <span>F</span>,
+        render: () => <div data-testid="pane-fleet" />,
+      },
+      {
+        id: 'peers',
+        label: 'Peers',
+        tip: 'Peers — live voice/video channels',
+        icon: <span>P</span>,
+        render: () => <div data-testid="pane-peers" />,
+      },
+    ];
+
+    it('renders the faces to the RIGHT of the 🫖 kettle button, in order', () => {
+      render(<OperatorChatSidebar faces={faces} />);
+      const row = document.querySelector('.op-chat-header-main')!;
+      const pills = Array.from(row.querySelectorAll('button')).map((b) =>
+        b.getAttribute('data-testid'),
+      );
+      const kettle = pills.findIndex((p) => p === null); // the 🫖 toggle carries no testid
+      const fleet = pills.indexOf('op-chat-face-fleet');
+      const peers = pills.indexOf('op-chat-face-peers');
+      expect(fleet).toBeGreaterThan(-1);
+      // Fleet then Peers, and both after the kettle toggle.
+      expect(peers).toBe(fleet + 1);
+      expect(fleet).toBeGreaterThan(kettle);
+      // …and the Inbox + Papercup faces still lead the row.
+      expect(pills.indexOf('op-chat-inbox-toggle')).toBeLessThan(fleet);
+    });
+
+    it('a face swaps the body for its pane and toggles back to the chat', async () => {
+      render(<OperatorChatSidebar faces={faces} />);
+      expect(screen.getByTestId('operator-chat')).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId('op-chat-face-fleet'));
+      expect(await screen.findByTestId('pane-fleet')).toBeTruthy();
+      expect(screen.queryByTestId('operator-chat')).toBeNull();
+      expect(screen.getByTestId('op-chat-face-fleet').getAttribute('aria-pressed')).toBe('true');
+
+      // Only ONE pane at a time — switching faces replaces, never stacks.
+      fireEvent.click(screen.getByTestId('op-chat-face-peers'));
+      expect(await screen.findByTestId('pane-peers')).toBeTruthy();
+      expect(screen.queryByTestId('pane-fleet')).toBeNull();
+
+      // Clicking the lit face returns to the chat (same contract as 🫖 / 📥).
+      fireEvent.click(screen.getByTestId('op-chat-face-peers'));
+      await waitFor(() => expect(screen.getByTestId('operator-chat')).toBeTruthy());
+      expect(screen.queryByTestId('pane-peers')).toBeNull();
+    });
+
+    it('an unpicked face never mounts its pane (the sidebar is boot-critical)', () => {
+      const render_ = vi.fn(() => <div data-testid="pane-fleet" />);
+      render(<OperatorChatSidebar faces={[{ ...faces[0], render: render_ }]} />);
+      expect(render_).not.toHaveBeenCalled();
+    });
+
+    it('drops a face whose id would shadow a built-in view', () => {
+      render(
+        <OperatorChatSidebar
+          faces={[{ ...faces[0], id: 'pot' }, { ...faces[1], id: 'peers' }, { ...faces[1], id: 'peers' }]}
+        />,
+      );
+      // 'pot' would fight the 🫖 toggle for ?opcv; the duplicate 'peers' would
+      // light two pills at once. Both are dropped, the first 'peers' survives.
+      expect(screen.queryByTestId('op-chat-face-pot')).toBeNull();
+      expect(screen.getAllByTestId('op-chat-face-peers')).toHaveLength(1);
+    });
+
+    it('renders the three built-in faces unchanged when no faces are passed', () => {
+      render(<OperatorChatSidebar />);
+      expect(screen.getByTestId('op-chat-inbox-toggle')).toBeTruthy();
+      expect(screen.getByTestId('operator-chat')).toBeTruthy();
+      expect(document.querySelector('.op-chat-face-toggle')).toBeNull();
+    });
+  });
 });

@@ -24,9 +24,9 @@ function makeCatalog(installedNames: string[], cupboardNames: string[]): Derived
     ),
   ];
   return {
-    view: buildPackCatalogView(packs, []),
+    view: buildPackCatalogView(packs, new Set<string>()),
     packs,
-    builtinTools: new Set(),
+    builtinTools: new Set<string>(),
     cupboardReachable: true,
   };
 }
