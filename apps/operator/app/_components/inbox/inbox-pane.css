@@ -48,6 +48,17 @@
   border: 1px solid var(--border, rgba(255, 255, 255, 0.12)); background: var(--bg-3, rgba(255, 255, 255, 0.05));
 }
 .op-inbox__meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute, #8a8a91); }
+/* P-007: per-row "open live chat with the originating agent" affordance —
+   sits in the row header, so it must not shrink/grow with .op-inbox__meta's
+   ellipsis and must not trigger .op-inbox__rowbtn's row-select (stopPropagation
+   in the click handler; this is a real nested <button> now that the row is a
+   `div[role=button]`, not a <button> — see InboxPane.tsx). */
+.op-inbox__chat-button {
+  flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; border-radius: 999px; cursor: pointer;
+  color: var(--fg-mute, #8a8a91); background: transparent; border: 1px solid transparent;
+}
+.op-inbox__chat-button:hover { color: var(--accent, #8b5cf6); border-color: color-mix(in srgb, var(--accent, #8b5cf6) 45%, transparent); background: color-mix(in srgb, var(--accent, #8b5cf6) 10%, transparent); }
 .op-inbox__title {
   min-width: 0; font-size: 11.5px; line-height: 1.35;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;

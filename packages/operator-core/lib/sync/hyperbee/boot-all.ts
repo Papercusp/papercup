@@ -302,15 +302,16 @@ async function defaultWirePresence(
  * to keep failing against it. Idempotent — a step that was never marked wired
  * (e.g. a wiring attempt that itself never succeeded) is a silent no-op.
  */
-function markSendSideUnwired(k: string, step: 'outbox' | 'presence'): void {
+function markSendSideUnwired(
+  k: string,
+  step: 'outbox' | 'presence',
+  reason = `session is SESSION_CLOSED — the next boot pass re-wires a fresh ${step} loop`,
+): void {
   const set = step === 'outbox' ? outboxWired : presenceWired;
   const wasWired = set.delete(k);
   if (wasWired) {
 
-    console.error(
-      `[boot-all] ${step} session for ${k} is SESSION_CLOSED — un-marking send-side ` +
-        `wiring so the next boot pass re-wires a fresh ${step} loop`,
-    );
+    console.error(`[boot-all] un-marking ${step} wiring for ${k} — ${reason}`);
   }
 }
 
@@ -728,7 +729,11 @@ export async function bootSingleHarness(
       // re-wire there could double-arm its drain loop) and re-attempt against
       // the registered handle, which now sees the live swarm.
       onSwarmJoinRecovered: () => {
-        markSendSideUnwired(k, 'presence');
+        markSendSideUnwired(
+          k,
+          'presence',
+          'swarm join recovered after boot (WI-752 retry) — re-wiring presence against the live swarm',
+        );
         const h = handles.get(k);
         if (h && !skipSendSideWiring) {
           void ensureSendSideWired(h, opts.wireSendSide).catch(() => {});

@@ -27,6 +27,48 @@ function plansGetArgs(plan: LaunchPlanRef): string {
   return `{ slug: "${plan.slug}"${h ? `, harness: "${h}"` : ''} }`;
 }
 
+/** coord:orient args for a plan-bound kickoff — the P-002 (WI-5228) orient-first
+ *  entry point: orient folds the bound plan's `## Now` + next actionable item +
+ *  the caller's claim state, so the lean kickoff points here instead of walking
+ *  plans:get by hand. The slug stays VERBATIM (the plan binding is part of the
+ *  irreducible delta — ornith session 10115 parked forever when a kickoff said
+ *  "the plan" without naming it). */
+function orientArgs(plan: LaunchPlanRef): string {
+  return `{ intent: "<one line on what you're starting>", planSlug: "${plan.slug}" }`;
+}
+
+/**
+ * kickoff-prompt-absorption-2026-07-17 P-004: how much guard text a kickoff
+ * carries, keyed by backend/model family.
+ *
+ * - 'full' — every weak-model guard clause (the receipts live on the branches
+ *   below: ornith sessions 9870/9885/9891/9981/10115, EI-7000). The DEFAULT for
+ *   every caller that doesn't say, so pre-P-004 call sites stay byte-identical.
+ * - 'lean' — the irreducible delta only (plan binding + orient pointer +
+ *   completion integrity, plus the routing gate on the AUTO-off branch). Safe
+ *   ONLY where the guarded behavior became STRUCTURAL:
+ *     · the plans:get ceremony + "read ## Now, pick the next item" walk →
+ *       coord:orient's plan-bound fold (P-002 / WI-5228);
+ *     · "don't hunt a plan FILE with read/bash/find/grep" → the Claude Code
+ *       PreToolUse plans-read-guard hook (P-003b / WI-5229) — claude-only;
+ *     · "never call MCP tools from inside eval / don't invent an eval tool" →
+ *       the server-side unknown-tool referral teaching error (P-003a / EI-9011).
+ */
+export type KickoffGuardProfile = 'full' | 'lean';
+
+/**
+ * The backend → guard-profile mapping (P-004): 'lean' ONLY for `claude` — the
+ * one backend whose installed hook layer carries the P-003b plans-read guard.
+ * `omp` (ornith/local) is the weak-model family P-004 explicitly keeps on full
+ * text until measured unnecessary; `codex` is conservative-full (its CLI runs
+ * no papercusp PreToolUse hooks). Unknown/null → 'full'.
+ */
+export function kickoffGuardProfileForAgent(
+  agent: string | null | undefined,
+): KickoffGuardProfile {
+  return agent === 'claude' ? 'lean' : 'full';
+}
+
 /**
  * The first user turn for a launch — the supplied note, or a default kickoff when
  * the launch carried none. When `plan` is provided, the kickoff names the exact
@@ -37,6 +79,11 @@ export function deriveLaunchPromptText(
   note: string | null | undefined,
   autoMode = true,
   plan?: LaunchPlanRef | null,
+  /** P-004: guard profile for the DEFAULT (no-note) kickoff branches. Omitted ⇒
+   *  'full', so every pre-P-004 caller is byte-identical; bootstrap-su passes
+   *  kickoffGuardProfileForAgent(agent). Lean applies only when a plan is bound
+   *  (with no binding there is no orient target to point at instead). */
+  guards: KickoffGuardProfile = 'full',
 ): string {
   const trimmed = (note ?? '').trim();
   if (trimmed.length > 0) {
@@ -45,6 +92,7 @@ export function deriveLaunchPromptText(
           `\`plans:get\` MCP tool, args ${plansGetArgs(plan)}.)`
       : trimmed;
   }
+  const lean = guards === 'lean' && plan != null;
   // AUTO ON — a headless fleet member / no human at the keyboard: it MUST start
   // working the plan immediately or it parks idle. Keep the direct work order —
   // but carry the SAME weak-model guards as the AUTO-off branch (proven necessary
@@ -55,6 +103,29 @@ export function deriveLaunchPromptText(
   // verification" that never happened (EI-7000) — hence the completion-integrity
   // clause.
   if (autoMode) {
+    // P-004 lean (claude): the irreducible delta — plan binding (verbatim slug) +
+    // orient pointer + completion integrity. Clauses REMOVED here, each with its
+    // landed absorber:
+    //  · "plans:get with EXACTLY these args / read ## Now / pick the next item"
+    //    → coord:orient's plan-bound fold returns all three (P-002 / WI-5228);
+    //  · "the plan lives in the coordination system, NOT on disk — do NOT hunt
+    //    with read/bash/find/grep" → the PreToolUse plans-read-guard hook
+    //    redirects those reads to plans:get at the point of failure (P-003b /
+    //    WI-5229);
+    //  · "NEVER call MCP tools from inside eval (NameError)" → the server-side
+    //    unknown-tool referral teaching error (P-003a / EI-9011).
+    // The completion-integrity clause (EI-7000) has NO structural absorber —
+    // it stays in both profiles.
+    if (lean && plan) {
+      return (
+        `Begin: advance the plan \`${plan.slug}\`. Orient FIRST: call the \`coord:orient\` ` +
+        `MCP tool with ${orientArgs(plan)} — its response folds the plan's \`## Now\` block, ` +
+        'the next actionable item, and your claim state; claim your lane and work that item. ' +
+        'Completion integrity: mark an item done ONLY after the work was actually done and ' +
+        'verified — a tool timeout or error means RETRY or report the blocker, never ' +
+        'mark-done-anyway.'
+      );
+    }
     const readClause = plan
       ? `Begin: advance the plan \`${plan.slug}\`. Read it by calling the \`plans:get\` MCP ` +
         `tool with EXACTLY these args: ${plansGetArgs(plan)} — copy them verbatim; do NOT ` +
@@ -84,6 +155,26 @@ export function deriveLaunchPromptText(
   //  · "(C) … executed with the `fleet:launch-on-plan` tool" — sessions 9870/9865
   //    chose C, then never launched (the tool was hidden) or hand-built a broken psu
   //    command; naming the exact verb makes option C real.
+  // P-004 lean (claude), AUTO-off: plan binding + orient pointer + the routing
+  // gate. The routing gate + the named `fleet:launch-on-plan` verb are BEHAVIOR,
+  // not tool-usage guards — no absorber landed for them, so they stay in both
+  // profiles (sessions 9870/9865 chose option C and then never launched because
+  // the verb went unnamed). Removed tool-usage guard clauses and their landed
+  // absorbers: identical to the AUTO branch above (P-002 / WI-5228 orient fold,
+  // P-003b / WI-5229 plans-read hook, P-003a / EI-9011 eval referral).
+  if (lean && plan) {
+    return (
+      `You've been handed the plan \`${plan.slug}\` to implement. Read it FIRST via the ` +
+      `\`coord:orient\` MCP tool with ${orientArgs(plan)} — its response folds the plan's ` +
+      `\`## Now\` block + the next actionable item (\`plans:get\` ${plansGetArgs(plan)} for ` +
+      'the full body). Then, BEFORE doing any work, go through your routing gate: outline ' +
+      'the approach and present the execution options — (A) do it yourself, (B) hand it to ' +
+      'the Mug, or (C) launch a fleet of agents to parallelize it (executed in ONE call ' +
+      'with the `fleet:launch-on-plan` tool — never a hand-built psu command) — recommend ' +
+      'one based on the plan size, and confirm with the owner which to use. Do not start ' +
+      'editing until they choose.'
+    );
+  }
   const gateReadClause = plan
     ? `You've been handed the plan \`${plan.slug}\` to implement. First read it by calling ` +
       `the \`plans:get\` MCP tool with EXACTLY these args: ${plansGetArgs(plan)} — copy them ` +

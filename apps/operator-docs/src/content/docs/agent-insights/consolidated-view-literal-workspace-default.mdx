@@ -43,6 +43,16 @@ correct workspace. The literal default is not a convenience; it is the bug.
 > `NOT NULL` violation into a silent wrong-tenant write. If you want a safety net,
 > make the net *derive* the value — never assert a literal.
 
+**This is now linted (WI-5243).** `findLiteralTenantDefault` in
+`scripts/lint-migrations.mjs` fails any enforced-era migration that sets a literal
+default on `workspace_id` / `hive_slug` / `tenant_id`, and the repo-wide scan runs
+inside `lint-migrations.test.ts` — so `npm run test:affected` (which the
+green-checkpoint gate runs) catches a reintroduction automatically. A *derived*
+default (`current_setting(...)`) is legitimate and is not flagged. Note the lint
+scans **raw** text, unlike its siblings: these `ALTER`s live inside a per-schema
+`DO $$ … $$` loop that `stripSqlBodies` removes, so a stripped scan would pass —
+that false green is the whole bug.
+
 ### The net that already existed
 
 `harness_shared.fill_workspace_id_from_projects()` — a `BEFORE INSERT` trigger that
@@ -119,3 +129,22 @@ curl -s "http://127.0.0.1:3070/api/zero-harness/rest-query?name=agentChats.detai
 `:3070` serves the **release** checkout, so it reflects DATA fixes immediately but
 never your local code changes — verify code on `:3170` after
 `dev:restart { target: 'staging' }`.
+
+## Where the explicit stamp lives now
+
+Every live writer into these per-harness views passes `activeWorkspaceId()`:
+
+- `agent-chats-data.ts` — `createChat` (and `listChats` is workspace-scoped, which
+  closes a second route to the same spinner: `openFeatureChat`'s
+  reuse-before-create otherwise hands `ChatPanel` a foreign chat id).
+- `execute-action.ts` — `messages` (×2), `executed_actions`, `supervisor_notes`,
+  `directive_summaries`. The active workspace is correct for the *recipient's* row
+  too: cross-workspace dispatch is unsupported in v1, so caller and recipient always
+  share a workspace.
+- `harness-agent-runs.ts` — already stamped explicitly; it was the model to copy.
+- `feature_audit` — only `_retired` code writes it.
+
+**Correct stamping does not break the readers.** These views filter on
+`harness_slug` alone (no workspace predicate), so a correctly-stamped row is still
+visible to every existing reader — verified before/after against
+`messages_consolidated`, which carries fleet comms.

@@ -27,10 +27,12 @@
  */
 import { useCallback, useMemo } from 'react';
 import { useQueryState, useQueryStates, parseAsString, parseAsStringLiteral } from 'nuqs';
+import { MessageCircle } from 'lucide-react';
 import { OtherDetail, KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
 import { TIER_LABEL, type AttentionItem, type AttentionTier } from '@/app/admin/plans/plans-api';
 import { effectiveTier, useInboxAttention } from './use-inbox-pending';
 import { seedOperatorChatDraft } from './chat-seed';
+import SessionChatModal from '../chat/SessionChatModal';
 // The Queue detail card's styles (pc-items__*, pc-tier/pc-kind badges). Global
 // (non-module) CSS — importing it here makes the pane self-sufficient on
 // every route.
@@ -86,6 +88,10 @@ export default function InboxPane({ onDiscussInChat }: {
     parseAsStringLiteral(FILTERS).withDefault('needs'),
   );
   const [sel, setSel] = useQueryState('opcis', parseAsString);
+  // The "chat-grade session context" popup (P-007): which agent's live session
+  // to show, keyed by ownerAgentId. Deep-linkable/agent-driveable like every
+  // other pane selector here (nuqs-by-default policy).
+  const [chatOwner, setChatOwner] = useQueryState('opcsession', parseAsString);
   // The Queue lives on /adv (?tab=plans&view=queue) — MERGE-write the params
   // when already there; hard-navigate otherwise (this sidebar is global).
   const [, setQueueParams] = useQueryStates({
@@ -118,6 +124,15 @@ export default function InboxPane({ onDiscussInChat }: {
     }
     return c;
   }, [items]);
+
+  // Best-effort friendly label for the SessionChatModal title — looked up from
+  // whichever visible item's ownerAgentId launched it; a stale/deep-linked
+  // opcsession with no matching item just falls back to the raw id (the modal
+  // handles that fine).
+  const chatOwnerLabel = useMemo(
+    () => items.find((i) => i.ownerAgentId === chatOwner)?.ownerLabel ?? null,
+    [items, chatOwner],
+  );
 
   const visible = useMemo(() => {
     const filtered = items.filter((i) => {
@@ -173,12 +188,22 @@ export default function InboxPane({ onDiscussInChat }: {
             .join(' · ');
           return (
             <li key={i.id} className={`op-inbox__row${isSel ? ' is-selected' : ''}`}>
-              <button
-                type="button"
+              {/* A `div` (not `button`) — the row now nests a real chat-launch
+                  <button>, and nested interactive elements are invalid HTML /
+                  silently mis-parsed by the browser. Same click+keyboard
+                  contract as a button (role, tabIndex, Enter/Space). */}
+              <div
+                role="button"
+                tabIndex={0}
                 className="op-inbox__rowbtn"
                 data-testid={`inbox-row-${i.id}`}
                 aria-expanded={isSel}
                 onClick={() => void setSel(isSel ? null : i.id)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return;
+                  e.preventDefault();
+                  void setSel(isSel ? null : i.id);
+                }}
               >
                 <span className="op-inbox__rowhead">
                   <span
@@ -188,9 +213,24 @@ export default function InboxPane({ onDiscussInChat }: {
                   />
                   <span className="op-inbox__kind">{KIND_LABEL[i.kind] ?? i.kind}</span>
                   {meta ? <span className="op-inbox__meta">{meta}</span> : null}
+                  {i.ownerAgentId ? (
+                    <button
+                      type="button"
+                      className="op-inbox__chat-button"
+                      data-testid={`inbox-chat-open-${i.id}`}
+                      aria-label={`Open live chat with ${i.ownerLabel ?? i.ownerAgentId}`}
+                      title="Open live chat with the originating agent"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void setChatOwner(i.ownerAgentId);
+                      }}
+                    >
+                      <MessageCircle size={13} aria-hidden="true" />
+                    </button>
+                  ) : null}
                 </span>
                 <span className="op-inbox__title">{i.title}</span>
-              </button>
+              </div>
               {isSel ? (
                 <div className="op-inbox__detail" data-testid="inbox-detail">
                   {/* key remounts the detail per selection so its local card
@@ -214,6 +254,12 @@ export default function InboxPane({ onDiscussInChat }: {
           Open full queue →
         </button>
       </div>
+
+      <SessionChatModal
+        sessionOwnerId={chatOwner}
+        ownerLabel={chatOwnerLabel}
+        onClose={() => void setChatOwner(null)}
+      />
     </div>
   );
 }

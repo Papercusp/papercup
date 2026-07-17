@@ -43,6 +43,12 @@ const ALLOWED: Record<string, ReadonlySet<string>> = {
   // D-027 follow-on (1): the Queue's inline improvement Dismiss → improvements:triage
   // (triage-one reject). Only triage is exposed — capture/resolve are agent-loop verbs.
   improvements: new Set(['triage']),
+  // owner-inbox-single-pane-2026-07-17 P-007: resolve "which session is this
+  // inbox item's ownerAgentId currently on" (SessionChatModal's owner→session
+  // lookup, ahead of the live /api/adv/session/thinking stream). Read-only —
+  // only `list` is exposed, never `read`/`search` (those return turn TEXT,
+  // which this admin mount has no reason to proxy).
+  sessions: new Set(['list']),
 };
 
 function unwrap(toolResult: { status: number; body: unknown }): Response {

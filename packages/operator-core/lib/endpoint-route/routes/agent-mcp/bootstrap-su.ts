@@ -44,7 +44,7 @@ import {
   type InstructionLintReport,
   type InstructionRuntimeContext,
 } from '../../../instruction-lint';
-import { deriveLaunchPromptText } from '../../../agent-tools/plans/launch-prompt';
+import { deriveLaunchPromptText, kickoffGuardProfileForAgent } from '../../../agent-tools/plans/launch-prompt';
 import { rekeyCodexHome, writeSuCodexHome } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import { resolveSuLaunchCwd } from '../../../su-launch-cwd';
@@ -658,6 +658,32 @@ export const AUTO_MODE_DIRECTIVE =
   'wake self-assign + advance a work_item; loop:end ONLY when the goal is done or you are ' +
   "blocked. (The persona's AUTO-mode section governs; the narrow irreversible-high-stakes " +
   'brakes still apply.)';
+
+/**
+ * kickoff-prompt-absorption-2026-07-17 P-004: the AUTO activation for a member
+ * whose engine loop the server ALREADY armed at boot (P-001's
+ * `autoArmFleetMemberLoop`). The "MUST ARM A SELF-SUSTAINING LOOP" compliance
+ * clause is replaced by its landed absorber — persistence is now a structural
+ * boot-time effect — leaving the one-line "already armed" notice P-004
+ * specifies. Everything else (act-don't-ask posture, per-wake work contract,
+ * loop:end exit, the persona pointer) is unchanged from AUTO_MODE_DIRECTIVE.
+ */
+export const AUTO_MODE_DIRECTIVE_LOOP_ARMED =
+  'AUTO mode is ON for this session — act on your judgment, do not stop to ask, ' +
+  'loop continuously until the work is done. You are a fleet member with no human at your ' +
+  'keyboard; your self-sustaining engine loop is ALREADY ARMED server-side, so each wake ' +
+  're-invokes you: self-assign + advance a work_item every wake (loop:status inspects it; ' +
+  'loop:end + loop:arm retunes it; loop:end ONLY when the goal is done or you are blocked). ' +
+  "(The persona's AUTO-mode section governs; the narrow irreversible-high-stakes brakes " +
+  'still apply.)';
+
+/** The AUTO activation a launch bakes/prepends, picked by whether P-001's
+ *  server-side auto-arm actually took (never assume — a leader, an unplanned
+ *  member, a disabled flag, or an arm error all fall back to the full
+ *  self-arm instruction). */
+export function autoModeDirective(loopAutoArmed: boolean): string {
+  return loopAutoArmed ? AUTO_MODE_DIRECTIVE_LOOP_ARMED : AUTO_MODE_DIRECTIVE;
+}
 
 /**
  * drain-mode-2026-07-03 (P-003): the durable DRAIN-mode activation a `--mode=drain`
@@ -1575,19 +1601,6 @@ const post = defineTool({
       }
     }
 
-    // fleet-auto-mode (WI-1356): bake the durable AUTO directive into the assembled
-    // system prompt so it survives compaction. promptText is the single source for
-    // every backend's launch context (claude/omp launch-context file + codex AGENTS.md),
-    // so injecting here covers all three.
-    if (drainMode) {
-      // drain-mode P-003: the DRAIN section REPLACES the plain AUTO one — the DRAIN
-      // directive carries the act-don't-ask posture itself (DRAIN implies AUTO), so
-      // baking both would just double-print the activation.
-      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## DRAIN mode\n\n${DRAIN_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
-    } else if (autoMode) {
-      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${AUTO_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
-    }
-
     // kickoff-prompt-absorption-2026-07-17 P-001: auto-arm a plan-bound fleet
     // MEMBER's engine loop server-side, right here — the moment its fleet
     // membership is durably registered (stampFleetMembershipAtBoot, above) —
@@ -1595,6 +1608,8 @@ const post = defineTool({
     // instruction alone. Idempotent (never clobbers an existing loop); a silent
     // no-op for a leader, an unplanned session, or a non-auto launch. Best-effort:
     // never fails the boot — the kickoff instruction remains the fallback path.
+    // Runs BEFORE the AUTO-directive injection below (P-004): the directive text
+    // depends on whether the arm actually took.
     let loopAutoArm: { armed: boolean; reason: string; loopName?: string } | null = null;
     if (autoMode && fleetPin.fleetSlug && harnessSlug) {
       try {
@@ -1610,6 +1625,21 @@ const post = defineTool({
       } catch (e: any) {
         loopAutoArm = { armed: false, reason: `error: ${e?.message ?? e}` };
       }
+    }
+
+    // fleet-auto-mode (WI-1356): bake the durable AUTO directive into the assembled
+    // system prompt so it survives compaction. promptText is the single source for
+    // every backend's launch context (claude/omp launch-context file + codex AGENTS.md),
+    // so injecting here covers all three. P-004: the AUTO variant reflects the
+    // auto-arm outcome — an armed loop swaps the "MUST ARM" clause for the
+    // one-line "already armed" notice.
+    if (drainMode) {
+      // drain-mode P-003: the DRAIN section REPLACES the plain AUTO one — the DRAIN
+      // directive carries the act-don't-ask posture itself (DRAIN implies AUTO), so
+      // baking both would just double-print the activation.
+      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## DRAIN mode\n\n${DRAIN_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
+    } else if (autoMode) {
+      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${autoModeDirective(loopAutoArm?.armed === true)}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
     }
 
     // P-022: compile the ACTUAL launch-time mode/route/scope precedence into a

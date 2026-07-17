@@ -49,6 +49,23 @@ vi.mock('@/app/admin/plans/PlanOtherList', () => ({
   },
 }));
 
+// SessionChatModal (P-007) does its own real work (fetch, SSE, OperatorChat) —
+// out of scope for InboxPane's own suite (mirrors the OtherDetail stub above).
+// The stub renders its props so this file can assert InboxPane wires the
+// right owner id/label and reacts to onClose.
+const chatModalProps = vi.fn();
+vi.mock('../chat/SessionChatModal', () => ({
+  default: (props: { sessionOwnerId: string | null; ownerLabel: string | null; onClose: () => void }) => {
+    chatModalProps(props);
+    if (props.sessionOwnerId === null) return null;
+    return (
+      <div data-testid="session-chat-modal-stub" data-owner={props.sessionOwnerId} data-owner-label={props.ownerLabel ?? ''}>
+        <button type="button" data-testid="session-chat-modal-close" onClick={props.onClose} />
+      </div>
+    );
+  },
+}));
+
 import InboxPane, { buildDiscussDraft } from './InboxPane';
 import { effectiveTier, useInboxPendingCount } from './use-inbox-pending';
 import { consumePendingChatSeed } from './chat-seed';
@@ -113,6 +130,7 @@ afterEach(() => {
   cleanup();
   H.results = {};
   consumePendingChatSeed(); // drain any staged seed between tests
+  chatModalProps.mockClear();
 });
 
 describe('effectiveTier (badge/filter derivation)', () => {
@@ -194,6 +212,41 @@ describe('<InboxPane>', () => {
     // Clicking the (now-)selected row clears it (toggle).
     fireEvent.click(screen.getByTestId('inbox-row-d1'));
     await waitFor(() => expect(lastQuery()).not.toContain('opcis='));
+  });
+
+  it('a row with an ownerAgentId shows a chat-launch button that opens SessionChatModal without also selecting the row', async () => {
+    seedAttention([mkItem('d1', { ownerAgentId: 'su-live-1', ownerLabel: 'su · live-1' })]);
+    const { lastQuery } = renderPane();
+    // Modal starts closed.
+    expect(chatModalProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionOwnerId: null }),
+    );
+    expect(screen.queryByTestId('session-chat-modal-stub')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('inbox-chat-open-d1'));
+
+    // Opens the modal with the row's owner id + label…
+    expect(screen.getByTestId('session-chat-modal-stub').getAttribute('data-owner')).toBe('su-live-1');
+    expect(screen.getByTestId('session-chat-modal-stub').getAttribute('data-owner-label')).toBe('su · live-1');
+    // …and does NOT ALSO toggle the row's own selection (?opcis stays unset —
+    // the click must not bubble to the row's onClick now that it's nested
+    // inside a real <button>, not stopped by browser button-nesting rules).
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lastQuery()).not.toContain('opcis=d1');
+  });
+
+  it('a row with no ownerAgentId renders no chat-launch button', () => {
+    seedAttention([mkItem('d1', { ownerAgentId: null, ownerLabel: null })]);
+    renderPane();
+    expect(screen.queryByTestId('inbox-chat-open-d1')).toBeNull();
+  });
+
+  it('SessionChatModal onClose clears ?opcsession', async () => {
+    seedAttention([mkItem('d1', { ownerAgentId: 'su-live-1' })]);
+    const { lastQuery } = renderPane('?opcsession=su-live-1');
+    expect(screen.getByTestId('session-chat-modal-stub')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('session-chat-modal-close'));
+    await waitFor(() => expect(lastQuery()).not.toContain('opcsession='));
   });
 
   it('Discuss stages a Papercup chat seed and flips back to the chat view', () => {
