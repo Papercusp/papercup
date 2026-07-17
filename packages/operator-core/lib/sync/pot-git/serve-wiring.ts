@@ -202,6 +202,18 @@ class FrameDuplex extends Duplex {
     private readonly onLocalEnd: (code: number) => void,
   ) {
     super();
+    // Fail-soft AT CONSTRUCTION (WI-5177 live crash, 2026-07-17): this module's
+    // contract is that consumers read `.destroyed`, and a refusal/close can
+    // destroy(err) this duplex at ANY moment — including the gap before a
+    // consumer attaches its own 'error' listener (bootstrap.ts awaits between
+    // openDuplex and fetchOverDuplex). With no listener, that destroy(err)
+    // becomes an unhandled 'error' → process-fatal uncaughtException (took the
+    // bg-host down: "pot-git serve refused: no-such-repo"). A no-op base
+    // listener makes every FrameDuplex safe; consumers' own listeners still
+    // fire alongside it.
+    this.on('error', () => {
+      /* fail-soft: consumers read `.destroyed` / attach their own listener */
+    });
   }
   override _write(chunk: Buffer, _enc: string, cb: (e?: Error | null) => void): void {
     try {

@@ -393,6 +393,23 @@ describe('WI-3496 drill regression: opens rejected by a not-yet-wired peer RECOV
     await waitFor(() => resolvePotGitPeerSocket(TOPIC2, SERVER_DEVICE) !== undefined);
     await waitFor(() => resolvePotGitPeerSocket(TOPIC2, CLIENT_DEVICE) !== undefined);
   });
+
+  it('a refusal arriving on a LISTENERLESS client duplex is fail-soft — never an unhandled error (bg-host crash, 2026-07-17)', async () => {
+    // The live crash: a peer's `refuse` frame destroys the client FrameDuplex
+    // with an Error while the consumer is still between openDuplex and
+    // fetchOverDuplex (bootstrap.ts awaits in that gap) — no 'error' listener
+    // attached yet, so the destroy became a process-fatal uncaughtException
+    // ("pot-git serve refused: no-such-repo"). Reproduce with the pure
+    // in-memory refusal: a topic NOBODY wired serve for refuses 'not-serving'.
+    // Pre-fix this test crashes the worker; post-fix the duplex just reads
+    // `.destroyed === true`.
+    const TOPIC3 = Buffer.alloc(32, 33);
+    const d = await openHiveGitFetchDuplex(aDuplex, TOPIC3, { repoKey: 'anything' });
+    await waitFor(() => d.destroyed, 10_000);
+    // Let any pending (would-be-unhandled) 'error' emission fire.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(d.destroyed).toBe(true);
+  });
 });
 
 describe('pot-git peer-dial-registry unit-level (no swarm — direct registry manipulation)', () => {
