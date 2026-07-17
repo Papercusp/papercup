@@ -640,14 +640,14 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       await seedFeature(db.sql, 'F-3');
 
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      let res: Awaited<ReturnType<typeof backfillLocalState>>;
-      try {
-        res = await backfillLocalState(fakeHandle(), db.sql, { maxEnqueueBeforeBail: 2 });
-      } finally {
-        errSpy.mockRestore();
-      }
+      const res = await backfillLocalState(fakeHandle(), db.sql, { maxEnqueueBeforeBail: 2 });
+      // Assert on the spy's recorded calls BEFORE restoring it — mockRestore()
+      // resets the call history (it's mockReset() + restore-original), so
+      // asserting after restore always sees 0 calls regardless of what actually
+      // happened (caught this via a real test run, not just review).
       expect(res).toMatchObject({ skipped: false, enqueued: 0, dropped: 0, bailed: true, candidateTotal: 3 });
       expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('BAIL'));
+      errSpy.mockRestore();
 
       // Nothing enqueued, no marker written — fully retryable.
       expect((await outboxRows(db.sql)).length).toBe(0);
