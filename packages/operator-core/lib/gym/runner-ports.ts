@@ -142,6 +142,18 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
       await sql`DELETE FROM harness_shared.harness_prompt_overrides WHERE workspace_id = ${workspaceId} AND harness_slug = ${slug}`.catch(() => {});
       await sql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${slug}`.catch(() => {});
       await rm(clonePath).catch(() => {});
+      // EI-484: deregister the throwaway harness project entry too — without this,
+      // the /api/harness/projects registration OUTLIVES the schema/clone teardown
+      // above. registerThrowawayHarness's 409 idempotency check (WI-2604/EI-7196)
+      // then basename-matches the STALE registration on the next replay of this
+      // deterministic slug and short-circuits as "already registered", skipping
+      // real re-registration — so the pipeline hits `relation ... does not exist`
+      // (42P01) against the schema this very call just dropped. Best-effort +
+      // fire-and-forget like the deletes above: a setup-failure teardown must
+      // never itself throw and mask the original error.
+      await doFetch(`${cfg.operatorBaseUrl}/api/harness/projects/${encodeURIComponent(slug)}`, {
+        method: 'DELETE',
+      }).catch(() => {});
     },
 
     now: () => Date.now(),

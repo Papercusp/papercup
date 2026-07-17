@@ -16,6 +16,7 @@ export type PlanEventType =
   | 'created'
   | 'now_updated'
   | 'decision_added'
+  | 'decision_ratified'
   | 'item_added'
   | 'item_status_changed'
   | 'status_changed'

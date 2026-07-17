@@ -50,6 +50,13 @@ vi.mock('../../../operator-standing-candidates', () => ({ readCandidates: vi.fn(
 vi.mock('../../../scout/routed-ledger', () => ({ readRoutedIdeas: vi.fn(async () => []) }));
 vi.mock('../../../plan-items/convert', () => ({ listConvertedPlanItemRefs: vi.fn(async () => new Set()) }));
 vi.mock('../../../attention/triage-store', () => ({ readTriageByWorkspace: vi.fn(async () => new Map()) }));
+// P-005c's dark-flag source reads the REAL static DARK_FLAGS map (no PG, so the
+// db-org mock above doesn't intercept it) — empty it out here so it stays
+// consistent with every other "not under test" source returning nothing.
+vi.mock('@papercusp/flags', async (orig) => {
+  const actual = await orig<typeof import('@papercusp/flags')>();
+  return { ...actual, DARK_FLAGS: new Map() };
+});
 
 import tool from '../attention';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';

@@ -365,6 +365,149 @@ describe('P-100 — folded disposition channels (B-14 / D-011)', () => {
   });
 });
 
+describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026-07-17)', () => {
+  it('work-item-needs-human: a Decision, plan-governance category, kind-aware status/body', () => {
+    const a = workItemNeedsHumanToAttention({
+      workItemId: 'WI-9001',
+      itemKind: 'bug',
+      title: 'connector auth broke',
+      body: 'the token refresh path 401s',
+      harnessSlug: 'papercusp',
+      ownerAgentId: 'su-abc',
+    });
+    expect(a.kind).toBe('work-item-needs-human');
+    expect(a.category).toBe('plan-governance');
+    expect(a.tier).toBe('decision');
+    expect(a.needsHuman).toBe(true);
+    expect(a.status).toBe('needs-human (bug)');
+    expect(a.id).toBe('work-item-needs-human:WI-9001');
+    expect(a.ownerAgentId).toBe('su-abc');
+    expect(a.ref).toEqual({ kind: 'work-item-needs-human', workItemId: 'WI-9001', itemKind: 'bug' });
+  });
+
+  it('work-item-needs-human: falls back to title as body when body is blank', () => {
+    const a = workItemNeedsHumanToAttention({ workItemId: 'F-1', itemKind: 'feature', title: 'ship it' });
+    expect(a.body).toBe('ship it');
+  });
+
+  it('owner-wall: a Decision; stranded status appends a respawn note to the body', () => {
+    const waiting = ownerWallToAttention({
+      source: 'loop-carry-note',
+      ownerId: 'su-xyz',
+      claim: 'pick account routing: default vs auto?',
+      recheck: 'accounts:status',
+      waitingHours: 5,
+      status: 'waiting',
+    });
+    expect(waiting.kind).toBe('owner-wall');
+    expect(waiting.category).toBe('plan-governance');
+    expect(waiting.needsHuman).toBe(true);
+    expect(waiting.importance).toBe('urgent'); // >= 4h
+    expect(waiting.body).toContain('Recheck: accounts:status');
+    expect(waiting.body).not.toContain('STRANDED');
+
+    const stranded = ownerWallToAttention({
+      source: 'work-item',
+      ownerId: 'su-xyz',
+      claim: 'ratify migration',
+      ref: 'WI-42',
+      waitingHours: 0.5,
+      status: 'stranded',
+    });
+    expect(stranded.importance).toBe('normal'); // < 1h
+    expect(stranded.body).toContain('STRANDED');
+    expect(stranded.ref).toEqual({ kind: 'owner-wall', wallSource: 'work-item', wallOwnerId: 'su-xyz', wallRef: 'WI-42' });
+  });
+
+  it('dark-flag-ratification: a Decision naming the flag key, falling back to a generic body', () => {
+    const withReason = darkFlagRatificationToAttention({ flagKey: 'papercusp-open-signup', justification: 'SECURITY: internet-reachable.' });
+    expect(withReason.kind).toBe('dark-flag-ratification');
+    expect(withReason.category).toBe('system-control');
+    expect(withReason.needsHuman).toBe(true);
+    expect(withReason.body).toBe('SECURITY: internet-reachable.');
+    expect(withReason.id).toBe('dark-flag-ratification:papercusp-open-signup');
+
+    const noReason = darkFlagRatificationToAttention({ flagKey: 'papercusp-x' });
+    expect(noReason.body).toContain('KNOWN_DARK_FLAGS allowlist');
+  });
+
+  it('blocked-session: a Decision; title/body use the mirrored question when present', () => {
+    const withQuestion = blockedSessionToAttention({
+      sessionId: 'sess-1',
+      client: 'codex',
+      refId: 'ref-1',
+      gateKind: 'ask',
+      question: 'should I proceed with the migration?',
+      waitingHours: 2,
+    });
+    expect(withQuestion.kind).toBe('blocked-session');
+    expect(withQuestion.category).toBe('escalations');
+    expect(withQuestion.needsHuman).toBe(true);
+    expect(withQuestion.title).toBe('should I proceed with the migration?');
+    expect(withQuestion.importance).toBe('high');
+    expect(withQuestion.id).toBe('blocked-session:codex:sess-1:ref-1');
+
+    const noQuestion = blockedSessionToAttention({ sessionId: 'sess-2', client: 'codex', refId: 'ref-2', gateKind: 'permission_wait' });
+    expect(noQuestion.title).toContain('permission prompt');
+    expect(noQuestion.body).toContain('D-002 capability matrix');
+  });
+
+  it('all four: id is kind-prefixed, ref.kind matches, needsHuman === (tier === decision), category set', () => {
+    const items: AttentionItem[] = [
+      workItemNeedsHumanToAttention({ workItemId: 'WI-1', itemKind: 'chunk', title: 't' }),
+      ownerWallToAttention({ source: 'work-item', ownerId: null, claim: 'c', status: 'unknown' }),
+      darkFlagRatificationToAttention({ flagKey: 'k' }),
+      blockedSessionToAttention({ sessionId: 's', client: 'omp', refId: 'r', gateKind: 'ask' }),
+    ];
+    for (const it of items) {
+      expect(it.id.startsWith(`${it.kind}:`)).toBe(true);
+      expect(it.ref.kind).toBe(it.kind);
+      expect(it.needsHuman).toBe(it.tier === 'decision');
+      expect(it.tier).toBe('decision'); // every one of these is a Decision by construction
+      expect(it.triageState).toBe('untriaged');
+      expect(it.category).toBe(attentionCategory(it.kind));
+    }
+  });
+});
+
+describe('P-005e — dropDuplicateNeedsHumanWorkItems (D-008 dedupe canonicalization)', () => {
+  it('drops a work-item-needs-human row whose id an improvement item already covers', () => {
+    const items: AttentionItem[] = [
+      improvementToAttention({ issueId: 'EI-7', title: 'covered by improvement' }),
+      workItemNeedsHumanToAttention({ workItemId: 'EI-7', itemKind: 'bug', title: 'same row, generic source' }),
+      workItemNeedsHumanToAttention({ workItemId: 'WI-99', itemKind: 'feature', title: 'uncovered, keep' }),
+    ];
+    const kept = dropDuplicateNeedsHumanWorkItems(items);
+    expect(kept.map((i) => i.id).sort()).toEqual(['improvement:EI-7', 'work-item-needs-human:WI-99'].sort());
+  });
+
+  it('drops a work-item-needs-human row whose id an owner-wall work-item leg already covers', () => {
+    const items: AttentionItem[] = [
+      ownerWallToAttention({ source: 'work-item', ownerId: 'su-a', claim: 'ratify', ref: 'F-3', status: 'waiting' }),
+      workItemNeedsHumanToAttention({ workItemId: 'F-3', itemKind: 'feature', title: 'same row, generic source' }),
+    ];
+    const kept = dropDuplicateNeedsHumanWorkItems(items);
+    expect(kept.length).toBe(1);
+    expect(kept[0]!.kind).toBe('owner-wall');
+  });
+
+  it('never drops a loop-carry-note owner-wall (it has no work-item ref to collide on)', () => {
+    const items: AttentionItem[] = [
+      ownerWallToAttention({ source: 'loop-carry-note', ownerId: 'su-a', claim: 'a decision', status: 'waiting' }),
+      workItemNeedsHumanToAttention({ workItemId: 'WI-1', itemKind: 'bug', title: 't' }),
+    ];
+    expect(dropDuplicateNeedsHumanWorkItems(items).length).toBe(2);
+  });
+
+  it('is a no-op when nothing overlaps (identity-preserving pass-through)', () => {
+    const items: AttentionItem[] = [
+      improvementToAttention({ issueId: 'EI-1', title: 't' }),
+      workItemNeedsHumanToAttention({ workItemId: 'WI-2', itemKind: 'task', title: 't2' }),
+    ];
+    expect(dropDuplicateNeedsHumanWorkItems(items).length).toBe(2);
+  });
+});
+
 describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009/D-011)', () => {
   const ALL_KINDS: AttentionKind[] = [
     'plan-item',

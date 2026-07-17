@@ -91,9 +91,12 @@ describe('action surface — coverage (P-016)', () => {
     expect(gaps.length).toBe(ACTION_SURFACE.filter((a) => a.coverage === 'gap').length);
   });
 
-  it('the known coverage gap (review&merge approval) is present and filed', () => {
+  it('the review&merge approval gap (EI-457) is now covered by review:approve / merge:approve', () => {
     const gapIds = coverageGaps().map((g) => g.id);
-    expect(gapIds).toContain('review.approve-code-review-merge');
+    expect(gapIds).not.toContain('review.approve-code-review-merge');
+    const row = ACTION_SURFACE.find((a) => a.id === 'review.approve-code-review-merge');
+    expect(row?.coverage).toBe('covered');
+    expect(row?.queenVerbs).toEqual(['review:approve', 'merge:approve']);
   });
 
   it('partialCoverage() returns only partial rows', () => {

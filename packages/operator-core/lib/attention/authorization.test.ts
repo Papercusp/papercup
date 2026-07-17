@@ -86,6 +86,10 @@ describe('deriveAuthorization (queue-authorization-redesign P-002)', () => {
       'standing-approval',
       'conversation',
       'scout-grade',
+      'work-item-needs-human',
+      'owner-wall',
+      'dark-flag-ratification',
+      'blocked-session',
     ];
     for (const k of kinds) {
       expect(['owner', 'system']).toContain(ATTENTION_KIND_AUTHORITY[k]);

@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { createGymRunnerPorts, type GymRunnerPortsConfig } from '../runner-ports';
+import type { Sql } from 'postgres';
+
+/** A no-op tagged-template + `.unsafe()` sql fake for teardownHarness tests. */
+function fakeSql(): Sql {
+  const tag = (async () => []) as unknown as Sql;
+  (tag as unknown as { unsafe: (s: string) => Promise<unknown[]> }).unsafe = async () => [];
+  return tag;
+}
 
 /**
  * Real GymRunnerPorts adapter (P-001 wiring). Binds the smoke-PROVEN operations:
@@ -174,6 +182,31 @@ describe('createGymRunnerPorts', () => {
     expect((reqs[0].init.headers as Record<string, string>).authorization).toBe('Bearer sekret-token-1234567890');
     expect(JSON.parse(reqs[0].init.body as string)).toEqual({ harnessSlug: 'gymx', featureId: 'F-GYM-1' });
     expect(out.workflowID).toBe('pipeline:gymx:F-GYM-1:e0');
+  });
+
+  it('teardownHarness (EI-484) also DELETEs the throwaway harness project registration, not just the schema/clone', async () => {
+    // Without this, /api/harness/projects keeps the entry after teardown drops the
+    // schema — the NEXT replay of this deterministic slug then basename-matches the
+    // stale registration (WI-2604/EI-7196's 409 idempotency check) and skips real
+    // re-registration, so the pipeline 42P01s against the schema this call just
+    // dropped (the follow-up edge EI-7196's resolution flagged as still-open).
+    const { config, reqs } = cfg({ gymSql: fakeSql() });
+    const p = createGymRunnerPorts(config);
+    await p.teardownHarness({ slug: 'gymx', clonePath: '/c/gymx', workspaceId: 'gym-ws' });
+    const del = reqs.find((r) => r.init.method === 'DELETE');
+    expect(del?.url).toBe('http://127.0.0.1:3971/api/harness/projects/gymx');
+  });
+
+  it('teardownHarness never throws even when the DELETE fails (best-effort cleanup)', async () => {
+    const { config } = cfg({
+      gymSql: fakeSql(),
+      fetchFn: (async () => { throw new Error('network down'); }) as unknown as typeof fetch,
+      rm: async () => { throw new Error('rm failed'); },
+    });
+    const p = createGymRunnerPorts(config);
+    await expect(
+      p.teardownHarness({ slug: 'gymx', clonePath: '/c/gymx', workspaceId: 'gym-ws' }),
+    ).resolves.toBeUndefined();
   });
 
   it('now + sleep work', async () => {
