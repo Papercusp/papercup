@@ -103,7 +103,9 @@ function extractResponsesText(value: unknown): string {
 }
 
 function codexCostUsd(model: string | undefined, inputTokens: number, outputTokens: number): number {
-  const m = model?.trim().toLowerCase();
+  // Strip a `:effort` suffix (e.g. 'gpt-5.5:low') — the gateway bridge parses it
+  // out of the model id, so pricing must key on the bare id too.
+  const m = model?.trim().toLowerCase().split(':')[0];
   const price =
     m === 'gpt-5.5'
       ? { in: 2.5, out: 20 }

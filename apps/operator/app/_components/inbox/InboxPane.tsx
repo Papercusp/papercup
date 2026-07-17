@@ -55,7 +55,19 @@ export function buildDiscussDraft(i: AttentionItem): string {
   const where = [i.planSlug && `plan ${i.planSlug}`, i.harnessSlug && `harness ${i.harnessSlug}`]
     .filter(Boolean)
     .join(' · ');
-  const report = typeof i.report === 'string' && i.report.trim() ? `\n\n${i.report.trim().slice(0, 600)}` : '';
+  // i.report is a STRUCTURED ReportBlock (title + plan rows), not a string —
+  // flatten it to a one-liner-per-plan digest for the drafted chat message.
+  const reportText = i.report
+    ? [
+        i.report.title,
+        ...i.report.plans.map((p) =>
+          [p.title, p.status && `[${p.status}]`, p.summary].filter(Boolean).join(' '),
+        ),
+      ]
+        .filter((s): s is string => Boolean(s && s.trim()))
+        .join('\n')
+    : '';
+  const report = reportText.trim() ? `\n\n${reportText.trim().slice(0, 600)}` : '';
   return (
     // i.id already carries the kind prefix (e.g. "coord-message:m1") — don't re-prepend it.
     `About this inbox item (${kindLabel}${where ? ` — ${where}` : ''}, ref ${i.id}):\n` +
